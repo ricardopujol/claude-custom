@@ -2,6 +2,10 @@
 /**
  * host/task-logs.js (BACKLOG #74 F(3)): which Claude Code task-output files the Leftovers readout lists, and which of
  * them are provably abandoned. The decision to delete is the dangerous one, so it is pinned by examples and by a property.
+ *
+ * RICARDO'S RULE (2026-10-08, PR #133 review): a file is deleted AUTOMATICALLY only when the app SAW its session alive
+ * (a registry entry whose pid was running) and later saw it end. A session never seen is "unknown": kept, with a manual
+ * Delete once the file has been idle. Absence from a registry is never proof of death.
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -18,10 +22,15 @@ const file = (o = {}) => ({
   bytes: 200 * MB, mtimeMs: NOW - 20 * 60_000, dev: '1', ino: '10', nlink: 1, ...o,
 });
 const registry = (entries, ok = true) => ({ ok, entries });
-const classify = (files, reg, listed = [], extra = {}) => T.classify({ files, registry: reg, listedPids: new Set(listed), now: NOW, ...extra });
+// `seen` defaults to "the app saw every session of these files alive earlier"; a test about never-seen passes its own.
+// `listed` defaults to a non-empty table (a real process table is never empty; an empty one means the read failed).
+const classify = (files, reg, listed = [1], extra = {}) => T.classify({
+  files, registry: reg, listedPids: new Set(listed), now: NOW, seen: new Set(files.map(f => f.session)), ...extra,
+});
+const other = registry([{ pid: 5, sessionId: 'other' }]);
 
-test('a big file, idle 20 min, whose session has no live process is deletable', () => {
-  const [r] = classify([file()], registry([{ pid: 5, sessionId: 'other' }]), [5]);
+test('a big file, idle 20 min, whose session was seen alive and has no live process now is deletable', () => {
+  const [r] = classify([file()], other, [5]);
   assert.strictEqual(r.deletable, true);
   assert.strictEqual(r.bytes, 200 * MB);
   assert.strictEqual(r.ageMs, 20 * 60_000);
@@ -29,35 +38,55 @@ test('a big file, idle 20 min, whose session has no live process is deletable', 
   assert.strictEqual(r.name, 'a1.output');
 });
 
-test('files under 100 MB are not listed at all', () => {
-  assert.deepStrictEqual(classify([file({ bytes: 100 * MB - 1 })], registry([{ pid: 5, sessionId: 'x' }])), []);
-  assert.strictEqual(classify([file({ bytes: 100 * MB })], registry([{ pid: 5, sessionId: 'x' }])).length, 1);
-});
-
-test('written within 15 minutes: shown, not deletable (the boundary is inclusive of exactly 15)', () => {
-  const reg = registry([{ pid: 5, sessionId: 'x' }]);
-  assert.strictEqual(classify([file({ mtimeMs: NOW - MIN + 1 })], reg)[0].deletable, false);
-  assert.strictEqual(classify([file({ mtimeMs: NOW - MIN })], reg)[0].deletable, true);
-});
-
-test('a session whose registry file names a listed pid is alive: shown only', () => {
-  const [r] = classify([file()], registry([{ pid: 7, sessionId: 's1' }]), [7]);
+test('REGRESSION (Dexter #1, Miguel B1): a session that is in no registry we read, while another session is live, is UNKNOWN, never deletable by itself', () => {
+  const [r] = classify([file({ session: 'other' })], registry([{ pid: 5, sessionId: 'tab' }]), [5], { seen: new Set(['tab']) });
   assert.strictEqual(r.deletable, false);
+  assert.strictEqual(r.why, 'unknown');
+  assert.strictEqual(r.manualDelete, true, 'idle 20 min, no live session in what we read: the person may decide');
+});
+
+test('a session seen alive earlier and now absent from the registry (its file removed on exit) is ended: deletable', () => {
+  assert.strictEqual(classify([file()], other, [5], { seen: new Set(['s1']) })[0].why, 'delete');
+});
+
+test('a session never seen: unknown, kept, with the manual Delete only once the file is idle', () => {
+  const old = classify([file()], other, [5], { seen: new Set() })[0];
+  assert.deepStrictEqual([old.why, old.deletable, old.manualDelete], ['unknown', false, true]);
+  const young = classify([file({ mtimeMs: NOW - 60_000 })], other, [5], { seen: new Set() })[0];
+  assert.deepStrictEqual([young.why, young.deletable, young.manualDelete], ['young', false, false]);
+});
+
+test('files under 100 MB are not listed at all', () => {
+  assert.deepStrictEqual(classify([file({ bytes: 100 * MB - 1 })], other), []);
+  assert.strictEqual(classify([file({ bytes: 100 * MB })], other).length, 1);
+});
+
+test('written within 15 minutes: shown, not deletable, no manual Delete (the boundary is inclusive of exactly 15)', () => {
+  const young = classify([file({ mtimeMs: NOW - MIN + 1 })], other)[0];
+  assert.deepStrictEqual([young.deletable, young.manualDelete], [false, false]);
+  assert.strictEqual(classify([file({ mtimeMs: NOW - MIN })], other)[0].deletable, true);
+});
+
+test('a session whose registry file names a listed pid is alive: shown only, no manual Delete either', () => {
+  const [r] = classify([file()], registry([{ pid: 7, sessionId: 's1' }]), [7]);
+  assert.deepStrictEqual([r.deletable, r.manualDelete, r.why], [false, false, 'alive']);
 });
 
 test('a registry entry for the session whose pid is not listed does not keep it', () => {
-  assert.strictEqual(classify([file()], registry([{ pid: 7, sessionId: 's1' }]), [])[0].deletable, true);
+  assert.strictEqual(classify([file()], registry([{ pid: 7, sessionId: 's1' }]), [99])[0].deletable, true);
 });
 
-test('doubt keeps: an unreadable or empty registry, a future mtime, an unreadable size or time', () => {
-  assert.strictEqual(classify([file()], registry([{ pid: 5, sessionId: 'x' }], false))[0].deletable, false);
-  assert.strictEqual(classify([file()], registry([]))[0].deletable, false);
-  assert.strictEqual(classify([file()], null)[0].deletable, false);
-  assert.strictEqual(classify([file({ mtimeMs: NOW + 5000 })], registry([{ pid: 5, sessionId: 'x' }]))[0].deletable, false);
-  assert.strictEqual(classify([file({ mtimeMs: NaN })], registry([{ pid: 5, sessionId: 'x' }]))[0].deletable, false);
+test('doubt keeps: an unreadable or empty registry, an empty or missing process table, a future mtime, an unreadable time', () => {
+  const del = (reg, listed, f = file()) => classify([f], reg, listed)[0];
+  for (const r of [
+    del(registry([{ pid: 5, sessionId: 'x' }], false)), del(registry([])), del(null),
+    del(other, []), del(other, [], file()), del(other, [5], file({ mtimeMs: NOW + 5000 })), del(other, [5], file({ mtimeMs: NaN })),
+  ]) assert.deepStrictEqual([r.deletable, r.manualDelete, r.why], [false, false, 'unknown']);
+  const bad = T.classify({ files: [file()], registry: other, listedPids: null, now: NOW, seen: new Set(['s1']) })[0];
+  assert.deepStrictEqual([bad.deletable, bad.manualDelete], [false, false], 'a null process table never reads as "everything is gone"');
 });
 
-test('a hard-linked file (one task output shared by several session folders) is one row, deletable only when EVERY session is gone', () => {
+test('a hard-linked file (one task output shared by several session folders) is one row, deletable only when EVERY session was seen and ended', () => {
   const a = file({ session: 'sa', nlink: 2, path: 'C:\\t\\claude\\p\\sa\\tasks\\a1.output' });
   const b = file({ session: 'sb', nlink: 2, path: 'C:\\t\\claude\\p\\sb\\tasks\\a1.output' });
   const rows = classify([a, b], registry([{ pid: 5, sessionId: 'zz' }]), [5]);
@@ -65,21 +94,21 @@ test('a hard-linked file (one task output shared by several session folders) is 
   assert.deepStrictEqual(rows[0].sessions.sort(), ['sa', 'sb']);
   assert.deepStrictEqual(rows[0].paths.sort(), [a.path, b.path].sort());
   assert.strictEqual(rows[0].deletable, true);
-  const alive = classify([a, b], registry([{ pid: 9, sessionId: 'sb' }]), [9]);
-  assert.strictEqual(alive[0].deletable, false);
+  assert.strictEqual(classify([a, b], registry([{ pid: 9, sessionId: 'sb' }]), [9])[0].deletable, false);
+  assert.strictEqual(classify([a, b], registry([{ pid: 5, sessionId: 'zz' }]), [5], { seen: new Set(['sa']) })[0].deletable, false, 'sb was never seen');
 });
 
-test('a link the scan did not see (nlink above the links found) keeps the file', () => {
-  const a = file({ nlink: 3 });
-  assert.strictEqual(classify([a], registry([{ pid: 5, sessionId: 'x' }]))[0].deletable, false);
+test('a link the scan did not see (nlink above the links found) keeps the file, with no manual Delete', () => {
+  const r = classify([file({ nlink: 3 })], other)[0];
+  assert.deepStrictEqual([r.deletable, r.manualDelete], [false, false]);
 });
 
 test('rows are ordered biggest first', () => {
-  const rows = classify([file({ ino: '1', bytes: 150 * MB }), file({ ino: '2', bytes: 900 * MB, name: 'b.output' })], registry([{ pid: 5, sessionId: 'x' }]));
+  const rows = classify([file({ ino: '1', bytes: 150 * MB }), file({ ino: '2', bytes: 900 * MB, name: 'b.output' })], other);
   assert.deepStrictEqual(rows.map(r => r.bytes), [900 * MB, 150 * MB]);
 });
 
-test('PROPERTY: deletable implies every condition; and every condition together implies deletable', () => {
+test('PROPERTY: auto-delete implies seen-then-ended, idle, links all seen and a readable registry; manual implies idle with nobody alive', () => {
   const sessionIds = ['s1', 's2', 's3'];
   const inoArb = fc.record({
     nlink: fc.integer({ min: 0, max: 3 }), bytes: fc.oneof(fc.integer({ min: 0, max: 300 * MB }), fc.constant(NaN)),
@@ -90,26 +119,26 @@ test('PROPERTY: deletable implies every condition; and every condition together 
     ok: fc.boolean(),
     entries: fc.array(fc.record({ pid: fc.integer({ min: 1, max: 4 }), sessionId: fc.constantFrom(...sessionIds, 'q') }), { maxLength: 5 }),
   }));
-  fc.assert(fc.property(fc.tuple(inoArb, inoArb), fc.array(fileArb, { maxLength: 6 }), regArb, fc.array(fc.integer({ min: 1, max: 4 })), (props, fs0, reg, listed) => {
+  const seenArb = fc.subarray([...sessionIds, 'q']);
+  fc.assert(fc.property(fc.tuple(inoArb, inoArb), fc.array(fileArb, { maxLength: 6 }), regArb, fc.array(fc.integer({ min: 1, max: 4 })), seenArb, (props, fs0, reg, listed, seen) => {
     const files = fs0.map((f, i) => ({ ...props[f.ino], dev: '1', session: f.session, ino: String(f.ino), path: `C:\\t\\claude\\p\\${f.session}\\tasks\\f${i}.output`, project: 'p', name: `f${i}` }));
-    const rows = classify(files, reg, listed);
+    const rows = classify(files, reg, listed, { seen: new Set(seen) });
     const live = new Set(listed);
     for (const r of rows) {
       const members = files.filter(f => r.paths.includes(f.path));
-      const registryOk = !!reg && reg.ok === true && reg.entries.length > 0;
-      const gone = s => registryOk && !reg.entries.some(e => e.sessionId === s && live.has(e.pid));
       const m = members[0];
-      const expected = registryOk
-        && Number.isFinite(m.mtimeMs) && NOW - m.mtimeMs >= MIN
-        && members.every(x => gone(x.session))
-        && members.length === m.nlink;
-      assert.strictEqual(r.deletable, expected);
+      const ctxOk = !!reg && reg.ok === true && reg.entries.length > 0 && listed.length > 0;
+      const aliveS = s => reg.entries.some(e => e.sessionId === s && live.has(e.pid));
+      const base = ctxOk && Number.isFinite(m.mtimeMs) && NOW - m.mtimeMs >= MIN && members.length === m.nlink && !members.some(x => aliveS(x.session));
+      assert.strictEqual(r.manualDelete, base);
+      assert.strictEqual(r.deletable, base && members.every(x => seen.includes(x.session)));
       if (r.deletable) {
         assert.ok(NOW - m.mtimeMs >= MIN, 'never a file written within 15 minutes');
-        assert.ok(members.every(x => !reg.entries.some(e => e.sessionId === x.session && live.has(e.pid))), 'never a live session');
+        assert.ok(members.every(x => !aliveS(x.session)), 'never a live session');
+        assert.ok(members.every(x => seen.includes(x.session)), 'never a session the app did not see alive first');
       }
     }
-  }), { numRuns: 300 });
+  }), { numRuns: 400 });
 });
 
 test('parseTaskPath: only root/<project>/<session>/tasks/<id>.output, nothing deeper, nothing else', () => {
@@ -125,10 +154,10 @@ test('parseTaskPath: only root/<project>/<session>/tasks/<id>.output, nothing de
 
 test('why: delete, alive, young or unknown, in that order of what the readout tells the person', () => {
   const reg = registry([{ pid: 7, sessionId: 's1' }]);
-  assert.strictEqual(classify([file()], reg, [])[0].why, 'delete');
+  assert.strictEqual(classify([file()], reg, [99])[0].why, 'delete');
   assert.strictEqual(classify([file()], reg, [7])[0].why, 'alive');
-  assert.strictEqual(classify([file({ mtimeMs: NOW - 60_000 })], reg, [])[0].why, 'young');
+  assert.strictEqual(classify([file({ mtimeMs: NOW - 60_000 })], reg, [99])[0].why, 'young');
   assert.strictEqual(classify([file({ mtimeMs: NOW - 60_000 })], reg, [7])[0].why, 'alive', 'a live session with a recent write is alive, not young');
   assert.strictEqual(classify([file()], null)[0].why, 'unknown');
-  assert.strictEqual(classify([file({ mtimeMs: NOW + 1 })], reg, [])[0].why, 'unknown');
+  assert.strictEqual(classify([file({ mtimeMs: NOW + 1 })], reg, [99])[0].why, 'unknown');
 });

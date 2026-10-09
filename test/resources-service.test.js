@@ -724,72 +724,93 @@ test('B: with no reap wired a manual Stop does nothing and says so', async () =>
 
 
 // ---- Leftovers: big task-output files (BACKLOG #74 F(3)) -------------------------------------------------------
+// Ricardo's rule (PR #133 review): the app deletes by itself only a file whose session it SAW alive and then saw end.
 
 const MBYTES = 1024 * 1024;
 const taskFile = (over = {}) => ({
-  path: `C:\t\claude\p\${over.session || 'sess-1'}\tasks\a1.output`, project: 'p', session: 'sess-1', name: 'a1.output',
+  path: `C:\\t\\claude\\p\\${over.session || 'sess-1'}\\tasks\\a1.output`, project: 'p', session: 'sess-1', name: 'a1.output',
   bytes: 300 * MBYTES, mtimeMs: NOWMS - 40 * MINUTE, dev: '1', ino: '10', nlink: 1, ...over,
 });
-function taskRig(extra = {}, files = [taskFile()], reg = { ok: true, entries: [{ pid: 4242, sessionId: 'sess-other' }] }) {
+// pid 4242 is session sess-1's claude: `live4242.on` says whether it is in the process table AND its registry entry exists
+function taskRig(extra = {}, files = [taskFile()]) {
   const clock = { t: NOWMS };
   const calls = { scan: 0, removed: [], logs: [] };
+  const world4242 = { on: true };
   const taskLogs = {
     everyMs: 60_000,
     scan: async () => { calls.scan++; return files; },
-    registry: async () => reg,
+    registry: async () => ({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }, ...(world4242.on ? [{ pid: 4242, sessionId: 'sess-1' }] : [])] }),
     remove: async (row) => { calls.removed.push(row.key); return { deleted: row.paths.length, failed: 0, kept: 0, freed: row.bytes }; },
     ...extra.taskLogs,
   };
   const r = rig({ now: () => clock.t, ledger: () => [], taskLogs, log: (...a) => calls.logs.push(a.join(' ')), ...extra.rig });
-  return { ...r, clock, calls };
+  const procsNow = () => {
+    const p = world();
+    p.push({ pid: 5555, ppid: 1, name: 'claude.exe', cmd: 'claude.exe', priv: 10, start: '1' });
+    if (world4242.on) p.push({ pid: 4242, ppid: 1, name: 'claude.exe', cmd: 'claude.exe', priv: 10, start: '2' });
+    return p;
+  };
+  let n = 1;
+  const tick = async () => { r.svc.onUpdate(fullSnap(++n, 10, procsNow())); await settle(); };
+  return { ...r, clock, calls, world4242, tick };
 }
 
 test('task logs: the first sample starts a scan; the next payload lists the file with its size, age and why, and no paths', async () => {
   const r = taskRig({}, [taskFile({ mtimeMs: NOWMS - 5 * MINUTE })]);
-  r.svc.onUpdate(fullSnap(2, 10));
-  assert.strictEqual(r.sent.at(-1).leftovers, null, 'nothing scanned yet');
-  await settle();
-  r.svc.onUpdate(fullSnap(3, 10));
+  await r.tick();
+  assert.strictEqual(r.sent.at(-1).leftovers, null, 'nothing scanned yet when the first payload went out');
+  await r.tick();
   const row = r.sent.at(-1).leftovers.taskLogs[0];
-  assert.deepStrictEqual([row.name, row.bytes, row.ageMs, row.why, row.sessions], ['a1.output', 300 * MBYTES, 5 * MINUTE, 'young', ['sess-1']]);
+  assert.deepStrictEqual([row.name, row.bytes, row.ageMs, row.why, row.sessions], ['a1.output', 300 * MBYTES, 5 * MINUTE, 'alive', ['sess-1']]);
   assert.ok(!('paths' in row));
   assert.strictEqual((r.svc.get(false) || {}).leftovers, undefined);
 });
 
-test('task logs: a deletable file is removed once, by the injected remove, and listed as deleted with the bytes freed', async () => {
+test('task logs: a file is removed only after its session was SEEN alive and then SEEN ended; listed as deleted with the bytes freed', async () => {
   const r = taskRig();
-  r.svc.onUpdate(fullSnap(2, 10));
-  await settle();
+  await r.tick();                      // scan 1: sess-1 is alive (registry entry, pid listed): seen
+  assert.deepStrictEqual(r.calls.removed, []);
+  r.world4242.on = false;              // the session ends: its registry file goes, its process goes
+  await r.tick();                      // inside the cadence: no scan
+  assert.deepStrictEqual(r.calls.removed, []);
+  r.clock.t += 61_000;
+  await r.tick();                      // scan 2: seen, now ended
   assert.deepStrictEqual(r.calls.removed, ['1:10']);
-  r.svc.onUpdate(fullSnap(3, 10));
+  await r.tick();
   const l = r.sent.at(-1).leftovers;
   assert.deepStrictEqual(l.deleted.map(d => [d.name, d.bytes]), [['a1.output', 300 * MBYTES]]);
-  r.clock.t += 61_000;
-  r.svc.onUpdate(fullSnap(4, 10));
-  await settle();
-  assert.strictEqual(r.calls.removed.length, 2, 'the (mock) scan still shows it, so it is tried again after the cadence; the real scan will not');
+  assert.deepStrictEqual(l.taskLogs, [], 'a deleted file leaves the list at once');
 });
 
-test('task logs: a file whose session has a live process is shown and never removed', async () => {
-  const procs = world();
-  procs.push({ pid: 4242, ppid: 1, name: 'claude.exe', cmd: 'claude.exe', priv: 10, start: '1' });
-  const r = taskRig({}, [taskFile({ session: 'sess-live' })], { ok: true, entries: [{ pid: 4242, sessionId: 'sess-live' }] });
-  r.svc.onUpdate(fullSnap(2, 10, procs));
-  await settle();
-  r.svc.onUpdate(fullSnap(3, 10, procs));
+test('REGRESSION (Dexter #1): registry [{5555,tab}] with pid 5555 live, a file of another session idle 20 min: NOT deleted, shown as unknown with a manual Delete', async () => {
+  const r = taskRig({}, [taskFile({ session: 'other', path: 'C:\\t\\claude\\p\\other\\tasks\\a1.output' })]);
+  await r.tick();
+  r.clock.t += 61_000;
+  await r.tick();
+  await r.tick();
+  assert.deepStrictEqual(r.calls.removed, []);
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['unknown', false, true]);
+});
+
+test('task logs: a session alive now (registry entry, pid listed) is shown and never removed', async () => {
+  const r = taskRig();
+  for (let i = 0; i < 3; i++) { r.clock.t += 61_000; await r.tick(); }
   assert.deepStrictEqual(r.calls.removed, []);
   assert.strictEqual(r.sent.at(-1).leftovers.taskLogs[0].why, 'alive');
 });
 
 test('task logs: written in the last 15 minutes, or an unreadable registry, means shown only', async () => {
-  for (const [files, reg, why] of [
-    [[taskFile({ mtimeMs: NOWMS - 5 * MINUTE })], { ok: true, entries: [{ pid: 4242, sessionId: 'x' }] }, 'young'],
-    [[taskFile()], { ok: false, entries: [] }, 'unknown'],
+  for (const [files, extra, why] of [
+    [[taskFile({ mtimeMs: NOWMS - 5 * MINUTE })], {}, 'alive'],
+    [[taskFile({ session: 'gone', mtimeMs: NOWMS - 5 * MINUTE })], {}, 'young'],
+    [[taskFile()], { taskLogs: { registry: async () => ({ ok: false, entries: [] }) } }, 'unknown'],
   ]) {
-    const r = taskRig({}, files, reg);
-    r.svc.onUpdate(fullSnap(2, 10));
-    await settle();
-    r.svc.onUpdate(fullSnap(3, 10));
+    const r = taskRig(extra, files);
+    await r.tick();
+    r.clock.t += 61_000;
+    await r.tick();
+    await r.tick();
     assert.deepStrictEqual(r.calls.removed, [], why);
     assert.strictEqual(r.sent.at(-1).leftovers.taskLogs[0].why, why);
   }
@@ -820,36 +841,26 @@ test('task logs: an expired sample, a Stop re-read (adhoc) or a failing scan nev
   await settle();
   assert.deepStrictEqual([exp.calls.scan, exp.calls.removed, adhoc.calls.scan, adhoc.calls.removed], [0, [], 0, []]);
   const bad = taskRig({ taskLogs: { scan: async () => { throw new Error('EPERM scan'); } } });
-  bad.svc.onUpdate(fullSnap(2, 10));
-  await settle();
-  bad.svc.onUpdate(fullSnap(3, 10));
+  await bad.tick();
+  await bad.tick();
   assert.ok(bad.sent.at(-1).model);
   assert.ok(bad.calls.logs.some(l => /EPERM scan/.test(l)));
   assert.deepStrictEqual(bad.calls.removed, []);
 });
 
-test('task logs: a manual Delete removes a deletable row by its key, and refuses anything else', async () => {
-  const r = taskRig({ taskLogs: { everyMs: 1e12 } });
-  r.svc.onUpdate(fullSnap(2, 10));
-  await settle();
-  r.calls.removed.length = 0;
+test('task logs: a manual Delete removes a row the person may choose to delete (even an unknown one), by its key, and refuses anything else', async () => {
+  const unknown = [taskFile({ session: 'other', path: 'C:\\t\\claude\\p\\other\\tasks\\a1.output' })];
+  const r = taskRig({ taskLogs: { everyMs: 1e12 } }, unknown);
+  await r.tick();
   for (const req of [{ taskLog: 'nope' }, { taskLog: 5 }, { taskLog: '' }]) assert.strictEqual((await r.svc.stopLeftovers(req)).ok, false, JSON.stringify(req));
   assert.deepStrictEqual(r.calls.removed, []);
-  const res = await r.svc.stopLeftovers({ taskLog: '1:10' });
-  assert.deepStrictEqual(res, { ok: true, stopped: 1, failed: 0 });
+  assert.deepStrictEqual(await r.svc.stopLeftovers({ taskLog: '1:10' }), { ok: true, stopped: 1, failed: 0 });
   assert.deepStrictEqual(r.calls.removed, ['1:10']);
-  const young = taskRig({ taskLogs: { everyMs: 1e12 } }, [taskFile({ mtimeMs: NOWMS - MINUTE })]);
-  young.svc.onUpdate(fullSnap(2, 10));
-  await settle();
+  const young = taskRig({ taskLogs: { everyMs: 1e12 } }, [taskFile({ session: 'other', mtimeMs: NOWMS - MINUTE })]);
+  await young.tick();
   assert.strictEqual((await young.svc.stopLeftovers({ taskLog: '1:10' })).ok, false);
-  assert.deepStrictEqual(young.calls.removed, []);
-});
-
-test('task logs: a deleted file leaves the list at once, without waiting for the next scan', async () => {
-  const r = taskRig();
-  r.svc.onUpdate(fullSnap(2, 10));
-  await settle();
-  r.svc.onUpdate(fullSnap(3, 10));
-  assert.deepStrictEqual(r.sent.at(-1).leftovers.taskLogs, []);
-  assert.strictEqual(r.sent.at(-1).leftovers.deleted.length, 1);
+  const alive = taskRig({ taskLogs: { everyMs: 1e12 } });
+  await alive.tick();
+  assert.strictEqual((await alive.svc.stopLeftovers({ taskLog: '1:10' })).ok, false, 'a live session\'s file has no manual Delete');
+  assert.deepStrictEqual([young.calls.removed, alive.calls.removed], [[], []]);
 });

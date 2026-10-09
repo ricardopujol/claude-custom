@@ -25,7 +25,7 @@ function put(root, project, session, name, bytes, when = OLD) {
 }
 const rowFor = async (root, minBytes = 10) => {
   const files = await FS.scanTaskFiles(root);
-  return T.classify({ files, registry: { ok: true, entries: [{ pid: 1, sessionId: 'x' }] }, listedPids: new Set([1]), minBytes });
+  return T.classify({ files, registry: { ok: true, entries: [{ pid: 1, sessionId: 'x' }] }, listedPids: new Set([1]), seen: new Set(files.map(f => f.session)), minBytes });
 };
 
 test('scan: lists task output files with size, mtime and inode; never reads them; ignores everything else', async () => {
@@ -114,7 +114,7 @@ test('delete: a row that is not deletable is never touched', async () => {
   const root = tmp();
   const a = put(root, 'p', 's', 'a.output', 50);
   const [row] = await rowFor(root);
-  assert.strictEqual((await FS.deleteTaskLog(root, { ...row, deletable: false })).deleted, 0);
+  assert.strictEqual((await FS.deleteTaskLog(root, { ...row, deletable: false, manualDelete: false })).deleted, 0);
   assert.ok(fs.existsSync(a));
 });
 
@@ -167,4 +167,23 @@ test('registries: several config dirs merge; one that cannot be read makes the w
   assert.deepStrictEqual(both, { ok: true, entries: [{ pid: 1, sessionId: 'aa' }, { pid: 2, sessionId: 'bb' }] });
   assert.strictEqual((await FS.readRegistries([a, path.join(b, 'missing')])).ok, false);
   assert.strictEqual((await FS.readRegistries([])).ok, false);
+});
+
+test('registryDirs: the main config dir plus one per tab, a relative dir anchored on each tab folder, unique', () => {
+  const cfg = (opts = {}) => (opts.cwd ? path.join(opts.cwd, '.cc') : path.join('main', '.cc'));
+  assert.deepStrictEqual(FS.registryDirs(['a', 'b', 'a'], cfg), [path.join('main', '.cc', 'sessions'), path.join('a', '.cc', 'sessions'), path.join('b', '.cc', 'sessions')]);
+  const fixed = () => path.join('home', '.claude');
+  assert.deepStrictEqual(FS.registryDirs(['a', 'b'], fixed), [path.join('home', '.claude', 'sessions')]);
+  assert.deepStrictEqual(FS.registryDirs(null, fixed), [path.join('home', '.claude', 'sessions')]);
+  assert.strictEqual(FS.registryDirs(['', 5], fixed).length, 1);
+});
+
+test('delete: a row the person chose to delete (manualDelete) is deleted by the same guarded function; one that is neither is not', async () => {
+  const root = tmp();
+  const a = put(root, 'p', 's', 'a.output', 50);
+  const [row] = await rowFor(root);
+  assert.strictEqual((await FS.deleteTaskLog(root, { ...row, deletable: false, manualDelete: false })).deleted, 0);
+  assert.ok(fs.existsSync(a));
+  assert.strictEqual((await FS.deleteTaskLog(root, { ...row, deletable: false, manualDelete: true })).deleted, 1);
+  assert.ok(!fs.existsSync(a));
 });

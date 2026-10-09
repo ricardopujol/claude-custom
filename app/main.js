@@ -1740,11 +1740,11 @@ app.whenReady().then(async () => {
       removeEntries: (entries) => pidLedger.removeEntries(pidLedger.defaultLedgerFile(), entries),
     }),
     // Big task-output files (#74 F(3)): stat-only scan of %TEMP%\claude every 60 s; the delete is host/task-logs-fs.js deleteTaskLog,
-    // the only thing that removes a file. Live sessions are read from the CLI's own session registry (host/claude-config-dir.js).
+    // the only thing that removes a file. Live sessions are read from the CLI's session registry in main's config dir AND every open tab's (a relative CLAUDE_CONFIG_DIR is anchored on the tab folder).
     taskLogs: {
       everyMs: 60_000,
       scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
-      registry: () => taskLogsFs.readRegistries([path.join(claudeConfigDir(), 'sessions')]),
+      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir)),
       remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
     },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one

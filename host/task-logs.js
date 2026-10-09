@@ -6,12 +6,14 @@
  * console-less Python REPL looping on tracebacks) once grew one to 5.1 GB and filled C:. MEASURED 2026-10-08: the same task
  * file is often HARD-LINKED into several session folders (nlink 3, one inode), so a row is one inode, not one path.
  *
- * WHEN A FILE MAY BE DELETED (every one of these, otherwise it is shown only; doubt keeps):
+ * WHEN A FILE MAY BE DELETED BY THE APP (every one of these, otherwise it is shown only; doubt keeps):
  *   - it is at least MIN_BYTES and was last written at least IDLE_MS ago (a future or unreadable mtime keeps it);
- *   - the registry of live sessions (`<config>/sessions/<pid>.json`, host/session-registry.js) was read completely, holds at
- *     least one entry, and NONE of the sessions that own the file (the folder names of every link) has a registry entry
- *     whose pid is still in the process table, whatever that pid's start (a reused pid reads as alive: doubt keeps);
+ *   - the registries of live sessions (`<config>/sessions/<pid>.json`, host/session-registry.js) were read completely and hold
+ *     at least one entry, and the process table is not empty;
+ *   - NONE of the sessions that own the file (the folder names of every link) has an entry naming a running pid, AND every one
+ *     of them was SEEN alive earlier in this run (so "ended" is observed, not inferred from absence);
  *   - every hard link was found (links seen == nlink), so a link in a session we did not scan keeps the file.
+ * A file that is idle with nobody alive but a session never seen is "unknown": the person may Delete it by hand.
  */
 
 const MIN_BYTES = 100 * 1024 * 1024;
@@ -41,15 +43,24 @@ function parseTaskPath(root, p) {
 }
 
 /**
- * classify({ files, registry, listedPids, now, minBytes, idleMs }) -> rows, biggest first
+ * classify({ files, registry, listedPids, seen, now, minBytes, idleMs }) -> rows, biggest first
  * files: [{ path, project, session, name, bytes, mtimeMs, dev, ino, nlink }]  (a stat of each task file; never its contents)
- * registry: { ok, entries: [{ pid, sessionId }] } | null     listedPids: Set of the pids in the process table
- * row: { key, name, project, sessions, paths, bytes, mtimeMs, ageMs (null: unknown), deletable, why, dev, ino }
+ * registry: { ok, entries: [{ pid, sessionId }] } | null     listedPids: the pids in the process table (a non-empty Set or Map)
+ * seen: Set of session ids the app SAW ALIVE (a registry entry with a running pid) on an earlier read of this run
+ * row: { key, name, project, sessions, paths, bytes, mtimeMs, ageMs (null: unknown), deletable (the app may delete it by
+ *        itself), manualDelete (the person may choose to), why, dev, ino }
+ *
+ * "ENDED" is positive evidence, never an absence (Ricardo, PR #133 review; Dexter #1, Miguel B1): a session is ended only when
+ * the app saw it alive and now no entry of it names a running pid. A session in no registry we read is UNKNOWN: it may run
+ * under another config dir, be a CLI that does not register, or be re-keyed. Unknown files are kept; once idle they get the
+ * manual Delete, so the person decides. An empty or missing process table or registry makes everything unknown.
  */
-function classify({ files, registry, listedPids, now = Date.now(), minBytes = MIN_BYTES, idleMs = IDLE_MS }) {
-  const listed = listedPids instanceof Set ? listedPids : new Set();
+function classify({ files, registry, listedPids, seen, now = Date.now(), minBytes = MIN_BYTES, idleMs = IDLE_MS }) {
+  const listed = listedPids instanceof Set || listedPids instanceof Map ? listedPids : null;
+  const everSeen = seen instanceof Set ? seen : new Set();
   const regOk = !!registry && registry.ok === true && Array.isArray(registry.entries) && registry.entries.length > 0;
-  const alive = (sid) => !regOk || registry.entries.some(e => e && e.sessionId === sid && listed.has(e.pid));
+  const ctxOk = regOk && listed !== null && listed.size > 0;
+  const alive = sid => registry.entries.some(e => e && e.sessionId === sid && listed.has(e.pid));
   const groups = new Map();
   for (const f of Array.isArray(files) ? files : []) {
     if (!f || !isNum(f.bytes) || f.bytes < minBytes) continue;
@@ -62,12 +73,15 @@ function classify({ files, registry, listedPids, now = Date.now(), minBytes = MI
     const m = members[0];
     const ageMs = isNum(m.mtimeMs) ? now - m.mtimeMs : null;
     const sessions = [...new Set(members.map(x => x.session))];
-    const live = regOk && sessions.some(alive);
-    // WHY it is shown: 'delete' (every condition holds), 'alive' (a session of it is running), 'young' (written within idleMs),
-    // 'unknown' (the registry, the time or a link could not be settled: doubt keeps).
-    const why = !regOk || ageMs === null || ageMs < 0 || members.length !== m.nlink ? 'unknown' : live ? 'alive' : ageMs < idleMs ? 'young' : 'delete';
-    const deletable = why === 'delete';
-    rows.push({ key, name: m.name, project: m.project, sessions, paths: members.map(x => x.path), bytes: m.bytes, mtimeMs: m.mtimeMs, ageMs: ageMs === null ? null : Math.max(0, ageMs), deletable, why, dev: m.dev, ino: m.ino });
+    const settled = ctxOk && ageMs !== null && ageMs >= 0 && members.length === m.nlink;   // the time and every link are known
+    const anyAlive = ctxOk && sessions.some(alive);
+    const idle = settled && ageMs >= idleMs;
+    const manualDelete = idle && !anyAlive;
+    const deletable = manualDelete && sessions.every(sid => everSeen.has(sid));
+    // WHY it is shown: 'delete' (the app will), 'alive' (a session of it is running), 'young' (written within idleMs),
+    // 'unknown' (the registry, the time, a link or the session's end could not be settled: doubt keeps).
+    const why = !settled ? 'unknown' : anyAlive ? 'alive' : !idle ? 'young' : deletable ? 'delete' : 'unknown';
+    rows.push({ key, name: m.name, project: m.project, sessions, paths: members.map(x => x.path), bytes: m.bytes, mtimeMs: m.mtimeMs, ageMs: ageMs === null ? null : Math.max(0, ageMs), deletable, manualDelete, why, dev: m.dev, ino: m.ino });
   }
   return rows.sort((a, b) => (b.bytes - a.bytes) || (a.key < b.key ? -1 : 1));
 }

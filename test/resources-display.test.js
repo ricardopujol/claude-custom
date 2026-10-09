@@ -554,6 +554,12 @@ test('task logs: Delete only on a deletable row, with the key; no Stop N on the 
   assert.ok(!html.includes('<b>x'));
 });
 
+test('task logs: an unknown file that is idle gets a manual Delete and says the choice is the persons choice; one that is not idle gets neither', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'unknown', deletable: false, manualDelete: true }), trow({ key: '1:11', why: 'unknown', deletable: false, manualDelete: false })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.canDelete), [true, false]);
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.note), ["can't tell whether its session ended: Delete is yours to choose", "kept: can't tell whether its session ended"]);
+});
+
 test('task logs: actionOf reads the Delete click strictly', () => {
   assert.deepStrictEqual(D.actionOf({ resAct: 'left-delete', resKey: '1:10' }), { act: 'left-delete', key: '1:10' });
   for (const bad of [{ resAct: 'left-delete' }, { resAct: 'left-delete', resKey: '' }, { resAct: 'left-delete', resKey: '..\\x' }, { resAct: 'left-delete', resKey: '1:x' }]) {

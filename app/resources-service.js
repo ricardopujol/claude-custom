@@ -63,6 +63,7 @@ function createResourcesService({
   let lastFound = null;           // the latest sample's leftovers (with their ledger entries): what a manual Stop is resolved against
   let tl = { files: [], registry: null, at: -Infinity, busy: false };   // the last task-output scan (stat only), when it ended, whether one is in flight
   let tlListed = null;         // the pids of the latest full, fresh sample: what "a session is alive" is judged against; null: nothing may be deleted
+  const tlSeen = new Set();    // session ids the app SAW alive (a registry entry whose pid was running); only these can be seen to END
   const tlDeleted = [];        // { name, bytes, at } of the files deleted lately (shown for an hour, like Stopped)
   const TL_EVERY_MS = (taskLogs && taskLogs.everyMs) || 60_000;
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
@@ -119,7 +120,13 @@ function createResourcesService({
   const withHistory = full => (full ? { ...full, history: history.points(), historyNow: Math.round(mono()) } : full);
 
   // ---- big task-output files (#74 F(3), host/task-logs.js decides, host/task-logs-fs.js touches the disk) ----
-  const tlClassify = () => taskLogsLib.classify({ files: tl.files, registry: tl.registry, listedPids: tlListed || new Set(), now: now() });
+  // A null process table is passed on as null: classify reads it as "unknown", never as "everything is gone".
+  const tlClassify = () => taskLogsLib.classify({ files: tl.files, registry: tl.registry, listedPids: tlListed, seen: tlSeen, now: now() });
+  // A session whose registry entry names a running pid is alive now; remember it, so a later absence is an END that was observed.
+  function tlMarkSeen() {
+    if (!tlListed || !tl.registry || tl.registry.ok !== true) return;
+    for (const e of tl.registry.entries) if (e && typeof e.sessionId === 'string' && tlListed.has(e.pid)) tlSeen.add(e.sessionId);
+  }
   function tlShownDeleted() {
     const t = now();
     for (let i = tlDeleted.length - 1; i >= 0; i--) if (t - tlDeleted[i].at >= 60 * 60_000) tlDeleted.splice(i, 1);
@@ -147,6 +154,7 @@ function createResourcesService({
     (async () => {
       try {
         await tlRead();
+        tlMarkSeen();
         if (tlListed) await tlRemove(tlClassify().filter(r => r.deletable));
       } catch (err) {
         log('[resources] the task-output scan failed:', (err && err.message) || err);
@@ -260,7 +268,8 @@ function createResourcesService({
       tl.busy = true;
       try {
         await tlRead();
-        const rows = tlListed ? tlClassify().filter(r => r.deletable && r.key === req.taskLog) : [];
+        tlMarkSeen();
+        const rows = tlListed ? tlClassify().filter(r => (r.deletable || r.manualDelete) && r.key === req.taskLog) : [];
         if (rows.length === 0) return refuse('that file is not one this panel can delete');
         const res = await tlRemove(rows);
         return { ok: true, stopped: res.ok, failed: res.failed };

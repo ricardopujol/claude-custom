@@ -60,6 +60,17 @@ async function readRegistry(dir, fsp = fs.promises) {
   return { ok, entries };
 }
 
+/**
+ * The `sessions` dir of every config dir a session of this app may be registered in: main's own, plus one per open tab (a
+ * tab's `claude` runs in its folder, and a RELATIVE CLAUDE_CONFIG_DIR resolves against that folder, not main's cwd).
+ * `configDir({ cwd })` is host/claude-config-dir.js. Unique, in order.
+ */
+function registryDirs(tabCwds, configDir) {
+  const dirs = [configDir()];
+  for (const cwd of Array.isArray(tabCwds) ? tabCwds : []) if (typeof cwd === 'string' && cwd !== '') dirs.push(configDir({ cwd }));
+  return [...new Set(dirs.map(d => path.join(d, 'sessions')))];
+}
+
 // Every config dir a session of this machine may be registered in: merged, and not ok if any one is not.
 async function readRegistries(dirs, fsp = fs.promises) {
   const list = [...new Set(dirs)];
@@ -75,7 +86,7 @@ const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLo
 
 async function deleteTaskLog(root, row, { fsp = fs.promises, now = Date.now, idleMs = IDLE_MS } = {}) {
   const res = { deleted: 0, failed: 0, kept: 0, freed: 0 };
-  if (!row || row.deletable !== true || !Array.isArray(row.paths) || !Number.isFinite(row.mtimeMs)) return { ...res, kept: Array.isArray(row && row.paths) ? row.paths.length : 0 };
+  if (!row || (row.deletable !== true && row.manualDelete !== true) || !Array.isArray(row.paths) || !Number.isFinite(row.mtimeMs)) return { ...res, kept: Array.isArray(row && row.paths) ? row.paths.length : 0 };
   let realRoot;
   try { realRoot = await fsp.realpath(root); } catch { return { ...res, kept: row.paths.length }; }
   for (const p of row.paths) {
@@ -96,4 +107,4 @@ async function deleteTaskLog(root, row, { fsp = fs.promises, now = Date.now, idl
   return res;
 }
 
-module.exports = { scanTaskFiles, readRegistry, readRegistries, deleteTaskLog };
+module.exports = { scanTaskFiles, readRegistry, readRegistries, registryDirs, deleteTaskLog };

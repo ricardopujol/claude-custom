@@ -181,8 +181,8 @@ function taskLogRow(r) {
   const notes = { delete: 'deleting within a minute', alive: 'kept: its session is still running', young: 'kept: written to in the last 15 min' };
   return {
     name: `${first} · ${file}${more}`, who: file, key: isStr(r.key) ? r.key : '', pid: '', start: '',
-    ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: notes[r.why] || "kept: can't tell whether its session ended",
-    canStop: false, canDelete: r.deletable === true && isStr(r.key) && /^\d+:\d+$/.test(r.key),
+    ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: notes[r.why] || (r.manualDelete === true ? "can't tell whether its session ended: Delete is yours to choose" : "kept: can't tell whether its session ended"),
+    canStop: false, canDelete: (r.deletable === true || r.manualDelete === true) && isStr(r.key) && /^\d+:\d+$/.test(r.key),
   };
 }
 
