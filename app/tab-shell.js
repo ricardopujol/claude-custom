@@ -118,6 +118,9 @@ const NO_PORT_ERROR = 'no usable port for this folder';
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
 
+// How long a turn must have been idle before a Ctrl+click close counts the session as at rest.
+const IDLE_SETTLE_MS = 10_000;
+
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
 /** What a renderer may say about itself, cut down to the eight known fields. */
@@ -659,7 +662,7 @@ function createShell(deps) {
       if (typeof occupancy.known === 'function' && occupancy.known(tab.cwd) !== true) return null;
       const claims = occupancy.claims();
       if (!Array.isArray(claims)) return null;
-      const occ = occupancyDisplay.tabOccupancy(claims, tab.key, { keyOf });
+      const occ = occupancyDisplay.tabOccupancy(claims, tab.key, { keyOf, withAlso: true });
       return occ ? occ.count : 0;
     } catch (err) {
       log('[shell] occupancy for a close threw:', err && err.message);
@@ -678,7 +681,10 @@ function createShell(deps) {
     // a /bedtime night between wakes is the run's, and a stop would end it (Dexter R1)
     if (st.working === true || st.turn === 'turn' || st.night === true) return 'busy';
     if (st.needsInput === true || st.turn === 'prompt') return 'waiting';
-    return busyWhy(st) === null ? 'idle' : null;
+    if (busyWhy(st) !== null) return null;
+    // A Stop that another Stop hook blocks reads idle until the continuation's first tool call (Dexter F1): a turn that
+    // went idle less than IDLE_SETTLE_MS ago, or whose time is unknown, is not at rest yet.
+    return typeof tab.idleSince === 'number' && now() - tab.idleSince >= IDLE_SETTLE_MS ? 'idle' : 'busy';
   }
 
   /**
@@ -770,6 +776,7 @@ function createShell(deps) {
     if (silent) {
       // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
       const gitAgain = await gitFactsOf(tab);
+      if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
       const again = closeReason(closeFactsOf(tab, gitAgain, { hostFound: target !== null }));
       if (again !== '') {
         let ok = false;
@@ -950,6 +957,8 @@ function createShell(deps) {
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
     if (tabStatusLib.sameStatus(tab.status, next)) return true;
+    if (next.turn !== 'idle') tab.idleSince = null;
+    else if (!tab.status || tab.status.turn !== 'idle' || typeof tab.idleSince !== 'number') tab.idleSince = now();
     tab.status = next;
     publish();
     return true;

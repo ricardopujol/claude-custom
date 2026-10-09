@@ -55,9 +55,9 @@ function createTurnState() {
     if (event === 'SessionEnd') { known = false; turn = false; dialog = false; held = null; ended.clear(); return; }
     if (event === 'UserPromptSubmit') { turn = true; dialog = false; held = null; return; }
     if (TOOL_EVENTS.has(event)) {
-      // any tool moving means a dialog was answered; only the MAIN session's calls prove a turn
-      dialog = false;
-      if (!(typeof p.agent_id === 'string' && p.agent_id)) turn = true;
+      // Only the MAIN session's calls prove a turn, and only they say its dialog was answered: a subagent's or
+      // teammate's Read moves while the main session's permission prompt is still on screen (PR #139 Dexter F2)
+      if (!(typeof p.agent_id === 'string' && p.agent_id)) { dialog = false; turn = true; }
       return;
     }
     if (event === 'Notification') {
