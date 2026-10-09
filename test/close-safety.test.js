@@ -234,3 +234,12 @@ test('real git: showUntrackedFiles=no can\'t hide a file; a detached HEAD is unk
   assert.strictEqual(r.branch, null);
   assert.strictEqual(r.unpushedCount, null, 'the branch\'s unpushed commit is NOT hidden by a detached HEAD');
 });
+
+// #50: unsaved edits in the file reader are a reason to ask.
+test('closeReasons: a file with unsaved edits in the reader is a reason, and an empty or missing one is not', () => {
+  assert.deepStrictEqual(closeReasons({ ...SAFE, readerUnsaved: 'src/app.js' }), ['unsaved edits in the file reader']);
+  assert.strictEqual(isSafeToClose({ ...SAFE, readerUnsaved: 'src/app.js' }), false);
+  for (const none of [undefined, null, '', 0, false, {}]) {
+    assert.strictEqual(isSafeToClose({ ...SAFE, readerUnsaved: none }), true, String(none));
+  }
+});

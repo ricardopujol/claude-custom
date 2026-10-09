@@ -4,7 +4,7 @@
  * the one `repo` conversation with the host that feeds both. renderer.js only wires it in (a hello, a control
  * message, the tab being shown, the socket dropping, and how to type into the terminal).
  *
- *   create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown }) ->
+ *   create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect, confirmDiscard, onDirty }) ->
  *     { setControls(list), onMessage(msg), show(), failAll(reason), probe(action, args) }
  *
  * `typeMention(text, done)` is the page's typeAndCheck path (PR #93): it clears a one-line draft, refuses a
@@ -18,7 +18,7 @@
  */
 (function (root) {
 
-function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect } = {}) {
+function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect, confirmDiscard, onDirty } = {}) {
   const R = root.repoRequester || (typeof require === 'function' ? require('./repo-requester') : null);
   const Panel = root.repoFilesPanel || (typeof require === 'function' ? require('./repo-files-panel') : null);
   const Reader = root.repoReader || (typeof require === 'function' ? require('./repo-reader') : null);
@@ -28,7 +28,7 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
   let said = () => {};
 
   const reader = Reader.create({
-    doc, requester, harness, storage, storageKey, typeMention, termRect,
+    doc, requester, harness, storage, storageKey, typeMention, termRect, confirmDiscard, onDirty,
     onClose: () => { panel.setSelected(null); if (focusTerminal) focusTerminal(); },
   });
 

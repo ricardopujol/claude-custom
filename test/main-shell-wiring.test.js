@@ -191,14 +191,15 @@ test('the probe driver does nothing without its env var, and only listens locall
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
   assert.match(MAIN, /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
   assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
-  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason \}\);\r?\n\s+return reason === '';/,
+  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
 });
 
 test('a hand close asks first, every time', () => {
   assert.match(MAIN, /dialog\.showMessageBox\(win, \{/);
   assert.match(MAIN, /message: `End the session in \$\{label\}\?`/);
-  assert.match(MAIN, /: 'The folder stays\.'/);
+  // the detail line is app/reader-unsaved.js closeDetail: 'The folder stays.' plus the reader's unsaved file (#50)
+  assert.match(MAIN, /detail: closeDetail\(\{ reason, unsaved \}\)/);
 });
 
 test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
@@ -206,7 +207,7 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
   assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
   assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
-  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\) \}/);
+  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\), readerUnsaved: \(tab\) => readerUnsaved\.pathFor\(tab\.key\) \}/);
   assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/,
     'a Ctrl+click close asks the service whether it could look (#77 D2)');
   // the context menu and the plain x stay plain

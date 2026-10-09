@@ -384,3 +384,72 @@ test('M6: a folder within the cap says nothing is omitted (0, a number), and an 
   const bad = make({ root: 'C:\r', readFog: noFog, index: { refresh: async () => ({ ok: false }), list: () => ({ ok: false, error: 'x' }), resolve: () => undefined }, listCap: 3 });
   assert.ok(!('omitted' in await bad.handle({ type: 'repo', action: 'list', dir: '', seq: 2 })));
 });
+
+// ---- #50: the reader's save ----
+
+const sha256 = (buf) => require('crypto').createHash('sha256').update(buf).digest('hex');
+
+test('write saves through the guard: the new text lands, the reply carries the new stamp and hash, and seq is echoed', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog });
+  const read = await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 });
+  const r = await svc.handle({ type: 'repo', action: 'write', path: 'src/a.js', text: 'const a = 2;\n', eol: read.eol, bom: read.bom, expectHash: read.hash, seq: 9 });
+  assert.strictEqual(r.type, 'repo');
+  assert.strictEqual(r.action, 'write');
+  assert.strictEqual(r.seq, 9);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.path, 'src/a.js');
+  assert.strictEqual(fs.readFileSync(path.join(root, 'src', 'a.js'), 'utf8'), 'const a = 2;\n');
+  assert.strictEqual(r.hash, sha256(Buffer.from('const a = 2;\n')));
+  assert.strictEqual(r.size, 13);
+});
+
+test('write refuses a stale hash and says so, leaving the disk version alone', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog });
+  const read = await svc.handle({ type: 'repo', action: 'read', path: 'README.md', seq: 1 });
+  fs.writeFileSync(path.join(root, 'README.md'), '# changed by Claude\n');
+  const r = await svc.handle({ type: 'repo', action: 'write', path: 'README.md', text: '# mine\n', expectHash: read.hash, seq: 2 });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.why, 'stale');
+  assert.strictEqual(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), '# changed by Claude\n');
+});
+
+test('write is re-guarded: a path outside the worktree, a non-string path and a missing hash are refused and nothing is written', async () => {
+  const { root } = repo();
+  const outside = path.join(path.dirname(root), `cc-outside-${process.pid}.txt`);
+  fs.writeFileSync(outside, 'outside');
+  try {
+    const svc = make({ root, readFog: noFog });
+    const h = sha256(Buffer.from('outside'));
+    for (const p of ['../' + path.basename(outside), outside, '..\\' + path.basename(outside)]) {
+      const r = await svc.handle({ type: 'repo', action: 'write', path: p, text: 'pwned', expectHash: h, seq: 1 });
+      assert.strictEqual(r.ok, false, p);
+    }
+    assert.strictEqual((await svc.handle({ type: 'repo', action: 'write', path: 5, text: 'x', expectHash: h, seq: 1 })).ok, false);
+    const noHash = await svc.handle({ type: 'repo', action: 'write', path: 'README.md', text: 'x', seq: 1 });
+    assert.deepStrictEqual({ ok: noHash.ok, why: noHash.why }, { ok: false, why: 'bad request' });
+    assert.strictEqual(fs.readFileSync(outside, 'utf8'), 'outside');
+    assert.strictEqual(fs.readFileSync(path.join(root, 'README.md'), 'utf8'), '# hi\n');
+  } finally { fs.rmSync(outside, { force: true }); }
+});
+
+test('write never touches git\'s own folder or the .git pointer file', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog });
+  const head = fs.readFileSync(path.join(root, '.git', 'HEAD'));
+  for (const p of ['.git/HEAD', '.git\\HEAD', '.GIT/HEAD', '.git']) {
+    const r = await svc.handle({ type: 'repo', action: 'write', path: p, text: 'x', expectHash: sha256(head), seq: 1 });
+    assert.deepStrictEqual({ ok: r.ok, why: r.why }, { ok: false, why: 'protected' }, p);
+  }
+  assert.deepStrictEqual(fs.readFileSync(path.join(root, '.git', 'HEAD')), head);
+});
+
+test('write goes through the injected writer with the resolved path', async () => {
+  const { root } = repo();
+  const calls = [];
+  const svc = make({ root, readFog: noFog, write: async (abs, opts) => { calls.push([path.relative(root, abs), opts.expectHash]); return { ok: true, size: 1, mtimeMs: 2, hash: 'h' }; } });
+  const r = await svc.handle({ type: 'repo', action: 'write', path: 'src/a.js', text: 'x', expectHash: 'abc', seq: 3 });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(calls, [[path.join('src', 'a.js'), 'abc']]);
+});

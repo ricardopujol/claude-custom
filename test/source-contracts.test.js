@@ -262,8 +262,8 @@ test("the shell's Run /merged path sends no Enter and no raw input anywhere", ()
 
 // The repo browser and code reader (#45 / #32). Here, not beside the unit tests: those are in the mutation
 // command and these modules are mutated, so reading their source there aborts the gate's dry run.
-const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-diff', 'repo-service', 'tool-calls'];
-const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-browser'];
+const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-write', 'repo-diff', 'repo-service', 'tool-calls'];
+const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-linediff', 'repo-browser'];
 const repoSources = () => [
   ...REPO_HOST.map(n => [`host/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'host', `${n}.js`), 'utf8')]),
   ...REPO_APP.map(n => [`app/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'app', `${n}.js`), 'utf8')]),
@@ -314,6 +314,33 @@ test('main re-runs the guard against the asking tab\'s own folder for reveal and
     const body = main.slice(at, main.indexOf('\n  });', at));
     assert.match(body, /isTabView\(e\.sender\)/, `${ch} answers only a tab view`);
     assert.match(body, /tab\.cwd/, `${ch} resolves against the asking tab's folder`);
+  }
+});
+
+test('#50: the reader\'s unsaved file reaches main only from a tab view, and the page wires its question and its report', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf("ipcMain.on('tab:readerDirty'");
+  assert.ok(at !== -1, 'main takes the report');
+  const body = main.slice(at, main.indexOf('\n  });', at));
+  assert.match(body, /isTabView\(e\.sender\)/, 'only a tab view may report');
+  assert.match(body, /readerUnsaved\.report\(tab\.key, p\)/, 'keyed by the asking tab, never by a name the page sends');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(preload, /readerDirty: \(rel\) => ipcRenderer\.send\('tab:readerDirty'/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(renderer, /onDirty: \(rel\) => \{[^}]*window\.harness\.readerDirty\(rel\)/);
+  assert.match(renderer, /confirmDiscard: async \(message\) => window\.confirm\(message\)/);
+  // a vetoed beforeunload pins a tab view with no way to close it: the reader never installs one
+  for (const f of ['app/repo-reader.js', 'app/repo-browser.js']) {
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), /beforeunload/, f);
+  }
+});
+
+test('#50: the host\'s write is the repo service\'s alone and goes through the guard; nothing else in the repo browser writes a file', () => {
+  const svc = fs.readFileSync(path.join(__dirname, '..', 'host', 'repo-service.js'), 'utf8');
+  assert.match(svc, /case 'write': \{[\s\S]*?await guard\(root, msg\.path\)[\s\S]*?\.git[\s\S]*?write\(g\.real \|\| g\.abs,/);
+  for (const [file, src] of repoSources()) {
+    if (file === 'host/repo-write.js') continue;
+    assert.doesNotMatch(src, /writeFile|appendFile|createWriteStream|\.rename\(|unlink|rmSync|\.open\([^)]*'w/, `${file} must not write or delete files`);
   }
 });
 

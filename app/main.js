@@ -70,6 +70,7 @@ const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
+const { createUnsaved, closeDetail } = require('./reader-unsaved');
 // What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
@@ -80,6 +81,8 @@ const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
 // would cost an async lookup that must finish before the pointer moves on.
 let repoDragIcon = null;
+// The code reader's unsaved edits per tab (#50), reported by the page, so ending a tab can say they'd be lost.
+const readerUnsaved = createUnsaved();
 const repoActions = createRepoActions({
   shell,
   icon: () => {
@@ -779,8 +782,9 @@ const probeConfirms = [];   // the probe driver's record of every confirm it was
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
   // to ask (#77), keeping what it was asked so the probe can read the reason back.
+  const unsaved = readerUnsaved.pathFor(tab.key);
   if (PROBE_PORT) {
-    probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason });
+    probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason, unsaved });
     return reason === '';
   }
   const label = tab.branch || projectLabel(tab.cwd);
@@ -790,8 +794,9 @@ async function confirmClose(tab, { reason = '' } = {}) {
     defaultId: 1,
     cancelId: 1,
     message: `End the session in ${label}?`,
-    detail: reason ? `Not closed without asking: ${reason}.\nThe folder stays.` : 'The folder stays.',
+    detail: closeDetail({ reason, unsaved }),
   });
+  if (r.response === 0) readerUnsaved.clear(tab.key);
   return r.response === 0;
 }
 
@@ -1058,6 +1063,11 @@ function registerIpc() {
   });
   // The Files tab (#45): Show in Explorer and drag-out. Main resolves the path against THAT tab's own
   // worktree and re-runs the realpath guard; the page only names a path relative to it.
+  // The code reader's unsaved file, or null (#50): kept per tab for the close question (app/reader-unsaved.js).
+  ipcMain.on('tab:readerDirty', (e, p) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    if (tab) readerUnsaved.report(tab.key, p);
+  });
   ipcMain.handle('tab:repoReveal', (e, rel) => {
     const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
     return tab ? repoActions.reveal(tab.cwd, rel) : { ok: false, why: 'refused' };
@@ -1431,6 +1441,7 @@ function startProbeDriver(port) {
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
@@ -1689,7 +1700,7 @@ app.whenReady().then(async () => {
     // `known`: whether "no claims" can be believed (#77: a Ctrl+click close treats an unreadable service as unknown).
     occupancy: { claims: () => occupancyService.current(), known: (folder) => occupancyService.known(folder) },
     // #77: a Ctrl+click close reads the folder's git facts (uncommitted, unpushed) before deciding to skip the confirm.
-    safety: { facts: (folder) => readCloseFacts(folder) },
+    safety: { facts: (folder) => readCloseFacts(folder), readerUnsaved: (tab) => readerUnsaved.pathFor(tab.key) },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points

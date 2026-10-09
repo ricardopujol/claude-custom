@@ -7,6 +7,8 @@
  *   read    { path }   a file's text, or why it can't be shown (too-large / binary / gone / ...)
  *   stat    { path }   size and mtime, for the Reload bar
  *   diff    { path }   what Claude changed in it (host/repo-diff.js)
+ *   write   { path, text, eol, bom, expectHash }   the reader's save (#50, host/repo-write.js): atomic, and refused
+ *                      as `stale` when the file is no longer the one `expectHash` names. Never under `.git`.
  *
  * Every reply is `{ type: 'repo', action, seq?, ok, ... }`, `seq` echoed so the page can tell which of its
  * asks an answer belongs to. A failure is `{ ok: false, why | error }`, never silence and never an empty
@@ -27,6 +29,7 @@
 const { guardPath, lexical } = require('./repo-guard');
 const { createIndex } = require('./repo-index');
 const { readRepoFile, statRepoFile } = require('./repo-read');
+const { writeRepoFile } = require('./repo-write');
 const { diffFor, gitModified } = require('./repo-diff');
 const { rollUp } = require('./repo-overlay');
 const { readFog } = require('./fog');
@@ -45,7 +48,7 @@ const validSeq = (s) => (Number.isSafeInteger(s) || (typeof s === 'string' && s.
 
 function createRepoService({
   root, projectsDir, readFog: readFogFn = readFog, index = createIndex(root),
-  guard = guardPath, read = readRepoFile, stat = statRepoFile, diff = diffFor, modified = gitModified,
+  guard = guardPath, read = readRepoFile, stat = statRepoFile, write = writeRepoFile, diff = diffFor, modified = gitModified,
   watch = watchRepo, announce = () => {}, listCap = MAX_LIST_ENTRIES,
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; }, clearTimer = clearTimeout,
 } = {}) {
@@ -164,6 +167,16 @@ function createRepoService({
           }
         }
         return { ...r, ...(r.ok ? { modified: m } : {}), path: g.rel };
+      }
+      case 'write': {
+        if (typeof msg.path !== 'string') return { ok: false, why: 'bad request', error: 'no path' };
+        const g = await guard(root, msg.path);
+        if (!g.ok) return { ok: false, why: g.why, path: msg.path.slice(0, 200) };
+        // git's own folder (and the .git pointer file of a worktree) is never written from the reader
+        if (/^\.git(\/|$)/i.test(g.rel)) return { ok: false, why: 'protected', path: g.rel };
+        ensureWatching();
+        const r = await write(g.real || g.abs, { text: msg.text, eol: msg.eol, bom: msg.bom, expectHash: msg.expectHash });
+        return { ...r, path: g.rel };
       }
       case 'diff': {
         if (typeof msg.path !== 'string') return { ok: false, why: 'bad request', error: 'no path' };

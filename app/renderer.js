@@ -793,6 +793,9 @@ const repoBrowser = window.repoBrowser.create({
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
+  // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
+  onDirty: (rel) => { try { if (window.harness && window.harness.readerDirty) window.harness.readerDirty(rel); } catch {} },
+  confirmDiscard: async (message) => window.confirm(message),
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
