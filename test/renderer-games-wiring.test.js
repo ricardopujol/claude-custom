@@ -49,7 +49,7 @@ test('HAND-BACK: every attention message calls gamesHandBack, before anything th
 
 test('the panel is told whether it is on screen after every layout, and when the page is shown or hidden', () => {
   assert.match(RENDERER, /shownModules = now;\s*gamesView\(\);/);
-  assert.match(BLOCK, /document\.addEventListener\('visibilitychange', \(\) => \{[^}]*\}[^}]*gamesView\(\); \}\)/);
+  assert.match(BLOCK, /document\.addEventListener\('visibilitychange', \(\) => \{[^\n]*gamesView\(\); \}\);/);
   assert.match(BLOCK, /window\.addEventListener\('pagehide', \(\) => \{ if \(gamesPanel\) gamesPanel\.bankNow\(\); \}\)/);
   assert.match(BLOCK, /shown: shownModules\.has\('games'\), pageVisible: document\.visibilityState === 'visible'/);
 });
