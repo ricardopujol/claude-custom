@@ -13,7 +13,7 @@ const flag = (n = 1) => ({ doc: 'DESIGN_X.md', sentence: `Sentence number ${n} h
 
 test('a fresh store has nothing processed and no notes', () => {
   const s = createDriftStore({ file: path.join(tmp(), 'p.json') });
-  assert.deepStrictEqual(s.read(), { processed: null, notes: [] });
+  assert.deepStrictEqual(s.read(), { processed: null, notes: [], unreadable: false });
   assert.deepStrictEqual(s.open(), []);
 });
 
@@ -127,4 +127,83 @@ test('property: any run of adds and dismissals keeps ids unique, the count cappe
     const ids = new Set(all.map(n => n.id));
     return ids.size === all.length && all.length <= MAX_NOTES && s.open().every(n => n.dismissed === false);
   }), { numRuns: 25 });
+});
+
+// ---- PR #153 review fixes ----------------------------------------------------------------------------------------
+
+const busy = () => Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+// An fs whose reads fail with EBUSY for the first `n` calls (a scanner holding the freshly renamed file), then work.
+const flaky = (n) => { let left = n; return { ...fs, readFileSync: (...a) => { if (left-- > 0) throw busy(); return fs.readFileSync(...a); } }; };
+
+test('a read that fails once (EBUSY) is tried again and sees the real file (PR #153 Dexter 6)', () => {
+  const file = path.join(tmp(), 'p.json');
+  const real = createDriftStore({ file });
+  real.setProcessed('b'.repeat(40));
+  real.addNotes(commit, [flag(1)], 1000);
+  const s = createDriftStore({ file, fsImpl: flaky(1), sleep: () => {} });
+  const r = s.read();
+  assert.strictEqual(r.unreadable, false);
+  assert.strictEqual(r.processed, 'b'.repeat(40));
+  assert.strictEqual(r.notes.length, 1);
+});
+
+test('a file that stays unreadable is NOT an empty one: read says so and every write refuses, leaving the file as it was (Dexter 6)', () => {
+  const file = path.join(tmp(), 'p.json');
+  const real = createDriftStore({ file });
+  real.setProcessed('b'.repeat(40));
+  real.addNotes(commit, [flag(1), flag(2)], 1000);
+  real.dismiss(real.open()[0].id);
+  const before = fs.readFileSync(file, 'utf8');
+  const s = createDriftStore({ file, fsImpl: flaky(100), sleep: () => {} });
+  assert.strictEqual(s.read().unreadable, true);
+  for (const r of [s.setProcessed('c'.repeat(40)), s.addNotes(commit, [flag(3)], 2000), s.dismiss('anything')]) {
+    assert.strictEqual(r.ok, false);
+    assert.match(r.error, /can't be read/);
+  }
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before);
+});
+
+test('a file that is missing or garbled is empty (the first look, or a file that is not ours), not unreadable', () => {
+  const dir = tmp();
+  assert.strictEqual(createDriftStore({ file: path.join(dir, 'none.json') }).read().unreadable, false);
+  fs.writeFileSync(path.join(dir, 'bad.json'), '{nope');
+  const r = createDriftStore({ file: path.join(dir, 'bad.json') }).read();
+  assert.deepStrictEqual([r.unreadable, r.processed, r.notes.length], [false, null, 0]);
+});
+
+test('two hosts never write at once: a dismissal made while another host is saving is refused, not lost, and goes through after (Dexter 7)', () => {
+  const file = path.join(tmp(), 'p.json');
+  const a = createDriftStore({ file });
+  a.addNotes(commit, [flag(1)], 1000);
+  const id = a.open()[0].id;
+  let during;
+  // host A is saving a new note: its rename is the moment the old code let host B read the OLD file and write it back over A's
+  const savingA = createDriftStore({ file, rename: (from, to) => {
+    during = createDriftStore({ file, lockDeadlineMs: 50 }).dismiss(id);
+    return require('../host/atomic-write').renameWithRetry(from, to);
+  } });
+  assert.ok(savingA.addNotes(commit, [flag(2)], 2000).ok);
+  assert.strictEqual(during.ok, false, 'B had to wait for A: its dismissal was refused, not interleaved');
+  assert.match(during.error, /lock/);
+  assert.strictEqual(a.open().length, 2);
+  assert.ok(createDriftStore({ file }).dismiss(id).ok, 'and B can dismiss once A has finished');
+  const final = a.read().notes;
+  assert.strictEqual(final.find(n => n.id === id).dismissed, true);
+  assert.strictEqual(final.length, 2);
+  assert.ok(!fs.existsSync(file + '.lock'), 'the lock is released');
+});
+
+test('the lock is released when a write fails', () => {
+  const file = path.join(tmp(), 'p.json');
+  const s = createDriftStore({ file, rename: () => { throw new Error('disk says no'); } });
+  assert.strictEqual(s.setProcessed('b'.repeat(40)).ok, false);
+  assert.ok(!fs.existsSync(file + '.lock'));
+  assert.ok(createDriftStore({ file }).setProcessed('b'.repeat(40)).ok);
+});
+
+test('the model\'s reason is scrubbed of secret-shaped strings before it is kept (Dexter 5)', () => {
+  const s = createDriftStore({ file: path.join(tmp(), 'p.json') });
+  s.addNotes(commit, [{ doc: 'DESIGN_X.md', sentence: 'Sentence number 1 here.', why: 'changed DB_PASSWORD=hunter2hunter2 and sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123' }], 1);
+  assert.doesNotMatch(s.open()[0].why, /hunter2|abcdefghijklmnopqrstuvwxyz0123/);
+  assert.match(s.open()[0].why, /\[redacted\]/);
 });

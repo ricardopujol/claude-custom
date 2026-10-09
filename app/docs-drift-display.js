@@ -3,7 +3,7 @@
  * The "Docs that may be out of date" list (BACKLOG #39 job 2), drawn at the top of the Git panel: what the local model flagged
  * after a merge into develop, each note dismissable. Pure view rules plus one tiny painter.
  *
- *   view({ notes, off }, now) -> null | { title, label, rows: [{ id, doc, sentence, why, commit, subject, age }], note }
+ *   view({ notes, off, error }, now) -> null | { title, label, rows: [{ id, doc, sentence, why, commit, subject, age }], note, error }
  *   html(view)                -> markup ('' for null); every word of the model is escaped
  *   render(el, snapshot, now, { onDismiss(id) })
  *
@@ -52,7 +52,8 @@ function view(snapshot, now) {
   const s = snapshot !== null && typeof snapshot === 'object' ? snapshot : {};
   const notes = Array.isArray(s.notes) ? s.notes.filter(n => n && isStr(n.id) && isStr(n.doc) && isStr(n.sentence)) : [];
   const note = offNote(s.off === undefined ? null : s.off);
-  if (notes.length === 0 && note === null) return null;
+  const error = isStr(s.error) && s.error !== '' ? s.error : null;   // a dismissal the host could not save
+  if (notes.length === 0 && note === null && error === null) return null;
   return {
     title: TITLE,
     label: 'local model · may be wrong: check the doc before changing it',
@@ -61,6 +62,7 @@ function view(snapshot, now) {
       subject: isStr(n.subject) ? n.subject : '', age: ageLabel(n.at, now),
     })),
     note,
+    error,
   };
 }
 
@@ -76,6 +78,7 @@ function html(v) {
     + `<div class="drift-sentence">${esc(r.sentence)}</div>`
     + `<div class="drift-why">${esc(r.why)}</div></div>`).join('');
   return `<section class="drift-sec"><h3>${esc(v.title)} <span class="drift-label">${esc(v.label)}</span></h3>`
+    + (v.error ? `<div class="drift-error">${esc(v.error)}</div>` : '')
     + (v.note ? `<div class="drift-note">${esc(v.note)}</div>` : '') + rows + '</section>';
 }
 

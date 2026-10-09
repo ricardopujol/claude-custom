@@ -809,7 +809,7 @@ function paintDocsDrift() {
   });
 }
 function applyDocsDrift(p) {
-  docsDrift = p && typeof p === 'object' ? { notes: Array.isArray(p.notes) ? p.notes : [], off: p.off && typeof p.off === 'object' ? p.off : null } : null;
+  docsDrift = p && typeof p === 'object' ? { notes: Array.isArray(p.notes) ? p.notes : [], off: p.off && typeof p.off === 'object' ? p.off : null, error: typeof p.error === 'string' ? p.error : null } : null;
   paintDocsDrift();
 }
 // The ages on the notes go stale between pushes.

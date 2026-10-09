@@ -87,7 +87,7 @@ const { createSlot } = require('./summary-slot');
 const { createOllamaClient } = require('./summary-ollama');
 const { createSummaryStore } = require('./summary-store');
 const { createPowerProbe } = require('./summary-power');
-const { createDriftService, TICK_MS: DRIFT_TICK_MS } = require('./drift-service');
+const { createDriftService, TICK_MS: DRIFT_TICK_MS, GENERATE_TIMEOUT_MS: DRIFT_GENERATE_MS } = require('./drift-service');
 const { createDriftStore } = require('./drift-store');
 const { createDriftGit } = require('./drift-git');
 const { readDocsDir } = require('./drift-docs-fs');
@@ -1188,7 +1188,7 @@ const DRIFT_FILE = path.join(seams.summaryDir ? path.join(seams.summaryDir, 'doc
 const drift = createDriftService({
   git: createDriftGit({ cwd: STATE_ROOT }),
   readDocs: () => readDocsDir(path.join(STATE_ROOT, 'documentation')),
-  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: 60_000 }),
+  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: DRIFT_GENERATE_MS }),
   store: createDriftStore({ file: DRIFT_FILE }),
   slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
   broadcast: (m) => broadcastControl(m),
@@ -2590,7 +2590,15 @@ wss.on('connection', (ws, req) => {
     if (msg.type === 'docs-drift') {
       // Dismiss a note (hidden for good, on every window of the project) or ask for the list again. The host only ever
       // hides a note: no document is touched.
-      if (msg.action === 'dismiss' && typeof msg.id === 'string') drift.dismiss(msg.id);
+      if (msg.action === 'dismiss' && typeof msg.id === 'string') {
+        const r = drift.dismiss(msg.id);
+        // A good dismissal was just broadcast to every window (this one too); a failed one is said, to the window that asked.
+        if (!r.ok) {
+          console.log('[drift] dismiss failed:', r.error);
+          sendControl(ws, { type: 'docs-drift', ...drift.snapshot(), error: `Couldn't hide that note: ${r.error}` });
+        }
+        return;
+      }
       sendControl(ws, { type: 'docs-drift', ...drift.snapshot() });
       return;
     }

@@ -36,7 +36,7 @@ test('it watches the project\'s develop checkout and reads that checkout\'s docu
 
 test('it talks to the same Ollama as the probes point at, with a generate timeout inside the GPU slot\'s stale time', () => {
   const b = block();
-  assert.match(b, /createAskOllama\(\{ baseUrl: seams\.ollamaUrl \|\| undefined, generateTimeoutMs: 60_000 \}\)/);
+  assert.match(b, /createAskOllama\(\{ baseUrl: seams\.ollamaUrl \|\| undefined, generateTimeoutMs: DRIFT_GENERATE_MS \}\)/);
 });
 
 test('it shares the summaries\' GPU slot file, so one Ollama job runs at a time across every host', () => {
@@ -65,7 +65,9 @@ test('the dismiss frame is a control type (or it would be TYPED into the pty) an
   assert.ok(i !== -1);
   const handler = HOST.slice(i, HOST.indexOf("if (msg.type === 'git-tree')", i));
   assert.match(handler, /msg\.action === 'dismiss' && typeof msg\.id === 'string'/);
-  assert.match(handler, /drift\.dismiss\(msg\.id\)/);
+  assert.match(handler, /const r = drift\.dismiss\(msg\.id\);/);
+  // a failed write is said to the window that asked (PR #153 Miguel I4); a good one is not echoed on top of the broadcast
+  assert.match(handler, /if \(!r\.ok\) \{[\s\S]*sendControl\(ws, \{ type: 'docs-drift', \.\.\.drift\.snapshot\(\), error: /);
   assert.doesNotMatch(handler, /term\.write|ptyWrite/);
 });
 

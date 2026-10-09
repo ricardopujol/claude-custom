@@ -92,3 +92,15 @@ test('property: any snapshot renders without throwing and never leaves a raw ang
     return !/[<>]/.test(body);
   }), { numRuns: 100 });
 });
+
+test('a failed dismissal is said: the section shows even with no notes, and the error is escaped (PR #153 Miguel I4)', () => {
+  const v = d.view({ notes: [], off: null, error: "Couldn't hide that note: <disk> says no" }, NOW);
+  assert.ok(v);
+  assert.strictEqual(v.error, "Couldn't hide that note: <disk> says no");
+  const html = d.html(v);
+  assert.match(html, /class="drift-error"/);
+  assert.match(html, /&lt;disk&gt; says no/);
+  assert.doesNotMatch(html, /<disk>/);
+  assert.strictEqual(d.view({ notes: [], off: null, error: '' }, NOW), null);
+  assert.strictEqual(d.view({ notes: [note()], off: null }, NOW).error, null);
+});

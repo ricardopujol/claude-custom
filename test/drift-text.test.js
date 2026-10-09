@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 const {
-  redact, trimDiff, changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply,
+  redact, trimDiff, changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply, isBuildLog,
   DIFF_MAX_CHARS, PROMPT_MAX_CHARS, MAX_FLAGS,
 } = require('../host/drift-text');
 
@@ -153,7 +153,9 @@ test('property: buildPrompt is bounded for any inputs', () => {
 });
 
 const given = [{ rel: 'DESIGN_ASK_REPO.md', excerpt: 'The index refreshes before each question.\nIt lives in host/ask-index.js.' }];
-const SHOWN_DIFF = diffOf('host/ask-index.js', '-  await refreshIndex();\n+  // the refresh now runs after the answer');
+const IMPORT_LINE = "+import { build } from './ask-index.js';";
+const CONTEXT_LINE = ' const RETRY_MS = 60_000;';
+const SHOWN_DIFF = diffOf('host/ask-index.js', [CONTEXT_LINE, '-  await refreshIndex();', '+  // the refresh now runs after the answer', IMPORT_LINE].join('\n'));
 const item = (o = {}) => ({ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', evidence: '+  // the refresh now runs after the answer', why: 'The refresh moved.', ...o });
 
 test('buildPrompt: hands back the diff text the model was shown, so evidence can be checked against it', () => {
@@ -197,7 +199,7 @@ test('parseReply: markers, spacing and comment asterisks around the evidence do 
 test('parseReply: evidence must be about the sentence: they share a distinctive word', () => {
   const unrelated = item({ sentence: 'It lives in host/ask-index.js.', evidence: '+  // the refresh now runs after the answer' });
   assert.deepStrictEqual(parseReply(JSON.stringify([unrelated]), given, SHOWN_DIFF), []);
-  const related = item({ sentence: 'It lives in host/ask-index.js.', evidence: '+++ b/host/ask-index.js' });
+  const related = item({ sentence: 'It lives in host/ask-index.js.', evidence: IMPORT_LINE });
   assert.strictEqual(parseReply(JSON.stringify([related]), given, SHOWN_DIFF).length, 1);
 });
 
@@ -216,7 +218,7 @@ test('parseReply: whitespace differences do not hide a real sentence; fences and
 
 test('parseReply: a reply cut off mid-list keeps the items that were whole', () => {
   const whole = JSON.stringify(item());
-  const cut = '[' + whole + ',' + JSON.stringify(item({ sentence: 'It lives in host/ask-index.js.', evidence: '+++ b/host/ask-index.js' })).slice(0, 60);
+  const cut = '[' + whole + ',' + JSON.stringify(item({ sentence: 'It lives in host/ask-index.js.', evidence: IMPORT_LINE })).slice(0, 60);
   const got = parseReply(cut, given, SHOWN_DIFF);
   assert.strictEqual(got.length, 1);
   assert.strictEqual(got[0].sentence, 'The index refreshes before each question.');
@@ -241,4 +243,92 @@ test('parseReply: duplicates collapse, the flag count and field lengths are capp
   const diff = diffOf('x.js', '+widgets changed');
   const many = parseReply(JSON.stringify(lines.map(s => ({ doc: 'DESIGN_M.md', sentence: s, evidence: '+widgets changed', why: 'w' }))), g, diff);
   assert.strictEqual(many.length, MAX_FLAGS);
+});
+
+// ---- PR #153 review fixes ----------------------------------------------------------------------------------------
+
+test('redact: environment-style and quoted-JSON secrets lose their value (Dexter 5)', () => {
+  const lines = [
+    'DB_PASSWORD=hunter2hunter2',
+    'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    '  "password": "hunter2hunter2",',
+    'STRIPE_SECRET_KEY=sk_live_51Habcdefghijklmnop',
+    'client_secret: abcdef123456',
+    'clientSecret = "abcdef123456"',
+    'const stripe = "sk_test_abcdefghijklmnop1234";',
+    'GITHUB_TOKEN: ghs_abcdefghijklmnopqrstuvwxyz0123',
+    'api-key: abcd1234efgh',
+  ];
+  for (const l of lines) {
+    const out = redact('+' + l);
+    assert.match(out, /\[redacted\]/, l);
+    assert.doesNotMatch(out, /hunter2|wJalr|51Habc|abcdef123456|abcdefghijklmnop1234|ghs_abc|abcd1234efgh/, l);
+  }
+});
+
+test('redact: still leaves ordinary code and prose alone', () => {
+  for (const l of ['const tokens = countTokens(text);', 'function keyOf(m) { return m.uuid; }', 'the token budget is 8192', 'if (auth) { return 1; }', 'const authorName = "x";', 'passwordless login is out of scope']) {
+    assert.strictEqual(redact(l), l);
+  }
+});
+
+test('redact: a long run of identifier characters is linear, not quadratic', () => {
+  const blob = 'a'.repeat(200_000) + '=1';
+  const t = Date.now();
+  redact(blob);
+  assert.ok(Date.now() - t < 1500, String(Date.now() - t));
+});
+
+test('trimDiff: .env variants and key files are excluded wherever they sit (Dexter 5)', () => {
+  const secret = '+API_KEY=zzzzzzzzzzzz';
+  for (const f of ['config/.env-prod', 'prod.env', '.envrc', 'a/b/.env.local', 'deploy/id_rsa', 'config/credentials.json']) {
+    assert.doesNotMatch(trimDiff(diffOf(f, secret) + diffOf('host/ok.js', '+const a = 1;')), new RegExp(f.replace(/[./]/g, '\\$&')), f);
+  }
+  assert.match(trimDiff(diffOf('host/environment.js', '+const a = 1;')), /host\/environment\.js/);
+});
+
+test('parseReply: the model\'s reason and evidence are redacted before they can be stored (Dexter 5)', () => {
+  const d = diffOf('host/ask-index.js', '+  // the refresh now runs after the answer');
+  const out = parseReply(JSON.stringify([item({ why: 'changed DB_PASSWORD=hunter2hunter2 and sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123' })]), given, d);
+  assert.strictEqual(out.length, 1);
+  assert.doesNotMatch(out[0].why, /hunter2|abcdefghijklmnopqrstuvwxyz0123/);
+});
+
+test('parseReply: evidence that is only an unchanged context line, a file header or a hunk header is dropped (Dexter 4)', () => {
+  assert.deepStrictEqual(parseReply(JSON.stringify([item({ sentence: 'It retries at most once a minute (RETRY_MS).', evidence: 'const RETRY_MS = 60_000;' })]),
+    [{ rel: 'DESIGN_ASK_REPO.md', excerpt: 'It retries at most once a minute (RETRY_MS).' }], SHOWN_DIFF), []);
+  const headerOnly = [{ rel: 'DESIGN_ASK_REPO.md', excerpt: 'It lives in host/ask-index.js.' }];
+  for (const ev of ['diff --git a/host/ask-index.js b/host/ask-index.js', '+++ b/host/ask-index.js', '--- a/host/ask-index.js', '@@ -1,2 +1,2 @@']) {
+    assert.deepStrictEqual(parseReply(JSON.stringify([item({ sentence: 'It lives in host/ask-index.js.', evidence: ev })]), headerOnly, SHOWN_DIFF), [], ev);
+  }
+});
+
+test('parseReply: evidence is one changed line: text spread over two lines, or across the - and + lines, does not count (Dexter 4)', () => {
+  const d = diffOf('host/w.js', '+const alphaValue = computeFirst();\n+const betaValue = computeSecond();');
+  const g = [{ rel: 'DESIGN_W.md', excerpt: 'The alphaValue and the betaValue are computed.' }];
+  const one = (ev) => parseReply(JSON.stringify([{ doc: 'DESIGN_W.md', sentence: 'The alphaValue and the betaValue are computed.', evidence: ev, why: 'w' }]), g, d);
+  assert.strictEqual(one('const alphaValue = computeFirst();').length, 1);
+  assert.deepStrictEqual(one('const alphaValue = computeFirst(); const betaValue = computeSecond();'), []);
+});
+
+test('candidateDocs: lines that are not next to each other are joined by a gap marker, so a quote spanning the gap is not in the excerpt (Dexter 10)', () => {
+  const text = ['The service polls git.', 'See host/drift-service.js for the loop.', 'It never retries.', 'u4', 'u5', 'u6', 'u7', 'u8', 'u9', 'Old text.', 'host/drift-service.js reads docs.', 'Ends here.'].join('\n');
+  const [one] = candidateDocs({ changedFiles: ['host/drift-service.js'], docs: [{ rel: 'DESIGN_S.md', text }] });
+  assert.match(one.excerpt, /\n\[\.\.\.\]\n/);
+  const g = [{ rel: 'DESIGN_S.md', excerpt: one.excerpt }];
+  const d = diffOf('host/drift-service.js', '+const retries = 0;');
+  const flag = (sentence) => parseReply(JSON.stringify([{ doc: 'DESIGN_S.md', sentence, evidence: '+const retries = 0;', why: 'w' }]), g, d);
+  assert.deepStrictEqual(flag('It never retries. Old text.'), []);
+  assert.strictEqual(flag('It never retries.').length, 1);
+});
+
+test('buildPrompt: the "Now" section is shown under the name of the build log it came from', () => {
+  const { prompt, docs } = buildPrompt({ subject: 's', sha: 'abc', diff: diffOf('x.js', '+a'), now: 'Now text', nowRel: 'FOO_BUILD_LOG.md', docs: [] });
+  assert.match(prompt, /FILE FOO_BUILD_LOG\.md \(its "Now" section\)/);
+  assert.strictEqual(docs[0].rel, 'FOO_BUILD_LOG.md');
+});
+
+test('isBuildLog: any <NAME>_BUILD_LOG.md is a build log (Dexter 8)', () => {
+  for (const n of ['CLAUDECUSTOM_BUILD_LOG.md', 'FACEBOOKDEALS_BUILD_LOG.md', 'x_build_log.md']) assert.strictEqual(isBuildLog(n), true, n);
+  for (const n of ['BUILD_LOG.md', 'DESIGN_BUILD_LOG_NOTES.md', 'CLAUDECUSTOM_HISTORY.md', 'FOO_BUILD_LOG.md.bak', null]) assert.strictEqual(isBuildLog(n), false, String(n));
 });

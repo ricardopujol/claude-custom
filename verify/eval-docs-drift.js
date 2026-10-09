@@ -8,6 +8,11 @@
  *
  * Run it under the heavy-work lock (~\.claude\scripts\heavy-lock.ps1): it keeps the GPU busy for a few minutes.
  * The flags are then judged by a person who reads the docs: this script only counts how many it raised.
+ *
+ * WHAT THIS DOES NOT MEASURE. The documents are read as they are TODAY, against merges that are usually older: by now they have
+ * mostly caught up with those merges, or been rewritten by later ones. There is no ground truth here, so no precision or recall
+ * comes out of it; it shows what the model raises, how long it takes, and how often a reply is unusable. It uses the host's own
+ * answer timeout (GENERATE_TIMEOUT_MS), so a merge that would time out in the app times out here.
  */
 
 const fs = require('fs');
@@ -15,7 +20,7 @@ const path = require('path');
 const { createAskOllama } = require('../host/ask-ollama');
 const { createDriftGit } = require('../host/drift-git');
 const { readDocsDir } = require('../host/drift-docs-fs');
-const { analyzeMerge } = require('../host/drift-service');
+const { analyzeMerge, GENERATE_TIMEOUT_MS } = require('../host/drift-service');
 
 function arg(name, fallback) {
   const i = process.argv.indexOf('--' + name);
@@ -26,12 +31,13 @@ async function main() {
   const repo = arg('repo');
   const docsDir = arg('docs');
   const n = Number(arg('n', '10'));
+  if (!Number.isInteger(n) || n < 1 || n > 100) { console.error('--n must be a whole number from 1 to 100'); process.exit(2); }
   const branch = arg('branch', 'develop');
   const out = arg('out', path.join(process.env.TEMP || '.', 'docs-drift-eval.json'));
   if (!repo || !docsDir) { console.error('usage: node verify/eval-docs-drift.js --repo <dir> --docs <dir> [--n 10] [--out file]'); process.exit(2); }
 
   const git = createDriftGit({ cwd: repo, branch });
-  const ollama = createAskOllama({ generateTimeoutMs: 120_000 });
+  const ollama = createAskOllama({ generateTimeoutMs: GENERATE_TIMEOUT_MS });
   const status = await ollama.check();
   if (!status.ok) { console.error('Ollama is not ready:', JSON.stringify(status)); process.exit(1); }
 

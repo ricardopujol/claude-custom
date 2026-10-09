@@ -7,6 +7,7 @@ const { tmpDir } = require('./tmp-dir');
 const { createDriftService, analyzeMerge, RETRY_MS, REPLY_TOKENS } = require('../host/drift-service');
 const { createDriftStore } = require('../host/drift-store');
 const { STALE_MS } = require('../host/summary-slot');
+const { TIMEOUT_MS: GIT_TIMEOUT_MS } = require('../host/drift-git');
 
 const H = (c) => c.repeat(40);
 const DOC_TEXT = 'The index refreshes before each question.\nIt lives in host/ask-index.js.\n';
@@ -265,5 +266,156 @@ test('analyzeMerge is the shared core: flags and what the model was shown, writi
 });
 
 test('one job (the host gives the model 60 s, see test/host-drift-wiring.test.js) fits inside the stale time of the GPU slot, or another host could take the slot over mid-job', () => {
-  assert.ok(60_000 + 10_000 < STALE_MS);
+  assert.ok(GENERATE_TIMEOUT_MS + GIT_TIMEOUT_MS < STALE_MS, 'the answer plus a diff that took its whole timeout');
+});
+
+// ---- PR #153 review fixes ----------------------------------------------------------------------------------------
+const { GENERATE_TIMEOUT_MS, MAX_ATTEMPTS } = require('../host/drift-service');
+
+function failingDiff(err) {
+  const base = rig();
+  const svc = createDriftService({
+    git: { head: async () => H('b'), merges: async () => [{ sha: H('c'), subject: 's' }], diff: async () => { base.calls.diff++; throw err; } },
+    readDocs: async () => DOCS, ollama: { answerModel: 'm', check: async () => ({ ok: true }), generate: async () => { base.calls.generate++; return { ok: true, text: '[]' }; } },
+    store: base.store, slot: { tryAcquire: () => { base.calls.acquire++; return true; }, release: () => { base.calls.release++; } }, now: () => base.t.now, broadcast() {}, log() {},
+  });
+  return { ...base, svc };
+}
+
+test('a merge whose diff can never be read is let go after MAX_ATTEMPTS, and never takes the GPU slot again (PR #153 Dexter 1)', async () => {
+  const { svc, store, calls, t } = failingDiff(new Error('stdout maxBuffer length exceeded'));
+  for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.strictEqual(calls.acquire, MAX_ATTEMPTS, 'one slot hold per attempt, then none');
+  assert.strictEqual(calls.release, calls.acquire);
+  assert.strictEqual(store.read().processed, H('b'), 'the mark moved past the bad merge');
+});
+
+test('the merge that was let go is said, with its short id and why', async () => {
+  const { svc, t } = failingDiff(new Error('stdout maxBuffer length exceeded'));
+  for (let i = 0; i < MAX_ATTEMPTS; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.match(svc.snapshot().off.detail, /let go of c{12} after 3 tries/);
+});
+
+test('a merge the model keeps timing out on, or Ollama keeps answering 500 for, is let go the same way', async () => {
+  for (const reason of ['timeout', 'http']) {
+    const { svc, store, calls, t } = rig({ reply: { ok: false, reason } });
+    for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+    assert.strictEqual(calls.generate, MAX_ATTEMPTS, reason);
+    assert.strictEqual(store.read().processed, H('b'), reason);
+  }
+});
+
+test('Ollama being down or the model missing never counts against a merge', async () => {
+  const { svc, store, calls, r, t } = rig({ check: { ok: false, reason: 'ollama-down' } });
+  for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.strictEqual(store.read().processed, H('a'), 'down for a long while: nothing is given up on');
+  r.check = { ok: true };
+  await svc.tick();
+  assert.strictEqual(store.read().processed, H('b'));
+  assert.strictEqual(calls.generate, 1);
+});
+
+test('the off line is cleared on every path that finds nothing left to do: another host read it, only direct commits, develop rewound (Dexter 2, Miguel I3)', async () => {
+  for (const after of [{ processed: H('b') }, { merges: [] }, { merges: null }]) {
+    const { svc, store, r, t } = rig({ check: { ok: false, reason: 'ollama-down' } });
+    await svc.tick();
+    assert.strictEqual(svc.snapshot().off.reason, 'ollama-down');
+    if (after.processed) store.setProcessed(after.processed);
+    if ('merges' in after) r.merges = after.merges;
+    t.now += RETRY_MS + 1;
+    await svc.tick();
+    assert.strictEqual(svc.snapshot().off, null, JSON.stringify(after));
+  }
+});
+
+test('two hosts over one store: the one that was off stops saying so once the other has read the merge', async () => {
+  const dir = tmpDir('drift-two-');
+  const store = createDriftStore({ file: path.join(dir, 'p.json') });
+  store.setProcessed(H('a'));
+  let clock = 1_000_000;
+  const mk = (check) => createDriftService({
+    git: { head: async () => H('b'), merges: async () => [{ sha: H('c'), subject: 's' }], diff: async () => DIFF },
+    readDocs: async () => DOCS, ollama: { answerModel: 'm', check: async () => check, generate: async () => ({ ok: true, text: '[]' }) },
+    store, slot: { tryAcquire: () => true, release() {} }, now: () => (clock += 100_000), broadcast() {}, log() {},
+  });
+  const A = mk({ ok: false, reason: 'ollama-down' });
+  const B = mk({ ok: true });
+  await A.tick();
+  assert.strictEqual(A.snapshot().off.reason, 'ollama-down');
+  await B.tick();
+  await A.tick();
+  assert.strictEqual(A.snapshot().off, null);
+});
+
+test('a project with no documentation: said, and no diff, no model, no GPU slot until documents exist (Dexter 3)', async () => {
+  const { svc, calls, store, r, t } = rig({ docs: { buildLog: null, buildLogName: null, docs: [] } });
+  for (let i = 0; i < 4; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.deepStrictEqual([calls.diff, calls.acquire, calls.generate, calls.check], [0, 0, 0, 0]);
+  assert.strictEqual(svc.snapshot().off.reason, 'no-docs');
+  assert.strictEqual(store.read().processed, H('a'));
+  r.docs = DOCS;
+  await svc.tick();
+  assert.strictEqual(calls.generate, 1);
+  assert.strictEqual(svc.snapshot().off, null);
+});
+
+test('an unreadable notes file is not a first look and not an empty store: nothing is marked, it is said, and it recovers when readable (Dexter 6)', async () => {
+  const dir = tmpDir('drift-unread-');
+  const file = path.join(dir, 'p.json');
+  createDriftStore({ file }).setProcessed(H('a'));
+  let broken = true;
+  const store = createDriftStore({ file, sleep: () => {}, fsImpl: { ...fs, readFileSync: (...a) => { if (broken) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return fs.readFileSync(...a); } } });
+  const calls = { generate: 0 };
+  const svc = createDriftService({
+    git: { head: async () => H('b'), merges: async () => [{ sha: H('c'), subject: 's' }], diff: async () => DIFF },
+    readDocs: async () => DOCS, ollama: { answerModel: 'm', check: async () => ({ ok: true }), generate: async () => { calls.generate++; return { ok: true, text: '[]' }; } },
+    store, slot: { tryAcquire: () => true, release() {} }, now: () => 5_000_000, broadcast() {}, log() {},
+  });
+  await svc.tick();
+  assert.strictEqual(calls.generate, 0);
+  assert.match(svc.snapshot().off.detail, /unreadable/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).processed, H('a'), 'the mark was not jumped to the tip');
+  broken = false;
+  await svc.tick();
+  assert.strictEqual(calls.generate, 1);
+  assert.strictEqual(svc.snapshot().off, null);
+});
+
+test('a git that times out is said and keeps the mark; it is never "no develop" or "rewound" (PR #153 B1)', async () => {
+  const { store, t } = rig();
+  const TIMEOUT = Object.assign(new Error('Command failed: git merge-base'), { code: null, killed: true, signal: 'SIGTERM' });
+  let fail = true;
+  const svc = createDriftService({
+    git: { head: async () => H('b'), merges: async () => { if (fail) throw TIMEOUT; return [{ sha: H('c'), subject: 's' }]; }, diff: async () => DIFF },
+    readDocs: async () => DOCS, ollama: { answerModel: 'm', check: async () => ({ ok: true }), generate: async () => ({ ok: true, text: '[]' }) },
+    store, slot: { tryAcquire: () => true, release() {} }, now: () => t.now, broadcast() {}, log() {},
+  });
+  await svc.tick();
+  assert.strictEqual(svc.snapshot().off.reason, 'failed');
+  assert.match(svc.snapshot().off.detail, /Command failed/);
+  assert.strictEqual(store.read().processed, H('a'));
+  fail = false;
+  await svc.tick();
+  assert.strictEqual(store.read().processed, H('b'));
+  assert.strictEqual(svc.snapshot().off, null);
+});
+
+test('the build log\'s own name goes to the model (Dexter 8)', async () => {
+  const { svc, calls } = rig({ docs: { buildLog: '## Now\n\nfb now text\n', buildLogName: 'FACEBOOKDEALS_BUILD_LOG.md', docs: DOCS.docs } });
+  await svc.tick();
+  assert.match(calls.prompts[0].prompt, /FILE FACEBOOKDEALS_BUILD_LOG\.md \(its "Now" section\)/);
+  assert.match(calls.prompts[0].prompt, /fb now text/);
+});
+
+test('dismiss hands back what the store said, so a failed write can be told (Miguel I4)', () => {
+  const failing = createDriftService({
+    git: { head: async () => H('b') }, readDocs: async () => DOCS, ollama: { answerModel: 'm' },
+    store: { open: () => [], read: () => ({ processed: H('b'), notes: [] }), dismiss: () => ({ ok: false, error: 'disk says no' }) },
+    slot: { tryAcquire: () => true, release() {} }, now: () => 1, broadcast() {}, log() {},
+  });
+  assert.deepStrictEqual(failing.dismiss('x'), { ok: false, error: 'disk says no' });
+});
+
+test('the host and the eval give the model the same time to answer', () => {
+  assert.strictEqual(GENERATE_TIMEOUT_MS, 60_000);
 });

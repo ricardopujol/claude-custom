@@ -33,23 +33,28 @@ const SENTENCE_MIN = 8;
 const EVIDENCE_MIN = 8;   // letters and digits of a quoted diff line, at least
 const WHY_MAX = 300;
 const CUT = '\n[diff cut]\n';
-const BUILD_LOG = 'CLAUDECUSTOM_BUILD_LOG.md';
+const BUILD_LOG = 'CLAUDECUSTOM_BUILD_LOG.md';   // the name shown when the caller does not say which build log the "Now" came from
+const GAP = '[...]';
 const BUILD_LOG_SECTION_CHARS = 200_000;
 
 const REDACTIONS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g,
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
   /\bsk-[A-Za-z0-9_-]{16,}/g,
+  /\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{8,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
 ];
 const BEARER = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi;
-const ASSIGNED = /(\b(?:password|passwd|secret|token|api[_-]?key|authorization|auth)\b\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi;
+// A secret-named variable or key, however it is spelled around the name: DB_PASSWORD=x, "password": "x", clientSecret = x, AWS_SECRET_ACCESS_KEY=x.
+// The name must END at the keyword or at a separator (so `tokens` and `authorName` are code, not secrets); the lookbehind makes a match start
+// only at the start of an identifier, which keeps a long run of identifier characters linear.
+const ASSIGNED = /((?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|authorization|auth)(?![A-Za-z0-9])[A-Za-z0-9_.-]*?["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi;
 
 const EXCLUDED_FILE = [
-  /(^|\/)\.env(\.|$)/i, /(^|\/)package-lock\.json$/i, /(^|\/)(yarn\.lock|pnpm-lock\.yaml)$/i, /\.min\.(js|css)$/i,
+  /(^|\/)\.env/i, /\.env$/i, /(^|\/)(id_rsa|id_ed25519|credentials(\.json)?)$/i, /(^|\/)package-lock\.json$/i, /(^|\/)(yarn\.lock|pnpm-lock\.yaml)$/i, /\.min\.(js|css)$/i,
   /\.(pem|key|p12|pfx|crt|cer)$/i, /(^|\/)secrets?(\.|\/|$)/i, /(^|\/)node_modules\//i,
   /\.(png|jpe?g|gif|webp|ico|mp4|webm|mp3|wav|zip|exe|dll|woff2?|ttf|pdf|map)$/i,
 ];
@@ -101,6 +106,9 @@ function changedFilesOf(diff) {
   return [...seen];
 }
 
+/** Is this file name a project's build log (`<NAME>_BUILD_LOG.md`, as /sync-docs names it)? */
+const isBuildLog = (name) => isStr(name) && /^[^/\\]+_BUILD_LOG\.md$/i.test(name);
+
 function buildLogNow(text, capChars = NOW_MAX_CHARS) {
   if (!isStr(text)) return null;
   const lines = text.split(/\r?\n/);
@@ -139,7 +147,15 @@ function excerptOf(text, terms, budget) {
     used += cost;
   }
   if (chosen.size === 0 && hits.length) return cap(lines[hits[0]], budget);
-  return [...chosen].sort((a, b) => a - b).map(i => lines[i]).join('\n');
+  // Lines that are not next to each other are joined by a gap marker: a quote that spans the gap is not a sentence of the document.
+  const out = [];
+  let prev = -2;
+  for (const i of [...chosen].sort((a, b) => a - b)) {
+    if (prev >= 0 && i !== prev + 1) out.push(GAP);
+    out.push(lines[i]);
+    prev = i;
+  }
+  return out.join('\n');
 }
 
 function candidateDocs({ changedFiles, docs, max = MAX_DOCS, excerptChars = EXCERPT_CHARS }) {
@@ -171,9 +187,9 @@ const SYSTEM = 'You check whether project documentation still matches the code. 
   + '"why": "<one short sentence: what the diff changed>"}. Keep every field under 200 characters. '
   + 'If nothing is contradicted, reply [] . Most merges contradict nothing: [] is the usual right answer.';
 
-function buildPrompt({ subject, sha, diff, now, docs }) {
+function buildPrompt({ subject, sha, diff, now, nowRel = BUILD_LOG, docs }) {
   const shown = [];
-  if (isStr(now) && now.trim() !== '') shown.push({ rel: BUILD_LOG, note: ' (its "Now" section)', excerpt: cap(redact(now), NOW_MAX_CHARS) });
+  if (isStr(now) && now.trim() !== '') shown.push({ rel: isStr(nowRel) && nowRel !== '' ? cap(nowRel, 120) : BUILD_LOG, note: ' (its "Now" section)', excerpt: cap(redact(now), NOW_MAX_CHARS) });
   for (const d of Array.isArray(docs) ? docs.slice(0, MAX_DOCS) : []) {
     if (d && isStr(d.rel) && isStr(d.excerpt)) shown.push({ rel: cap(d.rel, 120), note: '', excerpt: cap(redact(d.excerpt), EXCERPT_CHARS) });
   }
@@ -223,7 +239,11 @@ function parseReply(text, shownDocs, shownDiff) {
   const docs = (Array.isArray(shownDocs) ? shownDocs : []).filter(d => d && isStr(d.rel) && isStr(d.excerpt));
   const byRel = new Map(docs.map(d => [d.rel, squash(d.excerpt)]));
   const rels = docs.map(d => d.rel).sort((a, b) => b.length - a.length);
-  const diffText = isStr(shownDiff) ? alnum(shownDiff) : '';
+  // Only a line the merge CHANGED can prove a flag: not a context line, not a `diff --git` / `---` / `+++` / `@@` header, and one line
+  // at a time (text spread over two lines is not a line of the diff).
+  const changed = (isStr(shownDiff) ? shownDiff : '').split('\n')
+    .filter(l => (l.startsWith('+') && !l.startsWith('+++')) || (l.startsWith('-') && !l.startsWith('---')))
+    .map(l => alnum(l.slice(1)));
   const out = [];
   const seen = new Set();
   for (const it of items) {
@@ -233,22 +253,22 @@ function parseReply(text, shownDocs, shownDiff) {
     const rel = byRel.has(it.doc) ? it.doc : rels.find(r => it.doc.includes(r));   // "DOCUMENT X.md" still names X.md
     const sentence = squash(it.sentence);
     const evidence = stripDiffMark(it.evidence);
-    const why = squash(it.why);
+    const why = redact(squash(it.why));   // free text from the model: it is stored and shown, so it is scrubbed like the input
     if (rel === undefined || why === '' || sentence.length < SENTENCE_MIN || sentence.length > SENTENCE_MAX) continue;
     if (!byRel.get(rel).includes(sentence)) continue;                      // the sentence is really in the doc
     const proof = alnum(evidence);
-    if (proof.length < EVIDENCE_MIN || !diffText.includes(proof)) continue;   // the changed line is really in the diff
+    if (proof.length < EVIDENCE_MIN || !changed.some(l => l.includes(proof))) continue;   // the changed line is really in the diff
     const wanted = keysOf(sentence);
     if (![...keysOf(evidence)].some(k => wanted.has(k))) continue;          // and it is about the sentence
     const key = rel + '\0' + sentence;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ doc: rel, sentence, evidence: cap(evidence, 200), why: cap(why, WHY_MAX) });
+    out.push({ doc: rel, sentence, evidence: cap(redact(evidence), 200), why: cap(why, WHY_MAX) });
   }
   return out;
 }
 
 module.exports = {
-  redact, trimDiff, changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply,
+  redact, trimDiff, changedFilesOf, buildLogNow, isBuildLog, candidateDocs, buildPrompt, parseReply,
   DIFF_MAX_CHARS, PROMPT_MAX_CHARS, MAX_FLAGS, BUILD_LOG, SYSTEM,
 };
