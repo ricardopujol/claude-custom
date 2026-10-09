@@ -178,7 +178,7 @@ function taskLogRow(r) {
   const first = sessions.length ? sessions[0].slice(0, 8) : '?';
   const more = sessions.length > 1 ? ` +${sessions.length - 1}` : '';
   const file = isStr(r.name) && r.name !== '' ? r.name : '?';
-  const notes = { delete: 'deleting within a minute', alive: 'kept: its session is still running', young: 'kept: written to in the last 15 min', locked: 'kept: a process holds it open. Delete tries again' };
+  const notes = { delete: 'deleting within a minute', alive: 'kept: its session is still running', young: 'kept: written to in the last 15 min', locked: 'kept: a process holds it open. Delete tries again', settling: 'kept: confirming it has stayed idle' };
   return {
     name: `${first} · ${file}${more}`, who: file, key: isStr(r.key) ? r.key : '', pid: '', start: '',
     ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: notes[r.why] || (r.manualDelete === true ? "can't tell whether its session ended: Delete is yours to choose" : "kept: can't tell whether its session ended"),

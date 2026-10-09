@@ -25,7 +25,7 @@ const registry = (entries, ok = true) => ({ ok, entries });
 // `seen` defaults to "the app saw every session of these files alive earlier"; a test about never-seen passes its own.
 // `listed` defaults to a non-empty table (a real process table is never empty; an empty one means the read failed).
 const classify = (files, reg, listed = [1], extra = {}) => T.classify({
-  files, registry: reg, listedPids: new Set(listed), now: NOW, seen: new Set(files.map(f => f.session)), ...extra,
+  files, registry: reg, listedPids: listed instanceof Map ? listed : new Set(listed), now: NOW, seen: new Set(files.map(f => f.session)), ...extra,
 });
 const other = registry([{ pid: 5, sessionId: 'other' }]);
 
@@ -165,4 +165,25 @@ test('why: delete, alive, young or unknown, in that order of what the readout te
 test('"over 100 MB" is exact in the panel own unit: MIN_BYTES is 100 MB of 1 048 576 bytes, the MB every figure in the panel uses', () => {
   assert.strictEqual(T.MIN_BYTES, 100 * 1024 * 1024);
   assert.strictEqual(T.IDLE_MS, 15 * 60_000);
+});
+
+test('procStart (Dexter #6): a registry entry whose pid now runs a process with ANOTHER start is not alive, but not "ended" either: unknown, with a manual Delete', () => {
+  const reg = registry([{ pid: 7, sessionId: 's1', procStart: '134000000000000000' }]);
+  const at = start => classify([file()], reg, new Map([[7, start], [1, '1']]))[0];
+  const alive = at('134000000000000050');
+  assert.deepStrictEqual([alive.why, alive.manualDelete], ['alive', false], 'within the 10 ms slack: the same process');
+  const reused = at('134000000600000000');
+  assert.deepStrictEqual([reused.why, reused.deletable, reused.manualDelete], ['unknown', false, true], 'a reused pid: the session is not alive, and its end was not observed');
+  assert.strictEqual(at(null).why, 'alive', 'a table start that cannot be read: doubt keeps');
+  assert.strictEqual(classify([file()], registry([{ pid: 7, sessionId: 's1' }]), new Map([[7, '5'], [1, '1']]))[0].why, 'alive', 'an entry with no procStart: doubt keeps');
+});
+
+test('monoAge (Dexter #4): when given, the app deletes only a file that was idle on the monotonic clock too; the person\'s Delete is not held back', () => {
+  const run = monoAge => classify([file()], other, [5], { monoAge })[0];
+  const settled = run(() => 16 * 60_000);
+  assert.deepStrictEqual([settled.deletable, settled.why], [true, 'delete']);
+  for (const v of [null, undefined, 14 * 60_000]) {
+    const r = run(() => v);
+    assert.deepStrictEqual([r.deletable, r.manualDelete, r.why], [false, true, 'settling'], String(v));
+  }
 });

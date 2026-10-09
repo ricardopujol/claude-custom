@@ -71,10 +71,13 @@ test('scan: a symlinked task file is skipped (never followed)', async (t) => {
 
 test('registry: entries from <pid>.json; ok only when every json parsed and carried a pid and sessionId; .key files never opened', async () => {
   const dir = tmp();
-  fs.writeFileSync(path.join(dir, '10.json'), JSON.stringify({ pid: 10, sessionId: 'aa' }));
+  fs.writeFileSync(path.join(dir, '10.json'), JSON.stringify({ pid: 10, sessionId: 'aa', procStart: '134359628682213309' }));
   fs.writeFileSync(path.join(dir, '10.abc.key'), 'secret');
   let r = await FS.readRegistry(dir);
-  assert.deepStrictEqual(r, { ok: true, entries: [{ pid: 10, sessionId: 'aa' }] });
+  assert.deepStrictEqual(r, { ok: true, entries: [{ pid: 10, sessionId: 'aa', procStart: '134359628682213309' }] });
+  fs.writeFileSync(path.join(dir, '12.json'), JSON.stringify({ pid: 12, sessionId: 'bb', procStart: 5 }));
+  assert.deepStrictEqual((await FS.readRegistry(dir)).entries[1], { pid: 12, sessionId: 'bb', procStart: null }, 'a procStart that is not a string is kept as null (doubt keeps)');
+  fs.unlinkSync(path.join(dir, '12.json'));
   fs.writeFileSync(path.join(dir, '11.json'), '{ half');
   assert.strictEqual((await FS.readRegistry(dir)).ok, false);
   fs.writeFileSync(path.join(dir, '11.json'), JSON.stringify({ pid: 11 }));
@@ -167,7 +170,7 @@ test('registries: several config dirs merge; one that cannot be read makes the w
   fs.writeFileSync(path.join(a, '1.json'), JSON.stringify({ pid: 1, sessionId: 'aa' }));
   fs.writeFileSync(path.join(b, '2.json'), JSON.stringify({ pid: 2, sessionId: 'bb' }));
   const both = await FS.readRegistries([a, b, a]);
-  assert.deepStrictEqual(both, { ok: true, entries: [{ pid: 1, sessionId: 'aa' }, { pid: 2, sessionId: 'bb' }] });
+  assert.deepStrictEqual(both, { ok: true, entries: [{ pid: 1, sessionId: 'aa', procStart: null }, { pid: 2, sessionId: 'bb', procStart: null }] });
   assert.strictEqual((await FS.readRegistries([a, path.join(b, 'missing')])).ok, false);
   assert.strictEqual((await FS.readRegistries([])).ok, false);
 });

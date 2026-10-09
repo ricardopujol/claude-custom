@@ -18,6 +18,7 @@
 
 // "100 MB" in the panel's own unit: every figure the Resources panel shows as "MB" is 1 048 576 bytes (app/resources-display.js
 // fmtBytes), so a listed file always reads as 100 MB or more there. (Ricardo, PR #133 review: the label and the code agree.)
+const { sameStart } = require('./resource-tree');
 const MIN_BYTES = 100 * 1024 * 1024;
 const IDLE_MS = 15 * 60_000;
 
@@ -45,6 +46,27 @@ function parseTaskPath(root, p) {
 }
 
 /**
+ * What a registry entry says about its session right now, against the process table (a Set of pids, or a Map pid -> start):
+ *   'alive'   its pid is listed (and its procStart, when both sides have one, is the same process within the table's slack);
+ *   'reused'  its pid is listed but with ANOTHER start: not this session's process, yet its end was not observed either, so nothing
+ *             may be deleted on it by the clock (Dexter #6). The ledger's DST caveat (PR #132 F1) is why this is "unknown", not "ended";
+ *   'absent'  its pid is not listed.
+ */
+function entryState(entry, listed) {
+  if (!entry || !listed.has(entry.pid)) return 'absent';
+  const table = listed instanceof Map ? listed.get(entry.pid) : null;
+  if (isStr(entry.procStart) && isStr(table) && /^\d+$/.test(entry.procStart) && /^\d+$/.test(table) && !sameStart(entry.procStart, table)) return 'reused';
+  return 'alive';
+}
+/** Session ids with an 'alive' entry: what the app remembers as SEEN alive. */
+function aliveSessions(registry, listed) {
+  const out = new Set();
+  if (!registry || registry.ok !== true || !Array.isArray(registry.entries) || !(listed instanceof Set || listed instanceof Map)) return out;
+  for (const e of registry.entries) if (e && isStr(e.sessionId) && entryState(e, listed) === 'alive') out.add(e.sessionId);
+  return out;
+}
+
+/**
  * classify({ files, registry, listedPids, seen, now, minBytes, idleMs }) -> rows, biggest first
  * files: [{ path, project, session, name, bytes, mtimeMs, dev, ino, nlink }]  (a stat of each task file; never its contents)
  * registry: { ok, entries: [{ pid, sessionId }] } | null     listedPids: the pids in the process table (a non-empty Set or Map)
@@ -57,12 +79,15 @@ function parseTaskPath(root, p) {
  * under another config dir, be a CLI that does not register, or be re-keyed. Unknown files are kept; once idle they get the
  * manual Delete, so the person decides. An empty or missing process table or registry makes everything unknown.
  */
-function classify({ files, registry, listedPids, seen, now = Date.now(), minBytes = MIN_BYTES, idleMs = IDLE_MS }) {
+function classify({ files, registry, listedPids, seen, monoAge, now = Date.now(), minBytes = MIN_BYTES, idleMs = IDLE_MS }) {
   const listed = listedPids instanceof Set || listedPids instanceof Map ? listedPids : null;
   const everSeen = seen instanceof Set ? seen : new Set();
   const regOk = !!registry && registry.ok === true && Array.isArray(registry.entries) && registry.entries.length > 0;
   const ctxOk = regOk && listed !== null && listed.size > 0;
-  const alive = sid => registry.entries.some(e => e && e.sessionId === sid && listed.has(e.pid));
+  const stateOf = (sid) => {
+    const states = registry.entries.filter(e => e && e.sessionId === sid).map(e => entryState(e, listed));
+    return states.includes('alive') ? 'alive' : states.includes('reused') ? 'reused' : 'absent';
+  };
   const groups = new Map();
   for (const f of Array.isArray(files) ? files : []) {
     if (!f || !isNum(f.bytes) || f.bytes < minBytes) continue;
@@ -76,16 +101,22 @@ function classify({ files, registry, listedPids, seen, now = Date.now(), minByte
     const ageMs = isNum(m.mtimeMs) ? now - m.mtimeMs : null;
     const sessions = [...new Set(members.map(x => x.session))];
     const settled = ctxOk && ageMs !== null && ageMs >= 0 && members.length === m.nlink;   // the time and every link are known
-    const anyAlive = ctxOk && sessions.some(alive);
+    const states = ctxOk ? sessions.map(stateOf) : [];
+    const anyAlive = states.includes('alive');
     const idle = settled && ageMs >= idleMs;
     const manualDelete = idle && !anyAlive;
-    const deletable = manualDelete && sessions.every(sid => everSeen.has(sid));
+    const endedSeen = manualDelete && sessions.every((sid, i) => states[i] === 'absent' && everSeen.has(sid));
+    // `monoAge(key)`, when given: how long the file has been idle by the MONOTONIC clock, which a wall-clock step cannot move forward
+    // (Dexter #4). Not enough (or never observed): the app waits; the person's Delete is not held back.
+    const monoOk = typeof monoAge !== 'function' || (isNum(monoAge(key)) && monoAge(key) >= idleMs);
+    const deletable = endedSeen && monoOk;
     // WHY it is shown: 'delete' (the app will), 'alive' (a session of it is running), 'young' (written within idleMs),
+    // 'settling' (idle by the wall clock, not yet confirmed by the monotonic one),
     // 'unknown' (the registry, the time, a link or the session's end could not be settled: doubt keeps).
-    const why = !settled ? 'unknown' : anyAlive ? 'alive' : !idle ? 'young' : deletable ? 'delete' : 'unknown';
+    const why = !settled ? 'unknown' : anyAlive ? 'alive' : !idle ? 'young' : deletable ? 'delete' : endedSeen ? 'settling' : 'unknown';
     rows.push({ key, name: m.name, project: m.project, sessions, paths: members.map(x => x.path), bytes: m.bytes, mtimeMs: m.mtimeMs, ageMs: ageMs === null ? null : Math.max(0, ageMs), deletable, manualDelete, why, dev: m.dev, ino: m.ino });
   }
   return rows.sort((a, b) => (b.bytes - a.bytes) || (a.key < b.key ? -1 : 1));
 }
 
-module.exports = { classify, parseTaskPath, MIN_BYTES, IDLE_MS };
+module.exports = { classify, entryState, aliveSessions, parseTaskPath, MIN_BYTES, IDLE_MS };

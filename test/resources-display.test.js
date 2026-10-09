@@ -600,3 +600,8 @@ test('task logs (Dexter #3, Miguel I5): a locked file says a process holds it op
   assert.deepStrictEqual(v.stopped.map(s => s.text), ['Deleted b.output, but a process still holds it open: the space is not freed yet', 'Deleted c.output, 600 MB freed']);
   assert.strictEqual(v.chip, '1 left over', 'a locked file is a leftover');
 });
+
+test('task logs (Dexter #4): a file still being confirmed idle says so, and is a leftover', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'settling', deletable: false, manualDelete: true })] }));
+  assert.deepStrictEqual([v.groups[0].rows[0].note, v.groups[0].rows[0].canDelete, v.chip], ['kept: confirming it has stayed idle', true, '1 left over']);
+});

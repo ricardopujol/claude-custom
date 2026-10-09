@@ -53,7 +53,7 @@ async function readRegistry(dir, fsp = fs.promises) {
   for (const n of names.filter(x => /^\d+\.json$/.test(x))) {
     try {
       const j = JSON.parse(await fsp.readFile(path.join(dir, n), 'utf8'));
-      if (j && Number.isInteger(j.pid) && j.pid > 0 && typeof j.sessionId === 'string' && j.sessionId !== '') entries.push({ pid: j.pid, sessionId: j.sessionId });
+      if (j && Number.isInteger(j.pid) && j.pid > 0 && typeof j.sessionId === 'string' && j.sessionId !== '') entries.push({ pid: j.pid, sessionId: j.sessionId, procStart: typeof j.procStart === 'string' ? j.procStart : null });
       else ok = false;
     } catch { ok = false; }
   }

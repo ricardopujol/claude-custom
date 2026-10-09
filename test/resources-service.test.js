@@ -972,3 +972,34 @@ test('task logs (Dexter #5): a file already gone (another window won the race) l
   assert.deepStrictEqual(r.sent.at(-1).leftovers, null, 'nothing left to show');
   assert.ok(!r.calls.logs.some(l => /not deleted/.test(l)), r.calls.logs.join('|'));
 });
+
+test('REGRESSION (Dexter #4): a forward wall-clock step does not make a just-written file "15 minutes idle"; it needs 15 monotonic minutes too, and the person\'s Delete is not held back', async () => {
+  const m = { t: 1000 };
+  const files = [taskFile({ mtimeMs: NOWMS - 30_000 })];       // written 30 s ago when first seen
+  const r = taskRig({ rig: { mono: () => m.t }, taskLogs: { everyMs: 60_000 } }, files);
+  await r.judge();                                               // first sighting: young, session alive (seen)
+  r.world4242.on = false;
+  r.clock.t += 20 * MINUTE; m.t += 70_000;                       // the wall clock jumps 20 min; 70 s really passed
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, [], 'wall age is 20 min but only ~100 s are proven by the monotonic clock');
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['settling', false, true]);
+  r.clock.t += 16 * MINUTE; m.t += 16 * MINUTE;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10'], 'idle for 15+ real minutes too: now it goes');
+});
+
+test('task logs: a file whose size or mtime changed between two judged reads starts its idle count again', async () => {
+  const m = { t: 1000 };
+  let size = 300 * MBYTES;
+  const r = taskRig({ rig: { mono: () => m.t }, taskLogs: { scan: async () => [taskFile({ bytes: size, mtimeMs: NOWMS - 40 * MINUTE })] } });
+  await r.judge();
+  r.world4242.on = false;
+  size += 4096;                                                   // grew, with the same (lagging) mtime
+  r.clock.t += 61_000; m.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, [], 'changed since the last read: first sighting again');
+  r.clock.t += 61_000; m.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10'], 'unchanged across two reads: idle');
+});
