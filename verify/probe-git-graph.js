@@ -393,14 +393,14 @@ async function main() {
   // The tree is asked again (it reads origin every time); the graph is asked again by a switch of view.
   git(dev, 'remote', 'add', 'origin', 'https://github.com/probe/graph.git');
   await view(app, 'gitRefresh');
-  const openOf = async (hash, want) => {
+  const openOf = async (hash, want, why = null) => {
     await view(app, 'ggClick', { hash });
     return waitFor(async () => {
       const s = await gg();
-      return s.detail && actOf(s, 'open-commit').disabled === want ? s : null;
+      return s.detail && actOf(s, 'open-commit').disabled === want && (!why || why.test(actOf(s, 'open-commit').why || '')) ? s : null;
     }, 15000, 400);
   };
-  const unpushed = await openOf(tipB.hash, true);
+  const unpushed = await openOf(tipB.hash, true, /not pushed/);
   check('6: with a GitHub origin but nothing pushed, Open commit is still off and says so', !!unpushed && /not pushed/.test(actOf(unpushed, 'open-commit').why),
     JSON.stringify((await gg()).detail && (await gg()).detail.acts));
   await view(app, 'ggClick', { hash: tipB.hash });
