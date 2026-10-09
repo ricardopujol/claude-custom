@@ -34,22 +34,27 @@ $perf = @(Get-CimInstance Win32_PerfRawData_PerfProc_Process | ForEach-Object { 
 `;
 
 // The GPU counters (BACKLOG #82), in BOTH modes: the chip shows GPU busy %, so the machine-only sample needs them too. Raw classes, not
-// Get-Counter: one CIM query each (about a third of a second together on the dev machine, PR #82), and the busy time is a 100 ns
-// tick count like the CPU ones, so a delta of two samples is the busy %. Windows has no counter for the adapters' total memory:
-// it is the sum of their HardwareInformation.qwMemorySize in the display class (a REG_QWORD, or 8 bytes on some drivers), null
-// when none could be read. The backslashes are doubled for the template literal.
+// Get-Counter: one CIM query each, and the busy time is a 100 ns tick count like the CPU ones, so a delta of two samples is the busy %.
+// MEASURED on the dev machine (PR #82): the three queries take about 0.35 s together and add 712 engine rows, 58 process-memory rows
+// and 2 adapter rows to the JSON, about 83 KB (full sample 1.7 s -> 2.4 s median, machine-only 0.7 s -> 1.1 s).
+// ISOLATION: each query has its own 3 s operation timeout, so a wedged GPU provider (a driver reset) costs that query and leaves
+// the GPU part empty (the sample's gpu is then null, every figure "unknown"); the CPU and memory figures of the same call are not lost.
+// Windows has no counter for the adapters' total memory: the display class's driver keys carry HardwareInformation.qwMemorySize (a
+// REG_QWORD, or 8 bytes on some drivers) and MatchingDeviceId; the present display devices come from Win32_VideoController. The
+// join, and "only present adapters", is host/resource-gpu.js's. The backslashes are doubled for the template literal.
 const GPU_PART = `
-$ge = @(Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUEngine | ForEach-Object { [pscustomobject]@{ n=$_.Name; u=[string]$_.UtilizationPercentage; t=[string]$_.Timestamp_Sys100NS } })
-$gp = @(Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory | ForEach-Object { [pscustomobject]@{ n=$_.Name; d=[string]$_.LocalUsage } })
-$ga = @(Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUAdapterMemory | ForEach-Object { [pscustomobject]@{ n=$_.Name; d=[string]$_.DedicatedUsage } })
-$gt = [long]0
+$ge = @(Get-CimInstance -OperationTimeoutSec 3 Win32_PerfRawData_GPUPerformanceCounters_GPUEngine | ForEach-Object { [pscustomobject]@{ n=$_.Name; u=[string]$_.UtilizationPercentage; t=[string]$_.Timestamp_Sys100NS } })
+$gp = @(Get-CimInstance -OperationTimeoutSec 3 Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory | ForEach-Object { [pscustomobject]@{ n=$_.Name; d=[string]$_.LocalUsage } })
+$ga = @(Get-CimInstance -OperationTimeoutSec 3 Win32_PerfRawData_GPUPerformanceCounters_GPUAdapterMemory | ForEach-Object { [pscustomobject]@{ n=$_.Name; d=[string]$_.DedicatedUsage } })
+$gd = @()
 foreach ($k in @(Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}')) {
   if ($k.PSChildName -notmatch '^[0-9]{4}$') { continue }
   $q = $k.GetValue('HardwareInformation.qwMemorySize')
   if ($q -is [byte[]] -and $q.Length -ge 8) { $q = [BitConverter]::ToInt64($q, 0) }
-  if ($q -is [long] -and $q -gt 0) { $gt += $q }
+  if ($q -is [long] -and $q -gt 0) { $gd += [pscustomobject]@{ m=[string]$k.GetValue('MatchingDeviceId'); b=[string]$q } }
 }
-$gpu = [pscustomobject]@{ eng=$ge; pm=$gp; am=$ga; total=$(if ($gt -gt 0) { [string]$gt } else { $null }) }
+$gn = @(Get-CimInstance -OperationTimeoutSec 3 Win32_VideoController | ForEach-Object { [string]$_.PNPDeviceID })
+$gpu = [pscustomobject]@{ eng=$ge; pm=$gp; am=$ga; ad=$gd; pn=$gn }
 `;
 
 // The 100 ns counters travel as strings: Timestamp_Sys100NS is about 1.3e17, past 2^53.

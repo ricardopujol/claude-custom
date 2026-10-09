@@ -24,6 +24,8 @@ const sample = (gpu, procs = []) => {
   const text = `${JSON.stringify({ procs, perf: [], cpu: null, os: null, gpu })}END`;
   return parseSample(text, 0);
 };
+// the registry half of a document: one driver key matching one present device, with this much dedicated memory
+const sized = bytes => ({ ad: [{ m: 'pci\\ven_10de&dev_2820', b: String(bytes) }], pn: ['PCI\\VEN_10DE&DEV_2820&SUBSYS_13C71462&REV_A1\\4&32E816AC&0&0008'] });
 const proc = (pid, name, start = '1') => ({ pid, ppid: 0, name, cmd: null, start });
 
 test('parseGpu: engines by name, memory summed per pid over its adapters, adapters summed, the total from the registry', () => {
@@ -31,7 +33,7 @@ test('parseGpu: engines by name, memory summed per pid over its adapters, adapte
     eng: [eng(10, 0, '3D', 5, 100), eng(10, 1, 'Copy', 0, 100)],
     pm: [pm(10, 1000), pm(10, 24, L2), pm(11, 5)],
     am: [am(L1, 4000), am(L2, 8)],
-    total: '8000',
+    ...sized(8000),
   });
   assert.strictEqual(g.engines.size, 2);
   assert.deepStrictEqual([...g.procMem], [[10, 1024], [11, 5]]);
@@ -47,12 +49,12 @@ test('parseGpu: nothing readable is null (not an empty GPU), and so is a missing
   assert.strictEqual(G.parseGpu(undefined), null);
   assert.strictEqual(G.parseGpu([]), null);
   assert.strictEqual(G.parseGpu('x'), null);
-  assert.strictEqual(G.parseGpu({ eng: [], pm: [], am: [], total: null }), null);
+  assert.strictEqual(G.parseGpu({ eng: [], pm: [], am: [] }), null);
   assert.strictEqual(G.parseGpu({ eng: 'no', pm: 1, am: 2 }), null);
 });
 
 test('parseGpu: a class that gave no rows leaves that part null, never an empty or zero figure', () => {
-  const g = G.parseGpu({ eng: [eng(1, 0, '3D', 1, 1)], pm: [], am: [], total: '100' });
+  const g = G.parseGpu({ eng: [eng(1, 0, '3D', 1, 1)], pm: [], am: [], ...sized(100) });
   assert.strictEqual(g.procMem, null);
   assert.strictEqual(g.mem, null);
 });
@@ -62,7 +64,7 @@ test('parseGpu: rows that are not what the counters print are dropped, one by on
     eng: [eng(1, 0, '3D', 1, 1), { n: 'garbage', u: '1', t: '1' }, { n: eng(2, 0, '3D', 1, 1).n, u: 'x', t: '1' }, { n: eng(3, 0, '3D', 1, 1).n, u: '1' }, null, 'row'],
     pm: [pm(1, 5), { n: 'junk', d: '5' }, { n: pm(2, 5).n, d: 'many' }, { n: 7, d: '1' }],
     am: [am(L1, 9), { n: 'luid_x', d: '5' }],
-    total: '100',
+    ...sized(100),
   });
   assert.deepStrictEqual([...g.engines.values()].map(e => e.pid), [1]);
   assert.deepStrictEqual([...g.procMem], [[1, 5]]);
@@ -72,17 +74,44 @@ test('parseGpu: rows that are not what the counters print are dropped, one by on
 test('parseGpu: an engine type with spaces or digits still names its group', () => {
   const g = G.parseGpu({ eng: [eng(1, 0, 'Video Codec 0', 1, 1), eng(1, 1, 'Compute_0', 1, 1)] });
   assert.strictEqual(g.engines.size, 2);
-  assert.strictEqual(new Set([...g.engines.values()].map(e => e.group)).size, 2);
+  assert.strictEqual(new Set([...g.engines.values()].map(e => e.engine)).size, 2);
 });
 
-test('parseGpu: the total is unknown when absent, zero, not digits, or smaller than what is in use', () => {
+test('parseGpu: the total is unknown when there is no sized key, a zero or junk size, or it is smaller than what is in use', () => {
   const base = { eng: [eng(1, 0, '3D', 1, 1)], am: [am(L1, 500)] };
-  assert.strictEqual(G.parseGpu({ ...base, total: null }).mem.totalBytes, null);
-  assert.strictEqual(G.parseGpu({ ...base, total: '0' }).mem.totalBytes, null);
-  assert.strictEqual(G.parseGpu({ ...base, total: 'lots' }).mem.totalBytes, null);
-  assert.strictEqual(G.parseGpu({ ...base, total: '499' }).mem.totalBytes, null);
-  assert.strictEqual(G.parseGpu({ ...base, total: '500' }).mem.totalBytes, 500);
-  assert.strictEqual(G.parseGpu({ ...base, total: 1000 }).mem.totalBytes, 1000);
+  const pn = ['PCI\\VEN_10DE&DEV_2820&SUBSYS_13C71462&REV_A1\\4&1'];
+  const key = b => [{ m: 'pci\\ven_10de&dev_2820', b }];
+  assert.strictEqual(G.parseGpu({ ...base }).mem.totalBytes, null, 'no registry part at all');
+  assert.strictEqual(G.parseGpu({ ...base, ad: key('0'), pn }).mem.totalBytes, null);
+  assert.strictEqual(G.parseGpu({ ...base, ad: key('lots'), pn }).mem.totalBytes, null);
+  assert.strictEqual(G.parseGpu({ ...base, ad: key('499'), pn }).mem.totalBytes, null, 'smaller than what is in use');
+  assert.strictEqual(G.parseGpu({ ...base, ad: key('500'), pn }).mem.totalBytes, 500);
+  assert.strictEqual(G.parseGpu({ ...base, ad: key(1000), pn }).mem.totalBytes, 1000);
+});
+
+test('parseGpu: a driver key left behind by a removed card is not counted (PR #152 D3: 4 GB of 8 GB, not of 16 GB)', () => {
+  const base = { eng: [eng(1, 0, '3D', 1, 1)], am: [am(L1, 4e9)] };
+  const gb8 = String(8e9);
+  const present = 'PCI\\VEN_10DE&DEV_2820&SUBSYS_13C71462&REV_A1\\4&1';
+  const stale = { m: 'pci\\ven_10de&dev_1f08&subsys_0', b: gb8 };
+  const live = { m: 'pci\\ven_10de&dev_2820&subsys_13c71462', b: gb8 };
+  assert.strictEqual(G.parseGpu({ ...base, ad: [live, stale], pn: [present] }).mem.totalBytes, 8e9);
+  assert.strictEqual(G.parseGpu({ ...base, ad: [stale, live], pn: [present] }).mem.totalBytes, 8e9, 'the order of the keys decides nothing');
+  assert.strictEqual(G.parseGpu({ ...base, ad: [stale], pn: [present] }).mem.totalBytes, null, 'only a stale key: nothing to count');
+  assert.strictEqual(G.parseGpu({ ...base, ad: [live, stale] }).mem.totalBytes, null, 'no present device reported: unknown');
+});
+
+test('parseGpu: a present device with no sized key makes the total unknown (used would cover an adapter total does not)', () => {
+  const base = { eng: [eng(1, 0, '3D', 1, 1)], am: [am(L1, 100)] };
+  const a = 'PCI\\VEN_10DE&DEV_2820&REV_A1\\4&1';
+  const b = 'PCI\\VEN_8086&DEV_46A6&REV_0C\\3&2';
+  const ka = { m: 'pci\\ven_10de&dev_2820', b: '8000' };
+  const kb = { m: 'pci\\ven_8086&dev_46a6', b: '2000' };
+  assert.strictEqual(G.parseGpu({ ...base, ad: [ka, kb], pn: [a, b] }).mem.totalBytes, 10000, 'two present adapters add up');
+  assert.strictEqual(G.parseGpu({ ...base, ad: [ka], pn: [a, b] }).mem.totalBytes, null);
+  assert.strictEqual(G.parseGpu({ ...base, ad: [ka, { ...ka, b: '9000' }], pn: [a] }).mem.totalBytes, 9000, 'two keys for one device: the larger, never both');
+  assert.strictEqual(G.parseGpu({ ...base, ad: [{ ...ka, m: 'PCI\\VEN_10DE&DEV_2820' }], pn: [a.toLowerCase()] }).mem.totalBytes, 8000, 'case does not matter');
+  assert.strictEqual(G.parseGpu({ ...base, ad: [{ m: '', b: '5' }, { b: '5' }, null], pn: ['', 5, a] }).mem.totalBytes, null, 'junk entries are ignored');
 });
 
 test('parseSample carries the parsed gpu, and null for a document without one', () => {
@@ -93,14 +122,30 @@ test('parseSample carries the parsed gpu, and null for a document without one', 
 
 // ---- busy % ----------------------------------------------------------------------------------------------------------
 
-test('gpuBusy: busy time over wall time, per pid (its busiest engine type) and overall (the busiest adapter and type)', () => {
+test('gpuBusy: busy time over wall time; a pid is its busiest ENGINE NODE, the overall figure the busiest node (pids on one node add)', () => {
   const prev = sample({ eng: [eng(10, 0, '3D', 0, T0), eng(10, 1, '3D', 0, T0), eng(10, 2, 'Copy', 0, T0), eng(20, 0, '3D', 0, T0)] });
-  // over 2 s: pid 10 engine 0 busy 1 s (50%), engine 1 busy 0.5 s (25%), Copy 0.2 s (10%); pid 20 busy 0.4 s (20%)
+  // over 2 s: pid 10 node 0 busy 1 s (50%), node 1 busy 0.5 s (25%), Copy node 0.2 s (10%); pid 20 shares node 0, busy 0.4 s (20%)
   const next = sample({ eng: [eng(10, 0, '3D', SEC, T0 + 2n * SEC), eng(10, 1, '3D', SEC / 2n, T0 + 2n * SEC), eng(10, 2, 'Copy', SEC / 5n, T0 + 2n * SEC), eng(20, 0, '3D', (SEC * 2n) / 5n, T0 + 2n * SEC)] });
   const r = G.gpuBusy(prev, next);
-  assert.ok(Math.abs(r.byPid.get(10) - 75) < 1e-9, `pid 10 ${r.byPid.get(10)}`);
+  assert.ok(Math.abs(r.byPid.get(10) - 50) < 1e-9, `pid 10 ${r.byPid.get(10)}`);
   assert.ok(Math.abs(r.byPid.get(20) - 20) < 1e-9);
-  assert.ok(Math.abs(r.busy - 95) < 1e-9, `overall ${r.busy}`);
+  assert.ok(Math.abs(r.busy - 70) < 1e-9, `overall ${r.busy}: node 0 carries 50% + 20%`);
+});
+
+test('gpuBusy (PR #152 D1): two engine nodes of one type are two engines, not one: 2 x 3D at 60% reads 60, never 100', () => {
+  const prev = sample({ eng: [eng(10, 0, '3D', 0, T0), eng(10, 1, '3D', 0, T0)] });
+  const next = sample({ eng: [eng(10, 0, '3D', (SEC * 6n) / 5n, T0 + 2n * SEC), eng(10, 1, '3D', (SEC * 6n) / 5n, T0 + 2n * SEC)] });
+  const r = G.gpuBusy(prev, next);
+  assert.ok(Math.abs(r.byPid.get(10) - 60) < 1e-9, `pid ${r.byPid.get(10)}`);
+  assert.ok(Math.abs(r.busy - 60) < 1e-9, `overall ${r.busy}`);
+});
+
+test('gpuBusy (PR #152 D1): pids on the SAME node add up (they time-slice it): 30% + 30% on eng_0 reads 60', () => {
+  const prev = sample({ eng: [eng(10, 0, '3D', 0, T0), eng(20, 0, '3D', 0, T0)] });
+  const next = sample({ eng: [eng(10, 0, '3D', (SEC * 3n) / 5n, T0 + 2n * SEC), eng(20, 0, '3D', (SEC * 3n) / 5n, T0 + 2n * SEC)] });
+  const r = G.gpuBusy(prev, next);
+  assert.ok(Math.abs(r.busy - 60) < 1e-9);
+  assert.ok(Math.abs(r.byPid.get(10) - 30) < 1e-9);
 });
 
 test('gpuBusy: the same engine type on two adapters is two groups, not one sum', () => {
@@ -127,15 +172,20 @@ test('gpuBusy: no usable pair is null, never 0 (first sample, unreadable counter
   }
 });
 
-test('gpuBusy: a pid with an instance that has no delta is null for that pid; the others are still measured', () => {
-  const prev = sample({ eng: [eng(1, 0, '3D', 0, T0), eng(2, 0, '3D', 0, T0)] });
-  // pid 1 gained an engine instance (no earlier reading); pid 3 is new entirely; pid 2 is whole
-  const next = sample({ eng: [eng(1, 0, '3D', SEC, T0 + 2n * SEC), eng(1, 1, '3D', 5, T0 + 2n * SEC), eng(2, 0, '3D', SEC, T0 + 2n * SEC), eng(3, 0, '3D', 5, T0 + 2n * SEC)] });
+test('gpuBusy (PR #152 D2): an instance missing from the previous sample was created after it: its own counter is the delta', () => {
+  const prev = sample({ eng: [eng(1, 0, '3D', 0, T0)] });
+  // pid 1 (dwm) stays idle; pid 9 started a job in between and has been busy 9 s of the 10 s since the previous query
+  const next = sample({ eng: [eng(1, 0, '3D', 0, T0 + 10n * SEC), eng(9, 0, '3D', 9n * SEC, T0 + 10n * SEC)] });
   const r = G.gpuBusy(prev, next);
-  assert.strictEqual(r.byPid.get(1), null);
-  assert.strictEqual(r.byPid.get(3), null);
-  assert.ok(Math.abs(r.byPid.get(2) - 50) < 1e-9);
-  assert.ok(Math.abs(r.busy - 100) < 1e-9, 'the overall figure sums the instances that have a delta (pid 1 engine 0 and pid 2: 50% each)');
+  assert.ok(Math.abs(r.byPid.get(9) - 90) < 1e-9, `pid 9 ${r.byPid.get(9)}`);
+  assert.strictEqual(r.byPid.get(1), 0);
+  assert.ok(Math.abs(r.busy - 90) < 1e-9, `overall ${r.busy}: not the confident 0 of an idle dwm`);
+  // a pid that gained a second engine instance: the new one counts from zero, the old one by its delta
+  const gained = sample({ eng: [eng(1, 0, '3D', SEC, T0 + 2n * SEC), eng(1, 1, 'Copy', 5n, T0 + 2n * SEC)] });
+  assert.ok(Math.abs(G.gpuBusy(prev, gained).byPid.get(1) - 50) < 1e-9);
+  // a new instance whose clock is not after the previous query has no measurable interval
+  const same = sample({ eng: [eng(9, 0, '3D', SEC, T0)] });
+  assert.strictEqual(G.gpuBusy(prev, same).byPid.get(9), null);
 });
 
 test('gpuBusy: a pid that was reused between the samples (another start time) has no delta', () => {
@@ -179,8 +229,8 @@ test('gpuProcs: no memory rows or no gpu is an empty list', () => {
 });
 
 test('buildGpu: busy, memory and the processes, joined; everything unknown is null', () => {
-  const prev = sample({ eng: [eng(2, 0, '3D', 0, T0)], pm: [pm(2, 300)], am: [am(L1, 400)], total: '1000' }, [proc(2, 'llama-server.exe')]);
-  const next = sample({ eng: [eng(2, 0, '3D', SEC, T0 + 4n * SEC)], pm: [pm(2, 300)], am: [am(L1, 400)], total: '1000' }, [proc(2, 'llama-server.exe')]);
+  const prev = sample({ eng: [eng(2, 0, '3D', 0, T0)], pm: [pm(2, 300)], am: [am(L1, 400)], ...sized(1000) }, [proc(2, 'llama-server.exe')]);
+  const next = sample({ eng: [eng(2, 0, '3D', SEC, T0 + 4n * SEC)], pm: [pm(2, 300)], am: [am(L1, 400)], ...sized(1000) }, [proc(2, 'llama-server.exe')]);
   const g = G.buildGpu(prev, next);
   assert.ok(Math.abs(g.busy - 25) < 1e-9);
   assert.deepStrictEqual(g.mem, { usedBytes: 400, totalBytes: 1000 });
@@ -205,11 +255,13 @@ test('property: a figure is a number only when the counters give a usable pair; 
     for (const [pid, v] of r.byPid) {
       if (v === null) continue;
       assert.ok(v >= 0 && v <= 100);
-      // a number means every one of the pid's instances had a counterpart before it, with a forward clock and a counter that did not go down
+      // a number means every one of the pid's instances had a usable pair (a forward clock, a counter that did not go down), or is new
+      // since the previous query and its clock is after it
       for (const [name, e] of next.gpu.engines) {
         if (e.pid !== pid) continue;
         const p = prev.gpu.engines.get(name);
-        assert.ok(p && e.ts > p.ts && e.u >= p.u, `${name} gave a figure without a usable pair`);
+        if (p) assert.ok(e.ts > p.ts && e.u >= p.u, `${name} gave a figure without a usable pair`);
+        else assert.ok(e.ts > prev.gpu.ts, `${name} is new but has no interval`);
       }
     }
     if (r.busy !== null) assert.ok(r.busy >= 0 && r.busy <= 100);
@@ -219,8 +271,8 @@ test('property: a figure is a number only when the counters give a usable pair; 
 
 test('property: a row whose values are unknown never becomes a number in the memory figures', () => {
   const junk = fc.oneof(fc.constant(null), fc.constant(undefined), fc.constant('x'), fc.constant(-5), fc.constant(NaN), fc.constant({}), fc.constant([]));
-  fc.assert(fc.property(fc.array(junk, { maxLength: 6 }), junk, (ds, total) => {
-    const g = G.parseGpu({ eng: [eng(1, 0, '3D', 1, 1)], pm: ds.map(d => ({ n: pm(1, 1).n, d })), am: ds.map(d => ({ n: L1, d })), total });
+  fc.assert(fc.property(fc.array(junk, { maxLength: 6 }), junk, (ds, size) => {
+    const g = G.parseGpu({ eng: [eng(1, 0, '3D', 1, 1)], pm: ds.map(d => ({ n: pm(1, 1).n, d })), am: ds.map(d => ({ n: L1, d })), ad: [{ m: 'pci', b: size }], pn: ['PCI\\X'] });
     assert.strictEqual(g.procMem, null);
     assert.strictEqual(g.mem, null);
   }), { numRuns: 100 });

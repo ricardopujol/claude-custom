@@ -42,7 +42,9 @@ test('chipView: an unread GPU is "GPU —", a payload with no GPU part has none,
   assert.strictEqual(without.gpuText, null);
   assert.strictEqual(without.text, 'CPU 71%  21.4 GB / 32.0 GB');
   assert.strictEqual(D.chipView(null).gpuText, null);
-  assert.strictEqual(D.chipView(payload({ status: { expired: true } })).gpuText, null);
+  assert.strictEqual(D.chipView(payload({ status: { expired: true } })).gpuText, 'GPU —', 'expired: unknown, not absent (PR #152 D5)');
+  assert.strictEqual(D.chipView(payload({ status: { expired: true } })).text, 'CPU —  — / —  GPU —');
+  assert.strictEqual(D.chipView(payload({ status: { expired: true } }, NONE)).gpuText, null, 'expired with no GPU part stays without one');
 });
 
 test('view: the GPU section has busy %, memory used of total as bars, and the processes with their figures', () => {

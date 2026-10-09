@@ -52,13 +52,17 @@ const levelOf = pct => (!isNum(pct) ? null : pct >= RED ? 'red' : pct >= AMBER ?
  * `{ text, cpuText, memText, gpuText, level, dim, title }` for the chip: `CPU 71%  21.4 GB / 32.0 GB  GPU 12%`, amber from 40%, red from 75%
  * (the CPU's, as before: the GPU's figure never lights the chip). The figures also come apart, because a one-hour sparkline sits after
  * each (app/resources-history-display.js). `gpuText` is null when the payload carries no GPU part at all (BACKLOG #82); when it
- * does and the counters could not be read, it is "GPU —".
+ * does and the counters could not be read, it is "GPU —". An expired sample keeps the segment as "GPU —" (the figure is unknown, the
+ * segment is not absent), so the chip does not change width when the CPU and memory go to dashes.
  */
 function chipView(payload) {
   const title = 'Machine total and the last hour. Click for the graphs.';
   const status = payload && payload.status ? payload.status : {};
   const m = payload && payload.machine ? payload.machine : null;
-  if (!m || status.expired === true) return { text: 'CPU —  — / —', cpuText: 'CPU —', memText: '— / —', gpuText: null, level: null, dim: status.stale === true, title };
+  if (!m || status.expired === true) {
+    const gpuText = m && m.gpu && typeof m.gpu === 'object' ? 'GPU —' : null;
+    return { text: `CPU —  — / —${gpuText ? `  ${gpuText}` : ''}`, cpuText: 'CPU —', memText: '— / —', gpuText, level: null, dim: status.stale === true, title };
+  }
   const mem = m.mem && isNum(m.mem.usedBytes) && isNum(m.mem.totalBytes) ? `${fmtBytes(m.mem.usedBytes)} / ${fmtBytes(m.mem.totalBytes)}` : '— / —';
   const cpuText = `CPU ${fmtCpu(m.cpu)}`;
   const gpuText = m.gpu && typeof m.gpu === 'object' ? `GPU ${fmtCpu(m.gpu.busy)}` : null;

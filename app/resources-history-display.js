@@ -185,7 +185,10 @@ function graph(points, kind, nowAt, { w = 300, h = 64, hover = null } = {}) {
   const minutes = isNum(hover) ? hover : 0;
   const name = (KINDS[kind] || KINDS.mem).name;
   if (total.length === 0) {
-    return `<div class="hg" data-hist-graph="${kind}"><div class="hg-name">${name}</div><div class="hg-empty">Collecting data…</div></div>`;
+    // "measurable but never will be": GPU memory used is reported but its total is not (no sized registry key), so no point can be drawn
+    const never = kind === 'gpumem' && Array.isArray(points) && points.length > 0
+      && points.some(p => isNum(p && p.gpuMemUsed)) && !points.some(p => figuresOf(p).gpuMemUsed !== null);
+    return `<div class="hg" data-hist-graph="${kind}"><div class="hg-name">${name}</div><div class="hg-empty">${never ? 'Unknown: this GPU does not report its total memory' : 'Collecting data…'}</div></div>`;
   }
   let svg = '';
   const yOf = v => (h - 2) - v * (h - 4) + 1;

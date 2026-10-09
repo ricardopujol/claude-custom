@@ -1036,7 +1036,7 @@ const gpuDoc = (n, busyTicks) => {
   return {
     eng: [eng(23, BigInt(n) * busyTicks), eng(20, 0n)],
     pm: [{ n: 'pid_23_luid_0x00000000_0x000107EC_phys_0', d: '300' }, { n: 'pid_20_luid_0x00000000_0x000107EC_phys_0', d: '50' }],
-    am: [{ n: 'luid_0x00000000_0x000107EC_phys_0', d: '400' }], total: '1000',
+    am: [{ n: 'luid_0x00000000_0x000107EC_phys_0', d: '400' }], ad: [{ m: 'pci\\ven_1', b: '1000' }], pn: ['PCI\\VEN_1&DEV_2\\3'],
   };
 };
 const withGpu = (sample, n, busyTicks) => ({ ...sample, gpu: require('../host/resource-gpu').parseGpu(gpuDoc(n, busyTicks)) });

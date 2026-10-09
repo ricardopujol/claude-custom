@@ -73,6 +73,19 @@ test('the memory graph with no known total says it is collecting instead of draw
   assert.strictEqual(D.popover([pt(NOW, { gpu: null, gpuMemTotal: null })], NOW).includes('data-hist-graph="gpu"'), false, 'nothing measured at all: no GPU graphs');
 });
 
+test('PR #152 D4: a total that never arrives says "unknown" on the GPU memory graph, not "Collecting data…" forever', () => {
+  const pts = run(NOW - 5 * STEP, 6, { gpuMemTotal: null });
+  for (const html of [D.popover(pts, NOW), D.gpuGraphs(pts, NOW)]) {
+    const mem = html.slice(html.indexOf('data-hist-graph="gpumem"'));
+    assert.match(mem, /Unknown: this GPU does not report its total memory/);
+    assert.doesNotMatch(mem, /Collecting data/);
+  }
+  // before any GPU memory figure exists, and for the busy graph, "collecting" is still the honest word
+  const early = D.popover([pt(NOW, { gpuMemUsed: null, gpuMemTotal: null })], NOW);
+  assert.match(early.slice(early.indexOf('data-hist-graph="gpumem"')), /Collecting data/);
+  assert.doesNotMatch(D.gpuGraphs(pts, NOW).slice(0, D.gpuGraphs(pts, NOW).indexOf('data-hist-graph="gpumem"')), /Unknown/);
+});
+
 test('gpuGraphs: the two graphs for the Resources tab, none without GPU figures', () => {
   const html = D.gpuGraphs(run(NOW - 5 * STEP, 6), NOW);
   assert.deepStrictEqual([...html.matchAll(/data-hist-graph="(\w+)"/g)].map(m => m[1]), ['gpu', 'gpumem']);

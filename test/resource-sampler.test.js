@@ -64,6 +64,12 @@ test('the scripts: BOTH read the GPU counters (the chip shows GPU busy %), from 
     assert.match(s, /HardwareInformation\.qwMemorySize/, "the adapters' total memory has no counter");
     assert.ok(s.includes('HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'), 'the display class key, backslashes intact');
     assert.ok(s.includes('gpu=$gpu'));
+    // PR #152 Miguel 3: each GPU query has its own operation timeout, so a wedged provider costs the GPU part, not the whole sample
+    assert.strictEqual((s.match(/Get-CimInstance -OperationTimeoutSec 3 Win32_PerfRawData_GPUPerformanceCounters_/g) || []).length, 3);
+    assert.ok(s.includes('Get-CimInstance -OperationTimeoutSec 3 Win32_VideoController'), 'the present display devices');
+    assert.match(s, /MatchingDeviceId/);
+    assert.match(s, /PNPDeviceID/);
+    assert.doesNotMatch(s, /total=\$\(if \(\$gt/, 'the total is joined in JS now, over present adapters only');
     assert.strictEqual((s.match(/Get-Counter/g) || []).length, 0, 'no Get-Counter: it is slow');
   }
 });
