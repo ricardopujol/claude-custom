@@ -1698,7 +1698,7 @@ function openMoveMenu(id, x, y) {
   // A group of the tree folds to its rail (this window only); a float has no rail to fold to.
   const home = DTm.groupOf(placementLayout(), id);
   if (home) {
-    const shut = selection.collapsed[home.id] === true;
+    const shut = DTm.isCollapsed(selection, home);
     layoutMenu.appendChild(node('button', {
       type: 'button', text: shut ? 'Expand group' : 'Collapse group',
       title: shut ? 'Open this group again' : 'Fold this group to its rail in this window; its button on the rail opens the panel over the terminal',
@@ -2407,7 +2407,7 @@ document.addEventListener('dblclick', (e) => {
   if (bar) { toggleGroupCollapse(bar.parentNode.dataset.group); return; }
   const rail = e.target.closest && e.target.closest('.drail button[data-module]');
   const home = rail ? DTm.groupOf(placementLayout(), rail.dataset.module) : null;
-  if (home && selection.collapsed[home.id] === true) toggleGroupCollapse(home.id);
+  if (home && DTm.isCollapsed(selection, home)) toggleGroupCollapse(home.id);
 });
 
 document.getElementById('side-hint').addEventListener('click', toggleAllZones);

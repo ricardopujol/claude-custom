@@ -40,6 +40,12 @@ test('a selection carries the groups this window collapsed: only a real true on 
   assert.deepEqual(T.cleanSelection({ collapsed: { '': true } }).collapsed, {}, 'no empty names');
 });
 
+test('a collapse may carry the tabs of the group it was made on: only a non-empty list of strings counts, capped', () => {
+  assert.deepEqual(T.cleanSelection({ collapsed: { a: ['vault', 'git'], b: [], c: [1, null], d: [{}], e: ['x', 7] } }).collapsed, { a: ['vault', 'git'], e: ['x'] });
+  const big = T.cleanSelection({ collapsed: { a: Array.from({ length: 200 }, (_, i) => `m${i}`) } }).collapsed.a;
+  assert.ok(big.length <= 32);
+});
+
 test('a damaged file can\'t grow the collapsed list without end', () => {
   const many = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`g${i}`, true]));
   assert.ok(Object.keys(T.cleanSelection({ collapsed: many }).collapsed).length <= 64);
@@ -53,14 +59,14 @@ test('a selection from before D4 (no collapsed key) reads as nothing collapsed',
 test('toggleCollapse collapses a group and expands it again', () => {
   const l = ex();
   const once = T.toggleCollapse(NONE, l, 'right');
-  assert.deepEqual(once.collapsed, { right: true });
+  assert.deepEqual(once.collapsed, { right: ['agents', 'vault'] }, 'it remembers WHICH group it was (its tabs), not just a name');
   assert.deepEqual(T.toggleCollapse(once, l, 'right').collapsed, {});
 });
 
 test('toggleCollapse leaves everything else in the selection alone', () => {
   const s = { active: { right: 'vault' }, foldAll: true, floatOrder: ['f'], collapsed: { other: true } };
   const next = T.toggleCollapse(s, ex(), 'right');
-  assert.deepEqual(next, { ...s, collapsed: { other: true, right: true } });
+  assert.deepEqual(next, { ...s, collapsed: { other: true, right: ['agents', 'vault'] } });
 });
 
 test('only a group in the tree collapses: not the terminal, a float, an unknown name or junk', () => {
@@ -212,4 +218,33 @@ test('D1 property: whatever is collapsed and whichever divider key is pressed, t
       assert.equal(next.root.sizes[at], l.root.sizes[l.root.kids.findIndex(x => x.id === id)], `${id} was stored as ${next.root.sizes[at]}`);
     });
   }), { numRuns: 300 });
+});
+
+// --- PR #159 Dexter 3: a collapse is about THE group it was made on, not the name it carried ---------
+
+test('D3: a different group that reuses the name is drawn open (a preset or a reset pushed by another window)', () => {
+  const l = ex();                                       // group "right" holds agents and vault
+  const s = T.toggleCollapse(NONE, l, 'right');
+  const other = T.normalize(v2(row([term, g('right', 'git', 'fog')], [0, 180]), { hidden: IDS.filter(i => !['git', 'fog'].includes(i)) }), IDS);
+  const b = boxesOf(other, s);
+  assert.deepEqual(kinds(b), ['term', 'gutter', 'group'], 'open: a group, not a rail');
+  assert.deepEqual(T.pruneCollapsed(s, other).collapsed, {}, 'and the stale choice is forgotten');
+});
+
+test('D3: the same group with a tab added or taken away stays collapsed', () => {
+  const s = T.toggleCollapse(NONE, ex(), 'right');
+  const more = T.normalize(v2(row([term, g('right', 'agents', 'vault', 'git')], [0, 180]), { hidden: IDS.filter(i => !['agents', 'vault', 'git'].includes(i)) }), IDS);
+  const less = T.normalize(v2(row([term, g('right', 'vault')], [0, 180]), { hidden: IDS.filter(i => i !== 'vault') }), IDS);
+  assert.deepEqual(kinds(boxesOf(more, s)), ['term', 'rail']);
+  assert.deepEqual(kinds(boxesOf(less, s)), ['term', 'rail']);
+  assert.equal(T.pruneCollapsed(s, more), s);
+});
+
+test('D3: isCollapsed reads both forms: a remembered tab list, and a plain true (any group of that name)', () => {
+  const gr = { id: 'right', tabs: ['git'] };
+  assert.equal(T.isCollapsed({ collapsed: { right: true } }, gr), true);
+  assert.equal(T.isCollapsed({ collapsed: { right: ['git', 'fog'] } }, gr), true);
+  assert.equal(T.isCollapsed({ collapsed: { right: ['vault'] } }, gr), false);
+  assert.equal(T.isCollapsed({ collapsed: {} }, gr), false);
+  assert.equal(T.isCollapsed(null, gr), false);
 });

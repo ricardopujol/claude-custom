@@ -541,6 +541,7 @@ function setSplitSizes(layout, path, sizes) {
 /** A selection from anything stored. */
 const MAX_FLOAT_ORDER = 32;                           // a damaged file can't grow the list without end
 const MAX_COLLAPSED = 64;                             // ...nor can this one
+const MAX_COLLAPSED_TABS = 32;
 
 // A selection also holds which float is on top, bottom to top: pressing a float raises it in THIS window only,
 // so a click never writes the shared layout. Ids of floats that are gone stay until pushed out; `fit` ignores them.
@@ -553,7 +554,13 @@ function cleanSelection(raw) {
   const collapsed = {};
   if (isObject(r.collapsed)) {
     for (const [k, v] of Object.entries(r.collapsed)) {
-      if (k !== '' && v === true && Object.keys(collapsed).length < MAX_COLLAPSED) collapsed[k] = true;
+      if (k === '' || Object.keys(collapsed).length >= MAX_COLLAPSED) continue;
+      // `true`: any group of that name. A list of module ids: the group that held them when it was collapsed.
+      if (v === true) collapsed[k] = true;
+      else if (Array.isArray(v)) {
+        const ids = v.filter(x => typeof x === 'string' && x !== '').slice(0, MAX_COLLAPSED_TABS);
+        if (ids.length) collapsed[k] = ids;
+      }
     }
   }
   return { active: stringMap(r.active), foldAll: r.foldAll === true, floatOrder, collapsed };
@@ -582,7 +589,9 @@ function toggleCollapse(sel, layout, groupId) {
   const s = cleanSelection(sel);
   if (typeof groupId !== 'string' || !groups(layout).some(gr => gr.id === groupId)) return s;
   const collapsed = { ...s.collapsed };
-  if (collapsed[groupId]) delete collapsed[groupId]; else collapsed[groupId] = true;
+  const gr = groups(layout).find(x => x.id === groupId);
+  // Which group, not just which name: another layout can hand the name to a different group (PR #159 Dexter 3).
+  if (collapsed[groupId]) delete collapsed[groupId]; else collapsed[groupId] = [...gr.tabs].slice(0, MAX_COLLAPSED_TABS);
   return { ...s, collapsed };
 }
 
@@ -591,9 +600,17 @@ function toggleCollapse(sel, layout, groupId) {
  * a new group handed it would start collapsed. The very same selection when nothing was stale.
  */
 function pruneCollapsed(sel, layout) {
-  const live = new Set(groups(layout).map(gr => gr.id));
-  if (!isObject(sel) || !isObject(sel.collapsed) || Object.keys(sel.collapsed).every(k => live.has(k))) return sel;
-  return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(([k]) => live.has(k))) });
+  const grs = groups(layout);
+  const still = ([k, v]) => { const gr = grs.find(x => x.id === k); return !!gr && isCollapsed({ collapsed: { [k]: v } }, gr); };
+  if (!isObject(sel) || !isObject(sel.collapsed) || Object.entries(sel.collapsed).every(still)) return sel;
+  return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(still)) });
+}
+
+/** Whether this window collapsed THIS group: its name is in the list and (when the choice remembers tabs) it still holds one of them. */
+function isCollapsed(sel, group) {
+  const rec = isObject(sel) && isObject(sel.collapsed) && isObject(group) ? sel.collapsed[group.id] : undefined;
+  if (rec === true) return true;
+  return Array.isArray(rec) && Array.isArray(group.tabs) && group.tabs.some(t => rec.includes(t));
 }
 
 function toggleFoldAll(sel) {
@@ -743,7 +760,7 @@ function place(n, rect, path, ctx) {
   }
   const isRow = n.dir === 'row';
   const length = isRow ? rect.width : rect.height;
-  const shut = n.kids.map(k => k.type === 'group' && ctx.sel.collapsed[k.id] === true);
+  const shut = n.kids.map(k => k.type === 'group' && isCollapsed(ctx.sel, k));
   const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut) : plainLengths(n, length, shut);
   ctx.splits.push({
     path, dir: n.dir, px: len, state,
@@ -839,7 +856,7 @@ function fit(layout, selection, viewport) {
 const API = {
   HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
-  cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, activeOf, fit, peekFor, PEEK,
+  cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, isCollapsed, activeOf, fit, peekFor, PEEK,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.
