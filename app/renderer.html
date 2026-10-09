@@ -1435,6 +1435,25 @@
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 
+    /* BACKLOG #55, look A: the finer states. `data-state` keeps the ring above; `data-detail` adds a corner badge on
+       the portrait (app/agent-state-display.js) and colours the words under the name. The badge is a sibling of
+       .face, not inside it, because .face clips its content. */
+    .agent .state { text-transform: none; }
+    .agent .state::first-letter { text-transform: uppercase; }
+    .agent .state-badge {
+      position: absolute; left: calc(6px + var(--face, 34px) - 11px); top: calc(50% + var(--face, 34px) / 2 - 13px);
+      width: 15px; height: 15px; line-height: 15px; text-align: center; font-size: 10px;
+      border-radius: 50%; background: var(--panel); border: 1px solid var(--border); pointer-events: none;
+    }
+    .agent[data-detail="reading"] .state, .agent[data-detail="writing"] .state, .agent[data-detail="running"] .state { color: var(--agent); }
+    .agent[data-detail="waiting"] .state { color: var(--warn); }
+    .agent[data-detail="waiting"] .state-badge { border-color: var(--warn); animation: badge-pulse 1.8s ease-in-out infinite; }
+    .agent[data-detail="stuck"] .state { color: var(--bad); }
+    .agent[data-detail="stuck"] .state-badge { border-color: var(--bad); }
+    .agent[data-detail="helper"] .state { color: var(--accent); }
+    @keyframes badge-pulse { 50% { box-shadow: 0 0 0 3px rgba(230,195,74,.35); } }
+    @media (prefers-reduced-motion: reduce) { .agent[data-detail="waiting"] .state-badge { animation: none; } }
+
     /* --- top bar: model / effort ---------------------------------------------
        FF12. Model and effort are CONTROLS, not labels -- clicking either opens
        a small picker that types the matching /model or /effort command into
@@ -1939,6 +1958,7 @@
   <script src="./projects-display.js"></script>
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
+  <script src="./agent-state-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
   <script src="./colour-seeds.js"></script>

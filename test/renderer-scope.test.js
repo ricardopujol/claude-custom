@@ -83,6 +83,8 @@ const ALLOWED_GLOBALS = new Set([
   'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
+  // app/agent-state-display.js (BACKLOG #55): ONE name leaves its IIFE.
+  'agentStateDisplay',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.

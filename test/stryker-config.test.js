@@ -62,6 +62,8 @@ const REPO_SCANNING = new Set([
   'status-relay-process.test.js',
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
+  // #55 wiring: renderer.html / renderer.js / host.js source text. It requires nothing from a mutated module.
+  'renderer-agent-state-wiring.test.js',
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 

@@ -564,7 +564,12 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 const portraitOf = (agent, state) => portraitFor(agent, state, {
   portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
 });
-const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, state) });
+// `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
+// nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
+const describe = (agent, state, detail) => {
+  const d = detail || state;
+  return { agent, state, detail: d, portrait: portraitOf(agent, d) };
+};
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
@@ -893,7 +898,7 @@ function globalPortraitInfo() {
 // A file-tier change under _global alters what EVERY face without its own
 // picture resolves to, so re-describe all of them rather than guessing which.
 function repaintAllPortraits() {
-  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state) });
+  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state, r.detail) });
   lastRosterIndex = {
     ...lastRosterIndex,
     agents: lastRosterIndex.agents.map(a => ({ ...a, portrait: portraitOf(a.agent, 'sleeping') })),
@@ -941,7 +946,10 @@ function handlePortraitUpload(msg) {
   // Re-describe rather than assuming the tier that now applies -- describe()
   // re-reads the real filesystem, so a stale idea of "the upload obviously
   // won" can never disagree with what portraitFor actually resolves.
-  if (out.mood) broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state) });
+  if (out.mood) {
+    const row = mood.roster().find(r => r.agent === out.mood.agent);
+    broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state, row && row.state === out.mood.state ? row.detail : undefined) });
+  }
   if (out.repaintIndex) {
     lastRosterIndex = {
       ...lastRosterIndex,
@@ -1283,7 +1291,9 @@ if (helperExists) {
     // The turn state sees them too: a turn that only Reads and Edits (a blocked Stop's continuation, a turn an
     // agent's result opened) is live, and the early returns below would leave it 'idle' (BACKLOG #77 R1).
     if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
-    if (isOccupancyOnly(ev)) return;
+    // ...but the mood engine reads them for one thing only: which tool an agent is using now (reading, writing,
+    // BACKLOG #55). They open no run and touch no panel; a Read is never a process.
+    if (isOccupancyOnly(ev)) { mood.handle(ev); return; }
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
     if (isBedtimeOnly(ev)) return;
@@ -1789,8 +1799,8 @@ function wireTerm(t) {
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
-mood.on('change', ({ agent, state }) => {
-  broadcastControl({ type: 'mood', ...describe(agent, state) });
+mood.on('change', ({ agent, state, detail }) => {
+  broadcastControl({ type: 'mood', ...describe(agent, state, detail) });
   // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
   // applies the same rule itself, but the host persists it and is authoritative.
   if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
@@ -2135,7 +2145,7 @@ wss.on('connection', (ws, req) => {
     background: styleResolved.background,
     style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
-    roster: mood.roster().map(r => describe(r.agent, r.state)),
+    roster: mood.roster().map(r => describe(r.agent, r.state, r.detail)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).

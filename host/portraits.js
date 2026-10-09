@@ -33,6 +33,12 @@ const fs = require('fs');
 const path = require('path');
 
 const BUILTIN_STATES = ['sleeping', 'working', 'happy', 'stressed'];
+// The finer states a working card can show (host/mood-machine.js DETAIL, BACKLOG #55), each a portrait slot whose
+// missing picture is the nearest of the four above -- never a blank. Waiting on you is the awake face, not a new one.
+const NEAREST_STATE = {
+  reading: 'working', writing: 'working', running: 'working', waiting: 'working', helper: 'working', stuck: 'stressed',
+};
+const EXTRA_STATES = Object.keys(NEAREST_STATE);
 
 // Every extension a tier is willing to serve. Order is the tie-break when a
 // directory somehow holds more than one for the same name -- deterministic,
@@ -126,6 +132,10 @@ function fileResult(tier, agent, state, hit) {
 // Tier 1: a real person's own upload, copied in by host/portrait-upload.js.
 // A per-state file always wins; a per-agent default.<ext> only ever stands in
 // for a state that has no file of its own.
+function uploadedOwn(safeAgent, safeState, uploadsDir) {
+  return uploadsDir ? findAsset(path.join(uploadsDir, safeAgent), safeState) : null;
+}
+
 function uploadedFor(safeAgent, safeState, uploadsDir) {
   if (!uploadsDir) return null;
   const agentDir = path.join(uploadsDir, safeAgent);
@@ -177,8 +187,14 @@ function globalPortrait(uploadsDir) {
 
 function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}) {
   const safeAgent = safeSegment(agent);
-  const safeState = safeSegment(state);
+  let safeState = safeSegment(state);
   if (!safeAgent || !safeState) return placeholderFor(agent);
+  // A finer state (BACKLOG #55) with no picture of its own for this agent is its nearest original state, for
+  // every tier below: an upload of `working` beats a shared default for `reading`.
+  if (Object.hasOwn(NEAREST_STATE, safeState) && !isReservedAgent(safeAgent)
+      && !uploadedOwn(safeAgent, safeState, uploadsDir) && !forgeOwnFor(safeAgent, safeState, portraitsDir)) {
+    safeState = NEAREST_STATE[safeState];
+  }
   // `_global` is the folder of the global default, not an agent: a real agent
   // that happens to carry the name must not read it as its own upload.
   if (isReservedAgent(safeAgent)) return placeholderFor(agent);
@@ -203,6 +219,6 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}
 }
 
 module.exports = {
-  portraitFor, placeholderFor, listStates, BUILTIN_STATES,
+  portraitFor, placeholderFor, listStates, BUILTIN_STATES, NEAREST_STATE, EXTRA_STATES,
   safeSegment, MEDIA_EXTENSIONS, GLOBAL_AGENT, globalPortrait, isReservedAgent,
 };

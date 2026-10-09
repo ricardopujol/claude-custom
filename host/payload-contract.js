@@ -202,6 +202,9 @@ const CONTRACT = {
     // agent_needs_input (idle_prompt only as a held "finished"'s backstop); an
     // older CLI that sends none raises as before. Measured in CLI 2.1.286's own
     // input schema; verify/probe-notification-type.js is the tripwire.
+    // Also read, optional (BACKLOG #55): agent_id / agent_type, the base hook field "present only when the hook fires
+    // from within a subagent" (the CLI's own schema, verify/probe-agent-states.js). mood-machine.js marks THAT agent
+    // "waiting on you"; a Notification without one is read against the newest tool call of anyone.
   },
 };
 
