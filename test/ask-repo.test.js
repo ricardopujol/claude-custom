@@ -217,3 +217,27 @@ test('D5 P: for any chunks and any question the prompt fits the budget, and ever
     assert.ok(sent.length >= 1);
   }));
 });
+
+test('r2 #1: a build that fails AFTER the watch window is named on the next ask, not restarted into index-building forever', async () => {
+  let clock = 1000; let state = 'none'; let err; let failedAt; let running = false; let calls = 0;
+  const index = {
+    load: async () => null, get: () => null, isRunning: () => running,
+    progress: () => (state === 'failed' ? { state, error: err, failedAt, partial: false, done: 0, total: 0 } : { state, partial: false, done: 0, total: 0 }),
+    refresh: () => {
+      calls++; running = true; state = 'building';
+      return new Promise((_, rej) => setTimeout(() => { running = false; state = 'failed'; err = 'stdout maxBuffer length exceeded'; failedAt = clock; rej(new Error(err)); }, 90));
+    },
+  };
+  const ollama = { answerModel: 'm', check: async () => ({ ok: true, answer: true, embed: true }), embed: async () => ({ ok: false, reason: 'x' }), generate: async () => ({ ok: true, text: 't' }) };
+  const ask = createAskRepo({ index, ollama, buildProbeMs: 30, retryAfterMs: 60_000, now: () => clock });
+
+  assert.strictEqual((await ask.ask(WT, 'q')).reason, 'index-building');
+  await new Promise(r => setTimeout(r, 140));
+  clock += 1000;
+  const second = await ask.ask(WT, 'q');
+  assert.deepStrictEqual([second.reason, second.error], ['index-failed', 'stdout maxBuffer length exceeded']);
+  assert.strictEqual(calls, 1, 'the failed build was restarted on every ask');
+  clock += 120_000;
+  assert.strictEqual((await ask.ask(WT, 'q')).reason, 'index-building');
+  assert.strictEqual(calls, 2, 'after the backoff the build is tried again');
+});

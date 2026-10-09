@@ -31,7 +31,7 @@ function candidates(text, files) {
   let rest = text;
   const spaced = [...files.keys()].filter(f => f.includes(' ')).map(escapeRe);
   if (spaced.length) {
-    const re = new RegExp('(' + spaced.join('|') + '):(\\d{1,7})(?:\\s?[-–]\\s?(\\d{1,7}))?', 'g');
+    const re = new RegExp('(?<![\\w./\\\\@-])(' + spaced.join('|') + '):(\\d{1,7})(?:\\s?[-–]\\s?(\\d{1,7}))?', 'g');
     rest = rest.replace(re, (all, f, a, b, at) => { out.push({ at, raw: f, a, b, whole: true }); return ' '.repeat(all.length); });
   }
   for (const m of rest.matchAll(CITE)) {

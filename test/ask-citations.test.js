@@ -113,3 +113,11 @@ test('D6: a path with a space is cited whole, and never cut at the space and res
   const none = extractCitations('see docs/other notes.md:12', two);
   assert.ok(!none.citations.some(c => c.file === 'app/notes.md'), 'the tail of a cut path resolved to another file');
 });
+
+test('r2 #5: an unsent docs/my notes.md is not cited as the sent root my notes.md', () => {
+  const two = new Map([['my notes.md', 40]]); // ask() passes only the files that were sent
+  const ranges = new Map([['my notes.md', [[1, 40]]]]);
+  const r = extractCitations('docs/my notes.md:12', two, { ranges });
+  assert.ok(!r.citations.some(c => c.file === 'my notes.md'), JSON.stringify(r));
+  assert.strictEqual(extractCitations('see my notes.md:12', two, { ranges }).citations[0].file, 'my notes.md');
+});

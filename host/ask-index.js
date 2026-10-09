@@ -31,7 +31,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { chunkFile, splitLines } = require('./ask-chunks');
-const { renameWithRetryAsync } = require('./atomic-write');
+const { renameWithRetryAsync, isTransient } = require('./atomic-write');
 
 const VERSION = 1;
 const MAX_FILE_BYTES = 400_000;
@@ -93,9 +93,23 @@ function createIndex({
     return w.loading;
   }
 
+  // A read that fails for a moment (another host renaming over the file, an antivirus scan) is retried, and when it stays busy it is
+  // NOT remembered as "no index": the next call reads again, and a build refuses to start over a file it could not read (r2 #2).
+  async function readText(wt) {
+    let wait = 25;
+    for (let attempt = 1; ; attempt++) {
+      try { return await readIndexFile(fileFor(wt)); } catch (err) {
+        if (!isTransient(err) || attempt >= 4) throw err;
+        await new Promise(resolve => setTimeout(resolve, wait));
+        wait *= 2;
+      }
+    }
+  }
+
   async function readSaved(wt, w) {
     try {
-      const p = JSON.parse(await readIndexFile(fileFor(wt)));
+      w.unreadable = false;
+      const p = JSON.parse(await readText(wt));
       if (!p || p.version !== VERSION || p.embedModel !== embedModel || !Array.isArray(p.files)) return;
       w.data = {
         embedModel, builtAt: p.builtAt,
@@ -105,9 +119,13 @@ function createIndex({
         })),
       };
       // A save made mid-build says so: it loads as 'partial' and the build resumes (M5), never as a finished index.
-      w.partial = p.complete === false;
+      // Only a save that says it is complete is complete: files from before the flag existed resume as partial (r2 #4).
+      w.partial = p.complete !== true;
       if (w.progress.state === 'none') w.progress = { state: w.partial ? 'partial' : 'ready', done: w.data.files.length, total: w.data.files.length };
-    } catch { /* missing, corrupt, or from another version: an empty index, rebuilt */ }
+    } catch (err) {
+      if (isTransient(err)) { w.unreadable = true; w.loading = null; } // busy, not missing: ask again next time
+      /* otherwise missing, corrupt, or from another version: an empty index, rebuilt */
+    }
   }
 
   // Stringified a few files at a time with a turn of the event loop between, and a finished file's text kept: a save of a
@@ -152,6 +170,9 @@ function createIndex({
 
   async function run(wt, w) {
     await load(wt, w);
+    if (w.unreadable) throw new Error('the saved index is unreadable right now (busy); not rebuilding over it');
+    // A complete index on disk is only ever replaced by the finished build, never by a timed partial save along the way (r2 #2).
+    const protectComplete = Boolean(w.data) && !w.partial;
     const listed = (await listFiles(wt)).map(r => String(r).replace(/\\/g, '/')).filter(isIndexable);
     const previous = new Map((w.data ? w.data.files : []).map(f => [f.rel, f]));
     const kept = [];
@@ -198,7 +219,7 @@ function createIndex({
       if (!needsVectors(file)) embedded++;
       done.set(t.rel, file);
       w.progress.done++;
-      if (now() - lastSave >= saveEveryMs) { await save(wt, assemble(), false); lastSave = now(); }
+      if (!protectComplete && now() - lastSave >= saveEveryMs) { await save(wt, assemble(), false); lastSave = now(); }
     }
 
     // Files whose read failed are not in `done`; a stale copy of one is not kept either (it no longer matches the disk).
@@ -206,6 +227,7 @@ function createIndex({
     await save(wt, w.data, true);
     w.partial = false;
     w.error = null;
+    w.failedAt = null;
     const chunks = w.data.files.reduce((n, f) => n + f.chunks.length, 0);
     const keywordOnly = w.data.files.some(needsVectors);
     w.progress = { state: 'ready', done: todo.length, total: todo.length };
@@ -226,6 +248,9 @@ function createIndex({
    * live save lasts seconds, and another host may be writing one). Best effort: one unreadable entry doesn't stop the sweep.
    */
   async function sweep({ exists = (p) => fs.existsSync(p) } = {}) {
+    // GONE means the folder is missing while its parent can be reached. A drive that is offline or a share that is down is merely
+    // unreachable, and its index is kept (r2 #3).
+    const gone = (p) => !exists(p) && exists(path.dirname(p)) && exists(path.parse(p).root);
     let removedIndexes = 0; let removedTmp = 0;
     let names = [];
     try { names = await fsp.readdir(dir); } catch { return { removedIndexes, removedTmp }; }
@@ -239,7 +264,7 @@ function createIndex({
           let head = '';
           try { const buf = Buffer.alloc(2048); const { bytesRead } = await fh.read(buf, 0, 2048, 0); head = buf.toString('utf8', 0, bytesRead); } finally { await fh.close(); }
           const m = /"worktree":("(?:[^"\\]|\\.)*")/.exec(head);
-          if (m && !exists(JSON.parse(m[1]))) { await fsp.unlink(file); removedIndexes++; }
+          if (m && gone(JSON.parse(m[1]))) { await fsp.unlink(file); removedIndexes++; }
         }
       } catch { /* see above */ }
     }
@@ -253,6 +278,7 @@ function createIndex({
     // data stays usable but carries the error until a refresh succeeds. It never stays looking like a build in progress.
     w.running = run(wt, w).catch((err) => {
       w.error = (err && err.message) || String(err);
+      w.failedAt = now();
       w.progress = { state: w.data ? (w.partial ? 'partial' : 'ready') : 'failed', done: w.progress.done, total: w.progress.total };
       throw err;
     }).finally(() => { w.running = null; });
@@ -266,7 +292,7 @@ function createIndex({
     isRunning: (wt) => Boolean(world(wt).running),
     progress: (wt) => {
       const w = world(wt);
-      return { ...w.progress, partial: w.partial, ...(w.error ? { error: w.error } : {}) };
+      return { ...w.progress, partial: w.partial, ...(w.error ? { error: w.error, failedAt: w.failedAt } : {}) };
     },
     fileFor,
     drop,

@@ -114,10 +114,11 @@ test('M5: an interrupted first build loads as partial, resumes without re-embedd
 test('M4: drop() removes a worktree index; sweep() removes indexes whose worktree is gone and old orphan tmp files, and keeps the rest', async () => {
   const dir = tmpDir();
   const live = tmpDir();
+  const goneWt = path.join(tmpDir(), 'removed-worktree'); // its parent exists, the folder does not
   const w = world({ 'a.js': 'x' });
   const idx = createIndex({ dir, ...w.deps });
   await idx.refresh(live);
-  await idx.refresh('Z:\\definitely\\gone\\worktree');
+  await idx.refresh(goneWt);
   const orphan = path.join(dir, 'abc.json.99999.tmp');
   fs.writeFileSync(orphan, 'x');
   fs.utimesSync(orphan, new Date(Date.now() - 3 * 3600_000), new Date(Date.now() - 3 * 3600_000));
@@ -126,7 +127,7 @@ test('M4: drop() removes a worktree index; sweep() removes indexes whose worktre
   const r = await idx.sweep();
   assert.deepStrictEqual([r.removedIndexes, r.removedTmp], [1, 1]);
   assert.ok(fs.existsSync(idx.fileFor(live)));
-  assert.ok(!fs.existsSync(idx.fileFor('Z:\\definitely\\gone\\worktree')));
+  assert.ok(!fs.existsSync(idx.fileFor(goneWt)));
   assert.ok(fs.existsSync(young), 'a young tmp file may belong to a live writer');
   await idx.drop(live);
   assert.ok(!fs.existsSync(idx.fileFor(live)));
@@ -177,4 +178,90 @@ test('S8 P: after any mix of edits, embed outages, crashes and restarts, one hea
     await scratch.refresh(WT);
     assert.strictEqual(snapshot(live.get(WT)), snapshot(scratch.get(WT)));
   }), { numRuns: 60 });
+});
+
+// ---- Dexter round 2 ----
+const transient = (code) => Object.assign(new Error(code), { code });
+
+test('r2 #2: a transient EBUSY on the saved-index read is retried, not latched as "no index"', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one', 'b.js': 'two' });
+  await createIndex({ dir, ...w.deps }).refresh(WT);
+  w.embeds.length = 0;
+  let calls = 0;
+  const idx = createIndex({ dir, ...w.deps, readIndexFile: async (f) => { if (++calls === 1) throw transient('EBUSY'); return fsp.readFile(f, 'utf8'); } });
+  const r = await idx.refresh(WT);
+  assert.deepStrictEqual([r.embedded, r.reused], [0, 2]);
+});
+
+test('r2 #2: a read that stays busy starts no build over the saved file, and is tried again next time', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  await createIndex({ dir, ...w.deps }).refresh(WT);
+  const file = path.join(dir, fs.readdirSync(dir)[0]);
+  const before = fs.readFileSync(file, 'utf8');
+  let busy = true;
+  const idx = createIndex({ dir, ...w.deps, readIndexFile: async (f) => { if (busy) throw transient('EPERM'); return fsp.readFile(f, 'utf8'); } });
+  await assert.rejects(idx.refresh(WT), /unreadable/);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before);
+  busy = false;
+  w.embeds.length = 0;
+  const r = await idx.refresh(WT);
+  assert.strictEqual(r.embedded, 0);
+});
+
+test('r2 #2: a timed save never replaces a complete saved index with a partial one', async () => {
+  const dir = tmpDir();
+  const names = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`f${i}.js`, `line ${i}`]));
+  const w = world(names);
+  await createIndex({ dir, ...w.deps }).refresh(WT);
+  for (const n of Object.keys(names)) w.edit(n, `changed ${n}`);
+  let t = 0; let calls = 0;
+  const idx = createIndex({ dir, ...w.deps, now: () => (t += 10_000), embed: async (x) => { if (++calls === 6) throw new Error('killed'); return w.deps.embed(x); } });
+  await assert.rejects(idx.refresh(WT));
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir)[0]), 'utf8'));
+  assert.deepStrictEqual([saved.complete, saved.files.length], [true, 10]);
+});
+
+test('r2 #3: sweep keeps an index whose drive or parent cannot be reached, and removes one whose folder is gone from a reachable parent', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'x' });
+  const idx = createIndex({ dir, ...w.deps });
+  const offline = 'Q:\\usb\\wt';
+  await idx.refresh(offline);
+  const gone = path.join(tmpDir(), 'wt-gone');
+  await idx.refresh(gone);
+  const r = await idx.sweep({ exists: (p) => p === path.parse(gone).root || p === path.dirname(gone) });
+  assert.strictEqual(r.removedIndexes, 1);
+  assert.ok(fs.existsSync(idx.fileFor(offline)), 'an unreachable worktree lost its index');
+  assert.ok(!fs.existsSync(idx.fileFor(gone)));
+});
+
+test('r2 #4: a round-1 file with no complete key loads as partial and a refresh finishes it without re-embedding', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one', 'b.js': 'two' });
+  const first = createIndex({ dir, ...w.deps });
+  await first.refresh(WT);
+  const file = first.fileFor(WT);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  delete saved.complete;
+  fs.writeFileSync(file, JSON.stringify(saved));
+  w.embeds.length = 0;
+  const idx = createIndex({ dir, ...w.deps });
+  await idx.load(WT);
+  assert.deepStrictEqual([idx.progress(WT).state, idx.progress(WT).partial], ['partial', true]);
+  const r = await idx.refresh(WT);
+  assert.strictEqual(r.embedded, 0);
+  assert.strictEqual(idx.progress(WT).state, 'ready');
+});
+
+test('r2 #1: a build that fails after the watch window is remembered with a time, and cleared by a success', async () => {
+  const w = world({ 'a.js': 'x' });
+  let t = 5000; let fail = true;
+  const idx = createIndex({ dir: tmpDir(), ...w.deps, now: () => t, listFiles: async () => { if (fail) throw new Error('maxBuffer'); return w.deps.listFiles(); } });
+  await assert.rejects(idx.refresh(WT));
+  assert.deepStrictEqual([idx.progress(WT).state, idx.progress(WT).failedAt], ['failed', 5000]);
+  fail = false;
+  await idx.refresh(WT);
+  assert.strictEqual(idx.progress(WT).failedAt, undefined);
 });

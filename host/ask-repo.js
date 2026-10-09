@@ -35,6 +35,7 @@ const MAX_QUESTION_CHARS = 500;
 const DEFAULT_K = 8;
 const STALE_WAIT_MS = 15_000;
 const BUILD_PROBE_MS = 1_500;
+const RETRY_AFTER_MS = 30_000; // a build that failed is named, not restarted, for this long
 const LINE_CAP = 300;
 const CHUNK_CAP = 2_000;
 const EXCERPT_BUDGET = 12_000;
@@ -74,7 +75,7 @@ function buildPrompt(question, top) {
 }
 
 function createAskRepo({
-  index, ollama, k = DEFAULT_K, staleWaitMs = STALE_WAIT_MS, buildProbeMs = BUILD_PROBE_MS, now = Date.now,
+  index, ollama, k = DEFAULT_K, staleWaitMs = STALE_WAIT_MS, buildProbeMs = BUILD_PROBE_MS, retryAfterMs = RETRY_AFTER_MS, now = Date.now,
 } = {}) {
   // Tokens per chunk are worked out once per index object (a refresh makes a new one), not per question.
   const prepared = new WeakMap();
@@ -117,6 +118,11 @@ function createAskRepo({
     if (!data || progress().partial) {
       const partial = Boolean(data);
       if (!index.isRunning(worktree)) {
+        // A build that already failed (even long after the watch below ended) is named, and only retried after a backoff.
+        const p = progress();
+        if (p.error && typeof p.failedAt === 'number' && now() - p.failedAt < retryAfterMs) {
+          return { ok: false, reason: 'index-failed', error: p.error, partial };
+        }
         const w = await startAndWatch(worktree, buildProbeMs);
         if (w.outcome === 'failed') return { ok: false, reason: 'index-failed', error: w.error, partial };
         if (w.outcome === 'done') data = index.get(worktree) || null;
