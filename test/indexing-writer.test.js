@@ -18,10 +18,13 @@ const w = require('../host/indexing-writer');
 const BACKLOG = '# P — Backlog\n\n**Status:** fine\n\n## 1. First\nbody\n';
 const STAMP = '2026-10-05 09:07';
 
-function project({ backlog = BACKLOG, buildLog = true, name = 'PROJ' } = {}) {
+const makeGit = (dir) => { fs.mkdirSync(path.join(dir, '.git')); fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n'); };
+
+function project({ backlog = BACKLOG, buildLog = true, name = 'PROJ', git = true } = {}) {
   const dev = tmpDir('cc-iw-');
   const docs = path.join(dev, 'documentation');
   fs.mkdirSync(docs);
+  if (git) makeGit(dev);
   if (buildLog) fs.writeFileSync(path.join(docs, `${name}_BUILD_LOG.md`), '# log\n');
   if (backlog !== null) fs.writeFileSync(path.join(docs, `${name}_BACKLOG.md`), backlog);
   return { root: dev, dev, docs };
@@ -34,12 +37,13 @@ const WITH_INBOX = (entries) => BACKLOG.replace('## 1. First', `## Inbox\n${entr
 
 test('docsOf: <dev>\\documentation, the name from the one *_BUILD_LOG.md', () => {
   const p = project({ name: 'LYDIA' });
-  assert.deepStrictEqual(w.docsOf(p), { ok: true, dir: p.docs, name: 'LYDIA', title: path.basename(p.dev), backlog: path.join(p.docs, 'LYDIA_BACKLOG.md') });
+  assert.deepStrictEqual(w.docsOf(p), { ok: true, dir: p.docs, name: 'LYDIA', title: path.basename(p.dev), backlog: path.join(p.docs, 'LYDIA_BACKLOG.md'), canCreate: true });
 });
 
 test('docsOf: no build log falls back to the project folder\'s name, upper case, separators removed (sync-docs\' rule)', () => {
-  const p = project({ buildLog: false });
-  assert.strictEqual(w.docsOf({ root: path.join(path.dirname(p.dev), 'my-proj_x'), dev: p.dev }).name, 'MYPROJX');
+  const dev = path.join(tmpDir('cc-iw-'), 'my-proj_x');
+  fs.mkdirSync(path.join(dev, 'documentation'), { recursive: true });
+  assert.strictEqual(w.docsOf({ root: dev, dev }).name, 'MYPROJX');
 });
 
 test('docsOf: no project folder, or two build logs, says so', () => {
@@ -140,12 +144,159 @@ test('#79: no backlog file: it is created with a title and an Inbox, and the not
   assert.deepStrictEqual(tempsIn(p.docs), []);
 });
 
-test('#79: no documentation folder: it is made too, when the project folder exists', () => {
+// --- #79 (Dexter F2/F3, Miguel 4, PR #138): where a backlog may be created, and which name it gets ----------------------
+
+test('#79: a git root with no documentation folder is "no-docs", and none is made', () => {
   const dev = tmpDir('cc-iw-');
-  const docs = w.docsOf({ root: dev, dev });
+  makeGit(dev);
+  assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
+  assert.strictEqual(fs.existsSync(path.join(dev, 'documentation')), false);
+});
+
+test('#79: a home-like folder (no git, no documentation) is "no-docs", and nothing is made in it', () => {
+  const dev = tmpDir('cc-iw-');
+  assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
+  assert.deepStrictEqual(fs.readdirSync(dev), []);
+});
+
+test('#79: a drive root is "no-docs"', () => {
+  const root = path.parse(tmpDir('cc-iw-')).root;
+  if (fs.existsSync(path.join(root, 'documentation'))) return;       // someone's real folder: not ours to test
+  assert.deepStrictEqual(w.docsOf({ root, dev: root }), { ok: false, reason: 'no-docs' });
+});
+
+test('#79: a folder with a documentation folder but no git root can be read, never created into', () => {
+  const p = project({ backlog: null, git: false });
+  const docs = w.docsOf(p);
   assert.strictEqual(docs.ok, true);
-  assert.strictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x' }).result, 'created-backlog');
-  assert.ok(read(docs.backlog).includes('· x'));
+  assert.strictEqual(docs.canCreate, false);
+  assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x' }), { ok: false, reason: 'no-backlog' });
+  assert.strictEqual(fs.existsSync(docs.backlog), false);
+  assert.deepStrictEqual(w.ensureBacklog(docs), { ok: false, reason: 'no-backlog' });
+});
+
+test('#79: a linked worktree files into the main checkout\'s documentation, as sync-docs does', () => {
+  const main = project({ backlog: null });
+  const wt = tmpDir('cc-iw-');
+  fs.mkdirSync(path.join(main.dev, '.git', 'worktrees', 'wt'), { recursive: true });
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(main.dev, '.git', 'worktrees', 'wt').replace(/\\/g, '/')}\n`);
+  fs.mkdirSync(path.join(wt, 'documentation'));                      // tracked docs only (a README): no build log
+  const docs = w.docsOf({ root: wt, dev: wt });
+  assert.strictEqual(docs.dir, main.docs);
+  assert.strictEqual(w.fileNote({ docs, stamp: STAMP, text: 'from a worktree' }).result, 'created-backlog');
+  assert.ok(read(path.join(main.docs, 'PROJ_BACKLOG.md')).includes('· from a worktree'));
+  assert.deepStrictEqual(fs.readdirSync(path.join(wt, 'documentation')), []);
+});
+
+test('#79: a worktree with a build log of its own keeps its own documentation', () => {
+  const main = project();
+  const wt = tmpDir('cc-iw-');
+  fs.mkdirSync(path.join(main.dev, '.git', 'worktrees', 'wt'), { recursive: true });
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(main.dev, '.git', 'worktrees', 'wt')}\n`);
+  fs.mkdirSync(path.join(wt, 'documentation'));
+  fs.writeFileSync(path.join(wt, 'documentation', 'WT_BUILD_LOG.md'), '');
+  assert.strictEqual(w.docsOf({ root: wt, dev: wt }).dir, path.join(wt, 'documentation'));
+});
+
+test('#79: never a second backlog: a build log LYDIA_BUILD_LOG.md beside BACKLOG.md files into BACKLOG.md', () => {
+  const p = project({ name: 'LYDIA', backlog: null });
+  fs.writeFileSync(path.join(p.docs, 'BACKLOG.md'), BACKLOG);
+  const docs = w.docsOf(p);
+  assert.strictEqual(docs.backlog, path.join(p.docs, 'BACKLOG.md'));
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'x' });
+  assert.strictEqual(r.result, undefined);
+  assert.deepStrictEqual(fs.readdirSync(p.docs).sort(), ['BACKLOG.md', 'LYDIA_BUILD_LOG.md']);
+});
+
+test('#79: a single backlog with another stem is the backlog; several, none of them <NAME>_BACKLOG.md, are ambiguous; one of them named so wins', () => {
+  const p = project({ name: 'LYDIA', backlog: null });
+  fs.writeFileSync(path.join(p.docs, 'OLD_BACKLOG.md'), BACKLOG);
+  assert.strictEqual(w.docsOf(p).backlog, path.join(p.docs, 'OLD_BACKLOG.md'));
+  fs.writeFileSync(path.join(p.docs, 'BACKLOG.md'), BACKLOG);
+  assert.deepStrictEqual(w.docsOf(p), { ok: false, reason: 'no-backlog-ambiguous' });
+  fs.writeFileSync(path.join(p.docs, 'LYDIA_BACKLOG.md'), BACKLOG);
+  assert.strictEqual(w.docsOf(p).backlog, path.join(p.docs, 'LYDIA_BACKLOG.md'));
+});
+
+test('#79: the name follows Get-DocsName: a dev folder is named after its container; ß stays ß (ToUpperInvariant)', () => {
+  const container = path.join(tmpDir('cc-iw-'), 'my-straße_x');
+  const dev = path.join(container, 'dev');
+  fs.mkdirSync(path.join(dev, 'documentation'), { recursive: true });
+  makeGit(dev);
+  const docs = w.docsOf({ root: container, dev });
+  assert.strictEqual(docs.name, 'MYSTRAßEX');
+  assert.strictEqual(docs.title, 'my-straße_x');
+  assert.strictEqual(path.basename(docs.backlog), 'MYSTRAßEX_BACKLOG.md');
+  // and the name it would derive once the build log named by that rule exists is the same one
+  fs.writeFileSync(path.join(docs.dir, 'MYSTRAßEX_BUILD_LOG.md'), '');
+  assert.strictEqual(path.basename(w.docsOf({ root: container, dev }).backlog), 'MYSTRAßEX_BACKLOG.md');
+});
+
+// --- #79: creating without hard links never replaces (Dexter F5, Miguel 3) ----------------------------------------------
+
+const noLinks = (code) => () => { throw Object.assign(new Error(code), { code }); };
+
+test('#79: where hard links are not supported the backlog is created exclusively', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'x', link: noLinks('EPERM') });
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.strictEqual(read(docs.backlog), CREATED(docs.title, '- 2026-10-05 09:07 · x\n'));
+  assert.deepStrictEqual(tempsIn(p.docs), []);
+});
+
+test('#79: no hard links, and a session\'s backlog appears first: it is kept, byte for byte (Dexter F5)', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const theirs = '# theirs\n\n## Inbox\n- old\n';
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'mine', link: noLinks('EPERM'), beforeCreate: () => fs.writeFileSync(docs.backlog, theirs) });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result, undefined, 'it did not create the file');
+  assert.strictEqual(read(docs.backlog), theirs.replace('- old\n', '- old\n- 2026-10-05 09:07 · mine\n'));
+});
+
+test('#79: a link failure that is not "no hard links" (EACCES) is write-failed: nothing is written another way (Miguel 3)', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x', link: noLinks('EACCES') }), { ok: false, reason: 'write-failed' });
+  assert.strictEqual(fs.existsSync(docs.backlog), false);
+  assert.deepStrictEqual(tempsIn(p.docs), []);
+});
+
+// --- #79: Undo's delete moves the file aside first (Dexter F6, Miguel 2) -----------------------------------------------
+
+test('#79: an edit that lands as Undo deletes is kept: the file is put back and only the entry is taken out', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'only' });
+  const done = w.undoNote(docs.backlog, r.record, { beforeDelete: () => fs.appendFileSync(docs.backlog, '\n## 1. A session\'s edit\n') });
+  assert.deepStrictEqual(done, { ok: true });
+  assert.ok(fs.existsSync(docs.backlog));
+  assert.ok(read(docs.backlog).includes('## 1. A session\'s edit'));
+  assert.ok(!read(docs.backlog).includes('· only'));
+  assert.deepStrictEqual(fs.readdirSync(p.docs).filter(f => f.endsWith('.undo')), []);
+});
+
+test('#79: the file edited after the first check but before it is moved aside is checked again on the moved copy', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'only' });
+  let first = true;
+  const readFile = (f, enc) => { const t = fs.readFileSync(f, enc); if (first) { first = false; fs.appendFileSync(docs.backlog, 'late edit\n'); } return t; };
+  const done = w.undoNote(docs.backlog, r.record, { readFile });
+  assert.deepStrictEqual(done, { ok: true });
+  assert.ok(read(docs.backlog).includes('late edit'), 'the late edit survived');
+});
+
+test('#79: an unlink that fails is write-failed and the file is back as it was', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'only' });
+  const before = read(docs.backlog);
+  const done = w.undoNote(docs.backlog, r.record, { unlink: () => { throw Object.assign(new Error('locked'), { code: 'EBUSY' }); } });
+  assert.deepStrictEqual(done, { ok: false, reason: 'write-failed' });
+  assert.strictEqual(read(docs.backlog), before);
+  assert.deepStrictEqual(fs.readdirSync(p.docs).filter(f => f.endsWith('.undo')), []);
 });
 
 test('#79: a project folder that does not exist gets nothing made', () => {

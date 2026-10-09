@@ -50,6 +50,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-indexing-'));
 const project = path.join(tmp, 'probeproj');
 const docs = path.join(project, 'documentation');
 fs.mkdirSync(docs, { recursive: true });
+fs.mkdirSync(path.join(project, '.git'));             // a backlog is only ever created in a git root (PR #138)
+fs.writeFileSync(path.join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
 const BACKLOG = path.join(docs, 'PROBE_BACKLOG.md');
 const BACKLOG_TEXT = '# probe — Backlog\n\n**Status (2026-10-05):** a probe.\n\n## 1. The wand runs skills\nbody\n\n## 2. A resource panel\nmore\n';
 fs.writeFileSync(path.join(docs, 'PROBE_BUILD_LOG.md'), '# log\n');

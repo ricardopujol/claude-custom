@@ -24,6 +24,8 @@ function setup({ backlog = BACKLOG, writerImpl = writer } = {}) {
   const dev = path.join(dir, 'proj');
   const docsDir = path.join(dev, 'documentation');
   fs.mkdirSync(docsDir, { recursive: true });
+  fs.mkdirSync(path.join(dev, '.git'));
+  fs.writeFileSync(path.join(dev, '.git', 'HEAD'), 'ref: refs/heads/main\n');
   fs.writeFileSync(path.join(docsDir, 'P_BUILD_LOG.md'), '# log\n');
   if (backlog !== null) fs.writeFileSync(path.join(docsDir, 'P_BACKLOG.md'), backlog);
   const journal = createJournal({ file: path.join(dir, 'state', 'indexing-notes.jsonl') });
@@ -64,6 +66,7 @@ test('submit refuses an empty note and writes nothing anywhere', () => {
 });
 
 const NO_BACKLOG = { ...writer, fileNote: () => ({ ok: false, reason: 'no-backlog' }) };
+const NOT_FILED = { ...writer, fileNote: () => ({ ok: false, reason: 'no-docs' }) };
 
 test('a note the writer says has no backlog stays in the list as not filed, with its words', () => {
   const t = setup({ backlog: null, writerImpl: NO_BACKLOG });
@@ -75,13 +78,108 @@ test('a note the writer says has no backlog stays in the list as not filed, with
   assert.deepStrictEqual(t.svc.snapshot(t.project).counts, { filed: 0, unfiled: 1 });
 });
 
-test('no-backlog is not retried by the tick: only a created backlog files the held notes', async () => {
+test('a note held as no-backlog stays held while there is still no backlog (the tick does not retry it)', async () => {
   const t = setup({ backlog: null, writerImpl: NO_BACKLOG });
   t.svc.submit(t.project, 'x');
-  fs.writeFileSync(t.backlog, BACKLOG);
   t.advance(RETRY_MS);
   await t.svc.tick();
-  assert.strictEqual(read(t.backlog), BACKLOG);
+  assert.strictEqual(fs.existsSync(t.backlog), false);
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].reason, 'no-backlog');
+});
+
+test('#79 (Dexter F1): a backlog made by hand next to a held note: the tick files the held note, once', async () => {
+  const t = setup({ backlog: null });
+  hold(t, 'a', 'stranded', at(8, 15));
+  fs.writeFileSync(t.backlog, BACKLOG);
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog), INBOXED('- 2026-10-05 08:15 · stranded\n'));
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
+  await t.svc.tick();
+  assert.strictEqual(read(t.backlog).split('· stranded').length - 1, 1);
+});
+
+test('#79 (Dexter F1): the next note to a hand-made backlog files the held notes first, in time order', () => {
+  const t = setup({ backlog: null });
+  hold(t, 'a', 'stranded', at(8, 15));
+  fs.writeFileSync(t.backlog, BACKLOG);
+  const r = t.svc.submit(t.project, 'new');
+  assert.strictEqual(r.filed, true);
+  assert.strictEqual(read(t.backlog), INBOXED('- 2026-10-05 08:15 · stranded\n- 2026-10-05 09:07 · new\n'));
+});
+
+test('#79 (Dexter F1b / Miguel 1): the backlog was created but the note could not be written into it: the held note is filed on the tick', async () => {
+  let failOnce = true;
+  const flaky = { ...writer, fileNote: (a) => {
+    if (failOnce && a.text === 'new') { failOnce = false; writer.ensureBacklog(a.docs); return { ok: false, reason: 'busy' }; }
+    return writer.fileNote(a);
+  } };
+  const t = setup({ backlog: null, writerImpl: flaky });
+  const r = t.svc.submit(t.project, 'new');
+  assert.strictEqual(r.filed, false);
+  t.journal.append({ ev: 'note', id: 'h', project: t.project, text: 'older', at: at(8, 15) });
+  t.journal.append({ ev: 'unfiled', id: 'h', reason: 'no-backlog', at: at(8, 15) });
+  await t.svc.tick();
+  assert.ok(read(t.backlog).includes('· older'));
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.ok(read(t.backlog).includes('· new'));
+});
+
+test('#79 (Dexter F1c / Miguel 6): a held note whose write throws is journaled write-failed and retried; the note being filed and the others are not hurt', async () => {
+  let boom = true;
+  const throwing = { ...writer, fileNote: (a) => { if (boom && a.text === 'bad') throw new Error('disk gone'); return writer.fileNote(a); } };
+  const t = setup({ backlog: null, writerImpl: throwing });
+  hold(t, 'a', 'bad', at(8, 15));
+  hold(t, 'b', 'fine', at(8, 30));
+  const r = t.svc.submit(t.project, 'new');
+  assert.strictEqual(r.filed, true);
+  const rows = Object.fromEntries(t.svc.snapshot(t.project).list.map(n => [n.text, n.state + ':' + n.reason]));
+  assert.deepStrictEqual(rows, { new: 'filed:null', fine: 'filed:null', bad: 'unfiled:write-failed' });
+  boom = false;
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.ok(read(t.backlog).includes('· bad'));
+});
+
+test('#79 (Dexter F1c): a journal append that throws while a held note is settled does not fail the note being filed', () => {
+  const t = setup({ backlog: null });
+  hold(t, 'a', 'held', at(8, 15));
+  const real = t.journal;
+  const flaky = { ...real, withLock: (fn) => real.withLock(({ append, read }) => fn({
+    read, append: (e) => { if (e.ev === 'filed' && e.id === 'a') throw new Error('EPERM'); append(e); },
+  })) };
+  const svc = createIndexingService({ journal: flaky, docsFor: () => writer.docsOf({ root: t.project, dev: t.project }), now: () => at(9, 7), log: () => {} });
+  const r = svc.submit(t.project, 'new');
+  assert.strictEqual(r.filed, true);
+  assert.ok(read(t.backlog).includes('· new'));
+});
+
+test('#79 (Miguel 6): a replay that crashed halfway (the held note is in the file, the journal says unfiled) marks it filed and never doubles it', () => {
+  const t = setup({ backlog: null });
+  hold(t, 'a', 'halfway', at(8, 15));
+  fs.writeFileSync(t.backlog, INBOXED('- 2026-10-05 08:15 · halfway\n'));
+  t.svc.submit(t.project, 'new');
+  assert.strictEqual(read(t.backlog).split('· halfway').length - 1, 1);
+  assert.strictEqual(t.svc.snapshot(t.project).list.find(n => n.text === 'halfway').state, 'filed');
+});
+
+test('#79 (Dexter F2): a project folder that is not a git root gets no backlog: the note is held as no-backlog, nothing is made', () => {
+  const t = setup({ backlog: null });
+  fs.rmSync(path.join(t.project, '.git'), { recursive: true, force: true });
+  const r = t.svc.submit(t.project, 'x');
+  assert.deepStrictEqual([r.filed, r.reason], [false, 'no-backlog']);
+  assert.strictEqual(fs.existsSync(t.backlog), false);
+});
+
+test('#79 (Dexter F3): two backlogs and none named for the project: the note is held as no-backlog-ambiguous, not retried', async () => {
+  const t = setup({ backlog: null });
+  fs.writeFileSync(path.join(path.dirname(t.backlog), 'A_BACKLOG.md'), BACKLOG);
+  fs.writeFileSync(path.join(path.dirname(t.backlog), 'BACKLOG.md'), BACKLOG);
+  const r = t.svc.submit(t.project, 'x');
+  assert.deepStrictEqual([r.filed, r.reason], [false, 'no-backlog-ambiguous']);
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.strictEqual(read(path.join(path.dirname(t.backlog), 'BACKLOG.md')), BACKLOG);
 });
 
 // --- #79: create the backlog, then file ------------------------------------------------------------------------------
@@ -122,7 +220,7 @@ test('#79: notes held as no-backlog are filed with it, once each, in the order t
   t.journal.append({ ev: 'unfiled', id: 'x', reason: 'no-backlog', at: at(8, 0) });
   t.svc.submit(t.project, 'new one');
   const text = read(t.backlog);
-  assert.ok(text.indexOf('older one') < text.indexOf('older two'), 'in order');
+  assert.ok(text.indexOf('older one') < text.indexOf('older two') && text.indexOf('older two') < text.indexOf('new one'), 'plain time order, the new note last (Dexter F4)');
   assert.strictEqual(text.split('older one').length - 1, 1);
   assert.strictEqual(text.split('older two').length - 1, 1);
   assert.ok(!text.includes('another project'), 'another project\'s held note stays held');
@@ -311,7 +409,7 @@ test('snapshot: another project\'s notes are not in it', () => {
 
 test('the journal is rotated once a day: yesterday\'s filed and undone notes go, today\'s and any not filed stay (Miguel S1)', async () => {
   let none = true;
-  const t = setup({ backlog: null, writerImpl: { ...writer, fileNote: (a) => (none ? NO_BACKLOG.fileNote(a) : writer.fileNote(a)) } });
+  const t = setup({ backlog: null, writerImpl: { ...writer, fileNote: (a) => (none ? NOT_FILED.fileNote(a) : writer.fileNote(a)) } });
   t.svc.submit(t.project, 'never filed');                          // unfiled (no backlog), stays
   none = false;
   fs.writeFileSync(t.backlog, BACKLOG);

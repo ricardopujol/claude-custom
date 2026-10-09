@@ -33,6 +33,7 @@ function counterText(counts) {
 const REASONS = {
   'no-backlog': 'This project has no backlog file',   // held by an older build; a new note creates the file and files it
   'no-docs': 'This project has no documentation folder',
+  'no-backlog-ambiguous': 'Several backlog files in documentation',
   'many-build-logs': 'Two build logs in documentation',
   conflict: 'The backlog kept changing; it tries again',
   busy: 'The backlog was busy; it tries again',
