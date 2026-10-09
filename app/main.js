@@ -46,6 +46,7 @@ const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
 const { createOccupancyService } = require('../host/occupancy-service');
+const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
 const { startTimes, createSelfStartTime } = require('../host/proc-start');
 // ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
@@ -776,14 +777,20 @@ function onShellChanged(snapshot) {
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
 // close. Nothing on disk is touched.
-async function closeTabFlow(key) {
+async function closeTabFlow(key, { ifSafe = false } = {}) {
   if (!key || !tabShell) return null;
-  return tabShell.closeTab(key);
+  return tabShell.closeTab(key, { ifSafe });
 }
 
-async function confirmClose(tab) {
-  // The probe driver has nobody to click.
-  if (PROBE_PORT) return true;
+const probeConfirms = [];   // the probe driver's record of every confirm it was asked
+// `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
+async function confirmClose(tab, { reason = '' } = {}) {
+  // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
+  // to ask (#77), keeping what it was asked so the probe can read the reason back.
+  if (PROBE_PORT) {
+    probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason });
+    return reason === '';
+  }
   const label = tab.branch || projectLabel(tab.cwd);
   const r = await dialog.showMessageBox(win, {
     type: 'question',
@@ -791,7 +798,7 @@ async function confirmClose(tab) {
     defaultId: 1,
     cancelId: 1,
     message: `End the session in ${label}?`,
-    detail: 'The folder stays.',
+    detail: reason ? `Not closed without asking: ${reason}.\nThe folder stays.` : 'The folder stays.',
   });
   return r.response === 0;
 }
@@ -922,9 +929,9 @@ function registerIpc() {
     if (!fromStrip(e) || typeof key !== 'string') return;
     tabShell.select(key);
   });
-  ipcMain.on('strip:close', (e, key) => {
+  ipcMain.on('strip:close', (e, key, ifSafe) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
-    closeTabFlow(key);
+    closeTabFlow(key, { ifSafe: ifSafe === true });
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
@@ -1440,7 +1447,7 @@ function startProbeDriver(port) {
       const snap = tabShell.snapshot();
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
-        create: snap.create, reopenable: tabShell.plusMenu().reopen,
+        create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
       };
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
@@ -1475,6 +1482,17 @@ function startProbeDriver(port) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
       return tabShell.closeTab(key);
+    },
+    // #77: a real Ctrl+click on a tab in the strip page: its position is read from the DOM, the click is an input
+    // event with the control modifier, so the page's own handler decides what to ask main.
+    async ctrlClick(label) {
+      const rect = JSON.parse(await win.webContents.executeJavaScript(
+        `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
+      if (!rect) return { ok: false, error: `no tab labelled ${label}` };
+      const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: ['control'] };
+      win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+      win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+      return { ok: true };
     },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
@@ -1691,7 +1709,10 @@ app.whenReady().then(async () => {
     // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
     resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
     // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
-    occupancy: { claims: () => occupancyService.current() },
+    // `known`: whether "no claims" can be believed (#77: a Ctrl+click close treats an unreadable service as unknown).
+    occupancy: { claims: () => occupancyService.current(), known: () => occupancyService.known() },
+    // #77: a Ctrl+click close reads the folder's git facts (uncommitted, unpushed) before deciding to skip the confirm.
+    safety: { facts: (folder) => readCloseFacts(folder) },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points

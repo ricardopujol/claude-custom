@@ -51,7 +51,6 @@ const { spawn, execFileSync } = require('child_process');
 const WebSocket = require('ws');
 
 const ROOT = path.join(__dirname, '..');
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 const { projectRoots } = require(path.join(ROOT, 'host', 'project-roots'));
 const { rootsFromPorcelain } = require(path.join(ROOT, 'host', 'worktree-roots'));
 const DUMP = process.argv.includes('--dump');

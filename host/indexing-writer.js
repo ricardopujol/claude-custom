@@ -3,13 +3,26 @@
  * The indexing assistant's doc writer (backlog #66, documentation/DESIGN_INDEXING_ASSISTANT.md "Revised 2026-10-05
  * (evening)": a verbatim inbox). host/indexing-doc.js decides every byte; this reads, writes and checks.
  *
- *   docsOf({ root, dev })              -> { ok: true, dir, name, backlog } | { ok: false, reason: 'no-docs' | 'many-build-logs' }
- *   fileNote({ docs, stamp, text })    -> { ok: true, where: { file }, record } | { ok: false, reason }
+ *   docsOf({ root, dev })              -> { ok: true, dir, name, title, backlog, canCreate }
+ *                                        | { ok: false, reason: 'no-docs' | 'many-build-logs' | 'no-backlog-ambiguous' }
+ *   fileNote({ docs, stamp, text })    -> { ok: true, where: { file }, record, result? } | { ok: false, reason }
+ *   ensureBacklog(docs)                -> { ok: true, created } | { ok: false, reason }
  *   undoNote(file, record)             -> { ok: true } | { ok: false, reason: 'changed' | 'write-failed' }
  *
- * WHERE: `<dev>\documentation\<NAME>_BACKLOG.md`, NAME from the one `*_BUILD_LOG.md` (sync-docs' rule, SyncDocs.ps1
- * Get-DocsName), else the project folder's name upper-cased without separators. Only the backlog is ever written, and
- * only when it exists: a project with no backlog file gets none (`no-backlog`).
+ * WHERE: the project's `documentation\` folder, found the way sync-docs finds it (SyncDocs.ps1 Resolve-ProjectRoot: a
+ * linked worktree's docs are the main checkout's, unless the worktree has a build log of its own). It is never made:
+ * a project with no `documentation\` is `no-docs`. The backlog is the one that is there: a single `*_BACKLOG.md` or
+ * `BACKLOG.md` (whatever its stem), or the one named `<NAME>_BACKLOG.md` among several; several with none of that name
+ * are `no-backlog-ambiguous`. NAME is sync-docs' Get-DocsName: the one `*_BUILD_LOG.md`'s stem, else the folder name
+ * (a `dev` folder is named after its parent) upper-cased without separators, character by character like .NET's
+ * ToUpperInvariant. Only the backlog is ever written.
+ *
+ * CREATING (#79): a project with a `documentation\` and no backlog at all gets one, but only when its home is a git
+ * root that is not a drive root (`canCreate`), never a home folder or a launch-directory fallback: `# <folder> — Feature
+ * & Bug Backlog` and an empty `## Inbox`, made via temp file + hard link (or an exclusive create where hard links
+ * aren't supported) so a backlog that appears meanwhile is never replaced. fileNote says `result: 'created-backlog'`
+ * and its record carries the `pristine` text, so undoNote removes the file again only when the note was all that was
+ * ever in it.
  *
  * SAFELY: read, build the new text (the inbox created after the status block if it's missing, the entry appended),
  * write it to a temp file beside the backlog, re-read the backlog just before the rename, and rename only if it's still
@@ -27,16 +40,83 @@ const doc = require('./indexing-doc');
 
 const ATTEMPTS = 2;
 
+const DOCS_DIR = /^documentation$/i;
+
+/** The folder's `documentation` directory (any case, like Get-DocsDir), or null. */
+function docsDirIn(home) {
+  try {
+    const hit = fs.readdirSync(home, { withFileTypes: true }).find(e => e.isDirectory() && DOCS_DIR.test(e.name));
+    return hit ? path.join(home, hit.name) : null;
+  } catch { return null; }
+}
+
+const hasBuildLog = (dir) => { try { return fs.readdirSync(dir).some(n => /_BUILD_LOG\.md$/i.test(n)); } catch { return false; } };
+
+/** The main checkout of a linked worktree (its `.git` is a file naming `<main>\.git\worktrees\<name>`), else null. */
+function mainCheckoutOf(dev) {
+  try {
+    const gitFile = path.join(dev, '.git');
+    if (!fs.statSync(gitFile).isFile()) return null;
+    const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(gitFile, 'utf8'));
+    if (!m) return null;
+    const gitDir = path.resolve(dev, m[1]);
+    return /[\\/]\.git[\\/]worktrees[\\/][^\\/]+$/.test(gitDir) ? path.resolve(gitDir, '..', '..', '..') : null;
+  } catch { return null; }
+}
+
+/** Where this folder's docs live (sync-docs' Resolve-ProjectRoot, for the cases that matter here). */
+function homeOf(dev) {
+  const main = mainCheckoutOf(dev);
+  if (main === null) return dev;
+  const own = docsDirIn(dev);
+  if (own !== null && hasBuildLog(own)) return dev;
+  return docsDirIn(main) !== null ? main : dev;
+}
+
+/** sync-docs' Get-ProjectLeaf: in the worktree layout (`<project>\dev`) the project is named after the container. */
+function leafOf(home) {
+  const trimmed = home.replace(/[\\/]+$/, '');
+  const leaf = path.basename(trimmed);
+  if (leaf.toLowerCase() === 'dev') {
+    const parent = path.dirname(trimmed);
+    if (parent !== trimmed && path.basename(parent) !== '') return path.basename(parent);
+  }
+  return leaf;
+}
+
+/** .NET's ToUpperInvariant: one character at a time, a character whose upper case is several stays (ß is not SS). */
+const upperInvariant = (s) => Array.from(s, (ch) => { const u = ch.toUpperCase(); return Array.from(u).length === 1 ? u : ch; }).join('');
+
+/** A real project's top folder: a git repo (or linked worktree) that is not a drive root. */
+function isProjectRoot(home) {
+  try {
+    if (path.parse(path.resolve(home)).root === path.resolve(home)) return false;
+    const g = fs.statSync(path.join(home, '.git'));
+    return g.isFile() || (g.isDirectory() && fs.statSync(path.join(home, '.git', 'HEAD')).isFile());
+  } catch { return false; }
+}
+
 function docsOf(project) {
   if (!project || typeof project.dev !== 'string') return { ok: false, reason: 'no-docs' };
-  const dir = path.join(project.dev, 'documentation');
+  const home = homeOf(project.dev);
+  const dir = docsDirIn(home);
+  if (dir === null) return { ok: false, reason: 'no-docs' };
   let names;
   try { names = fs.readdirSync(dir); } catch { return { ok: false, reason: 'no-docs' }; }
   const logs = names.filter(n => /_BUILD_LOG\.md$/i.test(n));
   if (logs.length > 1) return { ok: false, reason: 'many-build-logs' };
-  const leaf = path.basename(typeof project.root === 'string' ? project.root : project.dev);
-  const name = logs.length === 1 ? logs[0].replace(/_BUILD_LOG\.md$/i, '') : leaf.replace(/[-_\s]/g, '').toUpperCase();
-  return { ok: true, dir, name, backlog: path.join(dir, `${name}_BACKLOG.md`) };
+  const leaf = leafOf(home);
+  const name = logs.length === 1 ? logs[0].replace(/_BUILD_LOG\.md$/i, '') : upperInvariant(leaf.replace(/[-_\s]/g, ''));
+  // Never a second backlog: whatever one is already there is the one.
+  const there = names.filter(n => /(^|_)BACKLOG\.md$/i.test(n));
+  let file = `${name}_BACKLOG.md`;
+  if (there.length === 1) file = there[0];
+  else if (there.length > 1) {
+    const own = there.find(n => n.toLowerCase() === file.toLowerCase());
+    if (!own) return { ok: false, reason: 'no-backlog-ambiguous' };
+    file = own;
+  }
+  return { ok: true, dir, name, title: leaf, backlog: path.join(dir, file), canCreate: isProjectRoot(home) };
 }
 
 const READ_ATTEMPTS = 4;
@@ -112,17 +192,92 @@ function safeRewrite(file, compute, { beforeRename = () => {}, rename, sleep, re
   return { ok: false, reason: 'conflict' };
 }
 
-function fileNote({ docs, stamp, text, beforeRename, rename, sleep, readFile }) {
+/** What a backlog this writer creates holds before any note: a title and an empty inbox. Undo recognises it again. */
+const pristineOf = (docs) => `# ${docs.title || docs.name} — Feature & Bug Backlog\n\n## Inbox\n`;
+
+// The codes that mean "this filesystem has no hard links" (FAT/exFAT, some SMB and cloud-filter folders). Anything else
+// (a locked folder, a full disk) is a failure, not a reason to try another way of writing.
+const NO_HARD_LINKS = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'ENOSYS', 'EXDEV', 'EINVAL']);
+
+/** Create the file with `text` only if it isn't there: an exclusive open, so an existing backlog is never replaced. */
+function createExclusive(file, text) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'wx');
+  } catch (err) {
+    if (err && err.code === 'EEXIST') return { ok: true, created: false };
+    throw err;
+  }
+  try {
+    fs.writeSync(fd, text, null, 'utf8');
+  } catch (err) {
+    try { fs.closeSync(fd); } catch { /* nothing to do */ }
+    try { fs.rmSync(file, { force: true }); } catch { /* nothing left to clean */ }
+    throw err;
+  }
+  fs.closeSync(fd);
+  return { ok: true, created: true };
+}
+
+/**
+ * Create the project's backlog when it isn't there (never its documentation folder, and only for a project that
+ * `canCreate`): written to a temp file, then hard-linked into place, which fails with EEXIST rather than replacing a
+ * backlog a session or another window made in the meantime; where hard links aren't supported, an exclusive create.
+ * The target is never opened for writing otherwise.
+ * -> { ok: true, created: boolean } | { ok: false, reason: 'no-backlog' | 'write-failed' }
+ */
+function createBacklog(docs, { beforeCreate = () => {}, link = fs.linkSync } = {}) {
+  if (!docs || docs.canCreate !== true) return { ok: false, reason: 'no-backlog' };
+  const tmp = path.join(docs.dir, `.${path.basename(docs.backlog)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(tmp, pristineOf(docs), 'utf8');
+    beforeCreate(docs.backlog);
+    try {
+      link(tmp, docs.backlog);
+    } catch (err) {
+      if (err && err.code === 'EEXIST') return { ok: true, created: false };
+      if (!(err && NO_HARD_LINKS.has(err.code))) throw err;
+      return createExclusive(docs.backlog, pristineOf(docs));
+    }
+    return { ok: true, created: true };
+  } catch {
+    return { ok: false, reason: 'write-failed' };
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to clean */ }
+  }
+}
+
+/** The backlog exists after this, or why not. -> { ok: true, created: boolean } | { ok: false, reason } */
+function ensureBacklog(docs, opts) {
+  if (docs && fs.existsSync(docs.backlog)) return { ok: true, created: false };
+  return createBacklog(docs, opts);
+}
+
+/**
+ * -> { ok: true, where, record, result?: 'created-backlog' } | { ok: false, reason }. A project with no backlog file
+ * gets one made first (#79); `result: 'created-backlog'` says this call made it, and the record then remembers the
+ * pristine text so Undo can take the file out again when the note was all that was in it.
+ */
+function fileNote({ docs, stamp, text, beforeRename, beforeCreate, link, rename, sleep, readFile }) {
   if (typeof text !== 'string' || text.trim() === '') return { ok: false, reason: 'empty' };
-  const r = safeRewrite(docs.backlog, (current) => {
+  const rewrite = () => safeRewrite(docs.backlog, (current) => {
     const base = doc.ensureInbox(current).text;
     const entry = doc.entryText(stamp, text, doc.newlineOf(base));
     const plan = doc.planAppend(base, entry);
     if (!plan.ok) return plan;
     return { ok: true, text: doc.applyInsert(base, plan), record: doc.recordOf(plan, entry) };
   }, { beforeRename, rename, sleep, readFile });
+  let r = rewrite();
+  let created = false;
+  if (!r.ok && r.reason === 'missing') {
+    const c = createBacklog(docs, { beforeCreate, link });
+    if (!c.ok) return c;
+    created = c.created;
+    r = rewrite();
+  }
   if (!r.ok) return { ok: false, reason: r.reason === 'missing' ? 'no-backlog' : r.reason };
-  return { ok: true, where: { file: docs.backlog }, record: r.record };
+  if (!created) return { ok: true, where: { file: docs.backlog }, record: r.record };
+  return { ok: true, result: 'created-backlog', where: { file: docs.backlog }, record: { ...r.record, pristine: pristineOf(docs) } };
 }
 
 /**
@@ -141,8 +296,41 @@ function findNote({ docs, stamp, text, others = [], readFile, sleep }) {
   return { ok: true, record: { entry, offset: found[found.length - 1], lead: '', sep: '' } };
 }
 
+const leavesPristine = (text, record) => { const u = doc.removeEntry(text, record); return u.ok && u.text === record.pristine; };
+
+/**
+ * Undo of a note that created its backlog: when taking the entry out leaves exactly the text the file was created with,
+ * the file goes too. The file is moved aside first and the moved copy is what gets checked and deleted, so an edit that
+ * lands after the check is either in the copy (then it isn't pristine and the file is put back) or in a new file at the
+ * old name; it is never deleted unseen. -> null (not applicable or not pristine: do the ordinary Undo) | { ok, reason? }
+ */
+function deleteIfPristine(file, record, { rename = fs.renameSync, unlink = fs.unlinkSync, beforeDelete = () => {}, readFile, sleep } = {}) {
+  const read = readDoc(file, { readFile, sleep });
+  if (!read.ok || !leavesPristine(read.text, record)) return null;
+  beforeDelete();
+  const aside = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.undo`);
+  try { rename(file, aside); } catch { return null; }
+  const moved = readDoc(aside, { readFile, sleep });
+  let failure = null;
+  if (moved.ok && leavesPristine(moved.text, record)) {
+    try { unlink(aside); return { ok: true }; } catch { failure = { ok: false, reason: 'write-failed' }; }
+  }
+  // Not what it was (or couldn't be deleted): put it back, unless something new is at the old name already.
+  try {
+    try { fs.linkSync(aside, file); } catch (err) { if (!err || err.code === 'EEXIST') throw err; rename(aside, file); }
+    fs.rmSync(aside, { force: true });
+  } catch {
+    return { ok: false, reason: 'changed' };
+  }
+  return failure;
+}
+
 /** -> { ok: true } | { ok: false, reason: 'changed' | 'busy' | 'write-failed' }  ('changed' also for a file that's gone) */
 function undoNote(file, record, opts) {
+  if (record && typeof record.pristine === 'string') {
+    const gone = deleteIfPristine(file, record, opts || {});
+    if (gone !== null) return gone;
+  }
   const r = safeRewrite(file, (text) => {
     const u = doc.removeEntry(text, record);
     return u.ok ? { ok: true, text: u.text } : { ok: false, reason: 'changed' };
@@ -151,4 +339,4 @@ function undoNote(file, record, opts) {
   return { ok: false, reason: r.reason === 'write-failed' || r.reason === 'busy' ? r.reason : 'changed' };
 }
 
-module.exports = { docsOf, fileNote, findNote, undoNote };
+module.exports = { docsOf, fileNote, findNote, undoNote, ensureBacklog, pristineOf };

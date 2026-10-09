@@ -64,7 +64,6 @@ const HELPER = path.join(HARNESS_DIR, 'hook-helper.exe');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { startFakeOllama } = require('./lib/fake-ollama');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 const { projectDirName } = require(path.join(ROOT, 'host', 'project-dir'));
 const { INSTRUCTION } = require(path.join(ROOT, 'host', 'summary-text'));
 const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
@@ -159,7 +158,7 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -172,8 +171,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 
@@ -189,7 +188,7 @@ function hook(hostPid, event, payload) {
 
 const stateOf = async (app) => {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return st;
 };
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
