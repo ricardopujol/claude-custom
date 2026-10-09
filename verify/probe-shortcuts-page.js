@@ -188,6 +188,15 @@ async function main() {
     JSON.stringify({ card: s.card, headerBottom: s.headerBottom, viewport: s.viewport }));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '1-sheet-open.png') });
 
+  // 3b: the focus trap (PR #156): Tab cycles search -> close -> search, and the page under the header is inert
+  await key('Tab'); await settle();
+  s = await state();
+  check('3b: Tab moves the focus to the sheet close button', s.activeId === 'shortcuts-close', s.activeId);
+  await key('Tab'); await settle();
+  s = await state();
+  check('3b: ...and wraps back to the search box (never out into the page)', s.activeId === 'shortcuts-search', s.activeId);
+  check('3b: the page under the header is inert while the sheet is open', s.bodyInert === true);
+
   // 4 -----------------------------------------------------------------------------
   await doOp('type', { text: 'ctrl+b' });
   s = await state();

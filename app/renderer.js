@@ -1686,6 +1686,10 @@ function openLayoutMenu() {
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   layoutMenu.appendChild(node('button', {
+    type: 'button', text: 'Show / hide panels (Ctrl+B)', title: 'Fold every panel away, or bring them back',
+    on: { click: () => { toggleAllZones(); closeLayoutMenu(); } },
+  }));
+  layoutMenu.appendChild(node('button', {
     type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
     on: { click: () => { commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
@@ -2234,13 +2238,19 @@ let shortcutsReturnFocus = null;
 
 function paintShortcuts() { shortcutsBodyEl.innerHTML = window.shortcutsDisplay.sheetBodyHtml(shortcutsSearchEl.value); }
 
+// Below the header, so the "?" that opened it can close it; with the header hidden (focus mode) the sheet takes the window.
+function placeShortcuts() {
+  const bar = document.querySelector('header');
+  shortcutsSheetEl.style.setProperty('--sc-top', `${bar ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom)) : 0}px`);
+}
+
 function openShortcutsPage() {
   if (shortcutsOpen) return;
   shortcutsOpen = true;
   shortcutsReturnFocus = document.activeElement && document.activeElement !== document.body ? document.activeElement : null;
-  // Below the header, so the "?" that opened it can close it; with the header hidden (focus mode) the sheet takes the window.
-  const bar = document.querySelector('header');
-  shortcutsSheetEl.style.setProperty('--sc-top', `${bar ? Math.max(0, Math.round(bar.getBoundingClientRect().bottom)) : 0}px`);
+  placeShortcuts();
+  // The page under the header is inert while the sheet is up (aria-modal means it): no clicks, no focus. The header stays live so "?" closes it.
+  document.getElementById('body').inert = true;
   shortcutsSearchEl.value = '';
   paintShortcuts();
   shortcutsSheetEl.hidden = false;
@@ -2252,6 +2262,7 @@ function closeShortcutsPage() {
   if (!shortcutsOpen) return;
   shortcutsOpen = false;
   shortcutsSheetEl.hidden = true;
+  document.getElementById('body').inert = false;
   shortcutsBtnEl.setAttribute('aria-expanded', 'false');
   const back = shortcutsReturnFocus;
   shortcutsReturnFocus = null;
@@ -2268,7 +2279,16 @@ shortcutsSearchEl.addEventListener('input', paintShortcuts);
 // Claude's interrupt, which would otherwise reach the pty). F1 is main's; this page takes no other key.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && shortcutsOpen) { e.preventDefault(); e.stopPropagation(); closeShortcutsPage(); }
+  // The focus trap: Tab cycles the sheet's own controls (search, close, the "?" in the header is reached by the mouse).
+  if (e.key === 'Tab' && shortcutsOpen && !e.ctrlKey && !e.altKey) {
+    const stops = [shortcutsSearchEl, document.getElementById('shortcuts-close')];
+    const at = stops.indexOf(document.activeElement);
+    const to = window.shortcutsDisplay.nextFocusIndex(stops.length, at, e.shiftKey);
+    if (to !== null) { e.preventDefault(); stops[to].focus(); }
+  }
 }, true);
+// The header changes height or disappears (a resize, focus mode): the sheet follows it while open.
+new ResizeObserver(() => { if (shortcutsOpen) placeShortcuts(); }).observe(document.querySelector('header'));
 
 // S2: the first launch after the upgrade has no stored layout at all; it starts
 // from this window's old per-window settings so nothing moves under anyone.
@@ -3174,7 +3194,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true, open: shortcutsOpen, hidden: shortcutsSheetEl.hidden, expanded: shortcutsBtnEl.getAttribute('aria-expanded'),
           activeId: (ae && ae.id) || '', inTerm: !!(term.element && term.element.contains(ae)),
           rows: shortcutsBodyEl.querySelectorAll('.sc-row').length, groups: [...shortcutsBodyEl.querySelectorAll('h3')].map(h => h.textContent),
-          cli: shortcutsBodyEl.querySelectorAll('.sc-cli').length, none: !!shortcutsBodyEl.querySelector('.sc-none'), query: shortcutsSearchEl.value,
+          cli: shortcutsBodyEl.querySelectorAll('.sc-cli').length, bodyInert: document.getElementById('body').inert, none: !!shortcutsBodyEl.querySelector('.sc-none'), query: shortcutsSearchEl.value,
           card: { left: Math.round(card.left), right: Math.round(card.right), top: Math.round(card.top), bottom: Math.round(card.bottom), width: Math.round(card.width) },
           headerBottom: Math.round(bar.bottom), viewport: { w: window.innerWidth, h: window.innerHeight },
           btn: { text: shortcutsBtnEl.textContent, title: shortcutsBtnEl.title } });

@@ -54,3 +54,31 @@ test('no match says so, and echoes the query escaped (it is typed text)', () => 
 test('non-string queries are the empty query, never a throw', () => {
   for (const q of [undefined, null, 5, {}]) assert.strictEqual(sheetBodyHtml(q), sheetBodyHtml(''));
 });
+
+// --- the focus trap (Miguel, PR #156 #1) -----------------------------------------------
+
+const { nextFocusIndex } = require('../app/shortcuts-display');
+
+test('nextFocusIndex: Tab wraps from the last stop to the first, Shift+Tab from the first to the last', () => {
+  assert.strictEqual(nextFocusIndex(3, 0, false), 1);
+  assert.strictEqual(nextFocusIndex(3, 2, false), 0);
+  assert.strictEqual(nextFocusIndex(3, 0, true), 2);
+  assert.strictEqual(nextFocusIndex(3, 2, true), 1);
+});
+
+test('nextFocusIndex: focus outside the sheet (-1) enters at the first stop, or the last going back; no stops is null', () => {
+  assert.strictEqual(nextFocusIndex(3, -1, false), 0);
+  assert.strictEqual(nextFocusIndex(3, -1, true), 2);
+  assert.strictEqual(nextFocusIndex(0, -1, false), null);
+  assert.strictEqual(nextFocusIndex(0, 0, true), null);
+});
+
+test('PROPERTY: the trap always lands inside the stops, and Shift+Tab undoes Tab', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.integer({ min: 1, max: 30 }), fc.nat(), (n, k) => {
+    const i = k % n;
+    const f = nextFocusIndex(n, i, false);
+    assert.ok(f >= 0 && f < n);
+    assert.strictEqual(nextFocusIndex(n, f, true), i);
+  }));
+});

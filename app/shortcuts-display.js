@@ -30,10 +30,20 @@ function sheetBodyHtml(query) {
   return groups.map((g) => `<section class="sc-group"><h3>${esc(g.group)}</h3>${g.rows.map(rowHtml).join('')}</section>`).join('');
 }
 
+/**
+ * Where Tab (or Shift+Tab) lands in a focus trap of `count` stops, from stop `current` (-1: focus is outside the sheet).
+ * Wraps at both ends; null when there is nothing to focus.
+ */
+function nextFocusIndex(count, current, shift) {
+  if (!(count > 0)) return null;
+  if (current < 0) return shift ? count - 1 : 0;
+  return shift ? (current - 1 + count) % count : (current + 1) % count;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { sheetBodyHtml };
+  module.exports = { sheetBodyHtml, nextFocusIndex };
 } else {
-  root.shortcutsDisplay = { sheetBodyHtml };
+  root.shortcutsDisplay = { sheetBodyHtml, nextFocusIndex };
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

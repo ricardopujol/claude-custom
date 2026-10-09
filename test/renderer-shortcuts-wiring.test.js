@@ -80,3 +80,24 @@ test('#42: a long usage or quota NOTE (a failed read says why, in words) shrinks
     assert.match(rule, /overflow:\s*hidden/, id);
   }
 });
+
+test('PR #156 #1: while the sheet is open Tab is trapped in it and the page under the header is inert', () => {
+  assert.match(JS, /nextFocusIndex\(/);
+  assert.match(JS, /getElementById\('body'\)\.inert = true/);
+  assert.match(JS, /getElementById\('body'\)\.inert = false/);
+  assert.match(JS, /e\.key === 'Tab' && shortcutsOpen/);
+});
+
+test('PR #156 #2: the sheet\'s top follows the header (resize, focus mode) while it is open', () => {
+  assert.match(JS, /new ResizeObserver\(\(\) => \{ if \(shortcutsOpen\) placeShortcuts\(\); \}\)\.observe\(/);
+});
+
+test('PR #156 #4: the Window menu has Show / hide panels, so the click the old hint offered still has a home', () => {
+  const open = JS.slice(JS.indexOf('function openLayoutMenu('), JS.indexOf("document.getElementById('layout-btn').addEventListener('click'"));
+  assert.match(open, /Show \/ hide panels/);
+  assert.match(open, /toggleAllZones\(\)/);
+});
+
+test('PR #156 #5: the dead "#usage .sub" rule is gone (nothing draws a .sub any more)', () => {
+  assert.ok(!/#usage \.sub\b/.test(HTML));
+});
