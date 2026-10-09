@@ -2,11 +2,11 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 const { readDocsDir, MAX_FILE_BYTES } = require('../host/drift-docs-fs');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'drift-docs-'));
+const tmp = () => tmpDir('drift-docs-');
 
 test('reads top-level .md files, the build log apart; ignores other files and sub-folders', async () => {
   const dir = tmp();

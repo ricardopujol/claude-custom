@@ -2,8 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 const { createDriftService, analyzeMerge, RETRY_MS, REPLY_TOKENS } = require('../host/drift-service');
 const { createDriftStore } = require('../host/drift-store');
 const { STALE_MS } = require('../host/summary-slot');
@@ -18,7 +18,7 @@ const DIFF = 'diff --git a/host/ask-index.js b/host/ask-index.js\n--- a/host/ask
 const GOOD = JSON.stringify([{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', evidence: '+// refresh moved', why: 'The refresh moved out of the question path.' }]);
 
 function rig({ head = H('b'), processed = H('a'), merges = [{ sha: H('c'), subject: 'Merge pull request #7' }], reply = { ok: true, text: GOOD }, check = { ok: true }, slotFree = true, docs = DOCS } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drift-svc-'));
+  const dir = tmpDir('drift-svc-');
   const store = createDriftStore({ file: path.join(dir, 'p.json') });
   if (processed) store.setProcessed(processed);
   const calls = { generate: 0, diff: 0, check: 0, acquire: 0, release: 0, prompts: [], broadcasts: [] };

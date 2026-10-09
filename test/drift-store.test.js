@@ -3,11 +3,11 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 const { createDriftStore, MAX_NOTES, noteId } = require('../host/drift-store');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'drift-store-'));
+const tmp = () => tmpDir('drift-store-');
 const commit = { sha: 'a'.repeat(40), subject: 'Merge pull request #9' };
 const flag = (n = 1) => ({ doc: 'DESIGN_X.md', sentence: `Sentence number ${n} here.`, why: 'the diff changed it' });
 

@@ -2,8 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 const { execFileSync } = require('child_process');
 const { createDriftGit } = require('../host/drift-git');
 
@@ -11,7 +11,7 @@ const { createDriftGit } = require('../host/drift-git');
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8', windowsHide: true }).trim();
 
 function repo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drift-git-'));
+  const dir = tmpDir('drift-git-');
   git(dir, 'init', '-q', '-b', 'develop');
   fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n');
   git(dir, 'add', '.');
