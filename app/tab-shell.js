@@ -118,9 +118,6 @@ const NO_PORT_ERROR = 'no usable port for this folder';
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
 
-// How long a turn must have been idle before a Ctrl+click close counts the session as at rest.
-const IDLE_SETTLE_MS = 10_000;
-
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
 /** What a renderer may say about itself, cut down to the eight known fields. */
@@ -671,28 +668,12 @@ function createShell(deps) {
   }
 
   /**
-   * What the tab's OWN session is doing: 'idle' | 'busy' | 'waiting', or null when that can't be told. Its
-   * `working` covers the agents and teammates it launched (the roster), and a stop ends them all. A tab with no
-   * session at all (nothing started, pending or found) is idle. Dexter D1.
-   */
-  function sessionOf(tab, hostFound) {
-    const st = tab.status;
-    if (!st) return (tab.started || tab.pending || tab.starting || tab.unconfirmed || hostFound) ? null : 'idle';
-    // a /bedtime night between wakes is the run's, and a stop would end it (Dexter R1)
-    if (st.working === true || st.turn === 'turn' || st.night === true) return 'busy';
-    if (st.needsInput === true || st.turn === 'prompt') return 'waiting';
-    if (busyWhy(st) !== null) return null;
-    // A Stop that another Stop hook blocks reads idle until the continuation's first tool call (Dexter F1): a turn that
-    // went idle less than IDLE_SETTLE_MS ago, or whose time is unknown, is not at rest yet.
-    return typeof tab.idleSince === 'number' && now() - tab.idleSince >= IDLE_SETTLE_MS ? 'idle' : 'busy';
-  }
-
-  /**
    * The facts closeReason judges: git's (read earlier, passed in) with everything cheap read fresh. Merged is
    * the marker for the branch that is checked out NOW AND that commit being on origin/develop (Dexter D5): a
-   * commit after the merge, or a switch to another branch, is not merged.
+   * commit after the merge, or a switch to another branch, is not merged. The tab's own session is not a fact:
+   * Ctrl+click closes it even mid-turn (Ricardo, 2026-10-09).
    */
-  function closeFactsOf(tab, g, { hostFound = false } = {}) {
+  function closeFactsOf(tab, g) {
     const f = g && typeof g === 'object' ? g : {};
     let merged = null;
     if (typeof f.branch === 'string' && f.branch !== '') {
@@ -704,7 +685,7 @@ function createShell(deps) {
     }
     return {
       merged, dirtyCount: f.dirtyCount, unpushedCount: f.unpushedCount,
-      agentsHere: agentsHereOf(tab), session: sessionOf(tab, hostFound),
+      agentsHere: agentsHereOf(tab),
     };
   }
 
@@ -777,7 +758,7 @@ function createShell(deps) {
       // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
       const gitAgain = await gitFactsOf(tab);
       if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
-      const again = closeReason(closeFactsOf(tab, gitAgain, { hostFound: target !== null }));
+      const again = closeReason(closeFactsOf(tab, gitAgain));
       if (again !== '') {
         let ok = false;
         try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
@@ -957,8 +938,6 @@ function createShell(deps) {
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
     if (tabStatusLib.sameStatus(tab.status, next)) return true;
-    if (next.turn !== 'idle') tab.idleSince = null;
-    else if (!tab.status || tab.status.turn !== 'idle' || typeof tab.idleSince !== 'number') tab.idleSince = now();
     tab.status = next;
     publish();
     return true;

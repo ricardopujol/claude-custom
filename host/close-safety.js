@@ -3,8 +3,8 @@
  * Is a tab safe to close with no confirm? (Backlog #77: Ctrl+click on a tab.)
  *
  * Safe means ALL of: the branch is merged (the `claude-merged.json` marker AND the checked-out commit is on
- * `origin/develop`), nothing uncommitted, nothing unpushed, no agent working in the folder, and the tab's own
- * session is at rest. Anything unknown (a git error, a timeout, an occupancy reader that couldn't say) is NOT
+ * `origin/develop`), nothing uncommitted, nothing unpushed, and no agent working in the folder. The tab's own
+ * session may be mid-turn: closing ends it, by design. Anything unknown (a git error, a timeout, an occupancy reader that couldn't say) is NOT
  * safe: "couldn't tell" drawn as "0" would end a session with work in it.
  *
  * The decision and its wording are pure; `readCloseFacts` is the only part that touches git, and it takes its
@@ -21,23 +21,23 @@ const GIT_TIMEOUT_MS = 3000;
 const known = n => typeof n === 'number' && Number.isInteger(n) && n >= 0;
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-/** Why a tab isn't safe to close without asking: an array of short phrases, [] when it is safe. */
+// The tab's own session is deliberately NOT a fact here: Ricardo chose (2026-10-09) that Ctrl+click closes a merged,
+// saved, pushed tab even mid-turn, and the stop ends the running turn.
+const PREFIX = "Ctrl+click only closes a tab that's merged, saved and pushed.";
+
+/** Why a tab isn't safe to close without asking: one sentence per reason, [] when it is safe. */
 function closeReasons(facts) {
   const f = facts && typeof facts === 'object' ? facts : {};
   const out = [];
-  if (f.merged === false) out.push('not merged');
-  else if (f.merged !== true) out.push("couldn't check whether it's merged");
-  if (!known(f.dirtyCount)) out.push("couldn't check for uncommitted files");
-  else if (f.dirtyCount > 0) out.push(plural(f.dirtyCount, 'uncommitted file', 'uncommitted files'));
-  if (!known(f.unpushedCount)) out.push("couldn't check for unpushed commits");
-  else if (f.unpushedCount > 0) out.push(plural(f.unpushedCount, 'unpushed commit', 'unpushed commits'));
-  if (!known(f.agentsHere)) out.push("couldn't check for agents");
-  else if (f.agentsHere === 1) out.push('an agent is working here');
-  else if (f.agentsHere > 1) out.push(`${f.agentsHere} agents are working here`);
-  // The tab's OWN session (and the agents it launched, which its `working` covers) is what a stop actually ends.
-  if (f.session === 'busy') out.push('Claude is still working in this tab');
-  else if (f.session === 'waiting') out.push('Claude is waiting for you in this tab');
-  else if (f.session !== 'idle') out.push("couldn't check what Claude is doing in this tab");
+  if (f.merged === false) out.push("This one isn't merged.");
+  else if (f.merged !== true) out.push("Couldn't check whether this one is merged.");
+  if (!known(f.dirtyCount)) out.push("Couldn't check for uncommitted files.");
+  else if (f.dirtyCount > 0) out.push(`This one has ${plural(f.dirtyCount, 'uncommitted file', 'uncommitted files')}.`);
+  if (!known(f.unpushedCount)) out.push("Couldn't check for unpushed commits.");
+  else if (f.unpushedCount > 0) out.push(`This one has ${plural(f.unpushedCount, 'unpushed commit', 'unpushed commits')}.`);
+  if (!known(f.agentsHere)) out.push("Couldn't check for agents.");
+  else if (f.agentsHere === 1) out.push('An agent is working here.');
+  else if (f.agentsHere > 1) out.push(`${f.agentsHere} agents are working here.`);
   return out;
 }
 
@@ -46,9 +46,10 @@ function isSafeToClose(facts) {
   return closeReasons(facts).length === 0;
 }
 
-/** The reasons as one line for the confirm's detail, or '' when safe. */
+/** The confirm's explanation: the rule, then each reason as a sentence; '' when safe. */
 function closeReason(facts) {
-  return closeReasons(facts).join('; ');
+  const reasons = closeReasons(facts);
+  return reasons.length === 0 ? '' : `${PREFIX} ${reasons.join(' ')}`;
 }
 
 /** The git runner: argv in a folder, stdout out; rejects on failure or timeout (the error keeps git's exit `code`). */

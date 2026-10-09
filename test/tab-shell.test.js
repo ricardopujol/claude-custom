@@ -2315,10 +2315,11 @@ async function mergedHarness(over = {}) {
   await h.shell.open();
   await flush();
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);
-  h.clock += 11_000;   // idle for a while: a turn that went idle a moment ago asks (F1)
   return h;
 }
+const RULE = "Ctrl+click only closes a tab that's merged, saved and pushed.";
 const asked = (h) => h.confirms.map(c => c && c.reason);
+const said = (...sentences) => `${RULE} ${sentences.join(' ')}`;
 async function ctrlClose(h, name = 'feat-a') {
   h.confirm = false;   // would cancel, if asked
   return h.shell.closeTab(key(name), { ifSafe: true });
@@ -2349,7 +2350,7 @@ test('ctrl-close: not merged (no marker) asks, and the confirm says why', async 
   delete h.markers[key('feat-a')];
   const r = await ctrlClose(h);
   assert.strictEqual(r.cancelled, true);
-  assert.deepStrictEqual(h.confirms, [{ reason: 'not merged' }]);
+  assert.deepStrictEqual(h.confirms, [{ reason: said("This one isn't merged.") }]);
   assert.strictEqual(h.shell.model().length, 3);
   assert.deepStrictEqual(h.controls, []);
 });
@@ -2358,7 +2359,7 @@ test('ctrl-close: uncommitted files, unpushed commits and an agent each ask, nam
   const h = await mergedHarness({ occupancy: { claims: () => [claimIn('feat-a')], known: () => true } });
   h.facts = { ...GIT_OK, dirtyCount: 2, unpushedCount: 3 };
   await ctrlClose(h);
-  assert.deepStrictEqual(asked(h), ['2 uncommitted files; 3 unpushed commits; an agent is working here']);
+  assert.deepStrictEqual(asked(h), [said('This one has 2 uncommitted files.', 'This one has 3 unpushed commits.', 'An agent is working here.')]);
 });
 
 test('ctrl-close: asking and then saying yes still ends the session', async () => {
@@ -2397,31 +2398,36 @@ test('ctrl-close: dev still has no close', async () => {
   assert.strictEqual((await h.shell.closeTab(key('dev'), { ifSafe: true })).ok, false);
 });
 
-// Dexter D1: what a stop ends is the tab's OWN session and the agents it launched.
-test("ctrl-close D1: the tab's own turn running, its own agent or teammate working, or it waiting on you, asks", async () => {
-  for (const [status, why] of [
-    [{ ...AT_REST, working: true, turn: 'turn' }, 'Claude is still working in this tab'],
-    [{ ...AT_REST, working: true }, 'Claude is still working in this tab'],   // a teammate / agent of its own (the roster)
-    [{ ...AT_REST, turn: 'turn' }, 'Claude is still working in this tab'],
-    [{ ...AT_REST, needsInput: true }, 'Claude is waiting for you in this tab'],
-    [{ ...AT_REST, turn: 'prompt' }, 'Claude is waiting for you in this tab'],
-    [{ ...AT_REST, lock: 'blocked' }, "couldn't check what Claude is doing in this tab"],
-    [{ ...AT_REST, turn: null }, "couldn't check what Claude is doing in this tab"],
+// Ricardo, 2026-10-09 (design round 2): the tab's OWN session no longer asks. Ctrl+click closes a merged, saved,
+// pushed tab even mid-turn; the stop ends the running turn. (Supersedes Dexter D1 / F1 / R1 of PR #137 / #139.)
+test("ctrl-close: the tab's own session mid-turn, waiting, on a /bedtime night or unreported closes with no confirm and a stop", async () => {
+  for (const status of [
+    { ...AT_REST, working: true, turn: 'turn' },
+    { ...AT_REST, working: true },   // a teammate / agent of its own (the roster)
+    { ...AT_REST, turn: 'turn' },
+    { ...AT_REST, needsInput: true },
+    { ...AT_REST, turn: 'prompt' },
+    { ...AT_REST, lock: 'blocked' },
+    { ...AT_REST, turn: null },
+    { ...AT_REST, night: true },
+    null,                           // started but has not reported yet
   ]) {
     const h = await mergedHarness();
-    h.shell.report(h.shell.tabByKey(key('feat-a')).view, status);
+    if (status === null) h.shell.tabByKey(key('feat-a')).status = null;
+    else h.shell.report(h.shell.tabByKey(key('feat-a')).view, status);
     const r = await ctrlClose(h);
-    assert.strictEqual(r.cancelled, true, JSON.stringify(status));
-    assert.deepStrictEqual(asked(h), [why], JSON.stringify(status));
-    assert.deepStrictEqual(h.controls, [], 'no stop was sent');
+    assert.strictEqual(r.ok, true, JSON.stringify(status));
+    assert.deepStrictEqual(h.confirms, [], JSON.stringify(status));
+    assert.deepStrictEqual(h.controls, [{ port: 7701, token: 'tok-7701', msg: { type: 'stop' } }], JSON.stringify(status));
   }
 });
 
-test('ctrl-close D1: a started tab that has not reported yet is unknown, so it asks', async () => {
+test('ctrl-close: a turn that only just went idle closes with no 10-second wait', async () => {
   const h = await mergedHarness();
-  h.shell.tabByKey(key('feat-a')).status = null;
-  await ctrlClose(h);
-  assert.deepStrictEqual(asked(h), ["couldn't check what Claude is doing in this tab"]);
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, turn: 'turn' });
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);   // idle this very instant: no clock advance
+  assert.strictEqual((await ctrlClose(h)).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
 });
 
 // Dexter D2 + Miguel 1: occupancy that can't be read is UNKNOWN, never "no agents".
@@ -2437,7 +2443,7 @@ test("ctrl-close D2: occupancy that can't be read is not 'no agents' (throws, ab
     const h = await mergedHarness(occupancy === null ? { occupancy: null } : { occupancy });
     const r = await ctrlClose(h);
     assert.strictEqual(r.cancelled, true, name);
-    assert.deepStrictEqual(asked(h), ["couldn't check for agents"], name);
+    assert.deepStrictEqual(asked(h), [said("Couldn't check for agents.")], name);
   }
 });
 
@@ -2449,15 +2455,15 @@ test('ctrl-close D2: a reader with no known() is believed when claims() answers'
 // Dexter D5: the marker is the word about a past tip; the commit checked out now has to be in origin/develop.
 test('ctrl-close D5: a commit after the merge, a switched branch, a detached HEAD or an unknown HEAD is not merged', async () => {
   for (const [facts, why] of [
-    [{ ...GIT_OK, headInDevelop: false }, 'not merged'],
-    [{ ...GIT_OK, headInDevelop: null }, "couldn't check whether it's merged"],
-    [{ ...GIT_OK, branch: 'feat/a2' }, 'not merged'],     // the marker is for feat/a, the folder is on feat/a2
-    [{ ...GIT_OK, branch: null, unpushedCount: null }, "couldn't check whether it's merged; couldn't check for unpushed commits"],
+    [{ ...GIT_OK, headInDevelop: false }, ["This one isn't merged."]],
+    [{ ...GIT_OK, headInDevelop: null }, ["Couldn't check whether this one is merged."]],
+    [{ ...GIT_OK, branch: 'feat/a2' }, ["This one isn't merged."]],     // the marker is for feat/a, the folder is on feat/a2
+    [{ ...GIT_OK, branch: null, unpushedCount: null }, ["Couldn't check whether this one is merged.", "Couldn't check for unpushed commits."]],
   ]) {
     const h = await mergedHarness();
     h.facts = facts;
     await ctrlClose(h);
-    assert.deepStrictEqual(asked(h), [why], JSON.stringify(facts));
+    assert.deepStrictEqual(asked(h), [said(...why)], JSON.stringify(facts));
   }
 });
 
@@ -2495,12 +2501,12 @@ test('ctrl-close D6: an agent arriving while the close waits for its host to be 
   release();
   const r = await closing;
   assert.strictEqual(r.cancelled, true);
-  assert.deepStrictEqual(asked(h), ['an agent is working here']);
+  assert.deepStrictEqual(asked(h), [said('An agent is working here.')]);
   assert.deepStrictEqual(h.controls, []);
   assert.strictEqual(h.shell.model().length, 3, 'the tab is still there');
 });
 
-test('ctrl-close D6: a session found while it waits, whose state is unknown, is asked about, not stopped', async () => {
+test('ctrl-close D6: a session found while it waits is stopped with no confirm (its state is not a fact)', async () => {
   const h = harness({ running: { 7700: wt('dev') }, safety: { facts: async () => GIT_OK }, occupancy: nobody() });
   h.markers[key('feat-a')] = 'feat/a';
   await h.shell.open();
@@ -2512,9 +2518,9 @@ test('ctrl-close D6: a session found while it waits, whose state is unknown, is 
   await flush();
   h.running[7701] = wt('feat-a');   // a host for it came up meanwhile
   release();
-  assert.strictEqual((await closing).cancelled, true);
-  assert.deepStrictEqual(asked(h), ["couldn't check what Claude is doing in this tab"]);
-  assert.deepStrictEqual(h.controls, []);
+  assert.strictEqual((await closing).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+  assert.deepStrictEqual(h.controls.map(c => c.msg), [{ type: 'stop' }]);
 });
 
 test('ctrl-close D6: a re-check that finds nothing new closes with no confirm', async () => {
@@ -2531,28 +2537,6 @@ test('ctrl-close D6: a re-check that finds nothing new closes with no confirm', 
   assert.deepStrictEqual(h.confirms, []);
 });
 
-// BACKLOG #77 R1: a /bedtime night between wakes is the run's, and a stop would end it.
-test('ctrl-close R1: a /bedtime night on the tab asks, even when the turn is idle', async () => {
-  const h = await mergedHarness();
-  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, night: true });
-  const r = await ctrlClose(h);
-  assert.strictEqual(r.cancelled, true);
-  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
-  assert.deepStrictEqual(h.controls, []);
-});
-
-test('ctrl-close R1: a turn that only reads and edits (the host now reports it as a turn) asks', async () => {
-  const h = await mergedHarness();
-  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, turn: 'turn' });
-  await ctrlClose(h);
-  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
-  h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);   // the Stop with no continuation: idle again
-  h.clock += 11_000;
-  h.confirms.length = 0;
-  assert.strictEqual((await ctrlClose(h)).ok, true);
-  assert.deepStrictEqual(h.confirms, []);
-});
-
 // BACKLOG #77 R2: an unprovable claim in one folder doubts that folder, not every tab.
 test('ctrl-close R2: known() is asked about the tab\'s own folder, so a doubt in feat-b leaves feat-a silent', async () => {
   const asked_ = [];
@@ -2560,13 +2544,12 @@ test('ctrl-close R2: known() is asked about the tab\'s own folder, so a doubt in
   const h = await mergedHarness({ occupancy });
   h.markers[key('feat-b')] = 'feat/a';
   h.shell.report(h.shell.tabByKey(key('feat-b')).view, AT_REST);
-  h.clock += 11_000;
   assert.strictEqual((await ctrlClose(h, 'feat-a')).ok, true);
   assert.deepStrictEqual(h.confirms, []);
   assert.ok(asked_.includes(wt('feat-a')), JSON.stringify(asked_));
   const r = await ctrlClose(h, 'feat-b');
   assert.strictEqual(r.cancelled, true);
-  assert.deepStrictEqual(asked(h), ["couldn't check for agents"]);
+  assert.deepStrictEqual(asked(h), [said("Couldn't check for agents.")]);
 });
 
 // BACKLOG #77 R4: the commit that lands while the git reads run is seen by the re-check.
@@ -2575,7 +2558,7 @@ test('ctrl-close R4: an unpushed commit that appears after the first git read as
   const h = await mergedHarness({ safety: { facts: async () => { reads += 1; return reads === 1 ? { ...GIT_OK } : { ...GIT_OK, unpushedCount: 1 }; } } });
   const r = await ctrlClose(h);
   assert.strictEqual(r.cancelled, true);
-  assert.deepStrictEqual(asked(h), ['1 unpushed commit']);
+  assert.deepStrictEqual(asked(h), [said('This one has 1 unpushed commit.')]);
   assert.deepStrictEqual(h.controls, []);
 });
 
@@ -2783,35 +2766,6 @@ test('handleProbeCommand: canvas (#71) is inspect or a click at whole-number coo
   assert.deepStrictEqual(seen, [['inspect', {}], ['click', { x: 30, y: 40 }]]);
 });
 
-// Dexter F1 (PR #139): a Stop that a Stop hook blocks reads idle until the continuation's first tool call.
-test('ctrl-close F1: a turn that went idle a moment ago is still busy; after 10 s of rest it closes', async () => {
-  const h = await mergedHarness();
-  const view = h.shell.tabByKey(key('feat-a')).view;
-  h.shell.report(view, { ...AT_REST, turn: 'turn' });
-  h.shell.report(view, AT_REST);                       // the Stop, at t0
-  h.clock += 1_500;
-  assert.strictEqual((await ctrlClose(h)).cancelled, true);
-  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
-  assert.deepStrictEqual(h.controls, []);
-  h.confirms.length = 0;
-  h.clock += 9_600;                                    // t0 + 11.1 s, nothing else
-  assert.strictEqual((await ctrlClose(h)).ok, true);
-  assert.deepStrictEqual(h.confirms, []);
-});
-
-test('ctrl-close F1: a repeated idle status does not restart the 10 s, and a first report counts as just now', async () => {
-  const h = await mergedHarness();
-  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, finished: true });   // another field moved, the turn stayed idle
-  assert.strictEqual((await ctrlClose(h)).ok, true, 'idle for 11 s already');
-  const fresh = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, safety: { facts: async () => GIT_OK }, occupancy: nobody() });
-  fresh.markers[key('feat-a')] = 'feat/a';
-  await fresh.shell.open();
-  await flush();
-  fresh.shell.report(fresh.shell.tabByKey(key('feat-a')).view, AT_REST);   // when it went idle is unknown: just now
-  assert.strictEqual((await ctrlClose(fresh)).cancelled, true);
-  assert.deepStrictEqual(asked(fresh), ['Claude is still working in this tab']);
-});
-
 // Dexter F3 (PR #139): the git re-read is an await; the tab may be gone when it returns.
 test('ctrl-close F3: a tab that leaves during the git re-read is not stopped again, with no notice', async () => {
   let reads = 0;
@@ -2832,8 +2786,8 @@ test('ctrl-close F4: a live claim whose `also` names the tab\'s folder asks, lik
   const claim = claimIn('feat-b', { also: [wt('feat-a')] });
   const live = await mergedHarness({ occupancy: { claims: () => [claim], known: () => true } });
   assert.strictEqual((await ctrlClose(live)).cancelled, true);
-  assert.deepStrictEqual(asked(live), ['an agent is working here']);
+  assert.deepStrictEqual(asked(live), [said('An agent is working here.')]);
   const unproven = await mergedHarness({ occupancy: { claims: () => [], known: (f) => f !== wt('feat-a') } });
   assert.strictEqual((await ctrlClose(unproven)).cancelled, true);
-  assert.deepStrictEqual(asked(unproven), ["couldn't check for agents"]);
+  assert.deepStrictEqual(asked(unproven), [said("Couldn't check for agents.")]);
 });

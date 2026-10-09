@@ -790,7 +790,7 @@ async function confirmClose(tab, { reason = '' } = {}) {
     defaultId: 1,
     cancelId: 1,
     message: `End the session in ${label}?`,
-    detail: reason ? `Not closed without asking: ${reason}.\nThe folder stays.` : 'The folder stays.',
+    detail: reason ? `${reason}\nThe folder stays.` : 'The folder stays.',
   });
   return r.response === 0;
 }

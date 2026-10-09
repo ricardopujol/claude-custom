@@ -11,9 +11,9 @@
  * origin:
  *
  *   feat/a  merged marker, clean, nothing unpushed   -> closes with NO confirm
- *   feat/b  merged marker, one untracked file        -> asks, reason "1 uncommitted file"
- *   feat/c  no marker                                -> asks, reason "not merged"
- *   feat/d  merged marker, clean, but a commit AFTER the merge -> asks, reason "not merged"
+ *   feat/b  merged marker, one untracked file        -> asks, "... This one has 1 uncommitted file."
+ *   feat/c  no marker                                -> asks, "... This one isn't merged."
+ *   feat/d  merged marker, clean, but a commit AFTER the merge -> asks, "... This one isn't merged."
  *   dev     Ctrl+click only selects (it has no close)
  *   plain close of feat/c                            -> asks with no reason (the old single confirm)
  *
@@ -144,6 +144,7 @@ const mark = (folder, branch) => {
   fs.writeFileSync(path.join(gitDir, 'claude-merged.json'), JSON.stringify({ branch, pr: 77, mergedAt: new Date().toISOString() }));
 };
 
+const RULE = "Ctrl+click only closes a tab that's merged, saved and pushed.";
 const labelsOf = async (app) => {
   const st = await command(app, { cmd: 'state' });
   for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
@@ -189,15 +190,15 @@ async function main() {
   await waitFor(async () => (await labelsOf(app)).confirms.length >= 1, 15000);
   st = await labelsOf(app);
   check('2: a merged tab with an uncommitted file asks, and says why', st.confirms.length === 1 && st.confirms[0].label === 'feat/b'
-    && st.confirms[0].reason === '1 uncommitted file', JSON.stringify(st.confirms));
+    && st.confirms[0].reason === `${RULE} This one has 1 uncommitted file.`, JSON.stringify(st.confirms));
   check('2: ...and stays open', tabLabels(st).includes('feat/b'));
 
   // feat/c: no marker
   await command(app, { cmd: 'ctrlClick', label: 'feat/c' });
   await waitFor(async () => (await labelsOf(app)).confirms.length >= 2, 15000);
   st = await labelsOf(app);
-  check('3: an unmerged tab asks, and says "not merged"', st.confirms.length === 2 && st.confirms[1].label === 'feat/c'
-    && st.confirms[1].reason === 'not merged', JSON.stringify(st.confirms));
+  check('3: an unmerged tab asks, and says it isn't merged', st.confirms.length === 2 && st.confirms[1].label === 'feat/c'
+    && st.confirms[1].reason === `${RULE} This one isn't merged.`, JSON.stringify(st.confirms));
   await shoot(app, '2-unsafe-asked');
 
   // feat/d: marker, but HEAD has a commit that is not on origin/develop (git's exit 1, read for real)
@@ -205,7 +206,7 @@ async function main() {
   await waitFor(async () => (await labelsOf(app)).confirms.length >= 3, 15000);
   st = await labelsOf(app);
   const dAsk = st.confirms[2] || {};
-  check('3b: a commit after the merge is "not merged", and also unpushed', dAsk.label === 'feat/d' && /^not merged/.test(dAsk.reason), JSON.stringify(st.confirms));
+  check('3b: a commit after the merge is "not merged", and also unpushed', dAsk.label === 'feat/d' && dAsk.reason.startsWith(`${RULE} This one isn't merged.`), JSON.stringify(st.confirms));
 
   // feat/a: merged, clean, pushed -> closes with no confirm
   await command(app, { cmd: 'ctrlClick', label: 'feat/a' });
