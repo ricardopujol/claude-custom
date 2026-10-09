@@ -127,17 +127,29 @@ function unaccountedDetached(source) {
   const code = blank(source);
   const lines = code.split(/\r?\n/);
   const reaps = /\b(?:reapMarked|reapDeadOwners)\s*\(/.test(code);
+  // every spelling of the option: `detached: x`, a quoted key, the shorthand `{ detached, ... }`, and `o.detached = x`
+  const SITE = /(?<![\w/.])(?:['"]?detached['"]?\s*:(?!\s*false\b)|detached(?=\s*[,}]))/g;
+  const SITE_DOT = /\.detached\s*=(?!=)(?!\s*false\b)/g;
   const bad = [];
   let offset = 0;
   lines.forEach((line, i) => {
-    for (const m of line.matchAll(/(?<![\w/])detached\s*:(?!\s*false\b)/g)) {
+    const hits = [...line.matchAll(SITE), ...line.matchAll(SITE_DOT)];
+    for (const m of hits) {
       if (line[m.index - 1] === '/') continue;                                   // inside a regex literal
-      const before = code.slice(Math.max(0, offset + m.index - 400), offset + m.index);
-      if (!/\b(?:spawn|fork|execFile)\s*\(|\b(?:stdio|windowsHide|shell)\s*:/.test(before + line)) continue;   // not a process option (git's `detached` worktree flag, say)
-      const near = orig.slice(Math.max(0, i - 1), i + 1).join('\n');
-      const excused = /kill-test-ok:[ \t]*\S{3,}/.test(near);
-      const after = code.slice(offset + m.index, offset + m.index + 300) + code.slice(Math.max(0, offset + m.index - 300), offset + m.index);
-      const feedsSleeper = /SLEEPER_SRC/.test(after);
+      // A process option, not data that happens to be called `detached` (git's worktree flag): a spawn/fork/execFile call or a
+      // stdio/windowsHide/shell key within 5 lines either side. Options built on their own line are still caught.
+      const around = lines.slice(Math.max(0, i - 5), i + 6).join('\n');
+      if (!/\b(?:spawn|fork|execFile)\s*\(|\b(?:stdio|windowsHide|shell)\s*:/.test(around)) continue;
+      // An exception covers ITS OWN spawn: a comment on the same line, or one on a comment-only line directly above.
+      const above = i > 0 && lines[i - 1].trim() === '' ? orig[i - 1] : '';
+      const excused = /kill-test-ok:[ \t]*\S{3,}/.test(`${above}\n${orig[i]}`);
+      // The shared sleeper: SLEEPER_SRC inside THIS spawn call (from the nearest spawn( at or before the site to its closing ');'),
+      // which holds a single spawn.
+      const pos = offset + m.index;
+      const start = code.lastIndexOf('spawn(', pos);
+      const end = code.indexOf(');', pos);
+      const seg = start >= 0 && pos - start < 400 && end >= 0 ? code.slice(start, end + 2) : '';
+      const feedsSleeper = /SLEEPER_SRC/.test(seg) && (seg.match(/spawn\(/g) || []).length === 1;
       if (!(excused || (feedsSleeper && reaps))) bad.push(`${i + 1}: ${orig[i].trim().slice(0, 90)}`);
     }
     offset += line.length + (code[offset + line.length] === '\r' ? 2 : 1);
@@ -163,6 +175,20 @@ ${bare}`).length, 1, 'no reason');
 spawn(cmd, args, o);`).length, 1, 'options object by variable');
   assert.strictEqual(unaccountedDetached(`const o = { stdio: 'ignore', ${D}: isWin };
 spawn(cmd, args, o);`).length, 1, 'a non-literal value');
+  // PR #135 Dexter D8-r2: each of these passed before
+  assert.strictEqual(unaccountedDetached(`${bare}   // kill-test-ok: reaped by pid in finally
+${bare}`).length, 1, 'a trailing comment excuses its own spawn only, not the next line');
+  assert.strictEqual(unaccountedDetached(`const o = { ${D}: true };
+spawn(cmd, args, o);`).length, 1, 'options built on their own line, spawn on the next');
+  assert.strictEqual(unaccountedDetached(`const ${D} = true;
+spawn(cmd, args, { ${D}, stdio: 'ignore' });`).length, 1, 'shorthand');
+  assert.strictEqual(unaccountedDetached(`spawn(cmd, args, { '${D}': true, stdio: 'ignore' });`).length, 1, 'quoted key');
+  assert.strictEqual(unaccountedDetached(`const o = { stdio: 'ignore' };
+o.${D} = true;
+spawn(cmd, args, o);`).length, 1, 'assignment');
+  assert.strictEqual(unaccountedDetached(`spawn(process.execPath, ['-e', SLEEPER_SRC, m], { stdio: 'ignore' });
+reapMarked(m);
+${bare}`).length, 1, 'a detached spawn next to a sleeper spawn is not the sleeper spawn');
   // and the accepted forms
   assert.deepStrictEqual(unaccountedDetached(`reapMarked(m);
 ${sleeperCall}`), []);
