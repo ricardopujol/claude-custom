@@ -11,7 +11,8 @@
 
 const FILES_MAX = 3;
 const AGENTS_MAX = 200;
-const FILE_KEYS = ['file_path', 'path', 'notebook_path'];
+// Not `path`: for Grep and Glob that is a FOLDER, and a folder name ("Personal") is not a file name.
+const FILE_KEYS = ['file_path', 'notebook_path'];
 
 const baseName = (p) => (typeof p === 'string' ? p.split(/[\\/]/).filter(Boolean).pop() || null : null);
 

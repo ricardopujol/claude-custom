@@ -17,7 +17,10 @@
 const MIN_GAP_MS = 3 * 60_000;
 const REMEMBER_MAX = 1000;
 
-function createBubbleGate({ now = Date.now, minGapMs = MIN_GAP_MS } = {}) {
+// A duration clock, not the wall clock: a step back must not hold an agent silent for the length of the step.
+const monotonic = () => performance.now();
+
+function createBubbleGate({ now = monotonic, minGapMs = MIN_GAP_MS } = {}) {
   // A Map, so an agent called `__proto__` or `toString` is an ordinary key.
   const last = new Map();
   let inFlight = false;
@@ -49,4 +52,4 @@ function createBubbleGate({ now = Date.now, minGapMs = MIN_GAP_MS } = {}) {
   return { offer, done, remembered: () => last.size };
 }
 
-module.exports = { createBubbleGate, MIN_GAP_MS };
+module.exports = { createBubbleGate, MIN_GAP_MS, monotonic };

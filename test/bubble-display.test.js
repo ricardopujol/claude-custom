@@ -15,7 +15,7 @@ test('a bubble lives for the time the host said, then is gone', () => {
   let t = 1000;
   const b = bd.createBoard({ now: () => t });
   assert.strictEqual(b.show(frame()), true);
-  assert.deepStrictEqual(b.live('miguel'), { text: 'Back to the grind!', remainingMs: 8000 });
+  assert.deepStrictEqual(b.live('miguel'), { text: 'Back to the grind!', remainingMs: 8000, ageMs: 0 });
   t += 7999;
   assert.strictEqual(b.live('miguel').remainingMs, 1);
   t += 1;
@@ -107,11 +107,58 @@ test('attach puts a live bubble on its card, replaces a stale one, and removes i
 });
 
 function mkCard(agent) {
-  const card = { dataset: { agent }, html: [] };
-  card.querySelector = (sel) => (sel === ':scope > .agent-bubble' && card.html.length ? { remove: () => { card.html = []; } } : null);
-  card.insertAdjacentHTML = (where, h) => { assert.strictEqual(where, 'afterbegin'); card.html.push(h); };
+  const card = { dataset: { agent }, html: [], inserts: 0, removes: 0 };
+  card.querySelector = (sel) => {
+    if (sel !== ':scope > .agent-bubble' || !card.html.length) return null;
+    const text = new RegExp(">([^<]*)<" + String.fromCharCode(47) + "div>$").exec(card.html[0])[1];
+    return { textContent: text, remove: () => { card.html = []; card.removes++; } };
+  };
+  card.insertAdjacentHTML = (where, h) => { assert.strictEqual(where, 'afterbegin'); card.html.push(h); card.inserts++; };
   return card;
 }
+
+test('attach keeps the same node while the line is unchanged (a repaint every second must not restart its fade-in), and swaps it when the line changes', () => {
+  const card = mkCard('miguel');
+  const root = { querySelectorAll: () => [card] };
+  const b = bd.createBoard({ now: () => 0 });
+  b.show(frame({ text: 'One' }));
+  bd.attach(root, b, true);
+  bd.attach(root, b, true);
+  bd.attach(root, b, true);
+  assert.strictEqual(card.inserts, 1);
+  assert.strictEqual(card.removes, 0);
+  b.show(frame({ text: 'Two' }));
+  bd.attach(root, b, true);
+  assert.strictEqual(card.inserts, 2);
+  assert.strictEqual(card.removes, 1);
+});
+
+test('a bubble rebuilt after it has played its fade-in is marked settled, so it does not blink again', () => {
+  let t = 0;
+  const b = bd.createBoard({ now: () => t });
+  b.show(frame());
+  assert.strictEqual(b.live('miguel').ageMs, 0);
+  assert.ok(!/data-settled/.test(bd.bubbleHtml('x', 8000, 0)));
+  t = 3000;
+  assert.strictEqual(b.live('miguel').ageMs, 3000);
+  assert.match(bd.bubbleHtml('x', 5000, 3000), /data-settled/);
+});
+
+test('the default clock is monotonic: a wall-clock step back neither stretches nor cuts a bubble', () => {
+  const realNow = performance.now; const realDate = Date.now;
+  let mono = 1000; let wall = 5_000_000;
+  performance.now = () => mono; Date.now = () => wall;
+  try {
+    const b = bd.createBoard();
+    b.show(frame());
+    wall -= 3_600_000;           // the wall clock steps back an hour
+    mono += 1000;
+    assert.strictEqual(b.live('miguel').remainingMs, 7000);
+    wall += 7_200_000;           // and forward two
+    mono += 7000;
+    assert.strictEqual(b.live('miguel'), null);
+  } finally { performance.now = realNow; Date.now = realDate; }
+});
 
 test('PROPERTY: live() is never a bubble older than its lifetime, over any sequence of shows and clock moves', () => {
   const ev = fc.oneof(

@@ -4047,7 +4047,8 @@ let hiddenAgentNames = [];
 // BACKLOG #80 (+ #55's bubbles). The medals Ricardo gave, as the host last said ([{ agent, medals }]; app/medals-display.js), and
 // the speech bubbles: the host's on/off switch (null until `hello`), the live bubbles, and whether the window is in lean mode
 // (#62's lean lane sets it; until it lands nothing is lean). Decisions are in app/bubble-display.js.
-let medalList = [];
+let medalList = null;      // null: not read yet, or the host couldn't read the file (unknown, never "no medals")
+const cleanMedalList = (list) => (Array.isArray(list) ? list.filter((e) => e && typeof e.agent === 'string' && Array.isArray(e.medals)) : null);
 let bubblesEnabled = null;
 let leanMode = false;
 const bubbleBoard = window.bubbleDisplay.createBoard();
@@ -4322,7 +4323,7 @@ const medalShelfEl = document.getElementById('agent-medals');
 function paintMedalShelf() {
   if (!medalShelfEl) return;
   const html = agentLog.open
-    ? window.medalsDisplay.shelfHtml(agentLog.agent, (medalList.find((e) => e.agent === agentLog.agent) || {}).medals)
+    ? window.medalsDisplay.shelfHtml(agentLog.agent, medalList === null ? null : (medalList.find((e) => e.agent === agentLog.agent) || {}).medals)
     : '';
   if (medalShelfEl.dataset.sig === html) return;
   medalShelfEl.dataset.sig = html;
@@ -4336,7 +4337,7 @@ if (medalShelfEl) {
 }
 
 function applyMedals(list) {
-  medalList = Array.isArray(list) ? list.filter((e) => e && typeof e.agent === 'string' && Array.isArray(e.medals)) : [];
+  medalList = cleanMedalList(list);
   renderRoster();
   paintMedalShelf();
 }
@@ -6608,7 +6609,7 @@ function handleControl(msg) {
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     // BACKLOG #80: the medals, and the bubbles' switch (these two don't repaint: renderRoster below does).
-    medalList = Array.isArray(msg.medals) ? msg.medals.filter((e) => e && typeof e.agent === 'string' && Array.isArray(e.medals)) : [];
+    medalList = cleanMedalList(msg.medals);
     bubblesEnabled = msg.bubbles && typeof msg.bubbles.enabled === 'boolean' ? msg.bubbles.enabled : null;
     paintBubblesToggle();
     tellHostBubblesVisible();

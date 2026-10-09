@@ -64,6 +64,19 @@ test('a clock that goes backwards never opens the gate early', () => {
   assert.strictEqual(g.offer('a').ok, false);
 });
 
+test('the default clock is monotonic: a wall-clock step back holds nobody silent past the gap', () => {
+  const realNow = performance.now; const realDate = Date.now;
+  let mono = 1000; let wall = 9_000_000;
+  performance.now = () => mono; Date.now = () => wall;
+  try {
+    const g = createBubbleGate();
+    g.offer('a'); g.done();
+    wall -= 3_600_000;
+    mono += MIN_GAP_MS;
+    assert.deepStrictEqual(g.offer('a'), { ok: true });
+  } finally { performance.now = realNow; Date.now = realDate; }
+});
+
 test('the memory of old bubbles is bounded', () => {
   const c = clock();
   const g = createBubbleGate({ now: c.now });

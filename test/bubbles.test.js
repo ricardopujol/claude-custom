@@ -37,6 +37,7 @@ function rig(over = {}) {
     log: () => {},
     now: () => t,
   });
+  svc.setViewer('w', true);
   return { svc, sent, calls, slotLog, o, time: () => t, advance: (d) => { t += d; } };
 }
 
@@ -72,6 +73,7 @@ test('a voice lookup that throws is a neutral voice, not a lost bubble', async (
     voiceOf: async () => { throw new Error('no file'); }, contextOf: () => ({}), settings: { enabled: () => true },
     broadcast: (m) => r.sent.push(m), log: () => {},
   });
+  svc.setViewer('w', true);
   assert.strictEqual((await svc.onMood({ agent: 'a', state: 'working' })).shown, true);
 });
 
@@ -83,13 +85,35 @@ test('off: no model request at all', async () => {
   assert.strictEqual(r.slotLog.length, 0);
 });
 
-test('hidden by the window (agent images off, or lean): no model request', async () => {
+test('no window that can show a bubble: no model request; one that can: a bubble', async () => {
   const r = rig();
-  r.svc.setVisible(false);
+  r.svc.setViewer('w', false);
   assert.deepStrictEqual(await r.svc.onMood({ agent: 'a', state: 'working' }), { shown: false, reason: 'hidden' });
   assert.strictEqual(r.calls.length, 0);
-  r.svc.setVisible(true);
+  r.svc.setViewer('w', true);
   assert.strictEqual((await r.svc.onMood({ agent: 'a', state: 'working' })).shown, true);
+});
+
+test('visibility is per window: a window that can not show them does not cancel one that can', async () => {
+  const r = rig();
+  r.svc.setViewer('w2', true);
+  r.svc.setViewer('w2', false);          // the second window attaches with agent images off
+  assert.strictEqual((await r.svc.onMood({ agent: 'a', state: 'working' })).shown, true);
+});
+
+test('a window that closes stops counting: a windowless host asks the model for nothing', async () => {
+  const r = rig();
+  r.svc.dropViewer('w');
+  assert.deepStrictEqual(await r.svc.onMood({ agent: 'a', state: 'working' }), { shown: false, reason: 'hidden' });
+  assert.strictEqual(r.calls.length, 0);
+});
+
+test('a host nobody has told yet (no window ever reported) shows nothing', async () => {
+  const fresh = createBubbles({
+    gate: createBubbleGate(), slot: { tryAcquire: () => true, release() {} }, ollama: { generate: async () => ({ ok: true, text: 'Hi.' }) },
+    voiceOf: async () => null, contextOf: () => ({}), settings: { enabled: () => true }, broadcast: () => {}, log: () => {},
+  });
+  assert.strictEqual((await fresh.onMood({ agent: 'a', state: 'working' })).reason, 'hidden');
 });
 
 test('only the four moods make a bubble', async () => {
@@ -120,6 +144,7 @@ test('a second agent while a request is running is dropped (one request at a tim
     voiceOf: async () => null, contextOf: () => ({}), settings: { enabled: () => true },
     broadcast: (m) => sent.push(m), log: () => {},
   });
+  svc.setViewer('w', true);
   const first = svc.onMood({ agent: 'a', state: 'working' });
   const second = await svc.onMood({ agent: 'b', state: 'working' });
   assert.deepStrictEqual(second, { shown: false, reason: 'busy' });
@@ -186,6 +211,7 @@ test('a broadcast that throws does not leak out of onMood', async () => {
     voiceOf: async () => null, contextOf: () => ({}), settings: { enabled: () => true },
     broadcast: () => { throw new Error('socket'); }, log: () => {},
   });
+  svc.setViewer('w', true);
   assert.strictEqual((await svc.onMood({ agent: 'a', state: 'working' })).shown, false);
 });
 
@@ -208,31 +234,63 @@ test('PROPERTY: over random mood events, broadcasts per agent are three minutes 
 
 // --- the setting ---------------------------------------------------------------------------------
 
-test('bubbles are on by default; the choice persists across a fresh store object', () => {
+test('bubbles are on by default (no file); the choice persists across a fresh store object', () => {
   const dir = tmpDir('bubbles');
   const a = createBubbleSettings({ store: createStore({ dir }) });
   assert.strictEqual(a.enabled(), true);
   assert.strictEqual(a.set(false).ok, true);
   assert.strictEqual(a.enabled(), false);
-  const b = createBubbleSettings({ store: createStore({ dir }) });
-  assert.strictEqual(b.enabled(), false);
+  assert.strictEqual(createBubbleSettings({ store: createStore({ dir }) }).enabled(), false);
 });
 
-test('a non-boolean setting is refused', () => {
-  const s = createBubbleSettings({ store: createStore({ dir: tmpDir('bubbles') }) });
-  assert.strictEqual(s.set('yes').ok, false);
-  assert.strictEqual(s.set(undefined).ok, false);
-  assert.strictEqual(s.enabled(), true);
+test('the switch is install-wide: turning it off through one host stops every other host, with no restart', () => {
+  const store = createStore({ dir: tmpDir('bubbles') });
+  const tabA = createBubbleSettings({ store });
+  const tabB = createBubbleSettings({ store });
+  assert.strictEqual(tabB.enabled(), true);
+  tabA.set(false);
+  assert.strictEqual(tabB.enabled(), false);
+  tabB.set(true);
+  assert.strictEqual(tabA.enabled(), true);
 });
 
-test('a corrupt settings file reads as the default, and a failed write is reported', () => {
+test('a setting nobody can read is OFF (fail closed): corrupt, unreadable, or a failing read', () => {
   const fs = require('node:fs');
   const dir = tmpDir('bubbles');
   const store = createStore({ dir });
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(store.pathOf('bubbles'), 'not json');
-  const s = createBubbleSettings({ store });
+  assert.strictEqual(createBubbleSettings({ store }).enabled(), false);
+  assert.strictEqual(createBubbleSettings({ store: { readState: () => ({ status: 'unreadable', value: null }), write() {} } }).enabled(), false);
+  assert.strictEqual(createBubbleSettings({ store: { readState: () => { throw new Error('EBUSY'); }, write() {} } }).enabled(), false);
+});
+
+test('a non-boolean setting is refused, and a failed write is reported without changing what is read', () => {
+  const s = createBubbleSettings({ store: createStore({ dir: tmpDir('bubbles') }) });
+  assert.strictEqual(s.set('yes').ok, false);
+  assert.strictEqual(s.set(undefined).ok, false);
   assert.strictEqual(s.enabled(), true);
-  const broken = createBubbleSettings({ store: { read: () => null, write: () => { throw new Error('disk'); } } });
+  const broken = createBubbleSettings({ store: { readState: () => ({ status: 'missing', value: null }), write: () => { throw new Error('disk'); } } });
   assert.strictEqual(broken.set(false).ok, false);
+  assert.strictEqual(broken.enabled(), true);
+});
+
+test('the default clock of the service is monotonic', () => {
+  const realNow = performance.now; const realDate = Date.now;
+  let mono = 10_000; let wall = 1_000_000;
+  performance.now = () => mono; Date.now = () => wall;
+  return (async () => {
+    try {
+      const r = createBubbles({
+        gate: createBubbleGate(), slot: { tryAcquire: () => true, release() {} },
+        ollama: { generate: async () => ({ ok: false, reason: 'ollama-down' }) },
+        voiceOf: async () => null, contextOf: () => ({}), settings: { enabled: () => true }, broadcast: () => {}, log: () => {},
+      });
+      r.setViewer('w', true);
+      await r.onMood({ agent: 'a', state: 'working' });          // fails: a 60 s cool-off starts
+      wall -= 3_600_000;                                          // a wall-clock step back must not stretch it
+      mono += FAILURE_COOLDOWN_MS;
+      assert.notStrictEqual((await r.onMood({ agent: 'b', state: 'working' })).reason, 'cooling-off');
+    } finally { performance.now = realNow; Date.now = realDate; }
+  })();
 });

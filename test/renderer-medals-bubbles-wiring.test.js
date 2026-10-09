@@ -80,3 +80,16 @@ test('every element renderer.js looks up at load comes BEFORE its script tag (th
     assert.ok(at > 0 && at < script, `${id} must be parsed before renderer.js runs`);
   }
 });
+
+test('visibility is per socket: a window that closes is dropped, and the install-wide files are watched for other hosts\' changes', () => {
+  assert.match(host, /bubbles\.setViewer\(ws, msg\.visible === true\)/);
+  assert.match(host, /bubbles\.dropViewer\(ws\)/);
+  assert.match(host, /medalsWatch\.tick\(\); bubblesWatch\.tick\(\)/);
+  assert.match(host, /medalsWatch\.note\(\)/);
+  assert.match(host, /bubblesWatch\.note\(\)/);
+  assert.ok(!/setVisible/.test(host));
+});
+
+test('a settled bubble does not replay its fade-in', () => {
+  assert.match(html, /\.agent-bubble\[data-settled\] \{ animation: bubble-out/);
+});

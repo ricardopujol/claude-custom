@@ -34,6 +34,14 @@ test('nothing but names is kept: no command, no contents', () => {
   assert.ok(!JSON.stringify(a.of('x')).match(/TOP_SECRET|S2|rm -rf/));
 });
 
+test('a Grep or Glob `path` is a FOLDER: it is never kept as a file name', () => {
+  const a = createActivity();
+  a.note(pre('x', 'Grep', { pattern: 'foo', path: 'C:\\Users\\ricar\\Ricardo-Pujol-Obsidian-Vault\\Personal' }));
+  a.note(pre('x', 'Glob', { pattern: '*.md', path: '/home/ricar/Personal' }));
+  assert.deepStrictEqual(a.of('x').files, []);
+  assert.strictEqual(a.of('x').tool, 'Glob');
+});
+
 test('an agent with no events is empty, not an error; odd events are ignored', () => {
   const a = createActivity();
   assert.deepStrictEqual(a.of('nobody'), { tool: undefined, files: [] });

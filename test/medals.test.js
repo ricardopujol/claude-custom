@@ -238,3 +238,90 @@ test('the menu and the card button escape the agent name', () => {
   assert.ok(!md.cardButtonHtml('"><script>').includes('<script>'));
   assert.match(md.cardButtonHtml('miguel'), /data-medal-open/);
 });
+
+// --- what an edit must not destroy, and what an unreadable file must not say ---------------------
+
+function seed(store, value) {
+  fs.mkdirSync(store.dir, { recursive: true });
+  fs.writeFileSync(store.pathOf('medals'), JSON.stringify(value));
+}
+const onDisk = (store) => JSON.parse(fs.readFileSync(store.pathOf('medals'), 'utf8'));
+
+test('an unrelated give writes every record it does not understand back verbatim (a newer host\'s kind, a long reason, extra fields)', () => {
+  const { store, make } = setup();
+  const longReason = 'r'.repeat(500);
+  const foreign = { id: 'a1', kind: 'teamwork', reason: longReason, at: 'yesterday', extra: { keep: true } };
+  seed(store, { version: 1, note: 'hand written', agents: [
+    { agent: 'dexter', label: 'D', medals: [foreign] },
+    { agent: 'miguel', medals: [{ id: 'b1', kind: 'fast', reason: '', at: 1 }] },
+  ] });
+  const out = make().give('miguel', 'spot-on', 'x');
+  assert.strictEqual(out.ok, true);
+  const disk = onDisk(store);
+  assert.deepStrictEqual(disk.agents[0], { agent: 'dexter', label: 'D', medals: [foreign] });
+  assert.strictEqual(disk.note, 'hand written');
+  assert.strictEqual(disk.agents[1].medals.length, 2);
+});
+
+test('removing one medal leaves a foreign one of the same agent in place', () => {
+  const { store, make } = setup();
+  const foreign = { id: 'a1', kind: 'teamwork', reason: 'x', at: 1 };
+  seed(store, { version: 1, agents: [{ agent: 'dexter', medals: [foreign, { id: 'a2', kind: 'fast', reason: '', at: 2 }] }] });
+  assert.strictEqual(make().remove('dexter', 'a2').ok, true);
+  assert.deepStrictEqual(onDisk(store).agents, [{ agent: 'dexter', medals: [foreign] }]);
+});
+
+test('a file from a newer version is shown but never edited', () => {
+  const { store, make } = setup();
+  seed(store, { version: 2, agents: [{ agent: 'miguel', medals: [{ id: 'b1', kind: 'fast', reason: '', at: 1 }] }] });
+  const before = fs.readFileSync(store.pathOf('medals'), 'utf8');
+  const m = make();
+  const out = m.give('miguel', 'fast', '');
+  assert.strictEqual(out.ok, false);
+  assert.strictEqual(out.reason, 'newer-version');
+  assert.strictEqual(fs.readFileSync(store.pathOf('medals'), 'utf8'), before);
+  assert.strictEqual(m.all()[0].medals.length, 1);
+});
+
+test('a version that is not a number is an unreadable file', () => {
+  const { store, make } = setup();
+  seed(store, { version: 'one', agents: [] });
+  assert.strictEqual(make().give('a', 'fast', '').reason, 'unreadable');
+});
+
+test('a medal list that is not a list is refused, not replaced', () => {
+  const { store, make } = setup();
+  seed(store, { version: 1, agents: [{ agent: 'miguel', medals: 'oops' }] });
+  const before = fs.readFileSync(store.pathOf('medals'), 'utf8');
+  assert.strictEqual(make().give('miguel', 'fast', '').reason, 'unreadable');
+  assert.strictEqual(fs.readFileSync(store.pathOf('medals'), 'utf8'), before);
+});
+
+test('an unreadable file is NOT "no medals": all() is null until it has read once, then keeps the last good set', () => {
+  const { store } = setup();
+  let busy = true;
+  const flaky = { ...store, readState: (k) => { if (busy) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return store.readState(k); },
+    write: store.write, withLock: store.withLock };
+  const m = createMedals({ store: flaky, newId: () => 'i1' });
+  assert.strictEqual(m.all(), null);                       // never read: unknown, not []
+  busy = false;
+  m.give('miguel', 'fast', '');
+  assert.strictEqual(m.all().length, 1);
+  busy = true;
+  assert.strictEqual(m.all().length, 1);                   // held for a moment: the last good set stays
+  busy = false;
+  assert.strictEqual(m.all().length, 1);
+});
+
+test('a corrupt file answers null, not an empty list', () => {
+  const { dir, store } = setup();
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(store.pathOf('medals'), '{ not json');
+  assert.strictEqual(createMedals({ store }).all(), null);
+});
+
+test('the shelf says it could not read the medals, never "No medals yet", for an unknown set', () => {
+  const html = md.shelfHtml('miguel', null);
+  assert.match(html, /read the medals/);
+  assert.ok(!/No medals yet/.test(html));
+});

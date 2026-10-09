@@ -1104,6 +1104,7 @@
     }
     .agent-bubble::before { content: '\201C'; }
     .agent-bubble::after { content: '\201D'; }
+    .agent-bubble[data-settled] { animation: bubble-out .6s ease-in var(--bubble-fade-delay, 0ms) forwards; }
     @keyframes bubble-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
     @keyframes bubble-out { from { opacity: 1; } to { opacity: 0; } }
     @media (prefers-reduced-motion: reduce) { .agent-bubble { animation: none; } }

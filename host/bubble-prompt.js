@@ -49,6 +49,14 @@ function maskSecrets(text) {
     .replace(/[A-Za-z0-9+/=_-]{40,}/g, '[secret]');
 }
 
+/** Whole paths out of free text (a task line can name one): drive paths, UNC and chains of folders become [path]. */
+function scrubPaths(text) {
+  return String(text)
+    .replace(/[A-Za-z]:\\[^\s]*/g, '[path]')
+    .replace(/\\\\[^\s]+/g, '[path]')
+    .replace(/~?\/[\w.@-]+(?:\/[\w.@-]+)+/g, '[path]');
+}
+
 const SECRET_NAME_RES = [
   /^\.env/i, /\.(pem|key|p12|pfx|crt|cer|keystore|jks)$/i, /^id_(rsa|dsa|ecdsa|ed25519)/i,
   /secret|token|credential|password|passwd|api[_-]?key|apikey/i,
@@ -86,7 +94,7 @@ function buildPrompt(input) {
   if (typeof input.tool === 'string' && /^[A-Za-z0-9_:.-]{1,40}$/.test(input.tool)) lines.push(`Tool: ${input.tool}`);
   const files = (Array.isArray(input.files) ? input.files : []).map(safeFileName).filter((f) => f !== null).slice(0, FILES_MAX);
   if (files.length) lines.push(`Files: ${files.join(', ')}`);
-  const task = typeof input.task === 'string' ? cap(maskSecrets(oneLine(input.task)), TASK_MAX) : '';
+  const task = typeof input.task === 'string' ? cap(maskSecrets(scrubPaths(oneLine(input.task))), TASK_MAX) : '';
   if (task) lines.push(`Task: ${task}`);
   lines.push('Write the joke line now.');
   return { system: systemFor(agent, input.voice), prompt: lines.join('\n') };
@@ -94,7 +102,20 @@ function buildPrompt(input) {
 
 // A bubble never claims the work went one way or the other. The prompt asks; a 4B model doesn't always listen (measured:
 // "I just spotted a null pointer"), so a line that SAYS something was found, fixed or finished is dropped rather than shown.
-const CLAIM_RE = /\b(fixed|found|saw|noticed|discovered|detected|admitted|spotted|solved|pass|passed|passes|merged|deployed|shipped|finished|completed|resolved|caught|killed|done|survived|all green)\b/i;
+// A BEST-EFFORT filter in English and Spanish (the voices are Spanish for Miguel), not a guarantee: it drops, it never rewrites,
+// and it errs on the side of dropping a harmless joke.
+const CLAIM_RE = new RegExp('\\b(' + [
+  // English
+  'fix(?:ed|es|ing)?', 'find(?:s|ing)?', 'found', 'saw', 'notic(?:ed|ing)', 'discover(?:ed|ing)?', 'detect(?:ed|ing)?', 'admitt?ed',
+  'spott?(?:ed|ing)', 'solv(?:ed|es|ing)', 'pass(?:ed|es|ing)?', 'merg(?:ed|es|ing)', 'deploy(?:ed|ing)?', 'ship(?:ped|ping)?',
+  'finish(?:ed|ing)?', 'complet(?:ed|ing)', 'resolv(?:ed|ing)', 'caught', 'catch(?:es|ing)?', 'kill(?:ed|ing)?', 'done', 'surviv(?:ed|ing)',
+  'squash(?:ed|ing)?', 'nail(?:ed|ing)?', 'green', 'works', 'broke', 'crash(?:ed|es)?',
+  // Spanish (matched with the accents stripped)
+  'arregl\\w*', 'encontr\\w*', 'termin\\w*', 'acab(?:e|ado|ada|amos|o)', 'resuelt\\w*', 'resolv\\w*', 'solucion\\w*', 'cazad\\w*', 'caz(?:e|o)',
+  'pas(?:o|aron|an|ado|ada|a)', 'desplieg\\w*', 'despleg\\w*', 'list(?:o|a)s?', 'hech(?:o|a)s?', 'verdes?', 'funciona\\w*', 'descubr\\w*',
+  'aplast\\w*', 'fusion\\w*',
+].join('|') + ')\\b', 'i');
+const unaccent = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 /** One short line from a model's reply, or null when there is nothing usable (empty, code, a link, a path). */
 function cleanLine(reply) {
@@ -106,7 +127,7 @@ function cleanLine(reply) {
   const line = oneLine(first.replace(/^[-*•]\s+/, '').replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, ''));
   if (!line) return null;
   if (/https?:\/\//i.test(line) || /[A-Za-z]:\\/.test(line) || /(^|\s)\/[\w.-]+\/[\w.-]/.test(line)) return null;
-  if (CLAIM_RE.test(line)) return null;
+  if (CLAIM_RE.test(unaccent(line))) return null;
   const chars = [...line];
   if (chars.length <= LINE_MAX) return line;
   // Cut at a word when there is one in the second half of the allowance, so a joke doesn't end mid-word.

@@ -38,6 +38,7 @@ const { createBubbleGate } = require('./bubble-gate');
 const { createActivity: createBubbleActivity } = require('./bubble-activity');
 const { createVoiceReader } = require('./bubble-voice');
 const { createAskOllama } = require('./ask-ollama');
+const { createChangeWatch } = require('./state-watch');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats, createStatsMemo } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
@@ -1209,14 +1210,22 @@ function handleMedalMessage(msg) {
   }
   if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
   broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
+  medalsWatch.note();
 }
-function handleBubblesMessage(msg) {
+// The medals and the bubbles' switch are install-wide files, but every tab is its own host: a change made through ANOTHER host reaches
+// this host's windows through these watches (polled from the 1 s clock below, host/state-watch.js).
+const medalsWatch = createChangeWatch({ read: () => medals.all(), onChange: (v) => broadcastControl({ type: 'medals', medals: v, ok: true, reason: null }) });
+const bubblesWatch = createChangeWatch({ read: () => bubbleSettings.enabled(), onChange: (v) => broadcastControl({ type: 'bubbles', enabled: v }) });
+// A window tells its host whether it can show a bubble (agent images off, lean mode): per SOCKET, so one window can't cancel another,
+// and a window that closes stops counting (dropViewer in its close handler).
+function handleBubblesMessage(msg, ws) {
   if (msg.action === 'set-enabled') {
     const out = bubbleSettings.set(msg.enabled);
     if (!out.ok) console.log('[host] bubbles setting refused:', out.reason);
     broadcastControl({ type: 'bubbles', enabled: bubbleSettings.enabled() });
+    bubblesWatch.note();
   } else if (msg.action === 'visible') {
-    bubbles.setVisible(msg.visible === true);
+    bubbles.setViewer(ws, msg.visible === true);
   }
 }
 
@@ -1844,8 +1853,10 @@ mood.on('change', ({ agent, state }) => {
   // applies the same rule itself, but the host persists it and is authoritative.
   if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
 });
+let installWideTicks = 0;
 const moodTimer = setInterval(() => {
   mood.tick();
+  if (++installWideTicks % 3 === 0) { medalsWatch.tick(); bubblesWatch.tick(); }      // another tab's medals / switch, every 3 s
   processes.sweep();
   occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   night.tick();              // a night that went overdue: a verdict of time, pushed when the clock makes it
@@ -2571,7 +2582,7 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (msg.type === 'bubbles') {
-      handleBubblesMessage(msg);
+      handleBubblesMessage(msg, ws);
       return;
     }
     if (canvasControl.handles(msg.type)) {
@@ -2726,6 +2737,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     clients.delete(ws);
+    bubbles.dropViewer(ws);      // BACKLOG #80: a window that left can't show a bubble
     // A WINDOW leaving (not a one-shot control client) starts stop-if-idle's
     // grace: it may be reloading, and its session is in use.
     if (leftAsWindow(ws.openedAt, Date.now())) lastWindowLeftAt = Date.now();

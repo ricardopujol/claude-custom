@@ -113,8 +113,10 @@ app.whenReady().then(async () => {
     await shot('1-bubble-over-card');
 
     // ---- B: survives repaints, passes clicks through, goes after 8 s ---------------------------------
+    await js('window.__bubbleNode = document.querySelector("#agents .agent-bubble")');
     for (let i = 0; i < 3; i++) { await js('renderRoster()'); await sleep(500); }
     check('a roster repaint keeps the bubble', !!(await bubbleOf('code-reviewer')));
+    check('and it is the SAME node (a rebuilt one would restart its fade-in about once a second)', await js('window.__bubbleNode === document.querySelector("#agents .agent-bubble") && window.__bubbleNode.isConnected'));
     const pass = await js('(() => { const b = document.querySelector("#agents .agent-bubble"); return getComputedStyle(b).pointerEvents === "none"; })()');
     check('the bubble takes no clicks (pointer-events: none)', pass);
     const gone = await until('!document.querySelector("#agents .agent-bubble")', 12000);

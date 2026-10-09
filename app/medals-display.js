@@ -79,6 +79,8 @@ function dateText(at) {
 
 /** The shelf on an agent's log page: every medal with its reason and date, newest first, each removable. */
 function shelfHtml(agent, medals) {
+  // null is UNKNOWN (the host couldn't read the file), which is not the same as none.
+  if (medals === null) return `<div class="medal-shelf" data-agent="${escapeHtml(agent)}"><div class="medal-shelf-title">Medals</div><div class="medal-none">Couldn't read the medals just now. Trying again.</div></div>`;
   const rows = (Array.isArray(medals) ? medals : [])
     .filter((m) => isObject(m) && kindOf(m.kind) && typeof m.id === 'string')
     .slice().sort((a, b) => (b.at || 0) - (a.at || 0))

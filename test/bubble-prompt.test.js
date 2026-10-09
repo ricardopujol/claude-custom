@@ -137,6 +137,27 @@ test('cleanLine refuses a line that claims something was found, fixed or finishe
   }
 });
 
+test('cleanLine refuses claims in Spanish too, accents or not, and broader English (a best-effort filter, never a rewrite)', () => {
+  for (const claim of ['¡Encontré el bug, olé!', 'Encontre el bug', 'Arreglado, de nada', 'Lo arreglé yo solito', 'Todo pasa, listo', 'Ya terminé, chaval',
+    'Todo en verde, tío', 'He cazado un bug', 'Despliegue hecho', 'Squashed that bug flat!', 'Tests are green, I am a genius', 'Nailed it, ship it',
+    'It works now', 'Bug fix incoming', 'Finding bugs all day', 'Resolved, you are welcome']) {
+    assert.strictEqual(cleanLine(claim), null, claim);
+  }
+  for (const joke of ['Back to work, sigh', 'Más café, por favor', '¡Qué vida esta!', 'Mutants everywhere, my favourite']) {
+    assert.strictEqual(cleanLine(joke), joke, joke);
+  }
+});
+
+test('the task line is scrubbed of paths: no drive letters, no folder chains', () => {
+  const o = buildPrompt({ agent: 'a', state: 'working', task: 'Read C:\\Users\\ricar\\.ssh\\config and /home/ricar/notes/todo.txt then ~/docs/plan.md' });
+  const task = /Task: (.*)/.exec(o.prompt)[1];
+  assert.ok(!/[A-Za-z]:\\/.test(task), task);
+  assert.ok(!task.includes('\\'), task);
+  assert.ok(!/\/[\w.-]+\/[\w.-]/.test(task), task);
+  assert.ok(!/ricar/.test(task), task);
+  assert.match(task, /Read/);
+});
+
 test('cleanLine cuts a long line at a word, not in the middle of one', () => {
   const out = cleanLine('wobble '.repeat(30));
   assert.ok(out.endsWith('…'));
