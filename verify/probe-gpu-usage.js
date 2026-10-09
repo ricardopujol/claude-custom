@@ -244,8 +244,9 @@ async function main() {
       const busyShot = path.join(shots, 'gpu-tab-busy.png');
       await command(app, { cmd: 'screenshot', file: busyShot });
       note(`screenshot (Resources tab, model generating): ${busyShot}`);
-      const row = busy.gpuSec && busy.gpuSec.rows.find(r => /llama|ollama/i.test(r.name));
-      check('4: its row shows a busy figure, not a dash', !!row && /^\d/.test(row.figs[0]) || (row && row.figs[0] === '<1%'), JSON.stringify(row));
+      // the row's own figure can land a sample after the chip's (a runner that restarted is "—" for one interval): wait for it
+      const rowNow = await waitFor(async () => { const s2 = await rs(); const r = s2.gpuSec && s2.gpuSec.rows.find(x => /llama|ollama/i.test(x.name)); return r && /^<?\d/.test(r.figs[0]) ? r : null; }, 20000, 500);
+      check('4: its row shows a busy figure, not a dash', !!rowNow, JSON.stringify(rowNow || (await rs()).gpuSec));
     }
     await job;
   }
