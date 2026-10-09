@@ -1050,8 +1050,8 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 /// --- the dock tree (BACKLOG #53, dockable panels D1; was L1's four zones, #22) ----
 // Every side panel is a module in a tabbed group of a split tree around the
 // terminal (app/dock-tree.js has every rule; app/dock-tree-display.js draws; and
-// app/dock-zones-display.js still decides a redraw's effects). L1's app/dock-layout.js
-// stays loaded for one reason: fromV1 and the pre-L1 migration read the old shapes with it.
+// app/dock-effects.js decides a redraw's effects). L1's four zones are gone; app/dock-migrate.js
+// reads the shapes they saved, for fromV1 and the pre-L1 migration.
 // Two kinds of state, kept apart on purpose:
 //   - PLACEMENT (the tree, hidden modules, sizes): the global layout in main
 //     (install-wide, store key `layout-tree`), or this tab's own, kept by its host.
@@ -1059,7 +1059,7 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 //     own, saved in localStorage (`dockSelection2`). Clicking Vault here must not
 //     switch every other project window to Vault (S3a; PR #82 Dexter F4).
 const MODULE_IDS = TABS.map(t => t.id);
-const DL = window.dockLayout;
+const DM = window.dockMigrate;
 const DTm = window.dockTree;
 let globalLayout = DTm.defaultLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
@@ -1485,7 +1485,7 @@ function onVaultLeft() {
 // move, a layout pushed from another window, the restore at launch -- so the
 // side effects of showing a module can't be skipped by one of them (the old
 // setTab had the same job, for the same reason). What a redraw may do besides
-// drawing is decided by dockZones.renderEffects, which is tested: above all,
+// drawing is decided by dockEffects.renderEffects, which is tested: above all,
 // a redraw never moves keyboard focus unless the vault opened or closed, or
 // the user acted (PR #82 Dexter F2, Miguel B1).
 // `refit: false` is for a redraw that cannot change the terminal's rectangle (a float's move or resize): the
@@ -1496,7 +1496,7 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   window.dockTreeView.applyBoxes(plan, document);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
   const now = new Set(plan.shown);
-  const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
+  const fx = window.dockEffects.renderEffects(shownModules, now, { userAction });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
@@ -2228,7 +2228,7 @@ document.getElementById('side-hint').addEventListener('click', toggleAllZones);
 function legacyLayout() {
   let legacy = {};
   try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
-  return DTm.fromV1(DL.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
+  return DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
 }
 
 async function loadLayout() {
@@ -2275,10 +2275,10 @@ async function loadLayout() {
 
 // The host's word on this tab's own layout: in `hello` and on every change. A
 // change this window made that the host hasn't echoed yet wins, and is sent
-// again (PR #82 Dexter F8; dockZones.overrideOnHello is the tested rule). A host
+// again (PR #82 Dexter F8; dockEffects.overrideOnHello is the tested rule). A host
 // started by an older window may hold an L1 layout: readAny migrates it.
 function applyLayoutOverride(incoming) {
-  const r = window.dockZones.overrideOnHello(pendingOverride, incoming);
+  const r = window.dockEffects.overrideOnHello(pendingOverride, incoming);
   if (r.settled) pendingOverride = null;
   ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readAny(r.apply, MODULE_IDS) : null;
   if (r.resend && pendingOverride) {
@@ -6829,7 +6829,7 @@ function connect() {
     // visible element the user is on (the vault's secret) keeps focus (backlog #36).
     const first = !socketOpened;
     socketOpened = true;
-    if (window.dockZones.focusOnOpen(first, window.dockZones.describeFocus(document.activeElement, term.element))) term.focus();
+    if (window.dockEffects.focusOnOpen(first, window.dockEffects.describeFocus(document.activeElement, term.element))) term.focus();
     sendResize();
     // A log open across a reattach is asked for again: the host's log session
     // belongs to the old socket and died with it.

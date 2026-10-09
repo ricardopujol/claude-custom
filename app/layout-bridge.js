@@ -6,7 +6,7 @@
  * (`.harness/state/layout-global.json`) and not in a host.
  *
  * Main stores and relays; it never judges the shape. The page normalizes every
- * layout it reads (app/dock-layout.js) because only the page knows which
+ * layout it reads (app/dock-tree.js, app/dock-migrate.js for L1's shape) because only the page knows which
  * modules this build has. So a missing record reads as `null` -- "migrate from
  * the old per-window settings" -- rather than a default invented here.
  *

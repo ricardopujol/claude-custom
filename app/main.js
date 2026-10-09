@@ -445,7 +445,7 @@ function createWindow() {
     // minimise and close (app/tab-strip.js windowChrome). The title still
     // feeds alt-tab and the taskbar.
     frame: !chrome.framelessWindow,
-    // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
+    // Room for the terminal's minimum and two side panels (app/dock-tree.js).
     minWidth: 640,
     minHeight: 480,
     // The project's own app colour when it has one, so a window does not

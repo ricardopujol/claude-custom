@@ -375,7 +375,7 @@ test('floatDragResult: junk is a dropped drag, never a throw', () => {
 
 // --- PR #102 Miguel Y4, S3: a floating Vault leaves view like any other, and moving a float never disturbs it ---
 
-const { renderEffects } = require('../app/dock-zones-display');
+const { renderEffects } = require('../app/dock-effects');
 const VAULT_FLOAT_VP = { width: 1000, height: 700 };
 const vaultFloating = () => T.dock(T.defaultLayout(IDS), 'vault', { float: { x: 100, y: 80 } });
 const shownIn = (l, sel = NO_SEL) => new Set(plan(l, VAULT_FLOAT_VP, sel).shown);

@@ -14,9 +14,9 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const T = require('../app/dock-tree');
-const DL = require('../app/dock-layout');
+const M = require('../app/dock-migrate');
 
-const { TERM_MIN, MIN, GUTTER } = T;
+const { TERM_MIN, GUTTER } = T;
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'git', 'models', 'projects', 'style'];
 const RUNS = { numRuns: Number(process.env.LAYOUT_RUNS) || 300 };
 
@@ -274,7 +274,7 @@ test('P7b: fit of the same inputs twice gives the same answer', () => {
   }), RUNS);
 });
 
-test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 gave it, in a roomy window', () => {
+test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 stored for it, in a roomy window', () => {
   const sizeV1 = fc.integer({ min: 120, max: 700 });
   const v1Arb = fc.record({
     zones: fc.record({ left: tabsArb, right: tabsArb, top: tabsArb, bottom: tabsArb }, { requiredKeys: [] }),
@@ -283,27 +283,24 @@ test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 gave it
   });
   const vp = fc.record({ width: fc.integer({ min: 640, max: 4000 }), height: fc.integer({ min: 480, max: 3000 }) });
   fc.assert(fc.property(v1Arb, vp, (raw, v) => {
-    const l1 = DL.normalizeLayout(raw, IDS);
-    // Every non-empty zone showing: L1 collapses a zone on purpose, the tree keeps that in the window's selection.
-    for (const z of DL.ZONES) l1.active[z] = l1.zones[z].length ? l1.zones[z][0] : null;
-    const want = DL.fitSizes(l1, v);
+    const l1 = M.normalizeV1(raw, IDS);
     const tree = T.fromV1(l1, IDS);
     assertWellFormed(tree);
     const f = T.fit(tree, { active: {}, foldAll: false }, v);
-    const open = DL.ZONES.filter(z => l1.zones[z].length);
-    // The tree spends GUTTER px per open zone on a divider, which L1 never did: only when the window has
-    // room for that as well is "the same picture" the claim. Squeezed, the tree folds one zone at a time
-    // (the edge first) where L1 folds an axis together, which is the design (plan Task 6).
-    const w = TERM_MIN.width + GUTTER * open.filter(z => z === 'left' || z === 'right').length;
-    const h = TERM_MIN.height + GUTTER * open.filter(z => z === 'top' || z === 'bottom').length;
-    const roomy = v.width >= w + want.left + want.right && v.height >= h + want.top + want.bottom
-      && want.left >= MIN.width && want.right >= MIN.width;
+    const open = M.ZONES.filter(z => l1.zones[z].length);
+    // The tree spends GUTTER px per open zone on a divider (L1 never did): only when the window has room for the
+    // zones, their dividers and the terminal's minimum is "the same picture" the claim. Squeezed, the tree folds one
+    // zone at a time (the edge first), which is the design (plan Task 6).
+    const across = open.filter(z => z === 'left' || z === 'right');
+    const down = open.filter(z => z === 'top' || z === 'bottom');
+    const roomy = v.width >= TERM_MIN.width + GUTTER * across.length + across.reduce((s, z) => s + l1.size[z], 0)
+      && v.height >= TERM_MIN.height + GUTTER * down.length + down.reduce((s, z) => s + l1.size[z], 0);
     fc.pre(roomy);
     for (const z of open) {
       const box = f.boxes.find(b => b.kind === 'group' && b.id === z);
       assert.ok(box, `${z} has no box`);
       const got = z === 'left' || z === 'right' ? box.rect.width : box.rect.height;
-      assert.ok(Math.abs(got - want[z]) <= 1, `${z}: ${got} vs L1's ${want[z]}`);
+      assert.ok(Math.abs(got - l1.size[z]) <= 1, `${z}: ${got} vs the stored ${l1.size[z]}`);
     }
   }), RUNS);
 });

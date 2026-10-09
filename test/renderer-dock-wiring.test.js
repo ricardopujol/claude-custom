@@ -1,7 +1,7 @@
 'use strict';
 /**
  * renderer.js's dock-zone wiring (layout pass L1, PR #82 review). The rules
- * live in pure, tested modules (app/dock-layout.js, app/dock-zones-display.js);
+ * live in pure, tested modules (app/dock-effects.js, app/dock-tree.js, app/dock-tree-display.js);
  * this pins that the page actually USES them where the reviewers found the
  * page going wrong. Source assertions, because renderer.js needs a real DOM;
  * verify/probe-dock-tree.js drives the same paths in a real window (check 6: a
@@ -28,7 +28,7 @@ test('Dexter F2 / Miguel B1: a redraw moves focus only as renderEffects says -- 
   // renderLayout called term.focus() on every redraw with the vault showing: a
   // resize mid-secret typed the rest of the secret into the session.
   const body = fnBody('renderLayout');
-  assert.match(body, /const fx = window\.dockZones\.renderEffects\(shownModules, now, \{ userAction \}\);/);
+  assert.match(body, /const fx = window\.dockEffects\.renderEffects\(shownModules, now, \{ userAction \}\);/);
   const focusCalls = [...body.matchAll(/term\.focus\(\)/g)];
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
   assert.match(body, /if \(fx\.focus === 'term'\) term\.focus\(\);/);
@@ -69,7 +69,7 @@ test('Dexter F4: the window seeds its own selection ONCE at load, and draws thro
 });
 
 test('Dexter F8: a tab\'s own layout goes through sendOverride, and the host\'s word through overrideOnHello', () => {
-  assert.match(fnBody('applyLayoutOverride'), /window\.dockZones\.overrideOnHello\(pendingOverride, incoming\)/);
+  assert.match(fnBody('applyLayoutOverride'), /window\.dockEffects\.overrideOnHello\(pendingOverride, incoming\)/);
   assert.match(fnBody('sendOverride'), /pendingOverride = \{ layout \};/);
   const direct = [...JS.matchAll(/type: 'layout-override'/g)].length;
   assert.strictEqual(direct, 2, 'sent from sendOverride and the resend in applyLayoutOverride only');
@@ -103,7 +103,7 @@ test('#36: the socket opening focuses the terminal only as focusOnOpen says -- n
   assert.match(handler, /sendResize\(\);/, 'the slice reaches past the focus line');
   assert.match(handler, /const first = !socketOpened;\s+socketOpened = true;/, '"first" is a flag, not read from focus');
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
-  assert.match(handler, /if \(window\.dockZones\.focusOnOpen\(first, window\.dockZones\.describeFocus\(document\.activeElement, term\.element\)\)\) term\.focus\(\);/);
+  assert.match(handler, /if \(window\.dockEffects\.focusOnOpen\(first, window\.dockEffects\.describeFocus\(document\.activeElement, term\.element\)\)\) term\.focus\(\);/);
 });
 
 test('PR #100 Dexter F6 / F3: a divider release is applied to the placement as it is NOW, and a drag that asks for nothing stores nothing', () => {

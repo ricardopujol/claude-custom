@@ -24,10 +24,10 @@
  */
 (function (root) {
 
-// Loaded the way app/dock-zones-display.js loads it: required under Node, a page global in the window.
-const layoutApi = typeof module !== 'undefined' && module.exports
-  ? require('./dock-layout')
-  : root.dockLayout;
+// L1's saved shape is read by app/dock-migrate.js: required under Node, a page global in the window.
+const migrateApi = typeof module !== 'undefined' && module.exports
+  ? require('./dock-migrate')
+  : root.dockMigrate;
 
 const VERSION = 2;
 const MIN = { width: 120, height: 80 };               // a panel
@@ -212,13 +212,13 @@ function stringMap(o) {
 /**
  * L1's four zones as a tree: col[top, row[left, term, right], bottom], each
  * non-empty zone one group named after its zone, sizes carried, hidden carried.
- * L1's own normalizer reads the input first, so its rules (unknown modules
- * dropped, missing ones back on the right) clean it before it becomes a tree.
+ * app/dock-migrate.js reads the input first (L1's rules: unknown modules
+ * dropped, missing ones back on the right), which cleans it before it becomes a tree.
  */
 function fromV1(raw, ids) {
   // An L1 layout predates the opt-in modules: the L1 normalizer would drop one into a zone, so it is not told about them and
   // the normalize below (which does know) hides them.
-  const l = layoutApi.normalizeLayout(raw, ids.filter(id => !HIDDEN_UNTIL_USED.includes(id)));
+  const l = migrateApi.normalizeV1(raw, ids.filter(id => !HIDDEN_UNTIL_USED.includes(id)));
   const zone = z => (l.zones[z].length ? { type: 'group', id: z, tabs: l.zones[z] } : null);
   const strip = (kids, sizes, dir) => ({
     type: 'split', dir, kids: kids.filter(Boolean), sizes: sizes.filter((_, i) => kids[i]),

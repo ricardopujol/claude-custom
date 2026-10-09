@@ -2,7 +2,7 @@
 /**
  * Drawing a dock tree (BACKLOG #53, dockable panels D1, Task 9).
  *
- * Two halves, as app/dock-zones-display.js is. `treePlan`, `dragSizes`,
+ * Two halves. `treePlan`, `dragSizes`,
  * `sizesAfterDrag`, `menuRows` and `afterTreeGet` are pure: what each group
  * shows, how a divider drag changes the sizes, what the Window menu lists, what
  * the page does with the store's answer. `applyBoxes` copies a plan onto the page
@@ -21,11 +21,11 @@
  */
 (function (root) {
 
-// Loaded the way app/dock-zones-display.js loads app/dock-layout.js.
+// Loaded the way app/dock-tree.js loads its own helpers: required under Node, a page global in the window.
 const treeApi = typeof module !== 'undefined' && module.exports ? require('./dock-tree') : root.dockTree;
-const zonesApi = typeof module !== 'undefined' && module.exports ? require('./dock-zones-display') : root.dockZones;
+const effectsApi = typeof module !== 'undefined' && module.exports ? require('./dock-effects') : root.dockEffects;
 const { fit, hasTerm } = treeApi;
-const { WIDE_FACE_CHROME } = zonesApi;
+const { WIDE_FACE_CHROME } = effectsApi;
 
 const isNumber = v => typeof v === 'number' && Number.isFinite(v);
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);

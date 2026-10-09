@@ -650,7 +650,7 @@ test('fit never changes the layout or the selection and reads a junk selection',
 
 // --- migration from L1 --------------------------------------------------------
 
-const DL = require('../app/dock-layout');
+const DL = { defaultLayout: require('../app/dock-migrate').defaultV1 };   // L1's default shape (D4: dock-layout.js is gone)
 const v1 = (zones, extra = {}) => ({
   version: 1,
   zones: { left: [], right: [], top: [], bottom: [], ...zones },
