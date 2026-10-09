@@ -83,21 +83,29 @@ const FALLBACK_BATCH_TIMEOUT_MS = 10000;
 const sweepScript = (pid) => `$ErrorActionPreference='Stop'
 $root=${pid}
 function Ftime($d){$d.ToFileTimeUtc()}
-# K ends one process and answers @{ended;exit}.
+# K1 proves and kills one process, K2 waits for it; together they answer @{ended;exit}.
 #   ended  true when it is no longer the process we meant: killed by us, already gone, or its pid belongs to another process now.
 #          false when we could not tell or could not kill it (it stays pending, and the fallback tries it with a proof).
 #   exit   the LATEST moment the process we meant can have exited: its own ExitTime when we killed it; when its pid was reused, the
 #          start of the process holding it now (it died before that); $null when unknown (gone, or unreadable).
-function K($o,$isRoot){
-  try{$p=[Diagnostics.Process]::GetProcessById($o.id)}catch{return @{ended=$true;exit=$null}}
+function K1($o,$isRoot){
+  try{$p=[Diagnostics.Process]::GetProcessById($o.id)}catch{return @{ended=$true;exit=$null;p=$null}}
   try{
     $null=$p.Handle
     $st=$p.StartTime.ToFileTimeUtc()
-    if(-not $isRoot -and [math]::Abs($st-$o.start) -gt ${START_TOLERANCE_TICKS}){return @{ended=$true;exit=$st}}
-    $p.Kill();[void]$p.WaitForExit(2000)
-    if($p.HasExited){$x=$null;try{$x=$p.ExitTime.ToFileTimeUtc()}catch{};return @{ended=$true;exit=$x}}
+    if(-not $isRoot -and [math]::Abs($st-$o.start) -gt ${START_TOLERANCE_TICKS}){return @{ended=$true;exit=$st;p=$null}}
+    $p.Kill()
+    return @{ended=$false;exit=$null;p=$p}
   }catch{}
-  return @{ended=$false;exit=$null}
+  return @{ended=$false;exit=$null;p=$null}
+}
+function K2($r){
+  if($null -eq $r.p){return $r}
+  try{
+    [void]$r.p.WaitForExit(2000)
+    if($r.p.HasExited){$x=$null;try{$x=$r.p.ExitTime.ToFileTimeUtc()}catch{};return @{ended=$true;exit=$x;p=$null}}
+  }catch{}
+  return @{ended=$false;exit=$null;p=$null}
 }
 # Is it still the process we listed? Gone or another process: no. Unreadable (access denied): assume yes, the fallback will judge it.
 function Alive($o){
@@ -116,12 +124,15 @@ function Say($pend){[Console]::Out.WriteLine('ALIVE '+(($pend | ForEach-Object {
 function Kids($rows,$parents,$known){
   $holder=@{}
   foreach($r in $rows){if($null -ne $r.CreationDate){$holder[[int]$r.ProcessId]=Ftime $r.CreationDate}}
+  $byId=@{}
+  foreach($p in $parents){if(-not $byId.ContainsKey($p.id)){$byId[$p.id]=New-Object System.Collections.ArrayList};[void]$byId[$p.id].Add($p)}
   $out=@()
   foreach($r in $rows){
     if($null -eq $r.CreationDate){continue}
     $pp=[int]$r.ParentProcessId;$cs=Ftime $r.CreationDate;$k=[int]$r.ProcessId
-    foreach($p in $parents){
-      if($p.id -ne $pp -or $cs -lt $p.start){continue}
+    if(-not $byId.ContainsKey($pp)){continue}
+    foreach($p in $byId[$pp]){
+      if($cs -lt $p.start){continue}
       $ub=$p.exit
       if((-not $p.alive) -and ($null -eq $ub) -and $holder.ContainsKey($p.id) -and ($holder[$p.id] -gt $p.start+${START_TOLERANCE_TICKS})){$ub=$holder[$p.id]}
       if($p.alive){$take=$true}
@@ -149,16 +160,24 @@ Say $pending
 $kill=@($rootObj)
 for($i=0;$i -lt ${SWEEP_MAX_LEVELS} -and $kill.Count;$i++){
   $parents=@()
-  foreach($o in $kill){
-    $res=K $o ($o.id -eq $root)
-    if($res.ended){$endedIds[$o.id]=1;$pending=@($pending | Where-Object { $_.id -ne $o.id })}
+  # One level is ended together, then waited on: 200 sleepers are one wait, not 200. A sequential Kill + WaitForExit took 17 s
+  # unloaded, close to the 20 s the relay gives the sweep, and a sweep cut off there has not yet listed the level below.
+  $first=@($kill | ForEach-Object { ,@{o=$_;r=(K1 $_ ($_.id -eq $root))} })
+  foreach($e in $first){
+    $o=$e.o
+    $res=K2 $e.r
+    if($res.ended){$endedIds[$o.id]=1}
     $parents+=[pscustomobject]@{id=$o.id;start=$o.start;exit=$res.exit;alive=(-not $res.ended)}
   }
+  # Filtered once per level, by a table: a Where-Object per ended process was 200 x 200 script blocks (6 s of a 20 s budget).
+  $pending=@($pending | Where-Object { -not $endedIds.ContainsKey($_.id) })
   $rows=$null
   for($a=0;$a -lt 2 -and $null -eq $rows;$a++){try{$rows=@(ReadProcs)}catch{Start-Sleep -Milliseconds 200}}
   if($null -eq $rows){Say $pending;exit 4}
   $kill=@(Kids $rows $parents $known | Where-Object { -not $endedIds.ContainsKey($_.id) })
-  foreach($o in $kill){if(-not @($pending | Where-Object { $_.id -eq $o.id }).Count){$pending+=$o}}
+  $have=@{};foreach($o in $pending){$have[$o.id]=1}
+  $pending=[System.Collections.ArrayList]@($pending)
+  foreach($o in $kill){if(-not $have.ContainsKey($o.id)){$have[$o.id]=1;[void]$pending.Add($o)}}
   Say $pending
 }
 $pending=@($pending | Where-Object { Alive $_ })

@@ -495,3 +495,20 @@ test('#27: quiet still forwards the document to the host', async () => {
   await bridge.close();
   assert.ok(ev && ev.event === 'Status', 'the header needs the document even when the row is quiet');
 });
+
+// The sweep's cost, pinned without a clock (a wall-clock bound flaked on a loaded machine). On develop the #72 test failed with ~108
+// sleepers left: the sweep killed and waited on one process at a time (17 s unloaded against the relay's 20 s) and kept $pending
+// current with a Where-Object per ended process (200 x 200 script blocks), so under load it was cut off before it listed the
+// sleepers a spawner had started, and they were never ended. Each rule below is what keeps a level of ~200 processes cheap.
+test('#72: the sweep ends a whole level before it waits on any of it, and keeps its tables in hashtables', () => {
+  let script = '';
+  killTree({ pid: 4242 }, 0, { run: (cmd, args) => { if (cmd === 'powershell.exe') script = args[3]; return { status: 0, stdout: '' }; } });
+  if (!script) return;   // not Windows: the sweep is a PowerShell script
+  const loop = script.slice(script.indexOf('for($i=0;'));
+  const killAt = loop.indexOf('K1 ');
+  const waitAt = loop.indexOf('K2 ');
+  assert.ok(killAt >= 0 && waitAt > killAt, 'the level loop must call K1 (prove + Kill) for the level before K2 (wait)');
+  assert.ok(!/function K\(/.test(script), 'a Kill + WaitForExit in one function is a wait per process');
+  assert.ok(!/Where-Object \{ \$_\.id -(ne|eq) \$o\.id \}/.test(loop), 'a Where-Object per process over $pending is quadratic');
+  assert.ok(/\$byId/.test(script), 'Kids must look a row\'s parent up, not scan every parent for every row');
+});
