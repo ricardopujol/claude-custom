@@ -14,8 +14,9 @@
  *     snapshot(project)       -> (throws when the journal can't be read) { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
  *
  * THE ORDER: the note is journaled first (nothing is lost), then the backlog is written, then `filed` is journaled.
- * A project with no backlog file gets one made by the first note (#79), and every note of that project held as
- * `no-backlog` (by an older build) is filed with it, in the order typed. Not filed: a project folder that isn't there,
+ * A project with no backlog file gets one made by the first note (#79), the documentation folder and its sync-docs
+ * .gitignore block too when it has none, and every note of that project held as `no-backlog` or `no-docs` is filed
+ * with it, in the order typed. Not filed: a project folder that isn't there,
  * stays in the list as not filed with its words in the journal for Copy; a backlog that kept changing under the write,
  * stayed busy or couldn't be written is tried again by the tick after RETRY_MS.
  *
@@ -32,6 +33,8 @@ const realWriter = require('./indexing-writer');
 
 const RETRY_MS = 15_000;
 const RETRIED = new Set(['conflict', 'write-failed', 'busy']);
+// Held because the project had nowhere to file them; filed (in order) once the backlog exists, however it came to.
+const HELD = new Set(['no-backlog', 'no-docs']);
 
 const isText = (s) => typeof s === 'string' && s.trim() !== '';
 const readOr = (file, fallback) => { try { return fs.readFileSync(file, 'utf8'); } catch { return fallback; } };
@@ -76,10 +79,10 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     return { filed: false, reason: r.reason };
   }
 
-  /** The notes of `project` held as `no-backlog` (by an older build, or a backlog that was gone), oldest first. */
+  /** The notes of `project` held as `no-backlog` or `no-docs` (a backlog or folder that was missing), oldest first. */
   function heldFor(project, exceptId, { read }) {
     return [...fold(read()).values()]
-      .filter(o => o.id !== exceptId && o.state === 'unfiled' && o.reason === 'no-backlog' && samePath(o.project, project))
+      .filter(o => o.id !== exceptId && o.state === 'unfiled' && HELD.has(o.reason) && samePath(o.project, project))
       .sort((a, b) => a.at - b.at);
   }
 
@@ -112,15 +115,18 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
       if (!docs || docs.ok !== true) return settle(n, { ok: false, reason: (docs && docs.reason) || 'no-docs' }, ctx);
       // Notes held for this project come first, so the inbox stays in the order they were typed (Dexter F4): the
       // backlog is made now if it isn't there, then they are filed, then this note.
-      let createdHere = false;
+      let made = null;                 // set when the backlog is made here, ahead of this note
       const held = heldFor(n.project, id, ctx);
       if (held.length > 0) {
-        if (!fs.existsSync(docs.backlog)) createdHere = writer.ensureBacklog(docs).created === true;
+        if (!fs.existsSync(docs.backlog)) {
+          const ens = writer.ensureBacklog(docs);
+          if (ens.created === true) made = ens;
+        }
         if (fs.existsSync(docs.backlog)) replayHeld(held, docs, ctx);
       }
       let r = attempt(n, docs, ctx);
-      if (r.ok && createdHere && r.result !== 'created-backlog' && r.record) {
-        r = { ...r, result: 'created-backlog', record: { ...r.record, pristine: writer.pristineOf(docs) } };
+      if (r.ok && made !== null && r.result !== 'created-backlog' && r.record) {
+        r = { ...r, result: 'created-backlog', record: { ...r.record, pristine: writer.pristineOf(docs), ...(made.made ? { made: made.made } : {}) } };
       }
       return settle(n, r, ctx);
     });
@@ -157,12 +163,12 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   }
 
   /**
-   * A backlog that exists next to notes held as `no-backlog` (made by hand, or by a note that then failed to file):
+   * A backlog that exists next to notes held as `no-backlog` / `no-docs` (made by hand, or by a note that then failed to file):
    * they are filed now, not only when a note happens to create the file (Dexter F1 / Miguel 1).
    */
   function replayStranded(notes) {
     const projects = new Map();
-    for (const n of notes) if (n.state === 'unfiled' && n.reason === 'no-backlog') projects.set(normPath(n.project), n.project);
+    for (const n of notes) if (n.state === 'unfiled' && HELD.has(n.reason)) projects.set(normPath(n.project), n.project);
     let did = false;
     for (const project of projects.values()) {
       journal.withLock((ctx) => {

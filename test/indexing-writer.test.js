@@ -146,11 +146,25 @@ test('#79: no backlog file: it is created with a title and an Inbox, and the not
 
 // --- #79 (Dexter F2/F3, Miguel 4, PR #138): where a backlog may be created, and which name it gets ----------------------
 
-test('#79: a git root with no documentation folder is "no-docs", and none is made', () => {
+test('#79 R2: a git root with no documentation folder can have one made by a note; reading it makes nothing', () => {
   const dev = tmpDir('cc-iw-');
   makeGit(dev);
-  assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
+  const docs = w.docsOf({ root: dev, dev });
+  assert.strictEqual(docs.ok, true);
+  assert.strictEqual(docs.canCreate, true);
+  assert.strictEqual(docs.dir, path.join(dev, 'documentation'));
   assert.strictEqual(fs.existsSync(path.join(dev, 'documentation')), false);
+  assert.deepStrictEqual(w.findNote({ docs, stamp: STAMP, text: 'x' }), { ok: false, reason: 'no-backlog' });
+  assert.deepStrictEqual(fs.readdirSync(dev), ['.git']);
+});
+
+test('#79 R2: the home folder is never a project root, even when it is a git repo', () => {
+  const dev = tmpDir('cc-iw-');
+  makeGit(dev);
+  const os = require('os');
+  const real = os.homedir;
+  os.homedir = () => dev;
+  try { assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' }); } finally { os.homedir = real; }
 });
 
 test('#79: a home-like folder (no git, no documentation) is "no-docs", and nothing is made in it', () => {
@@ -476,4 +490,141 @@ test('a read that fails for any reason but ENOENT (EMFILE, EIO) is "busy", retri
   }
   const gone = () => { const e = new Error('ENOENT'); e.code = 'ENOENT'; throw e; };
   assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x', readFile: gone, sleep: () => {} }), { ok: false, reason: 'no-backlog' });
+});
+
+// --- #79 (Ricardo, 2026-10-09): a note makes documentation\ and adds the sync-docs .gitignore block ---------------------
+
+const MARKER = '# --- sync-docs (gitignore) ---';
+const BLOCK = (nl = '\n') => [MARKER, '# documentation/ is mirrored to the Obsidian vault and kept OUT of GitHub by',
+  '# default. Only the index README is tracked. Delete this block to push the docs.', 'documentation/*', '!documentation/README.md',
+  '# --- end sync-docs (gitignore) ---'].join(nl) + nl;
+
+function gitRoot() {
+  const dev = tmpDir('cc-iw-');
+  makeGit(dev);
+  return { dev, docsDir: path.join(dev, 'documentation'), ignore: path.join(dev, '.gitignore') };
+}
+const fileFirst = (g, extra = {}) => w.fileNote({ docs: w.docsOf({ root: g.dev, dev: g.dev }), stamp: STAMP, text: 'first', ...extra });
+
+test('R2: no documentation folder and no .gitignore: both are made, the backlog holds the note, and the record says what was made', () => {
+  const g = gitRoot();
+  const r = fileFirst(g);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.ok(fs.statSync(g.docsDir).isDirectory());
+  assert.strictEqual(read(g.ignore), BLOCK());
+  assert.strictEqual(path.basename(r.where.file), `${path.basename(g.dev).toUpperCase().replace(/[-_\s]/g, '')}_BACKLOG.md`);
+  assert.deepStrictEqual(r.record.made, { dir: true, gitignore: { how: 'created', text: BLOCK() } });
+  assert.deepStrictEqual(fs.readdirSync(g.docsDir).filter(f => f.endsWith('.tmp')), []);
+});
+
+test('R2: an existing .gitignore keeps every byte; the block is appended after a blank line', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'node_modules/\n.env\n');
+  const r = fileFirst(g);
+  assert.strictEqual(read(g.ignore), 'node_modules/\n.env\n\n' + BLOCK());
+  assert.strictEqual(r.record.made.gitignore.how, 'appended');
+  fs.writeFileSync(g.ignore, 'no trailing newline');
+  fs.rmSync(g.docsDir, { recursive: true });
+  fileFirst(g);
+  assert.strictEqual(read(g.ignore), 'no trailing newline\n\n' + BLOCK());
+});
+
+test('R2: a CRLF .gitignore gets a CRLF block', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'a/\r\nb/\r\n');
+  fileFirst(g);
+  assert.strictEqual(read(g.ignore), 'a/\r\nb/\r\n\r\n' + BLOCK('\r\n'));
+});
+
+test('R2: a .gitignore that already has the block is left alone (idempotent by its marker), and the record does not claim it', () => {
+  const g = gitRoot();
+  const mine = 'x/\n' + BLOCK();
+  fs.writeFileSync(g.ignore, mine);
+  const r = fileFirst(g);
+  assert.strictEqual(read(g.ignore), mine);
+  assert.deepStrictEqual(r.record.made, { dir: true });
+});
+
+test('R2: a documentation folder that is already there: the .gitignore is not touched, even when it has no block', () => {
+  const g = gitRoot();
+  fs.mkdirSync(g.docsDir);
+  fs.writeFileSync(g.ignore, 'keep/\n');
+  const r = fileFirst(g);
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.strictEqual(read(g.ignore), 'keep/\n');
+  assert.strictEqual(r.record.made, undefined);
+});
+
+test('R2: the second note finds everything there and makes nothing more', () => {
+  const g = gitRoot();
+  fileFirst(g);
+  const before = read(g.ignore);
+  const r = fileFirst(g);
+  assert.strictEqual(r.result, undefined);
+  assert.strictEqual(read(g.ignore), before);
+});
+
+test('R2: Undo of the note that made it all removes the file, the empty folder and the .gitignore it created', () => {
+  const g = gitRoot();
+  const r = fileFirst(g);
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+  assert.strictEqual(fs.existsSync(g.ignore), false);
+});
+
+test('R2: Undo takes back only the block it appended; the rest of the .gitignore is as it was', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'node_modules/\n');
+  const r = fileFirst(g);
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+  assert.strictEqual(read(g.ignore), 'node_modules/\n');
+});
+
+test('R2: Undo leaves the folder AND the block when anything else is in the folder', () => {
+  const g = gitRoot();
+  const r = fileFirst(g);
+  fs.writeFileSync(path.join(g.docsDir, 'OTHER.md'), 'a session wrote this');
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.strictEqual(fs.existsSync(r.where.file), false, 'the backlog goes');
+  assert.ok(fs.existsSync(path.join(g.docsDir, 'OTHER.md')));
+  assert.strictEqual(read(g.ignore), BLOCK());
+});
+
+test('R2: Undo leaves a .gitignore that changed after the block was added', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'a/\n');
+  const r = fileFirst(g);
+  fs.appendFileSync(g.ignore, 'later/\n');
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+  assert.strictEqual(read(g.ignore), 'a/\n\n' + BLOCK() + 'later/\n', 'not ours to edit any more');
+  const g2 = gitRoot();
+  const r2 = fileFirst(g2);
+  fs.appendFileSync(g2.ignore, 'later/\n');
+  assert.deepStrictEqual(w.undoNote(r2.where.file, r2.record), { ok: true });
+  assert.strictEqual(read(g2.ignore), BLOCK() + 'later/\n', 'a created file someone added to stays');
+});
+
+test('R2: a .gitignore that cannot be written is write-failed and the folder this call made is taken back', () => {
+  const g = gitRoot();
+  fs.mkdirSync(g.ignore);                                           // a directory where the file should be
+  assert.deepStrictEqual(fileFirst(g), { ok: false, reason: 'write-failed' });
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+});
+
+test('R2: a backlog that cannot be created takes back the folder and the block this call made', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'keep/\n');
+  const noLink = () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); };
+  assert.deepStrictEqual(fileFirst(g, { link: noLink }), { ok: false, reason: 'write-failed' });
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+  assert.strictEqual(read(g.ignore), 'keep/\n');
+});
+
+test('R2: a drive root and a non-git folder never get a folder made', () => {
+  const dev = tmpDir('cc-iw-');
+  assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
+  assert.deepStrictEqual(fs.readdirSync(dev), []);
 });

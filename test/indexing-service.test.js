@@ -66,7 +66,7 @@ test('submit refuses an empty note and writes nothing anywhere', () => {
 });
 
 const NO_BACKLOG = { ...writer, fileNote: () => ({ ok: false, reason: 'no-backlog' }) };
-const NOT_FILED = { ...writer, fileNote: () => ({ ok: false, reason: 'no-docs' }) };
+const NOT_FILED = { ...writer, fileNote: () => ({ ok: false, reason: 'no-backlog-ambiguous' }) };
 
 test('a note the writer says has no backlog stays in the list as not filed, with its words', () => {
   const t = setup({ backlog: null, writerImpl: NO_BACKLOG });
@@ -529,4 +529,89 @@ test('snapshot of a journal that can\'t be read throws: it is not "no notes" (De
   assert.throws(() => svc.snapshot(t.project), /EBUSY/);
   fail = false;
   assert.strictEqual(svc.snapshot(t.project).list.length, 1);
+});
+
+// --- #79 (Ricardo, 2026-10-09): a note creates documentation\ and the sync-docs .gitignore block, and held "no-docs" notes replay ---
+
+const MARKER = '# --- sync-docs (gitignore) ---';
+const makeGit = (dir) => { fs.mkdirSync(path.join(dir, '.git'), { recursive: true }); fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n'); };
+
+/** A project folder with no documentation\ at all. `git`: whether it is a git root. */
+function bare({ git = true } = {}) {
+  const dir = tmpDir('cc-is-');
+  const dev = path.join(dir, 'proj');
+  fs.mkdirSync(dev, { recursive: true });
+  if (git) makeGit(dev);
+  const journal = createJournal({ file: path.join(dir, 'state', 'indexing-notes.jsonl') });
+  let clock = new Date(2026, 9, 5, 9, 7).getTime();
+  const svc = createIndexingService({ journal, writer, docsFor: () => writer.docsOf({ root: dev, dev }), now: () => clock });
+  return { svc, journal, project: dev, docs: path.join(dev, 'documentation'), ignore: path.join(dev, '.gitignore'),
+    backlog: path.join(dev, 'documentation', 'PROJ_BACKLOG.md'), advance: (ms) => { clock += ms; } };
+}
+
+test('#79 R2: a note to a git root with no documentation folder makes it, the backlog and the .gitignore block, and files', () => {
+  const t = bare();
+  const r = t.svc.submit(t.project, 'first');
+  assert.deepStrictEqual([r.ok, r.filed], [true, true]);
+  assert.strictEqual(read(t.backlog), CREATED('- 2026-10-05 09:07 · first\n'));
+  assert.ok(read(t.ignore).includes(MARKER) && read(t.ignore).includes('documentation/*'));
+  const n = t.svc.snapshot(t.project).list[0];
+  assert.deepStrictEqual([n.state, n.undoable, n.createdBacklog], ['filed', true, true]);
+});
+
+test('#79 R2: Undo of the note that made the folder takes the backlog, the folder and the block out again', () => {
+  const t = bare();
+  const r = t.svc.submit(t.project, 'first');
+  assert.deepStrictEqual(t.svc.undo(r.id, t.project), { ok: true });
+  assert.strictEqual(fs.existsSync(t.docs), false);
+  assert.strictEqual(fs.existsSync(t.ignore), false, 'the .gitignore this note created goes too');
+});
+
+test('#79 R2: a project that is not a git root is still "no-docs": nothing is made, the note is held', () => {
+  const t = bare({ git: false });
+  const r = t.svc.submit(t.project, 'x');
+  assert.deepStrictEqual([r.filed, r.reason], [false, 'no-docs']);
+  assert.deepStrictEqual(fs.readdirSync(t.project), []);
+});
+
+test('#79 R2: notes held as no-docs are filed with the folder a later note makes, once each, in the order typed', () => {
+  const t = bare({ git: false });
+  t.svc.submit(t.project, 'older one');
+  t.advance(60_000);
+  t.svc.submit(t.project, 'older two');
+  makeGit(t.project);                                              // now it is a git root: the next note can make the folder
+  t.advance(60_000);
+  const r = t.svc.submit(t.project, 'new one');
+  assert.strictEqual(r.filed, true);
+  const text = read(t.backlog);
+  assert.ok(text.indexOf('older one') < text.indexOf('older two') && text.indexOf('older two') < text.indexOf('new one'), text);
+  assert.strictEqual(text.split('older one').length - 1, 1);
+  assert.deepStrictEqual(Object.fromEntries(t.svc.snapshot(t.project).list.map(n => [n.text, n.state])),
+    { 'new one': 'filed', 'older one': 'filed', 'older two': 'filed' });
+  assert.ok(read(t.ignore).includes(MARKER));
+});
+
+test('#79 R2: a held no-docs note is filed on the tick once a backlog appears in a folder made by hand', async () => {
+  const t = bare({ git: false });
+  t.svc.submit(t.project, 'waiting');
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].reason, 'no-docs');
+  await t.svc.tick();
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'unfiled', 'still nowhere to put it');
+  fs.mkdirSync(t.docs);
+  fs.writeFileSync(t.backlog, BACKLOG);
+  t.advance(1000);
+  await t.svc.tick();
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'filed');
+  assert.ok(read(t.backlog).includes('· waiting'));
+});
+
+test('#79 R2: the held note that created the folder is undone along with the creating note: the folder stays while a note is in it', () => {
+  const t = bare({ git: false });
+  const held = t.svc.submit(t.project, 'held');
+  makeGit(t.project);
+  t.advance(60_000);
+  const mine = t.svc.submit(t.project, 'mine');
+  assert.deepStrictEqual(t.svc.undo(mine.id, t.project), { ok: true });
+  assert.ok(read(t.backlog).includes('· held') && !read(t.backlog).includes('· mine'), 'the held note is still filed');
+  assert.ok(held.ok);
 });

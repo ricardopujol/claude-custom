@@ -10,19 +10,22 @@
  *   undoNote(file, record)             -> { ok: true } | { ok: false, reason: 'changed' | 'write-failed' }
  *
  * WHERE: the project's `documentation\` folder, found the way sync-docs finds it (SyncDocs.ps1 Resolve-ProjectRoot: a
- * linked worktree's docs are the main checkout's, unless the worktree has a build log of its own). It is never made:
- * a project with no `documentation\` is `no-docs`. The backlog is the one that is there: a single `*_BACKLOG.md` or
+ * linked worktree's docs are the main checkout's, unless the worktree has a build log of its own). docsOf never makes
+ * it; a project with no `documentation\` is `no-docs` unless its home is a git root (then the first note makes the
+ * folder, see CREATING). The backlog is the one that is there: a single `*_BACKLOG.md` or
  * `BACKLOG.md` (whatever its stem), or the one named `<NAME>_BACKLOG.md` among several; several with none of that name
  * are `no-backlog-ambiguous`. NAME is sync-docs' Get-DocsName: the one `*_BUILD_LOG.md`'s stem, else the folder name
  * (a `dev` folder is named after its parent) upper-cased without separators, character by character like .NET's
- * ToUpperInvariant. Only the backlog is ever written.
+ * ToUpperInvariant. Besides what CREATING makes, only the backlog is ever written.
  *
- * CREATING (#79): a project with a `documentation\` and no backlog at all gets one, but only when its home is a git
- * root that is not a drive root (`canCreate`), never a home folder or a launch-directory fallback: `# <folder> — Feature
- * & Bug Backlog` and an empty `## Inbox`, made via temp file + hard link (or an exclusive create where hard links
- * aren't supported) so a backlog that appears meanwhile is never replaced. fileNote says `result: 'created-backlog'`
- * and its record carries the `pristine` text, so undoNote removes the file again only when the note was all that was
- * ever in it.
+ * CREATING (#79): a project with no backlog at all gets one, but only when its home is a git root that is not a
+ * drive root or the home folder (`canCreate`), never a launch-directory fallback: `# <folder> — Feature & Bug
+ * Backlog` and an empty `## Inbox`, made via temp file + hard link (or an exclusive create where hard links aren't
+ * supported) so a backlog that appears meanwhile is never replaced. A project with no `documentation\` folder gets that
+ * made first, and the sync-docs `.gitignore` block added to the repo's `.gitignore` (created if missing; idempotent by
+ * its marker line), so the docs stay out of GitHub (Ricardo, 2026-10-09). fileNote says `result: 'created-backlog'`
+ * and its record carries the `pristine` text (and `made`, what this note made besides the file), so undoNote removes
+ * the file again only when the note was all that was ever in it, then the folder if it is empty, then the block it added.
  *
  * SAFELY: read, build the new text (the inbox created after the status block if it's missing, the entry appended),
  * write it to a temp file beside the backlog, re-read the backlog just before the rename, and rename only if it's still
@@ -34,6 +37,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const { isTransient, nextWait, sleepSync, ATTEMPTS: RENAME_ATTEMPTS, FIRST_WAIT_MS } = require('./atomic-write');
 const doc = require('./indexing-doc');
@@ -87,10 +91,11 @@ function leafOf(home) {
 /** .NET's ToUpperInvariant: one character at a time, a character whose upper case is several stays (ß is not SS). */
 const upperInvariant = (s) => Array.from(s, (ch) => { const u = ch.toUpperCase(); return Array.from(u).length === 1 ? u : ch; }).join('');
 
-/** A real project's top folder: a git repo (or linked worktree) that is not a drive root. */
+/** A real project's top folder: a git repo (or linked worktree) that is not a drive root or the home folder. */
 function isProjectRoot(home) {
   try {
     if (path.parse(path.resolve(home)).root === path.resolve(home)) return false;
+    if (path.resolve(home).toLowerCase() === path.resolve(os.homedir()).toLowerCase()) return false;
     const g = fs.statSync(path.join(home, '.git'));
     return g.isFile() || (g.isDirectory() && fs.statSync(path.join(home, '.git', 'HEAD')).isFile());
   } catch { return false; }
@@ -99,10 +104,15 @@ function isProjectRoot(home) {
 function docsOf(project) {
   if (!project || typeof project.dev !== 'string') return { ok: false, reason: 'no-docs' };
   const home = homeOf(project.dev);
-  const dir = docsDirIn(home);
-  if (dir === null) return { ok: false, reason: 'no-docs' };
-  let names;
-  try { names = fs.readdirSync(dir); } catch { return { ok: false, reason: 'no-docs' }; }
+  let dir = docsDirIn(home);
+  let names = [];
+  if (dir === null) {
+    // No documentation folder: the first note makes it, but only in a real project's top folder (#79).
+    if (!isProjectRoot(home)) return { ok: false, reason: 'no-docs' };
+    dir = path.join(home, 'documentation');
+  } else {
+    try { names = fs.readdirSync(dir); } catch { return { ok: false, reason: 'no-docs' }; }
+  }
   const logs = names.filter(n => /_BUILD_LOG\.md$/i.test(n));
   if (logs.length > 1) return { ok: false, reason: 'many-build-logs' };
   const leaf = leafOf(home);
@@ -219,32 +229,115 @@ function createExclusive(file, text) {
   return { ok: true, created: true };
 }
 
+// The block /sync-docs puts in a project's .gitignore (skills/sync-docs/templates.md): documentation/ stays out of
+// GitHub, only its README is tracked. Idempotent by the marker line.
+const GITIGNORE_MARKER = '# --- sync-docs (gitignore) ---';
+const GITIGNORE_LINES = [
+  GITIGNORE_MARKER,
+  '# documentation/ is mirrored to the Obsidian vault and kept OUT of GitHub by',
+  '# default. Only the index README is tracked. Delete this block to push the docs.',
+  'documentation/*',
+  '!documentation/README.md',
+  '# --- end sync-docs (gitignore) ---',
+];
+const gitignoreBlock = (nl) => GITIGNORE_LINES.join(nl) + nl;
+
 /**
- * Create the project's backlog when it isn't there (never its documentation folder, and only for a project that
- * `canCreate`): written to a temp file, then hard-linked into place, which fails with EEXIST rather than replacing a
- * backlog a session or another window made in the meantime; where hard links aren't supported, an exclusive create.
- * The target is never opened for writing otherwise.
- * -> { ok: true, created: boolean } | { ok: false, reason: 'no-backlog' | 'write-failed' }
+ * Make sure `<home>\\.gitignore` carries the sync-docs block: created when there is no file (an exclusive create), the
+ * block appended (after a blank line, in the file's own line endings) when it lacks the marker, left alone when it has it.
+ * -> { ok: true, how: 'present' | 'created' | 'appended', text? } (text: exactly what this call added) | { ok: false }
+ */
+function addGitignoreBlock(home, opts = {}) {
+  const file = path.join(home, '.gitignore');
+  for (let i = 0; i < 2; i++) {
+    const cur = readDoc(file, opts);
+    if (!cur.ok && cur.reason === 'missing') {
+      const made = createExclusive(file, gitignoreBlock('\n'));
+      if (made.created) return { ok: true, how: 'created', text: gitignoreBlock('\n') };
+      continue;                                           // it appeared meanwhile: treat it as the existing file
+    }
+    if (!cur.ok) return { ok: false };
+    if (cur.text.includes(GITIGNORE_MARKER)) return { ok: true, how: 'present' };
+    const r = safeRewrite(file, (text) => {
+      if (text.includes(GITIGNORE_MARKER)) return { ok: false, reason: 'present' };
+      const nl = text.includes('\r\n') ? '\r\n' : '\n';
+      const sep = text === '' ? '' : (/\n$/.test(text) ? nl : nl + nl);
+      const added = sep + gitignoreBlock(nl);
+      return { ok: true, text: text + added, added };
+    }, opts);
+    if (r.ok) return { ok: true, how: 'appended', text: r.added };
+    if (r.reason === 'present') return { ok: true, how: 'present' };
+    return { ok: false };
+  }
+  return { ok: false };
+}
+
+/** Take back what addGitignoreBlock added, only while the file still ends/holds exactly that. Best effort. */
+function removeGitignoreBlock(home, g, opts = {}) {
+  const file = path.join(home, '.gitignore');
+  try {
+    if (g.how === 'created') {
+      const cur = readDoc(file, opts);
+      if (cur.ok && cur.text === g.text) fs.rmSync(file, { force: true });
+    } else if (g.how === 'appended') {
+      safeRewrite(file, (text) => (text.endsWith(g.text) ? { ok: true, text: text.slice(0, text.length - g.text.length) } : { ok: false, reason: 'changed' }), opts);
+    }
+  } catch { /* the block stays; harmless */ }
+}
+
+/**
+ * Take back what a note made besides the backlog: the documentation folder, only while it is empty, and then, only if
+ * the folder went, the .gitignore block this note added. Anything else in the folder keeps both.
+ */
+function unmake(dir, made, opts = {}) {
+  if (!made || made.dir !== true) return;
+  try { fs.rmdirSync(dir); } catch { return; }
+  if (made.gitignore) removeGitignoreBlock(path.dirname(dir), made.gitignore, opts);
+}
+
+/**
+ * Create the project's backlog when it isn't there (only for a project that `canCreate`): written to a temp file, then
+ * hard-linked into place, which fails with EEXIST rather than replacing a backlog a session or another window made in
+ * the meantime; where hard links aren't supported, an exclusive create. The target is never opened for writing otherwise.
+ * No `documentation\` folder yet: it is made first, and the sync-docs .gitignore block added; if either fails, whatever
+ * this call made is taken back. -> { ok: true, created: boolean, made?: { dir, gitignore? } } | { ok: false, reason: 'no-backlog' | 'write-failed' }
  */
 function createBacklog(docs, { beforeCreate = () => {}, link = fs.linkSync } = {}) {
   if (!docs || docs.canCreate !== true) return { ok: false, reason: 'no-backlog' };
+  const made = {};
+  try {
+    if (!fs.existsSync(docs.dir)) {
+      try { fs.mkdirSync(docs.dir); made.dir = true; } catch (err) { if (!(err && err.code === 'EEXIST')) throw err; }
+      if (made.dir) {
+        const g = addGitignoreBlock(path.dirname(docs.dir));
+        if (!g.ok) throw new Error('the .gitignore could not be updated');
+        if (g.how !== 'present') made.gitignore = { how: g.how, text: g.text };
+      }
+    }
+  } catch {
+    unmake(docs.dir, made.dir ? { dir: true, gitignore: made.gitignore } : null);
+    return { ok: false, reason: 'write-failed' };
+  }
   const tmp = path.join(docs.dir, `.${path.basename(docs.backlog)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+  let result;
   try {
     fs.writeFileSync(tmp, pristineOf(docs), 'utf8');
     beforeCreate(docs.backlog);
     try {
       link(tmp, docs.backlog);
+      result = { ok: true, created: true };
     } catch (err) {
-      if (err && err.code === 'EEXIST') return { ok: true, created: false };
-      if (!(err && NO_HARD_LINKS.has(err.code))) throw err;
-      return createExclusive(docs.backlog, pristineOf(docs));
+      if (err && err.code === 'EEXIST') result = { ok: true, created: false };
+      else if (!(err && NO_HARD_LINKS.has(err.code))) throw err;
+      else result = createExclusive(docs.backlog, pristineOf(docs));
     }
-    return { ok: true, created: true };
   } catch {
-    return { ok: false, reason: 'write-failed' };
+    result = { ok: false, reason: 'write-failed' };
   } finally {
     try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to clean */ }
   }
+  if (!result.ok) { unmake(docs.dir, made.dir ? { dir: true, gitignore: made.gitignore } : null); return result; }
+  return result.created && made.dir ? { ...result, made: { dir: true, ...(made.gitignore ? { gitignore: made.gitignore } : {}) } } : result;
 }
 
 /** The backlog exists after this, or why not. -> { ok: true, created: boolean } | { ok: false, reason } */
@@ -269,15 +362,18 @@ function fileNote({ docs, stamp, text, beforeRename, beforeCreate, link, rename,
   }, { beforeRename, rename, sleep, readFile });
   let r = rewrite();
   let created = false;
+  let made = null;
   if (!r.ok && r.reason === 'missing') {
     const c = createBacklog(docs, { beforeCreate, link });
     if (!c.ok) return c;
     created = c.created;
+    made = c.made || null;
     r = rewrite();
   }
   if (!r.ok) return { ok: false, reason: r.reason === 'missing' ? 'no-backlog' : r.reason };
   if (!created) return { ok: true, where: { file: docs.backlog }, record: r.record };
-  return { ok: true, result: 'created-backlog', where: { file: docs.backlog }, record: { ...r.record, pristine: pristineOf(docs) } };
+  return { ok: true, result: 'created-backlog', where: { file: docs.backlog },
+    record: { ...r.record, pristine: pristineOf(docs), ...(made ? { made } : {}) } };
 }
 
 /**
@@ -313,7 +409,11 @@ function deleteIfPristine(file, record, { rename = fs.renameSync, unlink = fs.un
   const moved = readDoc(aside, { readFile, sleep });
   let failure = null;
   if (moved.ok && leavesPristine(moved.text, record)) {
-    try { unlink(aside); return { ok: true }; } catch { failure = { ok: false, reason: 'write-failed' }; }
+    try {
+      unlink(aside);
+      unmake(path.dirname(file), record.made, { readFile, sleep });     // the folder and the .gitignore block this note made, if nothing else is in them
+      return { ok: true };
+    } catch { failure = { ok: false, reason: 'write-failed' }; }
   }
   // Not what it was (or couldn't be deleted): put it back, unless something new is at the old name already.
   try {

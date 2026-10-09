@@ -63,7 +63,7 @@ test('S21 service: a note held for RETRY_MS is tried again at exactly RETRY_MS a
   assert.ok(read(t.backlog).includes('· mine'));
 });
 
-test('S21 service: conflict, write-failed and busy are retried by the tick; no-docs, no-backlog-ambiguous and any other reason are not', async () => {
+test('S21 service: conflict, write-failed and busy are retried by the tick; no-backlog-ambiguous and any other reason are not (no-docs is replayed, not retried: see indexing-service.test.js)', async () => {
   for (const reason of ['conflict', 'write-failed', 'busy']) {
     const w = failingWriter([reason, 'ok']);
     const t = setup({ writerImpl: w.impl });
@@ -72,7 +72,7 @@ test('S21 service: conflict, write-failed and busy are retried by the tick; no-d
     await t.svc.tick();
     assert.strictEqual(w.calls.fileNote, 2, `${reason} is retried`);
   }
-  for (const reason of ['no-docs', 'many-build-logs', 'no-backlog-ambiguous', 'something-new']) {
+  for (const reason of ['many-build-logs', 'no-backlog-ambiguous', 'something-new']) {
     const w = failingWriter([reason, 'ok']);
     const t = setup({ writerImpl: w.impl });
     const r = t.svc.submit(t.project, 'x');
