@@ -137,9 +137,13 @@ function candidates(boxes, viewport, { tabBar = TAB_BAR, exclude = null } = {}) 
   return out.filter((z, i) => !out.slice(i + 1).some(o => sameTarget(o.target, z.target)));
 }
 
-/** Where a move starts: the middle of the group (or float) the module sits in, else the terminal's float zone. */
+/**
+ * Where a move starts: the middle of the group (or float) the module sits in, else the terminal's float zone. The boxes are
+ * the page's plan, whose tabs are { id, label, ... } objects (a bare list of ids is read too).
+ */
 function startTarget(boxes, id) {
-  const own = (Array.isArray(boxes) ? boxes : []).find(b => hasRect(b) && (b.kind === 'group' || b.kind === 'float') && Array.isArray(b.tabs) && b.tabs.includes(id));
+  const holds = b => Array.isArray(b.tabs) && b.tabs.some(t => t === id || (isObject(t) && t.id === id));
+  const own = (Array.isArray(boxes) ? boxes : []).find(b => hasRect(b) && (b.kind === 'group' || b.kind === 'float') && holds(b));
   return own ? { cell: own.id, side: 'center' } : { float: true };
 }
 

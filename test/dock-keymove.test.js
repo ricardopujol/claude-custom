@@ -67,6 +67,37 @@ test('a panel on a rail, or unknown, starts on the terminal\'s middle', () => {
   assert.deepEqual(D.startTarget(BOXES, 'nope'), { float: true });
 });
 
+// --- PR #159 Dexter 2: the page hands over the PLAN's boxes, whose tabs are { id, label, ... } objects ---
+
+const { TABS } = require('../app/side-tabs');
+const V = require('../app/dock-tree-display');
+const planBoxes = (l, vp = VP, sel = {}) => V.treePlan(l, sel, TABS, vp, {}).boxes;
+const allIds = TABS.map(t => t.id);
+
+test('Dexter 2: on the plan\'s own boxes a move starts on the middle of the group the panel sits in', () => {
+  const l = T.defaultLayout(allIds);
+  assert.deepEqual(D.startTarget(planBoxes(l), 'vault'), { cell: 'right', side: 'center' });
+});
+
+test('Dexter 2: ...and of the float it floats in', () => {
+  const l = T.dock(T.defaultLayout(allIds), 'vault', { float: { x: 40, y: 40 } });
+  assert.deepEqual(D.startTarget(planBoxes(l), 'vault'), { cell: l.floats[0].id, side: 'center' });
+});
+
+test('Dexter 2: Move then Enter with no step leaves the placement exactly as it was (the very same layout)', () => {
+  const l = T.defaultLayout(allIds);
+  const boxes = planBoxes(l);
+  const start = D.startTarget(boxes, 'vault');
+  assert.equal(T.dock(l, 'vault', start), l);
+  assert.match(D.describeTarget(start, c => `the ${c} group`), /as a tab in the right group/);
+});
+
+test('Dexter 2: a first arrow steps from the group, not from the terminal', () => {
+  const l = T.defaultLayout(allIds);
+  const boxes = planBoxes(l);
+  assert.deepEqual(D.nextZone(boxes, VP, D.startTarget(boxes, 'vault'), 'ArrowLeft'), { cell: 'right', side: 'left' });
+});
+
 // --- stepping -------------------------------------------------------------------------------
 
 test('arrow keys walk from the group\'s middle: left into its left band, then the terminal', () => {

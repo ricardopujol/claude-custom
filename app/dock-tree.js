@@ -746,7 +746,7 @@ function place(n, rect, path, ctx) {
   const shut = n.kids.map(k => k.type === 'group' && ctx.sel.collapsed[k.id] === true);
   const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut) : plainLengths(n, length, shut);
   ctx.splits.push({
-    path, dir: n.dir, px: len,
+    path, dir: n.dir, px: len, state,
     // A rail is as small as it gets, so a divider drag can't ask it for less.
     min: n.kids.map((k, i) => (state[i] === 'open' ? along(k, n.dir) : len[i])),
   });

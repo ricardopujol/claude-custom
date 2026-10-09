@@ -489,7 +489,7 @@ test('fit: the default in 1000 x 600 is the terminal, a gutter and the group at 
   assert.deepEqual(rectOf(f, 'term'), R(0, 0, 815, 600));
   assert.deepEqual(kindOf(f, 'gutter'), [{ kind: 'gutter', path: [], i: 1, dir: 'row', rect: R(815, 0, 5, 600) }]);
   assert.deepEqual(kindOf(f, 'group'), [{ kind: 'group', id: 'right', tabs: IDS, active: 'agents', rect: R(820, 0, 180, 600) }]);
-  assert.deepEqual(f.splits, [{ path: [], dir: 'row', px: [815, 180], min: [320, 120] }]);
+  assert.deepEqual(f.splits, [{ path: [], dir: 'row', px: [815, 180], state: ['open', 'open'], min: [320, 120] }]);
 });
 
 test('fit: a group shows this window\'s choice', () => {
@@ -544,7 +544,7 @@ test('fit: 440 wide folds the column to a rail of 28 and the terminal keeps 320'
   assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], rect: R(412, 0, 28, 700) }]);
   assert.equal(rectOf(f, 'term').width, 412);
   assert.equal(kindOf(f, 'group').length, 2);
-  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], min: [320, 28] });
+  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], state: ['open', 'rail'], min: [320, 28] });
   assertTiles(f, 440, 700);
 });
 
@@ -616,7 +616,7 @@ test('fit: in a column of proportions a kid under its minimum is raised, the big
   const l = T.normalize(v2(row([term, col([g('a', 'agents'), g('b', 'vault'), g('c', ...IDS.slice(2))], [10, 1, 1])], [0, 180])), IDS);
   const f = T.fit(l, NO_SEL, { width: 800, height: 600 });
   assert.deepEqual([rectOf(f, 'a').height, rectOf(f, 'b').height, rectOf(f, 'c').height], [430, 80, 80]);
-  assert.deepEqual(f.splits.find(s => s.path.length === 1), { path: [1], dir: 'col', px: [430, 80, 80], min: [80, 80, 80] });
+  assert.deepEqual(f.splits.find(s => s.path.length === 1), { path: [1], dir: 'col', px: [430, 80, 80], state: ['open', 'open', 'open'], min: [80, 80, 80] });
 });
 
 test('fit: pixels that do not divide go to the biggest remainders and the column still adds up', () => {

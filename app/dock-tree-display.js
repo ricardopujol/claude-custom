@@ -139,11 +139,23 @@ function dragSizes(px, min, i, delta) {
  */
 function sizesAfterDrag(node, split, i, delta) {
   if (!isObject(node) || node.type !== 'split' || !isObject(split)) return null;
+  // A kid drawn as a rail (collapsed in this window, or folded by a narrow one) is not the user's size to store: its
+  // 28 or 30 px is the rail's, and writing it would shrink the group in every other window (PR #159 Dexter 1).
+  const state = Array.isArray(split.state) && split.state.length === node.kids.length ? split.state : null;
+  const open = k => state === null || state[k] === 'open';
+  if (!Number.isInteger(i) || i < 1 || i >= node.kids.length) return null;
+  if (!open(i - 1) || !open(i)) return railNeighbourSizes(node, split, i, delta, open);
   const dragged = dragSizes(split.px, split.min, i, delta);
   if (!dragged) return null;
   // Nothing moved (no delta, or a neighbour at its minimum): not a choice, so nothing to store.
   if (dragged.every((v, k) => v === split.px[k])) return null;
-  if (!hasTerm(node)) return dragged;
+  if (!hasTerm(node)) {
+    if (state === null || state.every(s => s === 'open')) return dragged;
+    // Proportions with a rail in the row: the rail keeps its stored share, written in the drawn pixels' units.
+    const tOpen = node.kids.reduce((a, _, k) => a + (open(k) ? node.sizes[k] : 0), 0);
+    const sOpen = split.px.reduce((a, v, k) => a + (open(k) ? v : 0), 0);
+    return dragged.map((v, k) => (open(k) ? v : node.sizes[k] * sOpen / tOpen));
+  }
   return dragged.map((v, k) => {
     if (k === i - 1 || k === i || hasTerm(node.kids[k])) return v;
     return isSize(node.sizes[k]) ? node.sizes[k] : v;
@@ -186,6 +198,22 @@ function dividerKey(layout, splits, path, i, key) {
 
 /** Milliseconds boxes take to settle after a drop: none when the person asked for reduced motion (or it isn't known they didn't). */
 function settleMs(reducedMotion) { return reducedMotion === false ? SETTLE_MS : 0; }
+
+/**
+ * The divider beside a rail: the rail keeps what is stored, and the open kid on its other side trades with the room across
+ * the rail (the terminal's side), against its own minimum. Only in a row or column that holds the terminal; null elsewhere
+ * (a plain split has no room to trade with), and when nothing moves.
+ */
+function railNeighbourSizes(node, split, i, delta, open) {
+  const o = open(i) ? i : (open(i - 1) ? i - 1 : -1);
+  if (o < 0 || !hasTerm(node) || hasTerm(node.kids[o]) || !isNumber(delta)) return null;
+  const s = node.kids.findIndex(hasTerm);
+  if (split.px[o] < split.min[o]) return null;
+  const grow = o === i ? -delta : delta;                 // right/down shrinks the kid after the divider, grows the one before
+  const d = Math.round(Math.min(Math.max(0, split.px[s] - split.min[s]), Math.max(split.min[o] - split.px[o], grow)));
+  if (d === 0) return null;
+  return node.kids.map((k, j) => (j === o ? split.px[o] + d : (hasTerm(k) ? split.px[j] : node.sizes[j])));
+}
 
 /**
  * A divider is released on the placement as it is NOW, not as it was at pointerdown

@@ -159,3 +159,57 @@ test('a collapsed group still folds the rest by the usual rule when the window i
   const term0 = b.find(x => x.kind === 'term');
   assert.ok(term0.rect.width >= 320);
 });
+
+// --- PR #159 Dexter 1: a divider beside a collapsed group never stores the rail's pixels -----------
+
+const V = require('../app/dock-tree-display');
+const { TABS } = require('../app/side-tabs');
+const fc = require('fast-check');
+const dkey = (l, s, vp, path, i, key) => V.dividerKey(l, V.treePlan(l, s, TABS, vp, {}).splits, path, i, key);
+const twoRight = () => T.normalize(v2(row([term, g('g1', 'vault'), g('g2', 'git')], [0, 180, 200]), { hidden: IDS.filter(i => !['vault', 'git'].includes(i)) }), IDS);
+const column = () => T.normalize(v2(row([term, col([g('c1', 'vault'), g('c2', 'git'), g('c3', 'fog')], [1, 1, 1])], [0, 300]), { hidden: IDS.filter(i => !['vault', 'git', 'fog'].includes(i)) }), IDS);
+
+test('D1: ArrowRight on the divider between a collapsed group and the next stores the open one only; the rail keeps its 180', () => {
+  const next = dkey(twoRight(), sel({ g1: true }), { width: 1200, height: 800 }, [], 2, 'ArrowRight');
+  assert.ok(next, 'it moves');
+  assert.equal(next.root.sizes[1], 180, 'the collapsed group\'s stored size is untouched');
+  assert.equal(next.root.sizes[2], 184, 'the open one gave 16 px to the terminal');
+});
+
+test('D1: ...and the open group can still grow, toward the terminal\'s side', () => {
+  const next = dkey(twoRight(), sel({ g1: true }), { width: 1200, height: 800 }, [], 2, 'ArrowLeft');
+  assert.deepEqual([next.root.sizes[1], next.root.sizes[2]], [180, 216]);
+});
+
+test('D1: in a column, a divider beside a collapsed group keeps the rail\'s share of the column', () => {
+  const l = column();
+  const next = dkey(l, sel({ c1: true }), { width: 1200, height: 900 }, [1], 2, 'ArrowDown');
+  assert.ok(next);
+  const sizes = next.root.kids[1].sizes;
+  const share = sizes[0] / (sizes[0] + sizes[1] + sizes[2]);
+  assert.ok(Math.abs(share - 1 / 3) < 0.01, `c1's share is ${share}`);
+  assert.ok(sizes[1] > sizes[2], 'and the divider moved');
+});
+
+test('D1: a drag asks the same thing of the same rules (sizesAfterDrag), so a pointer cannot store a rail either', () => {
+  const l = twoRight();
+  const p = V.treePlan(l, sel({ g1: true }), TABS, { width: 1200, height: 800 }, {});
+  const out = V.sizesAfterDrag(l.root, p.splits[0], 2, 16);
+  assert.equal(out[1], 180);
+});
+
+test('D1 property: whatever is collapsed and whichever divider key is pressed, the collapsed groups keep their stored size', () => {
+  const sizeArb = fc.integer({ min: 120, max: 400 });
+  fc.assert(fc.property(fc.array(sizeArb, { minLength: 3, maxLength: 3 }), fc.array(fc.boolean(), { minLength: 3, maxLength: 3 }), fc.integer({ min: 1, max: 3 }), fc.constantFrom('ArrowLeft', 'ArrowRight'), fc.integer({ min: 700, max: 2000 }), (sz, shut, i, key, width) => {
+    const l = T.normalize(v2(row([g('a', 'vault'), term, g('b', 'git'), g('c', 'fog')], [sz[0], 0, sz[1], sz[2]]), { hidden: IDS.filter(x => !['vault', 'git', 'fog'].includes(x)) }), IDS);
+    const collapsed = {};
+    ['a', 'b', 'c'].forEach((id, k) => { if (shut[k]) collapsed[id] = true; });
+    const next = dkey(l, sel(collapsed), { width, height: 800 }, [], i, key);
+    fc.pre(next !== null);
+    ['a', 'b', 'c'].forEach((id, k) => {
+      if (!collapsed[id]) return;
+      const at = next.root.kids.findIndex(x => x.id === id);
+      assert.equal(next.root.sizes[at], l.root.sizes[l.root.kids.findIndex(x => x.id === id)], `${id} was stored as ${next.root.sizes[at]}`);
+    });
+  }), { numRuns: 300 });
+});
