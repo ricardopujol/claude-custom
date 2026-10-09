@@ -52,7 +52,6 @@ const HARNESS_DIR = path.join(ROOT, '.harness');
 const HELPER = path.join(HARNESS_DIR, 'hook-helper.exe');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
 
 const hygiene = createHygieneRegistry();
@@ -167,7 +166,7 @@ function hook(hostPid, event, payload) {
 
 const stateOf = async (app) => {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return st;
 };
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });

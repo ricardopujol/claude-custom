@@ -140,7 +140,6 @@ const view = (app, action, args = {}) => command(app, { cmd: 'view', action, arg
 // the process that had that start time: Windows reuses pids fast, and a probe that re-kills a recorded pid minutes later
 // can end somebody else's process with its whole tree (Miguel, PR #113 I4).
 const seenPids = require('./lib/seen-pids').createSeenPids();
-const track = (pid, start) => seenPids.add(pid, start);
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -153,7 +152,7 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) track(id.pid, id.processStartedAt);
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
   seenPids.endAll();   // a dead pid, or one reused since, is left alone (killProven). The tree is ours: a host this window spawned.
 }
 hygiene.addCleanup(killEverything);
@@ -161,7 +160,7 @@ hygiene.addCleanup(killEverything);
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) track(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');

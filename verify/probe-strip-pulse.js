@@ -146,7 +146,7 @@ const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=probe', '-c'
 
 async function stateOf(app) {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return st;
 }
 const tabOf = (st, label) => (Array.isArray(st && st.stripDom) ? st.stripDom.find(t => t.label === label) || null : null);

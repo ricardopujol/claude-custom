@@ -199,7 +199,7 @@ hygiene.addCleanup(restoreLayout);
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');
@@ -563,7 +563,7 @@ async function main() {
   await waitFor(async () => {
     const s = await command(app, { cmd: 'state' });
     const h = s && s.hosts && s.hosts.find(x => x.key === s.selectedKey);
-    if (h && Number.isInteger(h.pid)) { seenPids.add(h.pid); return true; }
+    if (h && Number.isInteger(h.pid)) { seenPids.see(h.pid); return true; }
     return null;
   }, 15000);
 

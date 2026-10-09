@@ -289,7 +289,7 @@ async function runRealApp() {
       const st = await command(app, { cmd: 'state' });
       const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
       if (!sel || !sel.started) return null;
-      if (Number.isInteger(sel.pid)) { out.hostPid = sel.pid; hostSeen.add(sel.pid); }
+      if (Number.isInteger(sel.pid)) { out.hostPid = sel.pid; hostSeen.see(sel.pid); }
       const v = await view('state');
       return v && v.ok && v.sent ? v : null;
     }, 150000, 500);

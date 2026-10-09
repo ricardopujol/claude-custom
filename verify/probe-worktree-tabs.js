@@ -204,7 +204,7 @@ function hostsUnder(dir) {
 }
 
 const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
-const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid); };
+const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid); };
 
 function killEverything() {
   for (const id of hostsUnder(tmp)) seenPids.add(id.pid, id.processStartedAt);
@@ -487,7 +487,7 @@ async function main() {
       sock.once('error', () => res(false));
     }), 30000, 300);
     const xid = await waitFor(() => readIdentity({ dir: HARNESS_DIR, port: xport }), 10000, 250);
-    if (xid) seenPids.add(xid.pid);
+    if (xid) seenPids.add(xid.pid, xid.processStartedAt);
     check('its host is on EXACTLY the named port and serves the folder it was given',
       !!listeningNow && !!xid && path.resolve(xid.cwd).toLowerCase() === path.resolve(container).toLowerCase(),
       xid ? `port ${xport}, cwd ${xid.cwd}` : 'no identity');

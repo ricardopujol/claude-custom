@@ -148,7 +148,7 @@ const fileMarks = () => { try { return JSON.parse(fs.readFileSync(MARKS_FILE, 'u
 
 async function devTab(app) {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return Array.isArray(st && st.stripDom) ? st.stripDom.find(t => t.label === 'develop') || null : null;
 }
 const markIs = (app, emoji) => waitFor(async () => {

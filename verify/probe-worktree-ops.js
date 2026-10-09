@@ -212,7 +212,7 @@ function hostsUnder(dir) {
 }
 
 const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
-const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid); };
+const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid); };
 
 // What a person does to end a session: type `exit` into its terminal. The
 // host exits with its claude (here cmd.exe), so the tab's port refuses.

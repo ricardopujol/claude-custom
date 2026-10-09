@@ -274,7 +274,7 @@ async function main() {
   const hostsBefore = probeHostPids().length;
   const o = await command(w, { cmd: 'background-open', port: h2.port });
   check('Open launched a window', o.ok && Number.isInteger(o.pid), JSON.stringify(o));
-  if (o.ok && Number.isInteger(o.pid)) { seen.add(o.pid); extraPids.push(o.pid); }
+  if (o.ok && Number.isInteger(o.pid)) { seen.see(o.pid); extraPids.push(o.pid); }
   const attached = await waitFor(async () => {
     const r = await command(w, { cmd: 'background' });
     const it = itemOn(r, h2.port);
