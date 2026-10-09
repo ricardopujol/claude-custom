@@ -56,7 +56,7 @@ test('the probe scans sleepers by a marker the spawner does not carry, and the s
 });
 
 test('the #72 test scans sleepers by a marker its spawner does not carry, and its spawner cannot end inside the test (D4, D7)', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'status-relay.test.js'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, 'status-relay-process.test.js'), 'utf8');
   assert.match(src, /cc72s-/);
   assert.doesNotMatch(src, /n >= 400/);
   assert.match(src, /deadlineMs: 170000/);

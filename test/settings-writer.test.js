@@ -220,21 +220,6 @@ test('the pipe argument carries no backslashes for a shell to eat', () => {
   assert.ok(!pipeArg.includes('\\'), `pipe argument still has backslashes: ${pipeArg}`);
 });
 
-test('the bare pipe name survives a POSIX shell unchanged', (t) => {
-  // Ask a real shell what it would hand the helper, rather than reasoning about
-  // escaping rules -- reasoning about them is how this shipped broken.
-  const { spawnSync } = require('child_process');
-  // Not spawnSync('bash'): from PowerShell that is the WSL launcher, which fails without an error (BACKLOG #72).
-  const sh = posixShell();
-  if (!sh) { t.skip('no POSIX shell on this machine'); return; }
-  const s = buildHarnessSettings({ helperPath: 'C:\\h\\hook-helper.exe', pipeName: '\\\\.\\pipe\\claude-custom-42' });
-  const cmd = s.hooks.PreToolUse[0].hooks[0].command;
-  const pipeArg = /--pipe\s+("[^"]*"|\S+)/.exec(cmd)[1];
-  const r = spawnSync(sh, ['-c', `printf %s ${pipeArg}`], { encoding: 'utf8' });
-  assert.strictEqual(r.status, 0, r.stderr);
-  assert.strictEqual(r.stdout, 'claude-custom-42');
-});
-
 test('the pipe name keeps its identity, prefix aside', () => {
   // The helper rebuilds the prefix, so the NAME must survive intact or it
   // connects to the wrong pipe rather than to none.

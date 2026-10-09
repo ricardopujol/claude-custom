@@ -57,7 +57,12 @@ const REPO_SCANNING = new Set([
   'canvas-wiring.test.js',
   'canvas-main-wiring.test.js',
   'renderer-canvas-wiring.test.js',
-  'canvas-mcp.test.js',            // #125: spawns the MCP server as a real process and reads its source; it requires canvas-store only to prepare a folder
+  // Release-gate lane 2026-10-09 (Miguel I1/I2): the tests that run real processes, split from the files in the command. A Stryker timeout counts as a
+  // KILL and a hung child is left behind, so they stay out; their pure tests stay in. Run them by hand: node --test test/<name>-process.test.js
+  'status-relay-process.test.js',
+  'probe-hygiene-process.test.js',
+  'settings-writer-process.test.js',
+  'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -188,6 +193,11 @@ test('no test in the command reads a MUTATED module as text', () => {
     // cannot be reached any other way). Instrumented text still runs there, and `process` is injected for it. It
     // asserts no code shape. A named exception, on purpose.
     'tab-strip-accent-wiring.test.js',
+    // Neither READS a mutated module (release-gate lane, 2026-10-09): both only NAME one as a string (status-relay.test.js in the settings it builds,
+    // settings-writer.test.js as 'host/loadout-hook.js'). The detector flags a quoted path beside any readFileSync in the file, so the name is what
+    // trips it. (The source-text assertions on host/status-relay.js are in source-contracts.test.js.)
+    'status-relay.test.js',
+    'settings-writer.test.js',
   ]);
 
   // THE BASENAME ANYWHERE INSIDE THE QUOTES. Mortimer, PR #42 run 3, and this is
@@ -400,7 +410,6 @@ test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six o
   // Derived from the tree, not restated: any app/canvas-*.js or host/canvas-*.js is logic-bearing and security-bearing unless it is named below.
   const NOT_LOGIC = new Set([
     'app/canvas-panel-preload.js',   // the two-function bridge: needs Electron's contextBridge, and test/canvas-panel-preload.test.js pins its surface
-    'host/canvas-mcp.js',            // an MCP stdio SERVER: test/canvas-mcp.test.js spawns it as a real process and reads its source text, both of which abort Stryker's dry run (the two rules above); NOT covered by a mutation score, which Mortimer's report must say
   ]);
   const found = [];
   for (const dir of ['app', 'host']) {
@@ -414,5 +423,27 @@ test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six o
   for (const m of found) {
     const own = `test/${path.basename(m, '.js')}.test.js`;
     if (fs.existsSync(path.join(ROOT, own))) assert.ok(cmd.includes(own), `${own} must be in the command`);
+  }
+});
+
+test('the eight modules that decide what is killed, deleted or kept running are mutated (Mortimer, release gate 2026-10-09)', () => {
+  // The consistency test above only checks the tests of modules ALREADY in `mutate`; these eight shipped (PRs #121-#133) without being
+  // listed, so no gate measured the code that kills a process tree, edits the pid ledger, deletes task logs and ends the quit.
+  for (const rel of ['host/kill-tree.js', 'host/pid-ledger.js', 'host/task-logs.js', 'host/task-logs-fs.js', 'host/status-relay.js',
+    'app/quit-watchdog.js', 'host/settings-writer.js', 'host/canvas-mcp.js']) {
+    assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
+  }
+});
+
+test('the real-process halves of status-relay, probe-hygiene and settings-writer stay split out of the command (Miguel, PR #142 I1/I2)', () => {
+  // A Stryker timeout counts as a KILL, and a hung child is left behind: the tests that run real processes live in <name>-process.test.js,
+  // exempt from the command, while the pure tests stay in. Each must exist, still spawn, and stay out; the pure file must not spawn.
+  const cmd = conf.commandRunner.command;
+  for (const name of ['status-relay', 'probe-hygiene', 'settings-writer']) {
+    const proc = fs.readFileSync(path.join(ROOT, 'test', name + '-process.test.js'), 'utf8');
+    assert.ok(SPAWN.test(proc), name + '-process.test.js no longer spawns a real process: merge it back or drop it');
+    assert.ok(!cmd.includes('test/' + name + '-process.test.js'), name + '-process.test.js must NOT be in the command');
+    assert.ok(cmd.includes('test/' + name + '.test.js'), name + '.test.js (the pure tests) must be in the command');
+    assert.ok(!SPAWN.test(fs.readFileSync(path.join(ROOT, 'test', name + '.test.js'), 'utf8')), name + '.test.js must not spawn real processes');
   }
 });
