@@ -493,6 +493,9 @@ function createShell(deps) {
         if (tab.started) return;
         const chosen = await hosts.choosePort(tab);
         if (!chosen) throw new Error(NO_PORT_ERROR);
+        // A side session never spawns into a folder that is being removed, or for a tab that closed during the walk (PR #149 R2-2).
+        // (A host the walk FOUND is still attached below, and stopped if its tab closed: it is already running.)
+        if (tab.side === true && chosen.action === 'spawn' && (tab.closed || destroyed || phaseOf(tab.parentKey) === 'removing')) return;
         port = chosen.port;
         // Dexter, PR #75 F2: a spawn whose wait timed out left a host that may
         // still be coming up. Retry must not spawn a second one onto its port.
@@ -1343,6 +1346,10 @@ function createShell(deps) {
     const sk = sideKeyOf(parentKey);
     const t = sk ? tabs.get(sk) : null;
     if (!t) return;
+    // Closed first, so a start still in its port walk gives up before it spawns; then wait for it to settle, so what it made or found
+    // is on the record when it is stopped below (R2-2). The remover must not start with a claude about to appear in the folder.
+    t.closed = true;
+    if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
     const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
     if (target) {
       try { await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }); } catch { /* the remover reports a folder still in use */ }

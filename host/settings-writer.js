@@ -23,7 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { SIDE_DENIED_TOOLS } = require('./side-session');
+const { SIDE_ALLOWED_TOOLS, SIDE_DENIED_TOOLS } = require('./side-session');
 
 // Hooks run synchronously in the critical path of tool execution, so the
 // matchers stay deliberately narrow. A '*' matcher would tax every Read, Grep
@@ -269,8 +269,10 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false }
   // override it, so the two never go together; and it is offered no panel of Claude's own.
   // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
   // a deny rule holds in every mode (host/side-session.js).
+  // --tools is the fence: only the named built-in tools exist in the session (an allow-list, so a new CLI tool is off until it is
+  // classified); --disallowedTools is a second wall by name; --strict-mcp-config (with no --mcp-config) loads no MCP server.
   const args = side === true
-    ? ['--permission-mode', 'plan', '--disallowedTools', SIDE_DENIED_TOOLS.join(',')]
+    ? ['--permission-mode', 'plan', '--tools', SIDE_ALLOWED_TOOLS.join(','), '--disallowedTools', SIDE_DENIED_TOOLS.join(','), '--strict-mcp-config']
     : ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
   // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer

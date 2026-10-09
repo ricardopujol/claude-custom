@@ -45,7 +45,8 @@ test('a side tab is drawn as a small tab: the "side" class, its label, and NO cl
   assert.ok(classesOf(side).includes('side'));
   assert.strictEqual(child(side, 'label').textContent, 'feat/a · side');
   assert.strictEqual(child(side, 'x'), undefined, 'it ends with its branch tab, not by a click of its own');
-  assert.match(side.title, /Edit, Write and Bash are denied/, 'its hover says what it is, and only what is true');
+  assert.match(side.title, /only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite/, 'its hover says what it is, and only what is true');
+  assert.match(side.title, /No Bash, PowerShell, Edit, Write or MCP/);
 });
 
 test('an ordinary tab carries no "side" class, whatever else it has', () => {

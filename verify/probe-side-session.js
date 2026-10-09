@@ -28,7 +28,7 @@
  * Every process it started is ended through host/kill-tree.js by pid AND start time (verify/lib/seen-pids.js), never by name.
  * WINDOWS ONLY (cmd.exe).
  */
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
@@ -40,6 +40,8 @@ const HARNESS_DIR = path.join(ROOT, '.harness');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { sendControl } = require(path.join(ROOT, 'host', 'host-client'));
+const sideSession = require(path.join(ROOT, 'host', 'side-session'));
+const { buildClaudeArgs } = require(path.join(ROOT, 'host', 'settings-writer'));
 
 if (process.platform !== 'win32') {
   console.log('SKIP: this probe drives cmd.exe; Windows only');
@@ -251,7 +253,7 @@ async function main() {
   s = await waitFor(async () => { const x = await state(app); return domOf(x, SIDE_A) ? x : null; }, 15000) || s;
   const dom = domOf(s, SIDE_A);
   check('the strip PAINTED it as a small side tab with no close button', !!dom && dom.side === true && dom.hasClose === false, JSON.stringify(dom));
-  check('and its hover says what it is', !!dom && /Edit, Write and Bash are denied/.test(dom.title || ''), dom && dom.title);
+  check('and its hover says what it is', !!dom && /No Bash, PowerShell, Edit, Write or MCP/.test(dom.title || ''), dom && dom.title);
   check('the side tab\'s page rendered and connected (xterm mounted)', !!(await waitFor(async () => {
     const x = await state(app);
     return x.viewDom && x.viewDom.xterm > 0 && x.viewDom.hasTerm ? x : null;
@@ -286,10 +288,66 @@ async function main() {
   // Plan mode is only where a session STARTS (Shift+Tab or accepting the plan leaves it); the deny rule is what holds in every
   // mode. Whether the CLI enforces it after a mode change takes a model turn to show, which bills, so this pins what the OS
   // says was passed (PR #149 Dexter 1); the CLI's deny-before-prompt behaviour is its documented one.
-  check('and with every writing tool denied through --disallowedTools (Edit, Write, NotebookEdit, MultiEdit, Bash)',
-    !!sideLine && /--disallowedTools\s+"?Edit,Write,NotebookEdit,MultiEdit,Bash"?/.test(sideLine), sideLine || 'no command line');
+  const toolsOf = (line, flag) => { const m = new RegExp(flag + '\\s+"?([A-Za-z,]+)"?').exec(line || ''); return m ? m[1].split(',') : null; };
+  const lineTools = toolsOf(sideLine, '--tools');
+  const lineDenied = toolsOf(sideLine, '--disallowedTools');
+  check('and is offered ONLY the read-only built-in tools (--tools), with PowerShell and Monitor in neither that list nor outside the deny',
+    !!lineTools && JSON.stringify(lineTools) === JSON.stringify(sideSession.SIDE_ALLOWED_TOOLS)
+    && !lineTools.includes('PowerShell') && !lineTools.includes('Monitor') && !lineTools.includes('Bash'), sideLine || 'no command line');
+  check('and PowerShell and Monitor are denied by name too, with no MCP server loaded (--strict-mcp-config)',
+    !!lineDenied && lineDenied.includes('PowerShell') && lineDenied.includes('Monitor') && lineDenied.includes('Bash')
+    && /--strict-mcp-config/.test(sideLine || '') && !/--mcp-config/.test(sideLine || ''), sideLine || 'no command line');
   check('the branch tab\'s claude is the other way round (bypass, no plan mode, nothing denied)',
-    !!mainLine && /--dangerously-skip-permissions/.test(mainLine) && !/--permission-mode/.test(mainLine) && !/--disallowedTools/.test(mainLine), mainLine || 'no command line');
+    !!mainLine && /--dangerously-skip-permissions/.test(mainLine) && !/--permission-mode/.test(mainLine) && !/--disallowedTools/.test(mainLine) && !/--tools/.test(mainLine), mainLine || 'no command line');
+
+  // ===== the REAL CLI's tool list, with no billed call =====
+  // `claude -p` prints its init message (with the tools it will offer) BEFORE any model request, and ANTHROPIC_BASE_URL on a dead port
+  // lets nothing be sent. So the args the side host really passes are measured against the installed CLI: only the allow-list exists in
+  // the session (PowerShell, Monitor and Bash are not there), and an unrestricted session's tools are all ones this repo has reviewed.
+  // The init line arrives within seconds; the process then keeps retrying its dead endpoint, so it is read as a stream and the child is
+  // ended through its own handle the moment the line is in.
+  const initTools = (extra) => new Promise((resolve) => {
+    const exe = path.join(process.env.APPDATA || '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+    if (!fs.existsSync(exe)) { resolve({ skipped: exe }); return; }
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-side-cli-'));
+    const child = spawn(exe, ['-p', 'hi', '--output-format', 'stream-json', '--verbose', '--max-turns', '1', '--no-session-persistence', ...extra],
+      { cwd, windowsHide: true, env: { ...process.env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }, stdio: ['ignore', 'pipe', 'ignore'] });
+    let buf = '';
+    let done = false;
+    const finish = (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      try { child.kill(); } catch { /* already gone */ }
+      setTimeout(() => { try { fs.rmSync(cwd, { recursive: true, force: true }); } catch { /* temp */ } }, 1500);
+      resolve(v);
+    };
+    const timer = setTimeout(() => finish({ error: 'no init message in 60 s' }), 60000);
+    child.on('error', (e) => finish({ error: e.message }));
+    child.on('exit', () => finish({ error: 'exited before its init message' }));
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const l = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        let j = null;
+        try { j = JSON.parse(l); } catch { continue; }
+        if (j && j.type === 'system' && j.subtype === 'init') { finish({ tools: j.tools, mcp: (j.mcp_servers || []).map(m => m.name), mode: j.permissionMode }); return; }
+      }
+    });
+  });
+  const real = await initTools(buildClaudeArgs({ settingsFile: null, helperExists: false, side: true }));
+  if (real.skipped) console.log(`SKIP  the CLI's claude.exe is not at ${real.skipped}: its real tool list was not measured`);
+  else {
+    check('the REAL CLI, given the side args, offers exactly the read-only tools: no Bash, PowerShell, Monitor, Edit or Write; no MCP; plan mode',
+      !!real.tools && real.tools.every(t => sideSession.SIDE_ALLOWED_TOOLS.includes(t)) && real.tools.includes('Read')
+      && !real.tools.some(t => ['Bash', 'PowerShell', 'Monitor', 'Edit', 'Write', 'NotebookEdit'].includes(t)) && real.mcp.length === 0 && real.mode === 'plan',
+      JSON.stringify(real));
+    const open = await initTools([]);
+    check('and every tool an UNRESTRICTED session of the installed CLI offers has been reviewed (a new one fails here until it is classified)',
+      !!open.tools && open.tools.every(t => sideSession.SIDE_REVIEWED_TOOLS.includes(t)), JSON.stringify(open.tools || open));
+  }
 
   // The session lock lives in the worktree's git dir: the branch tab's host holds it, the side host does not.
   const gitDir = git(featA, 'rev-parse', '--git-dir').trim();

@@ -111,7 +111,7 @@ test('a side host\'s identity carries its session id; an ordinary host\'s never 
 test('sideHostsOf: the port and folder of each side identity, and nothing else', () => {
   const ids = [id({ port: 1, side: true }), id({ port: 2 }), id({ port: 3, side: true, cwd: '' }), { port: 4, parsed: null }];
   assert.deepStrictEqual(side.sideHostsOf(ids), [{ port: 1, cwd: 'C:\\w\\feat-a' }]);
-  assert.deepStrictEqual(side.sideHostsOf(undefined), []);
+  assert.strictEqual(side.sideHostsOf(undefined), null);
 });
 
 test('readerSessionIds: the session ids of the live side identities in a list, and nothing else', () => {
@@ -146,6 +146,6 @@ test('host.js: a side host republishes its identity with its session id once it 
 });
 
 test('main.js: the transcript scanner is told which sessions are side sessions, and the shell how to list side hosts', () => {
-  assert.match(MAIN, /readerSessions: \(\) => readerSessionIds\(ownIdentities\(\)\)/);
+  assert.match(MAIN, /readerSessions: \(\) => readerSessionIds\(ownIdentities\(\) \|\| \[\]\)/);
   assert.match(MAIN, /sideHosts: \(\) => sideHostsOf\(ownIdentities\(\)\)/);
 });

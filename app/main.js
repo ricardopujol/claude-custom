@@ -271,9 +271,10 @@ async function chooseHostPort(tab) {
   return resolvePort({ cwd: tab.cwd, occupantAt, side });
 }
 
-// This build's identity files, or none when they can't be listed.
+// This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
+// one under every tab (host/side-session.js sideHostsOf).
 function ownIdentities() {
-  try { return identitiesIn(INSTALL_DIR); } catch { return []; }
+  try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
 
 function spawnHost(tab, port, token) {
@@ -1688,7 +1689,7 @@ app.whenReady().then(async () => {
   });
   transcriptOccupancy = createTranscriptScanner({
     // #81: a side host's session: its agents' claims are readers', whoever writes them
-    readerSessions: () => readerSessionIds(ownIdentities()),
+    readerSessions: () => readerSessionIds(ownIdentities() || []),
     projectsDir: seams.projectsDir || defaultProjectsDir(),
     roots: createRootsProvider({ cwd: STATE_ROOT, log: (...a) => console.log(...a) }),
     // The SAME store the hosts write to. The proof a reader checks is this window's own process: its claims

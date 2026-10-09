@@ -36,7 +36,7 @@ const settle = () => new Promise(r => setImmediate(r));
 const flush = async () => { for (let i = 0; i < 6; i++) await settle(); };
 
 /** running: port -> { cwd, side } of a live host. */
-function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts = true } = {}) {
+function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts = true, sideHostsSeam } = {}) {
   const h = {
     running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
     confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
@@ -102,6 +102,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
     sleep: async () => {},
   };
   if (!listSideHosts) delete deps.hosts.sideHosts;
+  if (sideHostsSeam) deps.hosts.sideHosts = sideHostsSeam;
   if (occupancy !== undefined) deps.occupancy = occupancy;
   if (safety !== undefined) deps.safety = safety;
   h.shell = createShell(deps);
@@ -533,4 +534,49 @@ test('sideMenu reads the shell\'s records, not the whole strip model (no claims,
   h.shell.sideMenu(skey('feat-a'));
   h.shell.sideMenu('nope');
   assert.strictEqual(reads, 0);
+});
+
+// --- PR #149 round 2 ---------------------------------------------------------------------------------------------------------
+
+test('a side start parked in its port walk when the merged tab\'s claude exits: no side host is spawned, and the remover waits for the start (R2-2)', async () => {
+  const h = await opened();
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();                         // finishing, its host seen
+  let release;
+  h.holdSide = new Promise((r) => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));   // allowed while finishing; parks inside choosePort
+  await flush();
+  delete h.running[7701];                       // the main claude exits during the walk
+  h.order.length = 0;
+  await h.shell.poll();                         // -> removing -> endSide
+  await flush();
+  assert.ok(!h.order.includes('remove'), 'the remover must not start while a side start is in flight');
+  release();
+  await opening;
+  await flush();
+  assert.strictEqual(h.spawns.filter(s => s.side).length, 0, 'nothing is spawned into a folder being removed');
+  assert.deepStrictEqual(h.order, ['remove']);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+});
+
+test('a side tab closed before its host is spawned spawns none; one whose walk FOUND a host still stops it (R2-2 + Dexter 4)', async () => {
+  const h = await opened();
+  let release;
+  h.holdSide = new Promise((r) => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  release();
+  await opening;
+  await flush();
+  assert.strictEqual(h.spawns.filter(s => s.side).length, 0);
+});
+
+test('side hosts the identity files could not list: every tab is looked for the slow way, so a running side host is still adopted (R2-3)', async () => {
+  for (const sideHosts of [() => null, () => { throw new Error('EPERM'); }]) {
+    const h2 = harness({ running: { 7700: dev(false), 7701: featA(false), 7702: featA(true) }, sideHostsSeam: sideHosts });
+    await h2.shell.open();
+    await flush();
+    assert.deepStrictEqual(labels(h2), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+  }
 });
