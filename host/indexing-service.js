@@ -14,9 +14,10 @@
  *     snapshot(project)       -> (throws when the journal can't be read) { counts: { filed, unfiled }, list: [{ id, text, at, state, reason, undoable }] }
  *
  * THE ORDER: the note is journaled first (nothing is lost), then the backlog is written, then `filed` is journaled.
- * Not filed: a project with no backlog file (or no documentation) gets nothing created and the note stays in the list
- * as not filed, its words in the journal for Copy; a backlog that kept changing under the write, stayed busy or couldn't
- * be written is tried again by the tick after RETRY_MS.
+ * A project with no backlog file gets one made by the first note (#79), and every note of that project held as
+ * `no-backlog` (by an older build) is filed with it, in the order typed. Not filed: a project folder that isn't there,
+ * stays in the list as not filed with its words in the journal for Copy; a backlog that kept changing under the write,
+ * stayed busy or couldn't be written is tried again by the tick after RETRY_MS.
  *
  * TWO WINDOWS: the doc write and its event happen under the journal lock after re-reading that the note is still not
  * filed, so a note can't be filed twice by two windows. A tick never throws. The note's words are never logged.
@@ -26,7 +27,7 @@ const path = require('path');
 const fs = require('fs');
 const { fold, listFor, counts, isCurrent } =require('./indexing-journal');
 const { stampOf, removeEntry } = require('./indexing-doc');
-const { samePath } = require('./project-layout');
+const { samePath, normPath } = require('./project-layout');
 const realWriter = require('./indexing-writer');
 
 const RETRY_MS = 15_000;
@@ -39,43 +40,89 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   const holds = new Map();          // note id -> time before which the tick doesn't try it again
   const changed = () => { try { broadcast(); } catch { /* a window that went away */ } };
 
+  /** Try to put one unfiled note into `docs`' backlog. -> the writer's result: { ok: true, where, record, result? } | { ok: false, reason } */
+  function attempt(n, docs, { append, read }, { look = false } = {}) {
+    // Journal the intent BEFORE the write; a note that has one may already be in the doc (the write landed and
+    // `filed` didn't), so it is looked for first and never written twice (Dexter F3 / Miguel I2, PR #121). A held
+    // note being replayed is always looked for (`look`): its replay may have crashed halfway (PR #138).
+    const lookFirst = n.intent || look;
+    const others = lookFirst
+      ? [...fold(read()).values()].filter(o => o.id !== n.id && o.state === 'filed' && o.record && o.where
+        && samePath(o.where.file, docs.backlog)).map(o => o.record)
+      : [];
+    let found = lookFirst ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text, others }) : null;
+    // No backlog file at all is a definite "the entry isn't there" (a note held that way, or a backlog deleted since):
+    // the write below makes the file (#79).
+    if (found && !found.ok && found.reason === 'no-backlog') found = null;
+    if (found && !found.ok) {
+      // The look couldn't read the backlog: that is not "the entry isn't there" (Dexter F1, PR #121). Writing now
+      // could put the note in twice, so this attempt ends here and the tick looks again later.
+      return { ok: false, reason: found.reason };
+    }
+    if (found && found.record) return { ok: true, where: { file: docs.backlog }, record: found.record };
+    if (!n.intent) append({ ev: 'filing', id: n.id, at: now() });
+    return writer.fileNote({ docs, stamp: stampOf(n.at), text: n.text });
+  }
+
+  /** Journal what an attempt came to. -> { filed: true } | { filed: false, reason } */
+  function settle(n, r, { append }) {
+    if (r.ok) {
+      append({ ev: 'filed', id: n.id, at: now(), where: r.where, record: r.record });
+      holds.delete(n.id);
+      return { filed: true };
+    }
+    if (n.reason !== r.reason) append({ ev: 'unfiled', id: n.id, reason: r.reason, at: now() });
+    if (RETRIED.has(r.reason)) holds.set(n.id, now() + RETRY_MS);
+    return { filed: false, reason: r.reason };
+  }
+
+  /** The notes of `project` held as `no-backlog` (by an older build, or a backlog that was gone), oldest first. */
+  function heldFor(project, exceptId, { read }) {
+    return [...fold(read()).values()]
+      .filter(o => o.id !== exceptId && o.state === 'unfiled' && o.reason === 'no-backlog' && samePath(o.project, project))
+      .sort((a, b) => a.at - b.at);
+  }
+
+  /**
+   * The backlog exists: every note held for its project as `no-backlog` is filed, oldest first (#79). Each one is
+   * looked for in the file before it is written, so a replay that crashed halfway files the rest without doubling the
+   * first; one whose attempt throws is settled as write-failed (the tick retries it), never left silent; and a settle
+   * that throws costs only that note, never the note being filed or the others.
+   */
+  function replayHeld(held, docs, ctx) {
+    for (const h of held) {
+      let r;
+      try { r = attempt(h, docs, ctx, { look: true }); } catch (err) {
+        log('[indexing] could not file a held note:', (err && err.message) || String(err));
+        r = { ok: false, reason: 'write-failed' };
+      }
+      try { settle(h, r, ctx); } catch (err) {
+        log('[indexing] could not journal a held note:', (err && err.message) || String(err));
+      }
+    }
+  }
+
   /** Under the journal lock: file one note that isn't filed yet. -> { filed: true } | { filed: false, reason } */
   function fileNow(id) {
-    return journal.withLock(({ append, read }) => {
-      const n = fold(read()).get(id);
+    return journal.withLock((ctx) => {
+      const n = fold(ctx.read()).get(id);
       if (!n) return { filed: false, reason: 'gone' };
       if (n.state !== 'unfiled') return { filed: n.state === 'filed' };       // another window got there first
       const docs = docsFor(n.project);
-      let r;
-      if (!docs || docs.ok !== true) {
-        r = { ok: false, reason: (docs && docs.reason) || 'no-docs' };
-      } else {
-        // Journal the intent BEFORE the write; a note that has one may already be in the doc (the write landed and
-        // `filed` didn't), so it is looked for first and never written twice (Dexter F3 / Miguel I2, PR #121).
-        const others = n.intent
-          ? [...fold(read()).values()].filter(o => o.id !== id && o.state === 'filed' && o.record && o.where
-            && samePath(o.where.file, docs.backlog)).map(o => o.record)
-          : [];
-        const found = n.intent ? writer.findNote({ docs, stamp: stampOf(n.at), text: n.text, others }) : null;
-        if (found && !found.ok) {
-          // The look couldn't read the backlog: that is not "the entry isn't there" (Dexter F1, PR #121). Writing now
-          // could put the note in twice, so this attempt ends here and the tick looks again later.
-          r = { ok: false, reason: found.reason };
-        } else if (found && found.record) {
-          r = { ok: true, where: { file: docs.backlog }, record: found.record };
-        } else {
-          if (!n.intent) append({ ev: 'filing', id, at: now() });
-          r = writer.fileNote({ docs, stamp: stampOf(n.at), text: n.text });
-        }
+      if (!docs || docs.ok !== true) return settle(n, { ok: false, reason: (docs && docs.reason) || 'no-docs' }, ctx);
+      // Notes held for this project come first, so the inbox stays in the order they were typed (Dexter F4): the
+      // backlog is made now if it isn't there, then they are filed, then this note.
+      let createdHere = false;
+      const held = heldFor(n.project, id, ctx);
+      if (held.length > 0) {
+        if (!fs.existsSync(docs.backlog)) createdHere = writer.ensureBacklog(docs).created === true;
+        if (fs.existsSync(docs.backlog)) replayHeld(held, docs, ctx);
       }
-      if (r.ok) {
-        append({ ev: 'filed', id, at: now(), where: r.where, record: r.record });
-        holds.delete(id);
-        return { filed: true };
+      let r = attempt(n, docs, ctx);
+      if (r.ok && createdHere && r.result !== 'created-backlog' && r.record) {
+        r = { ...r, result: 'created-backlog', record: { ...r.record, pristine: writer.pristineOf(docs) } };
       }
-      if (n.reason !== r.reason) append({ ev: 'unfiled', id, reason: r.reason, at: now() });
-      if (RETRIED.has(r.reason)) holds.set(id, now() + RETRY_MS);
-      return { filed: false, reason: r.reason };
+      return settle(n, r, ctx);
     });
   }
 
@@ -109,18 +156,38 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     rotatedDay = day;
   }
 
+  /**
+   * A backlog that exists next to notes held as `no-backlog` (made by hand, or by a note that then failed to file):
+   * they are filed now, not only when a note happens to create the file (Dexter F1 / Miguel 1).
+   */
+  function replayStranded(notes) {
+    const projects = new Map();
+    for (const n of notes) if (n.state === 'unfiled' && n.reason === 'no-backlog') projects.set(normPath(n.project), n.project);
+    let did = false;
+    for (const project of projects.values()) {
+      journal.withLock((ctx) => {
+        const docs = docsFor(project);
+        if (!docs || docs.ok !== true || !fs.existsSync(docs.backlog)) return;
+        const held = heldFor(project, null, ctx);
+        if (held.length > 0) { replayHeld(held, docs, ctx); did = true; }
+      });
+    }
+    return did;
+  }
+
   async function tick() {
     try {
       const t = now();
       // Its own try: a rotation that fails (the lock busy) must not keep a note from being filed.
       try { rotate(t); } catch (err) { log('[indexing] journal rotation failed:', (err && err.message) || String(err)); }
-      const due = [...fold(journal.read()).values()]
+      const notes = [...fold(journal.read()).values()];
+      const due = notes
         // A reason the tick retries, or none at all: journaled but never decided (a crash, a journal that threw).
         .filter(n => n.state === 'unfiled' && (n.reason === null || RETRIED.has(n.reason)) && !(holds.get(n.id) > t))
         .sort((a, b) => a.at - b.at)[0];
-      if (!due) return;
-      fileNow(due.id);
-      changed();
+      if (due) fileNow(due.id);
+      const replayed = replayStranded(due ? [...fold(journal.read()).values()] : notes);
+      if (due || replayed) changed();
     } catch (err) {
       log('[indexing] tick failed:', (err && err.message) || String(err));
     }
@@ -162,6 +229,7 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     const list = listFor(notes, project, t).map(n => ({
       id: n.id, text: n.text, at: n.at, state: n.state, reason: n.reason,
       file: n.where ? path.basename(n.where.file) : null,
+      createdBacklog: n.state === 'filed' && !!n.record && typeof n.record.pristine === 'string',
       undoable: n.state === 'filed' && own(n.where.file) && text(n.where.file) !== null
         && removeEntry(text(n.where.file), n.record).ok === true,
     }));

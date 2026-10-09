@@ -217,7 +217,8 @@ test('spawnWithTimeout does not force-kill a recycled pid when the direct child 
       args: ['-e', `
         const { spawn } = require('child_process');
         const fs = require('fs');
-        const gc = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'inherit', detached: true });
+        // kill-test-ok: reaped by the pid it reports (the finally below), and it expires by itself after two minutes
+        const gc = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(), 120000); setInterval(()=>{},1000)'], { stdio: 'inherit', detached: true });
         fs.writeFileSync(process.argv[1], String(gc.pid));
         gc.unref();
       `, gcMarker],

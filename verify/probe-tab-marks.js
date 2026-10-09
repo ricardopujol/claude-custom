@@ -121,7 +121,7 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -134,8 +134,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 
@@ -148,7 +148,7 @@ const fileMarks = () => { try { return JSON.parse(fs.readFileSync(MARKS_FILE, 'u
 
 async function devTab(app) {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return Array.isArray(st && st.stripDom) ? st.stripDom.find(t => t.label === 'develop') || null : null;
 }
 const markIs = (app, emoji) => waitFor(async () => {

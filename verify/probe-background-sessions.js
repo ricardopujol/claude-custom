@@ -92,12 +92,10 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-const killed = new Set();
-function killTree(pid) {
-  if (!alive(pid) || killed.has(pid)) return;
-  killed.add(pid);
-  try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
-}
+// Pids this probe only READ (identity files, a claude pid a host reported) are ended start-proven (BACKLOG #74 H):
+// seen.add records the start when first seen, killTree ends it through killProven on a held handle.
+const seen = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
+function killTree(pid) { seen.kill(pid); }
 
 // --- a host, as app/main.js would spawn one, on a non-repo folder ---------------------
 const hosts = [];
@@ -183,6 +181,7 @@ function probeHostPids() {
     try {
       const id = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
       if (id && typeof id.cwd === 'string' && path.resolve(id.cwd).toLowerCase().startsWith(path.resolve(tmp).toLowerCase())) {
+        seen.add(id.pid, id.processStartedAt);
         out.push({ pid: id.pid, port: id.port, cwd: id.cwd });
       }
     } catch { /* half-written */ }
@@ -275,7 +274,7 @@ async function main() {
   const hostsBefore = probeHostPids().length;
   const o = await command(w, { cmd: 'background-open', port: h2.port });
   check('Open launched a window', o.ok && Number.isInteger(o.pid), JSON.stringify(o));
-  if (o.ok && Number.isInteger(o.pid)) extraPids.push(o.pid);
+  if (o.ok && Number.isInteger(o.pid)) { seen.see(o.pid); extraPids.push(o.pid); }
   const attached = await waitFor(async () => {
     const r = await command(w, { cmd: 'background' });
     const it = itemOn(r, h2.port);

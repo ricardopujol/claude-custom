@@ -47,6 +47,7 @@ const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
 const tabStatusLib = require('./tab-status');
 const occupancyDisplay = require('./occupancy-display');
+const { closeReason } = require('../host/close-safety');
 const summaryDisplay = require('./summary-display');
 const { planGoTo } = require('./go-to-session');
 
@@ -117,6 +118,9 @@ const NO_PORT_ERROR = 'no usable port for this folder';
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
 
+// How long a turn must have been idle before a Ctrl+click close counts the session as at rest.
+const IDLE_SETTLE_MS = 10_000;
+
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
 /** What a renderer may say about itself, cut down to the eight known fields. */
@@ -169,7 +173,8 @@ function sanitizeStatus(s) {
  *   views.owns(tab, sender)-> boolean       the view's webContents is `sender`
  *   occupancy.claims()     -> [claim]    the LIVE worktree-occupancy claims (host/occupancy-service.js); optional
  *   now()                  -> ms         the clock the "4 min" labels read; optional
- *   ui.confirmClose(tab)   -> Promise<boolean>
+ *   safety.facts(cwd)      -> Promise<{ dirtyCount, unpushedCount }>  the folder's git facts for a Ctrl+click close (#77); optional
+ *   ui.confirmClose(tab, { reason }?) -> Promise<boolean>   `reason` only when a Ctrl+click close wasn't safe
  *   ui.changed(snapshot)
  *   ui.focusWindow()       restore + show + focus + flash
  *   ui.isFocused()
@@ -210,6 +215,9 @@ function createShell(deps) {
     // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
     // (gh can't say). Absent: never confirmed, so never typed.
     prs = null,
+    // #77: `facts(cwd)` -> { dirtyCount, unpushedCount } (null for a fact git couldn't give). Optional: without it
+    // a Ctrl+click close always asks.
+    safety = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -630,14 +638,106 @@ function createShell(deps) {
     return null;
   }
 
-  /** Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. */
-  async function closeTab(key) {
+  // --- #77: is this tab safe to close with no confirm? -------------------------------------------------------
+  // Every fact that can't be read counts AGAINST it (host/close-safety.js); nothing here turns "couldn't tell"
+  // into a number.
+
+  /** The slow facts, read once: git's (branch, uncommitted, unpushed, HEAD on origin/develop), or null. */
+  async function gitFactsOf(tab) {
+    if (!safety || typeof safety.facts !== 'function') return null;
+    try { return await safety.facts(tab.cwd); } catch (err) {
+      log('[shell] safety.facts threw:', err && err.message);
+      return null;
+    }
+  }
+
+  /**
+   * How many agents are working in the tab's folder (occupancy), or null when that can't be believed: no
+   * reader, a reader that throws, or a service that couldn't look (an unreadable claim folder, a claim it
+   * couldn't prove, no pass finished yet). Dexter D2, Miguel 1.
+   */
+  function agentsHereOf(tab) {
+    if (!occupancy || typeof occupancy.claims !== 'function') return null;
+    try {
+      if (typeof occupancy.known === 'function' && occupancy.known(tab.cwd) !== true) return null;
+      const claims = occupancy.claims();
+      if (!Array.isArray(claims)) return null;
+      const occ = occupancyDisplay.tabOccupancy(claims, tab.key, { keyOf, withAlso: true });
+      return occ ? occ.count : 0;
+    } catch (err) {
+      log('[shell] occupancy for a close threw:', err && err.message);
+      return null;
+    }
+  }
+
+  /**
+   * What the tab's OWN session is doing: 'idle' | 'busy' | 'waiting', or null when that can't be told. Its
+   * `working` covers the agents and teammates it launched (the roster), and a stop ends them all. A tab with no
+   * session at all (nothing started, pending or found) is idle. Dexter D1.
+   */
+  function sessionOf(tab, hostFound) {
+    const st = tab.status;
+    if (!st) return (tab.started || tab.pending || tab.starting || tab.unconfirmed || hostFound) ? null : 'idle';
+    // a /bedtime night between wakes is the run's, and a stop would end it (Dexter R1)
+    if (st.working === true || st.turn === 'turn' || st.night === true) return 'busy';
+    if (st.needsInput === true || st.turn === 'prompt') return 'waiting';
+    if (busyWhy(st) !== null) return null;
+    // A Stop that another Stop hook blocks reads idle until the continuation's first tool call (Dexter F1): a turn that
+    // went idle less than IDLE_SETTLE_MS ago, or whose time is unknown, is not at rest yet.
+    return typeof tab.idleSince === 'number' && now() - tab.idleSince >= IDLE_SETTLE_MS ? 'idle' : 'busy';
+  }
+
+  /**
+   * The facts closeReason judges: git's (read earlier, passed in) with everything cheap read fresh. Merged is
+   * the marker for the branch that is checked out NOW AND that commit being on origin/develop (Dexter D5): a
+   * commit after the merge, or a switch to another branch, is not merged.
+   */
+  function closeFactsOf(tab, g, { hostFound = false } = {}) {
+    const f = g && typeof g === 'object' ? g : {};
+    let merged = null;
+    if (typeof f.branch === 'string' && f.branch !== '') {
+      let marker = null;
+      try { marker = git.marker(tab.cwd, f.branch); } catch { marker = null; }
+      if (marker === null) merged = false;
+      else if (f.headInDevelop === true) merged = true;
+      else if (f.headInDevelop === false) merged = false;
+    }
+    return {
+      merged, dirtyCount: f.dirtyCount, unpushedCount: f.unpushedCount,
+      agentsHere: agentsHereOf(tab), session: sessionOf(tab, hostFound),
+    };
+  }
+
+  const closing = new Set();   // keys with a close in flight: one gesture, one question (Dexter D7, Miguel 3)
+
+  /**
+   * Hand close, once per tab at a time. A second request for a tab already closing (a double click) is ignored.
+   */
+  async function closeTab(key, opts) {
+    if (closing.has(key)) return { ok: false, error: 'already closing' };
+    closing.add(key);
+    try { return await closeTabOnce(key, opts); } finally { closing.delete(key); }
+  }
+  /**
+   * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
+   * skips the confirm when unsafeReason is empty; otherwise the confirm is told why.
+   */
+  async function closeTabOnce(key, { ifSafe = false } = {}) {
     const tab = tabByKey(key);
     if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
     if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
-    try { yes = (await ui.confirmClose(tab)) === true; } catch { yes = false; }
+    let reason = '';
+    let silent = false;
+    let gitFacts = null;
+    if (ifSafe === true) {
+      gitFacts = await gitFactsOf(tab);
+      reason = closeReason(closeFactsOf(tab, gitFacts));
+    }
+    if (ifSafe === true && reason === '') { yes = true; silent = true; } else {
+      try { yes = (await ui.confirmClose(tab, ifSafe === true ? { reason } : undefined)) === true; } catch { yes = false; }
+    }
     if (!yes) return { ok: false, cancelled: true };
     if (!tabs.has(key)) return { ok: true };     // gone while the dialog was up
     // Dexter, PR #75 F3: a tab still attaching has no host to stop YET. Let the
@@ -669,6 +769,20 @@ function createShell(deps) {
         else failure = `a host is on port ${found.port} but its token can't be read`;
       } else if (tab.unconfirmed) {
         failure = `its host on port ${tab.unconfirmed.port} never answered`;
+      }
+    }
+    // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
+    // session) right before the stop; if any of it changed, ask after all.
+    if (silent) {
+      // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
+      const gitAgain = await gitFactsOf(tab);
+      if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
+      const again = closeReason(closeFactsOf(tab, gitAgain, { hostFound: target !== null }));
+      if (again !== '') {
+        let ok = false;
+        try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
+        if (!ok) return { ok: false, cancelled: true };
+        if (!tabs.has(key)) return { ok: true };
       }
     }
     const before = model();
@@ -843,6 +957,8 @@ function createShell(deps) {
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
     if (tabStatusLib.sameStatus(tab.status, next)) return true;
+    if (next.turn !== 'idle') tab.idleSince = null;
+    else if (!tab.status || tab.status.turn !== 'idle' || typeof tab.idleSince !== 'number') tab.idleSince = now();
     tab.status = next;
     publish();
     return true;
@@ -1215,6 +1331,10 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'state': return { ok: true, ...(await api.state()) };
       case 'select': return await api.select(String(cmd.label));
       case 'close': return await api.close(String(cmd.label));
+      case 'ctrlClick':
+        // #77: a real Ctrl+click on the strip's tab, so the page's own handler runs.
+        if (typeof cmd.label !== 'string') return { ok: false, error: 'ctrlClick needs a label' };
+        return await api.ctrlClick(cmd.label);
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };

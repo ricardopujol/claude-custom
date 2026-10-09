@@ -40,6 +40,17 @@ test('toastModel: filed is "Added to the inbox" with the note\'s first line, and
   assert.strictEqual(d.toastModel({ state: 'filed', text: 'x', undoable: false }).undo, false);
 });
 
+test('toastModel (#79): a note that created the backlog says so, and still offers Undo only while Undo is exact', () => {
+  assert.deepStrictEqual(d.toastModel({ state: 'filed', text: 'first', undoable: true, createdBacklog: true }),
+    { kind: 'added', line: 'Created the backlog and filed your note', note: 'first', undo: true, copy: false });
+  assert.strictEqual(d.toastModel({ state: 'filed', text: 'x', undoable: false, createdBacklog: true }).undo, false);
+  assert.strictEqual(d.toastModel({ state: 'filed', text: 'x', undoable: true, createdBacklog: false }).line, 'Added to the inbox');
+});
+
+test('reasonText (PR #138): several backlog files is said in words', () => {
+  assert.strictEqual(d.reasonText('no-backlog-ambiguous'), 'Several backlog files in documentation');
+});
+
 test('toastModel: not filed says why, with Copy (the words are only in the journal)', () => {
   assert.deepStrictEqual(d.toastModel({ state: 'unfiled', reason: 'no-backlog', text: 'idea' }),
     { kind: 'unfiled', line: 'Not filed: This project has no backlog file', note: 'idea', undo: false, copy: true });
