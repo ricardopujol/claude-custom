@@ -192,6 +192,15 @@ const CONTRACT = {
     // measured, it carries no permission_mode.
     fields: {},
   },
+  // The permission prompt's own hook (BACKLOG #55). Bundle 2.1.296: base fields + tool_name, tool_input, permission_suggestions?, mcp_server?;
+  // built with the tool-use context, so agent_id / agent_type are present inside a subagent and absent for the main session's own prompt.
+  // Observe-only: the helper prints nothing, so mood-machine.js only ever marks the named agent "waiting on you".
+  PermissionRequest: {
+    fields: {
+      tool_name: { used: 'mood-machine.js, which only needs to know a prompt is opening for the agent that named itself' },
+      ...COMMON_FIELDS,
+    },
+  },
   Notification: {
     fields: {
       message: { used: 'attention-summary.js, to say what is being asked for' },
@@ -202,9 +211,8 @@ const CONTRACT = {
     // agent_needs_input (idle_prompt only as a held "finished"'s backstop); an
     // older CLI that sends none raises as before. Measured in CLI 2.1.286's own
     // input schema; verify/probe-notification-type.js is the tripwire.
-    // Also read, optional (BACKLOG #55): agent_id / agent_type, the base hook field "present only when the hook fires
-    // from within a subagent" (the CLI's own schema, verify/probe-agent-states.js). mood-machine.js marks THAT agent
-    // "waiting on you"; a Notification without one is read against the newest tool call of anyone.
+    // NOT read for a card (BACKLOG #55): a Notification never carries agent_id (CLI 2.1.296 builds it with no tool context,
+    // verify/probe-agent-states.js), so it can't say which agent is waiting; the PermissionRequest hook above does.
   },
 };
 

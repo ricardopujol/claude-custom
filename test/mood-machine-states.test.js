@@ -35,7 +35,14 @@ function rig(opts = {}) {
     },
     pre(a, tool, input = {}) { api.ev('PreToolUse', { tool_name: tool, tool_use_id: 'tu' + (++n), tool_input: input, agent_id: a.id, agent_type: a.type }); return 'tu' + n; },
     post(a, tool, id, input = {}) { api.ev('PostToolUse', { tool_name: tool, tool_use_id: id, tool_input: input, tool_response: { success: true }, agent_id: a.id, agent_type: a.type }); },
-    notify(type, by) { api.ev('Notification', { notification_type: type, message: 'x', ...(by ? { agent_id: by.id, agent_type: by.type } : {}) }); },
+    // The CLI's real Notification: it NEVER carries agent_id (2.1.296: the one builder calls $d(session, mode) with no tool context).
+    notify(type, message = 'Claude needs your permission to use Edit') { api.ev('Notification', { notification_type: type, message, title: undefined }); },
+    // The CLI's real PermissionRequest hook input: the base fields, agent_id/agent_type when it fires inside a subagent, and the
+    // tool (bundle 2.1.296: eK = base + tool_name, tool_input, permission_suggestions?, mcp_server?; built with $d(session, mode, ..., toolUseContext)).
+    permission(by, tool = 'Edit', input = { file_path: 'C:/x' }) {
+      api.ev('PermissionRequest', { session_id: 's', transcript_path: 't', cwd: 'c', permission_mode: 'default', hook_event_name: 'PermissionRequest',
+        tool_name: tool, tool_input: input, permission_suggestions: [], ...(by ? { agent_id: by.id, agent_type: by.type } : {}) });
+    },
     detail: name => m.detailOf(name),
   };
   return api;
@@ -132,36 +139,69 @@ test('a permission prompt that names the agent makes it wait on you, beating run
   const r = rig();
   const a = started(r);
   r.pre(a, 'Bash', { command: 'rm x' });
-  r.notify('permission_prompt', a);
+  r.permission(a);
   assert.strictEqual(r.detail('miguel'), 'waiting');
   assert.strictEqual(r.m.stateOf('miguel'), 'working');
 });
 
-test('every notification type that waits on a person counts; idle_prompt and unknown types do not', () => {
-  for (const type of ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input', undefined]) {
+test('a PermissionRequest from a subagent marks that agent, whatever the tool', () => {
+  for (const tool of ['Edit', 'Write', 'Bash', 'WebFetch', 'mcp__x__y', 'AskUserQuestion']) {
     const r = rig();
     const a = started(r);
-    r.notify(type, a);
-    assert.strictEqual(r.detail('miguel'), 'waiting', String(type));
+    r.permission(a, tool);
+    assert.strictEqual(r.detail('miguel'), 'waiting', tool);
   }
-  for (const type of ['idle_prompt', 'auth_success', 'something_new']) {
+});
+
+test('a PermissionRequest with no agent_id belongs to the main session: no subagent card waits', () => {
+  const r = rig();
+  const a = started(r);
+  r.pre(a, 'Edit', {});
+  r.permission(null, 'Edit');
+  assert.notStrictEqual(r.detail('miguel'), 'waiting');
+  const r2 = rig();
+  r2.permission(null, 'Bash');
+  assert.deepStrictEqual(r2.m.roster(), []);
+});
+
+test('a PermissionRequest from an agent this host never saw start marks nothing', () => {
+  const r = rig();
+  r.permission({ id: 'ghost', type: 'ghost' });
+  assert.deepStrictEqual(r.m.roster(), []);
+});
+
+test('the real Notification shape (no agent_id) marks no card, of any type', () => {
+  for (const type of ['permission_prompt', 'elicitation_dialog', 'agent_needs_input', 'idle_prompt', 'worker_permission_prompt', undefined]) {
     const r = rig();
     const a = started(r);
-    r.notify(type, a);
-    assert.strictEqual(r.detail('miguel'), 'working', type);
+    r.pre(a, 'Edit', {});
+    r.notify(type);
+    assert.notStrictEqual(r.detail('miguel'), 'waiting', String(type));
   }
+});
+
+test('a waiting card is never judged by silence, nor reaped by the stall clock while it waits', () => {
+  const r = rig({ stallMs: 30 * 60_000 });
+  const a = started(r);
+  r.permission(a);
+  r.advance(STUCK_MS + 5 * 60_000);
+  assert.strictEqual(r.detail('miguel'), 'waiting', 'not stuck');
+  r.advance(15 * 60_000);
+  assert.strictEqual(r.detail('miguel'), 'waiting', 'still there past the stall clock: the person has not answered');
+  r.pre(a, 'Read', {});
+  assert.notStrictEqual(r.detail('miguel'), 'waiting');
 });
 
 test('the agent working again, or finishing, ends the wait', () => {
   const r = rig();
   const a = started(r);
-  r.notify('permission_prompt', a);
+  r.permission(a);
   r.pre(a, 'Bash', { command: 'x' });
   assert.strictEqual(r.detail('miguel'), 'running', 'its next call proves the prompt was answered');
 
   const r2 = rig();
   const b = started(r2);
-  r2.notify('permission_prompt', b);
+  r2.permission(b);
   r2.ev('SubagentStop', { agent_id: b.id, agent_type: b.type });
   assert.strictEqual(r2.detail('miguel'), 'happy');
 });
@@ -208,7 +248,7 @@ test('a named prompt is open until that agent\'s next hooked event, not the appr
   const r = rig();
   const a = started(r);
   const id = r.pre(a, 'Bash', { command: 'npm test' });
-  r.notify('permission_prompt', a);
+  r.permission(a);
   r.advance(60_000);
   assert.strictEqual(r.detail('miguel'), 'waiting', 'silence is not an answer');
   r.post(a, 'Bash', 'some-other-call');
@@ -220,7 +260,7 @@ test('another agent\'s events do not end this agent\'s wait', () => {
   const r = rig();
   const a = started(r, 'agenta');
   const b = started(r, 'agentb');
-  r.notify('permission_prompt', a);
+  r.permission(a);
   r.pre(b, 'Read', {});
   r.post(b, 'Bash', r.pre(b, 'Bash', {}));
   assert.strictEqual(r.detail('agenta'), 'waiting');
@@ -354,7 +394,7 @@ test('priority: waiting on you > stuck > waiting on a helper > running > writing
   assert.strictEqual(r.detail('paris'), 'stuck', 'stuck beats helper');
   r.post(p, 'Bash', r.pre(p, 'Bash', { command: 'y' }), { command: 'y' });
   assert.strictEqual(r.detail('paris'), 'helper', 'a different call ended the retry loop');
-  r.notify('permission_prompt', p);
+  r.permission(p);
   assert.strictEqual(r.detail('paris'), 'waiting');
 });
 
@@ -398,11 +438,29 @@ test('sleeping, happy and a cut-off card show their state as the detail', () => 
 test('SessionEnd clears a wait and every tool', () => {
   const r = rig();
   const a = started(r);
-  r.notify('permission_prompt', a);
+  r.permission(a);
   r.ev('SessionEnd', {});
   assert.strictEqual(r.detail('miguel'), 'sleeping');
 });
 
 test('detailOf an unknown agent is sleeping', () => {
   assert.strictEqual(rig().detail('nobody'), 'sleeping');
+});
+
+// PR #154 round 2, N2: a call whose only hook is its PostToolUse (SendMessage, Artifact) is also a newer call of the run.
+test('a denied Bash followed only by Post-only calls stops running', () => {
+  const r = rig();
+  const a = started(r);
+  r.pre(a, 'Bash', { command: 'denied' });
+  r.ev('PostToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm1', tool_input: { to: 'x' }, tool_response: { success: true }, agent_id: a.id, agent_type: a.type });
+  r.advance(TOOL_LINGER_MS + 1);
+  assert.strictEqual(r.detail('miguel'), 'working');
+});
+
+test('...and a Post-only call ends a file tool moment too', () => {
+  const r = rig();
+  const a = started(r);
+  r.pre(a, 'Read', {});
+  r.ev('PostToolUse', { tool_name: 'Artifact', tool_use_id: 'ar1', tool_input: {}, tool_response: { ok: true }, agent_id: a.id, agent_type: a.type });
+  assert.strictEqual(r.detail('miguel'), 'working');
 });

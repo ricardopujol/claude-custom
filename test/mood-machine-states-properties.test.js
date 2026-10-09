@@ -8,8 +8,8 @@
  *     only while it is the run's last call; a newer call of any kind ends it (a denied or blocked Bash never gets a
  *     result, and must not stay "running");
  *   - a file tool's PreToolUse (no PostToolUse is hooked) is "reading"/"writing" for a moment, then nothing;
- *   - an unnamed Notification is the main session's: it marks no card; a named one marks that agent until the agent's
- *     next hooked event;
+ *   - the CLI's Notification never names an agent (2.1.296), so none marks a card; a PermissionRequest hook does, by
+ *     agent_id, until the agent's next hooked event (without an agent_id it is the main session's own prompt);
  *   - hooks see no unhooked tools, so silence means stuck only for a run with no background work, no Bash in flight and
  *     no foreground child, and its silence is refreshed by its own events and its foreground descendants' (up to a
  *     background run);
@@ -41,9 +41,10 @@ const opArb = fc.oneof(
   { weight: 4, arbitrary: fc.record({ op: fc.constant('bashPre'), who: fc.nat(), bg: fc.boolean() }) },
   { weight: 4, arbitrary: fc.record({ op: fc.constant('bashPost'), who: fc.nat(), kind: fc.constantFrom('ok', 'ok', 'err', 'fail'), same: fc.boolean(), ofLast: fc.boolean() }) },
   { weight: 4, arbitrary: fc.record({ op: fc.constant('filePre'), who: fc.nat(), tool: fc.constantFrom(...Object.keys(FILE_TOOLS)) }) },
+  { weight: 2, arbitrary: fc.record({ op: fc.constant('postOnly'), who: fc.nat() }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant('mainPre'), tool: fc.constantFrom('Edit', 'Read', 'Bash') }) },
-  { weight: 3, arbitrary: fc.record({ op: fc.constant('notify'), who: fc.nat(), named: fc.boolean(),
-    type: fc.constantFrom('permission_prompt', 'permission_prompt', 'elicitation_dialog', 'idle_prompt') }) },
+  { weight: 3, arbitrary: fc.record({ op: fc.constant('permission'), who: fc.nat(), named: fc.boolean(), tool: fc.constantFrom('Edit', 'Bash', 'WebFetch') }) },
+  { weight: 2, arbitrary: fc.record({ op: fc.constant('notify'), type: fc.constantFrom('permission_prompt', 'elicitation_dialog', 'idle_prompt') }) },
   { weight: 4, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 20_000 }) }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat() }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('interrupt'), who: fc.nat() }) },
@@ -127,16 +128,28 @@ function simulate(ops, onStep) {
         a.last = { kind: 'file', file: FILE_TOOLS[o.tool], at: t };
         break;
       }
+      case 'postOnly': {
+        const a = pick(o.who);
+        if (!a) break;
+        send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm' + (++n), tool_input: {}, tool_response: { success: false }, ...by(a) });
+        refresh(a);
+        a.waiting = false;
+        a.last = { kind: 'other' };          // a call whose only hook is its Post is still a newer call
+        break;
+      }
       case 'mainPre':
         send('PreToolUse', { tool_name: o.tool, tool_use_id: 'tu' + (++n), tool_input: {} });
         break;
-      case 'notify': {
+      case 'permission': {
         const a = pick(o.who);
-        if (o.named && a) send('Notification', { notification_type: o.type, message: 'm', ...by(a) });
-        else send('Notification', { notification_type: o.type, message: 'm' });
-        if (o.named && a && o.type !== 'idle_prompt') a.waiting = true;       // an unnamed one is the main session's: no card
+        send('PermissionRequest', { hook_event_name: 'PermissionRequest', tool_name: o.tool, tool_input: {}, permission_suggestions: [],
+          ...(o.named && a ? by(a) : {}) });
+        if (o.named && a) a.waiting = true;       // without an agent_id it is the main session's own prompt: no card
         break;
       }
+      case 'notify':
+        send('Notification', { notification_type: o.type, message: 'Claude needs your permission to use Edit' });   // never names an agent
+        break;
       case 'advance':
         t += o.ms;
         m.tick();
@@ -227,17 +240,16 @@ test('property: the same (agent, state, detail) is never announced twice in a ro
   }), { numRuns: 300 });
 });
 
-test('property: when the session ends nothing finer lingers, and an unnamed prompt never marks a card', () => {
+test('property: when the session ends nothing finer lingers, and prompts that name no agent never mark a card', () => {
   fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 40 }), (ops) => {
     simulate([...ops, { op: 'sessionEnd' }], ({ m, o }) => {
       if (o.op !== 'sessionEnd') return;
       for (const r of m.roster()) assert.strictEqual(r.detail, r.state, `${r.agent} after SessionEnd`);
     });
-    // a stream of nothing but unnamed prompts leaves every card at its plain state
-    simulate(ops.filter(x => x.op !== 'notify').concat(ops.filter(x => x.op === 'notify').map(x => ({ ...x, named: false }))), ({ m, agents }) => {
-      for (const r of m.roster()) {
-        if (agents.some(a => a.waiting && a.type === r.agent)) assert.fail('the simulation marked a card for an unnamed prompt');
-      }
+    // every PermissionRequest loses its agent_id (the main session's own prompt) and every Notification is what the CLI sends: no card waits
+    const unnamed = ops.map(x => (x.op === 'permission' ? { ...x, named: false } : x));
+    simulate(unnamed, ({ m }) => {
+      for (const r of m.roster()) assert.notStrictEqual(r.detail, 'waiting', `${r.agent}: nobody named an agent`);
     });
-  }), { numRuns: 150 });
+  }), { numRuns: 200 });
 });

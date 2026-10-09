@@ -30,12 +30,14 @@
  * of it each card has a `detail`, the finer name it shows, which equals `state`
  * unless the card is working (or stressed) AND one of these holds. Best first:
  *
- *   waiting   a Notification that waits on a person (permission prompt, a
- *             question), for that agent: by its agent_id when the payload has
- *             one, else the agent whose tool call came last, if that was just
- *             now. Ends with the agent's next tool event or its end.
- *   stuck     the retry detector (same call x3) or ten silent minutes with
- *             nothing in flight
+ *   waiting   a PermissionRequest hook (a permission prompt or question is about
+ *             to be shown) that names the agent by agent_id. A Notification
+ *             can't say whose it is (the CLI never puts agent_id on one), so
+ *             none marks a card; a PermissionRequest without agent_id is the
+ *             main session's own. Ends with the agent's next hooked event or
+ *             its end, and is never judged by silence or reaped while it waits.
+ *   stuck     the retry detector (same call x3) or twenty silent minutes with
+ *             nothing in flight and no background work launched
  *   helper    a FOREGROUND child it launched is still running (a background
  *             child leaves its parent free, so it isn't waiting)
  *   running   a Bash call in flight, PreToolUse .. PostToolUse
@@ -43,15 +45,16 @@
  *   reading   Read | Grep | Glob
  *
  * Reading and writing come from PreToolUse alone (their PostToolUse isn't
- * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS and the newest
- * of {a Bash in flight, the last file tool} decides.
+ * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
+ * are sequential: its newest call (a Pre, or a Post of a call whose only hook
+ * is its Post) ends every older one, so the newest of {a Bash in flight, the
+ * last file tool} is the only one that can show.
  *
  * Time is injected and transitions are applied by `tick()`, so the host owns
  * scheduling and the machine stays testable without wall-clock waits.
  */
 
 const { EventEmitter } = require('events');
-const { NEEDS_INPUT } = require('./attention');
 
 const SLEEPING = 'sleeping';
 const WORKING = 'working';
@@ -609,9 +612,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     }
   }
 
-  // A tool call began. The main session's own (no agent_id) is only remembered
-  // as the newest call of anyone, so a prompt right after it isn't pinned on a
-  // subagent; no card shows the main session's tools.
+  // A tool call began. The main session's own (no agent_id) touches no card.
   function noteTool(p) {
     const t = now();
     const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
@@ -640,13 +641,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     else if (inv.bash.size) inv.bash.delete(inv.bash.keys().next().value);
   }
 
-  // A Notification that waits on a person, for the agent that NAMES itself in it.
-  // One that names nobody is the main session's own prompt, which has its own
-  // attention cue and no card (PR #154, Dexter 1: pinning it on whichever agent
-  // called a tool last put "waiting on you" on the wrong card). An older CLI
-  // sends no type: read as a dialog, as host/turn-state.js does.
-  function notification(p) {
-    if (p.notification_type !== undefined && !NEEDS_INPUT.has(p.notification_type)) return;
+  // The PermissionRequest hook: a permission prompt or question is about to be shown for a tool call. Its input is built with the
+  // tool-use context (CLI 2.1.296, executePermissionRequestHooks: $d(session, mode, ..., toolUseContext)), so inside a subagent it carries
+  // that agent's agent_id; without one it is the main session's own prompt, which has its own attention cue and no card. (A Notification
+  // never carries agent_id, so it can't say whose it is: PR #154 round 2, N1.)
+  function permissionRequest(p) {
     const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
     if (inv) inv.waiting = true;
   }
@@ -708,7 +707,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       return;
     }
     if (event === 'PreToolUse') { noteTool(p); return; }
-    if (event === 'Notification') { notification(p); return; }
+    if (event === 'PermissionRequest') { permissionRequest(p); return; }
 
     const failureEvent = event === 'PostToolUseFailure';
     if (event === 'PostToolUse' || failureEvent) {
@@ -730,7 +729,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const spawned = spawnKey !== null ? spawns.get(spawnKey) : undefined;
       if (spawned || (spawnKey !== null && endedKeys.has(spawnKey))) {
         const spawner = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
-        if (spawner) { refresh(spawner); spawner.waiting = false; }
+        if (spawner) { refresh(spawner); spawner.waiting = false; spawner.bash.clear(); spawner.tool = null; }
         spawnResult(spawned, event, p, interrupted);
         return;
       }
@@ -756,6 +755,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (p.agent_id) refresh(inv); else refreshAll();
       inv.waiting = false;
       if (tool === 'Bash') clearBash(inv, p.tool_use_id);
+      else { inv.bash.clear(); inv.tool = null; }      // a call whose only hook is its Post (SendMessage, Artifact) is a newer call too
 
       // The interrupted invocation ends, with its foreground descendants.
       if (interrupted) { cutOff(subtree(inv)); return; }
@@ -864,7 +864,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       // mutation gate) at 45 minutes. Only once the CLI labels its calls: an
       // older one has refreshAll() touching everything, so there the cap stays.
       const capped = !(inv.background && saysWho) && t - inv.startedAt > maxInvocationMs;
-      const stale = capped || t - inv.lastActivity > stallMs;
+      // An open prompt is the person's to answer, not a silent run: the stall clock doesn't reap it (the age cap above still does).
+      const stale = capped || (!inv.waiting && t - inv.lastActivity > stallMs);
       if (stale && !fgChildren(inv).some(c => !gone.has(c))) gone.add(inv);
     }
     // A reaped run was cut off, so it sleeps at once -- not whenever the idle

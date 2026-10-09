@@ -55,7 +55,20 @@ function partA() {
     const at = text.indexOf('agent_id:o().optional().describe("Subagent identifier. Present only when the hook fires from within a subagent');
     check('the base hook input carries an optional agent_id (present only inside a subagent)', at !== -1);
     const n = text.indexOf('hook_event_name:C("Notification"),message:o(),title:o().optional(),notification_type:o()');
-    check('the Notification input is that base plus notification_type (so a subagent\'s prompt can name it)', n !== -1);
+    check('the Notification input schema is the base plus notification_type', n !== -1);
+    // The schema only says agent_id MAY be there; what matters is whether the call site that builds the input passes the tool-use
+    // context ($d(session, mode, ..., toolUseContext) sets agent_id from it). Read the builders, not the schema (PR #154 round 2, N1).
+    const argsBefore = (marker) => {
+      const at = text.indexOf(marker);
+      if (at === -1) return null;
+      const m = /\.\.\.[\w$]+\(([^()]*(?:\([^()]*\)[^()]*)*)\),\s*$/.exec(text.slice(Math.max(0, at - 160), at));
+      return m ? m[1].split(',').length : null;
+    };
+    const notifyArgs = argsBefore('hook_event_name:"Notification",message:');
+    check('a Notification is built WITHOUT the tool-use context (two arguments), so it never names an agent', notifyArgs === 2, 'arguments: ' + notifyArgs);
+    const permArgs = argsBefore('hook_event_name:"PermissionRequest",tool_name:');
+    check('a PermissionRequest is built WITH the tool-use context, so it names the agent', permArgs !== null && permArgs >= 4, 'arguments: ' + permArgs);
+    check('the CLI decides a PermissionRequest only from a hook result (permissionRequestResult), never from a silent hook', text.includes('permissionRequestResult'));
     for (const t of ['permission_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'agent_needs_input', 'idle_prompt']) {
       check(`the CLI knows the notification type ${t}`, text.includes(`"${t}"`));
     }
@@ -71,6 +84,10 @@ function partA() {
       matcherCovers(hooks.PreToolUse, tool) && !matcherCovers(hooks.PostToolUse, tool));
   }
   check('Notification is hooked', Array.isArray(hooks.Notification));
+  const withPerm = buildHarnessSettings({ helperPath: 'h.exe', pipeName: 'p', permissionRequest: true }).hooks;
+  check('PermissionRequest is hooked, every tool, short timeout', Boolean(withPerm.PermissionRequest) && withPerm.PermissionRequest[0].matcher === '' && withPerm.PermissionRequest[0].hooks[0].timeout <= 2);
+  const helperSrc = fs.readFileSync(path.join(ROOT, 'helper', 'hook-helper.cs'), 'utf8');
+  check('the helper prints nothing and only exits 0 (observe-only: output is how a hook decides)', !/Console\.(Out|Write)/.test(helperSrc) && [...helperSrc.matchAll(/return\s+(-?\d+)\s*;/g)].every(m => m[1] === '0'));
 
   const { createMoodMachine } = require('../host/mood-machine');
   const stream = fs.readFileSync(path.join(ROOT, 'test', 'hooks-real-subagent-failure.fixture.jsonl'), 'utf8')
@@ -270,7 +287,7 @@ async function partB() {
     // running: a Bash with no result yet
     bash('running', 'npm test');
     // waiting: a permission prompt that names the agent
-    send('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Edit', ...by('waiting') });
+    send('PermissionRequest', { hook_event_name: 'PermissionRequest', tool_name: 'Edit', tool_input: { file_path: 'C:/x/y.js' }, permission_suggestions: [], ...by('waiting') });
     // reading / writing last a few seconds, so they are sent when the window asks, not before it has started
     const fileTools = () => {
       send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/x/y.js' }, ...by('reading') });

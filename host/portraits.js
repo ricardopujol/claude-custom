@@ -34,7 +34,9 @@ const path = require('path');
 
 const BUILTIN_STATES = ['sleeping', 'working', 'happy', 'stressed'];
 // The finer states a working card can show (host/mood-machine.js DETAIL, BACKLOG #55), each a portrait slot whose
-// missing picture is the nearest of the four above -- never a blank. Waiting on you is the awake face, not a new one.
+// missing picture is the nearest of the four above -- never a blank. The card's OWN base state wins when portraitFor is given
+// it (`baseState`: a stressed card that waits keeps the stressed face, a silent-stuck working card keeps the working one);
+// this table is the fallback when it isn't. Waiting on you is the awake face, not a new one.
 const NEAREST_STATE = {
   reading: 'working', writing: 'working', running: 'working', waiting: 'working', helper: 'working', stuck: 'stressed',
 };

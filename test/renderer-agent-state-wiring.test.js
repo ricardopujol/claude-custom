@@ -38,3 +38,8 @@ test('the host sends the detail with every mood message, and the file tools reac
   assert.match(host, /mood\.on\('change', \(\{ agent, state, detail \}\) =>/);
   assert.match(host, /if \(isOccupancyOnly\(ev\)\) \{ mood\.handle\(ev\); return; \}/);
 });
+
+test('the host asks for the observe-only PermissionRequest hook, and the mood engine reads it', () => {
+  assert.match(read('host/host.js'), /permissionRequest: true,/);
+  assert.match(read('host/mood-machine.js'), /if \(event === 'PermissionRequest'\) \{ permissionRequest\(p\); return; \}/);
+});
