@@ -332,3 +332,13 @@ test('isBuildLog: any <NAME>_BUILD_LOG.md is a build log (Dexter 8)', () => {
   for (const n of ['CLAUDECUSTOM_BUILD_LOG.md', 'FACEBOOKDEALS_BUILD_LOG.md', 'x_build_log.md']) assert.strictEqual(isBuildLog(n), true, n);
   for (const n of ['BUILD_LOG.md', 'DESIGN_BUILD_LOG_NOTES.md', 'CLAUDECUSTOM_HISTORY.md', 'FOO_BUILD_LOG.md.bak', null]) assert.strictEqual(isBuildLog(n), false, String(n));
 });
+
+test('parseReply: the - line and the + line of one change may be quoted together, each on its own line, but every piece must be a changed line', () => {
+  const d = diffOf('host/w.js', ' const keep = 1;\n-const NUM_PREDICT = 350;\n+const NUM_PREDICT = 700;');
+  const g = [{ rel: 'DESIGN_W.md', excerpt: 'The reply is capped at 350 tokens (NUM_PREDICT).' }];
+  const one = (ev) => parseReply(JSON.stringify([{ doc: 'DESIGN_W.md', sentence: 'The reply is capped at 350 tokens (NUM_PREDICT).', evidence: ev, why: 'w' }]), g, d);
+  assert.strictEqual(one('-const NUM_PREDICT = 350;\n+const NUM_PREDICT = 700;').length, 1);
+  assert.deepStrictEqual(one('-const NUM_PREDICT = 350;\n const keep = 1;'), [], 'a context line among them');
+  assert.deepStrictEqual(one('-const NUM_PREDICT = 350;\n+const something = else;'), [], 'a line that is not in the diff');
+  assert.deepStrictEqual(one('-const NUM_PREDICT = 350; +const NUM_PREDICT = 700;'), [], 'two lines run together are not a line');
+});

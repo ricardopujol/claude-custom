@@ -256,8 +256,10 @@ function parseReply(text, shownDocs, shownDiff) {
     const why = redact(squash(it.why));   // free text from the model: it is stored and shown, so it is scrubbed like the input
     if (rel === undefined || why === '' || sentence.length < SENTENCE_MIN || sentence.length > SENTENCE_MAX) continue;
     if (!byRel.get(rel).includes(sentence)) continue;                      // the sentence is really in the doc
-    const proof = alnum(evidence);
-    if (proof.length < EVIDENCE_MIN || !changed.some(l => l.includes(proof))) continue;   // the changed line is really in the diff
+    // The evidence is one changed line, or the - and + lines of one change each on a line of its own: EVERY piece must be a changed line.
+    const pieces = it.evidence.split(/\r?\n/).map(p => alnum(stripDiffMark(p))).filter(p => p !== '');
+    if (pieces.length === 0 || pieces.length > 4 || Math.max(...pieces.map(p => p.length)) < EVIDENCE_MIN) continue;
+    if (!pieces.every(p => p.length >= 4 && changed.some(l => l.includes(p)))) continue;   // the changed lines are really in the diff
     const wanted = keysOf(sentence);
     if (![...keysOf(evidence)].some(k => wanted.has(k))) continue;          // and it is about the sentence
     const key = rel + '\0' + sentence;
