@@ -406,3 +406,56 @@ test('Y4: raising, moving or resizing a float keeps the Vault on screen and move
     assert.deepStrictEqual([fx.vaultLeft, fx.focus, fx.newlyShown], [false, null, []]);
   }
 });
+
+// --- D4: divider keys, the settle motion ----------------------------------------------------------
+
+test('a divider moves 16 px with the arrow that points along it, and only that arrow', () => {
+  assert.strictEqual(V.dividerStep('ArrowLeft', 'row'), -16);
+  assert.strictEqual(V.dividerStep('ArrowRight', 'row'), 16);
+  assert.strictEqual(V.dividerStep('ArrowUp', 'col'), -16);
+  assert.strictEqual(V.dividerStep('ArrowDown', 'col'), 16);
+  for (const [key, dir] of [['ArrowUp', 'row'], ['ArrowDown', 'row'], ['ArrowLeft', 'col'], ['ArrowRight', 'col'], ['Enter', 'row'], ['a', 'col'], ['ArrowLeft', 'diag'], [null, 'row'], ['ArrowLeft', null]]) {
+    assert.strictEqual(V.dividerStep(key, dir), null, `${key} ${dir}`);
+  }
+});
+
+const SPLIT_VP = { width: 1000, height: 600 };
+const keyed = (layout, path, i, key, vp = SPLIT_VP) => V.dividerKey(layout, plan(layout, vp).splits, path, i, key);
+
+test('ArrowLeft on the divider beside the terminal gives the group on the right 16 px; ArrowRight takes them back', () => {
+  const l = T.defaultLayout(IDS);
+  const wider = keyed(l, [], 1, 'ArrowLeft');
+  assert.strictEqual(wider.root.sizes[1], 196);
+  assert.deepStrictEqual(wider.root.sizes[0], 0, 'the terminal\'s side still flexes');
+  assert.strictEqual(keyed(wider, [], 1, 'ArrowRight').root.sizes[1], 180);
+});
+
+test('a divider at its limit, a key that does not move it and a path that is no split change nothing (null)', () => {
+  const l = T.defaultLayout(IDS);
+  const edge = keyed(T.setSplitSizes(l, [], [1, 120]), [], 1, 'ArrowRight');
+  assert.strictEqual(edge, null, 'the group is at its 120 px minimum: nothing to take from it');
+  assert.strictEqual(keyed(l, [], 1, 'Enter'), null);
+  assert.strictEqual(keyed(l, [], 1, 'ArrowUp'), null, 'a row split is moved by left and right');
+  assert.strictEqual(keyed(l, [5], 1, 'ArrowLeft'), null);
+  assert.strictEqual(keyed(l, [], 0, 'ArrowLeft'), null, 'there is no divider before the first kid');
+  assert.strictEqual(keyed(l, 'x', 1, 'ArrowLeft'), null);
+});
+
+test('a divider between two panels trades pixels but stays above both minimums', () => {
+  const l = T.normalize({
+    version: 2,
+    root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'split', dir: 'col', kids: [{ type: 'group', id: 'a', tabs: ['agents'] }, { type: 'group', id: 'b', tabs: ['vault'] }], sizes: [300, 300] }], sizes: [0, 200] },
+    floats: [], hidden: IDS.filter(i => !['agents', 'vault'].includes(i)), seat: {},
+  }, IDS);
+  const down = keyed(l, [1], 1, 'ArrowDown');
+  const [a, b] = down.root.kids[1].sizes;
+  assert.ok(a > b, `${a} ${b}`);
+  assert.ok(down.root.kids[1].sizes.every(s => s >= 80));
+});
+
+test('settleMs: about 120 ms, none when the person asked for reduced motion or the preference is unknown', () => {
+  assert.strictEqual(V.SETTLE_MS, 120);
+  assert.strictEqual(V.settleMs(false), 120);
+  assert.strictEqual(V.settleMs(true), 0);
+  for (const junk of [undefined, null, 'no', 0]) assert.strictEqual(V.settleMs(junk), 0, String(junk));
+});

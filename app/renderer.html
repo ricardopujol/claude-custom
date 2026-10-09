@@ -816,6 +816,25 @@
     .dgutter[data-dir="row"] { cursor: col-resize; background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat; }
     .dgutter[data-dir="col"] { cursor: row-resize; background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat; }
     .dgutter:hover, .dgutter.dragging { background-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    /* Reached with the keyboard (D4): the divider is a focusable separator, the arrow keys move it 16 px. */
+    .dgutter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    /* A rail's panel opened over the terminal (D4): a .zone in the floats' layer, above the floats (ranked 0, 1, 2...), beside
+       its rail. It takes the pointer, unlike the layer. Focus mode hides it like any zone. */
+    .dpeek {
+      position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: auto; z-index: 1000;
+      border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+    }
+    .drail button[aria-expanded="true"] { color: var(--model-accent); }
+    /* The settle motion (D4): after a drop, a collapse or a divider key the boxes glide to their new places for about
+       120 ms. Only while the dock has .settling (never during a drag), and never the terminal (xterm refits to the
+       rectangle it ends in). prefers-reduced-motion: they snap. */
+    #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter {
+      transition: left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter { transition: none; }
+    }
+    #dock-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
@@ -1752,6 +1771,8 @@
       <!-- Floating panels (D2): their own layer, above the groups, rails, gutters and the reader, below the drag overlay. -->
       <div id="dock-floats"></div>
       <div id="dock-overlay"></div>
+      <!-- What a keyboard move says in words (D4): where the panel would land. Read aloud, never seen. -->
+      <div id="dock-announce" role="status" aria-live="polite"></div>
       </div>
       <aside id="diag">
         <h2>Key diagnostics</h2>

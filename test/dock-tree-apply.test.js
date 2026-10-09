@@ -497,3 +497,104 @@ test('I4: focus is never invented: a module that is gone, or focus held elsewher
   V.applyBoxes(plan(l, NO_SEL, { width: 440, height: 600 }), w.doc);
   assert.strictEqual(w.doc.activeElement, field, 'focus held outside the tabs is not touched');
 });
+
+// --- D4: dividers you can reach, a rail's popover -----------------------------------------------------------
+
+const planD4 = (layout, sel = NO_SEL, peek = null, vp = { width: 1000, height: 600 }) => V.treePlan(layout, sel, TABS, vp, { faceSize: () => 77, peek });
+const peekEl = w => w.layer.children.find(e => e.classes.has('dpeek'));
+
+test('D4: a divider is a focusable separator that says which way it moves', () => {
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
+  const g = w.dock.children.find(e => e.classes.has('dgutter'));
+  assert.strictEqual(g.getAttribute('role'), 'separator');
+  assert.strictEqual(g.getAttribute('tabindex'), '0');
+  assert.strictEqual(g.getAttribute('aria-orientation'), 'vertical', 'a row\'s divider is a vertical bar');
+  assert.ok(/arrow keys/i.test(g.getAttribute('aria-label')));
+  const col = T.dock(T.defaultLayout(IDS), 'vault', { cell: 'term', side: 'bottom' });
+  V.applyBoxes(planD4(col), w.doc);
+  const bars = w.dock.children.filter(e => e.classes.has('dgutter'));
+  assert.ok(bars.some(e => e.getAttribute('aria-orientation') === 'horizontal' && e.dataset.dir === 'col'));
+});
+
+test('D4: a divider that changes direction under the same key is relabelled, not left saying the old way', () => {
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.dock(T.defaultLayout(IDS), 'vault', { cell: 'term', side: 'bottom' })), w.doc);
+  for (const e of w.dock.children.filter(x => x.classes.has('dgutter'))) {
+    assert.strictEqual(e.getAttribute('aria-orientation'), e.dataset.dir === 'row' ? 'vertical' : 'horizontal');
+  }
+});
+
+test('D4: a rail\'s buttons announce a popover, and the open one says so', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, { collapsed: { right: true } }), w.doc);
+  const rail = w.dock.children.find(e => e.classes.has('drail'));
+  assert.ok(rail.children.length > 1);
+  assert.ok(rail.children.every(b => b.getAttribute('aria-haspopup') === 'true' && b.getAttribute('aria-expanded') === 'false'));
+  const buttons = [...rail.children];
+  V.applyBoxes(planD4(l, { collapsed: { right: true } }, { module: 'vault' }), w.doc);
+  assert.deepStrictEqual([...rail.children], buttons, 'the same buttons: only the expanded mark moved');
+  assert.deepStrictEqual(rail.children.filter(b => b.getAttribute('aria-expanded') === 'true').map(b => b.dataset.module), ['vault']);
+});
+
+test('D4: a rail\'s popover is one element in the floats layer, holding the panel and its tabs', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, { collapsed: { right: true } }, { module: 'vault' }), w.doc);
+  const el = peekEl(w);
+  assert.ok(el, 'made');
+  assert.ok(el.classes.has('zone'), 'a .zone, so every panel\'s own styles apply inside it');
+  assert.ok(!el.classes.has('dgroup') && !el.classes.has('dfloat'), 'neither a tree group nor a float');
+  assert.strictEqual(el.dataset.module, 'vault');
+  assert.deepStrictEqual(el.style.left, '692px');
+  assert.deepStrictEqual([el.style.top, el.style.width, el.style.height], ['0px', '280px', '600px']);
+  assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'), 'the vault panel was moved in, not rebuilt');
+  assert.ok(w.panels.vault.classes.has('on'));
+  const tabs = el.querySelector('.zone-tabs').children;
+  assert.ok(tabs.length > 1);
+  assert.deepStrictEqual(tabs.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['vault']);
+  assert.ok(el.parentNode === w.layer && w.layer.children.indexOf(el) === w.layer.children.length - 1, 'last in the layer: above the floats');
+});
+
+test('D4: the popover is reused while open, switches panel by moving it, and takes its panel away when it closes', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  const sel = { collapsed: { right: true } };
+  V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
+  const el = peekEl(w);
+  const moves = w.panels.vault.moves;
+  V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
+  assert.strictEqual(peekEl(w), el);
+  assert.strictEqual(w.panels.vault.moves, moves, 'an idle redraw moves nothing');
+  V.applyBoxes(planD4(l, sel, { module: 'git' }), w.doc);
+  assert.strictEqual(peekEl(w), el, 'switching keeps the element');
+  assert.strictEqual(w.panels.git.parentNode, el.querySelector('.zone-panels'));
+  assert.strictEqual(w.panels.vault.parentNode, w.store, 'the vault panel went back to the store');
+  assert.ok(!w.panels.vault.classes.has('on'));
+  V.applyBoxes(planD4(l, sel, null), w.doc);
+  assert.strictEqual(peekEl(w), undefined, 'closed');
+  assert.strictEqual(w.panels.git.parentNode, w.store);
+});
+
+test('D4: a popover whose rail went away (the window grew, the group was opened) is removed with its panel put back', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, { collapsed: { right: true } }, { module: 'vault' }), w.doc);
+  assert.ok(peekEl(w));
+  V.applyBoxes(planD4(l, {}, { module: 'vault' }), w.doc);
+  assert.strictEqual(peekEl(w), undefined);
+  assert.strictEqual(w.panels.vault.parentNode, w.store);
+  assert.ok(groupEl(w.dock, 'right'));
+});
+
+test('D4: focus on a popover tab survives the popover being redrawn', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  const sel = { collapsed: { right: true } };
+  V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
+  const tab = peekEl(w).querySelector('.zone-tabs').children.find(b => b.dataset.module === 'git');
+  tab.focus();
+  V.applyBoxes(planD4(l, sel, { module: 'git' }), w.doc);
+  assert.strictEqual(w.doc.activeElement, tab, 'the same button, still focused');
+});

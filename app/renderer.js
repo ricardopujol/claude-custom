@@ -1067,6 +1067,9 @@ let pendingOverride = null;      // { layout } sent to the host, not yet echoed 
 let dragLayout = null;           // a divider being dragged: drawn, not yet saved
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
+let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved
+let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
+let kbRefresh = () => {};        // redraws the keyboard move's zones after the dock was redrawn (set by initKeyboardMove)
 let shownModules = new Set();
 let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
@@ -1490,9 +1493,16 @@ function onVaultLeft() {
 // the user acted (PR #82 Dexter F2, Miguel B1).
 // `refit: false` is for a redraw that cannot change the terminal's rectangle (a float's move or resize): the
 // pty is not told again and no timer is queued for it (PR #102 Miguel Y2).
-function renderLayout({ userAction = false, refit = true } = {}) {
-  const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize });
+// `settle: true` is for a change the person made (a drop, a collapse, a divider key): the boxes glide to their new places
+// (app/dock-tree-display.js settleMs: about 120 ms, none under prefers-reduced-motion). A drag never settles.
+function renderLayout({ userAction = false, refit = true, settle = false } = {}) {
+  // A collapsed group that is gone is forgotten here, so a group later handed its name doesn't start collapsed.
+  const pruned = DTm.pruneCollapsed(selection, placementLayout());
+  if (pruned !== selection) { selection = pruned; saveSelection(); }
+  const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize, peek });
   lastPlan = plan;
+  if (peek && !plan.peek) peek = null;     // its rail went (the window grew, the group was opened): so does the popover
+  if (settle) settleDock();
   window.dockTreeView.applyBoxes(plan, document);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
   const now = new Set(plan.shown);
@@ -1505,15 +1515,30 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   if (fx.focus === 'term') term.focus();
   const btn = document.getElementById('layout-btn');
   if (btn) btn.classList.toggle('own', ownLayout !== null);
+  kbRefresh();                      // a keyboard move in flight lights the zones of the dock as it is now
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
   if (refit) setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
 
-// A selection change (tab click, Ctrl+B) stays in this window.
+// The settle motion (dockable panels D4): the dock gets `.settling` for the length of the glide, and the CSS moves the
+// groups, rails and dividers with a transition only while it is there. Never the terminal: xterm is refitted to the
+// rectangle it ends in, and a rectangle still changing would be measured wrong.
+let settleTimer = null;
+function settleDock() {
+  const dockEl = document.getElementById('dock');
+  const reduced = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : undefined;
+  const ms = window.dockTreeView.settleMs(reduced);
+  clearTimeout(settleTimer);
+  if (ms === 0) { dockEl.classList.remove('settling'); return; }
+  dockEl.classList.add('settling');
+  settleTimer = setTimeout(() => dockEl.classList.remove('settling'), ms + 40);
+}
+
+// A selection change (tab click, Ctrl+B, collapsing a group) stays in this window.
 function commitSelection(next) {
   selection = DTm.cleanSelection(next);
   saveSelection();
-  renderLayout({ userAction: true });
+  renderLayout({ userAction: true, settle: true });
 }
 
 // This tab's own layout to its host. Kept as pending until the host echoes it
@@ -1546,6 +1571,7 @@ function saveGlobalLayout(l) {
 function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
+  peek = null;                              // any change of the placement closes a rail's popover
   if (placementOf(l) === placementOf(toOwn && ownLayout ? ownLayout : globalLayout) && (!justThisTab || ownLayout)) {
     renderLayout({ userAction, refit });
     return;
@@ -1558,7 +1584,7 @@ function commitPlacement(next, { justThisTab = false, select = null, userAction 
     globalLayout = l;
     saveGlobalLayout(l);
   }
-  renderLayout({ userAction, refit });
+  renderLayout({ userAction, refit, settle: userAction });
 }
 
 // Reset to global (the tab drops its own) and Make this global.
@@ -1574,6 +1600,23 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
 }
 
 function toggleAllZones() { commitSelection(DTm.toggleFoldAll(selection)); }
+
+// Fold one group to its rail in this window, or open it again (D4). The window's choice: the shared layout is untouched.
+function toggleGroupCollapse(groupId) {
+  peek = null;
+  commitSelection(DTm.toggleCollapse(selection, placementLayout(), groupId));
+}
+
+// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
+// placement and no selection, so nothing is saved, the pty isn't told and the keyboard stays where it was -- unless the
+// press was a key (Enter on the button), when the person is in the popover: its chosen tab has focus.
+function openPeek(id, byKeyboard) {
+  peek = window.dockTreeView.peekAfter(peek, { type: 'rail', module: id });
+  renderLayout({ refit: false });
+  if (!byKeyboard) return;
+  const target = peek ? document.querySelector('.dpeek .zone-tabs button.on') : document.querySelector(`.drail button[data-module="${CSS.escape(id)}"]`);
+  if (target) target.focus();
+}
 
 // A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
 function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
@@ -1628,13 +1671,28 @@ function showLayoutMenu(x, y) {
   layoutMenu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - r.height - 4))}px`;
 }
 
-// A module tab's right-click: Float and Hide. (A tab is moved by dragging it; Move arrives in D4.)
+// A module tab's (or rail button's) right-click, or Shift+F10 on it: Move, Float, Collapse / Expand group and Hide. A tab is
+// also moved by dragging it; Move is the same thing from the keyboard (the zones light and the arrow keys step through them).
 function openMoveMenu(id, x, y) {
   closeLayoutMenu();
   layoutMenuFor = id;
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: label }));
+  layoutMenu.appendChild(node('button', {
+    type: 'button', text: 'Move', title: 'Choose where this panel goes with the arrow keys; Enter drops it, Esc cancels',
+    on: { click: () => { closeLayoutMenu(); startKeyboardMove(id); } },
+  }));
+  // A group of the tree folds to its rail (this window only); a float has no rail to fold to.
+  const home = DTm.groupOf(placementLayout(), id);
+  if (home) {
+    const shut = selection.collapsed[home.id] === true;
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: shut ? 'Expand group' : 'Collapse group',
+      title: shut ? 'Open this group again' : 'Fold this group to its rail in this window; its button on the rail opens the panel over the terminal',
+      on: { click: () => { closeLayoutMenu(); toggleGroupCollapse(home.id); } },
+    }));
+  }
   // A panel that is already alone in its float has nothing to float out of.
   const own = DTm.floatOf(placementLayout(), id);
   if (!own || own.tabs.length > 1) {
@@ -1656,6 +1714,9 @@ function openMoveMenu(id, x, y) {
   layoutMenu.appendChild(node('div', { className: 'lm-sep' }));
   layoutMenu.appendChild(check.row);
   showLayoutMenu(x, y);
+  // Opened with Shift+F10 or the menu key, the keyboard is in it: the first item has focus, the arrows walk the rest.
+  const first = layoutMenu.querySelector('button');
+  if (first) first.focus();
 }
 
 // The ▦ Window menu: a check per module, hidden ones included (unticking hides,
@@ -1708,10 +1769,19 @@ document.getElementById('layout-btn').addEventListener('click', () => {
   else { openLayoutMenu(); retryPresets(); }      // an unreadable preset list is asked for again each time
 });
 document.addEventListener('contextmenu', (e) => {
-  const button = e.target.closest('.zone-tabs button[data-module]');
+  const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
   e.preventDefault();
   openMoveMenu(button.dataset.module, e.clientX, e.clientY);
+});
+// The arrows walk a menu opened from a tab (Move / Float / Collapse / Hide), as they do any menu.
+layoutMenu.addEventListener('keydown', (e) => {
+  if ((e.key !== 'ArrowDown' && e.key !== 'ArrowUp') || layoutMenuFor === 'menu') return;
+  const items = [...layoutMenu.querySelectorAll('button, input')];
+  const at = items.indexOf(document.activeElement);
+  if (at === -1) return;
+  e.preventDefault();
+  items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
 });
 window.addEventListener('mousedown', (e) => {
   if (!layoutMenu.hidden && !layoutMenu.contains(e.target) && !e.target.closest('#layout-btn')) closeLayoutMenu();
@@ -2011,6 +2081,19 @@ async function retryPresets() {
 // of the cell under the pointer is lit in #dock-overlay and the one under it
 // fills; a drop on a zone docks, anywhere else changes nothing.
 let cancelTabDrag = () => {};      // the socket closing ends a drag too
+
+// The zones of a drop, lit in #dock-overlay: the tab drag's and the keyboard move's. [] clears it.
+function paintZones(zones) {
+  const overlayEl = document.getElementById('dock-overlay');
+  overlayEl.textContent = '';
+  for (const z of zones) {
+    const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
+    Object.assign(el.style, { left: `${z.rect.x}px`, top: `${z.rect.y}px`, width: `${z.rect.width}px`, height: `${z.rect.height}px` });
+    overlayEl.appendChild(el);
+  }
+}
+// What a drop on `target` asks the model for: the terminal's middle floats the panel where it was dropped (D2).
+const landingFor = (target, at, viewport) => (target.float === true ? { float: DTm.floatSpotAt(at, viewport) } : target);
 let tabDragDraws = 0;             // how many times the drag rebuilt the overlay: the probe checks an idle pointer costs none
 (function initTabDrag() {
   const dock = document.getElementById('dock');
@@ -2020,12 +2103,7 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
 
   function drawZones(zones) {
     tabDragDraws += 1;
-    overlay.textContent = '';
-    for (const z of zones) {
-      const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
-      Object.assign(el.style, { left: `${z.rect.x}px`, top: `${z.rect.y}px`, width: `${z.rect.width}px`, height: `${z.rect.height}px` });
-      overlay.appendChild(el);
-    }
+    paintZones(zones);
   }
   function end() {
     if (press) { try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ } }
@@ -2076,7 +2154,7 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     if (!d) return;                                     // never moved: the click that follows selects the tab
     if (!d.target) return;
     // The terminal's middle floats the panel where it was dropped: the model says where (D2).
-    const target = d.target.float === true ? { float: DTm.floatSpotAt(d.at, d.viewport) } : d.target;
+    const target = landingFor(d.target, d.at, d.viewport);
     commitPlacement(DTm.dock(placementLayout(), d.id, target), { select: d.id });
   });
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
@@ -2085,6 +2163,70 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
   }, true);
+})();
+
+// --- moving a panel with the keyboard (dockable panels D4) ------------------------------------
+// The tab's menu has Move (right-click, or Shift+F10 / the menu key on a focused tab). It lights the zones of one cell and
+// the rim, as a drag does; the arrow keys step to the next zone and across to the next cell, Tab and Shift+Tab walk every
+// zone in order, Enter drops, Esc cancels. The keys are taken whole while it lasts (none reaches the terminal), and a
+// status line says in words where the panel would land. The zones, the steps and the words are app/dock-drag.js's; the
+// drop is the tab drag's own (DTm.dock through commitPlacement). A press anywhere, a blur or the socket closing ends it.
+let startKeyboardMove = () => {};
+let cancelKeyboardMove = () => {};
+(function initKeyboardMove() {
+  const announce = document.getElementById('dock-announce');
+  const labelOf = id => (TABS.find(t => t.id === id) || {}).label || id;
+  const nameOf = (cell) => {
+    if (cell === 'term') return 'the terminal';
+    const gr = DTm.allGroups(placementLayout()).find(x => x.id === cell);
+    return gr ? `the ${gr.tabs.map(labelOf).join(', ')} group` : 'that group';
+  };
+  const say = (text) => { announce.textContent = text; };
+  const boxes = () => (lastPlan ? lastPlan.boxes : []);
+  const exclude = () => { const own = kbMove ? DTm.floatOf(placementLayout(), kbMove.id) : null; return own ? own.id : null; };
+  function show() {
+    paintZones(window.dockDrag.zonesFor(boxes(), dockViewport(), kbMove.target).zones);
+    say(`Moving ${labelOf(kbMove.id)}: ${window.dockDrag.describeTarget(kbMove.target, nameOf)}. Arrow keys or Tab choose, Enter drops, Escape cancels.`);
+  }
+  function end() {
+    kbMove = null;
+    paintZones([]);
+    document.body.classList.remove('dock-moving');
+  }
+  const refocus = id => { const b = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(id)}"]`); if (b) b.focus(); };
+  startKeyboardMove = (id) => {
+    cancelTabDrag();
+    peek = null;
+    kbMove = { id, target: window.dockDrag.startTarget(boxes(), id) };
+    document.body.classList.add('dock-moving');
+    show();
+  };
+  cancelKeyboardMove = () => { if (kbMove) { end(); say('Move cancelled.'); } };
+  kbRefresh = () => { if (kbMove) show(); };
+
+  window.addEventListener('keydown', (e) => {
+    if (!kbMove) return;
+    e.preventDefault(); e.stopPropagation();
+    const { id } = kbMove;
+    if (e.key === 'Escape') { end(); say('Move cancelled.'); refocus(id); return; }
+    if (e.key === 'Enter') {
+      const vp = dockViewport();
+      const hot = window.dockDrag.zonesFor(boxes(), vp, kbMove.target);
+      const target = kbMove.target;
+      end();
+      if (!hot.target) { say('Move cancelled: that place is gone.'); refocus(id); return; }
+      const zone = hot.zones.find(z => z.hot);
+      const at = { x: zone.rect.x + zone.rect.width / 2, y: zone.rect.y + zone.rect.height / 2 };
+      commitPlacement(DTm.dock(placementLayout(), id, landingFor(target, at, vp)), { select: id });
+      say(`Moved ${labelOf(id)} ${window.dockDrag.describeTarget(target, nameOf)}.`);
+      refocus(id);
+      return;
+    }
+    kbMove.target = window.dockDrag.nextZone(boxes(), dockViewport(), kbMove.target, e.key === 'Tab' && e.shiftKey ? 'ShiftTab' : e.key, { exclude: exclude() });
+    show();
+  }, true);
+  window.addEventListener('pointerdown', () => { cancelKeyboardMove(); });
+  window.addEventListener('blur', () => { cancelKeyboardMove(); });
 })();
 
 // --- floating panels (dockable panels D2) -------------------------------------------
@@ -2096,8 +2238,9 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
 // A press that moves nothing stores nothing (PR #102 Dexter 2): the drag starts after FLOAT_SLOP px, and a release that
 // lands where the float is already drawn is no change (dockTreeView.floatDragResult). It follows only the pointer that
 // pressed (Miguel S4), is drawn at most once per animation frame, and never asks the terminal to refit: a float
-// doesn't change the terminal's rectangle (Miguel Y2). Moving by keyboard, and a name for the grip for assistive
-// tech, are D4's: until then the bar and the grip are pointer-only.
+// doesn't change the terminal's rectangle (Miguel Y2). A float's position and size by keyboard, and a name for the
+// grip for assistive tech, are not built: the bar and the grip are pointer-only, and the tab's Move (D4) docks a
+// floating panel elsewhere from the keyboard.
 let floatDragDraws = 0;   // how many times a float drag redrew: the probe checks N moves in one frame draw once
 let floatDrag = null;     // { kind: 'move' | 'resize', id, tabs, start, rect, viewport, base, el, pointerId, last, started, frame }
 (function initFloats() {
@@ -2213,12 +2356,45 @@ for (const id of ['focus-btn', 'focus-exit']) {
   document.getElementById(id).addEventListener('click', () => { if (focusBridge) focusBridge.toggle(); });
 }
 
-// A tab in a group, or a button on a rail. (The click a finished tab drag leaves
+// A tab in a group, a tab in a rail's popover, or a button on a rail. (The click a finished tab drag leaves
 // behind lands on the drop's common ancestor, not on a tab: nothing to swallow.)
 document.addEventListener('click', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
-  selectModule(button.dataset.module);
+  const id = button.dataset.module;
+  if (button.parentNode.classList.contains('drail')) { openPeek(id, e.detail === 0); return; }
+  if (button.closest('.dpeek')) {
+    // Another tab of the same rail: the popover shows that panel. Nothing is saved; the pty is not told.
+    peek = window.dockTreeView.peekAfter(peek, { type: 'tab', module: id });
+    renderLayout({ refit: false });
+    return;
+  }
+  selectModule(id);
+});
+
+// A rail's popover closes on Esc and on a press outside it and its rail (a press on the rail is the rail's own click).
+window.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !peek || kbMove) return;
+  const was = peek.module;
+  peek = window.dockTreeView.peekAfter(peek, { type: 'escape' });
+  renderLayout({ refit: false });
+  e.preventDefault(); e.stopPropagation();
+  const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
+  if (rail) rail.focus();
+}, true);
+document.addEventListener('pointerdown', (e) => {
+  if (!peek || (e.target.closest && e.target.closest('.dpeek, .drail'))) return;
+  peek = window.dockTreeView.peekAfter(peek, { type: 'outside' });
+  renderLayout({ refit: false });
+});
+
+// Double-clicking a group's tab bar folds the group to its rail; double-clicking its rail opens it again (this window only).
+document.addEventListener('dblclick', (e) => {
+  const bar = e.target.closest && e.target.closest('.dgroup:not(.dfloat) > .zone-tabs');
+  if (bar) { toggleGroupCollapse(bar.parentNode.dataset.group); return; }
+  const rail = e.target.closest && e.target.closest('.drail button[data-module]');
+  const home = rail ? DTm.groupOf(placementLayout(), rail.dataset.module) : null;
+  if (home && selection.collapsed[home.id] === true) toggleGroupCollapse(home.id);
 });
 
 document.getElementById('side-hint').addEventListener('click', toggleAllZones);
@@ -5088,6 +5264,17 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), d.path, rebased));     // the one real choice, saved once
     else renderLayout();
   });
+  // A divider is a focusable separator (D4): the arrow that points along it moves it 16 px, by the rules of a drag. Focus
+  // stays on it (userAction false), so the next press moves it again.
+  document.getElementById('dock').addEventListener('keydown', (e) => {
+    const g = e.target.closest && e.target.closest('.dgutter');
+    if (!g || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !lastPlan) return;
+    if (window.dockTreeView.dividerStep(e.key, g.dataset.dir) === null) return;
+    e.preventDefault();                                              // an arrow on a separator scrolls nothing
+    const path = g.dataset.path === '' ? [] : g.dataset.path.split('.').map(Number);
+    const next = window.dockTreeView.dividerKey(committedLayout(), lastPlan.splits, path, Number(g.dataset.i), e.key);
+    if (next) commitPlacement(next, { userAction: false });
+  });
   window.addEventListener('pointercancel', cancelDividerDrag);
   window.addEventListener('lostpointercapture', cancelDividerDrag);   // after a normal release the drag is already over
   window.addEventListener('blur', cancelDividerDrag);
@@ -6883,6 +7070,7 @@ function connect() {
     // a Files ask in flight will never be answered by this socket: fail it now, not after its timeout
     repoBrowser.failAll('the connection to the session dropped');
     cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
+    cancelKeyboardMove();           // ...and so is a keyboard move
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.

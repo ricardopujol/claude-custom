@@ -150,6 +150,43 @@ function sizesAfterDrag(node, split, i, delta) {
   });
 }
 
+const DIVIDER_STEP = 16;                       // px one arrow key moves a divider
+/** How long boxes take to settle into their new places after a drop (D4); a drag itself never animates. */
+const SETTLE_MS = 120;
+
+/** The pixels a key moves a divider: the arrow that points along it (left/right for a row's, up/down for a column's), else null. */
+function dividerStep(key, dir) {
+  if (dir === 'row') return key === 'ArrowLeft' ? -DIVIDER_STEP : key === 'ArrowRight' ? DIVIDER_STEP : null;
+  if (dir === 'col') return key === 'ArrowUp' ? -DIVIDER_STEP : key === 'ArrowDown' ? DIVIDER_STEP : null;
+  return null;
+}
+
+/**
+ * The layout after a key moves the divider before kid `i` of the split at `path`, by the same rules as dragging it
+ * (neither neighbour under its minimum, the terminal's side still flexing), or null when nothing moves: not an arrow
+ * along it, no such split or divider, a neighbour already at its minimum.
+ * @param splits `fit`'s per-split { path, px, min }
+ */
+function dividerKey(layout, splits, path, i, key) {
+  if (!isObject(layout) || !isObject(layout.root) || !Array.isArray(path) || !Array.isArray(splits)) return null;
+  let node = layout.root;
+  for (const k of path) {
+    if (!isObject(node) || node.type !== 'split' || !Number.isInteger(k) || k < 0 || k >= node.kids.length) return null;
+    node = node.kids[k];
+  }
+  if (!isObject(node) || node.type !== 'split') return null;
+  const delta = dividerStep(key, node.dir);
+  if (delta === null) return null;
+  const split = splits.find(s => isObject(s) && Array.isArray(s.path) && s.path.length === path.length && s.path.every((v, k) => v === path[k]));
+  const sizes = sizesAfterDrag(node, split, i, delta);
+  if (!sizes) return null;
+  const next = treeApi.setSplitSizes(layout, path, sizes);
+  return next === layout ? null : next;
+}
+
+/** Milliseconds boxes take to settle after a drop: none when the person asked for reduced motion (or it isn't known they didn't). */
+function settleMs(reducedMotion) { return reducedMotion === false ? SETTLE_MS : 0; }
+
 /**
  * A divider is released on the placement as it is NOW, not as it was at pointerdown
  * (another window may have hidden a panel or resized another split meanwhile, and
@@ -346,7 +383,15 @@ function applyBoxes(plan, doc) {
   const floatPool = syncPool(layer, ':scope > .dgroup', floatBoxes, b => b.id, makeGroup, null);
   const elOfBox = b => treePool.elOf.get(b) || floatPool.elOf.get(b);
   const gutters = plan.boxes.filter(b => b.kind === 'gutter');
-  const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, () => mk('div', 'dgutter'), overlay);
+  // A divider can be reached and moved with the arrow keys (D4): a separator, in the tab order.
+  const makeGutter = () => {
+    const el = mk('div', 'dgutter');
+    el.setAttribute('role', 'separator');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', 'Resize panels: the arrow keys move this divider');
+    return el;
+  };
+  const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, makeGutter, overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
   const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
 
@@ -363,7 +408,7 @@ function applyBoxes(plan, doc) {
     el.style.zIndex = isFloat ? String(floatsDrawn++) : '';
     const grip = el.querySelector('.dfloat-grip');
     if (isFloat && !grip) {
-      // Pointer-only until D4's keyboard work (move and resize without a mouse): so it is no control for assistive tech.
+      // Pointer-only (a float's size by keyboard is not built; the tab's Move re-docks it from the keyboard): so it is no control for assistive tech.
       const g = mk('div', 'dfloat-grip');
       g.setAttribute('aria-hidden', 'true');
       el.appendChild(g);
@@ -380,6 +425,7 @@ function applyBoxes(plan, doc) {
     el.dataset.path = b.path.join('.');
     el.dataset.i = String(b.i);
     el.dataset.dir = b.dir;
+    el.setAttribute('aria-orientation', b.dir === 'row' ? 'vertical' : 'horizontal');     // a row's divider is a vertical bar
     setRect(el, b.rect);
   }
   for (const b of rails) {
@@ -396,9 +442,31 @@ function applyBoxes(plan, doc) {
         btn.dataset.module = t.id;
         btn.title = t.title;
         btn.textContent = t.label;
+        btn.setAttribute('aria-haspopup', 'true');
         el.appendChild(btn);
       }
     }
+    // Which button has its panel open over the terminal moves without rebuilding the buttons (focus stays on the one pressed).
+    for (const btn of el.children) btn.setAttribute('aria-expanded', plan.peek && plan.peek.module === btn.dataset.module ? 'true' : 'false');
+  }
+
+  // A rail's panel opened over the terminal (D4): one element in the floats' layer, last, so it is above them. It is a
+  // .zone like a group so every panel's own styles apply, and not a .dgroup, so no pool mistakes it for one.
+  let popover = layer.querySelector(':scope > .dpeek');
+  if (plan.peek) {
+    if (!popover) {
+      popover = mk('aside', 'zone dpeek');
+      popover.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
+      layer.appendChild(popover);
+    }
+    popover.dataset.module = plan.peek.module;
+    popover.dataset.shape = plan.peek.shape;
+    popover.dataset.dir = plan.peek.dir;
+    setRect(popover, plan.peek.rect);
+    applyTabs(doc, popover.querySelector('.zone-tabs'), plan.peek.tabs);
+    const holder = popover.querySelector('.zone-panels');
+    const p = doc.querySelector(`.panel[data-panel="${plan.peek.module}"]`);
+    if (p && p.parentNode !== holder) holder.appendChild(p);
   }
 
   // Panels no group is showing wait in the store; that includes every panel of a group about to be removed.
@@ -408,7 +476,9 @@ function applyBoxes(plan, doc) {
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
-  for (const el of [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
+  const stale = [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale];
+  if (popover && !plan.peek) stale.push(popover);
+  for (const el of stale) el.remove();
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
   // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
@@ -420,7 +490,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, peekAfter, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, peekAfter, dividerStep, dividerKey, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
