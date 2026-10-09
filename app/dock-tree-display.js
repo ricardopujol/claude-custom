@@ -43,10 +43,12 @@ const faceForWide = height => Math.max(28, Math.min(150, height - WIDE_FACE_CHRO
  * @param tabs     the module registry: [{ id, label, title }] (app/side-tabs.js TABS)
  * @param viewport { width, height } of #dock
  * @param faceSize width -> portrait px (app/roster-width.js)
- * @returns { boxes, splits, shown, face } `fit`'s boxes with each group's tabs, panel and shape filled in;
- *          `shown` the panels on screen; `face` the portrait size while Agents shows, else null.
+ * @param peek     { module } the rail button this window pressed (D4), or null: its panel opens over the terminal
+ * @returns { boxes, splits, shown, face, peek } `fit`'s boxes with each group's tabs, panel and shape filled in;
+ *          `shown` the panels on screen (the popover's included); `face` the portrait size while Agents shows, else null;
+ *          `peek` the popover { module, rect, dir, tabs } or null (no such rail any more).
  */
-function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
+function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
   const { boxes, splits } = fit(layout, selection, viewport);
   const byId = new Map(tabs.map(t => [t.id, t]));
   const shown = [];
@@ -70,7 +72,39 @@ function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
       tabs: named(b.tabs).map(t => ({ ...t, on: t.id === b.active })),
     };
   });
-  return { boxes: drawn, splits, shown, face };
+  // A rail's panel opened over the terminal. It is on screen like any other panel (so the vault rule sees it come and go).
+  let popover = null;
+  const at = isObject(peek) ? treeApi.peekFor(boxes, peek.module, viewport) : null;
+  if (at) {
+    const shape = shapeOf(at.rect);
+    popover = { ...at, shape, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
+    if (popover.tabs.some(t => t.id === at.module)) {
+      shown.push(at.module);
+      if (at.module === 'agents') face = shape === 'tall' ? (typeof faceSize === 'function' ? faceSize(at.rect.width) : null) : faceForWide(at.rect.height);
+    } else popover = null;
+  }
+  return { boxes: drawn, splits, shown, face, peek: popover };
+}
+
+/**
+ * What a rail's popover does with what the user does (D4). The page keeps only `{ module }` or null, never saved:
+ *   rail     a rail's button: opens that module, moves it from another rail's, closes it if it is the open one
+ *   tab      a tab inside the popover: switches it
+ *   escape / outside / drop / gone   (Esc, a press outside it, a tab drop, its rail no longer exists): closes
+ * Anything else changes nothing.
+ */
+function peekAfter(state, ev) {
+  const cur = isObject(state) && typeof state.module === 'string' && state.module !== '' ? { module: state.module } : null;
+  const e = isObject(ev) ? ev : {};
+  const mod = typeof e.module === 'string' && e.module !== '' ? e.module : null;
+  switch (e.type) {
+    case 'rail':
+      if (mod === null) return cur;
+      return cur && cur.module === mod ? null : { module: mod };
+    case 'tab': return cur && mod !== null ? { module: mod } : cur;
+    case 'escape': case 'outside': case 'drop': case 'gone': return null;
+    default: return cur;
+  }
 }
 
 /**
@@ -386,7 +420,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, peekAfter, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

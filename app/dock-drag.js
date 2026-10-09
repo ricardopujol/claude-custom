@@ -105,7 +105,132 @@ function zonesAt(boxes, viewport, point, { tabBar = TAB_BAR, exclude = null } = 
   return { zones: zones.map(z => ({ ...z, hot: z === hot })), target: hot ? hot.target : null };
 }
 
-const API = { RIM, BAND, TAB_BAR, zonesAt };
+// --- the keyboard move mode (D4) ----------------------------------------------------------------
+//
+// The tab's menu has *Move*: the zones of one cell light, the arrow keys step to the next zone (and across to the next
+// cell), Enter drops, Esc cancels. It walks the very zones the pointer lights, from the same boxes, so a panel that can
+// be dragged somewhere can be moved there without a mouse.
+
+const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
+const isTerm = b => hasRect(b) && b.kind === 'term';
+const sameTarget = (a, b) => isObject(a) && isObject(b) && a.edge === b.edge && a.cell === b.cell && a.side === b.side && (a.float === true) === (b.float === true);
+const sized = (vp) => {
+  const v = isObject(vp) ? vp : null;
+  return v && dim(v.width) > 0 && dim(v.height) > 0 ? { width: dim(v.width), height: dim(v.height) } : null;
+};
+
+/**
+ * Every zone a panel can be dropped on, as the pointer would light them: the window's rim, each cell's bands and middle
+ * (the terminal's middle floats), and a float's whole box (join). Empty zones are left out. `exclude`: a float being
+ * moved is not its own target.
+ */
+function candidates(boxes, viewport, { tabBar = TAB_BAR, exclude = null } = {}) {
+  const vp = sized(viewport);
+  if (!vp) return [];
+  const barPx = isNumber(tabBar) && tabBar >= 0 ? tabBar : TAB_BAR;
+  const out = rimZones(vp.width, vp.height).filter(z => area(z.rect) > 0);
+  for (const b of Array.isArray(boxes) ? boxes : []) {
+    if (isCell(b)) out.push(...cellZones(b, barPx));
+    else if (hasRect(b) && b.kind === 'float' && typeof b.id === 'string' && b.id !== exclude && area(b.rect) > 0) out.push({ rect: { ...b.rect }, target: { cell: b.id, side: 'center' } });
+  }
+  // A group's tab bar and its middle both mean "join it": the keyboard steps through the middle only.
+  return out.filter((z, i) => !out.slice(i + 1).some(o => sameTarget(o.target, z.target)));
+}
+
+/** Where a move starts: the middle of the group (or float) the module sits in, else the terminal's float zone. */
+function startTarget(boxes, id) {
+  const own = (Array.isArray(boxes) ? boxes : []).find(b => hasRect(b) && (b.kind === 'group' || b.kind === 'float') && Array.isArray(b.tabs) && b.tabs.includes(id));
+  return own ? { cell: own.id, side: 'center' } : { float: true };
+}
+
+const STEPS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+const CYCLE = { Tab: 1, ShiftTab: -1 };
+
+/**
+ * The zone one key away from `current`. An arrow: the nearest zone whose middle lies beyond it in that direction (a zone
+ * straight ahead beats one off to the side), or `current` itself when there is none. 'Tab' / 'ShiftTab': the next or
+ * previous zone in the order the pointer meets them, round and round -- the way to a zone an arrow can't pick out (one
+ * lying behind another). A target that is not on screen any more (the layout changed under the move) restarts at the
+ * terminal's float zone. Any other key changes nothing.
+ */
+function nextZone(boxes, viewport, current, key, { tabBar = TAB_BAR, exclude = null } = {}) {
+  const has = o => Object.prototype.hasOwnProperty.call(o, key);
+  const step = has(STEPS) ? STEPS[key] : null;
+  const cycle = has(CYCLE) ? CYCLE[key] : 0;
+  if (!step && !cycle) return current;
+  const all = candidates(boxes, viewport, { tabBar });
+  const dests = exclude === null ? all : candidates(boxes, viewport, { tabBar, exclude });
+  const here = all.find(z => sameTarget(z.target, current));
+  if (!here) {
+    const home = dests.find(z => z.target.float === true) || dests[0];
+    return home ? home.target : null;
+  }
+  if (cycle) {
+    if (!dests.length) return current;
+    // From a zone that is not a destination (the float being moved), the order continues from where it would stand.
+    const at = all.indexOf(here);
+    const order = all.filter((z, i) => i === at || dests.some(d => sameTarget(d.target, z.target)));
+    const i = order.indexOf(here);
+    return order[(i + cycle + order.length) % order.length].target;
+  }
+  const mid = r => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
+  const a = mid(here.rect);
+  // The zones ahead, each with how far and how far off to the side. Those within 45 degrees of the key win first (up from
+  // a group's middle is its top band, not the thin rim strip that happens to sit a few pixels higher far to the side);
+  // only when none is, anything ahead at all.
+  const ahead = [];
+  for (const z of dests) {
+    if (sameTarget(z.target, current)) continue;
+    const b = mid(z.rect);
+    const along = step[0] !== 0 ? (b.x - a.x) * step[0] : (b.y - a.y) * step[1];
+    if (along <= 0) continue;
+    ahead.push({ z, along, aside: step[0] !== 0 ? Math.abs(b.y - a.y) : Math.abs(b.x - a.x) });
+  }
+  const pool = ahead.some(c => c.aside <= c.along) ? ahead.filter(c => c.aside <= c.along) : ahead;
+  let best = null;
+  for (const c of pool) if (best === null || c.along + 2 * c.aside < best.along + 2 * best.aside) best = c;
+  return best ? best.z.target : current;
+}
+
+/**
+ * The zones to draw while a move is on: the rim, and the cell the target belongs to. `target` comes back as the hot
+ * zone's, or null when it is not on screen.
+ */
+function zonesFor(boxes, viewport, target, { tabBar = TAB_BAR } = {}) {
+  const vp = sized(viewport);
+  const barPx = isNumber(tabBar) && tabBar >= 0 ? tabBar : TAB_BAR;
+  const list = Array.isArray(boxes) ? boxes : [];
+  const zones = vp ? rimZones(vp.width, vp.height) : [];
+  const t = isObject(target) ? target : {};
+  const owner = t.float === true ? list.find(isTerm)
+    : typeof t.cell === 'string' ? list.find(b => (t.cell === 'term' ? isTerm(b) : hasRect(b) && (b.kind === 'group' || b.kind === 'float') && b.id === t.cell))
+      : null;
+  if (owner && owner.kind === 'float') zones.push({ rect: { ...owner.rect }, target: { cell: owner.id, side: 'center' } });
+  else if (owner) zones.push(...cellZones(owner, barPx));
+  // A group's tab bar and its middle are both "join it": the middle (listed last) is the one that is hot.
+  const hot = [...zones].reverse().find(z => sameTarget(z.target, target));
+  return { zones: zones.map(z => ({ ...z, hot: z === hot })), target: hot ? hot.target : null };
+}
+
+/** The target in words, for the screen reader: `nameOf(cellId)` names a group or 'term'. */
+function describeTarget(target, nameOf) {
+  const name = c => (typeof nameOf === 'function' ? nameOf(c) : String(c));
+  if (!isObject(target)) return 'nowhere';
+  if (typeof target.edge === 'string') return `along the window's ${target.edge} edge`;
+  if (target.float === true) return 'floating over the terminal';
+  if (typeof target.cell !== 'string') return 'nowhere';
+  const n = name(target.cell);
+  switch (target.side) {
+    case 'left': return `left of ${n}`;
+    case 'right': return `right of ${n}`;
+    case 'top': return `above ${n}`;
+    case 'bottom': return `below ${n}`;
+    case 'center': return `as a tab in ${n}`;
+    default: return 'nowhere';
+  }
+}
+
+const API = { RIM, BAND, TAB_BAR, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

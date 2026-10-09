@@ -783,6 +783,43 @@ function placeFloats(layout, ctx, area) {
   }
 }
 
+// --- a rail's panel over the terminal (D4) --------------------------------------------------
+
+// How much of the window the popover of a rail takes: a vertical rail's is this wide, a horizontal rail's this high,
+// and along the rail it is at least this long (more when the rail is longer).
+const PEEK = { side: 280, wide: 220, span: 420 };
+
+/**
+ * Where the panel of a module on a rail opens. A group folded to a rail (collapsed on purpose, Ctrl+B, or squeezed by a
+ * narrow window) has no room for its panel, so it opens as a popover beside the rail, on the side with the most room,
+ * over whatever is drawn there. Whole pixels, always inside the window, never over its own rail.
+ * `boxes` are `fit`'s; the answer is { module, modules, dir, rect } -- `modules` the rail's, for the popover's tabs --
+ * or null when no rail holds the module (the popover closes by itself when its rail goes) or the window is junk.
+ */
+function peekFor(boxes, module, viewport) {
+  const vp = viewportOf(viewport);
+  if (!vp || typeof module !== 'string' || !Array.isArray(boxes)) return null;
+  const rail = boxes.find(b => isObject(b) && b.kind === 'rail' && Array.isArray(b.modules) && b.modules.includes(module)
+    && isObject(b.rect) && ['x', 'y', 'width', 'height'].every(k => isNum(b.rect[k])));
+  if (!rail || (rail.dir !== 'v' && rail.dir !== 'h')) return null;
+  const r = rail.rect;
+  const clampTo = (v, room) => Math.max(0, Math.min(Math.round(v), room));
+  if (rail.dir === 'v') {
+    const before = r.x;
+    const after = vp.width - (r.x + r.width);
+    const width = Math.floor(Math.min(PEEK.side, Math.max(before, after)));
+    const height = Math.min(vp.height, Math.max(Math.round(r.height), PEEK.span));
+    if (width <= 0 || height <= 0) return null;
+    return { module, modules: [...rail.modules], dir: 'v', rect: { x: Math.round(after >= before ? r.x + r.width : r.x - width), y: clampTo(r.y, vp.height - height), width, height } };
+  }
+  const before = r.y;
+  const after = vp.height - (r.y + r.height);
+  const height = Math.floor(Math.min(PEEK.wide, Math.max(before, after)));
+  const width = Math.min(vp.width, Math.max(Math.round(r.width), PEEK.span));
+  if (width <= 0 || height <= 0) return null;
+  return { module, modules: [...rail.modules], dir: 'h', rect: { x: clampTo(r.x, vp.width - width), y: Math.round(after >= before ? r.y + r.height : r.y - height), width, height } };
+}
+
 /**
  * @param layout    a normalized layout
  * @param selection this window's choices (anything: it is cleaned)
@@ -802,7 +839,7 @@ function fit(layout, selection, viewport) {
 const API = {
   HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
-  cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, activeOf, fit,
+  cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, activeOf, fit, peekFor, PEEK,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.
