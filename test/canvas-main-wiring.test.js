@@ -23,7 +23,7 @@ test('the process-wide resolver rule is set before the app is ready (a switch se
 });
 
 test('every tab-page channel is gated on the sender being a tab view', () => {
-  for (const ch of ['canvas:bounds', 'canvas:cover', 'canvas:hosts', 'canvas:hide']) {
+  for (const ch of ['canvas:bounds', 'canvas:cover', 'canvas:hosts', 'canvas:set-shelf', 'canvas:hide']) {
     const m = new RegExp(`ipcMain\\.on\\('${ch}', \\(e(?:, [a-z]+)?\\) => \\{ if \\(isTabView\\(e\\.sender\\)\\)`).exec(CODE);
     assert.ok(m, `${ch} must check isTabView(e.sender)`);
   }
@@ -70,6 +70,11 @@ test('the tab preload and main agree on every canvas channel, in both directions
   assert.deepStrictEqual(heard, pushed);
 });
 
+test('an address the panel asks to open goes to the real browser through openInBrowser, so only http(s) ever leaves the app', () => {
+  assert.match(CODE, /openUrl: \(url\) => openInBrowser\(url, "Claude's panel"\),/);
+});
+
+
 test("a panel made for a tab asks main whether that tab is the selected one, so it never starts visible over another tab (PR #122 Dexter F4)", () => {
   assert.match(CODE, /isOwnerVisible: \(owner\) => \{ const sel = selectedView\(\); return !!sel && sel\.webContents === owner; \},/);
 });
@@ -99,4 +104,14 @@ test('host/canvas-store.js depends on no app/ module: the origin rule lives on t
   assert.doesNotMatch(src, /require\(['"]\.\.\/app\//);
   assert.match(src, /require\('\.\/canvas-origin'\)/);
   assert.strictEqual(require('../app/canvas-csp').hostOrigin, require('../host/canvas-origin').hostOrigin);
+});
+
+test("the panel's MCP switch is answered only to a tab view, only writes a real boolean, and reads and writes the folder the host reads (#71 question 8)", () => {
+  assert.match(CODE, /ipcMain\.handle\('canvas:settings-get', \(e\) => \(isTabView\(e\.sender\) \? readMcpSetting\(uiStore\.dir\) : null\)\);/);
+  assert.match(CODE, /ipcMain\.handle\('canvas:settings-set', \(e, on\) => \(isTabView\(e\.sender\) && typeof on === 'boolean' \? writeMcpSetting\(uiStore\.dir, on\) : null\)\);/);
+  assert.match(CODE, /const uiStore = createStore\(\{ dir: path\.join\(__dirname, '\.\.', '\.harness', 'state'\) \}\);/);
+  const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  assert.match(host, /canvasMcpEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/, 'the host reads the same folder');
+  const pre = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(pre, /settingsSet: \(on\) => ipcRenderer\.invoke\('canvas:settings-set', on\)/, 'the page sends what it has; main refuses a non-boolean');
 });

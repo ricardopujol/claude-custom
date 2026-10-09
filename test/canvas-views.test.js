@@ -71,7 +71,10 @@ test('the panel view is sandboxed, isolated, bridge-less except its own preload,
   assert.strictEqual(p.sandbox, true);
   assert.strictEqual(p.contextIsolation, true);
   assert.strictEqual(p.nodeIntegration, false);
-  assert.ok(!p.webviewTag && !p.nodeIntegrationInWorker && !p.nodeIntegrationInSubFrames);
+  assert.ok(!p.webviewTag && !p.nodeIntegrationInWorker);
+  // The preload (the file-picker guard) must run in every frame; that is all a sub-frame may get from it, and sandbox + contextIsolation stay on, no Node
+  // (test/canvas-panel-preload.test.js: a sub-frame gets no bridge; verify/probe-canvas-sandbox.js `frame-surface`).
+  assert.strictEqual(p.nodeIntegrationInSubFrames, true);
   assert.strictEqual(p.devTools, false);
   assert.strictEqual(p.disableDialogs, true, "alert/confirm/prompt are native boxes on the app's window: a page looping on confirm() would lock it (PR #122 Dexter F1)");
   assert.strictEqual(p.safeDialogs, true);
@@ -316,7 +319,7 @@ test('messageFrom: input goes stale, one message per click, and bad shapes are d
   panel.emit('input-event', {}, { type: 'mouseDown' });
   r.tick(PANEL_LIMITS.inputWindowMs + 1);
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'late' }), false, 'a click from long ago is not a click now');
-  panel.emit('input-event', {}, { type: 'keyDown' });
+  press(panel, 'Enter');
   for (const bad of [null, 'x', {}, { kind: 'other', text: 'x' }, { kind: 'send' }, { kind: 'send', text: 5 }, { kind: 'send', text: '' }, { kind: 'send', text: '   ' },
     { kind: 'send', text: 'x'.repeat(PANEL_LIMITS.messageChars + 1) }, { kind: 'send', text: 'two\nlines' }]) {
     assert.strictEqual(r.m.messageFrom(panel, bad), false, JSON.stringify(bad));
@@ -349,14 +352,13 @@ test('the process-wide resolver rule refuses every name but loopback (this is wh
   assert.strictEqual(HOST_RESOLVER_RULES, 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost');
 });
 
-test('registerCanvasIpc: a panel contents is answered by the module, and nothing else is, on exactly two channels', async () => {
+test('registerCanvasIpc: a panel contents is answered by the module, and nothing else is', async () => {
   const handlers = {}; const listeners = {};
   const ipc = { handle: (ch, fn) => { handlers[ch] = fn; }, on: (ch, fn) => { listeners[ch] = fn; } };
   const calls = [];
   const m = { fetchFor: async (s, req) => { calls.push(['fetch', s.id, req]); return { ok: true }; }, messageFrom: (s, msg) => { calls.push(['send', s.id, msg]); return true; } };
   registerCanvasIpc(ipc, m);
-  assert.deepStrictEqual(Object.keys(handlers), ['canvas:fetch']);
-  assert.deepStrictEqual(Object.keys(listeners), ['canvas:send']);
+  assert.ok('canvas:fetch' in handlers && 'canvas:send' in listeners, 'the first two channels (the shelf adds two more, tested below)');
   assert.deepStrictEqual(await handlers['canvas:fetch']({ sender: { id: 5 } }, { url: 'u' }), { ok: true });
   listeners['canvas:send']({ sender: { id: 6 } }, { kind: 'send', text: 't' });
   assert.deepStrictEqual(calls, [['fetch', 5, { url: 'u' }], ['send', 6, { kind: 'send', text: 't' }]]);
@@ -377,6 +379,115 @@ test('inspect (a probe seam, read-only): where the panel is, whether it shows, a
   assert.deepStrictEqual(wc.sent.map(e => [e.type, e.x, e.y, e.button]), [['mouseMove', 30, 40, undefined], ['mouseDown', 30, 40, 'left'], ['mouseUp', 30, 40, 'left']]);
   assert.strictEqual(r.m.click({ id: 12345 }, 1, 1), false);
 });
+
+// --- the shelf (BACKLOG #71, PR 2) ---------------------------------------------------------------------------------------------
+const ITEM_A = { title: 'Roadmap', url: 'https://claude.ai/artifact/aaa', time: '2026-10-05T12:00:00.000Z' };
+const ITEM_B = { title: 'Older', url: 'https://claude.ai/artifact/bbb', time: '2026-10-04T12:00:00.000Z' };
+
+function shelfRig() {
+  const opened = [];
+  const r = rig();
+  r.m = createCanvasViews({
+    WebContentsView: class extends FakeView { constructor(o) { super(o); r.views.push(this); this.webContents.pushed = []; this.webContents.send = (ch, items) => this.webContents.pushed.push([ch, items]); } },
+    session: { fromPartition: (p) => (r.sessions[p] = r.sessions[p] || new FakeSession(p)) },
+    addChild: (v) => r.children.add(v), removeChild: (v) => r.children.delete(v),
+    ownerBounds: () => ({ x: 0, y: 40, width: 1200, height: 800 }), preloadPath: 'p.js',
+    ask: async () => 'deny', onMessage: (o, msg) => r.messages.push(msg), openUrl: (u) => { opened.push(u); return true; },
+    now: () => 1000, log: () => {},
+  });
+  return { ...r, opened };
+}
+
+test('the shelf given with the page is what the panel reads (shelfFor), and only the panel\'s own contents may ask', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A, ITEM_B] });
+  assert.deepStrictEqual(r.m.shelfFor(r.views[0].webContents), [ITEM_A, ITEM_B]);
+  assert.deepStrictEqual(r.m.shelfFor({ id: 99999 }), []);
+  assert.deepStrictEqual(r.m.shelfFor(null), []);
+});
+
+test('a changed shelf is pushed to the live panel once; an unchanged one is not', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const wc = r.views[0].webContents;
+  r.m.setShelf(r.owner, [ITEM_A]);
+  assert.deepStrictEqual(wc.pushed, [], 'same shelf: nothing to say');
+  r.m.setShelf(r.owner, [ITEM_B, ITEM_A]);
+  assert.deepStrictEqual(wc.pushed, [['canvas:shelf', [ITEM_B, ITEM_A]]]);
+  r.m.setShelf(r.owner, [ITEM_B, ITEM_A]);
+  assert.strictEqual(wc.pushed.length, 1);
+});
+
+test('the shelf is cleaned: only well-formed https entries, capped', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A, { title: 5, url: 'https://x.com/', time: 't' }, { ...ITEM_B, url: 'javascript:alert(1)' }, { ...ITEM_B, url: 'http://claude.ai/x' }, null, 'x', { title: 'u', url: 'https://u:p@x.com/', time: 't' }] });
+  assert.deepStrictEqual(r.m.shelfFor(r.views[0].webContents), [ITEM_A]);
+  const many = Array.from({ length: 300 }, (_, i) => ({ title: `T${i}`, url: `https://claude.ai/artifact/id${i}`, time: 't' }));
+  r.m.setShelf(r.owner, many);
+  assert.strictEqual(r.m.shelfFor(r.views[0].webContents).length, 200);
+  r.m.setShelf(r.owner, 'junk');
+  assert.deepStrictEqual(r.m.shelfFor(r.views[0].webContents), []);
+});
+
+test('open: a real click and an address that is exactly on the shelf; nothing else is ever opened', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const panel = r.views[0].webContents;
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false, 'no real click yet: a script cannot open a link');
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.openFrom(panel, { url: 'https://claude.ai/artifact/zzz' }), false, 'not on the shelf');
+  assert.strictEqual(r.m.openFrom(panel, { url: 'https://evil.example/' }), false);
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url + '#x' }), false, 'exactly the shelf entry, not a variant of it');
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), true);
+  assert.deepStrictEqual(r.opened, [ITEM_A.url]);
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false, 'one click opens one address');
+});
+
+test('open: a click is shared with send: it is spent by whichever uses it first', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'hi' }), true);
+  assert.strictEqual(r.m.openFrom(panel, { url: ITEM_A.url }), false);
+  assert.deepStrictEqual(r.opened, []);
+});
+
+test('open: bad shapes and a stranger are refused', async () => {
+  const r = shelfRig();
+  await show(r, { shelf: [ITEM_A] });
+  const panel = r.views[0].webContents;
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  for (const bad of [null, 'x', {}, { url: 5 }, { url: '' }]) assert.strictEqual(r.m.openFrom(panel, bad), false, JSON.stringify(bad));
+  assert.strictEqual(r.m.openFrom({ id: 54321 }, { url: ITEM_A.url }), false);
+  assert.deepStrictEqual(r.opened, []);
+});
+
+test('registerCanvasIpc also answers the shelf and the open request, on exactly four channels', async () => {
+  const handlers = {}; const listeners = {};
+  const ipc = { handle: (ch, fn) => { handlers[ch] = fn; }, on: (ch, fn) => { listeners[ch] = fn; } };
+  const calls = [];
+  const m = { fetchFor: async () => ({ ok: true }), messageFrom: () => true, shelfFor: (s) => { calls.push(['shelf', s.id]); return [ITEM_A]; }, openFrom: (s, msg) => { calls.push(['open', s.id, msg]); return true; } };
+  registerCanvasIpc(ipc, m);
+  assert.deepStrictEqual(Object.keys(handlers).sort(), ['canvas:fetch', 'canvas:shelf']);
+  assert.deepStrictEqual(Object.keys(listeners).sort(), ['canvas:open', 'canvas:send']);
+  assert.deepStrictEqual(await handlers['canvas:shelf']({ sender: { id: 8 } }), [ITEM_A]);
+  listeners['canvas:open']({ sender: { id: 9 } }, { url: 'u' });
+  assert.deepStrictEqual(calls, [['shelf', 8], ['open', 9, { url: 'u' }]]);
+});
+
+test('messageFrom: the C1 range and the Unicode line separators are refused like any control character (they end the typed line early)', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  for (const bad of ['a\u0085b', 'a\u009bb', 'a b', 'a b', 'a\u007fb']) {
+    panel.emit('input-event', {}, { type: 'mouseDown' });
+    assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: bad }), false, JSON.stringify(bad));
+  }
+  panel.emit('input-event', {}, { type: 'mouseDown' });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'café ☃' }), true);
+});
+
 
 // ---- show / hide / tab-switch interleavings while the proxy is being set (PR #122 Dexter F4 / Miguel Y1) ----------------------------
 
@@ -539,19 +650,70 @@ test('a lone mouseUp (a press that began outside the panel) does not arm anythin
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'x' }), false);
 });
 
-test('a key press is one use: the char that follows its keyDown does not re-arm', async () => {
+// A key is read from before-input-event, the only event that carries WHICH key (input-event has a type and modifiers, nothing else).
+const press = (panel, key, extra = {}) => panel.emit('before-input-event', { preventDefault() {} }, { type: 'keyDown', key, code: key === ' ' ? 'Space' : key, isAutoRepeat: false, ...extra });
+const release = (panel, key) => panel.emit('before-input-event', { preventDefault() {} }, { type: 'keyUp', key, code: key === ' ' ? 'Space' : key, isAutoRepeat: false });
+
+test('a key press is one use: Enter arms, the char that follows its keyDown does not re-arm', async () => {
   const r = rig();
   await show(r);
   const panel = r.views[0].webContents;
-  panel.emit('input-event', {}, { type: 'rawKeyDown' });
+  press(panel, 'Enter');
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true);
   panel.emit('input-event', {}, { type: 'char' });
   assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false);
 });
 
+test('PR #125 Dexter #6: ONLY Enter and Space count as a click; typing into the page\'s own field authorises nothing', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  for (const key of ['a', 'Z', '1', 'Tab', 'Escape', 'ArrowDown', 'Backspace', 'Shift', 'Control', 'F5', 'Delete', 'é']) {
+    press(panel, key);
+    panel.emit('input-event', {}, { type: 'rawKeyDown' });       // the old arming events, with no key named
+    panel.emit('input-event', {}, { type: 'keyDown' });
+    panel.emit('input-event', {}, { type: 'char' });
+    assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'x' }), false, key);
+  }
+  for (const key of ['Enter', ' ']) {
+    press(panel, key);
+    assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: key === ' ' ? 'space' : 'enter' }), true, JSON.stringify(key));
+  }
+  assert.deepStrictEqual(r.messages.map(m => m.text), ['enter', 'space']);
+});
+
+test('PR #125 Dexter #6: a held key (auto-repeat) never re-arms, and one press is one use', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  press(panel, 'Enter');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'first' }), true);
+  for (let i = 0; i < 5; i++) press(panel, 'Enter', { isAutoRepeat: true });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'again' }), false, 'auto-repeat is not a new press');
+  press(panel, ' ', { isAutoRepeat: true });
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'again' }), false);
+  press(panel, 'Enter');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'second' }), true, 'a fresh press is a fresh use');
+});
+
+test('PR #125 Dexter #6: Space acts on the key UP in a browser: the release keeps a press fresh without un-spending it', async () => {
+  const r = rig();
+  await show(r);
+  const panel = r.views[0].webContents;
+  press(panel, ' ');
+  r.tick(PANEL_LIMITS.inputWindowMs - 100);
+  release(panel, ' ');
+  r.tick(PANEL_LIMITS.inputWindowMs - 100);
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'a' }), true, 'still fresh after the release');
+  release(panel, ' ');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'b' }), false, 'a release is not a press');
+  release(panel, 'a');
+  assert.strictEqual(r.m.messageFrom(panel, { kind: 'send', text: 'c' }), false);
+});
+
 test('property: the messages let through never outnumber the gestures that began (a mouseDown or a key press)', async () => {
   const fc = require('fast-check');
-  const ev = fc.constantFrom('mouseDown', 'mouseUp', 'mouseMove', 'keyDown', 'rawKeyDown', 'char', 'send', 'send', 'send');
+  const ev = fc.constantFrom('mouseDown', 'mouseUp', 'mouseMove', 'enter', 'space', 'repeat', 'letter', 'char', 'send', 'send', 'send');
   await fc.assert(fc.asyncProperty(fc.array(ev, { maxLength: 40 }), async (events) => {
     const r = rig();
     await show(r);
@@ -563,8 +725,9 @@ test('property: the messages let through never outnumber the gestures that began
         assert.strictEqual(ok, armed, 'accepted exactly when a gesture began since the last accepted send');
         if (ok) { accepted += 1; armed = false; }
       } else {
-        panel.emit('input-event', {}, { type: e });
-        if (e === 'mouseDown' || e === 'keyDown' || e === 'rawKeyDown') { began += 1; armed = true; }
+        if (e === 'enter' || e === 'space' || e === 'repeat' || e === 'letter') press(panel, e === 'enter' ? 'Enter' : e === 'space' ? ' ' : 'q', { isAutoRepeat: e === 'repeat' });
+        else panel.emit('input-event', {}, { type: e });
+        if (e === 'mouseDown' || e === 'enter' || e === 'space') { began += 1; armed = true; }
       }
     }
     assert.ok(accepted <= began);

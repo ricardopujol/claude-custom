@@ -15,39 +15,50 @@
  *   - DNS is shut for the whole process in app/main.js (`host-resolver-rules`): the app makes no external Chromium request.
  *   - the panel's `fetch` is a message to this module, which makes the request itself, only to a host the person
  *     approved for THAT panel (app/canvas-fetch.js). An unknown host is a question to the owner's page, asked once.
- *   - the only other thing the panel can do is `send` a line of text toward the session (a button). It must be a real
- *     click or key press the contents received (a script cannot press its own button), one message per click, one line.
+ *   - the only other things the panel can do: `send` a line of text toward the session (a button), and `open` an address that is
+ *     exactly on the artifact shelf. Each must come with a real click, or an Enter or Space press, the contents received (a script cannot press
+ *     its own button), one use per click, one line of text. It can also READ the shelf (the host fills it from the CLI's hook).
  *   - no native dialog over the app's window: alert/confirm/prompt are disabled (`disableDialogs`). Measured (Electron 33, verify/
  *     probe-canvas-sandbox.js, PR #122 Dexter R2): `window.print()` raises NO dialog but wedges the panel's renderer and the browser's
- *     exit (app/quit-watchdog.js ends a stalled quit; `hide` kills the renderer outright), `<input type=file>` raises none, `<input type=color>` raises a popup widget, not a dialog. The probe
- *     fails the day any of them becomes a native dialog. The panel has no ability to read a file or show a picker: `fetch` and `send` only.
+ *     exit (app/quit-watchdog.js ends a stalled quit; `hide` kills the renderer outright), `<input type=file>` raises none, `<input type=color>`
+ *     raises a popup widget, not a dialog. The probe fails the day any of them becomes a native dialog. None of the panel's abilities
+ *     (`fetch`, `send`, `open`, reading the shelf) shows a picker or reads a file.
+ *   - the FILE PICKER is blocked as far as Electron 33 allows (app/canvas-panel-preload.js, in every frame): covered are input.click(), label.click(),
+ *     dispatchEvent(click) and showPicker() in the top frame. NOT covered: a page that writes its own about:blank iframe, or calls document.open(),
+ *     can still open one Open dialog per real click (measured; documentation/DESIGN_LIVE_PANEL.md).
  *   - hidden means stopped (design, call 7): `hide` destroys the view, so no timer or fetch of the page keeps running.
  *
  * The Electron classes arrive as arguments so test/canvas-views.test.js can drive this with fakes.
  */
 const { brokerFetch } = require('./canvas-fetch');
 const { buildPage, hostOrigin } = require('./canvas-csp');
+const { cleanShelfList } = require('../host/canvas-shelf');
 
 const PANEL_LIMITS = Object.freeze({
   htmlBytes: 1024 * 1024,        // the design's size cap on index.html
   messageChars: 2000,
   pendingAsks: 3,                // hosts waiting on an answer at once; past this a new one is refused unasked
   totalAsks: 12,                 // questions one view may put to the person in its lifetime; past this a new host is refused unasked (PR #122 Miguel G3)
-  inputWindowMs: 2000,           // how recent a real click or key press must be for a `send` to count
+  inputWindowMs: 2000,           // how recent a real click or Enter/Space press must be for a `send` to count
 });
 
 const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1', proxyBypassRules: '<-loopback>' });
-// A GESTURE, not an event: a click is a mouseDown and its mouseUp, a key press is a keyDown and its char. Only the first of each arms the
-// gate; the rest of the same gesture keeps it fresh without un-spending it (PR #122 Dexter F7 / Miguel G1: a mouseUp re-armed it, so
-// onmousedown + onclick sent twice from one click).
-const ARMS = new Set(['mouseDown', 'keyDown', 'rawKeyDown']);
-const KEEPS_FRESH = new Set(['mouseUp', 'char']);
+// A GESTURE, not an event: a click is a mouseDown and its mouseUp. Only the mouseDown arms the gate; the mouseUp keeps it fresh without
+// un-spending it (PR #122 Dexter F7 / Miguel G1: a mouseUp re-armed it, so onmousedown + onclick sent twice from one click).
+// A KEY counts as a click only for the two keys that activate a button, Enter and Space, once per press and never on auto-repeat (PR #125
+// Dexter #6, Ricardo's call 2026-10-08: typing into a field of the page, or holding a key, must authorise nothing). Which key is not in
+// 'input-event' (a type and modifiers only), so keys are read from 'before-input-event'. Space acts on the key UP in a browser, so a
+// release of Enter or Space keeps the press fresh, like a mouseUp.
+const ARMS = new Set(['mouseDown']);
+const KEEPS_FRESH = new Set(['mouseUp']);
+const ACTIVATION_KEYS = new Set(['Enter', ' ']);
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
+const cleanShelf = cleanShelfList;          // the ONE validator (host/canvas-shelf.js), shared by all three trust boundaries (PR #125 Miguel M4)
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
 
 function createCanvasViews({ WebContentsView, session, addChild, removeChild, ownerBounds, preloadPath, ask, onMessage,
-  isOwnerVisible = () => true, fetchImpl, resolveHost, now = Date.now, log = () => {} } = {}) {
+  isOwnerVisible = () => true, openUrl = () => false, fetchImpl, resolveHost, now = Date.now, log = () => {} } = {}) {
   const byOwner = new Map();          // owner contents id -> record
   const byPanel = new Map();          // panel contents id -> record
   // ONE in-memory session per tab, kept across hide/show: Electron never frees a session, so a fresh partition per show leaked a network
@@ -115,13 +126,21 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       // alert/confirm/prompt are native message boxes parented to the app's window: a page looping on confirm() would lock the
       // whole window (and a single one carries text the page chose, under the app's title). Both set: disableDialogs wins.
       disableDialogs: true, safeDialogs: true,
+      // The preload (the file-picker guard) must run in every frame the page makes; a sub-frame gets that guard and NOT the bridge, and no Node
+      // (sandboxed, contextIsolation on): verify/probe-canvas-sandbox.js `frame-surface` shows a sub-frame sees none of them.
+      nodeIntegrationInSubFrames: true,
     } });
     const wc = view.webContents;
     const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), html: null, approved: new Set(), denied: new Set(),
-      pending: new Map(), asked: 0, lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null };
+      pending: new Map(), asked: 0, lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null, shelf: [], shelfKey: '[]' };
     wc.on('input-event', (_e, ev) => {
       if (!ev) return;
       if (ARMS.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } else if (KEEPS_FRESH.has(ev.type)) rec.lastInput = now();
+    });
+    wc.on('before-input-event', (_e, input) => {
+      if (!input || !ACTIVATION_KEYS.has(input.key)) return;
+      if (input.type === 'keyDown' && input.isAutoRepeat !== true) { rec.lastInput = now(); rec.spent = false; }
+      else if (input.type === 'keyUp') rec.lastInput = now();
     });
     wc.on('render-process-gone', (_e, d) => log(`[canvas] panel renderer gone: ${d && d.reason}`));
     lockContents(wc);
@@ -168,12 +187,24 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     rec.denied = new Set(originList(hosts && hosts.denied));
   }
 
-  async function show(owner, { html, hosts, rect, covered = false } = {}) {
+  // The artifact shelf: given with the page, and pushed to the live panel when it changes. The page can only READ it.
+  function setShelf(owner, items) {
+    const rec = byOwner.get(owner && owner.id);
+    if (!rec) return;
+    const clean = cleanShelf(items);
+    const key = JSON.stringify(clean);
+    if (key === rec.shelfKey) return;
+    rec.shelf = clean; rec.shelfKey = key;
+    try { if (!rec.wc.isDestroyed()) rec.wc.send('canvas:shelf', clean); } catch { /* the contents is going away */ }
+  }
+
+  async function show(owner, { html, hosts, rect, covered = false, shelf } = {}) {
     if (typeof html !== 'string') return { ok: false, error: 'no page' };
     if (Buffer.byteLength(html) > PANEL_LIMITS.htmlBytes) return { ok: false, error: 'the page is too big' };
     if (owner && typeof owner.isDestroyed === 'function' && owner.isDestroyed()) return { ok: false, error: 'the tab is gone', stale: true };
     const rec = byOwner.get(owner.id) || begin(owner);
     setHosts(owner, hosts);
+    if (shelf !== undefined) { const clean = cleanShelf(shelf); rec.shelf = clean; rec.shelfKey = JSON.stringify(clean); }
     rec.rect = isRect(rect) ? rect : rec.rect;
     rec.covered = !!covered;
     applyBounds(rec);
@@ -245,14 +276,30 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
     if (!rec) return false;
     if (msg === null || typeof msg !== 'object' || msg.kind !== 'send' || typeof msg.text !== 'string') return false;
     const text = msg.text.trim();
-    if (!text || text.length > PANEL_LIMITS.messageChars || /[\x00-\x1f\x7f]/.test(text)) return false;
-    if (rec.spent || now() - rec.lastInput > PANEL_LIMITS.inputWindowMs) return false;
-    rec.spent = true;
+    if (!text || text.length > PANEL_LIMITS.messageChars || /[\x00-\x1f\x7f-\x9f\u2028\u2029]/.test(text)) return false;
+    if (!takeClick(rec)) return false;
     onMessage(rec.owner, { kind: 'send', text });
     return true;
   }
 
-  return { show, setBounds, setCovered, setOwnerVisible, setHosts, relayout, hide, destroyFor, has, fetchFor, messageFrom, inspect, click };
+  // A real click or key press the contents received a moment ago, spent by whichever of `send` and `open` uses it first.
+  function takeClick(rec) {
+    if (rec.spent || now() - rec.lastInput > PANEL_LIMITS.inputWindowMs) return false;
+    rec.spent = true;
+    return true;
+  }
+
+  const shelfFor = (sender) => { const rec = sender ? byPanel.get(sender.id) : null; return rec ? rec.shelf : []; };
+
+  /** Open one of the shelf's own addresses in the browser, on a real click. Never any other address, never a variant of one. */
+  function openFrom(sender, msg) {
+    const rec = sender ? byPanel.get(sender.id) : null;
+    if (!rec || msg === null || typeof msg !== 'object' || typeof msg.url !== 'string' || !rec.shelf.some(i => i.url === msg.url)) return false;
+    if (!takeClick(rec)) return false;
+    try { return openUrl(msg.url) !== false; } catch { return false; }
+  }
+
+  return { show, setBounds, setCovered, setOwnerVisible, setHosts, setShelf, relayout, hide, destroyFor, has, fetchFor, messageFrom, shelfFor, openFrom, inspect, click };
 }
 
 // Process-wide, set before the app is ready (app/main.js): Chromium resolves nothing but loopback. This is the only thing
@@ -260,10 +307,12 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
 // external request of its own through Chromium (the host and the Electron main process use Node's networking).
 const HOST_RESOLVER_RULES = 'MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost';
 
-/** The two channels the panel's preload talks on. `ipc` is Electron's ipcMain; `views` is a createCanvasViews result. */
+/** The four channels the panel's preload talks on. `ipc` is Electron's ipcMain; `views` is a createCanvasViews result. */
 function registerCanvasIpc(ipc, views) {
   ipc.handle('canvas:fetch', (e, req) => views.fetchFor(e.sender, req));
+  ipc.handle('canvas:shelf', (e) => views.shelfFor(e.sender));
   ipc.on('canvas:send', (e, msg) => { views.messageFrom(e.sender, msg); });
+  ipc.on('canvas:open', (e, msg) => { views.openFrom(e.sender, msg); });
 }
 
 module.exports = { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES, PANEL_LIMITS, DEAD_PROXY };

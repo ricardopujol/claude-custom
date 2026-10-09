@@ -19,14 +19,17 @@
  * rename). A page that was already there when the session resumed is not a "change"; only a write after that is.
  */
 const fs = require('fs');
+const path = require('path');
+const { writeFileAtomic } = require('./atomic-write');
 const { panelDir, validSessionId, readPage, readHosts, setHostDecision, MAX_HTML_BYTES } = require('./canvas-store');
+const { isShelfEvent, artifactFromPayload, readShelf, addToShelf } = require('./canvas-shelf');
 
 // Every message type this control answers. host/control.js CONTROL_TYPES must list each, or the frame is typed into the
 // pty as literal JSON (test/canvas-wiring.test.js checks both lists against each other).
 const CANVAS_TYPES = Object.freeze(['canvas-get', 'canvas-hosts']);
 const WATCHED = new Set(['index.html', 'shelf.json']);
 
-function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => {} } = {}) {
+function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => {}, pointerFile = null } = {}) {
   if (!stateDir) throw new Error('createCanvasControl: stateDir is required');
   if (typeof getSessionId !== 'function') throw new Error('createCanvasControl: getSessionId is required');
   if (typeof emit !== 'function') throw new Error('createCanvasControl: emit is required');
@@ -42,11 +45,34 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
   function meta(page, id) {
     const dir = dirOf(id);
     return { sessionId: id, status: page.status, bytes: page.bytes, signature: page.signature,
-      hosts: dir ? readHosts(dir) : { approved: [], denied: [] }, limitBytes: MAX_HTML_BYTES };
+      hosts: dir ? readHosts(dir) : { approved: [], denied: [] }, shelf: dir ? readShelf(dir) : [], limitBytes: MAX_HTML_BYTES };
   }
   const pageOf = (id) => (id ? readPage(dirOf(id)) : { status: 'empty', bytes: 0, signature: 'empty' });
 
   const payload = () => { const id = currentId(); return meta(pageOf(id), id); };
+
+  // The CLI's session id does not exist when the MCP server (host/canvas-mcp.js) is spawned, so the host keeps it in a pointer
+  // file the server re-reads on every call. Written atomically; removed when there is no session, and with the host.
+  // The pointer is keyed by PORT, so it can be another host's: a host that lost the port bind, or a second one started for the same port,
+  // never wrote it and must not remove it (PR #125 Dexter #5: the live host's canvas tools then failed until /clear). Only the host that wrote
+  // it removes it, and only while it still names the session that host wrote.
+  let wrote = null;         // the session id this control last wrote into the pointer, or null if it never has
+  function removeOwnPointer() {
+    if (!pointerFile || wrote === null) return;
+    let mine = true;
+    try { mine = JSON.parse(fs.readFileSync(pointerFile, 'utf8')).sessionId === wrote; } catch { /* unreadable or gone: nothing of another host's to protect */ }
+    wrote = null;
+    if (mine) fs.rmSync(pointerFile, { force: true });
+  }
+  function writePointer(id) {
+    if (!pointerFile) return;
+    try {
+      if (!id) { removeOwnPointer(); return; }
+      fs.mkdirSync(path.dirname(pointerFile), { recursive: true });
+      writeFileAtomic(pointerFile, JSON.stringify({ sessionId: id }));
+      wrote = id;
+    } catch (err) { log(`[canvas] could not write the session pointer: ${err && err.message}`); }
+  }
 
   function pruneEmpty(id) {
     const dir = dirOf(id);
@@ -69,6 +95,7 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
     pruneEmpty(armedId);
     armedId = id;
+    writePointer(id);
     if (id) {
       try {
         watcher = watch({ dir: dirOf(id), create: true, match: (f) => WATCHED.has(f), onChange });
@@ -100,13 +127,29 @@ function createCanvasControl({ stateDir, getSessionId, emit, watch, log = () => 
     }
   }
 
+  const handlesShelfEvent = isShelfEvent;
+
+  // A publish the CLI's own PostToolUse hook reported: onto THIS session's shelf, and every window is told. Never a page change, so
+  // it never docks the panel. A failure, or a payload with no https address, adds nothing and says nothing.
+  function shelfEvent(ev) {
+    const id = currentId();
+    const dir = dirOf(id);
+    // Only a PostToolUse is a publish: a PostToolUseFailure has no address to keep, whatever its message quotes (PR #125 Miguel M2).
+    if (!dir || !isShelfEvent(ev) || ev.event !== 'PostToolUse') return;
+    const item = artifactFromPayload(ev.payload);
+    if (!item) return;
+    try { addToShelf(dir, item); } catch (err) { log(`[canvas] could not save the shelf: ${err && err.message}`); return; }
+    emit({ type: 'canvas', ok: true, ...meta(pageOf(id), id), changed: false });
+  }
+
   function close() {
     if (watcher) { try { watcher.close(); } catch { /* already closed */ } watcher = null; }
     pruneEmpty(armedId);
     armedId = null;
+    writePointer(null);
   }
 
-  return { payload, handles, handle, sessionChanged, close };
+  return { payload, handles, handle, handlesShelfEvent, shelfEvent, sessionChanged, close };
 }
 
 module.exports = { createCanvasControl, CANVAS_TYPES };

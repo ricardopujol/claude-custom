@@ -205,10 +205,28 @@ async function renameWithRetryAsync(from, to, {
   throw last;
 }
 
+/**
+ * Write `data` to `file` through a temp file and a rename, and leave NO temp file behind if either step throws (PR #125 Miguel M1: the four
+ * copies of write-temp-then-rename in the panel's host files did not, and `renameWithRetry` deliberately does not unlink: a rename that is
+ * still refused after the retries, an antivirus holding the target, or a full disk on the write, each left a `*.tmp` in the folder for good).
+ * The error is rethrown: a save that did not happen is still reported, never swallowed.
+ */
+function writeFileAtomic(file, data, {
+  temp = `${file}.${process.pid}.${Date.now()}.tmp`, write = fs.writeFileSync, rename = renameWithRetry,
+} = {}) {
+  try {
+    write(temp, data);
+    rename(temp, file);
+  } catch (err) {
+    try { fs.rmSync(temp, { force: true }); } catch { /* nothing left to remove */ }
+    throw err;
+  }
+}
+
 // `sleepAsync` is deliberately NOT exported: nothing imports it, and an
 // unused export is surface that invites a second, divergent caller.
 // `sleepSync` is, because verify/probe-atomic-sleep.js measures it directly.
 module.exports = {
-  renameWithRetry, renameWithRetryAsync, sleepSync,
+  renameWithRetry, renameWithRetryAsync, writeFileAtomic, sleepSync,
   isTransient, nextWait, TRANSIENT_CODES, ATTEMPTS, FIRST_WAIT_MS,
 };

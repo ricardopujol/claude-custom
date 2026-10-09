@@ -69,6 +69,7 @@ const { createWandControl } = require('./wand-control');
 const { discoverSkills, claudeHomeOf, isSkillEvent } = require('./wand-skills');
 const { watchDir } = require('./wand-watch');
 const { createCanvasControl } = require('./canvas-control');
+const { canvasMcpEnabled } = require('./canvas-settings');
 const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleStopVerdict, leftAsWindow,
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
@@ -382,7 +383,14 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
 // Attached only once the native helper exists (step 2). Wiring hooks to a
 // missing binary would fire on every Task and Bash call and invoke nothing.
 const helperExists = fs.existsSync(HELPER_PATH);
-const ARGS = buildClaudeArgs({ settingsFile, helperExists });
+// Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) rides in on --mcp-config, added to the user's own servers, unless the
+// setting (host/canvas-settings.js) turns it off. It learns its session through this host's pointer file, which the control keeps.
+const CANVAS_POINTER_FILE = path.join(HARNESS_DIR, 'state', 'canvas', `_tab-${PORT}.json`);
+const canvasMcp = helperExists && canvasMcpEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') })
+  ? { nodePath: process.versions.electron ? 'node' : process.execPath, scriptPath: path.join(__dirname, 'canvas-mcp.js'),
+    root: path.join(HARNESS_DIR, 'state'), pointerFile: CANVAS_POINTER_FILE }
+  : null;
+const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp });
 
 if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
@@ -460,6 +468,7 @@ const canvasControl = createCanvasControl({
   emit: (frame) => broadcastControl(frame),
   watch: watchDir,
   log: (line) => console.log(line),
+  pointerFile: canvasMcp ? CANVAS_POINTER_FILE : null,        // no tools offered, no pointer to keep (PR #125 Miguel S5)
 });
 // The wand (BACKLOG #51): favourite skills as emoji buttons, .harness/state/wand.json, install-wide. The skill
 // list is read from the CLI's own directories (host/wand-skills.js); the claude-home override is a probe seam
@@ -1268,6 +1277,11 @@ if (helperExists) {
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
     if (isBedtimeOnly(ev)) return;
+    // An Artifact publish is the panel's shelf's and nobody else's (host/canvas-shelf.js): the mood engine would read it as work.
+    if (canvasControl.handlesShelfEvent(ev)) {
+      canvasControl.shelfEvent(ev);
+      return;
+    }
     // The context was just replaced (/clear) or summarised (compaction): the
     // last fill is no longer true, whether or not the CLI re-fires the
     // statusLine right after. Unknown until a document says otherwise.

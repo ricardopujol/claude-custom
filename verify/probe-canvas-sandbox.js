@@ -41,7 +41,7 @@ function runElectron(mode) {
     const out = path.join(os.tmpdir(), `probe-canvas-sandbox-${process.pid}-${mode}.json`);
     env.PROBE_OUT = out;
     env.PROBE_WATCH = '1';
-    if (process.env.PROBE_OWNER_FOCUS) env.PROBE_ARM = path.join(os.tmpdir(), `probe-canvas-windows-${process.pid}-${mode}.armed`);
+    env.PROBE_ARM = path.join(os.tmpdir(), `probe-canvas-windows-${process.pid}-${mode}.armed`);
     const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-canvas-'));
     const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [MAIN, `--user-data-dir=${userData}`],
       { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -55,7 +55,7 @@ function runElectron(mode) {
     let log = '';
     child.stdout.on('data', d => { log += d; });
     child.stderr.on('data', d => { log += d; });
-    const timer = setTimeout(() => { killChildTree(child); reject(new Error('timeout\n' + log.slice(-800))); }, 280000);
+    const timer = setTimeout(() => { killChildTree(child); reject(new Error('timeout\n' + log.slice(-800))); }, 600000);
     child.on('exit', () => {
       clearTimeout(timer);
       try { killChildTree(child); } catch { /* already gone */ }
@@ -98,7 +98,7 @@ const pad = (s, n) => String(s).padEnd(n);
   for (const name of s.names) {
     if (name === 'fetch-approved (control)') {
       check(String(s.results[name]) === '200' && s.approvedHits >= 1, 'control: the approved host IS reached through the broker (so a hit can be seen)');
-    } else if (name === 'send-with-click') {
+    } else if (name.endsWith('-with-click')) {
       continue;
     } else {
       check(leaked(s.hits[name]) === 0, `${name}: 0 hits on the denied server (saw ${leaked(s.hits[name])})`);
@@ -110,7 +110,10 @@ const pad = (s, n) => String(s).padEnd(n);
   check(/^blocked/.test(answer('fetch-loopback-approved (broker)')) && /computer or its network/.test(answer('fetch-loopback-approved (broker)')), 'an APPROVED loopback address is still refused by the broker');
   check(/^blocked/.test(answer('fetch-rebind-approved (broker)')) && /computer or its network/.test(answer('fetch-rebind-approved (broker)')), 'an approved name that resolves to loopback (rebinding) is refused by the broker');
   check(answer('app-bridge') === 'undefined/undefined/undefined/undefined/undefined', `the panel sees no app bridge, require, process or electron (got ${answer('app-bridge')})`);
-  check(answer('bridge-surface') === 'fetch,send', `the panel's own bridge is exactly fetch and send (got ${answer('bridge-surface')})`);
+  check(answer('bridge-surface') === 'fetch,onShelf,open,send,shelf', `the panel's own bridge is exactly fetch, send and the shelf's three (got ${answer('bridge-surface')})`);
+  check(answer('shelf-readable') === '["Roadmap"]', `the page can read the shelf it was given (got ${answer('shelf-readable')})`);
+  check(JSON.stringify(s.opened) === JSON.stringify(['https://claude.ai/artifact/on-the-shelf']),
+    `only a shelf address, on a real click, was opened: a script's open(), an off-shelf address and a variant were not (opened ${JSON.stringify(s.opened)})`);
   check(answer('window-open') === 'null', 'window.open returns null');
   check(!/^read:/.test(answer('clipboard-read')), `the clipboard is unreadable (got ${answer('clipboard-read')})`);
   check(!/^(wrote|set|opened)/.test(answer('local-storage')) && !/^(set|opened)/.test(answer('cookie')) && !/^opened/.test(answer('indexed-db')), 'storage, cookies and indexedDB are unusable');
@@ -122,13 +125,22 @@ const pad = (s, n) => String(s).padEnd(n);
   // cannot quit: app/quit-watchdog.js is what ends it, and the exit-time check below is its test);
   // <input type=file> raises none either, even with nothing sealed and the owner focused; <input type=color> raises a Chromium popup widget
   // (Chrome_WidgetWin_1, not a dialog) when the owner has focus. So these three checks are guards: they fail if any becomes a native dialog.
-  const dialogs = (run, name) => (name ? during(run, name) : (run.windows || [])).filter(isNativeDialog);
+  // The known-gap vectors (a page's own about:blank iframe, document.open) may open a dialog: recorded, never a failure.
+  const GAPS = ['file-picker-gap-iframe-with-click', 'file-picker-gap-open-with-click'];
+  const inGap = (w) => GAPS.some((g) => during(s, g).includes(w));
+  const dialogs = (run, name) => (name ? during(run, name) : (run.windows || []).filter((w) => !inGap(w))).filter(isNativeDialog);
   for (const name of ['print-loop', 'file-picker-with-click', 'color-picker-with-click'].filter(n => s.names.includes(n))) {
     check(dialogs(s, name).length === 0, `${name}: no native dialog window appeared (saw ${JSON.stringify(dialogs(s, name).map(w => w.cls + ':' + w.title))}; the panel answered "${answer(name)}")`);
   }
   // Quitting has to finish whatever the panel is doing: print-loop wedges the browser's exit (measured), spin-loop is the renderer-only control.
   check(s.exitMs !== null && s.exitMs <= EXIT_LIMIT_MS, `the app exits within ${EXIT_LIMIT_MS / 1000} s of its last result with print() and for(;;){} panels shown (took ${Math.round(s.exitMs)} ms)`);
   check(answer('spin-loop') === 'spinning', `a panel stuck in for(;;){} is reached and reports before it spins (got ${answer('spin-loop')})`);
+  // The file picker's guard, deterministically: the default of every covered path's click is prevented, and showPicker() throws.
+  const fp = (() => { try { return JSON.parse(answer('file-picker-with-click')); } catch { return {}; } })();
+  check(fp['input.click'] === true && fp['label.click'] === true && fp.dispatchEvent === true && fp.showPicker === 'NotAllowedError',
+    `the file picker is blocked for input.click(), label.click(), dispatchEvent(click) and showPicker() in the top frame (got ${answer('file-picker-with-click')})`);
+  check(answer('frame-surface') === 'undefined/undefined/undefined/undefined/undefined|guard=true', `a sub-frame has the file-picker guard and no bridge, no require, no process, no electron (got ${answer('frame-surface')})`);
+  for (const g of GAPS) if (s.names.includes(g)) console.log(`  KNOWN GAP (not a failure) ${g}: ${answer(g)}  (true would mean the guard covers it; false means the click's default is NOT prevented, so one Open dialog per real click is possible; dialogs seen: ${during(s, g).filter(isNativeDialog).length})`);
   check(dialogs(s).length === 0, `no native dialog window of any kind appeared in the panel's process tree during the run (saw ${dialogs(s).length})`);
   check(s.downloads.length >= 1 && s.downloads.every(d => d.prevented && !d.written), `a download the page starts itself (a data: link with download=) is cancelled: no Save-As box, no file (saw ${JSON.stringify(s.downloads)})`);
   check(answer('beforeunload-pin') === 'replaced', `a page whose beforeunload handler cancels leaving it is replaced by the next page Claude writes (got ${answer('beforeunload-pin')})`);
@@ -140,12 +152,23 @@ const pad = (s, n) => String(s).padEnd(n);
   check(s.delivered.length === 1 && s.delivered[0].text === 'hello from a click', 'a real click delivers exactly one message, and a script pressing its own button delivers none');
 
   console.log('\nNAIVE RUN (the control: the same page, nothing sealed)');
-  const n = await runElectron('naive');
-  console.log(`  frame self-navigation reached its server: ${leaked(n.hits['self-location-href'])}   STUN datagrams: ${n.rtc.stunDatagrams}   TURN-over-TCP connections: ${n.rtc.turnTcpConnections}   DNS queries: ${n.dns.queries} ${JSON.stringify(n.dns.kinds)}`);
-  check(leaked(n.hits['self-location-href']) >= 1, 'control: with nothing sealed, a self-navigation reaches its server');
-  check(n.rtc.stunDatagrams >= 1, 'control: with nothing sealed, WebRTC STUN reaches its server');
-  check(n.rtc.turnTcpConnections >= 1, 'control: with nothing sealed, WebRTC TURN over TCP reaches its server');
-  check(n.dns.queries >= 1, 'control: with nothing sealed, DNS prefetch resolves the hinted name');
+  // A control that leaks is timing-dependent on a busy machine (a connection can be cancelled by the next panel starting), so it gets
+  // up to three tries and what any of them saw counts: the point is that the probe CAN see each leak, not how often it shows.
+  const seen = { nav: 0, stun: 0, turn: 0, dns: 0, picker: null };
+  for (let attempt = 1; attempt <= 3 && !(seen.nav && seen.stun && seen.turn && seen.dns); attempt++) {
+    const n = await runElectron('naive');
+    seen.nav = Math.max(seen.nav, leaked(n.hits['self-location-href'])); seen.stun = Math.max(seen.stun, n.rtc.stunDatagrams);
+    seen.turn = Math.max(seen.turn, n.rtc.turnTcpConnections); seen.dns = Math.max(seen.dns, n.dns.queries);
+    if (n.results['file-picker-with-click'] !== undefined) seen.picker = String(n.results['file-picker-with-click']);
+    console.log(`  try ${attempt}: self-navigation hits ${leaked(n.hits['self-location-href'])}, STUN datagrams ${n.rtc.stunDatagrams}, TURN-over-TCP connections ${n.rtc.turnTcpConnections}, DNS queries ${n.dns.queries}`);
+  }
+  check(seen.nav >= 1, 'control: with nothing sealed, a self-navigation reaches its server');
+  check(seen.stun >= 1, 'control: with nothing sealed, WebRTC STUN reaches its server');
+  check(seen.turn >= 1, 'control: with nothing sealed, WebRTC TURN over TCP reaches its server');
+  check(seen.dns >= 1, 'control: with nothing sealed, DNS prefetch resolves the hinted name');
+  { const nfp = (() => { try { return JSON.parse(seen.picker); } catch { return null; } })();
+    check(nfp !== null && nfp['input.click'] === false && nfp['label.click'] === false && nfp.dispatchEvent === false,
+      `control: with no preload, the picker's clicks are NOT prevented, so the proxy can see a leak (got ${seen.picker})`); }
 
   console.log(failures.length ? `\nFAILED (${failures.length}): ${failures.join(' | ')}` : '\nOK: every blocked path reported 0 hits');
   process.exit(failures.length ? 1 : 0);

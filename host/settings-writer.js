@@ -42,8 +42,12 @@ const path = require('path');
 // is denied or blocked never runs, so its intent opens nothing. And with no
 // PreToolUse, a message never shows as a running process. SendMessage calls
 // are rare, so the tax is negligible.
+//
+// Artifact (BACKLOG #71), on its RESULT only, for the same reason: a publish that fails has no address to keep. host/host.js
+// hands every Artifact event to the panel's shelf (host/canvas-shelf.js) and never to the mood engine or the Running panel.
+// One more ~23 ms hook per publish, which is rare.
 const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
-const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and error signals
+const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage|Artifact';    // completion and error signals
 // Backlog #44 + #47 (worktree occupancy): which worktree a SUBAGENT is working in is proven by its own file
 // and search tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry,
 // so the mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit/Grep/Glob
@@ -239,15 +243,33 @@ function writeHarnessSettings(dir, opts, port) {
 }
 
 /**
+ * Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) as the JSON string `--mcp-config` takes. A CLI flag, so nothing is
+ * written to the user's config, and it is ADDED to the user's own servers (--strict-mcp-config, which would switch them off, is
+ * never passed). Forward slashes everywhere: no shell treats them as an escape (the backslash trap above). An incomplete
+ * description is no injection at all, never a broken one.
+ */
+function canvasMcpConfig(c) {
+  if (!c || typeof c !== 'object') return null;
+  const ok = (v) => typeof v === 'string' && v !== '';
+  if (!ok(c.nodePath) || !ok(c.scriptPath) || !ok(c.root) || !ok(c.pointerFile)) return null;
+  return JSON.stringify({ mcpServers: { canvas: { command: c.nodePath, args: [slashes(c.scriptPath)],
+    env: { CLAUDE_CUSTOM_CANVAS_ROOT: slashes(c.root), CLAUDE_CUSTOM_CANVAS_POINTER: slashes(c.pointerFile) } } } });
+}
+
+/**
  * Builds claude's argv. The generated settings file is attached only when the
  * native helper actually exists on disk: hooks pointing at a missing binary
  * would fire on every matched Task and Bash call and invoke nothing, degrading
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists } = {}) {
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp } = {}) {
   const args = ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
+  // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
+  // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
+  const mcp = helperExists ? canvasMcpConfig(canvasMcp) : null;
+  if (mcp) args.push('--mcp-config', mcp);
   return args;
 }
 

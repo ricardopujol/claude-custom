@@ -10,7 +10,7 @@ const {
 
 test('the registry lists colours, background and inactive windows, in that order', () => {
   // The container-that-grows design: a new section is one entry here.
-  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'background', 'inactive', 'avatars', 'window']);
+  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'background', 'inactive', 'avatars', 'window', 'panel']);
   for (const s of STYLE_SECTIONS) assert.ok(s.title, s.id);
 });
 
@@ -239,7 +239,7 @@ test('F2: an untagged refusal falls back to the background section, never vanish
 test('F2: an unknown ask tag is not used as a state key', () => {
   const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x', ask: '__proto__' });
   assert.strictEqual(s.background.error, 'x');
-  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'window']);
+  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'panel', 'window']);
 });
 
 test('F3: a refusal keeps the STORED darkness, so the preview can be put back', () => {
@@ -302,4 +302,46 @@ test('Miguel L2 Y3 / Dexter L2 #4: the status text says the own statusLine stops
 test('reduceStyle keeps the window settings, which the host never reports', () => {
   const prev = reduceChromeSettings(reduceStyle(undefined, hello), { statusInHeader: true, framelessWindow: false });
   assert.deepStrictEqual(reduceStyle(prev, hello).window, { statusInHeader: true, framelessWindow: false });
+});
+
+// ---- Claude's panel switch (#71 question 8, decided 2026-10-06: a checkbox in the Style tab) -----------------------------------------------------
+
+const { panelSectionView, reduceCanvasMcp, emptyStyleState, reduceStyle: reduceStyleForPanel } = require('../app/style-display');
+
+test('reduceStyle keeps the panel switch, which the host never reports (a style message must not lose it)', () => {
+  const known = reduceCanvasMcp(emptyStyleState(), false);
+  const after = reduceStyleForPanel(known, hello);
+  assert.strictEqual(after.panel.mcp, false);
+});
+
+test("the Style tab has a Claude's panel section after Window, with its switch unknown until main answers", () => {
+  const section = styleDisplay(emptyStyleState()).find(s => s.id === 'panel');
+  assert.strictEqual(section.title, "Claude's panel");
+  assert.deepStrictEqual(section.view, { mcp: null, mcpDescription: 'reading…' });
+  assert.strictEqual(STYLE_SECTIONS[STYLE_SECTIONS.length - 1].id, 'panel');
+});
+
+test('the switch view says what the next session gets, strictly: only a real boolean is known', () => {
+  assert.match(panelSectionView({ mcp: true }).mcpDescription, /Claude can build things in its panel.*next starts this tab's session; one already running keeps what it has/);
+  assert.match(panelSectionView({ mcp: false }).mcpDescription, /not offered to the CLI.*next starts this tab's session; one already running keeps what it has/);
+  for (const bad of [undefined, null, {}, { mcp: null }, { mcp: 'false' }, { mcp: 0 }, { mcp: 1 }]) {
+    assert.deepStrictEqual(panelSectionView(bad), { mcp: null, mcpDescription: 'reading…' }, JSON.stringify(bad));
+  }
+});
+
+test('reduceCanvasMcp: a real boolean lands, anything else changes nothing, and nothing else in the state moves', () => {
+  const start = emptyStyleState();
+  const on = reduceCanvasMcp(start, true);
+  assert.strictEqual(on.panel.mcp, true);
+  assert.strictEqual(reduceCanvasMcp(on, false).panel.mcp, false);
+  for (const bad of [null, undefined, 'true', 1, {}]) assert.strictEqual(reduceCanvasMcp(on, bad), on, String(bad));
+  assert.deepStrictEqual({ ...on, panel: null }, { ...start, panel: null });
+  assert.strictEqual(reduceCanvasMcp(undefined, true).panel.mcp, true);
+});
+
+test('canvasMcpRetryDelay (PR #125 Miguel M3): doubles from 1 s, caps at 30 s, stops after 8 asks, and refuses nonsense', () => {
+  const { canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES } = require('../app/style-display');
+  assert.strictEqual(CANVAS_MCP_MAX_TRIES, 8);
+  assert.deepStrictEqual([0, 1, 2, 3, 4, 5, 6].map(canvasMcpRetryDelay), [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
+  for (const bad of [7, 8, 100, -1, 1.5, NaN, Infinity, '1', null, undefined]) assert.strictEqual(canvasMcpRetryDelay(bad), null, String(bad));
 });

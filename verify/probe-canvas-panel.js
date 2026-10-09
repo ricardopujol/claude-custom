@@ -42,6 +42,7 @@ const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const CANVAS_DIR = path.join(STATE_DIR, 'canvas');
 const SID1 = 'probe-canvas-one';
 const SID2 = 'probe-canvas-two';
+const MCP_FILE = path.join(STATE_DIR, 'canvas-settings.json');
 const BROKER_NAME = 'probe-broker.invalid';
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
@@ -86,10 +87,11 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
+const mcpSnap = snapshotFile(MCP_FILE);
 const layoutSnap = snapshotFile(LAYOUT_FILE);
 const treeSnap = snapshotFile(TREE_FILE);
 const removeCanvasDirs = () => { for (const sid of [SID1, SID2]) { try { fs.rmSync(path.join(CANVAS_DIR, sid), { recursive: true, force: true }); } catch { /* none */ } } };
-hygiene.addCleanup(() => { layoutSnap.restore(); treeSnap.restore(); removeCanvasDirs(); });
+hygiene.addCleanup(() => { mcpSnap.restore(); layoutSnap.restore(); treeSnap.restore(); removeCanvasDirs(); });
 hygiene.install();
 
 async function launchApp(cwd) {
@@ -149,9 +151,26 @@ function hostsOfThisRun() {
   }
   return out;
 }
+// A killed host cannot remove its own identity file, and a stale one whose pid Windows has reused makes the NEXT run's REFUSED check
+// answer "live" whenever it cannot read a start time (a loaded machine). So this run's files go with its hosts.
+function removeIdentityFiles() {
+  const hostsDir = path.join(ROOT, '.harness', 'hosts');
+  let files = [];
+  try { files = fs.readdirSync(hostsDir).filter(f => f.endsWith('.json')); } catch { return; }
+  const inside = path.resolve(tmp).toLowerCase() + path.sep;
+  for (const f of files) {
+    const port = f.replace(/\.json$/, '');
+    const id = readIdentity({ dir: path.join(ROOT, '.harness'), port: Number(port) });
+    if (id && path.resolve(String(id.cwd || '')).toLowerCase().startsWith(inside)) {
+      try { fs.rmSync(path.join(hostsDir, f), { force: true }); fs.rmSync(path.join(hostsDir, `${port}.token`), { force: true }); } catch { /* gone */ }
+    }
+  }
+}
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  const ours = hostsOfThisRun();
+  for (const id of ours) seenPids.add(id.pid);
+  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held
+  if (ours.length) removeIdentityFiles();
 }
 hygiene.addCleanup(killEverything);
 
@@ -163,7 +182,7 @@ async function viewReady(app) {
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');
     return v && v.ok && v.sent ? v : null;
-  }, 45000);
+  }, 120000);
 }
 
 async function liveForeignHost() {
@@ -172,6 +191,9 @@ async function liveForeignHost() {
   for (const f of files) {
     const id = readIdentity({ dir: path.join(ROOT, '.harness'), port: Number(f.replace(/\.json$/, '')) });
     if (!id || !Number.isInteger(id.pid)) continue;
+    // A host of an EARLIER run of this probe (its project lives in a cc-probe-canvas-panel-* temp dir) is not a window open on this checkout: its
+    // identity file outlives a killed run, and Windows hands its pid to the next process (measured: a Chrome renderer made REFUSED fire).
+    if (path.basename(path.dirname(path.dirname(String(id.cwd || '')))).startsWith('cc-probe-canvas-panel-')) continue;
     if (await isLiveHost(id) && !path.resolve(String(id.cwd || '')).toLowerCase().startsWith(path.resolve(tmp).toLowerCase() + path.sep)) return id;
   }
   return null;
@@ -198,7 +220,7 @@ async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
-  for (const f of [LAYOUT_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
+  for (const f of [LAYOUT_FILE, TREE_FILE, MCP_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
   removeCanvasDirs();
 
   // the host the panel's page may reach (counts what arrives)
@@ -279,7 +301,7 @@ async function main() {
   const denied = await waitFor(async () => { const i = await inspect(); return i.title === 'fetch blocked' ? i : null; }, 10000, 150);
   check('5: Deny: the page\'s fetch fails and the server saw nothing', !!denied && hits.n === 0, JSON.stringify({ title: (await inspect()).title, hits: hits.n }));
   // the host's frame with the new list follows the answer: wait for it, a probe that reads the instant after the click races it
-  const afterDeny = await waitFor(async () => { const s = await st(); return s.badge === '1 host denied' ? s : null; }, 8000, 150) || await st();
+  const afterDeny = (await waitFor(async () => { const s = await st(); return s.badge === '1 host denied' ? s : null; }, 8000, 150)) || await st();
   check('5: the badge says "1 host denied", and the view is back', afterDeny.badge === '1 host denied' && (await inspect()).visible === true, JSON.stringify({ badge: afterDeny.badge, v: await inspect() }));
   check('5: the denial is on disk for this panel', !!hostsOnDisk() && hostsOnDisk().denied.includes(origin) && hostsOnDisk().approved.length === 0, JSON.stringify(hostsOnDisk()));
   writePage(SID1, reach(2));
@@ -301,7 +323,7 @@ async function main() {
   await view(app, 'canvasClick', { act: 'allow' });
   const ok200 = await waitFor(async () => { const i = await inspect(); return i.title === 'fetch 200' ? i : null; }, 10000, 150);
   check('5: Allow: the fetch reaches the server and answers 200', !!ok200 && hits.n >= 1, JSON.stringify({ title: (await inspect()).title, hits: hits.n }));
-  const afterAllow = await st();
+  const afterAllow = (await waitFor(async () => { const s = await st(); return s.badge === '1 host allowed' ? s : null; }, 8000, 150)) || await st();
   check('5: the badge says "1 host allowed" and the answer is on disk', afterAllow.badge === '1 host allowed' && !!hostsOnDisk() && hostsOnDisk().approved.includes(origin), JSON.stringify({ badge: afterAllow.badge, disk: hostsOnDisk() }));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '5-allowed.png') });
 
@@ -330,6 +352,63 @@ async function main() {
   const resumed = await waitFor(async () => { const i = await inspect(); return i.exists && i.visible ? i : null; }, 15000, 200);
   check('6: resuming the first session brings its page back', !!resumed, JSON.stringify(await inspect()));
   check('6: ...and its allowed host is still allowed', (await st()).badge === '1 host allowed', JSON.stringify((await st()).badge));
+
+  // 7 -----------------------------------------------------------------------------
+  // The shelf is filled from the CLI's own PostToolUse hook for the Artifact tool, never by the page. (The `open` path is pinned by
+  // verify/probe-canvas-sandbox.js: clicking it here would open the person's real browser.)
+  const shelfFile = path.join(CANVAS_DIR, SID1, 'shelf.json');
+  const shelfOnDisk = () => { try { return JSON.parse(fs.readFileSync(shelfFile, 'utf8')).items; } catch { return null; } };
+  const artifact = (id, title) => ({ tool_name: 'Artifact', tool_input: { file_path: `C:\\work\\${id}.html`, icon: 'layout' }, tool_response: { url: `https://claude.ai/artifact/${id}`, title, artifact_id: id, seq: 1 } });
+  writePage(SID1, '<h1>shelf</h1><script>claudePanel.shelf().then(i => { document.title = "shelf " + i.length; }); claudePanel.onShelf(i => { document.title = "shelf " + i.length + " live"; });</script>');
+  await waitFor(async () => { const i = await inspect(); return i.exists && /^shelf 0$/.test(i.title) ? i : null; }, 15000, 200);
+  check('7: the page reads an empty shelf at first (claudePanel.shelf())', /^shelf 0$/.test((await inspect()).title), (await inspect()).title);
+  check('7: a failed Artifact publish adds nothing', await hook('PostToolUseFailure', { tool_name: 'Artifact', error: 'not signed in' }) && (await sleep(500), shelfOnDisk() === null));
+  await hook('PostToolUse', artifact('probe1', 'Probe Artifact'));
+  const live1 = await waitFor(async () => { const i = await inspect(); return /^shelf 1 live$/.test(i.title) ? i : null; }, 10000, 150);
+  check('7: an Artifact publish (the CLI\'s hook) reaches the page through onShelf, live, with no reload', !!live1 && shelfOnDisk() && shelfOnDisk().length === 1 && shelfOnDisk()[0].title === 'Probe Artifact', JSON.stringify({ title: (await inspect()).title, disk: shelfOnDisk() }));
+  await hook('PostToolUse', artifact('probe2', 'Second'));
+  const live2 = await waitFor(async () => { const i = await inspect(); return /^shelf 2 live$/.test(i.title) ? i : null; }, 10000, 150);
+  check('7: a second publish is newest first on disk, and live in the page', !!live2 && shelfOnDisk()[0].title === 'Second' && shelfOnDisk()[1].title === 'Probe Artifact', JSON.stringify(shelfOnDisk()));
+  check('7: the panel did not reload for it (the page was not rebuilt: its title came from onShelf)', /live$/.test((await inspect()).title));
+
+  // 8 -----------------------------------------------------------------------------
+  // A button: a REAL click in the panel -> main (it checks the click was real) -> this page -> typeCommand -> the submit gate. The CLI
+  // here is a stand-in input box (verify/lib/fake-claude-box.js) in the tab's own shell.
+  const boxCtl = path.join(tmp, 'box-ctl.json');
+  const boxLog = path.join(tmp, 'box-submitted.log');
+  const boxLine = () => { try { return JSON.parse(fs.readFileSync(`${boxLog}.line`, 'utf8')); } catch { return null; } };
+  const submitted = () => { try { return fs.readFileSync(boxLog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } };
+  await waitFor(async () => { const r = await view(app, 'gitScreen'); return r && />\s*$/m.test(r.text || '') ? r : null; }, 15000, 300);
+  await view(app, 'gitTermInput', { data: `node "${path.join(ROOT, 'verify', 'lib', 'fake-claude-box.js')}" "${boxCtl}" "${boxLog}"\r` });
+  const boxUp = await waitFor(async () => { const r = await view(app, 'gitScreen'); return r && /❯/.test(r.text) && /fake claude box/.test(r.text) ? r : null; }, 15000, 300);
+  check('8: the stand-in CLI box is drawn in the tab', !!boxUp);
+  if (boxUp) {
+    writePage(SID1, '<button id="b" style="position:fixed;left:0;top:0;width:100%;height:100%" onclick="claudePanel.send(\'hello from the panel\')">press</button><script>claudePanel.send(\'typed by a script\'); document.title = "button";</script>');
+    await waitFor(async () => { const i = await inspect(); return i.exists && i.visible && i.title === 'button' ? i : null; }, 15000, 200);
+    await sleep(1200);
+    check('8: a script calling claudePanel.send() on its own types nothing (it was not a real click)', boxLine() !== null ? !/typed by a script/.test(boxLine()) && submitted().length === 0 : true, JSON.stringify({ box: boxLine(), submitted: submitted() }));
+    const before = submitted().length;
+    await command(app, { cmd: 'canvas', action: 'click', x: 20, y: 20 });
+    const sent = await waitFor(() => (submitted().length > before ? submitted() : null), 15000, 200)
+      || await waitFor(() => (boxLine() && /from Claude's panel/.test(boxLine()) ? [boxLine()] : null), 5000, 200);
+    const line = sent ? JSON.stringify(sent) : '';
+    check('8: a real click types "(from Claude\'s panel) hello from the panel" into the prompt (through the submit gate, so the CLI is idle: it is submitted)', !!sent && line.includes("(from Claude's panel) hello from the panel"), line.slice(0, 300) || JSON.stringify({ box: boxLine(), status: (await st()).text }));
+    check('8: the panel says what came of it (the gate\'s words), visibly', await waitFor(async () => { const s = await st(); return /sent|typed, press Enter/.test(s.text) ? s : null; }, 6000, 150) !== null, JSON.stringify((await st()).text).slice(0, 200));
+    check('8: and the script\'s own call never reached the prompt', !submitted().some(x => JSON.stringify(x).includes('typed by a script')));
+  }
+
+  if (failures) console.log('--- app output (tail) ---\n' + app.out.slice(-2500));
+  // 7: the Style tab's switch for Claude's panel (#71 question 8) ----------------------------------------------------------
+  await view(app, 'show', { id: 'style' });
+  const box = (click) => view(app, 'canvasMcpBox', { click });
+  const boxOn = await waitFor(async () => { const b = await box(false); return b.exists && !b.disabled ? b : null; }, 10000, 200);
+  check("7: the Style tab shows the switch, on by default (no file)", !!boxOn && boxOn.checked === true && !fs.existsSync(MCP_FILE), JSON.stringify(boxOn));
+  await box(true);
+  const mcpOff = await waitFor(async () => { try { return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).mcp === false ? true : null; } catch { return null; } }, 8000, 150);
+  check('7: clicking it writes { "mcp": false } where the host reads it, and the box says off', !!mcpOff && (await box(false)).checked === false, fs.existsSync(MCP_FILE) ? fs.readFileSync(MCP_FILE, 'utf8') : 'no file');
+  await box(true);
+  const mcpOn = await waitFor(async () => { try { return JSON.parse(fs.readFileSync(MCP_FILE, 'utf8')).mcp === true ? true : null; } catch { return null; } }, 8000, 150);
+  check('7: and clicking it again writes { "mcp": true }', !!mcpOn && (await box(false)).checked === true);
 
   const fin = await st();
   check('the page raised no panel error line at rest', fin.note === null, JSON.stringify(fin.note));

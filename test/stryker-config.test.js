@@ -57,6 +57,7 @@ const REPO_SCANNING = new Set([
   'canvas-wiring.test.js',
   'canvas-main-wiring.test.js',
   'renderer-canvas-wiring.test.js',
+  'canvas-mcp.test.js',            // #125: spawns the MCP server as a real process and reads its source; it requires canvas-store only to prepare a folder
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -399,6 +400,7 @@ test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six o
   // Derived from the tree, not restated: any app/canvas-*.js or host/canvas-*.js is logic-bearing and security-bearing unless it is named below.
   const NOT_LOGIC = new Set([
     'app/canvas-panel-preload.js',   // the two-function bridge: needs Electron's contextBridge, and test/canvas-panel-preload.test.js pins its surface
+    'host/canvas-mcp.js',            // an MCP stdio SERVER: test/canvas-mcp.test.js spawns it as a real process and reads its source text, both of which abort Stryker's dry run (the two rules above); NOT covered by a mutation score, which Mortimer's report must say
   ]);
   const found = [];
   for (const dir of ['app', 'host']) {

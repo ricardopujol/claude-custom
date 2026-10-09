@@ -469,3 +469,55 @@ test('bedtime changes only PreToolUse and PostToolUse, and composes with occupan
   const all = buildHarnessSettings({ ...opts, loadoutHook, occupancy: true, bedtime: true });
   assert.deepStrictEqual(all.hooks.PreToolUse.map(e => e.matcher), ['Agent|Task|Bash', 'Agent|Task', OCCUPANCY_MATCHER, BEDTIME_MATCHER]);
 });
+
+// BACKLOG #71: the artifact shelf is filled from the Artifact tool's own PostToolUse (host/canvas-shelf.js). Result only: a
+// publish that is refused or fails has no address to put on the shelf, and PreToolUse is only intent.
+test('Artifact is hooked on its result (and its failure), never on PreToolUse', () => {
+  const s = buildHarnessSettings(opts);
+  assert.ok(/\bArtifact\b/.test(s.hooks.PostToolUse[0].matcher), s.hooks.PostToolUse[0].matcher);
+  assert.ok(/\bArtifact\b/.test(s.hooks.PostToolUseFailure[0].matcher));
+  assert.ok(!/\bArtifact\b/.test(s.hooks.PreToolUse[0].matcher));
+  assert.ok(!/\bArtifact\b/.test(String(OCCUPANCY_MATCHER)), 'not the occupancy entry either');
+});
+
+// BACKLOG #71: Claude's panel's MCP server rides in on --mcp-config (a CLI flag: nothing is written to the user's config, and it
+// is ADDED to the user's own servers). Never --strict-mcp-config, which would switch every other server off.
+const CANVAS = { nodePath: 'node', scriptPath: 'C:\\app\\host\\canvas-mcp.js', root: 'C:\\app\\.harness\\state', pointerFile: 'C:\\app\\.harness\\state\\canvas\\_tab-7.json' };
+
+test('with the panel on, the args carry one --mcp-config whose value is a JSON string naming the server, its script and its two env vars', () => {
+  const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true, canvasMcp: CANVAS });
+  const at = args.indexOf('--mcp-config');
+  assert.ok(at !== -1);
+  assert.strictEqual(args.filter(a => a === '--mcp-config').length, 1);
+  const cfg = JSON.parse(args[at + 1]);
+  assert.deepStrictEqual(Object.keys(cfg), ['mcpServers']);
+  assert.deepStrictEqual(Object.keys(cfg.mcpServers), ['canvas']);
+  const s = cfg.mcpServers.canvas;
+  assert.strictEqual(s.command, 'node');
+  assert.deepStrictEqual(s.args, ['C:/app/host/canvas-mcp.js'], 'forward slashes: no shell treats them as an escape');
+  assert.deepStrictEqual(s.env, { CLAUDE_CUSTOM_CANVAS_ROOT: 'C:/app/.harness/state', CLAUDE_CUSTOM_CANVAS_POINTER: 'C:/app/.harness/state/canvas/_tab-7.json' });
+});
+
+test('--strict-mcp-config is never passed: the user\'s own MCP servers must keep working', () => {
+  for (const opts2 of [{ canvasMcp: CANVAS }, { canvasMcp: null }, {}, { helperExists: true, canvasMcp: CANVAS, settingsFile: 'x' }]) {
+    assert.ok(!buildClaudeArgs(opts2).includes('--strict-mcp-config'));
+  }
+});
+
+test('with the panel off (no canvasMcp) there is no --mcp-config at all, and the other args are exactly as before', () => {
+  assert.deepStrictEqual(buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true }), ['--dangerously-skip-permissions', '--settings', 'C:/h/s.json']);
+  assert.deepStrictEqual(buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true, canvasMcp: null }), ['--dangerously-skip-permissions', '--settings', 'C:/h/s.json']);
+});
+
+test('the panel DOES depend on the hook helper (PR #125 Dexter #8): without it no session id ever arrives, so it is not injected', () => {
+  const args = buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: false, canvasMcp: CANVAS });
+  assert.ok(!args.includes('--mcp-config'));
+  assert.ok(!args.includes('--settings'));
+  assert.ok(buildClaudeArgs({ settingsFile: 'C:/h/s.json', helperExists: true, canvasMcp: CANVAS }).includes('--mcp-config'));
+});
+
+test('an incomplete canvasMcp is no injection rather than a broken one', () => {
+  for (const bad of [{}, { nodePath: 'node' }, { ...CANVAS, scriptPath: '' }, { ...CANVAS, root: undefined }, { ...CANVAS, pointerFile: 5 }]) {
+    assert.ok(!buildClaudeArgs({ helperExists: false, canvasMcp: bad }).includes('--mcp-config'), JSON.stringify(bad));
+  }
+});

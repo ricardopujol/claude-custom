@@ -29,7 +29,7 @@ test('a page on disk is something to fetch until its html arrives; then it can b
   s = D.withFrame(s, frame({ html: '<p>x</p>' }));
   assert.strictEqual(D.needsFetch(s), false);
   assert.strictEqual(D.canShow(s), true);
-  assert.deepStrictEqual(D.showRequest(s), { html: '<p>x</p>', hosts: { approved: [], denied: [] } });
+  assert.deepStrictEqual(D.showRequest(s), { html: '<p>x</p>', hosts: { approved: [], denied: [] }, shelf: [] });
 });
 
 test('a changed signature without html is stale: the old page stays up only until the new one is fetched', () => {
@@ -193,6 +193,74 @@ test('actionOf: a click\'s data attributes become an action, strictly', () => {
     { canvasAct: 'remove' }, { canvasAct: 'remove', canvasOrigin: '' }]) assert.strictEqual(D.actionOf(bad), null, JSON.stringify(bad));
 });
 
+// --- the shelf and the buttons (BACKLOG #71, PR 2) ----------------------------------------------------------------
+
+const gate = require('../app/submit-gate');
+const ITEM = { title: 'Roadmap', url: 'https://claude.ai/artifact/aaa', time: '2026-10-05T12:00:00.000Z' };
+
+test('the shelf rides in the host\'s frames, validated, and goes to the panel with the page', () => {
+  const s = D.withFrame(D.emptyState(), frame({ html: '<p>x</p>', shelf: [ITEM, { title: 5, url: 'x' }, null, { title: 'no url', time: 't' }, { ...ITEM, url: 'javascript:1' }] }));
+  assert.deepStrictEqual(D.showRequest(s).shelf, [ITEM]);
+  assert.deepStrictEqual(D.shelfOf(s), [ITEM]);
+  assert.deepStrictEqual(D.shelfOf(D.emptyState()), []);
+  assert.deepStrictEqual(D.shelfOf(D.withFrame(D.emptyState(), frame({ shelf: 'x' }))), []);
+});
+
+test('a shelf change alone (same page) changes the shelf and nothing that would reload the page', () => {
+  let s = D.withFrame(D.emptyState(), frame({ html: '<p>x</p>' }));
+  const sig = s.htmlSig;
+  s = D.withFrame(s, frame({ shelf: [ITEM] }));
+  assert.strictEqual(s.htmlSig, sig);
+  assert.strictEqual(D.canShow(s), true);
+  assert.strictEqual(D.shelfKey(s), JSON.stringify([ITEM]));
+});
+
+test('typed: a click that typed says "typed, press Enter" (the gate\'s words); sent says what the gate says', () => {
+  let s = D.withFrame(D.emptyState(), frame({ html: '<p>x</p>' }));
+  s = D.typed(s, { ok: true });
+  assert.strictEqual(D.view(s).status, gate.FLASH.typed);
+  assert.strictEqual(D.view(s).statusIsError, false);
+  s = D.typed(s, { ok: true, flash: 'sent' });
+  assert.strictEqual(D.view(s).status, 'sent');
+  s = D.typed(s, { ok: true, flash: 'sent', box: 'a half-typed draft' });
+  assert.strictEqual(D.view(s).status, 'sent' + gate.DRAFT_CLEARED, 'a draft that was replaced is said, as the wand says it');
+});
+
+test('typed: a refusal says why and that it came from the panel, as an error line', () => {
+  let s = D.typed(D.emptyState(), { ok: false, reason: 'a dialog is open in the terminal' });
+  const v = D.view(s);
+  assert.strictEqual(v.status, "didn't type your message from Claude's panel: a dialog is open in the terminal");
+  assert.strictEqual(v.statusIsError, true);
+  assert.match(D.view(D.typed(D.emptyState(), null)).status, /the terminal did not take it/);
+  assert.match(D.view(D.typed(D.emptyState(), { ok: false })).status, /the terminal did not take it/);
+  s = D.clearStatus(s);
+  assert.strictEqual(D.view(s).status, null);
+});
+
+test('the status line is drawn under the header, escaped, with the error class only for a refusal', () => {
+  let s = D.withFrame(D.emptyState(), frame({ html: '<p>x</p>' }));
+  s = D.typed(s, { ok: true });
+  assert.match(D.html(D.view(s)), /<div class="cv-status" role="status">typed, press Enter<\/div>/);
+  s = D.typed(s, { ok: false, reason: '<b>x</b>' });
+  const html = D.html(D.view(s));
+  assert.match(html, /class="cv-status cv-status-bad"/);
+  assert.doesNotMatch(html, /<b>x<\/b>/);
+  assert.doesNotMatch(D.html(D.view(D.clearStatus(s))), /cv-status/);
+});
+
+test('a new session drops the status line too', () => {
+  let s = D.typed(D.withFrame(D.emptyState(), frame({ html: '<p>x</p>' })), { ok: true });
+  s = D.withFrame(s, frame({ sessionId: 'other', status: 'empty', bytes: 0, signature: 'empty' }));
+  assert.strictEqual(D.view(s).status, null);
+});
+
+test('the line sent to the session is "(from Claude\'s panel) <text>", one line', () => {
+  assert.strictEqual(D.sessionLine('hello'), "(from Claude's panel) hello");
+  assert.strictEqual(D.sessionLine('  padded  '), "(from Claude's panel) padded");
+  for (const bad of ['', '   ', 5, null, undefined, 'two\nlines', 'tab\there', 'x'.repeat(2001)]) assert.strictEqual(D.sessionLine(bad), null, JSON.stringify(bad));
+});
+
+
 // ---- anything else drawn over the slot (PR #122 Dexter F5) ---------------------------------------------------------------------------
 
 test('samplePoints: a grid inside the slot, none for a slot with no room', () => {
@@ -270,4 +338,18 @@ test('withoutAsks drops the pending questions and leaves everything else alone',
   assert.strictEqual(cleared.html, s.html);
   const none = withPage();
   assert.strictEqual(D.withoutAsks(none), none, 'same object when there is nothing to clear');
+});
+
+test('whyNot says, in words for the status line, why a message cannot be typed; null when it can (PR #125 Dexter #1, #10)', () => {
+  const BS = String.fromCharCode(92);
+  assert.strictEqual(D.whyNot('hello'), null);
+  assert.match(D.whyNot("C:" + BS + "Reports" + BS), /ending in a backslash/);
+  assert.match(D.whyNot('two\nlines'), /line break/);
+  assert.match(D.whyNot('x'.repeat(2001)), /longer than 2000/);
+  assert.match(D.whyNot('   '), /empty/);
+  assert.match(D.whyNot(5), /not text/);
+  assert.strictEqual(D.sessionLine('C:' + BS + 'x' + BS), null);
+  const s = D.unsent(D.emptyState(), D.whyNot('a' + BS));
+  assert.strictEqual(s.status.bad, true);
+  assert.match(s.status.text, /^didn't type your message from Claude's panel: a message ending in a backslash/);
 });

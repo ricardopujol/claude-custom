@@ -20,7 +20,15 @@
  */
 (function (root) {
 
+// The words come from app/submit-gate.js (loaded before this file in the renderer): one copy of "typed, press Enter" and of the
+// cleared-draft note, shared with the wand and the Git drawer.
+const gate = typeof module !== 'undefined' && module.exports ? require('./submit-gate') : root.submitGate;
+
 const MB = 1024 * 1024;
+const MESSAGE_MAX = 2000;
+// Control characters, the C1 range and the two Unicode line separators: none may be in a button's one line of text.
+const CONTROL = new RegExp('[' + String.fromCharCode(0) + '-' + String.fromCharCode(31) + String.fromCharCode(127) + '-' + String.fromCharCode(159)
+  + String.fromCharCode(0x2028) + String.fromCharCode(0x2029) + ']');
 const STATUSES = ['empty', 'ok', 'toobig', 'unreadable'];
 const EXAMPLES = ['a list of every artifact you publish', 'a clock with Santiago and UTC', 'a button that checks my Claude quota'];
 
@@ -30,10 +38,27 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ESCAPES[c]);
 const plural = (n, one, many) => (n === 1 ? one : many);
 const mb = (bytes) => { const n = bytes / MB; return Number.isInteger(n) ? String(n) : n.toFixed(1); };
 
-const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], hostsOpen: false, note: null, refusal: null });
+const emptyState = () => ({ payload: null, html: null, htmlSig: null, asks: [], hostsOpen: false, note: null, status: null, refusal: null });
 
 const isPayload = f => f !== null && typeof f === 'object' && (f.sessionId === null || isStr(f.sessionId)) && STATUSES.includes(f.status)
   && typeof f.signature === 'string';
+
+// A COPY of host/canvas-shelf.js cleanShelfList (this is a plain script in the page and cannot require it): test/shelf-validators.test.js feeds all
+// of them the same fixtures (PR #125 Miguel M4).
+const SHELF_MAX = 200;
+const SHELF_TITLE_MAX = 120;
+const shelfTitle = (v) => v.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, SHELF_TITLE_MAX).trim();
+function cleanShelf(list) {
+  const out = [];
+  for (const it of Array.isArray(list) ? list : []) {
+    if (it === null || typeof it !== 'object' || Array.isArray(it) || !isStr(it.title) || it.title === '' || !isStr(it.time) || !isStr(it.url)) continue;
+    let u;
+    try { u = new URL(it.url.trim()); } catch { continue; }
+    if (u.protocol === 'https:' && !u.username && !u.password && u.hostname) out.push({ title: shelfTitle(it.title) || 'Artifact', url: u.href, time: it.time });
+    if (out.length >= SHELF_MAX) break;
+  }
+  return out;
+}
 
 /**
  * A `canvas` frame (or the hello's payload). A refusal (`ok:false`) carries the true state and a reason. A new session is an
@@ -50,6 +75,7 @@ function withFrame(state, frame) {
     hosts: { approved: Array.isArray(frame.hosts && frame.hosts.approved) ? frame.hosts.approved.filter(isStr) : [],
       denied: Array.isArray(frame.hosts && frame.hosts.denied) ? frame.hosts.denied.filter(isStr) : [] },
     limitBytes: typeof frame.limitBytes === 'number' ? frame.limitBytes : MB,
+    shelf: cleanShelf(frame.shelf),
   };
   let { html, htmlSig } = base;
   if (frame.status !== 'ok') { html = null; htmlSig = null; }
@@ -67,7 +93,9 @@ const canShow = s => !!s.payload && s.payload.status === 'ok' && isStr(s.html) &
 const withRefusal = (state, sig, error) => (isStr(sig) && sig === state.htmlSig ? { ...state, refusal: { sig, error: isStr(error) && error ? error.slice(0, 120) : 'it was refused' } } : state);
 // The questions belong to the view that asked them: when the view goes (hidden, or its page changed) they are stale, and answering one would persist a decision for a page that no longer exists.
 const withoutAsks = state => (state.asks.length ? { ...state, asks: [] } : state);
-const showRequest = s => (canShow(s) ? { html: s.html, hosts: s.payload.hosts } : null);
+const showRequest = s => (canShow(s) ? { html: s.html, hosts: s.payload.hosts, shelf: s.payload.shelf } : null);
+const shelfOf = s => (s.payload ? s.payload.shelf : []);
+const shelfKey = s => JSON.stringify(shelfOf(s));
 const covered = s => s.asks.length > 0 || s.hostsOpen;
 
 // ---- anything ELSE drawn over the slot (PR #122 Dexter F5) ---------------------------------------------------------------------
@@ -94,6 +122,51 @@ function withAsk(state, ask) {
   if (state.asks.some(a => a.id === ask.id)) return state;
   return { ...state, asks: [...state.asks, { id: ask.id, origin: ask.origin }] };
 }
+/**
+ * What came of a button's message (typeCommand's / submitTyped's answer): the gate's own words for a message that was typed, and
+ * why nothing was typed otherwise. Said on screen, so a click is never unseen.
+ */
+function typed(state, result) {
+  if (result !== null && typeof result === 'object' && result.ok === true) {
+    const base = isStr(result.flash) && result.flash !== '' ? result.flash : gate.FLASH.typed;
+    const cleared = isStr(result.box) && result.box !== '';
+    return { ...state, status: { text: base + (cleared ? gate.DRAFT_CLEARED : ''), bad: false } };
+  }
+  const reason = result !== null && typeof result === 'object' && isStr(result.reason) && result.reason ? result.reason : 'the terminal did not take it';
+  return { ...state, status: { text: `didn't type your message from Claude's panel: ${reason}`, bad: true } };
+}
+const clearStatus = state => ({ ...state, status: null });
+
+/** The one line a button's message becomes in the prompt, or null if it is not a plain one-line message. */
+function sessionLine(text) {
+  return lineOrWhy(text).line;
+}
+
+/**
+ * Why a button's message cannot be typed, in the words the status line shows, or null if it can. Said out loud (PR #125 Dexter #1, #10):
+ * a message that vanished silently left the page and the person guessing.
+ */
+function whyNot(text) {
+  return lineOrWhy(text).why;
+}
+
+function lineOrWhy(text) {
+  const cannot = (why) => ({ line: null, why });
+  if (!isStr(text)) return cannot('the message was not text');
+  const t = text.trim();
+  if (!t) return cannot('the message was empty');
+  if (t.length > MESSAGE_MAX) return cannot(`the message is longer than ${MESSAGE_MAX} characters`);
+  if (CONTROL.test(t)) return cannot('the message has a line break or a control character, and only one line of plain text can be typed');
+  // The CLI's own newline is a backslash followed by Enter (measured, verify/probe-panel-line-input.js): the Enter that submits would not.
+  if (t.endsWith('\\')) return cannot('a message ending in a backslash cannot be typed: the terminal would take the Enter as a new line');
+  return { line: `(from Claude's panel) ${t}`, why: null };
+}
+
+/** The status a message that was never typed leaves, as typed() would for a refusal. */
+function unsent(state, why) {
+  return { ...state, status: { text: `didn't type your message from Claude's panel: ${why}`, bad: true } };
+}
+
 const answered = (state, id) => ({ ...state, asks: state.asks.filter(a => a.id !== id) });
 const toggleHosts = (state, open) => ({ ...state, hostsOpen: open === undefined ? !state.hostsOpen : open === true });
 
@@ -111,6 +184,7 @@ function view(state) {
   const first = state.asks[0] || null;
   return {
     kind, badge, hosts, hostsOpen: state.hostsOpen, note: state.note || (refused(state) ? `Couldn't show Claude's page: ${state.refusal.error}.` : null),
+    status: state.status ? state.status.text : null, statusIsError: state.status ? state.status.bad === true : false,
     ask: first ? { id: first.id, origin: first.origin, more: state.asks.length - 1 } : null,
     loading: kind === 'page' && !canShow(state) && !refused(state),
     text: kind === 'toobig' ? `Claude's page is too big (${mb(p.bytes)} MB, the limit is ${mb(p.limitBytes)} MB)` : null,
@@ -154,7 +228,8 @@ function html(v) {
   else if (v.kind === 'page') body = v.loading ? '<div class="cv-note">Loading…</div>' : '<div id="canvas-slot" class="cv-slot"></div>';
   else body = emptyHtml();
   const note = v.note ? `<div class="cv-error">${esc(v.note)}</div>` : '';
-  return head(v) + note + `<div class="cv-body">${body}</div>`;
+  const status = v.status ? `<div class="cv-status${v.statusIsError ? ' cv-status-bad' : ''}" role="status">${esc(v.status)}</div>` : '';
+  return head(v) + status + note + `<div class="cv-body">${body}</div>`;
 }
 
 /** A click's data attributes -> an action, or null. Strict: an id is a non-negative integer, an origin a non-empty string. */
@@ -172,7 +247,7 @@ function actionOf(data) {
   }
 }
 
-const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, covered, samplePoints, slotObstructed, SAMPLE_GAP, withRefusal, withoutAsks, withAsk, answered, toggleHosts, view, html, actionOf };
+const API = { emptyState, withFrame, shouldDock, needsFetch, canShow, showRequest, shelfOf, shelfKey, covered, samplePoints, slotObstructed, SAMPLE_GAP, withRefusal, withoutAsks, withAsk, answered, toggleHosts, typed, clearStatus, sessionLine, whyNot, unsent, view, html, actionOf };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.canvasDisplay = API;

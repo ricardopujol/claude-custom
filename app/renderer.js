@@ -1308,6 +1308,9 @@ const canvasRoot = document.getElementById('canvas-root');
 let canvasLive = false;           // main has a native view for this tab
 let canvasShownSig = null;        // the page signature main was last given
 let canvasShownHosts = '';        // the host lists main was last given, as JSON
+let canvasShownShelf = '';        // the artifact shelf main was last given, as JSON
+let canvasTyping = false;         // a button's message is being typed: one at a time, as the wand does
+let canvasStatusTimer = null;
 let canvasLastCover = null;
 let canvasLastRect = null;
 let canvasRectKey = '';
@@ -1342,9 +1345,10 @@ function syncCanvasView() {
   const hostsKey = JSON.stringify(req.hosts);
   if (!canvasLive || canvasShownSig !== canvasState.htmlSig) {
     canvasLive = true; canvasShownSig = canvasState.htmlSig; canvasShownHosts = hostsKey; canvasLastCover = covered;
+    canvasShownShelf = window.canvasDisplay.shelfKey(canvasState);
     canvasRectKey = JSON.stringify(canvasLastRect);
     const sig = canvasState.htmlSig;
-    canvasBridge.show({ html: req.html, hosts: req.hosts, rect: canvasLastRect, covered }).then((res) => {
+    canvasBridge.show({ html: req.html, hosts: req.hosts, shelf: req.shelf, rect: canvasLastRect, covered }).then((res) => {
       // main said no (too big once decoded, no tab...): say so in the module instead of drawing an empty slot for a view that does not exist.
       // A `stale` answer means a hide or a newer show overtook this one; that is not an error.
       if (res && res.ok === false && res.stale !== true) {
@@ -1356,6 +1360,8 @@ function syncCanvasView() {
     return;
   }
   if (hostsKey !== canvasShownHosts) { canvasShownHosts = hostsKey; canvasBridge.hosts(req.hosts); }
+  const shelfKey = window.canvasDisplay.shelfKey(canvasState);
+  if (shelfKey !== canvasShownShelf) { canvasShownShelf = shelfKey; canvasBridge.shelf(req.shelf); }
   if (covered !== canvasLastCover) { canvasLastCover = covered; canvasBridge.cover(covered); }
   const key = JSON.stringify(canvasLastRect);
   if (canvasLastRect && key !== canvasRectKey) { canvasRectKey = key; canvasBridge.bounds(canvasLastRect); }
@@ -1417,7 +1423,32 @@ function canvasAct(a) {
   renderCanvas();
 }
 
+// A button in Claude's panel (main already checked a real click came with it): its one line is typed into the prompt through the
+// wand's path, so the submit gate decides Enter and the transcript shows where it came from. The status line says what came of it.
+// The panel's status line: shown, and cleared again after a while.
+function showCanvasStatus(next, ms = 8000) {
+  canvasState = next;
+  renderCanvas();
+  clearTimeout(canvasStatusTimer);
+  canvasStatusTimer = setTimeout(() => { canvasState = window.canvasDisplay.clearStatus(canvasState); renderCanvas(); }, ms);
+}
+
+function canvasSendToSession(text) {
+  const line = window.canvasDisplay.sessionLine(text);
+  if (!line) { showCanvasStatus(window.canvasDisplay.unsent(canvasState, window.canvasDisplay.whyNot(text) || 'the message could not be typed')); return; }
+  if (canvasTyping) { showCanvasStatus(window.canvasDisplay.unsent(canvasState, 'the previous message is still being typed')); return; }
+  canvasTyping = true;
+  typeCommand(line, (r) => {
+    canvasTyping = false;
+    canvasState = window.canvasDisplay.typed(canvasState, r);
+    renderCanvas();
+    clearTimeout(canvasStatusTimer);
+    if (r && r.ok) canvasStatusTimer = setTimeout(() => { canvasState = window.canvasDisplay.clearStatus(canvasState); renderCanvas(); }, r.box ? 8000 : 2500);
+  }, 'panel', { submit: true });
+}
+
 if (canvasBridge && canvasRoot) {
+  canvasBridge.onMessage((msg) => { if (msg && msg.kind === 'send') canvasSendToSession(msg.text); });
   // The page asked for a host it has not been given: the question covers the panel until it is answered.
   canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });
   canvasRoot.addEventListener('click', (e) => {
@@ -2894,6 +2925,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (!el) return JSON.stringify({ ok: false, error: 'no canvas control ' + JSON.stringify(a) });
         el.click();
         return JSON.stringify({ ok: true });
+      }
+      case 'canvasMcpBox': {
+        // #71 question 8: the Style tab's switch for Claude's panel (read it, or press it)
+        const box = document.getElementById('style-canvas-mcp');
+        if (!box) return JSON.stringify({ ok: true, exists: false });
+        if (a.click === true) box.click();
+        return JSON.stringify({ ok: true, exists: true, checked: box.checked, disabled: box.disabled });
       }
       case 'canvasOverlay': {
         // a stand-in for a float / menu / popover crossing the slot (PR #122 Dexter F5): a fixed box over the slot's right half (at least SAMPLE_GAP wide: a thinner overlay can fall between the sample points), above the page
@@ -5207,7 +5245,7 @@ function typeAndCheck(enterInsert, command, done) {
   // Read the box back (Miguel r2): the screen was judged before the spaced writes, and a dialog opening
   // meanwhile, or anything glued to the command, would otherwise stand. Not exactly the command: clear it.
   setTimeout(() => {
-    if (commandTyped(screenLines(), command, { vim: vimSeen })) { done({ ok: true }); return; }
+    if (commandTyped(screenLines(), command, { vim: vimSeen, termRows: term.rows })) { done({ ok: true }); return; }
     input('\x05');
     setTimeout(() => input('\x15'), PTY_STEP_MS);
     // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
@@ -5285,12 +5323,12 @@ function submitTyped(command, opts, done) {
   const typeOnly = opts.typeOnly;
   const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
   if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
-  if (!gate.recheck) { pressEnter(done); return; }
+  if (!gate.recheck) { pressEnter(done, command, opts.enterInsert); return; }
   typingBusy = true;
   setTimeout(() => {
     typingBusy = false;
     const again = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
-    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done); return; }
+    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen, termRows: term.rows })) { pressEnter(done, command, opts.enterInsert); return; }
     clearTypedLine(opts.enterInsert);
     done({ ok: false, reason: 'the screen changed while waiting to press Enter (a dialog may have opened), so nothing was sent' });
   }, SUBMIT_RECHECK_MS);
@@ -5301,18 +5339,30 @@ function submitTyped(command, opts, done) {
  * frame silently (send()), so that is reported as not sent, never as "sent" (Dexter F6 / Miguel M1). Then the
  * flash is read off the SCREEN, not guessed from the hook state (F7): watchQueued.
  */
-function pressEnter(done) {
+function pressEnter(done, command, enterInsert) {
   if (!ws || ws.readyState !== WebSocket.OPEN) { done({ ok: false, reason: 'not connected to the session: the Enter was not sent' }); return; }
   send(JSON.stringify({ type: 'input', data: '\r' }));
-  watchQueued(done);
+  watchQueued(done, command, enterInsert);
 }
 
-/** After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7). */
-function watchQueued(done) {
+/**
+ * After an Enter: "queued" only if the CLI's own queued-messages line shows within the window, else "sent" (F7) -- but never "sent" while the box
+ * still holds the very line that was typed: an Enter the CLI swallowed (its `\` + Enter newline, a suggestion list taking the key) submitted
+ * nothing, and the status must say so (PR #125 Dexter #1, #4). The line is cleared, as a failed read-back clears it.
+ */
+function watchQueued(done, command, enterInsert) {
   let looks = 0;
   const look = () => {
     if (submitGate.queuedShown(screenLines())) { done({ ok: true, submitted: true, flash: submitGate.FLASH.queued }); return; }
-    if (++looks >= QUEUED_POLLS) { done({ ok: true, submitted: true, flash: submitGate.FLASH.sent }); return; }
+    if (++looks >= QUEUED_POLLS) {
+      if (command && boxHoldsLine(screenLines(), command)) {
+        clearTypedLine(enterInsert);
+        done({ ok: false, reason: 'the terminal did not take the Enter, so nothing was sent' });
+        return;
+      }
+      done({ ok: true, submitted: true, flash: submitGate.FLASH.sent });
+      return;
+    }
     setTimeout(look, QUEUED_POLL_MS);
   };
   setTimeout(look, QUEUED_POLL_MS);
@@ -5809,6 +5859,16 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'panel' && v) {
+    // Id written out in full: test/renderer-scope.test.js finds it by text.
+    return (
+      `<section class="style-section" data-section="panel">${header}` +
+      `<label class="style-row"><input type="checkbox" id="style-canvas-mcp"${v.mcp === true ? ' checked' : ''}${v.mcp === null ? ' disabled' : ''}>` +
+      ` Let Claude build in its panel (next session)</label>` +
+      `<div class="style-note">${escapeHtml(v.mcpDescription)}</div>` +
+      `</section>`
+    );
+  }
   // A future section with no view function yet still gets its title drawn,
   // rather than vanishing -- "say something rather than nothing", the same
   // rule the fog and projects panels follow for a failed read.
@@ -6012,6 +6072,14 @@ function bindAvatarSection() {
       chrome.setStatusInHeader(statusBox.checked).then(settledChrome).catch(refreshChromeSettings);
     });
   }
+  // #71 question 8: Claude's panel on or off for the next session. Send the DESIRED state; main answers what the file now says, and null
+  // (a failed save) re-reads the truth instead of trusting the click.
+  const canvasMcpBox = document.getElementById('style-canvas-mcp');
+  if (canvasMcpBox && window.harness && window.harness.canvas) {
+    canvasMcpBox.addEventListener('change', () => {
+      window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
+    });
+  }
   const framelessBox = document.getElementById('style-frameless');
   if (framelessBox && chrome) {
     framelessBox.addEventListener('change', () => {
@@ -6032,6 +6100,25 @@ function applyChromeSettings(settings) {
   chromeSettings = styleState.window;
   renderStatusFields(lastStatusFields);
   renderStylePanel();
+}
+// #71 question 8: the panel's MCP switch. Null (main couldn't read the file) stays unknown and asks again; never a guessed answer.
+function settledCanvasMcp(value) {
+  if (typeof value === 'boolean') { styleState = reduceCanvasMcp(styleState, value); renderStylePanel(); } else refreshCanvasMcp();
+}
+// ONE loop at a time, backing off and then stopping (PR #125 Miguel M3): a file main cannot read used to be asked about every second for the life
+// of the window, and a failed save could stack a second loop on top of a running one.
+let canvasMcpLoop = false;
+function refreshCanvasMcp(attempt = 0) {
+  if (!(window.harness && window.harness.canvas && window.harness.canvas.settingsGet)) return;
+  if (attempt === 0) { if (canvasMcpLoop) return; canvasMcpLoop = true; }
+  const again = () => {
+    const wait = canvasMcpRetryDelay(attempt);
+    if (wait === null) { canvasMcpLoop = false; return; }
+    setTimeout(() => refreshCanvasMcp(attempt + 1), wait);
+  };
+  window.harness.canvas.settingsGet().then((v) => {
+    if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
+  }).catch(again);
 }
 function settledChrome(saved) {
   if (saved && typeof saved === 'object') applyChromeSettings(saved);
@@ -6117,6 +6204,7 @@ if (window.harness && window.harness.chrome) {
   window.harness.chrome.onChange(applyChromeSettings);
   refreshChromeSettings();
 }
+refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
 
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
