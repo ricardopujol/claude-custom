@@ -54,6 +54,15 @@ test('html: the model words are escaped; a dismiss button carries the note id', 
   assert.match(html, /data-drift-dismiss="a&quot;b"/);
 });
 
+test('html: the doc name and Dismiss share the first line; the commit and age have a line of their own (they were squeezed to nothing beside the button)', () => {
+  const html = d.html(d.view({ notes: [note()], off: null }, NOW));
+  const doc = /<div class="drift-doc">(.*?)<\/div>/.exec(html)[1];
+  assert.match(doc, /DESIGN_X\.md/);
+  assert.match(doc, /data-drift-dismiss/);
+  assert.doesNotMatch(doc, /drift-meta/);
+  assert.match(html, /<div class="drift-meta">abcdef123 Merge pull request #7 · 5 min ago<\/div>/);
+});
+
 test('html: a view with only a note (no rows) still renders the note', () => {
   const html = d.html(d.view({ notes: [], off: { reason: 'ollama-down', model: 'm' } }, NOW));
   assert.match(html, /Ollama isn&#39;t running|Ollama isn't running/);

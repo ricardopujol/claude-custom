@@ -70,8 +70,9 @@ const esc = (v) => String(v === undefined || v === null ? '' : v).replace(/[&<>"
 function html(v) {
   if (v === null || v === undefined) return '';
   const rows = v.rows.map(r => `<div class="drift-row">`
-    + `<div class="drift-doc"><b>${esc(r.doc)}</b> <span class="drift-meta">${esc(r.commit.slice(0, 9))} ${esc(r.subject)} · ${esc(r.age)}</span>`
+    + `<div class="drift-doc"><b>${esc(r.doc)}</b>`
     + `<button type="button" class="drift-dismiss" data-drift-dismiss="${esc(r.id)}" title="Hide this note">Dismiss</button></div>`
+    + `<div class="drift-meta">${esc(r.commit.slice(0, 9))} ${esc(r.subject)} · ${esc(r.age)}</div>`
     + `<div class="drift-sentence">${esc(r.sentence)}</div>`
     + `<div class="drift-why">${esc(r.why)}</div></div>`).join('');
   return `<section class="drift-sec"><h3>${esc(v.title)} <span class="drift-label">${esc(v.label)}</span></h3>`
