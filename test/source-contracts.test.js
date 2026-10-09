@@ -470,6 +470,7 @@ const CLAUDE_FOLDER_ALLOWED = [
   ['host/drop.js', "'.config', '.claude', '.azure'", 'a deny-list NAME for the drop guard'],
   ['host/host.js', "path.join(CWD, '.claude', 'skills')", 'project-level (under the tab cwd)'],
   ['host/roster-index.js', "path.join(cwd, '.claude', 'agents')", 'project-level'],
+  ['host/bubble-voice.js', "path.join(cwd, '.claude', 'agents')", 'project-level (under the tab cwd); the install-level folder comes from claudeConfigDir()'],
   ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.local.json')", 'project-level'],
   ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.json')", 'project-level'],
   ['host/wand-skills.js', "path.join(projectDir, '.claude', 'skills')", 'project-level'],

@@ -4393,7 +4393,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && closeMedalMenu()) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 agentsEl.addEventListener('contextmenu', (e) => {
-  const card = e.target.closest && e.target.closest('.agent');
+  const card = e.target.closest && e.target.closest('.agent:not([data-state="inactive"])');
   if (!card || !card.dataset.agent) return;
   e.preventDefault();
   openMedalMenu(card.dataset.agent, e.clientX, e.clientY);

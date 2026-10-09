@@ -140,3 +140,13 @@ test('clear() empties the board (switching bubbles off drops the live ones)', ()
   assert.strictEqual(b.live('miguel'), null);
   assert.strictEqual(b.size(), 0);
 });
+
+test('attach leaves the Inactive tab alone: no bubbles on its rows', () => {
+  const card = mkCard('miguel');
+  card.dataset.state = 'inactive';
+  const root = { querySelectorAll: () => [card] };
+  const b = bd.createBoard({ now: () => 0 });
+  b.show(frame({ agent: 'miguel' }));
+  bd.attach(root, b, true);
+  assert.strictEqual(card.html.length, 0);
+});

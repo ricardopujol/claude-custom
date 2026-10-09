@@ -94,7 +94,7 @@ function attach(rootEl, board, show) {
   for (const card of rootEl.querySelectorAll('.agent')) {
     const old = card.querySelector(':scope > .agent-bubble');
     if (old) old.remove();
-    if (!show) continue;
+    if (!show || (card.dataset && card.dataset.state === 'inactive')) continue;      // the Inactive tab has no bubbles
     const b = card.dataset ? board.live(card.dataset.agent) : null;
     if (b) card.insertAdjacentHTML('afterbegin', bubbleHtml(b.text, b.remainingMs));
   }

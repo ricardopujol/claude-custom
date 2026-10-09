@@ -27,7 +27,7 @@ const NAME_MAX = 60;
 const FILES_MAX = 3;
 const FILE_NAME_MAX = 80;
 const DESCRIPTION_MAX = 240;
-const SIGN_OFF_MAX = 160;
+const SIGN_OFF_MAX = 220;
 
 // eslint-disable-next-line no-control-regex
 const CONTROL_RE = /[\u0000-\u001f\u007f]/g;
@@ -66,8 +66,9 @@ function safeFileName(p) {
 }
 
 const SYSTEM_BASE =
-  'You write ONE short joke line (under 70 characters) for a cartoon character on a dashboard. The line is decoration: a joke. ' +
-  'Never say or claim that anything was done, fixed, found, passed or finished, and never state a result. ' +
+  'You write ONE short joke line (under 70 characters) that a cartoon character on a dashboard says out loud, in the first person ' +
+  '("I", never its own name). The line is decoration: a joke or a mood. ' +
+  'Never say or claim that anything was done, fixed, found, passed or finished, never describe the real work, and never state a result. ' +
   'No quotes, no hashtags, no file paths, no links. Reply with one line and nothing else.';
 
 function systemFor(agent, voice) {
@@ -91,6 +92,10 @@ function buildPrompt(input) {
   return { system: systemFor(agent, input.voice), prompt: lines.join('\n') };
 }
 
+// A bubble never claims the work went one way or the other. The prompt asks; a 4B model doesn't always listen (measured:
+// "I just spotted a null pointer"), so a line that SAYS something was found, fixed or finished is dropped rather than shown.
+const CLAIM_RE = /\b(fixed|found|saw|noticed|discovered|detected|admitted|spotted|solved|pass|passed|passes|merged|deployed|shipped|finished|completed|resolved|caught|killed|done|survived|all green)\b/i;
+
 /** One short line from a model's reply, or null when there is nothing usable (empty, code, a link, a path). */
 function cleanLine(reply) {
   if (typeof reply !== 'string') return null;
@@ -101,12 +106,17 @@ function cleanLine(reply) {
   const line = oneLine(first.replace(/^[-*•]\s+/, '').replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, ''));
   if (!line) return null;
   if (/https?:\/\//i.test(line) || /[A-Za-z]:\\/.test(line) || /(^|\s)\/[\w.-]+\/[\w.-]/.test(line)) return null;
+  if (CLAIM_RE.test(line)) return null;
   const chars = [...line];
-  const out = chars.length <= LINE_MAX ? line : chars.slice(0, LINE_MAX - 1).join('').trimEnd() + '…';
-  return out.trim() || null;
+  if (chars.length <= LINE_MAX) return line;
+  // Cut at a word when there is one in the second half of the allowance, so a joke doesn't end mid-word.
+  const head = chars.slice(0, LINE_MAX - 1).join('');
+  const space = head.lastIndexOf(' ');
+  const out = (space >= LINE_MAX / 2 ? head.slice(0, space) : head).trimEnd() + '…';
+  return out.trim() === '…' ? null : out;
 }
 
-const SIGN_OFF_RE = /\b(sign(?:s|ed)?[- ]?off|closing line|end (?:every|each|all|your)\b[^.\n]{0,40}\bwith|always end)/i;
+const SIGN_OFF_RE = /\b(sign(?:s|ed)?[- ]?off|closing line|end (?:every|each|all|your)\b[^.\n]{0,40}\bwith|always end)|l[ií]nea final|despedida/i;
 
 /** { description, signOff } from an agent's .md text, or null when it offers neither. */
 function voiceFromMd(raw) {
@@ -117,8 +127,15 @@ function voiceFromMd(raw) {
   const { descriptionFromFrontmatter } = require('./roster-index');
   const description = cap(oneLine(descriptionFromFrontmatter(raw)), DESCRIPTION_MAX);
   const body = raw.slice(fm[0].length).split(/\r?\n/);
-  const hit = body.find((l) => SIGN_OFF_RE.test(l));
-  const signOff = hit ? cap(oneLine(hit.replace(/^[\s>*#-]+/, '').replace(/\*\*/g, '')), SIGN_OFF_MAX) : '';
+  const at = body.findIndex((l) => SIGN_OFF_RE.test(l));
+  // A heading ("## Mandatory sign-off") names the section: the instruction is the lines under it, up to the next heading.
+  const picked = [];
+  if (at >= 0) {
+    if (/^\s*#{1,6}\s/.test(body[at])) {
+      for (let i = at + 1; i < body.length && picked.length < 2 && !/^\s*#{1,6}\s/.test(body[i]); i++) if (body[i].trim()) picked.push(body[i]);
+    } else picked.push(body[at]);
+  }
+  const signOff = cap(oneLine(picked.join(' ').replace(/^[\s>*#-]+/, '').replace(/\*\*/g, '')), SIGN_OFF_MAX);
   if (!description && !signOff) return null;
   return { description, signOff: signOff || null };
 }

@@ -71,3 +71,12 @@ test('the host starts a bubble only through the mood listener, without waiting f
   assert.match(host, /bubbles\.onMood\(\{ agent, state \}\);/);
   assert.ok(!/await bubbles\.onMood/.test(host));
 });
+
+test('every element renderer.js looks up at load comes BEFORE its script tag (the menu once sat after it, and was null)', () => {
+  const script = html.indexOf('<script src="./renderer.js"></script>');
+  assert.ok(script > 0);
+  for (const id of ['bubbles-toggle', 'agent-medals', 'medal-menu']) {
+    const at = html.indexOf(`id="${id}"`);
+    assert.ok(at > 0 && at < script, `${id} must be parsed before renderer.js runs`);
+  }
+});

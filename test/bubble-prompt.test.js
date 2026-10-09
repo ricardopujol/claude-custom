@@ -26,6 +26,7 @@ test('the system prompt makes the line a joke that never claims anything happene
   assert.match(system, /joke/i);
   assert.match(system, /never (say|claim)/i);
   assert.match(system, /one (short )?line/i);
+  assert.match(system, /first person/i);
 });
 
 test('an unknown state is refused (null), not passed on', () => {
@@ -126,6 +127,23 @@ test('cleanLine returns null for nothing, code, links or paths', () => {
   assert.strictEqual(cleanLine('edited C:\\proj\\a.js'), null);
 });
 
+test('cleanLine refuses a line that claims something was found, fixed or finished (a bubble is a joke, never information)', () => {
+  for (const claim of ['I just spotted a null pointer where I expected nothing', 'All tests pass, you are welcome!', 'Bug fixed, no need to thank me',
+    'I found the leak', 'Merged and deployed, easy', 'Done! That was quick', 'I caught three bugs today', 'I just saw an off-by-one error']) {
+    assert.strictEqual(cleanLine(claim), null, claim);
+  }
+  for (const joke of ['Back to the grind!', 'MUAJAJA', 'Otra vez a revisar, ¡qué vida!', 'Dry as ever.', 'Send coffee, then send more coffee']) {
+    assert.strictEqual(cleanLine(joke), joke, joke);
+  }
+});
+
+test('cleanLine cuts a long line at a word, not in the middle of one', () => {
+  const out = cleanLine('wobble '.repeat(30));
+  assert.ok(out.endsWith('…'));
+  assert.ok([...out].length <= LINE_MAX);
+  assert.ok(out.slice(0, -1).trim().split(' ').every(w => w === 'wobble'), out);
+});
+
 test('cleanLine never cuts a surrogate pair', () => {
   const out = cleanLine('😀'.repeat(LINE_MAX + 10));
   assert.ok(!/[\uD800-\uDBFF]$/.test(out));
@@ -163,5 +181,18 @@ test('voiceFromMd caps what it keeps', () => {
   const raw = '---\ndescription: ' + 'd'.repeat(2000) + '\n---\nsign off with ' + 'z'.repeat(2000);
   const v = voiceFromMd(raw);
   assert.ok(v.description.length <= 240);
-  assert.ok(v.signOff.length <= 160);
+  assert.ok(v.signOff.length <= 220);
+});
+
+test('voiceFromMd follows a sign-off HEADING to the lines under it (the real agent files put the instruction there)', () => {
+  const raw = '---\ndescription: Gleeful mutation tester.\n---\n\n## Mandatory sign-off\n\nAlways close with the voice of a gleeful villain who delights in survivors.\nFormat: "[what you found] - Mortimer, MUAJAJA"\n\n## Next section\nunrelated';
+  const v = voiceFromMd(raw);
+  assert.match(v.signOff, /gleeful villain/);
+  assert.match(v.signOff, /MUAJAJA/);
+  assert.ok(!/unrelated/.test(v.signOff));
+});
+
+test('voiceFromMd finds a Spanish closing-line instruction', () => {
+  const raw = '---\ndescription: Elite code reviewer.\n---\nAl terminar SIEMPRE incluyes una línea final escrita en español de España con humor castizo.\n';
+  assert.match(voiceFromMd(raw).signOff, /español de España/);
 });
