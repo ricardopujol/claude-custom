@@ -281,8 +281,9 @@ async function main() {
   await sleep(1500);
   const stillFrozen = beats(hbFile) <= beforeQuit + 1;
   check('6: and it is frozen', stillFrozen, `${beforeQuit} -> ${beats(hbFile)}`);
-  await command(app, { cmd: 'quit' });
-  await waitFor(() => app.exited, 20000);
+  // The way a closed window quits (app.quit(), will-quit runs), not the harness's hard exit.
+  await command(app, { cmd: 'quit', graceful: true });
+  await waitFor(() => app.exited, 30000);
   check('6: the app has quit', app.exited === true);
   const atQuit = beats(hbFile);
   const woke = await waitFor(() => (beats(hbFile) > atQuit + 2 ? true : null), 20000, 300);

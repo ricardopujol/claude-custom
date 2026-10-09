@@ -265,3 +265,19 @@ test('pause: a process whose subtree holds something already paused is refused (
   assert.strictEqual(r.reason, 'already');
   assert.strictEqual(calls.length, 1);
 });
+
+test('pause: a refused overlapping request does not release the busy marks of the one still in flight', async () => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const calls = [];
+  const { pauser } = setup({ suspend: wrapCalls(calls, async (a, t) => { await gate; return done(...t.map(x => x.pid)); }) });
+  const first = pauser.pause({ pid: 24, startTime: '5100' });
+  await new Promise(r => setImmediate(r));
+  const parent = await pauser.pause({ pid: 23, startTime: '5000' });      // its subtree holds 24 and 25
+  assert.strictEqual(parent.reason, 'busy');
+  const child = await pauser.pause({ pid: 25, startTime: '5200' });       // 25 is part of the first request's set
+  assert.strictEqual(child.reason, 'busy', 'the first request is still in flight, so 25 is still marked');
+  release();
+  assert.strictEqual((await first).ok, true);
+  assert.strictEqual(calls.length, 1);
+});

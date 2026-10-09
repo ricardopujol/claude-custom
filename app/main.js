@@ -1540,8 +1540,9 @@ function startProbeDriver(port) {
       }
       return { ok: true, on, attached: dbg.isAttached() };
     },
-    async quit() {
-      setTimeout(() => app.exit(0), 200);
+    async quit(graceful) {
+      // A probe's hard exit skips will-quit; graceful is the path a closed window takes (verify/probe-pause-panel.js needs it).
+      setTimeout(() => (graceful === true ? app.quit() : app.exit(0)), 200);
       return { ok: true };
     },
     async background() {

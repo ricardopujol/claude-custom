@@ -63,8 +63,9 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {} }) {
       if (!Array.isArray(procs)) return refuse('unreadable');
       const d = stopDecision(request, procs, { sessionHostPids: hostPids(procs) });
       if (!d.ok) return refuse(d.reason);
-      held = d.kill.map(k => k.pid);
+      // Marks are taken only once the whole set is free: a refused request must not release the marks of the one in flight.
       if (d.kill.some(k => k.pid !== request.pid && busy.has(k.pid))) return refuse('busy');
+      held = d.kill.map(k => k.pid);
       for (const pid of held) busy.add(pid);
       if (store.holdsAny(d.kill)) return refuse('already');
 

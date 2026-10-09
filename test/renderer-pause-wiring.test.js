@@ -40,6 +40,13 @@ test('a quit wakes whatever this window paused: will-quit is held once while res
   assert.match(body, /resources\.resumeAll\(\)\.catch\(\(\) => \{\}\)\.finally\(\(\) => app\.quit\(\)\)/);
 });
 
+test('the probe can quit the way a closed window does, so a quit with a paused process is testable (the hard exit skips will-quit)', () => {
+  const SHELL = strip(fs.readFileSync(path.join(APP, 'tab-shell.js'), 'utf8'));
+  assert.match(SHELL, /case 'quit': return await api\.quit\(cmd\.graceful === true\);/);
+  assert.match(MAIN, /async quit\(graceful\)/);
+  assert.match(MAIN, /graceful === true \? app\.quit\(\) : app\.exit\(0\)/);
+});
+
 test('the preload bridge carries pause and resume with the request only', () => {
   assert.match(PRELOAD, /pause:\s*\(req\)\s*=>\s*ipcRenderer\.invoke\('resources:pause', req\)/);
   assert.match(PRELOAD, /resume:\s*\(req\)\s*=>\s*ipcRenderer\.invoke\('resources:resume', req\)/);

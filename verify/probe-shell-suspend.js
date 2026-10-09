@@ -31,7 +31,23 @@ const { killChildTree } = require('../host/kill-tree');
 const { startTimes } = require('../host/proc-start');
 const pause = require('./probe-pause');   // the helpers only; its main() runs under require.main === module
 
-const { hygiene, ntAction, ancestryChain, resolveClaudeExe, cleanEnv } = pause;
+const { hygiene, ancestryChain, resolveClaudeExe, cleanEnv } = pause;
+const { suspendScript, parseSuspendOutput } = require('../host/process-suspend');
+const { spawnSync } = require('child_process');
+
+// The product's own suspend / resume (host/process-suspend.js), run synchronously and with NO helper file: the first version of this probe
+// used probe-pause.js's temp .ps1, and after 30 minutes that file was gone from %TEMP% (the resume failed with "-File does not exist").
+// Every suspended process is named by pid AND the start time it was proved with.
+const POWERSHELL = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const starts = new Map();
+function ntAction(action, pid) {
+  const start = starts.get(pid);
+  if (typeof start !== 'string') return { code: 1, out: '', err: `no proven start for pid ${pid}` };
+  const r = spawnSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', suspendScript(action.toLowerCase(), [{ pid, start }])], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
+  const [res] = parseSuspendOutput(r.stdout || '', [{ pid, start }]);
+  return { code: res.status === 'done' ? 0 : 1, out: `${action} pid=${pid} ${res.status}${res.text ? ` ${res.text}` : ''}`, err: (r.stderr || '').trim() };
+}
+hygiene.setResumeFn((pid) => ntAction('Resume', pid).code === 0);   // the emergency path (Ctrl+C, a crash) uses the same one
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const T0 = Date.now();
 const at = () => `${((Date.now() - T0) / 60000).toFixed(1)}min`;
@@ -112,6 +128,7 @@ async function main() {
       const st = (await startTimes([s.pid])).get(s.pid);
       s.start = typeof st === 'string' ? st : null;
       seen.add(s.pid, s.start);
+      starts.set(s.pid, s.start);
       console.log(`[${at()}] shell ${s.i}: leaf pid ${s.pid} (${chain.map(c => c.name).join(' <- ')}) start ${s.start}`);
     }
 
@@ -135,6 +152,7 @@ async function main() {
       console.log(`[${at()}] shell ${s.i} before resume (${s.minutes} min suspended): heartbeat ${s.frozen} -> ${lines(s)} (flat ${flat}), alive ${alive === s.start}`);
       console.log(`  /tasks: ${pre.join(' | ')}`);
       const r = ntAction('Resume', s.pid);
+      console.log(`[${at()}] resume shell ${s.i}: rc=${r.code} out=${JSON.stringify(r.out)} err=${JSON.stringify(r.err)}`);
       if (r.code === 0) hygiene.clearSuspended(s.pid);
       await sleep(10000);
       const grew = lines(s) > s.frozen + 3;
