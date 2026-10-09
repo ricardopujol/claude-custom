@@ -16,16 +16,19 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'app', 'canvas-panel-prel
 // Objects made inside the vm have another realm's prototypes; compare them as plain data.
 const plain = (x) => JSON.parse(JSON.stringify(x));
 
-function load() {
-  const exposed = {}; const sent = []; const invoked = []; const listeners = {};
+function load({ top = true } = {}) {
+  const exposed = {}; const sent = []; const invoked = []; const listeners = {}; const winListeners = []; const scripts = [];
+  const win = { addEventListener: (type, fn, capture) => winListeners.push({ type, fn, capture }) };
+  win.top = top ? win : {};
   const electron = {
     contextBridge: { exposeInMainWorld: (name, api) => { exposed[name] = api; } },
     ipcRenderer: { send: (ch, ...a) => sent.push([ch, ...a]), invoke: (ch, ...a) => { invoked.push([ch, ...a]); return Promise.resolve({ ok: true }); },
       on: (ch, fn) => { listeners[ch] = fn; }, removeAllListeners: (ch) => { delete listeners[ch]; } },
+    webFrame: { executeJavaScript: (src) => { scripts.push(src); return Promise.resolve(); } },
   };
   const requires = [];
-  vm.runInNewContext(SRC, { require: (n) => { requires.push(n); return electron; }, module: {}, console });
-  return { exposed, sent, invoked, requires, listeners };
+  vm.runInNewContext(SRC, { require: (n) => { requires.push(n); return electron; }, module: {}, console, window: win, DOMException });
+  return { exposed, sent, invoked, requires, listeners, winListeners, scripts };
 }
 
 test('it exposes exactly one object, claudePanel, with exactly fetch, send and three for the shelf', () => {
@@ -78,4 +81,48 @@ test('onShelf replaces its one listener, hands the page the items, and a throwin
   assert.doesNotThrow(() => listeners['canvas:shelf']({}, []));
   exposed.claudePanel.onShelf('not a function');
   assert.strictEqual(listeners['canvas:shelf'], undefined, 'a non-function removes the listener rather than keeping a stale one');
+});
+
+// ---- PR #125 Dexter R2-3, Ricardo 2026-10-08 "block what we can": the file-picker guard, in every frame ---------------------------------------
+const fileEvent = (tag, type, path) => ({ target: { tagName: tag, type }, composedPath: path ? () => path : undefined, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } });
+
+test('every frame gets a CAPTURE-phase click guard that cancels a click on a file input, however it got there, and no other click', () => {
+  const { winListeners } = load();
+  const guards = winListeners.filter((l) => l.type === 'click');
+  assert.strictEqual(guards.length, 1);
+  assert.strictEqual(guards[0].capture, true, 'capture phase: it runs before any listener the page put on the input');
+  const hit = (e) => { guards[0].fn(e); return e.defaultPrevented; };
+  assert.strictEqual(hit(fileEvent('INPUT', 'file')), true);
+  assert.strictEqual(hit(fileEvent('INPUT', 'FILE')), true, 'the type attribute is case-insensitive');
+  const file = { tagName: 'INPUT', type: 'file' };
+  assert.strictEqual(hit({ ...fileEvent('LABEL', ''), composedPath: () => [{ tagName: 'DIV' }, file, { tagName: 'BODY' }] }), true, 'found through the composed path (shadow DOM, bubbling from a child)');
+  assert.strictEqual(hit(fileEvent('INPUT', 'text')), false);
+  assert.strictEqual(hit(fileEvent('INPUT', 'color')), false, 'only files');
+  assert.strictEqual(hit(fileEvent('BUTTON', '')), false);
+  assert.strictEqual(hit({ target: null, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } }), false);
+});
+
+test('showPicker is replaced in the page world: it throws NotAllowedError for a file input and passes everything else through', () => {
+  const { scripts } = load();
+  assert.strictEqual(scripts.length, 1);
+  const calls = [];
+  const proto = { showPicker() { calls.push(['orig', this.type]); return 'picked'; } };
+  const sandbox = { HTMLInputElement: { prototype: proto }, DOMException, Object, String };
+  vm.runInNewContext(scripts[0], sandbox);
+  assert.throws(() => proto.showPicker.call({ type: 'file' }), (e) => e.name === 'NotAllowedError');
+  assert.throws(() => proto.showPicker.call({ type: 'FILE' }), (e) => e.name === 'NotAllowedError');
+  assert.strictEqual(proto.showPicker.call({ type: 'date' }), 'picked');
+  assert.deepStrictEqual(calls, [['orig', 'date']]);
+  assert.throws(() => Object.defineProperty(proto, 'showPicker', { value: () => 'again' }), TypeError, 'the page cannot put the original back');
+});
+
+test('the top frame gets the guard AND the bridge; a sub-frame gets the guard and NOTHING else (no claudePanel, no ipc listeners)', () => {
+  const top = load({ top: true });
+  assert.deepStrictEqual(plain(Object.keys(top.exposed)), ['claudePanel']);
+  const sub = load({ top: false });
+  assert.deepStrictEqual(plain(Object.keys(sub.exposed)), [], 'no bridge in a sub-frame');
+  assert.strictEqual(sub.winListeners.filter((l) => l.type === 'click').length, 1, 'but the guard is there');
+  assert.strictEqual(sub.scripts.length, 1);
+  assert.deepStrictEqual(plain(sub.sent), []);
+  assert.deepStrictEqual(plain(sub.invoked), []);
 });

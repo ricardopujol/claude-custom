@@ -23,6 +23,9 @@
  *     exit (app/quit-watchdog.js ends a stalled quit; `hide` kills the renderer outright), `<input type=file>` raises none, `<input type=color>`
  *     raises a popup widget, not a dialog. The probe fails the day any of them becomes a native dialog. None of the panel's abilities
  *     (`fetch`, `send`, `open`, reading the shelf) shows a picker or reads a file.
+ *   - the FILE PICKER is blocked as far as Electron 33 allows (app/canvas-panel-preload.js, in every frame): covered are input.click(), label.click(),
+ *     dispatchEvent(click) and showPicker() in the top frame. NOT covered: a page that writes its own about:blank iframe, or calls document.open(),
+ *     can still open one Open dialog per real click (measured; documentation/DESIGN_LIVE_PANEL.md).
  *   - hidden means stopped (design, call 7): `hide` destroys the view, so no timer or fetch of the page keeps running.
  *
  * The Electron classes arrive as arguments so test/canvas-views.test.js can drive this with fakes.
@@ -123,6 +126,9 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       // alert/confirm/prompt are native message boxes parented to the app's window: a page looping on confirm() would lock the
       // whole window (and a single one carries text the page chose, under the app's title). Both set: disableDialogs wins.
       disableDialogs: true, safeDialogs: true,
+      // The preload (the file-picker guard) must run in every frame the page makes; a sub-frame gets that guard and NOT the bridge, and no Node
+      // (sandboxed, contextIsolation on): verify/probe-canvas-sandbox.js `frame-surface` shows a sub-frame sees none of them.
+      nodeIntegrationInSubFrames: true,
     } });
     const wc = view.webContents;
     const rec = { owner, view, wc, ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), html: null, approved: new Set(), denied: new Set(),

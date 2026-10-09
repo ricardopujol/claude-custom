@@ -125,13 +125,22 @@ const pad = (s, n) => String(s).padEnd(n);
   // cannot quit: app/quit-watchdog.js is what ends it, and the exit-time check below is its test);
   // <input type=file> raises none either, even with nothing sealed and the owner focused; <input type=color> raises a Chromium popup widget
   // (Chrome_WidgetWin_1, not a dialog) when the owner has focus. So these three checks are guards: they fail if any becomes a native dialog.
-  const dialogs = (run, name) => (name ? during(run, name) : (run.windows || [])).filter(isNativeDialog);
+  // The known-gap vectors (a page's own about:blank iframe, document.open) may open a dialog: recorded, never a failure.
+  const GAPS = ['file-picker-gap-iframe-with-click', 'file-picker-gap-open-with-click'];
+  const inGap = (w) => GAPS.some((g) => during(s, g).includes(w));
+  const dialogs = (run, name) => (name ? during(run, name) : (run.windows || []).filter((w) => !inGap(w))).filter(isNativeDialog);
   for (const name of ['print-loop', 'file-picker-with-click', 'color-picker-with-click'].filter(n => s.names.includes(n))) {
     check(dialogs(s, name).length === 0, `${name}: no native dialog window appeared (saw ${JSON.stringify(dialogs(s, name).map(w => w.cls + ':' + w.title))}; the panel answered "${answer(name)}")`);
   }
   // Quitting has to finish whatever the panel is doing: print-loop wedges the browser's exit (measured), spin-loop is the renderer-only control.
   check(s.exitMs !== null && s.exitMs <= EXIT_LIMIT_MS, `the app exits within ${EXIT_LIMIT_MS / 1000} s of its last result with print() and for(;;){} panels shown (took ${Math.round(s.exitMs)} ms)`);
   check(answer('spin-loop') === 'spinning', `a panel stuck in for(;;){} is reached and reports before it spins (got ${answer('spin-loop')})`);
+  // The file picker's guard, deterministically: the default of every covered path's click is prevented, and showPicker() throws.
+  const fp = (() => { try { return JSON.parse(answer('file-picker-with-click')); } catch { return {}; } })();
+  check(fp['input.click'] === true && fp['label.click'] === true && fp.dispatchEvent === true && fp.showPicker === 'NotAllowedError',
+    `the file picker is blocked for input.click(), label.click(), dispatchEvent(click) and showPicker() in the top frame (got ${answer('file-picker-with-click')})`);
+  check(answer('frame-surface') === 'undefined/undefined/undefined/undefined/undefined|guard=true', `a sub-frame has the file-picker guard and no bridge, no require, no process, no electron (got ${answer('frame-surface')})`);
+  for (const g of GAPS) if (s.names.includes(g)) console.log(`  KNOWN GAP (not a failure) ${g}: ${answer(g)}  (true would mean the guard covers it; false means the click's default is NOT prevented, so one Open dialog per real click is possible; dialogs seen: ${during(s, g).filter(isNativeDialog).length})`);
   check(dialogs(s).length === 0, `no native dialog window of any kind appeared in the panel's process tree during the run (saw ${dialogs(s).length})`);
   check(s.downloads.length >= 1 && s.downloads.every(d => d.prevented && !d.written), `a download the page starts itself (a data: link with download=) is cancelled: no Save-As box, no file (saw ${JSON.stringify(s.downloads)})`);
   check(answer('beforeunload-pin') === 'replaced', `a page whose beforeunload handler cancels leaving it is replaced by the next page Claude writes (got ${answer('beforeunload-pin')})`);
@@ -145,17 +154,21 @@ const pad = (s, n) => String(s).padEnd(n);
   console.log('\nNAIVE RUN (the control: the same page, nothing sealed)');
   // A control that leaks is timing-dependent on a busy machine (a connection can be cancelled by the next panel starting), so it gets
   // up to three tries and what any of them saw counts: the point is that the probe CAN see each leak, not how often it shows.
-  const seen = { nav: 0, stun: 0, turn: 0, dns: 0 };
+  const seen = { nav: 0, stun: 0, turn: 0, dns: 0, picker: null };
   for (let attempt = 1; attempt <= 3 && !(seen.nav && seen.stun && seen.turn && seen.dns); attempt++) {
     const n = await runElectron('naive');
     seen.nav = Math.max(seen.nav, leaked(n.hits['self-location-href'])); seen.stun = Math.max(seen.stun, n.rtc.stunDatagrams);
     seen.turn = Math.max(seen.turn, n.rtc.turnTcpConnections); seen.dns = Math.max(seen.dns, n.dns.queries);
+    if (n.results['file-picker-with-click'] !== undefined) seen.picker = String(n.results['file-picker-with-click']);
     console.log(`  try ${attempt}: self-navigation hits ${leaked(n.hits['self-location-href'])}, STUN datagrams ${n.rtc.stunDatagrams}, TURN-over-TCP connections ${n.rtc.turnTcpConnections}, DNS queries ${n.dns.queries}`);
   }
   check(seen.nav >= 1, 'control: with nothing sealed, a self-navigation reaches its server');
   check(seen.stun >= 1, 'control: with nothing sealed, WebRTC STUN reaches its server');
   check(seen.turn >= 1, 'control: with nothing sealed, WebRTC TURN over TCP reaches its server');
   check(seen.dns >= 1, 'control: with nothing sealed, DNS prefetch resolves the hinted name');
+  { const nfp = (() => { try { return JSON.parse(seen.picker); } catch { return null; } })();
+    check(nfp !== null && nfp['input.click'] === false && nfp['label.click'] === false && nfp.dispatchEvent === false,
+      `control: with no preload, the picker's clicks are NOT prevented, so the proxy can see a leak (got ${seen.picker})`); }
 
   console.log(failures.length ? `\nFAILED (${failures.length}): ${failures.join(' | ')}` : '\nOK: every blocked path reported 0 hits');
   process.exit(failures.length ? 1 : 0);

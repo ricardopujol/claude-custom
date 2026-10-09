@@ -71,7 +71,10 @@ test('the panel view is sandboxed, isolated, bridge-less except its own preload,
   assert.strictEqual(p.sandbox, true);
   assert.strictEqual(p.contextIsolation, true);
   assert.strictEqual(p.nodeIntegration, false);
-  assert.ok(!p.webviewTag && !p.nodeIntegrationInWorker && !p.nodeIntegrationInSubFrames);
+  assert.ok(!p.webviewTag && !p.nodeIntegrationInWorker);
+  // The preload (the file-picker guard) must run in every frame; that is all a sub-frame may get from it, and sandbox + contextIsolation stay on, no Node
+  // (test/canvas-panel-preload.test.js: a sub-frame gets no bridge; verify/probe-canvas-sandbox.js `frame-surface`).
+  assert.strictEqual(p.nodeIntegrationInSubFrames, true);
   assert.strictEqual(p.devTools, false);
   assert.strictEqual(p.disableDialogs, true, "alert/confirm/prompt are native boxes on the app's window: a page looping on confirm() would lock it (PR #122 Dexter F1)");
   assert.strictEqual(p.safeDialogs, true);

@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { DIALOG_VECTORS, vectorsFor } = require('../verify/probe71/vector-modes');
 
-const ALL = ['fetch-approved (control)', 'dialog-loop', 'print-loop', 'file-picker-with-click', 'color-picker-with-click', 'send-with-click'];
+const ALL = ['fetch-approved (control)', 'dialog-loop', 'print-loop', 'file-picker-with-click', 'file-picker-gap-iframe-with-click', 'color-picker-with-click', 'send-with-click'];
 
 test('SEALED runs every vector, dialogs included', () => {
   assert.deepStrictEqual(vectorsFor('sealed', ALL), ALL);
@@ -19,7 +19,7 @@ test('NAIVE runs the other dialog vectors only as a watched control, one the wat
   for (const n of DIALOG_VECTORS) assert.ok(!unwatched.includes(n), `${n} must not run naive without a watcher`);
   assert.ok(unwatched.includes('send-with-click') && unwatched.includes('fetch-approved (control)'), 'the non-dialog vectors still run');
   const watched = vectorsFor('naive', ALL, { watched: true });
-  assert.deepStrictEqual(watched, ALL.filter((n) => n !== 'dialog-loop' && n !== 'print-loop'));
+  assert.deepStrictEqual(watched, ALL.filter((n) => n !== 'dialog-loop' && n !== 'print-loop' && n !== 'file-picker-gap-iframe-with-click'));
 });
 
 test('the PROBE_ONLY filter narrows what the mode lets through, it never widens it', () => {

@@ -11,9 +11,9 @@
  *   - the others run naive only as a measured control: the driver started verify/probe71/watch-windows.ps1, which sees each
  *     dialog window and cancels it by handle.
  */
-const DIALOG_VECTORS = new Set(['dialog-loop', 'print-loop', 'file-picker-with-click', 'color-picker-with-click']);
+const DIALOG_VECTORS = new Set(['dialog-loop', 'print-loop', 'file-picker-with-click', 'file-picker-gap-iframe-with-click', 'file-picker-gap-open-with-click', 'color-picker-with-click']);
 // `print-loop` and `spin-loop` wedge a panel and only mean something sealed (they test that the APP survives them): no naive control.
-const NEVER_NAIVE = new Set(['dialog-loop', 'print-loop', 'spin-loop']);
+const NEVER_NAIVE = new Set(['dialog-loop', 'print-loop', 'spin-loop', 'file-picker-gap-iframe-with-click', 'file-picker-gap-open-with-click']);
 
 /** @param {'sealed'|'naive'} mode  @param {string[]} names every vector  @param {{watched?: boolean, only?: string}} opts */
 function vectorsFor(mode, names, { watched = false, only = '' } = {}) {

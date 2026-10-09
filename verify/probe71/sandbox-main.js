@@ -97,7 +97,23 @@ const VECTORS = {
   'print-loop': { code: `let n = 0; const next = () => { const f = document.createElement('iframe'); document.body.appendChild(f); f.contentWindow.print(); f.remove(); if (++n < 3) next(); }; next(); setTimeout(() => report('past print'), 300)` },
   // a panel that never yields: quitting must still work (PR #122 Dexter R2-1, lead 2026-10-08). `report` first: nothing runs after the loop.
   'spin-loop': { code: `report('spinning'); for (;;) {}` },
-  'file-picker-with-click': { code: `document.body.innerHTML = '<input type=file id=f><div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; document.addEventListener('click', () => { const a = navigator.userActivation.isActive; document.getElementById('f').click(); report('clicked, activation ' + a); })` },
+  // The file picker is blocked as far as Electron 33 allows (app/canvas-panel-preload.js; Ricardo 2026-10-08). The test is DETERMINISTIC: whether each
+  // path's click had its default prevented (the chooser opens in a click's default action) and whether showPicker() throws, on a real click; the
+  // driver also requires no #32770 window. Covered: input.click(), label.click(), dispatchEvent(click), showPicker().
+  'file-picker-with-click': { code: `document.body.innerHTML = '<input type=file id=f><label for=f id=l>l</label><div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; const f = document.getElementById('f'), l = document.getElementById('l'); const seen = {};
+    const run = (name, fn) => { let r = null; const h = (e) => { r = e.defaultPrevented; }; f.addEventListener('click', h); fn(); f.removeEventListener('click', h); seen[name] = r; };
+    document.addEventListener('click', () => { run('input.click', () => f.click()); run('label.click', () => l.click()); run('dispatchEvent', () => f.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+      try { f.showPicker(); seen.showPicker = 'opened'; } catch (e) { seen.showPicker = e.name; } report(JSON.stringify(seen)); }, { once: true });` },
+  // KNOWN GAPS (not failures): a page that writes its own about:blank iframe (the preload never runs in it), or calls document.open() (the spec erases the
+  // window's listeners), can still open one Open dialog per real click. The default is expected NOT prevented; the driver only records it.
+  'file-picker-gap-iframe-with-click': { code: `document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; document.addEventListener('click', () => { const fr = document.createElement('iframe'); document.documentElement.appendChild(fr);
+    const i = fr.contentDocument.createElement('input'); i.type = 'file'; fr.contentDocument.body.appendChild(i); let r = null; i.addEventListener('click', (e) => { r = e.defaultPrevented; }); i.click(); report(JSON.stringify({ iframe: r })); }, { once: true });` },
+  'file-picker-gap-open-with-click': { code: `document.body.innerHTML = '<div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; document.addEventListener('click', () => { document.open(); document.write('<input type=file id=z>'); document.close(); const z = document.getElementById('z');
+    let r = null; z.addEventListener('click', (e) => { r = e.defaultPrevented; }); z.click(); report(JSON.stringify({ documentOpen: r })); }, { once: true });` },
+  // A sub-frame gets the preload's guard and nothing else (nodeIntegrationInSubFrames, app/canvas-views.js): no bridge, no Node, and the guard IS there.
+  'frame-surface': { code: `addEventListener('message', (e) => report(e.data)); const fr = document.createElement('iframe');
+    fr.srcdoc = '<body><script>const i = document.createElement("input"); i.type = "file"; document.body.appendChild(i); let r = null; i.addEventListener("click", (e) => { r = e.defaultPrevented; }); i.click();'
+      + 'parent.postMessage([typeof claudePanel, typeof require, typeof process, typeof electron, typeof module].join("/") + "|guard=" + r, "*");<\\/script>'; document.documentElement.appendChild(fr);` },
   'color-picker-with-click': { code: `document.body.innerHTML = '<input type=color id=c><div style="position:fixed;left:0;top:0;width:300px;height:200px">x</div>'; document.addEventListener('click', () => { const a = navigator.userActivation.isActive; document.getElementById('c').click(); report('clicked, activation ' + a); })` },
   // --- a download the page starts itself: Electron's default is a Save-As box with a name and content the page chose (PR #122 Dexter F2)
   // (once from a script on load, and once more on a real click, so a download that needs a user gesture is seen too)
@@ -231,7 +247,8 @@ app.whenReady().then(async () => {
       });
     } else {
       // The control: the same page and preload, but a default session and nothing locked.
-      naiveView = new WebContentsView({ webPreferences: { sandbox: process.env.PROBE_NAIVE_SANDBOX !== '0', contextIsolation: true, nodeIntegration: false, preload: PRELOAD } });
+      // (the picker vectors' control has NO preload: it must show a click that is not prevented, or a quiet sealed run proves nothing)
+      naiveView = new WebContentsView({ webPreferences: { sandbox: process.env.PROBE_NAIVE_SANDBOX !== '0', contextIsolation: true, nodeIntegration: false, ...(name.startsWith('file-picker') ? {} : { preload: PRELOAD }) } });
       owner.contentView.addChildView(naiveView);
       naiveView.setBounds({ x: 0, y: 0, width: 400, height: 300 });
       wc = naiveView.webContents;

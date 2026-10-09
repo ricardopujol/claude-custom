@@ -322,8 +322,8 @@ test("the Style tab has a Claude's panel section after Window, with its switch u
 });
 
 test('the switch view says what the next session gets, strictly: only a real boolean is known', () => {
-  assert.match(panelSectionView({ mcp: true }).mcpDescription, /Claude can build things in its panel.*next starts this tab's session; one already running keeps what it started with, even after [/]clear/);
-  assert.match(panelSectionView({ mcp: false }).mcpDescription, /not offered to the CLI.*next starts this tab's session; one already running keeps what it started with, even after [/]clear/);
+  assert.match(panelSectionView({ mcp: true }).mcpDescription, /Claude can build things in its panel.*next starts this tab's session; one already running keeps what it has/);
+  assert.match(panelSectionView({ mcp: false }).mcpDescription, /not offered to the CLI.*next starts this tab's session; one already running keeps what it has/);
   for (const bad of [undefined, null, {}, { mcp: null }, { mcp: 'false' }, { mcp: 0 }, { mcp: 1 }]) {
     assert.deepStrictEqual(panelSectionView(bad), { mcp: null, mcpDescription: 'reading…' }, JSON.stringify(bad));
   }

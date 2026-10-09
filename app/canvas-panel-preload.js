@@ -14,7 +14,29 @@
  * This file requires nothing but `electron` (it runs sandboxed) and copies what it passes on, so no object of the page's
  * own travels to main.
  */
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
+
+// THE FILE-PICKER GUARD (PR #125 Dexter R2-3, Ricardo 2026-10-08: "block what we can"). This preload runs in EVERY frame
+// (nodeIntegrationInSubFrames, app/canvas-views.js), but only the top frame gets the bridge below; a sub-frame gets this guard and nothing else.
+// Electron 33 has no file-chooser hook, so the click is stopped before it does anything:
+//   - a capture-phase listener on the window, in this isolated world (the page cannot remove it), cancels every click that targets an
+//     <input type=file>, however it was made: input.click(), label.click(), dispatchEvent(new MouseEvent('click')), a real click on it;
+//   - HTMLInputElement.prototype.showPicker, which opens the chooser without a click, is replaced in the page's own world by one that throws
+//     NotAllowedError for a file input.
+// NOT COVERED, measured (scratchpad, verify/probe-canvas-sandbox.js "known gap" vectors): a page that writes its own about:blank iframe (this
+// preload never runs in it), and a page that calls document.open() (the spec erases the window's listeners). Either can still open one Open
+// dialog per real click. Claude's pages keep document.write, so document.open is not neutered.
+const isFileInputClick = (e) => {
+  const path = e && typeof e.composedPath === 'function' ? e.composedPath() : [e && e.target];
+  for (const t of path) if (t && t.tagName === 'INPUT' && String(t.type).toLowerCase() === 'file') return true;
+  return false;
+};
+window.addEventListener('click', (e) => { if (isFileInputClick(e)) e.preventDefault(); }, true);
+const SHOW_PICKER_GUARD = "(function () { var p = HTMLInputElement.prototype; var orig = p.showPicker; Object.defineProperty(p, 'showPicker', { value: function showPicker() { "
+  + "if (String(this.type).toLowerCase() === 'file') throw new DOMException('Choosing a file is not allowed in this panel.', 'NotAllowedError'); return orig.apply(this, arguments); }, "
+  + "configurable: false, writable: false }); })()";
+try { webFrame.executeJavaScript(SHOW_PICKER_GUARD); } catch { /* a frame being torn down */ }
+const isTopFrame = (() => { try { return window.top === window; } catch { return false; } })();
 
 function plainInit(init) {
   const out = {};
@@ -28,7 +50,7 @@ function plainInit(init) {
   return out;
 }
 
-contextBridge.exposeInMainWorld('claudePanel', {
+if (isTopFrame) contextBridge.exposeInMainWorld('claudePanel', {
   fetch: (url, init) => ipcRenderer.invoke('canvas:fetch', { url: String(url), init: plainInit(init) }),
   send: (text) => { ipcRenderer.send('canvas:send', { kind: 'send', text: String(text) }); },
   shelf: () => ipcRenderer.invoke('canvas:shelf'),

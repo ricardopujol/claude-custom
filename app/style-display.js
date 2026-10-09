@@ -197,8 +197,8 @@ function panelSectionView(state) {
   return {
     mcp,
     mcpDescription: mcp === null ? 'reading…'
-      : mcp ? "Claude can build things in its panel (it's offered to the CLI as a tool). A change applies when claude-custom next starts this tab's session; one already running keeps what it started with, even after /clear."
-        : "Claude's panel is not offered to the CLI: it can't build anything there. A change applies when claude-custom next starts this tab's session; one already running keeps what it started with, even after /clear.",
+      : mcp ? "Claude can build things in its panel (it's offered to the CLI as a tool). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
+        : "Claude's panel is not offered to the CLI: it can't build anything there. A change applies when claude-custom next starts this tab's session; one already running keeps what it has.",
   };
 }
 
