@@ -197,7 +197,7 @@ async function main() {
   await command(app, { cmd: 'ctrlClick', label: 'feat/c' });
   await waitFor(async () => (await labelsOf(app)).confirms.length >= 2, 15000);
   st = await labelsOf(app);
-  check('3: an unmerged tab asks, and says it isn't merged', st.confirms.length === 2 && st.confirms[1].label === 'feat/c'
+  check('3: an unmerged tab asks, and says it is not merged', st.confirms.length === 2 && st.confirms[1].label === 'feat/c'
     && st.confirms[1].reason === `${RULE} This one isn't merged.`, JSON.stringify(st.confirms));
   await shoot(app, '2-unsafe-asked');
 

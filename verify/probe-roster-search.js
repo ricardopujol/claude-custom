@@ -54,7 +54,12 @@ app.whenReady().then(async () => {
     while (Date.now() < end) { try { const v = await js(code); if (v) return v; } catch (e) { /* page not ready */ } await sleep(150); }
     return null;
   };
-  const shot = async (name) => { const img = await win.webContents.capturePage(); fs.writeFileSync(path.join(SHOTS, name + '.png'), img.toPNG()); };
+  const shot = async (name) => {
+    win.show(); win.focus(); win.webContents.invalidate();
+    let png = Buffer.alloc(0);
+    for (let i = 0; i < 8 && png.length === 0; i++) { await sleep(250); png = (await win.webContents.capturePage()).toPNG(); }   // a capture right after a repaint can come back empty
+    fs.writeFileSync(path.join(SHOTS, name + '.png'), png);
+  };
   const names = () => js('[...document.querySelectorAll("#agents .agent")].map(a => ({ big: (a.querySelector(".name").childNodes[0] || {}).textContent, alt: (a.querySelector(".name-alt") || {}).textContent || null, fn: (a.querySelector(".agent-fn") || {}).textContent || null, fnTitle: (a.querySelector(".agent-fn") || {}).title || null }))');
   const text = () => js('document.getElementById("agents").textContent');
 
@@ -115,7 +120,8 @@ app.whenReady().then(async () => {
     check('Inactive: Murray Bones (two words) is one name', n.some(x => x.big === 'Murray Bones' && x.alt === 'dead-code-sweeper'), n);
     check('Inactive: Cedar is shown as "Cedar" (the persona equals the role ignoring case, and is kept)', n.some(x => x.big === 'Cedar' && x.alt === 'cedar'), n);
     check('the small name is never cut to an ellipsis (it wraps under the big one instead)',
-      await js('[...document.querySelectorAll("#agents .name-alt")].every(a => a.scrollWidth <= a.clientWidth + 1)'));
+      await js('[...document.querySelectorAll("#agents .name-alt")].every(a => a.scrollWidth <= a.clientWidth + 1)'),
+      await js('JSON.stringify([...document.querySelectorAll("#agents .name-alt")].filter(a => a.scrollWidth > a.clientWidth + 1).map(a => [a.textContent, a.scrollWidth, a.clientWidth]))'));
     await shot('4-inactive-name');
     // the search checks below read the role-big layout
     await js('document.querySelector("#roster-names-toggle [data-roster-names=role]").click()');
