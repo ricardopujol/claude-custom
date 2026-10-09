@@ -25,8 +25,10 @@ const registry = (entries, ok = true) => ({ ok, entries });
 // `seen` defaults to "the app saw every session of these files alive earlier"; a test about never-seen passes its own.
 // `listed` defaults to a non-empty table (a real process table is never empty; an empty one means the read failed).
 const classify = (files, reg, listed = [1], extra = {}) => T.classify({
-  files, registry: reg, listedPids: listed instanceof Map ? listed : new Set(listed), now: NOW, seen: new Set(files.map(f => f.session)), ...extra,
+  files, registry: reg, listedPids: listed instanceof Map ? listed : new Set(listed), now: NOW, seen: seenOf(...files.map(f => f.session)), ...extra,
 });
+// what the app recorded when it saw a session alive: the pids (and table starts) it was seen under. Default: a pid nothing lists.
+const seenOf = (...sids) => new Map(sids.map(s => [s, [{ pid: 424242, start: null }]]));
 const other = registry([{ pid: 5, sessionId: 'other' }]);
 
 test('a big file, idle 20 min, whose session was seen alive and has no live process now is deletable', () => {
@@ -39,20 +41,20 @@ test('a big file, idle 20 min, whose session was seen alive and has no live proc
 });
 
 test('REGRESSION (Dexter #1, Miguel B1): a session that is in no registry we read, while another session is live, is UNKNOWN, never deletable by itself', () => {
-  const [r] = classify([file({ session: 'other' })], registry([{ pid: 5, sessionId: 'tab' }]), [5], { seen: new Set(['tab']) });
+  const [r] = classify([file({ session: 'other' })], registry([{ pid: 5, sessionId: 'tab' }]), [5], { seen: seenOf('tab') });
   assert.strictEqual(r.deletable, false);
   assert.strictEqual(r.why, 'unknown');
   assert.strictEqual(r.manualDelete, true, 'idle 20 min, no live session in what we read: the person may decide');
 });
 
 test('a session seen alive earlier and now absent from the registry (its file removed on exit) is ended: deletable', () => {
-  assert.strictEqual(classify([file()], other, [5], { seen: new Set(['s1']) })[0].why, 'delete');
+  assert.strictEqual(classify([file()], other, [5], { seen: seenOf('s1') })[0].why, 'delete');
 });
 
 test('a session never seen: unknown, kept, with the manual Delete only once the file is idle', () => {
-  const old = classify([file()], other, [5], { seen: new Set() })[0];
+  const old = classify([file()], other, [5], { seen: new Map() })[0];
   assert.deepStrictEqual([old.why, old.deletable, old.manualDelete], ['unknown', false, true]);
-  const young = classify([file({ mtimeMs: NOW - 60_000 })], other, [5], { seen: new Set() })[0];
+  const young = classify([file({ mtimeMs: NOW - 60_000 })], other, [5], { seen: new Map() })[0];
   assert.deepStrictEqual([young.why, young.deletable, young.manualDelete], ['young', false, false]);
 });
 
@@ -82,7 +84,7 @@ test('doubt keeps: an unreadable or empty registry, an empty or missing process 
     del(registry([{ pid: 5, sessionId: 'x' }], false)), del(registry([])), del(null),
     del(other, []), del(other, [], file()), del(other, [5], file({ mtimeMs: NOW + 5000 })), del(other, [5], file({ mtimeMs: NaN })),
   ]) assert.deepStrictEqual([r.deletable, r.manualDelete, r.why], [false, false, 'unknown']);
-  const bad = T.classify({ files: [file()], registry: other, listedPids: null, now: NOW, seen: new Set(['s1']) })[0];
+  const bad = T.classify({ files: [file()], registry: other, listedPids: null, now: NOW, seen: seenOf('s1') })[0];
   assert.deepStrictEqual([bad.deletable, bad.manualDelete], [false, false], 'a null process table never reads as "everything is gone"');
 });
 
@@ -95,7 +97,7 @@ test('a hard-linked file (one task output shared by several session folders) is 
   assert.deepStrictEqual(rows[0].paths.sort(), [a.path, b.path].sort());
   assert.strictEqual(rows[0].deletable, true);
   assert.strictEqual(classify([a, b], registry([{ pid: 9, sessionId: 'sb' }]), [9])[0].deletable, false);
-  assert.strictEqual(classify([a, b], registry([{ pid: 5, sessionId: 'zz' }]), [5], { seen: new Set(['sa']) })[0].deletable, false, 'sb was never seen');
+  assert.strictEqual(classify([a, b], registry([{ pid: 5, sessionId: 'zz' }]), [5], { seen: seenOf('sa') })[0].deletable, false, 'sb was never seen');
 });
 
 test('a link the scan did not see (nlink above the links found) keeps the file, with no manual Delete', () => {
@@ -108,7 +110,7 @@ test('rows are ordered biggest first', () => {
   assert.deepStrictEqual(rows.map(r => r.bytes), [900 * MB, 150 * MB]);
 });
 
-test('PROPERTY: auto-delete implies seen-then-ended, idle, links all seen and a readable registry; manual implies idle with nobody alive', () => {
+test('PROPERTY: auto-delete implies seen under pids that are all gone, idle, links all seen and a readable registry; manual implies idle with nobody alive', () => {
   const sessionIds = ['s1', 's2', 's3'];
   const inoArb = fc.record({
     nlink: fc.integer({ min: 0, max: 3 }), bytes: fc.oneof(fc.integer({ min: 0, max: 300 * MB }), fc.constant(NaN)),
@@ -119,26 +121,65 @@ test('PROPERTY: auto-delete implies seen-then-ended, idle, links all seen and a 
     ok: fc.boolean(),
     entries: fc.array(fc.record({ pid: fc.integer({ min: 1, max: 4 }), sessionId: fc.constantFrom(...sessionIds, 'q') }), { maxLength: 5 }),
   }));
-  const seenArb = fc.subarray([...sessionIds, 'q']);
-  fc.assert(fc.property(fc.tuple(inoArb, inoArb), fc.array(fileArb, { maxLength: 6 }), regArb, fc.array(fc.integer({ min: 1, max: 4 })), seenArb, (props, fs0, reg, listed, seen) => {
+  // what the app recorded when it SAW sessions alive: session -> the pids it was seen under (it can be several)
+  const seenArb = fc.array(fc.record({ sid: fc.constantFrom(...sessionIds, 'q'), pid: fc.integer({ min: 1, max: 4 }) }), { maxLength: 6 });
+  fc.assert(fc.property(fc.tuple(inoArb, inoArb), fc.array(fileArb, { maxLength: 6 }), regArb, fc.array(fc.integer({ min: 1, max: 4 })), seenArb, (props, fs0, reg, listed, seenPairs) => {
     const files = fs0.map((f, i) => ({ ...props[f.ino], dev: '1', session: f.session, ino: String(f.ino), path: `C:\\t\\claude\\p\\${f.session}\\tasks\\f${i}.output`, project: 'p', name: `f${i}` }));
-    const rows = classify(files, reg, listed, { seen: new Set(seen) });
+    const seen = new Map();
+    for (const { sid, pid } of seenPairs) seen.set(sid, [...(seen.get(sid) || []), { pid, start: null }]);
+    const rows = classify(files, reg, listed, { seen });
     const live = new Set(listed);
     for (const r of rows) {
       const members = files.filter(f => r.paths.includes(f.path));
       const m = members[0];
       const ctxOk = !!reg && reg.ok === true && reg.entries.length > 0 && listed.length > 0;
       const aliveS = s => reg.entries.some(e => e.sessionId === s && live.has(e.pid));
+      // ended = seen, and EVERY pid it was seen under is gone from the table: the registry's silence is never evidence
+      const endedS = s => seen.has(s) && seen.get(s).every(p => !live.has(p.pid));
       const base = ctxOk && Number.isFinite(m.mtimeMs) && NOW - m.mtimeMs >= MIN && members.length === m.nlink && !members.some(x => aliveS(x.session));
       assert.strictEqual(r.manualDelete, base);
-      assert.strictEqual(r.deletable, base && members.every(x => seen.includes(x.session)));
+      assert.strictEqual(r.deletable, base && members.every(x => endedS(x.session)));
       if (r.deletable) {
         assert.ok(NOW - m.mtimeMs >= MIN, 'never a file written within 15 minutes');
         assert.ok(members.every(x => !aliveS(x.session)), 'never a live session');
-        assert.ok(members.every(x => seen.includes(x.session)), 'never a session the app did not see alive first');
+        assert.ok(members.every(x => seen.has(x.session)), 'never a session the app did not see alive first');
+        assert.ok(members.every(x => seen.get(x.session).every(p => !live.has(p.pid))), 'never a session whose seen pid still runs, whatever the registry says');
       }
     }
-  }), { numRuns: 400 });
+  }), { numRuns: 500 });
+});
+
+test('REGRESSION (Dexter r2 #1, a): a seen session whose registry dir is no longer read, with its pid still listed, is NOT ended', () => {
+  const reg = registry([{ pid: 100, sessionId: 'D' }]);                    // main's dir only: S's tab is gone from the read set
+  const listed = new Map([[100, '1'], [200, '2']]);
+  const seen = new Map([['S', [{ pid: 200, start: '2' }]]]);
+  const [r] = classify([file({ session: 'S' })], reg, listed, { seen });
+  assert.deepStrictEqual([r.deletable, r.why, r.manualDelete], [false, 'unknown', true]);
+});
+
+test('(b) a seen session whose pid is gone from the process table is ended: deletable after 15 idle minutes, and not before', () => {
+  const reg = registry([{ pid: 100, sessionId: 'D' }]);
+  const seen = new Map([['S', [{ pid: 200, start: '2' }]]]);
+  assert.deepStrictEqual(classify([file({ session: 'S' })], reg, new Map([[100, '1']]), { seen }).map(r => [r.deletable, r.why]), [[true, 'delete']]);
+  assert.strictEqual(classify([file({ session: 'S', mtimeMs: NOW - 60_000 })], reg, new Map([[100, '1']]), { seen })[0].why, 'young');
+});
+
+test('a reused pid: the same pid with ANOTHER start (table against table, same source) is ended; a start that cannot be read is unknown', () => {
+  const reg = registry([{ pid: 100, sessionId: 'D' }]);
+  const seen = new Map([['S', [{ pid: 200, start: '134000000000000000' }]]]);
+  const at = start => classify([file({ session: 'S' })], reg, new Map([[100, '1'], [200, start]]), { seen })[0];
+  assert.deepStrictEqual([at('134000000600000000').deletable, at('134000000600000000').why], [true, 'delete'], 'another process holds pid 200 now');
+  assert.strictEqual(at('134000000000000050').deletable, false, 'within the slack: the same process');
+  assert.deepStrictEqual([at(null).deletable, at(null).why], [false, 'unknown'], 'the start cannot be read: doubt keeps');
+  const noRecordedStart = new Map([['S', [{ pid: 200, start: null }]]]);
+  assert.strictEqual(classify([file({ session: 'S' })], reg, new Map([[100, '1'], [200, '5']]), { seen: noRecordedStart })[0].deletable, false, 'no start recorded: doubt keeps');
+});
+
+test('a session seen under two pids (a resumed one) is ended only when BOTH are gone', () => {
+  const reg = registry([{ pid: 100, sessionId: 'D' }]);
+  const seen = new Map([['S', [{ pid: 200, start: '2' }, { pid: 300, start: '3' }]]]);
+  assert.strictEqual(classify([file({ session: 'S' })], reg, new Map([[100, '1'], [300, '3']]), { seen })[0].deletable, false);
+  assert.strictEqual(classify([file({ session: 'S' })], reg, new Map([[100, '1']]), { seen })[0].deletable, true);
 });
 
 test('parseTaskPath: only root/<project>/<session>/tasks/<id>.output, nothing deeper, nothing else', () => {

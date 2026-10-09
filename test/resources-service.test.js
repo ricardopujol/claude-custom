@@ -1003,3 +1003,28 @@ test('task logs: a file whose size or mtime changed between two judged reads sta
   await r.judge();
   assert.deepStrictEqual(r.calls.removed, ['1:10'], 'unchanged across two reads: idle');
 });
+
+test('REGRESSION (Dexter r2 #1): a seen session whose registry entry disappears (its tab dir no longer read, a removed file) while its pid still runs is NEVER deleted; it goes when that pid goes', async () => {
+  const r = taskRig();
+  await r.judge();                                   // sess-1 seen alive under pid 4242
+  r.setRegistry({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }] });   // the registry no longer lists sess-1; pid 4242 still runs
+  for (let i = 0; i < 3; i++) { r.clock.t += 61_000; await r.judge(); }
+  assert.deepStrictEqual(r.calls.removed, [], 'its process is still in the table');
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['unknown', false, true]);
+  r.world4242.on = false;                            // pid 4242 is gone from the table
+  r.clock.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+});
+
+test('task logs: a pid that is reused by another process (another start) ends the seen session; the same start does not', async () => {
+  const r = taskRig();
+  await r.judge();
+  r.setRegistry({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }] });
+  r.world4242.on = false;
+  r.extraProcs.push({ pid: 4242, ppid: 1, name: 'node.exe', cmd: 'node.exe', priv: 10, start: '500000000' });   // another process now has pid 4242 (its start is far from the recorded one)
+  r.clock.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+});

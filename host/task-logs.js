@@ -58,30 +58,47 @@ function entryState(entry, listed) {
   if (isStr(entry.procStart) && isStr(table) && /^\d+$/.test(entry.procStart) && /^\d+$/.test(table) && !sameStart(entry.procStart, table)) return 'reused';
   return 'alive';
 }
-/** Session ids with an 'alive' entry: what the app remembers as SEEN alive. */
-function aliveSessions(registry, listed) {
-  const out = new Set();
+const isDigits = v => isStr(v) && /^\d+$/.test(v);
+/**
+ * What the app records when it SEES a session alive: [{ sessionId, pid, start }] for every 'alive' entry, `start` being the PROCESS
+ * TABLE's start for that pid (null when unreadable). Later, "ended" is judged against exactly that process (see classify), taken
+ * from the same source, so a clock-source skew cannot make a live process look like another.
+ */
+function aliveEntries(registry, listed) {
+  const out = [];
   if (!registry || registry.ok !== true || !Array.isArray(registry.entries) || !(listed instanceof Set || listed instanceof Map)) return out;
-  for (const e of registry.entries) if (e && isStr(e.sessionId) && entryState(e, listed) === 'alive') out.add(e.sessionId);
+  for (const e of registry.entries) {
+    if (!e || !isStr(e.sessionId) || entryState(e, listed) !== 'alive') continue;
+    const table = listed instanceof Map ? listed.get(e.pid) : null;
+    out.push({ sessionId: e.sessionId, pid: e.pid, start: isDigits(table) ? table : null });
+  }
   return out;
+}
+/** Is the process the app saw a session under gone? Its pid is not listed, or is listed with another readable start. Doubt: not gone. */
+function processGone(rec, listed) {
+  if (!listed.has(rec.pid)) return true;
+  const table = listed instanceof Map ? listed.get(rec.pid) : null;
+  return isDigits(rec.start) && isDigits(table) && !sameStart(rec.start, table);
 }
 
 /**
  * classify({ files, registry, listedPids, seen, now, minBytes, idleMs }) -> rows, biggest first
  * files: [{ path, project, session, name, bytes, mtimeMs, dev, ino, nlink }]  (a stat of each task file; never its contents)
  * registry: { ok, entries: [{ pid, sessionId }] } | null     listedPids: the pids in the process table (a non-empty Set or Map)
- * seen: Set of session ids the app SAW ALIVE (a registry entry with a running pid) on an earlier read of this run
+ * seen: Map session id -> [{ pid, start }]: the processes the app SAW the session alive under (aliveEntries) on an earlier read of this run
  * row: { key, name, project, sessions, paths, bytes, mtimeMs, ageMs (null: unknown), deletable (the app may delete it by
  *        itself), manualDelete (the person may choose to), why, dev, ino }
  *
- * "ENDED" is positive evidence, never an absence (Ricardo, PR #133 review; Dexter #1, Miguel B1): a session is ended only when
- * the app saw it alive and now no entry of it names a running pid. A session in no registry we read is UNKNOWN: it may run
- * under another config dir, be a CLI that does not register, or be re-keyed. Unknown files are kept; once idle they get the
+ * "ENDED" is positive evidence about a PROCESS, never an absence from a registry (Ricardo, PR #133 review; Dexter #1, r2 #1): a session
+ * is ended only when the app saw it alive under a pid and THAT pid is now gone from the process table (or runs with another readable
+ * start), and no entry of the session names a running pid. A registry that no longer lists it (a tab's dir that is no longer read, a
+ * removed file, a re-key) proves nothing. A session in no registry we read is UNKNOWN: it may run under another config dir, be a CLI
+ * that does not register, or be re-keyed. Unknown files are kept; once idle they get the
  * manual Delete, so the person decides. An empty or missing process table or registry makes everything unknown.
  */
 function classify({ files, registry, listedPids, seen, monoAge, now = Date.now(), minBytes = MIN_BYTES, idleMs = IDLE_MS }) {
   const listed = listedPids instanceof Set || listedPids instanceof Map ? listedPids : null;
-  const everSeen = seen instanceof Set ? seen : new Set();
+  const everSeen = seen instanceof Map ? seen : new Map();
   const regOk = !!registry && registry.ok === true && Array.isArray(registry.entries) && registry.entries.length > 0;
   const ctxOk = regOk && listed !== null && listed.size > 0;
   const stateOf = (sid) => {
@@ -105,7 +122,7 @@ function classify({ files, registry, listedPids, seen, monoAge, now = Date.now()
     const anyAlive = states.includes('alive');
     const idle = settled && ageMs >= idleMs;
     const manualDelete = idle && !anyAlive;
-    const endedSeen = manualDelete && sessions.every((sid, i) => states[i] === 'absent' && everSeen.has(sid));
+    const endedSeen = manualDelete && sessions.every((sid, i) => states[i] === 'absent' && (everSeen.get(sid) || []).length > 0 && everSeen.get(sid).every(rec => processGone(rec, listed)));
     // `monoAge(key)`, when given: how long the file has been idle by the MONOTONIC clock, which a wall-clock step cannot move forward
     // (Dexter #4). Not enough (or never observed): the app waits; the person's Delete is not held back.
     const monoOk = typeof monoAge !== 'function' || (isNum(monoAge(key)) && monoAge(key) >= idleMs);
@@ -119,4 +136,4 @@ function classify({ files, registry, listedPids, seen, monoAge, now = Date.now()
   return rows.sort((a, b) => (b.bytes - a.bytes) || (a.key < b.key ? -1 : 1));
 }
 
-module.exports = { classify, entryState, aliveSessions, parseTaskPath, MIN_BYTES, IDLE_MS };
+module.exports = { classify, entryState, aliveEntries, parseTaskPath, MIN_BYTES, IDLE_MS };

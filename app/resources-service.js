@@ -66,7 +66,7 @@ function createResourcesService({
   let tlLastSample = null;
   let tlPending = null;        // a task-folder read waiting for a process sample taken wholly after it: { files, registry, afterSeq, at }
   let tlListed = null;         // the pids of the latest full, fresh sample: what "a session is alive" is judged against; null: nothing may be deleted
-  const tlSeen = new Set();    // session ids the app SAW alive (a registry entry whose pid was running); only these can be seen to END
+  const tlSeen = new Map();    // session id -> [{ pid, start }]: the processes the app SAW the session alive under; only these can be seen to END
   const tlBackoff = new Map(); // key -> when the app may try that file again after a delete that did not finish (locked, a live writer, a partial link set)
   const TL_BACKOFF_MS = 30 * 60_000;
   const tlObs = new Map();     // key -> { mtimeMs, bytes, ageAtSeen, monoSeen, first }: when this exact file state was first seen, on the MONOTONIC clock
@@ -137,7 +137,11 @@ function createResourcesService({
     });
   // A session whose registry entry names a running pid is alive now; remember it, so a later absence is an END that was observed.
   function tlMarkSeen(listed, read) {
-    for (const sid of taskLogsLib.aliveSessions(read.registry, listed)) tlSeen.add(sid);
+    // "Ended" later means THAT pid is gone (or another process has it), never that a registry stopped listing the session.
+    for (const { sessionId, pid, start } of taskLogsLib.aliveEntries(read.registry, listed)) {
+      const recs = tlSeen.get(sessionId) || [];
+      if (!recs.some(r => r.pid === pid && r.start === start)) tlSeen.set(sessionId, [...recs, { pid, start }]);
+    }
   }
   // How long a file state has been idle by the monotonic clock (a wall-clock step cannot move it): its wall age at the first sighting
   // plus the monotonic time since. null until a SECOND judged read has seen the same size and mtime (Dexter #4).
