@@ -115,6 +115,18 @@ test('the command and mutate list name only files that exist', () => {
   }
 });
 
+test('every test path in the command is ONE whitespace-separated token naming one existing file (PR #154: a missing space fused two)', () => {
+  // The regex scans above find both names inside a fused token `test/a.test.jstest/b.test.js`, so they stay green while node is handed a path that
+  // does not exist and neither suite runs under any mutant. Split on whitespace instead.
+  const tokens = conf.commandRunner.command.split(/\s+/).filter(t => t.includes('test/'));
+  assert.ok(tokens.length > 100, `the scan must find the command's test paths (${tokens.length})`);
+  const bad = tokens.filter(t => !/^test\/[a-z0-9-]+\.test\.js$/.test(t) || !fs.existsSync(path.join(ROOT, t)));
+  assert.deepStrictEqual(bad, [], `these command tokens are not exactly one existing test file: ${bad.join(', ')}`);
+  // positive control: the detector must flag a fused token
+  const fused = 'node --test test/a.test.jstest/b.test.js'.split(/\s+/).filter(t => t.includes('test/'));
+  assert.ok(fused.some(t => !/^test\/[a-z0-9-]+\.test\.js$/.test(t)));
+});
+
 test('the modules that decide whether a session is stopped are mutated (Miguel, PR #76 I3)', () => {
   // A wrong verdict here ends somebody's live claude. The scan above only
   // checks the tests of modules ALREADY in `mutate`; it cannot see one that was
