@@ -204,10 +204,17 @@ test('host.js logs every Notification hook with its notification_type', () => {
 
 // Dexter, notify round 2 F1 (High): a settle timer fired "finished" into a
 // working session, because the host never sees UserPromptSubmit and hooks only
-// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no timers here.
-test('attention.js arms no timer: only Claude Code knows when the session is quiet', () => {
+// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no settle timers here.
+// The one exception (BACKLOG #78, Ricardo 2026-10-09: "finished" waits for a shell younger than 10 minutes): a
+// shell ages out with no hook to say so, so ONE timer exists, armed only by a Stop that listed a young shell and
+// cancelled by any main-session activity (test/attention.test.js: "every main-session activity event cancels the
+// wait"), so it can only fire into a session that has been quiet since that Stop.
+test('attention.js arms no timer but the shell wait: one injectable setTimer, no intervals, no bare setTimeout', () => {
   const src = read('host/attention.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-  assert.doesNotMatch(src, /setTimeout|setInterval/);
+  assert.doesNotMatch(src, /setInterval/);
+  assert.strictEqual((src.match(/setTimeout\(/g) || []).length, 1, 'only unrefTimer calls setTimeout');
+  assert.match(src, /const unrefTimer = \(fn, ms\) => \{ const t = setTimeout\(fn, ms\);/);
+  assert.strictEqual((src.match(/setTimer\(/g) || []).length, 1, 'armed from exactly one place');
 });
 
 // --- the tab strip (moved here in PR 3 so app/tab-strip.js can be mutated) --------
