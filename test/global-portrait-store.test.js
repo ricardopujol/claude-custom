@@ -10,7 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
 
-const { userGlobalDir, migrateGlobalDefault, installDirsBeside } = require('../host/global-portrait-store');
+const {
+  userGlobalDir, migrateGlobalDefault, installDirsBeside, migrationCandidates, adoptOnStart,
+} = require('../host/global-portrait-store');
+const { handleGlobalPortraitMessage } = require('../host/portrait-upload');
 const { portraitFor, globalPortrait } = require('../host/portraits');
 
 function put(root, name, body, mtimeSec) {
@@ -103,10 +106,10 @@ test('migration: a failed copy reports the reason and leaves no half-written def
   put(a, 'default.png', 'x');
   const out = migrateGlobalDefault({
     userDir: user, candidateDirs: [a],
-    apply: () => { throw new Error('disk full'); },
+    copyFile: () => { throw new Error('disk full'); },
   });
   assert.strictEqual(out.migrated, false);
-  assert.match(out.reason, /disk full/);
+  assert.match(out.reason, /^copy failed: disk full$/);
   assert.strictEqual(globalPortrait(user), null);
 });
 
@@ -136,4 +139,107 @@ test('installDirsBeside: finds every sibling checkout\'s .harness/portraits, thi
 test('installDirsBeside: an unreadable parent gives only this install', () => {
   const lone = path.join(tmpDir('cc-gps-lone-'), 'only', 'host');
   assert.deepStrictEqual(installDirsBeside(lone), [path.join(lone, '..', '.harness', 'portraits')].map(p => path.resolve(p)));
+});
+
+// ---- PR #151 review fixes -------------------------------------------------------------------
+
+test('D1/B1: Reset sticks -- migrate, Reset, migrate again (a new host) adopts nothing', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  assert.strictEqual(migrateGlobalDefault({ userDir: user, candidateDirs: [a] }).migrated, true);
+  const reset = handleGlobalPortraitMessage({ action: 'reset-global' }, { uploadsDir: user });
+  assert.strictEqual(reset.reply.ok, true);
+  assert.strictEqual(globalPortrait(user), null);
+  const again = migrateGlobalDefault({ userDir: user, candidateDirs: [a] });
+  assert.strictEqual(again.migrated, false);
+  assert.strictEqual(globalPortrait(user), null);
+});
+
+test('D1/B1: a default set by the user and then reset also stops a later adoption', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  const src = path.join(tmpDir('cc-gps-src-'), 'mine.png');
+  fs.writeFileSync(src, 'mine');
+  put(a, 'default.png', 'old');
+  const deps = { uploadsDir: user, stat: (p) => fs.statSync(p), resolve: () => (globalPortrait(user) || {}).path || null };
+  assert.strictEqual(handleGlobalPortraitMessage({ action: 'set-global', path: src }, deps).reply.ok, true);
+  handleGlobalPortraitMessage({ action: 'reset-global' }, deps);
+  assert.strictEqual(migrateGlobalDefault({ userDir: user, candidateDirs: [a] }).migrated, false);
+});
+
+test('D1/B1: a refused or no-op Reset does not mark anything', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  handleGlobalPortraitMessage({ action: 'reset-global' }, { uploadsDir: user }); // nothing to remove
+  assert.strictEqual(migrateGlobalDefault({ userDir: user, candidateDirs: [a] }).migrated, true);
+});
+
+test('D2: a default another window sets between the scan and the write is kept; nothing is removed', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  const theirs = path.join(user, '_global', 'default.gif');
+  const out = migrateGlobalDefault({
+    userDir: user, candidateDirs: [a],
+    beforeCommit: () => { fs.mkdirSync(path.dirname(theirs), { recursive: true }); fs.writeFileSync(theirs, 'theirs'); },
+  });
+  assert.strictEqual(out.migrated, false);
+  assert.deepStrictEqual(fs.readdirSync(path.join(user, '_global')), ['default.gif']);
+  assert.strictEqual(fs.readFileSync(theirs, 'utf8'), 'theirs');
+});
+
+test('D2: the same format landing in that window is not overwritten either', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  const out = migrateGlobalDefault({
+    userDir: user, candidateDirs: [a],
+    beforeCommit: () => { put(user, 'default.png', 'theirs'); },
+  });
+  assert.strictEqual(out.migrated, false);
+  assert.strictEqual(fs.readFileSync(path.join(user, '_global', 'default.png'), 'utf8'), 'theirs');
+});
+
+test('D2: a lost race leaves no temp file behind', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  migrateGlobalDefault({ userDir: user, candidateDirs: [a], beforeCommit: () => { put(user, 'default.png', 'theirs'); } });
+  assert.deepStrictEqual(fs.readdirSync(path.join(user, '_global')), ['default.png']);
+});
+
+test('D3: with a probe override set, candidates come only from the probe\'s own uploads', () => {
+  const hostDir = path.join(tmpDir('cc-gps-h-'), 'dev', 'host');
+  fs.mkdirSync(path.join(hostDir, '..', '..', 'sib', '.harness', 'portraits'), { recursive: true });
+  const probe = { CLAUDE_CUSTOM_UPLOADS: 'X:/throwaway' };
+  assert.deepStrictEqual(migrationCandidates({ env: probe, uploadsDir: 'X:/throwaway', hostDir }), ['X:/throwaway']);
+  assert.deepStrictEqual(
+    migrationCandidates({ env: { CLAUDE_CUSTOM_GLOBAL_PORTRAITS: 'X:/g' }, uploadsDir: 'U', hostDir }), ['U']);
+  const real = migrationCandidates({ env: {}, uploadsDir: 'U', hostDir });
+  assert.strictEqual(real[0], 'U');
+  assert.ok(real.length >= 2 && real.some(d => d.includes(`${path.sep}sib${path.sep}`)));
+});
+
+test('I1: the startup adoption never throws, and says why when it fails', () => {
+  const lines = [];
+  const out = adoptOnStart({
+    userDir: 'X:/u', candidateDirs: () => { throw new Error('scan boom'); }, log: (l) => lines.push(l),
+  });
+  assert.strictEqual(out.migrated, false);
+  assert.match(out.reason, /scan boom/);
+  assert.ok(lines.some(l => /scan boom/.test(l)));
+  const out2 = adoptOnStart({ userDir: 'X:/u', candidateDirs: () => [], migrate: () => { throw new Error('mig boom'); }, log: () => {} });
+  assert.match(out2.reason, /mig boom/);
+});
+
+test('I1: the startup adoption logs what it adopted', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  const file = put(a, 'default.png', 'x');
+  const lines = [];
+  const out = adoptOnStart({ userDir: user, candidateDirs: () => [a], log: (l) => lines.push(l) });
+  assert.strictEqual(out.migrated, true);
+  assert.ok(lines.some(l => l.includes(file)));
 });

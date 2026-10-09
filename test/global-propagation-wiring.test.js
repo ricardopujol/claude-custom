@@ -37,7 +37,8 @@ test('Electron main follows the toggle store file that other windows write', () 
 test('the host reads, watches and writes the default picture in the user-wide folder, not UPLOADS_DIR', () => {
   assert.match(HOST, /const GLOBAL_PORTRAIT_DIR = userGlobalDir\(/);
   assert.match(HOST, /portraitFor\(agent, state, \{[^}]*globalDir: GLOBAL_PORTRAIT_DIR/);
-  assert.match(HOST, /migrateGlobalDefault\(\{\s*userDir: GLOBAL_PORTRAIT_DIR/);
+  assert.match(HOST, /adoptOnStart\(\{\s*userDir: GLOBAL_PORTRAIT_DIR/);
+  assert.match(HOST, /migrationCandidates\(\{ env: process\.env, uploadsDir: UPLOADS_DIR/);
   assert.match(HOST, /uploadsDir: GLOBAL_PORTRAIT_DIR,\s*stat:[^\n]*\n\s*resolve: \(\) => \(globalPortrait\(GLOBAL_PORTRAIT_DIR\)/);
   assert.doesNotMatch(HOST, /globalPortrait\(UPLOADS_DIR\)/);
 });

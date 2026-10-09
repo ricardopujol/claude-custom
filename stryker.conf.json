@@ -116,6 +116,7 @@
     "host/portraits.js",
     "host/portrait-upload.js",
     "host/global-portrait-store.js",
+    "host/global-migration-marker.js",
     "app/portrait-media-display.js",
     "app/avatar-bridge.js",
     "host/global-watch.js",

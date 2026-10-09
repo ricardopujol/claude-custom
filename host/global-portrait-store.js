@@ -13,7 +13,7 @@
 const fs = require('fs');
 const path = require('path');
 const { GLOBAL_AGENT, MEDIA_EXTENSIONS } = require('./portraits');
-const { applyPortraitUpload } = require('./portrait-upload');
+const { isMarked, writeMarker } = require('./global-migration-marker');
 
 const HARNESS_FOLDER = '.harness';
 const PORTRAITS_FOLDER = 'portraits';
@@ -61,9 +61,31 @@ function newestDefaultIn(root) {
   return best;
 }
 
-function migrateGlobalDefault({ userDir, candidateDirs = [], apply = applyPortraitUpload } = {}) {
+// Where the migration may look. A probe (CLAUDE_CUSTOM_UPLOADS or the global override set) is
+// isolated: it reads only its own uploads folder, never the developer's real sibling checkouts
+// (PR #151 D3). Only probes set these variables; no launcher in app/, bin/ or build/ does.
+function migrationCandidates({ env = process.env, uploadsDir, hostDir } = {}) {
+  if (env.CLAUDE_CUSTOM_UPLOADS || env.CLAUDE_CUSTOM_GLOBAL_PORTRAITS) return [uploadsDir];
+  return [uploadsDir, ...installDirsBeside(hostDir)];
+}
+
+// Adopts the newest per-install default into an EMPTY user-wide folder, once.
+//
+// Once = the marker (host/global-migration-marker.js), which Reset leaves alone. Never
+// check-then-overwrite: the copy goes to a temp file and is published with an exclusive link, after
+// a re-check that no default of ANY format is there, so a picture another window set meanwhile is
+// kept and nothing of theirs is removed. (An unlocked set-global landing between that re-check and
+// the link can still be beaten by us for one format; the window is two syscalls wide.)
+// `beforeCommit` is a test seam standing in for that other window.
+function migrateGlobalDefault({
+  userDir, candidateDirs = [], copyFile = fs.copyFileSync, link = fs.linkSync, beforeCommit = () => {},
+} = {}) {
   if (!userDir) return { migrated: false, from: null, reason: 'no user-wide folder is configured' };
-  if (newestDefaultIn(userDir)) return { migrated: false, from: null, reason: 'a user-wide default already exists' };
+  if (isMarked(userDir)) return { migrated: false, from: null, reason: 'the default was already decided' };
+  if (newestDefaultIn(userDir)) {
+    writeMarker(userDir);
+    return { migrated: false, from: null, reason: 'a user-wide default already exists' };
+  }
 
   const resolvedUser = path.resolve(userDir);
   let best = null;
@@ -74,12 +96,40 @@ function migrateGlobalDefault({ userDir, candidateDirs = [], apply = applyPortra
   }
   if (!best) return { migrated: false, from: null, reason: 'no per-install default found' };
 
+  const dest = path.join(userDir, GLOBAL_AGENT, `default.${best.ext}`);
+  const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
   try {
-    apply({ source: best.file, dest: path.join(userDir, GLOBAL_AGENT, `default.${best.ext}`) });
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    copyFile(best.file, tmp);
+    beforeCommit();
+    if (newestDefaultIn(userDir)) {
+      return { migrated: false, from: best.file, reason: 'a user-wide default was set meanwhile' };
+    }
+    link(tmp, dest);
+    // The picture's cache-busting version is its mtime, and copyFile keeps the source's.
+    try { const now = Date.now() / 1000; fs.utimesSync(dest, now, now); } catch { /* best effort */ }
   } catch (err) {
-    return { migrated: false, from: best.file, reason: `copy failed: ${err && err.message}` };
+    const reason = err && err.code === 'EEXIST' ? 'a user-wide default was set meanwhile' : `copy failed: ${err && err.message}`;
+    return { migrated: false, from: best.file, reason };
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* never created, or already gone */ }
   }
+  writeMarker(userDir);
   return { migrated: true, from: best.file, reason: null };
 }
 
-module.exports = { userGlobalDir, installDirsBeside, migrateGlobalDefault };
+// The startup call: scanning and copying are best effort, so nothing in them can abort the host
+// (PR #151 Miguel I1). `candidateDirs` is a function so a throwing scan is caught here too.
+function adoptOnStart({ userDir, candidateDirs, log = () => {}, migrate = migrateGlobalDefault } = {}) {
+  let out;
+  try {
+    out = migrate({ userDir, candidateDirs: candidateDirs() });
+  } catch (err) {
+    out = { migrated: false, from: null, reason: `migration failed: ${err && err.message}` };
+  }
+  if (out.migrated) log(`[host] default picture adopted from ${out.from}`);
+  else if (out.from || /failed/.test(out.reason || '')) log(`[host] default picture not adopted: ${out.reason}`);
+  return out;
+}
+
+module.exports = { userGlobalDir, installDirsBeside, migrationCandidates, migrateGlobalDefault, adoptOnStart };

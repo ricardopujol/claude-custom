@@ -28,7 +28,7 @@ const { killTree, killPidTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
-const { userGlobalDir, installDirsBeside, migrateGlobalDefault } = require('./global-portrait-store');
+const { userGlobalDir, migrationCandidates, adoptOnStart } = require('./global-portrait-store');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
@@ -423,14 +423,13 @@ const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
 // profile for every project, worktree and install, not UPLOADS_DIR's per-install `_global`. The
 // first run with none there adopts the newest per-install one (a copy; the old files stay).
 const GLOBAL_PORTRAIT_DIR = userGlobalDir({ env: process.env, home: os.homedir() });
-{
-  const adopted = migrateGlobalDefault({
-    userDir: GLOBAL_PORTRAIT_DIR,
-    candidateDirs: [UPLOADS_DIR, ...installDirsBeside(__dirname)],
-  });
-  if (adopted.migrated) console.log('[host] default picture adopted from', adopted.from);
-  else if (adopted.from) console.log('[host] default picture not adopted:', adopted.reason);
-}
+// Assumes the repo layout: each checkout (dev, feat-*) keeps its pictures in <checkout>/.harness/portraits.
+// Best effort and one-shot (a Reset is remembered); a probe's override keeps it inside its own folder.
+adoptOnStart({
+  userDir: GLOBAL_PORTRAIT_DIR,
+  candidateDirs: () => migrationCandidates({ env: process.env, uploadsDir: UPLOADS_DIR, hostDir: __dirname }),
+  log: (line) => console.log(line),
+});
 const theme = resolveTheme(PROJECT_ROOT, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
