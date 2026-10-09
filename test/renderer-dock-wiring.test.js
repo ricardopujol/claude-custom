@@ -288,8 +288,13 @@ test('D4: a divider moves with the arrow keys by the drag\'s rules, and keeps th
   const at = JS.indexOf("document.getElementById('dock').addEventListener('keydown', (e) => {\n    const g = e.target.closest && e.target.closest('.dgutter');");
   assert.ok(at !== -1, 'the divider key handler must be findable');
   const handler = JS.slice(at, JS.indexOf('\n  });', at));
-  assert.match(handler, /dividerKey\(committedLayout\(\), lastPlan\.splits, path, Number\(g\.dataset\.i\), e\.key\)/);
-  assert.match(handler, /commitPlacement\(next, \{ userAction: false \}\)/, 'userAction false: focus stays on the divider');
+  assert.match(handler, /dividerKey\(placementLayout\(\), lastPlan\.splits, path, Number\(g\.dataset\.i\), e\.key\)/);
+  assert.doesNotMatch(handler, /commitPlacement/, 'a key press is drawn, not saved: a held key would write ~30 times a second (PR #159 Miguel I4)');
+  assert.match(handler, /dragLayout = next;\s+renderLayout\(\);/);
+  assert.match(handler, /keyFlush = setTimeout\(flushKeys, 400\)/);
+  const flush = JS.slice(JS.indexOf('const flushKeys = () => {'), JS.indexOf('};', JS.indexOf('const flushKeys = () => {')));
+  assert.match(flush, /commitPlacement\(l, \{ userAction: false \}\)/, 'one save when the burst ends; userAction false: focus stays on the divider');
+  assert.match(JS, /flushKeys\(\);\s+\/\/ a key burst still waiting to be saved is saved first/, 'a pointer drag starts from what was pressed');
 });
 
 test('D4: the keyboard move takes every key while it lasts, drops through the tab drag\'s own landing and commit, and ends on Esc', () => {
@@ -324,4 +329,24 @@ test('D4: the page\'s CSS settles only the groups, rails and dividers, only whil
   const reduced = html.match(/@media \(prefers-reduced-motion: reduce\) \{\s*#dock\.settling > \.dgroup, #dock\.settling > \.drail, #dock\.settling > \.dgutter \{ transition: none; \}\s*\}/);
   assert.ok(reduced, 'reduced motion switches the glide off');
   assert.ok(html.indexOf(reduced[0]) > html.indexOf(rule[0]), 'and comes after it, so it wins');
+});
+
+test('PR #159 Miguel B1: Escape is the popover\'s only when focus is in it or on its rail; the terminal\'s interrupt is never taken', () => {
+  const at = JS.indexOf("window.addEventListener('keydown', (e) => {\n  if (e.key !== 'Escape' || !peek || kbMove) return;");
+  assert.ok(at !== -1);
+  const handler = JS.slice(at, JS.indexOf('\n}, true);', at));
+  assert.match(handler, /const held = document\.activeElement;\s+if \(!held \|\| !held\.closest \|\| !held\.closest\('\.dpeek, \.drail'\)\) return;/);
+  assert.ok(handler.indexOf('.closest(') < handler.indexOf('preventDefault'), 'decided before any key is taken');
+});
+
+test('PR #159 Miguel I2 / Dexter 4: the popover closes when the keyboard leaves it, and a keyboard move starting from it draws it away', () => {
+  assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+const to = e\.relatedTarget;\s+if \(!peek \|\| !to \|\| !to\.closest \|\| to\.closest\('\.dpeek, \.drail'\)\) return;/);
+  assert.match(JS, /if \(peek\) \{ peek = null; renderLayout\(\{ refit: false \}\); \}/);
+});
+
+test('PR #159 Miguel S1 / S3 / S5: focus into the tab menu only from the keyboard; "no zone further" is said; a held Enter does not drop', () => {
+  assert.match(JS, /if \(first && byKeyboard\) first\.focus\(\);/);
+  assert.match(JS, /e\.button !== 2\);/);
+  assert.match(JS, /No zone further that way\./);
+  assert.match(JS, /if \(e\.repeat\) return;/);
 });

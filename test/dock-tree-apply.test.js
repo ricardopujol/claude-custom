@@ -600,3 +600,12 @@ test('D4: focus on a popover tab survives the popover being redrawn', () => {
   V.applyBoxes(planD4(l, sel, { module: 'git' }), w.doc);
   assert.strictEqual(w.doc.activeElement, tab, 'the same button, still focused');
 });
+
+test('PR #159 Miguel I1: a divider announces its position: the size of the panel before it, its minimum, and the most it can have', () => {
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
+  const g = w.dock.children.find(e => e.classes.has('dgutter'));
+  assert.deepStrictEqual([g.getAttribute('aria-valuenow'), g.getAttribute('aria-valuemin'), g.getAttribute('aria-valuemax')], ['815', '320', '875']);
+  V.applyBoxes(planD4(T.setSplitSizes(T.defaultLayout(IDS), [], [1, 200])), w.doc);
+  assert.deepStrictEqual([g.getAttribute('aria-valuenow'), g.getAttribute('aria-valuemax')], ['795', '875'], 'follows the divider after a move');
+});

@@ -454,6 +454,13 @@ function applyBoxes(plan, doc) {
     el.dataset.i = String(b.i);
     el.dataset.dir = b.dir;
     el.setAttribute('aria-orientation', b.dir === 'row' ? 'vertical' : 'horizontal');     // a row's divider is a vertical bar
+    // A window splitter says where it stands: the pane before it, its least, and the most the two panes can give it.
+    const sp = plan.splits.find(s => s.path.join('.') === b.path.join('.'));
+    if (sp && isNumber(sp.px[b.i - 1]) && isNumber(sp.px[b.i]) && isNumber(sp.min[b.i - 1]) && isNumber(sp.min[b.i])) {
+      el.setAttribute('aria-valuenow', String(sp.px[b.i - 1]));
+      el.setAttribute('aria-valuemin', String(sp.min[b.i - 1]));
+      el.setAttribute('aria-valuemax', String(sp.px[b.i - 1] + sp.px[b.i] - sp.min[b.i]));
+    }
     setRect(el, b.rect);
   }
   for (const b of rails) {

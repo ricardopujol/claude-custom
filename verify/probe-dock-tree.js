@@ -1213,7 +1213,7 @@ async function main() {
       JSON.stringify([s.groups.length, s.rails.map(r => [r.dir, r.rect.width, r.modules.length]), s.termwrap.width, s.dock.width, tiles(s)]));
     check('13: ...terminal, fit and pty agree', folded.ok, sizeText(s));
     check('13: ...the choice is this window\'s: the selection says so, the layout file is byte-identical and no push reached the page',
-      s.selection.collapsed.right === true && same(treeNow(), treeBefore) && s.pushes === pushes0, JSON.stringify([s.selection.collapsed, s.pushes, pushes0]));
+      !!s.selection.collapsed.right && same(treeNow(), treeBefore) && s.pushes === pushes0, JSON.stringify([s.selection.collapsed, s.pushes, pushes0]));
     await command(app, { cmd: 'screenshot', file: path.join(shots, '13-collapsed.png') });
 
     // a rail's panel over the terminal
@@ -1263,7 +1263,7 @@ async function main() {
       !!p && !p.selection.collapsed.right && same(treeNow(), treeBefore) && p.pushes === pushes0, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.length]));
     await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs' });
     p = await stFor(v => v.groups.length === 0 && v.rails.length === 1);
-    check('13: double-clicking a group\'s tab bar folds it', !!p && p.selection.collapsed.right === true);
+    check('13: double-clicking a group\'s tab bar folds it', !!p && !!p.selection.collapsed.right);
     await view(app, 'railClick', { id: 'vault' });
     await stFor(v => v.popover);
     await view(app, 'collapse', { id: 'right' });

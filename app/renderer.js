@@ -1494,7 +1494,7 @@ function onVaultLeft() {
 // the user acted (PR #82 Dexter F2, Miguel B1).
 // `refit: false` is for a redraw that cannot change the terminal's rectangle (a float's move or resize): the
 // pty is not told again and no timer is queued for it (PR #102 Miguel Y2).
-// `settle: true` is for a change the person made (a drop, a collapse, a divider key): the boxes glide to their new places
+// `settle: true` is for a change the person made (a drop, a collapse): the boxes glide to their new places
 // (app/dock-tree-display.js settleMs: about 120 ms, none under prefers-reduced-motion). A drag never settles.
 function renderLayout({ userAction = false, refit = true, settle = false } = {}) {
   // A collapsed group that is gone is forgotten here, so a group later handed its name doesn't start collapsed -- but only
@@ -1685,7 +1685,7 @@ function showLayoutMenu(x, y) {
 
 // A module tab's (or rail button's) right-click, or Shift+F10 on it: Move, Float, Collapse / Expand group and Hide. A tab is
 // also moved by dragging it; Move is the same thing from the keyboard (the zones light and the arrow keys step through them).
-function openMoveMenu(id, x, y) {
+function openMoveMenu(id, x, y, byKeyboard = false) {
   closeLayoutMenu();
   layoutMenuFor = id;
   const label = (TABS.find(t => t.id === id) || {}).label || id;
@@ -1727,8 +1727,9 @@ function openMoveMenu(id, x, y) {
   layoutMenu.appendChild(check.row);
   showLayoutMenu(x, y);
   // Opened with Shift+F10 or the menu key, the keyboard is in it: the first item has focus, the arrows walk the rest.
+  // ...but not for a mouse right-click, which would put a focus ring on an item nobody pointed at (PR #159 Miguel S1).
   const first = layoutMenu.querySelector('button');
-  if (first) first.focus();
+  if (first && byKeyboard) first.focus();
 }
 
 // The ▦ Window menu: a check per module, hidden ones included (unticking hides,
@@ -1784,7 +1785,7 @@ document.addEventListener('contextmenu', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
   e.preventDefault();
-  openMoveMenu(button.dataset.module, e.clientX, e.clientY);
+  openMoveMenu(button.dataset.module, e.clientX, e.clientY, e.button !== 2);     // Shift+F10 and the menu key come with button 0
 });
 // The arrows walk a menu opened from a tab (Move / Float / Collapse / Hide), as they do any menu.
 layoutMenu.addEventListener('keydown', (e) => {
@@ -2209,7 +2210,7 @@ let cancelKeyboardMove = () => {};
   const refocus = id => { const b = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(id)}"]`); if (b) b.focus(); };
   startKeyboardMove = (id) => {
     cancelTabDrag();
-    peek = null;
+    if (peek) { peek = null; renderLayout({ refit: false }); }     // the popover goes off the screen too, not only out of the state (PR #159 Dexter 4)
     kbMove = { id, target: window.dockDrag.startTarget(boxes(), id) };
     document.body.classList.add('dock-moving');
     show();
@@ -2223,6 +2224,7 @@ let cancelKeyboardMove = () => {};
     const { id } = kbMove;
     if (e.key === 'Escape') { end(); say('Move cancelled.'); refocus(id); return; }
     if (e.key === 'Enter') {
+      if (e.repeat) return;                 // holding Enter on the menu's Move item must not drop at once (PR #159 Miguel S5)
       const vp = dockViewport();
       const hot = window.dockDrag.zonesFor(boxes(), vp, kbMove.target);
       const target = kbMove.target;
@@ -2235,8 +2237,11 @@ let cancelKeyboardMove = () => {};
       refocus(id);
       return;
     }
+    const was = JSON.stringify(kbMove.target);
     kbMove.target = window.dockDrag.nextZone(boxes(), dockViewport(), kbMove.target, e.key === 'Tab' && e.shiftKey ? 'ShiftTab' : e.key, { exclude: exclude() });
     show();
+    // The words repeat when the key found nothing, so the live region would stay silent: say so (PR #159 Miguel S3).
+    if (was === JSON.stringify(kbMove.target) && e.key.startsWith('Arrow')) say(`${announce.textContent} No zone further that way.`);
   }, true);
   window.addEventListener('pointerdown', () => { cancelKeyboardMove(); });
   window.addEventListener('blur', () => { cancelKeyboardMove(); });
@@ -2386,8 +2391,12 @@ document.addEventListener('click', (e) => {
 });
 
 // A rail's popover closes on Esc and on a press outside it and its rail (a press on the rail is the rail's own click).
+// Esc is the popover's only when the person is IN it (or on its rail button): everywhere else it is the terminal's own
+// interrupt, which is never taken (PR #99 Miguel G3; PR #159 Miguel B1).
 window.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape' || !peek || kbMove) return;
+  const held = document.activeElement;
+  if (!held || !held.closest || !held.closest('.dpeek, .drail')) return;
   const was = peek.module;
   peek = window.dockTreeView.peekAfter(peek, { type: 'escape' });
   renderLayout({ refit: false });
@@ -2395,6 +2404,14 @@ window.addEventListener('keydown', (e) => {
   const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
   if (rail) rail.focus();
 }, true);
+// ...and when the keyboard leaves it for something else (Tab out of the popover): otherwise keys would type into the
+// terminal behind an open panel. A focus that goes nowhere (the window blurring, a button replaced) keeps it open.
+document.addEventListener('focusout', (e) => {
+  const to = e.relatedTarget;
+  if (!peek || !to || !to.closest || to.closest('.dpeek, .drail')) return;
+  peek = window.dockTreeView.peekAfter(peek, { type: 'outside' });
+  renderLayout({ refit: false });
+});
 document.addEventListener('pointerdown', (e) => {
   if (!peek || (e.target.closest && e.target.closest('.dpeek, .drail'))) return;
   peek = window.dockTreeView.peekAfter(peek, { type: 'outside' });
@@ -5314,6 +5331,7 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
   document.getElementById('dock').addEventListener('pointerdown', (e) => {
     const g = e.target.closest && e.target.closest('.dgutter');
     if (!g || e.button !== 0) return;
+    flushKeys();                                    // a key burst still waiting to be saved is saved first
     const path = g.dataset.path === '' ? [] : g.dataset.path.split('.').map(Number);
     const base = placementLayout();
     const split = splitAt(path);
@@ -5365,16 +5383,31 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), d.path, rebased));     // the one real choice, saved once
     else renderLayout();
   });
-  // A divider is a focusable separator (D4): the arrow that points along it moves it 16 px, by the rules of a drag. Focus
-  // stays on it (userAction false), so the next press moves it again.
+  // A divider is a focusable separator (D4): the arrow that points along it moves it 16 px, by the rules of a drag. It is
+  // DRAWN at once and SAVED once when the burst of presses ends (a held key repeats ~30 times a second, and every save is a
+  // write relayed to every window); focus stays on it, and it does not glide (16 px steps would lag a key repeat).
+  let keyFlush = null;
+  const flushKeys = () => {
+    clearTimeout(keyFlush);
+    keyFlush = null;
+    if (!dragLayout || dividerDrag) return;
+    const l = dragLayout;
+    dragLayout = null;
+    commitPlacement(l, { userAction: false });
+  };
+  document.getElementById('dock').addEventListener('focusout', (e) => { if (e.target.closest && e.target.closest('.dgutter')) flushKeys(); });
   document.getElementById('dock').addEventListener('keydown', (e) => {
     const g = e.target.closest && e.target.closest('.dgutter');
     if (!g || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !lastPlan) return;
     if (window.dockTreeView.dividerStep(e.key, g.dataset.dir) === null) return;
     e.preventDefault();                                              // an arrow on a separator scrolls nothing
     const path = g.dataset.path === '' ? [] : g.dataset.path.split('.').map(Number);
-    const next = window.dockTreeView.dividerKey(committedLayout(), lastPlan.splits, path, Number(g.dataset.i), e.key);
-    if (next) commitPlacement(next, { userAction: false });
+    const next = window.dockTreeView.dividerKey(placementLayout(), lastPlan.splits, path, Number(g.dataset.i), e.key);
+    if (!next) return;
+    dragLayout = next;
+    renderLayout();
+    clearTimeout(keyFlush);
+    keyFlush = setTimeout(flushKeys, 400);
   });
   window.addEventListener('pointercancel', cancelDividerDrag);
   window.addEventListener('lostpointercapture', cancelDividerDrag);   // after a normal release the drag is already over
