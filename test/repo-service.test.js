@@ -453,3 +453,44 @@ test('write goes through the injected writer with the resolved path', async () =
   assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(calls, [[path.join('src', 'a.js'), 'abc']]);
 });
+
+// PR #155 fixes: the save's guard, end to end through the service.
+test('write: a deleted file is stale+gone with its old hash, and RECREATED with expectHash null (Keep mine after a delete)', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog });
+  const read = await svc.handle({ type: 'repo', action: 'read', path: 'src/a.js', seq: 1 });
+  fs.unlinkSync(path.join(root, 'src', 'a.js'));
+  const stale = await svc.handle({ type: 'repo', action: 'write', path: 'src/a.js', text: 'mine\n', expectHash: read.hash, seq: 2 });
+  assert.deepStrictEqual({ ok: stale.ok, why: stale.why, gone: stale.gone }, { ok: false, why: 'stale', gone: true });
+  assert.ok(!fs.existsSync(path.join(root, 'src', 'a.js')));
+  const made = await svc.handle({ type: 'repo', action: 'write', path: 'src/a.js', text: 'mine\n', expectHash: null, seq: 3 });
+  assert.strictEqual(made.ok, true);
+  assert.strictEqual(fs.readFileSync(path.join(root, 'src', 'a.js'), 'utf8'), 'mine\n');
+});
+
+test('write: when the folder is gone too, the save is refused as gone (and nothing is created)', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog });
+  fs.rmSync(path.join(root, 'src'), { recursive: true });
+  const r = await svc.handle({ type: 'repo', action: 'write', path: 'src/a.js', text: 'x', expectHash: null, seq: 1 });
+  assert.deepStrictEqual({ ok: r.ok, why: r.why }, { ok: false, why: 'gone' });
+  assert.ok(!fs.existsSync(path.join(root, 'src')));
+});
+
+test('write: a junction to .git/hooks, a nested .git and a junction out are all refused and nothing is written', async () => {
+  const { root } = repo();
+  const svc = make({ root, readFog: noFog });
+  fs.mkdirSync(path.join(root, '.git', 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.git', 'hooks', 'pre-commit'), 'hook');
+  fs.symlinkSync(path.join(root, '.git', 'hooks'), path.join(root, 'link'), 'junction');
+  fs.mkdirSync(path.join(root, 'vendor', '.git'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'vendor', '.git', 'config'), 'c');
+  const h = sha256(Buffer.from('hook'));
+  for (const [p, hash] of [['link/pre-commit', h], ['link/new-hook', null], ['vendor/.git/config', sha256(Buffer.from('c'))]]) {
+    const r = await svc.handle({ type: 'repo', action: 'write', path: p, text: 'pwned', expectHash: hash, seq: 1 });
+    assert.deepStrictEqual({ ok: r.ok, why: r.why }, { ok: false, why: 'protected' }, p);
+  }
+  assert.strictEqual(fs.readFileSync(path.join(root, '.git', 'hooks', 'pre-commit'), 'utf8'), 'hook');
+  assert.ok(!fs.existsSync(path.join(root, '.git', 'hooks', 'new-hook')));
+  assert.strictEqual(fs.readFileSync(path.join(root, 'vendor', '.git', 'config'), 'utf8'), 'c');
+});

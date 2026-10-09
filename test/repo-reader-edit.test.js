@@ -647,3 +647,86 @@ test('an older host that sends no hash is shown read-only with the reason: it co
   assert.strictEqual(s.el('reader-edit').disabled, true);
   assert.match(s.el('reader-edit').title, /older than this window/);
 });
+
+// ---- PR #155 review fixes ----
+
+test('Dexter 4: the plain Reload bar re-checks at CLICK time: edits typed after it rose are asked about, and survive a "no"', async () => {
+  const s = setup({ answers: [false, true] });
+  await openFile(s);
+  const c = s.rd.onRepoChanged();
+  await tick();
+  s.requester.last('stat').resolve({ ok: true, size: 9, mtimeMs: 200 });
+  await c;
+  assert.strictEqual(s.el('reader-bar').hidden, false);
+  s.el('reader-edit').click();
+  await settle();
+  const ed = s.cm.made[0];
+  ed.type('three new lines\n');
+  s.el('reader-reload').click();
+  await settle();
+  assert.strictEqual(s.confirms.length, 1);
+  assert.strictEqual(ed.text(), 'three new lines\n', 'a "no" keeps the text');
+  assert.strictEqual(s.requester.all('read').length, 1, 'and reads nothing');
+  s.el('reader-reload').click();
+  await tick(); await tick();
+  s.requester.last('read').resolve(fileReply({ text: 'fresh\n', size: 9, mtimeMs: 200, hash: 'H9' }));
+  await settle();
+  assert.strictEqual(ed.text(), 'fresh\n', 'a "yes" drops them and loads the file');
+});
+
+test('Dexter 7: a save whose answer never came, then a save that finds the disk holding exactly our text, is "saved", not a conflict', async () => {
+  const s = setup();
+  const ed = await startEditing(s);
+  ed.type('two\n');
+  ctrlS(s);
+  await tick();
+  s.requester.last('write').resolve({ ok: false, error: 'the host did not answer in time' });
+  await settle();
+  assert.match(s.el('reader-meta').textContent, /not saved/i);
+  assert.match(s.el('reader-meta').textContent, /may have/i);
+  ctrlS(s);
+  await tick();
+  s.requester.all('write')[1].resolve({ ok: false, why: 'stale', hash: 'H2' });
+  await tick();
+  s.requester.last('read').resolve(fileReply({ text: 'two\n', hash: 'H2', size: 4, mtimeMs: 400 }));
+  await settle();
+  assert.strictEqual(s.el('reader-conflict').hidden, true, 'no accusation');
+  assert.strictEqual(s.el('reader-dirty').hidden, true);
+  assert.match(s.el('reader-meta').textContent, /saved/i);
+  // and the next save is checked against what is on disk now
+  ed.type('three\n');
+  ctrlS(s);
+  await tick();
+  assert.strictEqual(s.requester.all('write')[2].body.expectHash, 'H2');
+});
+
+test('a stale save whose disk text equals yours is never a conflict, whatever happened before', async () => {
+  const s = setup();
+  const ed = await startEditing(s);
+  await conflict(s, ed, fileReply({ text: 'mine\n', hash: 'HD', size: 5, mtimeMs: 300 }));
+  assert.strictEqual(s.el('reader-conflict').hidden, true);
+  assert.strictEqual(s.el('reader-dirty').hidden, true);
+});
+
+test('Miguel S2: a save refused as gone (its folder is gone) says so in words, not "not saved: gone"', async () => {
+  const s = setup();
+  const ed = await startEditing(s);
+  ed.type('x\n');
+  ctrlS(s);
+  await tick();
+  s.requester.last('write').resolve({ ok: false, why: 'gone' });
+  await settle();
+  assert.doesNotMatch(s.el('reader-meta').textContent, /: gone$/);
+  assert.match(s.el('reader-meta').textContent, /folder/i);
+});
+
+test('Miguel I2: open() says whether it opened: false when the person kept editing, so the Files panel can re-sync its highlight', async () => {
+  const s = setup({ answers: [false] });
+  const ed = await startEditing(s);
+  ed.type('mine\n');
+  assert.strictEqual(await s.rd.open('src/b.js'), false);
+  const o = s.rd.open('src/a.js', { discard: true });
+  await tick(); await tick();
+  s.requester.last('read').resolve(fileReply());
+  assert.notStrictEqual(await o, false);
+});

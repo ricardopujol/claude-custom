@@ -70,7 +70,7 @@ const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
-const { createUnsaved, closeDetail } = require('./reader-unsaved');
+const { createUnsaved, closeDetail, guardWindowClose } = require('./reader-unsaved');
 // What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
@@ -519,6 +519,26 @@ function createWindow() {
   // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
   // so the next selection -- even of the same tab -- focuses its view again.
   win.webContents.on('focus', () => { lastFocusedView = null; });
+  // Closing the window (X, Alt+F4, app quit) ends every page, so unsaved text in a code reader (#50) is asked about
+  // first: Save / Discard / Cancel (app/reader-unsaved.js guardWindowClose). Once answered, the close goes through.
+  let closeGuarded = false;
+  win.on('close', (e) => {
+    if (closeGuarded || readerUnsaved.all().length === 0) return;
+    e.preventDefault();
+    if (closeAsking) return;
+    closeAsking = true;
+    guardWindowClose({
+      list: () => readerUnsaved.all(),
+      ask: askWindowClose,
+      saveAll: () => { if (win && !win.isDestroyed()) win.webContents.send('reader-save'); forEachView((v) => v.webContents.send('reader-save')); },
+      waitCleared: async () => {
+        for (let i = 0; i < 80; i++) { if (readerUnsaved.all().length === 0) return true; await new Promise(r => setTimeout(r, 100)); }
+        return false;
+      },
+    }).then((ok) => {
+      if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
+    }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
+  });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
   return win;
 }
@@ -592,7 +612,9 @@ function createTabView(tab) {
     if (cueOn) wc.send('attention-cue', true);
     if (focusMode) wc.send('focus-mode', true);
   });
-  wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
+  wc.on('render-process-gone', (_e, d) => { readerUnsaved.clear(tab.key); console.error(`[main] ${tab.key}: renderer gone:`, d.reason); });
+  // a fresh page (a reload, a crash recovery) starts with no unsaved text and never says so: forget the old entry
+  wc.on('did-start-navigation', (_e, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) readerUnsaved.clear(tab.key); });
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -775,6 +797,23 @@ function onShellChanged(snapshot) {
 async function closeTabFlow(key, { ifSafe = false } = {}) {
   if (!key || !tabShell) return null;
   return tabShell.closeTab(key, { ifSafe });
+}
+
+let closeAsking = false;     // the window-close question is up: a second close gesture doesn't stack another
+// The window's own close with unsaved reader text (#50): 'save' | 'discard' | 'cancel'. The probe driver has nobody
+// to click: it discards, like a plain tab close is answered yes.
+async function askWindowClose(files) {
+  if (PROBE_PORT) { probeConfirms.push({ label: 'window', reason: '', unsaved: files.join(', ') }); return 'discard'; }
+  const list = files.length === 1 ? files[0] : `${files.length} files (${files.slice(0, 3).join(', ')}${files.length > 3 ? ', ...' : ''})`;
+  const r = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Save and close', 'Discard and close', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message: 'Close with unsaved changes?',
+    detail: `The file reader has unsaved edits to ${list}.`,
+  });
+  return ['save', 'discard', 'cancel'][r.response] || 'cancel';
 }
 
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
@@ -1061,13 +1100,14 @@ function registerIpc() {
     console.log(`[main] ${tab.key}: file link ${JSON.stringify(String(p).slice(0, 200))}`);
     return fileLink.open(p, tab.cwd, fileFs, shell);
   });
-  // The Files tab (#45): Show in Explorer and drag-out. Main resolves the path against THAT tab's own
-  // worktree and re-runs the realpath guard; the page only names a path relative to it.
-  // The code reader's unsaved file, or null (#50): kept per tab for the close question (app/reader-unsaved.js).
+  // The code reader's unsaved file, or null (#50): kept per tab for the close questions (app/reader-unsaved.js).
+  // Only a tab view reports (a single-session window has none, so its reader isn't tracked).
   ipcMain.on('tab:readerDirty', (e, p) => {
     const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
     if (tab) readerUnsaved.report(tab.key, p);
   });
+  // The Files tab (#45): Show in Explorer and drag-out. Main resolves the path against THAT tab's own
+  // worktree and re-runs the realpath guard; the page only names a path relative to it.
   ipcMain.handle('tab:repoReveal', (e, rel) => {
     const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
     return tab ? repoActions.reveal(tab.cwd, rel) : { ok: false, why: 'refused' };

@@ -41,7 +41,9 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
 
   const panel = Panel.create({
     doc, requester, harness, storage,
-    onOpen: (path) => reader.open(path),
+    // the person may answer "keep editing" to the unsaved-text question: the row they clicked is then not what the
+    // reader shows, so the highlight goes back to the file that is (or to none)
+    onOpen: async (path) => { if ((await reader.open(path)) === false) panel.setSelected(reader.path()); },
     onMention: mentionFile,
     isShown,
   });

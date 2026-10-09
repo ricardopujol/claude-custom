@@ -8,7 +8,7 @@
  *   stat    { path }   size and mtime, for the Reload bar
  *   diff    { path }   what Claude changed in it (host/repo-diff.js)
  *   write   { path, text, eol, bom, expectHash }   the reader's save (#50, host/repo-write.js): atomic, and refused
- *                      as `stale` when the file is no longer the one `expectHash` names. Never under `.git`.
+ *                      as `stale` when the file is no longer the one `expectHash` names. Never under `.git` (real path).
  *
  * Every reply is `{ type: 'repo', action, seq?, ok, ... }`, `seq` echoed so the page can tell which of its
  * asks an answer belongs to. A failure is `{ ok: false, why | error }`, never silence and never an empty
@@ -26,7 +26,7 @@
  * watches. A change refreshes the listing (`again`, so a change that landed while git was looking is not
  * lost) and tells every client `changed`; the page then re-asks what it is showing.
  */
-const { guardPath, lexical } = require('./repo-guard');
+const { guardPath, guardWrite, lexical } = require('./repo-guard');
 const { createIndex } = require('./repo-index');
 const { readRepoFile, statRepoFile } = require('./repo-read');
 const { writeRepoFile } = require('./repo-write');
@@ -48,7 +48,7 @@ const validSeq = (s) => (Number.isSafeInteger(s) || (typeof s === 'string' && s.
 
 function createRepoService({
   root, projectsDir, readFog: readFogFn = readFog, index = createIndex(root),
-  guard = guardPath, read = readRepoFile, stat = statRepoFile, write = writeRepoFile, diff = diffFor, modified = gitModified,
+  guard = guardPath, guardSave = guardWrite, read = readRepoFile, stat = statRepoFile, write = writeRepoFile, diff = diffFor, modified = gitModified,
   watch = watchRepo, announce = () => {}, listCap = MAX_LIST_ENTRIES,
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; }, clearTimer = clearTimeout,
 } = {}) {
@@ -170,10 +170,10 @@ function createRepoService({
       }
       case 'write': {
         if (typeof msg.path !== 'string') return { ok: false, why: 'bad request', error: 'no path' };
-        const g = await guard(root, msg.path);
+        // the SAVE's own guard (host/repo-guard.js guardWrite): a deleted file can be recreated in its folder, and
+        // nothing whose REAL path is under any `.git` (a link, a nested repo, a short name) is ever written
+        const g = await guardSave(root, msg.path);
         if (!g.ok) return { ok: false, why: g.why, path: msg.path.slice(0, 200) };
-        // git's own folder (and the .git pointer file of a worktree) is never written from the reader
-        if (/^\.git(\/|$)/i.test(g.rel)) return { ok: false, why: 'protected', path: g.rel };
         ensureWatching();
         const r = await write(g.real || g.abs, { text: msg.text, eol: msg.eol, bom: msg.bom, expectHash: msg.expectHash });
         return { ...r, path: g.rel };

@@ -25,13 +25,32 @@ function createUnsaved() {
     },
     pathFor: (key) => (byTab.has(key) ? byTab.get(key) : null),
     clear: (key) => { byTab.delete(key); },
+    all: () => [...byTab].map(([key, path]) => ({ key, path })),
   };
 }
 
 function closeDetail({ reason = '', unsaved = null } = {}) {
   const lines = [reason ? `Not closed without asking: ${reason}.` : null, 'The folder stays.'];
-  if (typeof unsaved === 'string' && unsaved !== '') lines.push(`You have unsaved edits to ${JSON.stringify(unsaved).slice(1, -1)} in the file reader; they will be lost.`);
+  // a Ctrl+click close already says it in its reason (host/close-safety.js): once is enough
+  if (typeof unsaved === 'string' && unsaved !== '' && !/unsaved edits/.test(reason)) lines.push(`You have unsaved edits to ${JSON.stringify(unsaved).slice(1, -1)} in the file reader; they will be lost.`);
   return lines.filter(l => l !== null).join('\n');
 }
 
-module.exports = { createUnsaved, closeDetail };
+/**
+ * May the WINDOW close (X, Alt+F4, app quit)? Resolves true to close, false to stay. With no unsaved reader text,
+ * true at once. Otherwise `ask(files)` answers 'save' | 'discard' | 'cancel'; Save has every page save
+ * (`saveAll`) and closes only if all the entries clear within `waitCleared` (a save that hits a conflict or an
+ * error keeps the window open, where the banner is). Anything else, a throw included, is a Cancel.
+ */
+async function guardWindowClose({ list, ask, saveAll, waitCleared }) {
+  const entries = list();
+  if (entries.length === 0) return true;
+  let choice;
+  try { choice = await ask(entries.map(e => e.path)); } catch { return false; }
+  if (choice === 'discard') return true;
+  if (choice !== 'save') return false;
+  saveAll();
+  return (await waitCleared()) === true;
+}
+
+module.exports = { createUnsaved, closeDetail, guardWindowClose };

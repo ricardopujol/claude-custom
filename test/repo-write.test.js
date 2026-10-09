@@ -238,3 +238,56 @@ test('PROPERTY: a saved file re-opens as the same text, line endings and BOM, an
     if (t.includes('\n')) assert.strictEqual(back.eol, eol);
   }), { numRuns: 60 });
 });
+
+// ---- PR #155 review fixes ----
+
+test('Dexter 3: a rename that fails transiently (EPERM) because someone else is writing is RE-CHECKED before the retry: stale, theirs kept', async () => {
+  const p = put('H0\n');
+  const h0 = sha(Buffer.from('H0\n'));
+  let calls = 0;
+  const api = {
+    ...fsp,
+    rename: async (a, b) => {
+      calls += 1;
+      if (calls === 1) { fs.writeFileSync(p, 'H1 by Claude\n'); throw Object.assign(new Error('busy: being scanned'), { code: 'EPERM' }); }
+      return fsp.rename(a, b);
+    },
+  };
+  const r = await writeRepoFile(p, { text: 'mine\n', expectHash: h0, fsApi: api });
+  assert.deepStrictEqual({ ok: r.ok, why: r.why, hash: r.hash }, { ok: false, why: 'stale', hash: sha(Buffer.from('H1 by Claude\n')) });
+  assert.strictEqual(fs.readFileSync(p, 'utf8'), 'H1 by Claude\n');
+  assert.strictEqual(calls, 1, 'no second rename was attempted');
+  assert.deepStrictEqual(tempsIn(), []);
+});
+
+test('Dexter 3: a transient EPERM with the file UNCHANGED still retries and lands', async () => {
+  const p = put('H0\n');
+  let calls = 0;
+  const api = { ...fsp, rename: async (a, b) => { calls += 1; if (calls === 1) throw Object.assign(new Error('busy'), { code: 'EBUSY' }); return fsp.rename(a, b); } };
+  const r = await writeRepoFile(p, { text: 'mine\n', expectHash: sha(Buffer.from('H0\n')), fsApi: api });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(fs.readFileSync(p, 'utf8'), 'mine\n');
+});
+
+test('Dexter 6: the stamp in the reply is the TEMP file\'s (the bytes we wrote), not a stat by path that a later writer could have changed', async () => {
+  const p = put('old');
+  let renamed = false;
+  const api = {
+    ...fsp,
+    rename: async (a, b) => { await fsp.rename(a, b); renamed = true; },
+    stat: async (f) => (renamed ? { isFile: () => true, size: 999, mtimeMs: 123, mode: 0o644 } : fsp.stat(f)),
+  };
+  const r = await writeRepoFile(p, { text: 'new!', expectHash: sha(Buffer.from('old')), fsApi: api });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.size, 4);
+  assert.notStrictEqual(r.mtimeMs, 123);
+  assert.strictEqual(r.hash, sha(Buffer.from('new!')));
+});
+
+test('Miguel S5: text with a lone surrogate (it would be written as U+FFFD) is refused', async () => {
+  const p = put('x');
+  const r = await writeRepoFile(p, { text: 'a\ud800b', expectHash: sha(Buffer.from('x')) });
+  assert.deepStrictEqual({ ok: r.ok, why: r.why }, { ok: false, why: 'bad request' });
+  assert.strictEqual(fs.readFileSync(p, 'utf8'), 'x');
+});

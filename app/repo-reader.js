@@ -63,6 +63,8 @@ const COMPARE_MAX_ROWS = 4000;
 const SAVE_WHY = {
   'too-large': () => 'it would be over the size the reader opens',
   protected: () => "git's own files aren't edited here",
+  gone: () => 'the file and its folder are gone from disk (Done or Reload leaves this view)',
+  unreadable: () => "the file's place on disk can't be resolved",
   'not-a-file': () => "it isn't a file",
   'bad request': () => 'the host refused the request',
 };
@@ -269,7 +271,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   // `keepEditing`: come back in edit mode when the file loads (Reload while editing).
   async function open(path, { keepMode = false, discard = false, keepEditing = false } = {}) {
     if (typeof path !== 'string' || path === '') return;
-    if (!discard && isDirty() && !(await confirmLeave(`You have unsaved changes to ${state.path}. Discard them and open ${path}?`))) return;
+    if (!discard && isDirty() && !(await confirmLeave(`You have unsaved changes to ${state.path}. Discard them and open ${path}?`))) return false;
     const same = state.path === path;
     const resume = keepEditing && state.editing;
     stopEditing({ revert: false });
@@ -429,7 +431,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
       if (!(await raiseConflict())) { state.status = 'not saved: the file was touched on disk; save again'; syncDirty(); }
       return;
     }
-    state.status = `not saved: ${saveFailure(r)}`;
+    // no `why`: the host never answered, so the write may still have gone through (a later save checks for that)
+    state.status = r && r.why === undefined ? `not saved: ${saveFailure(r)} (it may have gone through; the next save checks)` : `not saved: ${saveFailure(r)}`;
     syncDirty();
   }
 
@@ -452,6 +455,16 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     if (r.hash === state.base.hash) {                      // touched, not changed
       state.stamp = { size: r.size, mtimeMs: r.mtimeMs };
       return false;
+    }
+    if (r.text === state.editor.text() && typeof r.hash === 'string') {
+      // the disk already holds exactly what is on screen (a save whose answer was lost, or the same edit made
+      // elsewhere): nothing to resolve, so no banner and no accusation: it is the new version started from
+      state.base = baseOf(r);
+      state.stamp = { size: r.size, mtimeMs: r.mtimeMs };
+      clearConflict();
+      state.status = 'saved';
+      syncDirty();
+      return true;
     }
     showConflict({ disk: r });
     return true;
@@ -572,7 +585,12 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   el.diff.addEventListener('click', toggleDiff);
   el.mention.addEventListener('click', mentionSelection);
   // the plain Reload bar only rises over a file with no unsaved edits, so there is nothing to ask about
-  el.reload.addEventListener('click', () => { if (state.path) open(state.path, { keepMode: true, discard: true, keepEditing: true }); });
+  // The bar rose over a file with no unsaved edits, but edits can be typed after that: ask again at click time.
+  el.reload.addEventListener('click', async () => {
+    if (!state.path) return;
+    if (isDirty() && !(await confirmLeave(`You have unsaved changes to ${state.path}. Discard them and reload it from disk?`))) return;
+    open(state.path, { keepMode: true, discard: true, keepEditing: true });
+  });
   el.edit.addEventListener('click', () => { toggleEdit(); });
   el.save.addEventListener('click', () => { save(); });
   el.conflictReload.addEventListener('click', conflictReload);
@@ -708,7 +726,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   }
 
   return {
-    open, close, isOpen: () => !el.pane.hidden, path: () => state.path, hasUnsaved: isDirty,
+    open, close, isOpen: () => !el.pane.hidden, path: () => state.path, hasUnsaved: isDirty, save,
     setOverlay, onRepoChanged: checkStale, probe, layout,
     editor: () => state.editor,
   };

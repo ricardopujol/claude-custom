@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('harness', {
   // The Files tab (#45): a path RELATIVE to this tab's worktree. Main re-runs the realpath guard against the
   // tab's own folder, then shows it in Explorer / starts an OS drag of the file. Neither ever opens or runs it.
   // The code reader's unsaved file (a path relative to the worktree) or null, so ending this tab can warn (#50).
+  // main asks every page to save its reader (the window-close question's Save): the page answers by reporting null
+  onReaderSave: (fn) => { ipcRenderer.on('reader-save', () => { try { fn(); } catch (err) { console.error('[preload] reader-save listener threw', err); } }); },
   readerDirty: (rel) => ipcRenderer.send('tab:readerDirty', rel === null ? null : String(rel)),
   repoReveal: (rel) => ipcRenderer.invoke('tab:repoReveal', rel),
   repoDrag: (rel) => ipcRenderer.invoke('tab:repoDrag', rel),

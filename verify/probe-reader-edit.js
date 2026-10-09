@@ -337,7 +337,22 @@ async function main() {
   const resumed = await waitFor(async () => { const s = await st(app); return !s.conflictShown && !s.dirty && s.editing && s.lines > 8 ? s : null; }, 8000);
   check('5: Reload lands back in edit mode on the outside text', !!resumed);
 
-  // 6 ------------------------------------------------------------------------------
+  // 5b: the file DELETED while editing: Keep mine, then Ctrl+S, recreates it (PR #155 Dexter 1 / Miguel B2)
+  const mineGone = 'recreated by Keep mine\n';
+  await rd(app, 'type', { text: mineGone });
+  await waitFor(async () => { const s = await st(app); return s.dirty ? s : null; }, 5000);
+  fs.unlinkSync(APP);
+  const goneBanner = await waitFor(async () => { const s = await st(app); return s.conflictShown && /deleted/.test(s.conflictText) ? s : null; }, 15000, 25);
+  check('5: a file deleted while you have unsaved edits raises the "deleted" banner', !!goneBanner, JSON.stringify(goneBanner && goneBanner.conflictText));
+  await rd(app, 'conflictKeep');
+  await rd(app, 'ctrlS');
+  const recreated = await waitFor(async () => { const s = await st(app); return !s.dirty && !s.conflictShown ? s : null; }, 8000);
+  check('5: Keep mine then Ctrl+S RECREATES the file with your text', !!recreated && fs.existsSync(APP) && disk() === mineGone, JSON.stringify(fs.existsSync(APP) && disk()));
+  await rd(app, 'type', { text: APP_TEXT });
+  await rd(app, 'ctrlS');
+  await waitFor(async () => { const s = await st(app); return !s.dirty ? s : null; }, 8000);
+
+  // 6 --------------------------------------------------------------------------------
   // the guards. The probe answers the native question for the person.
   await rd(app, 'confirmAnswer', { answer: false });
   await rd(app, 'type', { text: `${disk()}// unsaved\n` });

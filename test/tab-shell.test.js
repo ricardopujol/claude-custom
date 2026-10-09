@@ -2844,7 +2844,7 @@ test('ctrl-close: unsaved edits in the file reader make an otherwise safe tab AS
   const r = await ctrlClose(h);
   assert.strictEqual(r.cancelled, true);
   assert.strictEqual(h.confirms.length, 1);
-  assert.match(h.confirms[0].reason, /unsaved edits in the file reader/);
+  assert.match(h.confirms[0].reason, /unsaved edits to src\/app\.js in the file reader/);
 });
 
 test('ctrl-close: with nothing unsaved (null) or a reader that throws, the safe tab still closes silently', async () => {

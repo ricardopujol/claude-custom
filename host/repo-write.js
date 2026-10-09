@@ -21,7 +21,8 @@
  * `stale` with the disk's own hash, so the page can show what changed. Content, not mtime, decides: a `touch`
  * with identical bytes is not a conflict. `expectHash: null` means "the file must not exist" (saving over a file
  * that was deleted while open is a choice the person makes, and it creates the file again); `undefined` or
- * anything else is refused. One window stays open, the instant between the second check and the rename; a
+ * anything else is refused. The rename's retry looks again before every retry (the usual reason for one is that someone
+ * else has the file open, often to write it). One window stays open, the instant between the second check and the rename; a
  * writer that lands exactly there wins the race on any filesystem without a compare-and-swap rename.
  *
  * WRITES BACK WHAT THE READ FOUND: UTF-8, the file's line endings (`eol` 'crlf' turns every \n into CR LF), and
@@ -61,7 +62,7 @@ async function staleness(abs, expectHash, { fsApi, maxBytes }) {
 }
 
 async function writeRepoFile(abs, { text, eol = 'lf', bom = false, expectHash, maxBytes = MAX_BYTES, fsApi = fsp } = {}) {
-  if (typeof text !== 'string' || text.includes('\r')) return bad();
+  if (typeof text !== 'string' || text.includes('\r') || !text.isWellFormed()) return bad();
   if (eol !== 'lf' && eol !== 'crlf') return bad();
   if (expectHash !== null && (typeof expectHash !== 'string' || expectHash === '')) return bad();
 
@@ -77,19 +78,32 @@ async function writeRepoFile(abs, { text, eol = 'lf', bom = false, expectHash, m
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
   try {
     const fh = await fsApi.open(tmp, 'wx');
+    let written;
     try {
       await fh.writeFile(bytes);
       await fh.sync();
       if (mode !== null && process.platform !== 'win32') await fh.chmod(mode);
+      // the stamp of the bytes WE wrote, taken from the handle before anyone else can touch the path (a rename keeps it)
+      written = await fh.stat();
     } finally {
       await fh.close();
     }
     const second = await staleness(abs, expectHash, { fsApi, maxBytes });
     if (second) return second;
-    await renameWithRetryAsync(tmp, abs, { rename: fsApi.rename });
-    const st = await fsApi.stat(abs);
-    return { ok: true, size: st.size, mtimeMs: st.mtimeMs, hash: sha(bytes) };
+    // The retry is for a holder that clears in milliseconds, but a holder is often somebody WRITING the file: look
+    // again before every retry, and a change in between is stale, not overwritten.
+    let attempt = 0;
+    const rename = async (from, to) => {
+      if (attempt++ > 0) {
+        const again = await staleness(abs, expectHash, { fsApi, maxBytes });
+        if (again) throw Object.assign(new Error('changed during the save'), { staleResult: again });
+      }
+      return fsApi.rename(from, to);
+    };
+    await renameWithRetryAsync(tmp, abs, { rename });
+    return { ok: true, size: written.size, mtimeMs: written.mtimeMs, hash: sha(bytes) };
   } catch (err) {
+    if (err && err.staleResult) return err.staleResult;
     return { ok: false, why: 'unwritable', error: (err && err.message) || String(err) };
   } finally {
     // an early `return` above (a stale second check) and a throw both land here: no temp file survives
