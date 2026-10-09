@@ -2831,7 +2831,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
           chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
-          rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
+          // the GPU section's rows are read separately (gpuSec): this list is the session, self and window rows
+          rows: q('.res-row').filter(r => !r.closest('.res-gpu')).map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
             fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
@@ -2852,13 +2853,26 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
               chipRect: chip && !chip.hidden ? rect(chip) : null,
               chipClipped: chip ? chip.scrollWidth > chip.clientWidth : null,
               barClipped: bar ? bar.scrollWidth > bar.clientWidth : null,
-              winW: window.innerWidth,
+              winW: window.innerWidth, winH: window.innerHeight,
               link: !!(pop && pop.querySelector('button.hg-link[data-hist-act="open-panel"]')),
               open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
               popRect: pop && !pop.hidden ? rect(pop) : null,
               graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
                 latest: g.querySelectorAll('.hg-latest').length, dots: g.querySelectorAll('.hg-dot-rest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
                 empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
+            };
+          })(),
+          // backlog #82: verify/probe-gpu-usage.js reads the GPU section of the Resources tab
+          gpuSec: (() => {
+            const sec = document.querySelector('#resources-root .res-gpu');
+            if (!sec) return null;
+            const box = document.getElementById('resources-root').getBoundingClientRect();
+            return {
+              graphs: [...sec.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, dots: g.querySelectorAll('.hg-dot-rest').length, ours: g.querySelectorAll('.hg-ours').length })),
+              rows: [...sec.querySelectorAll('.res-row.res-plain')].map((r) => {
+                const b = r.getBoundingClientRect();
+                return { name: (r.querySelector('.res-name') || {}).textContent || '', figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent), inside: b.left >= box.left - 1 && b.right <= box.right + 1 };
+              }),
             };
           })(),
           panelFocused: document.activeElement === document.getElementById('resources-root'),
@@ -2879,6 +2893,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       }
       // #63 follow-up: the popover's other ways to close, and the hover readout, as the page would see them
       case 'resourcesHistoryDo': {
+        // backlog #82: bring the Resources tab's GPU section to the top of the panel, so a screenshot shows its process list
+        if (a.op === 'scroll-gpu') {
+          const sec = document.querySelector('#resources-root .res-gpu');
+          if (!sec) return JSON.stringify({ ok: false, error: 'no GPU section' });
+          sec.scrollIntoView({ block: 'start' });
+          return JSON.stringify({ ok: true });
+        }
         if (a.op === 'esc') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return JSON.stringify({ ok: true }); }
         if (a.op === 'outside') { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return JSON.stringify({ ok: true }); }
         if (a.op === 'link') {
