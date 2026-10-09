@@ -62,6 +62,7 @@ const REPO_SCANNING = new Set([
   'status-relay-process.test.js',
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
+  'process-suspend-process.test.js',   // #19: runs host/process-suspend.js against a real child (real PowerShell, seconds); the pure tests are in process-suspend.test.js
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 

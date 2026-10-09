@@ -168,7 +168,8 @@ test('hasPaused: false at the start, true while something is paused, false after
 
 function persistFake(dead = []) {
   const saved = [];
-  return { saved, save: list => saved.push(list.map(e => [e.pid, e.pids.map(p => p.pid)])), takeDead: () => dead };
+  const released = [];
+  return { saved, released, save: list => saved.push(list.map(e => [e.pid, e.pids.map(p => p.pid)])), takeDead: async () => ({ entries: dead, release: () => released.push(true) }) };
 }
 test('Miguel Y4: every change to the paused set is saved (the next start can undo a crash)', async () => {
   const persist = persistFake();
@@ -197,7 +198,21 @@ test('Miguel Y4: at start, what a dead run left suspended is woken by its proved
   });
   assert.deepStrictEqual(await svc.wakeLeftover(), { stuck: 0 });
   assert.deepStrictEqual(calls, [['resume', ['23:1', '24:2']]]);
-  assert.deepStrictEqual(persist.saved.at(-1), []);
+  assert.deepStrictEqual(persist.saved[0], [[23, [23, 24]]], 'recorded in THIS run first (R2-7)');
+  assert.deepStrictEqual(persist.saved.at(-1), [], 'and removed once the wake was confirmed');
+  assert.deepStrictEqual(persist.released, [true], 'only then do the old files go');
+});
+
+test('R2-7: a wake that cannot complete leaves the old file recorded under this run', async () => {
+  const persist = persistFake([{ pid: 23, start: '1', name: 'x', pids: [{ pid: 23, start: '1' }] }]);
+  const svc = S.createResourcesService({
+    sampler: { setWanted: () => {}, sampleNow: async () => world(), snapshot: () => null },
+    tabs: () => [], claims: () => [], installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c, send: () => {}, kill: async () => [], now: () => 5000,
+    suspend: async () => { throw new Error('boom'); }, pausePersist: persist,
+  });
+  const res = await svc.wakeLeftover();
+  assert.deepStrictEqual(res, { stuck: 1 }, 'recorded as stuck under this run name');
+  assert.deepStrictEqual(persist.saved.at(-1), [[23, [23]]]);
 });
 
 test('wakeLeftover with no persistence or no suspend wired does nothing', async () => {

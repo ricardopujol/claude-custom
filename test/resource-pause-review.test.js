@@ -102,7 +102,8 @@ test('Dexter 7: a pause still in flight when the quit starts is awaited, then wo
   const pausing = pauser.pause({ pid: 24, startTime: '5100' });
   await new Promise(r => setImmediate(r));
   assert.strictEqual(pauser.pending(), 1);
-  assert.deepStrictEqual(store.list(), [], 'not recorded yet: the script is still running');
+  assert.deepStrictEqual(store.list().map(e => [e.pid, e.pending]), [[24, true]], 'recorded BEFORE the script answers (write-ahead), as pending');
+  assert.deepStrictEqual(store.listConfirmed(), [], 'but not shown as paused yet');
   const quitting = pauser.resumeAll();
   release();
   await pausing;
@@ -162,6 +163,7 @@ test('Dexter 6 / Miguel Y3: orphans of a vanished root are woken by their proved
 
 test('an orphan that cannot be woken is recorded again (root-less), so the next sample tries again', async () => {
   const { pauser, store } = rig({ suspend: async (act, t) => t.map(x => ({ pid: x.pid, status: 'failed', text: 'denied' })) });
+  store.add({ pid: 23, start: '5000', name: 'sh', since: 7, pids: [{ pid: 24, start: '5100' }] }, { rootInSet: false });   // reconcile keeps the entry until the wake is confirmed
   const r = await pauser.wakeOrphans([{ pid: 23, start: '5000', name: 'sh', since: 7, alive: [{ pid: 24, start: '5100' }] }]);
   assert.deepStrictEqual(r, { woken: 0, stuck: 1 });
   assert.deepStrictEqual(store.list().map(e => [e.pid, e.since, e.pids]), [[23, 7, [{ pid: 24, start: '5100' }]]]);
@@ -176,4 +178,80 @@ test('Miguel Y4: the leftovers of a dead run are woken through their proved star
   assert.deepStrictEqual(calls, [[24, 25]]);
   assert.deepStrictEqual(store.list()[0].pids, [{ pid: 25, start: '5200' }]);
   assert.deepStrictEqual(await pauser.wakeStale(null), { stuck: 0 });
+});
+
+// ---- PR #158 review round 2 ---------------------------------------------------------------------------------------------
+
+test('R2-2 write-ahead: a suspend that NEVER answers has its targets on disk already, and a quit past the deadline leaves them there for the next start', async () => {
+  const saved = [];
+  const store = createPauseStore({ onChange: list => saved.push(list.map(e => [e.pid, e.pids.map(p => p.pid + ':' + p.start)])) });
+  const { pauser } = rig({ store, suspend: () => new Promise(() => {}) });
+  pauser.pause({ pid: 24, startTime: '5100' });
+  await new Promise(r => setImmediate(r));
+  assert.deepStrictEqual(saved.at(-1), [[24, ['24:5100', '25:5200']]], 'on disk before the script has answered');
+  const res = await pauser.resumeAll({ deadlineMs: 20 });
+  assert.strictEqual(res.timedOut, true);
+  assert.deepStrictEqual(saved.at(-1), [[24, ['24:5100', '25:5200']]], 'and still there after the quit gave up');
+});
+
+test('R2-2: a resume that never answers leaves the entry in the store (and so on disk): the removal waits for the confirmed wake', async () => {
+  const saved = [];
+  const store = createPauseStore({ onChange: list => saved.push(list.length) });
+  let mode = 'ok';
+  const { pauser } = rig({ store, suspend: (act, t) => (act === 'resume' && mode === 'hang' ? new Promise(() => {}) : Promise.resolve(t.map(x => ({ pid: x.pid, status: 'done' })))) });
+  await pauser.pause({ pid: 24, startTime: '5100' });
+  mode = 'hang';
+  pauser.resume({ pid: 24, startTime: '5100' });
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(store.peek(24, '5100') !== null, true);
+  assert.strictEqual(saved.at(-1), 1, 'the file still names it while the wake is in flight');
+});
+
+test('R2-2: a clean pause that is rolled back leaves nothing recorded, and a failed wake leaves the stuck ones', async () => {
+  const store = createPauseStore();
+  const { pauser } = rig({ store, suspend: async (act, t) => t.map(x => ({ pid: x.pid, status: act === 'suspend' && x.pid === 25 ? 'failed' : 'done' })) });
+  await pauser.pause({ pid: 24, startTime: '5100' });
+  assert.deepStrictEqual(store.list(), []);
+});
+
+test('R2-2: Pause on a process that is ALREADY suspended (a crashed run, another tool) adopts it: the row reads paused and Resume wakes it, not a dead end', async () => {
+  const calls = [];
+  const store = createPauseStore();
+  const { pauser } = rig({ store, suspend: async (act, t) => { calls.push(act); return act === 'suspend' ? [{ pid: 24, status: 'failed', text: 'already suspended' }] : t.map(x => ({ pid: x.pid, status: 'done' })); } });
+  const r = await pauser.pause({ pid: 24, startTime: '5100' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.adopted, true);
+  assert.deepStrictEqual(store.listConfirmed().map(e => [e.pid, e.pids]), [[24, [{ pid: 24, start: '5100' }]]]);
+  assert.deepStrictEqual(await pauser.resume({ pid: 24, startTime: '5100' }), { ok: true, pid: 24 });
+  assert.deepStrictEqual(calls, ['suspend', 'resume']);
+});
+
+test('R2-6: an extra the script found that could NOT be suspended rolls the pause back (27 failed: Access is denied)', async () => {
+  const answer = ['24 done', '24 start 5100', '25 done', '25 start 5200', '27 failed could not open it: Access is denied', 'END', ''].join(String.fromCharCode(10));
+  const sc = scripted([answer, ['24 done', '25 done', 'END', ''].join(String.fromCharCode(10))]);
+  const { pauser, store } = rig({ suspend: sc.suspend });
+  const r = await pauser.pause({ pid: 24, startTime: '5100' });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'suspend-failed');
+  assert.match(r.text, /PID 27 could not be suspended/);
+  assert.deepStrictEqual(sc.calls.at(-1), ['resume', [24, 25]]);
+  assert.deepStrictEqual(store.list(), []);
+});
+
+test('R2-7 / Dexter 6: an orphan entry stays in the store until its wake is confirmed, then leaves', async () => {
+  const store = createPauseStore();
+  const { pauser } = rig({ store, suspend: async (a, t) => t.map(x => ({ pid: x.pid, status: 'done' })) });
+  store.add({ pid: 23, start: '5000', name: 'sh', pids: [{ pid: 23, start: '5000' }, { pid: 24, start: '5100' }] });
+  const ended = store.reconcile([p(24, 23, 'node.exe', 'x', 5100)]);
+  assert.strictEqual(store.list().length, 1, 'still recorded after reconcile');
+  await pauser.wakeOrphans(ended);
+  assert.deepStrictEqual(store.list(), []);
+});
+
+test('R2-7: a stale entry from a dead run is recorded in THIS run before it is woken, and removed only once the wake is confirmed', async () => {
+  const order = [];
+  const store = createPauseStore({ onChange: l => order.push('saved:' + l.length) });
+  const { pauser } = rig({ store, suspend: async (a, t) => { order.push('resume'); return t.map(x => ({ pid: x.pid, status: 'done' })); } });
+  await pauser.wakeStale([{ pid: 24, start: '5100', name: 'a', since: 3, pids: [{ pid: 24, start: '5100' }] }]);
+  assert.deepStrictEqual(order, ['saved:1', 'resume', 'saved:0']);
 });

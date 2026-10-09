@@ -1,57 +1,70 @@
 'use strict';
 /**
- * The paused set, kept on disk (BACKLOG #19, PR #158 Miguel Y4 / Dexter 8): a crash of the app, the quit watchdog's kill or a power loss
- * to the Electron process skips will-quit, and a process left suspended with nobody who knows about it stays frozen. So each app instance
- * writes what it has paused to `paused-<ownPid>.json`; the next start reads the files of owners that are no longer running, wakes those
- * processes (every one proved again by its start time, so a reused pid is never touched) and removes the file.
+ * The paused set, kept on disk (BACKLOG #19, PR #158 Miguel Y4 / Dexter 8, R2-2, R2-3, R2-7): a crash of the app, the quit watchdog's kill or a power
+ * loss to the Electron process skips will-quit, and a process left suspended with nobody who knows about it stays frozen. So each app instance writes
+ * what it MAY have suspended to `paused-<ownPid>-<ownStart>.json` (the store is written ahead: host/pause-state.js), and any later instance reads the
+ * files of owners that are no longer running, wakes those processes (every one proved again by its start time, so a reused pid is never touched)
+ * and only then removes the file.
  *
- * ONE FILE PER OWNER, because two windows share the folder: a window must never wake what ANOTHER LIVE window paused. An owner is dead
- * only when `isAlive(pid)` says so; a pid that Windows has handed to another process reads alive, and then the file is simply left (the
- * safe direction: nothing is woken that might be someone's).
+ * AN OWNER IS A PID AND A START TIME (R2-3). A relaunch that Windows gave the dead owner's pid is a different owner: its own file has another name,
+ * and the stale one is found and woken, never overwritten or deleted. `ownerState(pid)` answers 'absent' (not running), the running process's start
+ * time (a string), or null (could not be told); an owner is dead only when absent, or running with a start that is not the file's. Unknown is alive:
+ * nothing is woken that might be another live window's.
  *
- * `save(list)` is atomic (host/atomic-write.js) and removes the file when nothing is paused. Everything it does is caught: persistence
- * is a safety net and must never break a Pause.
+ * REMOVAL WAITS FOR THE WAKE (R2-7). `takeDead()` returns { entries, release }: the caller records the entries in its own store, wakes them, and calls
+ * `release()` only after; a throw before that leaves the files. A live window runs this on a timer too, so a sibling that died later is swept.
+ *
+ * `save(list)` is atomic (host/atomic-write.js) and removes this owner's file when nothing is recorded. Persistence is a safety net and must never
+ * break a Pause: every failure is caught and logged.
  */
 
 const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic } = require('./atomic-write');
 
-const PREFIX = 'paused-';
-const NAME = /^paused-(\d+)\.json$/;
+const NAME = /^paused-(\d+)-(\d+)\.json$/;
 const isStart = s => typeof s === 'string' && /^\d+$/.test(s);
 const isEntry = e => !!e && Number.isInteger(e.pid) && e.pid > 0 && isStart(e.start)
   && Array.isArray(e.pids) && e.pids.length > 0 && e.pids.every(p => p && Number.isInteger(p.pid) && p.pid > 0 && isStart(p.start));
 
-function createPausePersist({ dir, ownPid, isAlive = () => true, log = () => {}, fsx = fs } = {}) {
-  const fileOf = pid => path.join(dir, `${PREFIX}${pid}.json`);
+function createPausePersist({ dir, ownPid, ownStart, ownerState = async () => null, log = () => {}, fsx = fs } = {}) {
+  const startPart = isStart(ownStart) ? ownStart : '0';
+  const fileOf = (pid, start) => path.join(dir, `paused-${pid}-${start}.json`);
+  const own = fileOf(ownPid, startPart);
 
   return {
     save(list) {
       try {
         const entries = (Array.isArray(list) ? list : []).filter(isEntry)
           .map(e => ({ pid: e.pid, start: e.start, name: typeof e.name === 'string' ? e.name : '', since: typeof e.since === 'number' ? e.since : null, pids: e.pids.map(p => ({ pid: p.pid, start: p.start })) }));
-        if (entries.length === 0) { try { fsx.unlinkSync(fileOf(ownPid)); } catch { /* none */ } return; }
+        if (entries.length === 0) { try { fsx.unlinkSync(own); } catch { /* none */ } return; }
         fsx.mkdirSync(dir, { recursive: true });
-        writeFileAtomic(fileOf(ownPid), JSON.stringify({ ownPid, entries }));
+        writeFileAtomic(own, JSON.stringify({ ownPid, ownStart: startPart, entries }));
       } catch (err) { log('[pause] could not save the paused set:', err && err.message); }
     },
-    /** The entries of every file whose owner is gone, and those files removed. A file that cannot be read is left alone. Never this owner's own. */
-    takeDead() {
-      const out = [];
+    /** -> { entries, release() }: the entries of every file whose owner is dead. Nothing is removed until `release()`. A file that cannot be read is left alone. */
+    async takeDead() {
+      const entries = [];
+      const files = [];
       let names = [];
-      try { names = fsx.readdirSync(dir); } catch { return out; }
+      try { names = fsx.readdirSync(dir); } catch { return { entries, release() {} }; }
       for (const name of names) {
         const m = NAME.exec(name);
-        if (!m || Number(m[1]) === ownPid || isAlive(Number(m[1])) !== false) continue;
+        if (!m || (Number(m[1]) === ownPid && m[2] === startPart)) continue;
+        let state = null;
+        try { state = await ownerState(Number(m[1])); } catch { state = null; }
+        const dead = state === 'absent' || (isStart(state) && state !== m[2]);
+        if (!dead) continue;
         const file = path.join(dir, name);
-        try {
-          const doc = JSON.parse(fsx.readFileSync(file, 'utf8'));
-          for (const e of (doc && Array.isArray(doc.entries) ? doc.entries : [])) if (isEntry(e)) out.push(e);
-          fsx.unlinkSync(file);
-        } catch (err) { log('[pause] could not read', name, err && err.message); }
+        let doc;
+        try { doc = JSON.parse(fsx.readFileSync(file, 'utf8')); } catch (err) { log('[pause] could not read', name, err && err.message); continue; }
+        for (const e of (doc && Array.isArray(doc.entries) ? doc.entries : [])) if (isEntry(e)) entries.push(e);
+        files.push(file);
       }
-      return out;
+      return {
+        entries,
+        release() { for (const file of files) { try { fsx.unlinkSync(file); } catch (err) { log('[pause] could not remove', path.basename(file), err && err.message); } } },
+      };
     },
   };
 }

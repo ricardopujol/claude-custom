@@ -1745,6 +1745,7 @@ app.whenReady().then(async () => {
   const warnAtSeam = parseWarnAt(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT);
   delete process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT;
   resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
+  const ownProcStart = await startTimes([process.pid]).then(m => (m && typeof m.get(process.pid) === 'string' ? m.get(process.pid) : null), () => null);
   resources = createResourcesService({
     sampler: resourceSampler,
     tabs: () => tabShell.snapshot().tabs,
@@ -1773,7 +1774,9 @@ app.whenReady().then(async () => {
     // Pause / Resume (#19): NtSuspendProcess / NtResumeProcess on a handle that re-proves pid and start time (host/process-suspend.js).
     suspend: (action, targets) => suspendVerified(action, targets, { exec: createPowerShellExec(20000) }),
     // What is paused is kept on disk, so a crash can be undone at the next start (host/pause-persist.js).
-    pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, isAlive: (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }, log: (...a) => console.log(...a) }),
+    // An owner is a pid AND a start time: 'absent', the running process's start, or null (could not be told).
+    pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, ownStart: ownProcStart,
+      ownerState: async (pid) => { const m = await startTimes([pid]); return !m ? null : (m.has(pid) ? m.get(pid) : 'absent'); }, log: (...a) => console.log(...a) }),
     // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
     // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
     // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
@@ -1801,7 +1804,9 @@ app.whenReady().then(async () => {
   watchChip({ file: path.join(__dirname, '..', '.harness', 'state', `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
-  resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
+  const sweepPaused = () => resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
+  sweepPaused();
+  setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on

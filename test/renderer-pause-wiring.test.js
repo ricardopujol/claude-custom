@@ -86,8 +86,10 @@ test('the agent card\'s Pause / Resume: the script loads before renderer.js, the
 
 
 test("main keeps the paused set on disk and wakes a dead run's leftovers at start", () => {
-  assert.ok(MAIN.includes("pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, isAlive:"));
+  assert.ok(MAIN.includes("pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, ownStart: ownProcStart,"), 'an owner is a pid AND a start time');
+  assert.ok(MAIN.includes('ownerState: async (pid) =>'));
   assert.ok(MAIN.includes('resources.wakeLeftover().catch'));
+  assert.ok(MAIN.includes('setInterval(sweepPaused, 60_000).unref()'), 'a live window also sweeps a sibling that died after it started');
 });
 
 test('the agent pause machine is fed what it needs: the turn state, the CLI\'s TaskStop call, and the session id', () => {

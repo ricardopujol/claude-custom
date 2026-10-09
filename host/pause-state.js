@@ -13,6 +13,10 @@
  *     A table that could not be read ends nothing;
  *   - nothing is "paused" that was not paused through `add`.
  *
+ * WRITE-AHEAD (PR #158 Dexter R2-2). An entry is recorded BEFORE its suspend script runs (`pending`: it MAY be suspended) and leaves only after
+ * the wake is confirmed (`remove`), never before: every change goes through `onChange`, and what is on disk always names everything that may be
+ * frozen. A pending entry is not shown as paused (`list()` carries the flag), blocks a second pause, and is not reconciled.
+ *
  * A process is named by pid AND start time (Windows reuses pids): the key is `<pid>:<start>`. `onChange(list)` is told after every
  * change (the paused set is kept on disk, host/pause-persist.js).
  */
@@ -39,14 +43,46 @@ function createPauseStore({ now = Date.now, onChange = () => {} } = {}) {
   }
 
   return {
-    add(e, { rootInSet = true } = {}) {
+    add(e, { rootInSet = true, pending = false } = {}) {
       if (!valid(e, { rootInSet })) return { ok: false, reason: 'invalid' };
       const key = keyOf(e.pid, e.start);
       if (entries.has(key)) return { ok: false, reason: 'already' };
       const since = typeof e.since === 'number' ? e.since : now();
-      entries.set(key, { pid: e.pid, start: e.start, name: typeof e.name === 'string' ? e.name : '', since, pids: e.pids.map(p => ({ pid: p.pid, start: p.start })) });
+      entries.set(key, { pid: e.pid, start: e.start, name: typeof e.name === 'string' ? e.name : '', since, pending: pending === true, pids: e.pids.map(p => ({ pid: p.pid, start: p.start })) });
       changed();
       return { ok: true, since };
+    },
+    /** The entry, as it is now (a copy), or null. */
+    peek(pid, start) {
+      const e = entries.get(keyOf(pid, start));
+      return e ? { ...e, pids: e.pids.map(p => ({ ...p })) } : null;
+    },
+    /** A pending entry whose suspend answered: it is paused now, with the set that was really suspended. */
+    confirm(pid, start, pids) {
+      const key = keyOf(pid, start);
+      const e = key === null ? undefined : entries.get(key);
+      if (!e || !Array.isArray(pids) || pids.length === 0 || !pids.every(p => p && keyOf(p.pid, p.start) !== null)) return false;
+      entries.set(key, { ...e, pending: false, orphan: false, pids: pids.map(p => ({ pid: p.pid, start: p.start })) });
+      changed();
+      return true;
+    },
+    /** What is STILL suspended after a wake that did not complete: the entry keeps only those (root-less if need be), confirmed, no longer an orphan in flight. No members: it is removed. */
+    narrow(pid, start, pids) {
+      const key = keyOf(pid, start);
+      const e = key === null ? undefined : entries.get(key);
+      if (!e) return false;
+      const keep = (Array.isArray(pids) ? pids : []).filter(p => p && keyOf(p.pid, p.start) !== null);
+      if (keep.length === 0) entries.delete(key);
+      else entries.set(key, { ...e, pending: false, orphan: false, pids: keep.map(p => ({ pid: p.pid, start: p.start })) });
+      changed();
+      return true;
+    },
+    /** The wake is confirmed (or there was nothing to wake): only now does the entry leave. */
+    remove(pid, start) {
+      const key = keyOf(pid, start);
+      if (key === null || !entries.delete(key)) return false;
+      changed();
+      return true;
     },
     isPaused: (pid, start) => entries.has(keyOf(pid, start)),
     /** Is any of these processes ({ pid, start }) already suspended by an entry (whatever its root)? Suspending it again would need a second resume. */
@@ -83,6 +119,7 @@ function createPauseStore({ now = Date.now, onChange = () => {} } = {}) {
       const ended = [];
       let touched = false;
       for (const [key, e] of [...entries]) {
+        if (e.pending === true) continue;           // its suspend has not answered: nothing is known yet
         const alive = e.pids.filter(aliveMember);
         const root = byPid.get(e.pid);
         const rootAlive = !!root && sameStart(e.start, root.start);
@@ -90,7 +127,12 @@ function createPauseStore({ now = Date.now, onChange = () => {} } = {}) {
           if (alive.length !== e.pids.length) { entries.set(key, { ...e, pids: alive }); touched = true; }
           continue;
         }
-        entries.delete(key);
+        if (alive.length > 0) {
+          // The root left while members are still suspended: the entry STAYS (flagged, narrowed to them) until their wake is confirmed, and is handed
+          // back once; a wake that did not complete clears the flag (`narrow`), so the next sample hands it back again.
+          if (e.orphan === true) continue;
+          entries.set(key, { ...e, orphan: true, pids: alive });
+        } else entries.delete(key);
         touched = true;
         ended.push({ ...e, key, how: root && !rootAlive ? 'reused' : 'gone', alive });
       }
@@ -98,6 +140,8 @@ function createPauseStore({ now = Date.now, onChange = () => {} } = {}) {
       return ended;
     },
     list: () => [...entries].map(([key, e]) => ({ key, ...e })),
+    /** What the panel shows as paused: not the entries still waiting for their suspend to answer. */
+    listConfirmed: () => [...entries].filter(([, e]) => e.pending !== true).map(([key, e]) => ({ key, ...e })),
   };
 }
 

@@ -20,7 +20,7 @@ test('a pause is recorded with the time it was made, and found again by pid and 
   assert.strictEqual(s.isPaused(10, '1001'), false, 'another start is another process');
   assert.strictEqual(s.isPaused(11, '1000'), false);
   t = 9000;
-  assert.deepStrictEqual(s.list(), [{ key: '10:1000', pid: 10, start: '1000', name: 'burn.js', since: 5000, pids: [{ pid: 10, start: '1000' }] }]);
+  assert.deepStrictEqual(s.list(), [{ key: '10:1000', pid: 10, start: '1000', name: 'burn.js', since: 5000, pending: false, pids: [{ pid: 10, start: '1000' }] }]);
 });
 
 test('pausing what is already paused is refused and keeps the first time', () => {
@@ -114,6 +114,9 @@ test('reconcile is PER MEMBER (PR #158 Dexter 6): a root that left while a membe
   assert.strictEqual(ended[0].pid, 23);
   assert.strictEqual(ended[0].how, 'gone');
   assert.deepStrictEqual(ended[0].alive, [{ pid: 24, start: '2000' }]);
+  assert.deepStrictEqual(s.list().map(e => [e.pid, e.orphan, e.pids]), [[23, true, [{ pid: 24, start: '2000' }]]], 'the entry STAYS until the wake is confirmed (write-ahead)');
+  assert.deepStrictEqual(s.reconcile([proc(24, 2000)]), [], 'handed back once');
+  assert.strictEqual(s.remove(23, '1000'), true);
   assert.deepStrictEqual(s.list(), []);
 });
 
@@ -173,6 +176,37 @@ const opArb = fc.oneof(
   fc.record({ op: fc.constant('resume'), id: fc.integer({ min: 1, max: 5 }) }),
   fc.record({ op: fc.constant('table'), alive: fc.subarray([1, 2, 3, 4, 5]), reused: fc.subarray([1, 2, 3, 4, 5]) }),
 );
+
+test('R2-2 write-ahead: a pending entry is recorded at once, blocks a second pause, is not shown as paused, and is not reconciled', () => {
+  const seen = [];
+  const s = createPauseStore({ now: () => 5, onChange: l => seen.push(l.map(e => [e.pid, e.pending])) });
+  assert.deepStrictEqual(s.add(multi(24, [[25, 2000]], 1000), { pending: true }), { ok: true, since: 5 });
+  assert.deepStrictEqual(seen, [[[24, true]]], 'on disk before anything is suspended');
+  assert.deepStrictEqual(s.listConfirmed(), []);
+  assert.strictEqual(s.holdsAny([{ pid: 25, start: '2000' }]), true);
+  assert.deepStrictEqual(s.reconcile([]), [], 'nothing is known until the suspend answers');
+  assert.strictEqual(s.list().length, 1);
+  assert.strictEqual(s.confirm(24, '1000', [{ pid: 24, start: '1000' }]), true);
+  assert.deepStrictEqual(s.listConfirmed().map(e => [e.pid, e.pending, e.pids.length]), [[24, false, 1]]);
+});
+
+test('R2-2: an entry leaves only when remove is asked; narrow keeps what is still suspended and removes an empty set; peek is a copy', () => {
+  const s = createPauseStore();
+  s.add(multi(24, [[25, 2000]], 1000));
+  const copy = s.peek(24, '1000');
+  copy.pids.length = 0;
+  assert.strictEqual(s.peek(24, '1000').pids.length, 2, 'peek hands out a copy');
+  assert.strictEqual(s.peek(99, '1'), null);
+  assert.strictEqual(s.narrow(24, '1000', [{ pid: 25, start: '2000' }]), true);
+  assert.deepStrictEqual(s.peek(24, '1000').pids, [{ pid: 25, start: '2000' }]);
+  assert.strictEqual(s.narrow(24, '1000', []), true);
+  assert.strictEqual(s.peek(24, '1000'), null);
+  assert.strictEqual(s.narrow(24, '1000', []), false);
+  assert.strictEqual(s.remove(24, '1000'), false);
+  assert.strictEqual(s.confirm(24, '1000', [{ pid: 24, start: '1000' }]), false);
+});
+
+// ---- the properties
 
 test('property: against a plain model, the store holds exactly the paused-and-not-yet-ended set, and every pause is accounted for once', () => {
   fc.assert(fc.property(fc.array(opArb, { maxLength: 60 }), (ops) => {

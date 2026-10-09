@@ -53,7 +53,7 @@ function createResourcesService({
   // Pause / Resume (#19): `suspend(action, [{ pid, start }])` -> results (host/process-suspend.js suspendVerified with a PowerShell exec). With none,
   // Pause is refused and no row offers it. `pauseNote`: a sentence shown next to Pause (what the CLI does with a long-suspended shell), or null.
   suspend = null, pauseNote = null,
-  // The paused set on disk (host/pause-persist.js): { save(list), takeDead() }. With none, a crash leaves what it paused frozen.
+  // The paused set on disk (host/pause-persist.js): { save(list), async takeDead() -> { entries, release() } }. With none, a crash leaves what it paused frozen.
   pausePersist = null,
 }) {
   let minimised = false;
@@ -297,7 +297,7 @@ function createResourcesService({
       const list = tabList().map(t => ({ key: t.key, label: t.label, hostPid: hostOfPort(proven, t.port) }));
       built = model.buildModel({
         sample: snap.sample, prev: snap.prev, cores, tabs: list, hosts: proven,
-        installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPid, labelOf, paused: pauseStore.list(), pauseOffered: !!suspend,
+        installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPid, labelOf, paused: pauseStore.listConfirmed(), pauseOffered: !!suspend,
       });
     }
 
@@ -478,11 +478,12 @@ function createResourcesService({
     resumeAll: (opts) => (pauser ? pauser.resumeAll(opts) : Promise.resolve({ resumed: 0, failed: 0 })),
     /** Is anything paused from this window right now, or a pause still being made? */
     hasPaused: () => pauseStore.list().length > 0 || (!!pauser && pauser.pending() > 0),
-    /** At start: wake what a dead run of the app left suspended (its file, host/pause-persist.js), by proved starts. */
+    /** At start, and on a timer: wake what a dead run of the app (or a sibling window that died) left suspended (its file, host/pause-persist.js), by proved starts. */
     async wakeLeftover() {
       if (!pauser || !pausePersist) return { stuck: 0 };
-      const res = await pauser.wakeStale(pausePersist.takeDead());
-      pausePersist.save(pauseStore.list());
+      const dead = await pausePersist.takeDead();
+      const res = await pauser.wakeStale(dead.entries);   // recorded here first, woken, removed from the store once confirmed
+      dead.release();                                     // only now do the dead owners' files go (a throw above leaves them)
       return res;
     },
   };
