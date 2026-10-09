@@ -35,23 +35,32 @@ const reasonText = reason => TEXT[reason] || stopText(reason);
 const asKey = r => (r && Number.isInteger(r.pid) ? keyOf(r.pid, r.startTime) : null);
 const asTarget = r => ({ pid: r.pid, start: r.start });
 
-function createPauser({ readProcs, hostPids, suspend, store, log = () => {} }) {
+function createPauser({ readProcs, hostPids, suspend, store, log = () => {}, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const busy = new Set();      // pids of the subtrees being paused or resumed right now
+  const inflight = new Set();  // the pauses still running: a quit waits for them (a suspend that lands after the quit's wake-up is never woken)
 
+  // A run that threw says nothing about what it did first: UNKNOWN, not "nothing was suspended" (host/process-suspend.js).
   const run = async (action, targets) => {
     try { return await suspend(action, targets); } catch (err) {
-      return targets.map(t => ({ pid: t.pid, status: 'failed', text: (err && err.message) || 'the suspend could not be run' }));
+      return targets.map(t => ({ pid: t.pid, status: 'failed', unknown: true, text: (err && err.message) || 'the suspend could not be run' }));
     }
   };
   const refuse = (reason, extra) => ({ ok: false, reason, text: reasonText(reason), ...extra });
 
-  // Wake what was suspended, by the start each was proved with; extras carry the start the script read.
-  const wake = async (done) => {
-    const targets = done.filter(r => typeof r.start === 'string').map(r => ({ pid: r.pid, start: r.start }));
-    return targets.length ? run('resume', targets) : [];
+  // Wake `list` ([{ pid, start }], each by the start it was proved with). -> the ones that could NOT be woken ('failed'): still suspended.
+  const wake = async (list) => {
+    const targets = list.filter(t => typeof t.start === 'string').map(t => ({ pid: t.pid, start: t.start }));
+    if (!targets.length) return [];
+    const res = await run('resume', targets);
+    return targets.filter(t => (res.find(r => r.pid === t.pid) || { status: 'failed' }).status === 'failed');
+  };
+  // Never leave a frozen pid unrecorded (PR #158 Dexter 2 / 9, Miguel Y1): what could not be woken stays in the store, root-less if need be,
+  // so Resume, a quit and the next start can try again.
+  const keep = (root, stuck) => {
+    if (stuck.length) store.add({ pid: root.pid, start: root.start, name: root.name, since: root.since, pids: stuck }, { rootInSet: false });
   };
 
-  async function pause(request) {
+  async function pauseBody(request) {
     const key = asKey(request);
     if (key === null) return refuse('invalid');
     if (busy.has(request.pid)) return refuse('busy');
@@ -76,36 +85,48 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {} }) {
       });
       const mine = results.find(r => r.pid === d.target.pid && r.extra !== true);
       const suspended = results.filter(r => r.status === 'done');
+      // What the script may have suspended: what it said it did, and every asked process it said NOTHING about (a cutoff, a run that threw).
+      const touched = results.filter(r => r.status === 'done' || (r.unknown === true && r.extra !== true));
+      const root = { pid: d.target.pid, start: d.target.start, name: d.target.name };
+      const stuckText = stuck => (stuck.length ? `; PID ${stuck.map(t => t.pid).join(', ')} could not be woken again` : '');
       if (!mine || mine.status !== 'done') {
-        if (suspended.length) await wake(suspended);
-        if (mine && (mine.status === 'gone' || mine.status === 'reused')) return refuse(mine.status);
-        return refuse('suspend-failed', { text: `${reasonText('suspend-failed')}${mine && mine.text ? `: ${mine.text}` : ''}` });
-      }
-      // A child that exited meanwhile ('gone') is fine; one that refused, or is another process now, makes the pause half done.
-      const bad = results.filter(r => r.pid !== d.target.pid && (r.status === 'failed' || r.status === 'reused'));
-      if (bad.length) {
-        const back = await wake(suspended);
-        const stuck = suspended.filter(r => !back.some(b => b.pid === r.pid && (b.status === 'done' || b.status === 'gone')) ).map(r => r.pid);
-        const why = bad[0].text ? `: ${bad[0].text}` : '';
-        log(`[pause] rolled back: PID ${bad[0].pid} ${bad[0].status}${why}${stuck.length ? `; still suspended: ${stuck.join(', ')}` : ''}`);
+        const stuck = await wake(touched);
+        keep(root, stuck);
+        if (mine && (mine.status === 'gone' || mine.status === 'reused') && !stuck.length) return refuse(mine.status);
         return refuse('suspend-failed', {
-          text: `${reasonText('suspend-failed')} (PID ${bad[0].pid} could not be suspended${why})${stuck.length ? `; PID ${stuck.join(', ')} could not be woken again` : ''}`,
-          ...(stuck.length ? { stuck } : {}),
+          text: `${reasonText('suspend-failed')}${mine && mine.text ? `: ${mine.text}` : ''}${stuckText(stuck)}`,
+          ...(stuck.length ? { stuck: stuck.map(t => t.pid) } : {}),
         });
       }
-      const added = store.add({
-        pid: d.target.pid, start: d.target.start, name: d.target.name,
-        pids: suspended.filter(r => typeof r.start === 'string').map(r => ({ pid: r.pid, start: r.start })),
-      });
+      // A child that exited meanwhile ('gone') is fine; one that refused, said nothing, or is another process now makes the pause half done.
+      const bad = results.filter(r => r.pid !== d.target.pid && r.extra !== true && (r.status === 'failed' || r.status === 'reused'));
+      if (bad.length) {
+        const stuck = await wake(touched);
+        keep(root, stuck);
+        const why = bad[0].text ? `: ${bad[0].text}` : '';
+        log(`[pause] rolled back: PID ${bad[0].pid} ${bad[0].status}${why}${stuck.length ? `; still suspended: ${stuck.map(t => t.pid).join(', ')}` : ''}`);
+        return refuse('suspend-failed', {
+          text: `${reasonText('suspend-failed')} (PID ${bad[0].pid} could not be suspended${why})${stuckText(stuck)}`,
+          ...(stuck.length ? { stuck: stuck.map(t => t.pid) } : {}),
+        });
+      }
+      const added = store.add({ ...root, pids: suspended.filter(r => typeof r.start === 'string').map(r => ({ pid: r.pid, start: r.start })) });
       if (!added.ok) {
-        await wake(suspended);
+        keep(root, await wake(suspended));
         return refuse(added.reason === 'already' ? 'already' : 'suspend-failed');
       }
-      return { ok: true, pid: d.target.pid, name: d.target.name, since: store.list().find(e => e.pid === d.target.pid && e.start === d.target.start).since };
+      return { ok: true, pid: d.target.pid, name: d.target.name, since: added.since };
     } finally {
       busy.delete(request.pid);
       for (const pid of held) busy.delete(pid);
     }
+  }
+
+  function pause(request) {
+    const p = pauseBody(request);
+    inflight.add(p);
+    p.then(() => inflight.delete(p), () => inflight.delete(p));
+    return p;
   }
 
   async function resume(request) {
@@ -133,19 +154,57 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {} }) {
     }
   }
 
-  // The app is quitting: wake everything this window paused, so a quit never leaves a process frozen with nobody to wake it.
-  async function resumeAll() {
+  // The app is quitting: wake everything this window paused, so a quit never leaves a process frozen with nobody to wake it. A pause still in
+  // flight is waited for first (its suspend would otherwise land after this wake-up). All entries at once, and no longer than `deadlineMs` in
+  // all (PR #158 Miguel Y2): the quit is held for this and must not hang on a PowerShell that does not answer. -> { resumed, failed, timedOut?, left? }
+  async function resumeAll({ deadlineMs = 10000 } = {}) {
     let resumed = 0;
     let failed = 0;
-    for (const e of store.list()) {
-      const r = await resume({ pid: e.pid, startTime: e.start });
-      if (r.ok) resumed++;
-      else if (r.reason === 'resume-failed') failed++;
-    }
-    return { resumed, failed };
+    const work = (async () => {
+      await Promise.allSettled([...inflight]);
+      await Promise.all(store.list().map(async (e) => {
+        const r = await resume({ pid: e.pid, startTime: e.start });
+        if (r.ok) resumed++;
+        else if (r.reason === 'resume-failed') failed++;
+      }));
+      return 'done';
+    })();
+    let timer;
+    const cutoff = new Promise((res) => { timer = setTimer(() => res('timeout'), deadlineMs); });
+    const how = await Promise.race([work, cutoff]);
+    clearTimer(timer);
+    if (how === 'timeout') log(`[pause] quit: the wake-up did not finish in ${deadlineMs} ms; ${store.list().length} still recorded`);
+    return how === 'timeout' ? { resumed, failed, timedOut: true, left: store.list().length } : { resumed, failed };
   }
 
-  return { pause, resume, resumeAll };
+  // Wake `pids` of an entry whose root is gone, or that an earlier run left behind: each by its proved start (a pid that is another process
+  // now answers 'reused', nothing is touched). What could not be woken is recorded again.
+  async function wakeEntry(e, pids) {
+    const stuck = await wake(pids);
+    keep({ pid: e.pid, start: e.start, name: e.name, since: e.since }, stuck);
+    return stuck;
+  }
+  /** Members of ended entries whose root left but which are still alive and suspended (host/pause-state.js reconcile). */
+  async function wakeOrphans(ended) {
+    let woken = 0;
+    let stuck = 0;
+    for (const e of Array.isArray(ended) ? ended : []) {
+      if (!Array.isArray(e.alive) || e.alive.length === 0) continue;
+      const left = await wakeEntry(e, e.alive);
+      woken += e.alive.length - left.length;
+      stuck += left.length;
+      log(`[pause] ${e.alive.length} suspended process(es) of PID ${e.pid} outlived it: ${e.alive.length - left.length} woken, ${left.length} still suspended`);
+    }
+    return { woken, stuck };
+  }
+  /** Entries a dead run of the app left on disk (host/pause-persist.js takeDead): wake them all. */
+  async function wakeStale(entries) {
+    let stuck = 0;
+    for (const e of Array.isArray(entries) ? entries : []) stuck += (await wakeEntry(e, e.pids)).length;
+    return { stuck };
+  }
+
+  return { pause, resume, resumeAll, wakeOrphans, wakeStale, pending: () => inflight.size };
 }
 
 module.exports = { createPauser, reasonText };

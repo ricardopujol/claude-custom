@@ -15,7 +15,7 @@ const entry = (pid, start = 1000, extra = {}) => ({ pid, start: String(start), n
 test('a pause is recorded with the time it was made, and found again by pid and start', () => {
   let t = 5000;
   const s = createPauseStore({ now: () => t });
-  assert.deepStrictEqual(s.add(entry(10, 1000)), { ok: true });
+  assert.deepStrictEqual(s.add(entry(10, 1000)), { ok: true, since: 5000 });
   assert.strictEqual(s.isPaused(10, '1000'), true);
   assert.strictEqual(s.isPaused(10, '1001'), false, 'another start is another process');
   assert.strictEqual(s.isPaused(11, '1000'), false);
@@ -104,6 +104,68 @@ test('holdsAny: a process in the set of any paused entry is held, by pid AND sta
   assert.strictEqual(s.holdsAny(null), false);
 });
 
+const multi = (root, kids, start = 1000) => ({ pid: root, start: String(start), name: 'sh', pids: [{ pid: root, start: String(start) }, ...kids.map(([pid, st]) => ({ pid, start: String(st) }))] });
+
+test('reconcile is PER MEMBER (PR #158 Dexter 6): a root that left while a member is alive ends the entry WITH that member listed, to be woken', () => {
+  const s = createPauseStore();
+  s.add(multi(23, [[24, 2000]]));
+  const ended = s.reconcile([proc(24, 2000)]);
+  assert.strictEqual(ended.length, 1);
+  assert.strictEqual(ended[0].pid, 23);
+  assert.strictEqual(ended[0].how, 'gone');
+  assert.deepStrictEqual(ended[0].alive, [{ pid: 24, start: '2000' }]);
+  assert.deepStrictEqual(s.list(), []);
+});
+
+test('reconcile: a root whose pid is another process now ends as reused, its members still listed if alive with their proved starts', () => {
+  const s = createPauseStore();
+  s.add(multi(23, [[24, 2000], [25, 3000]]));
+  const ended = s.reconcile([proc(23, 9999999999), proc(24, 2000), proc(25, 3999999999)]);
+  assert.strictEqual(ended[0].how, 'reused');
+  assert.deepStrictEqual(ended[0].alive, [{ pid: 24, start: '2000' }], 'a member whose pid was reused is not ours');
+});
+
+test('reconcile: a live root keeps its entry, narrowed to the members still alive; it ends only when none is', () => {
+  const s = createPauseStore();
+  s.add(multi(23, [[24, 2000]]));
+  assert.deepStrictEqual(s.reconcile([proc(23, 1000)]), [], 'the child left, the root is still suspended');
+  assert.deepStrictEqual(s.list()[0].pids, [{ pid: 23, start: '1000' }]);
+  const ended = s.reconcile([]);
+  assert.deepStrictEqual(ended.map(e => [e.pid, e.alive.length]), [[23, 0]]);
+});
+
+test('a narrowed entry (root gone from the set after a partial wake) is kept while its members live', () => {
+  const s = createPauseStore();
+  s.add(multi(23, [[24, 2000]]));
+  const taken = s.take(23, '1000');
+  s.restore({ ...taken, pids: [{ pid: 24, start: '2000' }] });
+  assert.deepStrictEqual(s.reconcile([proc(23, 1000), proc(24, 2000)]), []);
+  assert.deepStrictEqual(s.list()[0].pids, [{ pid: 24, start: '2000' }]);
+  const ended = s.reconcile([proc(23, 1000)]);
+  assert.deepStrictEqual(ended.map(e => e.how), ['gone'], 'the last member left');
+});
+
+test('add accepts a root-less set only when asked (the stuck members of a failed wake), and keeps a given time', () => {
+  const s = createPauseStore({ now: () => 9 });
+  const e = { pid: 23, start: '1000', name: 'sh', pids: [{ pid: 24, start: '2000' }] };
+  assert.deepStrictEqual(s.add(e), { ok: false, reason: 'invalid' });
+  assert.deepStrictEqual(s.add({ ...e, since: 4 }, { rootInSet: false }), { ok: true, since: 4 });
+  assert.strictEqual(s.list()[0].since, 4);
+});
+
+test('onChange hears every change with the whole set, and a throwing listener never breaks the store', () => {
+  const seen = [];
+  const s = createPauseStore({ onChange: list => seen.push(list.map(e => e.pid)) });
+  s.add(entry(10)); s.add(entry(11));
+  const t = s.take(10, '1000');
+  s.restore(t);
+  s.reconcile([proc(10, 1000)]);
+  s.reconcile([proc(10, 1000)]);        // nothing changed: no call
+  assert.deepStrictEqual(seen, [[10], [10, 11], [11], [11, 10], [10]]);
+  const bad = createPauseStore({ onChange() { throw new Error('disk full'); } });
+  assert.deepStrictEqual(bad.add(entry(5)).ok, true);
+});
+
 // ---- the properties --------------------------------------------------------------------------------------------------
 
 const opArb = fc.oneof(
@@ -144,4 +206,31 @@ test('property: against a plain model, the store holds exactly the paused-and-no
     // Accounting: pauses = ends + still paused.
     assert.strictEqual(paused.length, ends.length + model.size);
   }), { numRuns: 300 });
+});
+
+test('property: with multi-member entries, a member that is alive (with its start) is never forgotten: it stays in an entry or comes back in `alive`', () => {
+  fc.assert(fc.property(
+    fc.array(fc.record({ root: fc.integer({ min: 1, max: 3 }), kids: fc.subarray([11, 12, 13]) }), { minLength: 1, maxLength: 3 }),
+    fc.array(fc.record({ alive: fc.subarray([1, 2, 3, 11, 12, 13]) }), { minLength: 1, maxLength: 6 }),
+    (adds, tables) => {
+      const s = createPauseStore();
+      const members = new Set();
+      for (const a of adds) {
+        const kids = a.kids.filter(k => !members.has(k));
+        if (members.has(a.root) || !s.add(multi(a.root, kids.map(k => [k, k * 1000]), a.root * 1000)).ok) continue;
+        members.add(a.root); kids.forEach(k => members.add(k));
+      }
+      for (const t of tables) {
+        const startOf = pid => (pid < 10 ? pid * 1000 : pid * 1000);
+        const kept = new Set();
+        const ended = s.reconcile(t.alive.map(pid => proc(pid, startOf(pid))));
+        const woken = new Set(ended.flatMap(e => e.alive.map(m => m.pid)));
+        for (const e of s.list()) for (const p of e.pids) kept.add(p.pid);
+        for (const pid of members) {
+          if (!t.alive.includes(pid)) { members.delete(pid); continue; }
+          assert.ok(kept.has(pid) || woken.has(pid), 'member ' + pid + ' is alive and must be kept or handed back');
+          if (woken.has(pid)) members.delete(pid);
+        }
+      }
+    }), { numRuns: 300 });
 });

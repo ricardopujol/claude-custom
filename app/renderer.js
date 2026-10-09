@@ -3917,7 +3917,7 @@ document.addEventListener('click', (e) => {
   typeCommand(command, (r) => {
     // typed and not submitted (the gate said wait) is NOT a pause either: nothing was asked of the model
     if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
-  }, undefined, { submit: true, typeOnly: false });
+  }, window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false });
 });
 
 function countBadgeHtml(agent, counts) {
@@ -4177,7 +4177,7 @@ function renderRoster() {
   const rows = [...roster.values()].sort((a, b) =>
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
   const counts = instanceCounts(latestParty);
-  agentPauses.seen(counts, Date.now());
+  agentPauses.seen(counts, Date.now(), { turn: sessionTurn });
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
   // ever draws a hide flag on an awake agent. The host stays authoritative:
@@ -6511,6 +6511,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'session') {
+    agentPauses.sessionIs(msg.sessionId);     // a different session id (after /clear) forgets every agent pause: its background agents are gone
     occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     return;
@@ -6583,6 +6584,10 @@ function handleControl(msg) {
     // `mode`, so calling renderMode(undefined) here hid the badge a second after
     // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
+    // Our Pause's TaskStop, seen as the CLI's own tool call (app/agent-pause-display.js: "paused" needs it).
+    for (const p of Array.isArray(msg.running) ? msg.running : []) {
+      if (p && p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt);
+    }
     latestParty = msg.party || [];
     renderParty(msg.party);
     // The ×N badge is derived from `party`, which just changed; the roster map

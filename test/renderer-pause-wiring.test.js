@@ -37,7 +37,7 @@ test('a quit wakes whatever this window paused: will-quit is held once while res
   const body = MAIN.slice(MAIN.lastIndexOf("app.on('will-quit'", at), MAIN.indexOf('});', at) + 3);
   assert.match(body, /pausedWoken/);
   assert.match(body, /e\.preventDefault\(\)/);
-  assert.match(body, /resources\.resumeAll\(\)\.catch\(\(\) => \{\}\)\.finally\(\(\) => app\.quit\(\)\)/);
+  assert.match(body, /resources\.resumeAll\(\{ deadlineMs: 10000 \}\)\.catch\(\(\) => \{\}\)\.finally\(\(\) => app\.quit\(\)\)/);
 });
 
 test('the probe can quit the way a closed window does, so a quit with a paused process is testable (the hard exit skips will-quit)', () => {
@@ -72,7 +72,8 @@ test('the agent card\'s Pause / Resume: the script loads before renderer.js, the
   const code = strip(RAW);
   assert.match(code, /const agentPauses = window\.agentPauseDisplay\.createAgentPauses\(\)/);
   assert.match(code, /agentPauseHtml\(r\.agent, counts\)/, 'the live roster card carries the control');
-  assert.match(code, /agentPauses\.seen\(counts, Date\.now\(\)\)/, 'every roster draw is where an agent is SEEN stopped');
+  // PR #158 Dexter 1 is pinned through the REAL planTyping in test/agent-pause-display.test.js; here only that the click names that kind.
+  assert.match(code, /typeCommand\(command, [\s\S]*?window\.agentPauseDisplay\.INPUT_KIND, \{ submit: true, typeOnly: false \}\)/);
   // the click: validated, then typed with the gate (submit true, not type-only), and a refusal puts the phase back
   const click = code.slice(code.indexOf("closest('.agent-pause-btn')"), code.indexOf('function countBadgeHtml'));
   assert.match(click, /window\.agentPauseDisplay\.clickAction\(b\.dataset\)/);
@@ -81,4 +82,18 @@ test('the agent card\'s Pause / Resume: the script loads before renderer.js, the
   assert.match(click, /typeCommand\(command, [\s\S]*\{ submit: true, typeOnly: false \}\)/);
   assert.match(click, /agentPauses\.refused\(act\.agent\)/);
   assert.match(click, /r\.submitted !== true/, 'typed-but-not-sent is not a Pause either');
+});
+
+
+test("main keeps the paused set on disk and wakes a dead run's leftovers at start", () => {
+  assert.ok(MAIN.includes("pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, isAlive:"));
+  assert.ok(MAIN.includes('resources.wakeLeftover().catch'));
+});
+
+test('the agent pause machine is fed what it needs: the turn state, the CLI\'s TaskStop call, and the session id', () => {
+  const code = strip(RAW);
+  assert.ok(code.includes('agentPauses.seen(counts, Date.now(), { turn: sessionTurn })'), 'the idle-time timeout needs the turn');
+  assert.ok(code.includes("p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt)"), 'our TaskStop, seen in the hook feed');
+  assert.ok(code.includes('agentPauses.sessionIs(msg.sessionId)'), 'a new session (/clear) forgets every pause');
+  assert.ok(code.includes("window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false }"), 'the line is typed with the kind planTyping accepts');
 });

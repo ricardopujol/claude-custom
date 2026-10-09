@@ -97,6 +97,7 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
 const { suspendVerified } = require('../host/process-suspend');
+const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -1771,6 +1772,8 @@ app.whenReady().then(async () => {
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
     // Pause / Resume (#19): NtSuspendProcess / NtResumeProcess on a handle that re-proves pid and start time (host/process-suspend.js).
     suspend: (action, targets) => suspendVerified(action, targets, { exec: createPowerShellExec(20000) }),
+    // What is paused is kept on disk, so a crash can be undone at the next start (host/pause-persist.js).
+    pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, isAlive: (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } }, log: (...a) => console.log(...a) }),
     // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
     // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
     // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
@@ -1798,6 +1801,7 @@ app.whenReady().then(async () => {
   watchChip({ file: path.join(__dirname, '..', '.harness', 'state', `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
+  resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
@@ -1845,7 +1849,7 @@ app.on('will-quit', (e) => {
   if (!resources || pausedWoken || !resources.hasPaused()) return;
   pausedWoken = true;
   e.preventDefault();
-  resources.resumeAll().catch(() => {}).finally(() => app.quit());
+  resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
 });
 app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).

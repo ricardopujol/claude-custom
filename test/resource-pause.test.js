@@ -8,6 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { createPauser } = require('../host/resource-pause');
 const { createPauseStore } = require('../host/pause-state');
+const { suspendVerified } = require('../host/process-suspend');
 
 const INSTALL = 'C:\\r\\dev';
 const EXE = `${INSTALL}\\node_modules\\electron\\dist\\electron.exe`;
@@ -163,13 +164,14 @@ test('pause: a rollback that fails is said, with the pids left suspended', async
   assert.match(r.text, /24/);
 });
 
-test('pause: a suspend that throws is a failure, not a crash', async () => {
+test('pause: a suspend that throws is a failure, not a crash, and what it may have suspended stays RECORDED (nothing frozen is forgotten)', async () => {
   const { store, pauser } = setup({ suspend: async () => { throw new Error('powershell died'); } });
   const r = await pauser.pause({ pid: 24, startTime: '5100' });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, 'suspend-failed');
   assert.match(r.text, /powershell died/);
-  assert.deepStrictEqual(store.list(), []);
+  assert.deepStrictEqual(r.stuck, [24, 25]);
+  assert.deepStrictEqual(store.list()[0].pids, [{ pid: 24, start: '5100' }, { pid: 25, start: '5200' }]);
 });
 
 // ---- resume ------------------------------------------------------------------------------------------------------------

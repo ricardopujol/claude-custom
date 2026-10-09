@@ -163,3 +163,67 @@ test('hasPaused: false at the start, true while something is paused, false after
   await r.svc.resume({ pid: 23, startTime: r.procs[3].start });
   assert.strictEqual(r.svc.hasPaused(), false);
 });
+
+// ---- PR #158 review -------------------------------------------------------------------------------------------------
+
+function persistFake(dead = []) {
+  const saved = [];
+  return { saved, save: list => saved.push(list.map(e => [e.pid, e.pids.map(p => p.pid)])), takeDead: () => dead };
+}
+test('Miguel Y4: every change to the paused set is saved (the next start can undo a crash)', async () => {
+  const persist = persistFake();
+  const sent = [];
+  const svc = S.createResourcesService({
+    sampler: { setWanted: () => {}, sampleNow: async () => world(), snapshot: () => null },
+    tabs: () => [{ key: 'k', cwd: 'C:' + String.fromCharCode(92) + 'r' + String.fromCharCode(92) + 'dev', branch: 'main', port: 7701 }],
+    claims: () => [{ pid: 20, port: 7701, cwd: 'C:' + String.fromCharCode(92) + 'r' + String.fromCharCode(92) + 'dev', processStartedAt: world()[1].start }],
+    installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c, send: p => sent.push(p), kill: async () => [], now: () => 5000,
+    suspend: async (a, t) => t.map(x => ({ pid: x.pid, status: 'done' })), pausePersist: persist,
+  });
+  svc.onUpdate(snap(2));
+  await svc.pause({ pid: 23, startTime: world()[3].start });
+  assert.deepStrictEqual(persist.saved.at(-1), [[23, [23, 24]]]);
+  await svc.resume({ pid: 23, startTime: world()[3].start });
+  assert.deepStrictEqual(persist.saved.at(-1), [], 'resumed: the file is emptied');
+});
+
+test('Miguel Y4: at start, what a dead run left suspended is woken by its proved starts, and the file is rewritten', async () => {
+  const persist = persistFake([{ pid: 23, start: '1', name: 'x', pids: [{ pid: 23, start: '1' }, { pid: 24, start: '2' }] }]);
+  const calls = [];
+  const svc = S.createResourcesService({
+    sampler: { setWanted: () => {}, sampleNow: async () => world(), snapshot: () => null },
+    tabs: () => [], claims: () => [], installDirs: () => [INSTALL], ownPid: 10, cores: 4, labelOf: c => c, send: () => {}, kill: async () => [], now: () => 5000,
+    suspend: async (a, t) => { calls.push([a, t.map(x => x.pid + ':' + x.start)]); return t.map(x => ({ pid: x.pid, status: 'done' })); }, pausePersist: persist,
+  });
+  assert.deepStrictEqual(await svc.wakeLeftover(), { stuck: 0 });
+  assert.deepStrictEqual(calls, [['resume', ['23:1', '24:2']]]);
+  assert.deepStrictEqual(persist.saved.at(-1), []);
+});
+
+test('wakeLeftover with no persistence or no suspend wired does nothing', async () => {
+  assert.deepStrictEqual(await rig().svc.wakeLeftover(), { stuck: 0 });
+  assert.deepStrictEqual(await rig({ noSuspend: true }).svc.wakeLeftover(), { stuck: 0 });
+});
+
+test('Dexter 6: a paused root that leaves the table while its child stays is NOT forgotten: the child is woken by its proved start', async () => {
+  const r = rig();
+  r.svc.onUpdate(snap(2));
+  await r.svc.pause({ pid: 23, startTime: r.procs[3].start });
+  r.calls.length = 0;
+  r.svc.onUpdate(snap(3, world().filter(p => p.pid !== 23)));
+  await new Promise(res => setImmediate(res));
+  assert.deepStrictEqual(r.calls, [['resume', [24]]]);
+  assert.strictEqual(r.svc.hasPaused(), false);
+});
+
+test('Dexter 7: hasPaused is true while a pause is still being made (a quit then waits for it)', async () => {
+  let release;
+  const gate = new Promise(res => { release = res; });
+  const r = rig({ suspend: async (a, t) => { await gate; return t.map(x => ({ pid: x.pid, status: 'done' })); } });
+  r.svc.onUpdate(snap(2));
+  const p = r.svc.pause({ pid: 23, startTime: r.procs[3].start });
+  await new Promise(res => setImmediate(res));
+  assert.strictEqual(r.svc.hasPaused(), true);
+  release();
+  await p;
+});

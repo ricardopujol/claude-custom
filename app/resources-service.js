@@ -53,6 +53,8 @@ function createResourcesService({
   // Pause / Resume (#19): `suspend(action, [{ pid, start }])` -> results (host/process-suspend.js suspendVerified with a PowerShell exec). With none,
   // Pause is refused and no row offers it. `pauseNote`: a sentence shown next to Pause (what the CLI does with a long-suspended shell), or null.
   suspend = null, pauseNote = null,
+  // The paused set on disk (host/pause-persist.js): { save(list), takeDead() }. With none, a crash leaves what it paused frozen.
+  pausePersist = null,
 }) {
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
@@ -60,7 +62,7 @@ function createResourcesService({
   let chipOn = chipStore.read() !== false;   // ON by default: only a stored real `false` turns it off
   let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
-  const pauseStore = createPauseStore({ now });
+  const pauseStore = createPauseStore({ now, onChange: (list) => { if (pausePersist) pausePersist.save(list); } });
   const history = createHistory();   // the one-hour sparklines' data: in memory only, starts empty after a restart
   let lastRecordedSample = null;   // the sample object a point was last made from: a re-sent old one makes none
   let lastRecordMono = -Infinity;
@@ -285,7 +287,11 @@ function createResourcesService({
     let built = null;
     // A paused process that left the table (or whose pid is another process now) is no longer paused. Only a sample that was really read
     // can say so: an expired or machine-only one forgets nothing.
-    if (snap.mode === 'full' && snap.sample && snap.expired !== true) pauseStore.reconcile(snap.sample.procs);
+    if (snap.mode === 'full' && snap.sample && snap.expired !== true) {
+      // A root that left while members of its set are still suspended: they are woken (by their proved starts), never forgotten (#158 Dexter 6).
+      const ended = pauseStore.reconcile(snap.sample.procs);
+      if (pauser && ended.some(e => e.alive.length > 0)) pauser.wakeOrphans(ended).catch(err => log('[pause] waking orphans threw:', err && err.message));
+    }
     if (snap.mode === 'full' && snap.sample) {
       const proven = tree.provenHosts(snap.sample.procs, claims());
       const list = tabList().map(t => ({ key: t.key, label: t.label, hostPid: hostOfPort(proven, t.port) }));
@@ -469,9 +475,16 @@ function createResourcesService({
     pause,
     resume,
     /** The app is quitting: wake every process this window paused. */
-    resumeAll: () => (pauser ? pauser.resumeAll() : Promise.resolve({ resumed: 0, failed: 0 })),
-    /** Is anything paused from this window right now? */
-    hasPaused: () => pauseStore.list().length > 0,
+    resumeAll: (opts) => (pauser ? pauser.resumeAll(opts) : Promise.resolve({ resumed: 0, failed: 0 })),
+    /** Is anything paused from this window right now, or a pause still being made? */
+    hasPaused: () => pauseStore.list().length > 0 || (!!pauser && pauser.pending() > 0),
+    /** At start: wake what a dead run of the app left suspended (its file, host/pause-persist.js), by proved starts. */
+    async wakeLeftover() {
+      if (!pauser || !pausePersist) return { stuck: 0 };
+      const res = await pauser.wakeStale(pausePersist.takeDead());
+      pausePersist.save(pauseStore.list());
+      return res;
+    },
   };
 }
 

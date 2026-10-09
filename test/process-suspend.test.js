@@ -76,12 +76,27 @@ test('the script reads every answer line it prints back: done, gone, reused, fai
   ]);
 });
 
-test('no answer, or an answer cut off before END, is a failure for the process not reported: never a silent success', async () => {
+test('no answer is UNKNOWN, not "not suspended": the target may have been suspended (PR #158 Dexter 2)', async () => {
   const targets = [{ pid: 5, start: '1' }, { pid: 6, start: '1' }];
-  assert.deepStrictEqual(await S.suspendVerified('suspend', targets, { exec: async () => '5 done\n6 done\n' }),
-    targets.map(t => ({ pid: t.pid, status: 'failed', text: 'no answer from the suspend' })));
+  assert.deepStrictEqual(await S.suspendVerified('suspend', targets, { exec: async () => '' }),
+    targets.map(t => ({ pid: t.pid, status: 'failed', unknown: true, text: 'no answer from the suspend' })));
   assert.deepStrictEqual(await S.suspendVerified('suspend', targets, { exec: async () => '5 done\nEND\n' }),
-    [{ pid: 5, status: 'done' }, { pid: 6, status: 'failed', text: 'no answer from the suspend' }]);
+    [{ pid: 5, status: 'done' }, { pid: 6, status: 'failed', unknown: true, text: 'no answer from the suspend' }]);
+});
+
+test('an answer cut off by the timeout still names what it suspended: every "done" line before the cutoff is believed', async () => {
+  const targets = [{ pid: 24, start: '1' }, { pid: 25, start: '2' }];
+  const r = await S.suspendVerified('suspend', targets, { exec: async () => '24 done\n24 start 1\n' });
+  assert.deepStrictEqual(r, [{ pid: 24, status: 'done', start: '1' }, { pid: 25, status: 'failed', unknown: true, text: 'no answer from the suspend' }]);
+  const both = await S.suspendVerified('suspend', targets, { exec: async () => '24 done\n25 done\n' });
+  assert.deepStrictEqual(both.map(x => x.status), ['done', 'done']);
+  const extra = await S.suspendVerified('suspend', [targets[0]], { exec: async () => '24 done\n99 done\n99 start 7\n' });
+  assert.deepStrictEqual(extra, [{ pid: 24, status: 'done' }, { pid: 99, status: 'done', extra: true, start: '7' }]);
+});
+
+test('a cutoff does NOT make a "gone", "reused" or "failed" believable: only a done is', async () => {
+  const r = await S.suspendVerified('suspend', [{ pid: 5, start: '1' }], { exec: async () => '5 gone\n' });
+  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', unknown: true, text: 'no answer from the suspend' }]);
 });
 
 test('a process the script found itself (started under the root since the list) is reported as extra, never dropped', async () => {
@@ -89,19 +104,19 @@ test('a process the script found itself (started under the root since the list) 
   assert.deepStrictEqual(r, [{ pid: 5, status: 'done' }, { pid: 9, status: 'done', extra: true }, { pid: 10, status: 'failed', extra: true, text: 'denied' }]);
 });
 
-test('an exec that throws gives a failure for every target, with the reason', async () => {
+test('an exec that throws gives an UNKNOWN failure for every target, with the reason', async () => {
   const r = await S.suspendVerified('resume', [{ pid: 5, start: '1' }], { exec: async () => { throw new Error('powershell missing'); } });
-  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', text: 'powershell missing' }]);
+  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', unknown: true, text: 'powershell missing' }]);
 });
 
 test('an exec that throws something without a message still says that it could not run', async () => {
   const r = await S.suspendVerified('resume', [{ pid: 5, start: '1' }], { exec: async () => { throw null; } });
-  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', text: 'the suspend could not be run' }]);
+  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', unknown: true, text: 'the suspend could not be run' }]);
 });
 
 test('answer text is read line by line: a status word inside another line does not count', async () => {
   const r = await S.suspendVerified('suspend', [{ pid: 5, start: '1' }], { exec: async () => 'warning: 5 done maybe\nEND\n' });
-  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', text: 'no answer from the suspend' }]);
+  assert.deepStrictEqual(r, [{ pid: 5, status: 'failed', unknown: true, text: 'no answer from the suspend' }]);
 });
 
 test('the proved start of each process that was suspended rides back, so an extra can be woken through the same proof', async () => {
@@ -119,10 +134,14 @@ test('a start line for a process that was not "done" is ignored: only a suspende
   assert.deepStrictEqual(r, [{ pid: 5, status: 'gone' }]);
 });
 
-test('the script prints the start of every process it suspended, before END', async () => {
-  for (const action of ['suspend', 'resume']) {
-    const { calls, exec } = recording();
-    await S.suspendVerified(action, [{ pid: 5, start: '134000000000000001' }], { exec });
-    assert.ok(calls[0].indexOf('start $($done[$k])') > 0 && calls[0].indexOf('start $($done[$k])') < calls[0].lastIndexOf("'END'"), action);
-  }
+test('the script prints each start the moment it suspends, checks the suspend count, and a resume repeats until nothing is suspended', async () => {
+  const { calls, exec } = recording();
+  await S.suspendVerified('suspend', [{ pid: 5, start: '134000000000000001' }], { exec });
+  assert.ok(calls[0].includes('[Console]::Out.WriteLine("$id start $want")'));
+  assert.match(calls[0], /already suspended/);
+  assert.ok(!calls[0].includes('$done.Keys'), 'no end-of-run start dump: it would be lost to a cutoff');
+  const r = recording();
+  await S.suspendVerified('resume', [{ pid: 5, start: '134000000000000001' }], { exec: r.exec });
+  assert.ok(r.calls[0].includes('for ($i = 0; $i -lt 8; $i++)'));
+  assert.match(r.calls[0], /still suspended after 8 resumes/);
 });

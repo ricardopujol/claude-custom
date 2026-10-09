@@ -15,12 +15,37 @@
  * under the root since the list was read, and afterwards suspends whatever the root's subtree grew in the meantime (a
  * process that started between the list and the suspend). A resume is simpler: waking a process is harmless, so it has no
  * protected scan and always tries every target it is given.
+ *
+ * UNKNOWN IS NOT "NOT SUSPENDED" (PR #158 Dexter 2). The script prints each `<pid> done` the moment it suspends it, and the proved start
+ * right after it, so an answer cut off by the exec timeout still says what it suspended: a `done` line is believed with or without END
+ * (for a suspend, the safe reading is the one that records or wakes the process). A target the script said nothing about, or a run that
+ * threw, is `unknown: true`: it MAY have been suspended, and the caller must wake it, never forget it.
+ *
+ * THE SUSPEND COUNT (PR #158 Dexter 8). NtSuspendProcess nests, so a process already frozen (an earlier window that crashed) would reach
+ * count 2 and one Resume would leave it frozen. A suspend refuses a process whose threads are all already suspended ("already suspended"),
+ * and a resume repeats NtResumeProcess until the threads are no longer all suspended (at most 8 times).
  */
 
 const { validTarget, BELOW_PROT_OWN } = require('./resource-kill');
 
 const START_SLACK = 100000;      // 10 ms in 100 ns ticks: CIM and Get-Process start times differ by a tick (host/resource-tree.js)
 const ACTIONS = { suspend: 'NtSuspendProcess', resume: 'NtResumeProcess' };
+
+// Are all of the process's threads suspended? (WaitReason is only meaningful for a thread in the Wait state.)
+const SUSP = `function Susp($p) {
+  try { $p.Refresh(); $t = @($p.Threads); return (($t.Count -gt 0) -and (@($t | Where-Object { $_.ThreadState -ne 'Wait' -or $_.WaitReason -ne 'Suspended' }).Count -eq 0)) } catch { return $false }
+}`;
+
+const PASS_SUSPEND = `  if (Susp $p) { return "$id failed already suspended" }
+  try { $rc = [NtPause]::NtSuspendProcess($p.Handle) } catch { return "$id failed $($_.Exception.Message)" }
+  if ($rc -ne 0) { return "$id failed NtSuspendProcess returned $rc" }`;
+const PASS_RESUME = `  for ($i = 0; $i -lt 8; $i++) {
+    try { $rc = [NtPause]::NtResumeProcess($p.Handle) } catch { return "$id failed $($_.Exception.Message)" }
+    if ($rc -ne 0) { return "$id failed NtResumeProcess returned $rc" }
+    Start-Sleep -Milliseconds 100
+    if (-not (Susp $p)) { break }
+  }
+  if (Susp $p) { return "$id failed still suspended after 8 resumes" }`;
 
 const HELPER = `Add-Type -TypeDefinition @"
 using System;
@@ -31,15 +56,12 @@ public class NtPause {
 }
 "@`;
 
-// After the answers: the start time each "done" process was proved by, so a process the script found itself (an `extra`) can be
-// woken later through the same proof.
-const STARTS = 'foreach ($k in $done.Keys) { "$k start $($done[$k])" }';
-
 function suspendScript(action, targets) {
-  const nt = ACTIONS[action];
+  const PASS = action === 'resume' ? PASS_RESUME : PASS_SUSPEND;
   const [root, ...rest] = targets;
   const head = `$ErrorActionPreference='SilentlyContinue'
 ${HELPER}
+${SUSP}
 $done = @{}
 $tried = @{}
 function P($id, [long]$want) {
@@ -50,14 +72,15 @@ function P($id, [long]$want) {
   if ($p.HasExited) { return "$id gone" }
   $got = $p.StartTime.ToFileTimeUtc()
   if ([math]::Abs($got - $want) -gt ${START_SLACK}) { return "$id reused" }
-  try { $rc = [NtPause]::${nt}($p.Handle) } catch { return "$id failed $($_.Exception.Message)" }
-  if ($rc -ne 0) { return "$id failed ${nt} returned $rc" }
+${PASS}
   $script:done[$id] = $want
+  # the proved start, printed at once (not at the end): an answer cut off by the timeout still names what it suspended
+  [Console]::Out.WriteLine("$id start $want")
   return "$id done"
 }
 `;
   if (action === 'resume') {
-    return `${head}${targets.map(t => `P ${t.pid} ${t.start}`).join('\n')}\n${STARTS}\n'END'`;
+    return `${head}${targets.map(t => `P ${t.pid} ${t.start}`).join('\n')}\n'END'`;
   }
   const calls = rest.map(t => `  P ${t.pid} ${t.start}`).join('\n');
   return `${head}${BELOW_PROT_OWN}
@@ -68,7 +91,7 @@ if ($bad.Count -gt 0) {
 } else {
   $r = P ${root.pid} ${root.start}
   $r
-  if ($r -like '* done') {
+  if ($r -match '^\d+ done') {
 ${calls}
     for ($pass = 0; $pass -lt 3; $pass++) {
       $more = @(Below $done | Where-Object { -not (Own $_) -and -not (Prot $_) -and -not $tried.ContainsKey($_.id) })
@@ -77,7 +100,6 @@ ${calls}
     }
   }
 }
-${STARTS}
 'END'`;
 }
 
@@ -95,14 +117,14 @@ function parseSuspendOutput(text, targets) {
   }
   const asked = new Set(targets.map(t => t.pid));
   const startOf = (pid, s) => (s.status === 'done' && starts.has(pid) ? { start: starts.get(pid) } : {});
+  // A `done` is believed with or without END; every other answer needs END (a cut-off run says nothing about the rest: UNKNOWN).
+  const believed = s => !!s && (finished || s.status === 'done');
   const out = targets.map((t) => {
     const s = said.get(t.pid);
-    if (!s || !finished) return { pid: t.pid, status: 'failed', text: 'no answer from the suspend' };
+    if (!believed(s)) return { pid: t.pid, status: 'failed', unknown: true, text: 'no answer from the suspend' };
     return { pid: t.pid, status: s.status, ...startOf(t.pid, s), ...(s.text ? { text: s.text } : {}) };
   });
-  if (finished) {
-    for (const [pid, s] of said) if (!asked.has(pid)) out.push({ pid, status: s.status, extra: true, ...startOf(pid, s), ...(s.text ? { text: s.text } : {}) });
-  }
+  for (const [pid, s] of said) if (!asked.has(pid) && believed(s)) out.push({ pid, status: s.status, extra: true, ...startOf(pid, s), ...(s.text ? { text: s.text } : {}) });
   return out;
 }
 
@@ -118,7 +140,7 @@ async function suspendVerified(action, targets, { exec }) {
   }
   let out;
   try { out = await exec(suspendScript(action, list)); } catch (err) {
-    return list.map(t => ({ pid: t.pid, status: 'failed', text: (err && err.message) || 'the suspend could not be run' }));
+    return list.map(t => ({ pid: t.pid, status: 'failed', unknown: true, text: (err && err.message) || 'the suspend could not be run' }));
   }
   return parseSuspendOutput(out, list);
 }
