@@ -1235,6 +1235,15 @@ async function resourcesAct(a) {
     try { result = await resBridge.stopLeftovers(a.act === 'left-stop' ? { rows: [{ pid: a.pid, start: a.start }] } : a.act === 'left-delete' ? { taskLog: a.key } : { group: a.group }); } catch { result = null; }
     resState = D.leftStopResult(resState, result);
   }
+  else if (a.act === 'pause' || a.act === 'resume') {
+    // One at a time: the buttons are disabled while a request is in flight. Main re-checks everything; the page only names the process.
+    if (!resBridge || resState.pauseBusy) return;
+    resState = D.beginPause(resState, a);
+    renderResources();
+    let result;
+    try { result = await resBridge[a.act]({ pid: a.pid, startTime: a.start }); } catch { result = null; }
+    resState = D.pauseResult(resState, a, result, a.act);
+  }
   else if (a.act === 'confirm-stop') {
     const req = resState.confirm;
     // one Stop, one answer: a second press while it is in flight does nothing
@@ -2827,6 +2836,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         };
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
+          pauseScope: typeof window.agentPauseDisplay === 'object' && typeof window.agentPauseDisplay.createAgentPauses === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
           chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
@@ -2835,7 +2845,10 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
             figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
-            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent,
+            pause: (c.querySelector('[data-res-act="pause"]') || { dataset: {} }).dataset.resPid || null,
+            resume: (c.querySelector('[data-res-act="resume"]') || { dataset: {} }).dataset.resPid || null,
+            paused: c.classList.contains('res-paused-row') })),
           // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
           stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
           figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
@@ -3886,6 +3899,27 @@ document.addEventListener('click', (e) => {
   if (b && b.dataset.whereRoot) jumpToFolder(b.dataset.whereRoot).then(() => {}, () => {});
 });
 
+// An agent card's Pause / Resume (BACKLOG #19). The state machine and the markup live in app/agent-pause-display.js; the typing goes through
+// typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
+const agentPauses = window.agentPauseDisplay.createAgentPauses();
+function agentPauseHtml(agent, counts) {
+  return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.agent-pause-btn');
+  const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
+  if (!act) return;
+  const command = window.agentPauseDisplay.commandFor(act.act, act.agent);
+  if (!command || !agentPauses.begin(act.agent, act.act, Date.now())) return;
+  renderRoster();
+  // A Pause that never took effect is called off after the timeout, so the card must be drawn again then.
+  setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
+  typeCommand(command, (r) => {
+    // typed and not submitted (the gate said wait) is NOT a pause either: nothing was asked of the model
+    if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
+  }, undefined, { submit: true, typeOnly: false });
+});
+
 function countBadgeHtml(agent, counts) {
   // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
   // concurrent run is news.
@@ -4143,6 +4177,7 @@ function renderRoster() {
   const rows = [...roster.values()].sort((a, b) =>
     (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
   const counts = instanceCounts(latestParty);
+  agentPauses.seen(counts, Date.now());
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
   // ever draws a hide flag on an awake agent. The host stays authoritative:
@@ -4181,6 +4216,7 @@ function renderRoster() {
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
       `<div class="state">${r.state}</div>` +
+      agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
