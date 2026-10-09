@@ -37,13 +37,21 @@ test('wantWebgl: only when not lean, no background is set, and the addon exists'
 
 // --- animated images ---------------------------------------------------------------------
 
-test('isAnimatedImageUrl: gif and apng, with a query or fragment, any case; not png/jpg/webm', () => {
-  assert.strictEqual(L.isAnimatedImageUrl('file:///C:/p/background.gif'), true);
-  assert.strictEqual(L.isAnimatedImageUrl('file:///C:/p/Background.GIF?v=123'), true);
-  assert.strictEqual(L.isAnimatedImageUrl('file:///C:/p/a.apng#x'), true);
-  assert.strictEqual(L.isAnimatedImageUrl('file:///C:/p/background.png'), false);
-  assert.strictEqual(L.isAnimatedImageUrl('file:///C:/p/gif/background.png'), false, 'a folder named gif');
-  assert.strictEqual(L.isAnimatedImageUrl(null), false);
+test('mayAnimate: everything but a known-static decode, by name only because the content cannot be read here (Dexter F4)', () => {
+  for (const u of ['file:///C:/p/background.gif', 'file:///C:/p/Background.GIF?v=123', 'file:///C:/p/a.apng#x', 'file:///C:/p/bg.webp',
+    'file:///C:/p/bg.png', 'file:///C:/p/bg.svg', 'file:///C:/p/gif/bg.png', 'file:///C:/p/noextension']) assert.strictEqual(L.mayAnimate(u), true, u);
+  for (const u of ['file:///C:/p/bg.jpg', 'file:///C:/p/bg.JPEG?v=2', 'file:///C:/p/bg.jpg#frag']) assert.strictEqual(L.mayAnimate(u), false, u);
+  assert.strictEqual(L.mayAnimate(null), false);
+  assert.strictEqual(L.mayAnimate(''), false);
+});
+
+test('advanceCooldowns: a resume after 30 minutes drops the expired and shows the real time left (Dexter F7)', () => {
+  const t0 = 1_000_000;
+  const list = [{ agent: 'a', remainingMs: 10 * 60_000, _tick: t0 }, { agent: 'b', remainingMs: 45 * 60_000, _tick: t0 }];
+  const out = L.advanceCooldowns(list, t0 + 30 * 60_000);
+  assert.deepStrictEqual(out.map(c => [c.agent, c.remainingMs]), [['b', 15 * 60_000]]);
+  assert.deepStrictEqual(L.advanceCooldowns(undefined, t0), []);
+  assert.strictEqual(L.advanceCooldowns([{ agent: 'x', remainingMs: 5 }], t0)[0].remainingMs, 5, 'a first stamp subtracts nothing');
 });
 
 // --- the suspender ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ const RENDERER = strip(read('app/renderer.js'));
 const HTML = read('app/renderer.html');
 
 test('main registers the lean handlers for tab views and the strip, and pushes to both', () => {
-  assert.match(MAIN, /registerLeanHandlers\(\{[^}]*isView: isTabView[^}]*isStrip: \(sender\) => fromStrip\(\{ sender \}\)/s);
+  assert.match(MAIN, /registerLeanHandlers\(\{[\s\S]*?isView: isTabView[\s\S]*?isStrip: \(sender\) => fromStrip\(\{ sender \}\)/);
   assert.match(MAIN, /pushToViews\(LEAN_PUSH, state\)/);
   assert.match(MAIN, /win\.webContents\.send\(LEAN_PUSH, state\)/);
 });
@@ -27,8 +27,17 @@ test('main re-sends a lean state to a page that loads (or reloads) while the win
   assert.match(MAIN, /win\.webContents\.send\(LEAN_PUSH, leanBridge\.view\(\)\)/);
 });
 
-test('a tab view going away drops its night, so a closed tab cannot keep the window lean', () => {
-  assert.match(MAIN, /leanBridge\.dropOwner\(view\.webContents\.id\)/);
+test('a tab view going away drops its night by the id taken when it was made, even if the webContents is already destroyed (Miguel M2)', () => {
+  assert.match(MAIN, /view\.leanOwnerId = leanOwnerId/);
+  assert.match(MAIN, /wc\.once\('destroyed', \(\) => \{ if \(leanBridge\) leanBridge\.dropOwner\(leanOwnerId\); \}\)/);
+  const drop = MAIN.slice(MAIN.indexOf('function destroyTabView'), MAIN.indexOf('// --- pushing the model out'));
+  assert.match(drop, /leanBridge\.dropOwner\(view\.leanOwnerId\)/);
+  assert.doesNotMatch(drop, /isDestroyed\(\)\) leanBridge/, 'the drop is not behind an isDestroyed guard');
+});
+
+test('the nights sent Back to normal are kept across a restart in the install-wide record (Dexter F2)', () => {
+  assert.match(MAIN, /createLean\(\{\s*dismissed: Array\.isArray\(leanKept\) \? leanKept : \[\]/);
+  assert.match(MAIN, /leanDismissed: list/);
 });
 
 test('the tab preload exposes lean get / set / night / onChange on the channels main answers', () => {
@@ -40,6 +49,39 @@ test('the dock shows no panel while lean: renderLayout takes an empty set, so ev
   assert.match(RENDERER, /const now = new Set\(leanOn \? \[\] : plan\.shown\)/);
 });
 
+test('lean\'s unmount and remount are QUIET and leave the keyboard with the terminal, never the vault (Dexter F1)', () => {
+  assert.match(RENDERER, /renderEffects\(shownModules, now, \{ userAction, quiet \}\)/);
+  assert.match(RENDERER, /leanSuspender\.register\('dock', \{ suspend: \(\) => renderLayout\(\{ quiet: true \}\), resume: \(\) => renderLayout\(\{ quiet: true \}\) \}\)/);
+  const apply = RENDERER.slice(RENDERER.indexOf('function applyLean'), RENDERER.indexOf('if (leanBridge) {'));
+  assert.match(apply, /leanSuspender\.set\(on\)[\s\S]*term\.focus\(\);\s*\}/);
+  assert.doesNotMatch(apply, /if \(on\) term\.focus/);
+});
+
+test('Ctrl+B while lean folds nothing (Dexter F6)', () => {
+  assert.match(RENDERER, /if \(focusOn && focusBridge\) focusBridge\.set\(false\); else if \(!leanOn\) toggleAllZones\(\);/);
+});
+
+test('the cooldown countdown runs on resume, through the shared step (Dexter F7)', () => {
+  assert.match(RENDERER, /cooldownState = leanDisplay\.advanceCooldowns\(cooldownState, Date\.now\(\)\)/);
+  assert.match(RENDERER, /resume: \(\) => \{ paintBar\(\); if \(lastQuotaPayload\) renderQuota\(\); stepCooldowns\(\); renderCooldowns\(\); \}/);
+});
+
+test('the host is told when the window is lean, and again after a reattach, so its summary job can wait (Dexter F5)', () => {
+  assert.match(RENDERER, /leanSuspender\.register\('summary-job', \{ suspend: tellHostLean, resume: tellHostLean \}\)/);
+  assert.match(RENDERER, /JSON\.stringify\(\{ type: 'lean', on: leanOn \}\)/);
+  assert.match(RENDERER, /applyBedtime\(msg\.bedtime\);\s*if \(leanOn\) tellHostLean\(\);/);
+});
+
+test('the roster panel\'s face videos are unloaded while lean, not merely hidden (Miguel S5)', () => {
+  const pair = RENDERER.slice(RENDERER.indexOf("leanSuspender.register('roster'"), RENDERER.indexOf("leanSuspender.register('summary-job'"));
+  assert.match(pair, /paintAgents\(''\)/, 'the one path that replaces the roster (setRosterHtml), which also unloads its videos');
+});
+
+test('a video portrait gets a captured first frame in the strip (Dexter F8)', () => {
+  assert.match(RENDERER, /function paintStillFromVideo\(c\)/);
+  assert.match(RENDERER, /c\.dataset\.stillKind === 'video'/);
+});
+
 test('a night is reported to main only on the host\'s word: a dropped socket does not end it', () => {
   assert.match(RENDERER, /applyBedtime\(null, \{ fromHost: false \}\)/);
   assert.match(RENDERER, /if \(fromHost\) reportLeanNight\(\)/);
@@ -48,7 +90,7 @@ test('a night is reported to main only on the host\'s word: a dropped socket doe
 
 test('the minute-ticks skip while lean, so nothing polls for a hidden header', () => {
   assert.match(RENDERER, /if \(!leanOn && \(bar\.prompt/);
-  assert.match(RENDERER, /if \(leanOn \|\| !cooldownState\.length\) return/);
+  assert.match(RENDERER, /setInterval\(\(\) => \{ if \(!leanOn\) stepCooldowns\(\); \}, 15000\)/);
   assert.match(RENDERER, /if \(!leanOn && lastQuotaPayload\) renderQuota\(\)/);
 });
 
@@ -65,10 +107,13 @@ test('the terminal renderer swap and the background stills are registered pairs,
   assert.match(RENDERER, /lean: leanOn,/, 'the video play rule is fed lean');
 });
 
-test('applyBackground no longer sets a CSS background itself: the image goes through paintBackgroundImage (GIF -> first frame while lean)', () => {
-  assert.doesNotMatch(RENDERER, /style\.backgroundImage = `url\("\$\{media\.url\}"\)`;\s*\n\s*\}\s*\n\s*backgroundUrl = url/);
-  assert.match(RENDERER, /paintBackgroundImage\(media\.url\)/);
-  assert.match(RENDERER, /leanDisplay\.isAnimatedImageUrl\(url\)/);
+test('applyBackground never sets a CSS background itself: the image goes through paintBackgroundImage (a first frame while lean) (Miguel S6)', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function applyBackground('), RENDERER.indexOf('function clearBackgroundStill'));
+  assert.ok(fn.length > 200, 'the slice found the function');
+  assert.ok(!fn.includes('backgroundImage'), 'applyBackground does not touch backgroundImage');
+  assert.match(fn, /paintBackgroundImage\(media\.url\)/);
+  assert.match(RENDERER, /leanDisplay\.mayAnimate\(url\)/);
+  assert.match(RENDERER, /mayAnimate: leanDisplay\.mayAnimate/, 'the strip uses the same rule');
 });
 
 test('the page keeps the terminal and the strip\'s marks: lean hides panels and chrome, never the terminal, the background or the theme', () => {

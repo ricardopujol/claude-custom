@@ -201,20 +201,30 @@ test('unloadVideo carries on when pause() throws, and tolerates a non-video', ()
 
 // --- lean mode (BACKLOG #62): the portraits-only strip draws STILL faces ---------------------------------
 
-test('stillFaceHtml: a GIF is drawn into a canvas (frame one), never an animating <img>', () => {
+test('stillFaceHtml: an image that may animate (any name but a known-static one) is drawn into a canvas, never an animating <img> (Dexter F4)', () => {
   const { stillFaceHtml } = require('../app/portrait-media-display');
-  const html = stillFaceHtml({ agent: 'a', kind: 'file', path: 'C:/p/a b.gif', media: 'image', tier: 'uploaded' }, { imagesEnabled: true });
-  assert.match(html, /^<canvas /);
-  assert.ok(html.includes('data-still-src="file:///C:/p/a%20b.gif"'), html);
-  assert.doesNotMatch(html, /<img|<video/);
+  const { mayAnimate } = require('../app/lean-display');
+  const opts = { imagesEnabled: true, mayAnimate };
+  for (const p of ['C:/p/a b.gif', 'C:/p/a.webp', 'C:/p/a.png', 'C:/p/a.svg']) {
+    const html = stillFaceHtml({ agent: 'a', kind: 'file', path: p, media: 'image', tier: 'uploaded' }, opts);
+    assert.match(html, /^<canvas /, p);
+    assert.doesNotMatch(html, /<img|<video/, p);
+  }
+  assert.ok(stillFaceHtml({ kind: 'file', path: 'C:/p/a b.gif', media: 'image' }, opts).includes('data-still-src="file:///C:/p/a%20b.gif"'));
+  assert.match(stillFaceHtml({ kind: 'file', path: 'C:/p/a.webp', media: 'image' }, { imagesEnabled: true }), /^<canvas /, 'no rule given: may animate');
 });
 
-test('stillFaceHtml: a still image stays an <img>; a video face becomes the placeholder (no decoder for a strip)', () => {
+test('stillFaceHtml: a jpg stays an <img>', () => {
   const { stillFaceHtml } = require('../app/portrait-media-display');
-  assert.match(stillFaceHtml({ kind: 'file', path: 'C:/p/a.png', media: 'image', tier: 'forge' }, { imagesEnabled: true }), /^<img /);
-  const v = stillFaceHtml({ kind: 'file', path: 'C:/p/a.webm', media: 'video', tier: 'uploaded', fallback: { initials: 'AB', hue: 120 } }, { imagesEnabled: true });
-  assert.match(v, /face-placeholder/);
-  assert.match(v, />AB</);
+  const { mayAnimate } = require('../app/lean-display');
+  assert.match(stillFaceHtml({ kind: 'file', path: 'C:/p/a.jpg', media: 'image', tier: 'forge' }, { imagesEnabled: true, mayAnimate }), /^<img /);
+});
+
+test('stillFaceHtml: a video face is a canvas painted from the video\'s first frame, never a <video> (Dexter F8)', () => {
+  const { stillFaceHtml } = require('../app/portrait-media-display');
+  const v = stillFaceHtml({ kind: 'file', path: 'C:/p/a.webm', media: 'video', tier: 'uploaded' }, { imagesEnabled: true });
+  assert.match(v, /^<canvas /);
+  assert.match(v, /data-still-kind="video"/);
   assert.doesNotMatch(v, /<video/);
 });
 

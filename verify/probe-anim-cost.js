@@ -17,7 +17,7 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { launchElectron, sleep } = require('./lib/launch-electron');
+const { launchElectron, installSweep, sleep } = require('./lib/launch-electron');
 
 const ROOT = path.join(__dirname, '..');
 const WINDOW = path.join(__dirname, 'anim-cost-window', 'main.js');
@@ -139,6 +139,7 @@ function table(results) {
 }
 
 async function main() {
+  installSweep();      // a Ctrl-C or a crash mid-run still stops the window by its own pid (PR #140 Miguel S7)
   const ms = Number(arg('ms', '120000'));
   const only = arg('only', '');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anim-cost-'));

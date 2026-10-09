@@ -32,6 +32,7 @@ const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAME
 const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH } = require('./lean-bridge');
+const { createLean } = require('./lean-state');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -588,6 +589,9 @@ function createTabView(tab) {
 
   const wc = view.webContents;
   registerShortcuts(wc);
+  const leanOwnerId = wc.id;
+  view.leanOwnerId = leanOwnerId;
+  wc.once('destroyed', () => { if (leanBridge) leanBridge.dropOwner(leanOwnerId); });
   wc.on('did-finish-load', () => {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
@@ -671,7 +675,8 @@ function destroyTabView(tab) {
   canvasViews.destroyFor(view.webContents);
   liveViews.delete(view);
   // a closed tab's /bedtime night cannot keep the window lean for ever
-  if (leanBridge && !view.webContents.isDestroyed()) leanBridge.dropOwner(view.webContents.id);
+  // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
+  if (leanBridge && view.leanOwnerId !== undefined) leanBridge.dropOwner(view.leanOwnerId);
   try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
   try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
 }
@@ -1227,7 +1232,16 @@ function registerIpc() {
 
   // Lean mode (BACKLOG #62): one window-level state, told to every tab page and to the strip. The ☾ button and a
   // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
+  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
+  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
   leanBridge = registerLeanHandlers({
+    lean: createLean({
+      dismissed: Array.isArray(leanKept) ? leanKept : [],
+      onDismissed: (list) => {
+        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: list })); }
+        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
+      },
+    }),
     ipcMain, isView: isTabView, isStrip: (sender) => fromStrip({ sender }),
     push: (state) => { pushToViews(LEAN_PUSH, state); if (win && !win.isDestroyed()) win.webContents.send(LEAN_PUSH, state); },
   });

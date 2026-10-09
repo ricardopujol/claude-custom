@@ -10,7 +10,11 @@
  *   wantWebgl({ lean, hasBackground, supported })
  *                            may the terminal use the WebGL renderer: only when not lean, no background is set (WebGL
  *                            mis-draws a transparent terminal: renderer.js applyBackground) and the addon exists
- *   isAnimatedImageUrl(url)  a GIF or APNG (by extension): lean replaces it with a still frame
+ *   mayAnimate(url)          could this image move: everything but a known-static decode (jpg/jpeg). By CONTENT it cannot be told from a
+ *                            name: an APNG is a .png, a WebP may be animated, an SVG may carry SMIL/CSS animation (PR #140 Dexter F4). Lean
+ *                            draws such an image's first frame into a canvas; for a still one that is the same picture. ONE rule, shared by
+ *                            the background and the portraits strip.
+ *   advanceCooldowns(list,now) the cooldown widget's countdown step, so a resume after a long lean shows the real time left (Dexter F7)
  *   createSuspender()        the registry of suspend/resume pairs: every panel, poller or animation registers one;
  *                            `set(true)` suspends all (in registration order), `set(false)` resumes them in reverse.
  *                            One pair throwing never stops the others (its name comes back in `failed`).
@@ -51,10 +55,17 @@ function wantWebgl(o) {
   return s.lean === false && s.hasBackground === false && s.supported === true;
 }
 
-function isAnimatedImageUrl(url) {
-  if (typeof url !== 'string') return false;
-  const path = url.split('#')[0].split('?')[0];
-  return /\.(?:gif|apng)$/i.test(path);
+const STATIC_EXT = /\.(?:jpe?g)$/i;
+function mayAnimate(url) {
+  if (typeof url !== 'string' || url === '') return false;
+  return !STATIC_EXT.test(url.split('#')[0].split('?')[0]);
+}
+
+/** Each entry's remaining time reduced by the time since its last tick; the expired go. Pure: `now` in, a new list out. */
+function advanceCooldowns(list, now) {
+  return (Array.isArray(list) ? list : [])
+    .map((c) => ({ ...c, remainingMs: c.remainingMs - (now - (c._tick || now)), _tick: now }))
+    .filter((c) => c.remainingMs > 0);
 }
 
 function createSuspender() {
@@ -99,7 +110,7 @@ function workingFaces(rows, { limit = FACE_LIMIT } = {}) {
   };
 }
 
-const API = { normalize, chip, wantWebgl, isAnimatedImageUrl, createSuspender, workingFaces, FACE_LIMIT };
+const API = { normalize, chip, wantWebgl, mayAnimate, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.leanDisplay = API;

@@ -101,27 +101,90 @@ test('a night restarting under the same tab replaces the old one (one night per 
   assert.strictEqual(l.view().on, false);
 });
 
-test('property: lean is on exactly when the button said so, or a night it started is still going and the button has not said otherwise since', () => {
+test('Dexter F2: a night dismissed by Back to normal stays dismissed when a NEW view (a reopened tab, a reload) reports the same night', () => {
+  const l = createLean();
+  l.nightStarted(1, NIGHT);
+  l.setByHand(false);
+  assert.strictEqual(l.nightStarted(2, NIGHT), false);
+  assert.strictEqual(l.view().on, false);
+});
+
+test('Dexter F2: the dismissal survives a restart: it is handed out and comes back in', () => {
+  const saved = [];
+  const a = createLean({ onDismissed: (list) => saved.push(list) });
+  a.nightStarted(1, NIGHT);
+  a.setByHand(false);
+  assert.deepStrictEqual(saved, [[NIGHT]]);
+  const b = createLean({ dismissed: saved[0] });          // main restarted; every tab's hello reports the night again
+  assert.strictEqual(b.nightStarted(7, NIGHT), false);
+  assert.strictEqual(b.view().on, false);
+  assert.strictEqual(b.nightStarted(7, NIGHT + 1), true, 'a different night asks again');
+});
+
+test('Dexter F2: the dismissal is written once per night, and only when the button turned a lean off', () => {
+  const saved = [];
+  const l = createLean({ onDismissed: (list) => saved.push(list) });
+  l.setByHand(true); l.setByHand(false);                  // no night going
+  l.nightStarted(1, NIGHT);                                // on already (by hand? no: off after the above, so the night turns it on)
+  l.setByHand(false); l.setByHand(false);
+  assert.deepStrictEqual(saved, [[NIGHT]]);
+});
+
+test('Dexter F3: a night that went quiet and was REVIVED (same start) gets its lean back', () => {
+  const l = createLean();
+  l.nightStarted(1, NIGHT);
+  assert.strictEqual(l.nightEnded(1), true, 'the host said "no night": overdue wake');
+  assert.strictEqual(l.nightStarted(1, NIGHT), true, 'the late wake revived the same night');
+  assert.strictEqual(l.view().on, true);
+});
+
+test('Dexter F3 (contrast): a night the person dismissed is not revived into lean', () => {
+  const l = createLean();
+  l.nightStarted(1, NIGHT);
+  l.setByHand(false);
+  l.nightEnded(1);
+  assert.strictEqual(l.nightStarted(1, NIGHT), false);
+  assert.strictEqual(l.view().on, false);
+});
+
+// A reference model written as a plain table of rules (Miguel M1): the state machine must agree with it after EVERY operation.
+function model() {
+  const m = { on: false, owned: false, nights: new Map(), dismissed: new Set() };
+  return {
+    on: () => m.on,
+    hand(next) {
+      if (!next && m.on) for (const at of m.nights.values()) m.dismissed.add(at);
+      m.on = next; m.owned = false;
+    },
+    start(tab, at) {
+      m.nights.set(tab, at);
+      if (m.dismissed.has(at) || m.on) return;
+      m.on = true; m.owned = true;
+    },
+    end(tab) {
+      if (!m.nights.delete(tab)) return;
+      if (m.nights.size === 0 && m.on && m.owned) { m.on = false; m.owned = false; }
+    },
+  };
+}
+
+test('property: after every operation the state machine agrees with the reference model (button wins, night starts only if off, end only if owned and last, dismissals stick)', () => {
   const op = fc.oneof(
     fc.record({ t: fc.constant('hand'), on: fc.boolean() }),
     fc.record({ t: fc.constant('start'), tab: fc.constantFrom('a', 'b'), at: fc.integer({ min: 1, max: 4 }) }),
     fc.record({ t: fc.constant('end'), tab: fc.constantFrom('a', 'b') }),
   );
-  fc.assert(fc.property(fc.array(op, { maxLength: 30 }), (ops) => {
+  fc.assert(fc.property(fc.array(op, { maxLength: 40 }), (ops) => {
     const l = createLean();
+    const m = model();
     for (const o of ops) {
-      if (o.t === 'hand') l.setByHand(o.on);
-      else if (o.t === 'start') l.nightStarted(o.tab, o.at);
-      else l.nightEnded(o.tab);
+      if (o.t === 'hand') { l.setByHand(o.on); m.hand(o.on); }
+      else if (o.t === 'start') { l.nightStarted(o.tab, o.at); m.start(o.tab, o.at); }
+      else { l.nightEnded(o.tab); m.end(o.tab); }
       const v = l.view();
-      // internal consistency of the view
-      assert.strictEqual(typeof v.on, 'boolean');
+      assert.strictEqual(v.on, m.on(), JSON.stringify(o));
       if (!v.on) assert.deepStrictEqual([v.byBedtime, v.bedtimeSince], [false, null]);
       if (v.byBedtime) assert.strictEqual(typeof v.bedtimeSince, 'number');
     }
-    // ending every tab's night while on by bedtime always lands on normal
-    l.nightEnded('a'); l.nightEnded('b');
-    const v = l.view();
-    assert.strictEqual(v.byBedtime, false);
   }));
 });

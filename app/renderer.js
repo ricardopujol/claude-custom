@@ -1502,7 +1502,7 @@ function onVaultLeft() {
 // the user acted (PR #82 Dexter F2, Miguel B1).
 // `refit: false` is for a redraw that cannot change the terminal's rectangle (a float's move or resize): the
 // pty is not told again and no timer is queued for it (PR #102 Miguel Y2).
-function renderLayout({ userAction = false, refit = true } = {}) {
+function renderLayout({ userAction = false, refit = true, quiet = false } = {}) {
   const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize });
   lastPlan = plan;
   window.dockTreeView.applyBoxes(plan, document);
@@ -1510,7 +1510,7 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
   // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
   const now = new Set(leanOn ? [] : plan.shown);
-  const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
+  const fx = window.dockZones.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
@@ -3114,7 +3114,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             videos: facesEl.querySelectorAll('video').length },
           look: { accent: cs.getPropertyValue('--accent').trim(), bg: cs.getPropertyValue('--bg').trim(), text: cs.getPropertyValue('--text').trim() },
           termTheme: term.options.theme ? { background: term.options.theme.background || null, foreground: term.options.theme.foreground || null } : null,
-          typedFocus: !!(term.element && term.element.contains(document.activeElement)),
+          typedFocus: !!(term.element && term.element.contains(document.activeElement)), focusId: (document.activeElement && document.activeElement.id) || '',
         });
       }
       // Backlog #34 (verify/probe-video-background.js): the background layer as it is on screen --
@@ -4594,14 +4594,13 @@ function renderCooldowns(list) {
 
 // Counted down locally so the remaining time is honest between broadcasts;
 // the host stays the source of truth for what is ON cooldown.
-setInterval(() => {
-  if (leanOn || !cooldownState.length) return;
-  const now = Date.now();
-  cooldownState = cooldownState
-    .map(c => ({ ...c, remainingMs: c.remainingMs - (now - (c._tick || now)), _tick: now }))
-    .filter(c => c.remainingMs > 0);
+// The countdown step is lean-display's (tested with a fake clock); a resume after a long lean runs it too (PR #140 Dexter F7).
+function stepCooldowns() {
+  if (!cooldownState.length) return;
+  cooldownState = leanDisplay.advanceCooldowns(cooldownState, Date.now());
   renderCooldowns();
-}, 15000);
+}
+setInterval(() => { if (!leanOn) stepCooldowns(); }, 15000);
 
 // --- token spend ------------------------------------------------------------
 const usageEl = document.getElementById('usage');
@@ -4941,7 +4940,7 @@ function paintBackgroundImage(url) {
   clearBackgroundStill();
   bgImageUrl = url;
   if (!url) { bgEl.style.backgroundImage = ''; return; }
-  if (!(leanOn && leanDisplay.isAnimatedImageUrl(url))) { bgEl.style.backgroundImage = `url("${url}")`; return; }
+  if (!(leanOn && leanDisplay.mayAnimate(url))) { bgEl.style.backgroundImage = `url("${url}")`; return; }
   bgEl.style.backgroundImage = '';
   const token = bgStillToken;
   const img = new Image();
@@ -4949,8 +4948,8 @@ function paintBackgroundImage(url) {
     if (token !== bgStillToken || !leanOn) return;
     const c = document.createElement('canvas');
     c.className = 'bg-still';
-    c.width = img.naturalWidth || 1;
-    c.height = img.naturalHeight || 1;
+    c.width = img.naturalWidth || 300;       // an SVG with no intrinsic size reports 0
+    c.height = img.naturalHeight || 300;
     try { c.getContext('2d').drawImage(img, 0, 0); } catch { return; }       // cannot be drawn: no background, never a moving one
     bgEl.prepend(c);
     bgStillEl = c;
@@ -4971,17 +4970,19 @@ const leanFacesEl = document.getElementById('lean-faces');
 let leanFacesKey = '';
 
 // The dock: no panel is "shown" while lean (renderLayout), so each panel's hide effect runs and coming back refreshes them.
-leanSuspender.register('dock', { suspend: () => renderLayout(), resume: () => renderLayout() });
+// QUIET: panels coming back are not the person opening them, so the vault (open before lean) takes no keyboard focus (PR #140 Dexter F1).
+leanSuspender.register('dock', { suspend: () => renderLayout({ quiet: true }), resume: () => renderLayout({ quiet: true }) });
 
 // The minute-ticks (the bar's ages, quota countdowns, cooldowns) skip while lean; on return they are redrawn at once.
 leanSuspender.register('ticks', {
   suspend: () => { paintBar(); },
-  resume: () => { paintBar(); if (lastQuotaPayload) renderQuota(); renderCooldowns(); },
+  resume: () => { paintBar(); if (lastQuotaPayload) renderQuota(); stepCooldowns(); renderCooldowns(); },
 });
 
 // The roster panel is not drawn while lean (no face videos churn); the working agents get a strip of still portraits.
 leanSuspender.register('roster', {
-  suspend: () => { paintLeanFaces(); },
+  // the face videos are UNLOADED, not just hidden: a hidden <video> keeps its decoded buffers (PR #140 Miguel S5)
+  suspend: () => { paintAgents(''); paintLeanFaces(); },
   resume: () => { leanFacesKey = ''; if (leanFacesEl) { leanFacesEl.replaceChildren(); leanFacesEl.hidden = true; } renderRoster(); },
 });
 
@@ -5004,6 +5005,12 @@ function setTerminalRenderer() {
   }
   try { term.refresh(0, term.rows - 1); } catch {}
 }
+// The host's local-model summary job: its only reader (the terminal bar) is hidden, so the host starts none while every window is lean
+// (host/lean-gate.js). Main's process-tree sampler is NOT stopped: it drives Leftovers' 15-minute auto-reap, which matters most overnight.
+function tellHostLean() {
+  if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'lean', on: leanOn })); } catch { /* not attached: the hello says it again */ } }
+}
+leanSuspender.register('summary-job', { suspend: tellHostLean, resume: tellHostLean });
 leanSuspender.register('terminal-renderer', { suspend: setTerminalRenderer, resume: setTerminalRenderer });
 
 // The background: a video holds its first frame (backgroundPlaybackState carries `lean`); a GIF becomes its first frame.
@@ -5013,6 +5020,7 @@ leanSuspender.register('background', {
 });
 
 function paintStillCanvas(c) {
+  if (c.dataset.stillKind === 'video') { paintStillFromVideo(c); return; }
   const img = new Image();
   img.onload = () => {
     try {
@@ -5024,11 +5032,28 @@ function paintStillCanvas(c) {
   img.src = c.dataset.stillSrc;
 }
 
+// A video portrait's first frame, drawn once and the decoder released (PR #140 Dexter F8).
+function paintStillFromVideo(c) {
+  const v = document.createElement('video');
+  v.muted = true;
+  v.preload = 'auto';
+  v.addEventListener('loadeddata', () => {
+    try {
+      const ctx = c.getContext('2d');
+      const side = Math.min(v.videoWidth, v.videoHeight) || 1;
+      ctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, c.width, c.height);
+    } catch { /* stays blank */ }
+    portraitMedia.unloadVideo(v);
+  }, { once: true });
+  v.addEventListener('error', () => portraitMedia.unloadVideo(v), { once: true });
+  v.src = c.dataset.stillSrc;
+}
+
 // The portraits-only strip: the agents working right now, as still images, from the roster events already arriving.
 function paintLeanFaces() {
   if (!leanFacesEl) return;
   const { faces, more } = leanDisplay.workingFaces([...roster.values()]);
-  const html = faces.map(f => `<div class="lean-face" title="${escapeHtml(f.agent)} is working">${portraitMedia.stillFaceHtml(f.portrait, { imagesEnabled: agentImagesEnabled })}</div>`).join('') +
+  const html = faces.map(f => `<div class="lean-face" title="${escapeHtml(f.agent)} is working">${portraitMedia.stillFaceHtml(f.portrait, { imagesEnabled: agentImagesEnabled, mayAnimate: leanDisplay.mayAnimate })}</div>`).join('') +
     (more > 0 ? `<div class="lean-more" title="${more} more working">+${more}</div>` : '');
   if (html === leanFacesKey) return;
   leanFacesKey = html;
@@ -5045,7 +5070,8 @@ function applyLean(payload) {
   closeLayoutMenu();
   const { failed } = leanSuspender.set(on);
   if (failed.length) console.warn('[renderer] lean mode: these did not ' + (on ? 'suspend' : 'resume') + ': ' + failed.join(', '));
-  if (on) term.focus();
+  // the keyboard is the terminal's in both directions: lean's own unmount and remount move it nowhere else
+  term.focus();
 }
 if (leanBridge) {
   // A push that arrives before the first answer wins over it.
@@ -6517,6 +6543,7 @@ function handleControl(msg) {
     // from an older host, which is "none", never a stale one.
     applyBarPrompt(msg.prompt, false);
     applyBedtime(msg.bedtime);
+    if (leanOn) tellHostLean();      // a (re)attached host does not know this window is lean
     applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
     paintBar();
     reportTabStatus();
@@ -7095,7 +7122,8 @@ term.attachCustomKeyEventHandler((e) => {
   // line. Returning false is what stops the terminal taking it.
   if (isPanelToggle(e)) {
     // In focus mode the panels are hidden behind it: Ctrl+B brings them back.
-    if (focusOn && focusBridge) focusBridge.set(false); else toggleAllZones();
+    // Lean mode shows no panel, so folding the dock would only hide the panels Back to normal should return (PR #140 Dexter F6).
+    if (focusOn && focusBridge) focusBridge.set(false); else if (!leanOn) toggleAllZones();
     e.preventDefault();
     return false;
   }

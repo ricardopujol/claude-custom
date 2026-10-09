@@ -142,18 +142,20 @@ function placeholderHtml(a) {
 }
 
 /**
- * A face that never moves (BACKLOG #62, lean mode's portraits-only strip). A GIF/APNG becomes a <canvas> that the page
- * paints with the image's first frame once it has loaded (`data-still-src`; a plain <img> would keep animating); a still
- * image stays an <img>; a video face (and images off or unknown) is the placeholder, so the strip decodes nothing.
+ * A face that never moves (BACKLOG #62, lean mode's portraits-only strip). An image that MAY animate (`opts.mayAnimate(url)`: the one
+ * rule app/lean-display.js owns, so it is not written twice; absent means "may", the safe answer) becomes a <canvas> that the page
+ * paints with the image's first frame once it has loaded (`data-still-src`; a plain <img> would keep animating); an image known to be
+ * static stays an <img>; a video face becomes a canvas painted from the video's first frame (`data-still-kind="video"`, PR #140 Dexter
+ * F8: a still portrait, not initials); images off or unknown is the placeholder, as for the roster.
  */
 function stillFaceHtml(result, opts) {
   const d = mediaElementFor(result, opts);
-  if (d.tag === 'img' && /\.(?:gif|apng)$/i.test(String(result.path))) {
+  const may = opts && typeof opts.mayAnimate === 'function' ? opts.mayAnimate : () => true;
+  if (d.tag === 'img' && may(d.attrs.src)) {
     return `<canvas class="face-media face-still" width="96" height="96" data-still-src="${esc(d.attrs.src)}" title="${esc(d.attrs.title)}"></canvas>`;
   }
   if (d.tag === 'video') {
-    const r = result && typeof result === 'object' ? result : null;
-    return placeholderHtml(placeholderAttrs(r, tierTitle(r)));
+    return `<canvas class="face-media face-still" width="96" height="96" data-still-kind="video" data-still-src="${esc(d.attrs.src)}" title="${esc(d.attrs.title)}"></canvas>`;
   }
   return faceMediaHtml(result, opts);
 }

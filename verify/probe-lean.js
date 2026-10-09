@@ -310,6 +310,21 @@ async function main() {
   check('3: ...and the strip is normal again', !!sBack && sBack.btnHidden === false && sBack.chipHidden === true && sBack.bodyLean === false, JSON.stringify(sBack));
   await shoot(app, '4-back-to-normal');
 
+  // 3b: the vault in the layout must not take the keyboard when lean ends (PR #140 Dexter F1) ---------------------------
+  await view(app, 'show', { id: 'vault', justThisTab: true });
+  await sleep(1000);
+  await view(app, 'state', { focusTerm: true });
+  await press(app, 'lean-btn');
+  await waitFor(async () => { const p = await leanPage(app); return p && p.leanOn ? p : null; }, 10000);
+  await press(app, 'lean-back');
+  await waitFor(async () => { const p = await leanPage(app); return p && !p.leanOn ? p : null; }, 10000);
+  await sleep(800);
+  const afterVault = await leanPage(app);
+  check('3b: with the vault in the layout, leaving lean leaves the keyboard in the terminal, not #vault-search', !!afterVault && afterVault.typedFocus === true && afterVault.focusId !== 'vault-search',
+    afterVault ? JSON.stringify({ focusId: afterVault.focusId, inTerm: afterVault.typedFocus, shown: afterVault.shown }) : 'no state');
+  await view(app, 'move', { id: 'vault', target: 'hide', justThisTab: true });
+  await sleep(500);
+
   // 4 -------------------------------------------------------------------------------------------
   const startedNear = Date.now();
   schedule(devPid, NIGHT_PROMPT, 1800);
@@ -453,7 +468,7 @@ async function main() {
 main()
   .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
   .finally(() => {
-    hygiene._emergencyCleanup('done');
+    killEverything();      // our hosts, by proven start (verify/lib/seen-pids.js); the window's own tree goes with launch-electron's exit sweep
     console.log(`screenshots: ${shots}`);
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);

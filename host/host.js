@@ -87,6 +87,7 @@ const { createSlot } = require('./summary-slot');
 const { createOllamaClient } = require('./summary-ollama');
 const { createSummaryStore } = require('./summary-store');
 const { createPowerProbe } = require('./summary-power');
+const { createLeanGate } = require('./lean-gate');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -1162,7 +1163,13 @@ const summary = createSummaryService({
   broadcast: (m) => broadcastControl(m),
   log: (...a) => console.log(...a),
 });
-const summaryTimer = setInterval(() => { summary.tick().catch(() => { /* logged inside */ }); }, TICK_MS);
+// Lean mode (#62): while every attached window is lean the summary job's only reader (the terminal bar) is hidden, so no job is started
+// (host/lean-gate.js). The tick only starts jobs, so a paused tick costs nothing and a resumed one catches up at once.
+const leanGate = createLeanGate();
+const summaryTimer = setInterval(() => {
+  if (leanGate.paused(clients.size)) return;
+  summary.tick().catch(() => { /* logged inside */ });
+}, TICK_MS);
 summaryTimer.unref();
 summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep at start: old summaries, orphan temp files
 
@@ -2355,6 +2362,10 @@ wss.on('connection', (ws, req) => {
       runHealth().catch(() => {});   // broadcasts on start and on finish
       return;
     }
+    if (msg.type === 'lean') {
+      leanGate.set(ws, msg.on === true);
+      return;
+    }
     if (msg.type === 'input') {
       // Miguel, 2026-09-15: unvalidated, `term.write(undefined)` reaches
       // node-pty's deferred write queue and can throw OUTSIDE this function's
@@ -2658,6 +2669,7 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     clients.delete(ws);
+    leanGate.drop(ws);
     // A WINDOW leaving (not a one-shot control client) starts stop-if-idle's
     // grace: it may be reloading, and its session is in use.
     if (leftAsWindow(ws.openedAt, Date.now())) lastWindowLeftAt = Date.now();

@@ -59,7 +59,8 @@
  *
  * The host owns every write. The GUI reads through the control protocol and
  * never writes. ONE EXCEPTION (Miguel, feat/project-look #2): Electron MAIN
- * writes the 'look-global' key -- the install-wide unfocused-window dim --
+ * writes the 'look-global' key -- the install-wide unfocused-window dim, and
+ * lean mode's list of dismissed /bedtime nights (#62, `leanDismissed`) --
  * because focus is a fact only main knows and no host is involved. Its own
  * key, regenerable, last-writer-wins by design: two windows moving the same
  * slider should end on whichever moved last.
