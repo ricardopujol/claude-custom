@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('child_process');
-const { killProven, parseProvenKill, killPidTree } = require('../host/kill-tree');
+const { killProven, killProvenBatch, parseProvenKill, killPidTree } = require('../host/kill-tree');
 const { startTimes } = require('../host/proc-start');
 
 test('parseProvenKill: each answer of the PowerShell step maps to one outcome; anything else is unknown', () => {
@@ -110,6 +110,7 @@ test('killProven toleranceTicks: the compare is numeric within the tolerance; wi
   assert.match(exact, /\[string\]\$s -ne '134000000000000123'/);
   assert.match(tol, /Abs\(\[long\]\$s - 134000000000000123\) -gt 20000/);
   assert.strictEqual(killProven(4321, '1', { toleranceTicks: -1, run: () => assert.fail('a bad tolerance runs nothing') }), 'unknown');
+  assert.strictEqual(killProven(4321, '1', { toleranceTicks: 1e21, run: () => assert.fail('an unsafe tolerance runs nothing') }), 'unknown');
   assert.strictEqual(killProven(4321, '1', { toleranceTicks: 'x', run: () => assert.fail('a bad tolerance runs nothing') }), 'unknown');
 });
 
@@ -120,9 +121,61 @@ test('killProven toleranceTicks (real PowerShell): a start within the tolerance 
   const exited = new Promise(r => c.once('exit', r));
   try {
     const start = (await startTimes([c.pid])).get(c.pid);
-    assert.strictEqual(killProven(c.pid, (BigInt(start) + 30000n).toString(), { toleranceTicks: 20000 }), 'mismatch');
+    const near = (d) => killProven(c.pid, (BigInt(start) + d).toString(), { toleranceTicks: 20000 });
+    // both sides of the tolerance, and its exact edge (a mutant -gt -> -ge, or a dropped Abs, changes one of these)
+    assert.strictEqual(near(30000n), 'mismatch');
+    assert.strictEqual(near(-30000n), 'mismatch', 'the negative side');
+    assert.strictEqual(near(20001n), 'mismatch', 'one tick beyond the edge');
+    assert.strictEqual(near(-20001n), 'mismatch', 'one tick beyond the edge, negative side');
     assert.strictEqual(c.exitCode, null);
-    assert.strictEqual(killProven(c.pid, (BigInt(start) + 10000n).toString(), { toleranceTicks: 20000 }), 'killed');
+    assert.strictEqual(near(20000n), 'killed', 'exactly at the edge is within');
     await exited;
   } finally { if (c.exitCode === null && c.signalCode === null) c.kill(); }
+});
+
+// ---- killProvenBatch: PR #145 Miguel Y2 / Dexter F3 -- the relay's fallback proves and kills ALL pending pids in ONE PowerShell call ----
+
+test('killProvenBatch: 200 pending pids are ONE spawn, every pid and start in its script, one timeout for the batch', () => {
+  const items = Array.from({ length: 200 }, (_, i) => ({ pid: 1000 + i, start: String(134000000000000000n + BigInt(i)) }));
+  const runs = [];
+  const out = killProvenBatch(items, { toleranceTicks: 20000, timeoutMs: 10000, run: (exe, args, o) => { runs.push([exe, args, o]); return { stdout: items.map(t => `${t.pid} KILLED 0`).join('\r\n') + '\r\n' }; } });
+  assert.strictEqual(runs.length, 1, 'one PowerShell call for the whole batch');
+  assert.strictEqual(runs[0][2].timeout, 10000);
+  const script = runs[0][1][runs[0][1].length - 1];
+  for (const t of [items[0], items[199]]) assert.ok(script.includes(String(t.pid)) && script.includes(t.start), `${t.pid} is in the script`);
+  assert.match(script, /Abs\(\[long\]\$s - \$t\[1\]\) -gt 20000/);
+  assert.strictEqual(out.size, 200);
+  assert.strictEqual(out.get(1000), 'killed');
+});
+
+test('killProvenBatch: each pid gets its own answer; a pid with no answer, a failed run and bad items are unknown or skipped', () => {
+  const items = [{ pid: 11, start: '1' }, { pid: 12, start: '2' }, { pid: 13, start: '3' }, { pid: 14, start: '4' }];
+  const out = killProvenBatch(items, { run: () => ({ stdout: '11 KILLED 0\r\n12 MISMATCH\r\n13 GONE\r\nnoise\r\n' }) });
+  assert.deepStrictEqual([...out], [[11, 'killed'], [12, 'mismatch'], [13, 'gone'], [14, 'unknown']]);
+  assert.deepStrictEqual([...killProvenBatch(items, { run: () => ({ error: new Error('timeout'), stdout: '' }) })].map(e => e[1]), ['unknown', 'unknown', 'unknown', 'unknown']);
+  let ran = 0;
+  const none = killProvenBatch([{ pid: 0, start: '1' }, { pid: 5, start: 'x' }, null], { run: () => { ran++; return { stdout: '' }; } });
+  assert.strictEqual(ran, 0, 'nothing valid, nothing run');
+  assert.strictEqual(none.size, 0);
+  assert.throws(() => killProvenBatch(items, { toleranceTicks: 1e21 }), /toleranceTicks/);
+});
+
+test('killProvenBatch (real PowerShell): the right start is killed, a wrong start and a gone pid are not, in one call', {
+  skip: process.platform !== 'win32' && 'PowerShell + taskkill: Windows only',
+}, async () => {
+  const a = sleeper(); const b = sleeper();
+  const exitedA = new Promise(r => a.once('exit', r));
+  try {
+    const starts = await startTimes([a.pid, b.pid]);
+    const out = killProvenBatch([
+      { pid: a.pid, start: starts.get(a.pid) },
+      { pid: b.pid, start: (BigInt(starts.get(b.pid)) + 50000n).toString() },
+      { pid: 2147483646, start: '1' },
+    ], { toleranceTicks: 20000 });
+    assert.strictEqual(out.get(a.pid), 'killed');
+    assert.strictEqual(out.get(b.pid), 'mismatch');
+    assert.strictEqual(out.get(2147483646), 'gone');
+    await exitedA;
+    assert.strictEqual(b.exitCode, null, 'a mismatched start must not kill');
+  } finally { for (const c of [a, b]) if (c.exitCode === null && c.signalCode === null) c.kill(); }
 });
