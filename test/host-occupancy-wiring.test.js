@@ -41,9 +41,13 @@ test('the hook handler gives every event to the producer, and keeps the file-too
   const give = body.indexOf('occupancy.handle(ev);');
   const only = body.indexOf('if (isOccupancyOnly(ev)) return;');
   assert.ok(give !== -1 && only !== -1 && give < only, 'handled first, then the early return');
-  for (const consumer of ['attention.handle(ev)', 'turnState.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
+  for (const consumer of ['attention.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
     assert.ok(body.indexOf(consumer) > only, `${consumer} must come after the early return`);
   }
+  // ...except the turn state: a main-session Read or Edit proves a turn is live (BACKLOG #77 R1), so it sees them first
+  const turnAt = body.indexOf('turnState.handle(ev)');
+  assert.ok(turnAt !== -1 && turnAt < only, 'turnState.handle(ev) must come before the early return');
+  assert.strictEqual(body.split('turnState.handle(ev)').length - 1, 1, 'and is fed exactly once');
   // the Status document returns before it, so it never reaches the producer
   assert.ok(body.indexOf("if (ev.event === 'Status')") < give);
 });

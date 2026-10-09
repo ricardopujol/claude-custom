@@ -631,3 +631,45 @@ test('the default timer copes with a timer handle that has no unref, or no handl
     global.setTimeout = realSet;
   }
 });
+
+// --- known(folder): one unprovable claim doubts the folders it names, not every folder (#77 Dexter R2) -----
+
+const FEAT_Y = path.resolve('/occ-svc/feat-y');
+
+test('known(folder): an unprovable claim naming feat-x leaves feat-y known and feat-x not', async () => {
+  const r = rig();
+  r.writer.write(record({ hostStartedAt: undefined }));   // pid running, no recorded start: unproven
+  await r.service.refresh();
+  assert.strictEqual(r.service.known(FEAT_Y), true);
+  assert.strictEqual(r.service.known(FEAT), false);
+  assert.strictEqual(r.service.known(), false, 'no folder asked about: any doubt anywhere');
+});
+
+test('known(folder): an `also` folder of an unprovable claim is doubted too, however the path is spelled', async () => {
+  const r = rig();
+  r.writer.write(record({ hostStartedAt: undefined, also: [FEAT_Y] }));
+  await r.service.refresh();
+  assert.strictEqual(r.service.known(FEAT_Y + path.sep), false);
+  assert.strictEqual(r.service.known(path.resolve('/occ-svc/feat-z')), true);
+});
+
+test('known(folder): a service that could not look at all is unknown for every folder, and a bad folder is unknown', async () => {
+  const before = rig();
+  assert.strictEqual(before.service.known(FEAT_Y), false, 'no pass yet');
+  const unreadable = rig({ fsImpl: { readdirSync: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); }, existsSync: () => true } });
+  await unreadable.service.refresh();
+  assert.strictEqual(unreadable.service.known(FEAT_Y), false);
+  const ok = rig();
+  await ok.service.refresh();
+  assert.strictEqual(ok.service.known(FEAT_Y), true);
+  assert.strictEqual(ok.service.known(''), false);
+  assert.strictEqual(ok.service.known(42), false);
+});
+
+test('known(folder): when the OS cannot be asked, only the folders with a claim in them are doubted', async () => {
+  const r = rig({ startTimes: async () => { throw new Error('ps died'); } });
+  r.writer.write(record());
+  await r.service.refresh();
+  assert.strictEqual(r.service.known(FEAT), false);
+  assert.strictEqual(r.service.known(FEAT_Y), true);
+});

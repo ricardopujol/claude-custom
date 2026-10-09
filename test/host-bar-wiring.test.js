@@ -47,7 +47,7 @@ test('every hook event reaches the keeper and the night, and a ScheduleWakeup go
   assert.ok(give < keeper && give < nightAt, 'after the producer, before any early return: the main session\'s own file-tool calls keep a night awake');
   assert.ok(keeper < occOnly && nightAt < occOnly, 'before the occupancy-only return, so a Read in the night is seen');
   assert.ok(occOnly < bedOnly, 'then the two early returns');
-  for (const consumer of ['attention.handle(ev)', 'turnState.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
+  for (const consumer of ['attention.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
     assert.ok(body.indexOf(consumer) > bedOnly, `${consumer} must come after the bedtime-only return`);
   }
   assert.ok(body.indexOf("if (ev.event === 'Status')") < keeper, 'the Status document never reaches them');
