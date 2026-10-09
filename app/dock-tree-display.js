@@ -180,6 +180,18 @@ function dividerStep(key, dir) {
  * @param splits `fit`'s per-split { path, px, min }
  */
 function dividerKey(layout, splits, path, i, key) {
+  const moved = dividerKeySizes(layout, splits, path, i, key);
+  if (!moved) return null;
+  const next = treeApi.setSplitSizes(layout, path, moved.sizes);
+  return next === layout ? null : next;
+}
+
+/**
+ * What `dividerKey` asks the model for, before it asks: { node, sizes } -- the split as it was and the sizes a drag of that
+ * divider would answer -- or null. A burst of key presses is saved from these through `rebaseDrag`, exactly as a pointer
+ * release is, so it lands on the placement as it is by then and never overwrites a change made meanwhile.
+ */
+function dividerKeySizes(layout, splits, path, i, key) {
   if (!isObject(layout) || !isObject(layout.root) || !Array.isArray(path) || !Array.isArray(splits)) return null;
   let node = layout.root;
   for (const k of path) {
@@ -192,8 +204,7 @@ function dividerKey(layout, splits, path, i, key) {
   const split = splits.find(s => isObject(s) && Array.isArray(s.path) && s.path.length === path.length && s.path.every((v, k) => v === path[k]));
   const sizes = sizesAfterDrag(node, split, i, delta);
   if (!sizes) return null;
-  const next = treeApi.setSplitSizes(layout, path, sizes);
-  return next === layout ? null : next;
+  return treeApi.setSplitSizes(layout, path, sizes) === layout ? null : { node, sizes };
 }
 
 /** Milliseconds boxes take to settle after a drop: none when the person asked for reduced motion (or it isn't known they didn't). */
@@ -527,7 +538,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, peekAfter, dividerStep, dividerKey, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, peekAfter, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

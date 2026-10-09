@@ -459,3 +459,46 @@ test('settleMs: about 120 ms, none when the person asked for reduced motion or t
   assert.strictEqual(V.settleMs(true), 0);
   for (const junk of [undefined, null, 'no', 0]) assert.strictEqual(V.settleMs(junk), 0, String(junk));
 });
+
+// --- PR #159 Dexter r2 N1: a key burst is saved on the placement as it is NOW, like a pointer release ---
+
+test('N1: ArrowLeft on a divider, then the canvas docks itself within the burst: the flush keeps the canvas AND the divider move', () => {
+  const l0 = T.normalize(T.defaultLayout(IDS), IDS);
+  const withCanvas = T.hide(T.dock(l0, 'canvas', { cell: 'right', side: 'center' }), 'canvas');   // hidden from the group it sat in: showing it rejoins that group
+  const vp = { width: 1000, height: 600 };
+  const splits = plan(withCanvas, vp).splits;
+  const burst = V.dividerKeySizes(withCanvas, splits, [], 1, 'ArrowLeft');
+  assert.ok(burst, 'the key moves it');
+  // Meanwhile the committed layout changed under the burst (Claude's panel docked itself; or another window's push).
+  const nowSaved = T.show(withCanvas, 'canvas');
+  assert.ok(T.groupOf(nowSaved, 'canvas'), 'the canvas is on screen now');
+  const rebased = V.rebaseDrag(nowSaved, { path: [], i: 1, node: burst.node, sizes: burst.sizes });
+  assert.ok(rebased, 'the divider is still the one that was pressed');
+  const saved = T.setSplitSizes(nowSaved, [], rebased);
+  assert.ok(T.groupOf(saved, 'canvas'), 'the canvas is still docked and visible');
+  assert.equal(saved.root.sizes[1], withCanvas.root.sizes[1] + 16, 'and the divider move is kept');
+  // What the old flush saved was the whole stale drawn layout: it would hide the canvas again.
+  const stale = T.setSplitSizes(withCanvas, [], burst.sizes);
+  assert.equal(T.groupOf(stale, 'canvas'), null, 'the stale layout is the one that loses it (the bug this pins)');
+});
+
+test('N1: another window hid a panel during the burst: the flush saves on top of that, and a split that is gone drops the burst', () => {
+  const base = T.defaultLayout(IDS);
+  const burst = V.dividerKeySizes(base, plan(base, { width: 1000, height: 600 }).splits, [], 1, 'ArrowLeft');
+  const hidden = T.hide(base, 'style');
+  const out = T.setSplitSizes(hidden, [], V.rebaseDrag(hidden, { path: [], i: 1, node: burst.node, sizes: burst.sizes }));
+  assert.deepEqual(out.hidden.includes('style'), true, 'the hide survives');
+  const gone = T.defaultLayout([]);
+  assert.equal(V.rebaseDrag(gone, { path: [], i: 1, node: burst.node, sizes: burst.sizes }), null);
+});
+
+test('N1: dividerKey is dividerKeySizes applied; both are null together', () => {
+  const l = T.defaultLayout(IDS);
+  const splits = plan(l, { width: 1000, height: 600 }).splits;
+  for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'Enter']) {
+    const s = V.dividerKeySizes(l, splits, [], 1, key);
+    const k = V.dividerKey(l, splits, [], 1, key);
+    assert.equal(s === null, k === null, key);
+    if (s) assert.deepEqual(k, T.setSplitSizes(l, [], s.sizes));
+  }
+});

@@ -5387,14 +5387,23 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
   // DRAWN at once and SAVED once when the burst of presses ends (a held key repeats ~30 times a second, and every save is a
   // write relayed to every window); focus stays on it, and it does not glide (16 px steps would lag a key repeat).
   let keyFlush = null;
+  let keyBurst = null;       // { path, i, node, sizes }: the divider pressed, as it was, and where the last press asked it to go
+  // The save is a pointer release's: the burst's sizes are applied (rebaseDrag) to the placement as it is NOW, never the
+  // whole layout that was drawn at the first press -- a panel docked or hidden meanwhile (Claude's own, another window's push)
+  // must survive (PR #159 Dexter r2 N1). A float or divider drag in progress owns dragLayout: the burst is dropped.
   const flushKeys = () => {
     clearTimeout(keyFlush);
     keyFlush = null;
-    if (!dragLayout || dividerDrag) return;
-    const l = dragLayout;
+    const b = keyBurst;
+    keyBurst = null;
+    if (!b) return;
+    if (dividerDrag || floatDrag) return;
     dragLayout = null;
-    commitPlacement(l, { userAction: false });
+    const rebased = window.dockTreeView.rebaseDrag(committedLayout(), b);
+    if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), b.path, rebased), { userAction: false });
+    else renderLayout();
   };
+  window.addEventListener('pagehide', flushKeys);
   document.getElementById('dock').addEventListener('focusout', (e) => { if (e.target.closest && e.target.closest('.dgutter')) flushKeys(); });
   document.getElementById('dock').addEventListener('keydown', (e) => {
     const g = e.target.closest && e.target.closest('.dgutter');
@@ -5402,9 +5411,12 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     if (window.dockTreeView.dividerStep(e.key, g.dataset.dir) === null) return;
     e.preventDefault();                                              // an arrow on a separator scrolls nothing
     const path = g.dataset.path === '' ? [] : g.dataset.path.split('.').map(Number);
-    const next = window.dockTreeView.dividerKey(placementLayout(), lastPlan.splits, path, Number(g.dataset.i), e.key);
-    if (!next) return;
-    dragLayout = next;
+    if (dividerDrag || floatDrag) return;
+    const moved = window.dockTreeView.dividerKeySizes(placementLayout(), lastPlan.splits, path, Number(g.dataset.i), e.key);
+    if (!moved) return;
+    // Remembered from the FIRST press (the split as it was); each press only moves where it asks the divider to go.
+    keyBurst = { path, i: Number(g.dataset.i), node: keyBurst ? keyBurst.node : moved.node, sizes: moved.sizes };
+    dragLayout = DTm.setSplitSizes(placementLayout(), path, moved.sizes);
     renderLayout();
     clearTimeout(keyFlush);
     keyFlush = setTimeout(flushKeys, 400);

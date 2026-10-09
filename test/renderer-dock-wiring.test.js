@@ -288,12 +288,16 @@ test('D4: a divider moves with the arrow keys by the drag\'s rules, and keeps th
   const at = JS.indexOf("document.getElementById('dock').addEventListener('keydown', (e) => {\n    const g = e.target.closest && e.target.closest('.dgutter');");
   assert.ok(at !== -1, 'the divider key handler must be findable');
   const handler = JS.slice(at, JS.indexOf('\n  });', at));
-  assert.match(handler, /dividerKey\(placementLayout\(\), lastPlan\.splits, path, Number\(g\.dataset\.i\), e\.key\)/);
+  assert.match(handler, /dividerKeySizes\(placementLayout\(\), lastPlan\.splits, path, Number\(g\.dataset\.i\), e\.key\)/);
   assert.doesNotMatch(handler, /commitPlacement/, 'a key press is drawn, not saved: a held key would write ~30 times a second (PR #159 Miguel I4)');
-  assert.match(handler, /dragLayout = next;\s+renderLayout\(\);/);
+  assert.match(handler, /dragLayout = DTm\.setSplitSizes\(placementLayout\(\), path, moved\.sizes\);\s+renderLayout\(\);/);
+  assert.match(handler, /if \(dividerDrag \|\| floatDrag\) return;/, 'a float or divider drag owns dragLayout (PR #159 Dexter r2 N2)');
   assert.match(handler, /keyFlush = setTimeout\(flushKeys, 400\)/);
   const flush = JS.slice(JS.indexOf('const flushKeys = () => {'), JS.indexOf('};', JS.indexOf('const flushKeys = () => {')));
-  assert.match(flush, /commitPlacement\(l, \{ userAction: false \}\)/, 'one save when the burst ends; userAction false: focus stays on the divider');
+  assert.match(flush, /const rebased = window\.dockTreeView\.rebaseDrag\(committedLayout\(\), b\);\s+if \(rebased\) commitPlacement\(DTm\.setSplitSizes\(committedLayout\(\), b\.path, rebased\), \{ userAction: false \}\);/, 'one save when the burst ends, on the placement as it is NOW (PR #159 Dexter r2 N1); userAction false: focus stays on the divider');
+  assert.doesNotMatch(flush, /commitPlacement\(l\b|const l = dragLayout/, 'never the stale whole layout');
+  assert.match(flush, /if \(dividerDrag \|\| floatDrag\) return;/);
+  assert.match(JS, /window\.addEventListener\('pagehide', flushKeys\);/, 'a closing window keeps the last presses (N3)');
   assert.match(JS, /flushKeys\(\);\s+\/\/ a key burst still waiting to be saved is saved first/, 'a pointer drag starts from what was pressed');
 });
 
