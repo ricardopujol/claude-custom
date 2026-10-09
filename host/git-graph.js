@@ -148,14 +148,18 @@ async function readGraph(cwd, { run = defaultRun } = {}) {
   }
   const chips = chipsByTip(refs);
   let pushed = null;
+  let capped = false;
   if (commits.length) {
     try {
-      pushed = new Set(String(await run(['rev-list', '--remotes', `--max-count=${MAX_PUSHED_SCAN}`], cwd)).split(/\r?\n/).map(s => s.trim()).filter(Boolean));
+      const lines = String(await run(['rev-list', '--remotes', `--max-count=${MAX_PUSHED_SCAN}`], cwd)).split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      pushed = new Set(lines);
+      // a scan that hit its cap is cut off: a commit missing from it may simply be older than the newest MAX_PUSHED_SCAN
+      capped = lines.length >= MAX_PUSHED_SCAN;
     } catch { /* unknown, not "not pushed" */ }
   }
   for (const c of commits) {
     c.refs = chips.get(c.hash) || [];
-    c.pushed = pushed ? pushed.has(c.hash) : null;
+    c.pushed = !pushed ? null : pushed.has(c.hash) ? true : capped ? null : false;
   }
   return { ok: true, integration, ...buildGraph(commits) };
 }

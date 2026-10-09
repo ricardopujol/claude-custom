@@ -122,7 +122,11 @@ function fakeGit(over = {}) {
   const run = async (args) => {
     calls.push(args);
     if (args[0] === 'for-each-ref') return over.refs !== undefined ? over.refs : REFS;
-    if (args[0] === 'branch') return over.noMerged !== undefined ? over.noMerged : 'feat/new\nfeat/old\nworktree-agent-1\n';
+    if (args[0] === 'branch') {
+      const newestFirst = (over.noMerged !== undefined ? over.noMerged : 'feat/new\nfeat/old\nworktree-agent-1\n').split('\n').filter(Boolean);
+      // git lists alphabetically unless it is told to sort by the commit time
+      return (args.includes('--sort=-committerdate') ? newestFirst : [...newestFirst].sort()).join('\n');
+    }
     if (args[0] === 'rev-list') {
       if (over.revList instanceof Error) throw over.revList;
       return over.revList !== undefined ? over.revList : 'aaa\nzzz\n';
@@ -251,4 +255,14 @@ test('`git-graph` is on the control allow-list: off it, the panel\'s ask would b
   const { CONTROL_TYPES, parseControlFrame } = require('../host/control');
   assert.ok(CONTROL_TYPES.has('git-graph'));
   assert.deepStrictEqual(parseControlFrame(JSON.stringify({ type: 'git-graph' })), { type: 'git-graph' });
+});
+
+test('a scan that hit its cap never reads absence as "not pushed" (a local branch far behind a fetched origin)', async () => {
+  const flood = Array.from({ length: MAX_PUSHED_SCAN }, (_, i) => `f${i}`).join('\n');
+  const capped = await readGraph('C:\p', { run: fakeGit({ revList: flood }).run });
+  assert.deepStrictEqual(capped.commits.map(x => x.pushed), [null, null, null], 'none of the window is in the newest 2000: unknown');
+  const seen = await readGraph('C:\p', { run: fakeGit({ revList: `${flood}\naaa` }).run });
+  assert.strictEqual(seen.commits.find(x => x.hash === 'aaa').pushed, true, 'a hit is still a hit');
+  const one = await readGraph('C:\p', { run: fakeGit({ revList: flood.split('\n').slice(1).join('\n') }).run });
+  assert.deepStrictEqual(one.commits.map(x => x.pushed), [false, false, false], 'one under the cap is a complete scan');
 });

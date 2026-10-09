@@ -45,6 +45,8 @@ function createAsker(send) {
   let controls = null;
   return {
     setControls(list) { controls = list; },
+    // a dropped socket forgets what its host accepted: the next one may be an older host
+    forget() { controls = null; },
     ask() {
       if (!Array.isArray(controls)) return { sent: false, note: null };
       if (!controls.includes('git-graph')) return { sent: false, note: NEEDS_NEWER };

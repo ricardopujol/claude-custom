@@ -560,6 +560,14 @@ test('the Graph view never asks for a frame, sets a timer, or observes a resize'
 test('renderer.js asks for the graph only through the gated asker, and draws it only while it shows', () => {
   const src = read('app/renderer.js');
   assert.doesNotMatch(src, /type:\s*'git-graph'/, 'a bare git-graph frame in the renderer');
-  assert.match(src, /gitGraphAsker\.setControls\(msg\.controls\)/);
   assert.match(src, /if \(gitView !== 'graph' \|\| lastGitGraph === null\) return;/);
+});
+
+// PR #157 Dexter r2 N2 / N3: what the asker knows is the CURRENT socket's host's word, and a hello with no `controls` is an old host's.
+test('renderer.js: a dropped socket clears the graph asker, the hello sets it (no field = none) and re-asks', () => {
+  const src = read('app/renderer.js');
+  const close = src.slice(src.indexOf('ws.onclose = () => {'));
+  assert.match(close.slice(0, close.indexOf('};')), /gitGraphAsker\.forget\(\);/);
+  assert.match(src, /gitGraphAsker\.setControls\(Array\.isArray\(msg\.controls\) \? msg\.controls : \[\]\);/);
+  assert.match(src, /if \(shownModules\.has\('git'\) && gitView === 'graph'\) requestGitGraph\(\);\s*\n\s*if \(typeof msg\.project/);
 });

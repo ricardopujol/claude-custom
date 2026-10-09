@@ -6516,7 +6516,8 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
-    gitGraphAsker.setControls(msg.controls);
+    // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
+    gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
@@ -7008,6 +7009,8 @@ function connect() {
     dot.classList.remove('on');
     // a Files ask in flight will never be answered by this socket: fail it now, not after its timeout
     repoBrowser.failAll('the connection to the session dropped');
+    // the next socket may reach another host, an older one: nothing is asked of it until ITS hello (PR #95 D7)
+    gitGraphAsker.forget();
     cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }

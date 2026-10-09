@@ -470,3 +470,17 @@ test('an ok answer with no commit list is said, not thrown', () => {
   assert.match(r.status.textContent, /no commit list/);
   assert.strictEqual(r.rows().length, 0);
 });
+
+test('a dropped socket makes the asker forget what its host accepted; only a new hello lets it ask again', () => {
+  const sent = [];
+  const asker = display.createAsker(frame => { sent.push(frame); return true; });
+  asker.setControls(['git-graph']);
+  assert.strictEqual(asker.ask().sent, true);
+  asker.forget();
+  assert.deepStrictEqual(asker.ask(), { sent: false, note: null }, 'after the close: nothing sent, nothing said');
+  asker.setControls([]);
+  assert.deepStrictEqual(asker.ask(), { sent: false, note: display.NEEDS_NEWER }, 'a hello without it');
+  asker.setControls(['git-graph']);
+  assert.strictEqual(asker.ask().sent, true);
+  assert.strictEqual(sent.length, 2);
+});
