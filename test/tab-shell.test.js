@@ -1865,6 +1865,25 @@ test('handleProbeCommand: Stop all in this project, from the ▾ list (Windowles
   assert.strictEqual(asked, 1);
 });
 
+test('handleProbeCommand: strip-lean presses only the Lean button or Back to normal (#62)', async () => {
+  const seen = [];
+  const api = { stripLean: async (b) => { seen.push(b); return { ok: true, clicked: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-lean', button: 'lean-btn' }), api), { ok: true, clicked: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-lean', button: 'lean-back' }), api), { ok: true, clicked: true });
+  for (const button of [undefined, 'plus', 'lean-btn; alert(1)', 5]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-lean', button }), api),
+      { ok: false, error: 'strip-lean needs lean-btn or lean-back' }, String(button));
+  }
+  assert.deepStrictEqual(seen, ['lean-btn', 'lean-back']);
+});
+
+test('handleProbeCommand: leanState is one of the named view actions (#62)', async () => {
+  const seen = [];
+  const api = { view: async (a) => { seen.push(a); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'view', action: 'leanState' }), api), { ok: true });
+  assert.deepStrictEqual(seen, ['leanState']);
+});
+
 test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
   const seen = [];
   const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };

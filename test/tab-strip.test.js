@@ -247,7 +247,7 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its eighteen members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-one members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
@@ -255,7 +255,9 @@ test('the strip bridge exposes its eighteen members -- and nothing else', () => 
   assert.deepStrictEqual(members,
     ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
       // #66, the indexing field (app/indexing-bridge.js answers them)
-      'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus']);
+      'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus',
+      // #62, lean mode (app/lean-bridge.js answers them)
+      'leanGet', 'leanSet', 'onLean']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
@@ -670,4 +672,65 @@ test('#63 paint (kill, #70): the refusal is `pct < 0`, so exactly 0 still draws 
   const [zero, below] = doc.byId.tabs.children;
   assert.strictEqual(child(zero, 'res-warn').textContent, '0%');
   assert.strictEqual(child(below, 'res-warn'), undefined);
+});
+
+// --- lean mode (BACKLOG #62): the ☾ Lean button and the chip -----------------------------------------------
+
+const { paintLean } = require('../app/tab-strip');
+function leanDoc() {
+  const cls = new Set();
+  const body = { classList: { toggle: (c, on) => { if (on) cls.add(c); else cls.delete(c); }, contains: (c) => cls.has(c) } };
+  const byId = { 'lean-btn': node('button'), 'lean-chip': node('span'), 'lean-chip-label': node('span'), 'lean-chip-night': node('span'), 'lean-back': node('button') };
+  byId['lean-chip'].hidden = true;
+  byId['lean-chip-night'].hidden = true;
+  return { body, byId, getElementById: (id) => byId[id] };
+}
+
+test('paintLean: normal shows the Lean button and no chip; the button turns it on', () => {
+  const doc = leanDoc();
+  const sets = [];
+  paintLean(doc, { on: false }, { leanSet: (on) => sets.push(on) });
+  assert.strictEqual(doc.byId['lean-btn'].hidden, false);
+  assert.strictEqual(doc.byId['lean-chip'].hidden, true);
+  assert.strictEqual(doc.body.classList.contains('lean'), false);
+  doc.byId['lean-btn'].onclick();
+  assert.deepStrictEqual(sets, [true]);
+});
+
+test('paintLean: lean by hand shows "lean" and Back to normal, hides the button, marks the body', () => {
+  const doc = leanDoc();
+  const sets = [];
+  paintLean(doc, { on: true }, { leanSet: (on) => sets.push(on) });
+  assert.strictEqual(doc.byId['lean-btn'].hidden, true);
+  assert.strictEqual(doc.byId['lean-chip'].hidden, false);
+  assert.strictEqual(doc.byId['lean-chip-label'].textContent, '☾ lean');
+  assert.strictEqual(doc.byId['lean-chip-night'].hidden, true);
+  assert.strictEqual(doc.byId['lean-back'].textContent, 'Back to normal');
+  assert.strictEqual(doc.body.classList.contains('lean'), true);
+  doc.byId['lean-back'].onclick();
+  assert.deepStrictEqual(sets, [false]);
+});
+
+test('paintLean: a night that started it adds "bedtime HH:MM"', () => {
+  const doc = leanDoc();
+  paintLean(doc, { on: true, byBedtime: true, bedtimeSince: new Date(2026, 9, 9, 23, 40).getTime() }, { leanSet() {} });
+  assert.strictEqual(doc.byId['lean-chip-night'].hidden, false);
+  assert.strictEqual(doc.byId['lean-chip-night'].textContent, 'bedtime 23:40');
+});
+
+test('paintLean: a missing state (the bridge has not answered) is normal, never lean', () => {
+  const doc = leanDoc();
+  paintLean(doc, undefined, { leanSet() {} });
+  assert.strictEqual(doc.byId['lean-chip'].hidden, true);
+  assert.strictEqual(doc.body.classList.contains('lean'), false);
+});
+
+test('tab-strip.html: the lean button and chip sit before ▾, the chip starts hidden, and the page loads lean-display.js', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const strip = html.slice(html.indexOf('<div id="strip">'), html.indexOf('<div id="pane"'));
+  assert.ok(strip.indexOf('id="lean-btn"') < strip.indexOf('id="bg"'));
+  assert.ok(strip.indexOf('id="lean-chip"') < strip.indexOf('id="bg"'));
+  assert.match(strip, /id="lean-chip"[^>]*\bhidden\b/);
+  assert.ok(html.indexOf('lean-display.js') < html.indexOf('tab-strip.js'), 'the helper loads first');
+  assert.match(html, /body\.lean \.dot\.working\s*\{[^}]*animation:\s*none/);
 });

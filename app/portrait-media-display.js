@@ -132,9 +132,30 @@ function faceMediaHtml(result, opts) {
   if (d.tag === 'img') {
     return `<img class="face-media" src="${esc(a.src)}" alt="" title="${esc(a.title)}" />`;
   }
-  // The hue is forced numeric so it can't carry markup into the style.
+  return placeholderHtml(a);
+}
+
+// The hue is forced numeric so it can't carry markup into the style.
+function placeholderHtml(a) {
   return `<span class="face-media face-placeholder" title="${esc(a.title)}" style="width:100%;height:100%;display:flex;align-items:center;` +
          `justify-content:center;background:hsl(${Number(a.hue) || 0} 42% 62%)">${esc(a.initials)}</span>`;
+}
+
+/**
+ * A face that never moves (BACKLOG #62, lean mode's portraits-only strip). A GIF/APNG becomes a <canvas> that the page
+ * paints with the image's first frame once it has loaded (`data-still-src`; a plain <img> would keep animating); a still
+ * image stays an <img>; a video face (and images off or unknown) is the placeholder, so the strip decodes nothing.
+ */
+function stillFaceHtml(result, opts) {
+  const d = mediaElementFor(result, opts);
+  if (d.tag === 'img' && /\.(?:gif|apng)$/i.test(String(result.path))) {
+    return `<canvas class="face-media face-still" width="96" height="96" data-still-src="${esc(d.attrs.src)}" title="${esc(d.attrs.title)}"></canvas>`;
+  }
+  if (d.tag === 'video') {
+    const r = result && typeof result === 'object' ? result : null;
+    return placeholderHtml(placeholderAttrs(r, tierTitle(r)));
+  }
+  return faceMediaHtml(result, opts);
 }
 
 /** Strict: a face plays only when BOTH inputs are exactly `true`. */
@@ -154,7 +175,7 @@ function unloadVideo(el) {
   try { if (typeof el.load === 'function') el.load(); } catch { /* detached */ }
 }
 
-const API = { mediaElementFor, faceMediaHtml, videoKey, planVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
+const API = { mediaElementFor, faceMediaHtml, stillFaceHtml, videoKey, planVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.portraitMedia = API;

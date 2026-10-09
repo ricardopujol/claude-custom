@@ -3,7 +3,7 @@
  * The tab strip page's bridge (PR 2, worktree tabs). The strip is the window's
  * OWN page; the tabs' pages are separate views with app/preload.js.
  *
- * Eighteen members and no more: nine ways to ask main for something and two ways
+ * Twenty-one members and no more (lean mode, #62, added three): nine ways to ask main for something and two ways
  * to hear what main pushes (the model, and the accent colour: a #rrggbb, or
  * null when the selected tab hasn't reported one), plus the indexing field's
  * five asks and two pushes (#66). Layout pass L2: minimise and
@@ -58,4 +58,11 @@ contextBridge.exposeInMainWorld('strip', {
     () => {
       try { fn(); } catch (err) { console.error('[preload-strip] index focus listener threw', err); }
     }), () => ipcRenderer.removeAllListeners('strip-index-focus')),
+  // Backlog #62, lean mode: the ☾ Lean button and Back to normal (leanSet), the state on load (leanGet), and its pushes.
+  leanGet: () => ipcRenderer.invoke('lean:get'),
+  leanSet: (on) => ipcRenderer.send('lean:set', on === true),
+  onLean: (fn) => (ipcRenderer.removeAllListeners('lean-state'), ipcRenderer.on('lean-state',
+    (_e, state) => {
+      try { fn(state); } catch (err) { console.error('[preload-strip] lean listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('lean-state')),
 });

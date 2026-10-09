@@ -288,7 +288,30 @@ function paintAccent(doc, hex) {
   return true;
 }
 
-const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, windowChrome, GLYPHS };
+/**
+ * Lean mode (BACKLOG #62): the ☾ Lean button while normal, and while lean the chip `☾ lean` (+ `bedtime HH:MM` when a
+ * night started it) with Back to normal. The state is main's (app/lean-state.js); this only draws it and sends the
+ * button's word. The body class stops the working dots' pulse (CSS in tab-strip.html); a tab that NEEDS you keeps its
+ * pulse, because a notification is not an animation to save. A missing state is normal: nothing says lean until main does.
+ */
+function paintLean(doc, state, bridge) {
+  const lean = typeof module !== 'undefined' && module.exports ? require('./lean-display') : root.leanDisplay;
+  const chip = lean.chip(state);
+  const btn = doc.getElementById('lean-btn');
+  const box = doc.getElementById('lean-chip');
+  if (doc.body && doc.body.classList) doc.body.classList.toggle('lean', chip !== null);
+  if (btn) { btn.hidden = chip !== null; btn.onclick = () => bridge.leanSet(true); }
+  if (!box) return;
+  box.hidden = chip === null;
+  const label = doc.getElementById('lean-chip-label');
+  const night = doc.getElementById('lean-chip-night');
+  const back = doc.getElementById('lean-back');
+  if (label) label.textContent = chip ? chip.label : '';
+  if (night) { night.textContent = chip && chip.night ? chip.night : ''; night.hidden = !(chip && chip.night); }
+  if (back) { back.textContent = chip ? chip.back : ''; back.onclick = () => bridge.leanSet(false); }
+}
+
+const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, paintLean, windowChrome, GLYPHS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
@@ -299,6 +322,14 @@ if (typeof module !== 'undefined' && module.exports) {
   }
   if (root.strip && typeof root.strip.onAccent === 'function') {
     root.strip.onAccent((hex) => paintAccent(root.document, hex));
+  }
+  if (root.strip && typeof root.strip.onLean === 'function') {
+    // the state on load; a push that already arrived is not undone by a slower answer
+    let pushed = false;
+    root.strip.onLean((state) => { pushed = true; paintLean(root.document, state, root.strip); });
+    if (typeof root.strip.leanGet === 'function') {
+      Promise.resolve(root.strip.leanGet()).then((state) => { if (!pushed) paintLean(root.document, state, root.strip); }, () => {});
+    }
   }
   if (root.strip && typeof root.strip.onModel === 'function') {
     root.strip.onModel((payload) => paint(root.document, payload, root.strip));

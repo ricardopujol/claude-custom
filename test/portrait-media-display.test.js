@@ -198,3 +198,28 @@ test('unloadVideo carries on when pause() throws, and tolerates a non-video', ()
   assert.doesNotThrow(() => unloadVideo(null));
   assert.doesNotThrow(() => unloadVideo({}));
 });
+
+// --- lean mode (BACKLOG #62): the portraits-only strip draws STILL faces ---------------------------------
+
+test('stillFaceHtml: a GIF is drawn into a canvas (frame one), never an animating <img>', () => {
+  const { stillFaceHtml } = require('../app/portrait-media-display');
+  const html = stillFaceHtml({ agent: 'a', kind: 'file', path: 'C:/p/a b.gif', media: 'image', tier: 'uploaded' }, { imagesEnabled: true });
+  assert.match(html, /^<canvas /);
+  assert.ok(html.includes('data-still-src="file:///C:/p/a%20b.gif"'), html);
+  assert.doesNotMatch(html, /<img|<video/);
+});
+
+test('stillFaceHtml: a still image stays an <img>; a video face becomes the placeholder (no decoder for a strip)', () => {
+  const { stillFaceHtml } = require('../app/portrait-media-display');
+  assert.match(stillFaceHtml({ kind: 'file', path: 'C:/p/a.png', media: 'image', tier: 'forge' }, { imagesEnabled: true }), /^<img /);
+  const v = stillFaceHtml({ kind: 'file', path: 'C:/p/a.webm', media: 'video', tier: 'uploaded', fallback: { initials: 'AB', hue: 120 } }, { imagesEnabled: true });
+  assert.match(v, /face-placeholder/);
+  assert.match(v, />AB</);
+  assert.doesNotMatch(v, /<video/);
+});
+
+test('stillFaceHtml: images off or unknown is the placeholder, as for the roster', () => {
+  const { stillFaceHtml } = require('../app/portrait-media-display');
+  assert.match(stillFaceHtml({ kind: 'file', path: 'C:/p/a.gif', media: 'image' }, { imagesEnabled: false }), /face-placeholder/);
+  assert.match(stillFaceHtml(null, { imagesEnabled: null }), /face-placeholder/);
+});

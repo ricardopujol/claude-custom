@@ -324,7 +324,7 @@ function paintBarNow() {
     bedtime: bar.bedtime,
     occupancy: chip,
     summary: panel,
-    focusMode: document.body.classList.contains('focus-mode'),
+    focusMode: document.body.classList.contains('focus-mode') || leanOn,
   });
   bar.summaryShown = !!m.summary;
   if (!m.prompt) bar.fullOpen = false;
@@ -464,7 +464,17 @@ function applyBarPrompt(prompt, live) {
 
 
 
-function applyBedtime(payload) {
+// Lean mode follows the HOST's word about the night (main's app/lean-state.js decides what it means); a dropped socket
+// says nothing, so it never ends a night here.
+let lastLeanNight;
+function reportLeanNight() {
+  const at = bar.bedtime !== null ? bar.bedtime.startedAt : null;
+  if (at === lastLeanNight) return;
+  lastLeanNight = at;
+  if (window.harness && window.harness.lean) window.harness.lean.night(at);
+}
+
+function applyBedtime(payload, { fromHost = true } = {}) {
   bar.bedtime = payload && typeof payload === 'object' && typeof payload.startedAt === 'number' && Number.isFinite(payload.startedAt) ? payload : null;
   // A new night forgets the last one's answer (its id is never seen again); the same night returning keeps it.
   if (bar.bedtime !== null) {
@@ -473,6 +483,7 @@ function applyBedtime(payload) {
     bar.nightKey = key;
   }
   if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
+  if (fromHost) reportLeanNight();
   paintBar();
   reportTabStatus();
 }
@@ -523,7 +534,7 @@ async function jumpToFolder(folder) {
 }
 
 // The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
-setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0 || sum.pinned) paintBar(); }, 30000);
+setInterval(() => { if (!leanOn && (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0 || sum.pinned)) paintBar(); }, 30000);
 
 // --- the where-are-we summary (backlog #39 job 1) ----------------------------------------------------------
 // The host's local-model summary of this session (host/summary-service.js). Every decision is in
@@ -1068,6 +1079,7 @@ let dragLayout = null;           // a divider being dragged: drawn, not yet save
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let shownModules = new Set();
+let leanOn = false;              // lean mode, BACKLOG #62: the whole window is terminal-only; main's word, see the lean block below
 let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
 // This window's selection. A window that has none yet is seeded ONCE from L1's
@@ -1495,7 +1507,9 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   lastPlan = plan;
   window.dockTreeView.applyBoxes(plan, document);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
-  const now = new Set(plan.shown);
+  // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
+  // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
+  const now = new Set(leanOn ? [] : plan.shown);
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
   for (const id of fx.newlyShown) onModuleShown(id);
@@ -3079,6 +3093,30 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           }, 150);
         }, 50);
       });
+      // Backlog #62 (verify/probe-lean.js): lean mode as this page has it -- the class, what the dock still shows,
+      // the terminal's renderer and scrollback, the background layer and the working-agents strip.
+      case 'leanState': {
+        const facesEl = document.getElementById('lean-faces');
+        const buf = term.buffer.active;
+        const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+        const bgEl = document.getElementById('bg');
+        const cs = getComputedStyle(document.documentElement);
+        return JSON.stringify({
+          ok: true, leanOn, bodyLean: document.body.classList.contains('lean'), shown: [...shownModules],
+          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length, headerVisible: visible(document.querySelector('header')),
+          barVisible: visible(document.getElementById('terminal-bar')),
+          webgl: !!webglAddon, termRect: rectOf(document.getElementById('termwrap')), page: { width: window.innerWidth, height: window.innerHeight },
+          buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
+          bg: { cssImage: bgEl.style.backgroundImage, still: bgStillEl ? { width: bgStillEl.width, height: bgStillEl.height } : null,
+            video: bgVideoEl ? { paused: bgVideoEl.paused, currentTime: bgVideoEl.currentTime } : null, hasBg: document.body.classList.contains('has-bg') },
+          faces: { hidden: facesEl.hidden, shown: visible(facesEl), count: facesEl.querySelectorAll('.lean-face').length,
+            titles: [...facesEl.querySelectorAll('.lean-face')].map(f => f.title), stills: facesEl.querySelectorAll('canvas').length, imgs: facesEl.querySelectorAll('img').length, placeholders: facesEl.querySelectorAll('.face-placeholder').length,
+            videos: facesEl.querySelectorAll('video').length },
+          look: { accent: cs.getPropertyValue('--accent').trim(), bg: cs.getPropertyValue('--bg').trim(), text: cs.getPropertyValue('--text').trim() },
+          termTheme: term.options.theme ? { background: term.options.theme.background || null, foreground: term.options.theme.foreground || null } : null,
+          typedFocus: !!(term.element && term.element.contains(document.activeElement)),
+        });
+      }
       // Backlog #34 (verify/probe-video-background.js): the background layer as it is on screen --
       // the video's own state, the classes and variables the look paints, and the Style tab's note.
       case 'bgState': {
@@ -4019,6 +4057,8 @@ document.getElementById('roster-show-hidden').addEventListener('click', () => {
 });
 
 function renderRoster() {
+  // Lean mode keeps only a strip of the working agents' still portraits; the panel is not drawn (nor its videos churned).
+  if (leanOn) { paintLeanFaces(); return; }
   const showBtnEl = document.getElementById('roster-show-hidden');
   showBtnEl.hidden = true;   // Active tab only; the Active branch below un-hides it when n > 0
   const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
@@ -4555,7 +4595,7 @@ function renderCooldowns(list) {
 // Counted down locally so the remaining time is honest between broadcasts;
 // the host stays the source of truth for what is ON cooldown.
 setInterval(() => {
-  if (!cooldownState.length) return;
+  if (leanOn || !cooldownState.length) return;
   const now = Date.now();
   cooldownState = cooldownState
     .map(c => ({ ...c, remainingMs: c.remainingMs - (now - (c._tick || now)), _tick: now }))
@@ -4674,7 +4714,7 @@ function renderQuota(quota) {
 // The countdown in every tooltip goes stale on its own, with no message from
 // the host -- so it is recomputed locally. Cheap: it re-renders from the last
 // payload and makes no request.
-setInterval(() => { if (lastQuotaPayload) renderQuota(); }, 30000);
+setInterval(() => { if (!leanOn && lastQuotaPayload) renderQuota(); }, 30000);
 
 // A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
 // depletes an allowance, never goes red, and never warns. The same geometry
@@ -4756,6 +4796,9 @@ function flourish(milestone) {
 // `kind` (backlog #34): 'video' draws a muted looping <video> inside #bg, under the
 // same veil; anything else is the CSS background image it always was.
 let bgVideoEl = null;       // the <video> in #bg, or null
+let bgImageUrl = null;      // the image shown as #bg's CSS background (or stilled in lean mode), or null
+let bgStillEl = null;       // lean mode: the <canvas> holding a GIF background's first frame, or null
+let bgStillToken = 0;       // a newer background paint cancels an older still's late load
 let failedBgUrl = null;     // a video the engine refused: not retried until the file changes
 
 // What the video's play rule is fed (app/bg-media-display.js shouldPlay). `visible` joins the
@@ -4770,6 +4813,7 @@ function backgroundPlaybackState() {
     minimised: bgPlayback.minimised,
     onBattery: bgPlayback.onBattery,
     reducedMotion: reducedMotionQuery.matches,
+    lean: leanOn,       // BACKLOG #62: lean mode holds a video on its first frame
   };
 }
 
@@ -4845,7 +4889,7 @@ function showBackgroundVideo(url) {
 // No background at all: the theme's own colours show through, as before one was set.
 function clearBackgroundLayer() {
   removeBackgroundVideo();
-  document.getElementById('bg').style.backgroundImage = '';
+  paintBackgroundImage(null);
   backgroundUrl = null;
   backgroundSetAt = null;
   document.body.classList.remove('has-bg', 'has-custom-bg');
@@ -4862,11 +4906,11 @@ function applyBackground(filePath, { custom = false, version = '', kind = 'image
   if (media.tag === 'video' && url === failedBgUrl) return;     // already known not to play
   failedBgUrl = null;
   if (media.tag === 'video') {
-    document.getElementById('bg').style.backgroundImage = '';
+    paintBackgroundImage(null);
     showBackgroundVideo(media.attrs.src);
   } else {
     removeBackgroundVideo();
-    document.getElementById('bg').style.backgroundImage = `url("${media.url}")`;
+    paintBackgroundImage(media.url);
   }
   backgroundUrl = url;
   backgroundSetAt = custom && version ? version : null;
@@ -4883,6 +4927,131 @@ function applyBackground(filePath, { custom = false, version = '', kind = 'image
     webglAddon = null;
     console.info('[renderer] WebGL disabled: incompatible with a transparent background');
   }
+}
+
+// The background IMAGE layer. Normally the CSS background; while lean, a GIF/APNG is replaced by a canvas holding its
+// first frame (a CSS background GIF keeps decoding and compositing frame after frame). A canvas, not a blob: URL: the
+// page's CSP admits no blob:/data: image, and a canvas that is only displayed is never read back, so file: taint is moot.
+function clearBackgroundStill() {
+  bgStillToken += 1;
+  if (bgStillEl) { bgStillEl.remove(); bgStillEl = null; }
+}
+function paintBackgroundImage(url) {
+  const bgEl = document.getElementById('bg');
+  clearBackgroundStill();
+  bgImageUrl = url;
+  if (!url) { bgEl.style.backgroundImage = ''; return; }
+  if (!(leanOn && leanDisplay.isAnimatedImageUrl(url))) { bgEl.style.backgroundImage = `url("${url}")`; return; }
+  bgEl.style.backgroundImage = '';
+  const token = bgStillToken;
+  const img = new Image();
+  img.onload = () => {
+    if (token !== bgStillToken || !leanOn) return;
+    const c = document.createElement('canvas');
+    c.className = 'bg-still';
+    c.width = img.naturalWidth || 1;
+    c.height = img.naturalHeight || 1;
+    try { c.getContext('2d').drawImage(img, 0, 0); } catch { return; }       // cannot be drawn: no background, never a moving one
+    bgEl.prepend(c);
+    bgStillEl = c;
+  };
+  img.src = url;
+}
+
+// --- lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md) --------------------------------------------------
+// Main owns ONE window-level state (app/lean-state.js) and tells every tab page; this page does what that means here:
+// only the terminal shows, every panel / poller / animation is suspended, the terminal swaps WebGL for the default
+// renderer, and a GIF or video background holds a still frame. What stays is what makes the project itself: its colours,
+// its terminal theme, a still background, the strip's tab marks and names. app/lean-display.js holds the decisions;
+// every suspendable thing registers a suspend/resume pair on the one registry below, so a new poller has one place to
+// say how it stops. The page keeps the terminal and the pty untouched: typing, scrollback and `claude` carry on.
+const leanBridge = window.harness && window.harness.lean;
+const leanSuspender = leanDisplay.createSuspender();
+const leanFacesEl = document.getElementById('lean-faces');
+let leanFacesKey = '';
+
+// The dock: no panel is "shown" while lean (renderLayout), so each panel's hide effect runs and coming back refreshes them.
+leanSuspender.register('dock', { suspend: () => renderLayout(), resume: () => renderLayout() });
+
+// The minute-ticks (the bar's ages, quota countdowns, cooldowns) skip while lean; on return they are redrawn at once.
+leanSuspender.register('ticks', {
+  suspend: () => { paintBar(); },
+  resume: () => { paintBar(); if (lastQuotaPayload) renderQuota(); renderCooldowns(); },
+});
+
+// The roster panel is not drawn while lean (no face videos churn); the working agents get a strip of still portraits.
+leanSuspender.register('roster', {
+  suspend: () => { paintLeanFaces(); },
+  resume: () => { leanFacesKey = ''; if (leanFacesEl) { leanFacesEl.replaceChildren(); leanFacesEl.hidden = true; } renderRoster(); },
+});
+
+// xterm: the WebGL addon goes while lean and comes back after, only if no background forbids it (applyBackground). The
+// buffer lives in xterm, not in the renderer, so scrollback survives the swap.
+function setTerminalRenderer() {
+  const want = leanDisplay.wantWebgl({
+    lean: leanOn, hasBackground: document.body.classList.contains('has-bg'), supported: typeof WebglAddon !== 'undefined',
+  });
+  if (!want && webglAddon) {
+    try { webglAddon.dispose(); } catch {}
+    webglAddon = null;
+  } else if (want && !webglAddon) {
+    try {
+      const addon = new WebglAddon.WebglAddon();
+      addon.onContextLoss(() => addon.dispose());
+      term.loadAddon(addon);
+      webglAddon = addon;
+    } catch (e) { console.warn('[renderer] WebGL addon unavailable, using fallback:', e.message); }
+  }
+  try { term.refresh(0, term.rows - 1); } catch {}
+}
+leanSuspender.register('terminal-renderer', { suspend: setTerminalRenderer, resume: setTerminalRenderer });
+
+// The background: a video holds its first frame (backgroundPlaybackState carries `lean`); a GIF becomes its first frame.
+leanSuspender.register('background', {
+  suspend: () => { syncBackgroundPlayback(); if (bgImageUrl) paintBackgroundImage(bgImageUrl); },
+  resume: () => { syncBackgroundPlayback(); if (bgImageUrl) paintBackgroundImage(bgImageUrl); },
+});
+
+function paintStillCanvas(c) {
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const ctx = c.getContext('2d');
+      const side = Math.min(img.naturalWidth, img.naturalHeight) || 1;
+      ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, c.width, c.height);
+    } catch { /* stays blank: a face never moves */ }
+  };
+  img.src = c.dataset.stillSrc;
+}
+
+// The portraits-only strip: the agents working right now, as still images, from the roster events already arriving.
+function paintLeanFaces() {
+  if (!leanFacesEl) return;
+  const { faces, more } = leanDisplay.workingFaces([...roster.values()]);
+  const html = faces.map(f => `<div class="lean-face" title="${escapeHtml(f.agent)} is working">${portraitMedia.stillFaceHtml(f.portrait, { imagesEnabled: agentImagesEnabled })}</div>`).join('') +
+    (more > 0 ? `<div class="lean-more" title="${more} more working">+${more}</div>` : '');
+  if (html === leanFacesKey) return;
+  leanFacesKey = html;
+  leanFacesEl.innerHTML = html;
+  leanFacesEl.hidden = faces.length === 0;
+  for (const c of leanFacesEl.querySelectorAll('canvas[data-still-src]')) paintStillCanvas(c);
+}
+
+function applyLean(payload) {
+  const on = leanDisplay.normalize(payload).on;
+  if (on === leanOn) return;
+  leanOn = on;
+  document.body.classList.toggle('lean', on);
+  closeLayoutMenu();
+  const { failed } = leanSuspender.set(on);
+  if (failed.length) console.warn('[renderer] lean mode: these did not ' + (on ? 'suspend' : 'resume') + ': ' + failed.join(', '));
+  if (on) term.focus();
+}
+if (leanBridge) {
+  // A push that arrives before the first answer wins over it.
+  let leanPushed = false;
+  leanBridge.onChange((state) => { leanPushed = true; applyLean(state); });
+  Promise.resolve(leanBridge.get()).then((state) => { if (!leanPushed) applyLean(state); }, () => { /* main has no answer: normal */ });
 }
 
 // --- running processes ------------------------------------------------------
@@ -6784,7 +6953,7 @@ function connect() {
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
-    if (bar.bedtime !== null) applyBedtime(null);
+    if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);
