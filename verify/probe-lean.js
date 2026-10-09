@@ -420,7 +420,10 @@ async function main() {
     await setLean(false);
     await command(app, { cmd: 'select', label: 'develop' });
     await sleep(2000);
-    for (const id of ['git', 'resources', 'agents']) await view(app, 'show', { id });
+    // Several panels at once: tabs of one zone only count as shown while selected, so each goes to its own edge.
+    await view(app, 'move', { id: 'git', target: 'bottom', justThisTab: true });
+    await view(app, 'move', { id: 'resources', target: 'left', justThisTab: true });
+    await view(app, 'show', { id: 'agents', justThisTab: true });
     await sleep(10000);
     const open = await leanPage(app);
     console.log(`      (info) panels shown for the measurement: ${open && open.shown.join(', ')}`);
