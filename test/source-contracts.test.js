@@ -384,6 +384,13 @@ test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...
   assert.ok(uses <= 9, `probeAnswer is used ${uses} times: keep it to confirmLeave and the two probe actions`);
 });
 
+test('#50 (PR #155 r2 N1): destroying a tab view clears its unsaved entry (a removed worktree leaves no phantom question)', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf('function destroyTabView(tab) {');
+  assert.ok(at !== -1);
+  assert.match(main.slice(at, main.indexOf('\n}\n', at)), /readerUnsaved\.clear\(tab\.key\)/);
+});
+
 test('#50 (PR #155 Miguel I2): the Files panel highlight goes back when the person declines to leave unsaved text', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'repo-browser.js'), 'utf8');
   assert.match(src, /onOpen: async \(path\) => \{ if \(\(await reader\.open\(path\)\) === false\) panel\.setSelected\(reader\.path\(\)\); \}/);
