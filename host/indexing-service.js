@@ -236,6 +236,8 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
       id: n.id, text: n.text, at: n.at, state: n.state, reason: n.reason,
       file: n.where ? path.basename(n.where.file) : null,
       createdBacklog: n.state === 'filed' && !!n.record && typeof n.record.pristine === 'string',
+      createdFolder: n.state === 'filed' && !!n.record && !!n.record.made && n.record.made.dir === true,
+      createdIgnore: n.state === 'filed' && !!n.record && !!n.record.made && !!n.record.made.gitignore,
       undoable: n.state === 'filed' && own(n.where.file) && text(n.where.file) !== null
         && removeEntry(text(n.where.file), n.record).ok === true,
     }));

@@ -48,11 +48,22 @@ function reasonText(reason) {
 
 const firstLine = (text) => String(typeof text === 'string' ? text : '').split(/\r\n|\r|\n/)[0];
 
+/** "Created the backlog and filed your note", naming the folder and the .gitignore entry too when this note made them. */
+function createdLine(r) {
+  const parts = [];
+  if (r.createdFolder === true) parts.push('documentation\\');
+  parts.push('the backlog');
+  if (r.createdIgnore === true) parts.push('its .gitignore entry');
+  if (parts.length === 1) return 'Created the backlog and filed your note';
+  const what = parts.length === 2 ? parts.join(' and ') : `${parts[0]}, ${parts[1]} and ${parts[2]}`;
+  return `Created ${what}, and filed your note`;
+}
+
 function toastModel(row) {
   const r = row && typeof row === 'object' ? row : {};
   const note = firstLine(r.text);
   if (r.state === 'filed') {
-    const line = r.createdBacklog === true ? 'Created the backlog and filed your note' : 'Added to the inbox';
+    const line = r.createdBacklog === true ? createdLine(r) : 'Added to the inbox';
     return { kind: 'added', line, note, undo: r.undoable === true, copy: false };
   }
   if (r.state === 'undone') return { kind: 'undone', line: 'Undone. Removed from the inbox.', note, undo: false, copy: false };

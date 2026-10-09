@@ -556,7 +556,7 @@ test('#79 R2: a note to a git root with no documentation folder makes it, the ba
   assert.strictEqual(read(t.backlog), CREATED('- 2026-10-05 09:07 · first\n'));
   assert.ok(read(t.ignore).includes(MARKER) && read(t.ignore).includes('documentation/*'));
   const n = t.svc.snapshot(t.project).list[0];
-  assert.deepStrictEqual([n.state, n.undoable, n.createdBacklog], ['filed', true, true]);
+  assert.deepStrictEqual([n.state, n.undoable, n.createdBacklog, n.createdFolder, n.createdIgnore], ['filed', true, true, true, true]);
 });
 
 test('#79 R2: Undo of the note that made the folder takes the backlog, the folder and the block out again', () => {

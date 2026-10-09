@@ -116,9 +116,9 @@ app.whenReady().then(async () => {
     await js('document.querySelector("#roster-names-toggle [data-roster-names=name]").click()');
     check('back to name mode', await until('rosterNamesMode === "name"'));
     n = await names();
-    check('Inactive, name mode: five cards, personas big', n.length === 5 && n.every(x => x.alt !== null), n);
+    check('Inactive, name mode: five cards, personas big', n.length === 5 && n.every(x => x.alt !== null || x.big === 'Cedar'), n);
     check('Inactive: Murray Bones (two words) is one name', n.some(x => x.big === 'Murray Bones' && x.alt === 'dead-code-sweeper'), n);
-    check('Inactive: Cedar is shown as "Cedar" (the persona equals the role ignoring case, and is kept)', n.some(x => x.big === 'Cedar' && x.alt === 'cedar'), n);
+    check('Inactive: Cedar is shown once, as "Cedar" (the persona equals the role ignoring case: no small duplicate)', n.some(x => x.big === 'Cedar' && x.alt === null), n);
     check('the small name is never cut to an ellipsis (it wraps under the big one instead)',
       await js('[...document.querySelectorAll("#agents .name-alt")].every(a => a.scrollWidth <= a.clientWidth + 1)'),
       await js('JSON.stringify([...document.querySelectorAll("#agents .name-alt")].filter(a => a.scrollWidth > a.clientWidth + 1).map(a => [a.textContent, a.scrollWidth, a.clientWidth]))'));

@@ -40,6 +40,14 @@ test('toastModel: filed is "Added to the inbox" with the note\'s first line, and
   assert.strictEqual(d.toastModel({ state: 'filed', text: 'x', undoable: false }).undo, false);
 });
 
+test('toastModel (#79, Ricardo 2026-10-09): the line names only the parts this note created', () => {
+  const line = (over) => d.toastModel({ state: 'filed', text: 'x', undoable: true, createdBacklog: true, ...over }).line;
+  assert.strictEqual(line({ createdFolder: true, createdIgnore: true }), 'Created documentation\\, the backlog and its .gitignore entry, and filed your note');
+  assert.strictEqual(line({ createdFolder: true, createdIgnore: false }), 'Created documentation\\ and the backlog, and filed your note');
+  assert.strictEqual(line({ createdFolder: false, createdIgnore: false }), 'Created the backlog and filed your note');
+  assert.strictEqual(line({ createdFolder: undefined }), 'Created the backlog and filed your note');
+});
+
 test('toastModel (#79): a note that created the backlog says so, and still offers Undo only while Undo is exact', () => {
   assert.deepStrictEqual(d.toastModel({ state: 'filed', text: 'first', undoable: true, createdBacklog: true }),
     { kind: 'added', line: 'Created the backlog and filed your note', note: 'first', undo: true, copy: false });

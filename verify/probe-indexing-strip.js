@@ -333,7 +333,7 @@ ${electronLog.slice(-3000)}`);
     await key(strip, 'keyDown', 'Enter', 'Enter', 13);
     await key(strip, 'keyUp', 'Enter', 'Enter', 13);
     const made3 = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'added' ? t.querySelector('.t1').textContent : null; })()`));
-    check('7 no documentation folder: the toast says it created the backlog and filed the note', made3 === 'Created the backlog and filed your note', made3);
+    check('7 no documentation folder: the toast names the folder, the backlog and the .gitignore entry', made3 === 'Created documentation\\, the backlog and its .gitignore entry, and filed your note', made3);
     check('7 ...the folder and the backlog exist, with the note', fs.existsSync(NEW_BACKLOG) && /· a note with no folder either\n$/.test(fs.readFileSync(NEW_BACKLOG, 'utf8')));
     const ignoreText = fs.existsSync(IGNORE) ? fs.readFileSync(IGNORE, 'utf8') : '';
     check('7 ...and the repo has a .gitignore with the sync-docs block', ignoreText.includes('# --- sync-docs (gitignore) ---') && ignoreText.includes('documentation/*'), JSON.stringify(ignoreText));

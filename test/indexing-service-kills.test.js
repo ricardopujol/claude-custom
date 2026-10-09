@@ -261,7 +261,7 @@ test('S21 service: a snapshot row carries the id, words, time, state, reason, th
   const t = setup();
   const r = t.svc.submit(t.project, 'row words');
   const row = t.svc.snapshot(t.project).list[0];
-  assert.deepStrictEqual(row, { id: r.id, text: 'row words', at: T0, state: 'filed', reason: null, file: 'P_BACKLOG.md', createdBacklog: false, undoable: true });
+  assert.deepStrictEqual(row, { id: r.id, text: 'row words', at: T0, state: 'filed', reason: null, file: 'P_BACKLOG.md', createdBacklog: false, createdFolder: false, createdIgnore: false, undoable: true });
 });
 
 test('S21 service: undoable is false when docsFor throws or is not ok, when the backlog is gone, or when the entry was edited', () => {
