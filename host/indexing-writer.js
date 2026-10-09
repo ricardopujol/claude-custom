@@ -8,8 +8,11 @@
  *   undoNote(file, record)             -> { ok: true } | { ok: false, reason: 'changed' | 'write-failed' }
  *
  * WHERE: `<dev>\documentation\<NAME>_BACKLOG.md`, NAME from the one `*_BUILD_LOG.md` (sync-docs' rule, SyncDocs.ps1
- * Get-DocsName), else the project folder's name upper-cased without separators. Only the backlog is ever written, and
- * only when it exists: a project with no backlog file gets none (`no-backlog`).
+ * Get-DocsName), else the project folder's name upper-cased without separators. Only the backlog is ever written. A
+ * project with no backlog file gets one (#79): `# <folder> — Feature & Bug Backlog` and an empty `## Inbox`, made via
+ * temp file + hard link so a backlog that appears meanwhile is never replaced (and `documentation\` is made when the
+ * project folder exists), then the note is filed; fileNote says `result: 'created-backlog'` and its record carries the
+ * `pristine` text, so undoNote removes the file again only when the note was all that was ever in it.
  *
  * SAFELY: read, build the new text (the inbox created after the status block if it's missing, the entry appended),
  * write it to a temp file beside the backlog, re-read the backlog just before the rename, and rename only if it's still
@@ -31,12 +34,20 @@ function docsOf(project) {
   if (!project || typeof project.dev !== 'string') return { ok: false, reason: 'no-docs' };
   const dir = path.join(project.dev, 'documentation');
   let names;
-  try { names = fs.readdirSync(dir); } catch { return { ok: false, reason: 'no-docs' }; }
+  try {
+    names = fs.readdirSync(dir);
+  } catch (err) {
+    // No documentation folder yet is fine when the project folder is there: the first note makes it (#79).
+    let isProject = false;
+    try { isProject = !!(err && err.code === 'ENOENT') && fs.statSync(project.dev).isDirectory(); } catch { /* not there */ }
+    if (!isProject) return { ok: false, reason: 'no-docs' };
+    names = [];
+  }
   const logs = names.filter(n => /_BUILD_LOG\.md$/i.test(n));
   if (logs.length > 1) return { ok: false, reason: 'many-build-logs' };
   const leaf = path.basename(typeof project.root === 'string' ? project.root : project.dev);
   const name = logs.length === 1 ? logs[0].replace(/_BUILD_LOG\.md$/i, '') : leaf.replace(/[-_\s]/g, '').toUpperCase();
-  return { ok: true, dir, name, backlog: path.join(dir, `${name}_BACKLOG.md`) };
+  return { ok: true, dir, name, title: leaf, backlog: path.join(dir, `${name}_BACKLOG.md`) };
 }
 
 const READ_ATTEMPTS = 4;
@@ -112,17 +123,61 @@ function safeRewrite(file, compute, { beforeRename = () => {}, rename, sleep, re
   return { ok: false, reason: 'conflict' };
 }
 
-function fileNote({ docs, stamp, text, beforeRename, rename, sleep, readFile }) {
+/** What a backlog this writer creates holds before any note: a title and an empty inbox. Undo recognises it again. */
+const pristineOf = (docs) => `# ${docs.title || docs.name} — Feature & Bug Backlog\n\n## Inbox\n`;
+
+/**
+ * Create the project's backlog (and its documentation folder) when it isn't there: written to a temp file, then
+ * hard-linked into place, which fails with EEXIST rather than replacing a backlog a session or another window made in
+ * the meantime. The target is never opened for writing. -> { ok: true, created: boolean } | { ok: false, reason: 'write-failed' }
+ */
+function createBacklog(docs, { beforeCreate = () => {} } = {}) {
+  const tmp = path.join(docs.dir, `.${path.basename(docs.backlog)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+  try {
+    fs.mkdirSync(docs.dir, { recursive: true });
+    fs.writeFileSync(tmp, pristineOf(docs), 'utf8');
+    beforeCreate(docs.backlog);
+    try {
+      fs.linkSync(tmp, docs.backlog);
+    } catch (err) {
+      if (err && err.code === 'EEXIST') return { ok: true, created: false };
+      // A filesystem without hard links: rename, unless the backlog appeared meanwhile.
+      if (fs.existsSync(docs.backlog)) return { ok: true, created: false };
+      fs.renameSync(tmp, docs.backlog);
+    }
+    return { ok: true, created: true };
+  } catch {
+    return { ok: false, reason: 'write-failed' };
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to clean */ }
+  }
+}
+
+/**
+ * -> { ok: true, where, record, result?: 'created-backlog' } | { ok: false, reason }. A project with no backlog file
+ * gets one made first (#79); `result: 'created-backlog'` says this call made it, and the record then remembers the
+ * pristine text so Undo can take the file out again when the note was all that was in it.
+ */
+function fileNote({ docs, stamp, text, beforeRename, beforeCreate, rename, sleep, readFile }) {
   if (typeof text !== 'string' || text.trim() === '') return { ok: false, reason: 'empty' };
-  const r = safeRewrite(docs.backlog, (current) => {
+  const rewrite = () => safeRewrite(docs.backlog, (current) => {
     const base = doc.ensureInbox(current).text;
     const entry = doc.entryText(stamp, text, doc.newlineOf(base));
     const plan = doc.planAppend(base, entry);
     if (!plan.ok) return plan;
     return { ok: true, text: doc.applyInsert(base, plan), record: doc.recordOf(plan, entry) };
   }, { beforeRename, rename, sleep, readFile });
+  let r = rewrite();
+  let created = false;
+  if (!r.ok && r.reason === 'missing') {
+    const c = createBacklog(docs, { beforeCreate });
+    if (!c.ok) return c;
+    created = c.created;
+    r = rewrite();
+  }
   if (!r.ok) return { ok: false, reason: r.reason === 'missing' ? 'no-backlog' : r.reason };
-  return { ok: true, where: { file: docs.backlog }, record: r.record };
+  if (!created) return { ok: true, where: { file: docs.backlog }, record: r.record };
+  return { ok: true, result: 'created-backlog', where: { file: docs.backlog }, record: { ...r.record, pristine: pristineOf(docs) } };
 }
 
 /**
@@ -143,6 +198,20 @@ function findNote({ docs, stamp, text, others = [], readFile, sleep }) {
 
 /** -> { ok: true } | { ok: false, reason: 'changed' | 'busy' | 'write-failed' }  ('changed' also for a file that's gone) */
 function undoNote(file, record, opts) {
+  // A backlog this writer created goes away with its only note: only when taking the entry out leaves exactly the text
+  // it was created with (nothing else was ever added), and only if the file is still what was read.
+  if (record && typeof record.pristine === 'string') {
+    const read = readDoc(file, opts || {});
+    if (read.ok) {
+      const u = doc.removeEntry(read.text, record);
+      if (u.ok && u.text === record.pristine) {
+        const again = readDoc(file, opts || {});
+        if (!again.ok || again.text !== read.text) return { ok: false, reason: 'changed' };
+        try { fs.unlinkSync(file); } catch { return { ok: false, reason: 'write-failed' }; }
+        return { ok: true };
+      }
+    }
+  }
   const r = safeRewrite(file, (text) => {
     const u = doc.removeEntry(text, record);
     return u.ok ? { ok: true, text: u.text } : { ok: false, reason: 'changed' };

@@ -63,8 +63,10 @@ test('submit refuses an empty note and writes nothing anywhere', () => {
   assert.strictEqual(read(t.backlog), BACKLOG);
 });
 
-test('no backlog file: nothing is created, and the note stays in the list as not filed', () => {
-  const t = setup({ backlog: null });
+const NO_BACKLOG = { ...writer, fileNote: () => ({ ok: false, reason: 'no-backlog' }) };
+
+test('a note the writer says has no backlog stays in the list as not filed, with its words', () => {
+  const t = setup({ backlog: null, writerImpl: NO_BACKLOG });
   const r = t.svc.submit(t.project, 'an idea');
   assert.deepStrictEqual([r.ok, r.filed, r.reason], [true, false, 'no-backlog']);
   assert.strictEqual(fs.existsSync(t.backlog), false);
@@ -73,13 +75,110 @@ test('no backlog file: nothing is created, and the note stays in the list as not
   assert.deepStrictEqual(t.svc.snapshot(t.project).counts, { filed: 0, unfiled: 1 });
 });
 
-test('no backlog file is not retried by the tick (the design: it stays not filed, with Copy)', async () => {
-  const t = setup({ backlog: null });
+test('no-backlog is not retried by the tick: only a created backlog files the held notes', async () => {
+  const t = setup({ backlog: null, writerImpl: NO_BACKLOG });
   t.svc.submit(t.project, 'x');
   fs.writeFileSync(t.backlog, BACKLOG);
   t.advance(RETRY_MS);
   await t.svc.tick();
   assert.strictEqual(read(t.backlog), BACKLOG);
+});
+
+// --- #79: create the backlog, then file ------------------------------------------------------------------------------
+
+const CREATED = (entries) => `# proj — Feature & Bug Backlog\n\n## Inbox\n${entries}`;
+const at = (h, m) => new Date(2026, 9, 5, h, m).getTime();
+/** A note the way an older build left it: journaled, a write attempted, held as no-backlog. */
+function hold(t, id, text, when) {
+  t.journal.append({ ev: 'note', id, project: t.project, text, at: when });
+  t.journal.append({ ev: 'filing', id, at: when });
+  t.journal.append({ ev: 'unfiled', id, reason: 'no-backlog', at: when });
+}
+
+test('#79: a note to a project with no backlog creates it and files; the row says it created the backlog', () => {
+  const t = setup({ backlog: null });
+  const r = t.svc.submit(t.project, 'first');
+  assert.deepStrictEqual([r.ok, r.filed], [true, true]);
+  assert.strictEqual(read(t.backlog), CREATED('- 2026-10-05 09:07 · first\n'));
+  const n = t.svc.snapshot(t.project).list[0];
+  assert.deepStrictEqual([n.state, n.undoable, n.createdBacklog], ['filed', true, true]);
+});
+
+test('#79: only the creating note says it created the backlog', () => {
+  const t = setup({ backlog: null });
+  t.svc.submit(t.project, 'first');
+  t.advance(1000);
+  t.svc.submit(t.project, 'second');
+  const rows = t.svc.snapshot(t.project).list;
+  assert.deepStrictEqual(rows.map(n => [n.text, n.createdBacklog]), [['second', false], ['first', true]]);
+});
+
+test('#79: notes held as no-backlog are filed with it, once each, in the order they were typed, and marked filed', () => {
+  const t = setup({ backlog: null });
+  hold(t, 'b', 'older two', at(8, 30));
+  hold(t, 'a', 'older one', at(8, 15));
+  const other = path.join(path.dirname(t.project), 'elsewhere');
+  t.journal.append({ ev: 'note', id: 'x', project: other, text: 'another project', at: at(8, 0) });
+  t.journal.append({ ev: 'unfiled', id: 'x', reason: 'no-backlog', at: at(8, 0) });
+  t.svc.submit(t.project, 'new one');
+  const text = read(t.backlog);
+  assert.ok(text.indexOf('older one') < text.indexOf('older two'), 'in order');
+  assert.strictEqual(text.split('older one').length - 1, 1);
+  assert.strictEqual(text.split('older two').length - 1, 1);
+  assert.ok(!text.includes('another project'), 'another project\'s held note stays held');
+  const rows = Object.fromEntries(t.svc.snapshot(t.project).list.map(n => [n.text, n.state]));
+  assert.deepStrictEqual(rows, { 'new one': 'filed', 'older one': 'filed', 'older two': 'filed' });
+  assert.strictEqual(t.journal.read().filter(e => e.ev === 'filed' && (e.id === 'a' || e.id === 'b')).length, 2);
+  // a later note does not replay them again
+  t.advance(1000);
+  t.svc.submit(t.project, 'later');
+  assert.strictEqual(read(t.backlog).split('older one').length - 1, 1);
+});
+
+test('#79: a held note that cannot be written is left to the tick, and does not undo the creating note', async () => {
+  let failFor = 'older';
+  const picky = { ...writer, fileNote: (a) => (a.text === failFor ? { ok: false, reason: 'busy' } : writer.fileNote(a)) };
+  const t = setup({ backlog: null, writerImpl: picky });
+  hold(t, 'a', 'older', at(8, 15));
+  const r = t.svc.submit(t.project, 'new one');
+  assert.strictEqual(r.filed, true);
+  assert.strictEqual(t.svc.snapshot(t.project).list.find(n => n.text === 'older').reason, 'busy');
+  failFor = null;
+  t.advance(RETRY_MS);
+  await t.svc.tick();
+  assert.ok(read(t.backlog).includes('· older'));
+});
+
+test('#79: two notes in a row create one file with one title', () => {
+  const t = setup({ backlog: null });
+  t.svc.submit(t.project, 'one');
+  t.svc.submit(t.project, 'two');
+  assert.strictEqual(read(t.backlog).split('Feature & Bug Backlog').length - 1, 1);
+  assert.ok(read(t.backlog).includes('· one\n- 2026-10-05 09:07 · two'));
+});
+
+test('#79: Undo of the creating note, when it was all that was in the file, removes the file too', () => {
+  const t = setup({ backlog: null });
+  const { id } = t.svc.submit(t.project, 'only');
+  assert.deepStrictEqual(t.svc.undo(id, t.project), { ok: true });
+  assert.strictEqual(fs.existsSync(t.backlog), false);
+  assert.strictEqual(t.svc.snapshot(t.project).list[0].state, 'undone');
+});
+
+test('#79: Undo of the creating note keeps the file when another note is in it', () => {
+  const t = setup({ backlog: null });
+  const first = t.svc.submit(t.project, 'one');
+  t.svc.submit(t.project, 'two');
+  assert.deepStrictEqual(t.svc.undo(first.id, t.project), { ok: true });
+  assert.strictEqual(read(t.backlog), CREATED('- 2026-10-05 09:07 · two\n'));
+});
+
+test('#79: a held note filed with the creation can be undone, and the file stays', () => {
+  const t = setup({ backlog: null });
+  hold(t, 'a', 'older', at(8, 15));
+  t.svc.submit(t.project, 'new');
+  assert.deepStrictEqual(t.svc.undo('a', t.project), { ok: true });
+  assert.strictEqual(read(t.backlog), CREATED('- 2026-10-05 09:07 · new\n'));
 });
 
 test('a backlog that kept changing: the note waits, and the tick files it once the hold has passed', async () => {
@@ -197,7 +296,7 @@ test('undo of a note from another project than the selected one is refused', () 
 });
 
 test('undo of a note that is not filed says so', () => {
-  const t = setup({ backlog: null });
+  const t = setup({ backlog: null, writerImpl: NO_BACKLOG });
   const { id } = t.svc.submit(t.project, 'x');
   assert.deepStrictEqual(t.svc.undo(id, t.project), { ok: false, reason: 'not-filed' });
   assert.deepStrictEqual(t.svc.undo('nope', t.project), { ok: false, reason: 'not-filed' });
@@ -211,8 +310,10 @@ test('snapshot: another project\'s notes are not in it', () => {
 });
 
 test('the journal is rotated once a day: yesterday\'s filed and undone notes go, today\'s and any not filed stay (Miguel S1)', async () => {
-  const t = setup({ backlog: null });
+  let none = true;
+  const t = setup({ backlog: null, writerImpl: { ...writer, fileNote: (a) => (none ? NO_BACKLOG.fileNote(a) : writer.fileNote(a)) } });
   t.svc.submit(t.project, 'never filed');                          // unfiled (no backlog), stays
+  none = false;
   fs.writeFileSync(t.backlog, BACKLOG);
   const y = t.svc.submit(t.project, 'filed yesterday');             // filed, goes tomorrow
   assert.strictEqual(y.filed, true);

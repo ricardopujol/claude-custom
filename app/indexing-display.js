@@ -31,7 +31,7 @@ function counterText(counts) {
 }
 
 const REASONS = {
-  'no-backlog': 'This project has no backlog file',
+  'no-backlog': 'This project has no backlog file',   // held by an older build; a new note creates the file and files it
   'no-docs': 'This project has no documentation folder',
   'many-build-logs': 'Two build logs in documentation',
   conflict: 'The backlog kept changing; it tries again',
@@ -50,7 +50,10 @@ const firstLine = (text) => String(typeof text === 'string' ? text : '').split(/
 function toastModel(row) {
   const r = row && typeof row === 'object' ? row : {};
   const note = firstLine(r.text);
-  if (r.state === 'filed') return { kind: 'added', line: 'Added to the inbox', note, undo: r.undoable === true, copy: false };
+  if (r.state === 'filed') {
+    const line = r.createdBacklog === true ? 'Created the backlog and filed your note' : 'Added to the inbox';
+    return { kind: 'added', line, note, undo: r.undoable === true, copy: false };
+  }
   if (r.state === 'undone') return { kind: 'undone', line: 'Undone. Removed from the inbox.', note, undo: false, copy: false };
   return { kind: 'unfiled', line: `Not filed: ${reasonText(r.reason)}`, note, undo: false, copy: true };
 }

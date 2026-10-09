@@ -34,7 +34,7 @@ const WITH_INBOX = (entries) => BACKLOG.replace('## 1. First', `## Inbox\n${entr
 
 test('docsOf: <dev>\\documentation, the name from the one *_BUILD_LOG.md', () => {
   const p = project({ name: 'LYDIA' });
-  assert.deepStrictEqual(w.docsOf(p), { ok: true, dir: p.docs, name: 'LYDIA', backlog: path.join(p.docs, 'LYDIA_BACKLOG.md') });
+  assert.deepStrictEqual(w.docsOf(p), { ok: true, dir: p.docs, name: 'LYDIA', title: path.basename(p.dev), backlog: path.join(p.docs, 'LYDIA_BACKLOG.md') });
 });
 
 test('docsOf: no build log falls back to the project folder\'s name, upper case, separators removed (sync-docs\' rule)', () => {
@@ -42,8 +42,8 @@ test('docsOf: no build log falls back to the project folder\'s name, upper case,
   assert.strictEqual(w.docsOf({ root: path.join(path.dirname(p.dev), 'my-proj_x'), dev: p.dev }).name, 'MYPROJX');
 });
 
-test('docsOf: no documentation folder, or two build logs, says so', () => {
-  const dev = tmpDir('cc-iw-');
+test('docsOf: no project folder, or two build logs, says so', () => {
+  const dev = path.join(tmpDir('cc-iw-'), 'missing');
   assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
   const p = project();
   fs.writeFileSync(path.join(p.docs, 'OTHER_BUILD_LOG.md'), '');
@@ -118,12 +118,104 @@ test('findNote: an entry already in the inbox is found with the record Undo need
   assert.deepStrictEqual(w.findNote({ docs: w.docsOf(project({ backlog: null })), stamp: STAMP, text: 'x' }), { ok: false, reason: 'no-backlog' });
 });
 
-test('no backlog file: nothing is created', () => {
+test('fileNote without a backlog file: findNote still says no-backlog (a look never creates)', () => {
   const p = project({ backlog: null });
   const docs = w.docsOf(p);
-  assert.deepStrictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x' }), { ok: false, reason: 'no-backlog' });
+  assert.deepStrictEqual(w.findNote({ docs, stamp: STAMP, text: 'x' }), { ok: false, reason: 'no-backlog' });
+  assert.strictEqual(fs.existsSync(docs.backlog), false);
+});
+
+// --- #79: a note to a project with no backlog creates it, then files -------------------------------------------------
+
+const CREATED = (title, entries) => `# ${title} — Feature & Bug Backlog\n\n## Inbox\n${entries}`;
+
+test('#79: no backlog file: it is created with a title and an Inbox, and the note filed; no temp file is left', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'first idea' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.deepStrictEqual(r.where, { file: docs.backlog });
+  assert.strictEqual(read(docs.backlog), CREATED(docs.title, '- 2026-10-05 09:07 · first idea\n'));
+  assert.deepStrictEqual(tempsIn(p.docs), []);
+});
+
+test('#79: no documentation folder: it is made too, when the project folder exists', () => {
+  const dev = tmpDir('cc-iw-');
+  const docs = w.docsOf({ root: dev, dev });
+  assert.strictEqual(docs.ok, true);
+  assert.strictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x' }).result, 'created-backlog');
+  assert.ok(read(docs.backlog).includes('· x'));
+});
+
+test('#79: a project folder that does not exist gets nothing made', () => {
+  const dev = path.join(tmpDir('cc-iw-'), 'nope');
+  assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
+  assert.strictEqual(fs.existsSync(dev), false);
+});
+
+test('#79: the next note finds the backlog and just files (one file, one title)', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const a = w.fileNote({ docs, stamp: STAMP, text: 'one' });
+  const b = w.fileNote({ docs, stamp: STAMP, text: 'two' });
+  assert.strictEqual(a.result, 'created-backlog');
+  assert.strictEqual(b.result, undefined);
+  assert.strictEqual(read(docs.backlog), CREATED(docs.title, '- 2026-10-05 09:07 · one\n- 2026-10-05 09:07 · two\n'));
+});
+
+test('#79: two notes at once create one file: the one that lost the race files into the winner\'s, which is not replaced', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const winner = (file) => fs.writeFileSync(file, CREATED(docs.title, '- 2026-10-05 09:00 · theirs\n'));
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'mine', beforeCreate: () => winner(docs.backlog) });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result, undefined, 'it did not create the file');
+  assert.strictEqual(read(docs.backlog), CREATED(docs.title, '- 2026-10-05 09:00 · theirs\n- 2026-10-05 09:07 · mine\n'));
+  assert.deepStrictEqual(tempsIn(p.docs), []);
+});
+
+test('#79: a creation that cannot be written is "write-failed" and leaves nothing behind', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'x', beforeCreate: () => { throw new Error('disk'); } });
+  assert.deepStrictEqual(r, { ok: false, reason: 'write-failed' });
   assert.strictEqual(fs.existsSync(docs.backlog), false);
   assert.deepStrictEqual(tempsIn(p.docs), []);
+});
+
+test('#79: Undo of the only entry removes the file it created', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'only' });
+  assert.deepStrictEqual(w.undoNote(docs.backlog, r.record), { ok: true });
+  assert.strictEqual(fs.existsSync(docs.backlog), false);
+});
+
+test('#79: Undo leaves the file when anything else is in it (another note, or an edit)', () => {
+  const p = project({ backlog: null });
+  const docs = w.docsOf(p);
+  const a = w.fileNote({ docs, stamp: STAMP, text: 'one' });
+  w.fileNote({ docs, stamp: STAMP, text: 'two' });
+  assert.deepStrictEqual(w.undoNote(docs.backlog, a.record), { ok: true });
+  assert.strictEqual(read(docs.backlog), CREATED(docs.title, '- 2026-10-05 09:07 · two\n'));
+
+  const q = project({ backlog: null });
+  const d2 = w.docsOf(q);
+  const b = w.fileNote({ docs: d2, stamp: STAMP, text: 'solo' });
+  fs.appendFileSync(d2.backlog, '\n## 1. Added by a session\n');
+  assert.deepStrictEqual(w.undoNote(d2.backlog, b.record), { ok: true });
+  assert.ok(fs.existsSync(d2.backlog));
+  assert.ok(read(d2.backlog).includes('## 1. Added by a session'));
+});
+
+test('#79: Undo never deletes a backlog it did not create (an existing one emptied back to its start stays)', () => {
+  const p = project({ backlog: '# P\n\n## Inbox\n' });
+  const docs = w.docsOf(p);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'n' });
+  assert.strictEqual(r.result, undefined);
+  assert.deepStrictEqual(w.undoNote(docs.backlog, r.record), { ok: true });
+  assert.strictEqual(read(docs.backlog), '# P\n\n## Inbox\n');
 });
 
 test('an empty note is refused', () => {

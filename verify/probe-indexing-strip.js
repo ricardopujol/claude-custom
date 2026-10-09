@@ -16,8 +16,8 @@ const { killChildTree } = require('../host/kill-tree');
         the status block holding exactly `- YYYY-MM-DD HH:MM · <the note>`; the counter says "1 filed"
      3  Undo takes exactly that entry out (the inbox heading it created stays)
      4  the field keeps the keyboard across publishes; Esc hands it back; Ctrl+Alt+N in the tab view takes it again
-     5  with no backlog file, a note says "Not filed: This project has no backlog file" with Copy, and no file is made
-        (Copy itself isn't clicked: it would overwrite the real clipboard)
+     5  with no backlog file, a note creates it (title, Inbox, the note) and the toast says "Created the backlog and
+        filed your note" with Undo; Undo removes the file too (#79)
      6  the list opens from the counter, shows both notes, and closes again
 
    Safe: the host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing billable runs; the journal and the project docs
@@ -278,21 +278,29 @@ ${electronLog.slice(-3000)}`);
     const back = await waitFor(() => evalIn(strip, "document.activeElement && document.activeElement.id === 'index-note'"), 5000);
     check('4 Ctrl+Alt+N in the tab view focuses the field', !!back);
 
-    // 5 -------------------------------------------------------------------------------------------------------------
+    // 5 (#79) -------------------------------------------------------------------------------------------------------
     fs.unlinkSync(BACKLOG);
     const NOTE2 = 'a note with nowhere to go';
     await evalIn(strip, "document.getElementById('index-note').focus()");
     await strip.send('Input.insertText', { text: NOTE2 });
     await key(strip, 'keyDown', 'Enter', 'Enter', 13);
     await key(strip, 'keyUp', 'Enter', 'Enter', 13);
-    const unfiled = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'unfiled'
-      ? { line: t.querySelector('.t1').textContent, copy: [...t.querySelectorAll('button')].some(b => b.textContent === 'Copy') } : null; })()`));
-    check('5 no backlog file: the toast says so, with Copy', !!unfiled && unfiled.line === 'Not filed: This project has no backlog file' && unfiled.copy,
-      JSON.stringify(unfiled));
-    check('5 ...and no backlog file was created', !fs.existsSync(BACKLOG));
-    const count2 = await waitFor(() => evalIn(strip, "(() => { const c = document.getElementById('index-count').textContent; return /1 not filed/.test(c) ? c : null; })()"));
-    check('5 the counter says 1 not filed', !!count2, count2);
-    await shoot(toast, '5-toast-not-filed.png');
+    const created = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'added'
+      ? { line: t.querySelector('.t1').textContent, undo: [...t.querySelectorAll('button')].some(b => b.textContent === 'Undo') } : null; })()`));
+    check('5 no backlog file: the toast says it created the backlog and filed the note, with Undo',
+      !!created && created.line === 'Created the backlog and filed your note' && created.undo, JSON.stringify(created));
+    const madeText = fs.existsSync(BACKLOG) ? fs.readFileSync(BACKLOG, 'utf8') : null;
+    check('5 ...the file has a title, an Inbox and exactly the note',
+      madeText !== null && /^# probeproj — Feature & Bug Backlog\n\n## Inbox\n- \d{4}-\d\d-\d\d \d\d:\d\d · a note with nowhere to go\n$/.test(madeText),
+      JSON.stringify(madeText));
+    const count2 = await waitFor(() => evalIn(strip, "(() => { const c = document.getElementById('index-count').textContent; return c === '1 filed' ? c : null; })()"));
+    check('5 the counter says 1 filed', !!count2, count2);
+    await shoot(toast, '5-toast-created-backlog.png');
+    await evalIn(toast, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Undo').click()");
+    const undone2 = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast');
+      return t && t.dataset.kind === 'undone' ? t.querySelector('.t1').textContent : null; })()`));
+    check('5 Undo says so', undone2 === 'Undone. Removed from the inbox.', undone2);
+    check('5 ...and the note was the only content, so the file it created is gone too', !fs.existsSync(BACKLOG));
 
     // 6 -------------------------------------------------------------------------------------------------------------
     await evalIn(strip, "document.getElementById('index-count').click()");
@@ -304,7 +312,7 @@ ${electronLog.slice(-3000)}`);
         return p ? [...p.querySelectorAll('.row')].map(r => r.querySelector('.what').textContent + ' | ' + r.querySelector('.where').textContent
           + ' | ' + [...r.querySelectorAll('button')].map(b => b.textContent).join(',')) : null; })()`));
       check('6 the list shows today\'s two notes: the one not filed (with Copy), the one undone',
-        !!rows && rows.length === 2 && /nowhere to go \| Not filed: This project has no backlog file \| Copy/.test(rows[0]) && /tabs should glow when a session needs me \| Undone \| ?$/.test(rows[1]),
+        !!rows && rows.length === 2 && /nowhere to go \| Undone \| ?$/.test(rows[0]) && /tabs should glow when a session needs me \| Undone \| ?$/.test(rows[1]),
         JSON.stringify(rows));
       await shoot(list, '6-list.png');
       await evalIn(strip, "document.getElementById('index-count').click()");
