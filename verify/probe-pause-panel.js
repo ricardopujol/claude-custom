@@ -18,7 +18,7 @@
  *   4  the paused row stays in the panel's list over several samples (a suspended process uses no CPU and must not sink out of it)
  *   5  Resume: the row is running again, the heartbeat grows again
  *   6  quitting the app with a process paused wakes it first (the heartbeat keeps growing after the window is gone)
- *   7  the paused set is kept on disk while something is paused (.harness/state/paused/paused-<pid>.json) and removed on Resume (PR #158 Miguel Y4)
+ *   7  the paused set is kept on disk while something is paused (.harness/state/paused/paused-<pid>-<start>.json) and removed on Resume (PR #158 Miguel Y4)
  *
  * SAFE, as the Resources probe: the host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and no prompt is sent; every
  * CLAUDE_CUSTOM_* variable of an enclosing tab and ELECTRON_RUN_AS_NODE are stripped; the project is a temp git repo and every state folder
@@ -168,7 +168,7 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { 
 const readPid = (file) => { try { const n = Number(fs.readFileSync(file, 'utf8')); return Number.isInteger(n) && n > 0 ? n : null; } catch { return null; } };
 // The paused-set files this run's app wrote that name `pid` (host/pause-persist.js).
 const PAUSED_DIR = path.join(STATE_DIR, 'paused');
-const persisted = (pid) => { try { return fs.readdirSync(PAUSED_DIR).filter(n => /^paused-\d+\.json$/.test(n)).filter(n => fs.readFileSync(path.join(PAUSED_DIR, n), 'utf8').includes(`"pid":${pid},`)); } catch { return []; } };
+const persisted = (pid) => { try { return fs.readdirSync(PAUSED_DIR).filter(n => /^paused-\d+-\d+\.json$/.test(n)).filter(n => fs.readFileSync(path.join(PAUSED_DIR, n), 'utf8').includes(`"pid":${pid},`)); } catch { return []; } };
 const beats = (file) => { try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
 
 const HEARTBEAT = `'use strict';
