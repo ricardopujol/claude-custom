@@ -15,8 +15,8 @@
  *    runs the user's own command and passes its output through, and it keeps
  *    every other field of theirs. Anything else the harness needs travels
  *    through the pty environment, never through settings.
- *    The one other exception is the CLI's colour THEME (backlog #25, measured by verify/probe-cli-theme.js:
- *    `--settings` applies it per window and writes nothing). It is read once at the CLI's start, so a
+ *    The one other exception is the CLI's colour THEME (backlog #25, measured on CLI v2.1.283, see BACKLOG
+ *    "25. Per-project light mode": `--settings` applies it per window and writes nothing). It is read once at the CLI's start, so a
  *    project's dark/light switch takes effect on the next launch.
  *
  * 2. `hooks`, unlike single-valued keys, ACCUMULATES across layers. The harness
@@ -66,6 +66,9 @@ const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 // Running panel, which would show a ScheduleWakeup as a process. One call per wake (~every 25 min), so no tax.
 const BEDTIME_MATCHER = 'ScheduleWakeup';
 const HOOK_TIMEOUT_SECONDS = 5;
+
+// The CLI's own themes a project's mode maps to (its daltonized and ANSI families survive a flip).
+const CLI_THEMES = Object.freeze(['dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi']);
 
 const quote = s => `"${s}"`;
 
@@ -171,8 +174,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
       UserPromptSubmit: [entry('', 'UserPromptSubmit')],
     },
   };
-  // Only the two themes a project's mode can mean; anything else leaves the CLI's own choice alone.
-  if (theme === 'light' || theme === 'dark') settings.theme = theme;
+  // Only the themes a project's mode can mean (host/look.js cliThemeFor); anything else leaves the CLI's own choice alone.
+  if (CLI_THEMES.includes(theme)) settings.theme = theme;
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
@@ -207,6 +210,32 @@ function findUserStatusLine({ configDir, cwd } = {}) {
     const runnable = sl && typeof sl === 'object' && sl.type === 'command'
       && typeof sl.command === 'string' && sl.command;
     return runnable ? sl : null;
+  }
+  return null;
+}
+
+const THEME_RE = /^(?:auto|(?:dark|light)(?:-(?:daltonized|ansi))?)$/;
+
+/**
+ * The CLI theme the person already uses, or null: the first layer that names one, in the CLI's own precedence
+ * (project-local, project, user settings, then the global config `.claude.json`). A value that isn't one of the CLI's
+ * themes is skipped, and so is an unreadable layer.
+ */
+function findUserTheme({ configDir, cwd } = {}) {
+  const candidates = [];
+  if (cwd) {
+    candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
+    candidates.push(path.join(cwd, '.claude', 'settings.json'));
+  }
+  if (configDir) {
+    candidates.push(path.join(configDir, 'settings.json'));
+    candidates.push(path.join(configDir, '.claude.json'));
+    if (path.basename(configDir) === '.claude') candidates.push(path.join(path.dirname(configDir), '.claude.json'));
+  }
+  for (const file of candidates) {
+    let parsed;
+    try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+    if (parsed && typeof parsed === 'object' && typeof parsed.theme === 'string' && THEME_RE.test(parsed.theme)) return parsed.theme;
   }
   return null;
 }
@@ -278,4 +307,4 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp } = {}) {
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };

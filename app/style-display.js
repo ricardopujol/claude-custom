@@ -65,10 +65,12 @@ function colourView(set, painted, fallback, resetTitle) {
   return { value: paintedHex || fallback, isSet: false, resetTitle };
 }
 
-const MODE_NOTE = "Claude's colours switch next time you open this project";
+// The CLI takes its theme when the host STARTS it, and a window reopening only reattaches to the running one.
+const MODE_NOTE = "Claude's colours switch the next time this session restarts";
 
-// Dark or light; a mode never chosen reads as dark, on either side of the comparison.
-const modeOf = (v) => (v === 'light' ? 'light' : 'dark');
+// Dark or light, on either side of the comparison: a never-chosen mode, 'auto' and the dark families read as dark,
+// and 'light-ansi' / 'light-daltonized' as light (only the light or dark half is compared, not the family).
+const modeOf = (v) => (typeof v === 'string' && v.startsWith('light') ? 'light' : 'dark');
 
 function coloursSectionView(state) {
   const s = state || {};

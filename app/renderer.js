@@ -5815,7 +5815,9 @@ function applyStyleMessage(msg) {
   // a picture of the person's own stays; the app colour shows otherwise.
   const lightLook = look.mode === 'light';
   document.documentElement.setAttribute('data-look-mode', lightLook ? 'light' : 'dark');
-  if (lightLook && source !== 'override') clearBackgroundLayer();
+  if (lightLook && source !== 'override') {
+    if (backgroundUrl || document.body.classList.contains('has-bg')) clearBackgroundLayer();
+  }
   else applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
   if (typeof look.darkness === 'number') {
     document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));

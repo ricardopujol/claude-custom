@@ -473,6 +473,8 @@ const CLAUDE_FOLDER_ALLOWED = [
   ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.local.json')", 'project-level'],
   ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.json')", 'project-level'],
   ['host/wand-skills.js', "path.join(projectDir, '.claude', 'skills')", 'project-level'],
+  ['host/settings-writer.js', "path.join(configDir, '.claude.json')", 'a file inside the config dir, which is the CLI global config when it is relocated (findUserTheme)'],
+  ['host/settings-writer.js', "path.basename(configDir) === '.claude'", 'the default config dir, whose global config .claude.json sits beside it (findUserTheme)'],
   ['host/probe-seams.js', 'not gh / ~/.claude', 'a log message, no path built'],
 ];
 

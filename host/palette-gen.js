@@ -53,14 +53,14 @@
  *             colour can change that.
  */
 
-const { derivePalette, contrastRatio, luminance } = require('./look');
+const { derivePalette, contrastRatio, luminance, SAFE_LOOK_LIGHT, LIGHT_BG_FLOOR } = require('./look');
 
 const MIN_TEXT_CONTRAST = 4.5;
 const MIN_CONTROL_CONTRAST = 3;
 // Well clear of the ~0.18 mid-tone that look.js:150 names as unsatisfiable.
 const MAX_BG_LUMINANCE = 0.06;
 // A light look's background must be at least this bright: well clear of the same ~0.18 mid-tone.
-const MIN_LIGHT_BG_LUMINANCE = 0.6;
+const MIN_LIGHT_BG_LUMINANCE = LIGHT_BG_FLOOR;
 const MAX_ATTEMPTS = 20;
 // host/themes.js DEFAULT_THEME.terminal.foreground -- the host passes the
 // resolved theme's own, this is only the default for a bare call.
@@ -74,13 +74,7 @@ const SAFE_LOOK = Object.freeze({
   secondaryColor: '#a0a6b4',
 });
 
-// Checked by test/light-mode.test.js to pass every pair above in light mode.
-const SAFE_LOOK_LIGHT = Object.freeze({
-  appColor: '#f4f5f8',
-  textColor: '#1c1f29',
-  accentColor: '#9a4a00',
-  secondaryColor: '#4a5060',
-});
+// SAFE_LOOK_LIGHT lives in host/look.js (the painter's fallback too); test/light-mode.test.js checks it passes every pair.
 
 // The OKLCH ranges each colour is drawn from, per mode. [lo, hi] pairs; the order the draws are made in
 // (drawLook / drawLookFrom below) is fixed, so a seeded rng replays the same dark looks it always did.

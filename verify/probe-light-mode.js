@@ -16,6 +16,8 @@
      2. light: a light app colour with dark text, the terminal on the same light colour with dark text, the
         Light button seated, the Brightness slider, the light veil over the gradient picture, and the note.
      3. light, re-rolled: a different light palette (the picture and the mode unchanged), still readable.
+     4. light, no picture of its own: the generated art is NOT shown; the light app colour is.
+     5. dark again, no picture of its own: the generated art is back, the dark palette as in shot 1.
 
    Usage:  node verify/probe-light-mode.js        (OUT_DIR=<dir> and PORT=<n> optional)
    Takes the heavy-work lock first (C:\Users\ricar\.claude\scripts\heavy-lock.ps1): one Electron at a time. */
@@ -32,7 +34,7 @@ const OUT_DIR = process.env.OUT_DIR || path.join(REPO, '.harness');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const { generateLook, lookFailures } = require('../host/palette-gen');
-const { setMode, rerollLook, readLook } = require('../host/style');
+const { setMode, rerollLook, readLook, resetBackground } = require('../host/style');
 
 // A real PNG with no dependency: a diagonal gradient, so the veil over it is visible.
 function gradientPng(w, h) {
@@ -141,8 +143,17 @@ function finish(code) {
   check(readLook(project).other.appColor === dark.appColor, 'the dark look is still kept');
   shots.push(await shoot('3-light-rerolled'));
 
+  // Light with the GENERATED art (no picture of its own): the art is not shown under a light look.
+  resetBackground({ cwd: project });
+  shots.push(await shoot('4-light-generated-art'));
+
+  // Back to dark with the generated art: it returns, and the stored dark look is exactly as it was.
+  const back = setMode({ cwd: project, mode: 'dark', rng: () => 0.5 });
+  check(back.ok && back.look.mode === 'dark' && back.look.appColor === dark.appColor, 'flip back to dark restores the dark look');
+  shots.push(await shoot('5-dark-generated-art'));
+
   for (const s of shots) console.log(`screenshot: ${s.out} (${s.size} bytes)`);
   check(shots.every(s => s.size > 0), 'every screenshot was written');
-  console.log('OK -- inspect the three PNGs by eye, see the header of this file');
+  console.log('OK -- inspect the five PNGs by eye, see the header of this file');
   finish(0);
 })().catch((err) => { console.error(err && err.message); finish(1); });

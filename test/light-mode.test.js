@@ -19,6 +19,7 @@ const {
   sanitizeLook, derivePalette, terminalOverride, applyLook, effectiveMode, cliThemeFor, DEFAULT_LOOK,
   contrastRatio, luminance,
 } = require('../host/look');
+const { findUserTheme } = require('../host/settings-writer');
 const { setMode, setLook, readLook, rerollLook, seedLookIfNew, matchLook, LOOK_DIR_NAME } = require('../host/style');
 const { buildHarnessSettings, buildClaudeArgs } = require('../host/settings-writer');
 const { coloursSectionView, backgroundSectionView, reduceStyle, emptyStyleState, styleDisplay } = require('../app/style-display');
@@ -161,9 +162,37 @@ test('terminalOverride in light mode paints dark text on the light app colour in
   assert.notStrictEqual(dark.background, SAFE_LOOK_LIGHT.appColor);
 });
 
-test('terminalOverride in light mode with no colours set changes nothing', () => {
+test('terminalOverride in light mode with no colours set falls back to the light palette, never the dark registry terminal (Dexter D1)', () => {
   const base = { foreground: '#c7cede', background: '#11131a' };
-  assert.deepStrictEqual(terminalOverride({ ...DEFAULT_LOOK, mode: 'light' }, base), base);
+  const t = terminalOverride({ ...DEFAULT_LOOK, mode: 'light' }, base);
+  assert.strictEqual(t.background, SAFE_LOOK_LIGHT.appColor);
+  assert.strictEqual(t.foreground, SAFE_LOOK_LIGHT.textColor);
+});
+
+test('D1: a light look with the App colour reset or hand-picked dark still paints a light window', () => {
+  const theme = { name: 'x', chrome: { bg: '#11131a', panel: '#171a24', border: '#262b3a', text: '#c7cede', dim: '#6d7689', accent: '#d08c4a' },
+    terminal: { foreground: '#c7cede', background: '#11131a' } };
+  for (const appColor of [null, '#202020', '#000000', '#7a7a7a']) {
+    const out = applyLook(theme, { ...DEFAULT_LOOK, mode: 'light', appColor });
+    assert.ok(luminance(out.chrome.bg) >= MIN_LIGHT_BG_LUMINANCE, `chrome ${appColor}`);
+    assert.ok(luminance(out.terminal.background) >= MIN_LIGHT_BG_LUMINANCE, `terminal ${appColor}`);
+    assert.strictEqual(out.terminal.background, out.chrome.bg);
+    for (const surface of [out.chrome.bg, out.chrome.panel]) {
+      for (const k of ['text', 'dim', 'accent']) assert.ok(contrastRatio(out.chrome[k], surface) >= MIN_TEXT_CONTRAST, `${k} ${appColor}`);
+    }
+    assert.ok(contrastRatio(out.terminal.foreground, out.terminal.background) >= MIN_TEXT_CONTRAST);
+  }
+});
+
+test('D1: a light App colour a person picked is kept as given', () => {
+  const out = applyLook({ chrome: {}, terminal: {} }, { ...DEFAULT_LOOK, mode: 'light', appColor: '#fdf6e3' });
+  assert.strictEqual(out.chrome.bg, '#fdf6e3');
+  assert.strictEqual(out.terminal.background, '#fdf6e3');
+});
+
+test('D1: a dark look is untouched by the light fallback', () => {
+  const out = applyLook({ chrome: {}, terminal: { foreground: '#c7cede' } }, { ...DEFAULT_LOOK, mode: 'dark', appColor: '#202020' });
+  assert.strictEqual(out.chrome.bg, '#202020');
 });
 
 test('terminalOverride in light mode readability-guards a text colour that is too close to the app colour', () => {
@@ -213,19 +242,91 @@ test('flipping back restores the dark look exactly, and flipping again restores 
   assert.strictEqual(again.look.darkness, light.darkness);
 });
 
-test('a flip keeps the background and asking for the mode already showing changes nothing', () => {
+test('a flip keeps the background', () => {
   const { cwd } = projectWithDarkLook();
-  const before = fs.readFileSync(lookFile(cwd), 'utf8');
-  const noop = setMode({ cwd, mode: 'dark', rng: mulberry32(1) });
-  assert.strictEqual(noop.ok, true);
-  assert.strictEqual(noop.look.mode, 'dark', 'the dark look is now explicit');
   const stored = JSON.parse(fs.readFileSync(lookFile(cwd), 'utf8'));
   stored.background = { file: 'background.png', setAt: '2026-10-01T00:00:00.000Z' };
   fs.writeFileSync(path.join(cwd, LOOK_DIR_NAME, 'background.png'), 'x');
   fs.writeFileSync(lookFile(cwd), JSON.stringify(stored));
   const flipped = setMode({ cwd, mode: 'light', rng: mulberry32(2) });
   assert.deepStrictEqual(flipped.look.background, stored.background);
-  assert.ok(before.length > 0);
+});
+
+test('D3: asking for the mode already showing writes NOTHING, so a project with no chosen mode keeps its CLI theme', () => {
+  const { cwd } = projectWithDarkLook();
+  const before = fs.readFileSync(lookFile(cwd), 'utf8');
+  const noop = setMode({ cwd, mode: 'dark', rng: mulberry32(1) });
+  assert.strictEqual(noop.ok, true);
+  assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before);
+  assert.strictEqual(cliThemeFor(readLook(cwd)), null);
+  const light = setMode({ cwd, mode: 'light', rng: mulberry32(1) });
+  const mtime = fs.statSync(lookFile(cwd)).mtimeMs;
+  const again = setMode({ cwd, mode: 'light', rng: mulberry32(2) });
+  assert.deepStrictEqual(again.look, light.look);
+  assert.strictEqual(fs.statSync(lookFile(cwd)).mtimeMs, mtime);
+});
+
+test('D1: setMode light rolls a palette when the stored other look has no colours (other: {}, or a reset App)', () => {
+  for (const other of [{}, { appColor: null, darkness: 0.3 }]) {
+    const { cwd } = projectWithDarkLook();
+    const stored = JSON.parse(fs.readFileSync(lookFile(cwd), 'utf8'));
+    stored.other = other;
+    fs.writeFileSync(lookFile(cwd), JSON.stringify(stored));
+    const r = setMode({ cwd, mode: 'light', rng: mulberry32(3) });
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(lookFailures(r.look, { mode: 'light' }), []);
+  }
+});
+
+test('D1: Reset App in light, flip to dark and back to light still gives a light palette', () => {
+  const { cwd } = projectWithDarkLook();
+  setMode({ cwd, mode: 'light', rng: mulberry32(5) });
+  setLook({ cwd, patch: { appColor: null } });
+  setMode({ cwd, mode: 'dark', rng: mulberry32(6) });
+  const back = setMode({ cwd, mode: 'light', rng: mulberry32(7) });
+  assert.deepStrictEqual(lookFailures(back.look, { mode: 'light' }), []);
+});
+
+test('D1: going back to dark from a never-coloured look is still the registry theme', () => {
+  const cwd = tmpDir('cc-light-reg-');
+  setMode({ cwd, mode: 'light', rng: mulberry32(4) });
+  assert.strictEqual(setMode({ cwd, mode: 'dark', rng: mulberry32(4) }).look.appColor, null);
+});
+
+test('D3: the CLI theme keeps the person\'s own family (daltonized, ANSI) across a flip', () => {
+  assert.strictEqual(cliThemeFor({ mode: 'light' }, 'dark-daltonized'), 'light-daltonized');
+  assert.strictEqual(cliThemeFor({ mode: 'dark' }, 'light-daltonized'), 'dark-daltonized');
+  assert.strictEqual(cliThemeFor({ mode: 'light' }, 'dark-ansi'), 'light-ansi');
+  assert.strictEqual(cliThemeFor({ mode: 'dark' }, 'light-ansi'), 'dark-ansi');
+  for (const plain of ['dark', 'light', 'auto', undefined, null, 'sepia', 5]) {
+    assert.strictEqual(cliThemeFor({ mode: 'light' }, plain), 'light', String(plain));
+    assert.strictEqual(cliThemeFor({ mode: 'dark' }, plain), 'dark', String(plain));
+  }
+  assert.strictEqual(cliThemeFor(DEFAULT_LOOK, 'dark-ansi'), null);
+});
+
+test('D3: buildHarnessSettings passes the six CLI themes and nothing else', () => {
+  for (const t of ['dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi']) {
+    assert.strictEqual(buildHarnessSettings({ ...BASE, theme: t }).theme, t);
+  }
+  assert.ok(!('theme' in buildHarnessSettings({ ...BASE, theme: 'dark-ansi; rm' })));
+});
+
+test('findUserTheme reads the CLI theme from the settings layers, project first, and ignores a bad one', () => {
+  const cwd = tmpDir('cc-theme-cwd-');
+  const configDir = tmpDir('cc-theme-cfg-');
+  assert.strictEqual(findUserTheme({ configDir, cwd }), null);
+  fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ theme: 'dark-ansi' }));
+  assert.strictEqual(findUserTheme({ configDir, cwd }), 'dark-ansi');
+  fs.mkdirSync(path.join(cwd, '.claude'));
+  fs.writeFileSync(path.join(cwd, '.claude', 'settings.json'), JSON.stringify({ theme: 'light' }));
+  assert.strictEqual(findUserTheme({ configDir, cwd }), 'light');
+  fs.writeFileSync(path.join(cwd, '.claude', 'settings.json'), '{ nope');
+  assert.strictEqual(findUserTheme({ configDir, cwd }), 'dark-ansi');
+  fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ theme: 42 }));
+  assert.strictEqual(findUserTheme({ configDir, cwd }), null);
+  fs.writeFileSync(path.join(configDir, '.claude.json'), JSON.stringify({ theme: 'light-daltonized' }));
+  assert.strictEqual(findUserTheme({ configDir, cwd }), 'light-daltonized');
 });
 
 test('setMode refuses an unknown mode and writes nothing for a project with no look folder', () => {
@@ -334,7 +435,7 @@ const BASE = { helperPath: 'C:/h.exe', pipeName: 'pipe-x' };
 test('buildHarnessSettings carries the CLI theme only when one is chosen', () => {
   assert.strictEqual(buildHarnessSettings({ ...BASE, theme: 'light' }).theme, 'light');
   assert.strictEqual(buildHarnessSettings({ ...BASE, theme: 'dark' }).theme, 'dark');
-  for (const none of [undefined, null, 'auto', 'light-ansi', '', 1]) {
+  for (const none of [undefined, null, 'auto', 'sepia', '', 1]) {
     assert.ok(!('theme' in buildHarnessSettings({ ...BASE, theme: none })), String(none));
   }
 });
@@ -354,7 +455,7 @@ test('coloursSectionView: the mode and the next-launch note appear only while th
   assert.strictEqual(same.mode, 'light');
   assert.strictEqual(same.cliNote, null);
   const differs = coloursSectionView(state('light', 'dark'));
-  assert.strictEqual(differs.cliNote, "Claude's colours switch next time you open this project");
+  assert.strictEqual(differs.cliNote, "Claude's colours switch the next time this session restarts");
   assert.strictEqual(coloursSectionView(state('dark', 'light')).cliNote, differs.cliNote);
   // unset on either side is the dark default for the comparison, not a difference
   assert.strictEqual(coloursSectionView(state(null, null)).cliNote, null);
@@ -364,6 +465,27 @@ test('coloursSectionView: the mode and the next-launch note appear only while th
   assert.strictEqual(coloursSectionView(state(undefined, undefined)).mode, 'dark');
   assert.strictEqual(coloursSectionView(null).cliNote, null);
   assert.strictEqual(coloursSectionView(null).mode, 'dark');
+});
+
+test('D2/M2: the note compares the mode with the running CLI\'s theme FAMILY, and an old project on a light CLI is told', () => {
+  const note = (mode, cliTheme) => coloursSectionView({ appColor: '#111111', mode, cliTheme }).cliNote;
+  assert.strictEqual(note('dark', 'dark-daltonized'), null);
+  assert.strictEqual(note('light', 'light-ansi'), null);
+  assert.ok(note('light', 'dark-ansi'));
+  assert.ok(note('dark', 'light-daltonized'));
+  assert.ok(note(null, 'light'), 'a never-chosen look is dark; the CLI the person runs is light');
+  assert.strictEqual(note('dark', 'auto'), null, 'auto is not known to differ');
+});
+
+test('D2: a reattach (a second hello from the same host) keeps the note: the running CLI has not changed', () => {
+  const hello = (mode) => ({ type: 'hello', style: { look: { mode }, cliTheme: 'dark' }, theme: { chrome: {} } });
+  let s = reduceStyle(emptyStyleState(), hello('dark'));
+  s = reduceStyle(s, { type: 'style', look: { mode: 'light' }, theme: { chrome: {} } });
+  assert.ok(coloursSectionView(s.colours).cliNote);
+  s = reduceStyle(s, hello('light'));
+  assert.ok(coloursSectionView(s.colours).cliNote, 'still dark in the running CLI');
+  s = reduceStyle(s, { type: 'hello', style: { look: { mode: 'light' }, cliTheme: 'light' }, theme: { chrome: {} } });
+  assert.strictEqual(coloursSectionView(s.colours).cliNote, null);
 });
 
 test('backgroundSectionView: the veil slider is Darkness in dark mode and Brightness in light mode', () => {
@@ -380,7 +502,7 @@ test('reduceStyle files the look mode and the launched CLI theme under colours a
   assert.strictEqual(next.colours.cliTheme, 'dark');
   assert.strictEqual(next.background.mode, 'light');
   const view = styleDisplay(next);
-  assert.strictEqual(view.find((s) => s.id === 'colours').view.cliNote, "Claude's colours switch next time you open this project");
+  assert.strictEqual(view.find((s) => s.id === 'colours').view.cliNote, "Claude's colours switch the next time this session restarts");
   assert.strictEqual(view.find((s) => s.id === 'background').view.veilLabel, 'Brightness');
 });
 

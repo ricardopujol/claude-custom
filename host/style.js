@@ -327,7 +327,7 @@ function noGeneratedReason(mode, terminalForeground) {
  * one in the top-level fields, the other under `other`), so a flip swaps them and loses neither. The
  * first flip to a mode the project has never had rolls a palette for it with the same generator and the
  * same contrast gates (a Dark flip with no stored dark look does the same). Asking for the mode already
- * showing just records it. `generate` replaces the generator, for tests.
+ * showing writes nothing. `generate` replaces the generator, for tests.
  */
 function setMode({ cwd, mode, rng, terminalForeground, fsImpl = fs, generate = generateLook } = {}) {
   if (mode !== 'dark' && mode !== 'light') return { ok: false, reason: 'the mode must be dark or light' };
@@ -336,20 +336,21 @@ function setMode({ cwd, mode, rng, terminalForeground, fsImpl = fs, generate = g
   const refused = refusalFor(state, cwd);
   if (refused) return { ok: false, reason: refused };
   const cur = state.look;
-  let next;
-  if (effectiveMode(cur) === mode) {
-    next = { ...cur, mode };
-  } else {
-    let incoming = cur.other;
-    if (!incoming) {
-      const made = generate(rng, { terminalForeground, mode });
-      if (!made) return { ok: false, reason: noGeneratedReason(mode, terminalForeground) };
-      incoming = { ...made, darkness: DEFAULT_LOOK.darkness };
-    }
-    const stash = {};
-    for (const key of OTHER_KEYS) stash[key] = cur[key];
-    next = { ...cur, ...incoming, mode, other: stash };
+  // Already showing: nothing to write. Writing an explicit mode here would make the CLI launch with a theme the person
+  // never chose (Dexter D3).
+  if (effectiveMode(cur) === mode) return { ok: true, look: cur };
+  let incoming = cur.other;
+  // A stored look with no colours is not a light look (Reset App, a hand-edited `other: {}`): roll one (Dexter D1).
+  // For dark it IS one: the registry theme.
+  if (mode === 'light' && !(incoming && incoming.appColor)) incoming = null;
+  if (!incoming) {
+    const made = generate(rng, { terminalForeground, mode });
+    if (!made) return { ok: false, reason: noGeneratedReason(mode, terminalForeground) };
+    incoming = { ...made, darkness: DEFAULT_LOOK.darkness };
   }
+  const stash = {};
+  for (const key of OTHER_KEYS) stash[key] = cur[key];
+  const next = { ...cur, ...incoming, mode, other: stash };
   try {
     return { ok: true, look: writeLook(cwd, next, { fsImpl }) };
   } catch (err) {

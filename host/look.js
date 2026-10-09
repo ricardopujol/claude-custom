@@ -115,9 +115,43 @@ function effectiveMode(look) {
   return look && look.mode === 'light' ? 'light' : 'dark';
 }
 
-/** The theme to hand the CLI (`--settings`), or null to leave its own choice alone. */
-function cliThemeFor(look) {
-  return look && (look.mode === 'light' || look.mode === 'dark') ? look.mode : null;
+/**
+ * The theme to hand the CLI (`--settings`), or null to leave its own choice alone. `userTheme` is the theme the
+ * person already uses: a daltonized or ANSI family survives the flip (dark-ansi <-> light-ansi).
+ */
+function cliThemeFor(look, userTheme) {
+  const mode = look && (look.mode === 'light' || look.mode === 'dark') ? look.mode : null;
+  if (!mode) return null;
+  const family = typeof userTheme === 'string' ? /^(?:dark|light)-(daltonized|ansi)$/.exec(userTheme) : null;
+  return family ? `${mode}-${family[1]}` : mode;
+}
+
+// A light look's background must be at least this bright (well clear of the ~0.18 mid-tone), and the colours it falls
+// back to when the person's own are missing or not light. host/palette-gen.js checks SAFE_LOOK_LIGHT against every pair.
+const LIGHT_BG_FLOOR = 0.6;
+const SAFE_LOOK_LIGHT = Object.freeze({
+  appColor: '#f4f5f8',
+  textColor: '#1c1f29',
+  accentColor: '#9a4a00',
+  secondaryColor: '#4a5060',
+});
+
+/**
+ * The look as it is PAINTED. A dark look is as stored. A light look cannot trust its App colour (Reset, a hand-picked
+ * #202020, a stored look with no colours): a missing or non-light one becomes the light palette's own, and every unset
+ * colour is filled from it, so chrome, terminal and the CLI's light theme always sit on a light surface.
+ */
+function resolveLook(look) {
+  if (effectiveMode(look) !== 'light') return look;
+  const app = normalHex(look.appColor);
+  const pick = (key) => normalHex(look[key]) || SAFE_LOOK_LIGHT[key];
+  return {
+    ...look,
+    appColor: app && luminance(app) >= LIGHT_BG_FLOOR ? app : SAFE_LOOK_LIGHT.appColor,
+    textColor: pick('textColor'),
+    accentColor: pick('accentColor'),
+    secondaryColor: pick('secondaryColor'),
+  };
 }
 
 function sanitizeLook(raw) {
@@ -199,9 +233,6 @@ function ensureContrastAll(color, againsts) {
   return extreme;
 }
 
-// The terminal text in a light look whose person set an app colour but no text colour.
-const LIGHT_TEXT = '#1c1f29';
-
 // The theme's dark label on the accent (the inner-agent pill). Kept when it
 // reads on the chosen accent, walked to white-ish when it does not.
 const ON_ACCENT = '#12141c';
@@ -211,7 +242,8 @@ const ON_ACCENT = '#12141c';
  * Keys it does not own (ok, bad) pass through untouched, and so does an accent
  * the person has not set.
  */
-function derivePalette(look, baseChrome) {
+function derivePalette(rawLook, baseChrome) {
+  const look = resolveLook(rawLook);
   const base = { ...(baseChrome || {}) };
   const appColor = normalHex(look && look.appColor);
   const textColor = normalHex(look && look.textColor);
@@ -252,7 +284,8 @@ function derivePalette(look, baseChrome) {
  * the terminal does not sit in a differently-coloured box; the CLI's own text
  * colours are deliberately NOT this feature's to change.
  */
-function terminalOverride(look, baseTerminal) {
+function terminalOverride(rawLook, baseTerminal) {
+  const look = resolveLook(rawLook);
   const out = { ...(baseTerminal || {}) };
   const appColor = normalHex(look && look.appColor);
   if (!appColor) return out;
@@ -260,7 +293,7 @@ function terminalOverride(look, baseTerminal) {
     // The CLI runs its light theme in a light look, so its default text is dark: the terminal's own
     // foreground follows the look's text colour instead of pushing the app colour dark.
     out.background = appColor;
-    out.foreground = ensureContrast(normalHex(look.textColor) || LIGHT_TEXT, appColor);
+    out.foreground = ensureContrast(normalHex(look.textColor), appColor);
     return out;
   }
   // Moved away from the CLI's own text colour when it would hide it -- this
@@ -296,7 +329,7 @@ function sanitizeDim(v) {
 }
 
 module.exports = {
-  parseHex, formatHex, sanitizeLook, effectiveMode, cliThemeFor, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
+  parseHex, formatHex, sanitizeLook, effectiveMode, cliThemeFor, resolveLook, SAFE_LOOK_LIGHT, LIGHT_BG_FLOOR, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
   contrastRatio, ensureContrast, ensureContrastAll, MIN_CONTRAST,
   DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS, DEFAULT_DIM, MAX_DIM,
 };

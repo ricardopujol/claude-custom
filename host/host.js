@@ -20,7 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine } = require('./settings-writer');
+const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme } = require('./settings-writer');
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
@@ -346,7 +346,6 @@ async function currentFog() {
   return fog;
 }
 
-
 // Attached only once the native helper exists (step 2). Wiring hooks to a
 // missing binary would fire on every Task and Bash call and invoke nothing.
 const helperExists = fs.existsSync(HELPER_PATH);
@@ -551,7 +550,11 @@ try {
 
 // The theme the CLI is STARTED with: it reads it once, so a later flip of the project's mode shows in the Style tab
 // as "switches next time" until the next launch (app/style-display.js coloursSectionView).
-const LAUNCH_CLI_THEME = cliThemeFor(readLook(STATE_ROOT));
+// The person's own theme (null: none found) keeps its daltonized / ANSI family across a flip, and is what an old project
+// with no chosen mode is running, so the Style tab can tell when a flip differs from it.
+const USER_CLI_THEME = findUserTheme({ configDir: claudeConfigDir(), cwd: CWD });
+const LAUNCH_CLI_THEME = cliThemeFor(readLook(STATE_ROOT), USER_CLI_THEME);
+const RUNNING_CLI_THEME = LAUNCH_CLI_THEME || USER_CLI_THEME;
 
 // PORT-KEYED. The contents name this host's own pipe, so the filename has to
 // be this host's too -- otherwise a second host starting during this one's
@@ -601,7 +604,7 @@ function currentStyle() {
   const r = resolveStyle(STATE_ROOT, background.path);
   return {
     background: r.background, source: r.source, kind: r.kind, setAt: r.setAt, look: r.look,
-    cliTheme: LAUNCH_CLI_THEME,
+    cliTheme: RUNNING_CLI_THEME,
     theme: applyLook(theme, r.look),
   };
 }
@@ -2142,7 +2145,7 @@ wss.on('connection', (ws, req) => {
     theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
-    style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look, cliTheme: LAUNCH_CLI_THEME },
+    style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look, cliTheme: RUNNING_CLI_THEME },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
