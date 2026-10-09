@@ -304,3 +304,9 @@ test('sampleNow answers null when its own sample was dropped, never the older on
   pending.at(-1).resolve(text(2, { procs: P }));
   assert.strictEqual(await asked, null);
 });
+
+test('the full sample script asks Win32_Process for ThreadCount and HandleCount (the stuck-exit signature)', () => {
+  const script = require('../host/resource-sampler').scriptFor('full');
+  assert.match(script, /threads=\$_\.ThreadCount/);
+  assert.match(script, /handles=\$_\.HandleCount/);
+});

@@ -18,7 +18,7 @@
  * 'error'-listener fallback without actually depending on `taskkill` being
  * absent from this machine's PATH.
  */
-const { spawn, spawnSync } = require('child_process');
+const { spawn, spawnSync, execFile } = require('child_process');
 
 /*
  * Has this child ended? (PR #130 review, Dexter #1.) Once a child's exit has been handled its pid is free and may
@@ -161,16 +161,39 @@ function parseProvenKill(r) {
   return code === 0 ? 'killed' : code === 128 ? 'gone' : 'failed';
 }
 
-function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL } = {}) {
-  if (!Number.isInteger(pid) || pid <= 0 || typeof start !== 'string' || !/^\d+$/.test(start)) return 'unknown';
-  const script = [
+// The one script, shared by the sync and async callers: they can never disagree on what is proven.
+function provenScript(pid, start) {
+  return [
     `try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'GONE'; exit }`,
     "try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { 'UNKNOWN'; exit }",
     `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
     "if ($p.HasExited) { 'GONE'; exit }",
     `& taskkill.exe /PID ${pid} /T /F *> $null; 'KILLED ' + $LASTEXITCODE`,
   ].join('; ');
-  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+}
+const validProof = (pid, start) => Number.isInteger(pid) && pid > 0 && typeof start === 'string' && /^\d+$/.test(start);
+
+function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL } = {}) {
+  if (!validProof(pid, start)) return 'unknown';
+  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start)], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
 }
 
-module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, parseProvenKill };
+const execFileAsync = (exe, args, opts) => new Promise((resolve) => {
+  execFile(exe, args, opts, (error, stdout) => resolve({ error, stdout: typeof stdout === 'string' ? stdout : '' }));
+});
+
+/**
+ * killProven without blocking the caller (PR #132 Dexter F2 + Miguel I1: the Resources panel's auto-stop runs in the main
+ * process, and a spawnSync there freezes every window for the length of a PowerShell start-up). The same script and the same
+ * answers. A run that fails or throws is 'unknown': nothing was judged, nothing is assumed.
+ */
+async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershell = POWERSHELL } = {}) {
+  if (!validProof(pid, start)) return 'unknown';
+  try {
+    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start)], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    // A run that errored AFTER printing its answer (a timeout kill) still printed it; parseProvenKill reads stdout, and refuses a bare error.
+    return parseProvenKill(r && r.stdout ? { stdout: r.stdout } : { error: (r && r.error) || new Error('no output') });
+  } catch { return 'unknown'; }
+}
+
+module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, killProvenAsync, parseProvenKill };

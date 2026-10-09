@@ -22,6 +22,8 @@ const digits = v => (typeof v === 'string' && /^\d+$/.test(v)) || (Number.isSafe
 const big = v => BigInt(v);
 const posInt = v => Number.isInteger(v) && v > 0;
 
+const count = v => (Number.isInteger(v) && v >= 0 ? v : null);
+
 function parseProc(r) {
   if (!isObject(r) || !posInt(r.pid)) return null;
   return {
@@ -31,6 +33,9 @@ function parseProc(r) {
     cmd: typeof r.cmd === 'string' && r.cmd !== '' ? r.cmd : null,
     // An unknown start (a process of another user, an elevated one) stays null: nothing can be proved about it.
     start: digits(r.start) ? String(r.start) : null,
+    // Thread and handle counts: 1 thread and 0 handles is a process that is exiting and cannot finish (BACKLOG #74 A).
+    threads: count(r.threads),
+    handles: count(r.handles),
     priv: typeof r.priv === 'number' && Number.isFinite(r.priv) && r.priv >= 0 ? r.priv : null,
   };
 }

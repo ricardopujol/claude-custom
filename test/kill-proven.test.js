@@ -71,3 +71,32 @@ test('killProven (real process, real PowerShell): a wrong start time leaves it r
     await exited;
   } finally { if (c.exitCode === null && c.signalCode === null) c.kill(); }
 });
+
+test('killProvenAsync (PR #132 Dexter F2): the same one script and the same answers, through an async run; a bad pid or start runs nothing', async () => {
+  const { killProvenAsync } = require('../host/kill-tree');
+  let script = '';
+  let ran = 0;
+  const runAsync = async (exe, args) => { ran++; script = args[args.length - 1]; return { stdout: 'KILLED 0' }; };
+  assert.strictEqual(await killProvenAsync(4321, '134000000000000123', { runAsync }), 'killed');
+  assert.ok(script.indexOf('.Handle') > 0 && script.indexOf("'134000000000000123'") > script.indexOf('.Handle') && script.indexOf('taskkill') > script.indexOf("'134000000000000123'"));
+  assert.match(script, /\/PID 4321 \/T \/F/);
+  assert.strictEqual(await killProvenAsync(0, '1', { runAsync }), 'unknown');
+  assert.strictEqual(await killProvenAsync(5, 'x', { runAsync }), 'unknown');
+  assert.strictEqual(ran, 1);
+  for (const [stdout, want] of [['MISMATCH', 'mismatch'], ['GONE', 'gone'], ['KILLED 1', 'failed'], ['', 'unknown']]) {
+    assert.strictEqual(await killProvenAsync(7, '5', { runAsync: async () => ({ stdout }) }), want);
+  }
+  assert.strictEqual(await killProvenAsync(7, '5', { runAsync: async () => { throw new Error('spawn failed'); } }), 'unknown');
+  assert.strictEqual(await killProvenAsync(7, '5', { runAsync: async () => ({ error: new Error('x'), stdout: '' }) }), 'unknown');
+});
+
+test('killProvenAsync: it does not block the event loop while PowerShell runs', async () => {
+  const { killProvenAsync } = require('../host/kill-tree');
+  let ticked = false;
+  const slow = () => new Promise(r => setTimeout(() => r({ stdout: 'GONE' }), 30));
+  const p = killProvenAsync(7, '5', { runAsync: slow });
+  setImmediate(() => { ticked = true; });
+  await new Promise(r => setImmediate(r));
+  assert.strictEqual(ticked, true);
+  assert.strictEqual(await p, 'gone');
+});
