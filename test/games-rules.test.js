@@ -56,9 +56,21 @@ test('stack: 4 px off is not perfect', () => {
   assert.deepStrictEqual(r.stack[1], { x: 104, w: 116 });
 });
 
-test('stack: growth never pushes the block off the right wall', () => {
+test('stack: growth that would pass the right wall shifts the block left, and still grows (Dexter F6)', () => {
   const r = G.stackDrop([{ x: 300, w: 100 }], { x: 300, w: 100 });
-  assert.deepStrictEqual(r.stack[1], { x: 300, w: 100 });
+  assert.deepStrictEqual(r.stack[1], { x: 292, w: 108 });
+  const w = G.stackDrop([{ x: 0, w: 180 }, { x: 310, w: 90 }].slice(1), { x: 309, w: 90, dir: 1 });
+  assert.strictEqual(w.stack[1].w, 98);
+  assert.strictEqual(w.stack[1].x + w.stack[1].w, 400);
+});
+
+test('stack: a perfect drop on a very narrow block is perfect, not a miss (Dexter F4)', () => {
+  const r = G.stackDrop([{ x: 115, w: 5 }], { x: 116, w: 5, dir: 1 });
+  assert.strictEqual(r.over, false);
+  assert.strictEqual(r.perfect, true);
+  assert.deepStrictEqual(r.stack[1], { x: 115, w: 13 });
+  assert.strictEqual(G.stackDrop([{ x: 115, w: 5 }], { x: 118, w: 5, dir: 1 }).perfect, true);
+  assert.deepStrictEqual(G.stackDrop([{ x: 115, w: 5 }], { x: 119, w: 5, dir: 1 }), { over: true }, '4 px off a 5 px block is a miss');
 });
 
 test('stack: the score counts the blocks on the base', () => {

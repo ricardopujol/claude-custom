@@ -62,11 +62,69 @@ test('the best is written atomically: a replaced file, no temp left behind', () 
   assert.deepStrictEqual(fs.readdirSync(dir).filter(f => f.includes('.tmp')), []);
 });
 
-test('a corrupt file reads as no bests, and the next best replaces it', () => {
+test('a corrupt file reads as no bests, and is NOT written over: the submit answers null and the file is untouched', () => {
   const { scores, file } = rig();
   fs.writeFileSync(file, '{ not json');
   assert.deepStrictEqual(scores.read(), zero);
-  assert.deepStrictEqual(scores.submit('merge', 12), { stack: 0, merge: 12, pipeline: 0 });
+  assert.strictEqual(scores.submit('merge', 12), null);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{ not json');
+});
+
+// The store's REAL behaviour while a file is held (EBUSY, antivirus): read() does not throw, it returns the fallback. A store that
+// holds the file for N reads is the real store with its reads intercepted.
+const held = (store, holds) => {
+  let n = 0;
+  const gate = () => n++ < holds;
+  return {
+    ...store,
+    read: (k, fb) => (gate() ? fb : store.read(k, fb)),
+    readState: (k) => (gate() ? { status: 'unreadable', value: null, error: new Error('EBUSY') } : store.readState(k)),
+    withLock: store.withLock,
+    write: store.write,
+  };
+};
+
+test('a held score file is never written over: {30, 2048, 5} plus one held read and a Merge 512 leaves the file as it was (Dexter F1)', () => {
+  const { store, file } = rig();
+  store.write(KEY, { stack: 30, merge: 2048, pipeline: 5 });
+  const before = fs.readFileSync(file, 'utf8');
+  const scores = createScoreStore(held(store, 1));
+  assert.strictEqual(scores.submit('merge', 512), null);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before);
+  assert.deepStrictEqual(createScoreStore(store).read(), { stack: 30, merge: 2048, pipeline: 5 });
+});
+
+test('a file that reads fine outside the lock and is held inside it is not written over either', () => {
+  const { store, file } = rig();
+  store.write(KEY, { stack: 30, merge: 2048, pipeline: 5 });
+  const before = fs.readFileSync(file, 'utf8');
+  let n = 0;
+  const flaky = { ...store, readState: (k) => (n++ === 0 ? store.readState(k) : { status: 'unreadable', value: null }),
+    read: store.read, withLock: store.withLock, write: store.write };
+  assert.strictEqual(createScoreStore(flaky).submit('stack', 99), null);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before);
+});
+
+test('a held file reads as no bests for display, but a later submit after it is free still raises from the real bests', () => {
+  const { store } = rig();
+  store.write(KEY, { stack: 30, merge: 2048, pipeline: 5 });
+  const scores = createScoreStore(held(store, 1));
+  assert.deepStrictEqual(scores.read(), zero);
+  assert.strictEqual(scores.submit('stack', 31).stack, 31);
+  assert.deepStrictEqual(createScoreStore(store).read(), { stack: 31, merge: 2048, pipeline: 5 });
+});
+
+test('only a missing or a good file may be written over: an unreadable or corrupt one answers null', () => {
+  for (const status of ['unreadable', 'corrupt']) {
+    let wrote = false;
+    const scores = createScoreStore({ read: () => ({}), readState: () => ({ status, value: null }), write: () => { wrote = true; } });
+    assert.strictEqual(scores.submit('stack', 5), null, status);
+    assert.strictEqual(wrote, false, status);
+  }
+  const fresh = [];
+  const missing = createScoreStore({ read: () => ({}), readState: () => ({ status: 'missing', value: null }), write: (k, v) => fresh.push(v) });
+  assert.deepStrictEqual(missing.submit('stack', 5), { stack: 5, merge: 0, pipeline: 0 });
+  assert.strictEqual(fresh.length, 1);
 });
 
 test('a stored value that isn\'t a plain count reads as 0 for that game only', () => {

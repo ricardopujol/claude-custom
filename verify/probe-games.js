@@ -236,6 +236,23 @@ async function main() {
   await doIt({ op: 'resume' });
   check('5: a click on the board resumes it', !!(await waitFor(async () => { const s = await gs(); return s.state.phase === 'running' ? s : null; }, 5000, 150)));
 
+  // 5b: another TAB selected (the shell hides this tab's view with setVisible(false)); the dock layout of this page does not change,
+  // so only the page's own visibilitychange can pause the round (Miguel: unverified in Electron 33 until now)
+  const st5 = await command(app, { cmd: 'state' });
+  const firstLabel = st5.tabs && st5.tabs[0] && st5.tabs[0].label;
+  await command(app, { cmd: 'create', branch: 'feat/games-probe' });
+  const second = await waitFor(async () => { const x = await command(app, { cmd: 'state' }); return x.tabs && x.tabs.length >= 2 && x.selectedKey !== st5.selectedKey ? x : null; }, 60000, 500);
+  if (!second) {
+    check('5b: a second tab could be created for the background-tab check', false, JSON.stringify(st5.tabs));
+  } else {
+    await sleep(800);
+    await command(app, { cmd: 'select', label: firstLabel });
+    const back1 = await waitFor(async () => { const s = await gs(); return s && s.ok && s.shown ? s : null; }, 15000, 200);
+    check('5b: after the shell hid this tab's view (another tab selected) the round paused, saying it was out of sight', !!back1 && back1.state.phase === 'paused' && back1.state.why === 'hidden', JSON.stringify(back1 && [back1.state.phase, back1.state.why, back1.visibility]));
+    check('5b: and the page is visible again now', !!back1 && back1.visibility === 'visible');
+    await doIt({ op: 'resume' });
+  }
+
   // 6 -----------------------------------------------------------------------------
   await doIt({ op: 'pick', game: 'merge' });
   await doIt({ op: 'go' });

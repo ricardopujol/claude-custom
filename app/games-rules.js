@@ -44,12 +44,16 @@ function stackStep(cur, speed, dt) {
  */
 function stackDrop(stack, cur) {
   const top = stack[stack.length - 1];
-  let l = Math.max(top.x, cur.x);
-  let r = Math.min(top.x + top.w, cur.x + cur.w);
+  // Perfect is decided FIRST: on a block as narrow as the miss margin and the perfect margin together, a drop 1 px off would
+  // otherwise count as a miss. It grows back, then the block is shifted left if the growth would pass the right wall.
+  if (Math.abs(cur.x - top.x) <= STACK.perfect) {
+    const w = Math.min(STACK.cap, top.w + STACK.grow);
+    return { over: false, perfect: true, stack: stack.concat([{ x: Math.min(top.x, FIELD.width - w), w }]) };
+  }
+  const l = Math.max(top.x, cur.x);
+  const r = Math.min(top.x + top.w, cur.x + cur.w);
   if (r - l <= STACK.miss) return { over: true };
-  const perfect = Math.abs(cur.x - top.x) <= STACK.perfect;
-  if (perfect) { l = top.x; r = Math.min(FIELD.width, top.x + Math.min(STACK.cap, top.w + STACK.grow)); }
-  return { over: false, perfect, stack: stack.concat([{ x: l, w: r - l }]) };
+  return { over: false, perfect: false, stack: stack.concat([{ x: l, w: r - l }]) };
 }
 
 /** The score: how many blocks sit on the base. */

@@ -11,12 +11,14 @@ const { FakeDocument } = require('./fake-dom');
 const D = require('../app/games-display');
 
 const drawCalls = [];
+// A test can make drawing take time: its hook runs once per frame, on the first fillRect.
+const work = { fn: null, done: false };
 const ctx = new Proxy({}, {
-  get(_t, name) { return (...args) => { drawCalls.push([name, ...args]); }; },
+  get(_t, name) { return (...args) => { drawCalls.push([name, ...args]); if (name === 'fillRect' && work.fn && !work.done) { work.done = true; work.fn(); } }; },
   set(_t, name, v) { drawCalls.push(['set:' + String(name), v]); return true; },
 });
 
-function rig({ bridge = null, rng = () => 0.5, terminalFocus = false } = {}) {
+function rig({ bridge = null, rng = () => 0.5, terminalFocus = false, css = () => '#888888' } = {}) {
   const doc = new FakeDocument();
   const panel = doc.createElement('div');
   doc.root.appendChild(panel);
@@ -33,7 +35,7 @@ function rig({ bridge = null, rng = () => 0.5, terminalFocus = false } = {}) {
     raf: (fn) => { frames.push(fn); return frames.length; },
     caf: () => { calls.caf += 1; frames.length = 0; },
     now: () => t,
-    css: () => '#888888',
+    css,
   });
   const canvas = panel.querySelector('canvas');
   canvas.layout = { width: 400, height: 300 };
@@ -41,7 +43,11 @@ function rig({ bridge = null, rng = () => 0.5, terminalFocus = false } = {}) {
   const runFrame = (ms = 16) => { advance(ms); const fn = frames.shift(); if (fn) fn(); return Boolean(fn); };
   const shown = () => g.setView({ shown: true, pageVisible: true, lean: false });
   const go = () => panel.querySelector('[data-act="go"]').dispatch('click');
-  return { doc, panel, outside, canvas, g, frames, calls, state, advance, runFrame, shown, go };
+  const setNow = (ms) => { t = ms; };
+  const nowIs = () => t;
+  // the next frame fires at wall time ms, whatever the last frame's work took
+  const frameAt = (ms) => { t = ms; work.done = false; const fn = frames.shift(); if (fn) fn(); return Boolean(fn); };
+  return { doc, panel, outside, canvas, g, frames, calls, state, advance, runFrame, shown, go, setNow, nowIs, frameAt };
 }
 
 const coverText = r => r.panel.querySelector('.games-cover-text').textContent;
@@ -68,8 +74,8 @@ test('Play starts a 45-second round that runs frame by frame, and the cover goes
   assert.strictEqual(r.g.state().phase, 'running');
   assert.strictEqual(coverShown(r), false);
   assert.strictEqual(r.frames.length, 1);
-  r.runFrame(1000);                                     // a stalled frame counts as 50 ms
-  assert.ok(Math.abs(r.g.state().left - 44.95) < 1e-9);
+  r.runFrame(1000);                                     // a gap counts as half a second at most
+  assert.ok(Math.abs(r.g.state().left - 44.5) < 1e-9);
   assert.strictEqual(r.frames.length, 1, 'the next frame is asked for');
   assert.strictEqual(r.panel.querySelector('.games-time').textContent, '45');
 });
@@ -320,4 +326,132 @@ test('the games draw nothing before the panel is shown', () => {
   assert.strictEqual(drawCalls.length, n);
   r.shown();
   assert.ok(drawCalls.length > n, 'showing the panel paints the board once');
+});
+
+// --- the review fixes (PR #160) -----------------------------------------------------------------------------------------------
+
+function wallSecondsToEnd(frameMs, workMs) {
+  const r = rig(); r.shown();
+  r.setNow(1000); r.go();
+  work.fn = workMs > 0 ? () => r.setNow(r.nowIs() + workMs) : null;
+  let k = 0;
+  let wall = 0;
+  while (r.g.state().phase === 'running' && k < 20000) { k += 1; wall = k * frameMs; r.frameAt(1000 + wall); }
+  work.fn = null;
+  return { phase: r.g.state().phase, wall: wall / 1000 };
+}
+
+test('CLOCK: 2 ms of work in every 16.7 ms frame still ends the round after 45 s of wall time (Dexter F2)', () => {
+  const r = wallSecondsToEnd(16.7, 2);
+  assert.strictEqual(r.phase, 'over');
+  assert.ok(Math.abs(r.wall - 45) < 0.1, `ended after ${r.wall} s`);
+});
+
+test('CLOCK: a slow machine at 15 fps (66.7 ms frames) also gets 45 s, not 60', () => {
+  const r = wallSecondsToEnd(66.7, 0);
+  assert.strictEqual(r.phase, 'over');
+  assert.ok(Math.abs(r.wall - 45) < 0.1, `ended after ${r.wall} s`);
+});
+
+test('KEYS: a held key (auto-repeat) is one press (Miguel Y1)', () => {
+  const r = rig(); r.shown(); r.go();
+  r.canvas.dispatch('keydown', { key: ' ', code: 'Space' });
+  r.canvas.dispatch('keydown', { key: ' ', code: 'Space', repeat: true });
+  r.canvas.dispatch('keydown', { key: ' ', code: 'Space', repeat: true });
+  assert.strictEqual(r.g.state().score, 1);
+  const m = rig(); m.shown(); m.panel.querySelector('[data-game="merge"]').dispatch('click'); m.go();
+  const before = JSON.stringify(m.g.peek());
+  m.canvas.dispatch('keydown', { key: 'ArrowLeft', repeat: true });
+  assert.strictEqual(JSON.stringify(m.g.peek()), before, 'a repeated arrow moves nothing');
+});
+
+const mergeRig = () => {
+  const r = rig({ rng: (() => { let i = 0; const v = [0, 0.5, 0.2, 0.7, 0.4]; return () => v[i++ % v.length]; })() });
+  r.shown(); r.panel.querySelector('[data-game="merge"]').dispatch('click'); r.go();
+  return r;
+};
+const swipe = (r, from, to) => { r.canvas.dispatch('pointerdown', { clientX: from[0], clientY: from[1], pointerId: 1 }); r.canvas.dispatch('pointerup', { clientX: to[0], clientY: to[1], pointerId: 1 }); };
+
+test('SWIPE: a real swipe moves the board (positive control for the cases below)', () => {
+  const r = mergeRig();
+  const before = JSON.stringify(r.g.peek());
+  let changed = false;
+  for (const [a, b] of [[[100, 150], [300, 150]], [[300, 150], [100, 150]], [[200, 50], [200, 250]], [[200, 250], [200, 50]]]) {
+    swipe(r, a, b);
+    if (JSON.stringify(r.g.peek()) !== before) { changed = true; break; }
+  }
+  assert.ok(changed);
+});
+
+test('SWIPE: a press cut short by the hand-back never turns the resuming click into a move (Dexter F3, the exact sequence)', () => {
+  const r = mergeRig();
+  r.canvas.dispatch('pointerdown', { clientX: 100, clientY: 150, pointerId: 1 });
+  r.g.handBack();
+  const cover = r.panel.querySelector('.games-cover');
+  cover.dispatch('pointerup', { clientX: 100, clientY: 150, pointerId: 1 });
+  const before = JSON.stringify(r.g.peek());
+  cover.dispatch('pointerdown', { clientX: 300, clientY: 150, pointerId: 2 });
+  assert.strictEqual(r.g.state().phase, 'running');
+  r.canvas.dispatch('pointerup', { clientX: 300, clientY: 150, pointerId: 2 });
+  assert.strictEqual(JSON.stringify(r.g.peek()), before);
+  assert.strictEqual(r.g.state().phase, 'running');
+});
+
+test('SWIPE: a cancelled pointer (the system took it) leaves nothing armed', () => {
+  const r = mergeRig();
+  const before = JSON.stringify(r.g.peek());
+  r.canvas.dispatch('pointerdown', { clientX: 100, clientY: 150, pointerId: 1 });
+  r.canvas.dispatch('pointercancel', { pointerId: 1 });
+  r.canvas.dispatch('pointerup', { clientX: 300, clientY: 150, pointerId: 1 });
+  assert.strictEqual(JSON.stringify(r.g.peek()), before);
+});
+
+test('SWIPE: the press is captured, so a release outside the board still counts (Miguel Y3)', () => {
+  const r = mergeRig();
+  const captured = [];
+  r.canvas.setPointerCapture = (id) => captured.push(id);
+  r.canvas.dispatch('pointerdown', { clientX: 100, clientY: 150, pointerId: 5 });
+  assert.deepStrictEqual(captured, [5]);
+});
+
+test('BANK: a round that is paused by the hand-back banks its score, so quitting there loses nothing (Miguel Y5)', () => {
+  const submitted = [];
+  const bridge = { scores: () => Promise.resolve({}), submit: (g, v) => { submitted.push([g, v]); return Promise.resolve({ stack: v }); } };
+  const r = rig({ bridge }); r.shown(); r.go();
+  r.canvas.dispatch('keydown', { key: ' ' });
+  r.g.handBack();
+  assert.deepStrictEqual(submitted, [['stack', 1]]);
+});
+
+test('BANK: leaving the panel mid-round, or the page going away, banks the score too', () => {
+  const submitted = [];
+  const bridge = { scores: () => Promise.resolve({}), submit: (g, v) => { submitted.push([g, v]); return Promise.resolve({}); } };
+  const r = rig({ bridge }); r.shown(); r.go();
+  r.canvas.dispatch('keydown', { key: ' ' });
+  r.g.setView({ shown: false });
+  assert.deepStrictEqual(submitted, [['stack', 1]]);
+  r.g.bankNow();
+  assert.strictEqual(submitted.length, 2, 'pagehide banks whatever the round has');
+  const idle = rig({ bridge }); idle.shown(); idle.g.bankNow();
+  assert.strictEqual(submitted.length, 2, 'a round with no score banks nothing');
+});
+
+test('DRAW: the colour tokens are read once per frame, not once per tile (Miguel Y2)', () => {
+  const asked = [];
+  const r = rig({ css: (n) => { asked.push(n); return '#888'; } });
+  r.shown(); r.panel.querySelector('[data-game="merge"]').dispatch('click'); r.go();
+  asked.length = 0;
+  r.runFrame(16);
+  assert.ok(asked.length > 0 && asked.length <= 6, `${asked.length} reads in one frame: ${asked.join(',')}`);
+  assert.strictEqual(new Set(asked).size, asked.length, 'each token once');
+});
+
+test('DRAW: the pick row is repainted only when the chosen game changes (Miguel G1)', () => {
+  const r = rig(); r.shown(); r.go();
+  const pick = r.panel.querySelector('[data-game="stack"]');
+  let writes = 0;
+  const orig = pick.setAttribute.bind(pick);
+  pick.setAttribute = (k, v) => { writes += 1; orig(k, v); };
+  for (let k = 0; k < 5; k += 1) r.runFrame(16);
+  assert.strictEqual(writes, 0);
 });

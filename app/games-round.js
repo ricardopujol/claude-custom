@@ -18,7 +18,9 @@
 (function (root) {
 
 const ROUND_SECONDS = 45;
-const MAX_STEP = 0.05;          // a frame after a stall (a hidden window, a slow paint) must not eat the round
+// A frame after a real gap (a suspended tab, a stalled process) must not eat the round. A merely slow machine isn't a gap: at 15 fps
+// every frame is 67 ms and still counts in full, so a round lasts 45 s of wall time however slow the frames are.
+const MAX_GAP = 0.5;
 
 const WHY = Object.freeze({
   claude: '✋ Claude needs you',
@@ -41,10 +43,10 @@ function withScore(s, score) {
   return { ...s, score };
 }
 
-/** `dt` seconds of play. Only a running round has a clock; a bad or negative `dt` is no time; one long frame counts as MAX_STEP. */
+/** `dt` seconds of play. Only a running round has a clock; a bad or negative `dt` is no time; a gap over MAX_GAP counts as MAX_GAP. */
 function tick(s, dt) {
   if (s.phase !== 'running') return s;
-  const step = isNum(dt) && dt > 0 ? Math.min(dt, MAX_STEP) : 0;
+  const step = isNum(dt) && dt > 0 ? Math.min(dt, MAX_GAP) : 0;
   const left = s.left - step;
   return left <= 0 ? { ...s, left: 0, phase: 'over', why: 'time' } : { ...s, left };
 }
@@ -93,7 +95,13 @@ function cover(s, label) {
   return { text: label || '', note: '', button: 'Play' };
 }
 
-const API = { ROUND_SECONDS, MAX_STEP, WHY, idle, start, withScore, tick, finish, handBack, hide, comeBack, acceptsKeys, shouldDraw, secondsLeft, cover };
+/**
+ * Does coming back to the panel resume a paused round? Only a paused round, only when the press or focus landed on the board (not on
+ * the cover's own button, whose click resumes it), and only while the panel is on screen.
+ */
+const shouldResume = (s, onBoard, drawing) => s.phase === 'paused' && onBoard === true && drawing === true;
+
+const API = { ROUND_SECONDS, MAX_GAP, shouldResume, WHY, idle, start, withScore, tick, finish, handBack, hide, comeBack, acceptsKeys, shouldDraw, secondsLeft, cover };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.gamesRound = API;

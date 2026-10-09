@@ -1118,6 +1118,8 @@ function gamesView() {
 // back to the terminal.
 function gamesHandBack() { if (gamesPanel) gamesPanel.handBack(); }
 document.addEventListener('visibilitychange', gamesView);
+// The page is going away mid-round: bank the score it has (best effort; the raise is the same safe write as at a round's end).
+window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
 
 function onModuleShown(id) {
@@ -2995,6 +2997,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           scope: typeof window.gamesDisplay === 'object' && typeof window.gamesRules === 'object' && typeof window.gamesRound === 'object',
           shown: document.querySelector('.panel[data-panel="games"]').classList.contains('on'),
           state: gamesPanel.state(),
+          visibility: document.visibilityState,
           cover: { hidden: cover.hidden, text: cover.querySelector('.games-cover-text').textContent, button: cover.querySelector('.games-cover-btn').textContent },
           best: document.querySelector('#games-root .games-best').textContent,
           score: document.querySelector('#games-root .games-score').textContent,

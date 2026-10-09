@@ -34,6 +34,7 @@ const HINT = {
   merge: 'Arrow keys (click the board first) or swipe. Equal tiles merge.',
   pipeline: 'Click tiles to turn them. Connect src to tests.',
 };
+const PHYSICS_STEP = 0.05;     // the longest step a game's own motion takes in one frame (the round clock counts real time, see games-round)
 const FLASH = 0.35;           // seconds "perfect!" stays up
 const KEY_DIR = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D' };
 const SWIPE_MOVE = { L: 'L', R: 'R', U: 'U', D: 'D' };
@@ -98,6 +99,7 @@ function makeGames(rng, theme) {
     },
     key(e) { const d = KEY_DIR[e.key]; return d ? this.move(d) : undefined; },
     down(x, y) { this.s.swipe = [x, y]; },
+    cancel() { this.s.swipe = null; },
     up(x, y) {
       const from = this.s.swipe; this.s.swipe = null;
       if (!from) return undefined;
@@ -208,7 +210,10 @@ function mount(opts) {
   [head, pick, bar, stage].forEach(n => panel.appendChild(n));
 
   const ctx = opts.context || (typeof canvas.getContext === 'function' ? canvas.getContext('2d') : null);
-  const games = makeGames(rng, theme);
+  // The colour tokens are read from the page once per frame, not once per block or tile (each read can force a style recalc).
+  let tokens = null;
+  const tok = (name) => { if (tokens === null) tokens = {}; if (!(name in tokens)) tokens[name] = theme(name); return tokens[name]; };
+  const games = makeGames(rng, tok);
 
   // --- state
   let current = 'stack';
@@ -217,6 +222,7 @@ function mount(opts) {
   let bests = { stack: 0, merge: 0, pipeline: 0 };
   let loop = null;
   let last = 0;
+  let paintedPick = null;
   games[current].reset();
 
   const game = () => games[current];
@@ -228,18 +234,24 @@ function mount(opts) {
     put(bestEl, bestLine(bests));
     put(scoreEl, String(s.score));
     put(timeEl, String(round.secondsLeft(s)));
-    pickBtns.forEach((b) => { b.classList.toggle('on', b.getAttribute('data-game') === current); b.setAttribute('aria-pressed', String(b.getAttribute('data-game') === current)); });
+    if (paintedPick !== current) {
+      paintedPick = current;
+      pickBtns.forEach((b) => { b.classList.toggle('on', b.getAttribute('data-game') === current); b.setAttribute('aria-pressed', String(b.getAttribute('data-game') === current)); });
+    }
     const cv = round.cover(s, HINT[current]);
     cover.hidden = cv === null;
     if (cv) { put(coverText, cv.text); put(coverNote, cv.note); put(coverBtn, cv.button); }
   }
 
   function draw() {
-    if (ctx && drawing()) game().draw(ctx);
+    if (ctx && drawing()) { tokens = null; game().draw(ctx); }
   }
 
   function cancel() { if (loop !== null) { if (caf) caf(loop); loop = null; } }
+  // A loop STARTS (begin, resume, shown again) with a fresh stamp; a running loop re-arms WITHOUT one, so the time a frame spends
+  // working still counts against the round.
   function schedule() { if (loop === null && s.phase === 'running' && drawing()) { last = nowMs(); loop = raf(frame); } }
+  function rearm() { if (loop === null && s.phase === 'running' && drawing()) loop = raf(frame); }
 
   function bank() {
     const score = s.score;
@@ -268,10 +280,10 @@ function mount(opts) {
     const dt = Math.max(0, (t - last) / 1000);
     last = t;
     s = round.tick(s, dt);
-    game().step(Math.min(dt, round.MAX_STEP));
+    game().step(Math.min(dt, PHYSICS_STEP));
     after(undefined);
     draw(); paintLabels();
-    schedule();
+    rearm();
   }
 
   function begin() {
@@ -292,7 +304,8 @@ function mount(opts) {
   }
 
   function comeBack() {
-    if (s.phase !== 'paused' || !drawing()) return;
+    if (!round.shouldResume(s, true, drawing())) return;
+    cancelGesture();
     s = round.comeBack(s);
     paintLabels(); draw();
     if (typeof canvas.focus === 'function') canvas.focus();
@@ -306,6 +319,8 @@ function mount(opts) {
     return [(e.clientX - r.left) * FIELD.width / r.width, (e.clientY - r.top) * FIELD.height / r.height];
   };
   const live = () => s.phase === 'running' && drawing();
+  // a half-made gesture (a swipe's press) never survives a pause: the press that resumes, or one cut short, is not a move
+  function cancelGesture() { if (typeof game().cancel === 'function') game().cancel(); }
 
   panel.addEventListener('click', (e) => {
     const t = e.target;
@@ -327,7 +342,11 @@ function mount(opts) {
   panel.addEventListener('pointerdown', (e) => {
     skipClick = false;
     if (s.phase === 'paused') { if (onBoard(e.target)) { comeBack(); skipClick = true; } return; }
-    if (e.target === canvas && live() && typeof game().down === 'function') { const [x, y] = fieldPoint(e); game().down(x, y); }
+    if (e.target === canvas && live() && typeof game().down === 'function') {
+      // captured, so the release counts on the board even when the pointer ends outside it
+      if (typeof canvas.setPointerCapture === 'function' && e.pointerId !== undefined) { try { canvas.setPointerCapture(e.pointerId); } catch { /* the pointer is gone */ } }
+      const [x, y] = fieldPoint(e); game().down(x, y);
+    }
   });
   panel.addEventListener('pointerup', (e) => {
     if (e.target !== canvas || !live() || typeof game().up !== 'function') return;
@@ -335,10 +354,12 @@ function mount(opts) {
     const r = game().up(x, y);
     if (r !== undefined) { after(r); draw(); paintLabels(); }
   });
-  panel.addEventListener('focusin', (e) => { if (s.phase === 'paused' && onBoard(e.target)) comeBack(); });
+  panel.addEventListener('pointercancel', () => { cancelGesture(); });
+  panel.addEventListener('focusin', (e) => { if (round.shouldResume(s, onBoard(e.target), drawing())) comeBack(); });
   panel.addEventListener('keydown', (e) => {
     // A key reaches here only from inside the panel; the check is the rule, so it also holds if that ever changes.
     const focus = { panel: panel.contains(e.target), terminal: terminalHasFocus() === true };
+    if (e.repeat === true) return;       // a held key is one press: held Space would drop block after block
     if (!round.acceptsKeys(s, focus) || !drawing() || typeof game().key !== 'function') return;
     const r = game().key(e);
     if (r === undefined) return;
@@ -355,6 +376,8 @@ function mount(opts) {
       s = round.handBack(s);
       if (!was) return false;
       cancel();
+      cancelGesture();
+      bank();
       paintLabels();
       focusTerminal();
       return true;
@@ -368,11 +391,15 @@ function mount(opts) {
         schedule();
       } else {
         cancel();
-        if (s.phase === 'running') s = round.hide(s);
+        if (s.phase === 'running') { s = round.hide(s); cancelGesture(); bank(); }
       }
       paintLabels();
     },
+    // the board's own state, for tests and the probe: a copy, never the live object
+    peek() { return JSON.parse(JSON.stringify(game().s)); },
     refreshBests: loadBests,
+    /** The page is going away (pagehide): bank what the round has, best effort. */
+    bankNow() { bank(); },
     state() { return { ...s, game: current, bests: { ...bests }, drawing: drawing(), looping: loop !== null }; },
   };
 

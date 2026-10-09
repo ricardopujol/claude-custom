@@ -22,8 +22,10 @@ test('the clock runs only while the round is running', () => {
   assert.strictEqual(R.tick(running(), 0.04).left, 45 - 0.04);
 });
 
-test('one long frame counts as 50 ms, and a bad dt is no time', () => {
-  assert.strictEqual(R.tick(running(), 3).left, 45 - 0.05);
+test('a real gap counts as half a second, a merely slow frame counts in full, and a bad dt is no time (Dexter F2)', () => {
+  assert.strictEqual(R.tick(running(), 3).left, 45 - 0.5);
+  assert.strictEqual(R.tick(running(), 0.0667).left, 45 - 0.0667, 'a 15 fps frame is not clipped');
+  assert.strictEqual(R.MAX_GAP, 0.5);
   for (const bad of [0, -1, NaN, Infinity, undefined, null, '0.01']) assert.strictEqual(R.tick(running(), bad).left, 45, String(bad));
 });
 
@@ -112,6 +114,25 @@ test('DRAW: the panel paints only when shown, the page is visible, and it is not
   assert.strictEqual(R.shouldDraw({ shown: true, pageVisible: true, lean: true }), false);
   assert.strictEqual(R.shouldDraw(null), false);
   assert.strictEqual(R.shouldDraw({ shown: 'yes', pageVisible: true }), false);
+});
+
+test('P: at any steady frame time up to the gap limit, 45 s of frames end the round, not more and not less', () => {
+  fc.assert(fc.property(fc.double({ min: 0.004, max: 0.5, noNaN: true }), (dt) => {
+    let s = R.start(); let t = 0;
+    while (s.phase === 'running') { s = R.tick(s, dt); t += dt; }
+    assert.ok(t >= 45 - 1e-6 && t < 45 + dt + 1e-6, `ended after ${t}`);
+  }), { numRuns: 100 });
+});
+
+test('resuming: only a paused round, only on the board (not the cover button), only while the panel is drawing', () => {
+  const paused = R.handBack(running());
+  assert.strictEqual(R.shouldResume(paused, true, true), true);
+  assert.strictEqual(R.shouldResume(paused, false, true), false, 'the cover button resumes by its click');
+  assert.strictEqual(R.shouldResume(paused, true, false), false, 'not on screen');
+  assert.strictEqual(R.shouldResume(paused, 1, true), false, 'only a real true');
+  assert.strictEqual(R.shouldResume(running(), true, true), false);
+  assert.strictEqual(R.shouldResume(R.idle(), true, true), false);
+  assert.strictEqual(R.shouldResume({ phase: 'over', left: 0, score: 1, why: 'time' }, true, true), false);
 });
 
 test('the clock shows whole seconds, 45 down to 0', () => {

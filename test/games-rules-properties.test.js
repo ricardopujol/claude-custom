@@ -117,15 +117,26 @@ test('P11: a drop only ever lands inside the block below, and the stack stays in
   }), RUNS);
 });
 
-test('P12: a perfect drop never shrinks the stack and keeps its left edge', () => {
+test('P12a: a drop within 3 px of the block below never ends the round, whatever the width', () => {
+  fc.assert(fc.property(fc.integer({ min: 1, max: 180 }), fc.integer({ min: 0, max: 220 }), fc.integer({ min: -3, max: 3 }), (w, x, off) => {
+    if (x + w > 400 || x + off < 0 || x + off + w > 400) return;
+    const r = G.stackDrop([{ x, w }], { x: x + off, w, dir: 1 });
+    assert.strictEqual(r.over, false);
+    assert.strictEqual(r.perfect, true);
+  }), RUNS);
+});
+
+test('P12: a perfect drop never shrinks the stack, stays in the field, and only moves left to fit', () => {
   fc.assert(fc.property(stackArb, fc.integer({ min: -3, max: 3 }), (top, off) => {
     const x = top.x + off;
     if (x < 0 || x + top.w > 400) return;
     const r = G.stackDrop([top], { x, w: top.w });
     assert.strictEqual(r.over, false);
     assert.strictEqual(r.perfect, true);
-    assert.strictEqual(r.stack[1].x, top.x);
-    assert.ok(r.stack[1].w >= top.w);
+    const nb = r.stack[1];
+    assert.ok(nb.x <= top.x && nb.x >= 0 && nb.x + nb.w <= 400);
+    assert.ok(nb.w >= top.w);
+    assert.ok(nb.w === Math.min(180, top.w + 8), 'it always grows back, up to the cap');
   }), RUNS);
 });
 
