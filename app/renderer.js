@@ -1133,8 +1133,8 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  // each figure with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
-  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow());
+  // each figure (CPU, memory, and the GPU's when the payload has one) with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow(), c.gpuText);
   tbResourcesEl.setAttribute('aria-label', c.text);
   tbResourcesEl.title = c.title;
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
@@ -1200,7 +1200,8 @@ function renderResources() {
   // The markup is replaced on every draw: keep the keyboard on the same row or button.
   const focused = document.activeElement && resRoot.contains(document.activeElement) ? document.activeElement : null;
   const keep = focused && focused.dataset ? { act: focused.dataset.resAct, key: focused.dataset.resKey, pid: focused.dataset.resPid } : null;
-  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState));
+  // the GPU section's last-hour graphs come from the history display (it loads after resources-display.js, so it is handed in)
+  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState), { gpuGraphs: window.resourcesHistoryDisplay.gpuGraphs(resHistory(), resHistoryNow()) });
   if (!keep) return;
   const again = [...resRoot.querySelectorAll('[data-res-act]')].find(el => el.dataset.resAct === keep.act
     && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);

@@ -1028,3 +1028,65 @@ test('task logs: a pid that is reused by another process (another start) ends th
   await r.judge();
   assert.deepStrictEqual(r.calls.removed, ['1:10']);
 });
+
+// ---- BACKLOG #82: the GPU figures ride the same sample ----
+
+const gpuDoc = (n, busyTicks) => {
+  const eng = (pid, u) => ({ n: `pid_${pid}_luid_0x00000000_0x000107EC_phys_0_eng_0_engtype_3D`, u: String(u), t: String(T0 + BigInt(n) * 10n * SEC) });
+  return {
+    eng: [eng(23, BigInt(n) * busyTicks), eng(20, 0n)],
+    pm: [{ n: 'pid_23_luid_0x00000000_0x000107EC_phys_0', d: '300' }, { n: 'pid_20_luid_0x00000000_0x000107EC_phys_0', d: '50' }],
+    am: [{ n: 'luid_0x00000000_0x000107EC_phys_0', d: '400' }], total: '1000',
+  };
+};
+const withGpu = (sample, n, busyTicks) => ({ ...sample, gpu: require('../host/resource-gpu').parseGpu(gpuDoc(n, busyTicks)) });
+const gpuSnap = (n, busyTicks) => {
+  const f = fullSnap(n, 10);
+  return { ...f, machine: { last: withGpu(f.machine.last, n, busyTicks), prev: n > 1 ? withGpu(f.machine.prev, n - 1, busyTicks) : null } };
+};
+
+test('GPU: the machine part of EVERY payload carries busy % and memory, the process list only the full one', () => {
+  const r = hrig();
+  r.svc.onUpdate(gpuSnap(2, 25n * SEC / 10n));       // 2.5 s of a 10 s step: 25%
+  const [full, light] = [r.sent.at(-1), r.svc.get(false)];
+  assert.ok(Math.abs(full.machine.gpu.busy - 25) < 1e-9);
+  assert.deepStrictEqual(full.machine.gpu.mem, { usedBytes: 400, totalBytes: 1000 });
+  assert.deepStrictEqual(light.machine.gpu, full.machine.gpu);
+  assert.deepStrictEqual(full.gpuProcs.rows.map(x => [x.pid, x.name, x.bytes]), [[23, 'node.exe', 300], [20, 'electron.exe', 50]]);
+  assert.ok(Math.abs(full.gpuProcs.rows[0].busy - 25) < 1e-9);
+  assert.strictEqual(light.gpuProcs, undefined, 'the light payload never carries process names');
+});
+
+test('GPU: the first sample has the memory but no busy %; a sample without GPU counters is all null, never 0', () => {
+  const r = hrig();
+  r.svc.onUpdate(gpuSnap(1, 5n * SEC));
+  assert.strictEqual(r.sent.at(-1).machine.gpu.busy, null);
+  assert.strictEqual(r.sent.at(-1).machine.gpu.mem.usedBytes, 400);
+  const bare = hrig();
+  bare.svc.onUpdate(fullSnap(2, 10));
+  assert.deepStrictEqual(bare.sent.at(-1).machine.gpu, { busy: null, mem: null });
+  assert.deepStrictEqual(bare.sent.at(-1).gpuProcs, { rows: [], more: 0 });
+});
+
+test('GPU: the history point carries busy % and memory used / total; unknown ones are null', () => {
+  const r = hrig();
+  r.svc.onUpdate(gpuSnap(2, 25n * SEC / 10n));
+  const pt = r.sent.at(-1).history[0];
+  assert.ok(Math.abs(pt.gpu - 25) < 0.06);
+  assert.strictEqual(pt.gpuMemUsed, 400);
+  assert.strictEqual(pt.gpuMemTotal, 1000);
+  const bare = hrig();
+  bare.svc.onUpdate(fullSnap(2, 10));
+  const q = bare.sent.at(-1).history[0];
+  assert.deepStrictEqual([q.gpu, q.gpuMemUsed, q.gpuMemTotal], [null, null, null]);
+});
+
+test('GPU: a machine-only snapshot still has the chip figures, and no process list', () => {
+  const r = hrig();
+  const a = withGpu(sampleAt(world(), 0, 1), 1, 5n * SEC);
+  const b = withGpu(sampleAt(world(), 0, 2), 2, 5n * SEC);
+  r.svc.onUpdate(snap({ mode: 'machine', machine: { last: b, prev: a } }));
+  const p = r.sent.at(-1);
+  assert.ok(Math.abs(p.machine.gpu.busy - 50) < 1e-9);
+  assert.strictEqual(p.gpuProcs, null);
+});

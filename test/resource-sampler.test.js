@@ -52,6 +52,22 @@ test('policy: the panel shown samples the process tree, the chip alone samples t
   assert.strictEqual(R.policy(null), null);
 });
 
+test('the scripts: BOTH read the GPU counters (the chip shows GPU busy %), from the raw classes, in the same one call (#82)', () => {
+  for (const m of ['full', 'machine']) {
+    const s = R.scriptFor(m);
+    assert.match(s, /Win32_PerfRawData_GPUPerformanceCounters_GPUEngine/);
+    assert.match(s, /Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory/);
+    assert.match(s, /Win32_PerfRawData_GPUPerformanceCounters_GPUAdapterMemory/);
+    assert.match(s, /UtilizationPercentage/);
+    assert.match(s, /Timestamp_Sys100NS/);
+    assert.match(s, /LocalUsage/, "the per-process figure is Task Manager's dedicated memory");
+    assert.match(s, /HardwareInformation\.qwMemorySize/, "the adapters' total memory has no counter");
+    assert.ok(s.includes('HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}'), 'the display class key, backslashes intact');
+    assert.ok(s.includes('gpu=$gpu'));
+    assert.strictEqual((s.match(/Get-Counter/g) || []).length, 0, 'no Get-Counter: it is slow');
+  }
+});
+
 test('the scripts: the full one reads the process table and the counters, the machine one reads neither', () => {
   assert.match(R.scriptFor('full'), /Win32_Process/);
   assert.match(R.scriptFor('full'), /Win32_PerfRawData_PerfProc_Process/);
@@ -213,6 +229,8 @@ test('the real script, run once on this machine: it parses, has this process in 
   assert.ok(typeof s.perf.get(process.pid).ws === 'number' && s.perf.get(process.pid).ws > 0, 'its private working set is there');
   assert.ok(s.perf.has(process.pid), 'its CPU counter is there');
   assert.ok(s.cpuTotal && s.os && s.os.totalBytes > 0);
+  // a machine with a GPU has the counters; one without (a CI runner) has none, and null is the honest answer
+  assert.ok(s.gpu === null || (s.gpu.engines instanceof Map && s.gpu.engines.size > 0), 'the GPU part is parsed or null');
   const m = parseSample(await exec(R.scriptFor('machine')), 2);
   assert.ok(m && m.cpuTotal && m.os);
   assert.strictEqual(m.procs.length, 0);

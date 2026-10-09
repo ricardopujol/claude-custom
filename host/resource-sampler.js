@@ -33,16 +33,35 @@ $procs = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ p
 $perf = @(Get-CimInstance Win32_PerfRawData_PerfProc_Process | ForEach-Object { [pscustomobject]@{ pid=$_.IDProcess; cpu=[string]$_.PercentProcessorTime; ts=[string]$_.Timestamp_Sys100NS; wsp=[string]$_.WorkingSetPrivate } })
 `;
 
+// The GPU counters (BACKLOG #82), in BOTH modes: the chip shows GPU busy %, so the machine-only sample needs them too. Raw classes, not
+// Get-Counter: one CIM query each (about a third of a second together on the dev machine, PR #82), and the busy time is a 100 ns
+// tick count like the CPU ones, so a delta of two samples is the busy %. Windows has no counter for the adapters' total memory:
+// it is the sum of their HardwareInformation.qwMemorySize in the display class (a REG_QWORD, or 8 bytes on some drivers), null
+// when none could be read. The backslashes are doubled for the template literal.
+const GPU_PART = `
+$ge = @(Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUEngine | ForEach-Object { [pscustomobject]@{ n=$_.Name; u=[string]$_.UtilizationPercentage; t=[string]$_.Timestamp_Sys100NS } })
+$gp = @(Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory | ForEach-Object { [pscustomobject]@{ n=$_.Name; d=[string]$_.LocalUsage } })
+$ga = @(Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUAdapterMemory | ForEach-Object { [pscustomobject]@{ n=$_.Name; d=[string]$_.DedicatedUsage } })
+$gt = [long]0
+foreach ($k in @(Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}')) {
+  if ($k.PSChildName -notmatch '^[0-9]{4}$') { continue }
+  $q = $k.GetValue('HardwareInformation.qwMemorySize')
+  if ($q -is [byte[]] -and $q.Length -ge 8) { $q = [BitConverter]::ToInt64($q, 0) }
+  if ($q -is [long] -and $q -gt 0) { $gt += $q }
+}
+$gpu = [pscustomobject]@{ eng=$ge; pm=$gp; am=$ga; total=$(if ($gt -gt 0) { [string]$gt } else { $null }) }
+`;
+
 // The 100 ns counters travel as strings: Timestamp_Sys100NS is about 1.3e17, past 2^53.
 function scriptFor(mode) {
   if (mode !== 'full' && mode !== 'machine') throw new TypeError(`resource sampler: unknown mode ${mode}`);
   return `$ErrorActionPreference='SilentlyContinue'
 [Console]::OutputEncoding=[System.Text.Encoding]::UTF8
-$procs=@(); $perf=@()
-${mode === 'full' ? FULL_PART : ''}
+$procs=@(); $perf=@(); $gpu=$null
+${mode === 'full' ? FULL_PART : ''}${GPU_PART}
 $cpu = Get-CimInstance Win32_PerfRawData_PerfOS_Processor | Where-Object { $_.Name -eq '_Total' } | ForEach-Object { [pscustomobject]@{ idle=[string]$_.PercentProcessorTime; ts=[string]$_.TimeStamp_Sys100NS } }
 $os = Get-CimInstance Win32_OperatingSystem | ForEach-Object { [pscustomobject]@{ totalKb=$_.TotalVisibleMemorySize; freeKb=$_.FreePhysicalMemory } }
-[pscustomobject]@{ procs=$procs; perf=$perf; cpu=$cpu; os=$os } | ConvertTo-Json -Compress -Depth 4
+[pscustomobject]@{ procs=$procs; perf=$perf; cpu=$cpu; os=$os; gpu=$gpu } | ConvertTo-Json -Compress -Depth 5
 'END'`;
 }
 

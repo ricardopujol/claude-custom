@@ -20,6 +20,7 @@ const tree = require('../host/resource-tree');
 const warning = require('../host/resource-warning');
 const stopper = require('../host/resource-stop');
 const { createHistory } = require('../host/resource-history');
+const gpuLib = require('../host/resource-gpu');
 const leftovers = require('../host/leftovers');
 const taskLogsLib = require('../host/task-logs');
 
@@ -118,6 +119,8 @@ function createResourcesService({
       at, wall: now(), cpu: machine.cpu,
       cpuOurs: ours ? ours.cpu : null, memOurs: ours ? ours.bytes : null,
       memUsed: machine.mem ? machine.mem.usedBytes : null, memTotal: machine.mem ? machine.mem.totalBytes : null,
+      gpu: machine.gpu ? machine.gpu.busy : null,
+      gpuMemUsed: machine.gpu && machine.gpu.mem ? machine.gpu.mem.usedBytes : null, gpuMemTotal: machine.gpu && machine.gpu.mem ? machine.gpu.mem.totalBytes : null,
     });
   }
 
@@ -268,8 +271,11 @@ function createResourcesService({
 
   function onUpdate(snap) {
     const last = snap.machine && snap.machine.last;
+    // The GPU figures come from the same sample (BACKLOG #82): `machine.gpu` is always an object once there is a sample, its parts null
+    // where the counters could not be read; the process list rides only on the full payload (a name is somebody else's string).
+    const gpu = last ? gpuLib.buildGpu(snap.machine.prev, last) : null;
     const machine = last
-      ? { cpu: sample.machineCpu(snap.machine.prev, last), mem: sample.machineMemory(last) }
+      ? { cpu: sample.machineCpu(snap.machine.prev, last), mem: sample.machineMemory(last), gpu: { busy: gpu.busy, mem: gpu.mem } }
       : null;
     const status = {
       stale: snap.stale === true, expired: snap.expired === true,
@@ -314,7 +320,7 @@ function createResourcesService({
     tlListed = null;     // set again by leftoversOf from THIS sample; an expired or machine-only one deletes nothing
     const left = built && snap.expired !== true ? leftoversOf(snap, built) : null;
     if (!left) lastFound = null;
-    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null };
+    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null, gpuProcs: built && gpu ? gpu.procs : null };
     lastLight = { model: null, status, machine, chipOn };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(withHistory(lastPayload), lastLight);
