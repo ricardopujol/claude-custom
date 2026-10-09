@@ -3902,6 +3902,7 @@ document.addEventListener('click', (e) => {
 // An agent card's Pause / Resume (BACKLOG #19). The state machine and the markup live in app/agent-pause-display.js; the typing goes through
 // typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
 const agentPauses = window.agentPauseDisplay.createAgentPauses();
+let latestAgentIds = [];      // [{ name, agentId }] of the live runs, from every `processes` frame
 function agentPauseHtml(agent, counts) {
   return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
 }
@@ -3909,8 +3910,11 @@ document.addEventListener('click', (e) => {
   const b = e.target.closest && e.target.closest('.agent-pause-btn');
   const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
   if (!act) return;
-  const command = window.agentPauseDisplay.commandFor(act.act, act.agent);
-  if (!command || !agentPauses.begin(act.agent, act.act, Date.now())) return;
+  // The run's task id, when the host knows exactly one: named in the line, and what our TaskStop is recognised by (app/agent-pause-display.js).
+  const ids = latestAgentIds.filter(a => a.name === act.agent).map(a => a.agentId);
+  const taskId = ids.length === 1 ? ids[0] : undefined;
+  const command = window.agentPauseDisplay.commandFor(act.act, act.agent, taskId) || window.agentPauseDisplay.commandFor(act.act, act.agent);
+  if (!command || !agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)) return;
   renderRoster();
   // A Pause that never took effect is called off after the timeout, so the card must be drawn again then.
   setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
@@ -6501,6 +6505,7 @@ function handleControl(msg) {
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
+    agentPauses.sessionIs(msg.sessionId);     // seeds the id (a reattach, a reload, a reconnect), so the next different one is seen as a new session
     occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -6584,9 +6589,10 @@ function handleControl(msg) {
     // `mode`, so calling renderMode(undefined) here hid the badge a second after
     // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
+    latestAgentIds = Array.isArray(msg.agents) ? msg.agents.filter(a => a && typeof a.name === 'string' && typeof a.agentId === 'string') : [];
     // Our Pause's TaskStop, seen as the CLI's own tool call (app/agent-pause-display.js: "paused" needs it).
     for (const p of Array.isArray(msg.running) ? msg.running : []) {
-      if (p && p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt);
+      if (p && p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt, p.taskId);
     }
     latestParty = msg.party || [];
     renderParty(msg.party);
@@ -6678,6 +6684,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
+    agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
     paintBar();
     reportTabStatus();
     return;

@@ -1219,7 +1219,10 @@ function seatPayload(seats) {
 // down, and reading it here at startup is a TDZ ReferenceError that stops the
 // host before it serves anything. The closure reads it at first send, by which
 // point the whole module has run.
-const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
+// `agents` rides on every processes message: the live runs' names and ids, so an agent card's Pause can say which task it means and tell OUR
+// TaskStop from another (#19).
+const liveAgents = () => mood.invocations().filter(i => typeof i.agentId === 'string' && i.agentId && typeof i.name === 'string' && i.name).map(i => ({ name: i.name, agentId: i.agentId }));
+const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl({ ...msg, agents: liveAgents() }));
 
 // Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
 // calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.

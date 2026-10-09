@@ -22,6 +22,13 @@
  * pause off after a fixed time while a long turn is still running would leave the agent stopped later with no card for it. So the timeout counts
  * only while the turn is idle: it is measured from the last moment the turn was seen busy.
  *
+ * OUR TaskStop, not any TaskStop (PR #158 Dexter R2-1): the line names the run's id when the host knows it ("(task id X)"), and `sawTaskStop` takes the
+ * task a TaskStop call stopped (host/processes.js `taskId`). It counts only when that is this agent's id or its name, so a TaskStop of a dev-server shell
+ * never marks a pausing agent.
+ *
+ * THE TIMEOUT'S CLOCK IS THE TURN'S (R2-4): `turnIs` is fed by the host's own turn frames, so an idle edge is seen even when nothing else happened; an
+ * unknown turn counts as busy, never as idle.
+ *
  * A Pause is offered only for an agent with exactly one running instance (with two, "the agent" names neither). A new session id (/clear kills
  * background agents) forgets every pause (`sessionIs`, Dexter 5).
  *
@@ -35,19 +42,25 @@ const PAUSE_TIMEOUT_MS = 90_000;
 const STOP_SLACK_MS = 1000;
 const INPUT_KIND = 'agent-pause';   // the planTyping kind that accepts exactly these lines (app/top-bar-display.js AGENT_PAUSE_LINE)
 const NAME_RE = /^[A-Za-z0-9 _.:-]{1,200}$/;
+const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = s => String(s).replace(/[&<>"']/g, c => ESCAPES[c]);
 
 const plainName = n => typeof n === 'string' && NAME_RE.test(n);
 
-/** The line typed into the session, or null when the verb or the name is not plain. One line, no quotes of the agent's own. */
-function commandFor(verb, agent) {
+/**
+ * The line typed into the session, or null when the verb, the name or the id is not plain. One line, no quotes of the agent's own. `id` (the run's
+ * agent id, when the host knows exactly one) is named in the line so the model stops THAT task and the page can tell our TaskStop from another.
+ */
+function commandFor(verb, agent, id) {
   if (!plainName(agent)) return null;
+  if (id !== undefined && id !== null && !(typeof id === 'string' && ID_RE.test(id))) return null;
+  const idPart = typeof id === 'string' ? ` (task id ${id})` : '';
   if (verb === 'pause') {
-    return `Stop the background agent "${agent}" with TaskStop so it can be resumed later with its conversation kept. Do nothing else.`;
+    return `Stop the background agent "${agent}"${idPart} with TaskStop so it can be resumed later with its conversation kept. Do nothing else.`;
   }
   if (verb === 'resume') {
-    return `Resume the stopped agent "${agent}": send it a message with SendMessage to continue where it stopped, with its earlier context. Do nothing else.`;
+    return `Resume the stopped agent "${agent}"${idPart}: send it a message with SendMessage to continue where it stopped, with its earlier context. Do nothing else.`;
   }
   return null;
 }
@@ -60,16 +73,24 @@ function clickAction(data) {
 }
 
 function createAgentPauses() {
-  const state = new Map();   // agent -> { phase: 'pausing' | 'paused' | 'resuming', at, busyAt, since, stopSeen }
+  const state = new Map();   // agent -> { phase: 'pausing' | 'paused' | 'resuming', at, busyAt, idleSeen, since, stopSeen, id }
   let sessionId = null;
-  const busyTurn = turn => turn === 'turn' || turn === 'prompt';
+
+  // The turn, as the host's frames say it. Anything but 'idle' (a busy turn, a dialog, an UNKNOWN turn) is busy: the timeout never runs on a guess.
+  // The busy -> idle EDGE is stamped too: a quiet turn sends no other frame, so the first idle frame is the first moment it can be measured from.
+  function stamp(turn, at) {
+    for (const [agent, s] of state) {
+      if (turn !== 'idle') { if (s.busyAt !== at || s.idleSeen) state.set(agent, { ...s, busyAt: at, idleSeen: false }); }
+      else if (!s.idleSeen) state.set(agent, { ...s, busyAt: at, idleSeen: true });
+    }
+  }
 
   return {
-    /** A Pause or Resume was typed: only from the right phase. True when the phase moved. */
-    begin(agent, verb, at) {
+    /** A Pause or Resume was typed: only from the right phase. `id` is the run's task id named in the line, if any. True when the phase moved. */
+    begin(agent, verb, at, id) {
       const s = state.get(agent);
-      if (verb === 'pause' && !s) { state.set(agent, { phase: 'pausing', at, busyAt: at, since: null, stopSeen: false }); return true; }
-      if (verb === 'resume' && s && s.phase === 'paused') { state.set(agent, { phase: 'resuming', at, busyAt: at, since: s.since, stopSeen: true }); return true; }
+      if (verb === 'pause' && !s) { state.set(agent, { phase: 'pausing', at, busyAt: at, idleSeen: false, since: null, stopSeen: false, id: typeof id === 'string' ? id : null }); return true; }
+      if (verb === 'resume' && s && s.phase === 'paused') { state.set(agent, { ...s, phase: 'resuming', at, busyAt: at, idleSeen: false }); return true; }
       return false;
     },
     /** The typing was refused (the gate said no, the box was not empty): the phase goes back to where it was. */
@@ -77,26 +98,32 @@ function createAgentPauses() {
       const s = state.get(agent);
       if (!s) return;
       if (s.phase === 'pausing') state.delete(agent);
-      else if (s.phase === 'resuming') state.set(agent, { phase: 'paused', at: s.at, busyAt: s.at, since: s.since, stopSeen: true });
-    },
-    /** A TaskStop tool call was seen starting (`startedAt`, the CLI's hook feed): every pausing agent whose line was typed before it may have been stopped by it. */
-    sawTaskStop(startedAt) {
-      if (typeof startedAt !== 'number' || !Number.isFinite(startedAt)) return;
-      for (const [agent, s] of state) {
-        if (s.phase === 'pausing' && !s.stopSeen && startedAt >= s.at - STOP_SLACK_MS) state.set(agent, { ...s, stopSeen: true });
-      }
+      else if (s.phase === 'resuming') state.set(agent, { ...s, phase: 'paused', at: s.at, busyAt: s.at, idleSeen: false });
     },
     /**
-     * A roster refresh: `running` is Map<agent, instances>, `opts.turn` the session's turn state ('idle' | 'turn' | 'prompt' | null). This is where the
-     * agent is SEEN stopped or running again; the timeout counts only idle time.
+     * A TaskStop tool call was seen starting (`startedAt`, the CLI's hook feed) with the task it stops (`taskId`). It counts for a pausing agent only if
+     * it started after the line was typed AND it names THIS agent: its id from the line, or its name. A TaskStop of anything else, or one that names no
+     * task, is not ours.
+     */
+    sawTaskStop(startedAt, taskId) {
+      if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || typeof taskId !== 'string' || taskId === '') return;
+      for (const [agent, s] of state) {
+        if (s.phase !== 'pausing' || s.stopSeen || startedAt < s.at - STOP_SLACK_MS) continue;
+        if (taskId === agent || (s.id !== null && taskId === s.id)) state.set(agent, { ...s, stopSeen: true });
+      }
+    },
+    /** The session's turn state from a `turn` frame ('idle' | 'turn' | 'prompt' | null), when it arrives. */
+    turnIs(turn, at) { stamp(turn, at); },
+    /**
+     * A roster refresh: `running` is Map<agent, instances>, `opts.turn` the session's turn state. This is where the agent is SEEN stopped or running
+     * again; the timeout counts only idle time.
      */
     seen(running, at, opts) {
-      const busy = busyTurn(opts && opts.turn);
-      for (const [agent, s0] of [...state]) {
-        const s = busy ? { ...s0, busyAt: at } : s0;
-        state.set(agent, s);
+      stamp(opts && opts.turn, at);
+      const busy = !(opts && opts.turn === 'idle');
+      for (const [agent, s] of [...state]) {
         const n = running instanceof Map && typeof running.get(agent) === 'number' ? running.get(agent) : 0;
-        const timedOut = !busy && at - s.busyAt >= PAUSE_TIMEOUT_MS;
+        const timedOut = !busy && s.idleSeen && at - s.busyAt >= PAUSE_TIMEOUT_MS;
         if (s.phase === 'pausing') {
           if (n === 0 && s.stopSeen) state.set(agent, { ...s, phase: 'paused', at, since: at });
           else if (timedOut) state.delete(agent);
@@ -108,7 +135,7 @@ function createAgentPauses() {
         }
       }
     },
-    /** The session this roster belongs to: a DIFFERENT id than the last known one (/clear) forgets every pause. An unknown id changes nothing. */
+    /** The session this roster belongs to (from `hello` and every `session` frame): a DIFFERENT id than the last known one (/clear) forgets every pause. An unknown id changes nothing. */
     sessionIs(id) {
       if (typeof id !== 'string' || id === '') return;
       if (sessionId !== null && id !== sessionId) state.clear();

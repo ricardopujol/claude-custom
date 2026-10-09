@@ -41,6 +41,13 @@ const STALE_SHOW_MS = 2 * 60 * 1000;
 
 const CLOSE_EVENTS = new Set(['PostToolUse', 'PostToolUseFailure']);
 
+// A TaskStop's target: `task_id`, or the deprecated `shell_id` (sdk-tools.d.ts TaskStopInput). Only a plain short string is passed on.
+function taskIdOf(input) {
+  const i = input || {};
+  const id = typeof i.task_id === 'string' ? i.task_id : (typeof i.shell_id === 'string' ? i.shell_id : '');
+  return /^[A-Za-z0-9 _.:-]{1,200}$/.test(id) ? id : null;
+}
+
 function labelFor(toolName, input) {
   const i = input || {};
   const raw =
@@ -84,6 +91,8 @@ function createProcessTracker({ now = Date.now } = {}) {
       running.set(keyFor(p), {
         tool: p.tool_name,
         label: labelFor(p.tool_name, p.tool_input),
+        // Which task a TaskStop is stopping (an agent's id or name, a shell's id): what lets the page tell OUR stop from any other (#19).
+        taskId: p.tool_name === 'TaskStop' ? taskIdOf(p.tool_input) : null,
         owner: p.agent_id ?? null,
         startedAt: now(),
         endedAt: null,
@@ -142,6 +151,7 @@ function createProcessTracker({ now = Date.now } = {}) {
       .map(v => ({
         tool: v.tool,
         label: v.label,
+        ...(v.taskId ? { taskId: v.taskId } : {}),
         state: v.endedAt === null ? 'running' : 'stale',
         startedAt: v.startedAt,
         elapsedMs: (v.endedAt ?? t) - v.startedAt,

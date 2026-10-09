@@ -470,10 +470,10 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 // leave a two-row draft and submit nothing.
 const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?(?<!\\)$/;
 
-// An agent card's Pause / Resume line (BACKLOG #19, app/agent-pause-display.js commandFor): prose, so it is allowed only in exactly these two shapes,
-// on one line, with a plain agent name between double quotes (no quote, backslash or control character), and never ending in a backslash.
-// Left to the slash-command shape these lines were refused every time (PR #158 Dexter 1).
-const AGENT_PAUSE_LINE = /^(?:Stop the background agent|Resume the stopped agent) "[A-Za-z0-9 _.:-]{1,200}"[^\x00-\x1f\x7f-\x9f"\\]{1,300} Do nothing else\.$/;
+// An agent card's Pause / Resume line (BACKLOG #19, app/agent-pause-display.js commandFor): prose, so it is allowed ONLY as exactly these two sentences
+// (PR #158 Dexter R2-8), on one line, with a plain agent name between double quotes and an optional plain task id: no free text, no control or
+// line-separator character, nothing after the final full stop. Left to the slash-command shape these lines were refused every time (Dexter 1).
+const AGENT_PAUSE_LINE = /^(?:Stop the background agent "[A-Za-z0-9 _.:-]{1,200}"(?: \(task id [A-Za-z0-9_-]{1,64}\))? with TaskStop so it can be resumed later with its conversation kept\. Do nothing else\.|Resume the stopped agent "[A-Za-z0-9 _.:-]{1,200}"(?: \(task id [A-Za-z0-9_-]{1,64}\))?: send it a message with SendMessage to continue where it stopped, with its earlier context\. Do nothing else\.)$/;
 
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93

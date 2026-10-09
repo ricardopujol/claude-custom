@@ -46,8 +46,12 @@ const path = require('path');
 // Artifact (BACKLOG #71), on its RESULT only, for the same reason: a publish that fails has no address to keep. host/host.js
 // hands every Artifact event to the panel's shelf (host/canvas-shelf.js) and never to the mood engine or the Running panel.
 // One more ~23 ms hook per publish, which is rare.
-const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
-const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage|Artifact';    // completion and error signals
+// TaskStop (BACKLOG #19, PR #158 Dexter R2-1): an agent card's Pause is only called "paused" once the page has SEEN our TaskStop start (which task it
+// stopped is in its payload, host/processes.js `taskId`). A matcher made only of names and `|` is an EXACT name list in Claude Code: the 2.1.296
+// bundle's hook matcher (`pX`) takes a matcher that passes /^[a-zA-Z0-9_|]+$/ through `Mdn`, which splits it on `|` and tests `names.includes(toolName)`
+// (aliases such as Task/Agent resolved), and only anything else is read as a regex. So `Agent|Task|Bash` never delivered TaskStop.
+const PRE_TOOL_MATCHER = 'Agent|Task|Bash|TaskStop';
+const POST_TOOL_MATCHER = 'Agent|Task|Bash|TaskStop|SendMessage|Artifact';    // completion and error signals
 // Backlog #44 + #47 (worktree occupancy): which worktree a SUBAGENT is working in is proven by its own file
 // and search tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry,
 // so the mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit/Grep/Glob
