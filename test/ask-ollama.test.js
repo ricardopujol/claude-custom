@@ -69,6 +69,7 @@ test('generate: sends the system prompt, the settings per request, and unloads a
   const b = calls[0].body;
   assert.deepStrictEqual([calls[0].path, b.model, b.system, b.prompt, b.stream, b.keep_alive], ['/api/generate', 'qwen2.5-coder:latest', 'S', 'P', false, '5m']);
   assert.deepStrictEqual([b.options.num_ctx, b.options.temperature], [8192, 0]);
+  assert.strictEqual(b.think, false, 'a thinking model must answer, not deliberate for 40 s');
 });
 
 test('generate: an empty reply is a bad reply, never a silent empty answer', async () => {

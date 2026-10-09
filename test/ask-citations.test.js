@@ -37,6 +37,17 @@ test('windows separators, ./ prefixes, backticks and parentheses are tolerated',
   assert.deepStrictEqual(r.citations, [{ file: 'host/a.js', line: 7, endLine: 7 }, { file: 'app/b.js', line: 2, endLine: 3 }]);
 });
 
+test('a bare file name that is unique in the index is resolved to its path', () => {
+  const r = extractCitations('it is in a.js:7 (see also README.md:1)', files);
+  assert.deepStrictEqual(r.citations, [{ file: 'host/a.js', line: 7, endLine: 7 }, { file: 'README.md', line: 1, endLine: 1 }]);
+});
+
+test('a bare file name that two indexed files share is dropped, not guessed', () => {
+  const two = new Map([['host/x.js', 50], ['app/x.js', 50]]);
+  const r = extractCitations('x.js:7', two);
+  assert.deepStrictEqual([r.citations, r.dropped], [[], ['x.js:7']]);
+});
+
 test('the same citation twice is returned once', () => {
   assert.strictEqual(extractCitations('host/a.js:5 then host/a.js:5', files).citations.length, 1);
 });

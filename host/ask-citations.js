@@ -7,7 +7,8 @@
  * `files` is a Map of repo-relative path (forward slashes) -> line count, taken from the index. A 3B-7B model invents
  * paths and line numbers now and then; a clickable link to a file that is not there, or to line 4000 of a 90-line file,
  * is worse than no link. So only a citation whose file is in the index and whose line is inside it is returned (the end
- * of a range is clamped to the file); everything else is listed in `dropped` so the panel can say the model cited
+ * of a range is clamped to the file); a bare name with no folder (`host.js:12`, a habit of small models) is resolved only when exactly
+ * one indexed file has that name; everything else is listed in `dropped` so the panel can say the model cited
  * something that does not exist. Property-tested in test/ask-citations.test.js.
  */
 
@@ -23,8 +24,14 @@ function extractCitations(text, files) {
   const dropped = [];
   if (typeof text !== 'string' || !(files instanceof Map)) return { citations, dropped };
   const seen = new Set();
+  const byName = new Map(); // bare file name -> the one indexed path with it, or null when two share it
+  for (const f of files.keys()) {
+    const name = f.slice(f.lastIndexOf('/') + 1);
+    byName.set(name, byName.has(name) ? null : f);
+  }
   for (const m of text.matchAll(CITE)) {
-    const file = normalisePath(m[1]);
+    let file = normalisePath(m[1]);
+    if (!files.has(file) && !file.includes('/') && byName.get(file)) file = byName.get(file);
     const total = files.get(file);
     let a = Number(m[2]);
     let b = m[3] === undefined ? a : Number(m[3]);

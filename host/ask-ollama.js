@@ -14,13 +14,14 @@
  * or a stopped Ollama is said plainly (reason + model name) and never turned into an empty answer. The question and the
  * code excerpts are never logged here.
  *
- * keep_alive: the answer model stays loaded 5 minutes after a question (the 2026-10-09 measurement: a cold load of the 7B
- * coder is ~10 s, and it has to take turns on the 8 GB GPU with the summary model, which holds 5 minutes too); the embedder
- * stays 2 minutes.
+ * keep_alive: the answer model stays loaded 5 minutes after a question, the embedder 2. Measured 2026-10-09 (reviews/claude-custom/
+ * 2026-10-09-ask-repo-measure.md): Ollama keeps ONE generation model in memory on the 8 GB GPU, so asking with a model other than
+ * the summaries client's llama3.2:3b costs a 4-6 s load, and the next summary tick a ~4 s reload. Default answer model qwen3.5:4b
+ * (best graded answers); it's a thinking-capable model, so `think: false` is sent (every measurement ran with it off).
  */
 
 const DEFAULT_URL = 'http://127.0.0.1:11434';
-const DEFAULT_ANSWER_MODEL = 'qwen2.5-coder:latest';
+const DEFAULT_ANSWER_MODEL = 'qwen3.5:4b';
 const DEFAULT_EMBED_MODEL = 'snowflake-arctic-embed2:latest';
 const NUM_CTX = 8192;
 const NUM_PREDICT = 350;
@@ -92,7 +93,7 @@ function createAskOllama({
     const r = await call('/api/generate', {
       method: 'POST',
       timeoutMs: generateMs,
-      json: { model: answerModel, system, prompt, stream: false, keep_alive: '5m', options: { num_ctx: NUM_CTX, temperature: 0, num_predict: NUM_PREDICT } },
+      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: '5m', options: { num_ctx: NUM_CTX, temperature: 0, num_predict: NUM_PREDICT } },
     });
     const bad = failure(r, answerModel);
     if (bad) return bad;
