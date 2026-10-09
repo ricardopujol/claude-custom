@@ -143,8 +143,8 @@ app.whenReady().then(async () => {
     console.log('[need] file-tools');
     check('reading and writing cards show their state', await until(
       '(() => { const g = n => document.querySelector("#agents .agent[data-agent=\\'" + n + "\\']"); return g("probe-reading") && g("probe-reading").dataset.detail === "reading" && g("probe-writing").dataset.detail === "writing"; })()', 10000));
-    const want = { working: ['', 'working'], reading: ['\\u{1F4D6}', 'Reading'], writing: ['\\u270F\\uFE0F', 'Writing'], running: ['\\u25B6', 'Running'],
-      waiting: ['\\u270B', 'Waiting on you'], stuck: ['\\u26A0', 'Stuck'], helper: ['\\u23F3', 'Waiting on helper'] };
+    const want = { working: ['', 'working'], reading: ['\\u{1F4D6}', 'Reading'], writing: ['\\u270F\\uFE0F', 'Writing'], running: ['\\u25B6\\uFE0F', 'Running'],
+      waiting: ['\\u270B', 'Waiting on you'], stuck: ['\\u26A0\\uFE0F', 'Stuck'], helper: ['\\u23F3', 'Waiting on helper'] };
     const rows = {};
     for (const s of STATES) rows[s] = await read('probe-' + s);
     for (const s of STATES) {

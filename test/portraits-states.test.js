@@ -61,3 +61,18 @@ test('an unknown state name is not given a nearest state', () => {
   const dir = forge({ miguel: ['working'] });
   assert.strictEqual(portraitFor('miguel', 'dancing', { portraitsDir: dir }).kind, 'placeholder');
 });
+
+// PR #154 Dexter 5: a stressed card that is waiting on you or on a helper keeps the stressed picture, not the working one.
+test('the nearest state is the card\'s own base state when it is given', () => {
+  const dir = forge({ miguel: ['working', 'stressed'] });
+  assert.ok(portraitFor('miguel', 'waiting', { portraitsDir: dir, baseState: 'stressed' }).path.endsWith('stressed.png'));
+  assert.ok(portraitFor('miguel', 'helper', { portraitsDir: dir, baseState: 'stressed' }).path.endsWith('stressed.png'));
+  assert.ok(portraitFor('miguel', 'waiting', { portraitsDir: dir, baseState: 'working' }).path.endsWith('working.png'));
+  assert.ok(portraitFor('miguel', 'stuck', { portraitsDir: dir, baseState: 'working' }).path.endsWith('working.png'), 'a silent stuck on a working card');
+  assert.ok(portraitFor('miguel', 'stuck', { portraitsDir: dir }).path.endsWith('stressed.png'), 'no base given: the fixed nearest');
+});
+
+test('a base state that is not one of the four is ignored', () => {
+  const dir = forge({ miguel: ['working', 'stressed'] });
+  assert.ok(portraitFor('miguel', 'reading', { portraitsDir: dir, baseState: '../x' }).path.endsWith('working.png'));
+});

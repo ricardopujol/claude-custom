@@ -73,11 +73,11 @@ const RETRY_LIMIT = 3;
 // How long a reading/writing detail outlives the PreToolUse that raised it.
 const TOOL_LINGER_MS = 5_000;
 // Silence, with nothing in flight, that reads as stuck rather than thinking.
-// A third of STALL_MS: the stall clock reaps; this one only says so first.
-const STUCK_MS = 10 * 60_000;
-// A Notification that names nobody belongs to the agent whose tool call was
-// this recent: a permission prompt follows its PreToolUse by moments.
-const WAIT_ATTRIBUTION_MS = 15_000;
+// Hooks see no WebSearch, WebFetch, MCP or TaskOutput, so a long call of those
+// is silent too (PR #154, Dexter 4): the bar is high (two thirds of STALL_MS,
+// which reaps), and an agent that launched background work is never judged
+// by silence at all.
+const STUCK_MS = 20 * 60_000;
 
 // Claude Code's hook payloads are not strongly shaped, so failure detection is
 // deliberately permissive: treating a stringy "1" as success would make the
@@ -251,10 +251,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
 
   // What an invocation tracks for its detail: Bash calls in flight (id -> when
   // they began), the newest file tool ({kind, at}), and an open prompt.
-  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false });
-  // The newest tool call of anyone, main session included ({inv, at}): a
-  // Notification that names nobody is read against it.
-  let lastPre = null;
+  // `quiet`: it launched background work, so what it waits on emits no hook of its own.
+  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, quiet: false });
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -282,11 +280,13 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (inv.name !== agent) continue;
       if (inv.waiting) { take(WAITING); continue; }
       const kids = fgChildren(inv).length > 0;
-      if (repeating || (!kids && inv.bash.size === 0 && t - inv.lastActivity > stuckMs)) { take(STUCK); continue; }
+      // A Bash in flight for longer than the stall clock isn't: its result was lost (PR #154, Dexter 2).
+      const flying = [...inv.bash.values()].filter(at => t - at <= stallMs);
+      if (repeating || (!kids && !inv.quiet && flying.length === 0 && t - inv.lastActivity > stuckMs)) { take(STUCK); continue; }
       if (kids) { take(HELPER); continue; }
       if (state !== WORKING) continue;       // an error outranks what the tool is
       let newest = null;
-      for (const at of inv.bash.values()) if (!newest || at >= newest.at) newest = { kind: RUNNING, at };
+      for (const at of flying) if (!newest || at >= newest.at) newest = { kind: RUNNING, at };
       if (inv.tool && t - inv.tool.at <= toolLingerMs && (!newest || inv.tool.at > newest.at)) newest = inv.tool;
       if (newest) take(newest.kind);
     }
@@ -495,6 +495,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
         inv.mate = mate;
       }
       inv.background = true;
+      if (inv.parent) inv.parent.quiet = true;
       return;
     }
     const named = typeof r?.agentId === 'string' && r.agentId ? r.agentId : null;
@@ -503,7 +504,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (!adopt(inv, named)) return;
     }
     if (isCompleted(r)) { finish(inv); return; }
-    if (isAsyncLaunch(r)) { inv.background = true; return; }
+    if (isAsyncLaunch(r)) { inv.background = true; if (inv.parent) inv.parent.quiet = true; return; }
     // A status we don't know that still names a run: assume it is RUNNING.
     // `completed` is the only status that means done; guessing the other way
     // was the original bug (Miguel, PR #94, #1). Logged, so a renamed status
@@ -511,6 +512,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     if (r && typeof r === 'object' && resultAgentId(r)) {
       console.log(`[mood] unrecognised spawn status ${JSON.stringify(r.status)} naming a run: treated as background`);
       inv.background = true;
+      if (inv.parent) inv.parent.quiet = true;
     }
   }
 
@@ -613,14 +615,18 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   function noteTool(p) {
     const t = now();
     const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
-    lastPre = { inv, at: t };
     if (!inv) return;
     refresh(inv);
     inv.waiting = false;                               // its next call: the prompt was answered
+    // Calls of one run are sequential, and a Bash that was denied, blocked by a hook or lost never gets a result:
+    // a new call means the older ones are over (PR #154, Dexter 2).
+    inv.bash.clear();
+    inv.tool = null;
     const tool = p.tool_name;
     if (tool === 'Bash') {
-      // A background command returns at once; its end is not hooked, so it is never "running".
-      if (p.tool_input && p.tool_input.run_in_background === true) return;
+      // A background command returns at once; its end is not hooked, so it is never "running" -- and what the run
+      // then waits on (TaskOutput) is hooked by nothing, so silence no longer means stuck.
+      if (p.tool_input && p.tool_input.run_in_background === true) { inv.quiet = true; return; }
       inv.bash.set(p.tool_use_id ?? `anon:${++serial}`, t);
     } else if (READ_TOOLS.has(tool)) {
       inv.tool = { kind: READING, at: t };
@@ -634,16 +640,14 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     else if (inv.bash.size) inv.bash.delete(inv.bash.keys().next().value);
   }
 
-  // A Notification that waits on a person. By agent_id when the payload says
-  // whose; otherwise the agent whose tool call came last, if that was moments ago
-  // (a permission prompt follows the PreToolUse it is about) and it wasn't the
-  // main session's. An older CLI sends no type: read as a dialog, as
-  // host/turn-state.js does.
+  // A Notification that waits on a person, for the agent that NAMES itself in it.
+  // One that names nobody is the main session's own prompt, which has its own
+  // attention cue and no card (PR #154, Dexter 1: pinning it on whichever agent
+  // called a tool last put "waiting on you" on the wrong card). An older CLI
+  // sends no type: read as a dialog, as host/turn-state.js does.
   function notification(p) {
     if (p.notification_type !== undefined && !NEEDS_INPUT.has(p.notification_type)) return;
-    let inv = null;
-    if (p.agent_id) inv = bind(p.agent_id, p.agent_type);
-    else if (lastPre && lastPre.inv && isOpen(lastPre.inv) && now() - lastPre.at <= WAIT_ATTRIBUTION_MS) inv = lastPre.inv;
+    const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
     if (inv) inv.waiting = true;
   }
 
@@ -696,7 +700,9 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (parent) {
         refresh(parent);
         parent.waiting = false;                  // launching a helper is a tool call: its prompt was answered
-        lastPre = { inv: parent, at: now() };
+        parent.bash.clear();
+        parent.tool = null;
+        if (inv.background) parent.quiet = true;
       }
       setState(agent, a, WORKING);
       return;
@@ -825,7 +831,6 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       // queued message will wake anything.
       cutOff([...invs]);
       queued.clear();
-      lastPre = null;
     }
   }
 
@@ -918,5 +923,5 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
 
 module.exports = {
   createMoodMachine, STALL_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED,
-  READING, WRITING, RUNNING, WAITING, STUCK, HELPER, TOOL_LINGER_MS, STUCK_MS, WAIT_ATTRIBUTION_MS,
+  READING, WRITING, RUNNING, WAITING, STUCK, HELPER, TOOL_LINGER_MS, STUCK_MS,
 };

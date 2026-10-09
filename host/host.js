@@ -561,14 +561,14 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 // The ONE portrait lookup in this file, carrying all three tiers: the Inactive
 // tab's call sites once passed only portraitsDir, so an upload showed there as
 // "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
-const portraitOf = (agent, state) => portraitFor(agent, state, {
-  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
+const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
+  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, baseState,
 });
 // `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
 // nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
 const describe = (agent, state, detail) => {
   const d = detail || state;
-  return { agent, state, detail: d, portrait: portraitOf(agent, d) };
+  return { agent, state, detail: d, portrait: portraitOf(agent, d, state) };
 };
 
 // Generated once per project folder and reused by every context window on it.

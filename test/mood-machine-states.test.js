@@ -112,7 +112,7 @@ test('the newest tool decides: Edit after Read is writing, and a Bash in flight 
   const id = r.pre(a, 'Bash', { command: 'x' });
   assert.strictEqual(r.detail('miguel'), 'running');
   r.post(a, 'Bash', id);
-  assert.strictEqual(r.detail('miguel'), 'writing', 'the Edit is still recent');
+  assert.strictEqual(r.detail('miguel'), 'working', 'the Bash was a newer call than the Edit, so the Edit is over (calls are sequential)');
 });
 
 test('a main-session tool call (no agent_id) touches no card', () => {
@@ -166,35 +166,125 @@ test('the agent working again, or finishing, ends the wait', () => {
   assert.strictEqual(r2.detail('miguel'), 'happy');
 });
 
-test('a notification that names nobody belongs to the agent whose tool call came last, if that was just now', () => {
+// PR #154 Dexter 1: an unnamed prompt is the MAIN session's (the CLI puts agent_id on a subagent's own hooks, and the machine already
+// reads a call without one as the main session's: saysWho). It marks no card, however recently some subagent called a tool.
+test('a notification that names nobody marks no agent, even right after that agent\'s tool call', () => {
   const r = rig();
   const a = started(r);
   r.pre(a, 'Edit', { file_path: 'C:/x' });
-  r.advance(500);
-  r.notify('permission_prompt');
-  assert.strictEqual(r.detail('miguel'), 'waiting');
-});
-
-test('...not when the main session called a tool after it, nor when it was long ago', () => {
-  const r = rig();
-  const a = started(r);
-  r.pre(a, 'Edit', { file_path: 'C:/x' });
-  r.ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: 'C:/y' } });   // the main session's own
+  r.advance(400);
   r.notify('permission_prompt');
   assert.notStrictEqual(r.detail('miguel'), 'waiting');
+});
+
+test('...nor after a main-session call, nor with two agents active (Dexter 1 sequences)', () => {
+  const r = rig();
+  const b = started(r, 'builder');
+  r.pre(b, 'Read', {});
+  r.ev('PreToolUse', { tool_name: 'Bash', tool_input: {} });          // the main session's own call
+  r.advance(200);
+  r.notify('permission_prompt');
+  assert.notStrictEqual(r.detail('builder'), 'waiting');
 
   const r2 = rig();
-  const b = started(r2);
-  r2.pre(b, 'Edit', {});
-  r2.advance(60_000);
+  const x = started(r2, 'agenta');
+  const y = started(r2, 'agentb');
+  r2.pre(x, 'Bash', { command: 'needs permission' });
+  r2.advance(100);
+  r2.pre(y, 'Read', {});
+  r2.advance(200);
   r2.notify('permission_prompt');
-  assert.notStrictEqual(r2.detail('miguel'), 'waiting');
+  assert.notStrictEqual(r2.detail('agentb'), 'waiting');
+  assert.notStrictEqual(r2.detail('agenta'), 'waiting');
 });
 
 test('a notification that names nobody never marks a sleeping agent', () => {
   const r = rig();
   r.notify('permission_prompt');
   assert.deepStrictEqual(r.m.roster(), []);
+});
+
+test('a named prompt is open until that agent\'s next hooked event, not the approved call\'s result time (pinned: no signal says it was answered)', () => {
+  const r = rig();
+  const a = started(r);
+  const id = r.pre(a, 'Bash', { command: 'npm test' });
+  r.notify('permission_prompt', a);
+  r.advance(60_000);
+  assert.strictEqual(r.detail('miguel'), 'waiting', 'silence is not an answer');
+  r.post(a, 'Bash', 'some-other-call');
+  assert.notStrictEqual(r.detail('miguel'), 'waiting', 'any hooked event of the agent ends it');
+  void id;
+});
+
+test('another agent\'s events do not end this agent\'s wait', () => {
+  const r = rig();
+  const a = started(r, 'agenta');
+  const b = started(r, 'agentb');
+  r.notify('permission_prompt', a);
+  r.pre(b, 'Read', {});
+  r.post(b, 'Bash', r.pre(b, 'Bash', {}));
+  assert.strictEqual(r.detail('agenta'), 'waiting');
+});
+
+// PR #154 Dexter 2 / Miguel I1: a Bash PreToolUse that never gets its result (denied, blocked by a hook, lost) is not "in flight".
+test('a Bash that was denied (no result ever) stops running at the agent\'s next call', () => {
+  const r = rig();
+  const a = started(r);
+  r.pre(a, 'Bash', { command: 'rm -rf build' });
+  assert.strictEqual(r.detail('miguel'), 'running');
+  r.advance(10_000);
+  r.pre(a, 'Read', {});
+  r.advance(TOOL_LINGER_MS + 1);
+  assert.strictEqual(r.detail('miguel'), 'working', 'not running for the rest of the run');
+});
+
+test('a newer Bash replaces an older one that never ended', () => {
+  const r = rig();
+  const a = started(r);
+  r.pre(a, 'Bash', { command: 'denied' });
+  const second = r.pre(a, 'Bash', { command: 'ok' });
+  r.post(a, 'Bash', second);
+  assert.strictEqual(r.detail('miguel'), 'working', 'the first one is not still in flight');
+});
+
+test('an in-flight Bash older than the stall clock no longer counts (a ceiling, as for any silent run)', () => {
+  const r = rig({ stallMs: 100_000, maxInvocationMs: 10 ** 9 });
+  const a = started(r);
+  r.pre(a, 'Bash', { command: 'x' });
+  for (let i = 0; i < 4; i++) { r.advance(40_000); r.post(a, 'Bash', 'unrelated-' + i, { command: 'u' + i }); }   // the run is alive, that one call is not
+  assert.strictEqual(r.detail('miguel'), 'working');
+});
+
+// PR #154 Dexter 4: hooks see no WebSearch, WebFetch, MCP or TaskOutput, so silence can't tell stuck from a long unhooked call.
+test('an agent that launched background work is never stuck by silence', () => {
+  const r = rig();
+  const a = started(r);
+  r.pre(a, 'Bash', { command: 'npm test', run_in_background: true });
+  r.advance(STUCK_MS + 5000);
+  assert.strictEqual(r.detail('miguel'), 'working', 'it is waiting on TaskOutput, which no hook sees');
+
+  const r2 = rig();
+  const p = started(r2, 'paris');
+  r2.ev('PreToolUse', { tool_name: 'Agent', tool_use_id: 'bg', tool_input: { subagent_type: 'dexter', run_in_background: true }, agent_id: p.id, agent_type: p.type });
+  r2.advance(STUCK_MS + 5000);
+  assert.notStrictEqual(r2.detail('paris'), 'stuck');
+});
+
+test('silence-stuck waits longer than ten minutes: a long unhooked call is not stuck at ten', () => {
+  assert.ok(STUCK_MS >= 20 * 60_000);
+});
+
+// PR #154 Miguel I2: cards are per NAME and a retry loop is counted per name, so two runs of one agent share it.
+test('two runs of one agent: a retry loop in one is the card\'s, and the other\'s different call ends it', () => {
+  const r = rig();
+  const a1 = r.spawn('miguel');
+  const a2 = r.spawn('miguel');
+  r.post(a1, 'Bash', r.pre(a1, 'Bash', { command: 'x' }), { command: 'x' });
+  r.post(a2, 'Bash', r.pre(a2, 'Bash', { command: 'y' }), { command: 'y' });
+  for (let i = 0; i < 3; i++) r.post(a2, 'Bash', r.pre(a2, 'Bash', { command: 'loop' }), { command: 'loop' });
+  assert.strictEqual(r.detail('miguel'), 'stuck', 'the card is stuck, whichever run retried');
+  r.post(a1, 'Bash', r.pre(a1, 'Bash', { command: 'z' }), { command: 'z' });
+  assert.strictEqual(r.detail('miguel'), 'working', 'the sibling\'s different call resets the name\'s loop');
 });
 
 test('the same call three times is stuck: state stressed, detail stuck', () => {

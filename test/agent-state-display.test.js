@@ -13,8 +13,8 @@ const { describeState, badgeHtml, stateWords } = agentStateDisplay;
 const FINER = ['reading', 'writing', 'running', 'waiting', 'stuck', 'helper'];
 
 test('each finer state has its badge icon and its words', () => {
-  const want = { reading: ['\u{1F4D6}', 'reading'], writing: ['✏️', 'writing'], running: ['▶', 'running'],
-    waiting: ['✋', 'waiting on you'], stuck: ['⚠', 'stuck'], helper: ['⏳', 'waiting on helper'] };
+  const want = { reading: ['\u{1F4D6}', 'reading'], writing: ['✏️', 'writing'], running: ['▶️', 'running'],
+    waiting: ['✋', 'waiting on you'], stuck: ['⚠️', 'stuck'], helper: ['⏳', 'waiting on helper'] };
   for (const s of FINER) {
     const d = describeState('working', s);
     assert.strictEqual(d.detail, s);

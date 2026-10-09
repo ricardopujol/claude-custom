@@ -1,67 +1,73 @@
 'use strict';
 /**
- * PROPERTIES of the finer card states (BACKLOG #55), over random, well-formed
- * hook streams from a small simulated session.
+ * PROPERTIES of the finer card states (BACKLOG #55), over random, well-formed hook streams from a small simulated
+ * session. Rebuilt after PR #154 (Dexter 8): the first oracle was a transliteration of the machine's own bookkeeping,
+ * so it shared every premise of the code it checked. This one is written from the HOOK CONTRACT, not from refine():
  *
- * The simulation keeps its OWN account of what is in flight for each agent --
- * Bash calls begun and not ended, the newest file tool, an unanswered prompt,
- * the same call repeated -- and the machine's `detail` is checked against it
- * after every step:
+ *   - a run's tool calls are sequential, so its LAST call is the one in flight: a Bash with no result yet is running
+ *     only while it is the run's last call; a newer call of any kind ends it (a denied or blocked Bash never gets a
+ *     result, and must not stay "running");
+ *   - a file tool's PreToolUse (no PostToolUse is hooked) is "reading"/"writing" for a moment, then nothing;
+ *   - an unnamed Notification is the main session's: it marks no card; a named one marks that agent until the agent's
+ *     next hooked event;
+ *   - hooks see no unhooked tools, so silence means stuck only for a run with no background work, no Bash in flight and
+ *     no foreground child, and its silence is refreshed by its own events and its foreground descendants' (up to a
+ *     background run);
+ *   - the retry loop is the NAME's (two runs of one agent share it);
+ *   - Stop ends the main session's foreground runs; an interrupt ends the run and its foreground descendants.
  *
- *   1. SHAPE      detail is state itself for a sleeping or happy card, and one of
- *                 the finer names that fit for a working or stressed one.
- *   2. NO STICKING a finer name is only ever shown while the signal behind it
- *                 holds: running <- a Bash in flight; reading/writing <- a file
- *                 tool within the linger; waiting <- a prompt nobody has answered;
- *                 helper <- a foreground child still running.
- *   3. PRIORITY   waiting > stuck > helper > running/writing/reading: when
- *                 several hold the highest is shown.
- *   4. QUIET      with nothing in flight, nothing waiting and no retry loop, a
- *                 working card is plain `working`, and a card with no live run
- *                 shows its state.
- *   5. EVENTS     every change carries a detail, nothing is announced twice in
- *                 a row, and the roster's detail is the last one announced.
+ * Checked after every step, per card: (1) SHAPE, (2) NO STICKING and (3) PRIORITY (the detail equals what the live
+ * signals support, best first), (4) QUIET (a card with no live run shows its state), (5) EVENTS (every change carries
+ * a detail, nothing is announced twice in a row, the roster is the last thing announced).
  *
- * A Notification that names nobody is read against the newest tool call of
- * anyone (host/mood-machine.js, notification()); the simulation applies the
- * same rule, and generates the main session's own calls so it is exercised.
- * Silence-based "stuck" has its own unit test: here stuckMs is out of reach.
+ * Generated: parallel runs of one name, a Bash PreToolUse with no result while the run carries on, unnamed prompts,
+ * Stop, interrupts, and long silences (stuckMs is 30 s here).
  */
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { createMoodMachine, TOOL_LINGER_MS, WAIT_ATTRIBUTION_MS } = require('../host/mood-machine');
+const { createMoodMachine, TOOL_LINGER_MS } = require('../host/mood-machine');
 
-const MAX_AGENTS = 5;
+const MAX_AGENTS = 6;
+const TYPES = ['ta', 'tb', 'tc'];
 const FILE_TOOLS = { Read: 'reading', Grep: 'reading', Glob: 'reading', Edit: 'writing', Write: 'writing', NotebookEdit: 'writing' };
 const FINER = { working: ['working', 'reading', 'writing', 'running', 'waiting', 'stuck', 'helper'],
   stressed: ['stressed', 'waiting', 'stuck', 'helper'] };
+const RANK = { waiting: 6, stuck: 5, helper: 4, running: 3, reading: 3, writing: 3 };
+const STUCK_MS = 30_000;
 
 const opArb = fc.oneof(
-  { weight: 3, arbitrary: fc.record({ op: fc.constant('spawn'), from: fc.nat(), bg: fc.boolean() }) },
+  { weight: 3, arbitrary: fc.record({ op: fc.constant('spawn'), from: fc.nat(), type: fc.nat(), bg: fc.boolean() }) },
   { weight: 4, arbitrary: fc.record({ op: fc.constant('bashPre'), who: fc.nat(), bg: fc.boolean() }) },
-  { weight: 4, arbitrary: fc.record({ op: fc.constant('bashPost'), who: fc.nat(), kind: fc.constantFrom('ok', 'ok', 'err', 'fail'), same: fc.boolean() }) },
+  { weight: 4, arbitrary: fc.record({ op: fc.constant('bashPost'), who: fc.nat(), kind: fc.constantFrom('ok', 'ok', 'err', 'fail'), same: fc.boolean(), ofLast: fc.boolean() }) },
   { weight: 4, arbitrary: fc.record({ op: fc.constant('filePre'), who: fc.nat(), tool: fc.constantFrom(...Object.keys(FILE_TOOLS)) }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant('mainPre'), tool: fc.constantFrom('Edit', 'Read', 'Bash') }) },
   { weight: 3, arbitrary: fc.record({ op: fc.constant('notify'), who: fc.nat(), named: fc.boolean(),
     type: fc.constantFrom('permission_prompt', 'permission_prompt', 'elicitation_dialog', 'idle_prompt') }) },
-  { weight: 3, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 9_000 }) }) },
+  { weight: 4, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 20_000 }) }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat() }) },
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('interrupt'), who: fc.nat() }) },
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('stop') }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('sessionEnd') }) },
 );
 
 function simulate(ops, onStep) {
   let t = 1_000_000;
-  const m = createMoodMachine({ now: () => t, stuckMs: 10 ** 12, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12 });
+  const m = createMoodMachine({ now: () => t, stuckMs: STUCK_MS, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12 });
   const changes = [];
   m.on('change', c => changes.push(c));
-  const agents = [];                   // { id, type, parent, bg, alive, bash: Map(id->at), file, waiting, repeats, sig }
+  const agents = [];          // { id, type, parent, bg, alive, last, waiting, quiet, lastAct }
+  const loops = new Map();    // name -> { sig, n }: the retry loop is the NAME's
   let n = 0;
-  let lastPre = null;                  // { agent|null, at }
   const alive = () => agents.filter(a => a.alive);
   const fgKids = a => agents.filter(c => c.alive && c.parent === a && !c.bg);
+  const subtree = a => { const out = [a]; for (let k = 0; k < out.length; k++) out.push(...fgKids(out[k])); return out; };
+  const mainFg = a => { for (let i = a; i; i = i.parent) if (i.bg) return false; return true; };
   const send = (event, payload) => m.handle({ event, payload });
   const by = a => ({ agent_id: a.id, agent_type: a.type });
+  // a hooked event of the run: it is alive, and so is the chain above it, up to a background run
+  const refresh = a => { for (let i = a; i; i = i.parent) { i.lastAct = t; if (i.bg) break; } };
+  const loopOf = name => { if (!loops.has(name)) loops.set(name, { sig: null, n: 0 }); return loops.get(name); };
 
   for (const o of ops) {
     const live = alive();
@@ -71,19 +77,18 @@ function simulate(ops, onStep) {
         if (agents.length >= MAX_AGENTS) break;
         const at = o.from % (live.length + 1);
         const parent = at === 0 ? null : live[at - 1];
-        const type = 'ty' + agents.length;
+        const type = TYPES[o.type % TYPES.length];
         const key = 'toolu_' + (++n);
         send('PreToolUse', { tool_name: 'Agent', tool_use_id: key,
           tool_input: { subagent_type: type, run_in_background: o.bg }, ...(parent ? by(parent) : {}) });
-        const a = { id: 'a' + type + '-' + String(n).padStart(16, '0'), type, parent, bg: o.bg, alive: true,
-          bash: new Map(), file: null, waiting: false, repeats: 0, sig: null };
+        if (!live.some(x => x.type === type)) loops.set(type, { sig: null, n: 0 });      // a fresh run starts its loop clean
+        if (parent) { refresh(parent); parent.waiting = false; parent.last = { kind: 'other' }; if (o.bg) parent.quiet = true; }
+        const a = { id: 'a' + type + '-' + String(++n).padStart(16, '0'), type, parent, bg: o.bg, alive: true,
+          last: null, waiting: false, quiet: false, lastAct: t };
         agents.push(a);
-        if (parent) { parent.waiting = false; lastPre = { agent: parent, at: t }; }
-        // The run speaks at once, so the machine knows its id.
-        const id = 'tu' + (++n);
-        send('PreToolUse', { tool_name: 'Read', tool_use_id: id, tool_input: {}, ...by(a) });
-        a.file = { kind: 'reading', at: t };
-        lastPre = { agent: a, at: t };
+        // the run speaks at once, so the machine knows its id
+        send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: {}, ...by(a) });
+        a.last = { kind: 'file', file: 'reading', at: t };
         break;
       }
       case 'bashPre': {
@@ -91,46 +96,45 @@ function simulate(ops, onStep) {
         if (!a) break;
         const id = 'tu' + (++n);
         send('PreToolUse', { tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'c' + n, ...(o.bg ? { run_in_background: true } : {}) }, ...by(a) });
+        refresh(a);
         a.waiting = false;
-        lastPre = { agent: a, at: t };
-        if (!o.bg) a.bash.set(id, t);
+        if (o.bg) { a.quiet = true; a.last = { kind: 'other' }; } else a.last = { kind: 'bash', id, open: true };
         break;
       }
       case 'bashPost': {
         const a = pick(o.who);
         if (!a) break;
-        const id = a.bash.size ? a.bash.keys().next().value : 'tu' + (++n);
+        // the result of the run's last Bash, or of some call that is no longer in flight
+        const id = o.ofLast && a.last && a.last.kind === 'bash' ? a.last.id : 'tu' + (++n);
         const command = o.same ? 'same' : 'c' + (++n);
         const common = { tool_name: 'Bash', tool_use_id: id, tool_input: { command }, ...by(a) };
         if (o.kind === 'fail') send('PostToolUseFailure', common);
         else send('PostToolUse', { ...common, tool_response: o.kind === 'err' ? { exit_code: 1 } : { exit_code: 0 } });
+        refresh(a);
         a.waiting = false;
-        a.bash.delete(id);
-        if (o.kind === 'ok') { const s = 'Bash:' + JSON.stringify({ command }); a.repeats = s === a.sig ? a.repeats + 1 : 1; a.sig = s; }
-        else { a.repeats = 0; a.sig = null; }
+        if (a.last && a.last.kind === 'bash' && a.last.id === id) a.last.open = false;
+        const loop = loopOf(a.type);
+        if (o.kind === 'ok') { const sig = 'Bash:' + JSON.stringify({ command }); loop.n = sig === loop.sig ? loop.n + 1 : 1; loop.sig = sig; }
+        else { loop.n = 0; loop.sig = null; }
         break;
       }
       case 'filePre': {
         const a = pick(o.who);
         if (!a) break;
         send('PreToolUse', { tool_name: o.tool, tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/f' }, ...by(a) });
+        refresh(a);
         a.waiting = false;
-        a.file = { kind: FILE_TOOLS[o.tool], at: t };
-        lastPre = { agent: a, at: t };
+        a.last = { kind: 'file', file: FILE_TOOLS[o.tool], at: t };
         break;
       }
       case 'mainPre':
         send('PreToolUse', { tool_name: o.tool, tool_use_id: 'tu' + (++n), tool_input: {} });
-        lastPre = { agent: null, at: t };
         break;
       case 'notify': {
-        const waits = o.type !== 'idle_prompt';
         const a = pick(o.who);
         if (o.named && a) send('Notification', { notification_type: o.type, message: 'm', ...by(a) });
         else send('Notification', { notification_type: o.type, message: 'm' });
-        if (!waits) break;
-        if (o.named && a) a.waiting = true;
-        else if (!o.named && lastPre && lastPre.agent && lastPre.agent.alive && t - lastPre.at <= WAIT_ATTRIBUTION_MS) lastPre.agent.waiting = true;
+        if (o.named && a && o.type !== 'idle_prompt') a.waiting = true;       // an unnamed one is the main session's: no card
         break;
       }
       case 'advance':
@@ -144,58 +148,74 @@ function simulate(ops, onStep) {
         a.alive = false;
         break;
       }
+      case 'interrupt': {
+        const a = pick(o.who);
+        if (!a) break;
+        send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), is_interrupt: true, ...by(a) });
+        for (const x of subtree(a)) x.alive = false;
+        break;
+      }
+      case 'stop':
+        send('Stop', {});
+        for (const a of live) if (mainFg(a)) a.alive = false;
+        break;
       case 'sessionEnd':
         send('SessionEnd', {});
         for (const a of agents) a.alive = false;
-        lastPre = null;
         break;
       default: throw new Error(o.op);
     }
-    onStep({ m, agents, changes, t, o });
+    onStep({ m, agents, changes, t, o, loops, fgKids });
   }
 }
 
-// What the simulation says the card should show, given the machine's own base state.
-function expected(a, state, t, kids) {
+// What the contract says one live run shows, given the card's base state.
+function runDetail(a, state, t, loops, fgKids) {
   if (a.waiting) return 'waiting';
-  if (a.repeats >= 3) return 'stuck';
-  if (kids > 0) return 'helper';
+  const kids = fgKids(a).length > 0;
+  const bashInFlight = !!a.last && a.last.kind === 'bash' && a.last.open;
+  const silent = !a.quiet && !kids && !bashInFlight && t - a.lastAct > STUCK_MS;
+  if ((loops.get(a.type) || { n: 0 }).n >= 3 || silent) return 'stuck';
+  if (kids) return 'helper';
   if (state !== 'working') return state;
-  let newest = null;
-  for (const at of a.bash.values()) if (!newest || at >= newest.at) newest = { kind: 'running', at };
-  if (a.file && t - a.file.at <= TOOL_LINGER_MS && (!newest || a.file.at > newest.at)) newest = a.file;
-  return newest ? newest.kind : 'working';
+  if (bashInFlight) return 'running';
+  if (a.last && a.last.kind === 'file' && t - a.last.at <= TOOL_LINGER_MS) return a.last.file;
+  return 'working';
 }
 
 test('property: a card shows exactly the finest name its live signals support, highest priority first', () => {
-  fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 60 }), (ops) => {
-    simulate(ops, ({ m, agents, changes, t }) => {
-      const roster = new Map(m.roster().map(r => [r.agent, r]));
-      for (const [name, r] of roster) {
+  fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 70 }), (ops) => {
+    simulate(ops, ({ m, agents, changes, t, loops, fgKids }) => {
+      for (const r of m.roster()) {
         // 1. shape
-        if (r.state === 'working' || r.state === 'stressed') assert.ok(FINER[r.state].includes(r.detail), `${name}: ${r.state}/${r.detail}`);
-        else assert.strictEqual(r.detail, r.state, `${name}: a ${r.state} card has no finer name`);
-        assert.strictEqual(m.detailOf(name), r.detail);
-        const a = agents.find(x => x.type === name);
+        if (r.state === 'working' || r.state === 'stressed') assert.ok(FINER[r.state].includes(r.detail), `${r.agent}: ${r.state}/${r.detail}`);
+        else assert.strictEqual(r.detail, r.state, `${r.agent}: a ${r.state} card has no finer name`);
+        assert.strictEqual(m.detailOf(r.agent), r.detail);
+        const runs = agents.filter(x => x.alive && x.type === r.agent);
         // 4. a card with no live run shows its state
-        if (!a.alive) { assert.strictEqual(r.detail, r.state, `${name} has no live run`); continue; }
-        // 2 + 3 + 4: the detail the signals support, by priority
-        const kids = agents.filter(c => c.alive && c.parent === a && !c.bg).length;
-        assert.strictEqual(r.detail, expected(a, r.state, t, kids), `${name}: state ${r.state}`);
+        if (runs.length === 0) { assert.strictEqual(r.detail, r.state, `${r.agent} has no live run`); continue; }
+        if (r.state !== 'working' && r.state !== 'stressed') continue;
+        // 2 + 3. the best of what its live runs support
+        let want = r.state;
+        for (const a of runs) {
+          const d = runDetail(a, r.state, t, loops, fgKids);
+          if ((RANK[d] || 0) > (RANK[want] || 0)) want = d;
+        }
+        assert.strictEqual(r.detail, want, `${r.agent}: state ${r.state}, ${runs.length} live run(s)`);
       }
       // 5. events
       for (const c of changes) assert.ok(typeof c.detail === 'string' && c.detail, 'a change carries a detail');
-      for (const [name, r] of roster) {
-        const last = [...changes].reverse().find(c => c.agent === name);
-        assert.ok(last, `${name} was announced`);
-        assert.deepStrictEqual([last.state, last.detail], [r.state, r.detail], `${name}: the roster is the last thing announced`);
+      for (const r of m.roster()) {
+        const last = [...changes].reverse().find(c => c.agent === r.agent);
+        assert.ok(last, `${r.agent} was announced`);
+        assert.deepStrictEqual([last.state, last.detail], [r.state, r.detail], `${r.agent}: the roster is the last thing announced`);
       }
     });
-  }), { numRuns: 400 });
+  }), { numRuns: 600 });
 });
 
 test('property: the same (agent, state, detail) is never announced twice in a row', () => {
-  fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 60 }), (ops) => {
+  fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 70 }), (ops) => {
     let all = null;
     simulate(ops, ({ changes }) => { all = changes; });
     const lastOf = new Map();
@@ -207,11 +227,17 @@ test('property: the same (agent, state, detail) is never announced twice in a ro
   }), { numRuns: 300 });
 });
 
-test('property: once the session ends or time passes with nothing pending, nothing finer lingers', () => {
+test('property: when the session ends nothing finer lingers, and an unnamed prompt never marks a card', () => {
   fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 40 }), (ops) => {
     simulate([...ops, { op: 'sessionEnd' }], ({ m, o }) => {
       if (o.op !== 'sessionEnd') return;
       for (const r of m.roster()) assert.strictEqual(r.detail, r.state, `${r.agent} after SessionEnd`);
     });
-  }), { numRuns: 200 });
+    // a stream of nothing but unnamed prompts leaves every card at its plain state
+    simulate(ops.filter(x => x.op !== 'notify').concat(ops.filter(x => x.op === 'notify').map(x => ({ ...x, named: false }))), ({ m, agents }) => {
+      for (const r of m.roster()) {
+        if (agents.some(a => a.waiting && a.type === r.agent)) assert.fail('the simulation marked a card for an unnamed prompt');
+      }
+    });
+  }), { numRuns: 150 });
 });

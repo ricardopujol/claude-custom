@@ -185,7 +185,7 @@ function globalPortrait(uploadsDir) {
   return hit ? { ...hit, file: path.basename(hit.path), media: mediaKindFor(hit.ext) } : null;
 }
 
-function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}) {
+function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir, baseState } = {}) {
   const safeAgent = safeSegment(agent);
   let safeState = safeSegment(state);
   if (!safeAgent || !safeState) return placeholderFor(agent);
@@ -193,7 +193,7 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}
   // every tier below: an upload of `working` beats a shared default for `reading`.
   if (Object.hasOwn(NEAREST_STATE, safeState) && !isReservedAgent(safeAgent)
       && !uploadedOwn(safeAgent, safeState, uploadsDir) && !forgeOwnFor(safeAgent, safeState, portraitsDir)) {
-    safeState = NEAREST_STATE[safeState];
+    safeState = BUILTIN_STATES.includes(baseState) ? baseState : NEAREST_STATE[safeState];
   }
   // `_global` is the folder of the global default, not an agent: a real agent
   // that happens to carry the name must not read it as its own upload.

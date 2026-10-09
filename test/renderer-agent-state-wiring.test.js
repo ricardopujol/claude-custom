@@ -21,7 +21,7 @@ test('the page loads the state display before renderer.js, as a plain script', (
 
 test('the roster card keeps data-state for the base state and adds data-detail, the badge and the words', () => {
   const js = read('app/renderer.js');
-  assert.match(js, /data-state="\$\{r\.state\}" data-detail="\$\{escapeHtml\(look\.detail\)\}"/);
+  assert.match(js, /data-state="\$\{escapeHtml\(r\.state\)\}" data-detail="\$\{escapeHtml\(look\.detail\)\}"/);
   assert.match(js, /window\.agentStateDisplay\.badgeHtml\(r\.state, r\.detail\)/);
   assert.match(js, /<div class="state">\$\{escapeHtml\(look\.words\)\}<\/div>/);
 });
@@ -34,7 +34,7 @@ test('the waiting badge pulses, and not under prefers-reduced-motion', () => {
 
 test('the host sends the detail with every mood message, and the file tools reach the mood engine', () => {
   const host = read('host/host.js');
-  assert.match(host, /return \{ agent, state, detail: d, portrait: portraitOf\(agent, d\) \}/);
+  assert.match(host, /return \{ agent, state, detail: d, portrait: portraitOf\(agent, d, state\) \}/);
   assert.match(host, /mood\.on\('change', \(\{ agent, state, detail \}\) =>/);
   assert.match(host, /if \(isOccupancyOnly\(ev\)\) \{ mood\.handle\(ev\); return; \}/);
 });

@@ -4177,7 +4177,7 @@ function renderRoster() {
     // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
     // `data-detail`, drawn as a corner badge and as words under the name.
     const look = window.agentStateDisplay.describeState(r.state, r.detail);
-    return `<div class="agent" data-state="${r.state}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
+    return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +

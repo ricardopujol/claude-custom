@@ -21,9 +21,9 @@ const BASE = new Set(['sleeping', 'working', 'happy', 'stressed']);
 const FINER = {
   reading: { icon: '\u{1F4D6}', label: 'reading' },
   writing: { icon: '✏️', label: 'writing' },
-  running: { icon: '▶', label: 'running' },
+  running: { icon: '▶️', label: 'running' },
   waiting: { icon: '✋', label: 'waiting on you' },
-  stuck: { icon: '⚠', label: 'stuck' },
+  stuck: { icon: '⚠️', label: 'stuck' },
   helper: { icon: '⏳', label: 'waiting on helper' },
 };
 
@@ -46,11 +46,13 @@ function describeState(state, detail) {
 
 const stateWords = (state, detail) => describeState(state, detail).words;
 
+const esc = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[c]);
+
 // The corner badge. Decoration for the eye: the words under the name carry the same fact for a screen reader.
 function badgeHtml(state, detail) {
   const { detail: d, badge } = describeState(state, detail);
   if (!badge) return '';
-  return `<span class="state-badge" data-badge="${d}" title="${badge.label}" aria-hidden="true">${badge.icon}</span>`;
+  return `<span class="state-badge" data-badge="${esc(d)}" title="${esc(badge.label)}" aria-hidden="true">${badge.icon}</span>`;
 }
 
 const agentStateDisplay = { describeState, badgeHtml, stateWords, FINER_STATES: Object.keys(FINER) };
