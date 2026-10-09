@@ -13,6 +13,8 @@ const { tmpDir } = require('./tmp-dir');
 const { readRecentsOffThread, projectChoices, MAX_CHOICES } = require('../host/indexing-projects');
 const { projectDirName } = require('../host/project-dir');
 
+const BASE_MS = Date.UTC(2026, 9, 1, 12, 0, 0);
+
 function projectsDirWith(cwds) {
   const root = tmpDir('cc-ip-worker-');
   cwds.forEach((cwd, i) => {
@@ -20,7 +22,7 @@ function projectsDirWith(cwds) {
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `s${i}.jsonl`);
     fs.writeFileSync(file, JSON.stringify({ cwd, message: { usage: { input_tokens: 1, output_tokens: 1 } } }) + '\n');
-    const t = (Date.now() - i * 1000) / 1000;
+    const t = (BASE_MS - i * 1000) / 1000;
     fs.utimesSync(file, t, t);
   });
   return root;
@@ -55,22 +57,25 @@ test('S21 projects: with no projectsDir given the worker uses the default folder
   try {
     for (const arg of [undefined, {}, { projectsDir: '' }, { projectsDir: null }]) {
       const recents = await readRecentsOffThread(arg);
-      assert.deepStrictEqual((recents || []).map(r => r.path), ['C:\\code\\fromdefault'], JSON.stringify(arg));
+      assert.ok(Array.isArray(recents), `a list, not the failure answer: ${JSON.stringify(arg)}`);
+      assert.deepStrictEqual(recents.map(r => r.path), ['C:\\code\\fromdefault'], JSON.stringify(arg));
     }
   } finally {
     if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
   }
 });
 
-test('S21 projects: a read that fails in the worker is null ("could not read"), never an empty list', async () => {
+test('S21 projects: a worker that cannot be started is null ("could not read"), never an empty list', async () => {
+  // host/recent.js guards every read, so no folder makes it throw; a projectsDir the worker's data cannot carry
+  // (a function or a symbol is not cloneable) makes `new Worker` throw, which must come out as null.
+  assert.strictEqual(await readRecentsOffThread({ projectsDir: () => {} }), null);
+  assert.strictEqual(await readRecentsOffThread({ projectsDir: Symbol('x') }), null);
+});
+
+test('S21 projects: a folder that is not a projects folder is "no projects" ([]), which is not the failure answer', async () => {
   const notAFolder = path.join(tmpDir('cc-ip-file-'), 'file.txt');
   fs.writeFileSync(notAFolder, 'x');
-  const recents = await readRecentsOffThread({ projectsDir: notAFolder });
-  assert.ok(recents === null || (Array.isArray(recents) && recents.length === 0), 'null on failure, or [] when the reader treats it as nothing');
-  const real = require('../host/recent');
-  let direct;
-  try { direct = real.listRecentProjects({ projectsDir: notAFolder }); } catch { direct = null; }
-  assert.deepStrictEqual(recents, direct, 'the worker answers exactly what the reader does');
+  assert.deepStrictEqual(await readRecentsOffThread({ projectsDir: notAFolder }), []);
 });
 
 // ---- projectChoices guards --------------------------------------------------------------------------------------------------
