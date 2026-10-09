@@ -38,17 +38,17 @@ test('S7: sweepPids reads the last complete ALIVE line (pid:start pairs), LF or 
   assert.deepStrictEqual(got[199], p(200, 200));
 });
 
-test('S7: a sweep that exited 0 is followed by NO taskkill; one that failed ends the root, and every pending pid only through a proven start', { skip: !onWin }, () => {
+test('S7: a sweep that exited 0 is followed by NO taskkill; one that failed ends the root by number, and every pending pid in ONE proven batch', { skip: !onWin }, () => {
   const child = { pid: 100, kill() { assert.fail('the POSIX kill is not for Windows'); } };
   const mk = (result) => {
-    const runs = []; const proven = [];
-    return { runs, proven, run: (...a) => { runs.push(a); return runs.length === 1 ? result : { status: 0 }; }, prove: (pid, start, o) => { proven.push([pid, start, o]); return 'killed'; } };
+    const runs = []; const batches = [];
+    return { runs, batches, run: (...a) => { runs.push(a); return runs.length === 1 ? result : { status: 0 }; }, proveBatch: (items, o) => { batches.push([items, o]); return new Map(); } };
   };
 
   const clean = mk({ status: 0, stdout: 'ALIVE 5:50 6:60\r\n' });
-  killTree(child, 123, { run: clean.run, prove: clean.prove });
+  killTree(child, 123, { run: clean.run, proveBatch: clean.proveBatch });
   assert.strictEqual(clean.runs.length, 1, 'only the sweep ran');
-  assert.deepStrictEqual(clean.proven, [], 'a sweep that finished proves and kills nothing more');
+  assert.deepStrictEqual(clean.batches, [], 'a sweep that finished proves and kills nothing more');
   assert.strictEqual(clean.runs[0][0], 'powershell.exe');
   assert.deepStrictEqual(clean.runs[0][1].slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
   assert.match(clean.runs[0][1][3], /\$root=100\b/);
@@ -57,56 +57,57 @@ test('S7: a sweep that exited 0 is followed by NO taskkill; one that failed ends
   assert.strictEqual(clean.runs[0][2].encoding, 'utf8');
   assert.deepStrictEqual(clean.runs[0][2].stdio, ['ignore', 'pipe', 'ignore']);
 
-  // Only the ROOT (our own child, its pid held by libuv) is ended by number; every other pid goes through killProven with its start.
+  // Only the ROOT (our own child, its pid held by libuv) is ended by number; every other pid goes through ONE killProvenBatch with its start.
   const failed = mk({ status: 3, stdout: 'ALIVE 100:1 5:50 6:60\n' });
-  killTree(child, 123, { run: failed.run, prove: failed.prove });
+  killTree(child, 123, { run: failed.run, proveBatch: failed.proveBatch });
   assert.deepStrictEqual(failed.runs.slice(1).map(r => r[1][1]), ['100'], 'the only taskkill by number is the root');
   assert.strictEqual(failed.runs[1][0], 'taskkill');
   assert.deepStrictEqual(failed.runs[1][1].slice(2), ['/T', '/F']);
   assert.deepStrictEqual(failed.runs[1][2], { windowsHide: true, stdio: 'ignore' });
-  assert.deepStrictEqual(failed.proven, [[5, '50', { toleranceTicks: 20000 }], [6, '60', { toleranceTicks: 20000 }]]);
+  assert.deepStrictEqual(failed.batches, [[[{ pid: 5, start: '50' }, { pid: 6, start: '60' }], { toleranceTicks: 20000, timeoutMs: 10000 }]]);
 
   const errored = mk({ status: null, error: new Error('timeout'), stdout: 'ALIVE 100:1 7:70\n' });
-  killTree(child, 123, { run: errored.run, prove: errored.prove });
+  killTree(child, 123, { run: errored.run, proveBatch: errored.proveBatch });
   assert.deepStrictEqual(errored.runs.slice(1).map(r => r[1][1]), ['100'], 'a sweep that errored (timed out): the root once');
-  assert.deepStrictEqual(errored.proven.map(x => x[0]), [7]);
+  assert.deepStrictEqual(errored.batches.map(b => b[0].map(t => t.pid)), [[7]]);
 
   const silent = mk({ status: 4, stdout: '' });
-  killTree(child, 123, { run: silent.run, prove: silent.prove });
+  killTree(child, 123, { run: silent.run, proveBatch: silent.proveBatch });
   assert.deepStrictEqual(silent.runs.slice(1).map(r => r[1][1]), ['100'], 'a sweep that said nothing: the root first');
-  assert.deepStrictEqual(silent.proven, []);
+  assert.deepStrictEqual(silent.batches, [], 'nothing pending, no batch call');
+});
+
+test('Y2 (Miguel) / F3 (Dexter): ~200 pending pids are ONE proven batch with ONE timeout, not 200 PowerShell starts', { skip: !onWin }, () => {
+  const pending = Array.from({ length: 199 }, (_, i) => `${1000 + i}:${5000 + i}`);
+  const batches = []; const runs = [];
+  killTree({ pid: 100, kill() {} }, 0, {
+    run: (...a) => { runs.push(a); return runs.length === 1 ? { status: 5, stdout: `ALIVE 100:1 ${pending.join(' ')}\n` } : { status: 0 }; },
+    proveBatch: (items, o) => { batches.push([items, o]); return new Map(); },
+  });
+  assert.strictEqual(batches.length, 1, 'one batch call');
+  assert.strictEqual(batches[0][0].length, 199, 'the root plus 199 others: the line is capped at 200 pids');
+  assert.strictEqual(batches[0][1].timeoutMs, 10000);
+  assert.strictEqual(runs.length, 2, 'the sweep and one taskkill (the root); no per-pid spawn');
 });
 
 test('S7-1 (Dexter): a pid the sweep already ENDED is not in the pending set, so a failed sweep never re-kills it (pid 7000 reused by a stranger)', { skip: !onWin }, () => {
   // `ALIVE R:.. 7000:..` was said, 7000 was then killed, and the sweep failed (status 4). The sweep's last line no longer lists 7000.
-  const child = { pid: 100, kill() {} };
-  const runs = []; const proven = [];
-  killTree(child, 0, {
+  const runs = []; const batches = [];
+  killTree({ pid: 100, kill() {} }, 0, {
     run: (...a) => { runs.push(a); return runs.length === 1 ? { status: 4, stdout: 'ALIVE 100:1 7000:7\nALIVE 100:1\n' } : { status: 0 }; },
-    prove: (pid, start) => { proven.push([pid, start]); return 'killed'; },
+    proveBatch: (items) => { batches.push(items); return new Map(); },
   });
   assert.deepStrictEqual(runs.slice(1).map(r => r[1][1]), ['100']);
-  assert.deepStrictEqual(proven, [], 'pid 7000 is not touched: it was ended by the sweep and may be a stranger now');
+  assert.deepStrictEqual(batches, [], 'pid 7000 is not touched: it was ended by the sweep and may be a stranger now');
 });
 
-test('S7-1: a pending pid whose start no longer matches (the pid was reused) is left alone: killProven answers mismatch and nothing else runs', { skip: !onWin }, () => {
-  const child = { pid: 100, kill() {} };
+test('S7: a proveBatch that throws is swallowed; the root was already ended', { skip: !onWin }, () => {
   const runs = [];
-  killTree(child, 0, {
+  assert.doesNotThrow(() => killTree({ pid: 100, kill() {} }, 0, {
     run: (...a) => { runs.push(a); return runs.length === 1 ? { status: 4, stdout: 'ALIVE 100:1 5:50\n' } : { status: 0 }; },
-    prove: () => 'mismatch',
-  });
-  assert.deepStrictEqual(runs.slice(1).map(r => r[1][1]), ['100'], 'no taskkill by number follows a mismatch');
-});
-
-test('S7: a prove that throws does not stop the rest', { skip: !onWin }, () => {
-  const child = { pid: 100, kill() {} };
-  const proven = [];
-  killTree(child, 0, {
-    run: (...a) => (a[0] === 'powershell.exe' ? { status: 4, stdout: 'ALIVE 100:1 5:50 6:60\n' } : { status: 0 }),
-    prove: (pid) => { proven.push(pid); if (pid === 5) throw new Error('x'); return 'killed'; },
-  });
-  assert.deepStrictEqual(proven, [5, 6]);
+    proveBatch: () => { throw new Error('x'); },
+  }));
+  assert.deepStrictEqual(runs.slice(1).map(r => r[1][1]), ['100']);
 });
 
 test('S7: a run that throws is swallowed (the process is already gone)', { skip: !onWin }, () => {

@@ -383,6 +383,67 @@ test('#73 F4: the sweep reads no wall clock -- a stepped-back clock (since far i
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
+// --- PR #145 Dexter F1 / F2 / F3, Miguel Y1: a parent the sweep did not kill itself bounds nothing; a null date is skipped; a vanished pid is done ---
+// Synthetic rows (a ReadProcs of our own), a REAL sleeper as the root, real PowerShell. The synthetic pids sit above any Windows pid.
+const synthRow = (id, ppid, ms, t0) => `[pscustomobject]@{ProcessId=${id};ParentProcessId=${ppid};CreationDate=([DateTimeOffset]::FromUnixTimeMilliseconds(${t0 + ms}).UtcDateTime)}`;
+const aliveSleeper = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+const pidsOf = (stdout) => sweepLines(stdout).flatMap(l => (l.match(/\d+(?=:)/g) || []).map(Number));
+
+test('#73 F1 / Y1 (Dexter): `a | b` -- b exits, pid 7004 is taken by a stranger S, K(b) is a MISMATCH: S\'s child, started after b died, is NOT adopted', { skip: !onWin, timeout: 120000 }, async () => {
+  // The root R is a real sleeper; "b" is the REAL sleeper S (so K sees a live process whose start differs from the one the table gave
+  // for b: MISMATCH). S1 names b's pid as its parent and started after S did, so after b died: it is the stranger's child.
+  const root = aliveSleeper(); const reuser = aliveSleeper();
+  const seen = {};
+  const t0 = Date.now();
+  const synthetic = `$script:n=0\nfunction ReadProcs{$script:n++;$r=@(${synthRow(root.pid, 1, -3600000, t0)},${synthRow(reuser.pid, root.pid, -1800000, t0)});if($script:n -ge 2){$r+=@(${synthRow(2000000009, reuser.pid, 60000, t0)},${synthRow(2000000008, reuser.pid, -1000, t0)})};$r}`;
+  try {
+    killTree(root, 0, { proveBatch: () => new Map(), run: sabotaged(READ_PROCS, synthetic, seen) });
+    assert.ok(!pidsOf(seen.sweep.stdout).includes(2000000009), `the stranger's child was adopted: ${seen.sweep.stdout}`);
+    assert.ok(pidsOf(seen.sweep.stdout).includes(2000000008), `b's own late child (started before the holder of its pid) should be adopted: ${seen.sweep.stdout}`);
+    assert.ok(!reuser.killed && reuser.exitCode === null, 'the stranger itself was killed');
+  } finally { for (const c of [root, reuser]) { try { c.kill(); } catch { /* gone */ } } }
+});
+
+test('#73 F1 (GONE path): a parent that vanished before K, whose pid the next read shows reused, does not adopt the reuser\'s child; one with no bound adopts nothing new', { skip: !onWin, timeout: 120000 }, async () => {
+  // P = 2000000001 is not running (K: gone, exit unknown). Read 2 shows a holder of P's pid that started at +400: W (+300) is P's, Z (+500) is the
+  // holder's. A second parent Q = 2000000002 has no holder at all: a NEW child of Q (+900) has no bound and is not adopted.
+  const root = aliveSleeper();
+  const seen = {};
+  const t0 = Date.now();
+  const synthetic = `$script:n=0\nfunction ReadProcs{$script:n++;$r=@(${synthRow(root.pid, 1, -3600000, t0)},${synthRow(2000000001, root.pid, -1000, t0)},${synthRow(2000000002, root.pid, -900, t0)});if($script:n -ge 2){$r+=@(${synthRow(2000000001, 1, 400, t0)},${synthRow(2000000010, 2000000001, 300, t0)},${synthRow(2000000011, 2000000001, 500, t0)},${synthRow(2000000012, 2000000002, 900, t0)})};$r}`;
+  try {
+    killTree(root, 0, { proveBatch: () => new Map(), run: sabotaged(READ_PROCS, synthetic, seen) });
+    const all = pidsOf(seen.sweep.stdout);
+    assert.ok(all.includes(2000000010), `W, P's own child (started before the reuser), should have been adopted: ${seen.sweep.stdout}`);
+    assert.ok(!all.includes(2000000011), 'Z, the reuser\'s child, was adopted');
+    assert.ok(!all.includes(2000000012), 'a new child of a parent with no known bound was adopted');
+  } finally { try { root.kill(); } catch { /* gone */ } }
+});
+
+test('#73 F2 (Dexter): one row with a null CreationDate (System Idle Process) does not abort the sweep', { skip: !onWin, timeout: 120000 }, async () => {
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-null'));
+  const seen = {};
+  const withNull = `function ReadProcs{$r=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8);$r+[pscustomobject]@{ProcessId=0;ParentProcessId=0;CreationDate=$null}}`;
+  try {
+    killTree(child, since, { proveBatch: () => new Map(), run: sabotaged(READ_PROCS, withNull, seen) });
+    assert.strictEqual(seen.sweep.status, 0, `the sweep failed on a null date: status ${seen.sweep.status}`);
+    assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived`);
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#73 F3 (Dexter): a snapshot-listed process that exits on its own is done -- the sweep still exits 0, not 5', { skip: !onWin, timeout: 120000 }, async () => {
+  const root = aliveSleeper();
+  const seen = {};
+  const t0 = Date.now();
+  // D (2000000020) is in the snapshot as R's child and is gone from every later read (it ended by itself)
+  const synthetic = `$script:n=0\nfunction ReadProcs{$script:n++;$r=@(${synthRow(root.pid, 1, -3600000, t0)});if($script:n -le 1){$r+=@(${synthRow(2000000020, root.pid, -1000, t0)})};$r}`;
+  try {
+    killTree(root, 0, { proveBatch: () => assert.fail('a clean sweep proves nothing'), run: sabotaged(READ_PROCS, synthetic, seen) });
+    assert.strictEqual(seen.sweep.status, 0, `a vanished pid made the sweep fail: ${seen.sweep.status}`);
+    assert.strictEqual(sweepPids(seen.sweep.stdout).length, 0, 'nothing may be left pending');
+  } finally { try { root.kill(); } catch { /* gone */ } }
+});
+
 // --- #27: --quiet-when ------------------------------------------------------
 // The person moved the status line into the tab header (PLAN_LAYOUT_L2.md):
 // the relay still forwards every document, but prints nothing, so the CLI

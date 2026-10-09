@@ -32,7 +32,7 @@
 const fs = require('fs');
 const net = require('net');
 const { spawn, spawnSync } = require('child_process');
-const { killProven } = require('./kill-tree');
+const { killProvenBatch } = require('./kill-tree');
 
 const FORWARD_TIMEOUT_MS = 300;
 // How long the user's own statusLine command may run (Dexter r2 N6). Without
@@ -78,41 +78,72 @@ const SWEEP_MAX_LEVELS = 50;
 // One tick is 100 ns. The sweep reads starts from the process TABLE (CIM, microsecond precision); the proof that follows reads
 // them from a handle. 2 ms covers that rounding and cannot confuse two processes that held one pid.
 const START_TOLERANCE_TICKS = 20000;
+// The fallback proves and ends every pending pid in ONE PowerShell call (PR #145 Y2): one timeout for the whole batch.
+const FALLBACK_BATCH_TIMEOUT_MS = 10000;
 const sweepScript = (pid) => `$ErrorActionPreference='Stop'
 $root=${pid}
 function Ftime($d){$d.ToFileTimeUtc()}
+# K ends one process and answers @{ended;exit}.
+#   ended  true when it is no longer the process we meant: killed by us, already gone, or its pid belongs to another process now.
+#          false when we could not tell or could not kill it (it stays pending, and the fallback tries it with a proof).
+#   exit   the LATEST moment the process we meant can have exited: its own ExitTime when we killed it; when its pid was reused, the
+#          start of the process holding it now (it died before that); $null when unknown (gone, or unreadable).
 function K($o,$isRoot){
   try{$p=[Diagnostics.Process]::GetProcessById($o.id)}catch{return @{ended=$true;exit=$null}}
   try{
-    if(-not $isRoot -and [math]::Abs($p.StartTime.ToFileTimeUtc()-$o.start) -gt ${START_TOLERANCE_TICKS}){return @{ended=$true;exit=$null}}
-    $null=$p.Handle;$p.Kill();[void]$p.WaitForExit(2000)
+    $null=$p.Handle
+    $st=$p.StartTime.ToFileTimeUtc()
+    if(-not $isRoot -and [math]::Abs($st-$o.start) -gt ${START_TOLERANCE_TICKS}){return @{ended=$true;exit=$st}}
+    $p.Kill();[void]$p.WaitForExit(2000)
     if($p.HasExited){$x=$null;try{$x=$p.ExitTime.ToFileTimeUtc()}catch{};return @{ended=$true;exit=$x}}
   }catch{}
   return @{ended=$false;exit=$null}
 }
+# Is it still the process we listed? Gone or another process: no. Unreadable (access denied): assume yes, the fallback will judge it.
+function Alive($o){
+  try{$p=[Diagnostics.Process]::GetProcessById($o.id)}catch{return $false}
+  try{if($p.HasExited){return $false};return ([math]::Abs($p.StartTime.ToFileTimeUtc()-$o.start) -le ${START_TOLERANCE_TICKS})}catch{return $true}
+}
 function ReadProcs{Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}
 function Say($pend){[Console]::Out.WriteLine('ALIVE '+(($pend | ForEach-Object { [string]$_.id+':'+[string]$_.start }) -join ' '))}
-function Kids($rows,$parents){
+# The children of $parents in $rows. A row is P's child only if it names P's pid and started no earlier than P, and:
+#   P alive (a snapshot parent, or one we could not kill): that is enough.
+#   P ended with a known exit bound: it started no later than that bound.
+#   P gone and the table shows a process that started after P holding its pid now: it started before that holder did.
+#   no bound at all: only a row the snapshot already showed under this parent ($known), never a new one -- a stranger that reused the
+#   pid and started a child would be adopted otherwise.
+# A row with no CreationDate (System Idle Process) is skipped.
+function Kids($rows,$parents,$known){
+  $holder=@{}
+  foreach($r in $rows){if($null -ne $r.CreationDate){$holder[[int]$r.ProcessId]=Ftime $r.CreationDate}}
   $out=@()
   foreach($r in $rows){
-    $pp=[int]$r.ParentProcessId;$cs=Ftime $r.CreationDate
+    if($null -eq $r.CreationDate){continue}
+    $pp=[int]$r.ParentProcessId;$cs=Ftime $r.CreationDate;$k=[int]$r.ProcessId
     foreach($p in $parents){
-      if($p.id -eq $pp -and $cs -ge $p.start -and ($null -eq $p.exit -or $cs -le $p.exit)){$out+=[pscustomobject]@{id=[int]$r.ProcessId;start=$cs;exit=$null};break}
+      if($p.id -ne $pp -or $cs -lt $p.start){continue}
+      $ub=$p.exit
+      if((-not $p.alive) -and ($null -eq $ub) -and $holder.ContainsKey($p.id) -and ($holder[$p.id] -gt $p.start+${START_TOLERANCE_TICKS})){$ub=$holder[$p.id]}
+      if($p.alive){$take=$true}
+      elseif($null -ne $ub){$take=($cs -le $ub)}
+      else{$take=($known.ContainsKey($k) -and [math]::Abs($known[$k]-$cs) -le ${START_TOLERANCE_TICKS})}
+      if($take){$out+=[pscustomobject]@{id=$k;start=$cs;exit=$null;alive=$true};break}
     }
   }
   $out
 }
 function Desc($rows,$rootObj){
   $out=@();$f=@($rootObj);$seen=@{};$seen[$root]=1
-  while($f.Count){$n=@(Kids $rows $f | Where-Object { -not $seen.ContainsKey($_.id) });foreach($x in $n){$seen[$x.id]=1};$out+=$n;$f=$n}
+  while($f.Count){$n=@(Kids $rows $f @{} | Where-Object { -not $seen.ContainsKey($_.id) });foreach($x in $n){$seen[$x.id]=1};$out+=$n;$f=$n}
   $out
 }
 try{[void][Diagnostics.Process]::GetProcessById($root)}catch{exit 0}
 try{$snap=@(ReadProcs)}catch{exit 3}
-$rr=@($snap | Where-Object { [int]$_.ProcessId -eq $root })
+$rr=@($snap | Where-Object { ([int]$_.ProcessId -eq $root) -and ($null -ne $_.CreationDate) })
 if(-not $rr.Count){exit 0}
-$rootObj=[pscustomobject]@{id=$root;start=(Ftime $rr[0].CreationDate);exit=$null}
+$rootObj=[pscustomobject]@{id=$root;start=(Ftime $rr[0].CreationDate);exit=$null;alive=$true}
 $pending=@($rootObj)+@(Desc $snap $rootObj)
+$known=@{};foreach($o in $pending){$known[$o.id]=$o.start}
 $endedIds=@{}
 Say $pending
 $kill=@($rootObj)
@@ -121,15 +152,17 @@ for($i=0;$i -lt ${SWEEP_MAX_LEVELS} -and $kill.Count;$i++){
   foreach($o in $kill){
     $res=K $o ($o.id -eq $root)
     if($res.ended){$endedIds[$o.id]=1;$pending=@($pending | Where-Object { $_.id -ne $o.id })}
-    $parents+=[pscustomobject]@{id=$o.id;start=$o.start;exit=$res.exit}
+    $parents+=[pscustomobject]@{id=$o.id;start=$o.start;exit=$res.exit;alive=(-not $res.ended)}
   }
   $rows=$null
   for($a=0;$a -lt 2 -and $null -eq $rows;$a++){try{$rows=@(ReadProcs)}catch{Start-Sleep -Milliseconds 200}}
   if($null -eq $rows){Say $pending;exit 4}
-  $kill=@(Kids $rows $parents | Where-Object { -not $endedIds.ContainsKey($_.id) })
+  $kill=@(Kids $rows $parents $known | Where-Object { -not $endedIds.ContainsKey($_.id) })
   foreach($o in $kill){if(-not @($pending | Where-Object { $_.id -eq $o.id }).Count){$pending+=$o}}
   Say $pending
 }
+$pending=@($pending | Where-Object { Alive $_ })
+Say $pending
 if($kill.Count -or $pending.Count){exit 5}`;
 
 // What the sweep still had to end when it stopped: its LAST `ALIVE <pid>:<start> ...` line. A pid the sweep already ended is
@@ -146,9 +179,10 @@ function sweepPids(stdout) {
   });
 }
 
-// `run`, `prove` and `sweepTimeoutMs` are seams for the tests, which break the sweep on purpose. `since` is no longer read: the
-// sweep decides what is a child by the parent link and the parent's start, never by a wall clock (PR #126 Dexter F4).
-function killTree(child, since, { run = spawnSync, prove = killProven, sweepTimeoutMs = SWEEP_TIMEOUT_MS } = {}) {
+// `run`, `proveBatch` and `sweepTimeoutMs` are seams for the tests, which break the sweep on purpose. `_since` is DEPRECATED and unread:
+// the sweep decides what is a child by the parent link and the parent's start, never by a wall clock (PR #126 Dexter F4); the
+// parameter stays only so the callers' argument lists do not change.
+function killTree(child, _since, { run = spawnSync, proveBatch = killProvenBatch, sweepTimeoutMs = SWEEP_TIMEOUT_MS } = {}) {
   try {
     if (process.platform === 'win32') {
       const r = run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', sweepScript(child.pid)],
@@ -156,10 +190,11 @@ function killTree(child, since, { run = spawnSync, prove = killProven, sweepTime
       if (r.error || r.status !== 0) {
         // The root is our own child (libuv holds its pid until `close`), so it is ended by number: the sweep may never have said anything.
         run('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        // Every other pid the sweep had still to end goes through its start time (host/kill-tree.js killProven): a pid reused since is not ours.
-        for (const t of sweepPids(r.stdout)) {
-          if (t.pid === child.pid) continue;
-          try { prove(t.pid, t.start, { toleranceTicks: START_TOLERANCE_TICKS }); } catch { /* one pid failing must not stop the rest */ }
+        // Every other pid the sweep had still to end is proven by its start and ended in ONE call (host/kill-tree.js killProvenBatch):
+        // a pid reused since is not ours, and a pid per PowerShell start would hold the relay for minutes.
+        const pending = sweepPids(r.stdout).filter((t) => t.pid !== child.pid);
+        if (pending.length) {
+          try { proveBatch(pending.map((t) => ({ pid: t.pid, start: t.start })), { toleranceTicks: START_TOLERANCE_TICKS, timeoutMs: FALLBACK_BATCH_TIMEOUT_MS }); } catch { /* best effort */ }
         }
       }
     } else {

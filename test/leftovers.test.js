@@ -488,4 +488,6 @@ test('find: a malformed start string on a process that HAS a parent does not thr
   const procs = [proc(1, 0, 'services.exe', { start: ago(60 * MIN) }), proc(2, 1, 'bash.exe', { start: 'abc' })];
   const attribution = { pidBucket: new Map([[2, 'session:9']]) };
   assert.doesNotThrow(() => L.find({ procs, mem: new Map(), ledger: [], attribution, ownPid: 99, now: NOW }));
+  // The outcome, not just "no throw" (Miguel S1): a process whose start cannot be read gets NO row -- never a confident one.
+  assert.deepStrictEqual(L.find({ procs, mem: new Map(), ledger: [], attribution, ownPid: 99, now: NOW }), { stuck: [], probes: [], shells: [], mcp: [] });
 });
