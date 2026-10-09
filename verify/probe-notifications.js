@@ -35,7 +35,7 @@ const RUN = (id, type = 'subagent') => ({ id, type, status: 'running', agent_typ
 const SH = (id, extra = {}) => ({ id, type: 'shell', status: 'running', description: 'npm run dev', command: 'npm run dev', ...extra });
 // Start times the (stubbed) task-output-file lookup answers with; an id missing here has an unreadable start.
 const STARTED = { young: T0 - 2 * MIN, devserver: T0 - 30 * MIN, almost: T0 - 8 * MIN };
-const PLUS = n => [`(+${n} min)`, { advance: n * MIN }];
+const WAIT = (n, expect) => [`(+${n} min)`, { advance: n * MIN }, expect];
 
 // expect: 'fire' (the rule wants a notification here) or 'none'.
 const scenarios = [
@@ -57,26 +57,28 @@ const scenarios = [
   ['G. question / elicitation',
     [['Notification', { notification_type: 'elicitation_dialog', message: 'Claude has a question' }, 'fire']]],
   ['H1. turn ends while a YOUNG shell (2 min) runs; the shell ends; its notification starts a turn that ends',
-    [['Stop', { background_tasks: [SH('young')] }, 'none'], PLUS(3).concat('none'), ['Stop', { background_tasks: [] }, 'fire']]],
+    [['Stop', { background_tasks: [SH('young')] }, 'none'], WAIT(3, 'none'), ['Stop', { background_tasks: [] }, 'fire']]],
   ['H2. turn ends while a dev server that has run 30 min is still up',
     [['Stop', { background_tasks: [SH('devserver')] }, 'fire']]],
   ['H3. turn ends while an 8 min shell runs; nothing else happens; it turns 10 min old',
-    [['Stop', { background_tasks: [SH('almost')] }, 'none'], PLUS(1).concat('none'), PLUS(1).concat('fire')]],
+    [['Stop', { background_tasks: [SH('almost')] }, 'none'], WAIT(1, 'none'), WAIT(1, 'fire')]],
   ['H4. a shell whose start can\'t be read: young for 10 min from the Stop, then no longer holds it',
-    [['Stop', { background_tasks: [SH('mystery')] }, 'none'], PLUS(9).concat('none'), PLUS(1).concat('fire')]],
+    [['Stop', { background_tasks: [SH('mystery')] }, 'none'], WAIT(9, 'none'), WAIT(1, 'fire')]],
   ['H5. the main session works again before the shell ages out (its own Stop decides)',
     [['Stop', { background_tasks: [SH('young')] }, 'none'], ['PreToolUse', { tool_name: 'Read' }, 'none'],
-     PLUS(20).concat('none'), ['Stop', { background_tasks: [SH('young')] }, 'fire']]],
+     WAIT(20, 'none'), ['Stop', { background_tasks: [SH('young')] }, 'fire']]],
   ['I. turn ends while a subagent AND a young shell run; the agent stops; the idle prompt; the shell ages out',
     [['Stop', { background_tasks: [RUN('r1'), SH('almost')] }, 'none'], ['SubagentStop', { agent_id: 'r1' }, 'none'],
-     ['Notification', { notification_type: 'idle_prompt' }, 'none'], PLUS(2).concat('fire')]],
+     ['Notification', { notification_type: 'idle_prompt' }, 'none'], WAIT(2, 'fire')]],
   ['J. idle reminder 60 s after a finished turn',
     [['Stop', { background_tasks: [] }, 'fire'], ['Notification', { notification_type: 'idle_prompt' }, 'none']]],
 ];
 
+// Mirrors host/attention.js: anything not a known end counts as running (it fails closed).
+const ENDED = new Set(['completed', 'failed', 'killed', 'cancelled', 'stopped', 'error']);
 function hasRunningWork(p) {
   return Array.isArray(p.background_tasks) &&
-    p.background_tasks.some(t => t && (t.type === 'subagent' || t.type === 'shell') && t.status === 'running');
+    p.background_tasks.some(t => t && (t.type === 'subagent' || t.type === 'shell') && !ENDED.has(t.status));
 }
 
 function surfaceLabel(e, focused) {

@@ -348,8 +348,9 @@ const { tmpDir } = require('./tmp-dir');
 const MIN = 60000;
 const SHELL = (id, extra = {}) => ({ id, type: 'shell', status: 'running', description: 'npm run dev', command: 'npm run dev', ...extra });
 
-function shellHarness({ startedAt = {}, ...opts } = {}) {
+function shellHarness({ startedAt = {}, earlyOnce = false, ...opts } = {}) {
   let now = 1_000_000;
+  let early = earlyOnce;                                     // the first timer fires 1 ms before the clock agrees
   const sent = [];
   const timers = [];
   const a = createAttention({
@@ -371,10 +372,11 @@ function shellHarness({ startedAt = {}, ...opts } = {}) {
       for (;;) {
         const due = timers.filter(t => t.live && t.at <= to).sort((x, y) => x.at - y.at)[0];
         if (!due) break;
-        now = due.at; due.live = false; due.fn();
+        now = due.at - (early ? 1 : 0); early = false; due.live = false; due.fn();
       }
       now = to;
     },
+    get now() { return now; },
   };
 }
 const AGO = n => 1_000_000 - n;
@@ -556,10 +558,133 @@ test('input-needed is untouched by a waiting shell', () => {
   assert.deepStrictEqual(h.kinds(), ['input-needed']);
 });
 
-test('the real default timer is cleared by SessionEnd and does not keep the process alive', () => {
-  const a = createAttention({ now: () => 1_000_000, shellStartedAt: () => AGO(MIN) });
+test('the default timer does not keep the process alive, and SessionEnd clears it', () => {
+  const { unrefTimer } = require('../host/attention');
+  const t = unrefTimer(() => {}, 60 * MIN);
+  try { assert.strictEqual(t.hasRef(), false); } finally { clearTimeout(t); }
+  const cleared = [];
+  const a = createAttention({ now: () => 1_000_000, shellStartedAt: () => AGO(MIN), setTimer: () => 'handle', clearTimer: (x) => cleared.push(x) });
   a.handle({ event: 'Stop', payload: { background_tasks: [SHELL('s1')] } });
   a.handle({ event: 'SessionEnd', payload: {} });
+  assert.deepStrictEqual(cleared, ['handle']);
+});
+
+// --- PR #147 Dexter/Miguel: the timer's lifecycle -------------------------------------------------------------
+test('D1: a main-session file-tool PreToolUse, handed to activity() (host.js does, before its early return), cancels the wait', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(9 * MIN + 30000) } });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  assert.strictEqual(h.live().length, 1);
+  h.a.activity({ event: 'PreToolUse', payload: { tool_name: 'Read', tool_input: { file_path: 'b1.output' } } });
+  assert.deepStrictEqual(h.live(), []);
+  h.advance(30000);
+  assert.deepStrictEqual(h.sent, [], 'no "finished" into a turn that only reads and edits');
+  h.fire('Stop', { background_tasks: [] });
+  assert.deepStrictEqual(h.kinds(), ['finished'], 'the turn\'s own Stop is the one');
+});
+
+test('D1: activity() ignores a subagent\'s events and anything that is not activity', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(MIN) } });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  h.a.activity({ event: 'PreToolUse', payload: { tool_name: 'Read', agent_id: 'r9' } });
+  h.a.activity({ event: 'Stop', payload: {} });
+  h.a.activity({ event: 'Notification', payload: {} });
+  assert.strictEqual(h.live().length, 1, 'none of those is main-session work');
+  h.a.activity({ event: 'PreToolUse' });
+  assert.deepStrictEqual(h.live(), [], 'a main-session event with no payload at all is still activity');
+});
+
+test('D2: a timer that fires 1 ms early re-arms for the rest and still raises finished, once', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(4 * MIN) }, earlyOnce: true });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  h.advance(6 * MIN);
+  assert.deepStrictEqual(h.kinds(), ['finished']);
+  h.advance(60 * MIN);
+  assert.deepStrictEqual(h.kinds(), ['finished']);
+});
+
+test('D2: an early timer while an agent still runs re-arms but raises nothing', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(4 * MIN) }, earlyOnce: true });
+  h.fire('Stop', { background_tasks: [RUN('r1'), SHELL('s1')] });
+  h.advance(60 * MIN);
+  assert.deepStrictEqual(h.sent, []);
+  assert.deepStrictEqual(h.live(), [], 'and nothing is left ticking');
+});
+
+test('D3: a prompt cancels the timer, its turn ends in StopFailure while the shell is young: the timer comes back', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(MIN) } });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  h.fire('UserPromptSubmit', {});
+  assert.deepStrictEqual(h.live(), []);
+  h.advance(2 * MIN);
+  h.fire('StopFailure', {});
+  assert.strictEqual(h.live().length, 1);
+  h.advance(8 * MIN);
+  assert.deepStrictEqual(h.kinds(), ['finished']);
+});
+
+test('D3: a StopFailure after the shell has aged out releases the held finished at once', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(MIN) } });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  h.fire('UserPromptSubmit', {});
+  h.advance(20 * MIN);
+  assert.deepStrictEqual(h.sent, []);
+  h.fire('StopFailure', {});
+  assert.deepStrictEqual(h.kinds(), ['finished']);
+});
+
+test('D3: the idle prompt while the shell is still young re-arms the timer the prompt cancelled', () => {
+  const h = shellHarness({ startedAt: { s1: AGO(MIN) } });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  h.fire('UserPromptSubmit', {});
+  h.advance(2 * MIN);
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent, []);
+  assert.strictEqual(h.live().length, 1);
+  h.advance(8 * MIN);
+  assert.deepStrictEqual(h.kinds(), ['finished']);
+});
+
+test('D3: a StopFailure with nothing held, or with an agent still running, raises nothing', () => {
+  const none = shellHarness();
+  none.fire('StopFailure', {});
+  assert.deepStrictEqual(none.sent, []);
+  const h = shellHarness({ startedAt: { s1: AGO(MIN) } });
+  h.fire('Stop', { background_tasks: [RUN('r1'), SHELL('s1')] });
+  h.fire('StopFailure', {});
+  h.advance(60 * MIN);
+  assert.deepStrictEqual(h.sent, []);
+});
+
+test('D4: a start in the future is no younger than now: the wait is at most 10 minutes', () => {
+  for (const ahead of [60 * MIN, 30 * 24 * 60 * MIN]) {
+    const h = shellHarness({ startedAt: { s1: 1_000_000 + ahead } });
+    h.fire('Stop', { background_tasks: [SHELL('s1')] });
+    assert.ok(h.live()[0].ms <= 10 * MIN, `ms ${h.live()[0].ms}`);
+    h.advance(10 * MIN);
+    assert.deepStrictEqual(h.kinds(), ['finished'], String(ahead));
+  }
+});
+
+test('D5: a start that was readable stays known when the stat later fails: an old shell does not become young', () => {
+  let calls = 0;
+  const h = shellHarness({ shellStartedAt: () => (calls++ === 0 ? AGO(30 * MIN) : null) });
+  h.fire('Stop', { background_tasks: [SHELL('dev')] });
+  assert.deepStrictEqual(h.kinds(), ['finished']);
+  h.advance(5 * MIN);
+  h.fire('Stop', { background_tasks: [SHELL('dev')] });
+  h.advance(10 * MIN);                                       // past the debounce
+  h.fire('Stop', { background_tasks: [SHELL('dev')] });
+  assert.deepStrictEqual(h.kinds(), ['finished', 'finished', 'finished'], 'every Stop is finished: the shell stayed old');
+});
+
+test('D5: the first sighting is the anchor even when a later stat succeeds with an older start', () => {
+  let calls = 0;
+  const h = shellHarness({ shellStartedAt: () => (calls++ === 0 ? null : AGO(30 * MIN)) });
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  assert.deepStrictEqual(h.sent, [], 'unreadable at first: young');
+  h.advance(MIN);
+  h.fire('Stop', { background_tasks: [SHELL('s1')] });
+  assert.deepStrictEqual(h.kinds(), ['finished'], 'now readable and old');
 });
 
 // --- where a shell's start comes from: its own output file's birth time -----------------------------------------

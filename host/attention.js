@@ -106,8 +106,13 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   // notifies, a follow-up turn that ends in StopFailure -- so once every one
   // of them has stopped, Claude Code's own idle_prompt raises "finished"
   // (Ricardo, 2026-10-01: idle_prompt only). A settle timer was tried and
-  // fired into a working session: the host never sees UserPromptSubmit and
-  // hooks only Agent/Task/Bash, so it can't know the main session is quiet.
+  // fired into a working session: the host couldn't tell the main session was
+  // quiet. The only timer left is the shell wait below. What cancels it is every
+  // main-session hook the host sees (UserPromptSubmit, and a PreToolUse of ANY
+  // tool, file tools included: host.js hands those to `activity` before its
+  // occupancy-only return). A turn that opens with no prompt and uses no tool at
+  // all (a background task's notice answered in plain text) is invisible, so the
+  // timer can still fire into it: one early "finished", bounded by that turn's own Stop.
   let held = null;
   const ended = new Set();
 
@@ -127,45 +132,68 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     });
   }
 
-  // Young shells a held-back Stop waits on: when each turns 10 minutes old (ms). A shell with an unreadable start
-  // is anchored at the first Stop that listed it (`firstSeen`), so waiting on it always ends.
-  const firstSeen = new Map();
+  // Young shells a held-back Stop waits on: when each turns 10 minutes old (ms). `starts` is the best start known
+  // per shell id: the output file's birth time when it could be read (remembered, so a later unreadable stat can't
+  // make an old shell young again), else the moment of the FIRST Stop that listed it. Waiting always ends.
+  const starts = new Map();
   let timer = null;
 
   const stopTimer = () => { if (timer !== null) { clearTimer(timer); timer = null; } };
   const youngShell = () => held !== null && held.shells.some(at => at > now());
   const settled = () => held !== null && held.ids.size === 0 && held.unnamed === 0 && !youngShell();
 
+  // Arms the one timer for the last young shell to turn 10 minutes old. Never longer than 10 minutes (a bad clock
+  // must not make it so), never shorter than 1 ms.
+  function armShellTimer() {
+    if (held === null || timer !== null || !youngShell()) return;
+    timer = setTimer(expire, Math.min(SHELL_MAX_AGE_MS, Math.max(1, Math.max(...held.shells) - now())));
+  }
+
   // The turn is over, an agent may have stopped, and a shell may have aged out: with nothing else waiting,
-  // that is "everything finished". Only fires into a quiet session -- any main-session activity cancels it.
+  // that is "everything finished". A timer that fires a hair early (it runs on the monotonic clock, `now` is the
+  // wall clock) finds the shell still young by a millisecond: it re-arms for the rest, it never gives up.
   function expire() {
     timer = null;
-    if (settled()) { held = null; finished({}); }
+    if (settled()) { held = null; finished({}); return; }
+    armShellTimer();
   }
 
   function shellExpiry(task, p) {
     const t = now();
-    let start = typeof task.id === 'string' && task.id ? shellStartedAt(task, p) : null;
-    if (typeof start !== 'number' || !Number.isFinite(start)) {
-      if (typeof task.id !== 'string' || !task.id) start = t;
-      else {
-        if (!firstSeen.has(task.id)) {
-          firstSeen.set(task.id, t);
-          if (firstSeen.size > ENDED_MEMORY) firstSeen.delete(firstSeen.keys().next().value);
-        }
-        start = firstSeen.get(task.id);
-      }
-    }
-    return start + SHELL_MAX_AGE_MS;
+    const id = typeof task.id === 'string' && task.id ? task.id : null;
+    if (id === null) return t + SHELL_MAX_AGE_MS;             // nothing to remember it by: 10 minutes from this Stop
+    const read = shellStartedAt(task, p);
+    if (typeof read === 'number' && Number.isFinite(read)) starts.set(id, read);
+    else if (!starts.has(id)) starts.set(id, t);
+    if (starts.size > ENDED_MEMORY) starts.delete(starts.keys().next().value);   // deliberate: 200+ shells in one session
+    // A start in the future (a stepped clock) is no younger than now.
+    return Math.min(starts.get(id), t) + SHELL_MAX_AGE_MS;
+  }
+
+  // Main-session activity: the session is not quiet, so the shell timer must not fire into it. host.js calls this
+  // for EVERY hook event, before its early return for file-tool PreToolUse events (which never reach `handle`).
+  function activity({ event, payload }) {
+    const p = payload || {};
+    if (MAIN_ACTIVITY.has(event) && !(typeof p.agent_id === 'string' && p.agent_id)) stopTimer();
   }
 
   function handle({ event, payload }) {
     const p = payload || {};
 
-    if (MAIN_ACTIVITY.has(event) && !(typeof p.agent_id === 'string' && p.agent_id)) { stopTimer(); return; }
+    if (MAIN_ACTIVITY.has(event)) { activity({ event, payload }); return; }
+
+    // A turn that ended in an error sends no Stop. Whatever cancelled the timer (a prompt), it is over now, so a
+    // shell that is still young gets its timer back, and one that has aged out releases the held "finished".
+    if (event === 'StopFailure') {
+      if (settled()) { held = null; finished({}); } else armShellTimer();
+      return;
+    }
 
     if (event === 'Notification') {
-      if (p.notification_type === 'idle_prompt' && settled()) { held = null; finished({}); return; }
+      if (p.notification_type === 'idle_prompt') {
+        if (settled()) { held = null; finished({}); return; }
+        armShellTimer();                                       // quiet now, and the shell is still young: wait for it
+      }
       if (p.notification_type !== undefined && !NEEDS_INPUT.has(p.notification_type)) return;
       raise('input-needed', {
         title: project ? `${project} needs you` : 'Claude needs you',
@@ -184,7 +212,7 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
         const ids = new Set(running.map(t => t.id).filter(id => typeof id === 'string' && id));
         // One with no id can't be crossed off: only a later Stop resolves it.
         held = { ids, unnamed: running.length - ids.size, shells };
-        if (shells.length) timer = setTimer(expire, Math.max(...shells) - now());
+        armShellTimer();
         return;
       }
       finished(p);
@@ -200,11 +228,12 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
       return;
     }
 
-    if (event === 'SessionEnd') { held = null; ended.clear(); firstSeen.clear(); stopTimer(); }
+    if (event === 'SessionEnd') { held = null; ended.clear(); starts.clear(); stopTimer(); }
   }
 
   emitter.handle = handle;
+  emitter.activity = activity;
   return emitter;
 }
 
-module.exports = { createAttention, makeShellStartedAt, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT, SHELL_MAX_AGE_MS };
+module.exports = { createAttention, makeShellStartedAt, unrefTimer, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT, SHELL_MAX_AGE_MS };
