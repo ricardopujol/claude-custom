@@ -102,6 +102,8 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
+// BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
+const { isSideEnv } = require('./side-session');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
 const { createOccupancyProducer, isOccupancyOnly, teammateFromMeta, withoutFileText } = require('./occupancy-producer');
@@ -390,7 +392,10 @@ const canvasMcp = helperExists && canvasMcpEnabled({ env: process.env, stateDir:
   ? { nodePath: process.versions.electron ? 'node' : process.execPath, scriptPath: path.join(__dirname, 'canvas-mcp.js'),
     root: path.join(HARNESS_DIR, 'state'), pointerFile: CANVAS_POINTER_FILE }
   : null;
-const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp });
+// A side host runs claude in plan mode, takes no session lock (below) and says so in its identity, so it never holds the
+// worktree's writer role and the port walk never mistakes it for the folder's own host.
+const SIDE = isSideEnv(process.env);
+const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side: SIDE });
 
 if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
@@ -1243,6 +1248,8 @@ const occupancy = createOccupancyProducer({
     const inv = mood.invocations().find(i => i.agentId === agentId);
     return inv ? inv.name : null;
   },
+  // #81: what a side session's agents claim, they read.
+  role: SIDE ? 'reader' : undefined,
   // A teammate's SubagentStop ends a turn, not the agent: its claim is kept while it idles.
   isTeammate: teammateFromMeta,
   log: (...a) => console.log(...a),
@@ -1549,7 +1556,7 @@ function cleanEnv() {
 // blocked, until the person picks *Open anyway*. Every use of `term` below is
 // guarded for that. Design: documentation/PLAN_WORKTREE_TABS.md, Extension X.
 let term = null;
-const SESSION_LOCK = lockPathFor(CWD);
+const SESSION_LOCK = SIDE ? null : lockPathFor(CWD);
 let lockOwner = null;                  // what we wrote into the lock, once taken
 let lockState = { state: 'pending' };  // host/session-gate.js documents the shapes
 // WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE (Extension X3),
@@ -2708,7 +2715,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE,
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -2725,7 +2732,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -2804,7 +2811,7 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

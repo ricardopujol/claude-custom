@@ -263,12 +263,14 @@ function canvasMcpConfig(c) {
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists, canvasMcp } = {}) {
-  const args = ['--dangerously-skip-permissions'];
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false } = {}) {
+  // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
+  // override it, so the two never go together; and it is offered no panel of Claude's own.
+  const args = side === true ? ['--permission-mode', 'plan'] : ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
   // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
-  const mcp = helperExists ? canvasMcpConfig(canvasMcp) : null;
+  const mcp = helperExists && side !== true ? canvasMcpConfig(canvasMcp) : null;
   if (mcp) args.push('--mcp-config', mcp);
   return args;
 }

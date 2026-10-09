@@ -60,6 +60,7 @@ const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store'
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
+const { isSideKey } = require('../host/side-session');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
@@ -248,8 +249,11 @@ function attachOnlyText(d) {
 // Returns { port, action } or null when the user named a port we must not take.
 // Per TAB: each tab's folder hashes to its own port.
 async function chooseHostPort(tab) {
-  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
-  if (EXPLICIT_PORT) {
+  // #81: a branch tab's side session is looked for as a side host, on a port of its own: never the window's explicit one
+  // (that is the branch tab's), and the walk never attaches it to the folder's own host.
+  const side = tab.side === true;
+  if (!side && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (!side && EXPLICIT_PORT) {
     // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
     const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
@@ -264,7 +268,7 @@ async function chooseHostPort(tab) {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: tab.cwd, occupantAt });
+  return resolvePort({ cwd: tab.cwd, occupantAt, side });
 }
 
 function spawnHost(tab, port, token) {
@@ -286,7 +290,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -928,9 +932,18 @@ function registerIpc() {
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     const st = tabShell.menuState(key);
+    // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
+    const side = tabShell.sideMenu(key);
+    const sideItem = {
+      label: side.enabled ? side.label : `${side.label} (${side.why})`,
+      enabled: side.enabled,
+      click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
+    };
+    if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
     Menu.buildFromTemplate([
       markSubmenu(tabShell.branchOf(key)),
       { type: 'separator' },
+      sideItem,
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
@@ -1391,7 +1404,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1452,6 +1465,12 @@ function startProbeDriver(port) {
       };
     },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
+    // #81: what the tab menu's Open side session does, by the branch tab's label.
+    async sideOpen(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.openSide(key);
+    },
     // The window's own `focus` handler, run as the OS would.
     async windowFocus() { win.emit('focus'); return { ok: true, osFocused: win.isFocused() }; },
     async select(label) {

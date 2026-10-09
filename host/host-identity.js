@@ -71,13 +71,15 @@ function defaultIsAlive(pid) {
 // `claudePid` is the host's claude, once it has one (Dexter, PR #83 F1): a stop
 // waits for it too, since the host can exit while claude is still closing in
 // the folder -- and a host with no session lock has nowhere else to say it.
-function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid } = {}) {
+function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
   const doc = { port, cwd, pid, startedAt: Date.now() };
   if (typeof processStartedAt === 'string' && processStartedAt) doc.processStartedAt = processStartedAt;
   if (Number.isInteger(claudePid) && claudePid > 0) doc.claudePid = claudePid;
+  // #81: a tab's read-only side session shares the folder; this keeps the port walk from mistaking it for the folder's own host.
+  if (side === true) doc.side = true;
   try {
     fs.writeFileSync(tmp, JSON.stringify(doc),
       { encoding: 'utf8', mode: 0o600 });
@@ -111,7 +113,10 @@ function readIdentity({ dir, port, isAlive = defaultIsAlive } = {}) {
   // file, so nothing in it is worth trusting.
   if (Number(parsed.port) !== Number(port)) return null;
   if (!isAlive(parsed.pid)) return null;
-  return { port: Number(port), cwd: parsed.cwd, pid: parsed.pid, startedAt: parsed.startedAt };
+  const identity = { port: Number(port), cwd: parsed.cwd, pid: parsed.pid, startedAt: parsed.startedAt };
+  // Only a side host's carries the flag: an ordinary host's identity is what it always was.
+  if (parsed.side === true) identity.side = true;
+  return identity;
 }
 
 /**

@@ -50,6 +50,7 @@ const occupancyDisplay = require('./occupancy-display');
 const { closeReason } = require('../host/close-safety');
 const summaryDisplay = require('./summary-display');
 const { planGoTo } = require('./go-to-session');
+const { sideKeyOf, parentKeyOf, isSideKey, sideLabel } = require('../host/side-session');
 
 // --- pure helpers ------------------------------------------------------------
 
@@ -114,6 +115,9 @@ function observeWorktrees(porcelain, container, readMarker) {
 
 // What a tab says when no port could be found or refused for its folder.
 const NO_PORT_ERROR = 'no usable port for this folder';
+
+// #81: what a side tab says once its claude has ended.
+const SIDE_ENDED_TEXT = "This side session has ended. Reopen it from this tab's menu.";
 
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
@@ -318,15 +322,50 @@ function createShell(deps) {
     return t && typeof t.branch === 'string' && t.branch !== '' ? t.branch : null;
   }
 
+  /**
+   * The strip's entries with each branch tab's side session (BACKLOG #81) right after it. A side tab is not a worktree, so
+   * the reducer's state never lists it; it is joined here, from the shell's own records.
+   */
+  function entriesWithSides() {
+    const sideSelected = isSideKey(selectedKey) && tabs.has(selectedKey) ? selectedKey : null;
+    const base = tabModel.stripModel(state, runtime(), sideSelected ? parentKeyOf(sideSelected) : selectedKey, { keyOf });
+    const out = [];
+    for (const e of base) {
+      const mine = tabs.get(e.key);
+      // While its side tab is the one showing, the branch tab is not selected, so it can call for a look again.
+      out.push(sideSelected !== null && e.selected
+        ? { ...e, selected: false, pulse: tabModel.pulseFor(mine && mine.status ? mine.status : null) } : e);
+      const sk = sideKeyOf(e.key);
+      const rec = sk ? tabs.get(sk) : null;
+      if (rec) out.push(sideEntry(e, rec, sideSelected === sk));
+    }
+    return out;
+  }
+
+  function sideEntry(parent, rec, selected) {
+    const st = rec.status;
+    return {
+      key: rec.key, label: sideLabel(parent.label), isDev: false, selected, started: rec.started === true,
+      // It stays until its branch tab closes: no close button of its own.
+      closable: false,
+      working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
+      summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
+      lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null,
+      side: true, parentKey: parent.key, role: 'reader',
+    };
+  }
+
   function model() {
     const claims = readClaims();
     const at = now();
-    return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
+    return entriesWithSides().map((e) => {
       const t = tabs.get(e.key);
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
-        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
+        badge: tabModel.badgeFor(e),
+        phaseText: e.side === true && t && t.ended === true ? SIDE_ENDED_TEXT : tabModel.phaseText(e),
+        mark: readMark(branchOf(e.key)),
         // #63: the CPU warning chip ({ pct, level } or null).
         resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
@@ -344,7 +383,7 @@ function createShell(deps) {
     const claims = readClaims();
     for (const tab of tabs.values()) {
       if (!tab.view) continue;
-      const payload = occupancyDisplay.viewPayload(claims, tab.key, { keyOf });
+      const payload = occupancyDisplay.viewPayload(claims, tab.folderKey || tab.key, { keyOf });
       const text = JSON.stringify(payload);
       if (text === tab.occupancySent) continue;
       tab.occupancySent = text;
@@ -356,7 +395,7 @@ function createShell(deps) {
   function occupancyFor(sender) {
     const tab = tabForSender(sender);
     if (!tab) return null;
-    const payload = occupancyDisplay.viewPayload(readClaims(), tab.key, { keyOf });
+    const payload = occupancyDisplay.viewPayload(readClaims(), tab.folderKey || tab.key, { keyOf });
     tab.occupancySent = JSON.stringify(payload);
     return payload;
   }
@@ -390,6 +429,20 @@ function createShell(deps) {
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
       attachPromise: null, unconfirmed: null, ended: false, occupancySent: EMPTY_OCCUPANCY,
     };
+  }
+
+  /**
+   * A branch tab's side session: the same folder, a host of its own (the record's `side` flag makes main spawn it as a side
+   * host and look for it as one). `branch` is the name the Resources panel and a close dialog show.
+   */
+  function newSideRecord(parent) {
+    const rec = newRecord({ path: parent.cwd, branch: null, isDev: false });
+    rec.key = sideKeyOf(parent.key);
+    rec.side = true;
+    rec.parentKey = parent.key;
+    rec.folderKey = parent.key;
+    rec.branch = sideLabel(parent.branch || path.basename(parent.cwd));
+    return rec;
   }
 
   // Create the tab's view. The session is running by now (attached or spawned).
@@ -525,6 +578,7 @@ function createShell(deps) {
         const tab = newRecord(entry);
         tabs.set(key, tab);
         attachIfRunning(tab);
+        adoptSide(tab);
       } else if (a.type === 'stop') {
         const t = tabByKey(key);
         if (t && t.started && t.port && t.token) {
@@ -534,6 +588,10 @@ function createShell(deps) {
       } else if (a.type === 'close') {
         const t = tabByKey(key);
         if (!t) continue;
+        // A side session lives and dies with its branch tab (#81).
+        const sk = sideKeyOf(key);
+        const sideShowing = sk !== null && selectedKey === sk;
+        if (sk !== null) dropSide(sk, { stop: true });
         t.closed = true;
         if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
         t.view = null;
@@ -542,8 +600,9 @@ function createShell(deps) {
         // Reopen meanwhile can't start it early (PR #80 Dexter F1).
         if (!(setups.has(key) && setups.get(key).running === true)) setups.delete(key);
         createdWarnings.delete(key);
-        if (key === selectedKey) {
-          selectedKey = tabModel.afterClose(before, key, selectedKey);
+        if (key === selectedKey || sideShowing) {
+          // The model from before, without the side tab that went with it: it is not a neighbour to land on.
+          selectedKey = tabModel.afterClose(before.filter(e => e.parentKey !== key), key, key);
           reselect = true;
         }
       } else if (a.type === 'error') {
@@ -714,6 +773,8 @@ function createShell(deps) {
    * Hand close, once per tab at a time. A second request for a tab already closing (a double click) is ignored.
    */
   async function closeTab(key, opts) {
+    // A side tab has no close of its own: it ends with its branch tab (#81).
+    if (isSideKey(key)) return { ok: false, error: 'not closable' };
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
     try { return await closeTabOnce(key, opts); } finally { closing.delete(key); }
@@ -1141,6 +1202,21 @@ function createShell(deps) {
     return { key, override: e.lockGlyph === 'blocked', close: e.closable === true && mode === 'tabs' };
   }
 
+  /** The menu's side-session item for a branch tab or a side tab: its text, whether it works, and which branch tab it acts on. */
+  function sideMenu(key) {
+    const e = model().find(x => x.key === key);
+    const gone = { enabled: false, label: 'Open side session', target: null };
+    if (mode !== 'tabs') return { ...gone, why: 'not a project window' };
+    if (!e) return { ...gone, why: 'no such tab' };
+    const target = e.side === true ? e.parentKey : e.key;
+    const parent = tabByKey(target);
+    if (!parent) return { ...gone, why: 'no such tab' };
+    const rec = tabs.get(sideKeyOf(target));
+    const label = !rec ? 'Open side session' : (rec.ended === true ? 'Reopen side session' : 'Go to side session');
+    if (setupHolds(parent)) return { enabled: false, label, target, why: 'its worktree is still being set up' };
+    return { enabled: true, label, target };
+  }
+
   function override(key) {
     const tab = tabByKey(key);
     if (!tab || !tab.view) return false;
@@ -1170,11 +1246,71 @@ function createShell(deps) {
     return tab.isDev ? 'dev' : 'tab';
   }
 
+  // --- #81: the standing read-only side session ---------------------------------------------------------------
+
+  /**
+   * Stop and forget a branch tab's side session. Its host is sent a stop (an ended one has nobody to hear it, which is
+   * fine); the page goes; the selection is the caller's to move.
+   */
+  function dropSide(sk, { stop }) {
+    const t = tabs.get(sk);
+    if (!t) return;
+    t.closed = true;
+    if (stop === true) {
+      const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
+      if (target) {
+        hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } })
+          .then(r => log(`[shell] stop ${sk}: ${r && r.ok ? 'sent' : (r && r.error)}`), () => {});
+      }
+    }
+    if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+    t.view = null;
+    tabs.delete(sk);
+  }
+
+  /**
+   * *Open side session* (a tab's menu): a second real claude in the tab's folder, in plan mode, as a small tab right after
+   * its branch tab. Once open it stays; asking again goes to it. A stopped one is dropped and started afresh.
+   */
+  async function openSide(key) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    const sk = sideKeyOf(key);
+    const parent = sk === null ? null : tabByKey(key);
+    if (!parent || parent.closed) return { ok: false, error: 'no such tab' };
+    if (setupHolds(parent)) return { ok: false, error: 'its worktree is still being set up' };
+    const existing = tabs.get(sk);
+    if (existing && existing.ended !== true) {
+      await select(sk);          // an unstarted one (a failed start) is tried again by the selection
+      return { ok: true, already: true };
+    }
+    if (existing) dropSide(sk, { stop: false });
+    tabs.set(sk, newSideRecord(parent));
+    await select(sk);
+    return { ok: true };
+  }
+
+  /** At open: a side host still running from an earlier window comes back as the tab's side tab, with no spawn. */
+  function adoptSide(parent) {
+    const sk = sideKeyOf(parent.key);
+    if (sk === null) return;
+    queue.run(async () => {
+      if (parent.closed || destroyed || tabs.has(sk)) return;
+      const rec = newSideRecord(parent);
+      let chosen = null;
+      try { chosen = await hosts.choosePort(rec); } catch (err) { log('[shell] side port probe failed:', err && err.message); }
+      if (!chosen || chosen.action !== 'attach' || parent.closed || tabs.has(sk)) return;
+      const token = hosts.tokenFor(chosen.port);
+      if (!token) return;
+      tabs.set(sk, rec);
+      present(rec, chosen.port, token);
+    }).then(publish, publish);
+  }
+
   function destroy() { destroyed = true; }
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
+    createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked, openSide, sideMenu,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
@@ -1358,6 +1494,10 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
         return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
+      // #81: the tab menu's Open side session, without a native popup nobody can click.
+      case 'side-open':
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'side-open needs a label' };
+        return await api.sideOpen(cmd.label);
       // #31: what the window's own `focus` event does, without an OS to hand over focus.
       case 'windowFocus': return await api.windowFocus();
       case 'view':

@@ -1,0 +1,391 @@
+'use strict';
+/**
+ * BACKLOG #81: the standing read-only side session, in the tab shell (app/tab-shell.js). A tab's menu opens a second
+ * real `claude` in the same folder (the host is told it is a side host: plan mode, no session lock); it sits as a small
+ * tab right after its branch's tab, stays until that tab closes, and can be reopened from the same menu once it has
+ * stopped. It is a reader: it never counts as an agent working in the folder.
+ *
+ * Every effect is a recording fake, as in test/tab-shell.test.js.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const path = require('path');
+const os = require('os');
+
+const { createShell, handleProbeCommand } = require('../app/tab-shell');
+const { normPath } = require('../host/project-layout');
+const { sideKeyOf } = require('../host/side-session');
+
+const ROOT = path.join(os.tmpdir(), 'cc-tabshell-side');
+const wt = (name) => path.join(ROOT, name);
+const key = (name) => normPath(wt(name));
+const skey = (name) => sideKeyOf(key(name));
+
+const porcelain = (entries) => entries.map(([name, branch]) =>
+  `worktree ${wt(name).replace(/\\/g, '/')}\nHEAD 0123456789012345678901234567890123456789\n` +
+  (branch ? `branch refs/heads/${branch}\n` : 'detached\n')).join('\n') + '\n';
+const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
+
+const NO_OPS = {
+  available: () => ({ create: false, setup: false, remove: false }),
+  create: async () => ({ ok: false, error: 'no' }), setup: async () => ({ ok: false, error: 'no' }),
+  remove: async () => ({ ok: false, error: 'no' }),
+};
+
+const settle = () => new Promise(r => setImmediate(r));
+const flush = async () => { for (let i = 0; i < 6; i++) await settle(); };
+
+/** running: port -> { cwd, side } of a live host. */
+function harness({ mode = 'tabs', running = {}, occupancy, safety, setupHoldsFeatA = false } = {}) {
+  const h = {
+    running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
+    confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
+  };
+  const base = 7700;
+  const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
+  const deps = {
+    mode, container: ROOT, cwd: wt('dev'), launchedFrom: null, log: () => {},
+    git: {
+      list: async () => h.listText,
+      marker: (p, branch) => (h.markers[normPath(p)] === branch ? { branch, pr: 1, mergedAt: '2026-10-09T00:00:00Z' } : null),
+    },
+    ops: NO_OPS,
+    hosts: {
+      choosePort: async (tab) => {
+        let free = null;
+        for (let p = base; p < base + 50; p++) {
+          const occ = h.running[p];
+          if (occ === undefined) { if (free === null) free = p; continue; }
+          if (normPath(occ.cwd) === normPath(tab.cwd) && (occ.side === true) === (tab.side === true)) return { port: p, action: 'attach' };
+        }
+        return free === null ? null : { port: free, action: 'spawn' };
+      },
+      probe: async (port) => (h.running[port] !== undefined ? 'listening' : 'refused'),
+      spawn: ({ tab, port, token }) => {
+        h.spawns.push({ key: tab.key, port, token, side: tab.side === true, cwd: tab.cwd });
+        h.running[port] = { cwd: tab.cwd, side: tab.side === true };
+      },
+      wait: async () => true,
+      tokenFor: tokenOf,
+      tokenFile: tokenOf,
+      newToken: () => `fresh-${++h.tokens}`,
+      control: async (c) => { h.controls.push(c); return { ok: true, reply: null }; },
+      identity: () => null,
+      readToken: () => null,
+    },
+    views: {
+      create: (tab) => { const v = { tab: tab.key, id: h.viewsMade.length }; h.viewsMade.push(v); return v; },
+      destroy: (tab) => h.viewsGone.push(tab.key),
+      send: (tab, channel, payload) => { h.sent.push([tab.key, channel, payload]); },
+      owns: (tab, sender) => tab.view === sender,
+    },
+    ui: {
+      confirmClose: async (tab, opts) => { h.confirms.push(opts || null); return h.confirm; },
+      changed: (snap) => h.changes.push(snap),
+      focusWindow: () => {},
+      isFocused: () => true,
+    },
+    now: () => h.clock,
+    sleep: async () => {},
+  };
+  if (occupancy !== undefined) deps.occupancy = occupancy;
+  if (safety !== undefined) deps.safety = safety;
+  h.shell = createShell(deps);
+  return h;
+}
+
+const labels = (h) => h.shell.model().map(e => e.label);
+const keys = (h) => h.shell.model().map(e => e.key);
+const SIDE_A = 'feat/a · side';
+const dev = (side) => ({ cwd: wt('dev'), side });
+const featA = (side) => ({ cwd: wt('feat-a'), side });
+
+async function opened(over = {}) {
+  const h = harness({ running: { 7700: dev(false), 7701: featA(false) }, ...over });
+  await h.shell.open();
+  await flush();
+  return h;
+}
+
+// --- opening it -----------------------------------------------------------------------------------------------
+
+test('Open side session spawns a SECOND host for the same folder, told it is a side host, on its own port', async () => {
+  const h = await opened();
+  const r = await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.spawns, [{ key: skey('feat-a'), port: 7702, token: 'fresh-1', side: true, cwd: wt('feat-a') }]);
+  assert.strictEqual(h.running[7701].side, false, 'the branch tab\'s own host is untouched');
+});
+
+test('the side tab sits right after its branch tab, labelled "<branch> · side", is selected, and has a page', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+  const side = h.shell.model().find(e => e.label === SIDE_A);
+  assert.strictEqual(side.key, skey('feat-a'));
+  assert.strictEqual(side.side, true);
+  assert.strictEqual(side.parentKey, key('feat-a'));
+  assert.strictEqual(side.role, 'reader');
+  assert.strictEqual(side.selected, true);
+  assert.strictEqual(side.started, true);
+  assert.strictEqual(side.closable, false, 'it stays until its branch tab closes: no close button of its own');
+  assert.strictEqual(h.shell.model().filter(e => e.selected).length, 1, 'exactly one tab is selected');
+  assert.ok(h.viewsMade.some(v => v.tab === skey('feat-a')));
+});
+
+test('opened once: asking again selects the live one, and spawns nothing', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.select(key('feat-b'));
+  const again = await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(again.ok, true);
+  assert.strictEqual(again.already, true);
+  assert.strictEqual(h.spawns.filter(s => s.side).length, 1, 'one side host, ever');
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, skey('feat-a'));
+  assert.strictEqual(labels(h).filter(l => l === SIDE_A).length, 1);
+});
+
+test('the develop tab can have a side session too', async () => {
+  const h = await opened();
+  assert.strictEqual((await h.shell.openSide(key('dev'))).ok, true);
+  assert.deepStrictEqual(labels(h), ['develop', 'develop · side', 'feat/a', 'feat/b']);
+});
+
+test('refused: a single-folder window, a tab that is not there, a side tab\'s own side, and a worktree still being set up', async () => {
+  const single = harness({ mode: 'single', running: { 7700: dev(false) } });
+  await single.shell.open();
+  assert.strictEqual((await single.shell.openSide(key('dev'))).ok, false);
+
+  const h = await opened();
+  assert.strictEqual((await h.shell.openSide(key('ghost'))).ok, false);
+  assert.strictEqual((await h.shell.openSide(undefined)).ok, false);
+  await h.shell.openSide(key('feat-a'));
+  assert.strictEqual((await h.shell.openSide(skey('feat-a'))).ok, false, 'no side of a side');
+  assert.strictEqual(h.spawns.length, 1);
+});
+
+// --- it stays -------------------------------------------------------------------------------------------------
+
+test('it stays: polls, other selections and a restart of nothing do not close it', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.select(key('feat-b'));
+  await h.shell.poll();
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+  assert.deepStrictEqual(h.viewsGone, []);
+  assert.strictEqual(h.controls.length, 0, 'nothing was stopped');
+});
+
+test('Ctrl+Tab walks through the side tab in strip order', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.select(key('feat-a'));
+  await h.shell.next();
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, skey('feat-a'));
+  await h.shell.next();
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
+});
+
+test('the side tab cannot be closed by hand: it ends with its branch tab', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.confirms, []);
+  assert.strictEqual(labels(h).includes(SIDE_A), true);
+});
+
+// --- it ends with its branch tab -------------------------------------------------------------------------------
+
+test('closing the branch tab stops the side host too, closes its page, and selects a real tab', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  await flush();
+  const stopped = h.controls.filter(c => c.msg.type === 'stop').map(c => c.port).sort();
+  assert.deepStrictEqual(stopped, [7701, 7702]);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b']);
+  assert.ok(h.viewsGone.includes(skey('feat-a')));
+  const sel = h.shell.model().filter(e => e.selected);
+  assert.strictEqual(sel.length, 1);
+  assert.strictEqual(sel[0].side, undefined, 'never a side tab that is gone');
+});
+
+test('closing a tab that was NOT showing leaves the selection where it was', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.select(key('feat-b'));
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
+});
+
+test('closing a branch tab with no side session stops only its own host', async () => {
+  const h = await opened();
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.controls.map(c => c.port), [7701]);
+});
+
+test('a worktree git no longer lists takes its side session with it', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(h.shell.model().length, 4);
+  h.listText = porcelain([['dev', 'develop'], ['feat-b', 'feat/b']]);
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b']);
+  assert.deepStrictEqual(h.controls.map(c => c.port).sort(), [7701, 7702]);
+});
+
+// --- stopped: reopen from the same menu --------------------------------------------------------------------------
+
+test('the menu offers Open, then Go to, then Reopen once the side session has stopped', async () => {
+  const h = await opened();
+  assert.deepStrictEqual(h.shell.sideMenu(key('feat-a')), { enabled: true, label: 'Open side session', target: key('feat-a') });
+  await h.shell.openSide(key('feat-a'));
+  assert.deepStrictEqual(h.shell.sideMenu(key('feat-a')), { enabled: true, label: 'Go to side session', target: key('feat-a') });
+  delete h.running[7702];            // its claude ended, and the host with it
+  await h.shell.poll();
+  assert.deepStrictEqual(h.shell.sideMenu(key('feat-a')), { enabled: true, label: 'Reopen side session', target: key('feat-a') });
+  assert.deepStrictEqual(h.shell.sideMenu(skey('feat-a')), { enabled: true, label: 'Reopen side session', target: key('feat-a') });
+});
+
+test('a stopped side session reopens fresh: a new host, one tab, selected', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  delete h.running[7702];
+  await h.shell.poll();
+  const r = await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.notStrictEqual(r.already, true);
+  assert.strictEqual(h.spawns.length, 2);
+  assert.strictEqual(labels(h).filter(l => l === SIDE_A).length, 1);
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, skey('feat-a'));
+  assert.ok(h.viewsGone.includes(skey('feat-a')), 'the dead one\'s page was dropped');
+});
+
+test('the menu is off in a single-folder window, with the reason', async () => {
+  const h = harness({ mode: 'single', running: { 7700: dev(false) } });
+  await h.shell.open();
+  const s = h.shell.sideMenu(key('dev'));
+  assert.strictEqual(s.enabled, false);
+  assert.ok(s.why.length > 0);
+});
+
+test('a side session still running when the window reopens is found again, not lost', async () => {
+  const h = harness({ running: { 7700: dev(false), 7701: featA(false), 7702: featA(true) } });
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+  assert.strictEqual(h.spawns.length, 0);
+  assert.strictEqual(h.shell.sideMenu(key('feat-a')).label, 'Go to side session');
+});
+
+test('a branch tab never picks up the side host as its own, even when the side host answers first', async () => {
+  const h = harness({ running: { 7700: dev(false), 7701: featA(true), 7702: featA(false) } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).port, 7702);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')).port, 7701);
+});
+
+// --- a reader: never "an agent working here" -----------------------------------------------------------------
+
+const readerClaim = (name) => ({
+  agentId: 'rd-1', agent: 'Explore', worktree: wt(name), role: 'reader', fromBranch: 'feat/a', firstAt: 1, lastAt: 1,
+});
+const writerClaim = (name) => ({ ...readerClaim(name), agentId: 'wr-1', role: undefined });
+const GIT_OK = { branch: 'feat/a', dirtyCount: 0, unpushedCount: 0, headInDevelop: true };
+const AT_REST = { working: false, needsInput: false, lock: 'held', turn: 'idle' };
+
+async function mergedHarness(claims) {
+  const h = await opened({ safety: { facts: async () => GIT_OK }, occupancy: { claims: () => claims, known: () => true } });
+  h.markers[key('feat-a')] = 'feat/a';
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);
+  h.clock += 11_000;
+  h.confirm = false;
+  return h;
+}
+
+test('Ctrl+click close ignores a reader: a side session\'s agent is not an agent working here', async () => {
+  const h = await mergedHarness([readerClaim('feat-a')]);
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.confirms, [], 'closed with no question');
+});
+
+test('...while a writing agent in the same folder still asks', async () => {
+  const h = await mergedHarness([writerClaim('feat-a')]);
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(h.confirms.map(c => c.reason), ['an agent is working here']);
+});
+
+test('Ctrl+click close with a side session OPEN still closes silently, and ends the side session with it', async () => {
+  const h = await mergedHarness([]);
+  await h.shell.openSide(key('feat-a'));
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+  assert.deepStrictEqual(h.controls.map(c => c.port).sort(), [7701, 7702]);
+});
+
+test('the strip\'s occupancy mark for the branch tab says "reading only" for a reader, with no two-writers warning', async () => {
+  const h = await opened({ occupancy: { claims: () => [readerClaim('feat-a')], known: () => true } });
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, working: true, turn: 'turn' });
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.ok(e.occupancy, 'shown');
+  assert.strictEqual(e.occupancy.warn, false);
+  assert.strictEqual(e.occupancy.readersOnly, true);
+});
+
+// --- the side tab keeps the branch tab's own signals ------------------------------------------------------------
+
+test('a branch tab that needs you keeps pulsing while its side tab is the one showing', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, needsInput: true });
+  const parent = h.shell.model().find(e => e.key === key('feat-a'));
+  assert.strictEqual(parent.pulse, 'needs');
+  assert.strictEqual(parent.selected, false);
+});
+
+test('the side tab reports its own status, apart from its branch tab\'s', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.shell.report(h.shell.tabByKey(skey('feat-a')).view, { ...AT_REST, working: true });
+  assert.strictEqual(h.shell.model().find(e => e.key === skey('feat-a')).working, true);
+  assert.strictEqual(h.shell.model().find(e => e.key === key('feat-a')).working, false);
+});
+
+test('a side tab whose host could not start says why, and is still there to retry', async () => {
+  const h = await opened();
+  for (let p = 7702; p < 7750; p++) h.running[p] = { cwd: wt('elsewhere'), side: false };   // no free port
+  const r = await h.shell.openSide(key('feat-a'));
+  const e = h.shell.model().find(x => x.key === skey('feat-a'));
+  assert.ok(e, 'the tab is there with its error, not silently absent');
+  assert.strictEqual(e.started, false);
+  assert.ok(typeof e.startError === 'string' && e.startError.length > 0);
+  assert.strictEqual(r.ok, true);
+  delete h.running[7705];
+  await h.shell.select(skey('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === skey('feat-a')).started, true);
+});
+
+// --- the probe driver ----------------------------------------------------------------------------------------
+
+const PROBE_TOKEN = 'p'.repeat(32);
+const probe = (cmd, api) => handleProbeCommand(JSON.stringify({ token: PROBE_TOKEN, ...cmd }), api, PROBE_TOKEN);
+
+test('the probe driver can open a side session by label, and refuses it without one', async () => {
+  const seen = [];
+  const api = { sideOpen: async (label) => { seen.push(label); return { ok: true }; } };
+  assert.deepStrictEqual(await probe({ cmd: 'side-open', label: 'feat/a' }, api), { ok: true });
+  assert.deepStrictEqual(seen, ['feat/a']);
+  for (const bad of [{}, { label: '' }, { label: 5 }]) {
+    assert.strictEqual((await probe({ cmd: 'side-open', ...bad }, api)).ok, false, JSON.stringify(bad));
+  }
+  assert.strictEqual(seen.length, 1);
+});
