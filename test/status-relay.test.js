@@ -297,6 +297,7 @@ function waitUntil(f, what, ms = 30000) {
 // Every live node.exe whose command line carries `marker` (a table read, so it sees orphans whose parent is gone).
 // A failed or timed-out read throws, never an EMPTY list that would read as "nothing left running" (Miguel Y2).
 const { markedPids, reapMarked, reapDeadOwners, SLEEPER_SRC } = require('../verify/lib/reap-marked');
+const { spawnerSource } = require('../verify/lib/spawner-source');
 
 // BACKLOG #74 G: this test's sleepers once outlived a killed `npm test` by the thousand. Markers are
 // `cc72-<this pid>-<time>`: reaped in `finally`, on exit, and (a killed run's leftovers) by the next run's first test.
@@ -315,14 +316,7 @@ test('#72: a user command that is still starting processes while it is killed le
   RUN_MARKERS.push(marker, spawnerMarker);
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawner = path.join(dir, 'spawner.js');
-  fs.writeFileSync(spawner, `const { spawn } = require('child_process');
-let n = 0; const t0 = Date.now();
-setInterval(() => {
-  spawn(process.execPath, ['-e', ${JSON.stringify(SLEEPER_SRC)}, ${JSON.stringify(marker)}], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-  if (++n === 3) require('fs').writeFileSync(${JSON.stringify(ready)}, 'ok');
-  if (Date.now() - t0 > 170000) process.exit();   // a spawner orphaned by a killed run stops by itself, but never inside this test (its timeout is 120 s)
-}, 25);
-`);
+  fs.writeFileSync(spawner, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 170000, parentPid: process.pid, detached: true }));   // the deadline stays past the test's 120 s timeout
   const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${spawnerMarker}`;
   try {
     t.mock.timers.enable({ apis: ['setTimeout'] });

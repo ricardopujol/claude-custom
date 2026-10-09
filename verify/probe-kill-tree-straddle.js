@@ -20,6 +20,7 @@ const { spawn } = require('child_process');
 const { killPidTree } = require('../host/kill-tree');
 const { markedPids, reapMarked, SLEEPER_SRC } = require('./lib/reap-marked');
 const { runTrial } = require('./lib/straddle-trial');
+const { spawnerSource } = require('./lib/spawner-source');
 
 if (process.platform !== 'win32') { console.log('SKIP: Windows only (taskkill /T)'); process.exit(0); }
 
@@ -32,12 +33,7 @@ async function trial(i, dir) {
   const marker = `cc73-${process.pid}-${Date.now()}x${i}`;        // the sleepers carry this
   const spawnerMarker = `cc73s-${process.pid}-${Date.now()}x${i}`; // the spawner carries this one, so a scan for sleepers cannot match it
   const ready = path.join(dir, `ready-${i}`);
-  const src = `const { spawn } = require('child_process'); let n = 0; const t0 = Date.now();
-setInterval(() => {
-  spawn(process.execPath, ['-e', ${JSON.stringify(SLEEPER_SRC)}, ${JSON.stringify(marker)}], { stdio: 'ignore', windowsHide: true });
-  if (++n === 3) require('fs').writeFileSync(${JSON.stringify(ready)}, 'ok');
-  if (Date.now() - t0 > 600000) process.exit();   // far past any trial: a spawner nobody kills still ends, but never inside one
-}, ${INTERVAL});`;
+  const src = spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: INTERVAL, parentPid: process.pid });
   const spawnerFile = path.join(dir, `spawner-${i}.js`);
   fs.writeFileSync(spawnerFile, src);
   const root = UNDER_CMD
