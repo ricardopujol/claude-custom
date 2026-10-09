@@ -51,7 +51,7 @@ setInterval(() => {
       root, exited, sleep,
       jitterMs: Math.floor(Math.random() * 40),            // vary where in the spawning cycle the kill lands
       scanSleepers: () => markedPids(marker),
-      kill: (pid) => killPidTree(pid),   // kill-ok: the call under test, on a root this probe spawned; runTrial checks it has not exited in the same tick
+      kill: (pid) => killPidTree(pid),   // kill-ok(own-spawn): the call under test, on a root this probe spawned; runTrial checks it has not exited in the same tick
     });
     return { ...r, marker, spawnerMarker };
   } finally {
