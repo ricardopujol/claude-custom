@@ -21,7 +21,7 @@ const GLYPHS = {
 };
 // PR 3: a merged worktree (finishing, removing, kept), or one that failed to go.
 const BADGES = { merged: 'merged', warn: String.fromCodePoint(0x26a0) };
-const SIDE_TITLE = 'A read-only side session: it reads and answers, it never writes. It ends when this branch\'s tab closes.';
+const SIDE_TITLE = 'A side session: it starts in plan mode, and Edit, Write and Bash are denied however its mode changes. It ends when this branch\'s tab closes.';
 const GLYPH_TITLES = {
   open: 'Second session in this worktree (lock overridden, not saved)',
   warn: 'No session lock: a second window on this worktree would not be stopped',

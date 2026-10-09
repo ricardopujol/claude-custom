@@ -53,9 +53,9 @@ test('the side tab is labelled "<branch> · side"', () => {
   assert.strictEqual(side.sideLabel('feat/a'), 'feat/a \u00b7 side');
 });
 
-test('only the exact string "1" in CLAUDE_CUSTOM_SIDE makes a host a side host', () => {
-  assert.strictEqual(side.isSideEnv({ CLAUDE_CUSTOM_SIDE: '1' }), true);
-  for (const v of [undefined, '', '0', 'true', 'yes', 1]) assert.strictEqual(side.isSideEnv({ CLAUDE_CUSTOM_SIDE: v }), false, String(v));
+test('only the exact string "1" in CLAUDE_CUSTOM_SIDE_SESSION makes a host a side host', () => {
+  assert.strictEqual(side.isSideEnv({ CLAUDE_CUSTOM_SIDE_SESSION: '1' }), true);
+  for (const v of [undefined, '', '0', 'true', 'yes', 1]) assert.strictEqual(side.isSideEnv({ CLAUDE_CUSTOM_SIDE_SESSION: v }), false, String(v));
   assert.strictEqual(side.isSideEnv(null), false);
   assert.strictEqual(side.isSideEnv(undefined), false);
 });
@@ -65,15 +65,15 @@ test('only the exact string "1" in CLAUDE_CUSTOM_SIDE makes a host a side host',
 const FLAT = { kind: 'flat', root: 'C:\\repo', dev: 'C:\\repo' };
 const envArgs = (over = {}) => ({ cwd: 'C:\\repo', port: 4100, token: 'tok', project: FLAT, ...over });
 
-test('hostEnv marks a side host with CLAUDE_CUSTOM_SIDE=1, and only when asked', () => {
-  assert.strictEqual(hostEnv({}, envArgs({ side: true })).CLAUDE_CUSTOM_SIDE, '1');
-  assert.ok(!('CLAUDE_CUSTOM_SIDE' in hostEnv({}, envArgs())));
-  assert.ok(!('CLAUDE_CUSTOM_SIDE' in hostEnv({}, envArgs({ side: false }))));
+test('hostEnv marks a side host with CLAUDE_CUSTOM_SIDE_SESSION=1, and only when asked', () => {
+  assert.strictEqual(hostEnv({}, envArgs({ side: true })).CLAUDE_CUSTOM_SIDE_SESSION, '1');
+  assert.ok(!('CLAUDE_CUSTOM_SIDE_SESSION' in hostEnv({}, envArgs())));
+  assert.ok(!('CLAUDE_CUSTOM_SIDE_SESSION' in hostEnv({}, envArgs({ side: false }))));
 });
 
-test('an inherited CLAUDE_CUSTOM_SIDE never reaches an ordinary tab\'s host: it is per-tab identity', () => {
-  assert.ok(PER_TAB_KEYS.includes('CLAUDE_CUSTOM_SIDE'));
-  assert.ok(!('CLAUDE_CUSTOM_SIDE' in hostEnv({ CLAUDE_CUSTOM_SIDE: '1' }, envArgs())));
+test('an inherited CLAUDE_CUSTOM_SIDE_SESSION never reaches an ordinary tab\'s host: it is per-tab identity', () => {
+  assert.ok(PER_TAB_KEYS.includes('CLAUDE_CUSTOM_SIDE_SESSION'));
+  assert.ok(!('CLAUDE_CUSTOM_SIDE_SESSION' in hostEnv({ CLAUDE_CUSTOM_SIDE_SESSION: '1' }, envArgs())));
 });
 
 test('a side session\'s claude runs in plan mode, never with permissions bypassed', () => {

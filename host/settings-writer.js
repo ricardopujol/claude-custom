@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { SIDE_DENIED_TOOLS } = require('./side-session');
 
 // Hooks run synchronously in the critical path of tool execution, so the
 // matchers stay deliberately narrow. A '*' matcher would tax every Read, Grep
@@ -266,7 +267,11 @@ function canvasMcpConfig(c) {
 function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false } = {}) {
   // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
   // override it, so the two never go together; and it is offered no panel of Claude's own.
-  const args = side === true ? ['--permission-mode', 'plan'] : ['--dangerously-skip-permissions'];
+  // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
+  // a deny rule holds in every mode (host/side-session.js).
+  const args = side === true
+    ? ['--permission-mode', 'plan', '--disallowedTools', SIDE_DENIED_TOOLS.join(',')]
+    : ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
   // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).

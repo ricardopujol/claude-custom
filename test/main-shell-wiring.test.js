@@ -223,7 +223,7 @@ test('there is NO application menu bar: it is nulled once, before the window, an
 
 test('override and close live in the right-click popup only', () => {
   const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const body = MAIN.slice(at, at + 1800);
+  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
   assert.match(body, /\.popup\(/);

@@ -36,10 +36,11 @@ const settle = () => new Promise(r => setImmediate(r));
 const flush = async () => { for (let i = 0; i < 6; i++) await settle(); };
 
 /** running: port -> { cwd, side } of a live host. */
-function harness({ mode = 'tabs', running = {}, occupancy, safety, setupHoldsFeatA = false } = {}) {
+function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts = true } = {}) {
   const h = {
     running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
     confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
+    order: [], holdSide: null, removeHold: null, sideWalks: 0, sideHostReads: 0, controlOk: true,
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -49,9 +50,13 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, setupHoldsFea
       list: async () => h.listText,
       marker: (p, branch) => (h.markers[normPath(p)] === branch ? { branch, pr: 1, mergedAt: '2026-10-09T00:00:00Z' } : null),
     },
-    ops: NO_OPS,
+    ops: {
+      ...NO_OPS,
+      remove: async () => { h.order.push('remove'); if (h.removeHold) await h.removeHold; return { ok: true }; },
+    },
     hosts: {
       choosePort: async (tab) => {
+        if (tab.side === true) { h.sideWalks++; if (h.holdSide) await h.holdSide; }
         let free = null;
         for (let p = base; p < base + 50; p++) {
           const occ = h.running[p];
@@ -69,7 +74,15 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, setupHoldsFea
       tokenFor: tokenOf,
       tokenFile: tokenOf,
       newToken: () => `fresh-${++h.tokens}`,
-      control: async (c) => { h.controls.push(c); return { ok: true, reply: null }; },
+      control: async (c) => {
+        h.controls.push(c);
+        if (c.msg.type === 'stop') { h.order.push(`stop:${c.port}`); if (h.controlOk) delete h.running[c.port]; }
+        return h.controlOk ? { ok: true, reply: null } : { ok: false, error: 'no answer' };
+      },
+      sideHosts: () => {
+        h.sideHostReads++;
+        return Object.entries(h.running).filter(([, o]) => o.side === true).map(([p, o]) => ({ port: Number(p), cwd: o.cwd }));
+      },
       identity: () => null,
       readToken: () => null,
     },
@@ -88,6 +101,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, setupHoldsFea
     now: () => h.clock,
     sleep: async () => {},
   };
+  if (!listSideHosts) delete deps.hosts.sideHosts;
   if (occupancy !== undefined) deps.occupancy = occupancy;
   if (safety !== undefined) deps.safety = safety;
   h.shell = createShell(deps);
@@ -388,4 +402,135 @@ test('the probe driver can open a side session by label, and refuses it without 
     assert.strictEqual((await probe({ cmd: 'side-open', ...bad }, api)).ok, false, JSON.stringify(bad));
   }
   assert.strictEqual(seen.length, 1);
+});
+
+// --- PR #149 review: the lifecycle around a side session ----------------------------------------------------------------
+
+const stopsTo = (h, port) => h.controls.filter(c => c.port === port && c.msg.type === 'stop').length;
+// a merged tab whose own host has ended: the reducer is about to ask for the folder's removal
+async function mergedAndEnded(h) {
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();                       // finishing, and its host seen after the merge
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.poll();
+  delete h.running[7701];                     // the branch tab's claude ended
+}
+
+test('/merged with a side tab open: the side session is stopped BEFORE the worktree remover runs, and its tab goes (Dexter 2)', async () => {
+  const h = await opened();
+  await mergedAndEnded(h);
+  h.order.length = 0;
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(h.order, ['stop:7702', 'remove'], 'the folder must be free when the remover looks');
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.ok(!labels(h).some(l => l === SIDE_A));
+});
+
+test('...and a side host that does not answer its stop does not hold the removal back: the remover still runs and says why it can\'t', async () => {
+  const h = await opened();
+  await mergedAndEnded(h);
+  h.controlOk = false;
+  h.order.length = 0;
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(h.order, ['stop:7702', 'remove']);
+});
+
+test('a merged tab with NO side session is removed exactly as before: no stop, one remove', async () => {
+  const h = await opened();
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();
+  delete h.running[7701];
+  h.order.length = 0;
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(h.order, ['remove']);
+});
+
+test('a side host found by attach AFTER its branch tab closed is stopped, not left running with no tab (adopt path) (Dexter 4)', async () => {
+  const h = harness({ running: { 7700: dev(false), 7701: featA(false), 7702: featA(true) } });
+  let release;
+  h.holdSide = new Promise((r) => { release = r; });
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  release();
+  await flush();
+  assert.strictEqual(stopsTo(h, 7702), 1, 'the side host the adopt job proved was there is ended');
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+});
+
+test('a side host found by attach while Open side session was starting, then the branch tab closes: stopped (start path) (Dexter 4)', async () => {
+  const h = await opened();
+  h.running[7702] = featA(true);               // another window's side host serves the folder
+  let release;
+  h.holdSide = new Promise((r) => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  release();
+  await opening;
+  await flush();
+  assert.strictEqual(stopsTo(h, 7702), 1);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+});
+
+test('no side session while the branch\'s folder is being removed: the menu says so and openSide refuses (Dexter 5)', async () => {
+  const h = await opened();
+  h.markers[key('feat-a')] = 'feat/a';
+  h.removeHold = new Promise(() => {});        // the remover never finishes: the tab stays 'removing'
+  await h.shell.poll();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(h.shell._state().tabs.find(t => normPath(t.path) === key('feat-a')).phase, 'removing');
+  const m = h.shell.sideMenu(key('feat-a'));
+  assert.strictEqual(m.enabled, false);
+  assert.match(m.why, /removed/);
+  const r = await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(h.spawns.filter(s => s.side).length, 0);
+});
+
+// --- PR #149 Miguel Y2: no port walk per branch tab at open --------------------------------------------------------------
+
+test('opening a window walks the ports for a side host only where an identity file says one serves that folder (Miguel Y2)', async () => {
+  const none = harness({ running: { 7700: dev(false), 7701: featA(false) } });
+  await none.shell.open();
+  await flush();
+  assert.strictEqual(none.sideWalks, 0, 'no side host anywhere: no walk at all');
+  assert.ok(none.sideHostReads >= 1, 'the identity files were read');
+
+  const one = harness({ running: { 7700: dev(false), 7701: featA(false), 7702: featA(true) } });
+  await one.shell.open();
+  await flush();
+  assert.strictEqual(one.sideWalks, 1, 'one folder has a side host: one walk');
+  assert.deepStrictEqual(labels(one), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+});
+
+test('the identity files are read once per batch of tabs, not once per tab', async () => {
+  const h = harness({ running: { 7700: dev(false), 7701: featA(false) } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.sideHostReads, 1, 'three tabs opened in one poll, one read');
+});
+
+test('a shell given no way to list side hosts still finds one the slow way (the walk), so nothing is lost', async () => {
+  const h = harness({ running: { 7700: dev(false), 7701: featA(false), 7702: featA(true) }, listSideHosts: false });
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+});
+
+// --- PR #149 Miguel G2: a right-click does not rebuild the model ---------------------------------------------------------
+
+test('sideMenu reads the shell\'s records, not the whole strip model (no claims, no marks) (Miguel G2)', async () => {
+  let reads = 0;
+  const h = await opened({ occupancy: { claims: () => { reads++; return []; }, known: () => true } });
+  reads = 0;
+  h.shell.sideMenu(key('feat-a'));
+  h.shell.sideMenu(skey('feat-a'));
+  h.shell.sideMenu('nope');
+  assert.strictEqual(reads, 0);
 });

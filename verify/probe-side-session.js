@@ -251,7 +251,7 @@ async function main() {
   s = await waitFor(async () => { const x = await state(app); return domOf(x, SIDE_A) ? x : null; }, 15000) || s;
   const dom = domOf(s, SIDE_A);
   check('the strip PAINTED it as a small side tab with no close button', !!dom && dom.side === true && dom.hasClose === false, JSON.stringify(dom));
-  check('and its hover says what it is', !!dom && /read-only side session/.test(dom.title || ''), dom && dom.title);
+  check('and its hover says what it is', !!dom && /Edit, Write and Bash are denied/.test(dom.title || ''), dom && dom.title);
   check('the side tab\'s page rendered and connected (xterm mounted)', !!(await waitFor(async () => {
     const x = await state(app);
     return x.viewDom && x.viewDom.xterm > 0 && x.viewDom.hasTerm ? x : null;
@@ -283,8 +283,13 @@ async function main() {
   }, 20000, 500);
   check('the side claude runs with --permission-mode plan and WITHOUT --dangerously-skip-permissions',
     !!sideLine && /--permission-mode\s+plan/.test(sideLine) && !/--dangerously-skip-permissions/.test(sideLine), sideLine || 'no command line');
-  check('the branch tab\'s claude is the other way round (bypass, no plan mode)',
-    !!mainLine && /--dangerously-skip-permissions/.test(mainLine) && !/--permission-mode/.test(mainLine), mainLine || 'no command line');
+  // Plan mode is only where a session STARTS (Shift+Tab or accepting the plan leaves it); the deny rule is what holds in every
+  // mode. Whether the CLI enforces it after a mode change takes a model turn to show, which bills, so this pins what the OS
+  // says was passed (PR #149 Dexter 1); the CLI's deny-before-prompt behaviour is its documented one.
+  check('and with every writing tool denied through --disallowedTools (Edit, Write, NotebookEdit, MultiEdit, Bash)',
+    !!sideLine && /--disallowedTools\s+"?Edit,Write,NotebookEdit,MultiEdit,Bash"?/.test(sideLine), sideLine || 'no command line');
+  check('the branch tab\'s claude is the other way round (bypass, no plan mode, nothing denied)',
+    !!mainLine && /--dangerously-skip-permissions/.test(mainLine) && !/--permission-mode/.test(mainLine) && !/--disallowedTools/.test(mainLine), mainLine || 'no command line');
 
   // The session lock lives in the worktree's git dir: the branch tab's host holds it, the side host does not.
   const gitDir = git(featA, 'rev-parse', '--git-dir').trim();

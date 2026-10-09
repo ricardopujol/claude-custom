@@ -26,7 +26,7 @@ const PER_TAB_KEYS = Object.freeze([
   'CLAUDE_CUSTOM_SESSION_ID',
   'CLAUDE_CUSTOM_SIDE_TAB',
   // #81: this host is a tab's read-only side session. Per-tab identity: a side host's flag must never reach the next one.
-  'CLAUDE_CUSTOM_SIDE',
+  'CLAUDE_CUSTOM_SIDE_SESSION',
   'CLAUDE_CUSTOM_PROJECT_ROOT',
   'CLAUDE_CUSTOM_PROJECT_STATE',
 ]);
@@ -54,7 +54,7 @@ function hostEnv(baseEnv, { cwd, port, token, project, side = false } = {}) {
   out.CLAUDE_CUSTOM_TOKEN = token;
   out.CLAUDE_CUSTOM_PROJECT_ROOT = project.root;
   out.CLAUDE_CUSTOM_PROJECT_STATE = state;
-  if (side === true) out.CLAUDE_CUSTOM_SIDE = '1';
+  if (side === true) out.CLAUDE_CUSTOM_SIDE_SESSION = '1';
   return out;
 }
 

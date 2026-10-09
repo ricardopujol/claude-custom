@@ -71,7 +71,7 @@ function defaultIsAlive(pid) {
 // `claudePid` is the host's claude, once it has one (Dexter, PR #83 F1): a stop
 // waits for it too, since the host can exit while claude is still closing in
 // the folder -- and a host with no session lock has nowhere else to say it.
-function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false } = {}) {
+function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false, sessionId } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
@@ -80,6 +80,8 @@ function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, cl
   if (Number.isInteger(claudePid) && claudePid > 0) doc.claudePid = claudePid;
   // #81: a tab's read-only side session shares the folder; this keeps the port walk from mistaking it for the folder's own host.
   if (side === true) doc.side = true;
+  // A side host's session id, for the producers that read transcripts (host/occupancy-transcripts.js): only a safe id, and only a side host's.
+  if (side === true && typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) doc.sessionId = sessionId;
   try {
     fs.writeFileSync(tmp, JSON.stringify(doc),
       { encoding: 'utf8', mode: 0o600 });

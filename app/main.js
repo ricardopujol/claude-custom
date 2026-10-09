@@ -60,7 +60,7 @@ const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store'
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
-const { isSideKey } = require('../host/side-session');
+const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
@@ -269,6 +269,11 @@ async function chooseHostPort(tab) {
     return { port: EXPLICIT_PORT, action: decision.action };
   }
   return resolvePort({ cwd: tab.cwd, occupantAt, side });
+}
+
+// This build's identity files, or none when they can't be listed.
+function ownIdentities() {
+  try { return identitiesIn(INSTALL_DIR); } catch { return []; }
 }
 
 function spawnHost(tab, port, token) {
@@ -1682,6 +1687,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   transcriptOccupancy = createTranscriptScanner({
+    // #81: a side host's session: its agents' claims are readers', whoever writes them
+    readerSessions: () => readerSessionIds(ownIdentities()),
     projectsDir: seams.projectsDir || defaultProjectsDir(),
     roots: createRootsProvider({ cwd: STATE_ROOT, log: (...a) => console.log(...a) }),
     // The SAME store the hosts write to. The proof a reader checks is this window's own process: its claims
@@ -1726,6 +1733,8 @@ app.whenReady().then(async () => {
       newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
         || require('crypto').randomBytes(24).toString('hex'),
       control: (c) => sendControl(c),
+      // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
+      sideHosts: () => sideHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
       readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),

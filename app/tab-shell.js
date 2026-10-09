@@ -519,6 +519,8 @@ function createShell(deps) {
           spawned = true;
           if (!(await hosts.wait(port))) {
             tab.pending = { port, token };
+            // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
+            if (tab.closed && tab.side === true) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
@@ -529,8 +531,9 @@ function createShell(deps) {
         // written yet -- our own host, just past its bind.
         token = hosts.tokenFile(port) || token;
         if (tab.closed || destroyed) {
-          // Closed while starting: don't leave the host we just made behind.
-          if (spawned) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
+          // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
+          // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
+          if (spawned || tab.side === true) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
           return;
         }
         present(tab, port, token);
@@ -570,6 +573,7 @@ function createShell(deps) {
   // changed, which is what afterClose needs.
   function apply(actions, before) {
     let reselect = false;
+    let sideList;           // the side hosts the identity files list, read at most once per batch of actions (Miguel Y2)
     for (const a of actions) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
@@ -578,7 +582,8 @@ function createShell(deps) {
         const tab = newRecord(entry);
         tabs.set(key, tab);
         attachIfRunning(tab);
-        adoptSide(tab);
+        if (sideList === undefined) sideList = listSideHosts();
+        adoptSide(tab, sideList);
       } else if (a.type === 'stop') {
         const t = tabByKey(key);
         if (t && t.started && t.port && t.token) {
@@ -622,7 +627,8 @@ function createShell(deps) {
   // Contract C, for a tab the reducer moved to `removing`: its session ended
   // after the merge. Exactly one removeResult per remove, whatever happens.
   function runRemove(p) {
-    Promise.resolve()
+    // The side claude has this folder as its working folder: the remover can't take a busy folder, so it is ended first (Dexter 2).
+    endSide(keyOf(p))
       .then(() => ops.remove({ path: p }))
       .then(r => r, err => ({ ok: false, error: errorText(err) }))
       .then((r) => {
@@ -1204,18 +1210,21 @@ function createShell(deps) {
 
   /** The menu's side-session item for a branch tab or a side tab: its text, whether it works, and which branch tab it acts on. */
   function sideMenu(key) {
-    const e = model().find(x => x.key === key);
     const gone = { enabled: false, label: 'Open side session', target: null };
     if (mode !== 'tabs') return { ...gone, why: 'not a project window' };
-    if (!e) return { ...gone, why: 'no such tab' };
-    const target = e.side === true ? e.parentKey : e.key;
-    const parent = tabByKey(target);
+    // From the shell's own records: a right-click must not rebuild the whole strip model (claims, marks...).
+    const target = isSideKey(key) ? (tabs.has(key) ? parentKeyOf(key) : null) : key;
+    const parent = target === null ? null : tabByKey(target);
     if (!parent) return { ...gone, why: 'no such tab' };
     const rec = tabs.get(sideKeyOf(target));
     const label = !rec ? 'Open side session' : (rec.ended === true ? 'Reopen side session' : 'Go to side session');
+    if (phaseOf(target) === 'removing') return { enabled: false, label, target, why: 'its folder is being removed' };
     if (setupHolds(parent)) return { enabled: false, label, target, why: 'its worktree is still being set up' };
     return { enabled: true, label, target };
   }
+
+  // The reducer's phase of a branch tab ('removing' while its folder is being deleted), or null.
+  const phaseOf = (key) => { const t = state.tabs.find(x => keyOf(x.path) === key); return t && typeof t.phase === 'string' ? t.phase : null; };
 
   function override(key) {
     const tab = tabByKey(key);
@@ -1277,12 +1286,16 @@ function createShell(deps) {
     const sk = sideKeyOf(key);
     const parent = sk === null ? null : tabByKey(key);
     if (!parent || parent.closed) return { ok: false, error: 'no such tab' };
+    // A claude started in a folder `git worktree remove` is deleting leaves it half removed (Dexter 5): the same refusal a hand close has.
+    if (phaseOf(key) === 'removing') return { ok: false, error: 'its folder is being removed' };
     if (setupHolds(parent)) return { ok: false, error: 'its worktree is still being set up' };
     const existing = tabs.get(sk);
     if (existing && existing.ended !== true) {
       await select(sk);          // an unstarted one (a failed start) is tried again by the selection
       return { ok: true, already: true };
     }
+    // An ended record has no host to stop. (A timed-out spawn's `pending` can't be on a record that is also `ended`: pending is only
+    // set while the start has not presented, and `ended` only after it has.)
     if (existing) dropSide(sk, { stop: false });
     tabs.set(sk, newSideRecord(parent));
     await select(sk);
@@ -1290,20 +1303,52 @@ function createShell(deps) {
   }
 
   /** At open: a side host still running from an earlier window comes back as the tab's side tab, with no spawn. */
-  function adoptSide(parent) {
+  function adoptSide(parent, list) {
     const sk = sideKeyOf(parent.key);
     if (sk === null) return;
+    // The identity files say which folders have a side host: a tab with none costs no port walk, and no place in the start queue.
+    if (Array.isArray(list) && !list.some(h => h && typeof h.cwd === 'string' && keyOf(h.cwd) === parent.key)) return;
     queue.run(async () => {
       if (parent.closed || destroyed || tabs.has(sk)) return;
       const rec = newSideRecord(parent);
       let chosen = null;
       try { chosen = await hosts.choosePort(rec); } catch (err) { log('[shell] side port probe failed:', err && err.message); }
-      if (!chosen || chosen.action !== 'attach' || parent.closed || tabs.has(sk)) return;
-      const token = hosts.tokenFor(chosen.port);
+      if (!chosen || chosen.action !== 'attach' || tabs.has(sk)) return;
+      const token = hosts.tokenFile(chosen.port) || hosts.tokenFor(chosen.port);
       if (!token) return;
+      if (parent.closed || destroyed) {
+        // Its branch tab closed while this was looking: the host it just proved is there has no tab to end with, so it ends now (Dexter 4).
+        hosts.control({ port: chosen.port, token, msg: { type: 'stop' } }).catch(() => {});
+        return;
+      }
       tabs.set(sk, rec);
       present(rec, chosen.port, token);
     }).then(publish, publish);
+  }
+
+  /** The side hosts this build's identity files list ([{ port, cwd }]), or null when that can't be told (then each tab is looked for). */
+  function listSideHosts() {
+    if (typeof hosts.sideHosts !== 'function') return null;
+    try { const l = hosts.sideHosts(); return Array.isArray(l) ? l : null; } catch (err) {
+      log('[shell] hosts.sideHosts threw:', err && err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Stop a branch tab's side session and wait for its host to be gone, then forget it. The remover (Contract C) can't take a folder
+   * a claude is working in, so this runs before it. A host that doesn't answer its stop is not waited on for ever: the caller goes on.
+   */
+  async function endSide(parentKey) {
+    const sk = sideKeyOf(parentKey);
+    const t = sk ? tabs.get(sk) : null;
+    if (!t) return;
+    const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
+    if (target) {
+      try { await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }); } catch { /* the remover reports a folder still in use */ }
+    }
+    dropSide(sk, { stop: false });
+    publish();
   }
 
   function destroy() { destroyed = true; }
