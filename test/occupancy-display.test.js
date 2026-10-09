@@ -282,3 +282,13 @@ test('chipModel agrees with the banner on who is here, so the two never tell dif
     return chip !== null && chip.warn === banner.warn && JSON.stringify(chip.jump) === JSON.stringify(banner.jump) && chip.lines.length >= 1;
   }));
 });
+
+// Dexter F4 (PR #139): the close check counts a folder the agent touched earlier (`also`); the strip still draws only where it works.
+test('tabOccupancy: `also` counts only when asked to (the close check), and the strip is unchanged', () => {
+  const c = claim({ worktree: 'c:/p/feat-b', also: ['c:/p/feat-x'] });
+  assert.strictEqual(occ([c], 'c:/p/feat-x'), null, 'the strip');
+  assert.strictEqual(occ([c], 'c:/p/feat-x', { withAlso: true }).count, 1);
+  assert.strictEqual(occ([c], 'c:/p/feat-b', { withAlso: true }).count, 1);
+  assert.strictEqual(occ([c], 'c:/p/feat-z', { withAlso: true }), null);
+  assert.strictEqual(occ([claim({ worktree: 'c:/p/feat-b', also: 'junk' })], 'c:/p/feat-x', { withAlso: true }), null, 'a malformed `also` counts nothing');
+});

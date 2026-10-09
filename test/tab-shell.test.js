@@ -159,7 +159,8 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
   if (occupancy !== undefined) deps.occupancy = occupancy;
   if (resources !== undefined) deps.resources = resources;
   if (safety !== undefined) deps.safety = safety;
-  deps.now = () => 1_000_000_000;
+  h.clock = 1_000_000_000;
+  deps.now = () => h.clock;
   h.shell = createShell(deps);
   return h;
 }
@@ -2314,6 +2315,7 @@ async function mergedHarness(over = {}) {
   await h.shell.open();
   await flush();
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);
+  h.clock += 11_000;   // idle for a while: a turn that went idle a moment ago asks (F1)
   return h;
 }
 const asked = (h) => h.confirms.map(c => c && c.reason);
@@ -2529,6 +2531,64 @@ test('ctrl-close D6: a re-check that finds nothing new closes with no confirm', 
   assert.deepStrictEqual(h.confirms, []);
 });
 
+// BACKLOG #77 R1: a /bedtime night between wakes is the run's, and a stop would end it.
+test('ctrl-close R1: a /bedtime night on the tab asks, even when the turn is idle', async () => {
+  const h = await mergedHarness();
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, night: true });
+  const r = await ctrlClose(h);
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
+  assert.deepStrictEqual(h.controls, []);
+});
+
+test('ctrl-close R1: a turn that only reads and edits (the host now reports it as a turn) asks', async () => {
+  const h = await mergedHarness();
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, turn: 'turn' });
+  await ctrlClose(h);
+  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);   // the Stop with no continuation: idle again
+  h.clock += 11_000;
+  h.confirms.length = 0;
+  assert.strictEqual((await ctrlClose(h)).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+});
+
+// BACKLOG #77 R2: an unprovable claim in one folder doubts that folder, not every tab.
+test('ctrl-close R2: known() is asked about the tab\'s own folder, so a doubt in feat-b leaves feat-a silent', async () => {
+  const asked_ = [];
+  const occupancy = { claims: () => [], known: (folder) => { asked_.push(folder); return folder !== wt('feat-b'); } };
+  const h = await mergedHarness({ occupancy });
+  h.markers[key('feat-b')] = 'feat/a';
+  h.shell.report(h.shell.tabByKey(key('feat-b')).view, AT_REST);
+  h.clock += 11_000;
+  assert.strictEqual((await ctrlClose(h, 'feat-a')).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+  assert.ok(asked_.includes(wt('feat-a')), JSON.stringify(asked_));
+  const r = await ctrlClose(h, 'feat-b');
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(asked(h), ["couldn't check for agents"]);
+});
+
+// BACKLOG #77 R4: the commit that lands while the git reads run is seen by the re-check.
+test('ctrl-close R4: an unpushed commit that appears after the first git read asks', async () => {
+  let reads = 0;
+  const h = await mergedHarness({ safety: { facts: async () => { reads += 1; return reads === 1 ? { ...GIT_OK } : { ...GIT_OK, unpushedCount: 1 }; } } });
+  const r = await ctrlClose(h);
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(asked(h), ['1 unpushed commit']);
+  assert.deepStrictEqual(h.controls, []);
+});
+
+test('ctrl-close R4: a re-check whose git read throws asks, and an unchanged one closes silently', async () => {
+  let reads = 0;
+  const h = await mergedHarness({ safety: { facts: async () => { reads += 1; if (reads > 1) throw new Error('git broke'); return { ...GIT_OK }; } } });
+  assert.strictEqual((await ctrlClose(h)).cancelled, true);
+  assert.strictEqual(asked(h).length, 1);
+  const ok = await mergedHarness();
+  assert.strictEqual((await ctrlClose(ok)).ok, true);
+  assert.deepStrictEqual(ok.confirms, []);
+});
+
 // --- worktree occupancy (#44 + #47) -----------------------------------------------
 
 const OCC_NOW = 1_000_000_000;
@@ -2721,4 +2781,59 @@ test('handleProbeCommand: canvas (#71) is inspect or a click at whole-number coo
     assert.strictEqual(r.ok, false, JSON.stringify(bad));
   }
   assert.deepStrictEqual(seen, [['inspect', {}], ['click', { x: 30, y: 40 }]]);
+});
+
+// Dexter F1 (PR #139): a Stop that a Stop hook blocks reads idle until the continuation's first tool call.
+test('ctrl-close F1: a turn that went idle a moment ago is still busy; after 10 s of rest it closes', async () => {
+  const h = await mergedHarness();
+  const view = h.shell.tabByKey(key('feat-a')).view;
+  h.shell.report(view, { ...AT_REST, turn: 'turn' });
+  h.shell.report(view, AT_REST);                       // the Stop, at t0
+  h.clock += 1_500;
+  assert.strictEqual((await ctrlClose(h)).cancelled, true);
+  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
+  assert.deepStrictEqual(h.controls, []);
+  h.confirms.length = 0;
+  h.clock += 9_600;                                    // t0 + 11.1 s, nothing else
+  assert.strictEqual((await ctrlClose(h)).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+});
+
+test('ctrl-close F1: a repeated idle status does not restart the 10 s, and a first report counts as just now', async () => {
+  const h = await mergedHarness();
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, finished: true });   // another field moved, the turn stayed idle
+  assert.strictEqual((await ctrlClose(h)).ok, true, 'idle for 11 s already');
+  const fresh = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, safety: { facts: async () => GIT_OK }, occupancy: nobody() });
+  fresh.markers[key('feat-a')] = 'feat/a';
+  await fresh.shell.open();
+  await flush();
+  fresh.shell.report(fresh.shell.tabByKey(key('feat-a')).view, AT_REST);   // when it went idle is unknown: just now
+  assert.strictEqual((await ctrlClose(fresh)).cancelled, true);
+  assert.deepStrictEqual(asked(fresh), ['Claude is still working in this tab']);
+});
+
+// Dexter F3 (PR #139): the git re-read is an await; the tab may be gone when it returns.
+test('ctrl-close F3: a tab that leaves during the git re-read is not stopped again, with no notice', async () => {
+  let reads = 0;
+  let h = null;
+  h = await mergedHarness({ safety: { facts: async () => {
+    reads += 1;
+    if (reads === 2) { h.listText = porcelain([THREE[0], THREE[2]]); await h.shell.poll(); }   // git stops listing feat-a
+    return { ...GIT_OK };
+  } } });
+  const r = await ctrlClose(h);
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.controls, [{ port: 7701, token: 'tok-7701', msg: { type: 'stop' } }], 'only the poll\'s own stop');
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+// Dexter F4 (PR #139): one rule for doubt and count -- a folder an agent touched earlier (`also`) blocks a silent close.
+test('ctrl-close F4: a live claim whose `also` names the tab\'s folder asks, like the unprovable one', async () => {
+  const claim = claimIn('feat-b', { also: [wt('feat-a')] });
+  const live = await mergedHarness({ occupancy: { claims: () => [claim], known: () => true } });
+  assert.strictEqual((await ctrlClose(live)).cancelled, true);
+  assert.deepStrictEqual(asked(live), ['an agent is working here']);
+  const unproven = await mergedHarness({ occupancy: { claims: () => [], known: (f) => f !== wt('feat-a') } });
+  assert.strictEqual((await ctrlClose(unproven)).cancelled, true);
+  assert.deepStrictEqual(asked(unproven), ["couldn't check for agents"]);
 });

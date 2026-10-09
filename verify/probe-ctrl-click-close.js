@@ -35,7 +35,6 @@ const ROOT = path.join(__dirname, '..');
 const HARNESS_DIR = path.join(ROOT, '.harness');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
 
 const hygiene = createHygieneRegistry();
@@ -123,16 +122,17 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 
-const seenPids = new Set();
+// Pids seen (identity files carry their start time; the app's state does not): ended only through a proven start.
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function killEverything() {
   let files = [];
   try { files = fs.readdirSync(path.join(HARNESS_DIR, 'hosts')).filter(f => /^\d+\.json$/.test(f)); } catch { files = []; }
   const inside = path.resolve(tmp).toLowerCase() + path.sep;
   for (const f of files) {
     const id = readIdentity({ dir: HARNESS_DIR, port: Number(f.replace(/\.json$/, '')) });
-    if (id && path.resolve(id.cwd).toLowerCase().startsWith(inside)) seenPids.add(id.pid);
+    if (id && path.resolve(id.cwd).toLowerCase().startsWith(inside)) seenPids.add(id.pid, id.processStartedAt);
   }
-  for (const pid of seenPids) { try { killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 
@@ -146,7 +146,7 @@ const mark = (folder, branch) => {
 
 const labelsOf = async (app) => {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return st;
 };
 const tabLabels = (st) => ((st && st.tabs) || []).map(t => t.label);

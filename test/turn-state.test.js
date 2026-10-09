@@ -180,9 +180,9 @@ test('a tool event proves a turn only for the MAIN session: no agent_id, an empt
   assert.strictEqual(run([START, ev('PostToolUse', { agent_id: 'a1' })]), 'idle');
   assert.strictEqual(run([START, ev('PreToolUse', { agent_id: 'a1' })]), 'idle');
   assert.strictEqual(run([START, ev('PostToolUseFailure', { agent_id: 'a1' })]), 'idle');
-  // a subagent's tool call still answers a dialog, without opening a turn
+  // a subagent's tool call neither answers the main session's dialog nor opens a turn (PR #139 Dexter F2)
   const asked = [START, ev('Notification', { notification_type: 'permission_prompt' })];
-  assert.strictEqual(run([...asked, ev('PreToolUse', { agent_id: 'a1' })]), 'idle');
+  assert.strictEqual(run([...asked, ev('PreToolUse', { agent_id: 'a1' })]), 'prompt');
   assert.strictEqual(run([...asked, ev('PostToolUseFailure', {})]), 'turn');
 });
 
@@ -231,4 +231,29 @@ test('every clean start (startup, resume, clear) drops an open turn, dialog and 
   const compact = ev('SessionStart', { source: 'compact' });
   assert.strictEqual(run([START, ev('Notification', { notification_type: 'permission_prompt' }), compact]), 'prompt');
   assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop', bg), compact, ev('Notification', { notification_type: 'idle_prompt' })]), 'turn');
+});
+
+// --- BACKLOG #77 R1: a turn that only reads and edits ---------------------------------------------------------
+
+test('R1: Stop, then a blocked stop\'s continuation that only Reads and Edits, is a turn again', () => {
+  const edit = ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: 'CURRENT-feat-a.md' } });
+  const read = ev('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'CURRENT-feat-a.md' } });
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop'), read, edit]), 'turn');
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop'), edit]), 'turn');
+});
+
+test('R1: a Stop with no continuation is idle, and a subagent\'s Edit after it opens nothing', () => {
+  const edit = ev('PreToolUse', { tool_name: 'Edit', agent_id: 'a1' });
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('PreToolUse', { tool_name: 'Edit' }), ev('Stop')]), 'idle');
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop'), edit]), 'idle');
+});
+
+// Dexter F2 (PR #139): "a tool moved, so the dialog was answered" is true only of the MAIN session's tools.
+test('F2: a subagent\'s or teammate\'s Read does not close the main session\'s open dialog; the main session\'s does', () => {
+  const dialog = [START, ev('UserPromptSubmit'), ev('Notification', { notification_type: 'permission_prompt' })];
+  assert.strictEqual(run(dialog), 'prompt');
+  assert.strictEqual(run([...dialog, ev('PreToolUse', { tool_name: 'Read', agent_id: 'a1' })]), 'prompt');
+  assert.strictEqual(run([...dialog, ev('PostToolUse', { tool_name: 'Bash', agent_id: 'a1' })]), 'prompt');
+  assert.strictEqual(run([...dialog, ev('PreToolUse', { tool_name: 'Read' })]), 'turn');
+  assert.strictEqual(run([...dialog, ev('PostToolUse', { tool_name: 'Bash', agent_id: '' })]), 'turn', 'an empty id is not a subagent');
 });
