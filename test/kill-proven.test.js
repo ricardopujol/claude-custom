@@ -113,7 +113,7 @@ test('killProven toleranceTicks: the compare is numeric within the tolerance; wi
   assert.strictEqual(killProven(4321, '1', { toleranceTicks: 'x', run: () => assert.fail('a bad tolerance runs nothing') }), 'unknown');
 });
 
-test('killProven toleranceTicks (real process): a start within the tolerance kills, one beyond it does not', {
+test('killProven toleranceTicks (real PowerShell): a start within the tolerance kills, one beyond it does not', {
   skip: process.platform !== 'win32' && 'PowerShell + taskkill: Windows only',
 }, async () => {
   const c = sleeper();
