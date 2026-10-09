@@ -455,3 +455,14 @@ test('DRAW: the pick row is repainted only when the chosen game changes (Miguel 
   for (let k = 0; k < 5; k += 1) r.runFrame(16);
   assert.strictEqual(writes, 0);
 });
+
+test('HIDDEN: the focus the browser puts back on the board when the tab is shown again does NOT resume the round; a press does', () => {
+  const r = rig(); r.shown(); r.go();
+  r.g.setView({ shown: false });
+  r.g.setView({ shown: true, pageVisible: true });
+  assert.strictEqual(r.g.state().why, 'hidden');
+  r.canvas.dispatch('focusin');
+  assert.strictEqual(r.g.state().phase, 'paused', 'a restored focus is not Ricardo coming back');
+  r.canvas.dispatch('pointerdown');
+  assert.strictEqual(r.g.state().phase, 'running');
+});

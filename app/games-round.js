@@ -97,9 +97,12 @@ function cover(s, label) {
 
 /**
  * Does coming back to the panel resume a paused round? Only a paused round, only when the press or focus landed on the board (not on
- * the cover's own button, whose click resumes it), and only while the panel is on screen.
+ * the cover's own button, whose click resumes it), and only while the panel is on screen. `via` is 'pointer' (a press) or 'focus'.
+ * A round paused because the panel was out of sight never resumes by FOCUS: Chromium puts focus back on the board by itself when the
+ * tab is shown again (measured in a real window), and that is not Ricardo coming back; only a press is.
  */
-const shouldResume = (s, onBoard, drawing) => s.phase === 'paused' && onBoard === true && drawing === true;
+const shouldResume = (s, onBoard, drawing, via = 'pointer') => s.phase === 'paused' && onBoard === true && drawing === true
+  && !(via === 'focus' && s.why === 'hidden');
 
 const API = { ROUND_SECONDS, MAX_GAP, shouldResume, WHY, idle, start, withScore, tick, finish, handBack, hide, comeBack, acceptsKeys, shouldDraw, secondsLeft, cover };
 

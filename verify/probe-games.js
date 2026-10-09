@@ -248,7 +248,7 @@ async function main() {
     await sleep(800);
     await command(app, { cmd: 'select', label: firstLabel });
     const back1 = await waitFor(async () => { const s = await gs(); return s && s.ok && s.shown ? s : null; }, 15000, 200);
-    check('5b: after the shell hid this tab's view (another tab selected) the round paused, saying it was out of sight', !!back1 && back1.state.phase === 'paused' && back1.state.why === 'hidden', JSON.stringify(back1 && [back1.state.phase, back1.state.why, back1.visibility]));
+    check('5b: after the shell hid this tab view (another tab selected) the round paused, saying it was out of sight', !!back1 && back1.state.phase === 'paused' && back1.state.why === 'hidden', JSON.stringify(back1));
     check('5b: and the page is visible again now', !!back1 && back1.visibility === 'visible');
     await doIt({ op: 'resume' });
   }

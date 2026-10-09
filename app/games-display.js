@@ -355,7 +355,7 @@ function mount(opts) {
     if (r !== undefined) { after(r); draw(); paintLabels(); }
   });
   panel.addEventListener('pointercancel', () => { cancelGesture(); });
-  panel.addEventListener('focusin', (e) => { if (round.shouldResume(s, onBoard(e.target), drawing())) comeBack(); });
+  panel.addEventListener('focusin', (e) => { if (round.shouldResume(s, onBoard(e.target), drawing(), 'focus')) comeBack(); });
   panel.addEventListener('keydown', (e) => {
     // A key reaches here only from inside the panel; the check is the rule, so it also holds if that ever changes.
     const focus = { panel: panel.contains(e.target), terminal: terminalHasFocus() === true };

@@ -130,6 +130,9 @@ test('resuming: only a paused round, only on the board (not the cover button), o
   assert.strictEqual(R.shouldResume(paused, false, true), false, 'the cover button resumes by its click');
   assert.strictEqual(R.shouldResume(paused, true, false), false, 'not on screen');
   assert.strictEqual(R.shouldResume(paused, 1, true), false, 'only a real true');
+  assert.strictEqual(R.shouldResume(R.hide(running()), true, true), true, 'a press resumes a round that was out of sight');
+  assert.strictEqual(R.shouldResume(R.hide(running()), true, true, 'focus'), false, 'but focus alone does not: the browser restores it by itself');
+  assert.strictEqual(R.shouldResume(paused, true, true, 'focus'), true, 'focus resumes a round Claude paused');
   assert.strictEqual(R.shouldResume(running(), true, true), false);
   assert.strictEqual(R.shouldResume(R.idle(), true, true), false);
   assert.strictEqual(R.shouldResume({ phase: 'over', left: 0, score: 1, why: 'time' }, true, true), false);
