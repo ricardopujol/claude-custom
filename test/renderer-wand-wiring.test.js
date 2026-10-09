@@ -135,7 +135,7 @@ function loadTypeAndCheck() {
     typingKeys: (command) => ['\x05', '\x15', command],
     send: (s) => sent.push(JSON.parse(s).data),
     setTimeout: (fn, ms) => { timers.push({ fn, ms }); },
-    commandTyped: () => true, screenLines: () => [], vimSeen: false, PTY_STEP_MS: 120,
+    commandTyped: () => true, screenLines: () => [], vimSeen: false, PTY_STEP_MS: 120, term: { rows: 40 },
   };
   const factory = new Function(...Object.keys(env), 'let typingBusy = false;\n' + src + '\nreturn typeAndCheck;');
   return { typeAndCheck: factory(...Object.values(env)), sent, timers };
@@ -169,7 +169,7 @@ test('D8: the lock is released when the first command is confirmed, so the next 
 test('D8: the lock is released when the read-back FAILS too, or one failure would block typing for good', () => {
   const src = typeAndCheckSource();
   const timers = [];
-  const env = { typingKeys: (c) => [c], send() {}, setTimeout: (fn) => { timers.push(fn); }, commandTyped: () => false, screenLines: () => [], vimSeen: false, PTY_STEP_MS: 1 };
+  const env = { typingKeys: (c) => [c], send() {}, setTimeout: (fn) => { timers.push(fn); }, commandTyped: () => false, screenLines: () => [], vimSeen: false, PTY_STEP_MS: 1, term: { rows: 40 } };
   const typeAndCheck = new Function(...Object.keys(env), 'let typingBusy = false;\n' + src + '\nreturn typeAndCheck;')(...Object.values(env));
   const out = [];
   typeAndCheck(false, '/a', (r) => out.push(r));
@@ -249,13 +249,15 @@ function loadTypeCommand({ turn, readBack = true, screen = 'ready', connected = 
   const apiRef = {};
   const state = { turn, screen, queued, lineOk: true, ws: { readyState: connected ? 1 : 3 } };
   const env = {
-    term: { focus() {} },
+    term: { focus() {}, rows: 40 },
     screenLines: () => (state.queued ? ['❯ /x', '❯ Press up to edit queued messages'] : ['❯ /x']),
     vimInsertShown: () => false,
     inputState: () => state.screen,
     boxText: () => 'draft',
     // the line is in the box until the Enter goes in, unless the CLI swallowed that Enter (its backslash newline, a suggestion list)
-    commandTyped: () => state.lineOk && (state.enterSwallowed || !sent.includes('\r')),
+    commandTyped: () => state.lineOk,
+    // after the Enter: does the box still hold the line? only when the CLI swallowed the Enter
+    boxHoldsLine: () => state.lineOk && state.enterSwallowed === true,
     planTyping,
     WebSocket: { OPEN: 1 },
     submitGate: gate,

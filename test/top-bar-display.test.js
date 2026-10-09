@@ -769,7 +769,7 @@ test('commandTyped reads back a line that wraps over several rows: 99 and 1999 c
   for (const cols of [80, 120]) {
     for (const n of [99, 1999]) {
       const command = PANEL + words(n);
-      assert.strictEqual(commandTyped(wrapBox(command, cols), command), true, `${n} chars at ${cols} columns`);
+      assert.strictEqual(commandTyped(wrapBox(command, cols), command, { termRows: 40 }), true, `${n} chars at ${cols} columns`);
     }
   }
 });
@@ -782,8 +782,8 @@ test('commandTyped: a wrapped box that is NOT the command is refused (a glued-on
     assert.strictEqual(commandTyped(wrapBox(command.slice(0, -3) + 'XYZ', cols), command), false, 'different tail');
   }
   const long = PANEL + words(1999);
-  assert.strictEqual(commandTyped(wrapBox(long + 'x', 80), long), false, 'a scrolled box whose tail is not the command tail');
-  assert.strictEqual(commandTyped(wrapBox(long.slice(0, -1), 80), long), false, 'a scrolled box that ends short of it');
+  assert.strictEqual(commandTyped(wrapBox(long + 'x', 80), long, { termRows: 40 }), false, 'a scrolled box whose tail is not the command tail');
+  assert.strictEqual(commandTyped(wrapBox(long.slice(0, -1), 80), long, { termRows: 40 }), false, 'a scrolled box that ends short of it');
 });
 
 test('commandTyped: a few rows that are only the end of the command are NOT accepted (only a full scrolled box is)', () => {
@@ -814,4 +814,60 @@ test('typingKeys: a long command goes in chunks (one big write is collapsed to a
   const emoji = '😀'.repeat(150);
   assert.strictEqual(typingKeys(emoji, false).slice(2).join(''), emoji);
   assert.ok(typingKeys(emoji, false).slice(2).every((k) => !/[\ud800-\udbff]$/.test(k) && !/^[\udc00-\udfff]/.test(k)), 'a surrogate pair is never split between writes');
+});
+
+// --- PR #125 Dexter r2 #1: the tail rule is for a box AT the CLI's scroll cap, and a wrap swallows one space only ----------------------------
+test('scrollCapRows: the CLI box is floor(terminal rows / 2) - 5 rows tall at most (measured at 20, 24, 30, 36 and 40 rows)', () => {
+  const { scrollCapRows } = require('../app/top-bar-display');
+  assert.deepStrictEqual([20, 24, 30, 36, 40].map(scrollCapRows), [5, 7, 10, 13, 15]);
+  for (const bad of [undefined, null, 0, -4, 1.5, '40', NaN]) assert.strictEqual(scrollCapRows(bad), 0, String(bad));
+});
+
+test('commandTyped: only the last 600 characters of a 1022-character command in a 6-row box are NOT accepted (nothing is scrolled out of sight)', () => {
+  const command = PANEL + words(1000);
+  assert.strictEqual(command.length, 1022);
+  assert.strictEqual(commandTyped(wrapBox(command, 120), command, { termRows: 40 }), true, 'sanity: the full box is accepted');
+  const tail = command.slice(-600);
+  const sixRows = wrapBox(tail, 120);
+  assert.strictEqual(sixRows.filter((l) => l !== 'h' && !/^─/.test(l) && !/auto mode/.test(l)).length, 6, 'a six-row box');
+  for (const termRows of [40, 24, 60, undefined]) assert.strictEqual(commandTyped(sixRows, command, { termRows }), false, `termRows ${termRows}`);
+});
+
+test('commandTyped: a box AT the cap whose text is a matching tail is accepted; one row short of the cap, or with another tail, is not', () => {
+  const command = PANEL + words(1999);
+  const at = wrapBox(command, 80, 15);                              // 15 rows: the cap at 40 terminal rows
+  assert.strictEqual(commandTyped(at, command, { termRows: 40 }), true);
+  assert.strictEqual(commandTyped(at, command, { termRows: 36 }), false, 'the cap there is 13 rows: this box is not at it');
+  assert.strictEqual(commandTyped(at, command, {}), false, 'no terminal height, no tail');
+  assert.strictEqual(commandTyped(wrapBox(command, 80, 14), command, { termRows: 40 }), false, 'one row short of the cap');
+  assert.strictEqual(commandTyped(wrapBox(command, 80, 13), command, { termRows: 36 }), true, 'but at the cap of a 36-row terminal it is');
+  const other = PANEL + words(1999).replace('word190 ', 'wordXX ');
+  assert.strictEqual(commandTyped(wrapBox(other, 80, 15), command, { termRows: 40 }), false, 'a tail that differs somewhere');
+});
+
+test('commandTyped: a wrap swallows ONE space, not a missing one: "Total:42" is not "Total: 42" however the line wraps', () => {
+  const command = PANEL + 'Total: 42 and more words after';
+  const rows = (...r) => ['h', RULE, ...r, RULE, ...NO_MARK];
+  assert.strictEqual(commandTyped(rows("❯ (from Claude's panel) Total:", '42 and more words after'), command), true, 'wrapped at the space');
+  assert.strictEqual(commandTyped(rows("❯ (from Claude's panel) Total: 42 and", 'more words after'), command), true);
+  assert.strictEqual(commandTyped(rows("❯ (from Claude's panel) Total:42", 'and more words after'), command), false, 'a space lost inside the line');
+  assert.strictEqual(commandTyped(rows("❯ (from Claude's panel) Total:", '42and more words after'), command), false, 'a space lost after a break');
+  assert.strictEqual(commandTyped(rows("❯ (from Claude's panel) Total: 42 and more wo", 'rds after'), command), true, 'wrapped inside a word');
+});
+
+test('boxHoldsLine: the box still holding the typed line (even a little changed) means the Enter was swallowed; empty, reset or absent means it left', () => {
+  const { boxHoldsLine } = require('../app/top-bar-display');
+  const command = PANEL + 'Save the report to ' + 'C:' + String.fromCharCode(92) + 'Reports';
+  const box = (...r) => ['h', RULE, ...r, RULE, ...NO_MARK];
+  assert.strictEqual(boxHoldsLine(box('❯ ' + command), command), true, 'untouched');
+  assert.strictEqual(boxHoldsLine(box('❯ ' + command, ''), command), true, 'a newline added under it');
+  assert.strictEqual(boxHoldsLine(box('❯ ' + command.replace('Reports', 'Reports ')), command), true, 'changed a little');
+  assert.strictEqual(boxHoldsLine(box('❯ ' + command.slice(0, -10) + 'package.json '), command), true, 'its head is still there after a suggestion was accepted');
+  assert.strictEqual(boxHoldsLine(box('❯'), command), false, 'emptied');
+  assert.strictEqual(boxHoldsLine(box('❯ Try "fix lint errors"'), command), false, 'the CLI placeholder');
+  assert.strictEqual(boxHoldsLine(['  Do you want to proceed?', '  1. Yes'], command), false, 'a dialog');
+  assert.strictEqual(boxHoldsLine(null, command), false);
+  assert.strictEqual(boxHoldsLine(box('❯ x'), ''), false);
+  const long = PANEL + words(1999);
+  assert.strictEqual(boxHoldsLine(wrapBox(long, 80, 15), long), true, 'only its scrolled tail is in sight');
 });

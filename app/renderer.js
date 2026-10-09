@@ -5236,7 +5236,7 @@ function typeAndCheck(enterInsert, command, done) {
   // Read the box back (Miguel r2): the screen was judged before the spaced writes, and a dialog opening
   // meanwhile, or anything glued to the command, would otherwise stand. Not exactly the command: clear it.
   setTimeout(() => {
-    if (commandTyped(screenLines(), command, { vim: vimSeen })) { done({ ok: true }); return; }
+    if (commandTyped(screenLines(), command, { vim: vimSeen, termRows: term.rows })) { done({ ok: true }); return; }
     input('\x05');
     setTimeout(() => input('\x15'), PTY_STEP_MS);
     // Back to NORMAL if the `i` took vim out of it (Miguel #51 3).
@@ -5319,7 +5319,7 @@ function submitTyped(command, opts, done) {
   setTimeout(() => {
     typingBusy = false;
     const again = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
-    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen })) { pressEnter(done, command, opts.enterInsert); return; }
+    if (again.enter && commandTyped(screenLines(), command, { vim: vimSeen, termRows: term.rows })) { pressEnter(done, command, opts.enterInsert); return; }
     clearTypedLine(opts.enterInsert);
     done({ ok: false, reason: 'the screen changed while waiting to press Enter (a dialog may have opened), so nothing was sent' });
   }, SUBMIT_RECHECK_MS);
@@ -5346,7 +5346,7 @@ function watchQueued(done, command, enterInsert) {
   const look = () => {
     if (submitGate.queuedShown(screenLines())) { done({ ok: true, submitted: true, flash: submitGate.FLASH.queued }); return; }
     if (++looks >= QUEUED_POLLS) {
-      if (command && commandTyped(screenLines(), command, { vim: vimSeen })) {
+      if (command && boxHoldsLine(screenLines(), command)) {
         clearTypedLine(enterInsert);
         done({ ok: false, reason: 'the terminal did not take the Enter, so nothing was sent' });
         return;

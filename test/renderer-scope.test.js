@@ -110,7 +110,7 @@ const ALLOWED_GLOBALS = new Set([
   'modelFamily', 'cueColour', 'chosenAccent', 'withChosenAccent', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
-  'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'menuPlacement',
+  'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'boxHoldsLine', 'scrollCapRows', 'menuPlacement',
   // PR #93 Dexter F3: the typing plan the top bar and the Git drawer's Type /merged share
   'planTyping', 'typingKeys', 'boxText',
   // app/context-fill-display.js (BACKLOG #6)

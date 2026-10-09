@@ -342,27 +342,69 @@ function inputState(lines, opts) {
  * writes; a dialog opening meanwhile, or a draft the clear did not reach, would otherwise take the CR.
  *
  * Whitespace is judged the same on both sides (PR #125 Dexter #3): a run of it, or a non-breaking space, is one space in the box and in the
- * command. A line longer than the box is wide WRAPS over several rows (Dexter #2; measured, verify/probe-panel-line-input.js: 99 characters
- * wrap at 80 and 120 columns), and the wrap swallows the space it breaks at, so over several rows the comparison ignores whitespace
- * altogether. The CLI's box shows at most ~15 rows and keeps the END of a longer text (the `❯` stays on the first row): a box of
- * SCROLLED_MIN_ROWS or more whose text is a tail of the command is accepted, the head being out of sight. A stale draft before the
- * command is what that cannot show; the box was one row before the keys went in and Ctrl-U cleared it.
+ * command. A line longer than the box is wide WRAPS over several rows (Dexter #2; measured, verify/probe-panel-line-input.js); a wrap swallows
+ * the ONE space it breaks at and nothing else, so rows are joined back through that rule alone: `Total:42` is not `Total: 42` however it wraps
+ * (Dexter r2 #1).
+ *
+ * The CLI's box has a height cap and keeps the END of a longer text, the `❯` staying on the first row. MEASURED (the probe, at 20, 24, 30, 36
+ * and 40 terminal rows): the cap is floor(terminal rows / 2) - 5 rows. Only a box AT that cap can be hiding a head, so only then is a box that
+ * holds the TAIL of the command accepted (`opts.termRows` names the terminal's height; without it no tail is accepted). Below the cap the whole
+ * command is on screen and must match: a head that is gone, because a key cleared it mid-typing, is refused. What a read-back can never see
+ * is a stray key typed into the hidden head.
  */
-const SCROLLED_MIN_ROWS = 5;
+const SCROLL_CAP_BASE = 5;
 const COMMAND_CHUNK = 200;       // characters per write: one big write is taken for a paste and collapsed to "[Pasted text #1]" (measured)
+function scrollCapRows(termRows) {
+  if (!Number.isInteger(termRows) || termRows < 1) return 0;
+  return Math.floor(termRows / 2) - SCROLL_CAP_BASE;
+}
+const collapseWs = (t) => t.replace(/\s+/g, ' ').trim();
+
+// Do `rows` (already one-line each) read, from `pos` in `want`, as the rest of it? A wrap between two rows swallowed at most one space.
+function rowsFollow(rows, want, pos) {
+  let at = pos;
+  for (let i = 0; i < rows.length; i++) {
+    if (i > 0 && want.charAt(at) === ' ') at += 1;
+    if (!want.startsWith(rows[i], at)) return -1;
+    at += rows[i].length;
+  }
+  return at;
+}
+
 function commandTyped(lines, command, opts) {
   if (typeof command !== 'string' || !command) return false;
   const live = liveBox(lines);
   const rows = live && live.box;
   if (!rows || !rows.length || rows[0].charAt(0) !== '❯') return false;          // a dialog, or no box
   if (opts && opts.vim && !vimInsertShown(lines)) return false;                // vim NORMAL: keys are motions
-  const collapse = (t) => t.replace(/\s+/g, ' ').trim();
-  if (rows.length === 1) return collapse(rows[0]) === collapse(`❯ ${command}`);
-  const strip = (t) => t.replace(/\s+/g, '');
-  const shown = strip(rows.join('')).replace(/^❯/, '');
-  const want = strip(command);
-  if (shown === want) return true;
-  return rows.length >= SCROLLED_MIN_ROWS && shown.length > 0 && want.endsWith(shown);
+  const want = collapseWs('❯ ' + command);
+  const texts = rows.map(collapseWs);
+  if (rowsFollow(texts, want, 0) === want.length) return true;                 // the whole command, on one row or wrapped
+  if (texts.length < 2 || texts.length !== scrollCapRows(opts && opts.termRows)) return false;
+  // At the cap: the first row is the prompt mark and the END of the text. Find where that text sits in the command.
+  const first = texts[0].slice(1).trim();
+  if (!first) return false;
+  for (let p = want.indexOf(first, 2); p >= 0; p = want.indexOf(first, p + 1)) {
+    if (rowsFollow([first, ...texts.slice(1)], want, p) === want.length) return true;
+  }
+  return false;
+}
+
+/**
+ * After the Enter: does the box still hold the line that was typed? True when the box's text still contains the command's first or last
+ * stretch (the CLI swallowed the Enter: its backslash newline, a suggestion list taking the key), even if that swallow changed the box a little
+ * (PR #125 Dexter r2 #2). False for an emptied box, a reset one, a placeholder, a dialog, or no box: the line left it, which is what a
+ * submission looks like.
+ */
+function boxHoldsLine(lines, command) {
+  if (typeof command !== 'string' || !command) return false;
+  const live = liveBox(lines);
+  const rows = live && live.box;
+  if (!rows || !rows.length) return false;
+  const text = collapseWs(rows.join(' '));
+  const want = collapseWs(command);
+  const n = Math.min(20, want.length);
+  return text.includes(want.slice(0, n)) || text.includes(want.slice(-n));
 }
 
 const SCREEN_REFUSALS = {
@@ -513,7 +555,7 @@ if (typeof module !== 'undefined' && module.exports) {
     modelFamily, cueColour, chosenAccent, withChosenAccent, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
-    vimInsertShown, commandTyped, menuPlacement, planTyping, typingKeys, boxText,
+    vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, typingKeys, boxText,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -535,6 +577,8 @@ if (typeof module !== 'undefined' && module.exports) {
   root.switchNotice = switchNotice;
   root.vimInsertShown = vimInsertShown;
   root.commandTyped = commandTyped;
+  root.boxHoldsLine = boxHoldsLine;
+  root.scrollCapRows = scrollCapRows;
   root.menuPlacement = menuPlacement;
   root.planTyping = planTyping;
   root.typingKeys = typingKeys;

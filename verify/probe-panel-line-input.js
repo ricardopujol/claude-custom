@@ -106,7 +106,7 @@ async function runCase(claudeBin, c, dump) {
   Object.assign(env, { ANTHROPIC_BASE_URL: `http://127.0.0.1:${server.address().port}`, ANTHROPIC_AUTH_TOKEN: 'probe-token-not-real',
     CLAUDE_CONFIG_DIR: config, DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
 
-  const ROWS = 40;
+  const ROWS = Number(process.env.PROBE_ROWS) || 40;
   const term = new Terminal({ cols: c.cols, rows: ROWS, scrollback: 2000, allowProposedApi: true });
   const p = pty.spawn(claudeBin, ['--model', 'haiku'], { name: 'xterm-256color', cols: c.cols, rows: ROWS, cwd: work, env });
   trackExit(p);
