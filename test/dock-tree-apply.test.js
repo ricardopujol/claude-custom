@@ -547,6 +547,8 @@ test('D4: a rail\'s popover is one element in the floats layer, holding the pane
   assert.ok(el.classes.has('zone'), 'a .zone, so every panel\'s own styles apply inside it');
   assert.ok(!el.classes.has('dgroup') && !el.classes.has('dfloat'), 'neither a tree group nor a float');
   assert.strictEqual(el.dataset.module, 'vault');
+  assert.strictEqual(el.getAttribute('role'), 'group');
+  assert.strictEqual(el.getAttribute('aria-label'), `${TABS.find(t => t.id === 'vault').label} panel, opened from its rail`, 'named for a screen reader, by the panel it holds now');
   assert.deepStrictEqual(el.style.left, '692px');
   assert.deepStrictEqual([el.style.top, el.style.width, el.style.height], ['0px', '280px', '600px']);
   assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'), 'the vault panel was moved in, not rebuilt');

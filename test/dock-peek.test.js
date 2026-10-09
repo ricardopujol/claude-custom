@@ -150,3 +150,29 @@ test('treePlan: the module the popover shows is not also shown by another group'
   const p = plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: true } }, { module: 'git' });
   assert.equal(p.shown.filter(id => id === 'git').length, 1);
 });
+
+test('P2: every rail `fit` draws, in any layout and window, opens a popover that is whole inside the window and clear of its rail', () => {
+  const sizeArb = fc.integer({ min: -50, max: 3000 });
+  const tabsArb = fc.array(fc.constantFrom(...IDS), { maxLength: 9 });
+  const { node: nodeArb } = fc.letrec(tie => ({
+    node: fc.oneof({ depthSize: 'small', maxDepth: 4 }, tie('leaf'), tie('split')),
+    leaf: fc.oneof(
+      { weight: 1, arbitrary: fc.constant({ type: 'term' }) },
+      { weight: 3, arbitrary: fc.record({ type: fc.constant('group'), id: fc.constantFrom('a', 'b', 'c', 'g1', 'g2'), tabs: tabsArb }) },
+    ),
+    split: fc.record({ type: fc.constant('split'), dir: fc.constantFrom('row', 'col'), kids: fc.array(tie('node'), { maxLength: 4 }), sizes: fc.array(sizeArb, { maxLength: 5 }) }),
+  }));
+  const layoutArb = fc.record({ version: fc.constant(2), root: nodeArb, hidden: tabsArb }).map(raw => T.normalize(raw, IDS));
+  const selArb = fc.record({ foldAll: fc.boolean(), collapsed: fc.dictionary(fc.constantFrom('a', 'b', 'c', 'g1', 'g2', 'right'), fc.constant(true)) });
+  const vp = fc.record({ width: fc.integer({ min: 100, max: 2500 }), height: fc.integer({ min: 100, max: 1500 }) });
+  fc.assert(fc.property(layoutArb, selArb, vp, (l, sel, v) => {
+    const boxes = T.fit(l, sel, v).boxes;
+    for (const rail of boxes.filter(b => b.kind === 'rail')) {
+      const p = T.peekFor(boxes, rail.modules[0], v);
+      if (p === null) continue;       // no room beside it: no popover, which is allowed
+      assert.ok(p.rect.x >= 0 && p.rect.y >= 0 && p.rect.x + p.rect.width <= v.width && p.rect.y + p.rect.height <= v.height, `${JSON.stringify(p.rect)} leaves ${v.width}x${v.height}`);
+      assert.ok(!overlap(p.rect, rail.rect), `${JSON.stringify(p.rect)} covers its rail ${JSON.stringify(rail.rect)}`);
+      assert.deepEqual(p.modules, rail.modules);
+    }
+  }), RUNS);
+});

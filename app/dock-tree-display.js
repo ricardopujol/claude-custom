@@ -460,6 +460,8 @@ function applyBoxes(plan, doc) {
       layer.appendChild(popover);
     }
     popover.dataset.module = plan.peek.module;
+    popover.setAttribute('role', 'group');
+    popover.setAttribute('aria-label', `${(plan.peek.tabs.find(t => t.on) || { label: plan.peek.module }).label} panel, opened from its rail`);
     popover.dataset.shape = plan.peek.shape;
     popover.dataset.dir = plan.peek.dir;
     setRect(popover, plan.peek.rect);
