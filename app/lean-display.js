@@ -21,6 +21,9 @@
  *                            session as JSON (hosts outlive app updates; PR #140 Dexter N1). Only an exact array entry counts.
  *   stillSize(w, h, fw, fh, vector)  the size to draw a still frame at: the image's own; for a VECTOR image the size it covers the box at;
  *                            else (0) the fallback box, so the draw has a real destination and `cover` fills the window (Dexter N2)
+ *   stillNode(doc, face, portraitMedia)  one working agent's portrait as a DOM node that never moves (the strip's, #62 option C): the initials
+ *                            placeholder, a static <img>, or a <canvas> painted with the image's / video's first frame (paintStill). Built with
+ *                            the DOM API only: a name is somebody's string.
  *   advanceCooldowns(list,now) the cooldown widget's countdown step, so a resume after a long lean shows the real time left (Dexter F7)
  *   createSuspender()        the registry of suspend/resume pairs: every panel, poller or animation registers one;
  *                            `set(true)` suspends all (in registration order), `set(false)` resumes them in reverse.
@@ -93,6 +96,57 @@ function stillSize(w, h, fw, fh, vector = false) {
   return { width: ok(fw) ? Math.round(fw) : 300, height: ok(fh) ? Math.round(fh) : 300 };
 }
 
+// A canvas (data-still-src, data-still-kind) painted with a centred square of the first frame; a video is unloaded after.
+function paintStill(doc, c, portraitMedia) {
+  const src = c.dataset.stillSrc;
+  const draw = (el, w, h) => {
+    try {
+      const side = Math.min(w, h) || 1;
+      c.getContext('2d').drawImage(el, (w - side) / 2, (h - side) / 2, side, side, 0, 0, c.width, c.height);
+    } catch { /* stays blank: a face never moves */ }
+  };
+  if (c.dataset.stillKind === 'video') {
+    const v = doc.createElement('video');
+    v.muted = true;
+    v.preload = 'auto';
+    v.addEventListener('loadeddata', () => { draw(v, v.videoWidth, v.videoHeight); portraitMedia.unloadVideo(v); }, { once: true });
+    v.addEventListener('error', () => portraitMedia.unloadVideo(v), { once: true });
+    v.src = src;
+    return;
+  }
+  const img = doc.createElement('img');
+  img.onload = () => draw(img, img.naturalWidth, img.naturalHeight);
+  img.src = src;
+}
+
+function stillNode(doc, face, portraitMedia) {
+  const f = face && typeof face === 'object' ? face : {};
+  const d = portraitMedia.mediaElementFor(f.portrait, { imagesEnabled: f.images });
+  if (d.tag === 'placeholder') {
+    const span = doc.createElement('span');
+    span.className = 'face-media face-placeholder';
+    span.title = String(d.attrs.title || '');
+    span.textContent = String(d.attrs.initials);
+    span.style.background = `hsl(${Number(d.attrs.hue) || 0} 42% 62%)`;
+    return span;
+  }
+  if (d.tag === 'img' && !mayAnimate(d.attrs.src)) {
+    const img = doc.createElement('img');
+    img.className = 'face-media';
+    img.alt = '';
+    img.src = d.attrs.src;
+    return img;
+  }
+  const c = doc.createElement('canvas');
+  c.className = 'face-media face-still';
+  c.width = 36;
+  c.height = 36;
+  c.dataset.stillSrc = d.attrs.src;
+  c.dataset.stillKind = d.tag === 'video' ? 'video' : 'image';
+  paintStill(doc, c, portraitMedia);
+  return c;
+}
+
 /** Each entry's remaining time reduced by the time since its last tick; the expired go. Pure: `now` in, a new list out. */
 function advanceCooldowns(list, now) {
   return (Array.isArray(list) ? list : [])
@@ -142,7 +196,7 @@ function workingFaces(rows, { limit = FACE_LIMIT } = {}) {
   };
 }
 
-const API = { normalize, chip, holdStill, wantWebgl, mayAnimate, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
+const API = { normalize, chip, holdStill, wantWebgl, mayAnimate, stillNode, paintStill, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.leanDisplay = API;

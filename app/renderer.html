@@ -1528,17 +1528,6 @@
     body.lean header, body.lean .zone, body.lean #diag,
     body.lean .dgutter, body.lean .drail, body.lean #dock-overlay { display: none; }
     body.lean #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
-    /* ...and the working agents as a strip of still portraits in the top-right corner, over the terminal's empty margin. */
-    #lean-faces { display: none; }
-    body.lean #lean-faces:not([hidden]) {
-      display: flex; gap: 4px; align-items: center; position: fixed; top: 6px; right: 14px; z-index: 40;
-      padding: 3px 4px; border-radius: 6px; background: color-mix(in srgb, var(--chrome) 80%, transparent);
-      border: 1px solid var(--border);
-    }
-    .lean-face { width: 26px; height: 26px; border-radius: 50%; overflow: hidden; flex: 0 0 auto;
-      outline: 1px solid var(--agent, var(--accent)); outline-offset: 0; }
-    .lean-face .face-media { width: 100%; height: 100%; object-fit: cover; display: block; font-size: 10px; }
-    .lean-more { font-size: 10px; color: var(--dim); padding: 0 3px; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
@@ -1622,7 +1611,6 @@
 </head>
 <body>
   <div id="bg"></div>
-  <div id="lean-faces" hidden></div>
   <div id="focus-veil"></div>
   <!-- FF12's menus, at BODY level on purpose: inside the header they were
        clipped by its overflow:hidden and painted over by the panels below

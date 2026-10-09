@@ -383,11 +383,17 @@ async function main() {
   await sleep(2500);
   check('5: ...and the night ending leaves it on', (await leanPage(app)).leanOn === true);
 
-  // 6: portraits, while lean ----------------------------------------------------------------------------------
+  // 6: portraits, while lean: in the TAB STRIP next to the chip (Ricardo's option C), none over the terminal ---------------------
+  const noneYet = await stripLean(app);
+  check('6: nobody working: the strip shows no portraits', !!noneYet && noneYet.faces.hidden === true && noneYet.faces.count === 0, JSON.stringify(noneYet && noneYet.faces));
   hook(devPid, 'PreToolUse', { session_id: 'probe', tool_name: 'Agent', tool_input: { subagent_type: 'electron-pro', description: 'probe' }, tool_use_id: 'toolu_lean1' });
-  const faces = await waitFor(async () => { const p = await leanPage(app); return p && p.faces.count >= 1 ? p : null; }, 20000);
-  check('6: a working agent shows as a still portrait in the corner (an image, a canvas or the initials placeholder: never a video)', !!faces && faces.faces.shown === true && faces.faces.videos === 0 && faces.faces.stills + faces.faces.imgs + faces.faces.placeholders >= 1 && faces.faces.titles.some(t => /^electron-pro is working/.test(t)),
+  const faces = await waitFor(async () => { const s2 = await stripLean(app); return s2 && s2.faces.count >= 1 ? s2 : null; }, 20000);
+  check('6: a working agent is an 18 px round still portrait in the strip, left of the lean chip, named on hover (never a video)',
+    !!faces && faces.faces.hidden === false && faces.faces.size === 18 && faces.faces.round === '50%' && faces.faces.videos === 0 && faces.faces.titles.includes('electron-pro')
+      && faces.faces.stills + faces.faces.imgs + faces.faces.placeholders >= 1 && faces.faces.right <= faces.faces.chipLeft,
     faces ? JSON.stringify(faces.faces) : 'no faces');
+  const overlay = await leanPage(app);
+  check('6: ...and nothing is drawn over the terminal any more', !!overlay && !('faces' in overlay));
   await shoot(app, '5-lean-portraits');
   hook(devPid, 'SubagentStop', { session_id: 'probe', agent_id: 'toolu_lean1', agent_type: 'electron-pro' });
 

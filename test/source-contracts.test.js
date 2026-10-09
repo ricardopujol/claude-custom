@@ -219,7 +219,7 @@ test('the tab strip never uses innerHTML: a branch name is text, not markup', ()
 
 test('tab-strip.html loads only its own scripts: the indexing field\'s (#66), lean mode\'s helper (#62) and the strip\'s', () => {
   const html = read('app/tab-strip.html');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './lean-display.js', './tab-strip.js']);
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './portrait-media-display.js', './lean-display.js', './tab-strip.js']);
 });
 
 test('the indexing overlay loads only its display script, and neither page uses innerHTML: a note is text (#66)', () => {

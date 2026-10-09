@@ -273,7 +273,7 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-one members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-two members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
@@ -283,7 +283,7 @@ test('the strip bridge exposes its twenty-one members -- and nothing else', () =
       // #66, the indexing field (app/indexing-bridge.js answers them)
       'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus',
       // #62, lean mode (app/lean-bridge.js answers them)
-      'leanGet', 'leanSet', 'onLean']);
+      'leanGet', 'leanSet', 'onLeanFaces', 'onLean']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
@@ -758,4 +758,63 @@ test('tab-strip.html: the lean button and chip sit before ▾, the chip starts h
   assert.ok(strip.indexOf('id="lean-chip"') < strip.indexOf('id="bg"'));
   assert.match(strip, /id="lean-chip"[^>]*\bhidden\b/);
   assert.match(html, /body\.lean \.dot\.working\s*\{[^}]*animation:\s*none/);
+});
+
+// --- the working agents' portraits next to the lean chip (#62, option C): 0 / 2 / 7 agents ----------------------------------
+
+const { paintLeanFaces, LEAN_FACES_MAX } = require('../app/tab-strip');
+function facesDoc() {
+  const box = node('span');
+  box.hidden = true;
+  box.querySelectorAll = () => [];
+  const doc = { createElement: (tag) => { const n = node(tag); n.style = {}; n.dataset = {}; n.addEventListener = () => {}; n.getContext = () => ({ drawImage() {} }); return n; }, getElementById: (id) => (id === 'lean-faces' ? box : null) };
+  return { doc, box };
+}
+const agentFace = (name, extra = {}) => ({ agent: name, images: true, portrait: { kind: 'file', path: `C:/p/${name}.png`, media: 'image', tier: 'forge' }, ...extra });
+
+test('lean faces: none working shows nothing at all', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [], true);
+  assert.strictEqual(box.hidden, true);
+  assert.strictEqual(box.children.length, 0);
+});
+
+test('lean faces: two working agents are two round portraits with the name on hover, no "+N"', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [agentFace('amy'), agentFace('bob')], true);
+  assert.strictEqual(box.hidden, false);
+  assert.deepStrictEqual(box.children.map(c => c.title), ['amy', 'bob']);
+  assert.ok(box.children.every(c => c.className === 'lean-face'));
+  assert.strictEqual(box.children.some(c => c.className === 'lean-more'), false);
+});
+
+test('lean faces: seven working agents are six portraits and "+1"', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, Array.from({ length: 7 }, (_, i) => agentFace('a' + i)), true);
+  assert.strictEqual(LEAN_FACES_MAX, 6);
+  assert.strictEqual(box.children.length, 7);
+  assert.strictEqual(box.children.filter(c => c.className === 'lean-face').length, 6);
+  const more = box.children.find(c => c.className === 'lean-more');
+  assert.strictEqual(more.textContent, '+1');
+});
+
+test('lean faces: not lean shows none even if main still holds a list', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [agentFace('amy')], false);
+  assert.strictEqual(box.hidden, true);
+  assert.strictEqual(box.children.length, 0);
+});
+
+test('lean faces: a name is text, never markup (title and initials set as plain strings)', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [{ agent: '<img onerror=x>', images: false, portrait: null }], true);
+  assert.strictEqual(box.children[0].title, '<img onerror=x>');
+  assert.strictEqual(box.children[0].children[0].className, 'face-media face-placeholder', 'images off: the initials placeholder');
+});
+
+test('tab-strip.html: the faces sit left of the lean chip, 18 px round, and the page may load file images and media', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.ok(html.indexOf('id="lean-faces"') < html.indexOf('id="lean-chip"'));
+  assert.match(html, /\.lean-face \{[^}]*width: 18px; height: 18px; border-radius: 50%/);
+  assert.match(html, /img-src 'self'; media-src 'self'/);
 });

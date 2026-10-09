@@ -72,3 +72,35 @@ test('a night value that is not a number or null is ignored', () => {
 test('channels are the ones the preloads use', () => {
   assert.deepStrictEqual([GET_CHANNEL, SET_CHANNEL, NIGHT_CHANNEL, PUSH_CHANNEL], ['lean:get', 'lean:set', 'lean:night', 'lean-state']);
 });
+
+const { FACES_CHANNEL, FACES_PUSH } = require('../app/lean-bridge');
+
+function facesHarness() {
+  const listeners = new Map();
+  const pushed = [];
+  const ipcMain = { handle() {}, on: (ch, fn) => listeners.set(ch, fn) };
+  const api = registerLeanHandlers({ ipcMain, isView: (s) => s && s.id <= 2, isStrip: (s) => s && s.id === 9, push() {}, pushFaces: (f) => pushed.push(f.map(x => x.agent)) });
+  return { api, pushed, send: (id, list) => listeners.get(FACES_CHANNEL)({ sender: { id } }, list) };
+}
+
+test('faces: a tab view\'s working agents reach the strip as the window\'s set; another view adds to it; a repeat says nothing', () => {
+  const h = facesHarness();
+  h.send(1, [{ agent: 'amy' }]);
+  h.send(1, [{ agent: 'amy' }]);
+  h.send(2, [{ agent: 'bob' }]);
+  assert.deepStrictEqual(h.pushed, [['amy'], ['amy', 'bob']]);
+});
+
+test('faces: the strip and strangers cannot set them; a closing view takes its faces with it', () => {
+  const h = facesHarness();
+  h.send(9, [{ agent: 'x' }]);
+  h.send(77, [{ agent: 'y' }]);
+  assert.deepStrictEqual(h.pushed, []);
+  h.send(1, [{ agent: 'amy' }]);
+  h.api.dropOwner(1);
+  assert.deepStrictEqual(h.pushed, [['amy'], []]);
+});
+
+test('faces: the channels are the ones the preloads use', () => {
+  assert.deepStrictEqual([FACES_CHANNEL, FACES_PUSH], ['lean:faces', 'lean-faces']);
+});

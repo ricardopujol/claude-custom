@@ -179,3 +179,30 @@ test('normalize carries the window-wide night flag (a real true only), lean or n
   assert.strictEqual(L.normalize({ on: true, night: 'yes' }).night, false);
   assert.strictEqual(L.normalize(null).night, false);
 });
+
+// --- stillNode: one portrait for the strip, never moving (option C) ---------------------------------------------------------
+
+function fakeDoc() {
+  const mk = (tag) => ({ tag, className: '', title: '', textContent: '', style: {}, dataset: {}, children: [], alt: '', src: '', listeners: {}, addEventListener(n, f) { this.listeners[n] = f; }, getContext: () => ({ drawImage() {} }), appendChild(c) { this.children.push(c); } });
+  return { createElement: mk };
+}
+const PM = require('../app/portrait-media-display');
+
+test('stillNode: images off or no portrait is the initials placeholder', () => {
+  const n = L.stillNode(fakeDoc(), { agent: 'a', images: false, portrait: { kind: 'placeholder', initials: 'AB', hue: 120 } }, PM);
+  assert.strictEqual(n.className, 'face-media face-placeholder');
+  assert.strictEqual(n.textContent, 'AB');
+});
+
+test('stillNode: a jpg is an <img>; a gif/webp/png/svg is a canvas holding its first frame; a video is a canvas too, never a <video>', () => {
+  const face = (p, media = 'image') => ({ agent: 'a', images: true, portrait: { kind: 'file', path: p, media, tier: 'forge' } });
+  assert.strictEqual(L.stillNode(fakeDoc(), face('C:/p/a.jpg'), PM).tag, 'img');
+  for (const p of ['C:/p/a.gif', 'C:/p/a.webp', 'C:/p/a.png', 'C:/p/a.svg']) {
+    const n = L.stillNode(fakeDoc(), face(p), PM);
+    assert.strictEqual(n.tag, 'canvas', p);
+    assert.strictEqual(n.dataset.stillKind, 'image');
+  }
+  const v = L.stillNode(fakeDoc(), face('C:/p/a.webm', 'video'), PM);
+  assert.strictEqual(v.tag, 'canvas');
+  assert.strictEqual(v.dataset.stillKind, 'video');
+});

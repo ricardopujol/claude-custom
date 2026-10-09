@@ -77,9 +77,12 @@ test('the roster panel\'s face videos are unloaded while lean, not merely hidden
   assert.match(pair, /paintAgents\(''\)/, 'the one path that replaces the roster (setRosterHtml), which also unloads its videos');
 });
 
-test('a video portrait gets a captured first frame in the strip (Dexter F8)', () => {
-  assert.match(RENDERER, /function paintStillFromVideo\(c\)/);
-  assert.match(RENDERER, /c\.dataset\.stillKind === 'video'/);
+test('the page no longer draws portraits over the terminal: the working agents go to main for the strip (option C)', () => {
+  assert.doesNotMatch(RENDERER, /lean-faces|paintStillCanvas|paintStillFromVideo|stillFaceHtml/);
+  assert.match(RENDERER, /leanBridge\.faces\(list\)/);
+  assert.match(RENDERER, /leanDisplay\.workingFaces\(\[\.\.\.roster\.values\(\)\], \{ limit: 24 \}\)/);
+  assert.match(RENDERER, /const list = leanOn\s*\?/, 'not lean: an empty list');
+  assert.doesNotMatch(HTML, /id="lean-faces"|\.lean-face/);
 });
 
 test('a night is reported to main only on the host\'s word: a dropped socket does not end it', () => {
@@ -96,7 +99,6 @@ test('the minute-ticks skip while lean, so nothing polls for a hidden header', (
 
 test('the roster panel is not drawn while lean; the working agents go to the still strip', () => {
   assert.match(RENDERER, /function renderRoster\(\) \{[^}]*if \(leanOn\) \{ paintLeanFaces\(\); return; \}/s);
-  assert.match(RENDERER, /portraitMedia\.stillFaceHtml\(/);
 });
 
 test('the terminal renderer swap and the background stills are registered pairs, and every pair is resumed by one registry', () => {
@@ -113,7 +115,6 @@ test('applyBackground never sets a CSS background itself: the image goes through
   assert.ok(!fn.includes('backgroundImage'), 'applyBackground does not touch backgroundImage');
   assert.match(fn, /paintBackgroundImage\(media\.url\)/);
   assert.match(RENDERER, /leanDisplay\.mayAnimate\(url\)/);
-  assert.match(RENDERER, /mayAnimate: leanDisplay\.mayAnimate/, 'the strip uses the same rule');
 });
 
 test('the page keeps the terminal and the strip\'s marks: lean hides panels and chrome, never the terminal, the background or the theme', () => {
@@ -124,7 +125,6 @@ test('the page keeps the terminal and the strip\'s marks: lean hides panels and 
   assert.doesNotMatch(rules, /#bg\b/);
   assert.match(HTML, /<script src="\.\/lean-display\.js"><\/script>/);
   assert.ok(HTML.indexOf('lean-display.js') < HTML.indexOf('src="./renderer.js"'));
-  assert.match(HTML, /<div id="lean-faces" hidden><\/div>/);
 });
 
 test('Dexter N3: main writes the union of the stored list and its own', () => {
@@ -171,5 +171,6 @@ test('Ricardo\'s video rule: the video and image layers are fed leanHeld() (lean
 
 test('the lean portraits strip stays still whatever the focus or night (the rule is for backgrounds)', () => {
   const faces = RENDERER.slice(RENDERER.indexOf('function paintLeanFaces'), RENDERER.indexOf('function applyLean'));
+  assert.ok(faces.length > 100);
   assert.doesNotMatch(faces, /leanHeld|windowFocused|leanNight/);
 });

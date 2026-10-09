@@ -3099,7 +3099,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // Backlog #62 (verify/probe-lean.js): lean mode as this page has it -- the class, what the dock still shows,
       // the terminal's renderer and scrollback, the background layer and the working-agents strip.
       case 'leanState': {
-        const facesEl = document.getElementById('lean-faces');
         const buf = term.buffer.active;
         const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
         const bgEl = document.getElementById('bg');
@@ -3112,9 +3111,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
           bg: { cssImage: bgEl.style.backgroundImage, still: bgStillEl ? { width: bgStillEl.width, height: bgStillEl.height } : null,
             video: bgVideoEl ? { paused: bgVideoEl.paused, currentTime: bgVideoEl.currentTime } : null, hasBg: document.body.classList.contains('has-bg') },
-          faces: { hidden: facesEl.hidden, shown: visible(facesEl), count: facesEl.querySelectorAll('.lean-face').length,
-            titles: [...facesEl.querySelectorAll('.lean-face')].map(f => f.title), stills: facesEl.querySelectorAll('canvas').length, imgs: facesEl.querySelectorAll('img').length, placeholders: facesEl.querySelectorAll('.face-placeholder').length,
-            videos: facesEl.querySelectorAll('video').length },
           look: { accent: cs.getPropertyValue('--accent').trim(), bg: cs.getPropertyValue('--bg').trim(), text: cs.getPropertyValue('--text').trim() },
           termTheme: term.options.theme ? { background: term.options.theme.background || null, foreground: term.options.theme.foreground || null } : null,
           typedFocus: !!(term.element && term.element.contains(document.activeElement)), focusId: (document.activeElement && document.activeElement.id) || '',
@@ -5075,7 +5071,6 @@ function paintBackgroundImage(url) {
 // say how it stops. The page keeps the terminal and the pty untouched: typing, scrollback and `claude` carry on.
 const leanBridge = window.harness && window.harness.lean;
 const leanSuspender = leanDisplay.createSuspender();
-const leanFacesEl = document.getElementById('lean-faces');
 let leanFacesKey = '';
 
 // The dock: no panel is "shown" while lean (renderLayout), so each panel's hide effect runs and coming back refreshes them.
@@ -5092,7 +5087,7 @@ leanSuspender.register('ticks', {
 leanSuspender.register('roster', {
   // the face videos are UNLOADED, not just hidden: a hidden <video> keeps its decoded buffers (PR #140 Miguel S5)
   suspend: () => { paintAgents(''); paintLeanFaces(); },
-  resume: () => { leanFacesKey = ''; if (leanFacesEl) { leanFacesEl.replaceChildren(); leanFacesEl.hidden = true; } renderRoster(); },
+  resume: () => { paintLeanFaces(); renderRoster(); },
 });
 
 // xterm: the WebGL addon goes while lean and comes back after, only if no background forbids it (applyBackground). The
@@ -5136,47 +5131,17 @@ function syncLeanMotion() {
 }
 leanSuspender.register('background', { suspend: syncLeanMotion, resume: syncLeanMotion });
 
-function paintStillCanvas(c) {
-  if (c.dataset.stillKind === 'video') { paintStillFromVideo(c); return; }
-  const img = new Image();
-  img.onload = () => {
-    try {
-      const ctx = c.getContext('2d');
-      const side = Math.min(img.naturalWidth, img.naturalHeight) || 1;
-      ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, c.width, c.height);
-    } catch { /* stays blank: a face never moves */ }
-  };
-  img.src = c.dataset.stillSrc;
-}
-
-// A video portrait's first frame, drawn once and the decoder released (PR #140 Dexter F8).
-function paintStillFromVideo(c) {
-  const v = document.createElement('video');
-  v.muted = true;
-  v.preload = 'auto';
-  v.addEventListener('loadeddata', () => {
-    try {
-      const ctx = c.getContext('2d');
-      const side = Math.min(v.videoWidth, v.videoHeight) || 1;
-      ctx.drawImage(v, (v.videoWidth - side) / 2, (v.videoHeight - side) / 2, side, side, 0, 0, c.width, c.height);
-    } catch { /* stays blank */ }
-    portraitMedia.unloadVideo(v);
-  }, { once: true });
-  v.addEventListener('error', () => portraitMedia.unloadVideo(v), { once: true });
-  v.src = c.dataset.stillSrc;
-}
-
-// The portraits-only strip: the agents working right now, as still images, from the roster events already arriving.
+// The working agents go to MAIN, which hands the tab strip the window's whole set to draw as still portraits next to the lean chip
+// (BACKLOG #62, Ricardo's option C; app/lean-faces.js, app/tab-strip.js). They come from the roster events already arriving: no polling.
+// Not lean: an empty list, so the strip shows none.
 function paintLeanFaces() {
-  if (!leanFacesEl) return;
-  const { faces, more } = leanDisplay.workingFaces([...roster.values()]);
-  const html = faces.map(f => `<div class="lean-face" title="${escapeHtml(f.agent)} is working">${portraitMedia.stillFaceHtml(f.portrait, { imagesEnabled: agentImagesEnabled, mayAnimate: leanDisplay.mayAnimate })}</div>`).join('') +
-    (more > 0 ? `<div class="lean-more" title="${more} more working">+${more}</div>` : '');
-  if (html === leanFacesKey) return;
-  leanFacesKey = html;
-  leanFacesEl.innerHTML = html;
-  leanFacesEl.hidden = faces.length === 0;
-  for (const c of leanFacesEl.querySelectorAll('canvas[data-still-src]')) paintStillCanvas(c);
+  const list = leanOn
+    ? leanDisplay.workingFaces([...roster.values()], { limit: 24 }).faces.map(f => ({ agent: f.agent, images: agentImagesEnabled, portrait: f.portrait }))
+    : [];
+  const key = JSON.stringify(list);
+  if (key === leanFacesKey) return;
+  leanFacesKey = key;
+  if (leanBridge) leanBridge.faces(list);
 }
 
 function applyLean(payload) {

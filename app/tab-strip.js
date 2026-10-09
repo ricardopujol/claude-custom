@@ -318,7 +318,38 @@ function paintLean(doc, state, bridge) {
   if (back) { back.textContent = chip ? chip.back : ''; back.onclick = () => bridge.leanSet(false); }
 }
 
-const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, paintLean, windowChrome, GLYPHS };
+const LEAN_FACES_MAX = 6;
+
+/**
+ * The working agents' portraits next to the lean chip (BACKLOG #62, Ricardo's option C): 18 px round STILL images (app/lean-display.js
+ * stillNode), at most six then "+N", the agent's name on hover, only while lean, nothing at all when none work. `faces` is main's set
+ * for the whole window (app/lean-faces.js); the DOM is built with createElement and textContent, never innerHTML.
+ */
+function paintLeanFaces(doc, faces, on) {
+  const box = doc.getElementById('lean-faces');
+  if (!box) return;
+  const list = on === true && Array.isArray(faces) ? faces : [];
+  box.hidden = list.length === 0;
+  const lean = typeof module !== 'undefined' && module.exports ? require('./lean-display') : root.leanDisplay;
+  const pm = typeof module !== 'undefined' && module.exports ? require('./portrait-media-display') : root.portraitMedia;
+  const nodes = list.slice(0, LEAN_FACES_MAX).map((f) => {
+    const span = doc.createElement('span');
+    span.className = 'lean-face';
+    span.title = String(f.agent);
+    span.appendChild(lean.stillNode(doc, f, pm));
+    return span;
+  });
+  if (list.length > LEAN_FACES_MAX) {
+    const more = doc.createElement('span');
+    more.className = 'lean-more';
+    more.textContent = '+' + (list.length - LEAN_FACES_MAX);
+    more.title = `${list.length - LEAN_FACES_MAX} more working`;
+    nodes.push(more);
+  }
+  box.replaceChildren(...nodes);
+}
+
+const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, paintLean, paintLeanFaces, windowChrome, GLYPHS, LEAN_FACES_MAX };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
@@ -333,9 +364,19 @@ if (typeof module !== 'undefined' && module.exports) {
   if (root.strip && typeof root.strip.onLean === 'function') {
     // the state on load; a push that already arrived is not undone by a slower answer
     let pushed = false;
-    root.strip.onLean((state) => { pushed = true; paintLean(root.document, state, root.strip); });
+    let faces = [];
+    let leanOn = false;
+    const take = (state) => {
+      paintLean(root.document, state, root.strip);
+      leanOn = root.leanDisplay.normalize(state).on;
+      paintLeanFaces(root.document, faces, leanOn);
+    };
+    root.strip.onLean((state) => { pushed = true; take(state); });
+    if (typeof root.strip.onLeanFaces === 'function') {
+      root.strip.onLeanFaces((list) => { faces = Array.isArray(list) ? list : []; paintLeanFaces(root.document, faces, leanOn); });
+    }
     if (typeof root.strip.leanGet === 'function') {
-      Promise.resolve(root.strip.leanGet()).then((state) => { if (!pushed) paintLean(root.document, state, root.strip); }, () => {});
+      Promise.resolve(root.strip.leanGet()).then((state) => { if (!pushed) take(state); }, () => {});
     }
   }
   if (root.strip && typeof root.strip.onModel === 'function') {
