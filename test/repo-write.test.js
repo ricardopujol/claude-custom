@@ -291,3 +291,18 @@ test('Miguel S5: text with a lone surrogate (it would be written as U+FFFD) is r
   assert.deepStrictEqual({ ok: r.ok, why: r.why }, { ok: false, why: 'bad request' });
   assert.strictEqual(fs.readFileSync(p, 'utf8'), 'x');
 });
+
+test('N2: the stamp comes from the temp path AFTER its handle is closed, not from the handle', async () => {
+  const p = put('old');
+  const api = {
+    ...fsp,
+    open: async (f, flags, ...rest) => {
+      const fh = await fsp.open(f, flags, ...rest);
+      return String(f).endsWith('.tmp') ? new Proxy(fh, { get: (t, k) => (k === 'stat' ? async () => ({ size: 999, mtimeMs: 1 }) : (typeof t[k] === 'function' ? t[k].bind(t) : t[k])) }) : fh;
+    },
+  };
+  const r = await writeRepoFile(p, { text: 'new!', expectHash: sha(Buffer.from('old')), fsApi: api });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.size, 4);
+  assert.strictEqual(r.mtimeMs, fs.statSync(p).mtimeMs, 'what the page stores is what the disk says');
+});

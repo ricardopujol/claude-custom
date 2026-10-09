@@ -20,7 +20,8 @@ function createUnsaved() {
     // `path` is a file name to remember, or anything else (null) to forget the tab's entry
     report(key, path) {
       if (typeof key !== 'string' || key === '') return;
-      if (typeof path === 'string' && path !== '') byTab.set(key, path.slice(0, MAX_PATH));
+      // stored ESCAPED (newlines, quotes and control characters spelled out): every dialog and reason that shows the name reads it from here
+      if (typeof path === 'string' && path !== '') byTab.set(key, JSON.stringify(path.slice(0, MAX_PATH)).slice(1, -1));
       else byTab.delete(key);
     },
     pathFor: (key) => (byTab.has(key) ? byTab.get(key) : null),
@@ -32,7 +33,7 @@ function createUnsaved() {
 function closeDetail({ reason = '', unsaved = null } = {}) {
   const lines = [reason ? `Not closed without asking: ${reason}.` : null, 'The folder stays.'];
   // a Ctrl+click close already says it in its reason (host/close-safety.js): once is enough
-  if (typeof unsaved === 'string' && unsaved !== '' && !/unsaved edits/.test(reason)) lines.push(`You have unsaved edits to ${JSON.stringify(unsaved).slice(1, -1)} in the file reader; they will be lost.`);
+  if (typeof unsaved === 'string' && unsaved !== '' && !/unsaved edits/.test(reason)) lines.push(`You have unsaved edits to ${unsaved} in the file reader; they will be lost.`);
   return lines.filter(l => l !== null).join('\n');
 }
 
@@ -42,7 +43,7 @@ function closeDetail({ reason = '', unsaved = null } = {}) {
  * (`saveAll`) and closes only if all the entries clear within `waitCleared` (a save that hits a conflict or an
  * error keeps the window open, where the banner is). Anything else, a throw included, is a Cancel.
  */
-async function guardWindowClose({ list, ask, saveAll, waitCleared }) {
+async function guardWindowClose({ list, ask, saveAll, waitCleared, notify = () => {} }) {
   const entries = list();
   if (entries.length === 0) return true;
   let choice;
@@ -50,7 +51,10 @@ async function guardWindowClose({ list, ask, saveAll, waitCleared }) {
   if (choice === 'discard') return true;
   if (choice !== 'save') return false;
   saveAll();
-  return (await waitCleared()) === true;
+  if ((await waitCleared()) === true) return true;
+  // say why the window is still there: a save that hit a conflict or an error is waiting in its page
+  try { notify('Some changes could not be saved, so the window stays open. Check the file reader.'); } catch { /* the note is best effort */ }
+  return false;
 }
 
 module.exports = { createUnsaved, closeDetail, guardWindowClose };

@@ -730,3 +730,16 @@ test('Miguel I2: open() says whether it opened: false when the person kept editi
   s.requester.last('read').resolve(fileReply());
   assert.notStrictEqual(await o, false);
 });
+
+test('N3: a disk version with the same text but a different encoding (UTF-16) is a conflict, never adopted as an editable base', async () => {
+  const s = setup();
+  const ed = await startEditing(s);
+  await conflict(s, ed, fileReply({ text: 'mine\n', hash: 'HU', size: 14, mtimeMs: 300, editable: false, editableWhy: 'UTF-16 files are shown, not edited' }));
+  assert.strictEqual(s.el('reader-conflict').hidden, false, 'the banner, not a silent "saved"');
+  assert.strictEqual(s.el('reader-conflict-keep').hidden, true, 'Keep mine would re-encode it');
+  assert.doesNotMatch(s.el('reader-meta').textContent, /^saved/);
+  ctrlS(s);
+  await tick();
+  // a further save is still checked against the ORIGINAL version (H1), never against the UTF-16 file it would re-encode
+  assert.ok(s.requester.all('write').slice(1).every(w => w.body.expectHash === 'H1'));
+});

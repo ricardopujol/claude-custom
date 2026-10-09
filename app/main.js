@@ -530,6 +530,7 @@ function createWindow() {
     guardWindowClose({
       list: () => readerUnsaved.all(),
       ask: askWindowClose,
+      notify: (detail) => { if (!PROBE_PORT && win && !win.isDestroyed()) dialog.showMessageBox(win, { type: 'info', message: 'The window was not closed', detail }); },
       saveAll: () => { if (win && !win.isDestroyed()) win.webContents.send('reader-save'); forEachView((v) => v.webContents.send('reader-save')); },
       waitCleared: async () => {
         for (let i = 0; i < 80; i++) { if (readerUnsaved.all().length === 0) return true; await new Promise(r => setTimeout(r, 100)); }
@@ -689,6 +690,7 @@ function destroyTabView(tab) {
   if (!view) return;
   canvasViews.destroyFor(view.webContents);
   liveViews.delete(view);
+  readerUnsaved.clear(tab.key);      // its page is going: whatever it held unsaved goes with it, so no phantom question later
   try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
   try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
 }

@@ -456,9 +456,11 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
       state.stamp = { size: r.size, mtimeMs: r.mtimeMs };
       return false;
     }
-    if (r.text === state.editor.text() && typeof r.hash === 'string') {
+    if (r.text === state.editor.text() && typeof r.hash === 'string' && r.editable === true) {
       // the disk already holds exactly what is on screen (a save whose answer was lost, or the same edit made
-      // elsewhere): nothing to resolve, so no banner and no accusation: it is the new version started from
+      // elsewhere): nothing to resolve, so no banner and no accusation: it is the new version started from. Only
+      // when it can be written back faithfully: a re-encoded file (UTF-16...) is a conflict, never a base we would
+      // re-encode on the next save
       state.base = baseOf(r);
       state.stamp = { size: r.size, mtimeMs: r.mtimeMs };
       clearConflict();

@@ -78,16 +78,16 @@ async function writeRepoFile(abs, { text, eol = 'lf', bom = false, expectHash, m
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`);
   try {
     const fh = await fsApi.open(tmp, 'wx');
-    let written;
     try {
       await fh.writeFile(bytes);
       await fh.sync();
       if (mode !== null && process.platform !== 'win32') await fh.chmod(mode);
-      // the stamp of the bytes WE wrote, taken from the handle before anyone else can touch the path (a rename keeps it)
-      written = await fh.stat();
     } finally {
       await fh.close();
     }
+    // the stamp of the bytes WE wrote: taken from the TEMP path after the handle is closed (closing can still move the
+    // time on NTFS), before the rename and before anyone else can reach it; a rename keeps it
+    const written = await fsApi.stat(tmp);
     const second = await staleness(abs, expectHash, { fsApi, maxBytes });
     if (second) return second;
     // The retry is for a holder that clears in milliseconds, but a holder is often somebody WRITING the file: look

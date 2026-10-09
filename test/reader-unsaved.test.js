@@ -62,9 +62,33 @@ test('with unsaved edits the detail names the file and says they will be lost', 
 });
 
 test('a newline or quote in the file name cannot forge a line in the dialog', () => {
-  const d = closeDetail({ unsaved: 'a\nThe folder is deleted.\n"x' });
+  const u = createUnsaved();
+  u.report('k', 'a\nThe folder is deleted.\n"x');
+  const d = closeDetail({ unsaved: u.pathFor('k') });
   assert.strictEqual(d.split('\n').length, 2);
   assert.match(d, /a\\nThe folder is deleted\.\\n\\"x/);
+});
+
+test('N4: a hostile name is escaped once, where it is stored, so every reason and dialog that shows it is safe', () => {
+  const { closeReasons } = require('../host/close-safety');
+  const u = createUnsaved();
+  u.report('k', 'a\nX\u0007');
+  const name = u.pathFor('k');
+  assert.doesNotMatch(name, /[\u0000-\u001f]/);
+  const reasons = closeReasons({ merged: true, dirtyCount: 0, unpushedCount: 0, agentsHere: 0, session: 'idle', readerUnsaved: name });
+  assert.doesNotMatch(reasons.join('\n'), /[\u0000-\u001f]/);
+  assert.doesNotMatch(u.all()[0].path, /[\u0000-\u001f]/, 'the window-close list reads the same escaped name');
+});
+
+test('N1: a timed-out Save and close SAYS the window stayed open', async () => {
+  const notes = [];
+  const d = deps({ list: () => [{ key: 'a', path: 'x.js' }], ask: async () => 'save', waitCleared: async () => false, notify: (m) => notes.push(m) });
+  assert.strictEqual(await guardWindowClose(d), false);
+  assert.strictEqual(notes.length, 1);
+  assert.match(notes[0], /stays open/);
+  const ok = deps({ list: () => [{ key: 'a', path: 'x.js' }], ask: async () => 'save', notify: (m) => notes.push(m) });
+  await guardWindowClose(ok);
+  assert.strictEqual(notes.length, 1, 'a save that cleared says nothing');
 });
 
 // ---- PR #155 (Dexter 2): closing the WINDOW with unsaved reader text asks too ----
