@@ -395,7 +395,6 @@ let transcriptOccupancy = null;    // ...and the fallback producer: claims read 
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
-const fromStripSender = (sender) => !!win && !win.isDestroyed() && !!sender && sender === win.webContents;
 // Lean mode's bridge (app/lean-bridge.js), set once the handlers are registered. Module scope because a view that
 // finishes loading, or goes away, is handled far from where the handlers are.
 let leanBridge = null;
@@ -1222,7 +1221,7 @@ function registerIpc() {
   // Lean mode (BACKLOG #62): one window-level state, told to every tab page and to the strip. The ☾ button and a
   // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
   leanBridge = registerLeanHandlers({
-    ipcMain, isView: isTabView, isStrip: fromStripSender,
+    ipcMain, isView: isTabView, isStrip: (sender) => fromStrip({ sender }),
     push: (state) => { pushToViews(LEAN_PUSH, state); if (win && !win.isDestroyed()) win.webContents.send(LEAN_PUSH, state); },
   });
 

@@ -17,7 +17,7 @@ const RENDERER = strip(read('app/renderer.js'));
 const HTML = read('app/renderer.html');
 
 test('main registers the lean handlers for tab views and the strip, and pushes to both', () => {
-  assert.match(MAIN, /registerLeanHandlers\(\{[^}]*isView: isTabView[^}]*isStrip: fromStripSender/s);
+  assert.match(MAIN, /registerLeanHandlers\(\{[^}]*isView: isTabView[^}]*isStrip: \(sender\) => fromStrip\(\{ sender \}\)/s);
   assert.match(MAIN, /pushToViews\(LEAN_PUSH, state\)/);
   assert.match(MAIN, /win\.webContents\.send\(LEAN_PUSH, state\)/);
 });

@@ -24,8 +24,16 @@ const out = arg('out', '');
 const SETTLE_MS = 10000;
 const SAMPLE_MS = 5000;
 
+// Measured as a person watching sees it: the window is VISIBLE to Chromium even when another window covers it or the
+// machine is busy (an occluded window is throttled to nothing, which would make every clip look free).
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+
 const samples = [];
 let pids = [];
+let pageVisible = null;
+let win = null;
 
 function take() {
   const metrics = app.getAppMetrics();
@@ -38,8 +46,9 @@ function take() {
     byType[t].cpu += m.cpu.percentCPUUsage;
     byType[t].privateKB += (m.memory && m.memory.privateBytes) || 0;
   }
-  samples.push({ at: Date.now(), byType });
+  samples.push({ at: Date.now(), byType, pageVisible });
   save(false);
+  if (win && !win.isDestroyed()) win.webContents.executeJavaScript('document.visibilityState').then((v) => { pageVisible = v; }, () => {});
 }
 
 function save(done) {
@@ -50,9 +59,9 @@ function save(done) {
 }
 
 app.whenReady().then(() => {
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     width: 1280, height: 720, show: true,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },
   });
   const query = { variant, file, portrait, xterm: path.join(require.resolve('@xterm/xterm/package.json'), '..') };
   win.loadFile(path.join(__dirname, 'index.html'), { query });

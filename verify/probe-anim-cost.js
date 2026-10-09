@@ -122,17 +122,18 @@ async function runVariant(variant, clips, ms) {
   }
   const res = JSON.parse(fs.readFileSync(outFile, 'utf8'));
   fs.unlinkSync(outFile);
-  return { variant, done: res.done === true, byType: summariseSamples(res.samples), n: res.samples.length,
+  const seen = res.samples.filter((x) => x.pageVisible === 'visible').length;
+  return { variant, done: res.done === true, byType: summariseSamples(res.samples), n: res.samples.length, visible: `${seen}/${res.samples.length}`,
     gpuPercent: gpu === null ? null : gpuPercent(gpu, res.pids) };
 }
 
 function table(results) {
   const f = (x, d = 1) => (typeof x === 'number' ? x.toFixed(d) : 'n/a');
-  const lines = ['| clip | renderer CPU % | GPU proc CPU % | main CPU % | total CPU % | renderer MB | GPU proc MB | main MB | GPU engine % |', '|---|---|---|---|---|---|---|---|---|'];
+  const lines = ['| clip | renderer CPU % | GPU proc CPU % | main CPU % | total CPU % | renderer MB | GPU proc MB | main MB | GPU engine % | page visible (samples) |', '|---|---|---|---|---|---|---|---|---|---|'];
   for (const r of results) {
     const t = r.byType;
     const total = Object.values(t).reduce((a, x) => a + (x.cpu || 0), 0);
-    lines.push(`| ${r.variant} | ${f(t.renderer && t.renderer.cpu)} | ${f(t.gpu && t.gpu.cpu)} | ${f(t.main && t.main.cpu)} | ${f(total)} | ${f(t.renderer && t.renderer.privateMB, 0)} | ${f(t.gpu && t.gpu.privateMB, 0)} | ${f(t.main && t.main.privateMB, 0)} | ${f(r.gpuPercent)} |`);
+    lines.push(`| ${r.variant} | ${f(t.renderer && t.renderer.cpu)} | ${f(t.gpu && t.gpu.cpu)} | ${f(t.main && t.main.cpu)} | ${f(total)} | ${f(t.renderer && t.renderer.privateMB, 0)} | ${f(t.gpu && t.gpu.privateMB, 0)} | ${f(t.main && t.main.privateMB, 0)} | ${f(r.gpuPercent)} | ${r.visible || 'n/a'} |`);
   }
   return lines.join('\n');
 }

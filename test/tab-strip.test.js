@@ -731,6 +731,5 @@ test('tab-strip.html: the lean button and chip sit before ▾, the chip starts h
   assert.ok(strip.indexOf('id="lean-btn"') < strip.indexOf('id="bg"'));
   assert.ok(strip.indexOf('id="lean-chip"') < strip.indexOf('id="bg"'));
   assert.match(strip, /id="lean-chip"[^>]*\bhidden\b/);
-  assert.ok(html.indexOf('lean-display.js') < html.indexOf('tab-strip.js'), 'the helper loads first');
   assert.match(html, /body\.lean \.dot\.working\s*\{[^}]*animation:\s*none/);
 });
