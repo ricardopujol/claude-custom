@@ -192,6 +192,13 @@ contextBridge.exposeInMainWorld('harness', {
       (_e, enabled) => {
         try { fn(enabled === true); } catch (err) { console.error('[preload] avatar-images listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-images')),
+    // #76: the roster card's Role/Name toggle, install-wide in the same record. `setRosterNames` takes 'role' or 'name'.
+    getRosterNames: () => ipcRenderer.invoke('avatar:getRosterNames'),
+    setRosterNames: (mode) => ipcRenderer.invoke('avatar:setRosterNames', mode),
+    onRosterNames: (fn) => (ipcRenderer.removeAllListeners('avatar-roster-names'), ipcRenderer.on('avatar-roster-names',
+      (_e, mode) => {
+        try { fn(mode === 'name' ? 'name' : 'role'); } catch (err) { console.error('[preload] avatar-roster-names listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('avatar-roster-names')),
   },
   // Window chrome (layout pass L2): "status line in the header" (#27) and
   // "hide the title bar" (#28), install-wide -- see app/window-chrome-bridge.js.
