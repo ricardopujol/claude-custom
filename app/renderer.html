@@ -926,7 +926,7 @@
        not removed, so the roster re-appears exactly as it was left. */
     #agents .agent { cursor: pointer; }
     #agent-log { display: none; }
-    .panel.logging > :not(#agent-log) { display: none; }
+    .panel.logging > :not(#agent-log):not(#agent-medals) { display: none; }
     .panel.logging > #agent-log { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .alog-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
       border-bottom: 1px solid var(--border); }
@@ -1057,6 +1057,56 @@
     .agent:hover .agent-hide, .agent .agent-hide:focus-visible { opacity: 1; }
     .agent .agent-hide:hover { color: var(--accent); border-color: var(--accent); }
     .agent[data-hidden="true"] { outline: 1px dashed var(--border); outline-offset: -1px; }
+    /* BACKLOG #80: medals. The card shows a count chip only; the shelf (under an agent's log) shows each medal. */
+    .agent .agent-medal-btn {
+      position: absolute; bottom: 3px; right: 3px;
+      font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--dim);
+      cursor: pointer; opacity: 0; transition: opacity .15s;
+    }
+    .agent:hover .agent-medal-btn, .agent .agent-medal-btn:focus-visible { opacity: 1; }
+    .agent .agent-medal-btn:hover { border-color: var(--accent); }
+    .medal-chip { margin-left: 6px; font-size: 10px; color: var(--accent); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0 5px; text-transform: none; cursor: default; }
+    #agent-medals { display: none; }
+    .panel.logging > #agent-medals { display: block; flex: 0 0 auto; max-height: 34%; overflow-y: auto;
+      border-top: 1px solid var(--border); padding: 4px 8px; font-size: 11px; }
+    #agent-medals:empty { display: none !important; }
+    .medal-shelf-title { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 2px; }
+    .medal-row { display: flex; align-items: baseline; gap: 6px; padding: 1px 0; }
+    .medal-label { font-weight: 600; flex: 0 0 auto; }
+    .medal-reason { flex: 1; min-width: 0; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .medal-date { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+    .medal-remove { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0 3px; }
+    .medal-remove:hover { color: #e06c75; }
+    .medal-none { color: var(--dim); }
+    #medal-menu { position: fixed; z-index: 60; width: 250px; padding: 8px; border-radius: 8px;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+    #medal-menu[hidden] { display: none; }
+    .medal-menu-title { font-weight: 600; margin-bottom: 6px; }
+    .medal-kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
+    .medal-kind, .medal-menu-actions button { font: inherit; font-size: 11px; color: var(--text); background: transparent;
+      border: 1px solid var(--border); border-radius: 5px; padding: 3px 5px; cursor: pointer; text-align: left; }
+    .medal-kind:hover, .medal-menu-actions button:hover:not(:disabled) { border-color: var(--accent); }
+    .medal-kind.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+    .medal-reason-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; padding: 3px 5px;
+      color: var(--text); background: var(--bg, transparent); border: 1px solid var(--border); border-radius: 5px; }
+    .medal-menu-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+    .medal-menu-actions button:disabled { opacity: .4; cursor: default; }
+    /* BACKLOG #80 / #55: speech bubbles. A joke over the card, never a status: italic, in quotes, clicks pass through. */
+    #bubbles-toggle { cursor: pointer; }
+    #bubbles-toggle.off { opacity: .45; }
+    .agent-bubble {
+      position: absolute; top: -9px; right: 10px; z-index: 5; max-width: 80%; pointer-events: none;
+      padding: 2px 9px; border-radius: 11px; font-size: 11px; font-style: italic; line-height: 1.35;
+      color: var(--text); background: var(--panel); border: 1px solid var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,.4);
+      animation: bubble-in .18s ease-out, bubble-out .6s ease-in var(--bubble-fade-delay, 7400ms) forwards;
+    }
+    .agent-bubble::before { content: '\201C'; }
+    .agent-bubble::after { content: '\201D'; }
+    @keyframes bubble-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes bubble-out { from { opacity: 1; } to { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .agent-bubble { animation: none; } }
     #roster-show-hidden {
       display: block; width: 100%; margin: 0 0 4px; padding: 3px 6px; text-align: left;
       font-size: 10px; color: var(--dim); background: transparent;
@@ -1779,6 +1829,7 @@
             </span>
             <button type="button" id="roster-search-btn" aria-pressed="false" aria-label="Search the agents in this tab" title="Search the agents in this tab">🔍</button>
             <button type="button" id="images-toggle" aria-label="Show agent images" title="Agent images: reading the setting">🖼</button>
+            <button type="button" id="bubbles-toggle" aria-label="Speech bubbles" title="Speech bubbles: reading the setting">💬</button>
           </nav>
           <div id="roster-search-row" hidden>
             <input type="search" id="roster-search" autocomplete="off" spellcheck="false"
@@ -1792,6 +1843,8 @@
           <!-- BACKLOG #10: filled by app/agent-log-display.js while a log is
                open; the panel gets `.logging` and the rest of it steps aside. -->
           <div id="agent-log"></div>
+          <!-- BACKLOG #80: the medals of the agent whose log is open (app/medals-display.js), under the log. -->
+          <div id="agent-medals"></div>
           <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
           <div id="cooldowns"></div>
         <div id="procs">
@@ -1943,6 +1996,8 @@
   <script src="./bg-media-display.js"></script>
   <script src="./colour-seeds.js"></script>
   <script src="./agent-log-display.js"></script>
+  <script src="./medals-display.js"></script>
+  <script src="./bubble-display.js"></script>
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
@@ -1981,5 +2036,7 @@
   <script src="./repo-reader.js"></script>
   <script src="./repo-browser.js"></script>
   <script src="./renderer.js"></script>
+  <!-- BACKLOG #80: the give-a-medal menu (a right-click on a card, or its medal button). -->
+  <div id="medal-menu" hidden></div>
 </body>
 </html>

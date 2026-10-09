@@ -108,6 +108,8 @@ const ALLOWED_GLOBALS = new Set([
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
+  // app/medals-display.js, app/bubble-display.js (BACKLOG #80): one namespace each, reached through `window.`.
+  'medalsDisplay', 'bubbleDisplay',
   // app/top-bar-display.js (FF12)
   'modelFamily', 'cueColour', 'chosenAccent', 'withChosenAccent', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',

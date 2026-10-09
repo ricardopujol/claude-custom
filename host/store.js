@@ -18,6 +18,12 @@
  *                                  withLock and readState: a file it could not
  *                                  read is never written over.
  *
+ *   .harness/state/medals.json     host/medals.js, STORE_KEY 'medals' (BACKLOG #80: the medals
+ *                                  Ricardo gives agents). Install-wide, keyed by agent name. Given
+ *                                  by hand, so like the wand it opts in to withLock and readState.
+ *   .harness/state/bubbles.json    host/bubbles.js, STORE_KEY 'bubbles' (BACKLOG #80: the speech
+ *                                  bubbles' on/off switch). Install-wide, regenerable.
+ *
  *   .harness/state/vault.json      host/bugvault.js, STORE_KEY 'vault' (the bug
  *                                  vault; irreplaceable, so it opts in to
  *                                  withLock and readState).

@@ -4043,6 +4043,15 @@ function inactiveRowHtml(row) {
 // set and sends it in `hello` and in `hidden` frames; this list is only its
 // mirror, and a click sends a request rather than editing it.
 let hiddenAgentNames = [];
+
+// BACKLOG #80 (+ #55's bubbles). The medals Ricardo gave, as the host last said ([{ agent, medals }]; app/medals-display.js), and
+// the speech bubbles: the host's on/off switch (null until `hello`), the live bubbles, and whether the window is in lean mode
+// (#62's lean lane sets it; until it lands nothing is lean). Decisions are in app/bubble-display.js.
+let medalList = [];
+let bubblesEnabled = null;
+let leanMode = false;
+const bubbleBoard = window.bubbleDisplay.createBoard();
+let bubbleTimer = null;
 let showHiddenAgents = false;
 
 function sendRosterAction(action, agent) {
@@ -4073,6 +4082,7 @@ function paintAgents(html) {
   // Through setRosterHtml, not innerHTML: a live avatar video keeps its node
   // across a repaint, per PR #64. The unchanged-markup skip from PR #66 runs first.
   setRosterHtml(html);
+  paintBubbles();       // a repaint replaced the cards, so the bubbles go back on (BACKLOG #80)
 }
 
 // Delegated on #agents, the ONE click handler for the roster's cards. No
@@ -4177,10 +4187,11 @@ function renderRoster() {
     return `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
+      window.medalsDisplay.cardButtonHtml(r.agent) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
-      `<div class="state">${r.state}</div>` +
+      `<div class="state">${r.state}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
@@ -4225,6 +4236,7 @@ function renderAgentLogPanel() {
   // survives a live log), rebuilds otherwise, and keeps the reader's scroll
   // place -- all in the display module's paint function.
   window.agentLogDisplay.paint(agentLogEl, agentLog);
+  paintMedalShelf();       // BACKLOG #80: the medals under the log
 }
 
 function sendAgentLog(action, agent) {
@@ -4255,6 +4267,144 @@ if (agentLogEl) {
     }
   });
 }
+
+// --- medals and the speech bubbles (BACKLOG #80) ---------------------------------------------------
+// Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
+// medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
+function sendJson(obj) {
+  try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
+}
+
+function bubblesAllowed() {
+  return window.bubbleDisplay.canShow({ enabled: bubblesEnabled, imagesEnabled: agentImagesEnabled, lean: leanMode });
+}
+
+// Put each live bubble on its card and take expired ones off; look again when the next one expires.
+function paintBubbles() {
+  window.bubbleDisplay.attach(agentsEl, bubbleBoard, bubblesAllowed());
+  clearTimeout(bubbleTimer);
+  const next = bubbleBoard.nextExpiryIn();
+  bubbleTimer = next === null ? null : setTimeout(paintBubbles, next + 25);
+  paintBubblesToggle();
+}
+
+// The host asks the model only while this window could show the answer (agent images off or lean: no GPU spent).
+function tellHostBubblesVisible() {
+  sendJson({ type: 'bubbles', action: 'visible', visible: bubblesAllowed() });
+}
+
+function paintBubblesToggle() {
+  const bubblesToggleBtn = document.getElementById('bubbles-toggle');
+  if (!bubblesToggleBtn) return;
+  bubblesToggleBtn.classList.toggle('off', bubblesEnabled !== true);
+  if (typeof bubblesEnabled === 'boolean') bubblesToggleBtn.setAttribute('aria-pressed', String(bubblesEnabled));
+  else bubblesToggleBtn.removeAttribute('aria-pressed');
+  bubblesToggleBtn.title = bubblesEnabled === true
+    ? 'Speech bubbles are on (jokes from a local model). Click to turn them off.'
+    : bubblesEnabled === false ? 'Speech bubbles are off. Click to turn them on.' : 'Speech bubbles: reading the setting';
+}
+const bubblesToggleEl = document.getElementById('bubbles-toggle');
+if (bubblesToggleEl) {
+  bubblesToggleEl.addEventListener('click', () => {
+    if (typeof bubblesEnabled === 'boolean') sendJson({ type: 'bubbles', action: 'set-enabled', enabled: !bubblesEnabled });
+  });
+}
+
+function applyBubblesSwitch(enabled) {
+  bubblesEnabled = typeof enabled === 'boolean' ? enabled : null;
+  if (bubblesEnabled !== true) bubbleBoard.clear();
+  paintBubbles();
+  tellHostBubblesVisible();
+}
+
+// The shelf: every medal of the agent whose log is open, with reason and date, each removable.
+const medalShelfEl = document.getElementById('agent-medals');
+function paintMedalShelf() {
+  if (!medalShelfEl) return;
+  const html = agentLog.open
+    ? window.medalsDisplay.shelfHtml(agentLog.agent, (medalList.find((e) => e.agent === agentLog.agent) || {}).medals)
+    : '';
+  if (medalShelfEl.dataset.sig === html) return;
+  medalShelfEl.dataset.sig = html;
+  medalShelfEl.innerHTML = html;
+}
+if (medalShelfEl) {
+  medalShelfEl.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('[data-medal-remove]');
+    if (btn && agentLog.open) sendJson({ type: 'medal', action: 'remove', agent: agentLog.agent, id: btn.dataset.medalRemove });
+  });
+}
+
+function applyMedals(list) {
+  medalList = Array.isArray(list) ? list.filter((e) => e && typeof e.agent === 'string' && Array.isArray(e.medals)) : [];
+  renderRoster();
+  paintMedalShelf();
+}
+
+// The give-a-medal menu: opened by a right-click on a card or its 🏅 button.
+const medalMenuEl = document.getElementById('medal-menu');
+let medalMenu = null;     // { agent, kind, reason } while open
+function paintMedalMenu() {
+  if (!medalMenuEl) return;
+  if (!medalMenu) { medalMenuEl.hidden = true; medalMenuEl.innerHTML = ''; return; }
+  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.kind);
+  medalMenuEl.hidden = false;
+  const input = medalMenuEl.querySelector('.medal-reason-input');
+  if (input) { input.value = medalMenu.reason; input.focus(); }
+}
+function openMedalMenu(agent, x, y) {
+  if (!medalMenuEl) return;
+  medalMenu = { agent, kind: null, reason: '' };
+  paintMedalMenu();
+  const w = medalMenuEl.offsetWidth || 260;
+  const h = medalMenuEl.offsetHeight || 200;
+  medalMenuEl.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+  medalMenuEl.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+}
+function closeMedalMenu() {
+  if (!medalMenu) return false;
+  medalMenu = null;
+  paintMedalMenu();
+  return true;
+}
+function giveMedal() {
+  if (!medalMenu || !medalMenu.kind) return;
+  sendJson({ type: 'medal', action: 'give', agent: medalMenu.agent, kind: medalMenu.kind, reason: medalMenu.reason });
+  closeMedalMenu();
+}
+if (medalMenuEl) {
+  medalMenuEl.addEventListener('click', (e) => {
+    const kind = e.target.closest && e.target.closest('[data-medal-kind]');
+    if (kind) { medalMenu.kind = kind.dataset.medalKind; paintMedalMenu(); return; }
+    if (e.target.closest('[data-medal-give]')) giveMedal();
+    else if (e.target.closest('[data-medal-cancel]')) closeMedalMenu();
+  });
+  medalMenuEl.addEventListener('input', (e) => {
+    if (medalMenu && e.target.classList && e.target.classList.contains('medal-reason-input')) medalMenu.reason = e.target.value;
+  });
+  medalMenuEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('medal-reason-input')) { e.preventDefault(); giveMedal(); }
+  });
+}
+window.addEventListener('mousedown', (e) => {
+  if (medalMenu && medalMenuEl && !medalMenuEl.contains(e.target)) closeMedalMenu();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && closeMedalMenu()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
+agentsEl.addEventListener('contextmenu', (e) => {
+  const card = e.target.closest && e.target.closest('.agent');
+  if (!card || !card.dataset.agent) return;
+  e.preventDefault();
+  openMedalMenu(card.dataset.agent, e.clientX, e.clientY);
+});
+agentsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-medal-open]');
+  const card = btn && btn.closest('.agent');
+  if (!card || !card.dataset.agent) return;
+  const r = btn.getBoundingClientRect();
+  openMedalMenu(card.dataset.agent, r.left, r.bottom + 2);
+});
 
 function handleAgentLogFrame(msg) {
   const next = window.agentLogDisplay.applyFrame(agentLog, msg);
@@ -6275,6 +6425,8 @@ function applyAgentImages(enabled) {
       : 'Agent images are off (initials only). Click to turn them on.';
   }
   if (changed) { renderRoster(); renderStylePanel(); }
+  paintBubbles();          // agent images off means none of these (BACKLOG #80)
+  tellHostBubblesVisible();
 }
 
 function refreshAgentImages() {
@@ -6455,6 +6607,11 @@ function handleControl(msg) {
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
+    // BACKLOG #80: the medals, and the bubbles' switch (these two don't repaint: renderRoster below does).
+    medalList = Array.isArray(msg.medals) ? msg.medals.filter((e) => e && typeof e.agent === 'string' && Array.isArray(e.medals)) : [];
+    bubblesEnabled = msg.bubbles && typeof msg.bubbles.enabled === 'boolean' ? msg.bubbles.enabled : null;
+    paintBubblesToggle();
+    tellHostBubblesVisible();
     // Before renderRoster, so the first paint already carries the careers and
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
@@ -6503,6 +6660,19 @@ function handleControl(msg) {
     // Another claude-custom asked to be taken to this session (Go to that
     // session): the shell selects this tab and brings its window forward.
     if (window.harness && window.harness.raise) window.harness.raise();
+    return;
+  }
+  if (msg.type === 'medals') {
+    applyMedals(msg.medals);
+    if (msg.ok === false) flashAttention({ urgent: false, title: 'Couldn\'t save the medal (' + String(msg.reason) + ')' });
+    return;
+  }
+  if (msg.type === 'bubbles') {
+    applyBubblesSwitch(msg.enabled);
+    return;
+  }
+  if (msg.type === 'bubble') {
+    if (bubblesAllowed() && bubbleBoard.show(msg)) paintBubbles();
     return;
   }
   if (msg.type === 'hidden') {
@@ -6831,6 +7001,7 @@ function connect() {
     socketOpened = true;
     if (window.dockZones.focusOnOpen(first, window.dockZones.describeFocus(document.activeElement, term.element))) term.focus();
     sendResize();
+    tellHostBubblesVisible();      // a host that restarted forgot (BACKLOG #80)
     // A log open across a reattach is asked for again: the host's log session
     // belongs to the old socket and died with it.
     if (agentLog.open) openAgentLog(agentLog.agent);

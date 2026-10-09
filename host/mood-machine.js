@@ -770,6 +770,14 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // Whether this machine watched the run with that agent_id end, for the agent
   // log's "finished" (host/agent-log-session.js). Bounded by REMEMBER_MAX.
   machine.watchedEnd = agentId => typeof agentId === 'string' && endedIds.has(agentId);
+  // The task line the newest open run of this agent was spawned with (the Agent call's `description`), or undefined. Read-only;
+  // the speech bubbles (host/bubbles.js) put it, trimmed, in their prompt.
+  machine.taskOf = agent => {
+    for (let i = invs.length - 1; i >= 0; i--) {
+      if (invs[i].name === agent && typeof invs[i].description === 'string' && invs[i].description) return invs[i].description;
+    }
+    return undefined;
+  };
   // The live invocation tree, read-only, for tests and diagnostics.
   machine.invocations = () => invs.map(i => ({
     id: i.id, name: i.name, key: i.key, agentId: i.agentId,

@@ -31,6 +31,13 @@ const { portraitFor, globalPortrait } = require('./portraits');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
+const { createMedals } = require('./medals');
+const { validGive, validRemove } = require('../app/medals-display');
+const { createBubbles, createBubbleSettings } = require('./bubbles');
+const { createBubbleGate } = require('./bubble-gate');
+const { createActivity: createBubbleActivity } = require('./bubble-activity');
+const { createVoiceReader } = require('./bubble-voice');
+const { createAskOllama } = require('./ask-ollama');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats, createStatsMemo } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
@@ -1173,6 +1180,46 @@ const summaryTimer = setInterval(() => { summary.tick().catch(() => { /* logged 
 summaryTimer.unref();
 summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep at start: old summaries, orphan temp files
 
+// Backlog #80 (+ #55's bubbles): medals Ricardo gives agents (install-wide, host/medals.js) and the speech bubbles a LOCAL model
+// writes on a state change (host/bubbles.js). The bubbles share the summaries' GPU slot file, so a bubble never runs beside a
+// summary; they are decoration only and never an error (Ollama down: nothing). The probe seams point both at a fake Ollama.
+const medals = createMedals({ store });
+const bubbleSettings = createBubbleSettings({ store });
+const bubbleActivity = createBubbleActivity();
+const bubbles = createBubbles({
+  gate: createBubbleGate(),
+  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: 20_000 }),
+  slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
+  voiceOf: createVoiceReader({ configDir: claudeConfigDir(), cwd: CWD }).voiceOf,
+  contextOf: (agent) => ({ ...bubbleActivity.of(agent), task: mood.taskOf(agent) }),
+  settings: bubbleSettings,
+  broadcast: (m) => broadcastControl(m),
+  log: (...a) => console.log(...a),
+});
+function handleMedalMessage(msg) {
+  let out;
+  if (msg.action === 'give') {
+    const req = validGive(msg);
+    out = req ? medals.give(req.agent, req.kind, req.reason) : { ok: false, reason: 'invalid', medals: medals.all() };
+  } else if (msg.action === 'remove') {
+    const req = validRemove(msg);
+    out = req ? medals.remove(req.agent, req.id) : { ok: false, reason: 'invalid', medals: medals.all() };
+  } else {
+    out = { ok: false, reason: 'invalid', medals: medals.all() };
+  }
+  if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
+  broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
+}
+function handleBubblesMessage(msg) {
+  if (msg.action === 'set-enabled') {
+    const out = bubbleSettings.set(msg.enabled);
+    if (!out.ok) console.log('[host] bubbles setting refused:', out.reason);
+    broadcastControl({ type: 'bubbles', enabled: bubbleSettings.enabled() });
+  } else if (msg.action === 'visible') {
+    bubbles.setVisible(msg.visible === true);
+  }
+}
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
@@ -1369,6 +1416,7 @@ if (helperExists) {
       }));
     }
     attention.handle(ev);
+    bubbleActivity.note(ev);
     mood.handle(ev);
     // A backstop ending a call means that call's own close never arrived --
     // logged, because a lost event nobody can see is how PostToolUseFailure
@@ -1791,6 +1839,7 @@ function wireTerm(t) {
 // owns the clock and the transitions stay reproducible in tests.
 mood.on('change', ({ agent, state }) => {
   broadcastControl({ type: 'mood', ...describe(agent, state) });
+  bubbles.onMood({ agent, state });      // fire and forget: never throws, never makes the card wait (host/bubbles.js)
   // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
   // applies the same rule itself, but the host persists it and is authoritative.
   if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
@@ -2147,6 +2196,8 @@ wss.on('connection', (ws, req) => {
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
+    medals: medals.all(),
+    bubbles: { enabled: bubbleSettings.enabled() },
     globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
@@ -2513,6 +2564,14 @@ wss.on('connection', (ws, req) => {
     }
     if (msg.type === 'roster') {
       handleRosterMessage(msg);
+      return;
+    }
+    if (msg.type === 'medal') {
+      handleMedalMessage(msg);
+      return;
+    }
+    if (msg.type === 'bubbles') {
+      handleBubblesMessage(msg);
       return;
     }
     if (canvasControl.handles(msg.type)) {
