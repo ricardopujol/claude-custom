@@ -52,6 +52,8 @@ function createAskOllama({
       });
       let body = null;
       try { body = await res.json(); } catch { body = null; }
+      // The deadline can hit while the body is still arriving: that is a timeout, not a reply that failed to parse.
+      if (ctl.signal.aborted) return { reached: false, reason: 'timeout' };
       return { reached: true, status: res.status, body };
     } catch {
       return { reached: false, reason: ctl.signal.aborted ? 'timeout' : 'ollama-down' };

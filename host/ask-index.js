@@ -25,6 +25,7 @@
  * results (excluding them lifted recall 2-4 questions of 10), so they, vendored code, lockfiles and huge files stay out.
  */
 
+const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
@@ -36,7 +37,9 @@ const VERSION = 1;
 const MAX_FILE_BYTES = 400_000;
 const EMBED_INPUT_CHARS = 2000;
 const INDEXABLE_EXT = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx', '.md', '.css', '.html', '.py', '.ps1']);
-const SKIP_DIRS = new Set(['test', 'tests', 'verify', 'node_modules', 'dist', 'build', 'coverage', '.git', '.harness']);
+const SKIP_DIRS = new Set(['test', 'tests', 'verify', 'node_modules', 'vendor', 'third_party', 'dist', 'build', 'coverage', '.git', '.harness']);
+const SAVE_EVERY_MS = 10_000;
+const ORPHAN_TMP_MS = 3600_000;
 
 function isIndexable(rel) {
   const parts = String(rel).replace(/\\/g, '/').split('/');
@@ -60,30 +63,39 @@ const realDeps = {
       if (err) reject(err); else resolve(String(out).split('\0').filter(Boolean));
     });
   }),
-  statFile: async (wt, rel) => { try { const s = await fsp.stat(path.join(wt, rel)); return s.isFile() ? { size: s.size, mtimeMs: s.mtimeMs } : null; } catch { return null; } },
+  // lstat, not stat: git lists a tracked symlink as an entry, and following it would index a file outside the worktree (PR #136 S2).
+  statFile: async (wt, rel) => { try { const s = await fsp.lstat(path.join(wt, rel)); return s.isFile() ? { size: s.size, mtimeMs: s.mtimeMs } : null; } catch { return null; } },
   readFile: (wt, rel) => fsp.readFile(path.join(wt, rel), 'utf8'),
 };
 
 const keyOf = (wt) => path.resolve(wt).replace(/\\/g, '/').toLowerCase();
 
 function createIndex({
-  dir, embedModel = 'snowflake-arctic-embed2:latest', embed, batchSize = 16, saveEvery = 25,
+  dir, embedModel = 'snowflake-arctic-embed2:latest', embed, batchSize = 16, saveEveryMs = SAVE_EVERY_MS,
   listFiles = realDeps.listFiles, statFile = realDeps.statFile, readFile = realDeps.readFile, now = Date.now,
+  readIndexFile = (f) => fsp.readFile(f, 'utf8'), writeIndexFile = (f, text) => fsp.writeFile(f, text, 'utf8'),
 } = {}) {
-  const worlds = new Map(); // key -> { data, loaded, running, progress }
+  const worlds = new Map(); // key -> { data, loading, running, progress, partial, error }
+  const needsVectors = (f) => f.chunks.some(c => c.vec === null);
+  const serialised = new WeakMap(); // a finished file's JSON text, so a save re-stringifies only what changed
 
   const world = (wt) => {
     const k = keyOf(wt);
-    if (!worlds.has(k)) worlds.set(k, { data: null, loaded: false, running: null, progress: { state: 'none', done: 0, total: 0 } });
+    if (!worlds.has(k)) worlds.set(k, { data: null, loading: null, running: null, partial: false, error: null, progress: { state: 'none', done: 0, total: 0 } });
     return worlds.get(k);
   };
   const fileFor = (wt) => path.join(dir, crypto.createHash('sha1').update(keyOf(wt)).digest('hex').slice(0, 16) + '.json');
 
-  async function load(wt, w) {
-    if (w.loaded) return;
-    w.loaded = true;
+  // The latch is the PROMISE of the read, not a flag set before it (PR #136 Dexter D1): a second caller during the read waits
+  // for the same answer instead of seeing "no index" and re-embedding every file over the saved one.
+  function load(wt, w) {
+    if (!w.loading) w.loading = readSaved(wt, w);
+    return w.loading;
+  }
+
+  async function readSaved(wt, w) {
     try {
-      const p = JSON.parse(await fsp.readFile(fileFor(wt), 'utf8'));
+      const p = JSON.parse(await readIndexFile(fileFor(wt)));
       if (!p || p.version !== VERSION || p.embedModel !== embedModel || !Array.isArray(p.files)) return;
       w.data = {
         embedModel, builtAt: p.builtAt,
@@ -92,24 +104,42 @@ function createIndex({
           chunks: f.chunks.map(c => ({ start: c.s, end: c.e, ownStart: c.o, text: c.t, vec: typeof c.v === 'string' ? b64ToVec(c.v) : null })),
         })),
       };
-      if (w.progress.state === 'none') w.progress = { state: 'ready', done: w.data.files.length, total: w.data.files.length };
+      // A save made mid-build says so: it loads as 'partial' and the build resumes (M5), never as a finished index.
+      w.partial = p.complete === false;
+      if (w.progress.state === 'none') w.progress = { state: w.partial ? 'partial' : 'ready', done: w.data.files.length, total: w.data.files.length };
     } catch { /* missing, corrupt, or from another version: an empty index, rebuilt */ }
   }
 
-  async function save(wt, data) {
-    const out = {
-      version: VERSION, embedModel, worktree: path.resolve(wt), builtAt: data.builtAt,
-      files: data.files.map(f => ({
-        rel: f.rel, size: f.size, mtimeMs: f.mtimeMs, lines: f.lines,
-        chunks: f.chunks.map(c => ({ s: c.start, e: c.end, o: c.ownStart, t: c.text, v: c.vec ? vecToB64(c.vec) : null })),
-      })),
-    };
+  // Stringified a few files at a time with a turn of the event loop between, and a finished file's text kept: a save of a
+  // 3,000-chunk index used to stall the host for the whole stringify, every 25 files (PR #136 M3).
+  async function serialise(wt, data, complete) {
+    const parts = [];
+    for (let i = 0; i < data.files.length; i++) {
+      const f = data.files[i];
+      let text = serialised.get(f);
+      if (text === undefined) {
+        text = JSON.stringify({
+          rel: f.rel, size: f.size, mtimeMs: f.mtimeMs, lines: f.lines,
+          chunks: f.chunks.map(c => ({ s: c.start, e: c.end, o: c.ownStart, t: c.text, v: c.vec ? vecToB64(c.vec) : null })),
+        });
+        if (!needsVectors(f)) serialised.set(f, text);
+      }
+      parts.push(text);
+      if (i % 20 === 19) await new Promise(resolve => setImmediate(resolve));
+    }
+    // The header comes first and small, so a sweep can read which worktree a file belongs to without parsing 20 MB.
+    const head = JSON.stringify({ version: VERSION, embedModel, worktree: path.resolve(wt), builtAt: data.builtAt, complete });
+    return head.slice(0, -1) + ',"files":[' + parts.join(',') + ']}';
+  }
+
+  async function save(wt, data, complete) {
     try {
+      const text = await serialise(wt, data, complete);
       await fsp.mkdir(dir, { recursive: true });
       const file = fileFor(wt);
       const tmp = `${file}.${process.pid}.tmp`;
       try {
-        await fsp.writeFile(tmp, JSON.stringify(out), 'utf8');
+        await writeIndexFile(tmp, text);
         await renameWithRetryAsync(tmp, file);
       } catch (err) {
         try { await fsp.unlink(tmp); } catch { /* nothing left */ }
@@ -119,8 +149,6 @@ function createIndex({
       console.warn('[ask-index] could not save the index:', err && err.message); // a lost save is a rebuild next launch, said once
     }
   }
-
-  const needsVectors = (f) => f.chunks.some(c => c.vec === null);
 
   async function run(wt, w) {
     await load(wt, w);
@@ -141,7 +169,7 @@ function createIndex({
     let embedded = 0;
     let embedFailure = null;
     const done = new Map();
-    let sinceSave = 0;
+    let lastSave = now();
 
     const assemble = () => {
       const byRel = new Map(kept.map(f => [f.rel, f]));
@@ -170,12 +198,14 @@ function createIndex({
       if (!needsVectors(file)) embedded++;
       done.set(t.rel, file);
       w.progress.done++;
-      if (++sinceSave >= saveEvery) { sinceSave = 0; await save(wt, assemble()); }
+      if (now() - lastSave >= saveEveryMs) { await save(wt, assemble(), false); lastSave = now(); }
     }
 
     // Files whose read failed are not in `done`; a stale copy of one is not kept either (it no longer matches the disk).
     w.data = assemble();
-    await save(wt, w.data);
+    await save(wt, w.data, true);
+    w.partial = false;
+    w.error = null;
     const chunks = w.data.files.reduce((n, f) => n + f.chunks.length, 0);
     const keywordOnly = w.data.files.some(needsVectors);
     w.progress = { state: 'ready', done: todo.length, total: todo.length };
@@ -185,10 +215,47 @@ function createIndex({
     };
   }
 
+  /** Forget a worktree: its saved index and its in-memory state (for /merged housekeeping). */
+  async function drop(wt) {
+    worlds.delete(keyOf(wt));
+    try { await fsp.unlink(fileFor(wt)); } catch { /* nothing saved */ }
+  }
+
+  /**
+   * Remove indexes whose worktree folder no longer exists, and tmp files an interrupted save left behind (older than an hour: a
+   * live save lasts seconds, and another host may be writing one). Best effort: one unreadable entry doesn't stop the sweep.
+   */
+  async function sweep({ exists = (p) => fs.existsSync(p) } = {}) {
+    let removedIndexes = 0; let removedTmp = 0;
+    let names = [];
+    try { names = await fsp.readdir(dir); } catch { return { removedIndexes, removedTmp }; }
+    for (const name of names) {
+      const file = path.join(dir, name);
+      try {
+        if (name.endsWith('.tmp')) {
+          if (Date.now() - (await fsp.stat(file)).mtimeMs > ORPHAN_TMP_MS) { await fsp.unlink(file); removedTmp++; }
+        } else if (name.endsWith('.json')) {
+          const fh = await fsp.open(file, 'r');
+          let head = '';
+          try { const buf = Buffer.alloc(2048); const { bytesRead } = await fh.read(buf, 0, 2048, 0); head = buf.toString('utf8', 0, bytesRead); } finally { await fh.close(); }
+          const m = /"worktree":("(?:[^"\\]|\\.)*")/.exec(head);
+          if (m && !exists(JSON.parse(m[1]))) { await fsp.unlink(file); removedIndexes++; }
+        }
+      } catch { /* see above */ }
+    }
+    return { removedIndexes, removedTmp };
+  }
+
   function refresh(wt) {
     const w = world(wt);
     if (w.running) return w.running;
-    w.running = run(wt, w).finally(() => { w.running = null; });
+    // A failed run is REMEMBERED (PR #136 D2/M1): with no saved index the state is 'failed' with the reason; over a saved one the
+    // data stays usable but carries the error until a refresh succeeds. It never stays looking like a build in progress.
+    w.running = run(wt, w).catch((err) => {
+      w.error = (err && err.message) || String(err);
+      w.progress = { state: w.data ? (w.partial ? 'partial' : 'ready') : 'failed', done: w.progress.done, total: w.progress.total };
+      throw err;
+    }).finally(() => { w.running = null; });
     return w.running;
   }
 
@@ -197,8 +264,13 @@ function createIndex({
     get: (wt) => world(wt).data,
     load: async (wt) => { const w = world(wt); await load(wt, w); return w.data; },
     isRunning: (wt) => Boolean(world(wt).running),
-    progress: (wt) => ({ ...world(wt).progress }),
+    progress: (wt) => {
+      const w = world(wt);
+      return { ...w.progress, partial: w.partial, ...(w.error ? { error: w.error } : {}) };
+    },
     fileFor,
+    drop,
+    sweep,
   };
 }
 

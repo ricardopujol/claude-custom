@@ -89,3 +89,12 @@ test('unload: asks Ollama to drop the answer model now (keep_alive 0)', async ()
   await c.unload();
   assert.deepStrictEqual([calls[0].path, calls[0].body.model, calls[0].body.keep_alive], ['/api/generate', 'qwen2.5-coder:latest', 0]);
 });
+
+test('M2/D8: a deadline that hits while the body is still being read is a timeout, not a bad reply', async () => {
+  const slowBody = client((p, b, init) => ({
+    status: 200, ok: true,
+    json: () => new Promise((_, rej) => init.signal.addEventListener('abort', () => rej(new Error('aborted')))),
+  }), { generateTimeoutMs: 20, embedTimeoutMs: 20 });
+  assert.deepStrictEqual(await slowBody.c.generate({ system: '', prompt: 'p' }), { ok: false, reason: 'timeout' });
+  assert.deepStrictEqual(await slowBody.c.embed(['a']), { ok: false, reason: 'timeout' });
+});

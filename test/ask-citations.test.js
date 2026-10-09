@@ -80,3 +80,36 @@ test('P every citation names an indexed file and a line inside it, for any text 
 test('non-string input is no citations, not a throw', () => {
   assert.deepStrictEqual(extractCitations(undefined, files), { citations: [], dropped: [] });
 });
+
+// PR #136 Dexter D4: a citation must land inside an excerpt the model was actually shown.
+test('D4: with the sent ranges, a real file and line the model never saw is dropped (the prompt example, parroted)', () => {
+  const big = new Map([['host/session-lock.js', 246], ['host/a.js', 100]]);
+  const ranges = new Map([['host/a.js', [[10, 40]]]]);
+  const r = extractCitations('see host/session-lock.js:217 and host/a.js:20 and host/a.js:90', big, { ranges });
+  assert.deepStrictEqual(r.citations, [{ file: 'host/a.js', line: 20, endLine: 20 }]);
+  assert.deepStrictEqual(r.dropped, ['host/session-lock.js:217', 'host/a.js:90']);
+});
+
+test('D4: a range that runs past the sent excerpt is clamped to it', () => {
+  const ranges = new Map([['host/a.js', [[10, 40]]]]);
+  assert.deepStrictEqual(extractCitations('host/a.js:30-80', files, { ranges }).citations, [{ file: 'host/a.js', line: 30, endLine: 40 }]);
+});
+
+test('D4 P: with ranges, every citation sits inside a sent range', () => {
+  const ranges = new Map([['host/a.js', [[5, 20], [60, 70]]], ['app/b.js', [[1, 10]]]]);
+  fc.assert(fc.property(fc.array(fc.tuple(fc.constantFrom('host/a.js', 'app/b.js', 'README.md'), fc.integer({ min: -3, max: 120 }), fc.integer({ min: -3, max: 120 })), { maxLength: 8 }), (cs) => {
+    const text = cs.map(([f, a, b]) => ` ${f}:${a}-${b} `).join(' ');
+    for (const c of extractCitations(text, files, { ranges }).citations) {
+      assert.ok(ranges.get(c.file).some(([s, e]) => c.line >= s && c.line <= e && c.endLine <= e), JSON.stringify(c));
+    }
+  }));
+});
+
+// PR #136 Dexter D6
+test('D6: a path with a space is cited whole, and never cut at the space and resolved to a different file', () => {
+  const two = new Map([['docs/my notes.md', 120], ['app/notes.md', 40]]);
+  const r = extractCitations('see docs/my notes.md:12', two);
+  assert.deepStrictEqual(r.citations, [{ file: 'docs/my notes.md', line: 12, endLine: 12 }]);
+  const none = extractCitations('see docs/other notes.md:12', two);
+  assert.ok(!none.citations.some(c => c.file === 'app/notes.md'), 'the tail of a cut path resolved to another file');
+});
