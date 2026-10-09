@@ -162,7 +162,7 @@ function hostsUnder(dir) {
 }
 function killEverything() {
   for (const id of hostsUnder(dev)) seenPids.add(id.pid, id.processStartedAt);
-  seenPids.killAll();
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayout);

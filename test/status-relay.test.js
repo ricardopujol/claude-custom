@@ -296,7 +296,7 @@ function waitUntil(f, what, ms = 30000) {
 
 // Every live node.exe whose command line carries `marker` (a table read, so it sees orphans whose parent is gone).
 // A failed or timed-out read throws, never an EMPTY list that would read as "nothing left running" (Miguel Y2).
-const { markedPids, reapMarked, reapDeadOwners, SLEEPER_SRC } = require('./helpers/reap-marked');
+const { markedPids, reapMarked, reapDeadOwners, SLEEPER_SRC } = require('../verify/lib/reap-marked');
 
 // BACKLOG #74 G: this test's sleepers once outlived a killed `npm test` by the thousand. Markers are
 // `cc72-<this pid>-<time>`: reaped in `finally`, on exit, and (a killed run's leftovers) by the next run's first test.

@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
-const { reapMarked, reapDeadOwners, markedPids, SLEEPER_SRC } = require('./helpers/reap-marked');
+const { reapMarked, reapDeadOwners, markedPids, SLEEPER_SRC } = require('../verify/lib/reap-marked');
 
 const onWin = process.platform === 'win32';
 const opts = { skip: !onWin, timeout: 120000 };
@@ -58,7 +58,7 @@ test('the sleeper expires by itself, so even a reaper that never runs cannot lea
 });
 
 // The rule: a test file that spawns detached children must use the reaper.
-test('rule: every test that spawns detached children reaps them through test/helpers/reap-marked (or pids it holds)', () => {
+test('rule: every test that spawns detached children reaps them through verify/lib/reap-marked (or pids it holds)', () => {
   const dir = __dirname;
   const bad = [];
   for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.test.js'))) {

@@ -167,7 +167,7 @@ function hostsOfThisRun() {
 }
 function killEverything() {
   for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
-  seenPids.killAll();
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayout);

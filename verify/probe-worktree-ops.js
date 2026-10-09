@@ -249,7 +249,7 @@ function killEverything() {
   for (const dir of [dev, ...['feat/a', 'feat/demo', 'feat/setup-fails', 'feat/dirty', 'feat/keep'].map(wtPath)]) {
     for (const id of hostsUnder(dir)) seenPids.add(id.pid, id.processStartedAt);
   }
-  seenPids.killAll();
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 

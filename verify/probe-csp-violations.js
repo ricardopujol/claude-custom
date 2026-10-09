@@ -328,7 +328,7 @@ async function runRealApp() {
     // The tab's host is spawned detached by the app, so it is not under the Electron PID: add it (and its pty) by the pid the tab list gave.
     const tree = [...new Set([...descendantsOf(child.pid), ...(out.hostPid ? descendantsOf(out.hostPid) : [])])];
     hygiene._emergencyCleanup('phase2-done');
-    hostSeen.killAll();   // start-proven: recorded when the tab list first gave the pid
+    hostSeen.endAll();   // start-proven: recorded when the tab list first gave the pid
     await sleep(1500);
     out.left = tree.filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
     out.treeSize = tree.length;

@@ -36,7 +36,7 @@ function createSeenPids({ startOf = readStart, prove = killProven } = {}) {
       seen.delete(pid);
       try { prove(pid, start); } catch { /* gone */ }
     },
-    killAll() {
+    endAll() {
       for (const pid of [...seen.keys()]) this.kill(pid);
     },
   };

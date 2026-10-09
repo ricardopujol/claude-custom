@@ -208,7 +208,7 @@ const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInt
 
 function killEverything() {
   for (const id of hostsUnder(tmp)) seenPids.add(id.pid, id.processStartedAt);
-  seenPids.killAll();
+  seenPids.endAll();
 }
 
 function removeTemp() {

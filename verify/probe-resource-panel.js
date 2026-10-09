@@ -154,7 +154,7 @@ function hostsOfThisRun() {
 }
 function killEverything() {
   for (const id of hostsOfThisRun()) track(id.pid, id.processStartedAt);
-  seenPids.killAll();   // a dead pid, or one reused since, is left alone (killProven). The tree is ours: a host this window spawned.
+  seenPids.endAll();   // a dead pid, or one reused since, is left alone (killProven). The tree is ours: a host this window spawned.
 }
 hygiene.addCleanup(killEverything);
 

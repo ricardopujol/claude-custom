@@ -169,7 +169,7 @@ function removeIdentityFiles() {
 function killEverything() {
   const ours = hostsOfThisRun();
   for (const id of ours) seenPids.add(id.pid, id.processStartedAt);
-  seenPids.killAll();
+  seenPids.endAll();
   if (ours.length) removeIdentityFiles();
 }
 hygiene.addCleanup(killEverything);
