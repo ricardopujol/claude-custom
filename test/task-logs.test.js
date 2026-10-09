@@ -161,3 +161,8 @@ test('why: delete, alive, young or unknown, in that order of what the readout te
   assert.strictEqual(classify([file()], null)[0].why, 'unknown');
   assert.strictEqual(classify([file({ mtimeMs: NOW + 1 })], reg, [99])[0].why, 'unknown');
 });
+
+test('"over 100 MB" is exact in the panel own unit: MIN_BYTES is 100 MB of 1 048 576 bytes, the MB every figure in the panel uses', () => {
+  assert.strictEqual(T.MIN_BYTES, 100 * 1024 * 1024);
+  assert.strictEqual(T.IDLE_MS, 15 * 60_000);
+});

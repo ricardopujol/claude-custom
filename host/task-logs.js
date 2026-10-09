@@ -16,6 +16,8 @@
  * A file that is idle with nobody alive but a session never seen is "unknown": the person may Delete it by hand.
  */
 
+// "100 MB" in the panel's own unit: every figure the Resources panel shows as "MB" is 1 048 576 bytes (app/resources-display.js
+// fmtBytes), so a listed file always reads as 100 MB or more there. (Ricardo, PR #133 review: the label and the code agree.)
 const MIN_BYTES = 100 * 1024 * 1024;
 const IDLE_MS = 15 * 60_000;
 

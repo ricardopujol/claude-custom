@@ -528,7 +528,7 @@ const trow = (over = {}) => ({ key: '1:10', name: 'a1.output', project: 'p', ses
 
 test('task logs: the group is "Task logs over 100 MB", with the clock rule on its title line, and each row reads session, file, size, age', () => {
   const v = leftoverView(leftovers({ taskLogs: [trow()] }));
-  assert.deepStrictEqual([v.groups[0].title, v.groups[0].side], ['Task logs over 100 MB', 'deleted 15 min after their session ends']);
+  assert.deepStrictEqual([v.groups[0].title, v.groups[0].side], ['Task logs over 100 MB', 'deleted after 15 idle minutes once their session has ended']);
   assert.deepStrictEqual(v.groups[0].rows.map(r => [r.name, r.memFig, r.ageFig]), [['e3ca0a04 · a1.output', '5.1 GB', '40 min']]);
   assert.strictEqual(v.chip, '1 left over');
 });
@@ -582,4 +582,14 @@ test('task logs: deleted files read "Deleted <file>, <MB> MB freed" under Stoppe
   assert.strictEqual(only.chip, null);
   const mixed = leftoverView(leftovers({ probes: [lrow({ bytes: 200 * MB })], taskLogs: [trow()] }));
   assert.strictEqual(mixed.sum.memFig, '200 MB', 'RAM only: a file on disk is not memory');
+});
+
+test('task logs: the "N left over" chip counts only files that are left over, not ones whose session is alive or that were just written; the group is still listed', () => {
+  const only = leftoverView(leftovers({ taskLogs: [trow({ why: 'alive', deletable: false }), trow({ key: '1:11', why: 'young', deletable: false })] }));
+  assert.strictEqual(only.chip, null);
+  assert.strictEqual(only.sum.count, 0);
+  assert.strictEqual(only.groups[0].rows.length, 2);
+  const mixed = leftoverView(leftovers({ taskLogs: [trow(), trow({ key: '1:11', why: 'alive', deletable: false }), trow({ key: '1:12', why: 'unknown', deletable: false })] }));
+  assert.strictEqual(mixed.chip, '2 left over');
+  assert.ok(!/left over/.test(D.html(D.view(stateWith(payload({ leftovers: leftovers({ taskLogs: [trow({ why: 'alive', deletable: false })] }) }))))), 'no chip is drawn');
 });

@@ -205,8 +205,11 @@ function leftoversView(l, ui) {
     if (rows.length) groups.push({ id: kind, title, edge, rows, side: groupSide(kind, src), foot: kind === 'stuck' ? 'Windows is still tearing these down. Nothing can stop them faster.' : null, sub: kind === 'probes' ? 'launcher gone' : null, stopCount: LEFT_STOP_GROUPS.includes(kind) ? rows.filter(x => x.canStop).length : 0 });
   }
   const taskRows = list('taskLogs');
+  // Only what is actually left over counts toward the chip: a file whose session is still running, or that was written in the
+  // last 15 minutes, is listed but is not a leftover (Ricardo, PR #133 review).
+  const taskLeft = taskRows.filter(r => r.why !== 'alive' && r.why !== 'young');
   if (taskRows.length) {
-    groups.push({ id: 'taskLogs', title: 'Task logs over 100 MB', edge: 'res-edge-yellow', rows: taskRows.map(taskLogRow), side: 'deleted 15 min after their session ends', foot: null, sub: null, stopCount: 0 });
+    groups.push({ id: 'taskLogs', title: 'Task logs over 100 MB', edge: 'res-edge-yellow', rows: taskRows.map(taskLogRow), side: 'deleted after 15 idle minutes once their session has ended', foot: null, sub: null, stopCount: 0 });
   }
   const deleted = list('deleted').map(d => ({ text: `Deleted ${isStr(d.name) && d.name !== '' ? d.name : '?'}, ${fmtBytes(d.bytes)} freed` }));
   const stopped = list('stopped').map(s => ({ text: `Stopped ${isStr(s.what) && s.what !== '' ? s.what : (isStr(s.name) ? s.name : '?')} (PID ${s.pid}), ${fmtBytes(s.bytes)} freed` }));
@@ -223,7 +226,7 @@ function leftoversView(l, ui) {
   const disk = taskRows.reduce((n, r) => n + (isNum(r.bytes) ? r.bytes : 0), 0);
   const memFig = !all.length && taskRows.length ? `${fmtBytes(disk)} on disk` : !measured ? '—' : `${complete ? '' : '≥ '}${fmtBytes(bytes)}`;
   return {
-    sum: { count: all.length + taskRows.length, memFig }, chip: all.length + taskRows.length ? `${all.length + taskRows.length} left over` : null, groups, stopped: [...deleted, ...stopped],
+    sum: { count: all.length + taskLeft.length, memFig }, chip: all.length + taskLeft.length ? `${all.length + taskLeft.length} left over` : null, groups, stopped: [...deleted, ...stopped],
     busy: !!(ui && ui.busy), note: ui && isStr(ui.note) && ui.note !== '' ? ui.note : null,
   };
 }
