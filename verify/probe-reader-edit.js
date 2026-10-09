@@ -333,7 +333,9 @@ async function main() {
   const again = await waitFor(async () => { const s = await st(app); return s.conflictShown ? s : null; }, 15000, 25);
   check('5: Keep mine is not a blank cheque: a further change before the save raises the banner again and is not overwritten', !!again && disk() === outsideC, JSON.stringify({ banner: !!again, outsideKept: disk() === outsideC }));
   await rd(app, 'conflictReload');
-  await waitFor(async () => { const s = await st(app); return !s.conflictShown && !s.dirty ? s : null; }, 8000);
+  // (the banner goes the moment Reload is pressed; wait for the read to land and edit mode to come back)
+  const resumed = await waitFor(async () => { const s = await st(app); return !s.conflictShown && !s.dirty && s.editing && s.lines > 8 ? s : null; }, 8000);
+  check('5: Reload lands back in edit mode on the outside text', !!resumed);
 
   // 6 ------------------------------------------------------------------------------
   // the guards. The probe answers the native question for the person.
