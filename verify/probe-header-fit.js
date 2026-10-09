@@ -105,7 +105,12 @@ app.on('ready', async () => {
       const win = new BrowserWindow({ width, height: 640, show: true, frame: false, useContentSize: true,
         webPreferences: { contextIsolation: true, nodeIntegration: false } });
       await win.loadFile(path.join(APP_ROOT, 'app', 'renderer.html'));
-      await sleep(1200);
+      // The page is ready when its renderer script has defined what the fixture calls (a fixed sleep raced on a cold start).
+      for (let i = 0; i < 50; i++) {
+        if (await win.webContents.executeJavaScript("typeof renderUsage === 'function' && typeof renderQuota === 'function'")) break;
+        await sleep(200);
+      }
+      await sleep(600);
       await win.webContents.executeJavaScript(FIXTURE);
       await sleep(400);
       const m = JSON.parse(await win.webContents.executeJavaScript(MEASURE));
