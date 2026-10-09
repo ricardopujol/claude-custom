@@ -134,6 +134,13 @@ test('hostListsLean: only a hello whose controls list lean may be told (an older
   for (const c of [null, undefined, [], ['resize', 'input'], 'lean', { lean: true }]) assert.strictEqual(L.hostListsLean(c), false, JSON.stringify(c));
 });
 
+test('stillSize: a vector image covers the box at the size it will be shown (Chromium reports 240x150 for the generated viewBox-only SVG)', () => {
+  assert.deepStrictEqual(L.stillSize(240, 150, 1186, 730, true), { width: 1186, height: 741 });
+  assert.deepStrictEqual(L.stillSize(0, 0, 1186, 730, true), { width: 1186, height: 730 });
+  assert.deepStrictEqual(L.stillSize(240, 150, 1000, 1000, true), { width: 1600, height: 1000 });
+  assert.deepStrictEqual(L.stillSize(240, 150, 0, 0, true), { width: 240, height: 150 }, 'no box to cover: its own size');
+});
+
 test('stillSize: the image\'s own size, else the fallback box (a viewBox-only SVG reports 0), else a square (Dexter N2)', () => {
   assert.deepStrictEqual(L.stillSize(1600, 1000, 1920, 1080), { width: 1600, height: 1000 });
   assert.deepStrictEqual(L.stillSize(0, 0, 1920, 1080), { width: 1920, height: 1080 });

@@ -153,6 +153,6 @@ test('Dexter N1: the host is told about lean ONLY when its hello lists the type 
 });
 
 test('Dexter N2: the still background is drawn into a real destination box sized by stillSize, not at a default size', () => {
-  assert.match(RENDERER, /leanDisplay\.stillSize\(img\.naturalWidth, img\.naturalHeight, window\.innerWidth, window\.innerHeight\)/);
+  assert.match(RENDERER, /leanDisplay\.stillSize\(img\.naturalWidth, img\.naturalHeight, window\.innerWidth, window\.innerHeight, /);
   assert.match(RENDERER, /drawImage\(img, 0, 0, c\.width, c\.height\)/);
 });

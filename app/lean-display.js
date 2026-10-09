@@ -16,8 +16,8 @@
  *                            the background and the portraits strip.
  *   hostListsLean(controls)  does the host's hello list `lean` among its control types: a frame to a host that does not would be TYPED into the
  *                            session as JSON (hosts outlive app updates; PR #140 Dexter N1). Only an exact array entry counts.
- *   stillSize(w, h, fw, fh)  the size to draw a still frame at: the image's own, else (a viewBox-only SVG reports 0) the fallback box, so
- *                            the draw has a real destination and `cover` fills the window (Dexter N2)
+ *   stillSize(w, h, fw, fh, vector)  the size to draw a still frame at: the image's own; for a VECTOR image the size it covers the box at;
+ *                            else (0) the fallback box, so the draw has a real destination and `cover` fills the window (Dexter N2)
  *   advanceCooldowns(list,now) the cooldown widget's countdown step, so a resume after a long lean shows the real time left (Dexter F7)
  *   createSuspender()        the registry of suspend/resume pairs: every panel, poller or animation registers one;
  *                            `set(true)` suspends all (in registration order), `set(false)` resumes them in reverse.
@@ -69,8 +69,16 @@ function hostListsLean(controls) {
   return Array.isArray(controls) && controls.includes('lean');
 }
 
-function stillSize(w, h, fw, fh) {
+function stillSize(w, h, fw, fh, vector = false) {
   const ok = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0;
+  // A vector image (SVG) is drawn at the size it will be SHOWN at, covering the box: Chromium reports 240x150 for the generated art's
+  // viewBox-only SVG and drawing at that size, scaled up by `cover`, would be a blurry 5x enlargement.
+  if (vector && ok(fw) && ok(fh)) {
+    const aw = ok(w) && ok(h) ? w : fw;
+    const ah = ok(w) && ok(h) ? h : fh;
+    const scale = Math.max(fw / aw, fh / ah);
+    return { width: Math.round(aw * scale), height: Math.round(ah * scale) };
+  }
   if (ok(w) && ok(h)) return { width: Math.round(w), height: Math.round(h) };
   return { width: ok(fw) ? Math.round(fw) : 300, height: ok(fh) ? Math.round(fh) : 300 };
 }

@@ -4950,7 +4950,7 @@ function paintBackgroundImage(url) {
     const c = document.createElement('canvas');
     c.className = 'bg-still';
     // a viewBox-only SVG (the generated art) reports 0: size from the window and draw into that box, so cover fills it (Dexter N2)
-    const size = leanDisplay.stillSize(img.naturalWidth, img.naturalHeight, window.innerWidth, window.innerHeight);
+    const size = leanDisplay.stillSize(img.naturalWidth, img.naturalHeight, window.innerWidth, window.innerHeight, /\.svg$/i.test(url.split('#')[0].split('?')[0]));
     c.width = size.width;
     c.height = size.height;
     try { c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); } catch { return; }       // cannot be drawn: no background, never a moving one

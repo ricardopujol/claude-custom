@@ -289,8 +289,8 @@ async function main() {
     JSON.stringify({ rect: lean.termRect, page: lean.page }));
   // the default generated art is a viewBox-only SVG (no width/height): its still frame must be drawn into a real box (PR #140 Dexter N2)
   const svgNormal = /\.svg/i.test(n0.bg.cssImage || '');
-  check('2: the generated SVG background is its still frame in lean, a canvas the size of the window (not a 300x300 corner)',
-    svgNormal && !!lean.bg.still && lean.bg.cssImage === '' && Math.abs(lean.bg.still.width - lean.page.width) <= 2 && Math.abs(lean.bg.still.height - lean.page.height) <= 2,
+  check('2: the generated SVG background is its still frame in lean, a canvas covering the window at its shown size (not a 240x150 enlargement)',
+    svgNormal && !!lean.bg.still && lean.bg.cssImage === '' && lean.bg.still.width >= lean.page.width - 2 && lean.bg.still.height >= lean.page.height - 2,
     JSON.stringify({ normalBg: (n0.bg.cssImage || '').slice(-40), leanStill: lean.bg.still, page: lean.page }));
   check('2: the terminal swapped its WebGL renderer for the default one', lean.webgl === false, `normal ${n0.webgl} -> lean ${lean.webgl}`);
   check('2: the project\'s colours and terminal theme are untouched', JSON.stringify(lean.look) === JSON.stringify(n0.look) && JSON.stringify(lean.termTheme) === JSON.stringify(n0.termTheme),
