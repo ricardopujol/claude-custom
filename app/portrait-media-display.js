@@ -141,25 +141,6 @@ function placeholderHtml(a) {
          `justify-content:center;background:hsl(${Number(a.hue) || 0} 42% 62%)">${esc(a.initials)}</span>`;
 }
 
-/**
- * A face that never moves (BACKLOG #62, lean mode's portraits-only strip). An image that MAY animate (`opts.mayAnimate(url)`: the one
- * rule app/lean-display.js owns, so it is not written twice; absent means "may", the safe answer) becomes a <canvas> that the page
- * paints with the image's first frame once it has loaded (`data-still-src`; a plain <img> would keep animating); an image known to be
- * static stays an <img>; a video face becomes a canvas painted from the video's first frame (`data-still-kind="video"`, PR #140 Dexter
- * F8: a still portrait, not initials); images off or unknown is the placeholder, as for the roster.
- */
-function stillFaceHtml(result, opts) {
-  const d = mediaElementFor(result, opts);
-  const may = opts && typeof opts.mayAnimate === 'function' ? opts.mayAnimate : () => true;
-  if (d.tag === 'img' && may(d.attrs.src)) {
-    return `<canvas class="face-media face-still" width="96" height="96" data-still-src="${esc(d.attrs.src)}" title="${esc(d.attrs.title)}"></canvas>`;
-  }
-  if (d.tag === 'video') {
-    return `<canvas class="face-media face-still" width="96" height="96" data-still-kind="video" data-still-src="${esc(d.attrs.src)}" title="${esc(d.attrs.title)}"></canvas>`;
-  }
-  return faceMediaHtml(result, opts);
-}
-
 /** Strict: a face plays only when BOTH inputs are exactly `true`. */
 function visibilityAction(isIntersecting, docVisible) {
   return isIntersecting === true && docVisible === true ? 'play' : 'pause';
@@ -177,7 +158,7 @@ function unloadVideo(el) {
   try { if (typeof el.load === 'function') el.load(); } catch { /* detached */ }
 }
 
-const API = { mediaElementFor, faceMediaHtml, stillFaceHtml, videoKey, planVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
+const API = { mediaElementFor, faceMediaHtml, videoKey, planVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.portraitMedia = API;

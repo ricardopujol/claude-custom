@@ -206,3 +206,16 @@ test('stillNode: a jpg is an <img>; a gif/webp/png/svg is a canvas holding its f
   assert.strictEqual(v.tag, 'canvas');
   assert.strictEqual(v.dataset.stillKind, 'video');
 });
+
+test('Miguel S6: a video that never loads (no loadeddata, no error) is unloaded by a timeout, not left loading for ever', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const unloaded = [];
+  const video = { addEventListener() {}, muted: false, preload: '', set src(v) { this._src = v; }, pause() {}, removeAttribute() {}, load() {} };
+  const doc = { createElement: (tag) => (tag === 'video' ? video : {}) };
+  const c = { dataset: { stillSrc: 'file:///C:/p/a.webm', stillKind: 'video' }, getContext: () => ({}) };
+  const pm = { unloadVideo: (v) => unloaded.push(v) };
+  L.paintStill(doc, c, pm);
+  assert.strictEqual(unloaded.length, 0);
+  t.mock.timers.tick(10000);
+  assert.deepStrictEqual(unloaded, [video]);
+});

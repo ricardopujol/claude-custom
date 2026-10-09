@@ -12,14 +12,28 @@
  */
 
 const MAX_FACES = 24;
+const SCAN_MAX = 200;                                       // entries looked at, valid or not: a hostile page cannot make main walk a huge array
+const MEDIA_EXT = /\.(?:png|jpe?g|webp|gif|webm|mp4)$/i;
 const isStr = (s, max) => typeof s === 'string' && s !== '' && s.length <= max;
 const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
+
+/**
+ * A portrait path the strip may load (PR #140 Miguel Y2): absolute with a drive letter (so no UNC, no \\?\ device path), no `..` segment,
+ * and one of the media extensions the portraits tiers serve. The host that produced it owns the folders (they move per probe and per
+ * environment), so the SHAPE is what main can check.
+ */
+function safePortraitPath(p) {
+  if (!isStr(p, 1024)) return false;
+  if (!/^[A-Za-z]:[\\/]/.test(p)) return false;
+  if (p.split(/[\\/]/).includes('..')) return false;
+  return MEDIA_EXT.test(p);
+}
 
 function sanitizePortrait(p) {
   if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
   const out = {};
   if (isStr(p.kind, 20)) out.kind = p.kind;
-  if (isStr(p.path, 1024)) out.path = p.path;
+  if (safePortraitPath(p.path)) out.path = p.path;
   if (p.media === 'image' || p.media === 'video') out.media = p.media;
   if (isStr(p.tier, 20)) out.tier = p.tier;
   if (isNum(p.mtimeMs)) out.mtimeMs = p.mtimeMs;
@@ -39,7 +53,7 @@ function sanitizePortrait(p) {
 function sanitizeFaces(value) {
   if (!Array.isArray(value)) return [];
   const out = [];
-  for (const f of value) {
+  for (const f of value.slice(0, SCAN_MAX)) {
     if (out.length >= MAX_FACES) break;
     if (!f || typeof f !== 'object' || !isStr(f.agent, 80)) continue;
     out.push({ agent: f.agent, images: f.images === true ? true : f.images === false ? false : null, portrait: sanitizePortrait(f.portrait) });
@@ -67,4 +81,4 @@ function createFaces() {
   };
 }
 
-module.exports = { createFaces, sanitizeFaces, MAX_FACES };
+module.exports = { createFaces, sanitizeFaces, safePortraitPath, MAX_FACES, SCAN_MAX };

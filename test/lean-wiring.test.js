@@ -174,3 +174,10 @@ test('the lean portraits strip stays still whatever the focus or night (the rule
   assert.ok(faces.length > 100);
   assert.doesNotMatch(faces, /leanHeld|windowFocused|leanNight/);
 });
+
+test('Dexter r3 #1: a crashed renderer drops its lean owner (night and faces) like a closed view does', () => {
+  const at = MAIN.indexOf("wc.on('render-process-gone'");
+  assert.ok(at !== -1);
+  const handler = MAIN.slice(at, MAIN.indexOf('});', at));
+  assert.match(handler, /leanBridge\.dropOwner\(leanOwnerId\)/);
+});

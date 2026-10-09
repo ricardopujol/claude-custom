@@ -118,8 +118,9 @@ test('Dexter F2: the dismissal survives a restart: it is handed out and comes ba
   a.setByHand(false);
   assert.deepStrictEqual(saved, [[NIGHT]]);
   const b = createLean({ dismissed: saved[0] });          // main restarted; every tab's hello reports the night again
-  b.nightStarted(7, NIGHT);
+  assert.strictEqual(b.nightStarted(7, NIGHT), true, 'a dismissed night still flips the night flag (the pages hold their backgrounds still)');
   assert.strictEqual(b.view().on, false);
+  assert.strictEqual(b.view().night, true);
   assert.strictEqual(b.nightStarted(7, NIGHT + 1), true, 'a different night asks again');
 });
 

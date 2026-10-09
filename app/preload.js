@@ -286,7 +286,7 @@ contextBridge.exposeInMainWorld('harness', {
     get: () => ipcRenderer.invoke('lean:get'),
     set: (on) => ipcRenderer.send('lean:set', on === true),
     // this page's working agents (name, images flag, portrait result), for the strip's portraits
-    faces: (list) => ipcRenderer.send('lean:faces', Array.isArray(list) ? list : []),
+    faces: (list) => ipcRenderer.send('lean:faces', Array.isArray(list) ? list.slice(0, 48) : []),
     night: (startedAt) => ipcRenderer.send('lean:night', typeof startedAt === 'number' && Number.isFinite(startedAt) ? startedAt : null),
     onChange: (fn) => (ipcRenderer.removeAllListeners('lean-state'), ipcRenderer.on('lean-state',
       (_e, state) => {

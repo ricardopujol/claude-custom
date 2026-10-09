@@ -265,6 +265,12 @@ async function main() {
   const { files, errs } = makeMedia();
   check('ffmpeg made the test gif and webm (nothing downloaded)', errs.length === 0, errs.join(' | ').slice(0, 300));
 
+  // a REAL png portrait for the working agent (PR #140 Miguel Y1): it must load in the strip under its CSP, not fall back to initials
+  const portraitPng = path.join(tmp, 'uploads', 'electron-pro', 'default.png');
+  fs.mkdirSync(path.dirname(portraitPng), { recursive: true });
+  const pngErr = ffmpeg(['-f', 'lavfi', '-i', 'testsrc2=size=96x96', '-frames:v', '1', portraitPng]);
+  check('ffmpeg made the working agent\'s png portrait', pngErr === null, String(pngErr || ''));
+
   const app = await launchApp(container);
   const devHost = await waitFor(async () => {
     const st = await stateOf(app);
@@ -390,8 +396,10 @@ async function main() {
   const faces = await waitFor(async () => { const s2 = await stripLean(app); return s2 && s2.faces.count >= 1 ? s2 : null; }, 20000);
   check('6: a working agent is an 18 px round still portrait in the strip, left of the lean chip, named on hover (never a video)',
     !!faces && faces.faces.hidden === false && faces.faces.size === 18 && faces.faces.round === '50%' && faces.faces.videos === 0 && faces.faces.titles.includes('electron-pro')
-      && faces.faces.stills + faces.faces.imgs + faces.faces.placeholders >= 1 && faces.faces.right <= faces.faces.chipLeft,
+      && faces.faces.stills + faces.faces.imgs >= 1 && faces.faces.placeholders === 0 && faces.faces.right <= faces.faces.chipLeft,
     faces ? JSON.stringify(faces.faces) : 'no faces');
+  const drawn = await waitFor(async () => { const s3 = await stripLean(app); return s3 && s3.faces.drawn + s3.faces.imgsLoaded >= 1 ? s3 : null; }, 10000);
+  check('6: the real png portrait LOADED and was drawn in the strip under its CSP (not blank, not failed)', !!drawn && drawn.faces.failed === 0, drawn ? JSON.stringify(drawn.faces) : JSON.stringify((await stripLean(app)).faces));
   const overlay = await leanPage(app);
   check('6: ...and nothing is drawn over the terminal any more', !!overlay && !('faces' in overlay));
   await shoot(app, '5-lean-portraits');

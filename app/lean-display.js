@@ -96,26 +96,34 @@ function stillSize(w, h, fw, fh, vector = false) {
   return { width: ok(fw) ? Math.round(fw) : 300, height: ok(fh) ? Math.round(fh) : 300 };
 }
 
+const STILL_VIDEO_TIMEOUT_MS = 10000;
+
 // A canvas (data-still-src, data-still-kind) painted with a centred square of the first frame; a video is unloaded after.
 function paintStill(doc, c, portraitMedia) {
   const src = c.dataset.stillSrc;
+  // dataset.stillDrawn / stillFailed say what happened (a blocked or undecodable file is otherwise just a blank canvas)
   const draw = (el, w, h) => {
     try {
       const side = Math.min(w, h) || 1;
       c.getContext('2d').drawImage(el, (w - side) / 2, (h - side) / 2, side, side, 0, 0, c.width, c.height);
-    } catch { /* stays blank: a face never moves */ }
+      c.dataset.stillDrawn = '1';
+    } catch { c.dataset.stillFailed = '1'; /* stays blank: a face never moves */ }
   };
   if (c.dataset.stillKind === 'video') {
     const v = doc.createElement('video');
     v.muted = true;
     v.preload = 'auto';
     v.addEventListener('loadeddata', () => { draw(v, v.videoWidth, v.videoHeight); portraitMedia.unloadVideo(v); }, { once: true });
-    v.addEventListener('error', () => portraitMedia.unloadVideo(v), { once: true });
+    v.addEventListener('error', () => { c.dataset.stillFailed = '1'; portraitMedia.unloadVideo(v); }, { once: true });
+    // a video that never loads (a stalled path) must not stay a loading element for ever (PR #140 Miguel S6)
+    const timer = setTimeout(() => portraitMedia.unloadVideo(v), STILL_VIDEO_TIMEOUT_MS);
+    if (timer && typeof timer.unref === 'function') timer.unref();
     v.src = src;
     return;
   }
   const img = doc.createElement('img');
   img.onload = () => draw(img, img.naturalWidth, img.naturalHeight);
+  img.onerror = () => { c.dataset.stillFailed = '1'; };
   img.src = src;
 }
 

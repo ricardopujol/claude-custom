@@ -600,7 +600,12 @@ function createTabView(tab) {
     if (focusMode) wc.send('focus-mode', true);
     if (leanBridge && leanBridge.view().on) wc.send(LEAN_PUSH, leanBridge.view());
   });
-  wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
+  // A crashed renderer keeps its view but its page is gone: its night and its faces must not outlive it (the next morning's backgrounds would
+  // stay frozen by a night nobody reports ending; PR #140 Dexter r3 #1). A reloaded page reports again from its hello.
+  wc.on('render-process-gone', (_e, d) => {
+    if (leanBridge) leanBridge.dropOwner(leanOwnerId);
+    console.error(`[main] ${tab.key}: renderer gone:`, d.reason);
+  });
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -1440,7 +1445,7 @@ function startProbeDriver(port) {
           "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
           // #62: the lean button and chip as painted
           + "lean: { bodyLean: document.body.classList.contains('lean'), btnHidden: document.getElementById('lean-btn').hidden, chipHidden: document.getElementById('lean-chip').hidden, label: document.getElementById('lean-chip-label').textContent, night: document.getElementById('lean-chip-night').hidden ? null : document.getElementById('lean-chip-night').textContent, back: document.getElementById('lean-back').textContent, dotAnim: (() => { const d = document.querySelector('.dot.working'); return d ? getComputedStyle(d).animationName : null; })(), "
-          + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, imgs: b.querySelectorAll('img').length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
+          + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, drawn: b.querySelectorAll('canvas[data-still-drawn]').length, failed: b.querySelectorAll('canvas[data-still-failed]').length, imgs: b.querySelectorAll('img').length, imgsLoaded: [...b.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth > 0).length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
       } catch (err) { stripChrome = { error: err.message }; }
       let viewDom = null;
       const sel = selectedView();
