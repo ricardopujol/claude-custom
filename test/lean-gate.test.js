@@ -48,3 +48,7 @@ test('D5, the other half: lean never stops main\'s process-tree sampler (it driv
   }
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'host', 'lean-gate.js'), 'utf8'), /KEEPS running while lean on purpose/);
 });
+
+test('the page\'s lean frame is on the control allow-list: off it, it would be typed into the pty as JSON', () => {
+  assert.ok(require('../host/control').CONTROL_TYPES.has('lean'));
+});
