@@ -62,6 +62,9 @@ function createResourcesService({
   const tracker = leftovers.createTracker({ now });
   let lastFound = null;           // the latest sample's leftovers (with their ledger entries): what a manual Stop is resolved against
   let tl = { files: [], registry: null, at: -Infinity, busy: false };   // the last task-output scan (stat only), when it ended, whether one is in flight
+  let tlSeq = 0;               // fresh, full, non-stale samples counted so far (a re-sent old sample object counts once)
+  let tlLastSample = null;
+  let tlPending = null;        // a task-folder read waiting for a process sample taken wholly after it: { files, registry, afterSeq, at }
   let tlListed = null;         // the pids of the latest full, fresh sample: what "a session is alive" is judged against; null: nothing may be deleted
   const tlSeen = new Set();    // session ids the app SAW alive (a registry entry whose pid was running); only these can be seen to END
   const tlDeleted = [];        // { name, bytes, at } of the files deleted lately (shown for an hour, like Stopped)
@@ -121,11 +124,11 @@ function createResourcesService({
 
   // ---- big task-output files (#74 F(3), host/task-logs.js decides, host/task-logs-fs.js touches the disk) ----
   // A null process table is passed on as null: classify reads it as "unknown", never as "everything is gone".
-  const tlClassify = () => taskLogsLib.classify({ files: tl.files, registry: tl.registry, listedPids: tlListed, seen: tlSeen, now: now() });
+  const tlClassify = (listed = tlListed, read = tl) => taskLogsLib.classify({ files: read.files, registry: read.registry, listedPids: listed, seen: tlSeen, now: now() });
   // A session whose registry entry names a running pid is alive now; remember it, so a later absence is an END that was observed.
-  function tlMarkSeen() {
-    if (!tlListed || !tl.registry || tl.registry.ok !== true) return;
-    for (const e of tl.registry.entries) if (e && typeof e.sessionId === 'string' && tlListed.has(e.pid)) tlSeen.add(e.sessionId);
+  function tlMarkSeen(listed, read) {
+    if (!listed || !read.registry || read.registry.ok !== true) return;
+    for (const e of read.registry.entries) if (e && typeof e.sessionId === 'string' && listed.has(e.pid)) tlSeen.add(e.sessionId);
   }
   function tlShownDeleted() {
     const t = now();
@@ -144,20 +147,46 @@ function createResourcesService({
   }
   async function tlRead() {
     const [files, registry] = await Promise.all([taskLogs.scan(), taskLogs.registry()]);
-    tl.files = files;
-    tl.registry = registry;
+    return { files, registry };
   }
-  // On the slow cadence, after a fresh full sample was sent: stat the task folders, then delete what is provably abandoned. One at a time.
+  // On the slow cadence, driven by FRESH samples only: the folders and the registry are read once; the file is JUDGED on the second
+  // fresh sample after that read, so the process list it is held against was taken wholly after the registry (a session that
+  // started between the two reads is in it: Dexter #2). A re-sent old sample, a stale or expired one, or Stop's re-read never gets here.
   function tlTick() {
-    if (!taskLogs || tl.busy || !tlListed || now() - tl.at < TL_EVERY_MS) return;
+    if (!taskLogs) return;
+    tlSeq++;
+    if (tlPending) {
+      if (tl.busy) return;
+      if (tlSeq >= tlPending.afterSeq + 2 && tlListed) tlJudge();
+      else if (now() - tlPending.at > 4 * TL_EVERY_MS) tlPending = null;     // the window was minimised: stale, read again later
+      return;
+    }
+    if (tl.busy || now() - tl.at < TL_EVERY_MS) return;
     tl.busy = true;
     (async () => {
       try {
-        await tlRead();
-        tlMarkSeen();
-        if (tlListed) await tlRemove(tlClassify().filter(r => r.deletable));
+        const read = await tlRead();
+        tlPending = { ...read, afterSeq: tlSeq, at: now() };
       } catch (err) {
         log('[resources] the task-output scan failed:', (err && err.message) || err);
+        tl.at = now();
+      } finally {
+        tl.busy = false;
+      }
+    })();
+  }
+  function tlJudge() {
+    const read = tlPending;
+    tlPending = null;
+    tl.busy = true;
+    (async () => {
+      try {
+        tl.files = read.files;
+        tl.registry = read.registry;
+        tlMarkSeen(tlListed, read);
+        await tlRemove(tlClassify(tlListed, read).filter(r => r.deletable));
+      } catch (err) {
+        log('[resources] the task-output delete failed:', (err && err.message) || err);
       } finally {
         tl.busy = false;
         tl.at = now();
@@ -250,7 +279,8 @@ function createResourcesService({
     // AFTER the send: the panel paints first. The stop waits a macrotask before each kill (host/leftovers.js), and an adhoc sample
     // (Stop's own re-read) never starts it.
     if (left && reaper && snap.adhoc !== true) reaper.run(left.found).catch(err => log('[resources] leftovers reap threw:', err && err.message));
-    if (snap.adhoc !== true) { if (left) tlTick(); else tlListed = null; }
+    if (!left) tlListed = null;
+    else if (snap.adhoc !== true && snap.stale !== true && snap.expired !== true && snap.sample !== tlLastSample) { tlLastSample = snap.sample; tlTick(); }
   }
 
   // The Stop on a Leftovers row, or "Stop N" on a group (B). The page names WHICH rows ({ rows: [{ pid, start }] } or { group }); main
@@ -263,13 +293,19 @@ function createResourcesService({
     // A big task-output file, by its key: re-scanned now and re-judged by the same rule as the automatic delete, so the page can
     // never name a file the app does not itself hold as abandoned.
     if (req && typeof req === 'object' && typeof req.taskLog === 'string') {
-      if (!taskLogs || !tlListed) return refuse('deleting is not available');
+      if (!taskLogs) return refuse('deleting is not available');
       if (tl.busy) return refuse('the task folders are being scanned; try again in a moment');
       tl.busy = true;
       try {
-        await tlRead();
-        tlMarkSeen();
-        const rows = tlListed ? tlClassify().filter(r => (r.deletable || r.manualDelete) && r.key === req.taskLog) : [];
+        // The registry first, THEN a process list taken after it: the two are never read in the other order (Dexter #2).
+        const read = await tlRead();
+        const procs = await sampler.sampleNow();
+        if (!Array.isArray(procs) || procs.length === 0) return refuse('the process list could not be read; try again');
+        const listed = new Set(procs.map(p => p.pid));
+        tlMarkSeen(listed, read);
+        tl.files = read.files;
+        tl.registry = read.registry;
+        const rows = tlClassify(listed, read).filter(r => (r.deletable || r.manualDelete) && r.key === req.taskLog);
         if (rows.length === 0) return refuse('that file is not one this panel can delete');
         const res = await tlRemove(rows);
         return { ok: true, stopped: res.ok, failed: res.failed };
