@@ -47,7 +47,7 @@ test('a change in the live claims re-publishes the shell', () => {
 });
 
 test('the shell reads the live claims from it, and it starts once the shell is open and stops on quit', () => {
-  assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(\) => occupancyService\.known\(\) \}/);
+  assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/);
   assert.match(MAIN, /occupancyService\.start\(\)/);
   assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^}]*occupancyService\.close\(\)/);
 });

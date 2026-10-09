@@ -232,3 +232,18 @@ test('every clean start (startup, resume, clear) drops an open turn, dialog and 
   assert.strictEqual(run([START, ev('Notification', { notification_type: 'permission_prompt' }), compact]), 'prompt');
   assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop', bg), compact, ev('Notification', { notification_type: 'idle_prompt' })]), 'turn');
 });
+
+// --- BACKLOG #77 R1: a turn that only reads and edits ---------------------------------------------------------
+
+test('R1: Stop, then a blocked stop\'s continuation that only Reads and Edits, is a turn again', () => {
+  const edit = ev('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: 'CURRENT-feat-a.md' } });
+  const read = ev('PreToolUse', { tool_name: 'Read', tool_input: { file_path: 'CURRENT-feat-a.md' } });
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop'), read, edit]), 'turn');
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop'), edit]), 'turn');
+});
+
+test('R1: a Stop with no continuation is idle, and a subagent\'s Edit after it opens nothing', () => {
+  const edit = ev('PreToolUse', { tool_name: 'Edit', agent_id: 'a1' });
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('PreToolUse', { tool_name: 'Edit' }), ev('Stop')]), 'idle');
+  assert.strictEqual(run([START, ev('UserPromptSubmit'), ev('Stop'), edit]), 'idle');
+});

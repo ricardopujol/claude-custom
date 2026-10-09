@@ -656,7 +656,7 @@ function createShell(deps) {
   function agentsHereOf(tab) {
     if (!occupancy || typeof occupancy.claims !== 'function') return null;
     try {
-      if (typeof occupancy.known === 'function' && occupancy.known() !== true) return null;
+      if (typeof occupancy.known === 'function' && occupancy.known(tab.cwd) !== true) return null;
       const claims = occupancy.claims();
       if (!Array.isArray(claims)) return null;
       const occ = occupancyDisplay.tabOccupancy(claims, tab.key, { keyOf });
@@ -675,7 +675,8 @@ function createShell(deps) {
   function sessionOf(tab, hostFound) {
     const st = tab.status;
     if (!st) return (tab.started || tab.pending || tab.starting || tab.unconfirmed || hostFound) ? null : 'idle';
-    if (st.working === true || st.turn === 'turn') return 'busy';
+    // a /bedtime night between wakes is the run's, and a stop would end it (Dexter R1)
+    if (st.working === true || st.turn === 'turn' || st.night === true) return 'busy';
     if (st.needsInput === true || st.turn === 'prompt') return 'waiting';
     return busyWhy(st) === null ? 'idle' : null;
   }
@@ -767,7 +768,9 @@ function createShell(deps) {
     // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
     // session) right before the stop; if any of it changed, ask after all.
     if (silent) {
-      const again = closeReason(closeFactsOf(tab, gitFacts, { hostFound: target !== null }));
+      // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
+      const gitAgain = await gitFactsOf(tab);
+      const again = closeReason(closeFactsOf(tab, gitAgain, { hostFound: target !== null }));
       if (again !== '') {
         let ok = false;
         try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }

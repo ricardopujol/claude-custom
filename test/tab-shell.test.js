@@ -2529,6 +2529,62 @@ test('ctrl-close D6: a re-check that finds nothing new closes with no confirm', 
   assert.deepStrictEqual(h.confirms, []);
 });
 
+// BACKLOG #77 R1: a /bedtime night between wakes is the run's, and a stop would end it.
+test('ctrl-close R1: a /bedtime night on the tab asks, even when the turn is idle', async () => {
+  const h = await mergedHarness();
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, night: true });
+  const r = await ctrlClose(h);
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
+  assert.deepStrictEqual(h.controls, []);
+});
+
+test('ctrl-close R1: a turn that only reads and edits (the host now reports it as a turn) asks', async () => {
+  const h = await mergedHarness();
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, { ...AT_REST, turn: 'turn' });
+  await ctrlClose(h);
+  assert.deepStrictEqual(asked(h), ['Claude is still working in this tab']);
+  h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);   // the Stop with no continuation: idle again
+  h.confirms.length = 0;
+  assert.strictEqual((await ctrlClose(h)).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+});
+
+// BACKLOG #77 R2: an unprovable claim in one folder doubts that folder, not every tab.
+test('ctrl-close R2: known() is asked about the tab\'s own folder, so a doubt in feat-b leaves feat-a silent', async () => {
+  const asked_ = [];
+  const occupancy = { claims: () => [], known: (folder) => { asked_.push(folder); return folder !== wt('feat-b'); } };
+  const h = await mergedHarness({ occupancy });
+  h.markers[key('feat-b')] = 'feat/a';
+  h.shell.report(h.shell.tabByKey(key('feat-b')).view, AT_REST);
+  assert.strictEqual((await ctrlClose(h, 'feat-a')).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+  assert.ok(asked_.includes(wt('feat-a')), JSON.stringify(asked_));
+  const r = await ctrlClose(h, 'feat-b');
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(asked(h), ["couldn't check for agents"]);
+});
+
+// BACKLOG #77 R4: the commit that lands while the git reads run is seen by the re-check.
+test('ctrl-close R4: an unpushed commit that appears after the first git read asks', async () => {
+  let reads = 0;
+  const h = await mergedHarness({ safety: { facts: async () => { reads += 1; return reads === 1 ? { ...GIT_OK } : { ...GIT_OK, unpushedCount: 1 }; } } });
+  const r = await ctrlClose(h);
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(asked(h), ['1 unpushed commit']);
+  assert.deepStrictEqual(h.controls, []);
+});
+
+test('ctrl-close R4: a re-check whose git read throws asks, and an unchanged one closes silently', async () => {
+  let reads = 0;
+  const h = await mergedHarness({ safety: { facts: async () => { reads += 1; if (reads > 1) throw new Error('git broke'); return { ...GIT_OK }; } } });
+  assert.strictEqual((await ctrlClose(h)).cancelled, true);
+  assert.strictEqual(asked(h).length, 1);
+  const ok = await mergedHarness();
+  assert.strictEqual((await ctrlClose(ok)).ok, true);
+  assert.deepStrictEqual(ok.confirms, []);
+});
+
 // --- worktree occupancy (#44 + #47) -----------------------------------------------
 
 const OCC_NOW = 1_000_000_000;
