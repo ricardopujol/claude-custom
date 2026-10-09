@@ -43,9 +43,10 @@ const payload = {
       { key: '1:10', name: 'afc7d325ac474214c.output', sessions: ['e3ca0a04-d506-4379-8249-2062c4f76c5c'], bytes: 5.1 * 1024 * MB, ageMs: 40 * 60000, deletable: true, why: 'delete' },
       { key: '1:11', name: 'b3iua04rr.output', sessions: ['ad1d5a69-82ac-433b-ace2-e78da15a6ed8', '9fc4900e-7373-4361-9ec0-7bf3b873a5b7'], bytes: 640 * MB, ageMs: 3 * 60000, deletable: false, why: 'alive' },
       { key: '1:12', name: 'a3e02bf308200facf.output', sessions: ['dfc39700-7131-4f5e-bf3f-67232facee6f'], bytes: 180 * MB, ageMs: 6 * 60000, deletable: false, why: 'young' },
-      { key: '1:13', name: 'a5fc573bfafe76583.output', sessions: ['53291c5f-f7e9-4ef8-9354-68562fb4b67a'], bytes: 120 * MB, ageMs: 2 * 3600000, deletable: false, why: 'unknown' },
+      { key: '1:13', name: 'a5fc573bfafe76583.output', sessions: ['53291c5f-f7e9-4ef8-9354-68562fb4b67a'], bytes: 120 * MB, ageMs: 2 * 3600000, deletable: false, manualDelete: true, why: 'unknown' },
+      { key: '1:14', name: 'a48fa63b9f969fa60.output', sessions: ['4e7a4360-c77a-4607-be99-482a1b6fb5e8'], bytes: 2.3 * 1024 * MB, ageMs: 50 * 60000, deletable: false, manualDelete: true, why: 'locked' },
     ],
-    deleted: [{ name: 'a48fa63b9f969fa60.output', bytes: 2.3 * 1024 * MB, at: 1 }],
+    deleted: [{ name: 'a8e1f0c2.output', bytes: 2.3 * 1024 * MB, at: 1 }, { name: 'c01d.output', bytes: 800 * MB, held: true, at: 1 }],
     stopped: [{ kind: 'probe-window', pid: 7, what: 'probe-y', bytes: 120 * MB, at: 1 }],
   },
 };
@@ -111,12 +112,12 @@ const check = (ok, what) => { console.log(`${ok ? 'PASS' : 'FAIL'}  ${what}`); i
     check(Array.isArray(r.errors) && r.errors.length === 0, `no script error in the window (${JSON.stringify(r.errors)})`);
     check(r.h3s[0] === 'Leftovers' && r.h3s.indexOf('Machine') > 0, `the section sits above Machine (${r.h3s.join(', ')})`);
     check(JSON.stringify(r.subs) === JSON.stringify(['Stuck closing', 'Probe windows nobody is running', 'Agent shells still running', 'MCP servers', 'Task logs over 100 MB', 'Stopped']), `group titles (${r.subs.join(' | ')})`);
-    check(r.rows === 9, `nine rows drawn (${r.rows})`);
+    check(r.rows === 10, `ten rows drawn (${r.rows})`);
     check(!r.overflow, 'nothing overflows the 300 px column');
-    check(r.title === 'Resources 9 left over', `the title carries the chip (${r.title})`);
+    check(r.title === 'Resources 8 left over', `the title carries the chip (${r.title})`);
     check(r.stopBtns === 2 && JSON.stringify(r.groupBtns) === JSON.stringify(['Stop 2']), `Stop on the two provable rows and Stop 2 on their group only (${r.stopBtns} ${r.groupBtns})`);
     check(new Set(r.edges.slice(0, 5)).size === 3, `three left-edge colours: red, yellow (twice), grey (${r.edges.join(' | ')})`);
-    check(JSON.stringify(r.deleteBtns) === JSON.stringify(['1:10']), `Delete on the one deletable task log only (${r.deleteBtns})`);
+    check(JSON.stringify(r.deleteBtns) === JSON.stringify(['1:10', '1:13', '1:14']), `Delete on the deletable, the unknown-idle and the locked task logs only, not on alive or young (${r.deleteBtns})`);
     console.log(`screenshot: ${path.join(out, 'leftovers.png')}`);
   } catch (err) {
     console.log('FAIL ', err && err.message);
