@@ -82,6 +82,11 @@ test("buildPage: a page that tries to close our script is after the shim's own c
 
 const vm = require('node:vm');
 
+// Under Stryker the shim's source carries the instrumenter's global (stryMutAct_...), which the vm does not have, and a mutant can never
+// activate inside it: these tests would fail on the unmutated baseline and abort the whole dry run (Mortimer, release gate 2026-10-09).
+// They run in every ordinary run; the shim's mutants are judged by hand.
+const INSTRUMENTED = /stryMutAct|stryCov/.test(PANEL_SHIM) && 'the shim is instrumented by Stryker: it cannot run in a vm';
+
 function pageWith(answer) {
   const calls = [];
   const ctx = { Response, Request, atob, Uint8Array, TypeError, Promise, Object, Array, String, claudePanel: { fetch: (url, init) => { calls.push({ url, init }); return typeof answer === 'function' ? answer(url, init) : Promise.resolve(answer); } } };
@@ -93,7 +98,7 @@ function pageWith(answer) {
 const settles = (p) => Promise.race([p.then(() => 'resolved', (e) => 'rejected:' + (e && e.constructor && e.constructor.name)), new Promise(r => setTimeout(() => r('HUNG'), 300))]);
 const good = { ok: true, status: 200, statusText: 'OK', headers: { 'content-type': 'text/plain' }, bodyBase64: Buffer.from('pong').toString('base64') };
 
-test('the shim: an answer from main becomes a real Response with the status, headers and body', async () => {
+test('the shim: an answer from main becomes a real Response with the status, headers and body', { skip: INSTRUMENTED }, async () => {
   const p = pageWith(good);
   const res = await p.fetch('https://a.example.com/x', { method: 'POST', body: 'b', headers: { 'X-A': '1' } });
   assert.strictEqual(res.status, 200);
@@ -102,7 +107,7 @@ test('the shim: an answer from main becomes a real Response with the status, hea
   assert.deepStrictEqual(JSON.parse(JSON.stringify(p.calls[0])), { url: 'https://a.example.com/x', init: { method: 'POST', headers: { 'X-A': '1' }, body: 'b' } });
 });
 
-test('the shim: a response the Response class refuses rejects the fetch, it does not leave it pending forever', async () => {
+test('the shim: a response the Response class refuses rejects the fetch, it does not leave it pending forever', { skip: INSTRUMENTED }, async () => {
   for (const bad of [{ ...good, status: 600 }, { ...good, status: 99 }, { ...good, status: 1000 }, { ...good, statusText: 'bad\nstatus' }, { ...good, headers: { 'bad name': 'x' } },
     { ...good, headers: { 'x-a': 'line\nbreak' } }, { ...good, bodyBase64: '%%%' }]) {
     const out = await settles(pageWith(bad).fetch('https://a.example.com/'));
@@ -110,7 +115,7 @@ test('the shim: a response the Response class refuses rejects the fetch, it does
   }
 });
 
-test('the shim: a refusal or a failure from main is a TypeError, and a non-string body never reaches main', async () => {
+test('the shim: a refusal or a failure from main is a TypeError, and a non-string body never reaches main', { skip: INSTRUMENTED }, async () => {
   assert.strictEqual(await settles(pageWith({ ok: false, error: 'not allowed' }).fetch('https://a.example.com/')), 'rejected:TypeError');
   assert.strictEqual(await settles(pageWith(() => Promise.reject(new Error('gone'))).fetch('https://a.example.com/')), 'rejected:TypeError');
   assert.strictEqual(await settles(pageWith(() => { throw new Error('sync'); }).fetch('https://a.example.com/')), 'rejected:Error');
@@ -119,7 +124,7 @@ test('the shim: a refusal or a failure from main is a TypeError, and a non-strin
   assert.strictEqual(p.calls.length, 0);
 });
 
-test('the shim: a 204 has no body', async () => {
+test('the shim: a 204 has no body', { skip: INSTRUMENTED }, async () => {
   const res = await pageWith({ ...good, status: 204, bodyBase64: '' }).fetch('https://a.example.com/');
   assert.strictEqual(res.status, 204);
   assert.strictEqual(await res.text(), '');
