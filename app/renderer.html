@@ -105,6 +105,12 @@
       background: color-mix(in srgb, var(--bg) 25%, #000); opacity: var(--bg-darkness);
     }
 
+    /* Backlog #25: in a light look the veil over the person's own picture is LIGHT (mostly white with a
+       quarter of the app colour), and the slider is "Brightness". */
+    html[data-look-mode="light"] body.has-custom-bg #bg::after {
+      background: color-mix(in srgb, var(--bg) 25%, #fff);
+    }
+
     /* The unfocused-window dim: the window you are NOT typing into goes dark,
        so the one you are is unmistakable. Below the attention cue's z-index on
        purpose -- that cue exists for unfocused windows and must stay bright. */
@@ -1380,6 +1386,7 @@
       border: 1px solid var(--border); border-radius: 4px;
     }
     .style-section button:disabled { opacity: .45; cursor: default; }
+    .style-section button.seated { border-color: var(--accent); color: var(--accent); }
 
     .model:hover { background: var(--panel); border-color: var(--border); }
     .model.seated { border-color: var(--accent); background: var(--panel); }

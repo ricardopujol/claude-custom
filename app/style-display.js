@@ -65,9 +65,18 @@ function colourView(set, painted, fallback, resetTitle) {
   return { value: paintedHex || fallback, isSet: false, resetTitle };
 }
 
+const MODE_NOTE = "Claude's colours switch next time you open this project";
+
+// Dark or light; a mode never chosen reads as dark, on either side of the comparison.
+const modeOf = (v) => (v === 'light' ? 'light' : 'dark');
+
 function coloursSectionView(state) {
   const s = state || {};
+  const mode = modeOf(s.mode);
   return {
+    mode,
+    // The CLI takes its theme when it starts, so while the look and the running CLI disagree the person is told.
+    cliNote: mode === modeOf(s.cliTheme) ? null : MODE_NOTE,
     known: !!state && (typeof s.baseBg === 'string' || typeof s.appColor === 'string'),
     app: colourView(s.appColor, s.baseBg, FALLBACK_BG, THEME_RESET),
     text: colourView(s.textColor, s.baseText, FALLBACK_TEXT, THEME_RESET),
@@ -126,6 +135,8 @@ function backgroundSectionView(state) {
     // frame to take colours from -- a video that won't play has none.
     canMatch: isOverride && note === null,
     darknessPercent: toPercent(state && state.darkness),
+    // In light mode the veil over the picture is light, so the slider is how bright it gets.
+    veilLabel: modeOf(state && state.mode) === 'light' ? 'Brightness' : 'Darkness',
     error: errorOf(state),
   };
 }
@@ -233,7 +244,7 @@ const ASKABLE = ['colours', 'background'];
 function emptyStyleState() {
   return {
     colours: null,
-    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null },
+    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null, mode: null },
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
@@ -281,11 +292,16 @@ function reduceStyle(prev, msg) {
       appColor: look.appColor, textColor: look.textColor,
       accentColor: look.accentColor, secondaryColor: look.secondaryColor,
       baseBg: chrome.bg, baseText: chrome.text, baseAccent: chrome.accent, baseDim: chrome.dim,
+      mode: look.mode,
+      // What the running CLI was started with. Only a hello says; a style change is not a relaunch, so a
+      // message without it keeps what the panel already knew.
+      cliTheme: typeof style.cliTheme === 'string' || style.cliTheme === null
+        ? style.cliTheme : (state.colours && state.colours.cliTheme),
       error: keep('colours'),
     },
     background: {
       source: style.source || 'generated', kind: style.kind === 'video' ? 'video' : 'image', setAt: style.setAt || null,
-      darkness: look.darkness, error: keep('background'),
+      darkness: look.darkness, mode: look.mode, error: keep('background'),
       // The note is about ONE file: the same file re-announced (a darkness change) is not reloaded, so
       // it stands; a different file, kind or a reset is tried afresh.
       videoError: sameBackground(state.background, style) ? (state.background.videoError || null) : null,
@@ -370,7 +386,7 @@ function canvasMcpRetryDelay(attempt) {
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
-  panelSectionView, reduceCanvasMcp, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
+  coloursSectionView, panelSectionView, reduceCanvasMcp, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

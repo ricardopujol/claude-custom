@@ -30,7 +30,7 @@
 const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
-const { sanitizeLook, ACCEPTED_EXTENSIONS } = require('./look');
+const { sanitizeLook, effectiveMode, DEFAULT_LOOK, ACCEPTED_EXTENSIONS } = require('./look');
 const {
   generateLook, generateLookFrom, noLookReason, noSeedsReason, seedParts, DEFAULT_TERMINAL_FG,
 } = require('./palette-gen');
@@ -197,6 +197,9 @@ function writeLook(cwd, look, { fsImpl = fs } = {}) {
 
 const HEX_RE = /^#[0-9a-f]{6}$/i;
 
+// What a look holds per mode: the four colours and the veil over the background.
+const OTHER_KEYS = Object.freeze(['appColor', 'textColor', 'accentColor', 'secondaryColor', 'darkness']);
+
 // Why this one patched value is refused, or null. `null` itself is valid: it
 // means "back to the registry theme". Anything else malformed is REFUSED
 // rather than sanitized to null, which would silently wipe a stored colour
@@ -256,10 +259,21 @@ function seedLookIfNew({ cwd, hasHistory, rng, terminalForeground, fsImpl = fs }
   if (typeof hasHistory !== 'function' || hasHistory() !== false) {
     return { seeded: false, reason: 'the folder has Claude history' };
   }
-  const look = generateLook(rng, { terminalForeground });
+  // Backlog #25: a new project starts dark or light on the first draw, then rolls its own palette. A dark
+  // terminal-text theme can carry no dark look (noLookReason), but a light look never depends on it, so a
+  // dark pick that cannot be made becomes a light one rather than no look at all.
+  const draw = typeof rng === 'function' ? rng : Math.random;
+  const first = draw() < 0.5 ? 'dark' : 'light';
+  const order = first === 'dark' ? ['dark', 'light'] : ['light'];
+  let mode = null;
+  let look = null;
+  for (const m of order) {
+    look = generateLook(draw, { terminalForeground, mode: m });
+    if (look) { mode = m; break; }
+  }
   if (!look) return { seeded: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
   try {
-    return { seeded: true, look: createLook(cwd, { ...state.look, ...look }, { fsImpl }) };
+    return { seeded: true, look: createLook(cwd, { ...state.look, ...look, mode }, { fsImpl }) };
   } catch (err) {
     if (err && err.code === 'EEXIST') return { seeded: false, reason: 'a look was saved meanwhile -- kept it' };
     return { seeded: false, reason: `could not save the look: ${err && err.message}` };
@@ -295,9 +309,52 @@ function createLook(cwd, look, { fsImpl = fs } = {}) {
  * folder is refused and the background image is kept.
  */
 function rerollLook({ cwd, rng, terminalForeground, fsImpl = fs } = {}) {
-  const look = generateLook(rng, { terminalForeground });
-  if (!look) return { ok: false, reason: noLookReason(terminalForeground || DEFAULT_TERMINAL_FG) };
+  const mode = effectiveMode(readLook(cwd, { fsImpl }));
+  const look = generateLook(rng, { terminalForeground, mode });
+  if (!look) return { ok: false, reason: noGeneratedReason(mode, terminalForeground) };
   return setLook({ cwd, patch: look, fsImpl });
+}
+
+// Why no look came back, in words for the Style tab: only a dark look depends on the terminal's text.
+function noGeneratedReason(mode, terminalForeground) {
+  return mode === 'light'
+    ? "couldn't make a readable light palette -- kept your colours"
+    : noLookReason(terminalForeground || DEFAULT_TERMINAL_FG);
+}
+
+/**
+ * Backlog #25: switch this project between its dark and its light look. A project keeps BOTH (the active
+ * one in the top-level fields, the other under `other`), so a flip swaps them and loses neither. The
+ * first flip to a mode the project has never had rolls a palette for it with the same generator and the
+ * same contrast gates (a Dark flip with no stored dark look does the same). Asking for the mode already
+ * showing just records it. `generate` replaces the generator, for tests.
+ */
+function setMode({ cwd, mode, rng, terminalForeground, fsImpl = fs, generate = generateLook } = {}) {
+  if (mode !== 'dark' && mode !== 'light') return { ok: false, reason: 'the mode must be dark or light' };
+  if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
+  const state = readLookState(cwd, fsImpl);
+  const refused = refusalFor(state, cwd);
+  if (refused) return { ok: false, reason: refused };
+  const cur = state.look;
+  let next;
+  if (effectiveMode(cur) === mode) {
+    next = { ...cur, mode };
+  } else {
+    let incoming = cur.other;
+    if (!incoming) {
+      const made = generate(rng, { terminalForeground, mode });
+      if (!made) return { ok: false, reason: noGeneratedReason(mode, terminalForeground) };
+      incoming = { ...made, darkness: DEFAULT_LOOK.darkness };
+    }
+    const stash = {};
+    for (const key of OTHER_KEYS) stash[key] = cur[key];
+    next = { ...cur, ...incoming, mode, other: stash };
+  }
+  try {
+    return { ok: true, look: writeLook(cwd, next, { fsImpl }) };
+  } catch (err) {
+    return { ok: false, reason: `could not save the look: ${err.message}` };
+  }
 }
 
 /**
@@ -314,9 +371,9 @@ const NO_PALETTE_REASON = 'No readable palette in this background; kept your col
 // same colours DO give a palette against the default terminal text, it is this
 // theme's terminal text that no dark look can carry, and a different picture
 // would never fix it -- say so, as a re-roll does.
-function noMatchReason(seeds, terminalForeground, generate) {
+function noMatchReason(seeds, terminalForeground, generate, mode) {
   const fg = terminalForeground || DEFAULT_TERMINAL_FG;
-  if (fg.toLowerCase() !== DEFAULT_TERMINAL_FG.toLowerCase()
+  if (mode !== 'light' && fg.toLowerCase() !== DEFAULT_TERMINAL_FG.toLowerCase()
     && generate(seeds, () => 0.5, { terminalForeground: DEFAULT_TERMINAL_FG })) {
     return `no palette from this background reads against this theme's terminal text (${fg}) -- ` +
       'matched looks are dark, and this terminal text needs a light background; kept your colours';
@@ -338,8 +395,9 @@ function matchLook({ cwd, seeds, setAt, rng, terminalForeground, fsImpl = fs, ge
   if (refused) return { ok: false, reason: refused };
   if (!state.look.background) return { ok: false, reason: NO_OWN_BACKGROUND_REASON };
   if (typeof setAt !== 'string' || state.look.background.setAt !== setAt) return { ok: false, reason: STALE_MATCH_REASON };
-  const look = generate(seeds, rng, { terminalForeground });
-  if (!look) return { ok: false, reason: noMatchReason(seeds, terminalForeground, generate) };
+  const mode = effectiveMode(state.look);
+  const look = generate(seeds, rng, { terminalForeground, mode });
+  if (!look) return { ok: false, reason: noMatchReason(seeds, terminalForeground, generate, mode) };
   return setLook({ cwd, patch: look, fsImpl });
 }
 
@@ -486,7 +544,7 @@ function resolveStyle(cwd, fallbackBackground, { fsImpl = fs } = {}) {
 }
 
 module.exports = {
-  planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook,
+  planBackgroundChoice, setBackground, resetBackground, resolveStyle, setLook, setMode,
   readLook, writeLook, lookDir, ACCEPTED_EXTENSIONS, MAX_BYTES, MAX_VIDEO_BYTES, LOOK_DIR_NAME,
   seedLookIfNew, rerollLook, matchLook, NO_PALETTE_REASON, NO_OWN_BACKGROUND_REASON, STALE_MATCH_REASON,
   // the branch ledger (host/git-tree-service.js) lives in the same folder, behind the same ignore,

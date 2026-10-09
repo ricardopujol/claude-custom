@@ -15,6 +15,9 @@
  *    runs the user's own command and passes its output through, and it keeps
  *    every other field of theirs. Anything else the harness needs travels
  *    through the pty environment, never through settings.
+ *    The one other exception is the CLI's colour THEME (backlog #25, measured by verify/probe-cli-theme.js:
+ *    `--settings` applies it per window and writes nothing). It is read once at the CLI's start, so a
+ *    project's dark/light switch takes effect on the next launch.
  *
  * 2. `hooks`, unlike single-valued keys, ACCUMULATES across layers. The harness
  *    therefore contributes only its OWN matchers and never copies the user's in.
@@ -127,7 +130,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, theme } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -168,6 +171,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
       UserPromptSubmit: [entry('', 'UserPromptSubmit')],
     },
   };
+  // Only the two themes a project's mode can mean; anything else leaves the CLI's own choice alone.
+  if (theme === 'light' || theme === 'dark') settings.theme = theme;
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);

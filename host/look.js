@@ -38,7 +38,14 @@ const DEFAULT_LOOK = Object.freeze({
   secondaryColor: null,
   darkness: 0.5,
   background: null,
+  // Backlog #25. 'dark' | 'light' | null (never chosen: reads as dark, and the CLI is sent no theme, so an
+  // existing project keeps whatever theme the person had). The fields above are the look of THIS mode;
+  // `other` holds the colours and veil of the opposite mode, so a flip swaps them without losing either.
+  mode: null,
+  other: null,
 });
+
+const OTHER_COLOUR_KEYS = Object.freeze(['appColor', 'textColor', 'accentColor', 'secondaryColor']);
 
 // Panel and border are the app colour pushed a little toward contrast, so a
 // person picks ONE colour and the chrome still has visible edges. Tuned by eye
@@ -89,6 +96,30 @@ function sanitizeBackground(v) {
   return { file: v.file.toLowerCase(), setAt };
 }
 
+function sanitizeMode(v) {
+  return v === 'light' || v === 'dark' ? v : null;
+}
+
+// The stored look of the opposite mode: colours and a veil, nothing else. The background is one file
+// for both modes, so it is never part of this.
+function sanitizeOther(v) {
+  if (!isPlainObject(v)) return null;
+  const out = {};
+  for (const key of OTHER_COLOUR_KEYS) out[key] = normalHex(v[key]);
+  out.darkness = sanitizeDarkness(v.darkness);
+  return out;
+}
+
+/** 'light' or 'dark': a never-chosen mode reads as dark. */
+function effectiveMode(look) {
+  return look && look.mode === 'light' ? 'light' : 'dark';
+}
+
+/** The theme to hand the CLI (`--settings`), or null to leave its own choice alone. */
+function cliThemeFor(look) {
+  return look && (look.mode === 'light' || look.mode === 'dark') ? look.mode : null;
+}
+
 function sanitizeLook(raw) {
   if (!isPlainObject(raw)) return { ...DEFAULT_LOOK };
   return {
@@ -99,6 +130,8 @@ function sanitizeLook(raw) {
     secondaryColor: normalHex(raw.secondaryColor),
     darkness: sanitizeDarkness(raw.darkness),
     background: sanitizeBackground(raw.background),
+    mode: sanitizeMode(raw.mode),
+    other: sanitizeOther(raw.other),
   };
 }
 
@@ -166,6 +199,9 @@ function ensureContrastAll(color, againsts) {
   return extreme;
 }
 
+// The terminal text in a light look whose person set an app colour but no text colour.
+const LIGHT_TEXT = '#1c1f29';
+
 // The theme's dark label on the accent (the inner-agent pill). Kept when it
 // reads on the chosen accent, walked to white-ish when it does not.
 const ON_ACCENT = '#12141c';
@@ -220,6 +256,13 @@ function terminalOverride(look, baseTerminal) {
   const out = { ...(baseTerminal || {}) };
   const appColor = normalHex(look && look.appColor);
   if (!appColor) return out;
+  if (effectiveMode(look) === 'light') {
+    // The CLI runs its light theme in a light look, so its default text is dark: the terminal's own
+    // foreground follows the look's text colour instead of pushing the app colour dark.
+    out.background = appColor;
+    out.foreground = ensureContrast(normalHex(look.textColor) || LIGHT_TEXT, appColor);
+    return out;
+  }
   // Moved away from the CLI's own text colour when it would hide it -- this
   // feature cannot change that text, so the background is what must give.
   out.background = parseHex(out.foreground) ? ensureContrast(appColor, out.foreground) : appColor;
@@ -253,7 +296,7 @@ function sanitizeDim(v) {
 }
 
 module.exports = {
-  parseHex, formatHex, sanitizeLook, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
+  parseHex, formatHex, sanitizeLook, effectiveMode, cliThemeFor, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
   contrastRatio, ensureContrast, ensureContrastAll, MIN_CONTRAST,
   DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS, DEFAULT_DIM, MAX_DIM,
 };

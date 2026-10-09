@@ -80,7 +80,7 @@ const ALLOWED_GLOBALS = new Set([
   'bugVaultDisplay', 'formatBugRow',
   'projectsDisplay',
   // app/style-display.js
-  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
+  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'coloursSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.

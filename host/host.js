@@ -52,10 +52,10 @@ const { normalizeCatalogue } = require('./models');
 const { createCatalogueCache } = require('./catalogue-cache');
 const { addSeat, removeSeat, seatWarnings, MAX_SEATS } = require('./seats');
 const { backgroundFor } = require('./background');
-const { setBackground, resetBackground, resolveStyle, setLook, seedLookIfNew, rerollLook, matchLook } = require('./style');
+const { setBackground, resetBackground, resolveStyle, setLook, setMode, readLook, seedLookIfNew, rerollLook, matchLook } = require('./style');
 const { hasClaudeHistory } = require('./recent');
 const { projectRoots } = require('./project-roots');
-const { applyLook } = require('./look');
+const { applyLook, cliThemeFor } = require('./look');
 const { createProcessTracker } = require('./processes');
 const { createStore } = require('./store');
 const { createBugVault, applyVaultAction } = require('./bugvault');
@@ -346,39 +346,6 @@ async function currentFog() {
   return fog;
 }
 
-// PORT-KEYED. The contents name this host's own pipe, so the filename has to
-// be this host's too -- otherwise a second host starting during this one's
-// module init redirects our claude's hooks into its bridge. See the header of
-// writeHarnessSettings; the shared copy is still written for the probes.
-//
-// The statusLine relay is FF12's truth source (see host/status-relay.js). It
-// runs under `node` from PATH -- this process's execPath is electron, which
-// is only node with ELECTRON_RUN_AS_NODE set, and that must not be relied on
-// in the pty. Under plain node (the probes) the exact binary is used instead.
-const settingsFile = writeHarnessSettings(HARNESS_DIR, {
-  helperPath: HELPER_PATH,
-  pipeName: PIPE_NAME,
-  // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
-  occupancy: true,
-  // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
-  bedtime: true,
-  statusRelay: {
-    nodePath: process.versions.electron ? 'node' : process.execPath,
-    scriptPath: path.join(__dirname, 'status-relay.js'),
-    userStatusLine: findUserStatusLine({ configDir: claudeConfigDir(), cwd: CWD }),
-    // BACKLOG #27: "status line in the header" quiets the CLI's row. Written by
-    // app/window-chrome-bridge.js into the same install-wide state dir.
-    quietWhen: path.join(HARNESS_DIR, 'state', 'chrome-global.json'),
-  },
-  // The tool belt (BACKLOG #17): rewrites an Agent spawn from state/loadout.json.
-  // Same node-from-PATH reasoning as the relay above; the hook re-reads the file
-  // on every spawn, so an equip needs no restart.
-  loadoutHook: {
-    nodePath: process.versions.electron ? 'node' : process.execPath,
-    scriptPath: path.join(__dirname, 'loadout-hook.js'),
-    stateDir: path.join(HARNESS_DIR, 'state'),
-  },
-}, PORT);
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
 // missing binary would fire on every Task and Bash call and invoke nothing.
@@ -390,7 +357,6 @@ const canvasMcp = helperExists && canvasMcpEnabled({ env: process.env, stateDir:
   ? { nodePath: process.versions.electron ? 'node' : process.execPath, scriptPath: path.join(__dirname, 'canvas-mcp.js'),
     root: path.join(HARNESS_DIR, 'state'), pointerFile: CANVAS_POINTER_FILE }
   : null;
-const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp });
 
 if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
@@ -583,6 +549,48 @@ try {
   console.log('[host] look seed failed:', err && err.message);
 }
 
+// The theme the CLI is STARTED with: it reads it once, so a later flip of the project's mode shows in the Style tab
+// as "switches next time" until the next launch (app/style-display.js coloursSectionView).
+const LAUNCH_CLI_THEME = cliThemeFor(readLook(STATE_ROOT));
+
+// PORT-KEYED. The contents name this host's own pipe, so the filename has to
+// be this host's too -- otherwise a second host starting during this one's
+// module init redirects our claude's hooks into its bridge. See the header of
+// writeHarnessSettings; the shared copy is still written for the probes.
+//
+// The statusLine relay is FF12's truth source (see host/status-relay.js). It
+// runs under `node` from PATH -- this process's execPath is electron, which
+// is only node with ELECTRON_RUN_AS_NODE set, and that must not be relied on
+// in the pty. Under plain node (the probes) the exact binary is used instead.
+const settingsFile = writeHarnessSettings(HARNESS_DIR, {
+  helperPath: HELPER_PATH,
+  // BACKLOG #25: the CLI's colour theme follows the project's mode, read AFTER the new-project seed above so a
+  // project that has just been given a random look starts its CLI in the matching theme. Null: leave the CLI alone.
+  theme: LAUNCH_CLI_THEME,
+  pipeName: PIPE_NAME,
+  // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
+  occupancy: true,
+  // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
+  bedtime: true,
+  statusRelay: {
+    nodePath: process.versions.electron ? 'node' : process.execPath,
+    scriptPath: path.join(__dirname, 'status-relay.js'),
+    userStatusLine: findUserStatusLine({ configDir: claudeConfigDir(), cwd: CWD }),
+    // BACKLOG #27: "status line in the header" quiets the CLI's row. Written by
+    // app/window-chrome-bridge.js into the same install-wide state dir.
+    quietWhen: path.join(HARNESS_DIR, 'state', 'chrome-global.json'),
+  },
+  // The tool belt (BACKLOG #17): rewrites an Agent spawn from state/loadout.json.
+  // Same node-from-PATH reasoning as the relay above; the hook re-reads the file
+  // on every spawn, so an equip needs no restart.
+  loadoutHook: {
+    nodePath: process.versions.electron ? 'node' : process.execPath,
+    scriptPath: path.join(__dirname, 'loadout-hook.js'),
+    stateDir: path.join(HARNESS_DIR, 'state'),
+  },
+}, PORT);
+const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp });
+
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
 // look edited from another window of the same folder is what this one sends.
@@ -593,6 +601,7 @@ function currentStyle() {
   const r = resolveStyle(STATE_ROOT, background.path);
   return {
     background: r.background, source: r.source, kind: r.kind, setAt: r.setAt, look: r.look,
+    cliTheme: LAUNCH_CLI_THEME,
     theme: applyLook(theme, r.look),
   };
 }
@@ -2133,7 +2142,7 @@ wss.on('connection', (ws, req) => {
     theme: styleResolved.theme,
     hooks: helperExists,
     background: styleResolved.background,
-    style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look },
+    style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look, cliTheme: LAUNCH_CLI_THEME },
     usage: currentUsage(),
     roster: mood.roster().map(r => describe(r.agent, r.state)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
@@ -2613,6 +2622,17 @@ wss.on('connection', (ws, req) => {
         // The Style tab's "Random colours": host/style.js generates and saves,
         // with the same refusals set-look has.
         const r = rerollLook({ cwd: STATE_ROOT, terminalForeground: theme.terminal && theme.terminal.foreground });
+        if (!r.ok) {
+          refuse(r.reason);
+          return;
+        }
+        announce();
+        return;
+      }
+      if (msg.action === 'set-mode') {
+        // Backlog #25: Dark / Light. host/style.js swaps the project's two looks (rolling a palette the first
+        // time a mode is chosen); the CLI's own theme follows on the next launch (LAUNCH_CLI_THEME).
+        const r = setMode({ cwd: STATE_ROOT, mode: msg.mode, terminalForeground: theme.terminal && theme.terminal.foreground });
         if (!r.ok) {
           refuse(r.reason);
           return;

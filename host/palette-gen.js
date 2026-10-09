@@ -18,7 +18,12 @@
  * accent jumping in brightness. The conversion to sRGB is written out below
  * (Björn Ottosson's OKLab matrices) rather than pulled in as a dependency.
  *
- * DARK BACKGROUNDS ONLY. host/look.js:150 documents that a mid-tone background
+ * TWO MODES (backlog #25): 'dark' (the default, below) and 'light'. A light look is the same generator
+ * with light ranges (RANGES) and its own luminance floor, run through the SAME pairs. In light mode the
+ * terminal's text is the look's own text colour (host/look.js terminalOverride), so the CLI-text pair is
+ * covered by the text-on-background pair and no terminal foreground is needed.
+ *
+ * DARK MODE: DARK BACKGROUNDS ONLY. host/look.js:150 documents that a mid-tone background
  * (luminance ~0.18) cannot carry 4.5:1 on both it and its panel -- and a light
  * one is no better here: the CLI's own text colour (a light #c7cede in the
  * default theme) is not this feature's to change, so terminalOverride would
@@ -54,6 +59,8 @@ const MIN_TEXT_CONTRAST = 4.5;
 const MIN_CONTROL_CONTRAST = 3;
 // Well clear of the ~0.18 mid-tone that look.js:150 names as unsatisfiable.
 const MAX_BG_LUMINANCE = 0.06;
+// A light look's background must be at least this bright: well clear of the same ~0.18 mid-tone.
+const MIN_LIGHT_BG_LUMINANCE = 0.6;
 const MAX_ATTEMPTS = 20;
 // host/themes.js DEFAULT_THEME.terminal.foreground -- the host passes the
 // resolved theme's own, this is only the default for a bare call.
@@ -66,6 +73,32 @@ const SAFE_LOOK = Object.freeze({
   accentColor: '#e0a060',
   secondaryColor: '#a0a6b4',
 });
+
+// Checked by test/light-mode.test.js to pass every pair above in light mode.
+const SAFE_LOOK_LIGHT = Object.freeze({
+  appColor: '#f4f5f8',
+  textColor: '#1c1f29',
+  accentColor: '#9a4a00',
+  secondaryColor: '#4a5060',
+});
+
+// The OKLCH ranges each colour is drawn from, per mode. [lo, hi] pairs; the order the draws are made in
+// (drawLook / drawLookFrom below) is fixed, so a seeded rng replays the same dark looks it always did.
+const RANGES = Object.freeze({
+  dark: Object.freeze({
+    bgL: [0.17, 0.25], bgC: [0.015, 0.05], bgCSeeded: [0.025, 0.05],
+    textL: [0.9, 0.96], textC: [0.005, 0.025],
+    accentL: [0.76, 0.84], accentC: [0.09, 0.15],
+    secondaryL: [0.73, 0.79], secondaryC: [0.02, 0.06],
+  }),
+  light: Object.freeze({
+    bgL: [0.94, 0.98], bgC: [0.005, 0.03], bgCSeeded: [0.012, 0.035],
+    textL: [0.2, 0.28], textC: [0.01, 0.03],
+    accentL: [0.4, 0.5], accentC: [0.1, 0.16],
+    secondaryL: [0.38, 0.45], secondaryC: [0.02, 0.06],
+  }),
+});
+const rangesFor = (mode) => (mode === 'light' ? RANGES.light : RANGES.dark);
 
 // --- OKLCH -> sRGB ------------------------------------------------------------
 
@@ -121,13 +154,17 @@ const ratio = (a, b) => contrastRatio(a, b).toFixed(2);
  * Every reason this look is not safe to hand someone, as sentences; [] when it
  * is. Checked on the palette derivePalette actually renders.
  */
-function lookFailures(look, { terminalForeground = DEFAULT_TERMINAL_FG } = {}) {
+function lookFailures(look, { terminalForeground = DEFAULT_TERMINAL_FG, mode = 'dark' } = {}) {
   const missing = COLOUR_KEYS.filter((k) => !(look && typeof look[k] === 'string' && HEX_RE.test(look[k])));
   if (missing.length) return missing.map((k) => `${k} is not set`);
 
   const out = [];
+  const light = mode === 'light';
   const bgLum = luminance(look.appColor);
-  if (bgLum > MAX_BG_LUMINANCE) {
+  if (light && bgLum < MIN_LIGHT_BG_LUMINANCE) {
+    out.push(`background ${look.appColor} is not light (luminance ${bgLum.toFixed(3)} < ${MIN_LIGHT_BG_LUMINANCE}; mid-tone or dark)`);
+  }
+  if (!light && bgLum > MAX_BG_LUMINANCE) {
     out.push(`background ${look.appColor} is not dark (luminance ${bgLum.toFixed(3)} > ${MAX_BG_LUMINANCE}; mid-tone or light)`);
   }
 
@@ -150,7 +187,7 @@ function lookFailures(look, { terminalForeground = DEFAULT_TERMINAL_FG } = {}) {
   need(p.onAccent, p.accent, MIN_TEXT_CONTRAST, 'pill label (onAccent) on accent');
   need(p.accent, p.border, MIN_CONTROL_CONTRAST, 'accent control on border');
   need(p.dim, p.border, MIN_CONTROL_CONTRAST, 'secondary (dim) control on border');
-  if (HEX_RE.test(String(terminalForeground))) {
+  if (!light && HEX_RE.test(String(terminalForeground))) {
     need(terminalForeground, look.appColor, MIN_TEXT_CONTRAST, 'terminal text on background');
   }
   return out;
@@ -164,16 +201,17 @@ const between = (rng, lo, hi) => lo + (hi - lo) * rng();
  * One draw, unchecked. Ranges are chosen so a draw nearly always passes; the
  * check, not these numbers, is the guarantee.
  */
-function drawLook(rng) {
+function drawLook(rng, mode = 'dark') {
+  const r = rangesFor(mode);
   const hue = between(rng, 0, 360);
   // Accent roughly opposite the background's hue, so it stands out from it.
   const accentHue = (hue + between(rng, 150, 210)) % 360;
   const secondaryHue = (hue + between(rng, -25, 25) + 360) % 360;
   return {
-    appColor: oklchToHex(between(rng, 0.17, 0.25), between(rng, 0.015, 0.05), hue),
-    textColor: oklchToHex(between(rng, 0.9, 0.96), between(rng, 0.005, 0.025), hue),
-    accentColor: oklchToHex(between(rng, 0.76, 0.84), between(rng, 0.09, 0.15), accentHue),
-    secondaryColor: oklchToHex(between(rng, 0.73, 0.79), between(rng, 0.02, 0.06), secondaryHue),
+    appColor: oklchToHex(between(rng, ...r.bgL), between(rng, ...r.bgC), hue),
+    textColor: oklchToHex(between(rng, ...r.textL), between(rng, ...r.textC), hue),
+    accentColor: oklchToHex(between(rng, ...r.accentL), between(rng, ...r.accentC), accentHue),
+    secondaryColor: oklchToHex(between(rng, ...r.secondaryL), between(rng, ...r.secondaryC), secondaryHue),
   };
 }
 
@@ -185,13 +223,14 @@ function drawLook(rng) {
  * all, and the caller must write nothing rather than a look that fails
  * (Dexter F1). `candidate` replaces the draw -- for tests of the retry itself.
  */
-function generateLook(rng = Math.random, { terminalForeground = DEFAULT_TERMINAL_FG, candidate = drawLook } = {}) {
-  const passes = (look) => lookFailures(look, { terminalForeground }).length === 0;
+function generateLook(rng = Math.random, { terminalForeground = DEFAULT_TERMINAL_FG, candidate = drawLook, mode = 'dark' } = {}) {
+  const passes = (look) => lookFailures(look, { terminalForeground, mode }).length === 0;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const look = candidate(rng);
+    const look = candidate(rng, mode);
     if (passes(look)) return look;
   }
-  return passes(SAFE_LOOK) ? { ...SAFE_LOOK } : null;
+  const safe = mode === 'light' ? SAFE_LOOK_LIGHT : SAFE_LOOK;
+  return passes(safe) ? { ...safe } : null;
 }
 
 // Why generateLook came back empty, in words for the Style tab and the log.
@@ -289,29 +328,30 @@ function drawHues(rng, parts) {
  * every colour neutral, the accent too; a coloured one keeps its hue within a
  * few degrees so a re-roll varies without leaving the picture's colour.
  */
-function drawLookFrom(rng, parts) {
+function drawLookFrom(rng, parts, mode = 'dark') {
+  const r = rangesFor(mode);
   const { base, accent } = parts;
   const { hue, accentHue } = drawHues(rng, parts);
   if (hue === null) {
     return {
-      appColor: oklchToHex(between(rng, 0.17, 0.25), 0, 0),
-      textColor: oklchToHex(between(rng, 0.9, 0.96), 0, 0),
-      accentColor: oklchToHex(between(rng, 0.76, 0.84), 0, 0),
-      secondaryColor: oklchToHex(between(rng, 0.73, 0.79), 0, 0),
+      appColor: oklchToHex(between(rng, ...r.bgL), 0, 0),
+      textColor: oklchToHex(between(rng, ...r.textL), 0, 0),
+      accentColor: oklchToHex(between(rng, ...r.accentL), 0, 0),
+      secondaryColor: oklchToHex(between(rng, ...r.secondaryL), 0, 0),
     };
   }
-  const accentChroma = accent ? clamp(accent.C * between(rng, 0.9, 1.1), 0.09, 0.15) : between(rng, 0.09, 0.15);
+  const accentChroma = accent ? clamp(accent.C * between(rng, 0.9, 1.1), ...r.accentC) : between(rng, ...r.accentC);
   return {
-    appColor: oklchToHex(between(rng, 0.17, 0.25), between(rng, 0.025, 0.05), hue),
-    textColor: oklchToHex(between(rng, 0.9, 0.96), between(rng, 0.005, 0.025), hue),
-    accentColor: oklchToHex(between(rng, 0.76, 0.84), accentChroma, accentHue),
-    secondaryColor: oklchToHex(between(rng, 0.73, 0.79), between(rng, 0.02, 0.06), wrap(base.h + between(rng, -25, 25))),
+    appColor: oklchToHex(between(rng, ...r.bgL), between(rng, ...r.bgCSeeded), hue),
+    textColor: oklchToHex(between(rng, ...r.textL), between(rng, ...r.textC), hue),
+    accentColor: oklchToHex(between(rng, ...r.accentL), accentChroma, accentHue),
+    secondaryColor: oklchToHex(between(rng, ...r.secondaryL), between(rng, ...r.secondaryC), wrap(base.h + between(rng, -25, 25))),
   };
 }
 
 /** The draw with every random choice at its midpoint: the safe fallback, still seeded. */
-function tameDraw(parts) {
-  return drawLookFrom(() => 0.5, parts);
+function tameDraw(parts, mode = 'dark') {
+  return drawLookFrom(() => 0.5, parts, mode);
 }
 
 /**
@@ -321,15 +361,15 @@ function tameDraw(parts) {
  * (generateLook falls back to SAFE_LOOK; that would be a fixed palette sold as
  * a match, so this does not.) `candidate` replaces the draw, for tests.
  */
-function generateLookFrom(seeds, rng = Math.random, { terminalForeground = DEFAULT_TERMINAL_FG, candidate = drawLookFrom } = {}) {
+function generateLookFrom(seeds, rng = Math.random, { terminalForeground = DEFAULT_TERMINAL_FG, candidate = drawLookFrom, mode = 'dark' } = {}) {
   const parts = seedParts(seeds);
   if (!parts) return null;
-  const passes = (look) => lookFailures(look, { terminalForeground }).length === 0;
+  const passes = (look) => lookFailures(look, { terminalForeground, mode }).length === 0;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const look = candidate(rng, parts);
+    const look = candidate(rng, parts, mode);
     if (passes(look)) return look;
   }
-  const tame = tameDraw(parts);
+  const tame = tameDraw(parts, mode);
   return passes(tame) ? tame : null;
 }
 
@@ -338,7 +378,7 @@ function noSeedsReason() {
 }
 
 module.exports = {
-  generateLook, drawLook, lookFailures, noLookReason, oklchToHex, SAFE_LOOK, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
+  generateLook, drawLook, lookFailures, noLookReason, oklchToHex, SAFE_LOOK, SAFE_LOOK_LIGHT, MIN_LIGHT_BG_LUMINANCE, RANGES, MAX_ATTEMPTS, DEFAULT_TERMINAL_FG,
   MIN_TEXT_CONTRAST, MIN_CONTROL_CONTRAST, MAX_BG_LUMINANCE,
   generateLookFrom, drawLookFrom, drawHues, seedParts, hexToOklch, tameDraw, noSeedsReason, MAX_SEEDS, ACCENT_HUE_GAP,
 };
