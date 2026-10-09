@@ -37,24 +37,25 @@ const SUSP = `function Susp($p) {
 }`;
 
 const PASS_SUSPEND = `  if (Susp $p) { return "$id failed already suspended" }
-  try { $rc = [NtPause]::NtSuspendProcess($p.Handle) } catch { return "$id failed $($_.Exception.Message)" }
+  try { $rc = Nt 'NtSuspendProcess' $p.Handle } catch { return "$id failed $($_.Exception.Message)" }
   if ($rc -ne 0) { return "$id failed NtSuspendProcess returned $rc" }`;
 const PASS_RESUME = `  for ($i = 0; $i -lt 8; $i++) {
-    try { $rc = [NtPause]::NtResumeProcess($p.Handle) } catch { return "$id failed $($_.Exception.Message)" }
+    try { $rc = Nt 'NtResumeProcess' $p.Handle } catch { return "$id failed $($_.Exception.Message)" }
     if ($rc -ne 0) { return "$id failed NtResumeProcess returned $rc" }
     Start-Sleep -Milliseconds 100
     if (-not (Susp $p)) { break }
   }
   if (Susp $p) { return "$id failed still suspended after 8 resumes" }`;
 
-const HELPER = `Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class NtPause {
-  [DllImport("ntdll.dll")] public static extern uint NtSuspendProcess(IntPtr h);
-  [DllImport("ntdll.dll")] public static extern uint NtResumeProcess(IntPtr h);
+// The two ntdll calls, bound IN MEMORY through Reflection.Emit, not `Add-Type` (PR #158 Miguel S1): Add-Type compiles C# with csc.exe, which took
+// over 30 s on a loaded machine and ran into the 20 s exec timeout (measured, 2026-10-09); the emit takes ~0.3 s.
+const HELPER = `$tb = [AppDomain]::CurrentDomain.DefineDynamicAssembly((New-Object System.Reflection.AssemblyName 'NtPauseAsm'), [Reflection.Emit.AssemblyBuilderAccess]::Run).DefineDynamicModule('m').DefineType('NtPause', 'Public,Class')
+foreach ($n in 'NtSuspendProcess', 'NtResumeProcess') {
+  $m = $tb.DefinePInvokeMethod($n, 'ntdll.dll', 'Public,Static,PinvokeImpl', [Reflection.CallingConventions]::Standard, [uint32], @([IntPtr]), [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Auto)
+  $m.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
 }
-"@`;
+$NtPause = $tb.CreateType()
+function Nt($name, $h) { [uint32]$NtPause.GetMethod($name).Invoke($null, @([IntPtr]$h)) }`;
 
 function suspendScript(action, targets) {
   const PASS = action === 'resume' ? PASS_RESUME : PASS_SUSPEND;

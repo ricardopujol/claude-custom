@@ -41,8 +41,8 @@ test('a valid suspend runs one script that names each pid with its start, suspen
   const { calls, exec } = recording('5 done\n6 done\nEND\n');
   const r = await S.suspendVerified('suspend', [{ pid: 5, start: '134000000000000001' }, { pid: 6, start: '134000000000000002' }], { exec });
   assert.strictEqual(calls.length, 1);
-  assert.ok(calls[0].includes('[NtPause]::NtSuspendProcess('));
-  assert.ok(!calls[0].includes('[NtPause]::NtResumeProcess('));
+  assert.ok(calls[0].includes("Nt 'NtSuspendProcess' $p.Handle"));
+  assert.ok(!calls[0].includes("Nt 'NtResumeProcess' $p.Handle"));
   assert.match(calls[0], /\$rootId = 5\b/);
   assert.match(calls[0], /P 5 134000000000000001\b/);
   assert.match(calls[0], /P 6 134000000000000002\b/);
@@ -52,8 +52,8 @@ test('a valid suspend runs one script that names each pid with its start, suspen
 test('a resume uses NtResumeProcess, and never scans for or refuses on protected processes (waking one is harmless)', async () => {
   const { calls, exec } = recording('5 done\nEND\n');
   await S.suspendVerified('resume', [{ pid: 5, start: '134000000000000001' }], { exec });
-  assert.ok(calls[0].includes('[NtPause]::NtResumeProcess('));
-  assert.ok(!calls[0].includes('[NtPause]::NtSuspendProcess('));
+  assert.ok(calls[0].includes("Nt 'NtResumeProcess' $p.Handle"));
+  assert.ok(!calls[0].includes("Nt 'NtSuspendProcess' $p.Handle"));
   assert.doesNotMatch(calls[0], /protected process/);
 });
 
@@ -144,4 +144,14 @@ test('the script prints each start the moment it suspends, checks the suspend co
   await S.suspendVerified('resume', [{ pid: 5, start: '134000000000000001' }], { exec: r.exec });
   assert.ok(r.calls[0].includes('for ($i = 0; $i -lt 8; $i++)'));
   assert.match(r.calls[0], /still suspended after 8 resumes/);
+});
+
+test('Miguel S1: the ntdll calls are bound in memory (Reflection.Emit), never compiled with Add-Type (csc.exe took 30 s under load and hit the exec timeout)', async () => {
+  for (const action of ['suspend', 'resume']) {
+    const { calls, exec } = recording();
+    await S.suspendVerified(action, [{ pid: 5, start: '134000000000000001' }], { exec });
+    assert.ok(!calls[0].includes('Add-Type'), action);
+    assert.ok(calls[0].includes('DefinePInvokeMethod'), action);
+    assert.ok(calls[0].includes("'ntdll.dll'"), action);
+  }
 });

@@ -5,11 +5,12 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { createPausePersist } = require('../host/pause-persist');
 
-const dirOf = () => fs.mkdtempSync(path.join(os.tmpdir(), 'cc-pause-persist-'));
+const { tmpDir } = require('./tmp-dir');
+
+const dirOf = () => tmpDir('cc-pause-persist-');
 const entry = (pid, start = '100') => ({ key: `${pid}:${start}`, pid, start, name: 'burn.js', since: 5, pids: [{ pid, start }, { pid: pid + 1, start: '200' }] });
 
 test('save writes the set under the owner\'s pid, and an empty set removes the file', () => {
