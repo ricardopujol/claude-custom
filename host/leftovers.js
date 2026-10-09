@@ -56,6 +56,7 @@ const mcpName = (cmd, name) => {
 
 function isNum(v) { return typeof v === 'number' && Number.isFinite(v); }
 function isStr(v) { return typeof v === 'string'; }
+const isDigits = v => isStr(v) && /^\d+$/.test(v);
 const lower = s => (isStr(s) ? s.toLowerCase() : '');
 const keyOf = r => `${r.pid}:${r.start}`;
 
@@ -85,7 +86,7 @@ function hasAncestorIn(p, set, byPid) {
   for (;;) {
     const parent = byPid.get(cur.ppid);
     if (!parent || seen.has(parent.pid)) return false;
-    if (isStr(parent.start) && isStr(cur.start) && BigInt(parent.start) > BigInt(cur.start)) return false;
+    if (isDigits(parent.start) && isDigits(cur.start) && BigInt(parent.start) > BigInt(cur.start)) return false;
     if (set.has(parent.pid)) return true;
     seen.add(parent.pid);
     cur = parent;

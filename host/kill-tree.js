@@ -162,20 +162,57 @@ function parseProvenKill(r) {
 }
 
 // The one script, shared by the sync and async callers: they can never disagree on what is proven.
-function provenScript(pid, start) {
+// `toleranceTicks` (100 ns ticks, default 0 = an exact string compare): for a start read from the process TABLE (CIM, microsecond
+// precision) rather than from a handle; the status relay's sweep passes 20000 (2 ms).
+function provenScript(pid, start, toleranceTicks = 0) {
   return [
     `try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'GONE'; exit }`,
     "try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { 'UNKNOWN'; exit }",
-    `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
+    toleranceTicks > 0
+      ? `if ([math]::Abs([long]$s - ${start}) -gt ${toleranceTicks}) { 'MISMATCH'; exit }`
+      : `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
     "if ($p.HasExited) { 'GONE'; exit }",
     `& taskkill.exe /PID ${pid} /T /F *> $null; 'KILLED ' + $LASTEXITCODE`,
   ].join('; ');
 }
-const validProof = (pid, start) => Number.isInteger(pid) && pid > 0 && typeof start === 'string' && /^\d+$/.test(start);
+const validProof = (pid, start, tol = 0) => Number.isInteger(pid) && pid > 0 && typeof start === 'string' && /^\d+$/.test(start) && Number.isSafeInteger(tol) && tol >= 0;
 
-function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL } = {}) {
-  if (!validProof(pid, start)) return 'unknown';
-  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start)], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL, toleranceTicks = 0 } = {}) {
+  if (!validProof(pid, start, toleranceTicks)) return 'unknown';
+  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+}
+
+/**
+ * killProven for MANY pids in ONE PowerShell call (PR #145 Miguel Y2 / Dexter F3): the status relay's fallback runs in a timer on
+ * a path that must give way quickly, and one PowerShell start per pending pid was up to 30 s each. Same proof per pid (open the
+ * process, hold its handle, compare StartTime on it within `toleranceTicks`, only then taskkill /T), one timeout for the batch.
+ * Returns Map<pid, outcome> in item order, outcomes as killProven's; a pid the script did not answer for (a cut-off or failed
+ * run) is 'unknown'. Bad items are skipped. At most 200 items.
+ */
+function killProvenBatch(items, { run = spawnSync, powershell = POWERSHELL, toleranceTicks = 0, timeoutMs = 30000 } = {}) {
+  if (!Number.isSafeInteger(toleranceTicks) || toleranceTicks < 0) throw new Error('killProvenBatch: toleranceTicks must be a non-negative safe integer');
+  const valid = (Array.isArray(items) ? items : []).filter((t) => t && validProof(t.pid, t.start, toleranceTicks) && BigInt(t.start) < 2n ** 62n).slice(0, 200);
+  const out = new Map(valid.map((t) => [t.pid, 'unknown']));
+  if (!valid.length) return out;
+  const script = [
+    `$items = @(${valid.map((t) => `@(${t.pid}, ${t.start})`).join(', ')})`,
+    'foreach ($t in $items) {',
+    '  $id = $t[0]',
+    '  try { $p = Get-Process -Id $id -ErrorAction Stop } catch { "$id GONE"; continue }',
+    '  try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { "$id UNKNOWN"; continue }',
+    `  if ([math]::Abs([long]$s - $t[1]) -gt ${toleranceTicks}) { "$id MISMATCH"; continue }`,
+    '  if ($p.HasExited) { "$id GONE"; continue }',
+    '  & taskkill.exe /PID $id /T /F *> $null; "$id KILLED $LASTEXITCODE"',
+    '}',
+  ].join('\n');
+  const r = run(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
+  const text = r && typeof r.stdout === 'string' ? r.stdout : '';
+  for (const m of text.matchAll(/^(\d+) (GONE|UNKNOWN|MISMATCH|KILLED (-?\d+))\s*$/gm)) {
+    const pid = Number(m[1]);
+    if (!out.has(pid)) continue;
+    out.set(pid, m[2] === 'GONE' ? 'gone' : m[2] === 'MISMATCH' ? 'mismatch' : m[2] === 'UNKNOWN' ? 'unknown' : (Number(m[3]) === 0 ? 'killed' : Number(m[3]) === 128 ? 'gone' : 'failed'));
+  }
+  return out;
 }
 
 const execFileAsync = (exe, args, opts) => new Promise((resolve) => {
@@ -187,13 +224,13 @@ const execFileAsync = (exe, args, opts) => new Promise((resolve) => {
  * process, and a spawnSync there freezes every window for the length of a PowerShell start-up). The same script and the same
  * answers. A run that fails or throws is 'unknown': nothing was judged, nothing is assumed.
  */
-async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershell = POWERSHELL } = {}) {
-  if (!validProof(pid, start)) return 'unknown';
+async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershell = POWERSHELL, toleranceTicks = 0 } = {}) {
+  if (!validProof(pid, start, toleranceTicks)) return 'unknown';
   try {
-    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start)], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
     // A run that errored AFTER printing its answer (a timeout kill) still printed it; parseProvenKill reads stdout, and refuses a bare error.
     return parseProvenKill(r && r.stdout ? { stdout: r.stdout } : { error: (r && r.error) || new Error('no output') });
   } catch { return 'unknown'; }
 }
 
-module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, killProvenAsync, parseProvenKill };
+module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill };

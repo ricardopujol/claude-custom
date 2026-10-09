@@ -138,11 +138,11 @@ test('no host listening: forward settles on the connect error, never on its dead
   await forward(pipeName(), DOC);
 });
 
-test('sweepPids reads the last cumulative ALIVE line, digits only, even from a sweep that was cut short', () => {
-  assert.deepStrictEqual(sweepPids('ALIVE 10 11\r\nALIVE 10 11 12\r\n'), [10, 11, 12]);
-  // A line cut short mid-pid ("ALIVE 10 1") would name some other process: only complete lines count.
-  assert.deepStrictEqual(sweepPids('ALIVE 10 11\r\nALIVE 10 1'), [10, 11]);
-  assert.deepStrictEqual(sweepPids('ALIVE 10 1'), []);
+test('sweepPids reads the last ALIVE line (pid:start pairs only), even from a sweep that was cut short', () => {
+  assert.deepStrictEqual(sweepPids('ALIVE 10:1 11:2\r\nALIVE 10:1 11:2 12:3\r\n'), [{ pid: 10, start: '1' }, { pid: 11, start: '2' }, { pid: 12, start: '3' }]);
+  // A line cut short mid-number ("ALIVE 10:1 1") would name some other process: only complete lines count.
+  assert.deepStrictEqual(sweepPids('ALIVE 10:1 11:2\r\nALIVE 10:1 1'), [{ pid: 10, start: '1' }, { pid: 11, start: '2' }]);
+  assert.deepStrictEqual(sweepPids('ALIVE 10:1 1'), []);
   assert.deepStrictEqual(sweepPids('ALIVE 5 & calc'), []);
   assert.deepStrictEqual(sweepPids(''), []);
   assert.deepStrictEqual(sweepPids(undefined), []);
