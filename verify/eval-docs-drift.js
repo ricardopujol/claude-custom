@@ -49,7 +49,8 @@ async function main() {
     try { r = await analyzeMerge({ git, readDocs: () => readDocsDir(docsDir), ollama }, m); } catch (err) { r = { ok: false, reason: 'threw', detail: String(err && err.message) }; }
     const ms = Date.now() - t;
     results.push({ sha: m.sha, subject: m.subject, ms, ...r });
-    console.log(`${m.sha.slice(0, 9)} ${String(ms).padStart(6)} ms  ${r.ok ? r.flags.length + ' flag(s)' : 'FAILED ' + r.reason}  ${m.subject.slice(0, 70)}`);
+    const raised = r.ok ? (String(r.reply).match(/"sentence"/g) || []).length : 0;
+    console.log(`${m.sha.slice(0, 9)} ${String(ms).padStart(6)} ms  ${r.ok ? raised + ' raised, ' + r.flags.length + ' kept' : 'FAILED ' + r.reason}  ${m.subject.slice(0, 70)}`);
   }
   await ollama.unload();
   fs.writeFileSync(out, JSON.stringify(results, null, 2));

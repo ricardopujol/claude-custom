@@ -37,8 +37,6 @@ test('it watches the project\'s develop checkout and reads that checkout\'s docu
 test('it talks to the same Ollama as the probes point at, with a generate timeout inside the GPU slot\'s stale time', () => {
   const b = block();
   assert.match(b, /createAskOllama\(\{ baseUrl: seams\.ollamaUrl \|\| undefined, generateTimeoutMs: 60_000 \}\)/);
-  const { STALE_MS } = require('../host/summary-slot');
-  assert.ok(60_000 < STALE_MS);
 });
 
 test('it shares the summaries\' GPU slot file, so one Ollama job runs at a time across every host', () => {
@@ -47,7 +45,8 @@ test('it shares the summaries\' GPU slot file, so one Ollama job runs at a time 
 
 test('its notes are kept per project under the harness state, and it ticks on unref\'d timers that never throw into the host', () => {
   const b = block();
-  assert.match(HOST, /const DRIFT_FILE = path\.join\(HARNESS_DIR, 'state', 'docs-drift',/);
+  // ...or under the probe's own summaries folder when that seam is set, so a probe never writes into the real harness state
+  assert.match(HOST, /const DRIFT_FILE = path\.join\(seams\.summaryDir \? path\.join\(seams\.summaryDir, 'docs-drift'\) : path\.join\(HARNESS_DIR, 'state', 'docs-drift'\),/);
   assert.match(b, /store: createDriftStore\(\{ file: DRIFT_FILE \}\)/);
   assert.match(b, /broadcast: \(m\) => broadcastControl\(m\),/);
   assert.match(b, /driftTimer\.unref\(\);/);

@@ -30,6 +30,7 @@ const MAX_FLAGS = 3;
 const MAX_DOCS = 2;
 const SENTENCE_MAX = 400;
 const SENTENCE_MIN = 8;
+const EVIDENCE_MIN = 8;   // letters and digits of a quoted diff line, at least
 const WHY_MAX = 300;
 const CUT = '\n[diff cut]\n';
 const BUILD_LOG = 'CLAUDECUSTOM_BUILD_LOG.md';
@@ -164,52 +165,85 @@ function candidateDocs({ changedFiles, docs, max = MAX_DOCS, excerptChars = EXCE
 const SYSTEM = 'You check whether project documentation still matches the code. You get one merged change (a diff) and excerpts '
   + 'of documents. Flag a sentence ONLY when the diff clearly makes it false: a name, number, behaviour or rule that the '
   + 'diff changed or removed. Do not flag sentences that are merely incomplete, or about things the diff does not touch. '
-  + 'Copy the sentence EXACTLY as it appears in the excerpt. Reply with ONLY a JSON array of at most 3 items, each '
-  + '{"doc": "<file name>", "sentence": "<the exact sentence>", "why": "<one short sentence: what the diff changed>"}. '
-  + 'If nothing is contradicted, reply [].';
+  + 'Copy the sentence EXACTLY as it appears in the excerpt, and copy the ONE changed diff line (starting with + or -) that makes '
+  + 'it false EXACTLY as it appears in the diff. Reply with ONLY a JSON array of at most 3 items, each '
+  + '{"doc": "<file name>", "sentence": "<the exact sentence>", "evidence": "<the exact changed diff line>", '
+  + '"why": "<one short sentence: what the diff changed>"}. Keep every field under 200 characters. '
+  + 'If nothing is contradicted, reply [] . Most merges contradict nothing: [] is the usual right answer.';
 
 function buildPrompt({ subject, sha, diff, now, docs }) {
   const shown = [];
-  if (isStr(now) && now.trim() !== '') shown.push({ rel: BUILD_LOG, label: `${BUILD_LOG} (section "Now")`, excerpt: cap(redact(now), NOW_MAX_CHARS) });
+  if (isStr(now) && now.trim() !== '') shown.push({ rel: BUILD_LOG, note: ' (its "Now" section)', excerpt: cap(redact(now), NOW_MAX_CHARS) });
   for (const d of Array.isArray(docs) ? docs.slice(0, MAX_DOCS) : []) {
-    if (d && isStr(d.rel) && isStr(d.excerpt)) shown.push({ rel: cap(d.rel, 120), label: cap(d.rel, 120), excerpt: cap(redact(d.excerpt), EXCERPT_CHARS) });
+    if (d && isStr(d.rel) && isStr(d.excerpt)) shown.push({ rel: cap(d.rel, 120), note: '', excerpt: cap(redact(d.excerpt), EXCERPT_CHARS) });
   }
   const head = `Merged commit ${isStr(sha) ? cap(sha, 40) : ''}: ${isStr(subject) ? cap(redact(squash(subject)), 200) : ''}`;
   const body = trimDiff(diff, { maxChars: DIFF_MAX_CHARS, perFile: DIFF_PER_FILE });
-  const parts = [head, '', 'DIFF:', body, '', ...shown.flatMap(d => [`DOCUMENT ${d.label}:`, d.excerpt, ''])];
-  parts.push('Which sentences in the documents above does this diff now contradict? Reply with the JSON array only.');
+  const parts = [head, '', 'DIFF:', body, '', ...shown.flatMap(d => [`FILE ${d.rel}${d.note}:`, d.excerpt, ''])];
+  parts.push('Which sentences in the files above does this diff now contradict? Reply with the JSON array only.');
   const prompt = cap(parts.join('\n'), PROMPT_MAX_CHARS - SYSTEM.length);
-  return { system: SYSTEM, prompt, docs: shown.map(({ rel, excerpt }) => ({ rel, excerpt })) };
+  return { system: SYSTEM, prompt, diff: body, docs: shown.map(({ rel, excerpt }) => ({ rel, excerpt })) };
 }
 
-function extractJson(text) {
+/** The items of the first JSON list in the reply; a list cut off mid-way keeps the objects that were whole. null: no list at all. */
+function extractItems(text) {
   const s = text.replace(/```(?:json)?/gi, '');
   const open = s.indexOf('[');
+  if (open < 0) return null;
   const close = s.lastIndexOf(']');
-  if (open < 0 || close < open) return null;
-  try { const v = JSON.parse(s.slice(open, close + 1)); return Array.isArray(v) ? v : null; } catch { return null; }
+  if (close > open) {
+    try { const v = JSON.parse(s.slice(open, close + 1)); if (Array.isArray(v)) return v; } catch { /* salvage below */ }
+  }
+  const whole = [];
+  for (const m of s.slice(open).matchAll(/\{[^{}]*\}/g)) {
+    try { whole.push(JSON.parse(m[0])); } catch { /* not an object */ }
+  }
+  return whole.length ? whole : null;
 }
 
-function parseReply(text, shownDocs) {
+// Words too common to show a sentence and a diff line are about the same thing.
+const COMMON = new Set(['before', 'after', 'would', 'should', 'could', 'which', 'their', 'there', 'these', 'those', 'where', 'while',
+  'every', 'other', 'about', 'being', 'using', 'always', 'never', 'within', 'through']);
+/** The distinctive words of a text, by their first five letters ("refresh" and "refreshes" are the same word here). */
+function keysOf(text) {
+  const keys = new Set();
+  for (const w of text.toLowerCase().split(/[^a-z0-9_-]+/)) if (w.length >= 5 && !COMMON.has(w)) keys.add(w.slice(0, 5));
+  return keys;
+}
+
+const stripDiffMark = (s) => squash(s.replace(/^\s*[+-]+/, ''));
+// Evidence is compared by its letters and digits alone: a 4B model drops a comment's asterisk or re-spaces a column, and that
+// is still the line it saw. Anything it made up has different letters.
+const alnum = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+function parseReply(text, shownDocs, shownDiff) {
   if (!isStr(text) || text.trim() === '') return null;
-  const items = extractJson(text);
+  const items = extractItems(text);
   if (items === null) return null;
-  const byRel = new Map((Array.isArray(shownDocs) ? shownDocs : []).filter(d => d && isStr(d.rel) && isStr(d.excerpt)).map(d => [d.rel, squash(d.excerpt)]));
+  const docs = (Array.isArray(shownDocs) ? shownDocs : []).filter(d => d && isStr(d.rel) && isStr(d.excerpt));
+  const byRel = new Map(docs.map(d => [d.rel, squash(d.excerpt)]));
+  const rels = docs.map(d => d.rel).sort((a, b) => b.length - a.length);
+  const diffText = isStr(shownDiff) ? alnum(shownDiff) : '';
   const out = [];
   const seen = new Set();
   for (const it of items) {
     if (out.length >= MAX_FLAGS) break;
     if (it === null || typeof it !== 'object' || Array.isArray(it)) continue;
-    if (!isStr(it.doc) || !isStr(it.sentence) || !isStr(it.why)) continue;
-    const hay = byRel.get(it.doc);
+    if (!isStr(it.doc) || !isStr(it.sentence) || !isStr(it.why) || !isStr(it.evidence)) continue;
+    const rel = byRel.has(it.doc) ? it.doc : rels.find(r => it.doc.includes(r));   // "DOCUMENT X.md" still names X.md
     const sentence = squash(it.sentence);
+    const evidence = stripDiffMark(it.evidence);
     const why = squash(it.why);
-    if (hay === undefined || why === '' || sentence.length < SENTENCE_MIN || sentence.length > SENTENCE_MAX) continue;
-    if (!hay.includes(sentence)) continue;
-    const key = it.doc + '\0' + sentence;
+    if (rel === undefined || why === '' || sentence.length < SENTENCE_MIN || sentence.length > SENTENCE_MAX) continue;
+    if (!byRel.get(rel).includes(sentence)) continue;                      // the sentence is really in the doc
+    const proof = alnum(evidence);
+    if (proof.length < EVIDENCE_MIN || !diffText.includes(proof)) continue;   // the changed line is really in the diff
+    const wanted = keysOf(sentence);
+    if (![...keysOf(evidence)].some(k => wanted.has(k))) continue;          // and it is about the sentence
+    const key = rel + '\0' + sentence;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ doc: it.doc, sentence, why: cap(why, WHY_MAX) });
+    out.push({ doc: rel, sentence, evidence: cap(evidence, 200), why: cap(why, WHY_MAX) });
   }
   return out;
 }

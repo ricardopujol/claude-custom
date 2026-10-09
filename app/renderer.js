@@ -2702,6 +2702,24 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
       // this tab's own terminal screen: what its session's pty has shown
       case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
+      // docs drift (verify/probe-docs-drift.js): the list as painted, and a click on a note's Dismiss button
+      case 'driftState': {
+        const el = document.getElementById('drift-list');
+        const box = el.getBoundingClientRect();
+        return JSON.stringify({
+          ok: true, hidden: el.hidden, text: el.textContent, html: el.innerHTML, shown: box.width > 0 && box.height > 0,
+          rows: [...el.querySelectorAll('.drift-row')].map(r => ({ doc: r.querySelector('.drift-doc b').textContent, sentence: r.querySelector('.drift-sentence').textContent, why: r.querySelector('.drift-why').textContent, meta: r.querySelector('.drift-meta').textContent })),
+          note: (el.querySelector('.drift-note') || {}).textContent || null,
+          label: (el.querySelector('.drift-label') || {}).textContent || null,
+          color: getComputedStyle(el).color, background: getComputedStyle(document.getElementById('git-body')).backgroundColor,
+        });
+      }
+      case 'driftDismiss': {
+        const btn = document.querySelector('#drift-list [data-drift-dismiss]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no note to dismiss' });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
       // backlog #44 + #47 (verify/probe-worktree-occupancy.js): the banner, the confirm and the card lines as
       // painted; a keystroke through xterm's own input path (term.input fires onData as typing does); a click on
       // one of the page's occupancy controls; and the session's turn, as the host's `turn` message would set it.

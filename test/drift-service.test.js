@@ -4,8 +4,9 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createDriftService, analyzeMerge, RETRY_MS } = require('../host/drift-service');
+const { createDriftService, analyzeMerge, RETRY_MS, REPLY_TOKENS } = require('../host/drift-service');
 const { createDriftStore } = require('../host/drift-store');
+const { STALE_MS } = require('../host/summary-slot');
 
 const H = (c) => c.repeat(40);
 const DOC_TEXT = 'The index refreshes before each question.\nIt lives in host/ask-index.js.\n';
@@ -14,7 +15,7 @@ const DOCS = {
   docs: [{ rel: 'DESIGN_ASK_REPO.md', text: DOC_TEXT }, { rel: 'DESIGN_WAND.md', text: 'wand only' }],
 };
 const DIFF = 'diff --git a/host/ask-index.js b/host/ask-index.js\n--- a/host/ask-index.js\n+++ b/host/ask-index.js\n@@ -1 +1 @@\n-refresh();\n+// refresh moved\n';
-const GOOD = JSON.stringify([{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', why: 'The refresh moved out of the question path.' }]);
+const GOOD = JSON.stringify([{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', evidence: '+// refresh moved', why: 'The refresh moved out of the question path.' }]);
 
 function rig({ head = H('b'), processed = H('a'), merges = [{ sha: H('c'), subject: 'Merge pull request #7' }], reply = { ok: true, text: GOOD }, check = { ok: true }, slotFree = true, docs = DOCS } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'drift-svc-'));
@@ -69,6 +70,13 @@ test('a merge: the model is asked, a verified flag becomes a note, the merge is 
   assert.strictEqual(n.subject, 'Merge pull request #7');
   assert.deepStrictEqual([calls.acquire, calls.release], [1, 1]);
   assert.ok(calls.broadcasts.some(m => m.type === 'docs-drift' && m.notes.length === 1));
+});
+
+test('the model is given room for a whole reply (the default cut a real one off mid-list)', async () => {
+  const { svc, calls } = rig();
+  await svc.tick();
+  assert.strictEqual(calls.prompts[0].numPredict, REPLY_TOKENS);
+  assert.ok(REPLY_TOKENS >= 600);
 });
 
 test('the prompt carries the diff and the doc that names the changed file, not the unrelated one', async () => {
@@ -254,4 +262,8 @@ test('analyzeMerge is the shared core: flags and what the model was shown, writi
   assert.strictEqual(out.ok, true);
   assert.strictEqual(out.flags.length, 1);
   assert.deepStrictEqual(out.shown.map(d => d.rel), ['CLAUDECUSTOM_BUILD_LOG.md', 'DESIGN_ASK_REPO.md']);
+});
+
+test('one job (the host gives the model 60 s, see test/host-drift-wiring.test.js) fits inside the stale time of the GPU slot, or another host could take the slot over mid-job', () => {
+  assert.ok(60_000 + 10_000 < STALE_MS);
 });

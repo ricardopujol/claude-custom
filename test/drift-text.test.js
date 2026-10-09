@@ -153,45 +153,92 @@ test('property: buildPrompt is bounded for any inputs', () => {
 });
 
 const given = [{ rel: 'DESIGN_ASK_REPO.md', excerpt: 'The index refreshes before each question.\nIt lives in host/ask-index.js.' }];
+const SHOWN_DIFF = diffOf('host/ask-index.js', '-  await refreshIndex();\n+  // the refresh now runs after the answer');
+const item = (o = {}) => ({ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', evidence: '+  // the refresh now runs after the answer', why: 'The refresh moved.', ...o });
 
-test('parseReply: a flag whose sentence is really in the named doc survives', () => {
-  const reply = JSON.stringify([{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', why: 'The refresh now runs after.' }]);
-  assert.deepStrictEqual(parseReply(reply, given), [{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', why: 'The refresh now runs after.' }]);
+test('buildPrompt: hands back the diff text the model was shown, so evidence can be checked against it', () => {
+  const { diff, prompt } = sample();
+  assert.match(diff, /host\/ask-index\.js/);
+  assert.ok(prompt.includes(diff));
 });
 
-test('parseReply: a made-up sentence, an unknown doc, an empty why are all dropped', () => {
+test('parseReply: a flag whose sentence is in the named doc AND whose evidence is in the shown diff survives', () => {
+  const got = parseReply(JSON.stringify([item()]), given, SHOWN_DIFF);
+  assert.deepStrictEqual(got, [{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', evidence: '// the refresh now runs after the answer', why: 'The refresh moved.' }]);
+});
+
+test('parseReply: a made-up sentence, an unknown doc, an empty why, a missing field are all dropped', () => {
   const reply = JSON.stringify([
-    { doc: 'DESIGN_ASK_REPO.md', sentence: 'The index is rebuilt nightly.', why: 'x' },
-    { doc: 'DESIGN_OTHER.md', sentence: 'The index refreshes before each question.', why: 'x' },
-    { doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', why: '  ' },
-    { doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.' },
+    item({ sentence: 'The index is rebuilt nightly.' }),
+    item({ doc: 'DESIGN_OTHER.md' }),
+    item({ why: '  ' }),
+    item({ why: undefined }),
+    item({ evidence: undefined }),
     'not an object', null, 7,
   ]);
-  assert.deepStrictEqual(parseReply(reply, given), []);
+  assert.deepStrictEqual(parseReply(reply, given, SHOWN_DIFF), []);
+});
+
+test('parseReply: evidence that is not in the diff the model was shown is dropped (the model invented it)', () => {
+  assert.deepStrictEqual(parseReply(JSON.stringify([item({ evidence: '+  rebuildNightly();' })]), given, SHOWN_DIFF), []);
+  assert.deepStrictEqual(parseReply(JSON.stringify([item()]), given, ''), []);
+  assert.deepStrictEqual(parseReply(JSON.stringify([item()]), given), []);
+});
+
+test('parseReply: markers, spacing and comment asterisks around the evidence do not matter (a real reply garbled them)', () => {
+  const d = diffOf('host/w.js', '+ *   docsOf({ root, dev })              -> { ok: true, dir, canCreate }');
+  const g = [{ rel: 'PLAN_W.md', excerpt: 'The writer exposes docsOf(projectDev) to find the docs.' }];
+  const it = { doc: 'PLAN_W.md', sentence: 'The writer exposes docsOf(projectDev) to find the docs.', evidence: '- *docsOf*({ root, dev }) -> { ok: true, dir, canCreate }', why: 'its argument changed' };
+  assert.strictEqual(parseReply(JSON.stringify([it]), g, d).length, 1);
+  assert.deepStrictEqual(parseReply(JSON.stringify([{ ...it, evidence: '- *docsOf*({ root }) -> { ok: false }' }]), g, d), []);
+  assert.deepStrictEqual(parseReply(JSON.stringify([{ ...it, evidence: '+ a' }]), g, d), [], 'too short to prove anything');
+});
+
+test('parseReply: evidence must be about the sentence: they share a distinctive word', () => {
+  const unrelated = item({ sentence: 'It lives in host/ask-index.js.', evidence: '+  // the refresh now runs after the answer' });
+  assert.deepStrictEqual(parseReply(JSON.stringify([unrelated]), given, SHOWN_DIFF), []);
+  const related = item({ sentence: 'It lives in host/ask-index.js.', evidence: '+++ b/host/ask-index.js' });
+  assert.strictEqual(parseReply(JSON.stringify([related]), given, SHOWN_DIFF).length, 1);
+});
+
+test('parseReply: the model naming the doc with a prefix ("DOCUMENT X.md") still finds the doc', () => {
+  const got = parseReply(JSON.stringify([item({ doc: 'DOCUMENT DESIGN_ASK_REPO.md' })]), given, SHOWN_DIFF);
+  assert.strictEqual(got.length, 1);
+  assert.strictEqual(got[0].doc, 'DESIGN_ASK_REPO.md');
 });
 
 test('parseReply: whitespace differences do not hide a real sentence; fences and chatter around the JSON are tolerated', () => {
-  const reply = 'Here you go:\n```json\n' + JSON.stringify([{ doc: 'DESIGN_ASK_REPO.md', sentence: 'The  index   refreshes\nbefore each question.', why: 'changed' }]) + '\n```';
-  const got = parseReply(reply, given);
+  const reply = 'Here you go:\n```json\n' + JSON.stringify([item({ sentence: 'The  index   refreshes\nbefore each question.' })]) + '\n```';
+  const got = parseReply(reply, given, SHOWN_DIFF);
+  assert.strictEqual(got.length, 1);
+  assert.strictEqual(got[0].sentence, 'The index refreshes before each question.');
+});
+
+test('parseReply: a reply cut off mid-list keeps the items that were whole', () => {
+  const whole = JSON.stringify(item());
+  const cut = '[' + whole + ',' + JSON.stringify(item({ sentence: 'It lives in host/ask-index.js.', evidence: '+++ b/host/ask-index.js' })).slice(0, 60);
+  const got = parseReply(cut, given, SHOWN_DIFF);
   assert.strictEqual(got.length, 1);
   assert.strictEqual(got[0].sentence, 'The index refreshes before each question.');
 });
 
 test('parseReply: [] and garbage are no flags; null means the reply was not usable at all', () => {
-  assert.deepStrictEqual(parseReply('[]', given), []);
-  assert.strictEqual(parseReply('I think the docs are fine.', given), null);
-  assert.strictEqual(parseReply('', given), null);
-  assert.strictEqual(parseReply(null, given), null);
-  assert.strictEqual(parseReply('{"a":1}', given), null);
+  assert.deepStrictEqual(parseReply('[]', given, SHOWN_DIFF), []);
+  assert.strictEqual(parseReply('I think the docs are fine.', given, SHOWN_DIFF), null);
+  assert.strictEqual(parseReply('', given, SHOWN_DIFF), null);
+  assert.strictEqual(parseReply(null, given, SHOWN_DIFF), null);
+  assert.strictEqual(parseReply('{"a":1}', given, SHOWN_DIFF), null);
+  assert.strictEqual(parseReply('[ {"doc": "DESIGN_ASK_REPO.md", "sent', given, SHOWN_DIFF), null);
 });
 
 test('parseReply: duplicates collapse, the flag count and field lengths are capped', () => {
-  const one = { doc: 'DESIGN_ASK_REPO.md', sentence: 'The index refreshes before each question.', why: 'w'.repeat(2000) };
-  const out = parseReply(JSON.stringify([one, one, one]), given);
+  const one = item({ why: 'w'.repeat(2000) });
+  const out = parseReply(JSON.stringify([one, one, one]), given, SHOWN_DIFF);
   assert.strictEqual(out.length, 1);
   assert.ok(out[0].why.length <= 300);
-  const lines = Array.from({ length: 10 }, (_, i) => `Sentence number ${i} is here.`);
+  const lines = Array.from({ length: 10 }, (_, i) => `Sentence number ${i} about widgets is here.`);
   const g = [{ rel: 'DESIGN_M.md', excerpt: lines.join('\n') }];
-  const many = parseReply(JSON.stringify(lines.map(s => ({ doc: 'DESIGN_M.md', sentence: s, why: 'w' }))), g);
+  const diff = diffOf('x.js', '+widgets changed');
+  const many = parseReply(JSON.stringify(lines.map(s => ({ doc: 'DESIGN_M.md', sentence: s, evidence: '+widgets changed', why: 'w' }))), g, diff);
   assert.strictEqual(many.length, MAX_FLAGS);
 });

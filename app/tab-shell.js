@@ -1282,6 +1282,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
   'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
+  // backlog #39 job 2: verify/probe-docs-drift.js reads the docs-drift list and clicks a note's Dismiss
+  'driftState', 'driftDismiss',
   // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
   'gitTermInput',
   // the repo browser and code reader: verify/probe-repo-browser.js

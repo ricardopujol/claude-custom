@@ -1183,7 +1183,7 @@ summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep 
 // project: it reads documentation\ and git, and writes only its own notes under .harness\state\docs-drift. It shares the
 // summaries' GPU slot, so one Ollama job runs at a time across every tab; each tab's host looks, and the shared mark in the
 // notes file keeps a merge from being read twice.
-const DRIFT_FILE = path.join(HARNESS_DIR, 'state', 'docs-drift',
+const DRIFT_FILE = path.join(seams.summaryDir ? path.join(seams.summaryDir, 'docs-drift') : path.join(HARNESS_DIR, 'state', 'docs-drift'),
   require('crypto').createHash('sha1').update(String(STATE_ROOT).toLowerCase()).digest('hex').slice(0, 16) + '.json');
 const drift = createDriftService({
   git: createDriftGit({ cwd: STATE_ROOT }),

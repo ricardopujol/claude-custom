@@ -9,7 +9,7 @@
  *     .snapshot()     -> { notes: [note], off: null | { reason, model?, detail? } }
  *     .dismiss(id)    -> { ok: true } | { ok: false, error }
  *   broadcast({ type: 'docs-drift', ...snapshot })    only when what a window would see changed
- *   analyzeMerge({ git, readDocs, ollama }, { sha, subject }) -> { ok: true, flags, shown } | { ok: false, reason }
+ *   analyzeMerge({ git, readDocs, ollama }, { sha, subject }) -> { ok: true, flags, shown, reply } | { ok: false, reason }
  *       the one analysis, shared with the evaluation script (verify/eval-docs-drift.js); it writes nothing.
  *
  * SEAMS. git: host/drift-git.js. readDocs() -> { buildLog: text | null, docs: [{ rel, text }] } (host/drift-docs-fs.js, read-only).
@@ -35,18 +35,20 @@ const { changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply } = 
 const RETRY_MS = 60_000;
 const TICK_MS = 60_000;
 const DEFAULT_LIMIT = 3;
+// Room for three flags with their quoted lines; the default 350 cut a real reply off mid-list (measured on a real merge).
+const REPLY_TOKENS = 700;
 
 /** Read one merge and ask the model about it. Writes nothing. */
 async function analyzeMerge({ git, readDocs, ollama }, { sha, subject }) {
   const [diff, docs] = await Promise.all([git.diff(sha), readDocs()]);
   if (!docs || (!docs.buildLog && !(Array.isArray(docs.docs) && docs.docs.length))) return { ok: false, reason: 'no-docs' };
   const candidates = candidateDocs({ changedFiles: changedFilesOf(diff), docs: docs.docs || [] });
-  const { system, prompt, docs: shown } = buildPrompt({ subject, sha, diff, now: buildLogNow(docs.buildLog), docs: candidates });
-  const res = await ollama.generate({ system, prompt });
+  const { system, prompt, diff: shownDiff, docs: shown } = buildPrompt({ subject, sha, diff, now: buildLogNow(docs.buildLog), docs: candidates });
+  const res = await ollama.generate({ system, prompt, numPredict: REPLY_TOKENS });
   if (!res.ok) return { ok: false, reason: res.reason, ...(res.model ? { model: res.model } : {}) };
-  const flags = parseReply(res.text, shown);
+  const flags = parseReply(res.text, shown, shownDiff);
   if (flags === null) return { ok: false, reason: 'bad-reply' };
-  return { ok: true, flags, shown };
+  return { ok: true, flags, shown, reply: res.text };
 }
 
 function createDriftService({
@@ -163,4 +165,4 @@ function createDriftService({
   return { tick, snapshot, dismiss };
 }
 
-module.exports = { createDriftService, analyzeMerge, RETRY_MS, TICK_MS, DEFAULT_LIMIT };
+module.exports = { createDriftService, analyzeMerge, RETRY_MS, TICK_MS, DEFAULT_LIMIT, REPLY_TOKENS };
