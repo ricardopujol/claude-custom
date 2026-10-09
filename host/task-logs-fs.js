@@ -84,11 +84,30 @@ const within = (parent, child) => {
 };
 const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
-async function deleteTaskLog(root, row, { fsp = fs.promises, now = Date.now, idleMs = IDLE_MS } = {}) {
-  const res = { deleted: 0, failed: 0, kept: 0, freed: 0 };
-  if (!row || (row.deletable !== true && row.manualDelete !== true) || !Array.isArray(row.paths) || !Number.isFinite(row.mtimeMs)) return { ...res, kept: Array.isArray(row && row.paths) ? row.paths.length : 0 };
+const SETTLE_MS = 3000;
+const sleepMs = ms => new Promise(resolve => setTimeout(resolve, ms));
+const LOCKED = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const freeBytes = async (fsp, root) => {
+  try { const st = await fsp.statfs(root); const n = Number(st.bavail) * Number(st.bsize); return Number.isFinite(n) ? n : null; } catch { return null; }
+};
+
+/**
+ * -> { deleted, gone, locked, failed, kept, freed, held, deletedPaths }   (per LINK of the row, counted once each)
+ *   deleted  unlinked by this call;  gone  already gone when we looked (another window won the race: counts as deleted, not as failed)
+ *   locked   the OS refused (EBUSY/EPERM/EACCES: something holds the file);  failed  any other error;  kept  a re-check refused it
+ *   freed    the bytes returned, claimed ONLY when every link is deleted-or-gone and the volume's free space grew by at least half of
+ *            them (a writer that still holds the file open keeps the space: `held`); 0 when a link remains (the data is still there)
+ * Two looks, `settleMs` apart (default 3 s): size AND mtime must be unchanged since the scan at the first, and since the first at the
+ * second, so a file a live writer is still appending to is kept even when its mtime lags (Dexter #3).
+ */
+async function deleteTaskLog(root, row, { fsp = fs.promises, now = Date.now, idleMs = IDLE_MS, settleMs = SETTLE_MS, sleep = sleepMs } = {}) {
+  const res = { deleted: 0, gone: 0, locked: 0, failed: 0, kept: 0, freed: 0, held: false, deletedPaths: [] };
+  const allKept = () => ({ ...res, kept: Array.isArray(row && row.paths) ? row.paths.length : 0 });
+  if (!row || (row.deletable !== true && row.manualDelete !== true) || !Array.isArray(row.paths) || !Number.isFinite(row.mtimeMs) || !Number.isFinite(row.bytes)) return allKept();
   let realRoot;
-  try { realRoot = await fsp.realpath(root); } catch { return { ...res, kept: row.paths.length }; }
+  try { realRoot = await fsp.realpath(root); } catch { return allKept(); }
+  const sameFile = (st, ref) => st.isFile() && String(st.dev) === String(ref.dev) && String(st.ino) === String(ref.ino) && num(st.mtimeMs) === ref.mtimeMs && num(st.size) === ref.bytes;
+  const first = [];
   for (const p of row.paths) {
     try {
       if (!parseTaskPath(root, p)) { res.kept++; continue; }
@@ -96,14 +115,32 @@ async function deleteTaskLog(root, row, { fsp = fs.promises, now = Date.now, idl
       const realDir = await fsp.realpath(dir);
       if (!within(realRoot, realDir) || !same(realDir, path.join(realRoot, path.relative(root, dir)))) { res.kept++; continue; }
       const st = await fsp.lstat(p, { bigint: true });
-      const idle = now() - num(st.mtimeMs);
-      if (!st.isFile() || String(st.dev) !== String(row.dev) || String(st.ino) !== String(row.ino)
-        || num(st.mtimeMs) !== row.mtimeMs || !(idle >= idleMs)) { res.kept++; continue; }
+      if (!sameFile(st, row) || !(now() - num(st.mtimeMs) >= idleMs)) { res.kept++; continue; }
+      first.push(p);
+    } catch (err) { if (err && err.code === 'ENOENT') res.gone++; else res.failed++; }
+  }
+  if (first.length === 0) return res;
+  if (settleMs > 0) await sleep(settleMs);
+  const before = await freeBytes(fsp, root);
+  for (const p of first) {
+    try {
+      const st = await fsp.lstat(p, { bigint: true });
+      if (!sameFile(st, row)) { res.kept++; continue; }       // grew or was written during the wait: a live writer
       await fsp.unlink(p);
       res.deleted++;
-    } catch { res.failed++; }
+      res.deletedPaths.push(p);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') res.gone++;
+      else if (err && LOCKED.has(err.code)) res.locked++;
+      else res.failed++;
+    }
   }
-  if (res.deleted > 0 && res.failed === 0 && res.kept === 0) res.freed = Number.isFinite(row.bytes) ? row.bytes : 0;
+  if (res.deleted > 0 && res.kept === 0 && res.failed === 0 && res.locked === 0) {
+    const after = await freeBytes(fsp, root);
+    const verifiable = before !== null && after !== null;
+    if (!verifiable || after - before >= row.bytes / 2) res.freed = row.bytes;
+    else res.held = true;
+  }
   return res;
 }
 

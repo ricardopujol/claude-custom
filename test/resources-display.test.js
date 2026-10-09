@@ -593,3 +593,10 @@ test('task logs: the "N left over" chip counts only files that are left over, no
   assert.strictEqual(mixed.chip, '2 left over');
   assert.ok(!/left over/.test(D.html(D.view(stateWith(payload({ leftovers: leftovers({ taskLogs: [trow({ why: 'alive', deletable: false })] }) }))))), 'no chip is drawn');
 });
+
+test('task logs (Dexter #3, Miguel I5): a locked file says a process holds it open and keeps its manual Delete; a deleted file still held open is not called freed', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'locked', deletable: false, manualDelete: true })], deleted: [{ name: 'b.output', bytes: 600 * MB, held: true, at: 1 }, { name: 'c.output', bytes: 600 * MB, at: 1 }] }));
+  assert.deepStrictEqual([v.groups[0].rows[0].note, v.groups[0].rows[0].canDelete], ['kept: a process holds it open. Delete tries again', true]);
+  assert.deepStrictEqual(v.stopped.map(s => s.text), ['Deleted b.output, but a process still holds it open: the space is not freed yet', 'Deleted c.output, 600 MB freed']);
+  assert.strictEqual(v.chip, '1 left over', 'a locked file is a leftover');
+});

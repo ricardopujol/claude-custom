@@ -67,6 +67,8 @@ function createResourcesService({
   let tlPending = null;        // a task-folder read waiting for a process sample taken wholly after it: { files, registry, afterSeq, at }
   let tlListed = null;         // the pids of the latest full, fresh sample: what "a session is alive" is judged against; null: nothing may be deleted
   const tlSeen = new Set();    // session ids the app SAW alive (a registry entry whose pid was running); only these can be seen to END
+  const tlBackoff = new Map(); // key -> when the app may try that file again after a delete that did not finish (locked, a live writer, a partial link set)
+  const TL_BACKOFF_MS = 30 * 60_000;
   const tlDeleted = [];        // { name, bytes, at } of the files deleted lately (shown for an hour, like Stopped)
   const TL_EVERY_MS = (taskLogs && taskLogs.everyMs) || 60_000;
   let lastStepped = null;      // the sample the counters last stepped on: a re-sent old one must not step them again
@@ -124,7 +126,14 @@ function createResourcesService({
 
   // ---- big task-output files (#74 F(3), host/task-logs.js decides, host/task-logs-fs.js touches the disk) ----
   // A null process table is passed on as null: classify reads it as "unknown", never as "everything is gone".
-  const tlClassify = (listed = tlListed, read = tl) => taskLogsLib.classify({ files: read.files, registry: read.registry, listedPids: listed, seen: tlSeen, now: now() });
+  // A file the app tried to delete and could not (locked, a writer still at it, some links left) reads "locked" and is not retried by
+  // the clock for TL_BACKOFF_MS (Miguel I5); the person's Delete still tries it.
+  const tlClassify = (listed = tlListed, read = tl) => taskLogsLib.classify({ files: read.files, registry: read.registry, listedPids: listed, seen: tlSeen, now: now() })
+    .map((r) => {
+      const until = tlBackoff.get(r.key);
+      if (until === undefined || now() >= until || r.why !== 'delete') return r;
+      return { ...r, why: 'locked', deletable: false };
+    });
   // A session whose registry entry names a running pid is alive now; remember it, so a later absence is an END that was observed.
   function tlMarkSeen(listed, read) {
     if (!listed || !read.registry || read.registry.ok !== true) return;
@@ -140,8 +149,19 @@ function createResourcesService({
     let ok = 0;
     for (const row of rows) {
       const res = await taskLogs.remove(row);
-      if (res && res.deleted > 0 && res.failed === 0 && res.kept === 0) { ok++; tl.files = tl.files.filter(f => !row.paths.includes(f.path)); tlDeleted.push({ name: row.name, project: row.project, bytes: res.freed > 0 ? res.freed : row.bytes, at: now() }); }
-      else log('[resources] task log not deleted:', row.name, JSON.stringify(res));
+      const whole = !!res && !res.kept && !res.failed && !res.locked && (res.deleted > 0 || res.gone > 0);
+      if (whole) {
+        ok++;
+        tlBackoff.delete(row.key);
+        tl.files = tl.files.filter(f => !row.paths.includes(f.path));
+        // Only what this call removed is listed as deleted; a link another window had already removed is not ours to report.
+        if (res.deleted > 0) tlDeleted.push({ name: row.name, project: row.project, bytes: res.freed > 0 ? res.freed : row.bytes, held: res.held === true, at: now() });
+      } else {
+        // some links may be gone already: the file is still there through the others, and nothing was freed
+        if (res && Array.isArray(res.deletedPaths)) tl.files = tl.files.filter(f => !res.deletedPaths.includes(f.path));
+        tlBackoff.set(row.key, now() + TL_BACKOFF_MS);
+        log('[resources] task log not deleted:', row.name, JSON.stringify(res));
+      }
     }
     return { ok, failed: rows.length - ok };
   }

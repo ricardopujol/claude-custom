@@ -919,3 +919,56 @@ test('REGRESSION (Dexter #2): a manual Delete judges against a process list take
   assert.deepStrictEqual(order, ['registry', 'sample'], 'the process list is read after the registry');
   assert.deepStrictEqual(r.calls.removed, []);
 });
+
+// An auto-delete round: the session was seen alive, then ends; the next judged read removes the file.
+async function endedRig(remove) {
+  const r = taskRig({ taskLogs: { remove: async (row) => { r.calls.removed.push(row.key); return remove(row); } } });
+  await r.judge();
+  r.world4242.on = false;
+  r.clock.t += 61_000;
+  return r;
+}
+const clean = (row, over = {}) => ({ deleted: row.paths.length, gone: 0, locked: 0, failed: 0, kept: 0, freed: row.bytes, held: false, deletedPaths: row.paths, ...over });
+
+test('task logs (Dexter #3): a deleted file whose space is still held open is listed as deleted but "held", never as freed', async () => {
+  const r = await endedRig(row => clean(row, { freed: 0, held: true }));
+  await r.judge();
+  await r.tick();
+  const d = r.sent.at(-1).leftovers.deleted;
+  assert.deepStrictEqual(d.map(x => [x.name, x.held]), [['a1.output', true]]);
+});
+
+test('task logs (Miguel I5): a locked file is not retried every minute; the row says locked, keeps a manual Delete, and is tried again after the back-off', async () => {
+  const r = await endedRig(row => clean(row, { deleted: 0, locked: 1, freed: 0, deletedPaths: [] }));
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+  for (let i = 0; i < 5; i++) { r.clock.t += 61_000; await r.judge(); }
+  assert.strictEqual(r.calls.removed.length, 1, 'no retry inside the back-off');
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['locked', false, true]);
+  assert.strictEqual(r.sent.at(-1).leftovers.deleted.length, 0, 'nothing was freed');
+  r.clock.t += 31 * 60_000;
+  await r.judge();
+  assert.strictEqual(r.calls.removed.length, 2, 'tried again after the back-off');
+});
+
+test('task logs (Miguel I6): a partial hard-link delete lists nothing freed, and backs off', async () => {
+  const files = [taskFile({ nlink: 2 }), taskFile({ nlink: 2, name: 'a2.output', path: 'C:\t\claude\p\sess-1\tasks\a2.output' })];
+  const r = taskRig({ taskLogs: { remove: async (row) => { r.calls.removed.push(row.key); return { deleted: 1, gone: 0, locked: 1, failed: 0, kept: 0, freed: 0, held: false, deletedPaths: [row.paths[0]] }; } } }, files);
+  await r.judge();
+  r.world4242.on = false;
+  r.clock.t += 61_000;
+  await r.judge();
+  await r.tick();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+  assert.strictEqual(r.sent.at(-1).leftovers.deleted.length, 0, 'no freed claim');
+  assert.notStrictEqual(r.sent.at(-1).leftovers.taskLogs[0].why, 'delete', 'the remaining link is kept until the next scan shows it');
+});
+
+test('task logs (Dexter #5): a file already gone (another window won the race) leaves the list quietly: no failure logged, no "freed" line', async () => {
+  const r = await endedRig(row => clean(row, { deleted: 0, gone: row.paths.length, freed: 0, deletedPaths: [] }));
+  await r.judge();
+  await r.tick();
+  assert.deepStrictEqual(r.sent.at(-1).leftovers, null, 'nothing left to show');
+  assert.ok(!r.calls.logs.some(l => /not deleted/.test(l)), r.calls.logs.join('|'));
+});

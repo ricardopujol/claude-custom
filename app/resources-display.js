@@ -178,7 +178,7 @@ function taskLogRow(r) {
   const first = sessions.length ? sessions[0].slice(0, 8) : '?';
   const more = sessions.length > 1 ? ` +${sessions.length - 1}` : '';
   const file = isStr(r.name) && r.name !== '' ? r.name : '?';
-  const notes = { delete: 'deleting within a minute', alive: 'kept: its session is still running', young: 'kept: written to in the last 15 min' };
+  const notes = { delete: 'deleting within a minute', alive: 'kept: its session is still running', young: 'kept: written to in the last 15 min', locked: 'kept: a process holds it open. Delete tries again' };
   return {
     name: `${first} · ${file}${more}`, who: file, key: isStr(r.key) ? r.key : '', pid: '', start: '',
     ageFig: fmtAge(r.ageMs), memFig: fmtBytes(r.bytes), note: notes[r.why] || (r.manualDelete === true ? "can't tell whether its session ended: Delete is yours to choose" : "kept: can't tell whether its session ended"),
@@ -211,7 +211,10 @@ function leftoversView(l, ui) {
   if (taskRows.length) {
     groups.push({ id: 'taskLogs', title: 'Task logs over 100 MB', edge: 'res-edge-yellow', rows: taskRows.map(taskLogRow), side: 'deleted after 15 idle minutes once their session has ended', foot: null, sub: null, stopCount: 0 });
   }
-  const deleted = list('deleted').map(d => ({ text: `Deleted ${isStr(d.name) && d.name !== '' ? d.name : '?'}, ${fmtBytes(d.bytes)} freed` }));
+  const deleted = list('deleted').map((d) => {
+    const name = isStr(d.name) && d.name !== '' ? d.name : '?';
+    return { text: d.held === true ? `Deleted ${name}, but a process still holds it open: the space is not freed yet` : `Deleted ${name}, ${fmtBytes(d.bytes)} freed` };
+  });
   const stopped = list('stopped').map(s => ({ text: `Stopped ${isStr(s.what) && s.what !== '' ? s.what : (isStr(s.name) ? s.name : '?')} (PID ${s.pid}), ${fmtBytes(s.bytes)} freed` }));
   if (!all.length && !stopped.length && !taskRows.length && !deleted.length) return null;
   // Each process once: a row inside another row's subtree (`nested`) is already in that row's figure. Not every figure measured: "at least".
