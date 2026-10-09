@@ -295,28 +295,31 @@ function waitUntil(f, what, ms = 30000) {
 }
 
 // Every live node.exe whose command line carries `marker` (a table read, so it sees orphans whose parent is gone).
-function markedPids(marker) {
-  const ps = `Get-CimInstance Win32_Process -Filter "Name='node.exe' AND CommandLine LIKE '%${marker}%'" | ForEach-Object { $_.ProcessId }`;
-  const r = require('child_process').spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { encoding: 'utf8', windowsHide: true, timeout: 60000 });
-  // A failed or timed-out read is an EMPTY list, which would read as "nothing left running" (Miguel Y2).
-  if (r.error || r.status !== 0) throw new Error(`could not list the processes: ${r.error ? r.error.message : `exit ${r.status}`}`);
-  return (r.stdout || '').split(/\s+/).filter(Boolean).map(Number);
-}
+// A failed or timed-out read throws, never an EMPTY list that would read as "nothing left running" (Miguel Y2).
+const { markedPids, reapMarked, reapDeadOwners, SLEEPER_SRC } = require('./helpers/reap-marked');
+
+// BACKLOG #74 G: this test's sleepers once outlived a killed `npm test` by the thousand. Markers are
+// `cc72-<this pid>-<time>`: reaped in `finally`, on exit, and (a killed run's leftovers) by the next run's first test.
+const RUN_MARKERS = [];
+process.on('exit', () => { for (const m of RUN_MARKERS) { try { reapMarked(m); } catch { /* best effort at exit */ } } });
 
 test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+  try { reapDeadOwners('cc72'); } catch { /* a leftover sweep must never fail the test */ }
   // taskkill /T reads the tree once and then ends it. A process the tree started after that read (cmd.exe still
   // creating the user's command, under load) outlived the kill, and kept the relay's stdout open: MEASURED, a relay
   // whose grandchild was created during the kill was waited on for 685 s. This command starts a new process every
   // 25 ms, so a kill that reads the tree only once loses one every time.
   const dir = tmpDir('relay-spawner');
   const marker = `cc72-${process.pid}-${Date.now()}`;
+  RUN_MARKERS.push(marker);
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawner = path.join(dir, 'spawner.js');
   fs.writeFileSync(spawner, `const { spawn } = require('child_process');
 let n = 0;
 setInterval(() => {
-  spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', ${JSON.stringify(marker)}], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  spawn(process.execPath, ['-e', ${JSON.stringify(SLEEPER_SRC)}, ${JSON.stringify(marker)}], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   if (++n === 3) require('fs').writeFileSync(${JSON.stringify(ready)}, 'ok');
+  if (n >= 400) process.exit();   // a spawner orphaned by a killed run stops by itself
 }, 25);
 `);
   const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${marker}`;
@@ -333,7 +336,7 @@ setInterval(() => {
     for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
     assert.deepStrictEqual(left, [], 'processes the user command started are still running after the kill');
   } finally {
-    try { for (const pid of markedPids(marker)) { try { process.kill(pid); } catch { /* gone */ } } } catch { /* cleanup only */ }
+    try { reapMarked(marker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ }
   }
 });
 
