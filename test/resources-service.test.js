@@ -721,3 +721,310 @@ test('B: with no reap wired a manual Stop does nothing and says so', async () =>
   r.svc.onUpdate(fullSnap(2, 10, leftoverWorld()));
   assert.strictEqual((await r.svc.stopLeftovers({ group: 'probes' })).ok, false);
 });
+
+
+// ---- Leftovers: big task-output files (BACKLOG #74 F(3)) -------------------------------------------------------
+// Ricardo's rule (PR #133 review): the app deletes by itself only a file whose session it SAW alive and then saw end, judged
+// against a process list taken wholly AFTER the registry was read (Dexter #2).
+
+const MBYTES = 1024 * 1024;
+const taskFile = (over = {}) => ({
+  path: `C:\\t\\claude\\p\\${over.session || 'sess-1'}\\tasks\\a1.output`, project: 'p', session: 'sess-1', name: 'a1.output',
+  bytes: 300 * MBYTES, mtimeMs: NOWMS - 40 * MINUTE, dev: '1', ino: '10', nlink: 1, ...over,
+});
+// pid 4242 is session sess-1's claude: `world4242.on` says whether it is in the process table AND its registry entry exists
+function taskRig(extra = {}, files = [taskFile()]) {
+  const clock = { t: NOWMS };
+  const calls = { scan: 0, removed: [], logs: [] };
+  const world4242 = { on: true };
+  const extraProcs = [];
+  let regNow = null;
+  const taskLogs = {
+    everyMs: 60_000,
+    scan: async () => { calls.scan++; return files; },
+    registry: async () => regNow || ({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }, ...(world4242.on ? [{ pid: 4242, sessionId: 'sess-1' }] : [])] }),
+    remove: async (row) => { calls.removed.push(row.key); return { deleted: row.paths.length, failed: 0, kept: 0, freed: row.bytes }; },
+    ...extra.taskLogs,
+  };
+  const r = rig({ now: () => clock.t, ledger: () => [], taskLogs, log: (...a) => calls.logs.push(a.join(' ')), ...extra.rig });
+  const procsWith = () => {
+    const p = world();
+    p.push({ pid: 5555, ppid: 1, name: 'claude.exe', cmd: 'claude.exe', priv: 10, start: '1' });
+    if (world4242.on) p.push({ pid: 4242, ppid: 1, name: 'claude.exe', cmd: 'claude.exe', priv: 10, start: '2' });
+    return [...p, ...extraProcs];
+  };
+  let n = 1;
+  const tick = async (over = {}) => { r.svc.onUpdate({ ...fullSnap(++n, 10, procsWith()), ...over }); await settle(); };
+  // a scan starts on one fresh sample; the file is judged on the SECOND fresh sample after the read (taken wholly after it)
+  const judge = async () => { await tick(); await tick(); await tick(); };
+  return { ...r, clock, calls, world4242, tick, judge, extraProcs, procsWith, syncReread: () => r.setReread(procsWith()), setRegistry: (x) => { regNow = x; } };
+}
+
+test('task logs: the first sample starts a scan; once judged, the payload lists the file with its size, age and why, and no paths', async () => {
+  const r = taskRig({}, [taskFile({ mtimeMs: NOWMS - 5 * MINUTE })]);
+  await r.tick();
+  assert.strictEqual(r.sent.at(-1).leftovers, null, 'nothing scanned yet when the first payload went out');
+  await r.judge();
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.name, row.bytes, row.ageMs, row.why, row.sessions], ['a1.output', 300 * MBYTES, 5 * MINUTE, 'alive', ['sess-1']]);
+  assert.ok(!('paths' in row));
+  assert.strictEqual((r.svc.get(false) || {}).leftovers, undefined);
+});
+
+test('task logs: a file is removed only after its session was SEEN alive and then SEEN ended; listed as deleted with the bytes freed', async () => {
+  const r = taskRig();
+  await r.judge();                     // read 1 judged: sess-1 is alive (registry entry, pid listed): seen
+  assert.deepStrictEqual(r.calls.removed, []);
+  r.world4242.on = false;              // the session ends: its registry file goes, its process goes
+  await r.tick();
+  await r.tick();                      // inside the cadence: no scan
+  assert.strictEqual(r.calls.scan, 1);
+  assert.deepStrictEqual(r.calls.removed, []);
+  r.clock.t += 61_000;
+  await r.judge();                     // read 2 judged: seen, now ended
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+  await r.tick();
+  const l = r.sent.at(-1).leftovers;
+  assert.deepStrictEqual(l.deleted.map(d => [d.name, d.bytes]), [['a1.output', 300 * MBYTES]]);
+  assert.deepStrictEqual(l.taskLogs, [], 'a deleted file leaves the list at once');
+});
+
+test('REGRESSION (Dexter #1): registry [{5555,tab}] with pid 5555 live, a file of another session idle 20 min: NOT deleted, shown as unknown with a manual Delete', async () => {
+  const r = taskRig({}, [taskFile({ session: 'other', path: 'C:\\t\\claude\\p\\other\\tasks\\a1.output' })]);
+  await r.judge();
+  r.clock.t += 61_000;
+  await r.judge();
+  await r.tick();
+  assert.deepStrictEqual(r.calls.removed, []);
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['unknown', false, true]);
+});
+
+test('task logs: a session alive now (registry entry, pid listed) is shown and never removed', async () => {
+  const r = taskRig();
+  for (let i = 0; i < 3; i++) { r.clock.t += 61_000; await r.judge(); }
+  assert.deepStrictEqual(r.calls.removed, []);
+  assert.strictEqual(r.sent.at(-1).leftovers.taskLogs[0].why, 'alive');
+});
+
+test('REGRESSION (Dexter #2): a session resumed between the process sample and the registry read is alive, not gone; with no such process it is ended', async () => {
+  for (const [resumed, removed] of [[true, []], [false, ['1:10']]]) {
+    const r = taskRig();
+    await r.judge();                   // sess-1 seen alive (pid 4242)
+    r.world4242.on = false;
+    // the registry now names the resumed session's NEW pid 9999; the sample current when the read starts does not list it yet
+    r.setRegistry({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }, { pid: 9999, sessionId: 'sess-1' }] });
+    r.clock.t += 61_000;
+    await r.tick();                    // the read starts (and ends) on this sample
+    if (resumed) r.extraProcs.push({ pid: 9999, ppid: 1, name: 'claude.exe', cmd: 'claude.exe', priv: 10, start: '3' });
+    await r.tick();
+    assert.deepStrictEqual(r.calls.removed, [], 'one sample after the read is not yet enough to judge on');
+    await r.tick();
+    assert.deepStrictEqual(r.calls.removed, removed, resumed ? 'its new process is in the sample the judgement used' : 'no such process: the entry is stale and the session has ended');
+  }
+});
+
+test('task logs: written in the last 15 minutes, or an unreadable registry, means shown only', async () => {
+  for (const [files, extra, why] of [
+    [[taskFile({ mtimeMs: NOWMS - 5 * MINUTE })], {}, 'alive'],
+    [[taskFile({ session: 'gone', mtimeMs: NOWMS - 5 * MINUTE })], {}, 'young'],
+    [[taskFile()], { taskLogs: { registry: async () => ({ ok: false, entries: [] }) } }, 'unknown'],
+  ]) {
+    const r = taskRig(extra, files);
+    await r.judge();
+    r.clock.t += 61_000;
+    await r.judge();
+    await r.tick();
+    assert.deepStrictEqual(r.calls.removed, [], why);
+    assert.strictEqual(r.sent.at(-1).leftovers.taskLogs[0].why, why);
+  }
+});
+
+test('task logs: the scan runs on its own slow cadence, never twice at once', async () => {
+  let release;
+  const gate = new Promise(res => { release = res; });
+  const r = taskRig({ taskLogs: { scan: async () => { r.calls.scan++; await gate; return []; } } });
+  await r.tick();
+  r.clock.t += 61_000;
+  await r.tick();
+  assert.strictEqual(r.calls.scan, 1, 'one in flight');
+  release();
+  await settle();
+  await r.tick();
+  await r.tick();
+  await r.tick();
+  assert.strictEqual(r.calls.scan, 1, 'a scan just finished: not again inside the cadence');
+  r.clock.t += 61_000;
+  await r.tick();
+  assert.strictEqual(r.calls.scan, 2);
+});
+
+test('task logs: an expired sample, a stale one, a Stop re-read (adhoc) or a failing scan never scans or deletes, and a failing scan costs only the group', async () => {
+  const exp = taskRig();
+  await exp.tick({ expired: true, failures: 3 });
+  const adhoc = taskRig();
+  await adhoc.tick({ adhoc: true });
+  const stale = taskRig();
+  await stale.tick({ stale: true, failures: 1 });
+  await stale.tick({ stale: true, failures: 1 });
+  await stale.tick({ stale: true, failures: 2 });
+  assert.deepStrictEqual([exp.calls.scan, exp.calls.removed, adhoc.calls.scan, adhoc.calls.removed, stale.calls.scan, stale.calls.removed], [0, [], 0, [], 0, []]);
+  const bad = taskRig({ taskLogs: { scan: async () => { throw new Error('EPERM scan'); } } });
+  await bad.tick();
+  await bad.tick();
+  assert.ok(bad.sent.at(-1).model);
+  assert.ok(bad.calls.logs.some(l => /EPERM scan/.test(l)));
+  assert.deepStrictEqual(bad.calls.removed, []);
+});
+
+test('task logs: the SAME sample object re-sent (the sampler does this after a failed read) counts once and never advances a judgement', async () => {
+  const r = taskRig();
+  const snapA = fullSnap(2, 10, r.procsWith());
+  r.svc.onUpdate(snapA);
+  await settle();
+  r.svc.onUpdate(snapA);
+  r.svc.onUpdate(snapA);
+  r.svc.onUpdate(snapA);
+  await settle();
+  assert.deepStrictEqual(r.calls.removed, []);
+  assert.strictEqual(r.sent.at(-1).leftovers, null, 'still waiting for two NEW samples: nothing was judged');
+});
+
+test('task logs: a manual Delete removes a row the person may choose to delete (even an unknown one), by its key, and refuses anything else', async () => {
+  const unknown = [taskFile({ session: 'other', path: 'C:\\t\\claude\\p\\other\\tasks\\a1.output' })];
+  const r = taskRig({ taskLogs: { everyMs: 1e12 } }, unknown);
+  r.syncReread();
+  await r.tick();
+  for (const req of [{ taskLog: 'nope' }, { taskLog: 5 }, { taskLog: '' }]) assert.strictEqual((await r.svc.stopLeftovers(req)).ok, false, JSON.stringify(req));
+  assert.deepStrictEqual(r.calls.removed, []);
+  assert.deepStrictEqual(await r.svc.stopLeftovers({ taskLog: '1:10' }), { ok: true, stopped: 1, failed: 0 });
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+  const young = taskRig({ taskLogs: { everyMs: 1e12 } }, [taskFile({ session: 'other', mtimeMs: NOWMS - MINUTE })]);
+  young.syncReread();
+  assert.strictEqual((await young.svc.stopLeftovers({ taskLog: '1:10' })).ok, false);
+  const alive = taskRig({ taskLogs: { everyMs: 1e12 } });
+  alive.syncReread();
+  assert.strictEqual((await alive.svc.stopLeftovers({ taskLog: '1:10' })).ok, false, 'a live session\'s file has no manual Delete');
+  assert.deepStrictEqual([young.calls.removed, alive.calls.removed], [[], []]);
+});
+
+test('REGRESSION (Dexter #2): a manual Delete judges against a process list taken AFTER it read the registry; if that list cannot be had it refuses', async () => {
+  const unknown = [taskFile({ session: 'other', path: 'C:\\t\\claude\\p\\other\\tasks\\a1.output' })];
+  const order = [];
+  const r = taskRig({
+    taskLogs: { everyMs: 1e12, registry: async () => { order.push('registry'); return { ok: true, entries: [{ pid: 5555, sessionId: 'tab' }, { pid: 9999, sessionId: 'other' }] }; } },
+    rig: { sampler: { setWanted: () => {}, snapshot: () => null, sampleNow: async () => { order.push('sample'); return null; } } },
+  }, unknown);
+  assert.strictEqual((await r.svc.stopLeftovers({ taskLog: '1:10' })).ok, false, 'no fresh process list: refused');
+  assert.deepStrictEqual(order, ['registry', 'sample'], 'the process list is read after the registry');
+  assert.deepStrictEqual(r.calls.removed, []);
+});
+
+// An auto-delete round: the session was seen alive, then ends; the next judged read removes the file.
+async function endedRig(remove) {
+  const r = taskRig({ taskLogs: { remove: async (row) => { r.calls.removed.push(row.key); return remove(row); } } });
+  await r.judge();
+  r.world4242.on = false;
+  r.clock.t += 61_000;
+  return r;
+}
+const clean = (row, over = {}) => ({ deleted: row.paths.length, gone: 0, locked: 0, failed: 0, kept: 0, freed: row.bytes, held: false, deletedPaths: row.paths, ...over });
+
+test('task logs (Dexter #3): a deleted file whose space is still held open is listed as deleted but "held", never as freed', async () => {
+  const r = await endedRig(row => clean(row, { freed: 0, held: true }));
+  await r.judge();
+  await r.tick();
+  const d = r.sent.at(-1).leftovers.deleted;
+  assert.deepStrictEqual(d.map(x => [x.name, x.held]), [['a1.output', true]]);
+});
+
+test('task logs (Miguel I5): a locked file is not retried every minute; the row says locked, keeps a manual Delete, and is tried again after the back-off', async () => {
+  const r = await endedRig(row => clean(row, { deleted: 0, locked: 1, freed: 0, deletedPaths: [] }));
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+  for (let i = 0; i < 5; i++) { r.clock.t += 61_000; await r.judge(); }
+  assert.strictEqual(r.calls.removed.length, 1, 'no retry inside the back-off');
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['locked', false, true]);
+  assert.strictEqual(r.sent.at(-1).leftovers.deleted.length, 0, 'nothing was freed');
+  r.clock.t += 31 * 60_000;
+  await r.judge();
+  assert.strictEqual(r.calls.removed.length, 2, 'tried again after the back-off');
+});
+
+test('task logs (Miguel I6): a partial hard-link delete lists nothing freed, and backs off', async () => {
+  const files = [taskFile({ nlink: 2 }), taskFile({ nlink: 2, name: 'a2.output', path: 'C:\t\claude\p\sess-1\tasks\a2.output' })];
+  const r = taskRig({ taskLogs: { remove: async (row) => { r.calls.removed.push(row.key); return { deleted: 1, gone: 0, locked: 1, failed: 0, kept: 0, freed: 0, held: false, deletedPaths: [row.paths[0]] }; } } }, files);
+  await r.judge();
+  r.world4242.on = false;
+  r.clock.t += 61_000;
+  await r.judge();
+  await r.tick();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+  assert.strictEqual(r.sent.at(-1).leftovers.deleted.length, 0, 'no freed claim');
+  assert.notStrictEqual(r.sent.at(-1).leftovers.taskLogs[0].why, 'delete', 'the remaining link is kept until the next scan shows it');
+});
+
+test('task logs (Dexter #5): a file already gone (another window won the race) leaves the list quietly: no failure logged, no "freed" line', async () => {
+  const r = await endedRig(row => clean(row, { deleted: 0, gone: row.paths.length, freed: 0, deletedPaths: [] }));
+  await r.judge();
+  await r.tick();
+  assert.deepStrictEqual(r.sent.at(-1).leftovers, null, 'nothing left to show');
+  assert.ok(!r.calls.logs.some(l => /not deleted/.test(l)), r.calls.logs.join('|'));
+});
+
+test('REGRESSION (Dexter #4): a forward wall-clock step does not make a just-written file "15 minutes idle"; it needs 15 monotonic minutes too, and the person\'s Delete is not held back', async () => {
+  const m = { t: 1000 };
+  const files = [taskFile({ mtimeMs: NOWMS - 30_000 })];       // written 30 s ago when first seen
+  const r = taskRig({ rig: { mono: () => m.t }, taskLogs: { everyMs: 60_000 } }, files);
+  await r.judge();                                               // first sighting: young, session alive (seen)
+  r.world4242.on = false;
+  r.clock.t += 20 * MINUTE; m.t += 70_000;                       // the wall clock jumps 20 min; 70 s really passed
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, [], 'wall age is 20 min but only ~100 s are proven by the monotonic clock');
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['settling', false, true]);
+  r.clock.t += 16 * MINUTE; m.t += 16 * MINUTE;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10'], 'idle for 15+ real minutes too: now it goes');
+});
+
+test('task logs: a file whose size or mtime changed between two judged reads starts its idle count again', async () => {
+  const m = { t: 1000 };
+  let size = 300 * MBYTES;
+  const r = taskRig({ rig: { mono: () => m.t }, taskLogs: { scan: async () => [taskFile({ bytes: size, mtimeMs: NOWMS - 40 * MINUTE })] } });
+  await r.judge();
+  r.world4242.on = false;
+  size += 4096;                                                   // grew, with the same (lagging) mtime
+  r.clock.t += 61_000; m.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, [], 'changed since the last read: first sighting again');
+  r.clock.t += 61_000; m.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10'], 'unchanged across two reads: idle');
+});
+
+test('REGRESSION (Dexter r2 #1): a seen session whose registry entry disappears (its tab dir no longer read, a removed file) while its pid still runs is NEVER deleted; it goes when that pid goes', async () => {
+  const r = taskRig();
+  await r.judge();                                   // sess-1 seen alive under pid 4242
+  r.setRegistry({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }] });   // the registry no longer lists sess-1; pid 4242 still runs
+  for (let i = 0; i < 3; i++) { r.clock.t += 61_000; await r.judge(); }
+  assert.deepStrictEqual(r.calls.removed, [], 'its process is still in the table');
+  const row = r.sent.at(-1).leftovers.taskLogs[0];
+  assert.deepStrictEqual([row.why, row.deletable, row.manualDelete], ['unknown', false, true]);
+  r.world4242.on = false;                            // pid 4242 is gone from the table
+  r.clock.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+});
+
+test('task logs: a pid that is reused by another process (another start) ends the seen session; the same start does not', async () => {
+  const r = taskRig();
+  await r.judge();
+  r.setRegistry({ ok: true, entries: [{ pid: 5555, sessionId: 'tab' }] });
+  r.world4242.on = false;
+  r.extraProcs.push({ pid: 4242, ppid: 1, name: 'node.exe', cmd: 'node.exe', priv: 10, start: '500000000' });   // another process now has pid 4242 (its start is far from the recorded one)
+  r.clock.t += 61_000;
+  await r.judge();
+  assert.deepStrictEqual(r.calls.removed, ['1:10']);
+});

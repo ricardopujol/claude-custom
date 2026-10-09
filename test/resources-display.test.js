@@ -521,3 +521,87 @@ test('Leftovers (mock A wording): the titles are the mock\'s', () => {
   const v = leftoverView(leftovers({ probes: [lrow()], shells: [unproven({ kind: 'shell' })], mcp: [unproven({ kind: 'mcp' })], stuck: [unproven({ kind: 'stuck' })] }));
   assert.deepStrictEqual(v.groups.map(g => g.title), ['Stuck closing', 'Probe windows nobody is running', 'Agent shells still running', 'MCP servers']);
 });
+
+// ---- Leftovers: big task-output files (BACKLOG #74 F(3)) ------------------------------------------------------
+
+const trow = (over = {}) => ({ key: '1:10', name: 'a1.output', project: 'p', sessions: ['e3ca0a04-d506-4379-8249-2062c4f76c5c'], bytes: 5.1 * 1024 * MB, ageMs: 40 * MINUTE, deletable: true, why: 'delete', ...over });
+
+test('task logs: the group is "Task logs over 100 MB", with the clock rule on its title line, and each row reads session, file, size, age', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow()] }));
+  assert.deepStrictEqual([v.groups[0].title, v.groups[0].side], ['Task logs over 100 MB', 'deleted after 15 idle minutes once their session has ended']);
+  assert.deepStrictEqual(v.groups[0].rows.map(r => [r.name, r.memFig, r.ageFig]), [['e3ca0a04 · a1.output', '5.1 GB', '40 min']]);
+  assert.strictEqual(v.chip, '1 left over');
+});
+
+test('task logs: a row says what happens to it by its why', () => {
+  const notes = why => leftoverView(leftovers({ taskLogs: [trow({ why, deletable: why === 'delete' })] })).groups[0].rows[0].note;
+  assert.strictEqual(notes('delete'), 'deleting within a minute');
+  assert.strictEqual(notes('alive'), 'kept: its session is still running');
+  assert.strictEqual(notes('young'), 'kept: written to in the last 15 min');
+  assert.strictEqual(notes('unknown'), "kept: can't tell whether its session ended");
+});
+
+test('task logs: a linked file names its first session and how many more', () => {
+  const r = leftoverView(leftovers({ taskLogs: [trow({ sessions: ['aaaaaaaa-1', 'bbbbbbbb-2', 'cccccccc-3'] })] })).groups[0].rows[0];
+  assert.strictEqual(r.name, 'aaaaaaaa · a1.output +2');
+});
+
+test('task logs: Delete only on a deletable row, with the key; no Stop N on the group; escaped', () => {
+  const html = leftoverHtml(leftovers({ taskLogs: [trow(), trow({ key: '1:11', deletable: false, why: 'alive', name: '<b>x</b>.output' })] }));
+  assert.strictEqual((html.match(/data-res-act="left-delete"/g) || []).length, 1);
+  assert.match(html, /data-res-act="left-delete" data-res-key="1:10"/);
+  assert.ok(!/left-stop-group" data-res-group="taskLogs"/.test(html));
+  assert.ok(!html.includes('<b>x'));
+});
+
+test('task logs: an unknown file that is idle gets a manual Delete and says the choice is the persons choice; one that is not idle gets neither', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'unknown', deletable: false, manualDelete: true }), trow({ key: '1:11', why: 'unknown', deletable: false, manualDelete: false })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.canDelete), [true, false]);
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.note), ["can't tell whether its session ended: Delete is yours to choose", "kept: can't tell whether its session ended"]);
+});
+
+test('task logs: actionOf reads the Delete click strictly', () => {
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-delete', resKey: '1:10' }), { act: 'left-delete', key: '1:10' });
+  for (const bad of [{ resAct: 'left-delete' }, { resAct: 'left-delete', resKey: '' }, { resAct: 'left-delete', resKey: '..\\x' }, { resAct: 'left-delete', resKey: '1:x' }]) {
+    assert.strictEqual(D.actionOf(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('task logs: Delete buttons are disabled while a request is in flight', () => {
+  const l = leftovers({ taskLogs: [trow()] });
+  const html = D.html(D.view(D.beginLeftStop(stateWith(payload({ leftovers: l })))));
+  assert.match(html, /<button[^>]*left-delete[^>]*disabled/);
+});
+
+test('task logs: deleted files read "Deleted <file>, <MB> MB freed" under Stopped; with no process rows the heading shows the disk total', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ bytes: 300 * MB })], deleted: [{ name: 'b.output', bytes: 600 * MB, at: 1 }] }));
+  assert.deepStrictEqual(v.stopped.map(s => s.text), ['Deleted b.output, 600 MB freed']);
+  assert.strictEqual(v.sum.memFig, '300 MB on disk');
+  const only = leftoverView(leftovers({ deleted: [{ name: 'b.output', bytes: 600 * MB, at: 1 }] }));
+  assert.strictEqual(only.groups.length, 0);
+  assert.strictEqual(only.chip, null);
+  const mixed = leftoverView(leftovers({ probes: [lrow({ bytes: 200 * MB })], taskLogs: [trow()] }));
+  assert.strictEqual(mixed.sum.memFig, '200 MB', 'RAM only: a file on disk is not memory');
+});
+
+test('task logs: the "N left over" chip counts only files that are left over, not ones whose session is alive or that were just written; the group is still listed', () => {
+  const only = leftoverView(leftovers({ taskLogs: [trow({ why: 'alive', deletable: false }), trow({ key: '1:11', why: 'young', deletable: false })] }));
+  assert.strictEqual(only.chip, null);
+  assert.strictEqual(only.sum.count, 0);
+  assert.strictEqual(only.groups[0].rows.length, 2);
+  const mixed = leftoverView(leftovers({ taskLogs: [trow(), trow({ key: '1:11', why: 'alive', deletable: false }), trow({ key: '1:12', why: 'unknown', deletable: false })] }));
+  assert.strictEqual(mixed.chip, '2 left over');
+  assert.ok(!/left over/.test(D.html(D.view(stateWith(payload({ leftovers: leftovers({ taskLogs: [trow({ why: 'alive', deletable: false })] }) }))))), 'no chip is drawn');
+});
+
+test('task logs (Dexter #3, Miguel I5): a locked file says a process holds it open and keeps its manual Delete; a deleted file still held open is not called freed', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'locked', deletable: false, manualDelete: true })], deleted: [{ name: 'b.output', bytes: 600 * MB, held: true, at: 1 }, { name: 'c.output', bytes: 600 * MB, at: 1 }] }));
+  assert.deepStrictEqual([v.groups[0].rows[0].note, v.groups[0].rows[0].canDelete], ['kept: a process holds it open. Delete tries again', true]);
+  assert.deepStrictEqual(v.stopped.map(s => s.text), ['Deleted b.output, but a process still holds it open: the space is not freed yet', 'Deleted c.output, 600 MB freed']);
+  assert.strictEqual(v.chip, '1 left over', 'a locked file is a leftover');
+});
+
+test('task logs (Dexter #4): a file still being confirmed idle says so, and is a leftover', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'settling', deletable: false, manualDelete: true })] }));
+  assert.deepStrictEqual([v.groups[0].rows[0].note, v.groups[0].rows[0].canDelete, v.chip], ['kept: confirming it has stayed idle', true, '1 left over']);
+});

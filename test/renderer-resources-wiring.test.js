@@ -121,8 +121,16 @@ test('Leftovers Stop (B): the bridge, the gated IPC handler and the page\'s clic
   assert.match(PRELOAD, /ipcRenderer\.invoke\('resources:stopLeftovers', req\)/);
   assert.match(MAIN, /ipcMain\.handle\('resources:stopLeftovers', \(e, req\) => \(isTabView\(e\.sender\)/);
   assert.match(MAIN, /resources\.stopLeftovers\(req\)/);
-  assert.match(BLOCK, /resBridge\.stopLeftovers\(a\.act === 'left-stop' \? \{ rows: \[\{ pid: a\.pid, start: a\.start \}\] \} : \{ group: a\.group \}\)/);
+  assert.match(BLOCK, /resBridge\.stopLeftovers\(a\.act === 'left-stop' \? \{ rows: \[\{ pid: a\.pid, start: a\.start \}\] \} : a\.act === 'left-delete' \? \{ taskLog: a\.key \} : \{ group: a\.group \}\)/);
   assert.match(BLOCK, /if \(!resBridge \|\| resState\.leftBusy\) return;/);
+});
+
+test('Leftovers task logs (#74 F(3)): main hands the service the stat-only scan of %TEMP%\\claude, the CLI registry, and the one guarded delete', () => {
+  assert.match(MAIN, /taskLogsRoot = path\.join\(require\('os'\)\.tmpdir\(\), 'claude'\)/);
+  assert.match(MAIN, /scan: \(\) => taskLogsFs\.scanTaskFiles\(taskLogsRoot\)/);
+  assert.match(MAIN, /registry: \(\) => taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir\)\)/);
+  assert.match(MAIN, /remove: \(row\) => taskLogsFs\.deleteTaskLog\(taskLogsRoot, row\)/);
+  assert.doesNotMatch(MAIN, /\bunlink|rmSync|\.rm\(/, 'main never deletes a file itself');
 });
 
 test('Leftovers (F2): the stop is the async killProven, the launcher is re-asked through the seams, and main never calls the sync one', () => {
