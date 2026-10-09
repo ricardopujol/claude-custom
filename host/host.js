@@ -28,6 +28,7 @@ const { killTree, killPidTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
+const { userGlobalDir, installDirsBeside, migrateGlobalDefault } = require('./global-portrait-store');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
@@ -418,6 +419,18 @@ const PORTRAITS_DIR =
 // instead of the developer's real pictures (Miguel I1, PR #64).
 const UPLOADS_DIR = process.env.CLAUDE_CUSTOM_UPLOADS || path.join(HARNESS_DIR, 'portraits');
 const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
+// The default agent picture is USER-WIDE (BACKLOG #3, Ricardo 2026-10-09): one folder in the user
+// profile for every project, worktree and install, not UPLOADS_DIR's per-install `_global`. The
+// first run with none there adopts the newest per-install one (a copy; the old files stay).
+const GLOBAL_PORTRAIT_DIR = userGlobalDir({ env: process.env, home: os.homedir() });
+{
+  const adopted = migrateGlobalDefault({
+    userDir: GLOBAL_PORTRAIT_DIR,
+    candidateDirs: [UPLOADS_DIR, ...installDirsBeside(__dirname)],
+  });
+  if (adopted.migrated) console.log('[host] default picture adopted from', adopted.from);
+  else if (adopted.from) console.log('[host] default picture not adopted:', adopted.reason);
+}
 const theme = resolveTheme(PROJECT_ROOT, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
@@ -562,7 +575,7 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 // tab's call sites once passed only portraitsDir, so an upload showed there as
 // "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
 const portraitOf = (agent, state) => portraitFor(agent, state, {
-  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
+  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR,
 });
 const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, state) });
 
@@ -886,7 +899,7 @@ function handleDrop(msg, ws) {
 // What the Style tab's "Default agent picture" row shows: set or not, never
 // blank, and the file's own name so the row can say where the picture came from.
 function globalPortraitInfo() {
-  const g = globalPortrait(UPLOADS_DIR);
+  const g = globalPortrait(GLOBAL_PORTRAIT_DIR);
   return g ? { set: true, file: g.file, media: g.media } : { set: false, file: null, media: null };
 }
 
@@ -901,12 +914,12 @@ function repaintAllPortraits() {
   broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
 }
 
-// Every project window is its own host, but the uploads folder is install-wide:
+// Every project window is its own host, but the global picture is user-wide:
 // a change to the global picture made in ANOTHER window must reach this one, or
 // its idle faces keep pointing at a deleted file (Dexter F3, PR #64). `quiet`
 // tells the renderer to update the Style row without announcing a change this
 // window's user did not make.
-watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
+watchGlobalDir(path.join(GLOBAL_PORTRAIT_DIR, '_global'), () => {
   broadcastControl({ type: 'portrait', global: true, ok: true, quiet: true, globalPortrait: globalPortraitInfo() });
   repaintAllPortraits();
 });
@@ -916,9 +929,9 @@ watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
 // reason as the per-agent upload above.
 function handleGlobalPortrait(msg) {
   const out = handleGlobalPortraitMessage(msg, {
-    uploadsDir: UPLOADS_DIR,
+    uploadsDir: GLOBAL_PORTRAIT_DIR,
     stat: (p) => fs.lstatSync(p),
-    resolve: () => (globalPortrait(UPLOADS_DIR) || {}).path || null,
+    resolve: () => (globalPortrait(GLOBAL_PORTRAIT_DIR) || {}).path || null,
   });
   if (!out.reply.ok) console.log('[host] global portrait refused:', msg && msg.action, '-', out.reply.reason);
   broadcastControl({ type: 'portrait', ...out.reply, globalPortrait: globalPortraitInfo() });

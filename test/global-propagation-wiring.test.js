@@ -15,8 +15,8 @@ const MAIN = read('app', 'main.js');
 const RENDERER = read('app', 'renderer.js');
 
 test('the host watches the shared _global folder and repaints every face on a change', () => {
-  const i = HOST.indexOf("watchGlobalDir(path.join(UPLOADS_DIR, '_global')");
-  assert.ok(i !== -1, 'host.js must start the watcher on UPLOADS_DIR/_global');
+  const i = HOST.indexOf("watchGlobalDir(path.join(GLOBAL_PORTRAIT_DIR, '_global')");
+  assert.ok(i !== -1, 'host.js must start the watcher on the user-wide GLOBAL_PORTRAIT_DIR/_global');
   const call = HOST.slice(i, HOST.indexOf('repaintAllPortraits();', i) + 30);
   assert.match(call, /repaintAllPortraits\(\)/);
   assert.match(call, /globalPortraitInfo\(\)/);
@@ -32,4 +32,12 @@ test('the renderer updates the Style row for a quiet change but does not announc
 
 test('Electron main follows the toggle store file that other windows write', () => {
   assert.match(MAIN, /watchImagesEnabled\(\{[\s\S]*?store: uiStore[\s\S]*?\$\{AVATAR_KEY\}\.json/);
+});
+
+test('the host reads, watches and writes the default picture in the user-wide folder, not UPLOADS_DIR', () => {
+  assert.match(HOST, /const GLOBAL_PORTRAIT_DIR = userGlobalDir\(/);
+  assert.match(HOST, /portraitFor\(agent, state, \{[^}]*globalDir: GLOBAL_PORTRAIT_DIR/);
+  assert.match(HOST, /migrateGlobalDefault\(\{\s*userDir: GLOBAL_PORTRAIT_DIR/);
+  assert.match(HOST, /uploadsDir: GLOBAL_PORTRAIT_DIR,\s*stat:[^\n]*\n\s*resolve: \(\) => \(globalPortrait\(GLOBAL_PORTRAIT_DIR\)/);
+  assert.doesNotMatch(HOST, /globalPortrait\(UPLOADS_DIR\)/);
 });
