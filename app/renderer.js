@@ -3933,7 +3933,7 @@ const rosterSearchBtnEl = document.getElementById('roster-search-btn');
 function agentNameHtml(agent, entry, extraHtml) {
   const n = window.rosterSearchDisplay.cardNames(agent, entry, rosterNamesMode);
   const title = n.small ? `${n.big} (${n.small})` : n.big;
-  return `<div class="name" title="${escapeHtml(title)}">${escapeHtml(n.big)}` +
+  return `<div class="name" title="${escapeHtml(title)}"><span class="name-big">${escapeHtml(n.big)}</span>` +
     (n.small ? `<span class="name-alt">${escapeHtml(n.small)}</span>` : '') + extraHtml + `</div>`;
 }
 
@@ -3985,7 +3985,7 @@ if (rosterSearchBtnEl) {
 if (rosterSearchEl) {
   rosterSearchEl.addEventListener('input', () => { rosterQuery = rosterSearchEl.value; renderRoster(); });
   rosterSearchEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') { e.preventDefault(); setRosterSearch(false); }
+    if (e.key === 'Escape') { e.preventDefault(); setRosterSearch(false); if (rosterSearchBtnEl) rosterSearchBtnEl.focus(); }
   });
 }
 applyRosterNames('role');
@@ -4088,6 +4088,12 @@ agentsEl.addEventListener('click', (e) => {
   if (agent) openAgentLog(agent);
 });
 
+// The search's "show hidden" (#76): reveal the hidden agents the query matched. Its own listener, so the card click
+// handler above stays the one that opens a log.
+agentsEl.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('[data-roster-reveal]')) { showHiddenAgents = true; renderRoster(); }
+});
+
 document.getElementById('roster-show-hidden').addEventListener('click', () => {
   showHiddenAgents = !showHiddenAgents;
   renderRoster();
@@ -4144,9 +4150,19 @@ function renderRoster() {
   if (nHidden === 0) showHiddenAgents = false;   // nothing left to reveal
   const visible = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
   const shown = searching ? visible.filter((r) => rosterMatches(r.agent)) : visible;
+  // A hidden agent is still on this tab: say so when it matches rather than claim there is no match (PR #141 F2).
+  const hiddenMatches = searching && !showHiddenAgents
+    ? rows.filter((r) => hiddenAgentNames.includes(r.agent) && rosterMatches(r.agent)) : [];
+  const hiddenNote = hiddenMatches.length > 0
+    ? `<div class="empty roster-hidden-note">${escapeHtml(window.rosterSearchDisplay.hiddenMatchMessage(hiddenMatches.length, rosterQuery))} ` +
+      `<button type="button" class="agent-reveal" data-roster-reveal>show hidden</button></div>` : '';
   showBtnEl.hidden = nHidden === 0;
-  showBtnEl.textContent = showHiddenAgents ? `hide hidden (${nHidden})` : `show hidden (${nHidden})`;
-  if (searching && shown.length === 0) { noMatch(); return; }
+  showBtnEl.textContent = showHiddenAgents ? `hide hidden (${nHidden})`
+    : `show hidden (${nHidden}${hiddenMatches.length ? `, ${hiddenMatches.length} match` : ''})`;
+  if (searching && shown.length === 0) {
+    if (hiddenMatches.length > 0) paintAgents(hiddenNote); else noMatch();
+    return;
+  }
   if (shown.length === 0) {
     // True only because awake rows are always in `shown`: what is left is
     // sleeping AND hidden.

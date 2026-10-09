@@ -123,3 +123,71 @@ test('agentDefinitions carries persona and fn per agent name', async () => {
   assert.deepStrictEqual(r.infos.get('code-reviewer'), { persona: 'Miguel', fn: 'Elite reviewer.' });
   assert.deepStrictEqual(r.infos.get('bare'), { persona: null, fn: null });
 });
+
+// --- PR #141 review fixes ------------------------------------------------------
+
+test('F1: persona names are Unicode, not ASCII-only', () => {
+  assert.strictEqual(personaFromDescription('Interviewer. Invoke whenever the user mentions José Tomás, or needs interviews.'), 'José Tomás');
+  assert.strictEqual(personaFromDescription('X. whenever the user mentions Álvaro in the context of y'), 'Álvaro');
+  assert.strictEqual(personaFromDescription('X. whenever the user mentions Begoña, or z'), 'Begoña');
+  assert.strictEqual(personaFromDescription('X. whenever the user mentions Zoë in the context'), 'Zoë');
+  assert.strictEqual(personaFromDescription('José — does things.'), 'José');
+});
+
+test('F5: acronyms, products and a multi-word lead-in are not personas', () => {
+  assert.strictEqual(personaFromDescription('Containers. Invoke whenever the user mentions Docker or Kubernetes.'), null);
+  assert.strictEqual(personaFromDescription('Tools. whenever the user mentions MCP in passing'), null);
+  assert.strictEqual(personaFromDescription('Tools. whenever the user mentions MCP Servers in passing'), null);
+  assert.strictEqual(personaFromDescription('Elite Reviewer — reviews code.'), null);
+  assert.strictEqual(functionFromDescription('Elite Reviewer — reviews code. More.'), 'Elite Reviewer — reviews code.');
+  // and the real shapes still parse
+  assert.strictEqual(personaFromDescription('X. whenever the user mentions James or Barnes in the context'), 'James');
+});
+
+test('F6: the first sentence does not end at an abbreviation', () => {
+  assert.strictEqual(functionFromDescription('Compares Django vs. Flask projects. Invoke often.'), 'Compares Django vs. Flask projects.');
+  assert.strictEqual(functionFromDescription('Works with e.g. React and Vue. More.'), 'Works with e.g. React and Vue.');
+  assert.strictEqual(functionFromDescription('Writes letters for Mr. Smith daily. More.'), 'Writes letters for Mr. Smith daily.');
+  assert.strictEqual(functionFromDescription('Writes for Dr. Who, i.e. Alice Smith. More.'), 'Writes for Dr. Who, i.e. Alice Smith.');
+  assert.strictEqual(functionFromDescription('Tools, tests, etc. Invoke often. More.'), 'Tools, tests, etc. Invoke often.');
+});
+
+test('F7: a block scalar keeps going across blank lines and ignores its indicators', () => {
+  const blank = '---\nname: x\ndescription: >\n  Reviews code.\n\n  Invoke whenever the user mentions Miguel.\nmodel: opus\n---\n';
+  assert.strictEqual(descriptionFromFrontmatter(blank), 'Reviews code. Invoke whenever the user mentions Miguel.');
+  assert.strictEqual(agentInfo(blank).persona, 'Miguel');
+  for (const ind of ['>2-', '>-2', '|+', '> # folded', '>  ', '|2']) {
+    const raw = `---\nname: x\ndescription: ${ind}\n  Reviews code.\n---\n`;
+    assert.strictEqual(descriptionFromFrontmatter(raw), 'Reviews code.', ind);
+  }
+  const dq = '---\nname: x\ndescription: "Reviews\n\n  code."\nmodel: opus\n---\n';
+  assert.strictEqual(descriptionFromFrontmatter(dq), 'Reviews code.');
+});
+
+test('F9: the cap never leaves half of a surrogate pair', () => {
+  const out = functionFromDescription('A' + 'b'.repeat(297) + '😀 tail');
+  assert.doesNotThrow(() => encodeURIComponent(out));
+  assert.ok(out.endsWith('…'));
+});
+
+test('the first letter is capitalised by code point, not code unit', () => {
+  const out = functionFromDescription('𐐨 lower deseret letter.');
+  assert.doesNotThrow(() => encodeURIComponent(out));
+  assert.strictEqual(out.codePointAt(0), 0x10400);
+});
+
+// The corpus: the real description lines of every global agent file, copied into a fixture so this doesn't depend on
+// the live folder. The expected map was read by eye (persona and function line per agent) when it was written.
+test('corpus: every real agent file parses to its pinned persona and function line', () => {
+  const corpus = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-descriptions.fixture.json'), 'utf8'));
+  const expected = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-descriptions.expected.fixture.json'), 'utf8'));
+  assert.deepStrictEqual(Object.keys(expected).sort(), Object.keys(corpus).sort());
+  for (const [file, raw] of Object.entries(corpus)) {
+    assert.deepStrictEqual(agentInfo(raw), expected[file], file);
+  }
+  // the named cases from the review
+  assert.strictEqual(expected['ux-researcher-cl.md'].persona, 'José Tomás');
+  assert.strictEqual(expected['founder-playbook-coach.md'].persona, 'Peter');
+  assert.strictEqual(expected['dead-code-hunter.md'].persona, 'Murray Bones');
+  assert.strictEqual(expected['node-specialist.md'].persona, null);
+});

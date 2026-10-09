@@ -39,10 +39,13 @@ const NAMES_PUSH_CHANNEL = 'avatar-roster-names';
  * `false`: a missing, corrupt or unreadable record must never silently strip
  * every face (and only an explicit user choice may turn them off).
  */
+function imagesFromRecord(rec) {
+  return !(rec && typeof rec === 'object' && rec.imagesEnabled === false);
+}
+
 function readImagesEnabled(store) {
   try {
-    const rec = store.read(AVATAR_KEY, {});
-    return !(rec && typeof rec === 'object' && rec.imagesEnabled === false);
+    return imagesFromRecord(store.read(AVATAR_KEY, {}));
   } catch {
     return true;
   }
@@ -54,13 +57,36 @@ function readImagesEnabled(store) {
  * 'role' unless the store holds exactly 'name': a missing or corrupt record
  * must never switch the roster to a different set of names by itself.
  */
+function namesFromRecord(rec) {
+  return rec && typeof rec === 'object' && rec.rosterNames === 'name' ? 'name' : 'role';
+}
+
 function readRosterNames(store) {
   try {
-    const rec = store.read(AVATAR_KEY, {});
-    return rec && typeof rec === 'object' && rec.rosterNames === 'name' ? 'name' : 'role';
+    return namesFromRecord(store.read(AVATAR_KEY, {}));
   } catch {
     return 'role';
   }
+}
+
+/**
+ * Sets ONE field of the shared avatar record, keeping the others. The two
+ * toggles (images, roster names) live in one record, so a write that rebuilt it
+ * from `{}` after a failed read would silently reset the other one (PR #141,
+ * Dexter F3). `read()` folds "unreadable" and "corrupt" into the fallback, so
+ * the decision is made on `readState`: only a record that is `ok` or `missing`
+ * may be written over. Throws, with nothing written, otherwise.
+ */
+function saveField(store, field, value) {
+  if (typeof store.readState === 'function') {
+    const st = store.readState(AVATAR_KEY);
+    if (st.status !== 'ok' && st.status !== 'missing') {
+      throw new Error(`the avatar record is ${st.status}; not writing over it`);
+    }
+  }
+  store.update(AVATAR_KEY, {}, (prev) => ({
+    ...(prev && typeof prev === 'object' ? prev : {}), [field]: value,
+  }));
 }
 
 function pickerOptions() {
@@ -86,9 +112,7 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
     if (!fromWindow(e)) return null;
     if (typeof enabled !== 'boolean') return null;
     try {
-      store.update(AVATAR_KEY, {}, (prev) => ({
-        ...(prev && typeof prev === 'object' ? prev : {}), imagesEnabled: enabled,
-      }));
+      saveField(store, 'imagesEnabled', enabled);
     } catch (err) {
       console.error('[main] could not save the agent-images toggle:', err && err.message);
       return null;
@@ -106,9 +130,7 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
     if (!fromWindow(e)) return null;
     if (mode !== 'role' && mode !== 'name') return null;
     try {
-      store.update(AVATAR_KEY, {}, (prev) => ({
-        ...(prev && typeof prev === 'object' ? prev : {}), rosterNames: mode,
-      }));
+      saveField(store, 'rosterNames', mode);
     } catch (err) {
       console.error('[main] could not save the roster names toggle:', err && err.message);
       return null;
@@ -149,18 +171,25 @@ function watchImagesEnabled({
     // A read that FAILED (EBUSY under an antivirus scan) or found a corrupt file
     // says nothing about the user's choice: skip it and let the next poll try,
     // instead of pushing the fresh-install default of "on" (Dexter N2).
-    let now;
+    // ONE read feeds both values (PR #141, Dexter F4): two separate reads could
+    // disagree about whether the file was readable, and a failed second read
+    // would revert the roster names to their default.
+    let rec;
     if (typeof store.readState === 'function') {
       const st = store.readState(AVATAR_KEY);
-      if (st.status !== 'ok' && st.status !== 'missing') return;
+      if (st.status === 'missing') rec = {};
+      else if (st.status === 'ok') rec = st.value;
+      else return;
+    } else {
+      try { rec = store.read(AVATAR_KEY, {}); } catch { rec = {}; }
     }
-    now = readImagesEnabled(store);
+    const now = imagesFromRecord(rec);
     if (now !== sync.last) {
       sync.last = now;
       try { push(PUSH_CHANNEL, now); } catch { /* window is going away */ }
     }
     // The roster names mode (#76) lives in the same record, so the same poll follows it.
-    const names = readRosterNames(store);
+    const names = namesFromRecord(rec);
     if (names !== sync.lastNames) {
       sync.lastNames = names;
       try { push(NAMES_PUSH_CHANNEL, names); } catch { /* window is going away */ }

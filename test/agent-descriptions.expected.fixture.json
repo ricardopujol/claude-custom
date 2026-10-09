@@ -1,0 +1,166 @@
+{
+ "agent-creator.md": {
+  "persona": "Nova",
+  "fn": "Senior agent architect and builder."
+ },
+ "agent-organizer.md": {
+  "persona": "Paris",
+  "fn": "Senior agent organizer and multi-agent team coordinator."
+ },
+ "archibaldo.md": {
+  "persona": null,
+  "fn": "Onboards a repository — clones it (if a GitHub URL is given), reviews structure and code, and produces a neutral summary describing what the project is and how to open/run it."
+ },
+ "architect-reviewer.md": {
+  "persona": "James",
+  "fn": "Senior architecture reviewer."
+ },
+ "backend-developer.md": {
+  "persona": "Samantha",
+  "fn": "Senior backend developer."
+ },
+ "browser-automation-engineer.md": {
+  "persona": "Otto",
+  "fn": "Browser-automation specialist for actions that are irreversible or cost money."
+ },
+ "cedar.md": {
+  "persona": "Cedar",
+  "fn": "Patient Socratic interrogator who stress-tests plans and designs by interviewing the user one question at a time, walking every branch of the decision tree until shared understanding is reached."
+ },
+ "cli-developer.md": {
+  "persona": null,
+  "fn": "Building command-line tools and terminal applications that require intuitive command design, cross-platform compatibility, and optimized developer experience."
+ },
+ "code-reviewer.md": {
+  "persona": "Miguel",
+  "fn": "Elite code reviewer specializing in code quality, security vulnerabilities, performance, and best practices."
+ },
+ "compliance-auditor.md": {
+  "persona": null,
+  "fn": "Achieve regulatory compliance, implement compliance controls, or prepare for audits across frameworks like GDPR, HIPAA, PCI DSS, SOC 2, and ISO standards."
+ },
+ "content-marketer.md": {
+  "persona": null,
+  "fn": "Develop comprehensive content strategies, create SEO-optimized marketing content, or execute multi-channel content campaigns to drive engagement and conversions."
+ },
+ "dead-code-hunter.md": {
+  "persona": "Murray Bones",
+  "fn": "Read-only dead-code sweeper."
+ },
+ "devops-engineer.md": {
+  "persona": null,
+  "fn": "Building or optimizing infrastructure automation, CI/CD pipelines, containerization strategies, and deployment workflows to accelerate software delivery while maintaining reliability and security."
+ },
+ "display-integrity-auditor.md": {
+  "persona": "Vera",
+  "fn": "Display-truth & data-provenance auditor."
+ },
+ "django-developer.md": {
+  "persona": null,
+  "fn": "Building Django 4+ web applications, REST APIs, or modernizing existing Django projects with async views and enterprise patterns."
+ },
+ "doc-auditor.md": {
+  "persona": "Dewey",
+  "fn": "Read-only documentation drift auditor."
+ },
+ "electron-pro.md": {
+  "persona": null,
+  "fn": "Building Electron desktop applications that require native OS integration, cross-platform distribution, security hardening, and performance optimization."
+ },
+ "experiment-analyst.md": {
+  "persona": "Esther",
+  "fn": "Adversarial auditor of decision gates in plans, specs, and builds."
+ },
+ "founder-playbook-coach.md": {
+  "persona": "Peter",
+  "fn": "Ricardo's ongoing Founder's Playbook compliance coach & stage auditor."
+ },
+ "frontend-developer.md": {
+  "persona": null,
+  "fn": "Building complete frontend applications across React, Vue, and Angular frameworks requiring multi-framework expertise and full-stack integration."
+ },
+ "fullstack-developer.md": {
+  "persona": "Guillaume",
+  "fn": "Build complete features spanning database, API, and frontend layers together as a cohesive unit."
+ },
+ "growth-engineer.md": {
+  "persona": "Marcos",
+  "fn": "Owns the agency's automated, measured client-acquisition engine — the per-channel sequences (contadores white-label, niche associations, Type-B distributors, faro-seeding), per-channel CAC/conversion analytics, the weekly binding-constraint diagnosis loop, the dogfooding automation, and the interna…"
+ },
+ "hermes-integration-engineer.md": {
+  "persona": null,
+  "fn": "Anything touching the Hermes (Nous Research) `hermes-agent` CLI runtime that Agora is built on — installing, configuring, OPERATING, and DEBUGGING it: wiring multi-provider routing and cost-tier failover, configuring messaging gateways (Telegram/Discord/Slack/etc.), connecting MCP servers, managing…"
+ },
+ "javascript-pro.md": {
+  "persona": null,
+  "fn": "Build, optimize, or refactor modern JavaScript code for browser, Node.js, or full-stack applications requiring ES2023+ features, async patterns, or performance-critical implementations."
+ },
+ "llm-finops-strategist.md": {
+  "persona": null,
+  "fn": "LLM cost governance and economics: deciding subscription-vs-API trade-offs, validating whether a given invocation path bills a subscription quota or a paid API, designing cost-aware routing policies across tiers (subscription / local / paid), building spend ledgers and hard budget caps, tracking su…"
+ },
+ "llm-serving-engineer.md": {
+  "persona": null,
+  "fn": "Plan, deploy, benchmark, or troubleshoot LOCAL and self-hosted LLM serving — sizing models against GPU VRAM, computing KV-cache cost at a target context length, choosing quantization, configuring Ollama/vLLM/llama.cpp/TGI, serving across multiple GPU nodes, and measuring real throughput (tokens/sec…"
+ },
+ "logic-reviewer.md": {
+  "persona": "Dexter",
+  "fn": "Adversarial logic & correctness reviewer — hunts off-by-one errors, missed edge cases, non-exhaustive branches, inverted conditionals, broken invariants, unsound state machines, race conditions, floating-point mistakes, security-relevant logic flaws, and spec-vs-implementation drift by constructing…"
+ },
+ "m365-admin.md": {
+  "persona": null,
+  "fn": "Automating Microsoft 365 administrative tasks including Exchange Online mailbox provisioning, Teams collaboration management, SharePoint site configuration, license lifecycle management, and Graph API-driven identity automation."
+ },
+ "media-pipeline-engineer.md": {
+  "persona": "Lukas",
+  "fn": "Senior media pipeline engineer specializing in ffmpeg filter graph composition, video/audio codec and container handling, frame-accurate editing, and media API integrations (Replicate, Pexels, Internet Archive/Prelinger, Pixabay, fal.ai, RunwayML, ElevenLabs, etc.)."
+ },
+ "mutation-tester.md": {
+  "persona": "Mortimer",
+  "fn": "Mutation-testing specialist — measures and hardens test-suite effectiveness by injecting small faults (mutants) into code with mutmut/cosmic-ray (Python), Stryker (JS/TS), PIT (Java) and friends, then reporting surviving mutants as proof of weak assertions, hollow coverage, and untested edge cases,…"
+ },
+ "node-specialist.md": {
+  "persona": null,
+  "fn": "Build, optimize, or debug Node.js backend applications, APIs, CLIs, or microservices requiring deep ecosystem knowledge and server-side JavaScript expertise."
+ },
+ "project-idea-validator.md": {
+  "persona": null,
+  "fn": "You need an idea pressure-tested with brutal honesty, competitor teardown, market validation, and clear go/no-go guidance before building."
+ },
+ "prompt-engineer.md": {
+  "persona": null,
+  "fn": "Design, optimize, test, or evaluate prompts for large language models in production systems."
+ },
+ "python-pro.md": {
+  "persona": null,
+  "fn": "Build type-safe, production-ready Python code for web APIs, system utilities, or complex applications requiring modern async patterns and extensive type coverage."
+ },
+ "research-analyst.md": {
+  "persona": null,
+  "fn": "You need comprehensive research across multiple sources with synthesis of findings into actionable insights, trend identification, and detailed reporting."
+ },
+ "security-auditor.md": {
+  "persona": "Andy",
+  "fn": "Senior security auditor."
+ },
+ "security-engineer.md": {
+  "persona": "Paul",
+  "fn": "Senior security engineer."
+ },
+ "spec-partner.md": {
+  "persona": "Atlas",
+  "fn": "Collaborative spec & planning partner who works WITH you to turn a fuzzy idea into a concrete, testable specification and a phased plan — eliciting requirements, surfacing hidden assumptions and edge cases, and pinning down scope, goals/non-goals, constraints, and acceptance criteria one theme at a…"
+ },
+ "ui-designer.md": {
+  "persona": null,
+  "fn": "Designing visual interfaces, creating design systems, building component libraries, or refining user-facing aesthetics requiring expert visual design, interaction patterns, and accessibility considerations."
+ },
+ "ui-ux-tester.md": {
+  "persona": "Naomi",
+  "fn": "Senior QA Automation Engineer and UX Researcher."
+ },
+ "ux-researcher-cl.md": {
+  "persona": "José Tomás",
+  "fn": "Runs cheap, deep end-user discovery for Chilean non-technical SMB app users (the actual operators, not just the buyer) — 3–5 interviews/surveys per early client in es-CL — to (a) extract concrete requirements for the manual-first build and (b) drive adoption ('the product is adoption')."
+ }
+}

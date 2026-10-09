@@ -33,12 +33,17 @@ function cardNames(agent, entry, mode) {
   return normalizeMode(mode) === 'name' ? { big: persona, small: agent } : { big: agent, small: persona };
 }
 
-/** Whether the agent matches a search query: role, persona or function text, ignoring case. A blank query matches all. */
+// Case and accents are folded away on both sides, so "jose" finds José Tomás and "cafe" finds café.
+function fold(s) {
+  return s.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+}
+
+/** Whether the agent matches a search query: role, persona or function text, ignoring case and accents. A blank query matches all. */
 function matches(agent, entry, query) {
-  const q = typeof query === 'string' ? query.trim().toLowerCase() : '';
+  const q = typeof query === 'string' ? fold(query.trim()) : '';
   if (!q) return true;
   const fn = entry && typeof entry.fn === 'string' ? entry.fn : '';
-  return [agent, personaOf(entry) || '', fn].some((s) => s.toLowerCase().includes(q));
+  return [agent, personaOf(entry) || '', fn].some((s) => fold(s).includes(q));
 }
 
 /** What the roster says when the search finds nothing in the current tab. */
@@ -48,7 +53,12 @@ function emptyMessage(tab, query) {
   return `No ${here} agent matches “${String(query == null ? '' : query).trim()}”. Try the ${other} tab.`;
 }
 
-const api = { MODES, normalizeMode, cardNames, matches, emptyMessage };
+/** The Active tab's search also looks at hidden agents; this says how many matched but are hidden. */
+function hiddenMatchMessage(n, query) {
+  return `${n} hidden agent${n === 1 ? '' : 's'} match${n === 1 ? 'es' : ''} “${String(query == null ? '' : query).trim()}”.`;
+}
+
+const api = { MODES, normalizeMode, cardNames, matches, emptyMessage, hiddenMatchMessage };
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
 } else {

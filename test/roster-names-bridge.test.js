@@ -112,3 +112,77 @@ test('this window\'s own set is not echoed back by the watcher', () => {
   l[0]();
   assert.deepStrictEqual(sent, []);
 });
+
+// --- PR #141 review fixes (F3, F4) ----------------------------------------------
+
+function stateStore(record, status = 'ok') {
+  const data = { [AVATAR_KEY]: record };
+  const writes = [];
+  return {
+    data, writes, status,
+    read: (n, f) => (n in data && status === 'ok' ? data[n] : f),   // an unreadable file reads as the fallback
+    readState: () => ({ status, value: status === 'ok' ? data[AVATAR_KEY] : undefined }),
+    update: (n, f, fn) => { writes.push(n); data[n] = fn(status === 'ok' ? data[n] : f); },
+  };
+}
+
+for (const status of ['unreadable', 'corrupt']) {
+  test(`F3: with the record ${status}, setting the names refuses instead of rebuilding it from {}`, () => {
+    const store = stateStore({ imagesEnabled: false }, status);
+    const { call, sent } = setup(store);
+    assert.strictEqual(call(NAMES_SET_CHANNEL, 'name'), null);
+    assert.deepStrictEqual(store.writes, []);
+    assert.deepStrictEqual(sent, []);
+  });
+
+  test(`F3: with the record ${status}, setting images refuses and cannot erase the names`, () => {
+    const store = stateStore({ rosterNames: 'name' }, status);
+    const { call, sent } = setup(store);
+    assert.strictEqual(call('avatar:setImagesEnabled', true), null);
+    assert.deepStrictEqual(store.writes, []);
+    assert.deepStrictEqual(sent, []);
+  });
+}
+
+test('F3: a missing record is fine to write, and a good one keeps the other field', () => {
+  const missing = { read: (n, f) => f, readState: () => ({ status: 'missing' }), update: (n, f, fn) => { missing.out = fn(f); } };
+  assert.strictEqual(setup(missing).call(NAMES_SET_CHANNEL, 'name'), 'name');
+  assert.deepStrictEqual(missing.out, { rosterNames: 'name' });
+  const ok = stateStore({ imagesEnabled: false });
+  assert.strictEqual(setup(ok).call(NAMES_SET_CHANNEL, 'name'), 'name');
+  assert.deepStrictEqual(ok.data[AVATAR_KEY], { imagesEnabled: false, rosterNames: 'name' });
+  assert.strictEqual(setup(ok).call('avatar:setImagesEnabled', true), true);
+  assert.deepStrictEqual(ok.data[AVATAR_KEY], { imagesEnabled: true, rosterNames: 'name' });
+});
+
+test('F4: the watcher takes both values from ONE read, so a failed names read cannot revert the mode', () => {
+  let reads = 0;
+  const store = {
+    readState: () => ({ status: 'ok', value: { imagesEnabled: false, rosterNames: 'name' } }),
+    // a second, separate read would fail like an EBUSY and answer the fallback
+    read: () => { reads++; return {}; },
+  };
+  const sent = [];
+  const l = [];
+  const sync = { last: false, lastNames: 'name' };
+  watchImagesEnabled({
+    store, file: 'f', win: { webContents: { send: (ch, v) => sent.push([ch, v]) } }, sync,
+    watchFile: (f, o, fn) => l.push(fn), unwatchFile: () => {},
+  });
+  sync.last = false; sync.lastNames = 'name';
+  l[0]();
+  assert.deepStrictEqual(sent, []);
+  assert.strictEqual(sync.lastNames, 'name');
+});
+
+test('F4: an unreadable poll pushes nothing for either value', () => {
+  const store = { readState: () => ({ status: 'unreadable' }), read: () => ({}) };
+  const sent = [];
+  const l = [];
+  watchImagesEnabled({
+    store, file: 'f', win: { webContents: { send: (ch, v) => sent.push([ch, v]) } }, sync: { last: false, lastNames: 'name' },
+    watchFile: (f, o, fn) => l.push(fn), unwatchFile: () => {},
+  });
+  l[0]();
+  assert.deepStrictEqual(sent, []);
+});

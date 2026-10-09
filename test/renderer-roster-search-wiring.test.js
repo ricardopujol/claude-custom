@@ -51,3 +51,29 @@ test('the toggle is saved through main, not localStorage', () => {
   assert.match(JS, /window\.harness\.avatar\.setRosterNames\(mode\)/);
   assert.match(JS, /window\.harness\.avatar\.onRosterNames\(applyRosterNames\)/);
 });
+
+// --- PR #141 review fixes ------------------------------------------------------
+
+test('Miguel 1: the small name wraps to its own line instead of ellipsising', () => {
+  assert.match(JS, /class="name-big"/);
+  assert.match(HTML, /\.agent \.name \{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/);
+  assert.match(HTML, /\.agent \.name \.name-big \{[^}]*text-overflow:\s*ellipsis/);
+});
+
+test('Miguel 5, 6: Esc returns focus to the search button; the emoji buttons have aria-labels', () => {
+  assert.match(JS, /rosterSearchBtnEl\.focus\(\)/);
+  assert.match(HTML, /id="roster-search-btn"[^>]*aria-label="Search the agents in this tab"/);
+  assert.match(HTML, /id="images-toggle"[^>]*aria-label="/);
+});
+
+test('F2: an Active search counts hidden matches and offers the existing reveal', () => {
+  assert.match(JS, /hiddenMatchMessage\(/);
+  assert.match(JS, /data-roster-reveal/);
+  assert.match(JS, /closest\('\[data-roster-reveal\]'\)/);
+  // the "try the other tab" message is only for a search with no hidden match either
+  assert.match(JS, /hiddenMatches\.length > 0/);
+});
+
+test('F2: the show-hidden button says how many hidden agents match the search', () => {
+  assert.match(JS, /\$\{hiddenMatches\.length\} match/);
+});

@@ -107,11 +107,14 @@ function unescapeDouble(s) {
   return s.replace(/\\(["\\/]|n|t)/g, (_m, c) => (c === 'n' || c === 't' ? ' ' : c));
 }
 
+// `>`, `|`, an indent digit and a chomping sign in either order, then an optional comment: `>`, `|+`, `>2-`, `>-2`, `> # x`.
+const BLOCK_INDICATOR_RE = /^[>|](?:[+-]\d?|\d[+-]?)?\s*(?:#.*)?$/;
+
 /**
  * The agent's `description:` as one line of text, or '' when the file has no
  * frontmatter or no such key. Reads the scalar shapes seen on a real install:
  * double-quoted, single-quoted, plain (with indented continuation lines) and a
- * `>` / `|` block scalar. Never throws, never answers null.
+ * `>` / `|` block scalar, blank lines inside included. Never throws, never answers null.
  */
 function descriptionFromFrontmatter(raw) {
   if (typeof raw !== 'string') return '';
@@ -120,11 +123,14 @@ function descriptionFromFrontmatter(raw) {
   const lines = fm[1].split(/\r?\n/);
   const at = lines.findIndex((l) => /^description:/.test(l));
   if (at < 0) return '';
-  let value = lines[at].replace(/^description:\s*/, '');
+  const first = lines[at].replace(/^description:\s*/, '').trim();
   const cont = [];
-  for (let i = at + 1; i < lines.length && /^\s+\S/.test(lines[i]); i++) cont.push(lines[i].trim());
-  if (/^[>|][+-]?\d*$/.test(value)) return cont.join(' ').trim();
-  value = [value, ...cont].join(' ').trim();
+  // Blank lines belong to the value; the first unindented line (the next key) ends it.
+  for (let i = at + 1; i < lines.length && /^(?:\s*|\s+\S.*)$/.test(lines[i]); i++) {
+    if (lines[i].trim()) cont.push(lines[i].trim());
+  }
+  if (BLOCK_INDICATOR_RE.test(first)) return cont.join(' ').trim();
+  const value = [first, ...cont].join(' ').trim();
   const dq = /^"([\s\S]*)"$/.exec(value);
   if (dq) return unescapeDouble(dq[1]).trim();
   const sq = /^'([\s\S]*)'$/.exec(value);
@@ -132,12 +138,32 @@ function descriptionFromFrontmatter(raw) {
   return value;
 }
 
-// One capitalised word, or several in a row ("Murray Bones"); the first
-// lowercase word ("or", "in") ends the name.
-const NAME_WORD = "[A-Z][\\w'’-]*";
+// A name is one capitalised word (any script: José, Álvaro, Zoë) or several in
+// a row ("Murray Bones"); the first lowercase word ("or", "in") ends it.
+const NAME_WORD = "\\p{Lu}[\\p{L}\\p{M}\\w'’-]*";
 const NAME_RUN = `${NAME_WORD}(?:[ \\t]+${NAME_WORD}){0,2}`;
-const MENTIONS_RE = new RegExp(`\\bmentions[ \\t]+(${NAME_RUN})`);
-const LEADING_NAME_RE = new RegExp(`^(${NAME_RUN})[ \\t]+[—–][ \\t]+`);
+const MENTIONS_RE = new RegExp(`\\bmentions[ \\t]+(${NAME_RUN})`, 'u');
+// The leading form is ONE word: "Peter — ..." is a name, "Elite Reviewer — ..." is a job title.
+const LEADING_NAME_RE = new RegExp(`^(${NAME_WORD})[ \\t]+[—–][ \\t]+`, 'u');
+
+// Not people: an ACRONYM ("MCP") or a well-known product a description might mention ("mentions Docker or Kubernetes").
+// A heuristic with a known limit: an unlisted product name still reads as a persona.
+const NOT_A_NAME = new Set(['docker', 'kubernetes', 'python', 'javascript', 'typescript', 'java', 'rust', 'react', 'vue',
+  'angular', 'node', 'django', 'flask', 'git', 'github', 'gitlab', 'linux', 'windows', 'macos', 'aws', 'azure', 'claude',
+  'openai', 'anthropic', 'ollama', 'postgres', 'mysql', 'redis', 'kafka', 'terraform', 'ansible', 'jenkins']);
+function isNotAName(word) {
+  return /^\p{Lu}{2,}$/u.test(word) || NOT_A_NAME.has(word.toLowerCase());
+}
+
+// The words of a matched run up to the first one that isn't a name, joined; null when the first isn't.
+function nameFromRun(run) {
+  const words = [];
+  for (const w of run.split(/[ \t]+/)) {
+    if (isNotAName(w)) break;
+    words.push(w);
+  }
+  return words.length ? words.join(' ') : null;
+}
 
 /**
  * The persona a description names: "...whenever the user mentions Miguel in the
@@ -146,12 +172,28 @@ const LEADING_NAME_RE = new RegExp(`^(${NAME_RUN})[ \\t]+[—–][ \\t]+`);
  */
 function personaFromDescription(description) {
   if (typeof description !== 'string') return null;
-  const m = MENTIONS_RE.exec(description) || LEADING_NAME_RE.exec(description.trim());
-  return m ? m[1] : null;
+  const m = MENTIONS_RE.exec(description);
+  if (m) return nameFromRun(m[1]);
+  const lead = LEADING_NAME_RE.exec(description.trim());
+  return lead ? nameFromRun(lead[1]) : null;
 }
 
 const FN_LEAD_RE = /^(?:use this agent when you need to|use this agent when|use this agent for|use when)(?:\s+|$)/i;
 const FN_MAX = 300;
+// A full stop after one of these does not end a sentence, even before a capital: "Django vs. Flask", "Mr. Smith".
+const ABBREVIATION_RE = /(?:^|[\s(])(?:vs|e\.g|i\.e|etc|mr|mrs|ms|dr|prof|st|cf|approx)\.$/i;
+
+// The text up to the first real sentence end: . ! or ? followed by a capitalised word or the end.
+function firstSentence(text) {
+  const re = /[.!?](?=\s+\p{Lu}|\s*$)/gu;
+  let m;
+  while ((m = re.exec(text))) {
+    const upto = text.slice(0, m.index + 1);
+    if (text[m.index] === '.' && m.index + 1 < text.length && ABBREVIATION_RE.test(upto)) continue;
+    return upto;
+  }
+  return text;
+}
 
 /**
  * The function line: the description's first sentence, a leading persona
@@ -162,12 +204,16 @@ function functionFromDescription(description) {
   if (typeof description !== 'string') return '';
   let text = description.trim().replace(/\s+/g, ' ');
   if (!text) return '';
-  text = text.replace(LEADING_NAME_RE, '');
-  const sentence = /^([\s\S]*?[.!?])(?=\s+[A-Z]|\s*$)/.exec(text);
-  let fn = (sentence ? sentence[1] : text).replace(FN_LEAD_RE, '').trim();
+  const lead = LEADING_NAME_RE.exec(text);
+  if (lead && nameFromRun(lead[1])) text = text.slice(lead[0].length) || text;
+  let fn = firstSentence(text).replace(FN_LEAD_RE, '').trim();
   if (!fn) fn = text; // the lead-in WAS the whole sentence: show it rather than nothing
-  if (fn.length > FN_MAX) fn = fn.slice(0, FN_MAX - 1).trimEnd() + '…';
-  return fn.charAt(0).toUpperCase() + fn.slice(1);
+  if (fn.length > FN_MAX) {
+    let cut = fn.slice(0, FN_MAX - 1);
+    if (/[\uD800-\uDBFF]$/.test(cut)) cut = cut.slice(0, -1); // never half of a surrogate pair
+    fn = cut.trimEnd() + '…';
+  }
+  return fn.replace(/^[\s\S]/u, (c) => c.toUpperCase());
 }
 
 /** `{ persona, fn }` for a whole agent file; both null when it says nothing. */

@@ -69,6 +69,7 @@ app.whenReady().then(async () => {
         mk('general-purpose', null, null, 2e6),
         mk('dead-code-sweeper', 'Murray Bones', 'Read-only dead-code sweeper.', 4e5),
         mk('qa-expert', 'Naomi', 'Senior QA Automation Engineer and UX Researcher.', 3e5),
+        mk('ux-researcher-cl', 'José Tomás', 'Runs cheap, deep end-user discovery.', 1e5),
         mk('fullstack-developer', 'Guillaume', 'Build complete features spanning database, API, and frontend layers together as a cohesive unit.', null),
       ] };
       roster.set('code-reviewer', { agent: 'code-reviewer', state: 'working', portrait: null });
@@ -102,13 +103,15 @@ app.whenReady().then(async () => {
     await js('setRosterTab("inactive")');
     await sleep(400);
     n = await names();
-    check('Inactive, name mode: three cards, personas big', n.length === 3 && n.every(x => x.alt !== null), n);
+    check('Inactive, name mode: four cards, personas big', n.length === 4 && n.every(x => x.alt !== null), n);
     check('Inactive: Murray Bones (two words) is one name', n.some(x => x.big === 'Murray Bones' && x.alt === 'dead-code-sweeper'), n);
     await shot('3-inactive-name');
     await js('document.querySelector("#roster-names-toggle [data-roster-names=role]").click()');
     check('back to role mode', await until('rosterNamesMode === "role"'));
     n = await names();
     check('Inactive, role mode: roles big', n.some(x => x.big === 'qa-expert' && x.alt === 'Naomi'), n);
+    check('the small name is never cut to an ellipsis (it wraps under the big one instead)',
+      await js('[...document.querySelectorAll("#agents .name-alt")].every(a => a.scrollWidth <= a.clientWidth + 1)'));
     await shot('4-inactive-role');
 
     // ---- search -----------------------------------------------------------------
@@ -129,6 +132,10 @@ app.whenReady().then(async () => {
     await sleep(200);
     n = await names();
     check('search matches the function text ("database")', n.length === 1 && n[0].big === 'fullstack-developer', n);
+    await setQ('jose');
+    await sleep(200);
+    n = await names();
+    check('search ignores accents ("jose" finds José Tomás)', n.length === 1 && n[0].alt === 'José Tomás', n);
     await setQ('zzzz');
     await sleep(200);
     const empty = await text();
@@ -145,8 +152,29 @@ app.whenReady().then(async () => {
     await shot('7-active-search-hit');
     await js('document.getElementById("roster-search").dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
     await sleep(300);
+    check('Esc puts focus back on the search button', await js('document.activeElement && document.activeElement.id === "roster-search-btn"'));
     check('Esc closes the field', await js('document.getElementById("roster-search-row").hidden === true'));
     check('Esc clears the query and the full tab is back', (await js('document.getElementById("roster-search").value === "" && rosterQuery === ""')) && (await names()).length === 2);
+
+    // ---- a hidden agent that matches (PR #141 F2) ---------------------------------
+    await js('hiddenAgentNames = ["general-purpose"]; renderRoster()');
+    await js('document.getElementById("roster-search-btn").click()');
+    await setQ('general');
+    await sleep(300);
+    const hn = await text();
+    check('a hidden match is reported as hidden, with a reveal, never "try the other tab"',
+      /1 hidden agent matches “general”./.test(hn) && !/Try the/.test(hn) && await js('!!document.querySelector("#agents [data-roster-reveal]")'), hn);
+    await shot('8-active-search-hidden');
+    await js('document.querySelector("#agents [data-roster-reveal]").click()');
+    await sleep(300);
+    n = await names();
+    check('show hidden reveals the matching agent', n.length === 1 && n[0].big === 'general-purpose', n);
+
+    // ---- a wide zone (PR #141 Miguel 8) ---------------------------------------------
+    await js('setRosterSearch(false); hiddenAgentNames = []; showHiddenAgents = false; renderRoster(); document.querySelector("#roster-subtabs").closest(".zone").dataset.shape = "wide"');
+    await sleep(400);
+    await shot('9-wide-zone');
+    check('a wide zone still shows the header controls', await js('!!document.querySelector("#roster-names-toggle") && document.querySelector("#roster-names-toggle").getBoundingClientRect().width > 0'));
   } catch (err) {
     check('probe ran to completion', false, String(err && err.stack || err));
   }

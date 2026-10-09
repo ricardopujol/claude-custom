@@ -1006,10 +1006,16 @@
     #roster-search:focus { outline: none; border-color: var(--accent); }
     .zone[data-shape="wide"] #roster-names-toggle { margin-left: 0; margin-right: 0; }
     /* BACKLOG #76: the other name, small and mono beside the big one; the function line, two lines at most. */
+    /* The small name stays readable: when both don't fit on one line it wraps under the big one (PR #141, Miguel 1). */
+    .agent .name { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; white-space: normal; }
+    .agent .name .name-big { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .agent .name .name-alt {
-      margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--dim);
+      max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; font-weight: 400; color: var(--dim);
       font-family: ui-monospace, Consolas, monospace;
     }
+    .roster-hidden-note { text-align: left; }
+    .roster-hidden-note .agent-reveal { font-size: 10px; margin-left: 4px; padding: 1px 6px; cursor: pointer;
+      color: var(--accent); background: transparent; border: 1px solid var(--accent); border-radius: 4px; }
     .agent .agent-fn {
       font-size: 10px; color: var(--dim); opacity: .8; margin-top: 1px; line-height: 1.3;
       display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -1771,8 +1777,8 @@
               <button type="button" data-roster-names="role" title="Show the role (code-reviewer) big">Role</button>
               <button type="button" data-roster-names="name" title="Show the name (Miguel) big">Name</button>
             </span>
-            <button type="button" id="roster-search-btn" aria-pressed="false" title="Search the agents in this tab">🔍</button>
-            <button type="button" id="images-toggle" title="Agent images: reading the setting">🖼</button>
+            <button type="button" id="roster-search-btn" aria-pressed="false" aria-label="Search the agents in this tab" title="Search the agents in this tab">🔍</button>
+            <button type="button" id="images-toggle" aria-label="Show agent images" title="Agent images: reading the setting">🖼</button>
           </nav>
           <div id="roster-search-row" hidden>
             <input type="search" id="roster-search" autocomplete="off" spellcheck="false"

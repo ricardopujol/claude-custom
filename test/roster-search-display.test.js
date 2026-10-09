@@ -74,3 +74,22 @@ test('property: a query that is a substring of the role always matches', () => {
     assert.strictEqual(matches(agent, undefined, q.toUpperCase()), true);
   }));
 });
+
+// --- PR #141 review fixes ------------------------------------------------------
+
+const { hiddenMatchMessage } = require('../app/roster-search-display');
+
+test('F1: search folds case and accents, in the query and in the names', () => {
+  const jose = { agent: 'ux-researcher-cl', persona: 'José Tomás', fn: 'Runs interviews.' };
+  for (const q of ['josé', 'jose', 'JOSE', 'tomás', 'tomas', 'José Tomás', 'jose tomas']) {
+    assert.strictEqual(matches('ux-researcher-cl', jose, q), true, q);
+  }
+  assert.strictEqual(matches('ux-researcher-cl', jose, 'jorge'), false);
+  assert.strictEqual(matches('x', { persona: 'Jose', fn: null }, 'josé'), true);
+  assert.strictEqual(matches('x', { persona: null, fn: 'Café owner.' }, 'cafe'), true);
+});
+
+test('F2: hiddenMatchMessage counts the hidden matches honestly', () => {
+  assert.strictEqual(hiddenMatchMessage(1, 'naomi'), '1 hidden agent matches “naomi”.');
+  assert.strictEqual(hiddenMatchMessage(3, ' q '), '3 hidden agents match “q”.');
+});
