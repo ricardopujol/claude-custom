@@ -15,53 +15,98 @@ const onWin = process.platform === 'win32';
 const owned = [];
 test.after(() => { for (const dir of owned.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 2 }); });
 
-test('S7: sweepPids reads the last complete ALIVE line, LF or CRLF, and nothing else', () => {
-  assert.deepStrictEqual(sweepPids('ALIVE 7 8\n'), [7, 8], 'LF only');
-  assert.deepStrictEqual(sweepPids('ALIVE 5 6\r\n'), [5, 6], 'CRLF');
-  assert.deepStrictEqual(sweepPids('ALIVE 7\nnoise\n'), [7], 'noise lines are not ALIVE lines');
-  assert.deepStrictEqual(sweepPids('ALIVE 1\nALIVE 1 2\nALIVE 1 2 3\n'), [1, 2, 3], 'cumulative: the last one');
-  assert.deepStrictEqual(sweepPids('ALIVE 1 2\nALIVE 1 2 3'), [1, 2], 'an unterminated last line may be cut mid-pid: not read');
-  assert.deepStrictEqual(sweepPids('ALIVE 10 1'), [], 'a single cut-off line names nothing');
-  assert.deepStrictEqual(sweepPids('ALIVE 1\nALIVE 2 x\n'), [1], 'a line with a non-pid is not an ALIVE line');
-  assert.deepStrictEqual(sweepPids('xALIVE 1\n'), []);
+test('S7: sweepPids reads the last complete ALIVE line (pid:start pairs), LF or CRLF, and nothing else', () => {
+  const p = (pid, start) => ({ pid, start: String(start) });
+  assert.deepStrictEqual(sweepPids('ALIVE 7:70 8:80\n'), [p(7, 70), p(8, 80)], 'LF only');
+  assert.deepStrictEqual(sweepPids('ALIVE 5:50 6:60\r\n'), [p(5, 50), p(6, 60)], 'CRLF');
+  assert.deepStrictEqual(sweepPids('ALIVE 7:70\nnoise\n'), [p(7, 70)], 'noise lines are not ALIVE lines');
+  assert.deepStrictEqual(sweepPids('ALIVE 1:1\nALIVE 1:1 2:2\nALIVE 3:3\n'), [p(3, 3)], 'the LAST line is the pending set: pids the sweep ended are gone from it');
+  assert.deepStrictEqual(sweepPids('ALIVE 1:1 2:2\nALIVE 1:1 2:2 3:3'), [p(1, 1), p(2, 2)], 'an unterminated last line may be cut mid-number: not read');
+  assert.deepStrictEqual(sweepPids('ALIVE 10:5 1'), [], 'a single cut-off line names nothing');
+  assert.deepStrictEqual(sweepPids('ALIVE 1:1\nALIVE 2:2 x\n'), [p(1, 1)], 'a line with a non-pair is not an ALIVE line');
+  assert.deepStrictEqual(sweepPids('ALIVE 7 8\n'), [], 'a bare pid, with no start to prove, is not read');
+  assert.deepStrictEqual(sweepPids('ALIVE 7:70 8\n'), [], 'one bare pid spoils the line');
+  assert.deepStrictEqual(sweepPids('xALIVE 1:1\n'), []);
   assert.deepStrictEqual(sweepPids('ALIVE\n'), []);
+  assert.deepStrictEqual(sweepPids('ALIVE \n'), [], 'nothing pending');
   assert.deepStrictEqual(sweepPids(''), []);
   assert.deepStrictEqual(sweepPids(null), []);
-  const many = 'ALIVE ' + Array.from({ length: 300 }, (_, i) => i + 1).join(' ') + '\n';
+  const many = 'ALIVE ' + Array.from({ length: 300 }, (_, i) => `${i + 1}:${i + 1}`).join(' ') + '\n';
   const got = sweepPids(many);
   assert.strictEqual(got.length, 200, 'capped');
-  assert.strictEqual(got[0], 1);
-  assert.strictEqual(got[199], 200);
+  assert.deepStrictEqual(got[0], p(1, 1));
+  assert.deepStrictEqual(got[199], p(200, 200));
 });
 
-test('S7: a sweep that exited 0 is followed by NO taskkill; one that failed ends the root and every pid it reported', { skip: !onWin }, () => {
+test('S7: a sweep that exited 0 is followed by NO taskkill; one that failed ends the root, and every pending pid only through a proven start', { skip: !onWin }, () => {
   const child = { pid: 100, kill() { assert.fail('the POSIX kill is not for Windows'); } };
-  const mk = (result) => { const runs = []; return { runs, run: (...a) => { runs.push(a); return runs.length === 1 ? result : { status: 0 }; } }; };
+  const mk = (result) => {
+    const runs = []; const proven = [];
+    return { runs, proven, run: (...a) => { runs.push(a); return runs.length === 1 ? result : { status: 0 }; }, prove: (pid, start, o) => { proven.push([pid, start, o]); return 'killed'; } };
+  };
 
-  const clean = mk({ status: 0, stdout: 'ALIVE 5 6\r\n' });
-  killTree(child, 123, { run: clean.run });
+  const clean = mk({ status: 0, stdout: 'ALIVE 5:50 6:60\r\n' });
+  killTree(child, 123, { run: clean.run, prove: clean.prove });
   assert.strictEqual(clean.runs.length, 1, 'only the sweep ran');
+  assert.deepStrictEqual(clean.proven, [], 'a sweep that finished proves and kills nothing more');
   assert.strictEqual(clean.runs[0][0], 'powershell.exe');
   assert.deepStrictEqual(clean.runs[0][1].slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command']);
   assert.match(clean.runs[0][1][3], /\$root=100\b/);
-  assert.match(clean.runs[0][1][3], /FromUnixTimeMilliseconds\(123\)/);
+  assert.doesNotMatch(clean.runs[0][1][3], /FromUnixTimeMilliseconds|\$since/, 'the sweep reads no wall clock (PR #126 F4)');
   assert.strictEqual(clean.runs[0][2].windowsHide, true);
   assert.strictEqual(clean.runs[0][2].encoding, 'utf8');
   assert.deepStrictEqual(clean.runs[0][2].stdio, ['ignore', 'pipe', 'ignore']);
 
-  const failed = mk({ status: 3, stdout: 'ALIVE 5 6\n' });
-  killTree(child, 123, { run: failed.run });
-  const targets = failed.runs.slice(1).map(r => { assert.strictEqual(r[0], 'taskkill'); assert.deepStrictEqual(r[1].slice(2), ['/T', '/F']); assert.strictEqual(r[1][0], '/pid'); return r[1][1]; });
-  assert.deepStrictEqual(targets.sort(), ['100', '5', '6']);
+  // Only the ROOT (our own child, its pid held by libuv) is ended by number; every other pid goes through killProven with its start.
+  const failed = mk({ status: 3, stdout: 'ALIVE 100:1 5:50 6:60\n' });
+  killTree(child, 123, { run: failed.run, prove: failed.prove });
+  assert.deepStrictEqual(failed.runs.slice(1).map(r => r[1][1]), ['100'], 'the only taskkill by number is the root');
+  assert.strictEqual(failed.runs[1][0], 'taskkill');
+  assert.deepStrictEqual(failed.runs[1][1].slice(2), ['/T', '/F']);
   assert.deepStrictEqual(failed.runs[1][2], { windowsHide: true, stdio: 'ignore' });
+  assert.deepStrictEqual(failed.proven, [[5, '50', { toleranceTicks: 20000 }], [6, '60', { toleranceTicks: 20000 }]]);
 
-  const errored = mk({ status: null, error: new Error('timeout'), stdout: 'ALIVE 100 7\n' });
-  killTree(child, 123, { run: errored.run });
-  assert.deepStrictEqual(errored.runs.slice(1).map(r => r[1][1]).sort(), ['100', '7'], 'a sweep that errored (timed out) is also followed by the plain kill, the root once');
+  const errored = mk({ status: null, error: new Error('timeout'), stdout: 'ALIVE 100:1 7:70\n' });
+  killTree(child, 123, { run: errored.run, prove: errored.prove });
+  assert.deepStrictEqual(errored.runs.slice(1).map(r => r[1][1]), ['100'], 'a sweep that errored (timed out): the root once');
+  assert.deepStrictEqual(errored.proven.map(x => x[0]), [7]);
 
   const silent = mk({ status: 4, stdout: '' });
-  killTree(child, 123, { run: silent.run });
+  killTree(child, 123, { run: silent.run, prove: silent.prove });
   assert.deepStrictEqual(silent.runs.slice(1).map(r => r[1][1]), ['100'], 'a sweep that said nothing: the root first');
+  assert.deepStrictEqual(silent.proven, []);
+});
+
+test('S7-1 (Dexter): a pid the sweep already ENDED is not in the pending set, so a failed sweep never re-kills it (pid 7000 reused by a stranger)', { skip: !onWin }, () => {
+  // `ALIVE R:.. 7000:..` was said, 7000 was then killed, and the sweep failed (status 4). The sweep's last line no longer lists 7000.
+  const child = { pid: 100, kill() {} };
+  const runs = []; const proven = [];
+  killTree(child, 0, {
+    run: (...a) => { runs.push(a); return runs.length === 1 ? { status: 4, stdout: 'ALIVE 100:1 7000:7\nALIVE 100:1\n' } : { status: 0 }; },
+    prove: (pid, start) => { proven.push([pid, start]); return 'killed'; },
+  });
+  assert.deepStrictEqual(runs.slice(1).map(r => r[1][1]), ['100']);
+  assert.deepStrictEqual(proven, [], 'pid 7000 is not touched: it was ended by the sweep and may be a stranger now');
+});
+
+test('S7-1: a pending pid whose start no longer matches (the pid was reused) is left alone: killProven answers mismatch and nothing else runs', { skip: !onWin }, () => {
+  const child = { pid: 100, kill() {} };
+  const runs = [];
+  killTree(child, 0, {
+    run: (...a) => { runs.push(a); return runs.length === 1 ? { status: 4, stdout: 'ALIVE 100:1 5:50\n' } : { status: 0 }; },
+    prove: () => 'mismatch',
+  });
+  assert.deepStrictEqual(runs.slice(1).map(r => r[1][1]), ['100'], 'no taskkill by number follows a mismatch');
+});
+
+test('S7: a prove that throws does not stop the rest', { skip: !onWin }, () => {
+  const child = { pid: 100, kill() {} };
+  const proven = [];
+  killTree(child, 0, {
+    run: (...a) => (a[0] === 'powershell.exe' ? { status: 4, stdout: 'ALIVE 100:1 5:50 6:60\n' } : { status: 0 }),
+    prove: (pid) => { proven.push(pid); if (pid === 5) throw new Error('x'); return 'killed'; },
+  });
+  assert.deepStrictEqual(proven, [5, 6]);
 });
 
 test('S7: a run that throws is swallowed (the process is already gone)', { skip: !onWin }, () => {

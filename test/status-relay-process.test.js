@@ -324,6 +324,65 @@ test('#72 Dexter F5: a command that already exited leaves its background child a
   } finally { try { process.kill(refresher); } catch { /* gone */ } }
 });
 
+// --- BACKLOG #73, Dexter release S7-1 / S7-2: the sweep's parent link and its pending set, with the real PowerShell -------------------
+const READ_PROCS = 'function ReadProcs{Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}';
+const sweepLines = (stdout) => String(stdout || '').split(/\r?\n/).filter(l => /^ALIVE/.test(l));
+
+test('#73 S7-1 (Dexter): a pid the sweep already ENDED is not in its last ALIVE line, even though the sweep then failed', { skip: !onWin, timeout: 120000 }, async () => {
+  // cmd.exe (root) -> node (the grandchild). The 3rd table read fails: by then both are ended. The last `ALIVE` line must be empty,
+  // or the fallback would re-kill a pid that Windows may have handed to someone else.
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-ended'));
+  const seen = {};
+  const failThird = `$script:n=0\nfunction ReadProcs{$script:n++;if($script:n -ge 3){throw 'broken on purpose'};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
+  try {
+    killTree(child, since, { prove: () => assert.fail('nothing was pending, so nothing is proven or killed'), run: sabotaged(READ_PROCS, failThird, seen) });
+    assert.strictEqual(seen.sweep.status, 4, 'the sweep did not fail where the test broke it');
+    assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived`);
+    const lines = sweepLines(seen.sweep.stdout);
+    assert.ok(lines.length >= 2, `expected the snapshot line and the last line, got ${JSON.stringify(lines)}`);
+    assert.ok(sweepPids(seen.sweep.stdout).every(t => t.pid !== grandchild), `the ended grandchild ${grandchild} is still pending in ${JSON.stringify(lines[lines.length - 1])}`);
+    assert.ok(lines[0].includes(`${grandchild}:`), 'the snapshot line did list the grandchild, with its start');
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#73 S7-2 (Dexter): the Z / P / C reuse sequence -- a child that STARTED BEFORE its named parent is not adopted', { skip: !onWin, timeout: 120000 }, async () => {
+  // P (pid 2000000001) started Z (2000000002, ppid P) and exited; the pid was reused for C, a real child of the root. Z's start is
+  // BEFORE C's, so it cannot be C's child. W (2000000003) started after C: a real child. since-based code adopted Z.
+  const root = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const seen = {};
+  const t0 = Date.now();
+  const row = (id, ppid, ms) => `[pscustomobject]@{ProcessId=${id};ParentProcessId=${ppid};CreationDate=([DateTimeOffset]::FromUnixTimeMilliseconds(${t0 + ms}).UtcDateTime)}`;
+  const synthetic = `function ReadProcs{@(${row(root.pid, 1, -60000)},${row(2000000001, root.pid, 500)},${row(2000000002, 2000000001, 100)},${row(2000000003, 2000000001, 700)})}`;
+  try {
+    killTree(root, t0, { prove: () => 'killed', run: sabotaged(READ_PROCS, synthetic, seen) });
+    const first = sweepPids(seen.sweep.stdout.split(/\r?\n/)[0] + '\n').map(t => t.pid);
+    assert.deepStrictEqual(first.sort(), [root.pid, 2000000001, 2000000003].sort(), `the snapshot adopted the wrong set: ${seen.sweep.stdout}`);
+    assert.ok(!first.includes(2000000002), 'Z (older than the pid it names as its parent) was adopted');
+  } finally { try { root.kill(); } catch { /* gone */ } }
+});
+
+test('#73 S7-2: a process that started AFTER its named parent was ended is not that parent\'s child (a stranger reused the pid)', { skip: !onWin, timeout: 120000 }, async () => {
+  // After the real grandchild is killed, a table row names it as parent but started an hour LATER than its exit: not a child.
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-late'));
+  const seen = {};
+  const stranger = `$script:n=0;$script:kid=$null\nfunction ReadProcs{$script:n++;$rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8);if($script:n -eq 2){$script:kid=@($rows | Where-Object { [int]$_.ParentProcessId -eq $root })[0].ProcessId};if($script:n -ge 3 -and $script:kid){$rows+=[pscustomobject]@{ProcessId=2000000005;ParentProcessId=[int]$script:kid;CreationDate=(Get-Date).AddHours(1)}};$rows}`;
+  try {
+    killTree(child, since, { prove: () => 'killed', run: sabotaged(READ_PROCS, stranger, seen) });
+    assert.strictEqual(seen.sweep.status, 0, `the sweep should have finished clean: ${seen.sweep.status}`);
+    assert.doesNotMatch(seen.sweep.stdout, /2000000005/, 'a process that started after its parent died was adopted');
+    assert.ok(await gone(grandchild));
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#73 F4: the sweep reads no wall clock -- a stepped-back clock (since far in the future) still ends the whole tree', { skip: !onWin, timeout: 120000 }, async () => {
+  const { child, grandchild } = await hangTree(tmpDir('relay-sweep-noclock'));
+  try {
+    killTree(child, Date.now() + 3600 * 1000);
+    assert.ok(await gone(child.pid), 'the root survived');
+    assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived a sweep given a future since`);
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
 // --- #27: --quiet-when ------------------------------------------------------
 // The person moved the status line into the tab header (PLAN_LAYOUT_L2.md):
 // the relay still forwards every document, but prints nothing, so the CLI
