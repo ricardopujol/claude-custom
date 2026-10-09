@@ -65,20 +65,43 @@ test('an identity file\'s recorded start replaces a failed or earlier fresh read
   assert.deepStrictEqual(b.proven, [[10, '111']]);
 });
 
-test('a recorded start is not replaced by a later one', () => {
-  const { seen, proven } = rig({});
+test('two recorded starts for one pid are BOTH tried: a second host of this run that reused the pid is not leaked (D3-r2)', () => {
+  const proven = [];
+  const seen = createSeenPids({ startOf: () => null, prove: (pid, start) => { proven.push([pid, start]); return start === '222' ? 'killed' : 'mismatch'; }, log: () => {} });
   seen.add(10, '111');
   seen.add(10, '222');
+  const r = seen.endAll();
+  assert.deepStrictEqual(proven, [[10, '111'], [10, '222']]);
+  assert.deepStrictEqual(r.left, []);
+});
+
+test('a duplicate recorded start is tried once', () => {
+  const { seen, proven } = rig({});
+  seen.add(10, '111'); seen.add(10, '111');
   seen.endAll();
   assert.deepStrictEqual(proven, [[10, '111']]);
 });
 
-test('a failed fresh read is retried on the next sighting (Miguel 1)', () => {
-  const starts = {};
-  const { seen, proven } = rig(starts);
+// N2: a fresh read is trusted only as the FIRST sighting. worktree-ops: see(P) times out -> null; P exits; a stranger S
+// takes P; see(P) again would read S's start, and endAll would end S and its tree. A leak is acceptable, that never.
+test('a failed first read is NEVER filled from a later fresh read (it could be a stranger that took the pid) (N2)', () => {
+  const reads = ['TIMEOUT', 'STRANGER'];
+  const { seen, proven, logs } = (() => {
+    const proven = []; const logs = [];
+    const seen = createSeenPids({ startOf: () => { const r = reads.shift(); return r === 'TIMEOUT' ? null : r; }, prove: (pid, start) => { proven.push([pid, start]); return 'killed'; }, log: (m) => logs.push(m) });
+    return { seen, proven, logs };
+  })();
+  seen.see(10);          // times out
+  seen.see(10);          // the pid is a stranger's now
+  seen.endAll();
+  assert.deepStrictEqual(proven, []);
+  assert.ok(logs.some(l => /10/.test(l) && /no proven start/.test(l)), 'the skip is logged');
+});
+
+test('a failed first read IS filled by a RECORDED start (the identity file own)', () => {
+  const { seen, proven } = rig({});
   seen.see(10);
-  starts[10] = '111';
-  seen.see(10);
+  seen.add(10, '111');
   seen.endAll();
   assert.deepStrictEqual(proven, [[10, '111']]);
 });
