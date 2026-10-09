@@ -167,9 +167,16 @@ function paintTab(doc, entry, bridge) {
     const x = tab.appendChild(el(doc, 'button', 'x', '×'));
     x.type = 'button';
     x.title = 'Close tab (ends its session; the folder stays)';
-    x.addEventListener('click', (ev) => { ev.stopPropagation(); bridge.close(entry.key); });
+    x.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (ev && ev.ctrlKey === true) bridge.close(entry.key, true); else bridge.close(entry.key);
+    });
   }
-  tab.addEventListener('click', () => bridge.select(entry.key));
+  // #77: Ctrl+click closes a merged, safe tab with no confirm (main decides; it asks when it isn't safe).
+  tab.addEventListener('click', (ev) => {
+    if (entry.closable && ev && ev.ctrlKey === true) bridge.close(entry.key, true);
+    else bridge.select(entry.key);
+  });
   tab.addEventListener('contextmenu', (ev) => { ev.preventDefault(); bridge.contextMenu(entry.key); });
   return tab;
 }

@@ -38,7 +38,7 @@ const entry = (o) => ({
 });
 const bridgeSpy = () => {
   const calls = [];
-  return { calls, select: (k) => calls.push(['select', k]), close: (k) => calls.push(['close', k]), contextMenu: (k) => calls.push(['menu', k]) };
+  return { calls, select: (k) => calls.push(['select', k]), close: (k, ifSafe) => calls.push(ifSafe === undefined ? ['close', k] : ['close', k, ifSafe]), contextMenu: (k) => calls.push(['menu', k]) };
 };
 const child = (tab, cls) => tab.children.find(c => c.className.split(' ').includes(cls));
 
@@ -152,6 +152,32 @@ test('paint: the close x exists only for a closable tab, and closing does not al
   x.listeners.click({ stopPropagation: () => { stopped = true; } });
   assert.strictEqual(stopped, true);
   assert.deepStrictEqual(b.calls, [['close', 'a']]);
+});
+
+test('paint: Ctrl+click on a closable tab asks main to close it if safe (#77) instead of selecting; on dev it just selects', () => {
+  const doc = fakeDoc();
+  const b = bridgeSpy();
+  paint(doc, { model: [entry({ key: 'dev', isDev: true, closable: false }), entry({ key: 'a' })] }, b);
+  const [dev, a] = doc.byId.tabs.children;
+  a.listeners.click({ ctrlKey: true });
+  assert.deepStrictEqual(b.calls, [['close', 'a', true]]);
+  b.calls.length = 0;
+  dev.listeners.click({ ctrlKey: true });
+  assert.deepStrictEqual(b.calls, [['select', 'dev']], 'dev has no close');
+  b.calls.length = 0;
+  a.listeners.click({ ctrlKey: false });
+  a.listeners.click({});
+  assert.deepStrictEqual(b.calls, [['select', 'a'], ['select', 'a']], 'a plain click selects');
+});
+
+test('paint: Ctrl+click on the x is the same safe close; a plain x click is the plain close', () => {
+  const doc = fakeDoc();
+  const b = bridgeSpy();
+  paint(doc, { model: [entry({ key: 'a' })] }, b);
+  const x = child(doc.byId.tabs.children[0], 'x');
+  x.listeners.click({ stopPropagation() {}, ctrlKey: true });
+  x.listeners.click({ stopPropagation() {} });
+  assert.deepStrictEqual(b.calls, [['close', 'a', true], ['close', 'a']]);
 });
 
 test('paint: click selects, right-click asks main for the menu (and stops the browser\'s own)', () => {

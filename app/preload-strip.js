@@ -22,7 +22,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('strip', {
   select: (key) => ipcRenderer.send('strip:select', key),
-  close: (key) => ipcRenderer.send('strip:close', key),
+  // `ifSafe` (Ctrl+click, #77): close with no confirm when the tab is merged, clean, pushed and unoccupied.
+  close: (key, ifSafe) => ipcRenderer.send('strip:close', key, ifSafe === true),
   contextMenu: (key) => ipcRenderer.send('strip:contextMenu', key),
   plus: () => ipcRenderer.send('strip:plus'),
   create: (branch) => ipcRenderer.send('strip:create', branch),

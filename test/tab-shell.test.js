@@ -39,11 +39,11 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources } = {}) {
+function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources, safety } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
-    confirm: true, resolveCalls: [], tokens: 0, failWait: false, spawnRegisters: true, gitInFlight: 0, gitMax: 0,
+    confirm: true, confirms: [], resolveCalls: [], tokens: 0, failWait: false, spawnRegisters: true, gitInFlight: 0, gitMax: 0,
     // port -> the token file the host that BOUND that port wrote (host.js writes
     // it only on 'listening', PR #75 F2). Unset: a pre-existing host, `tok-<port>`.
     tokenFiles: {},
@@ -144,7 +144,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
       owns: (tab, sender) => tab.view === sender,
     },
     ui: {
-      confirmClose: async () => h.confirm,
+      confirmClose: async (tab, opts) => { h.confirms.push(opts || null); return h.confirm; },
       changed: (snap) => h.changes.push(snap),
       focusWindow: () => { h.focusCalls++; },
       isFocused: () => h.focused,
@@ -158,6 +158,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
   if (marks !== undefined) deps.marks = marks;
   if (occupancy !== undefined) deps.occupancy = occupancy;
   if (resources !== undefined) deps.resources = resources;
+  if (safety !== undefined) deps.safety = safety;
   deps.now = () => 1_000_000_000;
   h.shell = createShell(deps);
   return h;
@@ -1981,6 +1982,14 @@ test('handleProbeCommand: create, reopen and cancelCreate reach the driver; crea
   assert.deepStrictEqual(seen, [['create', 'feat/demo'], ['reopen'], ['cancel']]);
 });
 
+test('handleProbeCommand: ctrlClick reaches the driver with a tab label (#77); it needs one', async () => {
+  const seen = [];
+  const api = { ctrlClick: async (l) => { seen.push(l); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'ctrlClick', label: 'feat/a' }), api), { ok: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'ctrlClick' }), api), { ok: false, error: 'ctrlClick needs a label' });
+  assert.deepStrictEqual(seen, ['feat/a']);
+});
+
 test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
   const seen = [];
   const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };
@@ -2284,6 +2293,99 @@ test('the probe may drive the occupancy page actions, by name only (#44 + #47)',
 test('the probe may drive the terminal bar page actions, by name only (#49 + #52)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+// --- Ctrl+click close (backlog #77): merged + clean + pushed + no agent closes with no confirm ---------
+
+const CLEAN = { dirtyCount: 0, unpushedCount: 0 };
+const mergedHarness = (over = {}) => {
+  const h = harness({
+    running: { 7700: wt('dev'), 7701: wt('feat-a') },
+    safety: { facts: async () => h.facts },
+    ...over,
+  });
+  h.facts = { ...CLEAN };
+  h.markers[key('feat-a')] = 'feat/a';
+  return h;
+};
+
+test('ctrl-close: a merged, clean, pushed, unoccupied tab closes and stops with no confirm', async () => {
+  const h = mergedHarness();
+  await h.shell.open();
+  await flush();
+  h.confirm = false;   // would cancel, if asked
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.confirms, [], 'no dialog');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b']);
+  assert.deepStrictEqual(h.controls, [{ port: 7701, token: 'tok-7701', msg: { type: 'stop' } }]);
+  assert.deepStrictEqual(h.shell.plusMenu().reopen.map(r => r.key), [key('feat-a')], 'the closed-tabs list has it');
+});
+
+test('ctrl-close: not merged asks, and the confirm says why', async () => {
+  const h = mergedHarness();
+  delete h.markers[key('feat-a')];
+  await h.shell.open();
+  await flush();
+  h.confirm = false;
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.cancelled, true);
+  assert.deepStrictEqual(h.confirms, [{ reason: 'not merged' }]);
+  assert.strictEqual(h.shell.model().length, 3);
+});
+
+test('ctrl-close: uncommitted files, unpushed commits and an agent each ask, naming the reason', async () => {
+  const h = mergedHarness({ occupancy: { claims: () => [claimIn('feat-a')] } });
+  h.facts = { dirtyCount: 2, unpushedCount: 3 };
+  await h.shell.open();
+  await flush();
+  h.confirm = false;
+  await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.deepStrictEqual(h.confirms, [{ reason: '2 uncommitted files; 3 unpushed commits; an agent is working here' }]);
+});
+
+test('ctrl-close: asking and then saying yes still ends the session', async () => {
+  const h = mergedHarness();
+  h.facts = { dirtyCount: 1, unpushedCount: 0 };
+  await h.shell.open();
+  await flush();
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.confirms.length, 1);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/b']);
+});
+
+test('ctrl-close: git unknown, a throwing reader, or no reader at all is NOT safe', async () => {
+  for (const safety of [
+    { facts: async () => ({ dirtyCount: null, unpushedCount: 0 }) },
+    { facts: async () => { throw new Error('git broke'); } },
+    { facts: async () => 'junk' },
+    undefined,
+  ]) {
+    const h = mergedHarness(safety === undefined ? { safety: null } : { safety });
+    await h.shell.open();
+    await flush();
+    h.confirm = false;
+    const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+    assert.strictEqual(r.cancelled, true, JSON.stringify(safety));
+    assert.strictEqual(h.confirms.length, 1);
+    assert.ok(h.confirms[0].reason.length > 0);
+  }
+});
+
+test('ctrl-close: a plain close (no ifSafe) still asks once, with no reason, even for a safe tab', async () => {
+  const h = mergedHarness();
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.confirms, [null]);
+});
+
+test('ctrl-close: dev still has no close', async () => {
+  const h = mergedHarness();
+  await h.shell.open();
+  await flush();
+  assert.strictEqual((await h.shell.closeTab(key('dev'), { ifSafe: true })).ok, false);
 });
 
 // --- worktree occupancy (#44 + #47) -----------------------------------------------

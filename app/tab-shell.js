@@ -47,6 +47,7 @@ const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
 const tabStatusLib = require('./tab-status');
 const occupancyDisplay = require('./occupancy-display');
+const { closeReason } = require('../host/close-safety');
 const summaryDisplay = require('./summary-display');
 const { planGoTo } = require('./go-to-session');
 
@@ -169,7 +170,8 @@ function sanitizeStatus(s) {
  *   views.owns(tab, sender)-> boolean       the view's webContents is `sender`
  *   occupancy.claims()     -> [claim]    the LIVE worktree-occupancy claims (host/occupancy-service.js); optional
  *   now()                  -> ms         the clock the "4 min" labels read; optional
- *   ui.confirmClose(tab)   -> Promise<boolean>
+ *   safety.facts(cwd)      -> Promise<{ dirtyCount, unpushedCount }>  the folder's git facts for a Ctrl+click close (#77); optional
+ *   ui.confirmClose(tab, { reason }?) -> Promise<boolean>   `reason` only when a Ctrl+click close wasn't safe
  *   ui.changed(snapshot)
  *   ui.focusWindow()       restore + show + focus + flash
  *   ui.isFocused()
@@ -210,6 +212,9 @@ function createShell(deps) {
     // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
     // (gh can't say). Absent: never confirmed, so never typed.
     prs = null,
+    // #77: `facts(cwd)` -> { dirtyCount, unpushedCount } (null for a fact git couldn't give). Optional: without it
+    // a Ctrl+click close always asks.
+    safety = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -630,14 +635,40 @@ function createShell(deps) {
     return null;
   }
 
-  /** Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. */
-  async function closeTab(key) {
+  /**
+   * #77: why a Ctrl+click close must still ask -- '' when it is safe (merged, nothing uncommitted, nothing
+   * unpushed, no agent in the folder). Every fact that can't be read counts against it.
+   */
+  async function unsafeReason(tab) {
+    const branch = branchOf(tab.key) || tab.branch;
+    let merged = false;
+    try { merged = typeof branch === 'string' && git.marker(tab.cwd, branch) !== null; } catch { merged = false; }
+    let facts = null;
+    if (safety && typeof safety.facts === 'function') {
+      try { facts = await safety.facts(tab.cwd); } catch (err) { log('[shell] safety.facts threw:', err && err.message); }
+    }
+    const f = facts && typeof facts === 'object' ? facts : {};
+    const occ = occupancyDisplay.tabOccupancy(readClaims(), tab.key, { keyOf });
+    const agentsHere = occ ? occ.count : 0;
+    return closeReason({ merged, dirtyCount: f.dirtyCount, unpushedCount: f.unpushedCount, agentsHere });
+  }
+
+  /**
+   * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
+   * skips the confirm when unsafeReason is empty; otherwise the confirm is told why.
+   */
+  async function closeTab(key, { ifSafe = false } = {}) {
     const tab = tabByKey(key);
     if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
     if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
-    try { yes = (await ui.confirmClose(tab)) === true; } catch { yes = false; }
+    let reason = '';
+    if (ifSafe === true) reason = await unsafeReason(tab);
+    if (ifSafe === true && reason === '') yes = true;
+    else {
+      try { yes = (await ui.confirmClose(tab, ifSafe === true ? { reason } : undefined)) === true; } catch { yes = false; }
+    }
     if (!yes) return { ok: false, cancelled: true };
     if (!tabs.has(key)) return { ok: true };     // gone while the dialog was up
     // Dexter, PR #75 F3: a tab still attaching has no host to stop YET. Let the
@@ -1215,6 +1246,10 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'state': return { ok: true, ...(await api.state()) };
       case 'select': return await api.select(String(cmd.label));
       case 'close': return await api.close(String(cmd.label));
+      case 'ctrlClick':
+        // #77: a real Ctrl+click on the strip's tab, so the page's own handler runs.
+        if (typeof cmd.label !== 'string') return { ok: false, error: 'ctrlClick needs a label' };
+        return await api.ctrlClick(cmd.label);
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };

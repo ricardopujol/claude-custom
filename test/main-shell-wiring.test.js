@@ -191,13 +191,24 @@ test('the probe driver does nothing without its env var, and only listens locall
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
   assert.match(MAIN, /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
   assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
-  assert.match(MAIN, /if \(PROBE_PORT\) return true;/, 'the confirm is auto-yes only under the driver');
+  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason \}\);\r?\n\s+return reason === '';/,
+    'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
 });
 
 test('a hand close asks first, every time', () => {
   assert.match(MAIN, /dialog\.showMessageBox\(win, \{/);
   assert.match(MAIN, /message: `End the session in \$\{label\}\?`/);
-  assert.match(MAIN, /detail: 'The folder stays\.'/);
+  assert.match(MAIN, /: 'The folder stays\.'/);
+});
+
+test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
+  assert.match(MAIN, /ipcMain\.on\('strip:close', \(e, key, ifSafe\)/);
+  assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
+  assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
+  assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
+  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\) \}/);
+  // the context menu and the plain x stay plain
+  assert.match(MAIN, /label: 'Close tab', enabled: st\.close, click: \(\) => closeTabFlow\(key\)/);
 });
 
 test('there is NO application menu bar: it is nulled once, before the window, and never set', () => {
