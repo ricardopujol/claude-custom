@@ -1687,7 +1687,7 @@ app.whenReady().then(async () => {
     resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
     // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
     // `known`: whether "no claims" can be believed (#77: a Ctrl+click close treats an unreadable service as unknown).
-    occupancy: { claims: () => occupancyService.current(), known: () => occupancyService.known() },
+    occupancy: { claims: () => occupancyService.current(), known: (folder) => occupancyService.known(folder) },
     // #77: a Ctrl+click close reads the folder's git facts (uncommitted, unpushed) before deciding to skip the confirm.
     safety: { facts: (folder) => readCloseFacts(folder) },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.

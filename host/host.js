@@ -1280,6 +1280,9 @@ if (helperExists) {
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
     night.handle(ev);
+    // The turn state sees them too: a turn that only Reads and Edits (a blocked Stop's continuation, a turn an
+    // agent's result opened) is live, and the early returns below would leave it 'idle' (BACKLOG #77 R1).
+    if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
     if (isOccupancyOnly(ev)) return;
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
@@ -1366,7 +1369,6 @@ if (helperExists) {
       }));
     }
     attention.handle(ev);
-    if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
     mood.handle(ev);
     // A backstop ending a call means that call's own close never arrived --
     // logged, because a lost event nobody can see is how PostToolUseFailure

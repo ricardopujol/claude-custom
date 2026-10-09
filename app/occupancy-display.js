@@ -79,8 +79,12 @@ function lineFor(c, now) {
 
 const OWN_WRITING = "this tab's own session is writing too";
 
-function tabOccupancy(claims, key, { keyOf = identity, turn, now } = {}) {
-  const mine = distinctAgents((Array.isArray(claims) ? claims : []).filter(c => isClaim(c) && keyOf(c.worktree) === key));
+// `withAlso`: the close check also counts a folder the agent touched earlier, the same set known() doubts for an unprovable
+// claim (PR #139 Dexter F4). The strip draws only where an agent works now.
+function tabOccupancy(claims, key, { keyOf = identity, turn, now, withAlso = false } = {}) {
+  const here = c => keyOf(c.worktree) === key ||
+    (withAlso === true && Array.isArray(c.also) && c.also.some(a => isStr(a) && keyOf(a) === key));
+  const mine = distinctAgents((Array.isArray(claims) ? claims : []).filter(c => isClaim(c) && here(c)));
   if (mine.length === 0) return null;
   const warn = turn === 'turn';
   const lines = mine.map(c => lineFor(c, now));
