@@ -389,15 +389,33 @@ async function main() {
     `rings ${cpuRings.toFixed(2)}%, graph ${cpuGraph.toFixed(2)}%`);
 
   // 6 -----------------------------------------------------------------------------
-  // A GitHub origin: the strip's Open commit turns on. (The tree is asked again; it reads origin every time.)
+  // A GitHub origin: the strip's Open commit turns on, but only for a commit a remote ref reaches (a 404 otherwise).
+  // The tree is asked again (it reads origin every time); the graph is asked again by a switch of view.
   git(dev, 'remote', 'add', 'origin', 'https://github.com/probe/graph.git');
   await view(app, 'gitRefresh');
-  await view(app, 'ggClick', { hash: st.rows[1].hash });
-  const on = await waitFor(async () => {
+  const openOf = async (hash, want) => {
+    await view(app, 'ggClick', { hash });
+    return waitFor(async () => {
+      const s = await gg();
+      return s.detail && actOf(s, 'open-commit').disabled === want ? s : null;
+    }, 15000, 400);
+  };
+  const unpushed = await openOf(tipB.hash, true);
+  check('6: with a GitHub origin but nothing pushed, Open commit is still off and says so', !!unpushed && /not pushed/.test(actOf(unpushed, 'open-commit').why),
+    JSON.stringify((await gg()).detail && (await gg()).detail.acts));
+  await view(app, 'ggClick', { hash: tipB.hash });
+  // a remote ref at develop's tip: the merge commit and everything under it is now on the remote
+  git(dev, 'update-ref', 'refs/remotes/origin/develop', mergeHash);
+  await view(app, 'ggView', { view: 'rings', save: false });
+  await view(app, 'ggView', { view: 'graph', save: false });
+  const pushedNow = await waitFor(async () => {
     const s = await gg();
-    return s.detail && actOf(s, 'open-commit').disabled === false ? s : null;
+    const m = s.rows.find(r => r.hash === mergeHash);
+    return m && m.refs.includes('origin/develop') ? s : null;
   }, 15000, 400);
-  check('6: with a GitHub origin the strip\'s Open commit is enabled', !!on, JSON.stringify((await gg()).detail && (await gg()).detail.acts));
+  check('6: the remote ref shows as a chip on the commit it points at', !!pushedNow, JSON.stringify((await gg()).rows.map(r => r.refs)));
+  const on = await openOf(mergeHash, false);
+  check('6: ...and that commit has Open commit enabled', !!on, JSON.stringify((await gg()).detail && (await gg()).detail.acts));
 
   // 7 -----------------------------------------------------------------------------
   // The choice is saved per project: a click on the Graph button (the real one) saves it

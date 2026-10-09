@@ -554,3 +554,12 @@ test('the Graph view never asks for a frame, sets a timer, or observes a resize'
     assert.ok(!code.includes(word), `${word} in git-graph-display.js`);
   }
 });
+
+// PR #157 Dexter F1 / Miguel Y3: the page's only way to ask for the graph is the asker (app/git-graph-display.js createAsker),
+// fed by the hello's `controls`; and the hidden Graph view is not drawn while Rings shows.
+test('renderer.js asks for the graph only through the gated asker, and draws it only while it shows', () => {
+  const src = read('app/renderer.js');
+  assert.doesNotMatch(src, /type:\s*'git-graph'/, 'a bare git-graph frame in the renderer');
+  assert.match(src, /gitGraphAsker\.setControls\(msg\.controls\)/);
+  assert.match(src, /if \(gitView !== 'graph' \|\| lastGitGraph === null\) return;/);
+});

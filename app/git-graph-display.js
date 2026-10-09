@@ -31,6 +31,28 @@ const PAD = 10;
 const DOT_R = 4;
 const LANE_COLOURS = 6;   // .gg-l0 .. .gg-l5 in renderer.html
 
+// ---------- the ask ----------
+
+const NEEDS_NEWER = 'The graph needs a newer session: restart this tab.';
+
+/**
+ * The page's ask for the graph. Hosts outlive windows, so a new page can attach to a host that doesn't list
+ * `git-graph` in its hello: that host would TYPE the frame into the session. So nothing is sent until the hello says
+ * the host accepts it (the check app/repo-requester.js makes for `repo`). `ask()` -> { sent, note }: `note` is what the
+ * panel should say when the host is too old; before the hello arrives it is not known, so nothing is sent or said.
+ */
+function createAsker(send) {
+  let controls = null;
+  return {
+    setControls(list) { controls = list; },
+    ask() {
+      if (!Array.isArray(controls)) return { sent: false, note: null };
+      if (!controls.includes('git-graph')) return { sent: false, note: NEEDS_NEWER };
+      return { sent: send('{"type":"git-graph"}') === true, note: null };
+    },
+  };
+}
+
 // ---------- the view choice ----------
 
 const VIEWS = ['rings', 'graph'];
@@ -65,24 +87,20 @@ function step(x0, y0, x1, y1) {
 }
 
 /**
- * One edge from the commit at `row`: it leaves for its `via` lane in the first row gap, runs down it, and bends
- * into its parent's lane in the last one. A parent outside the window runs off the bottom.
+ * One edge from the commit at `row`: it bends into its parent's lane in the first row gap, runs straight down it, and
+ * ends at the parent. A parent outside the window runs off the bottom.
  */
 function edgePath(edge, row, lane, rows) {
   const x0 = laneX(lane);
   const y0 = rowY(row);
-  const xv = laneX(edge.via);
+  const x1 = laneX(edge.lane);
   if (edge.row === null) {
     const bottom = rows * ROW_H;
-    const y1 = Math.min(y0 + ROW_H, bottom);
-    return `M${x0} ${y0} ${step(x0, y0, xv, y1)} L${xv} ${bottom}`;
+    return `M${x0} ${y0} ${step(x0, y0, x1, Math.min(y0 + ROW_H, bottom))} L${x1} ${bottom}`;
   }
-  const x1 = laneX(edge.lane);
   const y1 = rowY(edge.row);
   if (edge.row === row + 1) return `M${x0} ${y0} ${step(x0, y0, x1, y1)}`;
-  const yFirst = y0 + ROW_H;
-  const yLast = y1 - ROW_H;
-  return `M${x0} ${y0} ${step(x0, y0, xv, yFirst)} L${xv} ${yLast} ${step(xv, yLast, x1, y1)}`;
+  return `M${x0} ${y0} ${step(x0, y0, x1, y0 + ROW_H)} L${x1} ${y1}`;
 }
 
 /** graph -> { width, height, nodes: [{ hash, x, y, lane, merge }], edges: [{ d, lane, merge }] } */
@@ -93,7 +111,7 @@ function geometry(graph) {
   const nodes = commits.map((c, i) => ({ hash: c.hash, x: laneX(c.lane), y: rowY(i), lane: c.lane, merge: c.parents.length > 1 }));
   const edges = [];
   commits.forEach((c, i) => {
-    for (const e of c.edges) edges.push({ d: edgePath(e, i, c.lane, rows), lane: e.via, merge: e.merge });
+    for (const e of c.edges) edges.push({ d: edgePath(e, i, c.lane, rows), lane: e.lane, merge: e.merge });
   });
   return { width: PAD * 2 + Math.max(0, laneCount - 1) * LANE_W, height: rows * ROW_H, nodes, edges };
 }
@@ -106,12 +124,10 @@ function dayOf(time) {
   return Number.isNaN(d.getTime()) ? null : `${MON[d.getMonth()]} ${d.getDate()}`;
 }
 
-const isRemote = n => n.startsWith('origin/');
-
 /** The tree's branch whose tip this commit is (a local ref on it), preferring one with an open worktree. */
 function branchAt(commit, tree) {
   const branches = tree && Array.isArray(tree.branches) ? tree.branches : [];
-  const mine = (commit.refs || []).filter(n => !isRemote(n)).map(n => branches.find(b => b.name === n)).filter(Boolean);
+  const mine = (commit.refs || []).filter(x => !x.remote).map(x => branches.find(b => b.name === x.name)).filter(Boolean);
   return mine.find(b => b.place === 'worktree') || mine[0] || null;
 }
 
@@ -119,7 +135,11 @@ function openCommit(commit, tree) {
   const label = 'Open commit on GitHub';
   const t = tree && tree.ok ? tree : null;
   if (!t) return { id: 'open-commit', label, enabled: false, why: "the branch list hasn't loaded yet" };
-  if (typeof t.repoUrl === 'string' && t.repoUrl) return { id: 'open-commit', label, enabled: true, why: null };
+  if (typeof t.repoUrl === 'string' && t.repoUrl) {
+    // `pushed` is false only when git said no remote reaches it; unknown (null, absent) is not "no"
+    if (commit && commit.pushed === false) return { id: 'open-commit', label, enabled: false, why: 'not pushed to GitHub yet' };
+    return { id: 'open-commit', label, enabled: true, why: null };
+  }
   if (typeof t.originHost === 'string' && t.originHost) {
     return { id: 'open-commit', label, enabled: false, why: `origin points at ${t.originHost}, not a github.com address it can open` };
   }
@@ -137,7 +157,7 @@ function jumpAction(commit, tree, tab) {
 function commitModel(commit, { tree = null, tab = null } = {}) {
   const c = commit || {};
   const parents = Array.isArray(c.parents) ? c.parents : [];
-  const refs = Array.isArray(c.refs) ? c.refs : [];
+  const refs = (Array.isArray(c.refs) ? c.refs : []).map(x => x.name);
   const meta = [
     typeof c.hash === 'string' ? c.hash.slice(0, 7) : null,
     c.author || null,
@@ -292,7 +312,8 @@ function wire(graphEl) {
     if (!row) return;
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      select(graphEl, row.getAttribute('data-hash'));
+      const hash = row.getAttribute('data-hash');
+      select(graphEl, st.selected === hash ? null : hash);
       return;
     }
     const delta = { ArrowDown: 1, ArrowUp: -1 }[e.key];
@@ -304,11 +325,16 @@ function wire(graphEl) {
   });
 }
 
-/** What changes the drawing: the graph, and the little of the tree and the tabs the detail strip reads. */
+/**
+ * What changes the drawing: the graph, and the little of the tree and the tabs the strip reads. The strip reads a
+ * branch's name, place and folder, the repo's address, and whether the branch's worktree tab is open: not a branch's
+ * state or PR, and not what a tab is doing (those change every few seconds).
+ */
 function keyOf(graph, tree, tabs) {
-  const t = tree && tree.ok ? { repoUrl: tree.repoUrl || null, originHost: tree.originHost || null, prsKnown: tree.prsKnown,
-    branches: (tree.branches || []).map(b => [b.name, b.place, b.folder || null, b.state, b.pr || null]) } : null;
-  return JSON.stringify([graph === undefined ? null : graph, t, tabs]);
+  const open = new Map((Array.isArray(tabs) ? tabs : []).filter(t => t && typeof t.folder === 'string').map(t => [t.folder, t.open]));
+  const t = tree && tree.ok ? { repoUrl: tree.repoUrl || null, originHost: tree.originHost || null,
+    branches: (tree.branches || []).map(b => [b.name, b.place, b.folder || null, typeof b.folder === 'string' && open.has(b.folder) ? open.get(b.folder) : null]) } : null;
+  return JSON.stringify([graph === undefined ? null : graph, t]);
 }
 
 /**
@@ -341,15 +367,16 @@ function render(rootEl, graph, { tree = null, tabs = null, onJump, onOpenUrl, on
   // the scroll position is the person's: a redraw puts it back
   const was = body.querySelector('.gg-scroll');
   const scrollTop = was ? was.scrollTop : 0;
-  const focused = doc.activeElement && graphEl.contains(doc.activeElement) && doc.activeElement.getAttribute
-    ? doc.activeElement.getAttribute('data-hash') : null;
+  const at = doc.activeElement && graphEl.contains(doc.activeElement) && doc.activeElement.getAttribute ? doc.activeElement : null;
+  const focusedAct = at ? at.getAttribute('data-act') : null;
+  const focused = at && !focusedAct ? at.getAttribute('data-hash') : null;
 
   body.textContent = '';
-  if (!graph || !graph.ok) {
+  if (!graph || !graph.ok || !Array.isArray(graph.commits)) {
     st.graph = null;
     st.byHash = new Map();
     st.selected = null;
-    status.textContent = `Can't read this repo's commits: ${(graph && graph.error) || 'no answer'}`;
+    status.textContent = `Can't read this repo's commits: ${(graph && graph.error) || (graph && graph.ok ? 'no commit list in the answer' : 'no answer')}`;
     return;
   }
   status.textContent = '';
@@ -375,19 +402,22 @@ function render(rootEl, graph, { tree = null, tabs = null, onJump, onOpenUrl, on
     const row = el(doc, 'div', { class: `gg-row${st.selected === c.hash ? ' sel' : ''}`, role: 'listitem', tabindex: '0', 'data-hash': c.hash,
       'aria-label': `${c.hash.slice(0, 7)} ${c.subject || '(no message)'}` }, list);
     row.style.height = `${ROW_H}px`;
-    for (const name of c.refs) el(doc, 'span', { class: `gg-ref${isRemote(name) ? ' remote' : ''}` }, row).textContent = name;
+    for (const x of c.refs) el(doc, 'span', { class: `gg-ref${x.remote ? ' remote' : ''}` }, row).textContent = x.name;
     el(doc, 'span', { class: 'gg-msg' }, row).textContent = c.subject || '(no message)';
   });
   el(doc, 'aside', { class: 'gg-detail', hidden: '', tabindex: '-1', role: 'region', 'aria-label': 'Commit details' }, body);
   fillDetail(graphEl);
   scroll.scrollTop = scrollTop;
-  if (focused) {
+  if (focusedAct) {
+    const b = [...graphEl.querySelectorAll('.git-act')].find(x => x.getAttribute('data-act') === focusedAct);
+    if (b) b.focus();
+  } else if (focused) {
     const r = [...graphEl.querySelectorAll('.gg-row')].find(x => x.getAttribute('data-hash') === focused);
     if (r) r.focus();
   }
 }
 
-const api = { render, geometry, commitModel, commitLink, readView, writeView, viewKey, normalizeView, adoptView, dayOf, ROW_H, LANE_W, PAD };
+const api = { render, geometry, commitModel, commitLink, readView, writeView, viewKey, normalizeView, adoptView, createAsker, NEEDS_NEWER, dayOf, ROW_H, LANE_W, PAD };
 
 if (isNode) {
   module.exports = api;

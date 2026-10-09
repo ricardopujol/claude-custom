@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 
-const { repoUrl, prUrl, commitUrl, parseRemoteUrl } = require('../host/pr-url');
+const { repoUrl, prUrl, parseRemoteUrl } = require('../host/pr-url');
 
 test('https, with or without .git, a trailing slash or a newline', () => {
   assert.strictEqual(repoUrl('https://github.com/ricardopujol/claude-custom.git'), 'https://github.com/ricardopujol/claude-custom');
@@ -88,15 +88,4 @@ test('Dexter F9: remoteHost names the host of any remote, and never its credenti
   for (const s of ['https://user:s3cret@github-x/o/r', 'tok3n@hostx:o/r']) {
     assert.doesNotMatch(String(remoteHost(s)), /s3cret|tok3n|user/);
   }
-});
-
-test('commitUrl: the commit page, for a hex hash only', () => {
-  const h = 'a'.repeat(40);
-  assert.strictEqual(commitUrl('https://github.com/o/r', h), `https://github.com/o/r/commit/${h}`);
-  assert.strictEqual(commitUrl('https://github.com/o/r', 'abc1234'), 'https://github.com/o/r/commit/abc1234');
-  for (const bad of ['', 'abc12', 'xyz1234', `${h}/../../x`, 'abc1234?x=1', null, undefined, 42]) {
-    assert.strictEqual(commitUrl('https://github.com/o/r', bad), null, String(bad));
-  }
-  assert.strictEqual(commitUrl(null, h), null);
-  assert.strictEqual(commitUrl('', h), null);
 });

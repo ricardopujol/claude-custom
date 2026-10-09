@@ -10,11 +10,12 @@ const fc = require('fast-check');
 
 const { FakeDocument } = require('./fake-dom');
 const display = require('../app/git-graph-display');
-const { assignLanes, buildGraph } = require('../host/git-graph');
+const { buildGraph } = require('../host/git-graph');
 
 const c = (hash, parents = [], extra = {}) => ({ hash, parents, time: 1_760_000_000, author: 'Ann', subject: `msg ${hash}`, refs: [], ...extra });
 const graphOf = (...commits) => ({ ok: true, integration: 'develop', ...buildGraph(commits) });
 const { ROW_H, LANE_W, PAD } = display;
+const ref = (name, remote = false) => ({ name, remote });
 
 // ---------- the choice, remembered per project ----------
 
@@ -100,7 +101,7 @@ const TREE = { ok: true, prsKnown: true, repoUrl: 'https://github.com/o/r', orig
 ] };
 
 test('the model names the commit: message, short hash, author, day, merge, refs', () => {
-  const m = display.commitModel(c('abcdef0123456789', ['p1', 'p2'], { refs: ['develop'] }), { tree: TREE });
+  const m = display.commitModel(c('abcdef0123456789', ['p1', 'p2'], { refs: [ref('develop')] }), { tree: TREE });
   assert.strictEqual(m.title, 'msg abcdef0123456789');
   assert.match(m.meta, /^abcdef0 · Ann · [A-Z][a-z]{2} \d{1,2} · merge of 2 parents$/);
   assert.deepStrictEqual(m.refs, ['develop']);
@@ -128,12 +129,12 @@ test('Open commit follows origin: enabled with a GitHub repo, else disabled and 
 
 test('Jump to its tab: only for the tip of a branch with an open worktree; the tab can veto it', () => {
   const jump = (commit, tab) => display.commitModel(commit, { tree: TREE, tab }).actions.find(a => a.id === 'jump');
-  assert.strictEqual(jump(c('x1', [], { refs: ['feat/a'] })).enabled, true);
-  assert.strictEqual(jump(c('x1', [], { refs: ['feat/a'] }), { open: false }).enabled, false);
-  assert.match(jump(c('x1', [], { refs: ['feat/a'] }), { open: false }).why, /no tab/);
-  assert.match(jump(c('x2', [], { refs: ['feat/b'] })).why, /no open worktree/);
+  assert.strictEqual(jump(c('x1', [], { refs: [ref('feat/a')] })).enabled, true);
+  assert.strictEqual(jump(c('x1', [], { refs: [ref('feat/a')] }), { open: false }).enabled, false);
+  assert.match(jump(c('x1', [], { refs: [ref('feat/a')] }), { open: false }).why, /no tab/);
+  assert.match(jump(c('x2', [], { refs: [ref('feat/b')] })).why, /no open worktree/);
   assert.strictEqual(jump(c('x3')).why, 'not the tip of a branch with an open worktree');
-  assert.strictEqual(jump(c('x4', [], { refs: ['origin/feat/a'] })).enabled, false, 'a remote ref is not a worktree branch');
+  assert.strictEqual(jump(c('x4', [], { refs: [ref('origin/feat/a', true)] })).enabled, false, 'a remote ref is not a worktree branch');
 });
 
 test('commitLink builds the URL from the repo and a hex hash only', () => {
@@ -148,7 +149,7 @@ test('commitLink builds the URL from the repo and a hex hash only', () => {
 
 const flush = () => new Promise(res => setImmediate(res));
 
-function rig({ graph = graphOf(c('a1b2c3d', ['e4f5a6b'], { refs: ['develop'] }), c('e4f5a6b', [], { subject: '<b>x</b>' })), tree = TREE, tabs = [], handlers = {} } = {}) {
+function rig({ graph = graphOf(c('a1b2c3d', ['e4f5a6b'], { refs: [ref('develop')] }), c('e4f5a6b', [], { subject: '<b>x</b>' })), tree = TREE, tabs = [], handlers = {} } = {}) {
   const doc = new FakeDocument();
   const rootEl = doc.createElement('section');
   doc.root.appendChild(rootEl);
@@ -188,9 +189,9 @@ test('a subject is text, never markup', () => {
 });
 
 test('a remote ref is marked as one', () => {
-  const r = rig({ graph: graphOf(c('a1b2c3d', [], { refs: ['origin/develop', 'develop'] })) });
+  const r = rig({ graph: graphOf(c('a1b2c3d', [], { refs: [ref('develop'), ref('origin/develop', true)] })) });
   const chips = r.graphEl.querySelectorAll('.gg-ref');
-  assert.deepStrictEqual(chips.map(x => x.classList.contains('remote')), [true, false]);
+  assert.deepStrictEqual(chips.map(x => x.classList.contains('remote')), [false, true]);
 });
 
 test('a failed or missing answer says so and draws nothing; an empty repo says there are no commits', () => {
@@ -319,7 +320,7 @@ test('a disabled action does nothing, and its reason is on screen beside it', as
 });
 
 test('Jump selects the worktree tab of the branch the commit is the tip of', async () => {
-  const graph = graphOf(c('a1b2c3d', [], { refs: ['feat/a'] }));
+  const graph = graphOf(c('a1b2c3d', [], { refs: [ref('feat/a')] }));
   const r = rig({ graph });
   r.row('a1b2c3d').dispatch('click');
   r.button('jump').dispatch('click');
@@ -333,7 +334,7 @@ test('Jump selects the worktree tab of the branch the commit is the tip of', asy
 });
 
 test('a tab the shell says is closed turns Jump off', () => {
-  const graph = graphOf(c('a1b2c3d', [], { refs: ['feat/a'] }));
+  const graph = graphOf(c('a1b2c3d', [], { refs: [ref('feat/a')] }));
   const r = rig({ graph, tabs: [{ folder: 'C:/p/feat-a', open: false }] });
   r.row('a1b2c3d').dispatch('click');
   assert.strictEqual(r.button('jump').getAttribute('aria-disabled'), 'true');
@@ -370,12 +371,6 @@ test('without handlers the actions say so instead of failing silently', async ()
   assert.strictEqual(r.said(), "Can't open a browser from here.");
 });
 
-test('assignLanes and the page agree on the shape the host sends', () => {
-  const rows = assignLanes([c('a', ['b']), c('b')]).rows;
-  const g = graphOf(c('a', ['b']), c('b'));
-  assert.deepStrictEqual(g.commits.map(x => x.lane), rows.map(x => x.lane));
-});
-
 test('when the project becomes known: a view chosen meanwhile wins and is saved; otherwise the saved one applies', () => {
   assert.deepStrictEqual(display.adoptView({ chosen: false, current: 'rings', saved: 'graph' }), { view: 'graph', persist: false });
   assert.deepStrictEqual(display.adoptView({ chosen: false, current: 'rings', saved: 'rings' }), { view: 'rings', persist: false });
@@ -383,4 +378,95 @@ test('when the project becomes known: a view chosen meanwhile wins and is saved;
   assert.deepStrictEqual(display.adoptView({ chosen: true, current: 'rings', saved: 'graph' }), { view: 'rings', persist: true });
   assert.deepStrictEqual(display.adoptView({ chosen: false, current: 'rings', saved: 'junk' }), { view: 'rings', persist: false });
   assert.deepStrictEqual(display.adoptView({ chosen: true, current: 'junk', saved: 'graph' }), { view: 'rings', persist: true });
+});
+
+// ---------- the ask: nothing is sent to a host that doesn't list `git-graph` (it would TYPE the frame into the session) ----------
+
+test('the ask goes only to a host whose hello lists git-graph; an older one gets nothing and the panel says why', () => {
+  const sent = [];
+  const asker = display.createAsker(frame => { sent.push(frame); return true; });
+  assert.deepStrictEqual(asker.ask(), { sent: false, note: null }, 'before the hello it is not known: nothing sent, nothing said');
+  asker.setControls(['git-tree', 'repo']);
+  assert.deepStrictEqual(asker.ask(), { sent: false, note: display.NEEDS_NEWER });
+  assert.match(display.NEEDS_NEWER, /newer session/);
+  asker.setControls(undefined);
+  assert.strictEqual(asker.ask().sent, false);
+  asker.setControls('git-graph');
+  assert.strictEqual(asker.ask().sent, false, 'a string is not a list');
+  assert.deepStrictEqual(sent, []);
+  asker.setControls(['git-tree', 'git-graph']);
+  assert.deepStrictEqual(asker.ask(), { sent: true, note: null });
+  assert.deepStrictEqual(sent, ['{"type":"git-graph"}']);
+});
+
+test('a socket that cannot send is "not sent", with no note', () => {
+  const asker = display.createAsker(() => false);
+  asker.setControls(['git-graph']);
+  assert.deepStrictEqual(asker.ask(), { sent: false, note: null });
+});
+
+// ---------- review fixes (PR #157) ----------
+
+test('what the host sends is what the page draws: a commit with chips, pushed and lane geometry', () => {
+  const g = display.geometry(graphOf(c('a1', ['b1'], { refs: [ref('develop'), ref('origin/develop', true)], pushed: true }), c('b1', [], { pushed: null })));
+  assert.strictEqual(g.nodes.length, 2);
+  assert.strictEqual(g.edges.length, 1);
+});
+
+test('Open commit is off for a commit no remote reaches; on when it is, or when that is unknown', () => {
+  const act = commit => display.commitModel(commit, { tree: TREE }).actions.find(a => a.id === 'open-commit');
+  const no = act(c('abcdef0', [], { pushed: false }));
+  assert.strictEqual(no.enabled, false);
+  assert.strictEqual(no.why, 'not pushed to GitHub yet');
+  assert.strictEqual(act(c('abcdef0', [], { pushed: true })).enabled, true);
+  assert.strictEqual(act(c('abcdef0', [], { pushed: null })).enabled, true);
+  assert.strictEqual(act(c('abcdef0')).enabled, true, 'no pushed field: unknown');
+  // no GitHub address wins as the reason: it is the more basic one
+  assert.match(display.commitModel(c('abcdef0', [], { pushed: false }), { tree: { ...TREE, repoUrl: null } }).actions[0].why, /no GitHub remote/);
+});
+
+const TIP = c('a1b2c3d', [], { refs: [ref('feat/a')] });
+const TAB_A = { folder: 'C:/p/feat-a', open: true, working: true, needsInput: false, turn: 'turn', lock: 'held' };
+
+test('a tab that only changes what it is doing redraws nothing; one that opens or closes does, and the focus comes back to the same button', () => {
+  const r = rig({ graph: graphOf(TIP), tabs: [TAB_A] });
+  r.row('a1b2c3d').dispatch('click');
+  r.button('copy').focus();
+  const before = r.graphEl.ggState.renders;
+  r.redraw(graphOf(TIP), TREE, [{ ...TAB_A, working: false, turn: 'idle' }]);
+  assert.strictEqual(r.graphEl.ggState.renders, before, 'working / turn are not what the strip shows');
+  assert.strictEqual(r.doc.activeElement, r.button('copy'));
+  r.redraw(graphOf(TIP), { ...TREE, branches: TREE.branches.map(b => ({ ...b, state: 'merged', pr: 9 })) }, [TAB_A]);
+  assert.strictEqual(r.graphEl.ggState.renders, before, 'a branch\'s state or PR is not what the strip shows');
+  r.redraw(graphOf(TIP), TREE, [{ ...TAB_A, open: false }]);
+  assert.strictEqual(r.graphEl.ggState.renders, before + 1);
+  assert.strictEqual(r.button('jump').getAttribute('aria-disabled'), 'true');
+  assert.ok(r.doc.activeElement && r.doc.activeElement.isConnected, 'the focus is on something still on the page');
+  assert.strictEqual(r.doc.activeElement.getAttribute('data-act'), 'copy');
+});
+
+test('a tab for a folder the tree has no branch for does not redraw the graph', () => {
+  const r = rig({ graph: graphOf(TIP), tabs: [] });
+  const before = r.graphEl.ggState.renders;
+  r.redraw(graphOf(TIP), TREE, [{ folder: 'C:/elsewhere', open: true, working: true }]);
+  assert.strictEqual(r.graphEl.ggState.renders, before);
+});
+
+test('Enter and Space toggle a commit, as a click does', () => {
+  const r = rig();
+  r.row('a1b2c3d').dispatch('keydown', { key: 'Enter' });
+  assert.strictEqual(r.detail().hidden, false);
+  r.row('a1b2c3d').dispatch('keydown', { key: 'Enter' });
+  assert.strictEqual(r.detail().hidden, true);
+  r.row('a1b2c3d').dispatch('keydown', { key: ' ' });
+  assert.strictEqual(r.detail().hidden, false);
+  r.row('a1b2c3d').dispatch('keydown', { key: ' ' });
+  assert.strictEqual(r.detail().hidden, true);
+});
+
+test('an ok answer with no commit list is said, not thrown', () => {
+  const r = rig();
+  assert.doesNotThrow(() => r.redraw({ ok: true }));
+  assert.match(r.status.textContent, /no commit list/);
+  assert.strictEqual(r.rows().length, 0);
 });

@@ -37,12 +37,6 @@ function prUrl(repo, n) {
   return Number.isInteger(n) && n > 0 ? `${repo}/pull/${n}` : null;
 }
 
-/** '<repoUrl>/commit/<hash>' for a hex commit hash (7 to 64 digits), else null: a hash is the only thing that joins the path. */
-function commitUrl(repo, hash) {
-  if (typeof repo !== 'string' || !repo) return null;
-  return typeof hash === 'string' && /^[0-9a-f]{7,64}$/i.test(hash) ? `${repo}/commit/${hash}` : null;
-}
-
 const HOSTNAME = /^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$/;
 // scheme://[userinfo@]host, then a port, a path or the end; or scp-like [user@]host:path (not a drive letter)
 const URL_HOST = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/\s]*@)?([^/:\s?#@]+)(?=$|[/:?#])/i;
@@ -63,4 +57,4 @@ function remoteHost(remote) {
   return host.toLowerCase();
 }
 
-module.exports = { repoUrl, prUrl, commitUrl, parseRemoteUrl, remoteHost };
+module.exports = { repoUrl, prUrl, parseRemoteUrl, remoteHost };

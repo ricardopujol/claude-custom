@@ -825,12 +825,19 @@ let gitView = 'rings';
 let gitViewProject = null;
 let gitViewChosen = false;       // a button was pressed: the project's saved view must not overrule it when it arrives
 let lastGitGraph = null;
+// Nothing is sent to a host that doesn't list `git-graph` in its hello: it would TYPE the frame into the session
+// (the asker keeps that rule, with tests); the panel says the session needs restarting instead.
+const gitGraphAsker = window.gitGraphDisplay.createAsker(frame => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  try { ws.send(frame); return true; } catch { return false; }
+});
 function requestGitGraph() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(JSON.stringify({ type: 'git-graph' })); } catch {}
+  const r = gitGraphAsker.ask();
+  if (r.note) document.getElementById('git-graph-status').textContent = r.note;
 }
 function renderGitGraph() {
-  if (lastGitGraph === null) return;       // nothing answered yet: the status line says "reading the commits…"
+  // only the shown view is drawn; nothing answered yet: the status line says "reading the commits…"
+  if (gitView !== 'graph' || lastGitGraph === null) return;
   window.gitGraphDisplay.render(document.getElementById('git-body'), lastGitGraph, {
     tree: lastGitTree,
     tabs: lastGitTabs,
@@ -6509,6 +6516,8 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    gitGraphAsker.setControls(msg.controls);
+    if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();

@@ -43,7 +43,7 @@ test('parents are drawn below their child, and a merge connects real lanes', () 
       assert.deepStrictEqual(r.edges.map(e => e.hash), commits[i].parents, 'one edge per parent, in order');
       r.edges.forEach((e, k) => {
         assert.strictEqual(e.merge, k > 0);
-        assert.ok(e.via >= 0 && e.via < g.laneCount && e.lane >= 0 && e.lane < g.laneCount);
+        assert.ok(e.lane >= 0 && e.lane < g.laneCount);
         if (rowOf.has(e.hash)) {
           assert.ok(e.row > i, 'the parent is below its child');
           assert.strictEqual(e.row, rowOf.get(e.hash));
@@ -63,8 +63,8 @@ test('no commit sits on a lane another commit\'s edge is running down', () => {
       for (const e of r.edges) {
         const end = e.row === null ? g.rows.length : e.row;
         for (let k = i + 1; k < end; k++) {
-          assert.notStrictEqual(g.rows[k].lane, e.via,
-            `row ${k} sits on lane ${e.via} under the edge ${i} -> ${e.hash}`);
+          assert.notStrictEqual(g.rows[k].lane, e.lane,
+            `row ${k} sits on lane ${e.lane} under the edge ${i} -> ${e.hash}`);
         }
       }
     });
@@ -81,11 +81,24 @@ test('edges running down one lane at the same row lead to the same parent', () =
         for (const e of r.edges) {
           const end = e.row === null ? Infinity : e.row;
           if (end <= k) continue;
-          if (!byLane.has(e.via)) byLane.set(e.via, new Set());
-          byLane.get(e.via).add(e.hash);
+          if (!byLane.has(e.lane)) byLane.set(e.lane, new Set());
+          byLane.get(e.lane).add(e.hash);
         }
       });
       for (const hashes of byLane.values()) assert.ok(hashes.size <= 1, 'two different parents share a lane at row ' + k);
+    }
+  }));
+});
+
+test('no hash is ever waited for in two lanes: every edge to one parent runs down one lane', () => {
+  fc.assert(fc.property(dagArb, commits => {
+    const g = assignLanes(commits);
+    const laneOf = new Map();
+    for (const r of g.rows) {
+      for (const e of r.edges) {
+        if (laneOf.has(e.hash)) assert.strictEqual(laneOf.get(e.hash), e.lane, 'two lanes wait for ' + e.hash);
+        laneOf.set(e.hash, e.lane);
+      }
     }
   }));
 });
