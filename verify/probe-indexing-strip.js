@@ -311,7 +311,7 @@ ${electronLog.slice(-3000)}`);
       const rows = await waitFor(() => evalIn(list, `(() => { const p = document.querySelector('.pop');
         return p ? [...p.querySelectorAll('.row')].map(r => r.querySelector('.what').textContent + ' | ' + r.querySelector('.where').textContent
           + ' | ' + [...r.querySelectorAll('button')].map(b => b.textContent).join(',')) : null; })()`));
-      check('6 the list shows today\'s two notes: the one not filed (with Copy), the one undone',
+      check('6 the list shows today\'s two notes: both undone',
         !!rows && rows.length === 2 && /nowhere to go \| Undone \| ?$/.test(rows[0]) && /tabs should glow when a session needs me \| Undone \| ?$/.test(rows[1]),
         JSON.stringify(rows));
       await shoot(list, '6-list.png');
