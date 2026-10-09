@@ -96,6 +96,7 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
+const { suspendVerified } = require('../host/process-suspend');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -911,6 +912,13 @@ function registerIpc() {
   ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
+  // Pause / Resume (#19): the same guard as Stop, re-checked in main (host/resource-pause.js) however the page asks.
+  ipcMain.handle('resources:pause', (e, req) => (isTabView(e.sender) && resources
+    ? resources.pause(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
+  ipcMain.handle('resources:resume', (e, req) => (isTabView(e.sender) && resources
+    ? resources.resume(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
   ipcMain.handle('resources:stopLeftovers', (e, req) => (isTabView(e.sender) && resources
     ? resources.stopLeftovers(req)
@@ -1760,6 +1768,8 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Pause / Resume (#19): NtSuspendProcess / NtResumeProcess on a handle that re-proves pid and start time (host/process-suspend.js).
+    suspend: (action, targets) => suspendVerified(action, targets, { exec: createPowerShellExec(20000) }),
     // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
     // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
     // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
@@ -1827,6 +1837,15 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+// A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
+// The quit is held once, for as long as the resumes take, and then asked for again.
+let pausedWoken = false;
+app.on('will-quit', (e) => {
+  if (!resources || pausedWoken || !resources.hasPaused()) return;
+  pausedWoken = true;
+  e.preventDefault();
+  resources.resumeAll().catch(() => {}).finally(() => app.quit());
+});
 app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app);

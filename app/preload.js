@@ -236,6 +236,9 @@ contextBridge.exposeInMainWorld('harness', {
     // the saved setting, read synchronously so the page decides the chip before its first paint
     chipOn: () => ipcRenderer.sendSync('resources:chipOn') !== false,
     stop: (req) => ipcRenderer.invoke('resources:stop', req),
+    // Pause / Resume of a child row (#19), by pid and start time; main judges it with Stop's own guard.
+    pause: (req) => ipcRenderer.invoke('resources:pause', req),
+    resume: (req) => ipcRenderer.invoke('resources:resume', req),
     // The Leftovers section's Stop: { rows: [{ pid, start }] } or { group }. Main resolves it against its own latest sample.
     stopLeftovers: (req) => ipcRenderer.invoke('resources:stopLeftovers', req),
     onState: (fn) => (ipcRenderer.removeAllListeners('resources:state'), ipcRenderer.on('resources:state',

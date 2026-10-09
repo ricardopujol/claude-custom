@@ -64,7 +64,7 @@ function chipView(payload) {
 
 // ---- state --------------------------------------------------------------------------------------------------
 
-const emptyState = () => ({ payload: null, expanded: [], confirm: null, pending: null, outcome: null, leftBusy: false, leftNote: null });
+const emptyState = () => ({ payload: null, expanded: [], confirm: null, pending: null, outcome: null, leftBusy: false, leftNote: null, pauseBusy: null });
 
 function sessionRows(payload) {
   return payload && payload.model && payload.model.project && Array.isArray(payload.model.project.rows) ? payload.model.project.rows : [];
@@ -75,11 +75,13 @@ function hasChild(payload, pid, start) {
 
 /** A new sample arrived: "Stopped" lasts one sample, and a confirm or message about a process that left is dropped. */
 function withPayload(state, payload) {
-  let { confirm, outcome } = state;
+  let { confirm, outcome, pauseBusy } = state;
   if (confirm && !hasChild(payload, confirm.pid, confirm.start)) confirm = null;
+  // A Pause / Resume in flight for a process that left: its answer would never match a row, so the buttons are freed.
+  if (pauseBusy && !hasChild(payload, pauseBusy.pid, pauseBusy.start)) pauseBusy = null;
   if (outcome && (outcome.kind === 'stopped' || !hasChild(payload, outcome.pid, outcome.start))) outcome = null;
   // The Leftovers Stop's message lasts one sample, like "Stopped".
-  return { ...state, payload, confirm, outcome, leftNote: null };
+  return { ...state, payload, confirm, outcome, pauseBusy, leftNote: null };
 }
 
 /** A Leftovers Stop was pressed: the request is in flight and every Leftovers button is disabled until it answers. */
@@ -114,6 +116,21 @@ function stopResult(state, req, result) {
   return { ...state, confirm: null, pending: null, outcome: { ...base, kind: 'refused', text: `Couldn't stop PID ${req.pid}: ${why}.` } };
 }
 
+/**
+ * Pause / Resume (BACKLOG #19). One request at a time: while it is in flight every Pause / Resume button is disabled. No confirm
+ * (Resume undoes it). Success shows nothing here: the next sample draws the row "paused" (or running again). A refusal is said on
+ * the row, in words, until the process leaves, like Stop's.
+ */
+const beginPause = (state, req) => (state.pauseBusy ? state : { ...state, pauseBusy: { pid: req.pid, start: req.start, name: req.name }, outcome: null });
+
+function pauseResult(state, req, result, verb) {
+  const base = { pid: req.pid, start: req.start, name: req.name };
+  if (result && result.ok === true) return { ...state, pauseBusy: null, outcome: null };
+  if (result && result.reason === 'gone') return { ...state, pauseBusy: null, outcome: { ...base, kind: 'gone', text: 'Already exited' } };
+  const why = result && isStr(result.text) && result.text !== '' ? result.text : 'the request did not get through';
+  return { ...state, pauseBusy: null, outcome: { ...base, kind: 'refused', text: `Couldn't ${verb === 'resume' ? 'resume' : 'pause'} PID ${req.pid}: ${why}.` } };
+}
+
 /** A click's data attributes -> an action, or null. Strict: a pid is a positive integer, a start time is digits. */
 function actionOf(data) {
   if (!data || typeof data !== 'object') return null;
@@ -125,6 +142,12 @@ function actionOf(data) {
     }
     case 'left-stop-group': return LEFT_STOP_GROUPS.includes(data.resGroup) ? { act: 'left-stop-group', group: data.resGroup } : null;
     case 'left-delete': return isStr(data.resKey) && /^\d+:\d+$/.test(data.resKey) ? { act: 'left-delete', key: data.resKey } : null;
+    case 'pause':
+    case 'resume': {
+      const pid = /^\d+$/.test(String(data.resPid)) ? Number(data.resPid) : 0;
+      if (!(pid > 0) || !/^\d+$/.test(String(data.resStart)) || !isStr(data.resName)) return null;
+      return { act: data.resAct, pid, start: data.resStart, name: data.resName };
+    }
     case 'confirm-stop': return { act: 'confirm-stop' };
     case 'cancel-stop': return { act: 'cancel-stop' };
     case 'ask-stop': {
@@ -291,9 +314,13 @@ function view(state) {
   };
 
   const proj = model.project || { rows: [], self: { parts: [] } };
+  const pauseNote = isStr(p.pauseNote) && p.pauseNote !== '' ? p.pauseNote : null;
   const childView = (c) => {
     const same = x => !!x && x.pid === c.pid && x.start === c.start;
+    const pausedNow = !!c.paused && typeof c.paused === 'object';
     return {
+      paused: pausedNow ? { text: isNum(c.paused.since) ? `paused ${clockOf(c.paused.since)}` : 'paused' } : null,
+      canPause: c.canPause === true && !pausedNow, pauseNote, pauseLocked: !!state.pauseBusy,
       pid: c.pid, name: c.name, cmd: c.cmd, full: isStr(c.full) && c.full !== '' ? c.full : c.cmd, start: c.start, cpuFig: cpuFig(c.cpu), memFig: memFig(c.bytes), canStop: c.canStop === true,
       confirm: same(state.confirm), pending: same(state.pending), outcome: same(state.outcome) ? state.outcome : null,
     };
@@ -324,6 +351,12 @@ function view(state) {
   };
 }
 
+// HH:MM in the person's own time zone, 24 hours.
+function clockOf(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 // ---- the HTML ---------------------------------------------------------------------------------------------------
 
 const bar = (b) => (b
@@ -343,10 +376,19 @@ function childHtml(c) {
   const stop = c.canStop
     ? `<button type="button" class="res-stop" data-res-act="ask-stop" data-res-pid="${esc(c.pid)}" data-res-start="${esc(c.start)}" data-res-name="${esc(c.name)}" aria-label="Stop ${esc(c.name)}, PID ${esc(c.pid)}" title="Stop ${esc(c.name)}, PID ${esc(c.pid)}">■</button>`
     : '';
-  // ONE line per child: name (truncated first), CPU, memory, then a small square Stop at the end. The command line is the
-  // row's hover tooltip, not a line of its own.
-  let h = `<div class="res-child" title="${esc(c.full)}"><span class="res-cname">${esc(c.name)}</span>`
-    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop || '<span class="res-stop-gap" aria-hidden="true"></span>'}</div>`;
+  // Pause, or Resume on a paused row (BACKLOG #19): a small button before Stop. The CLI-limit note rides on Pause's tooltip.
+  const lock = c.pauseLocked ? ' disabled' : '';
+  const data = `data-res-pid="${esc(c.pid)}" data-res-start="${esc(c.start)}" data-res-name="${esc(c.name)}"`;
+  const pause = c.paused
+    ? `<button type="button" class="res-pause" data-res-act="resume" ${data} aria-label="Resume ${esc(c.name)}, PID ${esc(c.pid)}" title="Resume ${esc(c.name)}, PID ${esc(c.pid)}"${lock}>▶</button>`
+    : c.canPause
+      ? `<button type="button" class="res-pause" data-res-act="pause" ${data} aria-label="Pause ${esc(c.name)}, PID ${esc(c.pid)}" title="Pause ${esc(c.name)}, PID ${esc(c.pid)}${c.pauseNote ? `. ${esc(c.pauseNote)}` : ''}"${lock}>⏸</button>`
+      : '<span class="res-stop-gap" aria-hidden="true"></span>';
+  // ONE line per child: name (truncated first), CPU, memory, then a small square Pause and Stop at the end. The command line is the
+  // row's hover tooltip, not a line of its own. A paused row carries "paused HH:MM" after its name.
+  let h = `<div class="res-child${c.paused ? ' res-paused-row' : ''}" title="${esc(c.full)}"><span class="res-cname">${esc(c.name)}</span>`
+    + (c.paused ? `<span class="res-paused">${esc(c.paused.text)}</span>` : '')
+    + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${pause}${stop || '<span class="res-stop-gap" aria-hidden="true"></span>'}</div>`;
   if (c.confirm) {
     const lock = c.pending ? ' disabled' : '';
     h += `<div class="res-confirm" role="alert">Stop ${esc(c.name)}, PID ${esc(c.pid)}? Only this process stops, and anything it started stops with it. `
@@ -384,7 +426,7 @@ function html(v) {
 /** The chip's on/off the page holds: a payload with a real boolean wins; anything else keeps what the page had. */
 const nextChipOn = (current, payload) => (payload && typeof payload.chipOn === 'boolean' ? payload.chipOn : current);
 
-const API = { fmtAge, fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, beginLeftStop, leftStopResult, actionOf, view, html };
+const API = { fmtAge, fmtCpu, fmtBytes, chipView, nextChipOn, emptyState, withPayload, toggle, askStop, cancelStop, beginStop, stopResult, beginPause, pauseResult, beginLeftStop, leftStopResult, actionOf, view, html };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesDisplay = API;
