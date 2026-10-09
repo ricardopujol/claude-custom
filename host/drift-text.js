@@ -51,13 +51,22 @@ const BEARER = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{16,}/gi;
 // A secret-named variable or key, however it is spelled around the name: DB_PASSWORD=x, "password": "x", clientSecret = x, AWS_SECRET_ACCESS_KEY=x.
 // The name must END at the keyword or at a separator (so `tokens` and `authorName` are code, not secrets); the lookbehind makes a match start
 // only at the start of an identifier, which keeps a long run of identifier characters linear.
-const ASSIGNED = /((?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*?(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|credentials?|authorization|auth)(?![A-Za-z0-9])[A-Za-z0-9_.-]*?["']?\s*[:=]\s*)(["']?)[^\s"',;]{4,}\2/gi;
+const ASSIGNED = /((?<![A-Za-z0-9_.-])[A-Za-z0-9_.-]*?(?:(?:password|passwd|pass|secret|credential)s?[0-9]*|passphrase|secretkey|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|[_-]key|authorization|auth)(?![A-Za-z0-9])[A-Za-z0-9_.-]*?["']?\s*[:=]\s*)(?:"[^"\n]{4,}"|'[^'\n]{4,}'|[^\s"',;]{4,})/gi;
+// scheme://user:password@host (a connection string, a clone URL): the credentials go, the host stays
+const URL_CREDENTIALS = /((?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/)[^\s/@:"']*:[^\s/@"']+@/gi;
 
 const EXCLUDED_FILE = [
   /(^|\/)\.env/i, /\.env$/i, /(^|\/)(id_rsa|id_ed25519|credentials(\.json)?)$/i, /(^|\/)package-lock\.json$/i, /(^|\/)(yarn\.lock|pnpm-lock\.yaml)$/i, /\.min\.(js|css)$/i,
-  /\.(pem|key|p12|pfx|crt|cer)$/i, /(^|\/)secrets?(\.|\/|$)/i, /(^|\/)node_modules\//i,
+  /\.(pem|key|p12|pfx|crt|cer)$/i, /(^|\/)secrets?(\.|\/|$)/i, /(^|\/)node_modules\//i, /(^|\/)dist\//i,
   /\.(png|jpe?g|gif|webp|ico|mp4|webm|mp3|wav|zip|exe|dll|woff2?|ttf|pdf|map)$/i,
 ];
+
+// The same files as pathspecs for `git diff`, so git itself leaves them out and its byte cap is spent on code (PR #153 R2-3):
+// a 3 MB source map that sorts before the code can't push the code past the cut.
+const EXCLUDE_PATHSPECS = ['*.map', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '*.min.js', '*.min.css', 'dist/**', 'node_modules/**',
+  '.env*', '*.env', '*.pem', '*.key', '*.p12', '*.pfx', '*.crt', '*.cer', 'id_rsa', 'id_ed25519', 'credentials.json', 'secret', 'secret.*', 'secrets', 'secrets.*', 'secret/**', 'secrets/**',
+  '*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp', '*.ico', '*.mp4', '*.webm', '*.mp3', '*.wav', '*.zip', '*.exe', '*.dll', '*.woff', '*.woff2', '*.ttf', '*.pdf']
+  .map(g => ':(exclude,glob)**/' + g);
 
 const isStr = (s) => typeof s === 'string';
 const squash = (s) => s.replace(/\s+/g, ' ').trim();
@@ -67,7 +76,8 @@ function redact(text) {
   let out = text;
   for (const re of REDACTIONS) out = out.replace(re, '[redacted]');
   out = out.replace(BEARER, '$1[redacted]');
-  return out.replace(ASSIGNED, '$1$2[redacted]$2');
+  out = out.replace(URL_CREDENTIALS, '$1[redacted]@');
+  return out.replace(ASSIGNED, '$1[redacted]');
 }
 
 const cap = (s, n) => (s.length > n ? s.slice(0, n) : s);
@@ -93,6 +103,21 @@ function trimDiff(diff, { maxChars = DIFF_MAX_CHARS, perFile = DIFF_PER_FILE } =
       return out + CUT;
     }
     out += chunk;
+  }
+  return out;
+}
+
+/**
+ * The lines a diff ADDED or REMOVED, without their mark. A header is told from a line by POSITION, not by prefix: everything between
+ * `diff --git` and the first `@@` is header, and inside a hunk `--- uses the old index` is a removed line and `+++retries;` an added one.
+ */
+function changedLinesOf(diff) {
+  const out = [];
+  let inHunk = false;
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('diff --git ')) { inHunk = false; continue; }
+    if (line.startsWith('@@')) { inHunk = true; continue; }
+    if (inHunk && (line[0] === '+' || line[0] === '-')) out.push(line.slice(1));
   }
   return out;
 }
@@ -241,9 +266,7 @@ function parseReply(text, shownDocs, shownDiff) {
   const rels = docs.map(d => d.rel).sort((a, b) => b.length - a.length);
   // Only a line the merge CHANGED can prove a flag: not a context line, not a `diff --git` / `---` / `+++` / `@@` header, and one line
   // at a time (text spread over two lines is not a line of the diff).
-  const changed = (isStr(shownDiff) ? shownDiff : '').split('\n')
-    .filter(l => (l.startsWith('+') && !l.startsWith('+++')) || (l.startsWith('-') && !l.startsWith('---')))
-    .map(l => alnum(l.slice(1)));
+  const changed = changedLinesOf(isStr(shownDiff) ? shownDiff : '').map(alnum);
   const out = [];
   const seen = new Set();
   for (const it of items) {
@@ -271,6 +294,6 @@ function parseReply(text, shownDocs, shownDiff) {
 }
 
 module.exports = {
-  redact, trimDiff, changedFilesOf, buildLogNow, isBuildLog, candidateDocs, buildPrompt, parseReply,
+  redact, trimDiff, changedFilesOf, buildLogNow, isBuildLog, candidateDocs, buildPrompt, parseReply, changedLinesOf, EXCLUDE_PATHSPECS,
   DIFF_MAX_CHARS, PROMPT_MAX_CHARS, MAX_FLAGS, BUILD_LOG, SYSTEM,
 };

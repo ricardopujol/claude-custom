@@ -25,6 +25,7 @@
  */
 
 const { execFile } = require('child_process');
+const { EXCLUDE_PATHSPECS } = require('./drift-text');
 
 const SHA = /^[0-9a-f]{7,40}$/i;
 const TIMEOUT_MS = 20_000;
@@ -87,11 +88,28 @@ function createDriftGit({ cwd, branch = 'develop', execFileImpl, timeoutMs, run 
     }
   }
 
+  /** Is this commit absent from the repository? true | false; a failure to ask throws. */
+  async function isMissing(sha) {
+    try {
+      await run(['cat-file', '-e', `${sha}^{commit}`]);
+      return false;
+    } catch (err) {
+      if (isInfraError(err)) throw err;
+      return true;
+    }
+  }
+
   async function merges(from, to, { limit = DEFAULT_LIMIT } = {}) {
     checked(from);
     checked(to);
     if (from === to) return [];
-    if (!(await isAncestor(from, to))) return null;
+    try {
+      if (!(await isAncestor(from, to))) return null;
+    } catch (err) {
+      // exit 128 for a mark git no longer has (pruned, a re-clone) is an answer about the MARK: follow develop, as for a rewind
+      if (exitedWith(err, 128) && await isMissing(from)) return null;
+      throw err;
+    }
     const out = await run(['log', '--first-parent', '--merges', '--format=%H%x09%P%x09%s', `${from}..${to}`]);   // newest first
     const kept = [];
     for (const l of out.split('\n')) {
@@ -108,7 +126,7 @@ function createDriftGit({ cwd, branch = 'develop', execFileImpl, timeoutMs, run 
 
   async function diff(sha) {
     checked(sha);
-    return run(['diff', '--no-color', '--no-ext-diff', '-U2', `${sha}^1`, sha], { truncateOk: true });
+    return run(['diff', '--no-color', '--no-ext-diff', '-U2', `${sha}^1`, sha, '--', '.', ...EXCLUDE_PATHSPECS], { truncateOk: true });
   }
 
   return { head, merges, diff };

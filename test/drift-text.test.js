@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 const {
-  redact, trimDiff, changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply, isBuildLog,
+  redact, trimDiff, changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply, isBuildLog, EXCLUDE_PATHSPECS,
   DIFF_MAX_CHARS, PROMPT_MAX_CHARS, MAX_FLAGS,
 } = require('../host/drift-text');
 
@@ -341,4 +341,55 @@ test('parseReply: the - line and the + line of one change may be quoted together
   assert.deepStrictEqual(one('-const NUM_PREDICT = 350;\n const keep = 1;'), [], 'a context line among them');
   assert.deepStrictEqual(one('-const NUM_PREDICT = 350;\n+const something = else;'), [], 'a line that is not in the diff');
   assert.deepStrictEqual(one('-const NUM_PREDICT = 350; +const NUM_PREDICT = 700;'), [], 'two lines run together are not a line');
+});
+
+// ---- PR #153 round 2 ---------------------------------------------------------------------------------------------
+
+test('redact: URL credentials, DB_PASS, SECRETKEY / SECRETS / PASSWORD1 and quoted passphrases with spaces lose their value (R2-4)', () => {
+  const lines = [
+    '+DATABASE_URL=postgres://admin:hunter2hunter2@db:5432/app',
+    '+redis_url: "redis://:hunter2hunter2@cache:6379"',
+    '+DB_PASS=hunter2hunter2',
+    '+SECRETKEY=abcd1234efgh',
+    '+PASSWORD1=hunter2hunter2',
+    '+SECRETS=hunter2hunter2',
+    '+ENCRYPTION_KEY=abcd1234efgh',
+    '+password = "correct horse battery staple"',
+    "+passphrase: 'correct horse battery staple'",
+  ];
+  for (const l of lines) {
+    const out = redact(l);
+    assert.match(out, /\[redacted\]/, l);
+    assert.doesNotMatch(out, /hunter2|abcd1234efgh|horse|battery/, l);
+  }
+  assert.match(redact('+const u = "https://example.com/path?x=1";'), /https:\/\/example\.com\/path\?x=1/, 'a URL with no credentials is left alone');
+});
+
+test('redact: the ordinary-code lines still survive the wider net', () => {
+  for (const l of ['const tokens = countTokens(text);', 'const authorName = "x";', 'const passes = 3;', 'sort = byName;', 'const keyboard = 1;']) assert.strictEqual(redact(l), l);
+});
+
+test('trimDiff / parseReply: a reason that echoes a URL credential is scrubbed too (R2-4)', () => {
+  const d = diffOf('host/ask-index.js', '+  // the refresh now runs after the answer');
+  const out = parseReply(JSON.stringify([item({ why: 'DATABASE_URL now points at postgres://admin:hunter2hunter2@db' })]), given, d);
+  assert.doesNotMatch(out[0].why, /hunter2/);
+});
+
+test('trimDiff: maps, lockfiles, minified files and dist/ are dropped whole, and the pathspecs handed to git cover the same files (R2-3)', () => {
+  const files = ['dist/app.js', 'web/dist/x.css', 'aaa/big.map', 'package-lock.json', 'a/yarn.lock', 'a/pnpm-lock.yaml', 'x/app.min.js', 'x/app.min.css', 'node_modules/p/i.js'];
+  for (const f of files) assert.doesNotMatch(trimDiff(diffOf(f, '+x') + diffOf('host/ok.js', '+const a = 1;')), new RegExp(f.replace(/[./]/g, '\\$&')), f);
+  assert.ok(EXCLUDE_PATHSPECS.every(p => p.startsWith(':(exclude,glob)**/')), EXCLUDE_PATHSPECS.join(' '));
+  for (const needle of ['*.map', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', '*.min.js', '*.min.css', 'dist/**', 'node_modules/**', '.env*', '*.env', '*.pem', 'id_rsa']) {
+    assert.ok(EXCLUDE_PATHSPECS.some(p => p.endsWith('**/' + needle)), needle);
+  }
+});
+
+test('parseReply: a removed line that starts with -- and an added line that starts with ++ are changed lines, not file headers (R2-5)', () => {
+  const d = diffOf('db/q.sql', '--- uses the old index\n+++countRetries();');
+  const g = [{ rel: 'DESIGN_Q.md', excerpt: 'The query uses the old index. It calls countRetries.' }];
+  const one = (sentence, ev) => parseReply(JSON.stringify([{ doc: 'DESIGN_Q.md', sentence, evidence: ev, why: 'w' }]), g, d);
+  assert.strictEqual(one('The query uses the old index.', '-- uses the old index').length, 1);
+  assert.strictEqual(one('It calls countRetries.', '++countRetries();').length, 1);
+  // ...while the real headers are still not evidence
+  assert.deepStrictEqual(one('The query uses the old index.', 'b/db/q.sql'), []);
 });

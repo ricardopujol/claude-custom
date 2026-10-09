@@ -123,3 +123,30 @@ test('a real timeout (a child that outlives it, killed by Node) is an infrastruc
   const m = await g.merges('a'.repeat(40), 'b'.repeat(40)).then(() => null, e => e);
   assert.ok(m && m.killed === true, 'is-ancestor timing out is not a rewind');
 });
+
+// ---- PR #153 round 2 ---------------------------------------------------------------------------------------------
+const { trimDiff } = require('../host/drift-text');
+
+test('a 3 MB source map sorted before the code does not eat the cap: the code change reaches trimDiff (R2-3)', async () => {
+  const dir = repo();
+  const g = createDriftGit({ cwd: dir });
+  git(dir, 'checkout', '-q', '-b', 'maps');
+  fs.mkdirSync(path.join(dir, 'aaa'));
+  fs.mkdirSync(path.join(dir, 'host'));
+  fs.writeFileSync(path.join(dir, 'aaa', 'big.map'), Array.from({ length: 50_000 }, (_, i) => `mapping ${i} ${'y'.repeat(50)}`).join('\n'));
+  fs.writeFileSync(path.join(dir, 'host', 'x.js'), 'const changed = 1;\n');
+  git(dir, 'add', '.'); git(dir, 'commit', '-q', '-m', 'maps');
+  git(dir, 'checkout', '-q', 'develop');
+  git(dir, 'merge', '-q', '--no-ff', '-m', 'Merge pull request #2 from x/maps', 'maps');
+  const d = await g.diff(git(dir, 'rev-parse', 'HEAD'));
+  assert.doesNotMatch(d, /big\.map/);
+  const shown = trimDiff(d);
+  assert.match(shown, /host\/x\.js/);
+  assert.match(shown, /\+const changed = 1;/);
+});
+
+test('a mark that is not in the repository (pruned, or a re-clone) is followed, not an error on every tick (R2-6)', async () => {
+  const dir = repo();
+  const g = createDriftGit({ cwd: dir });
+  assert.strictEqual(await g.merges('1'.repeat(40), await g.head()), null);
+});

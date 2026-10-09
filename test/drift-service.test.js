@@ -143,7 +143,8 @@ test('a reply that is not a JSON list is dropped for that merge and said once, n
   const { svc, store, calls } = rig({ reply: { ok: true, text: 'The docs look fine to me.' } });
   await svc.tick();
   assert.strictEqual(store.read().processed, H('b'));
-  assert.strictEqual(svc.snapshot().off.detail, 'bad-reply');
+  assert.strictEqual(svc.snapshot().off, null, 'it is a note now (R2-2), not an off line the next tick would wipe');
+  assert.match(svc.snapshot().notes[0].doc, /not checked/);
   await svc.tick();
   assert.strictEqual(calls.generate, 1);
 });
@@ -282,27 +283,117 @@ function failingDiff(err) {
   return { ...base, svc };
 }
 
-test('a merge whose diff can never be read is let go after MAX_ATTEMPTS, and never takes the GPU slot again (PR #153 Dexter 1)', async () => {
-  const { svc, store, calls, t } = failingDiff(new Error('stdout maxBuffer length exceeded'));
+// What a process answers with: an exit status (the merge's own failure), vs what stops it (infrastructure).
+const OWN = () => Object.assign(new Error('fatal: bad object'), { code: 128, killed: false, signal: null });
+const KILLED = () => Object.assign(new Error('Command failed: git diff'), { code: null, killed: true, signal: 'SIGTERM' });
+const LETGO_NOTE = /not checked/;
+
+test('a merge whose diff git itself refuses (its OWN failure) is let go after MAX_ATTEMPTS, and never takes the GPU slot again (PR #153 Dexter 1)', async () => {
+  const { svc, store, calls, t } = failingDiff(OWN());
   for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
   assert.strictEqual(calls.acquire, MAX_ATTEMPTS, 'one slot hold per attempt, then none');
   assert.strictEqual(calls.release, calls.acquire);
   assert.strictEqual(store.read().processed, H('b'), 'the mark moved past the bad merge');
 });
 
-test('the merge that was let go is said, with its short id and why', async () => {
-  const { svc, t } = failingDiff(new Error('stdout maxBuffer length exceeded'));
-  for (let i = 0; i < MAX_ATTEMPTS; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
-  assert.match(svc.snapshot().off.detail, /let go of c{12} after 3 tries/);
+test('infrastructure never counts against a merge: a git that is killed / times out / is missing / has a full buffer keeps the mark however long it lasts (R2-1)', async () => {
+  for (const err of [KILLED(), Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }), Object.assign(new Error('maxBuffer'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }), new Error('plain')]) {
+    const { svc, store, t } = failingDiff(err);
+    for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+    assert.strictEqual(store.read().processed, H('a'), String(err.message));
+    assert.strictEqual(svc.snapshot().notes.length, 0);
+  }
 });
 
-test('a merge the model keeps timing out on, or Ollama keeps answering 500 for, is let go the same way', async () => {
+test('Ollama timing out or answering 5xx never counts against a merge; when it recovers the merge is read, not skipped (R2-1)', async () => {
   for (const reason of ['timeout', 'http']) {
-    const { svc, store, calls, t } = rig({ reply: { ok: false, reason } });
+    const { svc, store, calls, r, t } = rig({ reply: { ok: false, reason } });
     for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
-    assert.strictEqual(calls.generate, MAX_ATTEMPTS, reason);
+    assert.strictEqual(store.read().processed, H('a'), reason);
+    assert.strictEqual(calls.generate, MAX_ATTEMPTS + 3, 'it keeps trying, one job a minute');
+    r.reply = { ok: true, text: GOOD };
+    await svc.tick();
     assert.strictEqual(store.read().processed, H('b'), reason);
+    assert.ok(svc.snapshot().notes.some(n => n.doc === 'DESIGN_ASK_REPO.md'), 'the merge was read');
   }
+});
+
+test('a held GPU slot never counts against a merge either', async () => {
+  const { svc, store, r, t } = rig({ slotFree: false });
+  for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.strictEqual(store.read().processed, H('a'));
+  r.slotFree = true;
+  await svc.tick();
+  assert.strictEqual(store.read().processed, H('b'));
+});
+
+test('a reply that is not a list on a valid diff is the merge\'s own failure: let go, and said (R2-1)', async () => {
+  const { svc, store } = rig({ reply: { ok: true, text: 'The docs look fine to me.' } });
+  await svc.tick();
+  assert.strictEqual(store.read().processed, H('b'));
+  assert.match(svc.snapshot().notes[0].doc + svc.snapshot().notes[0].sentence, LETGO_NOTE);
+});
+
+test('a merge that was let go is reported durably: it is a note, so it survives the next tick and the next merge\'s success until it is dismissed (R2-2)', async () => {
+  const { svc, store, r, t } = failingDiff(OWN());
+  for (let i = 0; i < MAX_ATTEMPTS; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  const first = svc.snapshot().notes;
+  assert.strictEqual(first.length, 1);
+  assert.match(first[0].doc + first[0].sentence, LETGO_NOTE);
+  assert.match(first[0].sentence, /Merge pull request|s/);
+  assert.strictEqual(first[0].commit, H('c').slice(0, 12));
+  await svc.tick();
+  t.now += RETRY_MS + 1;
+  await svc.tick();
+  assert.strictEqual(svc.snapshot().notes.length, 1, 'the next ticks do not wipe it');
+  assert.ok(first[0].id);
+  // a later merge that is read fine does not erase it
+  const ok = rig();
+  ok.store.addNotes({ sha: H('c'), subject: 's' }, [{ doc: '(merge not checked)', sentence: 'x'.repeat(20), why: 'w' }], 1);
+  ok.r.head = H('b');
+  await ok.svc.tick();
+  assert.ok(ok.svc.snapshot().notes.some(n => n.doc === '(merge not checked)'));
+  assert.ok(ok.svc.snapshot().notes.length >= 2);
+  assert.ok(store && r);
+});
+
+test('with two pending merges, the first let go and the second read, the let-go note is still there (R2-2)', async () => {
+  const dir = tmpDir('drift-two-merges-');
+  const store = createDriftStore({ file: path.join(dir, 'p.json') });
+  store.setProcessed(H('a'));
+  let clock = 1_000_000;
+  const svc = createDriftService({
+    git: { head: async () => H('b'), merges: async () => [{ sha: H('1'), subject: 'one' }, { sha: H('2'), subject: 'two' }], diff: async (sha) => { if (sha === H('1')) throw OWN(); return DIFF; } },
+    readDocs: async () => DOCS, ollama: { answerModel: 'm', check: async () => ({ ok: true }), generate: async () => ({ ok: true, text: GOOD }) },
+    store, slot: { tryAcquire: () => true, release() {} }, now: () => (clock += RETRY_MS + 1), broadcast() {}, log() {},
+  });
+  for (let i = 0; i < MAX_ATTEMPTS; i++) await svc.tick();
+  const notes = svc.snapshot().notes;
+  assert.ok(notes.some(n => LETGO_NOTE.test(n.doc + n.sentence) && n.commit === H('1').slice(0, 12)), JSON.stringify(notes));
+  assert.ok(notes.some(n => n.doc === 'DESIGN_ASK_REPO.md' && n.commit === H('2').slice(0, 12)));
+});
+
+test('an unreadable notes file keeps the last good list on screen, never an empty one (R2-7)', async () => {
+  const dir = tmpDir('drift-keep-');
+  const file = path.join(dir, 'p.json');
+  const good = createDriftStore({ file });
+  good.setProcessed(H('b'));
+  good.addNotes({ sha: H('c'), subject: 's' }, [{ doc: 'DESIGN_X.md', sentence: 'Sentence number 1 here.', why: 'w' }], 1);
+  let broken = false;
+  const store = createDriftStore({ file, sleep: () => {}, fsImpl: { ...fs, readFileSync: (...a) => { if (broken) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); return fs.readFileSync(...a); } } });
+  const sent = [];
+  const svc = createDriftService({ git: { head: async () => H('b') }, readDocs: async () => DOCS, ollama: { answerModel: 'm' }, store, slot: { tryAcquire: () => true, release() {} }, now: () => 1, broadcast: (m) => sent.push(m), log() {} });
+  assert.strictEqual(svc.snapshot().notes.length, 1);
+  broken = true;
+  const id = svc.snapshot().notes[0].id;
+  svc.dismiss(id);
+  assert.strictEqual(svc.snapshot().notes.length, 1, 'still shown');
+  assert.match(svc.snapshot().off.detail, /unreadable/);
+  assert.ok(sent.every(m => m.notes.length === 1), JSON.stringify(sent.map(m => m.notes.length)));
+  broken = false;
+  svc.dismiss(id);
+  assert.strictEqual(svc.snapshot().notes.length, 0);
+  assert.strictEqual(svc.snapshot().off, null);
 });
 
 test('Ollama being down or the model missing never counts against a merge', async () => {

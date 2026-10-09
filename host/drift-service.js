@@ -34,6 +34,7 @@
  * file that exists but can't be read is not a first look: nothing is marked until it can be read.
  */
 
+const { isInfraError } = require('./drift-git');
 const { changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply } = require('./drift-text');
 
 const RETRY_MS = 60_000;
@@ -44,9 +45,12 @@ const REPLY_TOKENS = 700;
 // How long the model gets per merge. One job (a 20 s diff at worst plus this) must fit inside the GPU slot's stale time
 // (host/summary-slot.js, test/drift-service.test.js), and the evaluation script uses the same number so it measures what ships.
 const GENERATE_TIMEOUT_MS = 60_000;
-// A merge that fails for ITS OWN reasons (a diff git can't produce, a model that times out on it, a 500) is let go after this many
-// tries, so it can never hold the shared GPU slot every minute for good (PR #153 Dexter 1).
+// A merge that fails for ITS OWN reasons (git answers with an exit status for its diff) is let go after this many tries, so it can
+// never hold the shared GPU slot every minute for good (PR #153 Dexter 1). Nothing infrastructural ever counts (R2-1): a git that was
+// killed or timed out, a missing git, Ollama down or slow or answering 5xx, a busy GPU. Those wait, however long they last.
+// A merge that is let go is recorded as a NOTE (LET_GO_DOC), so it is shown on every window until dismissed (R2-2).
 const MAX_ATTEMPTS = 3;
+const LET_GO_DOC = '(merge not checked)';
 
 /** Read one merge and ask the model about it. Writes nothing. `docs` may be handed in when the caller has just read them. */
 async function analyzeMerge({ git, readDocs, ollama, docs: given }, { sha, subject }) {
@@ -72,13 +76,17 @@ function createDriftService({
   let busy = null;
   let lastSent = null;
   const attempts = new Map();     // merge sha -> failed tries in this host
+  let lastNotes = [];             // the last list the notes file really gave, kept on screen while it can't be read (R2-7)
 
   const model = () => ollama.answerModel;
   const message = (err) => (err && err.message) || String(err);
 
   function snapshot() {
-    const off = gitOff || jobOff;
-    return { notes: store.open().map(n => ({ ...n })), off: off ? { ...off } : null };
+    const st = store.read();
+    if (!st.unreadable) lastNotes = st.notes.filter(n => !n.dismissed).sort((a, b) => b.at - a.at);
+    // An unreadable file is not an empty one: the last good list stays, and the line says why it may be out of date.
+    const off = gitOff || jobOff || (st.unreadable ? { reason: 'failed', detail: 'the notes file is unreadable right now' } : null);
+    return { notes: lastNotes.map(n => ({ ...n })), off: off ? { ...off } : null };
   }
 
   function publish() {
@@ -100,6 +108,14 @@ function createDriftService({
   const settled = () => { jobOff = null; publish(); };
   const holdOff = (off) => { retryAt = now() + RETRY_MS; setJobOff(off); };
 
+  /** A merge that was given up on, kept as a note so it is not lost with the next tick. */
+  function letGo(merge, why) {
+    log('[drift] letting go of', merge.sha.slice(0, 12), ':', why);
+    const put = store.addNotes(merge, [{ doc: LET_GO_DOC, sentence: `This merge was not checked: ${merge.subject || merge.sha.slice(0, 12)}`, why }], now());
+    if (!put.ok) log('[drift] could not save the let-go note:', put.error);
+    jobOff = null;
+  }
+
   /** One merge, under the GPU slot. -> 'next' | 'stop' */
   async function processMerge(merge, mark, docs) {
     if (!slot.tryAcquire()) return 'stop';                       // the GPU is busy: dropped for now, the mark stays
@@ -112,24 +128,26 @@ function createDriftService({
       } catch (err) {
         thrown = message(err);
         log('[drift] could not read merge', merge.sha.slice(0, 12), ':', thrown);
+        // a git that was killed, timed out, is missing or ran out of buffer says nothing about THIS merge: wait, never count
+        if (isInfraError(err)) { holdOff(failOff('error')); return 'stop'; }
         r = { ok: false, reason: 'error' };
       }
       if (!r.ok && r.reason === 'no-docs') { holdOff({ reason: 'no-docs' }); return 'stop'; }
       // The project's own condition, not this merge's: it waits, and is never held against the merge.
       if (!r.ok && (r.reason === 'ollama-down' || r.reason === 'model-missing')) { holdOff(failOff(r.reason)); return 'stop'; }
-      if (!r.ok && r.reason !== 'bad-reply') {
+      // The model timing out or answering 5xx, or any other reason Ollama gives, is the machine's condition, not this merge's: it waits.
+      if (!r.ok && r.reason !== 'bad-reply' && r.reason !== 'error') { holdOff(failOff(r.reason)); return 'stop'; }
+      if (!r.ok && r.reason === 'error') {
         const n = (attempts.get(merge.sha) || 0) + 1;
-        if (n < MAX_ATTEMPTS) { attempts.set(merge.sha, n); holdOff(failOff(r.reason)); return 'stop'; }
+        if (n < MAX_ATTEMPTS) { attempts.set(merge.sha, n); holdOff(failOff('error')); return 'stop'; }
         attempts.delete(merge.sha);
-        log('[drift] letting go of', merge.sha.slice(0, 12), 'after', n, 'tries:', thrown || r.reason);
-        jobOff = failOff('failed', `let go of ${merge.sha.slice(0, 12)} after ${n} tries (${r.reason === 'error' ? 'its diff could not be read' : r.reason})`);
+        letGo(merge, `git refused its diff ${n} times (${thrown})`);
       } else if (r.ok) {
         const put = store.addNotes(merge, r.flags, now());
         if (!put.ok) log('[drift] could not save notes:', put.error);
         jobOff = null;
       } else {
-        log('[drift] the model did not answer with a list for', merge.sha.slice(0, 12));
-        jobOff = failOff('bad-reply', 'bad-reply');
+        letGo(merge, 'the model did not answer with a list');
       }
       const moved = store.setProcessed(merge.sha);
       if (!moved.ok) { log('[drift] could not save the mark:', moved.error); holdOff(jobOff); return 'stop'; }

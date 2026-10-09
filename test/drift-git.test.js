@@ -36,7 +36,7 @@ test('head: a timeout, a missing git, a full buffer or another exit is thrown, n
 test('merges: exit 1 of `--is-ancestor` is a rewound branch (null); a timeout or any other failure throws and says nothing about a rewind', async () => {
   const g = (err) => createDriftGit({ cwd: '.', run: async () => { throw err; } });
   assert.strictEqual(await g(exit(1)).merges(H('a'), H('b')), null);
-  for (const err of [TIMEOUT, exit(128, 'fatal: Not a valid commit name'), exit('ENOENT'), new Error('Command failed: git merge-base --is-ancestor a b')]) {
+  for (const err of [TIMEOUT, exit('ENOENT'), new Error('Command failed: git merge-base --is-ancestor a b')]) {
     await assert.rejects(() => g(err).merges(H('a'), H('b')), (e) => e === err);
   }
 });
@@ -79,7 +79,7 @@ test('diff: asks for the first-parent diff and allows a truncated answer', async
   let seen;
   const g = createDriftGit({ cwd: '.', run: async (args, opts) => { seen = [args, opts]; return 'D'; } });
   assert.strictEqual(await g.diff(H('c')), 'D');
-  assert.deepStrictEqual(seen[0], ['diff', '--no-color', '--no-ext-diff', '-U2', `${H('c')}^1`, H('c')]);
+  assert.deepStrictEqual(seen[0].slice(0, 6), ['diff', '--no-color', '--no-ext-diff', '-U2', `${H('c')}^1`, H('c')]);
   assert.deepStrictEqual(seen[1], { truncateOk: true });
 });
 
@@ -100,4 +100,28 @@ test('isInfraError: only a plain exit status is an answer', () => {
   assert.strictEqual(isInfraError(exit(1)), false);
   assert.strictEqual(isInfraError(exit(0)), false);
   for (const e of [TIMEOUT, exit('ENOENT'), { code: 1, killed: true }, { code: 1, signal: 'SIGKILL' }, new Error('x'), null, undefined]) assert.strictEqual(isInfraError(e), true);
+});
+
+// ---- PR #153 round 2 ---------------------------------------------------------------------------------------------
+const { EXCLUDE_PATHSPECS } = require('../host/drift-text');
+
+test('diff: files nobody reads (maps, lockfiles, dist, minified, keys) are excluded by git itself, so the byte cap is spent on code (R2-3)', async () => {
+  let args;
+  const g = createDriftGit({ cwd: '.', run: async (a) => { args = a; return ''; } });
+  await g.diff(H('c'));
+  const at = args.indexOf('--');
+  assert.ok(at > 0, args.join(' '));
+  assert.deepStrictEqual(args.slice(at), ['--', '.', ...EXCLUDE_PATHSPECS]);
+  assert.deepStrictEqual(args.slice(0, at), ['diff', '--no-color', '--no-ext-diff', '-U2', `${H('c')}^1`, H('c')]);
+});
+
+test('merges: a mark git no longer has (exit 128 and the commit is not there) is a rewind to follow, not a failure every minute (R2-6)', async () => {
+  const gone = exit(128, 'fatal: Not a valid commit name');
+  const run = (catFile) => async (args) => { if (args[0] === 'merge-base') throw gone; if (args[0] === 'cat-file') return catFile(); return ''; };
+  assert.strictEqual(await createDriftGit({ cwd: '.', run: run(() => { throw exit(1); }) }).merges(H('a'), H('b')), null);
+  assert.strictEqual(await createDriftGit({ cwd: '.', run: run(() => { throw exit(128, 'fatal: Not a valid object name'); }) }).merges(H('a'), H('b')), null);
+  // the commit IS there, so the 128 was something else: that is thrown
+  await assert.rejects(() => createDriftGit({ cwd: '.', run: run(() => '') }).merges(H('a'), H('b')), (e) => e === gone);
+  // asking about the commit timed out: thrown too
+  await assert.rejects(() => createDriftGit({ cwd: '.', run: run(() => { throw TIMEOUT; }) }).merges(H('a'), H('b')), (e) => e === TIMEOUT);
 });
