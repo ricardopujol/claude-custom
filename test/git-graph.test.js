@@ -206,3 +206,9 @@ test('the service shares one read between overlapping asks and never rejects', a
   const bad = createGitGraphService({ cwd: 'x', read: async () => { throw new Error('boom'); } });
   assert.deepStrictEqual(await bad.get(), { ok: false, error: 'boom' });
 });
+
+test('`git-graph` is on the control allow-list: off it, the panel\'s ask would be TYPED into the session as JSON', () => {
+  const { CONTROL_TYPES, parseControlFrame } = require('../host/control');
+  assert.ok(CONTROL_TYPES.has('git-graph'));
+  assert.deepStrictEqual(parseControlFrame(JSON.stringify({ type: 'git-graph' })), { type: 'git-graph' });
+});

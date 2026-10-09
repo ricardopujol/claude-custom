@@ -375,3 +375,12 @@ test('assignLanes and the page agree on the shape the host sends', () => {
   const g = graphOf(c('a', ['b']), c('b'));
   assert.deepStrictEqual(g.commits.map(x => x.lane), rows.map(x => x.lane));
 });
+
+test('when the project becomes known: a view chosen meanwhile wins and is saved; otherwise the saved one applies', () => {
+  assert.deepStrictEqual(display.adoptView({ chosen: false, current: 'rings', saved: 'graph' }), { view: 'graph', persist: false });
+  assert.deepStrictEqual(display.adoptView({ chosen: false, current: 'rings', saved: 'rings' }), { view: 'rings', persist: false });
+  assert.deepStrictEqual(display.adoptView({ chosen: true, current: 'graph', saved: 'rings' }), { view: 'graph', persist: true });
+  assert.deepStrictEqual(display.adoptView({ chosen: true, current: 'rings', saved: 'graph' }), { view: 'rings', persist: true });
+  assert.deepStrictEqual(display.adoptView({ chosen: false, current: 'rings', saved: 'junk' }), { view: 'rings', persist: false });
+  assert.deepStrictEqual(display.adoptView({ chosen: true, current: 'junk', saved: 'graph' }), { view: 'rings', persist: true });
+});

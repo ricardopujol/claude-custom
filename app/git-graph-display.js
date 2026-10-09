@@ -44,6 +44,14 @@ function writeView(storage, project, view) {
   try { if (storage) storage.setItem(viewKey(project), normalizeView(view)); } catch { /* the choice just isn't remembered */ }
 }
 
+/**
+ * The first tree answer names the project, which can be after the person already pressed a button: what they chose
+ * wins (and is saved for the project); otherwise the project's saved view applies.
+ */
+function adoptView({ chosen, current, saved }) {
+  return chosen ? { view: normalizeView(current), persist: true } : { view: normalizeView(saved), persist: false };
+}
+
 // ---------- geometry ----------
 
 const laneX = lane => PAD + lane * LANE_W;
@@ -379,7 +387,7 @@ function render(rootEl, graph, { tree = null, tabs = null, onJump, onOpenUrl, on
   }
 }
 
-const api = { render, geometry, commitModel, commitLink, readView, writeView, viewKey, normalizeView, dayOf, ROW_H, LANE_W, PAD };
+const api = { render, geometry, commitModel, commitLink, readView, writeView, viewKey, normalizeView, adoptView, dayOf, ROW_H, LANE_W, PAD };
 
 if (isNode) {
   module.exports = api;

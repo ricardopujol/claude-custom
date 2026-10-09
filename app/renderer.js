@@ -823,6 +823,7 @@ document.addEventListener('visibilitychange', () => {
 // project (the tree's answer names it), and only the shown view is re-asked; the commit log is a separate, cheap read.
 let gitView = 'rings';
 let gitViewProject = null;
+let gitViewChosen = false;       // a button was pressed: the project's saved view must not overrule it when it arrives
 let lastGitGraph = null;
 function requestGitGraph() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -841,8 +842,9 @@ function renderGitGraph() {
     },
   });
 }
-function setGitView(view, { save = true } = {}) {
+function setGitView(view, { save = true, chosen = true } = {}) {
   gitView = window.gitGraphDisplay.normalizeView(view);
+  if (chosen) gitViewChosen = true;
   const graph = gitView === 'graph';
   document.getElementById('git-dial').hidden = graph;
   document.getElementById('git-status').hidden = graph;
@@ -866,7 +868,8 @@ document.getElementById('git-view').addEventListener('click', e => {
 function adoptGitViewProject(tree) {
   if (!tree || typeof tree.project !== 'string' || tree.project === gitViewProject) return;
   gitViewProject = tree.project;
-  setGitView(window.gitGraphDisplay.readView(storageOrNull(), gitViewProject), { save: false });
+  const a = window.gitGraphDisplay.adoptView({ chosen: gitViewChosen, current: gitView, saved: window.gitGraphDisplay.readView(storageOrNull(), gitViewProject) });
+  setGitView(a.view, { save: a.persist, chosen: false });
 }
 let lastGitTree = null;
 // What the shell knows of each listed worktree's tab (Enhancement #46): [{ folder, open, started, known,
@@ -2725,6 +2728,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'ggClick': {
         const r = [...document.querySelectorAll('#git-graph .gg-row')].find(x => x.dataset.hash === a.hash || x.dataset.hash.startsWith(String(a.hash)));
         if (!r) return JSON.stringify({ ok: false, error: 'no such commit' });
+        r.focus();       // a real click on a row focuses it
         r.click();
         break;
       }

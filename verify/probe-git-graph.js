@@ -361,20 +361,32 @@ async function main() {
   })());
 
   // 8 (CPU) -----------------------------------------------------------------------------
-  // Rings runs its Settle swing; the Graph view does nothing between its 30 s asks. Same window, same repo, the pointer away.
+  // Rings runs its Settle swing; the Graph view does nothing between its 30 s asks. Same window, same repo, the pointer
+  // away. Alternated twice (a window's CPU drifts as it settles), after a warm-up, and with the Git panel hidden last
+  // as the baseline (the window still runs its terminal and its link to the host).
   await view(app, 'ggClick', { hash: st.rows[1].hash });          // close the strip: nothing pinned
-  await view(app, 'ggView', { view: 'rings', save: false });
   await view(app, 'gitMotion', { pointer: 'out' });
+  await sleep(15000);
+  const sample = async (which) => {
+    await view(app, 'ggView', { view: which, save: false });
+    await sleep(4000);
+    return cpuOver(app.child.pid, 8000);
+  };
+  const runs = { rings: [], graph: [] };
+  for (let i = 0; i < 2; i++) { runs.rings.push(await sample('rings')); runs.graph.push(await sample('graph')); }
+  await view(app, 'select', { id: 'projects' });
   await sleep(4000);
-  const cpuRings = await cpuOver(app.child.pid, 10000);
-  await view(app, 'ggView', { view: 'graph', save: false });
-  await sleep(4000);
-  const cpuGraph = await cpuOver(app.child.pid, 10000);
-  console.log(`ℹ CPU of the window's process tree (${cpuGraph.procs} processes), % of one core over 10 s, same window and repo:`);
-  console.log(`ℹ   Rings open: ${cpuRings.pct.toFixed(2)}%`);
-  console.log(`ℹ   Graph open: ${cpuGraph.pct.toFixed(2)}%`);
-  check('8: the Graph view costs no more CPU than Rings (it is still; allowing 1% of a core of noise)', cpuGraph.pct <= cpuRings.pct + 1,
-    `rings ${cpuRings.pct.toFixed(2)}%, graph ${cpuGraph.pct.toFixed(2)}%`);
+  const cpuBase = await cpuOver(app.child.pid, 8000);
+  await view(app, 'select', { id: 'git' });
+  const avg = list => list.reduce((t, x) => t + x.pct, 0) / list.length;
+  const cpuRings = avg(runs.rings);
+  const cpuGraph = avg(runs.graph);
+  console.log(`ℹ CPU of the window's process tree (${cpuBase.procs} processes), % of one core, 8 s samples, same window and repo:`);
+  console.log(`ℹ   Rings open: ${runs.rings.map(x => x.pct.toFixed(1)).join(', ')}  (mean ${cpuRings.toFixed(1)}%)`);
+  console.log(`ℹ   Graph open: ${runs.graph.map(x => x.pct.toFixed(1)).join(', ')}  (mean ${cpuGraph.toFixed(1)}%)`);
+  console.log(`ℹ   Git panel hidden (baseline): ${cpuBase.pct.toFixed(1)}%`);
+  check('8: the Graph view costs no more CPU than Rings (it is still; allowing 1% of a core of noise)', cpuGraph <= cpuRings + 1,
+    `rings ${cpuRings.toFixed(2)}%, graph ${cpuGraph.toFixed(2)}%`);
 
   // 6 -----------------------------------------------------------------------------
   // A GitHub origin: the strip's Open commit turns on. (The tree is asked again; it reads origin every time.)
