@@ -1068,6 +1068,7 @@ let dragLayout = null;           // a divider being dragged: drawn, not yet save
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved
+let layoutLoaded = false;        // the stored layout has been read: until then the default is only a placeholder, whose groups mean nothing to a saved collapse
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
 let kbRefresh = () => {};        // redraws the keyboard move's zones after the dock was redrawn (set by initKeyboardMove)
 let shownModules = new Set();
@@ -1496,9 +1497,12 @@ function onVaultLeft() {
 // `settle: true` is for a change the person made (a drop, a collapse, a divider key): the boxes glide to their new places
 // (app/dock-tree-display.js settleMs: about 120 ms, none under prefers-reduced-motion). A drag never settles.
 function renderLayout({ userAction = false, refit = true, settle = false } = {}) {
-  // A collapsed group that is gone is forgotten here, so a group later handed its name doesn't start collapsed.
-  const pruned = DTm.pruneCollapsed(selection, placementLayout());
-  if (pruned !== selection) { selection = pruned; saveSelection(); }
+  // A collapsed group that is gone is forgotten here, so a group later handed its name doesn't start collapsed -- but only
+  // once the stored layout is in: the placeholder default drawn at launch has none of the groups a saved collapse names.
+  if (layoutLoaded) {
+    const pruned = DTm.pruneCollapsed(selection, placementLayout());
+    if (pruned !== selection) { selection = pruned; saveSelection(); }
+  }
   const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize, peek });
   lastPlan = plan;
   if (peek && !plan.peek) peek = null;     // its rail went (the window grew, the group was opened): so does the popover
@@ -1600,6 +1604,14 @@ function dropOwnLayout({ makeGlobal = false } = {}) {
 }
 
 function toggleAllZones() { commitSelection(DTm.toggleFoldAll(selection)); }
+
+// A whole layout put in place (Reset layout, a preset) starts with every group open in this window: a collapse is a choice about
+// the groups of the layout it was made in, and group names are handed out again by the next layout.
+function openEveryGroup() {
+  if (Object.keys(selection.collapsed).length === 0) return;
+  selection = DTm.cleanSelection({ ...selection, collapsed: {} });
+  saveSelection();
+}
 
 // Fold one group to its rail in this window, or open it again (D4). The window's choice: the shared layout is untouched.
 function toggleGroupCollapse(groupId) {
@@ -1748,7 +1760,7 @@ function openLayoutMenu() {
   layoutMenu.appendChild(check.row);
   layoutMenu.appendChild(node('button', {
     type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
-    on: { click: () => { commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+    on: { click: () => { openEveryGroup(); commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
     layoutMenu.appendChild(node('button', {
@@ -1864,6 +1876,7 @@ function applyPreset(p, justThisTab) {
     return;
   }
   const hadFocus = layoutMenu.contains(document.activeElement);
+  openEveryGroup();
   commitPlacement(r.layout, { justThisTab });
   closeLayoutMenu();
   if (hadFocus) document.getElementById('layout-btn').focus();      // focus doesn't drop to the page behind
@@ -2436,13 +2449,15 @@ async function loadLayout() {
     // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
     // next real change saves as usual.
     const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
-    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); renderLayout(); }
+    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
     else if (what === 'migrate-v1') {
       globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
+      layoutLoaded = true;
       saveGlobalLayout(globalLayout);
       renderLayout();
     } else if (what === 'migrate-legacy') {
       globalLayout = legacyLayout();
+      layoutLoaded = true;
       saveGlobalLayout(globalLayout);
       renderLayout();
     } else flashAttention({ urgent: false, title: 'Couldn\'t read the saved layout; showing the default' });
@@ -2523,6 +2538,29 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           header: !!document.querySelector('header') && getComputedStyle(document.querySelector('header')).display !== 'none',
           innerHeight: window.innerHeight, focus: focusOn, overlay: overlayState(), title: document.title,
           vaultNode: vaultField ? vaultField.__probeTag : null,
+          // D4: a rail's popover, the keyboard move, the settle class, what a screen reader is told, and what holds focus.
+          peek: peek ? peek.module : null,
+          popover: (() => {
+            const pe = document.querySelector('#dock-floats > .dpeek');
+            if (!pe) return null;
+            return {
+              module: pe.dataset.module, rect: rectOf(pe), z: getComputedStyle(pe).zIndex,
+              // Is the popover what is on top at its own middle (above the terminal, the floats and the rails)?
+              hit: (() => { const r = pe.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!top && !!top.closest && !!top.closest('.dpeek'); })(),
+              tabs: [...pe.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
+              on: [...pe.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
+              panels: [...pe.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
+              panelRects: [...pe.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
+            };
+          })(),
+          settling: document.getElementById('dock').classList.contains('settling'),
+          groupTransition: (() => { const g = document.querySelector('#dock > .dgroup'); return g ? getComputedStyle(g).transitionDuration : null; })(),
+          announce: document.getElementById('dock-announce').textContent,
+          kbMove: kbMove ? { id: kbMove.id, target: kbMove.target } : null,
+          held: (() => {
+            const e = document.activeElement;
+            return e && e !== document.body ? { tag: e.tagName, cls: e.className, parent: e.parentNode ? e.parentNode.className : null, module: e.dataset ? e.dataset.module || null : null, role: e.getAttribute('role'), path: e.dataset ? e.dataset.path || null : null, i: e.dataset ? e.dataset.i || null : null } : null;
+          })(),
           // Plain <script> files that fail to export break only the real window, never a unit test.
           exports: { fit: typeof (window.dockTree || {}).fit, applyBoxes: typeof (window.dockTreeView || {}).applyBoxes, zonesAt: typeof (window.dockDrag || {}).zonesAt },
         });
@@ -2706,6 +2744,69 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true });
       }
       case 'closeMenu': closeLayoutMenu(); break;
+      // D4 (verify/probe-dock-tree.js): a rail's button pressed as a pointer would (`byKey`: as Enter does, detail 0), a group
+      // collapsed through the page's own function, a key sent to what holds focus (or to `selector`), a double-click, a
+      // divider focused, and the tab's menu opened by the context-menu event a focused tab gets from Shift+F10.
+      case 'railClick': {
+        const b = document.querySelector(`.drail button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!b) return JSON.stringify({ ok: false, error: 'no such rail button' });
+        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: a.byKey === true ? 0 : 1 }));
+        return JSON.stringify({ ok: true });
+      }
+      case 'peekTabClick': {
+        const b = document.querySelector(`.dpeek .zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!b) return JSON.stringify({ ok: false, error: 'no such popover tab' });
+        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+        return JSON.stringify({ ok: true });
+      }
+      case 'collapse': toggleGroupCollapse(String(a.id)); break;
+      // A drop as the person makes it, with the motion read at that moment: whether the dock settles, over what, and that it ends.
+      case 'settleProbe': return (async () => {
+        const dockEl = document.getElementById('dock');
+        window.matchMedia = q => ({ matches: a.reduced === true && /prefers-reduced-motion/.test(String(q)), media: String(q), addEventListener() {}, removeEventListener() {} });
+        commitPlacement(DTm.dock(placementLayout(), a.id, a.target), { select: String(a.id) });
+        const dur = sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).transitionDuration : null; };
+        const during = { settling: dockEl.classList.contains('settling'), group: dur('#dock > .dgroup'), gutter: dur('#dock > .dgutter'), termwrap: dur('#termwrap') };
+        await new Promise(r => setTimeout(r, 400));
+        return JSON.stringify({ ok: true, during, after: { settling: dockEl.classList.contains('settling'), group: dur('#dock > .dgroup') } });
+      })();
+      // Reduced motion, pretended: the page asks matchMedia at the moment of a drop, so this is what it will read.
+      case 'reducedMotion': {
+        window.matchMedia = q => ({ matches: a.on === true && /prefers-reduced-motion/.test(String(q)), media: String(q), addEventListener() {}, removeEventListener() {} });
+        return JSON.stringify({ ok: true });
+      }
+      case 'key': {
+        const el = a.selector ? document.querySelector(a.selector) : (document.activeElement || document.body);
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const ev = new KeyboardEvent('keydown', { key: a.key, shiftKey: a.shift === true, bubbles: true, cancelable: true });
+        el.dispatchEvent(ev);
+        return JSON.stringify({ ok: true, prevented: ev.defaultPrevented });
+      }
+      case 'focus': {
+        const el = document.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        el.focus();
+        return JSON.stringify({ ok: true });
+      }
+      case 'dblclick': {
+        const el = document.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+        return JSON.stringify({ ok: true });
+      }
+      case 'outsidePress': {
+        const el = document.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        el.dispatchEvent(ptr('pointerdown', 5, 5));
+        return JSON.stringify({ ok: true });
+      }
+      case 'tabMenu': {
+        const b = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(String(a.id))}"], .drail button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!b) return JSON.stringify({ ok: false, error: 'no such tab' });
+        const r = b.getBoundingClientRect();
+        b.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.bottom }));
+        return JSON.stringify({ ok: true, items: [...layoutMenu.querySelectorAll('button')].map(x => x.textContent), held: document.activeElement ? document.activeElement.textContent : null });
+      }
       // Layout presets (D3, verify/probe-dock-tree.js): what the list and the open menu's Presets section hold ...
       case 'presets':
         return JSON.stringify({

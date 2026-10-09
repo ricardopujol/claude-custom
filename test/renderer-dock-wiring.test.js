@@ -247,7 +247,9 @@ test('PR #100 Miguel S3: every save of the global layout goes through one helper
 
 test('D4: a redraw forgets collapsed groups that are gone and hands the open popover to the plan', () => {
   const body = fnBody('renderLayout');
-  assert.match(body, /const pruned = DTm\.pruneCollapsed\(selection, placementLayout\(\)\);/);
+  assert.match(body, /if \(layoutLoaded\) \{\s+const pruned = DTm\.pruneCollapsed\(selection, placementLayout\(\)\);/, 'and only once the stored layout is in: the launch placeholder has none of the groups a saved collapse names');
+  const load = fnBody('loadLayout');
+  assert.strictEqual([...load.matchAll(/layoutLoaded = true;/g)].length, 3, 'set in the three branches that draw a layout that was read, never when it was unreadable (nothing to prune against)');
   assert.match(body, /\{ faceSize: window\.faceSize, peek \}\)/);
   assert.match(body, /if \(peek && !plan\.peek\) peek = null;/, 'a popover whose rail is gone closes itself');
 });
@@ -274,6 +276,12 @@ test('D4: collapsing is the window\'s selection: it goes through commitSelection
   const body = fnBody('toggleGroupCollapse');
   assert.match(body, /commitSelection\(DTm\.toggleCollapse\(selection, placementLayout\(\), groupId\)\);/);
   assert.doesNotMatch(body, /commitPlacement|saveGlobalLayout|sendOverride/);
+});
+
+test('D4: Reset layout and applying a preset open every group in this window first (group names are handed out again by the next layout)', () => {
+  assert.match(JS, /on: \{ click: \(\) => \{ openEveryGroup\(\); commitPlacement\(DTm\.defaultLayout\(MODULE_IDS\), \{ justThisTab: check\.box\.checked \}\); closeLayoutMenu\(\); \} \},/);
+  assert.match(fnBody('applyPreset'), /openEveryGroup\(\);\s+commitPlacement\(r\.layout, \{ justThisTab \}\);/);
+  assert.match(fnBody('openEveryGroup'), /collapsed: \{\}/);
 });
 
 test('D4: a divider moves with the arrow keys by the drag\'s rules, and keeps the keyboard where it is', () => {
@@ -305,4 +313,15 @@ test('D4: the settle motion is for what the person did, and reads the reduced-mo
   assert.match(body, /window\.dockTreeView\.settleMs\(reduced\)/);
   // Nothing animates while a divider or a float is dragged: those redraws are plain renderLayout() calls.
   assert.doesNotMatch(JS.slice(JS.indexOf('function initDividers'), JS.indexOf("document.getElementById('dock').addEventListener('keydown'")), /settle: true/);
+});
+
+test('D4: the page\'s CSS settles only the groups, rails and dividers, only while the dock has .settling, and snaps under prefers-reduced-motion', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const rule = html.match(/#dock\.settling > \.dgroup, #dock\.settling > \.drail, #dock\.settling > \.dgutter \{\s*transition: ([^;]+);/);
+  assert.ok(rule, 'the settle rule must be findable');
+  assert.match(rule[1], /^left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out$/, 'about 120 ms, geometry only');
+  assert.doesNotMatch(html, /#termwrap\s*\{[^}]*transition/, 'xterm refits to the rectangle it ends in: the terminal never glides');
+  const reduced = html.match(/@media \(prefers-reduced-motion: reduce\) \{\s*#dock\.settling > \.dgroup, #dock\.settling > \.drail, #dock\.settling > \.dgutter \{ transition: none; \}\s*\}/);
+  assert.ok(reduced, 'reduced motion switches the glide off');
+  assert.ok(html.indexOf(reduced[0]) > html.indexOf(rule[0]), 'and comes after it, so it wins');
 });
