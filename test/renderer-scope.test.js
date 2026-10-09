@@ -126,6 +126,8 @@ const ALLOWED_GLOBALS = new Set([
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
   'terminalBar',
   'summaryDisplay',
+  // app/docs-drift-display.js (backlog #39 job 2): one namespace object, IIFE-wrapped.
+  'docsDriftDisplay',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/accent-preview.js (backlog #64): one namespace object, IIFE-wrapped.

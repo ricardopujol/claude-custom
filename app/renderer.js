@@ -797,6 +797,23 @@ const repoBrowser = window.repoBrowser.create({
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
 
+// --- docs drift (backlog #39 job 2) --------------------------------------------------------------------------
+// The host's list of docs the local model flagged after a merge into develop (host/drift-service.js), drawn above the git dial
+// by app/docs-drift-display.js. Dismiss tells the host to hide the note; nothing here edits a document.
+let docsDrift = null;
+function paintDocsDrift() {
+  const el = document.getElementById('drift-list');
+  if (!el || !window.docsDriftDisplay) return;
+  docsDriftDisplay.render(el, docsDrift, Date.now(), {
+    onDismiss: (id) => { try { ws.send(JSON.stringify({ type: 'docs-drift', action: 'dismiss', id })); } catch {} },
+  });
+}
+function applyDocsDrift(p) {
+  docsDrift = p && typeof p === 'object' ? { notes: Array.isArray(p.notes) ? p.notes : [], off: p.off && typeof p.off === 'object' ? p.off : null } : null;
+  paintDocsDrift();
+}
+// The ages on the notes go stale between pushes.
+setInterval(() => { if (docsDrift) paintDocsDrift(); }, 60 * 1000);
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
 // Asked for when the panel opens, on reconnect, and every 30s while it's showing:
 // branches and spend move while you work. The host shares one read between
@@ -6451,6 +6468,7 @@ function handleControl(msg) {
     applyBarPrompt(msg.prompt, false);
     applyBedtime(msg.bedtime);
     applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
+    applyDocsDrift(msg.docsDrift);
     paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
@@ -6647,6 +6665,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'summary') {
     applySummary(msg, false);
+    return;
+  }
+  if (msg.type === 'docs-drift') {
+    applyDocsDrift(msg);
     return;
   }
   if (msg.type === 'bedtime') {

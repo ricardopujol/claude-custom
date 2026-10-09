@@ -144,6 +144,18 @@
     #git-body { padding: 6px 8px; gap: 4px; }
     #git-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
     #git-status:empty { display: none; }
+    /* Docs drift (BACKLOG #39 job 2): notes from the local model, above the dial. app/docs-drift-display.js */
+    #drift-list { flex: 0 0 auto; max-height: 38%; overflow-y: auto; font-size: 11px; line-height: 1.4; }
+    #drift-list[hidden] { display: none; }
+    #drift-list h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 2px 0 4px; font-weight: 600; }
+    #drift-list .drift-label { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    #drift-list .drift-note { color: var(--dim); margin-bottom: 4px; }
+    #drift-list .drift-row { border-left: 2px solid var(--accent); padding: 2px 0 2px 6px; margin-bottom: 5px; }
+    #drift-list .drift-doc { display: flex; gap: 6px; align-items: baseline; }
+    #drift-list .drift-meta { color: var(--dim); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #drift-list .drift-sentence { font-style: italic; overflow-wrap: anywhere; }
+    #drift-list .drift-why { color: var(--dim); overflow-wrap: anywhere; }
+    #drift-list .drift-dismiss { cursor: pointer; font-size: 10px; padding: 0 6px; }
     #git-dial { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
     /* fits BOTH ways (viewBox, meet): a short bottom zone shrinks it by height, not clips it */
     .git-svg { display: block; width: 100%; height: 100%; flex: 1; min-height: 0; }
@@ -1882,6 +1894,7 @@
         </div>
         <div class="panel" data-panel="git" id="git-body">
           <div id="git-status">reading the history…</div>
+          <div id="drift-list" hidden></div>
           <div id="git-dial"></div>
         </div>
         <div class="panel" data-panel="projects" id="projects-body">
@@ -1965,6 +1978,7 @@
   <script src="./occupancy-confirm.js"></script>
   <script src="./terminal-bar.js"></script>
   <script src="./summary-display.js"></script>
+  <script src="./docs-drift-display.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
