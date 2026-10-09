@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
+const { tmpDir } = require('./tmp-dir');
 const path = require('path');
 const { spawn } = require('child_process');
 const { spawnerSource } = require('../verify/lib/spawner-source');
@@ -27,7 +27,7 @@ function launch(dir, name, over) {
 const readStats = (f) => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
 
 test('a spawner whose parent is gone exits by itself within a few seconds (N1)', opts, async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsp-'));
+  const dir = tmpDir('ccsp-');
   const parent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: 'ignore', windowsHide: true });
   const s = launch(dir, 'orphan', { intervalMs: 25, parentPid: parent.pid });
   try {
@@ -39,12 +39,11 @@ test('a spawner whose parent is gone exits by itself within a few seconds (N1)',
   } finally {
     if (s.child.exitCode === null) s.child.kill();
     try { reapMarked(s.marker); } catch { /* sleepers expire by themselves */ }
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test('a spawner keeps spawning but never more than liveMax sleepers alive (N1)', opts, async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccsp-'));
+  const dir = tmpDir('ccsp-');
   const s = launch(dir, 'cap', { intervalMs: 5, parentPid: process.pid, liveMax: 20 });
   try {
     await sleep(4500);
@@ -55,7 +54,6 @@ test('a spawner keeps spawning but never more than liveMax sleepers alive (N1)',
   } finally {
     s.child.kill();
     try { reapMarked(s.marker); } catch { /* sleepers expire by themselves */ }
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
