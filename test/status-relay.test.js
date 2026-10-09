@@ -432,18 +432,7 @@ test('sweepPids reads the last cumulative ALIVE line, digits only, even from a s
   assert.deepStrictEqual(sweepPids('ALIVE '), []);
 });
 
-const RELAY_SRC = fs.readFileSync(RELAY, 'utf8');
-
-test('the relay exits explicitly, so a kill that failed cannot keep it alive (Miguel #51 2)', () => {
-  assert.match(RELAY_SRC, /process\.exit\(code\)/);
-});
-
-test('the user command stays in the relay\'s process group (Dexter #51 F7)', () => {
-  // detached:true moved it into its own group on POSIX, so a CLI that kills
-  // the relay's group no longer reached it: worse than before the timeout.
-  assert.doesNotMatch(RELAY_SRC, /detached:/);
-});
-
+// (the two source-text assertions on host/status-relay.js moved to test/source-contracts.test.js: this file is in the mutation command)
 // --- #27: --quiet-when ------------------------------------------------------
 // The person moved the status line into the tab header (PLAN_LAYOUT_L2.md):
 // the relay still forwards every document, but prints nothing, so the CLI

@@ -534,3 +534,14 @@ test('app/canvas-views.js uses the host shelf validator itself, not a copy', () 
   assert.match(src, /const cleanShelf = cleanShelfList;/);
   assert.doesNotMatch(src, /function cleanShelf\(/);
 });
+
+// Moved from test/status-relay.test.js (release-gate lane, 2026-10-09): host/status-relay.js is a mutated module and that file is in the command.
+test('the relay exits explicitly, so a kill that failed cannot keep it alive (Miguel #51 2)', () => {
+  assert.match(read('host/status-relay.js'), /process\.exit\(code\)/);
+});
+
+test('the user command stays in the relay\'s process group (Dexter #51 F7)', () => {
+  // detached:true moved it into its own group on POSIX, so a CLI that kills
+  // the relay's group no longer reached it: worse than before the timeout.
+  assert.doesNotMatch(read('host/status-relay.js'), /detached:/);
+});

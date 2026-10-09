@@ -57,7 +57,7 @@ const REPO_SCANNING = new Set([
   'canvas-wiring.test.js',
   'canvas-main-wiring.test.js',
   'renderer-canvas-wiring.test.js',
-  'canvas-mcp.test.js',            // #125: spawns the MCP server as a real process and reads its source; it requires canvas-store only to prepare a folder
+  'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -188,6 +188,11 @@ test('no test in the command reads a MUTATED module as text', () => {
     // cannot be reached any other way). Instrumented text still runs there, and `process` is injected for it. It
     // asserts no code shape. A named exception, on purpose.
     'tab-strip-accent-wiring.test.js',
+    // Neither READS a mutated module (release-gate lane, 2026-10-09): both only NAME one. status-relay.test.js puts host/status-relay.js's path in
+    // spawn() (its two source-text assertions moved to source-contracts.test.js), and settings-writer.test.js uses 'host/loadout-hook.js' as a string
+    // fed to the settings builder. The detector flags a quoted path beside any readFileSync in the file, so the name is what trips it.
+    'status-relay.test.js',
+    'settings-writer.test.js',
   ]);
 
   // THE BASENAME ANYWHERE INSIDE THE QUOTES. Mortimer, PR #42 run 3, and this is
@@ -331,6 +336,10 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
     'summary-slot-kills.test.js',  // one node -e child whose pid is then free
     'proc-start.test.js',          // one real powershell holder (pre-#63)
     'window-count.test.js',        // the real proc-start exec (pre-#63)
+    // Added with the release-gate lane (2026-10-09), when their modules joined `mutate`; Mortimer's batch 1 ran all three this way:
+    'status-relay.test.js',        // the relay SCRIPT run as a node child, hung commands and swept trees (~30 s; the biggest per-mutant cost of the three)
+    'settings-writer.test.js',     // one POSIX-shell round trip of the relay command (~0.1 s)
+    'probe-hygiene.test.js',       // spawnWithTimeout against real hung node children, to prove the default tree kill (~5 s)
   ]);
 
   const cmd = conf.commandRunner.command;
@@ -400,7 +409,6 @@ test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six o
   // Derived from the tree, not restated: any app/canvas-*.js or host/canvas-*.js is logic-bearing and security-bearing unless it is named below.
   const NOT_LOGIC = new Set([
     'app/canvas-panel-preload.js',   // the two-function bridge: needs Electron's contextBridge, and test/canvas-panel-preload.test.js pins its surface
-    'host/canvas-mcp.js',            // an MCP stdio SERVER: test/canvas-mcp.test.js spawns it as a real process and reads its source text, both of which abort Stryker's dry run (the two rules above); NOT covered by a mutation score, which Mortimer's report must say
   ]);
   const found = [];
   for (const dir of ['app', 'host']) {
@@ -414,5 +422,14 @@ test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six o
   for (const m of found) {
     const own = `test/${path.basename(m, '.js')}.test.js`;
     if (fs.existsSync(path.join(ROOT, own))) assert.ok(cmd.includes(own), `${own} must be in the command`);
+  }
+});
+
+test('the eight modules that decide what is killed, deleted or kept running are mutated (Mortimer, release gate 2026-10-09)', () => {
+  // The consistency test above only checks the tests of modules ALREADY in `mutate`; these eight shipped (PRs #121-#133) without being
+  // listed, so no gate measured the code that kills a process tree, edits the pid ledger, deletes task logs and ends the quit.
+  for (const rel of ['host/kill-tree.js', 'host/pid-ledger.js', 'host/task-logs.js', 'host/task-logs-fs.js', 'host/status-relay.js',
+    'app/quit-watchdog.js', 'host/settings-writer.js', 'host/canvas-mcp.js']) {
+    assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
   }
 });
