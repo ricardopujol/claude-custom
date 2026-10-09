@@ -162,20 +162,24 @@ function parseProvenKill(r) {
 }
 
 // The one script, shared by the sync and async callers: they can never disagree on what is proven.
-function provenScript(pid, start) {
+// `toleranceTicks` (100 ns ticks, default 0 = an exact string compare): for a start read from the process TABLE (CIM, microsecond
+// precision) rather than from a handle; the status relay's sweep passes 20000 (2 ms).
+function provenScript(pid, start, toleranceTicks = 0) {
   return [
     `try { $p = Get-Process -Id ${pid} -ErrorAction Stop } catch { 'GONE'; exit }`,
     "try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { 'UNKNOWN'; exit }",
-    `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
+    toleranceTicks > 0
+      ? `if ([math]::Abs([long]$s - ${start}) -gt ${toleranceTicks}) { 'MISMATCH'; exit }`
+      : `if ([string]$s -ne '${start}') { 'MISMATCH'; exit }`,
     "if ($p.HasExited) { 'GONE'; exit }",
     `& taskkill.exe /PID ${pid} /T /F *> $null; 'KILLED ' + $LASTEXITCODE`,
   ].join('; ');
 }
-const validProof = (pid, start) => Number.isInteger(pid) && pid > 0 && typeof start === 'string' && /^\d+$/.test(start);
+const validProof = (pid, start, tol = 0) => Number.isInteger(pid) && pid > 0 && typeof start === 'string' && /^\d+$/.test(start) && Number.isInteger(tol) && tol >= 0;
 
-function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL } = {}) {
-  if (!validProof(pid, start)) return 'unknown';
-  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start)], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL, toleranceTicks = 0 } = {}) {
+  if (!validProof(pid, start, toleranceTicks)) return 'unknown';
+  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
 }
 
 const execFileAsync = (exe, args, opts) => new Promise((resolve) => {
@@ -187,10 +191,10 @@ const execFileAsync = (exe, args, opts) => new Promise((resolve) => {
  * process, and a spawnSync there freezes every window for the length of a PowerShell start-up). The same script and the same
  * answers. A run that fails or throws is 'unknown': nothing was judged, nothing is assumed.
  */
-async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershell = POWERSHELL } = {}) {
-  if (!validProof(pid, start)) return 'unknown';
+async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershell = POWERSHELL, toleranceTicks = 0 } = {}) {
+  if (!validProof(pid, start, toleranceTicks)) return 'unknown';
   try {
-    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start)], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
     // A run that errored AFTER printing its answer (a timeout kill) still printed it; parseProvenKill reads stdout, and refuses a bare error.
     return parseProvenKill(r && r.stdout ? { stdout: r.stdout } : { error: (r && r.error) || new Error('no output') });
   } catch { return 'unknown'; }

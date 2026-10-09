@@ -100,3 +100,29 @@ test('killProvenAsync: it does not block the event loop while PowerShell runs', 
   assert.strictEqual(ticked, true);
   assert.strictEqual(await p, 'gone');
 });
+
+// The status relay's sweep reads a start from the process TABLE (CIM, microsecond precision) and ends it later through
+// killProven, whose handle read is 100 ns precise: a tolerance covers that rounding, and nothing wider.
+test('killProven toleranceTicks: the compare is numeric within the tolerance; without it the compare stays exact', () => {
+  let exact = ''; let tol = '';
+  killProven(4321, '134000000000000123', { run: (e, a) => { exact = a[a.length - 1]; return { stdout: 'KILLED 0' }; } });
+  killProven(4321, '134000000000000123', { toleranceTicks: 20000, run: (e, a) => { tol = a[a.length - 1]; return { stdout: 'KILLED 0' }; } });
+  assert.match(exact, /\[string\]\$s -ne '134000000000000123'/);
+  assert.match(tol, /Abs\(\[long\]\$s - 134000000000000123\) -gt 20000/);
+  assert.strictEqual(killProven(4321, '1', { toleranceTicks: -1, run: () => assert.fail('a bad tolerance runs nothing') }), 'unknown');
+  assert.strictEqual(killProven(4321, '1', { toleranceTicks: 'x', run: () => assert.fail('a bad tolerance runs nothing') }), 'unknown');
+});
+
+test('killProven toleranceTicks (real process): a start within the tolerance kills, one beyond it does not', {
+  skip: process.platform !== 'win32' && 'PowerShell + taskkill: Windows only',
+}, async () => {
+  const c = sleeper();
+  const exited = new Promise(r => c.once('exit', r));
+  try {
+    const start = (await startTimes([c.pid])).get(c.pid);
+    assert.strictEqual(killProven(c.pid, (BigInt(start) + 30000n).toString(), { toleranceTicks: 20000 }), 'mismatch');
+    assert.strictEqual(c.exitCode, null);
+    assert.strictEqual(killProven(c.pid, (BigInt(start) + 10000n).toString(), { toleranceTicks: 20000 }), 'killed');
+    await exited;
+  } finally { if (c.exitCode === null && c.signalCode === null) c.kill(); }
+});
