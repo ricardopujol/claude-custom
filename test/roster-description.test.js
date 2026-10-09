@@ -191,3 +191,15 @@ test('corpus: every real agent file parses to its pinned persona and function li
   assert.strictEqual(expected['dead-code-hunter.md'].persona, 'Murray Bones');
   assert.strictEqual(expected['node-specialist.md'].persona, null);
 });
+
+test('#3: an excluded first "mentions" does not hide a leading name or a later "mentions"', () => {
+  assert.strictEqual(personaFromDescription('Otto — browser automation. Invoke whenever the user mentions AWS or Otto.'), 'Otto');
+  assert.strictEqual(personaFromDescription('Containers. Invoke whenever the user mentions Docker, or whenever the user mentions Paul.'), 'Paul');
+  assert.strictEqual(personaFromDescription('Containers. Invoke whenever the user mentions Docker or Kubernetes.'), null);
+});
+
+test('#5: "Use this agent when you need an/a/comprehensive ..." trims to the function phrase', () => {
+  assert.strictEqual(functionFromDescription('Use this agent when you need an idea pressure-tested with honesty. More.'), 'An idea pressure-tested with honesty.');
+  assert.strictEqual(functionFromDescription('Use this agent when you need comprehensive research across sources. More.'), 'Comprehensive research across sources.');
+  assert.strictEqual(functionFromDescription('Use this agent when you need to build CLIs.'), 'Build CLIs.');
+});

@@ -142,7 +142,7 @@ function descriptionFromFrontmatter(raw) {
 // a row ("Murray Bones"); the first lowercase word ("or", "in") ends it.
 const NAME_WORD = "\\p{Lu}[\\p{L}\\p{M}\\w'’-]*";
 const NAME_RUN = `${NAME_WORD}(?:[ \\t]+${NAME_WORD}){0,2}`;
-const MENTIONS_RE = new RegExp(`\\bmentions[ \\t]+(${NAME_RUN})`, 'u');
+const MENTIONS_ALL_RE = new RegExp(`\\bmentions[ \\t]+(${NAME_RUN})`, 'gu');
 // The leading form is ONE word: "Peter — ..." is a name, "Elite Reviewer — ..." is a job title.
 const LEADING_NAME_RE = new RegExp(`^(${NAME_WORD})[ \\t]+[—–][ \\t]+`, 'u');
 
@@ -172,13 +172,16 @@ function nameFromRun(run) {
  */
 function personaFromDescription(description) {
   if (typeof description !== 'string') return null;
-  const m = MENTIONS_RE.exec(description);
-  if (m) return nameFromRun(m[1]);
+  // Keep looking when a "mentions" names a product or acronym: a later one, or the leading form, may be the persona.
+  for (const m of description.matchAll(MENTIONS_ALL_RE)) {
+    const name = nameFromRun(m[1]);
+    if (name) return name;
+  }
   const lead = LEADING_NAME_RE.exec(description.trim());
   return lead ? nameFromRun(lead[1]) : null;
 }
 
-const FN_LEAD_RE = /^(?:use this agent when you need to|use this agent when|use this agent for|use when)(?:\s+|$)/i;
+const FN_LEAD_RE = /^(?:use this agent when you need(?: to)?|use this agent when|use this agent for|use when)(?:\s+|$)/i;
 const FN_MAX = 300;
 // A full stop after one of these does not end a sentence, even before a capital: "Django vs. Flask", "Mr. Smith".
 const ABBREVIATION_RE = /(?:^|[\s(])(?:vs|e\.g|i\.e|etc|mr|mrs|ms|dr|prof|st|cf|approx)\.$/i;

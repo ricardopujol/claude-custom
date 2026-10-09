@@ -126,23 +126,54 @@ function stateStore(record, status = 'ok') {
   };
 }
 
-for (const status of ['unreadable', 'corrupt']) {
-  test(`F3: with the record ${status}, setting the names refuses instead of rebuilding it from {}`, () => {
-    const store = stateStore({ imagesEnabled: false }, status);
-    const { call, sent } = setup(store);
-    assert.strictEqual(call(NAMES_SET_CHANNEL, 'name'), null);
-    assert.deepStrictEqual(store.writes, []);
-    assert.deepStrictEqual(sent, []);
-  });
-
-  test(`F3: with the record ${status}, setting images refuses and cannot erase the names`, () => {
-    const store = stateStore({ rosterNames: 'name' }, status);
-    const { call, sent } = setup(store);
-    assert.strictEqual(call('avatar:setImagesEnabled', true), null);
-    assert.deepStrictEqual(store.writes, []);
-    assert.deepStrictEqual(sent, []);
+// The real store's shape: read() folds a bad file into the fallback, readState() says why, write() is atomic.
+function seqStore(seq, initial) {
+  const state = { calls: 0, writes: [], record: initial };
+  const next = () => seq[Math.min(state.calls++, seq.length - 1)];
+  const st = () => { const status = next(); return { status, value: status === 'ok' ? state.record : null }; };
+  return Object.assign(state, {
+    readState: st,
+    read: (n, f) => { const r = st(); return r.status === 'ok' ? r.value : f; },
+    write: (n, v) => { state.writes.push(v); state.record = v; },
+    update: () => { throw new Error('update would read the file a second time'); },
   });
 }
+
+test('F3 residual: the new record is built from the ONE read that passed the gate', async () => {
+  const store = seqStore(['ok', 'unreadable'], { imagesEnabled: false });
+  const { call } = setup(store);
+  assert.strictEqual(await call(NAMES_SET_CHANNEL, 'name'), 'name');
+  assert.deepStrictEqual(store.writes, [{ imagesEnabled: false, rosterNames: 'name' }]);
+  const store2 = seqStore(['ok', 'unreadable'], { rosterNames: 'name' });
+  assert.strictEqual(await setup(store2).call('avatar:setImagesEnabled', false), false);
+  assert.deepStrictEqual(store2.writes, [{ rosterNames: 'name', imagesEnabled: false }]);
+});
+
+test('#2: a CORRUPT record is repaired by the click, and both toggles work after', async () => {
+  const store = seqStore(['corrupt', 'ok', 'ok'], null);
+  const { call, sent } = setup(store);
+  assert.strictEqual(await call(NAMES_SET_CHANNEL, 'name'), 'name');
+  assert.deepStrictEqual(store.writes, [{ rosterNames: 'name' }]);
+  assert.strictEqual(await call('avatar:setImagesEnabled', false), false);
+  assert.deepStrictEqual(store.writes[1], { rosterNames: 'name', imagesEnabled: false });
+  assert.deepStrictEqual(sent, [[NAMES_PUSH_CHANNEL, 'name'], [PUSH_CHANNEL, false]]);
+});
+
+test('#2: an UNREADABLE record is retried once, and saved if the lock has gone', async () => {
+  const store = seqStore(['unreadable', 'ok'], { imagesEnabled: false });
+  const { call } = setup(store);
+  assert.strictEqual(await call(NAMES_SET_CHANNEL, 'name'), 'name');
+  assert.deepStrictEqual(store.writes, [{ imagesEnabled: false, rosterNames: 'name' }]);
+});
+
+test('#2: unreadable twice is refused: nothing written, nothing pushed, answered null', async () => {
+  const store = seqStore(['unreadable'], { imagesEnabled: false });
+  const { call, sent } = setup(store);
+  assert.strictEqual(await call(NAMES_SET_CHANNEL, 'name'), null);
+  assert.strictEqual(await call('avatar:setImagesEnabled', true), null);
+  assert.deepStrictEqual(store.writes, []);
+  assert.deepStrictEqual(sent, []);
+});
 
 test('F3: a missing record is fine to write, and a good one keeps the other field', () => {
   const missing = { read: (n, f) => f, readState: () => ({ status: 'missing' }), update: (n, f, fn) => { missing.out = fn(f); } };

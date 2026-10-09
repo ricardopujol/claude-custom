@@ -77,3 +77,7 @@ test('F2: an Active search counts hidden matches and offers the existing reveal'
 test('F2: the show-hidden button says how many hidden agents match the search', () => {
   assert.match(JS, /\$\{hiddenMatches\.length\} match/);
 });
+
+test('#2: a refused names save snaps the toggle back to the saved value', () => {
+  assert.match(JS, /Refused \(the record was locked\)[\s\S]{0,120}getRosterNames\(\)\.then\(applyRosterNames\)/);
+});

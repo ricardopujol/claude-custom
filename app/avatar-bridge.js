@@ -70,23 +70,44 @@ function readRosterNames(store) {
 }
 
 /**
- * Sets ONE field of the shared avatar record, keeping the others. The two
- * toggles (images, roster names) live in one record, so a write that rebuilt it
- * from `{}` after a failed read would silently reset the other one (PR #141,
- * Dexter F3). `read()` folds "unreadable" and "corrupt" into the fallback, so
- * the decision is made on `readState`: only a record that is `ok` or `missing`
- * may be written over. Throws, with nothing written, otherwise.
+ * One attempt to set ONE field of the shared avatar record, keeping the others.
+ * The two toggles (images, roster names) live in one record, so a write that
+ * rebuilt it from `{}` after a failed read would silently reset the other one
+ * (PR #141, Dexter F3). `read()` folds "unreadable" and "corrupt" into the
+ * fallback, so the decision is made on ONE `readState` and the new record is
+ * built from THAT read's value (a second read, inside `update`, could fail
+ * between the two):
+ *   ok / missing  merge the field into the record and write it
+ *   corrupt       the readers already treat it as the defaults, so nothing in
+ *                 effect is lost: write the defaults plus this field (the click
+ *                 repairs the file instead of leaving both toggles dead)
+ *   unreadable    EBUSY / EPERM, a transient lock: write nothing, answer false
+ * Returns true when saved, false when refused. A real write failure throws.
  */
-function saveField(store, field, value) {
-  if (typeof store.readState === 'function') {
-    const st = store.readState(AVATAR_KEY);
-    if (st.status !== 'ok' && st.status !== 'missing') {
-      throw new Error(`the avatar record is ${st.status}; not writing over it`);
-    }
+function attemptSave(store, field, value) {
+  const st = typeof store.readState === 'function' ? store.readState(AVATAR_KEY) : null;
+  if (st && st.status === 'unreadable') return false;
+  if (st && typeof store.write === 'function') {
+    const base = st.status === 'ok' && st.value && typeof st.value === 'object' && !Array.isArray(st.value) ? st.value : {};
+    store.write(AVATAR_KEY, { ...base, [field]: value });
+    return true;
   }
   store.update(AVATAR_KEY, {}, (prev) => ({
     ...(prev && typeof prev === 'object' ? prev : {}), [field]: value,
   }));
+  return true;
+}
+
+const SAVE_RETRY_MS = 100;
+
+/** true when saved straight away; otherwise a Promise<boolean> for the one retry after an unreadable record. */
+function saveField(store, field, value, delayMs = SAVE_RETRY_MS) {
+  if (attemptSave(store, field, value)) return true;
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      try { resolve(attemptSave(store, field, value)); } catch { resolve(false); }
+    }, delayMs);
+  });
 }
 
 function pickerOptions() {
@@ -111,17 +132,26 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
   ipcMain.handle(SET_CHANNEL, (e, enabled) => {
     if (!fromWindow(e)) return null;
     if (typeof enabled !== 'boolean') return null;
+    const done = () => {
+      // The watcher must know what this window was just told, or a later change
+      // back would compare equal to its stale memory and never be pushed (Dexter N2).
+      sync.last = enabled;
+      try { push(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
+      return enabled;
+    };
+    let saved;
     try {
-      saveField(store, 'imagesEnabled', enabled);
+      saved = saveField(store, 'imagesEnabled', enabled);
     } catch (err) {
       console.error('[main] could not save the agent-images toggle:', err && err.message);
       return null;
     }
-    // The watcher must know what this window was just told, or a later change
-    // back would compare equal to its stale memory and never be pushed (Dexter N2).
-    sync.last = enabled;
-    try { push(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
-    return enabled;
+    if (saved === true) return done();
+    return saved.then((ok) => {
+      if (ok) return done();
+      console.error('[main] the avatar record stayed unreadable; the agent-images toggle was not saved');
+      return null;
+    });
   });
 
   ipcMain.handle(NAMES_GET_CHANNEL, (e) => (fromWindow(e) ? readRosterNames(store) : 'role'));
@@ -129,15 +159,24 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
   ipcMain.handle(NAMES_SET_CHANNEL, (e, mode) => {
     if (!fromWindow(e)) return null;
     if (mode !== 'role' && mode !== 'name') return null;
+    const done = () => {
+      sync.lastNames = mode;
+      try { push(NAMES_PUSH_CHANNEL, mode); } catch { /* window is going away */ }
+      return mode;
+    };
+    let saved;
     try {
-      saveField(store, 'rosterNames', mode);
+      saved = saveField(store, 'rosterNames', mode);
     } catch (err) {
       console.error('[main] could not save the roster names toggle:', err && err.message);
       return null;
     }
-    sync.lastNames = mode;
-    try { push(NAMES_PUSH_CHANNEL, mode); } catch { /* window is going away */ }
-    return mode;
+    if (saved === true) return done();
+    return saved.then((ok) => {
+      if (ok) return done();
+      console.error('[main] the avatar record stayed unreadable; the roster names toggle was not saved');
+      return null;
+    });
   });
 
   ipcMain.handle(PICK_CHANNEL, async (e) => {

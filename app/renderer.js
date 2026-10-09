@@ -3962,7 +3962,9 @@ function applyRosterNames(mode) {
 function setRosterNames(mode) {
   if (!(window.harness && window.harness.avatar && window.harness.avatar.setRosterNames)) { applyRosterNames(mode); return; }
   window.harness.avatar.setRosterNames(mode).then((saved) => {
-    if (saved === 'role' || saved === 'name') applyRosterNames(saved);
+    if (saved === 'role' || saved === 'name') { applyRosterNames(saved); return; }
+    // Refused (the record was locked): snap back to what is saved.
+    window.harness.avatar.getRosterNames().then(applyRosterNames).catch(() => { /* keep what's shown */ });
   }).catch(() => { /* keep what's shown; main's push corrects it */ });
 }
 

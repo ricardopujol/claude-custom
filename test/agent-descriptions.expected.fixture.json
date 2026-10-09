@@ -125,7 +125,7 @@
  },
  "project-idea-validator.md": {
   "persona": null,
-  "fn": "You need an idea pressure-tested with brutal honesty, competitor teardown, market validation, and clear go/no-go guidance before building."
+  "fn": "An idea pressure-tested with brutal honesty, competitor teardown, market validation, and clear go/no-go guidance before building."
  },
  "prompt-engineer.md": {
   "persona": null,
@@ -137,7 +137,7 @@
  },
  "research-analyst.md": {
   "persona": null,
-  "fn": "You need comprehensive research across multiple sources with synthesis of findings into actionable insights, trend identification, and detailed reporting."
+  "fn": "Comprehensive research across multiple sources with synthesis of findings into actionable insights, trend identification, and detailed reporting."
  },
  "security-auditor.md": {
   "persona": "Andy",
