@@ -34,7 +34,7 @@
 const { spawn } = require('child_process');
 const { killPidTree, killChildTree } = require('../../host/kill-tree');
 
-function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, killFn = killPidTree }) {   // kill-ok: the default killFn, reached only through killChildTree(child) on the held child
+function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, killFn = killPidTree }) {   // kill-ok(held-handle): the default killFn, reached only through killChildTree(child) on the held child
   return new Promise((resolve) => {
     let stdout = '', stderr = '', timedOut = false, settled = false;
     let exited = false, exitCode = null;

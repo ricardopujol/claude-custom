@@ -195,6 +195,59 @@ test('a throwing startTimes or onChange never rejects a refresh', async () => {
   assert.deepStrictEqual(r.service.current(), []);
 });
 
+// --- known(): "no claims" is believable only when the service could look (#77 Dexter D2) -----------------
+
+test('known: false before the first pass, true after a pass over an empty or missing folder', async () => {
+  const r = rig();
+  assert.strictEqual(r.service.known(), false, 'it has not looked yet');
+  await r.service.refresh();
+  assert.strictEqual(r.service.known(), true, 'no claim folder is a real "nobody"');
+});
+
+test('known: true when every claim was proven, false when one could not be (the OS could not be asked)', async () => {
+  const r = rig();
+  r.writer.write(record());
+  await r.service.refresh();
+  assert.strictEqual(r.service.known(), true);
+  const r2 = rig({ startTimes: async () => { throw new Error('ps died'); } });
+  r2.writer.write(record());
+  await r2.service.refresh();
+  assert.deepStrictEqual(r2.service.current(), []);
+  assert.strictEqual(r2.service.known(), false, 'a claim never proven live is hidden, but it might be an agent');
+  const r3 = rig({ startTimes: async () => null });
+  r3.writer.write(record());
+  await r3.service.refresh();
+  assert.strictEqual(r3.service.known(), false);
+});
+
+test('known: a dead claim is a real "nobody"; a claim with no start time is unproven, so unknown', async () => {
+  const dead = rig();
+  dead.writer.write(record());
+  dead.running = new Map();
+  await dead.service.refresh();
+  assert.strictEqual(dead.service.known(), true);
+  const noStart = rig();
+  noStart.writer.write(record({ hostStartedAt: undefined }));
+  await noStart.service.refresh();
+  assert.strictEqual(noStart.service.known(), false);
+});
+
+test('known: an unreadable claim folder is false, and so is a pass that threw', async () => {
+  const unreadable = rig({ fsImpl: { readdirSync: () => { throw Object.assign(new Error('EACCES'), { code: 'EACCES' }); }, existsSync: () => true } });
+  await unreadable.service.refresh();
+  assert.strictEqual(unreadable.service.state(), 'unreadable');
+  assert.strictEqual(unreadable.service.known(), false);
+  const boom = rig({ log: () => {} });
+  boom.writer.write(record());
+  await boom.service.refresh();
+  assert.strictEqual(boom.service.known(), true);
+  boom.running = new Map([[4242, '1000']]);
+  const r = rig({ now: () => { throw new Error('clock exploded'); }, log: () => {} });
+  r.writer.write(record());
+  await r.service.refresh();
+  assert.strictEqual(r.service.known(), false, 'a refresh that failed is not a "nobody"');
+});
+
 // --- watching and the timer ---------------------------------------------------------------------
 
 test('start arms a watcher on the folder (creating it first, safely), and a file event refreshes', async () => {
