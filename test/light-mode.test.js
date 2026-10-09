@@ -17,9 +17,10 @@ const {
 } = require('../host/palette-gen');
 const {
   sanitizeLook, derivePalette, terminalOverride, applyLook, effectiveMode, cliThemeFor, DEFAULT_LOOK,
-  contrastRatio, luminance,
+  contrastRatio, luminance, resolveLook, mix, ensureContrastAll,
 } = require('../host/look');
 const { findUserTheme } = require('../host/settings-writer');
+const { chosenAccent } = require('../app/top-bar-display');
 const { setMode, setLook, readLook, rerollLook, seedLookIfNew, matchLook, LOOK_DIR_NAME } = require('../host/style');
 const { buildHarnessSettings, buildClaudeArgs } = require('../host/settings-writer');
 const { coloursSectionView, backgroundSectionView, reduceStyle, emptyStyleState, styleDisplay } = require('../app/style-display');
@@ -178,7 +179,7 @@ test('D1: a light look with the App colour reset or hand-picked dark still paint
     assert.ok(luminance(out.terminal.background) >= MIN_LIGHT_BG_LUMINANCE, `terminal ${appColor}`);
     assert.strictEqual(out.terminal.background, out.chrome.bg);
     for (const surface of [out.chrome.bg, out.chrome.panel]) {
-      for (const k of ['text', 'dim', 'accent']) assert.ok(contrastRatio(out.chrome[k], surface) >= MIN_TEXT_CONTRAST, `${k} ${appColor}`);
+      for (const k of ['text', 'dim']) assert.ok(contrastRatio(out.chrome[k], surface) >= MIN_TEXT_CONTRAST, `${k} ${appColor}`);
     }
     assert.ok(contrastRatio(out.terminal.foreground, out.terminal.background) >= MIN_TEXT_CONTRAST);
   }
@@ -278,13 +279,51 @@ test('D1: setMode light rolls a palette when the stored other look has no colour
   }
 });
 
-test('D1: Reset App in light, flip to dark and back to light still gives a light palette', () => {
+test('D1/N2: Reset App in light, flip to dark and back keeps the person own Text and Accent and still paints light', () => {
   const { cwd } = projectWithDarkLook();
   setMode({ cwd, mode: 'light', rng: mulberry32(5) });
-  setLook({ cwd, patch: { appColor: null } });
+  setLook({ cwd, patch: { appColor: null, textColor: '#3a2e1f', accentColor: '#7b2d8e' } });
   setMode({ cwd, mode: 'dark', rng: mulberry32(6) });
   const back = setMode({ cwd, mode: 'light', rng: mulberry32(7) });
-  assert.deepStrictEqual(lookFailures(back.look, { mode: 'light' }), []);
+  assert.strictEqual(back.look.textColor, '#3a2e1f');
+  assert.strictEqual(back.look.accentColor, '#7b2d8e');
+  assert.strictEqual(back.look.appColor, null);
+  const out = applyLook({ chrome: {}, terminal: {} }, back.look);
+  assert.ok(luminance(out.chrome.bg) >= MIN_LIGHT_BG_LUMINANCE);
+});
+
+test('N3: an unset accent or secondary stays unset when painted in light, so no choice is reported that was never made', () => {
+  const out = applyLook({ chrome: { accent: '#d08c4a', dim: '#6d7689' }, terminal: {} }, { ...DEFAULT_LOOK, mode: 'light' });
+  assert.strictEqual(out.chrome.onAccent, undefined, 'onAccent marks a CHOSEN accent');
+  assert.strictEqual(out.chrome.accent, '#d08c4a');
+  assert.strictEqual(chosenAccent(out), null);
+  // the secondary is automatic again: worked out from Text and App
+  assert.strictEqual(out.chrome.dim, ensureContrastAll(mix(out.chrome.text, out.chrome.bg, 0.45), [out.chrome.bg, out.chrome.panel]));
+  const picked = applyLook({ chrome: {}, terminal: {} }, { ...DEFAULT_LOOK, mode: 'light', accentColor: '#7b2d8e' });
+  assert.strictEqual(chosenAccent(picked), '#7b2d8e');
+  assert.ok(resolveLook({ ...DEFAULT_LOOK, mode: 'light' }).accentColor === null);
+});
+
+test('N4: a half-written config file is retried once before the theme is taken as missing', () => {
+  const cfg = tmpDir('cc-theme-retry-');
+  const file = path.join(cfg, '.claude.json');
+  fs.writeFileSync(file, JSON.stringify({ theme: 'dark-daltonized' }));
+  let reads = 0;
+  let slept = 0;
+  const fsImpl = { readFileSync: (f, enc) => { if (f === file && ++reads === 1) return '{ "theme": "da'; return fs.readFileSync(f, enc); } };
+  assert.strictEqual(findUserTheme({ configDir: cfg, fsImpl, sleep: () => { slept++; } }), 'dark-daltonized');
+  assert.strictEqual(reads, 2);
+  assert.strictEqual(slept, 1);
+  // still broken after the retry: missing, and only one retry
+  reads = 0;
+  const broken = { readFileSync: (f, enc) => { if (f === file) { reads++; return '{ nope'; } return fs.readFileSync(f, enc); } };
+  assert.strictEqual(findUserTheme({ configDir: cfg, fsImpl: broken, sleep: () => {} }), null);
+  assert.strictEqual(reads, 2);
+  // an absent file is not retried
+  let missing = 0;
+  const gone = { readFileSync: () => { missing++; const e = new Error('x'); e.code = 'ENOENT'; throw e; } };
+  findUserTheme({ configDir: cfg, fsImpl: gone, sleep: () => { throw new Error('slept'); } });
+  assert.ok(missing > 0);
 });
 
 test('D1: going back to dark from a never-coloured look is still the registry theme', () => {

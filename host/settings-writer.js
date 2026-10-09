@@ -221,7 +221,23 @@ const THEME_RE = /^(?:auto|(?:dark|light)(?:-(?:daltonized|ansi))?)$/;
  * (project-local, project, user settings, then the global config `.claude.json`). A value that isn't one of the CLI's
  * themes is skipped, and so is an unreadable layer.
  */
-function findUserTheme({ configDir, cwd } = {}) {
+// Another tab's CLI may be rewriting its config as this host starts, so a file that fails to PARSE is read once more
+// shortly after before it counts as having no theme (an absent file is not retried).
+const RETRY_WAIT_MS = 60;
+const sleepSync = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no wait available */ } };
+
+function readJsonRetry(file, fsImpl, sleep) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return JSON.parse(fsImpl.readFileSync(file, 'utf8'));
+    } catch (err) {
+      if (attempt === 1 || !(err instanceof SyntaxError)) return undefined;
+      sleep(RETRY_WAIT_MS);
+    }
+  }
+}
+
+function findUserTheme({ configDir, cwd, fsImpl = fs, sleep = sleepSync } = {}) {
   const candidates = [];
   if (cwd) {
     candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
@@ -233,8 +249,7 @@ function findUserTheme({ configDir, cwd } = {}) {
     if (path.basename(configDir) === '.claude') candidates.push(path.join(path.dirname(configDir), '.claude.json'));
   }
   for (const file of candidates) {
-    let parsed;
-    try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
+    const parsed = readJsonRetry(file, fsImpl, sleep);
     if (parsed && typeof parsed === 'object' && typeof parsed.theme === 'string' && THEME_RE.test(parsed.theme)) return parsed.theme;
   }
   return null;

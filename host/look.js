@@ -138,19 +138,18 @@ const SAFE_LOOK_LIGHT = Object.freeze({
 
 /**
  * The look as it is PAINTED. A dark look is as stored. A light look cannot trust its App colour (Reset, a hand-picked
- * #202020, a stored look with no colours): a missing or non-light one becomes the light palette's own, and every unset
- * colour is filled from it, so chrome, terminal and the CLI's light theme always sit on a light surface.
+ * #202020, a stored look with no colours): a missing or non-light one becomes the light palette's own, and an unset
+ * Text is filled from it, so chrome, terminal and the CLI's light theme always sit on a light surface.
  */
 function resolveLook(look) {
   if (effectiveMode(look) !== 'light') return look;
   const app = normalHex(look.appColor);
-  const pick = (key) => normalHex(look[key]) || SAFE_LOOK_LIGHT[key];
+  // Only App and Text are filled: the registry's text is a light one that vanishes on a light surface. An unset accent or
+  // secondary stays unset, so nothing is reported as a choice nobody made (chosenAccent, the automatic secondary).
   return {
     ...look,
     appColor: app && luminance(app) >= LIGHT_BG_FLOOR ? app : SAFE_LOOK_LIGHT.appColor,
-    textColor: pick('textColor'),
-    accentColor: pick('accentColor'),
-    secondaryColor: pick('secondaryColor'),
+    textColor: normalHex(look.textColor) || SAFE_LOOK_LIGHT.textColor,
   };
 }
 
@@ -267,6 +266,8 @@ function derivePalette(rawLook, baseChrome) {
     // Dim is re-derived whenever either end moved: the base theme's dim was
     // tuned against the base background, and against a new one it can vanish.
     out.dim = mix(out.text, out.bg, DIM_MIX);
+    // On a light surface that automatic dim sits close to the dark text and can fall under 4.5:1: keep it readable.
+    if (effectiveMode(look) === 'light') out.dim = readable(out.dim);
   }
   // A chosen accent or secondary colour is used as given when it reads, and
   // moved just far enough when it would vanish -- a separate guard from the
@@ -329,7 +330,7 @@ function sanitizeDim(v) {
 }
 
 module.exports = {
-  parseHex, formatHex, sanitizeLook, effectiveMode, cliThemeFor, resolveLook, SAFE_LOOK_LIGHT, LIGHT_BG_FLOOR, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
+  parseHex, formatHex, sanitizeLook, effectiveMode, cliThemeFor, resolveLook, mix, SAFE_LOOK_LIGHT, LIGHT_BG_FLOOR, derivePalette, terminalOverride, applyLook, luminance, sanitizeDim,
   contrastRatio, ensureContrast, ensureContrastAll, MIN_CONTRAST,
   DEFAULT_LOOK, MAX_DARKNESS, ACCEPTED_EXTENSIONS, DEFAULT_DIM, MAX_DIM,
 };

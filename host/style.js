@@ -340,9 +340,10 @@ function setMode({ cwd, mode, rng, terminalForeground, fsImpl = fs, generate = g
   // never chose (Dexter D3).
   if (effectiveMode(cur) === mode) return { ok: true, look: cur };
   let incoming = cur.other;
-  // A stored look with no colours is not a light look (Reset App, a hand-edited `other: {}`): roll one (Dexter D1).
-  // For dark it IS one: the registry theme.
-  if (mode === 'light' && !(incoming && incoming.appColor)) incoming = null;
+  // A stored look with NO colours at all is not a light look (a hand-edited `other: {}`): roll one (Dexter D1). One that
+  // still holds any of the person's own picks is kept, even with App reset: the painter puts it on a light surface (N2).
+  // For dark an empty look IS one: the registry theme.
+  if (mode === 'light' && !(incoming && OTHER_KEYS.some((k) => k !== 'darkness' && incoming[k]))) incoming = null;
   if (!incoming) {
     const made = generate(rng, { terminalForeground, mode });
     if (!made) return { ok: false, reason: noGeneratedReason(mode, terminalForeground) };
