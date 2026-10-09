@@ -9,7 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { reapMarked, reapDeadOwners, markedPids, SLEEPER_SRC } = require('../verify/lib/reap-marked');
 
 const onWin = process.platform === 'win32';
@@ -35,10 +35,34 @@ test('reapMarked ends the processes carrying the marker, and only those', opts, 
   } finally { reapMarked(mine); reapMarked(other); }
 });
 
+test('markers that share a prefix do not match each other (the token boundary, PR #135 Miguel 4)', opts, async () => {
+  const x = `ccbound-${process.pid}-${Date.now()}`;
+  const longer = `${x}-2`;
+  const a = sleeper(x); const b = sleeper(longer);
+  try {
+    assert.ok(await until(() => markedPids(x).length === 1 && markedPids(longer).length === 1), 'each marker sees only its own sleeper');
+    assert.strictEqual(reapMarked(x), 1);
+    assert.ok(await until(() => !alive(a.pid)));
+    assert.ok(alive(b.pid), 'reaping X ended X-2');
+  } finally { reapMarked(x); reapMarked(longer); }
+});
+
+test('the start-time proof: a creation time that does not match the process\'s StartTime spares it (PR #135 Miguel 4)', opts, async () => {
+  const m = `ccproof-${process.pid}-${Date.now()}`;
+  const a = sleeper(m);
+  try {
+    assert.ok(await until(() => markedPids(m).length === 1));
+    assert.strictEqual(reapMarked(m, { forgeTicks: 10000000 }), 0, 'a process whose creation time is a second off was ended');   // 1 s in 100 ns ticks
+    assert.ok(alive(a.pid), 'the proof let a mismatched process die');
+    assert.strictEqual(reapMarked(m), 1, 'the unforged proof must still end it');
+    assert.ok(await until(() => !alive(a.pid)));
+  } finally { reapMarked(m); }
+});
+
 test('reapDeadOwners ends a killed run\'s leftovers, and leaves a live owner\'s alone', opts, async () => {
   const prefix = `ccdead${Date.now()}`;
-  const gone = spawnSync(process.execPath, ['-e', '0']);           // a pid that has exited
-  const deadMarker = `${prefix}-${gone.pid}-1`;
+  const deadOwner = 2147483646;                                  // above any Windows pid: provably not running, and never reusable
+  const deadMarker = `${prefix}-${deadOwner}-1`;
   const liveMarker = `${prefix}-${process.pid}-1`;
   const d = sleeper(deadMarker); const l = sleeper(liveMarker);
   try {
@@ -49,6 +73,17 @@ test('reapDeadOwners ends a killed run\'s leftovers, and leaves a live owner\'s 
   } finally { reapMarked(deadMarker); reapMarked(liveMarker); }
 });
 
+test('reapDeadOwners: an owner pid that is not an Int32 is skipped, it does not fail the sweep (Miguel 9)', opts, async () => {
+  const prefix = `ccbig${Date.now()}`;
+  const marker = `${prefix}-99999999999-1`;
+  const s = sleeper(marker);
+  try {
+    assert.ok(await until(() => markedPids(marker).length === 1));
+    assert.strictEqual(reapDeadOwners(prefix), 0);
+    assert.ok(alive(s.pid));
+  } finally { reapMarked(marker); }
+});
+
 test('a marker that could match more than itself is refused (no wildcard widening of the kill)', () => {
   for (const bad of ['', 'a b', "x'y", 'a%b', '*', 'a;b']) assert.throws(() => reapMarked(bad), /marker/, JSON.stringify(bad));
 });
@@ -57,14 +92,90 @@ test('the sleeper expires by itself, so even a reaper that never runs cannot lea
   assert.match(SLEEPER_SRC, /setTimeout\(\(\) => process\.exit\(\), \d+\)/);
 });
 
-// The rule: a test file that spawns detached children must use the reaper.
-test('rule: every test that spawns detached children reaps them through verify/lib/reap-marked (or pids it holds)', () => {
-  const dir = __dirname;
+// ---- the rule: every detached spawn site is accounted for, per site (PR #135 Dexter 8, Miguel 5) --------------------
+//
+// A "site" is any `detached:` option that is not `false` (an options object built apart from the spawn call carries it
+// too). A site is accounted for if EITHER a `kill-test-ok: <reason>` comment sits on its line or the line above it, OR
+// it feeds the shared sleeper (SLEEPER_SRC within 300 characters after it) AND the file calls reapMarked( or
+// reapDeadOwners( in code. Comments and regex literals never count, in either direction.
+
+function blank(src) {   // comments blanked to spaces, strings kept, line breaks kept
+  let out = ''; let i = 0; const n = src.length;
+  while (i < n) {
+    const c = src[i]; const d = src[i + 1];
+    if (c === '/' && d === '/') { while (i < n && src[i] !== '\n') { out += src[i] === '\r' ? '\r' : ' '; i++; } continue; }
+    if (c === '/' && d === '*') { out += '  '; i += 2; while (i < n && !(src[i] === '*' && src[i + 1] === '/')) { out += src[i] === '\n' || src[i] === '\r' ? src[i] : ' '; i++; } out += '  '; i += 2; continue; }
+    if (c === "'" || c === '"' || c === '`') {
+      const q = c; out += c; i++;
+      while (i < n && src[i] !== q) {
+        if (src[i] === '\\') { out += src[i] + (src[i + 1] || ''); i += 2; continue; }
+        if (q !== '`' && src[i] === '\n') break;
+        // a comment inside a template literal that holds code (a spawned `node -e` program) is still a comment
+        if (q === '`' && src[i] === '/' && src[i + 1] === '/') { while (i < n && src[i] !== '\n') { out += ' '; i++; } continue; }
+        out += src[i]; i++;
+      }
+      if (i < n && src[i] === q) { out += src[i]; i++; }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+function unaccountedDetached(source) {
+  const orig = source.split(/\r?\n/);
+  const code = blank(source);
+  const lines = code.split(/\r?\n/);
+  const reaps = /\b(?:reapMarked|reapDeadOwners)\s*\(/.test(code);
   const bad = [];
-  for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.test.js'))) {
-    const src = fs.readFileSync(path.join(dir, f), 'utf8');
-    const spawnsDetached = [...src.matchAll(/\bdetached:\s*true/g)].some(m => src.slice(Math.max(0, m.index - 300), m.index).includes('spawn('));
-    if (spawnsDetached && !/reap-marked/.test(src) && !/kill-test-ok:/.test(src)) bad.push(f);
+  let offset = 0;
+  lines.forEach((line, i) => {
+    for (const m of line.matchAll(/(?<![\w/])detached\s*:(?!\s*false\b)/g)) {
+      if (line[m.index - 1] === '/') continue;                                   // inside a regex literal
+      const before = code.slice(Math.max(0, offset + m.index - 400), offset + m.index);
+      if (!/\b(?:spawn|fork|execFile)\s*\(|\b(?:stdio|windowsHide|shell)\s*:/.test(before + line)) continue;   // not a process option (git's `detached` worktree flag, say)
+      const near = orig.slice(Math.max(0, i - 1), i + 1).join('\n');
+      const excused = /kill-test-ok:[ \t]*\S{3,}/.test(near);
+      const after = code.slice(offset + m.index, offset + m.index + 300) + code.slice(Math.max(0, offset + m.index - 300), offset + m.index);
+      const feedsSleeper = /SLEEPER_SRC/.test(after);
+      if (!(excused || (feedsSleeper && reaps))) bad.push(`${i + 1}: ${orig[i].trim().slice(0, 90)}`);
+    }
+    offset += line.length + (code[offset + line.length] === '\r' ? 2 : 1);
+  });
+  return bad;
+}
+
+test('rule fixtures: one excused spawn does not excuse a second; a comment is not a reaper; a reason is required; options by variable count', () => {
+  const D = 'detached';   // built, so this file's own scan does not read its fixtures as spawn sites
+  const sleeperCall = `spawn(process.execPath, ['-e', SLEEPER_SRC, m], { ${D}: true });`;
+  const bare = `spawn(a, b, { ${D}: true });`;
+  assert.strictEqual(unaccountedDetached(`// kill-test-ok: reaped by pid in finally
+${bare}
+${bare}`).length, 1);
+  assert.strictEqual(unaccountedDetached(`// reaps through reap-marked, honest
+${sleeperCall}`).length, 1, 'a comment naming the reaper');
+  assert.strictEqual(unaccountedDetached(`const reapMarked = 1; // x
+const r = require('./reap-marked');
+${sleeperCall}`).length, 1, 'a mention that is not a call');
+  assert.strictEqual(unaccountedDetached(`// kill-test-ok:
+${bare}`).length, 1, 'no reason');
+  assert.strictEqual(unaccountedDetached(`const o = { stdio: 'ignore', ${D}: true };
+spawn(cmd, args, o);`).length, 1, 'options object by variable');
+  assert.strictEqual(unaccountedDetached(`const o = { stdio: 'ignore', ${D}: isWin };
+spawn(cmd, args, o);`).length, 1, 'a non-literal value');
+  // and the accepted forms
+  assert.deepStrictEqual(unaccountedDetached(`reapMarked(m);
+${sleeperCall}`), []);
+  assert.deepStrictEqual(unaccountedDetached(`// kill-test-ok: reaped by the pid it reports in finally
+${bare}`), []);
+  assert.deepStrictEqual(unaccountedDetached(`spawn(a, b, { ${D}: false });
+assert.match(body, /${D}: true/);`), []);
+});
+
+test('rule: every detached spawn in the test suite is accounted for', () => {
+  const bad = [];
+  for (const f of fs.readdirSync(__dirname).filter(n => n.endsWith('.test.js'))) {
+    for (const b of unaccountedDetached(fs.readFileSync(path.join(__dirname, f), 'utf8'))) bad.push(`${f}:${b}`);
   }
   assert.deepStrictEqual(bad, []);
 });

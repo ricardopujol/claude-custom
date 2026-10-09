@@ -304,30 +304,32 @@ const RUN_MARKERS = [];
 process.on('exit', () => { for (const m of RUN_MARKERS) { try { reapMarked(m); } catch { /* best effort at exit */ } } });
 
 test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
-  try { reapDeadOwners('cc72'); } catch { /* a leftover sweep must never fail the test */ }
+  try { reapDeadOwners('cc72'); reapDeadOwners('cc72s'); } catch { /* a leftover sweep must never fail the test */ }
   // taskkill /T reads the tree once and then ends it. A process the tree started after that read (cmd.exe still
   // creating the user's command, under load) outlived the kill, and kept the relay's stdout open: MEASURED, a relay
   // whose grandchild was created during the kill was waited on for 685 s. This command starts a new process every
   // 25 ms, so a kill that reads the tree only once loses one every time.
   const dir = tmpDir('relay-spawner');
-  const marker = `cc72-${process.pid}-${Date.now()}`;
-  RUN_MARKERS.push(marker);
+  const marker = `cc72-${process.pid}-${Date.now()}`;          // the sleepers carry this
+  const spawnerMarker = `cc72s-${process.pid}-${Date.now()}`;   // the spawner carries this one, so a scan for sleepers cannot match it
+  RUN_MARKERS.push(marker, spawnerMarker);
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawner = path.join(dir, 'spawner.js');
   fs.writeFileSync(spawner, `const { spawn } = require('child_process');
-let n = 0;
+let n = 0; const t0 = Date.now();
 setInterval(() => {
   spawn(process.execPath, ['-e', ${JSON.stringify(SLEEPER_SRC)}, ${JSON.stringify(marker)}], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   if (++n === 3) require('fs').writeFileSync(${JSON.stringify(ready)}, 'ok');
-  if (n >= 400) process.exit();   // a spawner orphaned by a killed run stops by itself
+  if (Date.now() - t0 > 170000) process.exit();   // a spawner orphaned by a killed run stops by itself, but never inside this test (its timeout is 120 s)
 }, 25);
 `);
-  const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${marker}`;
+  const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${spawnerMarker}`;
   try {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const ran = runUser(b64(cmd), DOC, { timeoutMs: 1500 });
     await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
     // Positive control: the same read must SEE the spawned processes before the kill, or "none left" proves nothing.
+    // (the scan matches the sleepers' marker only, never the spawner's own: PR #135 Dexter 4)
     assert.ok(markedPids(marker).length > 0, 'the marker scan finds none of the running spawned processes');
     t.mock.timers.tick(1500);                         // the timeout fires now, mid-spawning
     assert.strictEqual(await ran, 1, 'a killed command is not a success');
@@ -336,7 +338,7 @@ setInterval(() => {
     for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
     assert.deepStrictEqual(left, [], 'processes the user command started are still running after the kill');
   } finally {
-    try { reapMarked(marker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ }
+    try { reapMarked(marker); reapMarked(spawnerMarker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ }
   }
 });
 

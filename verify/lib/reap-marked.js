@@ -41,12 +41,13 @@ function checkMarker(marker) {
 }
 
 // Ends $rows[i] only if the process holding its pid started when the table says (within 2 ms).
-const KILL_PROVEN = `$n=0
+// `forgeTicks` is a seam for the tests: it shifts the table's creation time so the proof can be shown to refuse a mismatch.
+const killProven = (forgeTicks = 0) => `$n=0
 foreach($r in $rows){
   $p=Get-Process -Id $r.ProcessId -ErrorAction SilentlyContinue
   if(-not $p -or $p.ProcessName -ne 'node'){continue}
   try{$null=$p.Handle;$s=$p.StartTime.ToFileTimeUtc()}catch{continue}
-  if([math]::Abs($s-$r.CreationDate.ToFileTimeUtc()) -gt 20000){continue}
+  if([math]::Abs($s-($r.CreationDate.ToFileTimeUtc()+${Number(forgeTicks) || 0})) -gt 20000){continue}
   try{$p.Kill();$n++}catch{}
 }
 'REAPED '+$n`;
@@ -60,19 +61,20 @@ function markedPids(marker) {
   return out.split(/\s+/).filter(Boolean).map(Number);
 }
 
-function reapMarked(marker) {
+function reapMarked(marker, { forgeTicks = 0 } = {}) {
   checkMarker(marker);
   if (process.platform !== 'win32') return 0;
-  return count(ps(`${rowsScript(`[regex]::Escape('${marker}')`)}\n${KILL_PROVEN}`));
+  return count(ps(`${rowsScript(`[regex]::Escape('${marker}')`)}\n${killProven(forgeTicks)}`));
 }
 
-function reapDeadOwners(prefix) {
+function reapDeadOwners(prefix, { forgeTicks = 0 } = {}) {
   checkMarker(prefix);
   if (process.platform !== 'win32') return 0;
   const script = `${rowsScript(`[regex]::Escape('${prefix}')+'-\\d+-[\\w.]+'`)}
+function Dead($v){$id=0;if(-not [int]::TryParse($v,[ref]$id)){return $false};-not (Get-Process -Id $id -ErrorAction SilentlyContinue)}
 $own=[regex]::new('(?<![\\w.-])'+[regex]::Escape('${prefix}')+'-(\\d+)-')
-$rows=@($rows | Where-Object { $m=$own.Match($_.CommandLine); $m.Success -and -not (Get-Process -Id ([int]$m.Groups[1].Value) -ErrorAction SilentlyContinue) })
-${KILL_PROVEN}`;
+$rows=@($rows | Where-Object { $m=$own.Match($_.CommandLine); $m.Success -and (Dead $m.Groups[1].Value) })
+${killProven(forgeTicks)}`;
   return count(ps(script));
 }
 
