@@ -53,6 +53,9 @@ const REPO_SCANNING = new Set([
   // renderer.js / renderer.html / main.js / preload.js source text (#63); it requires tab-shell only for the probe-action
   // whitelist, which tab-shell.test.js pins itself.
   'renderer-resources-wiring.test.js',
+  // #41 the wait games: renderer.js / renderer.html / main.js / preload.js source text. games-display.js (the wiring and drawing)
+  // is deliberately NOT mutated: the rules, the round and the score store are, and their own tests are in the command.
+  'renderer-games-wiring.test.js',
   // #71 Claude's panel: source assertions on host.js / main.js / renderer.js; they say "deliberately NOT in Stryker's command" themselves.
   'canvas-wiring.test.js',
   'canvas-main-wiring.test.js',

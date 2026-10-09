@@ -1290,6 +1290,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
+  // backlog #41: verify/probe-games.js reads the Games panel and operates it
+  'gamesState', 'gamesDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
   'canvasState', 'canvasClick', 'canvasOverlay', 'canvasMcpBox',
   // backlog #34: verify/probe-video-background.js

@@ -87,6 +87,8 @@ const ALLOWED_GLOBALS = new Set([
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
   'wandDisplay',
+  // app/games-rules.js, app/games-round.js, app/games-display.js (BACKLOG #41): the wait games. ONE name leaves each IIFE.
+  'gamesRules', 'gamesRound', 'gamesDisplay',
   // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
   'resourcesDisplay',
   // app/canvas-display.js (BACKLOG #71): Claude's panel. ONE name leaves its IIFE.

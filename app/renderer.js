@@ -1093,6 +1093,33 @@ function dockViewport() {
   return { width: dock.clientWidth, height: dock.clientHeight };
 }
 
+// --- the Games panel (BACKLOG #41) -----------------------------------------------------------------------------------------
+// GAMES-BEGIN
+// app/games-display.js builds the panel and runs the rounds; the rules are in app/games-rules.js and app/games-round.js, the bests are
+// kept by main (host/game-scores.js). What is here is the three facts only this page knows: whether the panel is on screen, whether
+// the terminal holds the keyboard, and when Claude needs Ricardo (the attention message below calls gamesHandBack).
+const gamesRoot = document.getElementById('games-root');
+const gamesPanel = gamesRoot ? window.gamesDisplay.mount({
+  doc: document,
+  root: gamesRoot,
+  bridge: window.harness && window.harness.games ? window.harness.games : null,
+  focusTerminal: () => term.focus(),
+  terminalHasFocus: () => !!(term.element && term.element.contains(document.activeElement)),
+  raf: (fn) => requestAnimationFrame(fn),
+  caf: (id) => cancelAnimationFrame(id),
+  now: () => performance.now(),
+  css: (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
+}) : null;
+// Lean mode unmounts every dock panel, so it reaches the games as "not shown": no separate lean flag is needed.
+function gamesView() {
+  if (gamesPanel) gamesPanel.setView({ shown: shownModules.has('games'), pageVisible: document.visibilityState === 'visible' });
+}
+// Claude needs Ricardo (a permission prompt, a question) or its turn finished: a running round freezes and the keyboard goes
+// back to the terminal.
+function gamesHandBack() { if (gamesPanel) gamesPanel.handBack(); }
+document.addEventListener('visibilitychange', gamesView);
+// GAMES-END
+
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
   if (id === 'git') requestGitTree();
@@ -1498,6 +1525,7 @@ function renderLayout({ userAction = false, refit = true } = {}) {
   const now = new Set(plan.shown);
   const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
   shownModules = now;
+  gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   for (const id of fx.newlyShown) onModuleShown(id);
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
@@ -2946,6 +2974,53 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
           document.body.appendChild(box);
         }
+        return JSON.stringify({ ok: true });
+      }
+      // backlog #41 (verify/probe-games.js): read the Games panel, and operate it as a pointer, a keyboard or Claude would
+      case 'gamesState': {
+        if (!gamesPanel) return JSON.stringify({ ok: false, error: 'no games panel' });
+        const cv = document.querySelector('#games-root .games-canvas');
+        const cover = document.querySelector('#games-root .games-cover');
+        const act = document.activeElement;
+        // how many pixels of the board are not the plain background: a blank canvas (a game that never drew) reads 0
+        let inked = null;
+        try {
+          const px = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+          const seen = new Set();
+          for (let i = 0; i < px.length; i += 4 * 97) seen.add((px[i] << 16) | (px[i + 1] << 8) | px[i + 2]);
+          inked = seen.size;
+        } catch { /* unreadable */ }
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.gamesDisplay === 'object' && typeof window.gamesRules === 'object' && typeof window.gamesRound === 'object',
+          shown: document.querySelector('.panel[data-panel="games"]').classList.contains('on'),
+          state: gamesPanel.state(),
+          cover: { hidden: cover.hidden, text: cover.querySelector('.games-cover-text').textContent, button: cover.querySelector('.games-cover-btn').textContent },
+          best: document.querySelector('#games-root .games-best').textContent,
+          score: document.querySelector('#games-root .games-score').textContent,
+          time: document.querySelector('#games-root .games-time').textContent,
+          picks: [...document.querySelectorAll('#games-root .games-pick')].map(b => [b.dataset.game, b.classList.contains('on')]),
+          canvas: rectOf(cv), colours: inked,
+          focus: { terminal: !!(term.element && term.element.contains(act)), panel: !!(act && gamesRoot.contains(act)), tag: act ? act.tagName : null },
+          accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        });
+      }
+      case 'gamesDo': {
+        if (!gamesPanel) return JSON.stringify({ ok: false, error: 'no games panel' });
+        const root = document.getElementById('games-root');
+        const cv = root.querySelector('.games-canvas');
+        const at = (x, y) => { const r = cv.getBoundingClientRect(); return { clientX: r.left + x * r.width / 400, clientY: r.top + y * r.height / 300, bubbles: true }; };
+        if (a.op === 'pick') { const b = [...root.querySelectorAll('.games-pick')].find(x => x.dataset.game === a.game); if (!b) return JSON.stringify({ ok: false, error: 'no game ' + a.game }); b.click(); }
+        else if (a.op === 'go') root.querySelector('.games-cover-btn').click();
+        else if (a.op === 'focusBoard') cv.focus();
+        // a key at whatever holds focus: the terminal's own input when it has it, so this is the "typing for Claude" case
+        else if (a.op === 'keyAtFocus') (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: String(a.key), code: a.code || '', bubbles: true, cancelable: true }));
+        else if (a.op === 'click') { cv.dispatchEvent(new PointerEvent('pointerdown', at(a.x, a.y))); cv.dispatchEvent(new PointerEvent('pointerup', at(a.x, a.y))); cv.dispatchEvent(new MouseEvent('click', at(a.x, a.y))); }
+        else if (a.op === 'resume') { cv.dispatchEvent(new PointerEvent('pointerdown', at(200, 150))); }
+        // the real control-message path: the same function the host's attention message goes through
+        else if (a.op === 'attention') handleControl({ type: 'attention', urgent: a.urgent === true, title: 'games probe', body: 'games probe' });
+        else if (a.op === 'termFocus') term.focus();
+        else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
         return JSON.stringify({ ok: true });
       }
       case 'resourcesClick': {
@@ -6597,6 +6672,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'attention') {
+    gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
     // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
     // skipped the toast whenever the window had focus, which silenced the one
     // case the feature was built for: watching the terminal while a long task
