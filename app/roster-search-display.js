@@ -17,9 +17,9 @@
 
 const MODES = ['role', 'name'];
 
-/** 'name' or 'role'; anything else (a missing, corrupt or old stored value) is the default, 'role'. */
+/** 'role' or 'name'; anything else (a missing, corrupt or old stored value) is the default, 'name'. */
 function normalizeMode(v) {
-  return v === 'name' ? 'name' : 'role';
+  return v === 'role' ? 'role' : 'name';
 }
 
 function personaOf(entry) {

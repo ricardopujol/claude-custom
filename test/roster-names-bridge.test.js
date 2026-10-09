@@ -28,20 +28,22 @@ function setup(store = fakeStore()) {
   return { handlers, store, sent, call, win };
 }
 
-test('the mode is role unless the store holds exactly "name"', () => {
-  assert.strictEqual(readRosterNames(fakeStore()), 'role');
-  for (const bad of [null, 0, 'NAME', 'both', {}, [], true]) {
-    assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: { rosterNames: bad } })), 'role', String(bad));
+test('the mode is name unless the store holds exactly "role": an install that never chose starts on Name', () => {
+  assert.strictEqual(readRosterNames(fakeStore()), 'name');
+  for (const bad of [null, 0, 'ROLE', 'both', {}, [], true]) {
+    assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: { rosterNames: bad } })), 'name', String(bad));
   }
+  assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: { imagesEnabled: false } })), 'name');
   assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: { rosterNames: 'name' } })), 'name');
-  assert.strictEqual(readRosterNames({ read: () => { throw new Error('disk'); } }), 'role');
-  assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: 'garbage' })), 'role');
+  assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: { rosterNames: 'role' } })), 'role', 'a saved choice wins');
+  assert.strictEqual(readRosterNames({ read: () => { throw new Error('disk'); } }), 'name');
+  assert.strictEqual(readRosterNames(fakeStore({ [AVATAR_KEY]: 'garbage' })), 'name');
 });
 
-test('get answers the stored mode to the window, role to a stranger', async () => {
-  const { call, handlers } = setup(fakeStore({ [AVATAR_KEY]: { rosterNames: 'name' } }));
-  assert.strictEqual(await call(NAMES_GET_CHANNEL), 'name');
-  assert.strictEqual(await handlers.get(NAMES_GET_CHANNEL)({ sender: {} }), 'role');
+test('get answers the stored mode to the window, the default (name) to a stranger', async () => {
+  const { call, handlers } = setup(fakeStore({ [AVATAR_KEY]: { rosterNames: 'role' } }));
+  assert.strictEqual(await call(NAMES_GET_CHANNEL), 'role');
+  assert.strictEqual(await handlers.get(NAMES_GET_CHANNEL)({ sender: {} }), 'name');
 });
 
 test('set persists the desired mode beside imagesEnabled, answers it and pushes it', () => {
@@ -86,16 +88,16 @@ function watchHarness(initial) {
 
 test('the watcher pushes a mode another window wrote, once', () => {
   const h = watchHarness({ imagesEnabled: true });
-  h.store.data[AVATAR_KEY] = { imagesEnabled: true, rosterNames: 'name' };
+  h.store.data[AVATAR_KEY] = { imagesEnabled: true, rosterNames: 'role' };
   h.poke(); h.poke();
-  assert.deepStrictEqual(h.sent, [[NAMES_PUSH_CHANNEL, 'name']]);
+  assert.deepStrictEqual(h.sent, [[NAMES_PUSH_CHANNEL, 'role']]);
 });
 
 test('the watcher pushes images and mode independently', () => {
   const h = watchHarness({});
-  h.store.data[AVATAR_KEY] = { imagesEnabled: false, rosterNames: 'name' };
+  h.store.data[AVATAR_KEY] = { imagesEnabled: false, rosterNames: 'role' };
   h.poke();
-  assert.deepStrictEqual(h.sent, [[PUSH_CHANNEL, false], [NAMES_PUSH_CHANNEL, 'name']]);
+  assert.deepStrictEqual(h.sent, [[PUSH_CHANNEL, false], [NAMES_PUSH_CHANNEL, 'role']]);
 });
 
 test('this window\'s own set is not echoed back by the watcher', () => {
@@ -107,7 +109,7 @@ test('this window\'s own set is not echoed back by the watcher', () => {
   registerAvatarHandlers({ ipcMain: { handle: (ch, fn) => handlers.set(ch, fn) }, store, win, dialog: {}, sync });
   const l = [];
   watchImagesEnabled({ store, file: 'f', win, sync, watchFile: (f, o, fn) => l.push(fn), unwatchFile: () => {} });
-  handlers.get(NAMES_SET_CHANNEL)({ sender: win.webContents }, 'name');
+  handlers.get(NAMES_SET_CHANNEL)({ sender: win.webContents }, 'role');
   sent.length = 0;
   l[0]();
   assert.deepStrictEqual(sent, []);

@@ -124,6 +124,18 @@ test('agentDefinitions carries persona and fn per agent name', async () => {
   assert.deepStrictEqual(r.infos.get('bare'), { persona: null, fn: null });
 });
 
+// Ricardo, 2026-10-09: cedar.md names "Cedar", the role cedar again ignoring case -- the persona is kept, as written.
+test('agentDefinitions keeps a persona that equals the role ignoring case (cedar -> Cedar)', async () => {
+  const corpus = JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-descriptions.fixture.json'), 'utf8'));
+  const cfg = tmpDir('roster-cedar-');
+  const dir = path.join(cfg, 'agents');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'cedar.md'), corpus['cedar.md']);
+  const r = await agentDefinitions({ configDir: cfg });
+  assert.strictEqual(r.infos.get('cedar').persona, 'Cedar');
+  assert.strictEqual(r.infos.get('cedar').fn, JSON.parse(fs.readFileSync(path.join(__dirname, 'agent-descriptions.expected.fixture.json'), 'utf8'))['cedar.md'].fn);
+});
+
 // --- PR #141 review fixes ------------------------------------------------------
 
 test('F1: persona names are Unicode, not ASCII-only', () => {

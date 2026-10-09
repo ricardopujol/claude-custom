@@ -70,6 +70,7 @@ app.whenReady().then(async () => {
         mk('dead-code-sweeper', 'Murray Bones', 'Read-only dead-code sweeper.', 4e5),
         mk('qa-expert', 'Naomi', 'Senior QA Automation Engineer and UX Researcher.', 3e5),
         mk('ux-researcher-cl', 'José Tomás', 'Runs cheap, deep end-user discovery.', 1e5),
+        mk('cedar', 'Cedar', 'Patient Socratic interrogator who stress-tests plans.', 2e5),
         mk('fullstack-developer', 'Guillaume', 'Build complete features spanning database, API, and frontend layers together as a cohesive unit.', null),
       ] };
       roster.set('code-reviewer', { agent: 'code-reviewer', state: 'working', portrait: null });
@@ -78,41 +79,47 @@ app.whenReady().then(async () => {
     })()\`);
     await sleep(600);
 
-    // ---- Active tab, role mode ------------------------------------------------
+    // ---- Active tab, the default: Name (Ricardo, 2026-10-09: an install that never chose starts on Name) --------
     let n = await names();
     check('Active: two cards', n.length === 2, n);
-    const cr = n.find(x => x.big === 'code-reviewer');
-    check('Active, role mode: the role is big and the persona small beside it', cr && cr.alt === 'Miguel', cr);
+    check('a fresh install starts on Name, in the page and in main', (await js('rosterNamesMode')) === 'name' && (await js('window.harness.avatar.getRosterNames()')) === 'name');
+    check('the Name button is the pressed one at first paint', await js('document.querySelector("#roster-names-toggle [data-roster-names=name]").getAttribute("aria-pressed") === "true"'));
+    const cr = n.find(x => x.big === 'Miguel');
+    check('Active, default: the persona is big and the role small beside it', cr && cr.alt === 'code-reviewer', n);
     const gp = n.find(x => x.big === 'general-purpose');
     check('Active: an agent with no persona shows the role only (no second name, no function)', gp && gp.alt === null && gp.fn === null, gp);
     check('Active: the function line is drawn with the full text in its title', cr && cr.fn && cr.fnTitle === cr.fn, cr);
     const clamp = await js('(() => { const f = document.querySelector("#agents .agent-fn"); const cs = getComputedStyle(f); return { clamp: cs.webkitLineClamp, h: f.getBoundingClientRect().height, lh: parseFloat(cs.lineHeight) }; })()');
     check('the function line is clamped to two lines', clamp.clamp === '2' && clamp.h <= clamp.lh * 2 + 1, clamp);
-    await shot('1-active-role');
+    await shot('1-active-name-default');
 
-    // ---- the toggle -------------------------------------------------------------
-    await js('document.querySelector("#roster-names-toggle [data-roster-names=name]").click()');
-    check('the Name toggle reaches main and comes back', await until('rosterNamesMode === "name"'));
+    // ---- the toggle: a saved choice of Role wins ------------------------------------
+    await js('document.querySelector("#roster-names-toggle [data-roster-names=role]").click()');
+    check('the Role toggle reaches main and comes back', await until('rosterNamesMode === "role"'));
     n = await names();
-    check('Active, name mode: the persona is big and the role small', n.some(x => x.big === 'Miguel' && x.alt === 'code-reviewer'), n);
-    check('Active, name mode: no persona, role only', n.some(x => x.big === 'general-purpose' && x.alt === null), n);
-    check('main stores the mode', (await js('window.harness.avatar.getRosterNames()')) === 'name');
-    await shot('2-active-name');
+    check('Active, role mode: the role is big and the persona small', n.some(x => x.big === 'code-reviewer' && x.alt === 'Miguel'), n);
+    check('Active, role mode: no persona, role only', n.some(x => x.big === 'general-purpose' && x.alt === null), n);
+    check('main stores the mode', (await js('window.harness.avatar.getRosterNames()')) === 'role');
+    await shot('2-active-role');
 
     // ---- Inactive ---------------------------------------------------------------
     await js('setRosterTab("inactive")');
     await sleep(400);
     n = await names();
-    check('Inactive, name mode: four cards, personas big', n.length === 4 && n.every(x => x.alt !== null), n);
-    check('Inactive: Murray Bones (two words) is one name', n.some(x => x.big === 'Murray Bones' && x.alt === 'dead-code-sweeper'), n);
-    await shot('3-inactive-name');
-    await js('document.querySelector("#roster-names-toggle [data-roster-names=role]").click()');
-    check('back to role mode', await until('rosterNamesMode === "role"'));
-    n = await names();
     check('Inactive, role mode: roles big', n.some(x => x.big === 'qa-expert' && x.alt === 'Naomi'), n);
+    await shot('3-inactive-role');
+    await js('document.querySelector("#roster-names-toggle [data-roster-names=name]").click()');
+    check('back to name mode', await until('rosterNamesMode === "name"'));
+    n = await names();
+    check('Inactive, name mode: five cards, personas big', n.length === 5 && n.every(x => x.alt !== null), n);
+    check('Inactive: Murray Bones (two words) is one name', n.some(x => x.big === 'Murray Bones' && x.alt === 'dead-code-sweeper'), n);
+    check('Inactive: Cedar is shown as "Cedar" (the persona equals the role ignoring case, and is kept)', n.some(x => x.big === 'Cedar' && x.alt === 'cedar'), n);
     check('the small name is never cut to an ellipsis (it wraps under the big one instead)',
       await js('[...document.querySelectorAll("#agents .name-alt")].every(a => a.scrollWidth <= a.clientWidth + 1)'));
-    await shot('4-inactive-role');
+    await shot('4-inactive-name');
+    // the search checks below read the role-big layout
+    await js('document.querySelector("#roster-names-toggle [data-roster-names=role]").click()');
+    check('back to role mode for the search checks', await until('rosterNamesMode === "role"'));
 
     // ---- search -----------------------------------------------------------------
     check('the search field starts closed', await js('document.getElementById("roster-search-row").hidden === true'));

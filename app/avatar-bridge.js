@@ -54,18 +54,18 @@ function readImagesEnabled(store) {
 /**
  * BACKLOG #76: which name the roster card shows big, 'role' or 'name' (the
  * persona). Install-wide and kept in this same record, beside `imagesEnabled`.
- * 'role' unless the store holds exactly 'name': a missing or corrupt record
- * must never switch the roster to a different set of names by itself.
+ * 'name' unless the store holds exactly 'role' (Ricardo, 2026-10-09): an install that
+ * never chose starts on Name, and a saved choice of Role still wins.
  */
 function namesFromRecord(rec) {
-  return rec && typeof rec === 'object' && rec.rosterNames === 'name' ? 'name' : 'role';
+  return rec && typeof rec === 'object' && rec.rosterNames === 'role' ? 'role' : 'name';
 }
 
 function readRosterNames(store) {
   try {
     return namesFromRecord(store.read(AVATAR_KEY, {}));
   } catch {
-    return 'role';
+    return 'name';
   }
 }
 
@@ -154,7 +154,7 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
     });
   });
 
-  ipcMain.handle(NAMES_GET_CHANNEL, (e) => (fromWindow(e) ? readRosterNames(store) : 'role'));
+  ipcMain.handle(NAMES_GET_CHANNEL, (e) => (fromWindow(e) ? readRosterNames(store) : 'name'));
 
   ipcMain.handle(NAMES_SET_CHANNEL, (e, mode) => {
     if (!fromWindow(e)) return null;

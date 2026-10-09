@@ -197,7 +197,7 @@ contextBridge.exposeInMainWorld('harness', {
     setRosterNames: (mode) => ipcRenderer.invoke('avatar:setRosterNames', mode),
     onRosterNames: (fn) => (ipcRenderer.removeAllListeners('avatar-roster-names'), ipcRenderer.on('avatar-roster-names',
       (_e, mode) => {
-        try { fn(mode === 'name' ? 'name' : 'role'); } catch (err) { console.error('[preload] avatar-roster-names listener threw', err); }
+        try { fn(mode === 'role' ? 'role' : 'name'); } catch (err) { console.error('[preload] avatar-roster-names listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-roster-names')),
   },
   // Window chrome (layout pass L2): "status line in the header" (#27) and
