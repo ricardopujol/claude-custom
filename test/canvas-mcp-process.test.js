@@ -13,9 +13,13 @@ const { tmpDir } = require('./tmp-dir');
 
 const SID = '0f6c8a1e-3b8e-4a5b-9f0e-1d2c3b4a5f6e';
 
+const owned = [];
+test.after(() => { for (const dir of owned.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 2 }); });
+
 // The same rig as test/canvas-mcp.test.js, without the in-process server: a root (a child of a temp dir the test owns) and a pointer file.
 function rig(sessionId = SID) {
   const base = tmpDir('cc-canvas-mcp-proc-');
+  owned.push(base);
   const root = path.join(base, 'root');
   fs.mkdirSync(root);
   const pointerFile = path.join(root, 'canvas', '_tab-4242.json');

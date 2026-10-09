@@ -12,6 +12,9 @@ const { killTree, sweepPids, parseArgs, quiet } = require('../host/status-relay'
 
 const onWin = process.platform === 'win32';
 
+const owned = [];
+test.after(() => { for (const dir of owned.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 2 }); });
+
 test('S7: sweepPids reads the last complete ALIVE line, LF or CRLF, and nothing else', () => {
   assert.deepStrictEqual(sweepPids('ALIVE 7 8\n'), [7, 8], 'LF only');
   assert.deepStrictEqual(sweepPids('ALIVE 5 6\r\n'), [5, 6], 'CRLF');
@@ -77,6 +80,7 @@ test('S19: parseArgs reads each flag, and a flag with no value after it is ignor
 
 test('S19: quiet is true only for an exact statusInHeader: true in a readable file', () => {
   const dir = tmpDir('cc-relay-kills-');
+  owned.push(dir);
   const put = (name, text) => { const f = path.join(dir, name); fs.writeFileSync(f, text); return f; };
   assert.strictEqual(quiet(put('yes.json', '{"statusInHeader":true}')), true);
   assert.strictEqual(quiet(put('str.json', '{"statusInHeader":"true"}')), false);

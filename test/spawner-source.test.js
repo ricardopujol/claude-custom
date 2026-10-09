@@ -58,7 +58,7 @@ test('a spawner keeps spawning but never more than liveMax sleepers alive (N1)',
 });
 
 test('both spawners (the #73 probe and the #72 test) are built from this source, with their parent pid', () => {
-  for (const f of [path.join(__dirname, '..', 'verify', 'probe-kill-tree-straddle.js'), path.join(__dirname, 'status-relay.test.js')]) {
+  for (const f of [path.join(__dirname, '..', 'verify', 'probe-kill-tree-straddle.js'), path.join(__dirname, 'status-relay-process.test.js')]) {
     const src = fs.readFileSync(f, 'utf8');
     assert.match(src, /spawnerSource\(/, f);
     assert.match(src, /parentPid: process\.pid/, f);
