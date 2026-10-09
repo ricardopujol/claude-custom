@@ -282,13 +282,14 @@ async function runRealApp() {
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
   const view = (action, args = {}) => command(app, { cmd: 'view', action, args });
+  const hostSeen = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
   const out = { ok: false, detail: '', csp: [], renderer: 0, binExists: fs.existsSync(CMD_EXE), hostPid: null, hostAliveAtEnd: false, left: [], treeSize: 0 };
   try {
     const up = await waitFor(async () => {
       const st = await command(app, { cmd: 'state' });
       const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
       if (!sel || !sel.started) return null;
-      if (Number.isInteger(sel.pid)) out.hostPid = sel.pid;
+      if (Number.isInteger(sel.pid)) { out.hostPid = sel.pid; hostSeen.add(sel.pid); }
       const v = await view('state');
       return v && v.ok && v.sent ? v : null;
     }, 150000, 500);
@@ -327,7 +328,7 @@ async function runRealApp() {
     // The tab's host is spawned detached by the app, so it is not under the Electron PID: add it (and its pty) by the pid the tab list gave.
     const tree = [...new Set([...descendantsOf(child.pid), ...(out.hostPid ? descendantsOf(out.hostPid) : [])])];
     hygiene._emergencyCleanup('phase2-done');
-    if (out.hostPid) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(out.hostPid); } catch { /* already gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+    hostSeen.killAll();   // start-proven: recorded when the tab list first gave the pid
     await sleep(1500);
     out.left = tree.filter(pid => { try { process.kill(pid, 0); return true; } catch { return false; } });
     out.treeSize = tree.length;

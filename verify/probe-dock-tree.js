@@ -238,7 +238,7 @@ const rectKey = (v) => JSON.stringify(keyed(v));
 const keyDiff = (a, b) => { const x = keyed(a); const y = keyed(b); return JSON.stringify(x.filter((r, i) => JSON.stringify(r) !== JSON.stringify(y[i])).slice(0, 3)) + ' vs ' + JSON.stringify(y.filter((r, i) => JSON.stringify(r) !== JSON.stringify(x[i])).slice(0, 3)); };
 
 // --- hosts the probe started ---------------------------------------------------------------
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsUnder(dir) {
   const out = [];
   let files = [];
@@ -250,8 +250,8 @@ function hostsUnder(dir) {
   return out;
 }
 function killEverything() {
-  for (const id of [...hostsUnder(dev), ...hostsUnder(featA)]) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of [...hostsUnder(dev), ...hostsUnder(featA)]) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.killAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayouts);

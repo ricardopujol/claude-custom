@@ -203,12 +203,12 @@ function hostsUnder(dir) {
   return out;
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 const remember = (s) => { for (const h of (s && s.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid); };
 
 function killEverything() {
-  for (const id of hostsUnder(tmp)) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsUnder(tmp)) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.killAll();
 }
 
 function removeTemp() {

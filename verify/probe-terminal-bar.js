@@ -137,7 +137,7 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -150,8 +150,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.killAll();
 }
 hygiene.addCleanup(killEverything);
 

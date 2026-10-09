@@ -48,7 +48,7 @@ const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { snapshotFile } = require('./lib/file-snapshot');
 const { isLiveHost } = require('./lib/live-host');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
-const { killPidTree, killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
+const { killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 
 const hygiene = createHygieneRegistry();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -139,15 +139,8 @@ const view = (app, action, args = {}) => command(app, { cmd: 'view', action, arg
 // pid -> the start time (FILETIME) it had when this probe first saw it. A pid is killed at the end ONLY while it is still
 // the process that had that start time: Windows reuses pids fast, and a probe that re-kills a recorded pid minutes later
 // can end somebody else's process with its whole tree (Miguel, PR #113 I4).
-const seenPids = new Map();
-const startOf = (pid) => {
-  try {
-    return execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-      `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToFileTimeUtc()`], { encoding: 'utf8', windowsHide: true }).trim() || null;
-  } catch { return null; }
-};
-const sameStart = (a, b) => !!a && !!b && /^\d+$/.test(a) && /^\d+$/.test(b) && Math.abs(Number(BigInt(a) - BigInt(b))) <= 100000;
-const track = (pid, start) => { if (Number.isInteger(pid) && pid > 0 && !seenPids.has(pid)) seenPids.set(pid, start || startOf(pid)); };
+const seenPids = require('./lib/seen-pids').createSeenPids();
+const track = (pid, start) => seenPids.add(pid, start);
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -161,10 +154,7 @@ function hostsOfThisRun() {
 }
 function killEverything() {
   for (const id of hostsOfThisRun()) track(id.pid, id.processStartedAt);
-  for (const [pid, start] of seenPids) {
-    // still the same process? (a dead pid, or one reused since, is left alone). The tree is ours: a host this window spawned.
-    if (sameStart(startOf(pid), start)) { try { killPidTree(pid); } catch { /* gone */ } }   // kill-ok: start-proven on the line itself, just before the kill (the seenPids class, proven)
-  }
+  seenPids.killAll();   // a dead pid, or one reused since, is left alone (killProven). The tree is ours: a host this window spawned.
 }
 hygiene.addCleanup(killEverything);
 

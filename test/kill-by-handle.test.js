@@ -147,12 +147,15 @@ function blankComments(src) {
 }
 
 const KILL_OK = /\/\/.*\bkill-ok:\s*\S/;
+// No reason can excuse an identity-file or app-state pid: it has no handle, so it goes through killProven (verify/lib/seen-pids.js).
+const IDENTITY_REASON = /\/\/.*\bkill-ok:.*(identity[- ]file|app state|seenPids)/i;
 
 function rawKills(source) {
   const orig = source.split(/\r?\n/);
   const code = blankComments(source).split(/\r?\n/);
   const out = [];
   code.forEach((line, i) => {
+    if (IDENTITY_REASON.test(orig[i])) { out.push(`${i + 1}: kill-ok on an identity-file/app-state pid (use killProven): ${orig[i].trim().slice(0, 90)}`); return; }
     if (KILL_OK.test(orig[i])) return;
     const hits = [];
     const imp = /^\s*(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(/.exec(line);
@@ -184,6 +187,10 @@ test('rule fixtures: every bypass from the round-2 review is flagged (Dexter #3)
     "process.kill(k.pid, 'SIGTERM');",
     'process.kill(pid);',
     'killPidTree(pid); // kill-ok:',                                                    // an exception needs a reason
+    // BACKLOG #74 H: an identity-file / app-state pid has no handle; no exception covers it, it goes through killProven
+    "for (const pid of seenPids) killPidTree(pid);   // kill-ok: identity-file pids, the seenPids class",
+    'killPidTree(out.hostPid);   // kill-ok: a host pid from an identity file or the app state, no handle held',
+    "execFileSync('taskkill', ['/PID', String(pid)]);   // kill-ok: a host pid read from app state",
   ]) assert.ok(flagged(fx), fx);
 });
 
@@ -193,7 +200,6 @@ test('rule fixtures: the held-child forms, a liveness probe, a reasoned exceptio
     'killChildTree(app);', 'hygiene.registerChild(electron);', 'child.kill();',
     'process.kill(out.hostPid, 0);', 'try { process.kill(pid, 0); return true; } catch {}',
     'try { process.kill(Number(id), 0); } catch {}',
-    "for (const pid of seenPids) killPidTree(pid);   // kill-ok: identity-file pids, the seenPids class",
     "console.log('SKIP: this probe drives cmd.exe and taskkill; Windows only');",
     '// killPidTree(app.pid) was the old way',
     "/* spawnSync('taskkill', ['/PID', String(c.pid)]) */",

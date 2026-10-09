@@ -139,7 +139,7 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -152,8 +152,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.killAll();
 }
 hygiene.addCleanup(killEverything);
 
@@ -395,7 +395,8 @@ async function main() {
   }, 20000);
   check('10: a new claim from the live launcher shows again', !!back);
   const killing = devPid;
-  killPidTree(killing);            // the dev host's own PID, a host this probe's window started inside the temp project   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  seenPids.add(killing);
+  seenPids.kill(killing);          // the dev host's own PID, a host this probe's window started inside the temp project; start-proven
   const dark = await waitFor(async () => {
     const t = await stripTab(app, 'feat/a');
     const o = await occState(app);

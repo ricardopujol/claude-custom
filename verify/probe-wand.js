@@ -177,7 +177,7 @@ function command(app, cmd, timeoutMs = 30000) {
 }
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 // Every host of this run: any whose folder is inside the probe's temp folder (a host outlives its window by
 // design, so one that registers late must still be found).
 function hostsOfThisRun() {
@@ -192,8 +192,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }   // kill-ok: a host pid from an identity file or the app state, no handle held (the seenPids class, PR #130 follow-up)
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.killAll();
 }
 hygiene.addCleanup(killEverything);
 
