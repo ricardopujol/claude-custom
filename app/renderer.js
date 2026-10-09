@@ -3919,6 +3919,83 @@ function setRosterTab(tab) {
   renderRoster();
 }
 
+// --- two names, the Role/Name toggle and the search (BACKLOG #76) -------------
+// Decisions are in app/roster-search-display.js; this is state and drawing.
+// `rosterNamesMode` is install-wide, kept by main beside the agent-images switch
+// (app/avatar-bridge.js); until main answers, or with no bridge, it's 'role'.
+let rosterNamesMode = 'role';
+let rosterQuery = '';
+const rosterSearchEl = document.getElementById('roster-search');
+const rosterSearchRowEl = document.getElementById('roster-search-row');
+const rosterSearchBtnEl = document.getElementById('roster-search-btn');
+
+// The name line: the toggle's pick big, the other small beside it. `title` carries both.
+function agentNameHtml(agent, entry, extraHtml) {
+  const n = window.rosterSearchDisplay.cardNames(agent, entry, rosterNamesMode);
+  const title = n.small ? `${n.big} (${n.small})` : n.big;
+  return `<div class="name" title="${escapeHtml(title)}"><span class="name-big">${escapeHtml(n.big)}</span>` +
+    (n.small ? `<span class="name-alt">${escapeHtml(n.small)}</span>` : '') + extraHtml + `</div>`;
+}
+
+// Up to two lines under the name (CSS line-clamp); the full text is the hover.
+function agentFnHtml(entry) {
+  return entry && typeof entry.fn === 'string' && entry.fn
+    ? `<div class="agent-fn" title="${escapeHtml(entry.fn)}">${escapeHtml(entry.fn)}</div>` : '';
+}
+
+function rosterMatches(agent) {
+  return window.rosterSearchDisplay.matches(agent, rosterIndexEntry(agent), rosterQuery);
+}
+
+function applyRosterNames(mode) {
+  const next = window.rosterSearchDisplay.normalizeMode(mode);
+  const changed = next !== rosterNamesMode;
+  rosterNamesMode = next;
+  for (const b of document.querySelectorAll('#roster-names-toggle button[data-roster-names]')) {
+    const on = b.dataset.rosterNames === next;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  }
+  if (changed) renderRoster();
+}
+
+function setRosterNames(mode) {
+  if (!(window.harness && window.harness.avatar && window.harness.avatar.setRosterNames)) { applyRosterNames(mode); return; }
+  window.harness.avatar.setRosterNames(mode).then((saved) => {
+    if (saved === 'role' || saved === 'name') { applyRosterNames(saved); return; }
+    // Refused (the record was locked): snap back to what is saved.
+    window.harness.avatar.getRosterNames().then(applyRosterNames).catch(() => { /* keep what's shown */ });
+  }).catch(() => { /* keep what's shown; main's push corrects it */ });
+}
+
+function setRosterSearch(open) {
+  if (rosterSearchRowEl) rosterSearchRowEl.hidden = !open;
+  if (rosterSearchBtnEl) rosterSearchBtnEl.setAttribute('aria-pressed', String(open));
+  if (open) { if (rosterSearchEl) rosterSearchEl.focus(); return; }
+  const had = rosterQuery !== '';
+  rosterQuery = '';
+  if (rosterSearchEl) rosterSearchEl.value = '';
+  if (had) renderRoster();
+}
+
+for (const b of document.querySelectorAll('#roster-names-toggle button[data-roster-names]')) {
+  b.addEventListener('click', () => setRosterNames(b.dataset.rosterNames));
+}
+if (rosterSearchBtnEl) {
+  rosterSearchBtnEl.addEventListener('click', () => setRosterSearch(!!(rosterSearchRowEl && rosterSearchRowEl.hidden)));
+}
+if (rosterSearchEl) {
+  rosterSearchEl.addEventListener('input', () => { rosterQuery = rosterSearchEl.value; renderRoster(); });
+  rosterSearchEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); setRosterSearch(false); if (rosterSearchBtnEl) rosterSearchBtnEl.focus(); }
+  });
+}
+applyRosterNames('role');
+if (window.harness && window.harness.avatar && window.harness.avatar.getRosterNames) {
+  window.harness.avatar.onRosterNames(applyRosterNames);
+  window.harness.avatar.getRosterNames().then(applyRosterNames).catch(() => { /* stays 'role' */ });
+}
+
 for (const b of document.querySelectorAll('#roster-subtabs button[data-roster-tab]')) {
   b.addEventListener('click', () => setRosterTab(b.dataset.rosterTab));
 }
@@ -3952,8 +4029,8 @@ function inactiveRowHtml(row) {
   // the agent's default portrait for state "inactive" (Miguel I1, PR #35).
   return `<div class="agent" data-state="inactive" data-agent="${escapeHtml(row.agent)}">` +
       `<div class="face">${faceHtml(entry && entry.portrait)}${faceEditHtml()}</div>` +
-      `<div class="meta"><div class="name" title="${escapeHtml(row.agent)}">${escapeHtml(row.agent)}` +
-        unresolvedHtml + unreadableHtml + `</div>` +
+      `<div class="meta">` + agentNameHtml(row.agent, entry, unresolvedHtml + unreadableHtml) +
+      agentFnHtml(entry) +
       `<div class="state">inactive</div>` +
       tokenHtml +
       beltHtml(row.agent, { resolved: entry ? entry.resolved : undefined }) +
@@ -4013,6 +4090,12 @@ agentsEl.addEventListener('click', (e) => {
   if (agent) openAgentLog(agent);
 });
 
+// The search's "show hidden" (#76): reveal the hidden agents the query matched. Its own listener, so the card click
+// handler above stays the one that opens a log.
+agentsEl.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('[data-roster-reveal]')) { showHiddenAgents = true; renderRoster(); }
+});
+
 document.getElementById('roster-show-hidden').addEventListener('click', () => {
   showHiddenAgents = !showHiddenAgents;
   renderRoster();
@@ -4023,12 +4106,18 @@ function renderRoster() {
   showBtnEl.hidden = true;   // Active tab only; the Active branch below un-hides it when n > 0
   const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
 
+  const searching = rosterQuery.trim() !== '';
+  const noMatch = () => paintAgents(
+    `<div class="empty">${escapeHtml(window.rosterSearchDisplay.emptyMessage(activeRosterTab, rosterQuery))}</div>`);
+
   if (activeRosterTab === 'inactive') {
     if (inactive.length === 0) {
       paintAgents('<div class="empty">No other agents known yet.</div>');
       return;
     }
-    const rows = sortRosterRows(inactive.map((agent) => {
+    const found = inactive.filter(rosterMatches);
+    if (found.length === 0) { noMatch(); return; }
+    const rows = sortRosterRows(found.map((agent) => {
       const entry = rosterIndexEntry(agent);
       return {
         agent,
@@ -4061,9 +4150,21 @@ function renderRoster() {
   hiddenAgentNames = reconcileHidden(hiddenAgentNames, rows).hidden;
   const nHidden = hiddenCount(rows, hiddenAgentNames);
   if (nHidden === 0) showHiddenAgents = false;   // nothing left to reveal
-  const shown = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
+  const visible = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
+  const shown = searching ? visible.filter((r) => rosterMatches(r.agent)) : visible;
+  // A hidden agent is still on this tab: say so when it matches rather than claim there is no match (PR #141 F2).
+  const hiddenMatches = searching && !showHiddenAgents
+    ? rows.filter((r) => hiddenAgentNames.includes(r.agent) && rosterMatches(r.agent)) : [];
+  const hiddenNote = hiddenMatches.length > 0
+    ? `<div class="empty roster-hidden-note">${escapeHtml(window.rosterSearchDisplay.hiddenMatchMessage(hiddenMatches.length, rosterQuery))} ` +
+      `<button type="button" class="agent-reveal" data-roster-reveal>show hidden</button></div>` : '';
   showBtnEl.hidden = nHidden === 0;
-  showBtnEl.textContent = showHiddenAgents ? `hide hidden (${nHidden})` : `show hidden (${nHidden})`;
+  showBtnEl.textContent = showHiddenAgents ? `hide hidden (${nHidden})`
+    : `show hidden (${nHidden}${hiddenMatches.length ? `, ${hiddenMatches.length} match` : ''})`;
+  if (searching && shown.length === 0) {
+    if (hiddenMatches.length > 0) paintAgents(hiddenNote); else noMatch();
+    return;
+  }
   if (shown.length === 0) {
     // True only because awake rows are always in `shown`: what is left is
     // sleeping AND hidden.
@@ -4071,21 +4172,22 @@ function renderRoster() {
     return;
   }
 
-  paintAgents(shown.map(r =>
-    `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
+  paintAgents(shown.map(r => {
+    const entry = rosterIndexEntry(r.agent);
+    return `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
-      `<div class="meta"><div class="name" title="${escapeHtml(r.agent)}">${escapeHtml(r.agent)}` +
-        countBadgeHtml(r.agent, counts) + `</div>` +
+      `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
+      agentFnHtml(entry) +
       `<div class="state">${r.state}</div>` +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
       beltHtml(r.agent) +
       `</div>` +
-    `</div>`
-  ).join(''));
+    `</div>`;
+  }).join(''));
 }
 
 function renderRosterIndex(rosterIndex) {
