@@ -466,3 +466,64 @@ test('HIDDEN: the focus the browser puts back on the board when the tab is shown
   r.canvas.dispatch('pointerdown');
   assert.strictEqual(r.g.state().phase, 'running');
 });
+
+// --- Dexter r2 ---------------------------------------------------------------------------------------------------------------
+
+test('BANK: a bank refused by a held file is retried once shortly after, so a record reached during a hold is not lost (N2)', async () => {
+  const calls = [];
+  let held = true;
+  const bridge = { scores: () => Promise.resolve({ stack: 10 }), submit: (g, v) => { calls.push([g, v]); return Promise.resolve(held ? null : { stack: v }); } };
+  const timers = [];
+  const doc = new FakeDocument();
+  const panel = doc.createElement('div'); doc.root.appendChild(panel);
+  let t = 1000;
+  const g = D.mount({ doc, root: panel, bridge, rng: () => 0.5, context: ctx, focusTerminal: () => {}, terminalHasFocus: () => false,
+    raf: () => 1, caf: () => {}, now: () => t, css: () => '#888', later: (fn, ms) => { timers.push([fn, ms]); return timers.length; } });
+  g.setView({ shown: true, pageVisible: true });
+  panel.querySelector('[data-act="go"]').dispatch('click');
+  panel.querySelector('canvas').dispatch('keydown', { key: ' ' });
+  g.handBack();                                           // banks 1 while the file is held
+  await new Promise(res => setImmediate(res));
+  assert.deepStrictEqual(calls, [['stack', 1]]);
+  assert.strictEqual(timers.length, 1, 'one retry is armed');
+  assert.ok(timers[0][1] > 0 && timers[0][1] <= 5000);
+  held = false;
+  timers[0][0]();
+  await new Promise(res => setImmediate(res));
+  assert.deepStrictEqual(calls, [['stack', 1], ['stack', 1]]);
+  assert.strictEqual(g.state().bests.stack, 1);
+  timers.length = 0;
+  g.bankNow();
+  await new Promise(res => setImmediate(res));
+  assert.strictEqual(timers.length, 0, 'nothing pending any more, so no further retry');
+});
+
+test('BANK: a refused bank is also retried at the next bank (hide, hand-back or pagehide)', async () => {
+  const calls = [];
+  let held = true;
+  const bridge = { scores: () => Promise.resolve({}), submit: (g, v) => { calls.push([g, v]); return Promise.resolve(held ? null : { stack: v }); } };
+  const r = rig({ bridge }); r.shown(); r.go();
+  r.canvas.dispatch('keydown', { key: ' ' });
+  r.g.handBack();
+  await new Promise(res => setImmediate(res));
+  assert.strictEqual(r.g.state().bests.stack, 0, 'nothing stored while held');
+  held = false;
+  r.g.bankNow();
+  await new Promise(res => setImmediate(res));
+  assert.strictEqual(r.g.state().bests.stack, 1, 'the next bank got it through');
+});
+
+test('KEYS: a held key the game would take is still swallowed (no scroll), and one it would not take is left alone (N3)', () => {
+  const r = rig(); r.shown(); r.go();
+  const held = r.canvas.dispatch('keydown', { key: ' ', code: 'Space', repeat: true });
+  assert.strictEqual(held.defaultPrevented, true);
+  assert.strictEqual(r.g.state().score, 0, 'but it is not a drop');
+  const other = r.canvas.dispatch('keydown', { key: 'a', repeat: true });
+  assert.strictEqual(other.defaultPrevented, false);
+  const m = rig(); m.shown(); m.panel.querySelector('[data-game="merge"]').dispatch('click'); m.go();
+  const before = JSON.stringify(m.g.peek());
+  assert.strictEqual(m.canvas.dispatch('keydown', { key: 'ArrowDown', repeat: true }).defaultPrevented, true);
+  assert.strictEqual(JSON.stringify(m.g.peek()), before);
+  const paused = rig(); paused.shown(); paused.go(); paused.g.handBack();
+  assert.strictEqual(paused.canvas.dispatch('keydown', { key: ' ', repeat: true }).defaultPrevented, false, 'a paused game takes nothing');
+});

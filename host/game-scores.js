@@ -4,11 +4,14 @@
  * game, shared by every project window, shown in the Games panel's title. `read()` always returns all three games, each a whole
  * number from 0: a missing file, a corrupt one, a value that isn't a plain count, or a store that throws all mean "no best yet" for
  * that game, never an error and never a confident wrong number. `submit(game, score)` raises a best and never lowers one, and it never writes over
- * a file it could not read (held, or corrupt): the stored bests survive, and the submit answers null.
+ * a file it could not read because it was held: the stored bests survive, and the submit answers null. A file that does not parse is moved aside
+ * (wait-games.json.corrupt-<time>, never deleted) and a fresh one starts.
  *
  * Another project window is another main process on the same file, so a raise is read-modify-write under the store's
  * cross-process lock (a lost raise would cost someone their record); the write itself is the store's temp-and-rename.
  */
+const fs = require('fs');
+
 const KEY = 'wait-games';
 const GAMES = Object.freeze(['stack', 'merge', 'pipeline']);
 const MAX_SCORE = 1000000;     // nothing a 45-second round can reach; a damaged file's 1e306 is not a record
@@ -32,9 +35,16 @@ function createScoreStore(store, key = KEY) {
     try {
       if (typeof store.readState !== 'function') return { writable: true, bests: clean(store.read(key, {})) };
       const st = store.readState(key);
-      if (st.status === 'ok') return { writable: true, bests: clean(st.value) };
-      return { writable: st.status === 'missing', bests: empty() };
-    } catch { return { writable: false, bests: empty() }; }
+      if (st.status === 'ok') return { writable: true, corrupt: false, bests: clean(st.value) };
+      return { writable: st.status === 'missing', corrupt: st.status === 'corrupt', bests: empty() };
+    } catch { return { writable: false, corrupt: false, bests: empty() }; }
+  };
+  // A file that does not parse is moved aside, never deleted, so a fresh one can start and the bad one stays for a look. A file that
+  // is merely held (EBUSY) is not this: it parses fine once released, so it is never touched.
+  const moveAside = () => {
+    if (typeof store.pathOf !== 'function') return false;
+    const file = store.pathOf(key);
+    try { fs.renameSync(file, `${file}.corrupt-${Date.now()}`); return true; } catch { return false; }
   };
   const read = () => look().bests;
   return {
@@ -48,11 +58,11 @@ function createScoreStore(store, key = KEY) {
       if (!GAMES.includes(game) || !isCount(score)) return null;
       try {
         const first = look();
-        if (!first.writable) return null;
+        if (!first.writable && !first.corrupt) return null;
         if (score <= first.bests[game]) return first.bests;     // not a record: no lock, no write
         const run = () => {
           const now = look();                                   // again, inside the lock: another window may have raised it
-          if (!now.writable) return null;
+          if (now.corrupt) { if (!moveAside()) return null; } else if (!now.writable) return null;
           if (score <= now.bests[game]) return now.bests;
           const next = { ...now.bests, [game]: score };
           store.write(key, next);

@@ -62,10 +62,21 @@ test('the best is written atomically: a replaced file, no temp left behind', () 
   assert.deepStrictEqual(fs.readdirSync(dir).filter(f => f.includes('.tmp')), []);
 });
 
-test('a corrupt file reads as no bests, and is NOT written over: the submit answers null and the file is untouched', () => {
-  const { scores, file } = rig();
+test('a corrupt file reads as no bests; the next best moves it aside (never deletes it) and starts a fresh file (Dexter r2 N1)', () => {
+  const { scores, file, dir } = rig();
   fs.writeFileSync(file, '{ not json');
   assert.deepStrictEqual(scores.read(), zero);
+  assert.deepStrictEqual(scores.submit('merge', 12), { stack: 0, merge: 12, pipeline: 0 });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { stack: 0, merge: 12, pipeline: 0 });
+  const kept = fs.readdirSync(dir).filter(f => f.startsWith(path.basename(file) + '.corrupt-'));
+  assert.strictEqual(kept.length, 1);
+  assert.strictEqual(fs.readFileSync(path.join(dir, kept[0]), 'utf8'), '{ not json');
+});
+
+test('a corrupt file that cannot be moved aside is left alone and the submit answers null', () => {
+  const { store, file } = rig();
+  fs.writeFileSync(file, '{ not json');
+  const scores = createScoreStore({ ...store, read: store.read, readState: store.readState, withLock: store.withLock, write: store.write, pathOf: () => path.join(path.dirname(file), 'no-such-dir', 'x.json') });
   assert.strictEqual(scores.submit('merge', 12), null);
   assert.strictEqual(fs.readFileSync(file, 'utf8'), '{ not json');
 });
@@ -114,8 +125,8 @@ test('a held file reads as no bests for display, but a later submit after it is 
   assert.deepStrictEqual(createScoreStore(store).read(), { stack: 31, merge: 2048, pipeline: 5 });
 });
 
-test('only a missing or a good file may be written over: an unreadable or corrupt one answers null', () => {
-  for (const status of ['unreadable', 'corrupt']) {
+test('only a missing, a good or a corrupt (moved aside) file may be written over: a held one answers null', () => {
+  for (const status of ['unreadable']) {
     let wrote = false;
     const scores = createScoreStore({ read: () => ({}), readState: () => ({ status, value: null }), write: () => { wrote = true; } });
     assert.strictEqual(scores.submit('stack', 5), null, status);

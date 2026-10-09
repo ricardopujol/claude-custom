@@ -1108,6 +1108,7 @@ const gamesPanel = gamesRoot ? window.gamesDisplay.mount({
   raf: (fn) => requestAnimationFrame(fn),
   caf: (id) => cancelAnimationFrame(id),
   now: () => performance.now(),
+  later: (fn, ms) => setTimeout(fn, ms),
   css: (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
 }) : null;
 // Lean mode unmounts every dock panel, so it reaches the games as "not shown": no separate lean flag is needed.

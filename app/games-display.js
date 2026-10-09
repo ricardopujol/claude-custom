@@ -35,6 +35,7 @@ const HINT = {
   pipeline: 'Click tiles to turn them. Connect src to tests.',
 };
 const PHYSICS_STEP = 0.05;     // the longest step a game's own motion takes in one frame (the round clock counts real time, see games-round)
+const RETRY_MS = 1500;         // a refused bank (file held) is tried once more after this
 const FLASH = 0.35;           // seconds "perfect!" stays up
 const KEY_DIR = { ArrowLeft: 'L', ArrowRight: 'R', ArrowUp: 'U', ArrowDown: 'D' };
 const SWIPE_MOVE = { L: 'L', R: 'R', U: 'U', D: 'D' };
@@ -67,7 +68,8 @@ function makeGames(rng, theme) {
       this.s.cur = rules.stackBlock(r.stack);
       return null;
     },
-    key(e) { if (e.key === ' ' || e.code === 'Space') return this.drop(); return undefined; },
+    takes(e) { return e.key === ' ' || e.code === 'Space'; },
+    key(e) { if (this.takes(e)) return this.drop(); return undefined; },
     point() { return this.drop(); },
     score() { return rules.stackScore(this.s.stack); },
     draw(x) {
@@ -97,6 +99,7 @@ function makeGames(rng, theme) {
       this.s.board = r.board; this.s.points += r.gained;
       return r.over ? 'full' : null;
     },
+    takes(e) { return Boolean(KEY_DIR[e.key]); },
     key(e) { const d = KEY_DIR[e.key]; return d ? this.move(d) : undefined; },
     down(x, y) { this.s.swipe = [x, y]; },
     cancel() { this.s.swipe = null; },
@@ -253,11 +256,32 @@ function mount(opts) {
   function schedule() { if (loop === null && s.phase === 'running' && drawing()) { last = nowMs(); loop = raf(frame); } }
   function rearm() { if (loop === null && s.phase === 'running' && drawing()) loop = raf(frame); }
 
+  // A bank the store refused (the file was held: null) is kept and tried again once shortly after, and again at the next bank, so a
+  // record reached during a hold is not lost.
+  const pending = {};
+  let retry = null;
+  function submitScore(g, score) {
+    Promise.resolve(bridge.submit(g, score)).then((b) => {
+      if (b && typeof b === 'object') {
+        if (pending[g] !== undefined && pending[g] <= score) delete pending[g];
+        bests = { ...bests, ...b }; paintLabels();
+        return;
+      }
+      pending[g] = Math.max(pending[g] || 0, score);
+      armRetry();
+    }, () => {});
+  }
+  function armRetry() {
+    if (retry !== null || !opts.later) return;
+    retry = opts.later(() => { retry = null; flushPending(); }, RETRY_MS);
+  }
+  function flushPending() { Object.keys(pending).forEach(g => submitScore(g, pending[g])); }
   function bank() {
     const score = s.score;
-    if (!bridge || !(score > 0)) return;
-    const g = current;
-    Promise.resolve(bridge.submit(g, score)).then((b) => { if (b && typeof b === 'object') { bests = { ...bests, ...b }; paintLabels(); } }, () => {});
+    if (!bridge) return;
+    flushPending();
+    if (!(score > 0)) return;
+    submitScore(current, score);
   }
 
   function settleRound() {
@@ -359,8 +383,9 @@ function mount(opts) {
   panel.addEventListener('keydown', (e) => {
     // A key reaches here only from inside the panel; the check is the rule, so it also holds if that ever changes.
     const focus = { panel: panel.contains(e.target), terminal: terminalHasFocus() === true };
-    if (e.repeat === true) return;       // a held key is one press: held Space would drop block after block
     if (!round.acceptsKeys(s, focus) || !drawing() || typeof game().key !== 'function') return;
+    // a held key is one press (held Space would drop block after block), but it is still the game's key: it must not scroll the panel
+    if (e.repeat === true) { if (typeof game().takes === 'function' && game().takes(e)) e.preventDefault(); return; }
     const r = game().key(e);
     if (r === undefined) return;
     e.preventDefault();
