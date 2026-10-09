@@ -1293,6 +1293,9 @@ if (helperExists) {
     // The turn state sees them too: a turn that only Reads and Edits (a blocked Stop's continuation, a turn an
     // agent's result opened) is live, and the early returns below would leave it 'idle' (BACKLOG #77 R1).
     if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
+    // And attention's shell wait: a main-session Read or Edit means the session is working, so a timer that would
+    // raise "finished" is cancelled here (BACKLOG #78, PR #147 Dexter D1); `handle` below never sees these events.
+    attention.activity(ev);
     // ...but the mood engine reads them for one thing only: which tool an agent is using now (reading, writing,
     // BACKLOG #55). They open no run and touch no panel; a Read is never a process.
     if (isOccupancyOnly(ev)) { mood.handle(ev); return; }

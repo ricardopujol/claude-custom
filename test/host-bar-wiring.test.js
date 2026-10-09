@@ -53,6 +53,15 @@ test('every hook event reaches the keeper and the night, and a ScheduleWakeup go
   assert.ok(body.indexOf("if (ev.event === 'Status')") < keeper, 'the Status document never reaches them');
 });
 
+test('attention hears every hook event BEFORE the occupancy-only return: a main-session Read cancels the shell wait (PR #147 D1)', () => {
+  const body = handlerBody();
+  const activity = body.indexOf('attention.activity(ev);');
+  assert.ok(activity !== -1, 'attention.activity(ev) is called');
+  assert.ok(activity < body.indexOf('if (isOccupancyOnly(ev)) return;'), 'before the occupancy-only return');
+  assert.ok(activity > body.indexOf("if (ev.event === 'Status')"), 'after the Status document, which is not a hook');
+  assert.strictEqual((body.match(/attention\.activity\(/g) || []).length, 1);
+});
+
 test('the person\'s words are never logged by the keeper wiring (the hook debug line is the only place a payload prints)', () => {
   const body = handlerBody();
   const near = body.slice(body.indexOf('promptKeeper.handle(ev)') - 200, body.indexOf('promptKeeper.handle(ev)') + 300);
