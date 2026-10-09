@@ -48,7 +48,7 @@ test('a change this host made itself and already broadcast is not announced twic
   const heard = [];
   const watch = createChangeWatch({ read: () => m.all(), onChange: (v) => heard.push(v) });
   m.give('a', 'fast', '');
-  watch.note();
+  watch.note(m.all());
   assert.strictEqual(watch.tick(), false);
   assert.deepStrictEqual(heard, []);
 });
@@ -88,4 +88,40 @@ test('PROPERTY: the watch announces exactly the distinct consecutive values it w
 test('createChangeWatch needs both functions', () => {
   assert.throws(() => createChangeWatch({}), /required/);
   assert.throws(() => createChangeWatch({ read: () => 1 }), /required/);
+});
+
+test('note(value) records what was BROADCAST, never a second read: a change that lands between them is still announced', () => {
+  let file = 'X';
+  const heard = [];
+  const watch = createChangeWatch({ read: () => file, onChange: (v) => heard.push(v) });
+  const broadcast = file;            // this host told its windows X
+  file = 'Y';                        // another host's write lands before note()
+  watch.note(broadcast);
+  assert.strictEqual(watch.tick(), true);
+  assert.deepStrictEqual(heard, ['Y']);
+});
+
+test('the bubbles switch: a read that failed during a broadcast is a missed look, so a later tick corrects the windows', () => {
+  const store = createStore({ dir: tmpDir('state-watch') });
+  const s = createBubbleSettings({ store });
+  s.set(true);
+  let flaky = false;
+  const wrapped = createBubbleSettings({ store: { ...store, readState: (k) => (flaky ? { status: 'unreadable', value: null } : store.readState(k)), write: store.write } });
+  const heard = [];
+  const watch = createChangeWatch({ read: () => { const v = wrapped.peek(); if (v === null) throw new Error('unreadable'); return v; }, onChange: (v) => heard.push(v) });
+  flaky = true;
+  assert.strictEqual(watch.tick(), false);                 // not a false "off"
+  assert.deepStrictEqual(heard, []);
+  assert.strictEqual(wrapped.enabled(), false);            // the gate itself still fails closed
+  flaky = false;
+  assert.strictEqual(watch.tick(), false);                 // still on: nothing to announce
+});
+
+test('peek() answers true, false, or null when the file can not be read', () => {
+  const store = createStore({ dir: tmpDir('state-watch') });
+  const s = createBubbleSettings({ store });
+  assert.strictEqual(s.peek(), true);
+  s.set(false);
+  assert.strictEqual(s.peek(), false);
+  assert.strictEqual(createBubbleSettings({ store: { readState: () => ({ status: 'corrupt', value: null }), write() {} } }).peek(), null);
 });

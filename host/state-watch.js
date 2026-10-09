@@ -5,7 +5,8 @@
  *
  *   createChangeWatch({ read, onChange })
  *     .tick()   read now; when the value differs from the last one seen, remember it and call onChange(value)
- *     .note()   this host just changed it itself and already told its windows: remember the value without calling onChange
+ *     .note(value)  this host just changed it itself and told its windows `value`: remember THAT value, never a second read (a change
+ *                   another host makes between the broadcast and a re-read would be swallowed, and the windows left stale)
  *
  * Polled (the host's own 1 s clock calls tick() every few seconds) rather than fs.watch: the file is a few KB, a missed event
  * would mean a stale window until restart, and a replace-by-rename is exactly what fs.watch on Windows loses track of.
@@ -28,9 +29,8 @@ function createChangeWatch({ read, onChange } = {}) {
       onChange(now.value);
       return true;
     },
-    note() {
-      const now = look();
-      if (now) last = JSON.stringify(now.value);
+    note(value) {
+      last = JSON.stringify(value);
     },
   };
 }

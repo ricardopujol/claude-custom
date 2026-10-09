@@ -103,13 +103,15 @@ function createBubbles({ gate, ollama, slot, voiceOf, contextOf, settings, broad
 function createBubbleSettings({ store } = {}) {
   if (!store || typeof store.readState !== 'function' || typeof store.write !== 'function') throw new Error('createBubbleSettings: a store with readState and write is required');
   return {
-    enabled() {
+    /** true, false, or null when the file can't be read (a watch treats null as a missed look, not as "off"). */
+    peek() {
       let state;
-      try { state = store.readState(STORE_KEY); } catch { return false; }
+      try { state = store.readState(STORE_KEY); } catch { return null; }
       if (state.status === 'missing') return true;
-      if (state.status !== 'ok') return false;
+      if (state.status !== 'ok') return null;
       return !(state.value && typeof state.value === 'object' && state.value.enabled === false);
     },
+    enabled() { return this.peek() === true; },
     set(value) {
       if (typeof value !== 'boolean') return { ok: false, reason: 'invalid' };
       try { store.write(STORE_KEY, { enabled: value }); } catch { return { ok: false, reason: 'write-failed' }; }

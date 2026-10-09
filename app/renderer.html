@@ -1107,7 +1107,7 @@
     .agent-bubble[data-settled] { animation: bubble-out .6s ease-in var(--bubble-fade-delay, 0ms) forwards; }
     @keyframes bubble-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
     @keyframes bubble-out { from { opacity: 1; } to { opacity: 0; } }
-    @media (prefers-reduced-motion: reduce) { .agent-bubble { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .agent-bubble, .agent-bubble[data-settled] { animation: none; } }
     #roster-show-hidden {
       display: block; width: 100%; margin: 0 0 4px; padding: 3px 6px; text-align: left;
       font-size: 10px; color: var(--dim); background: transparent;

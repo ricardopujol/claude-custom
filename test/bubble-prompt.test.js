@@ -217,3 +217,24 @@ test('voiceFromMd finds a Spanish closing-line instruction', () => {
   const raw = '---\ndescription: Elite code reviewer.\n---\nAl terminar SIEMPRE incluyes una línea final escrita en español de España con humor castizo.\n';
   assert.match(voiceFromMd(raw).signOff, /español de España/);
 });
+
+test('cleanLine drops verdict and sign-off words in both languages (the agents\' own sign-off is the voice the model is given)', () => {
+  for (const line of ['DEFECTIVE — and I haven\'t had coffee', 'Verdict: CORRECT, as usual', 'Approved, olé', '¡Aprobado!', 'Aprobado, chaval', 'LGTM, next',
+    'Ya está, chaval', 'Todo bien, sin errores', 'All good here', 'Correcto, tío', 'APPROVED!!!']) {
+    assert.strictEqual(cleanLine(line), null, line);
+  }
+  assert.strictEqual(cleanLine('Coffee first, verdicts never'), null);        // "verdict" itself is out, even in a joke
+  assert.strictEqual(cleanLine('Back to the grind!'), 'Back to the grind!');
+});
+
+test('scrubPaths-in-the-task: a Windows path with spaces and a relative slash path each become one [path], no folder names left', () => {
+  const win = buildPrompt({ agent: 'a', state: 'working', task: 'Read C:\\Users\\ricar\\Ricardo-Pujol-Obsidian-Vault\\Personal Notes\\diary.md now' });
+  const wt = /Task: (.*)/.exec(win.prompt)[1];
+  assert.ok(!wt.includes('\\'), wt);
+  assert.ok(!/Notes|Personal|Obsidian|diary/.test(wt), wt);
+  assert.match(wt, /^Read \[path\] now$/);
+  const rel = buildPrompt({ agent: 'a', state: 'working', task: 'Edit documentation/handoffs/CURRENT-x.md please' });
+  const rt = /Task: (.*)/.exec(rel.prompt)[1];
+  assert.ok(!/documentation|handoffs|CURRENT/.test(rt), rt);
+  assert.match(rt, /^Edit \[path\] please$/);
+});

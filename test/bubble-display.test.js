@@ -197,3 +197,16 @@ test('attach leaves the Inactive tab alone: no bubbles on its rows', () => {
   bd.attach(root, b, true);
   assert.strictEqual(card.html.length, 0);
 });
+
+test('the real repaint (replaceChildren) hands attach brand-new cards: a bubble past its fade-in is rebuilt SETTLED, so it does not blink', () => {
+  let t = 0;
+  const b = bd.createBoard({ now: () => t });
+  b.show(frame({ ttlMs: 8000 }));
+  const first = mkCard('miguel');
+  bd.attach({ querySelectorAll: () => [first] }, b, true);
+  assert.ok(!/data-settled/.test(first.html[0]));          // a fresh bubble animates in once
+  t = 3000;
+  const rebuilt = mkCard('miguel');                         // a repaint made a new card: no old node to keep
+  bd.attach({ querySelectorAll: () => [rebuilt] }, b, true);
+  assert.match(rebuilt.html[0], /data-settled/);
+});

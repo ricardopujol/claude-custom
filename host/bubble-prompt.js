@@ -52,9 +52,13 @@ function maskSecrets(text) {
 /** Whole paths out of free text (a task line can name one): drive paths, UNC and chains of folders become [path]. */
 function scrubPaths(text) {
   return String(text)
+    // A drive path may hold spaces ("Personal Notes"): take it up to the first file extension, then sweep any backslash chain left.
+    .replace(/[A-Za-z]:\\[^\r\n]*?\.[A-Za-z0-9]{1,8}\b/g, '[path]')
     .replace(/[A-Za-z]:\\[^\s]*/g, '[path]')
-    .replace(/\\\\[^\s]+/g, '[path]')
-    .replace(/~?\/[\w.@-]+(?:\/[\w.@-]+)+/g, '[path]');
+    .replace(/\\[^\s]+/g, '[path]')
+    // A chain of folders with forward slashes, absolute, home-relative or relative ("documentation/handoffs/x.md").
+    .replace(/(?<![\w.@-])[~.]{0,2}\/?[\w.@-]+(?:\/[\w.@-]+)+/g, '[path]')
+    .replace(/(?:\[path\][ ]*){2,}/g, '[path] ');
 }
 
 const SECRET_NAME_RES = [
@@ -114,6 +118,9 @@ const CLAIM_RE = new RegExp('\\b(' + [
   'arregl\\w*', 'encontr\\w*', 'termin\\w*', 'acab(?:e|ado|ada|amos|o)', 'resuelt\\w*', 'resolv\\w*', 'solucion\\w*', 'cazad\\w*', 'caz(?:e|o)',
   'pas(?:o|aron|an|ado|ada|a)', 'desplieg\\w*', 'despleg\\w*', 'list(?:o|a)s?', 'hech(?:o|a)s?', 'verdes?', 'funciona\\w*', 'descubr\\w*',
   'aplast\\w*', 'fusion\\w*',
+  // Verdict and sign-off words: the agents' own sign-offs are the voice the model is handed (both languages)
+  'defective', 'defectuos\\w*', 'correct', 'correcto', 'verdicts?', 'veredicto', 'approv\\w*', 'aprobad\\w*', 'aprueb\\w*', 'lgtm', 'ya esta',
+  'sin errores', 'all good', 'todo bien', 'todo correcto',
 ].join('|') + ')\\b', 'i');
 const unaccent = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 

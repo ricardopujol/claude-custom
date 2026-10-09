@@ -55,7 +55,7 @@ test('the page has the scripts and elements the wiring looks up', () => {
 });
 
 test('reduced motion turns the bubble animation off', () => {
-  assert.match(html, /prefers-reduced-motion: reduce\) \{ \.agent-bubble \{ animation: none; \} \}/);
+  assert.match(html, /prefers-reduced-motion: reduce\) \{ \.agent-bubble, \.agent-bubble\[data-settled\] \{ animation: none; \} \}/);
 });
 
 test('a bubble never takes a click from its card', () => {
@@ -85,8 +85,8 @@ test('visibility is per socket: a window that closes is dropped, and the install
   assert.match(host, /bubbles\.setViewer\(ws, msg\.visible === true\)/);
   assert.match(host, /bubbles\.dropViewer\(ws\)/);
   assert.match(host, /medalsWatch\.tick\(\); bubblesWatch\.tick\(\)/);
-  assert.match(host, /medalsWatch\.note\(\)/);
-  assert.match(host, /bubblesWatch\.note\(\)/);
+  assert.match(host, /medalsWatch\.note\(out\.medals\)/);
+  assert.match(host, /bubblesWatch\.note\(told\)/);
   assert.ok(!/setVisible/.test(host));
 });
 

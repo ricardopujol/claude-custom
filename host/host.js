@@ -1210,20 +1210,21 @@ function handleMedalMessage(msg) {
   }
   if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
   broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
-  medalsWatch.note();
+  medalsWatch.note(out.medals);
 }
 // The medals and the bubbles' switch are install-wide files, but every tab is its own host: a change made through ANOTHER host reaches
 // this host's windows through these watches (polled from the 1 s clock below, host/state-watch.js).
 const medalsWatch = createChangeWatch({ read: () => medals.all(), onChange: (v) => broadcastControl({ type: 'medals', medals: v, ok: true, reason: null }) });
-const bubblesWatch = createChangeWatch({ read: () => bubbleSettings.enabled(), onChange: (v) => broadcastControl({ type: 'bubbles', enabled: v }) });
+const bubblesWatch = createChangeWatch({ read: () => { const v = bubbleSettings.peek(); if (v === null) throw new Error('bubbles setting unreadable'); return v; }, onChange: (v) => broadcastControl({ type: 'bubbles', enabled: v }) });
 // A window tells its host whether it can show a bubble (agent images off, lean mode): per SOCKET, so one window can't cancel another,
 // and a window that closes stops counting (dropViewer in its close handler).
 function handleBubblesMessage(msg, ws) {
   if (msg.action === 'set-enabled') {
     const out = bubbleSettings.set(msg.enabled);
     if (!out.ok) console.log('[host] bubbles setting refused:', out.reason);
-    broadcastControl({ type: 'bubbles', enabled: bubbleSettings.enabled() });
-    bubblesWatch.note();
+    const told = bubbleSettings.enabled();
+    broadcastControl({ type: 'bubbles', enabled: told });
+    bubblesWatch.note(told);      // what was just said, not a second read
   } else if (msg.action === 'visible') {
     bubbles.setViewer(ws, msg.visible === true);
   }

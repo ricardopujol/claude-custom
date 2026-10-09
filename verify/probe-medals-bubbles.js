@@ -116,7 +116,10 @@ app.whenReady().then(async () => {
     await js('window.__bubbleNode = document.querySelector("#agents .agent-bubble")');
     for (let i = 0; i < 3; i++) { await js('renderRoster()'); await sleep(500); }
     check('a roster repaint keeps the bubble', !!(await bubbleOf('code-reviewer')));
-    check('and it is the SAME node (a rebuilt one would restart its fade-in about once a second)', await js('window.__bubbleNode === document.querySelector("#agents .agent-bubble") && window.__bubbleNode.isConnected'));
+    check('an UNCHANGED repaint (the usual one, about 1/s) keeps the same node', await js('window.__bubbleNode === document.querySelector("#agents .agent-bubble") && window.__bubbleNode.isConnected'));
+    // The repaint that really replaces the cards (markup changed): the bubble comes back SETTLED, so its fade-in doesn't replay.
+    await js('lastAgentsHtml = ""; renderRoster()');
+    check('a REBUILT card gets its bubble back settled: no fade-in replay (animation is bubble-out only)', await js('(function(){var b=document.querySelector("#agents .agent-bubble");return !!b && b.hasAttribute("data-settled") && getComputedStyle(b).animationName === "bubble-out" && b !== window.__bubbleNode;})()'));
     const pass = await js('(() => { const b = document.querySelector("#agents .agent-bubble"); return getComputedStyle(b).pointerEvents === "none"; })()');
     check('the bubble takes no clicks (pointer-events: none)', pass);
     const gone = await until('!document.querySelector("#agents .agent-bubble")', 12000);
