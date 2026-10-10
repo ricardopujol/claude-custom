@@ -84,6 +84,7 @@ const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleSt
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
+const { createSharedQuota } = require('./quota-share');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
@@ -761,10 +762,18 @@ function checkMilestone(usage) {
 let lastQuota = null;
 let quotaPending = null;
 const quotaAnnouncer = createQuotaAnnouncer();
+// ONE host per machine polls the usage endpoint (a lease in ~/.claude-custom); every
+// host, this one included, shows what the shared file says. BACKLOG #83, host/quota-share.js.
+const sharedQuota = createSharedQuota({
+  owner: `${process.pid}-${Date.now()}`,
+  readQuota,
+  log: (m) => console.log('[host]', m),
+});
+process.on('exit', () => { sharedQuota.release(); });
 
 function refreshQuota() {
   if (quotaPending) return quotaPending;
-  quotaPending = readQuota({})
+  quotaPending = sharedQuota.refresh()
     .then((q) => {
       lastQuota = q;
       checkQuotaWarning(q);
