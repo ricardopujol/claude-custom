@@ -7,7 +7,8 @@
  *   1. UPLOADED  .harness/portraits/<agent>/<state>.<ext>      (user-supplied)
  *                .harness/portraits/<agent>/default.<ext>      (per-agent fallback)
  *   2. FORGE     portraits/<agent>/<state>.png                 (generated, existing)
- *   3. GLOBAL    .harness/portraits/_global/default.<ext>      (the user's default for everyone)
+ *   3. GLOBAL    <user profile>/.claude-custom/portraits/_global/default.<ext>
+ *                                                              (the user's default, user-wide)
  *   4. FORGE     portraits/_default/<state>.png                (one character for everyone)
  *                portraits/_default/default.png
  *   5. SHIPPED   app/assets/portrait-default.<ext>             (bundled with the app)
@@ -175,7 +176,9 @@ function globalPortrait(uploadsDir) {
   return hit ? { ...hit, file: path.basename(hit.path), media: mediaKindFor(hit.ext) } : null;
 }
 
-function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}) {
+// `globalDir` is the USER-WIDE folder holding `_global` (host/global-portrait-store.js); without
+// one the default is read from `uploadsDir`, as before.
+function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir, globalDir } = {}) {
   const safeAgent = safeSegment(agent);
   const safeState = safeSegment(state);
   if (!safeAgent || !safeState) return placeholderFor(agent);
@@ -190,7 +193,7 @@ function portraitFor(agent, state, { portraitsDir, uploadsDir, shippedDir } = {}
   if (forgedOwn) return forgedOwn;
 
   // The user's own explicit choice beats the generated shared character.
-  const global = globalPortrait(uploadsDir);
+  const global = globalPortrait(globalDir === undefined ? uploadsDir : globalDir);
   if (global) return fileResult('global', safeAgent, safeState, global);
 
   const forgedShared = forgeSharedFor(safeAgent, safeState, portraitsDir);

@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, GLOBAL_AGENT, isReservedAgent } = require('./portraits');
 const { renameWithRetry } = require('./atomic-write');
+const { writeMarker } = require('./global-migration-marker');
 
 // The upload tier accepts the same media as the resolver serves. Named
 // separately from MEDIA_EXTENSIONS at the call site below so a future format
@@ -292,6 +293,8 @@ function handleGlobalPortraitMessage(msg, {
         if (!err || err.code !== 'ENOENT') stuck.push(path.basename(file));
       }
     }
+    // The user has decided about the default: the one-shot migration must not bring an old one back.
+    if (removed > 0) writeMarker(uploadsDir);
     if (stuck.length) {
       return { reply: { ok: false, global: true, reason: `could not remove ${stuck.join(', ')}` }, changed: removed > 0 };
     }
@@ -324,6 +327,7 @@ function handleGlobalPortraitMessage(msg, {
   } catch (err) {
     return refuse(`copy failed: ${err && err.message}`);
   }
+  writeMarker(uploadsDir);
   const shown = resolve() === plan.dest;
   const reason = shown ? (versionStale ? STALE_REASON : null)
     : leftovers.length
