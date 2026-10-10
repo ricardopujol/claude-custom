@@ -64,6 +64,13 @@ const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 // Running panel, which would show a ScheduleWakeup as a process. One call per wake (~every 25 min), so no tax.
 const BEDTIME_MATCHER = 'ScheduleWakeup';
 const HOOK_TIMEOUT_SECONDS = 5;
+// Backlog #55 ("waiting on you"): the CLI's PermissionRequest hook runs BEFORE a permission prompt is shown and is the one event of the
+// prompt that carries the asking agent's agent_id (a Notification never does: CLI 2.1.296 builds it with no tool context). OBSERVE-ONLY:
+// the native helper prints nothing and always exits 0, and the CLI decides a PermissionRequest only from a hook's JSON output
+// (permissionRequestResult allow|deny), so the prompt is shown exactly as before. It is awaited, so the timeout is short: a helper
+// that cannot connect gives up in milliseconds, and a stuck one costs the prompt at most these seconds, never a decision.
+// Opt-in (`permissionRequest: true`), so a host that doesn't ask writes the same settings as before.
+const PERMISSION_HOOK_TIMEOUT_SECONDS = 2;
 
 const quote = s => `"${s}"`;
 
@@ -128,7 +135,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -169,6 +176,9 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
       UserPromptSubmit: [entry('', 'UserPromptSubmit')],
     },
   };
+  if (permissionRequest === true) {
+    settings.hooks.PermissionRequest = [{ matcher: '', hooks: [{ type: 'command', command: command('PermissionRequest'), timeout: PERMISSION_HOOK_TIMEOUT_SECONDS }] }];
+  }
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);

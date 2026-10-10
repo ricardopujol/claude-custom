@@ -4450,9 +4450,8 @@ function renderRoster() {
   }
   // Active agents first, then alphabetical, so the thing you care about is at
   // the top without the list reshuffling on every tick.
-  const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
-  const rows = [...roster.values()].sort((a, b) =>
-    (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
+  // A card waiting on you floats to the top, then base state, then name (app/agent-state-display.js sortRows).
+  const rows = window.agentStateDisplay.sortRows([...roster.values()]);
   const counts = instanceCounts(latestParty);
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
@@ -4485,14 +4484,18 @@ function renderRoster() {
 
   paintAgents(shown.map(r => {
     const entry = rosterIndexEntry(r.agent);
-    return `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
+    // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
+    // `data-detail`, drawn as a corner badge and as words under the name.
+    const look = window.agentStateDisplay.describeState(r.state, r.detail);
+    return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
       window.medalsDisplay.cardButtonHtml(r.agent) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
+      window.agentStateDisplay.badgeHtml(r.state, r.detail) +
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
-      `<div class="state">${r.state}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +

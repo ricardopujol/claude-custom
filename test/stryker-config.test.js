@@ -68,6 +68,8 @@ const REPO_SCANNING = new Set([
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
   'drift-git-process.test.js',    // docs drift (PR #153 Miguel I1): the real git on a throwaway repo and a real child that outlives a timeout; its pure tests (drift-git.test.js) are in the command
+  // #55 wiring: renderer.html / renderer.js / host.js source text. It requires nothing from a mutated module.
+  'renderer-agent-state-wiring.test.js',
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 
@@ -117,6 +119,18 @@ test('the command and mutate list name only files that exist', () => {
   for (const rel of conf.mutate) {
     assert.ok(fs.existsSync(path.join(ROOT, rel)), `mutate names a missing file: ${rel}`);
   }
+});
+
+test('every test path in the command is ONE whitespace-separated token naming one existing file (PR #154: a missing space fused two)', () => {
+  // The regex scans above find both names inside a fused token `test/a.test.jstest/b.test.js`, so they stay green while node is handed a path that
+  // does not exist and neither suite runs under any mutant. Split on whitespace instead.
+  const tokens = conf.commandRunner.command.split(/\s+/).filter(t => t.includes('test/'));
+  assert.ok(tokens.length > 100, `the scan must find the command's test paths (${tokens.length})`);
+  const bad = tokens.filter(t => !/^test\/[a-z0-9-]+\.test\.js$/.test(t) || !fs.existsSync(path.join(ROOT, t)));
+  assert.deepStrictEqual(bad, [], `these command tokens are not exactly one existing test file: ${bad.join(', ')}`);
+  // positive control: the detector must flag a fused token
+  const fused = 'node --test test/a.test.jstest/b.test.js'.split(/\s+/).filter(t => t.includes('test/'));
+  assert.ok(fused.some(t => !/^test\/[a-z0-9-]+\.test\.js$/.test(t)));
 });
 
 test('the modules that decide whether a session is stopped are mutated (Miguel, PR #76 I3)', () => {

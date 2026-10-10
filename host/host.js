@@ -380,6 +380,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   occupancy: true,
   // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
   bedtime: true,
+  // PermissionRequest, observe-only, so "waiting on you" can name the agent (BACKLOG #55; host/settings-writer.js).
+  permissionRequest: true,
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
@@ -600,10 +602,15 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 // The ONE portrait lookup in this file, carrying all three tiers: the Inactive
 // tab's call sites once passed only portraitsDir, so an upload showed there as
 // "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
-const portraitOf = (agent, state) => portraitFor(agent, state, {
-  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR,
+const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
+  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR, baseState,
 });
-const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, state) });
+// `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
+// nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
+const describe = (agent, state, detail) => {
+  const d = detail || state;
+  return { agent, state, detail: d, portrait: portraitOf(agent, d, state) };
+};
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
@@ -932,7 +939,7 @@ function globalPortraitInfo() {
 // A file-tier change under _global alters what EVERY face without its own
 // picture resolves to, so re-describe all of them rather than guessing which.
 function repaintAllPortraits() {
-  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state) });
+  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state, r.detail) });
   lastRosterIndex = {
     ...lastRosterIndex,
     agents: lastRosterIndex.agents.map(a => ({ ...a, portrait: portraitOf(a.agent, 'sleeping') })),
@@ -980,7 +987,10 @@ function handlePortraitUpload(msg) {
   // Re-describe rather than assuming the tier that now applies -- describe()
   // re-reads the real filesystem, so a stale idea of "the upload obviously
   // won" can never disagree with what portraitFor actually resolves.
-  if (out.mood) broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state) });
+  if (out.mood) {
+    const row = mood.roster().find(r => r.agent === out.mood.agent);
+    broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state, row && row.state === out.mood.state ? row.detail : undefined) });
+  }
   if (out.repaintIndex) {
     lastRosterIndex = {
       ...lastRosterIndex,
@@ -1403,7 +1413,9 @@ if (helperExists) {
     // And attention's shell wait: a main-session Read or Edit means the session is working, so a timer that would
     // raise "finished" is cancelled here (BACKLOG #78, PR #147 Dexter D1); `handle` below never sees these events.
     attention.activity(ev);
-    if (isOccupancyOnly(ev)) return;
+    // ...but the mood engine reads them for one thing only: which tool an agent is using now (reading, writing,
+    // BACKLOG #55). They open no run and touch no panel; a Read is never a process.
+    if (isOccupancyOnly(ev)) { mood.handle(ev); return; }
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
     if (isBedtimeOnly(ev)) return;
@@ -1911,8 +1923,8 @@ function wireTerm(t) {
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
-mood.on('change', ({ agent, state }) => {
-  broadcastControl({ type: 'mood', ...describe(agent, state) });
+mood.on('change', ({ agent, state, detail }) => {
+  broadcastControl({ type: 'mood', ...describe(agent, state, detail) });
   bubbles.onMood({ agent, state });      // fire and forget: never throws, never makes the card wait (host/bubbles.js)
   // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
   // applies the same rule itself, but the host persists it and is authoritative.
@@ -2263,7 +2275,7 @@ wss.on('connection', (ws, req) => {
     background: styleResolved.background,
     style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look },
     usage: currentUsage(),
-    roster: mood.roster().map(r => describe(r.agent, r.state)),
+    roster: mood.roster().map(r => describe(r.agent, r.state, r.detail)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).

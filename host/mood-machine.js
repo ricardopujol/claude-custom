@@ -25,6 +25,31 @@
  * open while a foreground child it waits on runs. Background runs are their
  * own roots.
  *
+ * DETAIL (BACKLOG #55). `state` is the four above and never changes meaning:
+ * the roster's sort, hide rule, ring and portrait files all key on it. On top
+ * of it each card has a `detail`, the finer name it shows, which equals `state`
+ * unless the card is working (or stressed) AND one of these holds. Best first:
+ *
+ *   waiting   a PermissionRequest hook (a permission prompt or question is about
+ *             to be shown) that names the agent by agent_id. A Notification
+ *             can't say whose it is (the CLI never puts agent_id on one), so
+ *             none marks a card; a PermissionRequest without agent_id is the
+ *             main session's own. Ends with the agent's next hooked event or
+ *             its end, and is never judged by silence or reaped while it waits.
+ *   stuck     the retry detector (same call x3) or twenty silent minutes with
+ *             nothing in flight and no background work launched
+ *   helper    a FOREGROUND child it launched is still running (a background
+ *             child leaves its parent free, so it isn't waiting)
+ *   running   a Bash call in flight, PreToolUse .. PostToolUse
+ *   writing   Edit | Write | NotebookEdit    (working only; an error shows stressed)
+ *   reading   Read | Grep | Glob
+ *
+ * Reading and writing come from PreToolUse alone (their PostToolUse isn't
+ * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
+ * are sequential: its newest call (a Pre, or a Post of a call whose only hook
+ * is its Post) ends every older one, so the newest of {a Bash in flight, the
+ * last file tool} is the only one that can show.
+ *
  * Time is injected and transitions are applied by `tick()`, so the host owns
  * scheduling and the machine stays testable without wall-clock waits.
  */
@@ -36,7 +61,26 @@ const WORKING = 'working';
 const HAPPY = 'happy';
 const STRESSED = 'stressed';
 
+// The finer names. Each is also a portrait slot (host/portraits.js NEAREST_STATE).
+const READING = 'reading';
+const WRITING = 'writing';
+const RUNNING = 'running';
+const WAITING = 'waiting';
+const STUCK = 'stuck';
+const HELPER = 'helper';
+
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
+
 const RETRY_LIMIT = 3;
+// How long a reading/writing detail outlives the PreToolUse that raised it.
+const TOOL_LINGER_MS = 5_000;
+// Silence, with nothing in flight, that reads as stuck rather than thinking.
+// Hooks see no WebSearch, WebFetch, MCP or TaskOutput, so a long call of those
+// is silent too (PR #154, Dexter 4): the bar is high (two thirds of STALL_MS,
+// which reaps), and an agent that launched background work is never judged
+// by silence at all.
+const STUCK_MS = 20 * 60_000;
 
 // Claude Code's hook payloads are not strongly shaped, so failure detection is
 // deliberately permissive: treating a stringy "1" as success would make the
@@ -131,7 +175,8 @@ function remember(set, value) {
 }
 
 function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS,
-                            maxInvocationMs = MAX_INVOCATION_MS, flashMs = 8_000 } = {}) {
+                            maxInvocationMs = MAX_INVOCATION_MS, flashMs = 8_000,
+                            toolLingerMs = TOOL_LINGER_MS, stuckMs = STUCK_MS } = {}) {
   const machine = new EventEmitter();
 
   // CARDS, keyed by agent NAME: the face the roster shows.
@@ -207,6 +252,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     if (mates.size > REMEMBER_MAX) mates.delete(mates.keys().next().value);
   }
 
+  // What an invocation tracks for its detail: Bash calls in flight (id -> when
+  // they began), the newest file tool ({kind, at}), and an open prompt.
+  // `quiet`: it launched background work, so what it waits on emits no hook of its own.
+  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, quiet: false });
+
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
   const current = () => (invs.length ? invs[invs.length - 1] : null);
@@ -214,16 +264,50 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   function ensure(agent) {
     let a = agents.get(agent);
     if (!a) {
-      a = { state: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0 };
+      a = { state: SLEEPING, detail: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0 };
       agents.set(agent, a);
     }
     return a;
   }
 
+  // The card's finer name for `state` (see DETAIL, in the header): the best of
+  // what its invocations show, or `state` itself.
+  const RANK = { [WAITING]: 6, [STUCK]: 5, [HELPER]: 4, [RUNNING]: 3, [WRITING]: 3, [READING]: 3 };
+  function refine(agent, a, state) {
+    if (state !== WORKING && state !== STRESSED) return state;
+    const t = now();
+    const repeating = a.repeats >= RETRY_LIMIT;
+    let best = state;
+    const take = d => { if ((RANK[d] || 0) > (RANK[best] || 0)) best = d; };
+    for (const inv of invs) {
+      if (inv.name !== agent) continue;
+      if (inv.waiting) { take(WAITING); continue; }
+      const kids = fgChildren(inv).length > 0;
+      // A Bash in flight for longer than the stall clock isn't: its result was lost (PR #154, Dexter 2).
+      const flying = [...inv.bash.values()].filter(at => t - at <= stallMs);
+      if (repeating || (!kids && !inv.quiet && flying.length === 0 && t - inv.lastActivity > stuckMs)) { take(STUCK); continue; }
+      if (kids) { take(HELPER); continue; }
+      if (state !== WORKING) continue;       // an error outranks what the tool is
+      let newest = null;
+      for (const at of flying) if (!newest || at >= newest.at) newest = { kind: RUNNING, at };
+      if (inv.tool && t - inv.tool.at <= toolLingerMs && (!newest || inv.tool.at > newest.at)) newest = inv.tool;
+      if (newest) take(newest.kind);
+    }
+    return best;
+  }
+
   function setState(agent, a, state) {
-    if (a.state === state) return;
+    const detail = refine(agent, a, state);
+    if (a.state === state && a.detail === detail) return;
     a.state = state;
-    machine.emit('change', { agent, state });
+    a.detail = detail;
+    machine.emit('change', { agent, state, detail });
+  }
+
+  // Re-asks every card for its detail: time passing (a linger ending, a silence
+  // growing) and a tool event both move it without moving `state`.
+  function settle() {
+    for (const [agent, a] of agents) setState(agent, a, a.state);
   }
 
   // agent_id -> its invocation. An id seen for the first time is bound to the
@@ -414,6 +498,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
         inv.mate = mate;
       }
       inv.background = true;
+      if (inv.parent) inv.parent.quiet = true;
       return;
     }
     const named = typeof r?.agentId === 'string' && r.agentId ? r.agentId : null;
@@ -422,7 +507,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (!adopt(inv, named)) return;
     }
     if (isCompleted(r)) { finish(inv); return; }
-    if (isAsyncLaunch(r)) { inv.background = true; return; }
+    if (isAsyncLaunch(r)) { inv.background = true; if (inv.parent) inv.parent.quiet = true; return; }
     // A status we don't know that still names a run: assume it is RUNNING.
     // `completed` is the only status that means done; guessing the other way
     // was the original bug (Miguel, PR #94, #1). Logged, so a renamed status
@@ -430,6 +515,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     if (r && typeof r === 'object' && resultAgentId(r)) {
       console.log(`[mood] unrecognised spawn status ${JSON.stringify(r.status)} naming a run: treated as background`);
       inv.background = true;
+      if (inv.parent) inv.parent.quiet = true;
     }
   }
 
@@ -455,7 +541,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     a.lastActivity = now();
     const inv = {
       id: ++serial, key, name, agentId, parent: null, orphan: false, background: true,
-      description: undefined, startedAt: now(), lastActivity: now(),
+      description: undefined, startedAt: now(), lastActivity: now(), ...idleTools(),
     };
     if (mate) { inv.mate = mate; mate.ended = false; mate.reaped = false; mate.wake = false; mate.runtimeId = agentId; }
     invs.push(inv);
@@ -526,7 +612,45 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     }
   }
 
-  function handle({ event, payload }) {
+  // A tool call began. The main session's own (no agent_id) touches no card.
+  function noteTool(p) {
+    const t = now();
+    const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
+    if (!inv) return;
+    refresh(inv);
+    inv.waiting = false;                               // its next call: the prompt was answered
+    // Calls of one run are sequential, and a Bash that was denied, blocked by a hook or lost never gets a result:
+    // a new call means the older ones are over (PR #154, Dexter 2).
+    inv.bash.clear();
+    inv.tool = null;
+    const tool = p.tool_name;
+    if (tool === 'Bash') {
+      // A background command returns at once; its end is not hooked, so it is never "running" -- and what the run
+      // then waits on (TaskOutput) is hooked by nothing, so silence no longer means stuck.
+      if (p.tool_input && p.tool_input.run_in_background === true) { inv.quiet = true; return; }
+      inv.bash.set(p.tool_use_id ?? `anon:${++serial}`, t);
+    } else if (READ_TOOLS.has(tool)) {
+      inv.tool = { kind: READING, at: t };
+    } else if (WRITE_TOOLS.has(tool)) {
+      inv.tool = { kind: WRITING, at: t };
+    }
+  }
+
+  function clearBash(inv, toolUseId) {
+    if (toolUseId != null) inv.bash.delete(toolUseId);
+    else if (inv.bash.size) inv.bash.delete(inv.bash.keys().next().value);
+  }
+
+  // The PermissionRequest hook: a permission prompt or question is about to be shown for a tool call. Its input is built with the
+  // tool-use context (CLI 2.1.296, executePermissionRequestHooks: $d(session, mode, ..., toolUseContext)), so inside a subagent it carries
+  // that agent's agent_id; without one it is the main session's own prompt, which has its own attention cue and no card. (A Notification
+  // never carries agent_id, so it can't say whose it is: PR #154 round 2, N1.)
+  function permissionRequest(p) {
+    const inv = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
+    if (inv) inv.waiting = true;
+  }
+
+  function handleEvent({ event, payload }) {
     const p = payload || {};
     const tool = p.tool_name;
     if (p.agent_id) {
@@ -568,14 +692,22 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
         // orphan ends only on its own events, SessionEnd and the reapers.
         orphan: !!p.agent_id && !parent,
         background: input.run_in_background === true, description: input.description,
-        startedAt: now(), lastActivity: now(),
+        startedAt: now(), lastActivity: now(), ...idleTools(),
       };
       invs.push(inv);
       if (inv.key !== null) spawns.set(inv.key, inv);
-      if (parent) refresh(parent);
+      if (parent) {
+        refresh(parent);
+        parent.waiting = false;                  // launching a helper is a tool call: its prompt was answered
+        parent.bash.clear();
+        parent.tool = null;
+        if (inv.background) parent.quiet = true;
+      }
       setState(agent, a, WORKING);
       return;
     }
+    if (event === 'PreToolUse') { noteTool(p); return; }
+    if (event === 'PermissionRequest') { permissionRequest(p); return; }
 
     const failureEvent = event === 'PostToolUseFailure';
     if (event === 'PostToolUse' || failureEvent) {
@@ -597,7 +729,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       const spawned = spawnKey !== null ? spawns.get(spawnKey) : undefined;
       if (spawned || (spawnKey !== null && endedKeys.has(spawnKey))) {
         const spawner = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
-        if (spawner) refresh(spawner);
+        if (spawner) { refresh(spawner); spawner.waiting = false; spawner.bash.clear(); spawner.tool = null; }
         spawnResult(spawned, event, p, interrupted);
         return;
       }
@@ -621,6 +753,9 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       else if (!saysWho) inv = [...invs].reverse().find(mainForeground);
       if (!inv) return;                       // no running agent to attribute to
       if (p.agent_id) refresh(inv); else refreshAll();
+      inv.waiting = false;
+      if (tool === 'Bash') clearBash(inv, p.tool_use_id);
+      else { inv.bash.clear(); inv.tool = null; }      // a call whose only hook is its Post (SendMessage, Artifact) is a newer call too
 
       // The interrupted invocation ends, with its foreground descendants.
       if (interrupted) { cutOff(subtree(inv)); return; }
@@ -699,6 +834,11 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
     }
   }
 
+  function handle(ev) {
+    handleEvent(ev);
+    settle();
+  }
+
   function finishAll(list) { end(list, () => true); }
 
   function tick() {
@@ -724,7 +864,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       // mutation gate) at 45 minutes. Only once the CLI labels its calls: an
       // older one has refreshAll() touching everything, so there the cap stays.
       const capped = !(inv.background && saysWho) && t - inv.startedAt > maxInvocationMs;
-      const stale = capped || t - inv.lastActivity > stallMs;
+      // An open prompt is the person's to answer, not a silent run: the stall clock doesn't reap it (the age cap above still does).
+      const stale = capped || (!inv.waiting && t - inv.lastActivity > stallMs);
       if (stale && !fgChildren(inv).some(c => !gone.has(c))) gone.add(inv);
     }
     // A reaped run was cut off, so it sleeps at once -- not whenever the idle
@@ -754,6 +895,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
       if (running(agent)) continue;
       if (t - a.lastActivity > idleMs) setState(agent, a, SLEEPING);
     }
+    settle();
   }
 
   machine.handle = handle;
@@ -763,7 +905,8 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   // instance, unchanged for every consumer (host.js draws this as `party`,
   // app/agent-card-display.js counts it for the ×N badge).
   machine.stack = () => invs.map(i => i.name);
-  machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state }));
+  machine.detailOf = agent => (agents.get(agent) || { detail: SLEEPING }).detail;
+  machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state, detail: a.detail }));
   // Sizes of the per-host bookkeeping, for the test that it stays bounded.
   machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size,
     queued: queued.size });
@@ -787,4 +930,7 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
   return machine;
 }
 
-module.exports = { createMoodMachine, STALL_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED };
+module.exports = {
+  createMoodMachine, STALL_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED,
+  READING, WRITING, RUNNING, WAITING, STUCK, HELPER, TOOL_LINGER_MS, STUCK_MS,
+};

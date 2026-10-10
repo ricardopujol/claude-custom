@@ -13,7 +13,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, GLOBAL_AGENT, isReservedAgent } = require('./portraits');
+const { safeSegment, MEDIA_EXTENSIONS, BUILTIN_STATES, EXTRA_STATES, GLOBAL_AGENT, isReservedAgent } = require('./portraits');
 const { renameWithRetry } = require('./atomic-write');
 const { writeMarker } = require('./global-migration-marker');
 
@@ -218,7 +218,7 @@ function handlePortraitMessage(msg, { uploadsDir, stat, apply = applyPortraitUpl
   if (isReservedAgent(agent)) return refuse(RESERVED_REASON);
   if (typeof seen !== 'string' || !seen) return refuse('no state was given for the portrait');
   const target = seen === 'inactive' ? 'sleeping' : seen;
-  if (!BUILTIN_STATES.includes(target)) {
+  if (!BUILTIN_STATES.includes(target) && !EXTRA_STATES.includes(target)) {
     return refuse(`"${seen}" is not a state a portrait can be set for`);
   }
 

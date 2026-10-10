@@ -660,3 +660,15 @@ test('renderer.js: a dropped socket clears the graph asker, the hello sets it (n
   assert.match(src, /gitGraphAsker\.setControls\(Array\.isArray\(msg\.controls\) \? msg\.controls : \[\]\);/);
   assert.match(src, /if \(shownModules\.has\('git'\) && gitView === 'graph'\) requestGitGraph\(\);\s*\n\s*if \(typeof msg\.project/);
 });
+
+// PR #154 round 2, N1: the PermissionRequest hook must be OBSERVE-ONLY. The CLI (2.1.296) decides a permission request only from a hook's
+// JSON output (permissionRequestResult allow|deny; runHooks returns null otherwise and the dialog is shown), and a blocking error is exit
+// code 2. The native helper therefore must print nothing and never exit with anything but 0.
+test('the hook helper prints nothing and only ever exits 0, so a PermissionRequest hook can never decide a prompt', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'helper', 'hook-helper.cs'), 'utf8');
+  assert.doesNotMatch(src, /Console\.(Out|Write|WriteLine)\b/, 'nothing on stdout: output is how a hook decides');
+  assert.doesNotMatch(src, /Console\.Error/, 'nor on stderr');
+  const exits = [...src.matchAll(/return\s+(-?\d+)\s*;/g)].map(m => m[1]);
+  assert.ok(exits.length > 0 && exits.every(c => c === '0'), `every return of Main is 0: ${exits.join(',')}`);
+  assert.doesNotMatch(src, /Environment\.Exit\(\s*[1-9]/);
+});

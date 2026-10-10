@@ -506,3 +506,24 @@ test('an incomplete canvasMcp is no injection rather than a broken one', () => {
     assert.ok(!buildClaudeArgs({ helperExists: false, canvasMcp: bad }).includes('--mcp-config'), JSON.stringify(bad));
   }
 });
+
+// BACKLOG #55 / PR #154 round 2 (N1): "waiting on you" is driven by the PermissionRequest hook, which names the agent.
+test('PermissionRequest is hooked only when asked for, for every tool, with a short timeout', () => {
+  assert.strictEqual(buildHarnessSettings(opts).hooks.PermissionRequest, undefined, 'a host that does not ask writes the settings it always did');
+  const s = buildHarnessSettings({ ...opts, permissionRequest: true });
+  const entry = s.hooks.PermissionRequest;
+  assert.ok(Array.isArray(entry) && entry.length === 1);
+  assert.strictEqual(entry[0].matcher, '', 'every tool');
+  assert.match(entry[0].hooks[0].command, /--event PermissionRequest$/);
+  assert.strictEqual(entry[0].hooks[0].type, 'command');
+  assert.ok(entry[0].hooks[0].timeout <= 2, 'awaited before the prompt is shown: short');
+  assert.strictEqual(buildHarnessSettings({ ...opts, permissionRequest: 'yes' }).hooks.PermissionRequest, undefined, 'only an explicit true');
+});
+
+test('PermissionRequest uses the same native helper as every other hook, and adds nothing else', () => {
+  const plain = buildHarnessSettings(opts).hooks;
+  const withIt = buildHarnessSettings({ ...opts, permissionRequest: true }).hooks;
+  const { PermissionRequest, ...rest } = withIt;
+  assert.deepStrictEqual(rest, plain, 'no other hook changes');
+  assert.ok(PermissionRequest[0].hooks[0].command.startsWith(plain.Stop[0].hooks[0].command.replace(/--event Stop$/, '')));
+});
