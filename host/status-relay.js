@@ -80,32 +80,55 @@ const SWEEP_MAX_LEVELS = 50;
 const START_TOLERANCE_TICKS = 20000;
 // The fallback proves and ends every pending pid in ONE PowerShell call (PR #145 Y2): one timeout for the whole batch.
 const FALLBACK_BATCH_TIMEOUT_MS = 10000;
-const sweepScript = (pid) => `$ErrorActionPreference='Stop'
+// One deadline for the processes of a level that was killed but has not exited yet.
+const WAIT_LEVEL_MS = 2000;
+
+// The two ways the script starts. From a root: snapshot the tree, then end it level by level. Seeded (the fallback's rescan, PR #161
+// Dexter 2): the parents an earlier sweep ENDED, each with the exit bound it read, whose children were never listed; the first read
+// lists them and the same loop ends them. Seeded parents are never alive and bound their children by their exit.
+const rootPrelude = `$seeded=$false
+try{[void][Diagnostics.Process]::GetProcessById($root)}catch{exit 0}
+try{$snap=@(ReadProcs)}catch{exit 3}
+$rr=@($snap | Where-Object { ([int]$_.ProcessId -eq $root) -and ($null -ne $_.CreationDate) })
+if(-not $rr.Count){exit 0}
+$rootObj=[pscustomobject]@{id=$root;start=(Ftime $rr[0].CreationDate);exit=$null;alive=$true}
+$pending=@($rootObj)+@(Desc $snap $rootObj)
+$known=@{};foreach($o in $pending){$known[$o.id]=$o.start}
+$endedIds=@{}
+Say $pending
+$kill=@($rootObj)`;
+const seedPrelude = (seed) => `$seeded=$true
+$pending=@();$known=@{};$endedIds=@{}
+$parents=@(${seed.map((t) => `[pscustomobject]@{id=${t.pid};start=${t.start};exit=${t.exit};alive=$false}`).join(',')})
+$kill=@()`;
+const sweepScript = (pid, seed = null) => `$ErrorActionPreference='Stop'
 $root=${pid}
 function Ftime($d){$d.ToFileTimeUtc()}
-# K1 proves and kills one process, K2 waits for it; together they answer @{ended;exit}.
+# KillStart proves and kills one process, KillWait waits for it; together they answer @{ended;exit;killed}.
 #   ended  true when it is no longer the process we meant: killed by us, already gone, or its pid belongs to another process now.
 #          false when we could not tell or could not kill it (it stays pending, and the fallback tries it with a proof).
 #   exit   the LATEST moment the process we meant can have exited: its own ExitTime when we killed it; when its pid was reused, the
 #          start of the process holding it now (it died before that); $null when unknown (gone, or unreadable).
-function K1($o,$isRoot){
-  try{$p=[Diagnostics.Process]::GetProcessById($o.id)}catch{return @{ended=$true;exit=$null;p=$null}}
+#   killed true when Kill() went through but the exit was not seen in time: it is ending, so it is NOT a live parent (it adopts
+#          nothing unbounded; PR #161 Dexter 3), and the final Alive check decides whether it is still pending.
+function KillStart($o,$isRoot){
+  try{$p=[Diagnostics.Process]::GetProcessById($o.id)}catch{return @{ended=$true;exit=$null;killed=$false;p=$null}}
   try{
     $null=$p.Handle
     $st=$p.StartTime.ToFileTimeUtc()
-    if(-not $isRoot -and [math]::Abs($st-$o.start) -gt ${START_TOLERANCE_TICKS}){return @{ended=$true;exit=$st;p=$null}}
+    if(-not $isRoot -and [math]::Abs($st-$o.start) -gt ${START_TOLERANCE_TICKS}){return @{ended=$true;exit=$st;killed=$false;p=$null}}
     $p.Kill()
-    return @{ended=$false;exit=$null;p=$p}
+    return @{ended=$false;exit=$null;killed=$true;p=$p}
   }catch{}
-  return @{ended=$false;exit=$null;p=$null}
+  return @{ended=$false;exit=$null;killed=$false;p=$null}
 }
-function K2($r){
+function KillWait($r,$ms){
   if($null -eq $r.p){return $r}
   try{
-    [void]$r.p.WaitForExit(2000)
-    if($r.p.HasExited){$x=$null;try{$x=$r.p.ExitTime.ToFileTimeUtc()}catch{};return @{ended=$true;exit=$x;p=$null}}
+    [void]$r.p.WaitForExit($ms)
+    if($r.p.HasExited){$x=$null;try{$x=$r.p.ExitTime.ToFileTimeUtc()}catch{};return @{ended=$true;exit=$x;killed=$false;p=$null}}
   }catch{}
-  return @{ended=$false;exit=$null;p=$null}
+  return @{ended=$false;exit=$null;killed=$true;p=$null}
 }
 # Is it still the process we listed? Gone or another process: no. Unreadable (access denied): assume yes, the fallback will judge it.
 function Alive($o){
@@ -113,6 +136,7 @@ function Alive($o){
   try{if($p.HasExited){return $false};return ([math]::Abs($p.StartTime.ToFileTimeUtc()-$o.start) -le ${START_TOLERANCE_TICKS})}catch{return $true}
 }
 function ReadProcs{Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}
+function SayEnded($ps){[Console]::Out.WriteLine('ENDED '+(($ps | Where-Object { $_.exit } | ForEach-Object { [string]$_.id+':'+[string]$_.start+':'+[string]$_.exit }) -join ' '))}
 function Say($pend){[Console]::Out.WriteLine('ALIVE '+(($pend | ForEach-Object { [string]$_.id+':'+[string]$_.start }) -join ' '))}
 # The children of $parents in $rows. A row is P's child only if it names P's pid and started no earlier than P, and:
 #   P alive (a snapshot parent, or one we could not kill): that is enough.
@@ -148,29 +172,27 @@ function Desc($rows,$rootObj){
   while($f.Count){$n=@(Kids $rows $f @{} | Where-Object { -not $seen.ContainsKey($_.id) });foreach($x in $n){$seen[$x.id]=1};$out+=$n;$f=$n}
   $out
 }
-try{[void][Diagnostics.Process]::GetProcessById($root)}catch{exit 0}
-try{$snap=@(ReadProcs)}catch{exit 3}
-$rr=@($snap | Where-Object { ([int]$_.ProcessId -eq $root) -and ($null -ne $_.CreationDate) })
-if(-not $rr.Count){exit 0}
-$rootObj=[pscustomobject]@{id=$root;start=(Ftime $rr[0].CreationDate);exit=$null;alive=$true}
-$pending=@($rootObj)+@(Desc $snap $rootObj)
-$known=@{};foreach($o in $pending){$known[$o.id]=$o.start}
-$endedIds=@{}
-Say $pending
-$kill=@($rootObj)
-for($i=0;$i -lt ${SWEEP_MAX_LEVELS} -and $kill.Count;$i++){
-  $parents=@()
-  # One level is ended together, then waited on: 200 sleepers are one wait, not 200. A sequential Kill + WaitForExit took 17 s
-  # unloaded, close to the 20 s the relay gives the sweep, and a sweep cut off there has not yet listed the level below.
-  $first=@($kill | ForEach-Object { ,@{o=$_;r=(K1 $_ ($_.id -eq $root))} })
-  foreach($e in $first){
-    $o=$e.o
-    $res=K2 $e.r
-    if($res.ended){$endedIds[$o.id]=1}
-    $parents+=[pscustomobject]@{id=$o.id;start=$o.start;exit=$res.exit;alive=(-not $res.ended)}
+${seed ? seedPrelude(seed) : rootPrelude}
+for($i=0;$i -lt ${SWEEP_MAX_LEVELS} -and ($kill.Count -or ($seeded -and $i -eq 0));$i++){
+  if($kill.Count){
+    $parents=@()
+    # One level is ended together, then waited on: 200 sleepers are one wait, not 200. A sequential Kill + WaitForExit took 17 s
+    # unloaded, close to the 20 s the relay gives the sweep, and a sweep cut off there has not yet listed the level below.
+    $started=@($kill | ForEach-Object { @{o=$_;r=(KillStart $_ ($_.id -eq $root))} })
+    # One deadline for the whole level: processes that refuse to die cost ${WAIT_LEVEL_MS} ms together, not ${WAIT_LEVEL_MS} ms each.
+    $dl=[Diagnostics.Stopwatch]::StartNew()
+    foreach($e in $started){
+      $o=$e.o
+      $res=KillWait $e.r ([int][math]::Max(0,${WAIT_LEVEL_MS}-$dl.ElapsedMilliseconds))
+      if($res.ended){$endedIds[$o.id]=1}
+      $parents+=[pscustomobject]@{id=$o.id;start=$o.start;exit=$res.exit;alive=(-not $res.ended -and -not $res.killed)}
+    }
+    # Filtered once per level, by a table: a Where-Object per ended process was 200 x 200 script blocks (6 s of a 20 s budget).
+    $pending=@($pending | Where-Object { -not $endedIds.ContainsKey($_.id) })
+    # What this level ended, BEFORE the read that lists its children: if the read fails or the sweep is cut off, the fallback
+    # still knows which parents to look under (PR #161 Dexter 2).
+    SayEnded $parents
   }
-  # Filtered once per level, by a table: a Where-Object per ended process was 200 x 200 script blocks (6 s of a 20 s budget).
-  $pending=@($pending | Where-Object { -not $endedIds.ContainsKey($_.id) })
   $rows=$null
   for($a=0;$a -lt 2 -and $null -eq $rows;$a++){try{$rows=@(ReadProcs)}catch{Start-Sleep -Milliseconds 200}}
   if($null -eq $rows){Say $pending;exit 4}
@@ -198,6 +220,19 @@ function sweepPids(stdout) {
   });
 }
 
+// The parents the sweep had ended when it stopped: its LAST `ENDED <pid>:<start>:<exit> ...` line, each with the exit bound it
+// read. Their children may have started after the last table read (a spawner's sleepers), so the fallback lists them again
+// (PR #161 Dexter 2). Complete lines only, as for ALIVE.
+const ENDED_LIST = /^ENDED((?: \d+:\d+:\d+)*)\s*$/;
+function sweepEnded(stdout) {
+  const lines = String(stdout || '').split(/\r?\n/).slice(0, -1).filter((l) => ENDED_LIST.test(l));
+  if (!lines.length) return [];
+  return ENDED_LIST.exec(lines[lines.length - 1])[1].split(' ').filter(Boolean).slice(0, 200).map((triple) => {
+    const [pid, start, exit] = triple.split(':');
+    return { pid: Number(pid), start, exit };
+  });
+}
+
 // `run`, `proveBatch` and `sweepTimeoutMs` are seams for the tests, which break the sweep on purpose. `_since` is DEPRECATED and unread:
 // the sweep decides what is a child by the parent link and the parent's start, never by a wall clock (PR #126 Dexter F4); the
 // parameter stays only so the callers' argument lists do not change.
@@ -214,6 +249,12 @@ function killTree(child, _since, { run = spawnSync, proveBatch = killProvenBatch
         const pending = sweepPids(r.stdout).filter((t) => t.pid !== child.pid);
         if (pending.length) {
           try { proveBatch(pending.map((t) => ({ pid: t.pid, start: t.start })), { toleranceTicks: START_TOLERANCE_TICKS, timeoutMs: FALLBACK_BATCH_TIMEOUT_MS }); } catch { /* best effort */ }
+        }
+        // The children of the parents the sweep ended, started after its last table read, are in no list: read the table again and
+        // end them under the same parent link and exit bound (a fresh sweep seeded with those parents).
+        const ended = sweepEnded(r.stdout);
+        if (ended.length) {
+          try { run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', sweepScript(child.pid, ended)], { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: FALLBACK_BATCH_TIMEOUT_MS }); } catch { /* best effort */ }
         }
       }
     } else {

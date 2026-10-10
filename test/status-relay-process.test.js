@@ -258,8 +258,10 @@ function sabotaged(from, to, seen) {
   return (cmd, args, o) => {
     if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
     assert.ok(args[3].includes(from), `the sweep script no longer contains ${from}`);
-    seen.sweep = spawnSync(cmd, [...args.slice(0, 3), args[3].replace(from, () => to)], o);
-    return seen.sweep;
+    const r = spawnSync(cmd, [...args.slice(0, 3), args[3].replace(from, () => to)], o);
+    // The first call is the sweep; the fallback's rescan of the parents it ended is a second one (PR #161 Dexter 2).
+    if (!seen.sweep) seen.sweep = r; else (seen.rescans = seen.rescans || []).push(r);
+    return r;
   };
 }
 async function gone(pid) {
@@ -333,9 +335,12 @@ test('#73 S7-1 (Dexter): a pid the sweep already ENDED is not in its last ALIVE 
   // or the fallback would re-kill a pid that Windows may have handed to someone else.
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-ended'));
   const seen = {};
+  const batched = [];
   const failThird = `$script:n=0\nfunction ReadProcs{$script:n++;if($script:n -ge 3){throw 'broken on purpose'};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
   try {
-    killTree(child, since, { prove: () => assert.fail('nothing was pending, so nothing is proven or killed'), run: sabotaged(READ_PROCS, failThird, seen) });
+    killTree(child, since, { proveBatch: (items) => { batched.push(items); return new Map(); }, run: sabotaged(READ_PROCS, failThird, seen) });
+    // (killTree swallows what a stub throws, so the stub records and the test asserts)
+    assert.deepStrictEqual(batched, [], 'nothing was pending, so nothing is proven or killed');
     assert.strictEqual(seen.sweep.status, 4, 'the sweep did not fail where the test broke it');
     assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived`);
     const lines = sweepLines(seen.sweep.stdout);
@@ -354,7 +359,7 @@ test('#73 S7-2 (Dexter): the Z / P / C reuse sequence -- a child that STARTED BE
   const row = (id, ppid, ms) => `[pscustomobject]@{ProcessId=${id};ParentProcessId=${ppid};CreationDate=([DateTimeOffset]::FromUnixTimeMilliseconds(${t0 + ms}).UtcDateTime)}`;
   const synthetic = `function ReadProcs{@(${row(root.pid, 1, -60000)},${row(2000000001, root.pid, 500)},${row(2000000002, 2000000001, 100)},${row(2000000003, 2000000001, 700)})}`;
   try {
-    killTree(root, t0, { prove: () => 'killed', run: sabotaged(READ_PROCS, synthetic, seen) });
+    killTree(root, t0, { proveBatch: () => new Map(), run: sabotaged(READ_PROCS, synthetic, seen) });
     const first = sweepPids(seen.sweep.stdout.split(/\r?\n/)[0] + '\n').map(t => t.pid);
     assert.deepStrictEqual(first.sort(), [root.pid, 2000000001, 2000000003].sort(), `the snapshot adopted the wrong set: ${seen.sweep.stdout}`);
     assert.ok(!first.includes(2000000002), 'Z (older than the pid it names as its parent) was adopted');
@@ -367,7 +372,7 @@ test('#73 S7-2: a process that started AFTER its named parent was ended is not t
   const seen = {};
   const stranger = `$script:n=0;$script:kid=$null\nfunction ReadProcs{$script:n++;$rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8);if($script:n -eq 2){$script:kid=@($rows | Where-Object { [int]$_.ParentProcessId -eq $root })[0].ProcessId};if($script:n -ge 3 -and $script:kid){$rows+=[pscustomobject]@{ProcessId=2000000005;ParentProcessId=[int]$script:kid;CreationDate=(Get-Date).AddHours(1)}};$rows}`;
   try {
-    killTree(child, since, { prove: () => 'killed', run: sabotaged(READ_PROCS, stranger, seen) });
+    killTree(child, since, { proveBatch: () => new Map(), run: sabotaged(READ_PROCS, stranger, seen) });
     assert.strictEqual(seen.sweep.status, 0, `the sweep should have finished clean: ${seen.sweep.status}`);
     assert.doesNotMatch(seen.sweep.stdout, /2000000005/, 'a process that started after its parent died was adopted');
     assert.ok(await gone(grandchild));
@@ -434,11 +439,13 @@ test('#73 F2 (Dexter): one row with a null CreationDate (System Idle Process) do
 test('#73 F3 (Dexter): a snapshot-listed process that exits on its own is done -- the sweep still exits 0, not 5', { skip: !onWin, timeout: 120000 }, async () => {
   const root = aliveSleeper();
   const seen = {};
+  const batched = [];
   const t0 = Date.now();
   // D (2000000020) is in the snapshot as R's child and is gone from every later read (it ended by itself)
   const synthetic = `$script:n=0\nfunction ReadProcs{$script:n++;$r=@(${synthRow(root.pid, 1, -3600000, t0)});if($script:n -le 1){$r+=@(${synthRow(2000000020, root.pid, -1000, t0)})};$r}`;
   try {
-    killTree(root, 0, { proveBatch: () => assert.fail('a clean sweep proves nothing'), run: sabotaged(READ_PROCS, synthetic, seen) });
+    killTree(root, 0, { proveBatch: (items) => { batched.push(items); return new Map(); }, run: sabotaged(READ_PROCS, synthetic, seen) });
+    assert.deepStrictEqual(batched, [], 'a clean sweep proves nothing');
     assert.strictEqual(seen.sweep.status, 0, `a vanished pid made the sweep fail: ${seen.sweep.status}`);
     assert.strictEqual(sweepPids(seen.sweep.stdout).length, 0, 'nothing may be left pending');
   } finally { try { root.kill(); } catch { /* gone */ } }
@@ -496,19 +503,105 @@ test('#27: quiet still forwards the document to the host', async () => {
   assert.ok(ev && ev.event === 'Status', 'the header needs the document even when the row is quiet');
 });
 
-// The sweep's cost, pinned without a clock (a wall-clock bound flaked on a loaded machine). On develop the #72 test failed with ~108
-// sleepers left: the sweep killed and waited on one process at a time (17 s unloaded against the relay's 20 s) and kept $pending
-// current with a Where-Object per ended process (200 x 200 script blocks), so under load it was cut off before it listed the
-// sleepers a spawner had started, and they were never ended. Each rule below is what keeps a level of ~200 processes cheap.
-test('#72: the sweep ends a whole level before it waits on any of it, and keeps its tables in hashtables', () => {
-  let script = '';
-  killTree({ pid: 4242 }, 0, { run: (cmd, args) => { if (cmd === 'powershell.exe') script = args[3]; return { status: 0, stdout: '' }; } });
-  if (!script) return;   // not Windows: the sweep is a PowerShell script
-  const loop = script.slice(script.indexOf('for($i=0;'));
-  const killAt = loop.indexOf('K1 ');
-  const waitAt = loop.indexOf('K2 ');
-  assert.ok(killAt >= 0 && waitAt > killAt, 'the level loop must call K1 (prove + Kill) for the level before K2 (wait)');
-  assert.ok(!/function K\(/.test(script), 'a Kill + WaitForExit in one function is a wait per process');
-  assert.ok(!/Where-Object \{ \$_\.id -(ne|eq) \$o\.id \}/.test(loop), 'a Where-Object per process over $pending is quadratic');
-  assert.ok(/\$byId/.test(script), 'Kids must look a row\'s parent up, not scan every parent for every row');
+// --- PR #161: the sweep must reach, and end, every process of a still-spawning command even when it is cut off or its reads fail ---
+// A still-spawning user command (the #72 spawner, detached sleepers), cut with `intervalMs` 25 until ~150 sleepers are live.
+async function spawnerTree(name, { enough = 150 } = {}) {
+  const dir = tmpDir(name);
+  const marker = `cc161-${process.pid}-${Date.now()}`;
+  const spawnerMarker = `cc161s-${process.pid}-${Date.now()}`;
+  RUN_MARKERS.push(marker, spawnerMarker);
+  const ready = path.join(dir, 'ready').replace(/\\/g, '/');
+  const spawnerFile = path.join(dir, 'spawner.js');
+  fs.writeFileSync(spawnerFile, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 170000, parentPid: process.pid, detached: true }));
+  const child = spawn(`"${process.execPath}" "${spawnerFile.replace(/\\/g, '/')}" ${spawnerMarker}`, { shell: true, stdio: 'ignore', windowsHide: true });
+  await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
+  await waitUntil(() => markedPids(marker).length >= enough, `about ${enough} sleepers`, 60000);
+  const cleanup = () => { try { reapMarked(marker); reapMarked(spawnerMarker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ } };
+  return { child, marker, cleanup };
+}
+async function noneLeft(marker) {
+  let left = markedPids(marker);
+  for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
+  return left;
+}
+// `sabotaged` with several edits at once (each `from` must be in the script).
+function sabotagedAll(pairs, seen) {
+  return (cmd, args, o) => {
+    if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
+    let script = args[3];
+    for (const [from, to] of pairs) { assert.ok(script.includes(from), `the sweep script no longer contains ${from}`); script = script.replace(from, () => to); }
+    const r = spawnSync(cmd, [...args.slice(0, 3), script], o);
+    if (!seen.sweep) seen.sweep = r; else (seen.rescans = seen.rescans || []).push(r);
+    return r;
+  };
+}
+
+test('#72 PR #161 Dexter 1: a sweep cut off after it listed ~150 sleepers still leaves none of them running (the fallback is one proven batch)', { skip: !onWin, timeout: 180000 }, async () => {
+  // The F1-stall sabotage: the 3rd table read hangs, the sweep is cut off at 8 s, and everything it listed is the fallback's. One
+  // taskkill.exe per pid could not end 200 of them inside the batch's 10 s.
+  const { child, marker, cleanup } = await spawnerTree('relay-fallback-batch');
+  const seen = {};
+  const stallThird = `$script:n=0\nfunction ReadProcs{$script:n++;if($script:n -ge 3){Start-Sleep -Seconds 120};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
+  try {
+    const before = markedPids(marker).length;
+    const t0 = Date.now();
+    killTree(child, 0, { sweepTimeoutMs: 8000, run: sabotagedAll([[READ_PROCS, stallThird]], seen) });
+    const took = Date.now() - t0;
+    assert.ok(seen.sweep.error, `the stalled sweep was not cut off (status ${seen.sweep.status}); the fallback was never exercised`);
+    const listed = sweepPids(seen.sweep.stdout).length;
+    const left = await noneLeft(marker);
+    assert.deepStrictEqual(left, [], `${left.length} of ${before} sleepers survived the fallback (it listed ${listed}; killTree took ${took} ms; sweep stdout ${String(seen.sweep.stdout).split(/\r?\n/).map(l => l.slice(0, 40)).join(' | ')})`);
+  } finally { cleanup(); }
+});
+
+test('#72 PR #161 Dexter 2: sleepers born between the snapshot and the spawner\'s kill are ended when the read after that kill fails', { skip: !onWin, timeout: 180000 }, async () => {
+  // failThird: read 1 is the snapshot, read 2 lists the spawner, read 3 (after the spawner is dead) fails. Every sleeper the spawner
+  // started since the snapshot is in no ALIVE line: only a second look under the parents the sweep ended can reach it.
+  const { child, marker, cleanup } = await spawnerTree('relay-newborns');
+  const seen = {};
+  const failThird = `$script:n=0\nfunction ReadProcs{$script:n++;if($script:n -ge 3){throw 'broken on purpose'};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
+  try {
+    killTree(child, 0, { run: sabotagedAll([[READ_PROCS, failThird]], seen) });
+    assert.strictEqual(seen.sweep.status, 4, 'the sweep did not fail where the test broke it');
+    assert.match(seen.sweep.stdout, /^ENDED( \d+:\d+:\d+)+\s*$/m, 'the sweep did not say which parents it had ended');
+    assert.ok(seen.rescans && seen.rescans.length === 1, 'the fallback did not read the table again');
+    const left = await noneLeft(marker);
+    assert.deepStrictEqual(left, [], `${left.length} sleepers born after the snapshot survived`);
+  } finally { cleanup(); }
+});
+
+test('#72 PR #161 Dexter 3: a process we killed whose exit was not seen in time adopts nothing unbounded (a stranger that reused its pid is spared)', { skip: !onWin, timeout: 120000 }, async () => {
+  // The S7-2 stranger case with the exit forced to be "not seen": every kill's wait reports "still running". The row 2000000005 names
+  // the killed grandchild as its parent but started an hour later; it was adopted as an alive parent's child, and the sweep exited 5.
+  const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-slow-exit'));
+  const seen = {};
+  const stranger = `$script:n=0;$script:kid=$null\nfunction ReadProcs{$script:n++;$rows=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8);if($script:n -eq 2){$script:kid=@($rows | Where-Object { [int]$_.ParentProcessId -eq $root })[0].ProcessId};if($script:n -ge 3 -and $script:kid){$rows+=[pscustomobject]@{ProcessId=2000000005;ParentProcessId=[int]$script:kid;CreationDate=(Get-Date).AddHours(1)}};$rows}`;
+  try {
+    killTree(child, since, { proveBatch: () => new Map(), run: sabotagedAll([[READ_PROCS, stranger], ['if($r.p.HasExited){', 'if($false){']], seen) });
+    assert.doesNotMatch(seen.sweep.stdout, /2000000005/, 'a killed, still-exiting process adopted a stranger\'s child');
+    assert.strictEqual(seen.sweep.status, 0, `the sweep should have finished clean: ${seen.sweep.status}`);
+    assert.ok(await gone(grandchild));
+  } finally { try { process.kill(grandchild); } catch { /* gone */ } }
+});
+
+test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on before the first of them is waited on', { skip: !onWin, timeout: 120000 }, async () => {
+  // cmd.exe -> node (P) -> three sleepers. The sweep's KillStart and KillWait are made to say which pid they touch; the level of the
+  // three sleepers must be all KillStart lines, then the KillWait lines. No clock.
+  const dir = tmpDir('relay-level-order');
+  const pidFile = path.join(dir, 'pids').replace(/\\/g, '/');
+  const prog = `const{spawn}=require('child_process');const k=[1,2,3].map(()=>spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}).pid);require('fs').writeFileSync('${pidFile}',k.join(','));setInterval(()=>{},1000)`;
+  const child = spawn(`"${process.execPath}" -e "${prog}"`, { shell: true, stdio: 'ignore', windowsHide: true });
+  const kids = (await waitUntil(() => { try { return fs.readFileSync(pidFile, 'utf8'); } catch { return false; } }, 'the three sleepers', 60000)).toString().split(',').map(Number);
+  const seen = {};
+  const sayStart = ['function KillStart($o,$isRoot){', "function KillStart($o,$isRoot){[Console]::Out.WriteLine('KS '+$o.id);"];
+  const sayWait = ['function KillWait($r,$ms){', "function KillWait($r,$ms){if($r.p){[Console]::Out.WriteLine('KW '+$r.p.Id)};"];
+  try {
+    killTree(child, 0, { run: sabotagedAll([sayStart, sayWait], seen) });
+    const lines = String(seen.sweep.stdout).split(/\r?\n/).filter(l => /^K[SW] \d+$/.test(l));
+    const idx = (tag, pid) => lines.indexOf(`${tag} ${pid}`);
+    for (const k of kids) assert.ok(idx('KS', k) >= 0 && idx('KW', k) >= 0, `pid ${k} was not started on and waited on: ${lines.join(', ')}`);
+    const lastStart = Math.max(...kids.map(k => idx('KS', k)));
+    const firstWait = Math.min(...kids.map(k => idx('KW', k)));
+    assert.ok(lastStart < firstWait, `a sleeper was waited on before the whole level had been started on: ${lines.join(', ')}`);
+  } finally { for (const k of kids) { try { process.kill(k); } catch { /* gone */ } } }
 });
