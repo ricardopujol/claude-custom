@@ -19,6 +19,7 @@
 
 const { stopDecision, reasonText: stopText } = require('./resource-stop');
 const { keyOf } = require('./pause-state');
+const { descendants, sameStart } = require('./resource-tree');
 
 const TEXT = {
   already: 'it is already paused (or part of it is)',
@@ -61,6 +62,17 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {}, set
     else store.remove(root.pid, root.start);
   };
 
+  // The pending entry turns into a paused one. If it is GONE (something else removed it) the processes are suspended all the same, so it is
+  // recorded again: a pause never answers ok with nothing on record (PR #158 Dexter R3 N1). -> the time it has been paused since
+  const record = (root, pids, since) => {
+    if (!store.confirm(root.pid, root.start, pids)) {
+      store.add({ ...root, since, pids }, { rootInSet: false });
+      store.confirm(root.pid, root.start, pids);
+    }
+    const e = store.peek(root.pid, root.start);
+    return e ? e.since : since;
+  };
+
   async function pauseBody(request) {
     const key = asKey(request);
     if (key === null) return refuse('invalid');
@@ -97,9 +109,10 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {}, set
       if (!mine || mine.status !== 'done') {
         // Already frozen (an earlier run that crashed, or another tool): proved by pid and start, so it is ADOPTED: the row reads paused and Resume wakes it.
         if (mine && mine.status === 'failed' && mine.unknown !== true && /already suspended/.test(mine.text || '')) {
-          store.confirm(root.pid, root.start, [{ pid: root.pid, start: root.start }]);
+          // The script skipped the children, so their state is unknown: the whole subtree is recorded (waking a running process is harmless) (N6).
+          const since = record(root, d.kill.map(k => ({ pid: k.pid, start: k.start })), rec.since);
           log(`[pause] PID ${root.pid} was already suspended: adopted, Resume wakes it`);
-          return { ok: true, adopted: true, pid: root.pid, name: root.name, since: store.peek(root.pid, root.start).since };
+          return { ok: true, adopted: true, pid: root.pid, name: root.name, since };
         }
         const stuck = await wake(touched);
         settle(root, stuck);
@@ -122,8 +135,8 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {}, set
           ...(stuck.length ? { stuck: stuck.map(t => t.pid) } : {}),
         });
       }
-      store.confirm(root.pid, root.start, suspended.filter(r => typeof r.start === 'string').map(r => ({ pid: r.pid, start: r.start })));
-      return { ok: true, pid: root.pid, name: root.name, since: rec.since };
+      const since = record(root, suspended.filter(r => typeof r.start === 'string').map(r => ({ pid: r.pid, start: r.start })), rec.since);
+      return { ok: true, pid: root.pid, name: root.name, since };
     } finally {
       busy.delete(request.pid);
       for (const pid of held) busy.delete(pid);
@@ -208,9 +221,20 @@ function createPauser({ readProcs, hostPids, suspend, store, log = () => {}, set
    */
   async function wakeStale(entries) {
     let stuck = 0;
+    let procs = null;
+    try { procs = await readProcs(); } catch { procs = null; }
     for (const e of Array.isArray(entries) ? entries : []) {
-      store.add({ pid: e.pid, start: e.start, name: e.name, since: e.since, pids: e.pids }, { rootInSet: false });
-      const left = await wake(e.pids);
+      // A record this window already holds (a pause of the same root in flight, or an earlier sweep) belongs to whoever made it: it is neither woken
+      // nor settled here (PR #158 Dexter R3 N1).
+      const added = store.add({ pid: e.pid, start: e.start, name: e.name, since: e.since, pids: e.pids }, { rootInSet: false });
+      if (!added.ok && added.reason === 'already') { log(`[pause] PID ${e.pid} is already recorded here: left to its owner`); continue; }
+      // The workers the script found under the root after the list was read are in no record (N3): while the root is still the proved process, what
+      // is below it is woken too (waking a running process is harmless).
+      const root = Array.isArray(procs) ? procs.find(x => x.pid === e.pid) : null;
+      const extra = root && sameStart(e.start, root.start)
+        ? descendants(procs, e.pid).filter(x => typeof x.start === 'string' && !e.pids.some(m => m.pid === x.pid)).map(x => ({ pid: x.pid, start: x.start }))
+        : [];
+      const left = await wake([...e.pids, ...extra]);
       settle(e, left);
       stuck += left.length;
     }

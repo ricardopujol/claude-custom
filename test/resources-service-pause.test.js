@@ -211,8 +211,8 @@ test('R2-7: a wake that cannot complete leaves the old file recorded under this 
     suspend: async () => { throw new Error('boom'); }, pausePersist: persist,
   });
   const res = await svc.wakeLeftover();
-  assert.deepStrictEqual(res, { stuck: 1 }, 'recorded as stuck under this run name');
-  assert.deepStrictEqual(persist.saved.at(-1), [[23, [23]]]);
+  assert.deepStrictEqual(res, { stuck: 2 }, 'recorded as stuck under this run name, with the worker found under it (N3)');
+  assert.deepStrictEqual(persist.saved.at(-1), [[23, [23, 24]]]);
 });
 
 test('wakeLeftover with no persistence or no suspend wired does nothing', async () => {

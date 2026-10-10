@@ -221,7 +221,7 @@ test('R2-2: Pause on a process that is ALREADY suspended (a crashed run, another
   const r = await pauser.pause({ pid: 24, startTime: '5100' });
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.adopted, true);
-  assert.deepStrictEqual(store.listConfirmed().map(e => [e.pid, e.pids]), [[24, [{ pid: 24, start: '5100' }]]]);
+  assert.deepStrictEqual(store.listConfirmed().map(e => [e.pid, e.pids]), [[24, [{ pid: 24, start: '5100' }, { pid: 25, start: '5200' }]]], 'the whole subtree (N6)');
   assert.deepStrictEqual(await pauser.resume({ pid: 24, startTime: '5100' }), { ok: true, pid: 24 });
   assert.deepStrictEqual(calls, ['suspend', 'resume']);
 });
