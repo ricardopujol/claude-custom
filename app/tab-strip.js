@@ -21,6 +21,7 @@ const GLYPHS = {
 };
 // PR 3: a merged worktree (finishing, removing, kept), or one that failed to go.
 const BADGES = { merged: 'merged', warn: String.fromCodePoint(0x26a0) };
+const SIDE_TITLE = 'A side session: it starts in plan mode and has only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite. No Bash, PowerShell, Edit, Write or MCP, whatever mode it is switched to. It ends when this branch\'s tab closes.';
 const GLYPH_TITLES = {
   open: 'Second session in this worktree (lock overridden, not saved)',
   warn: 'No session lock: a second window on this worktree would not be stopped',
@@ -97,6 +98,8 @@ function occupancyOf(o) {
     tags,
     more: Number.isInteger(o.more) && o.more > 0 ? o.more : 0,
     warn: o.warn === true,
+    // #81: only readers here (an agent of a read-only side session): shown, but nobody is WORKING in the folder.
+    readersOnly: o.readersOnly === true,
     lines: Array.isArray(o.lines) ? o.lines.filter(nonEmpty) : [],
   };
 }
@@ -121,7 +124,9 @@ function paintTab(doc, entry, bridge) {
   if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
   // The hatched lower edge. It NEVER animates: movement on the strip means "needs you".
   const occ = occupancyOf(entry.occupancy);
-  if (occ) cls.push(occ.warn ? 'occupied occupied-warn' : 'occupied');
+  if (occ) cls.push(occ.readersOnly ? 'reading' : (occ.warn ? 'occupied occupied-warn' : 'occupied'));
+  // #81: a branch tab's read-only side session: a small tab, no close button of its own (it ends with its branch tab).
+  if (entry.side === true) cls.push('side');
   // Backlog #52: a /bedtime night turns the tab deep blue. Distinct from #31's pulse, which still wins while the tab
   // needs you (the pulse animates the background; the night is a still colour).
   const night = entry.night === true;
@@ -130,6 +135,7 @@ function paintTab(doc, entry, bridge) {
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
+  if (entry.side === true) tab.title = [tab.title, SIDE_TITLE].join('\n');
   // One line per agent under the name, from the model (it has the minutes and the two-writers line).
   if (occ && occ.lines.length) tab.title = [tab.title, ...occ.lines].join('\n');
   // Backlog #39: the local model's "where are we", under every other line. The shell worked the lines out

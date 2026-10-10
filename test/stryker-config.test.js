@@ -59,6 +59,8 @@ const REPO_SCANNING = new Set([
   // #71 Claude's panel: source assertions on host.js / main.js / renderer.js; they say "deliberately NOT in Stryker's command" themselves.
   'canvas-wiring.test.js',
   'canvas-main-wiring.test.js',
+  // #81 side session: source assertions on host.js / main.js (they need Electron and a pty); the pieces are tested in the files that ARE in the command.
+  'side-session-wiring.test.js',
   'renderer-canvas-wiring.test.js',
   // Release-gate lane 2026-10-09 (Miguel I1/I2): the tests that run real processes, split from the files in the command. A Stryker timeout counts as a
   // KILL and a hung child is left behind, so they stay out; their pure tests stay in. Run them by hand: node --test test/<name>-process.test.js

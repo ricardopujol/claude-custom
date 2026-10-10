@@ -134,7 +134,7 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
   const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
-  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT \}\)/);
+  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);
@@ -224,7 +224,7 @@ test('there is NO application menu bar: it is nulled once, before the window, an
 
 test('override and close live in the right-click popup only', () => {
   const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const body = MAIN.slice(at, at + 600);
+  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
   assert.match(body, /\.popup\(/);
