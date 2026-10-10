@@ -279,6 +279,20 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(on === true); } catch (err) { console.error('[preload] focus-mode listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('focus-mode')),
   },
+  // Lean mode (BACKLOG #62; main's half is app/lean-bridge.js): one window-level state. `get` asks it, `set` is the
+  // button, `night` forwards THIS session's /bedtime night (its start in ms, or null when it ended: the host's word),
+  // and `onChange` replaces its one listener.
+  lean: {
+    get: () => ipcRenderer.invoke('lean:get'),
+    set: (on) => ipcRenderer.send('lean:set', on === true),
+    // this page's working agents (name, images flag, portrait result), for the strip's portraits
+    faces: (list) => ipcRenderer.send('lean:faces', Array.isArray(list) ? list.slice(0, 48) : []),
+    night: (startedAt) => ipcRenderer.send('lean:night', typeof startedAt === 'number' && Number.isFinite(startedAt) ? startedAt : null),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('lean-state'), ipcRenderer.on('lean-state',
+      (_e, state) => {
+        try { fn(state); } catch (err) { console.error('[preload] lean-state listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('lean-state')),
+  },
   // The global dock layout (layout pass L1) -- see app/layout-bridge.js. `get`
   // answers null when nothing is saved yet (the page migrates); `onChange`
   // replaces its one listener, like onImagesEnabled.

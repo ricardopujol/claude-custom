@@ -31,6 +31,8 @@ const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./av
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES } = require('./layout-bridge');
 const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
+const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
+const { createLean, unionDismissed } = require('./lean-state');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -395,6 +397,9 @@ let transcriptOccupancy = null;    // ...and the fallback producer: claims read 
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
+// Lean mode's bridge (app/lean-bridge.js), set once the handlers are registered. Module scope because a view that
+// finishes loading, or goes away, is handled far from where the handlers are.
+let leanBridge = null;
 const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
 const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
 
@@ -512,6 +517,8 @@ function createWindow() {
     if (lastStripPayload) win.webContents.send('strip-model', lastStripPayload);
     win.webContents.send('strip-accent', lastStripAccent);
     if (indexing) indexing.push(true);
+    if (leanBridge && leanBridge.view().on) win.webContents.send(LEAN_PUSH, leanBridge.view());
+    if (leanBridge && leanBridge.faces().length) win.webContents.send(LEAN_FACES_PUSH, leanBridge.faces());
   });
   // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
   // so the next selection -- even of the same tab -- focuses its view again.
@@ -583,13 +590,22 @@ function createTabView(tab) {
 
   const wc = view.webContents;
   registerShortcuts(wc);
+  const leanOwnerId = wc.id;
+  view.leanOwnerId = leanOwnerId;
+  wc.once('destroyed', () => { if (leanBridge) leanBridge.dropOwner(leanOwnerId); });
   wc.on('did-finish-load', () => {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
     if (cueOn) wc.send('attention-cue', true);
     if (focusMode) wc.send('focus-mode', true);
+    if (leanBridge && leanBridge.view().on) wc.send(LEAN_PUSH, leanBridge.view());
   });
-  wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
+  // A crashed renderer keeps its view but its page is gone: its night and its faces must not outlive it (the next morning's backgrounds would
+  // stay frozen by a night nobody reports ending; PR #140 Dexter r3 #1). A reloaded page reports again from its hello.
+  wc.on('render-process-gone', (_e, d) => {
+    if (leanBridge) leanBridge.dropOwner(leanOwnerId);
+    console.error(`[main] ${tab.key}: renderer gone:`, d.reason);
+  });
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -664,6 +680,9 @@ function destroyTabView(tab) {
   if (!view) return;
   canvasViews.destroyFor(view.webContents);
   liveViews.delete(view);
+  // a closed tab's /bedtime night cannot keep the window lean for ever
+  // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
+  if (leanBridge && view.leanOwnerId !== undefined) leanBridge.dropOwner(view.leanOwnerId);
   try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
   try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
 }
@@ -1217,6 +1236,24 @@ function registerIpc() {
   // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
   registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender: isTabView, send: pushToViews });
 
+  // Lean mode (BACKLOG #62): one window-level state, told to every tab page and to the strip. The ☾ button and a
+  // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
+  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
+  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
+  leanBridge = registerLeanHandlers({
+    lean: createLean({
+      dismissed: Array.isArray(leanKept) ? leanKept : [],
+      onDismissed: (list) => {
+        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
+        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
+      },
+    }),
+    ipcMain, isView: isTabView, isStrip: (sender) => fromStrip({ sender }),
+    push: (state) => { pushToViews(LEAN_PUSH, state); if (win && !win.isDestroyed()) win.webContents.send(LEAN_PUSH, state); },
+    // the working agents' portraits go to the strip only (it draws them next to the lean chip)
+    pushFaces: (list) => { if (win && !win.isDestroyed()) win.webContents.send(LEAN_FACES_PUSH, list); },
+  });
+
   // The global dock layout (layout pass L1): install-wide like the toggle above,
   // and followed across project windows the same way -- see layout-bridge.js.
   // A tab's OWN layout is its host's business, not main's.
@@ -1405,7 +1442,10 @@ function startProbeDriver(port) {
       let stripChrome = null;
       try {
         stripChrome = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent })"));
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
+          // #62: the lean button and chip as painted
+          + "lean: { bodyLean: document.body.classList.contains('lean'), btnHidden: document.getElementById('lean-btn').hidden, chipHidden: document.getElementById('lean-chip').hidden, label: document.getElementById('lean-chip-label').textContent, night: document.getElementById('lean-chip-night').hidden ? null : document.getElementById('lean-chip-night').textContent, back: document.getElementById('lean-back').textContent, dotAnim: (() => { const d = document.querySelector('.dot.working'); return d ? getComputedStyle(d).animationName : null; })(), "
+          + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, drawn: b.querySelectorAll('canvas[data-still-drawn]').length, failed: b.querySelectorAll('canvas[data-still-failed]').length, imgs: b.querySelectorAll('img').length, imgsLoaded: [...b.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth > 0).length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
       } catch (err) { stripChrome = { error: err.message }; }
       let viewDom = null;
       const sel = selectedView();
@@ -1454,6 +1494,7 @@ function startProbeDriver(port) {
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
     // The window's own `focus` handler, run as the OS would.
     async windowFocus() { win.emit('focus'); return { ok: true, osFocused: win.isFocused() }; },
+    async windowBlur() { win.emit('blur'); return { ok: true, osFocused: win.isFocused() }; },
     async select(label) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
@@ -1531,6 +1572,12 @@ function startProbeDriver(port) {
         try { await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [] }); } finally { dbg.detach(); }
       }
       return { ok: true, on, attached: dbg.isAttached() };
+    },
+    // #62: press the strip's own Lean button / Back to normal (the click handler, not a shortcut around it).
+    async stripLean(button) {
+      const clicked = await win.webContents.executeJavaScript(
+        `(() => { const b = document.getElementById(${JSON.stringify(button)}); if (!b || b.hidden || (b.offsetParent === null && !b.getClientRects().length)) return false; b.click(); return true; })()`);
+      return { ok: clicked === true, clicked: clicked === true };
     },
     async quit() {
       setTimeout(() => app.exit(0), 200);

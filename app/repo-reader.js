@@ -124,7 +124,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   }
   function layout() {
     if (el.pane.hidden) return;
-    if (doc.body.classList && doc.body.classList.contains('focus-mode')) return;       // only the terminal shows
+    if (doc.body.classList && (doc.body.classList.contains('focus-mode') || doc.body.classList.contains('lean'))) return;       // only the terminal shows
     const r = fullRect();
     const { min, max } = widthBounds(r.width);
     const w = Math.round(Math.min(max, Math.max(min, state.width)));

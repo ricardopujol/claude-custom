@@ -55,6 +55,8 @@ function validResizeDims(cols, rows) {
 // fall-through for everything else.
 const CONTROL_TYPES = new Set([
   'resize', 'health', 'input', 'models', 'seat', 'fog', 'drop',
+  // Lean mode's "this window is lean" (#62): off the list it would be TYPED into the pty as JSON.
+  'lean',
   // Both sides of this merge added a type. Taking either alone makes the
   // other's frames fall through to `term.write` -- verbatim JSON typed into
   // a session running --dangerously-skip-permissions. That has happened

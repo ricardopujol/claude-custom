@@ -89,7 +89,7 @@
     /* A video background (backlog #34): the same layer, filled edge to edge. The darkness veil is
        #bg::after, which comes later in paint order, so it sits OVER the video exactly as it does
        over an image. */
-    #bg .bg-video {
+    #bg .bg-video, #bg .bg-still {
       position: absolute; inset: 0; width: 100%; height: 100%;
       object-fit: cover; pointer-events: none;
     }
@@ -270,7 +270,7 @@
     #reader-split[hidden], #reader[hidden] { display: none; }
     body.reader-resizing { user-select: none; cursor: col-resize; }
     #reader { position: absolute; z-index: 30; box-sizing: border-box; display: flex; flex-direction: column; min-width: 240px; min-height: 0; background: var(--bg); }
-    body.focus-mode #reader, body.focus-mode #reader-split { display: none; }
+    body.focus-mode #reader, body.focus-mode #reader-split, body.lean #reader, body.lean #reader-split { display: none; }
     #reader-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 8px; font-size: 11px;
       background: var(--chrome); border-bottom: 1px solid var(--border); }
     #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
@@ -659,7 +659,7 @@
       border: 1px solid var(--border);
     }
     #terminal-bar[hidden], #occupancy-confirm[hidden], #bar-prompt[hidden], #bar-prompt-full[hidden] { display: none; }
-    body.focus-mode #terminal-bar { display: none; }
+    body.focus-mode #terminal-bar, body.lean #terminal-bar { display: none; }
     #bar-prompt {
       flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
       background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
@@ -1523,6 +1523,11 @@
     body.focus-mode .dgutter, body.focus-mode .drail, body.focus-mode #dock-overlay { display: none; }
     /* ...and the terminal takes the whole area, wherever the layout last put it (inline rect). */
     body.focus-mode #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
+    /* Lean mode (#62): only the terminal, like focus mode but with the strip kept (it carries the tab marks and the
+       way back). Nothing else changes: the colours, the terminal theme and the background are the project's own. */
+    body.lean header, body.lean .zone, body.lean #diag,
+    body.lean .dgutter, body.lean .drail, body.lean #dock-overlay { display: none; }
+    body.lean #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
@@ -1941,6 +1946,7 @@
   <script src="./agent-card-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
+  <script src="./lean-display.js"></script>
   <script src="./colour-seeds.js"></script>
   <script src="./agent-log-display.js"></script>
   <script src="./loadout-display.js"></script>

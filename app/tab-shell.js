@@ -1297,7 +1297,9 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
   'occState', 'occKey', 'occClick', 'occTurn',
   // backlog #49 + #52: verify/probe-terminal-bar.js
-  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']);
+  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection',
+  // backlog #62: verify/probe-lean.js reads lean mode as the page has it
+  'leanState']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));
@@ -1360,6 +1362,8 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'cancelCreate': return await api.cancelCreate();
       // #31: what the window's own `focus` event does, without an OS to hand over focus.
       case 'windowFocus': return await api.windowFocus();
+      // #62: the window losing focus, as the OS would (Ricardo's lean video rule reads focus).
+      case 'windowBlur': return await api.windowBlur();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions
         // (renderer.js window.__dockProbe), never a string of code.
@@ -1392,6 +1396,10 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (!(Number.isInteger(cmd.port) && cmd.port > 0 && cmd.port < 65536)) return { ok: false, error: 'background-open needs a port' };
         return await api.backgroundOpen(cmd.port);
       case 'background-stop-all': return await api.backgroundStopAll();
+      // #62: a click on one of the strip's lean controls, as a mouse would press it (only these two buttons).
+      case 'strip-lean':
+        if (cmd.button !== 'lean-btn' && cmd.button !== 'lean-back') return { ok: false, error: 'strip-lean needs lean-btn or lean-back' };
+        return await api.stripLean(cmd.button);
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }
   } catch (err) {
