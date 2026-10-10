@@ -5811,14 +5811,9 @@ function applyStyleMessage(msg) {
   const source = (msg.style && msg.style.source) || msg.source;
   const setAt = (msg.style ? msg.style.setAt : msg.setAt) || '';
   const kind = (msg.style ? msg.style.kind : msg.kind) === 'video' ? 'video' : 'image';
-  // Backlog #25: a light look has no dark generated art under it (the art bakes in its own dimming), so only
-  // a picture of the person's own stays; the app colour shows otherwise.
-  const lightLook = look.mode === 'light';
-  document.documentElement.setAttribute('data-look-mode', lightLook ? 'light' : 'dark');
-  if (lightLook && source !== 'override') {
-    if (backgroundUrl || document.body.classList.contains('has-bg')) clearBackgroundLayer();
-  }
-  else applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
+  // Backlog #25: a light look puts a white veil over the art (renderer.html), whichever picture it is.
+  document.documentElement.setAttribute('data-look-mode', look.mode === 'light' ? 'light' : 'dark');
+  applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
   if (typeof look.darkness === 'number') {
     document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
   }

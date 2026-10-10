@@ -16,7 +16,7 @@
      2. light: a light app colour with dark text, the terminal on the same light colour with dark text, the
         Light button seated, the Brightness slider, the light veil over the gradient picture, and the note.
      3. light, re-rolled: a different light palette (the picture and the mode unchanged), still readable.
-     4. light, no picture of its own: the generated art is NOT shown; the light app colour is.
+     4. light, no picture of its own: the generated art IS shown, under a white veil that keeps the text readable.
      5. dark again, no picture of its own: the generated art is back, the dark palette as in shot 1.
 
    Usage:  node verify/probe-light-mode.js        (OUT_DIR=<dir> and PORT=<n> optional)
@@ -143,7 +143,7 @@ function finish(code) {
   check(readLook(project).other.appColor === dark.appColor, 'the dark look is still kept');
   shots.push(await shoot('3-light-rerolled'));
 
-  // Light with the GENERATED art (no picture of its own): the art is not shown under a light look.
+  // Light with the GENERATED art (no picture of its own): the art shows under a white veil.
   resetBackground({ cwd: project });
   shots.push(await shoot('4-light-generated-art'));
 
