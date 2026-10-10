@@ -1273,6 +1273,9 @@
     .hg-readout { min-height: 14px; margin-top: 3px; font-variant-numeric: tabular-nums; }
     .hg-empty { color: var(--dim); padding: 14px 0; }
     .hg-key { color: var(--dim); font-size: 10.5px; }
+    /* the GPU section of the Resources tab (BACKLOG #82) holds the same two graphs: they follow the panel's width */
+    .res-gpu .hg-plot { width: 100% !important; max-width: 300px; }
+    .res-gpu .hg-plot svg { width: 100%; height: auto; }
     .hg-link { display: block; margin-top: 8px; padding: 0; font: inherit; font-size: 10.5px; color: var(--accent); background: none; border: 0; cursor: pointer; }
     .hg-link:hover { text-decoration: underline; }
     .hg-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
@@ -1953,7 +1956,7 @@
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
-  <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
+  <div id="res-popover" hidden role="region" aria-label="CPU, memory and GPU over the last hour"></div>
   <script src="./canvas-display.js"></script>
   <script src="./resources-display.js"></script>
   <script src="./resources-history-display.js"></script>
