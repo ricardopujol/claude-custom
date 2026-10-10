@@ -168,7 +168,7 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { 
 const readPid = (file) => { try { const n = Number(fs.readFileSync(file, 'utf8')); return Number.isInteger(n) && n > 0 ? n : null; } catch { return null; } };
 // The paused-set files this run's app wrote that name `pid` (host/pause-persist.js).
 const PAUSED_DIR = path.join(STATE_DIR, 'paused');
-const persisted = (pid) => { try { return fs.readdirSync(PAUSED_DIR).filter(n => /^paused-\d+-\d+\.json$/.test(n)).filter(n => fs.readFileSync(path.join(PAUSED_DIR, n), 'utf8').includes(`"pid":${pid},`)); } catch { return []; } };
+const persisted = (pid) => { try { return fs.readdirSync(PAUSED_DIR).filter(n => /^paused-\d+-(\d+|unknown)\.json$/.test(n)).filter(n => fs.readFileSync(path.join(PAUSED_DIR, n), 'utf8').includes(`"pid":${pid},`)); } catch { return []; } };
 const beats = (file) => { try { return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).length; } catch { return 0; } };
 
 const HEARTBEAT = `'use strict';
