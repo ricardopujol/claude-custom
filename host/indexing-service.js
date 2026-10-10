@@ -34,8 +34,10 @@ const realWriter = require('./indexing-writer');
 const RETRY_MS = 15_000;
 const RETRIED = new Set(['conflict', 'write-failed', 'busy']);
 // Held because the project had nowhere to file them; filed (in order) once the backlog exists, however it came to.
-const HELD = new Set(['no-backlog', 'no-docs']);
+// docs-blocked / gitignore-blocked: a file named documentation, a .gitignore that can't be changed. Permanent: held, never retried.
+const HELD = new Set(['no-backlog', 'no-docs', 'docs-blocked', 'gitignore-blocked']);
 
+const firstLine = (s) => String(s).split(/\r\n|\r|\n/)[0];
 const isText = (s) => typeof s === 'string' && s.trim() !== '';
 const readOr = (file, fallback) => { try { return fs.readFileSync(file, 'utf8'); } catch { return fallback; } };
 
@@ -79,6 +81,16 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
     return { filed: false, reason: r.reason };
   }
 
+  /** Does the backlog already hold this note's words as an entry (any stamp, or none)? Compared a line at a time. */
+  function alreadyThere(n, docs) {
+    const text = readOr(docs.backlog, null);
+    if (text === null) return false;
+    const want = firstLine(n.text).trim();
+    if (want === '') return false;
+    const bare = (l) => l.replace(/^\s*[-*]\s*/, '').replace(/^\d{4}-\d\d-\d\d \d\d:\d\d\s*[·-]\s*/, '').trim();
+    return text.split(/\r?\n/).some(l => bare(l) === want);
+  }
+
   /** The notes of `project` held as `no-backlog` or `no-docs` (a backlog or folder that was missing), oldest first. */
   function heldFor(project, exceptId, { read }) {
     return [...fold(read()).values()]
@@ -95,7 +107,10 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
   function replayHeld(held, docs, ctx) {
     for (const h of held) {
       let r;
-      try { r = attempt(h, docs, ctx, { look: true }); } catch (err) {
+      try {
+        // A note the person already put in the backlog by hand (Copy, then paste) is marked filed, not written again (Dexter D7).
+        r = alreadyThere(h, docs) ? { ok: true, where: { file: docs.backlog }, record: null } : attempt(h, docs, ctx, { look: true });
+      } catch (err) {
         log('[indexing] could not file a held note:', (err && err.message) || String(err));
         r = { ok: false, reason: 'write-failed' };
       }
@@ -125,6 +140,8 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
         if (fs.existsSync(docs.backlog)) replayHeld(held, docs, ctx);
       }
       let r = attempt(n, docs, ctx);
+      // The backlog was made ahead of this note and the note didn't go in: take back what was made, if nothing else is in it (Dexter D2).
+      if (!r.ok && made !== null && typeof writer.takeBack === 'function') { try { writer.takeBack(docs, made.made); } catch { /* the retry finds it */ } }
       if (r.ok && made !== null && r.result !== 'created-backlog' && r.record) {
         r = { ...r, result: 'created-backlog', record: { ...r.record, pristine: writer.pristineOf(docs), ...(made.made ? { made: made.made } : {}) } };
       }
@@ -238,6 +255,7 @@ function createIndexingService({ journal, writer = realWriter, docsFor, now = Da
       createdBacklog: n.state === 'filed' && !!n.record && typeof n.record.pristine === 'string',
       createdFolder: n.state === 'filed' && !!n.record && !!n.record.made && n.record.made.dir === true,
       createdIgnore: n.state === 'filed' && !!n.record && !!n.record.made && !!n.record.made.gitignore,
+      ignoreSkipped: n.state === 'filed' && !!n.record && !!n.record.made && !!n.record.made.ignoreSkipped,
       undoable: n.state === 'filed' && own(n.where.file) && text(n.where.file) !== null
         && removeEntry(text(n.where.file), n.record).ok === true,
     }));

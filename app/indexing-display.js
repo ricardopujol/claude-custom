@@ -33,6 +33,8 @@ function counterText(counts) {
 const REASONS = {
   'no-backlog': 'This project has no backlog file',   // held by an older build; a new note creates the file and files it
   'no-docs': 'This project has no documentation folder',
+  'docs-blocked': 'A file named documentation is in the way of the folder',
+  'gitignore-blocked': "The .gitignore can't be changed, so no documentation folder was made",
   'no-backlog-ambiguous': 'Several backlog files in documentation',
   'many-build-logs': 'Two build logs in documentation',
   conflict: 'The backlog kept changing; it tries again',
@@ -56,7 +58,8 @@ function createdLine(r) {
   if (r.createdIgnore === true) parts.push('its .gitignore entry');
   if (parts.length === 1) return 'Created the backlog and filed your note';
   const what = parts.length === 2 ? parts.join(' and ') : `${parts[0]}, ${parts[1]} and ${parts[2]}`;
-  return `Created ${what}, and filed your note`;
+  const line = `Created ${what}, and filed your note`;
+  return r.ignoreSkipped === true ? `${line}. Your .gitignore wasn't changed.` : line;
 }
 
 function toastModel(row) {

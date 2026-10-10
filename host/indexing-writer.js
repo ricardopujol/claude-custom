@@ -25,7 +25,11 @@
  * made first, and the sync-docs `.gitignore` block added to the repo's `.gitignore` (created if missing; idempotent by
  * its marker line), so the docs stay out of GitHub (Ricardo, 2026-10-09). fileNote says `result: 'created-backlog'`
  * and its record carries the `pristine` text (and `made`, what this note made besides the file), so undoNote removes
- * the file again only when the note was all that was ever in it, then the folder if it is empty, then the block it added.
+ * the file again only when the note was all that was ever in it, then the folder if it is empty, then the block it added
+ * (only while git shows the .gitignore uncommitted; else it is left and Undo says `kept: ['gitignore']`). In a linked
+ * worktree with no docs anywhere the folder is made in the MAIN checkout. The .gitignore is edited as bytes and never
+ * if it is a symlink or not valid UTF-8 (the note still files; the record says `ignoreSkipped`). A read-only
+ * .gitignore, or a file named documentation, is the permanent `gitignore-blocked` / `docs-blocked` (held, not retried).
  *
  * SAFELY: read, build the new text (the inbox created after the status block if it's missing, the entry appended),
  * write it to a temp file beside the backlog, re-read the backlog just before the rename, and rename only if it's still
@@ -39,7 +43,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
-const { isTransient, nextWait, sleepSync, ATTEMPTS: RENAME_ATTEMPTS, FIRST_WAIT_MS } = require('./atomic-write');
+const { execFileSync } = require('child_process');
+const { isTransient, nextWait, sleepSync, renameWithRetry, ATTEMPTS: RENAME_ATTEMPTS, FIRST_WAIT_MS } = require('./atomic-write');
 const doc = require('./indexing-doc');
 
 const ATTEMPTS = 2;
@@ -74,7 +79,10 @@ function homeOf(dev) {
   if (main === null) return dev;
   const own = docsDirIn(dev);
   if (own !== null && hasBuildLog(own)) return dev;
-  return docsDirIn(main) !== null ? main : dev;
+  if (docsDirIn(main) !== null) return main;
+  // Neither has docs: a folder made now goes in the MAIN checkout, where sync-docs will look, never in the worktree
+  // (flat sibling or nested `.claude\worktrees\*`); the worktree's own folder is used only when it already has one.
+  return own !== null ? dev : main;
 }
 
 /** sync-docs' Get-ProjectLeaf: in the worktree layout (`<project>\dev`) the project is named after the container. */
@@ -91,11 +99,13 @@ function leafOf(home) {
 /** .NET's ToUpperInvariant: one character at a time, a character whose upper case is several stays (ß is not SS). */
 const upperInvariant = (s) => Array.from(s, (ch) => { const u = ch.toUpperCase(); return Array.from(u).length === 1 ? u : ch; }).join('');
 
-/** A real project's top folder: a git repo (or linked worktree) that is not a drive root or the home folder. */
+// Windows-only today: paths compare case-insensitively.
+const isHomeFolder = (home) => { try { return path.resolve(home).toLowerCase() === path.resolve(os.homedir()).toLowerCase(); } catch { return false; } };
+
+/** A git repo (or linked worktree) top folder that is not a drive root: where a backlog may be created in an existing documentation\. */
 function isProjectRoot(home) {
   try {
     if (path.parse(path.resolve(home)).root === path.resolve(home)) return false;
-    if (path.resolve(home).toLowerCase() === path.resolve(os.homedir()).toLowerCase()) return false;
     const g = fs.statSync(path.join(home, '.git'));
     return g.isFile() || (g.isDirectory() && fs.statSync(path.join(home, '.git', 'HEAD')).isFile());
   } catch { return false; }
@@ -108,7 +118,7 @@ function docsOf(project) {
   let names = [];
   if (dir === null) {
     // No documentation folder: the first note makes it, but only in a real project's top folder (#79).
-    if (!isProjectRoot(home)) return { ok: false, reason: 'no-docs' };
+    if (!isProjectRoot(home) || isHomeFolder(home)) return { ok: false, reason: 'no-docs' };     // never a folder made in the home folder
     dir = path.join(home, 'documentation');
   } else {
     try { names = fs.readdirSync(dir); } catch { return { ok: false, reason: 'no-docs' }; }
@@ -242,81 +252,182 @@ const GITIGNORE_LINES = [
 ];
 const gitignoreBlock = (nl) => GITIGNORE_LINES.join(nl) + nl;
 
-/**
- * Make sure `<home>\\.gitignore` carries the sync-docs block: created when there is no file (an exclusive create), the
- * block appended (after a blank line, in the file's own line endings) when it lacks the marker, left alone when it has it.
- * -> { ok: true, how: 'present' | 'created' | 'appended', text? } (text: exactly what this call added) | { ok: false }
- */
-function addGitignoreBlock(home, opts = {}) {
-  const file = path.join(home, '.gitignore');
-  for (let i = 0; i < 2; i++) {
-    const cur = readDoc(file, opts);
-    if (!cur.ok && cur.reason === 'missing') {
-      const made = createExclusive(file, gitignoreBlock('\n'));
-      if (made.created) return { ok: true, how: 'created', text: gitignoreBlock('\n') };
-      continue;                                           // it appeared meanwhile: treat it as the existing file
+// A .gitignore is a tracked file this writer doesn't own, so it is handled as BYTES: read, appended to, written back
+// without ever decoding what it doesn't understand (PR #146, Dexter D3).
+const isUtf8 = (buf) => {
+  if (buf.includes(0)) return false;                       // UTF-16 without a BOM, or binary
+  try { new TextDecoder('utf-8', { fatal: true }).decode(buf); return true; } catch { return false; }
+};
+const PERMANENT = new Set(['EPERM', 'EACCES', 'EROFS', 'EISDIR', 'ENOTDIR']);
+const blockedOr = (err) => (err && PERMANENT.has(err.code) ? 'gitignore-blocked' : 'write-failed');
+
+/** Replace `file` with compute(bytes) (a Buffer, or null to give up), only while it still holds what was read. */
+function rewriteBytes(file, compute) {
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    const before = fs.readFileSync(file);
+    const next = compute(before);
+    if (next === null) return { ok: false, reason: 'changed' };
+    const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
+    try {
+      fs.writeFileSync(tmp, next);
+      if (!fs.readFileSync(file).equals(before)) { fs.rmSync(tmp, { force: true }); continue; }
+      renameWithRetry(tmp, file);
+      return { ok: true };
+    } catch (err) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to clean */ }
+      return { ok: false, reason: blockedOr(err) };
     }
-    if (!cur.ok) return { ok: false };
-    if (cur.text.includes(GITIGNORE_MARKER)) return { ok: true, how: 'present' };
-    const r = safeRewrite(file, (text) => {
-      if (text.includes(GITIGNORE_MARKER)) return { ok: false, reason: 'present' };
-      const nl = text.includes('\r\n') ? '\r\n' : '\n';
-      const sep = text === '' ? '' : (/\n$/.test(text) ? nl : nl + nl);
-      const added = sep + gitignoreBlock(nl);
-      return { ok: true, text: text + added, added };
-    }, opts);
-    if (r.ok) return { ok: true, how: 'appended', text: r.added };
-    if (r.reason === 'present') return { ok: true, how: 'present' };
-    return { ok: false };
   }
-  return { ok: false };
+  return { ok: false, reason: 'conflict' };
 }
 
-/** Take back what addGitignoreBlock added, only while the file still ends/holds exactly that. Best effort. */
-function removeGitignoreBlock(home, g, opts = {}) {
+/**
+ * Make sure `<home>\.gitignore` carries the sync-docs block: created when there is no file (an exclusive create), the
+ * block appended at the byte level (after a blank line, in the file's own line endings) when it lacks the marker, left
+ * alone when it has it. A symlink, or a file that isn't valid UTF-8 (cp1252, UTF-16), is never touched.
+ * -> { ok: true, how: 'present' | 'created' | 'appended', text? } (text: exactly what this call added)
+ *  | { ok: true, how: 'skipped', why: 'symlink' | 'encoding' }
+ *  | { ok: false, reason: 'gitignore-blocked' (read-only, not a file: permanent) | 'write-failed' }
+ */
+function addGitignoreBlock(home) {
+  const file = path.join(home, '.gitignore');
+  for (let i = 0; i < 2; i++) {
+    let st = null;
+    try { st = fs.lstatSync(file); } catch (err) { if (!(err && err.code === 'ENOENT')) return { ok: false, reason: blockedOr(err) }; }
+    if (st === null) {
+      try {
+        if (createExclusive(file, gitignoreBlock('\n')).created) return { ok: true, how: 'created', text: gitignoreBlock('\n') };
+      } catch (err) { return { ok: false, reason: blockedOr(err) }; }
+      continue;                                             // it appeared meanwhile: treat it as the existing file
+    }
+    if (st.isSymbolicLink()) return { ok: true, how: 'skipped', why: 'symlink' };
+    if (!st.isFile()) return { ok: false, reason: 'gitignore-blocked' };
+    try { fs.accessSync(file, fs.constants.W_OK); } catch { return { ok: false, reason: 'gitignore-blocked' }; }
+    let buf;
+    try { buf = fs.readFileSync(file); } catch (err) { return { ok: false, reason: blockedOr(err) }; }
+    if (!isUtf8(buf)) return { ok: true, how: 'skipped', why: 'encoding' };
+    if (buf.toString('utf8').includes(GITIGNORE_MARKER)) return { ok: true, how: 'present' };
+    let added = '';
+    const r = rewriteBytes(file, (bytes) => {
+      if (!isUtf8(bytes)) return null;
+      const text = bytes.toString('utf8');
+      if (text.includes(GITIGNORE_MARKER)) return null;
+      const nl = text.includes('\r\n') ? '\r\n' : '\n';
+      added = (text === '' ? '' : (/\n$/.test(text) ? nl : nl + nl)) + gitignoreBlock(nl);
+      return Buffer.concat([bytes, Buffer.from(added, 'utf8')]);
+    });
+    if (r.ok) return { ok: true, how: 'appended', text: added };
+    if (r.reason === 'changed') continue;
+    return { ok: false, reason: r.reason };
+  }
+  return { ok: false, reason: 'write-failed' };
+}
+
+const defaultGitStatus = (home) => {
+  try {
+    return execFileSync('git', ['status', '--porcelain', '--', '.gitignore'], {
+      cwd: home, encoding: 'utf8', windowsHide: true, timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+    });
+  } catch { return null; }
+};
+
+/**
+ * Is the .gitignore still what this note made, in git's eyes too? A block that has been committed since is history, not
+ * ours to cut out (Dexter D6). The file just made reads `??` (or staged `A`); an appended block reads as a modification.
+ */
+function stillOurs(home, g, gitStatus) {
+  const out = gitStatus(home);
+  if (typeof out !== 'string') return false;                // git couldn't say: leave it
+  return out.trim() !== '';                              // clean = committed since (or never differed): history, not ours to cut
+}
+
+/**
+ * Take back what addGitignoreBlock added, only while the file still ends/holds exactly that (and, unless `force`, git
+ * shows it uncommitted). Bytes, never decoded. -> true (taken back) | false (left alone)
+ */
+function removeGitignoreBlock(home, g, { force = false, gitStatus = defaultGitStatus } = {}) {
   const file = path.join(home, '.gitignore');
   try {
+    if (!force && !stillOurs(home, g, gitStatus)) return false;
+    const want = Buffer.from(g.text, 'utf8');
     if (g.how === 'created') {
-      const cur = readDoc(file, opts);
-      if (cur.ok && cur.text === g.text) fs.rmSync(file, { force: true });
-    } else if (g.how === 'appended') {
-      safeRewrite(file, (text) => (text.endsWith(g.text) ? { ok: true, text: text.slice(0, text.length - g.text.length) } : { ok: false, reason: 'changed' }), opts);
+      if (!fs.readFileSync(file).equals(want)) return false;
+      // Moved aside first, and the moved copy is what is checked and deleted (the shape Undo of the backlog uses).
+      const aside = path.join(home, `.gitignore.${process.pid}-${crypto.randomBytes(4).toString('hex')}.undo`);
+      fs.renameSync(file, aside);
+      if (fs.readFileSync(aside).equals(want)) { fs.unlinkSync(aside); return true; }
+      try { fs.linkSync(aside, file); } catch { /* something new is at the old name: keep that */ }
+      fs.rmSync(aside, { force: true });
+      return false;
+    }
+    if (g.how === 'appended') {
+      return rewriteBytes(file, (b) => (b.length >= want.length && b.subarray(b.length - want.length).equals(want)
+        ? b.subarray(0, b.length - want.length) : null)).ok;
     }
   } catch { /* the block stays; harmless */ }
+  return false;
 }
 
 /**
  * Take back what a note made besides the backlog: the documentation folder, only while it is empty, and then, only if
- * the folder went, the .gitignore block this note added. Anything else in the folder keeps both.
+ * the folder went, the .gitignore block this note added (a block added to an existing empty folder: only while it is
+ * still empty). Anything else in the folder keeps both. -> the list of things it left alone ('gitignore'), usually [].
  */
 function unmake(dir, made, opts = {}) {
-  if (!made || made.dir !== true) return;
-  try { fs.rmdirSync(dir); } catch { return; }
-  if (made.gitignore) removeGitignoreBlock(path.dirname(dir), made.gitignore, opts);
+  const kept = [];
+  if (!made) return kept;
+  if (made.dir === true) {
+    try { fs.rmdirSync(dir); } catch { return kept; }
+  } else if (made.gitignore) {
+    try { if (fs.readdirSync(dir).length > 0) return kept; } catch { return kept; }
+  }
+  if (made.gitignore && !removeGitignoreBlock(path.dirname(dir), made.gitignore, opts)) kept.push('gitignore');
+  return kept;
+}
+
+/**
+ * A backlog this call created, taken back with the folder and block it made, when the note could not be written into it
+ * (Dexter D2): only while the file still holds exactly what it was created with.
+ */
+function takeBack(docs, made) {
+  try {
+    const cur = readDoc(docs.backlog);
+    if (cur.ok && cur.text === pristineOf(docs)) fs.rmSync(docs.backlog, { force: true });
+  } catch { /* the file stays; the retry finds it */ }
+  unmake(docs.dir, made, { force: true });
 }
 
 /**
  * Create the project's backlog when it isn't there (only for a project that `canCreate`): written to a temp file, then
  * hard-linked into place, which fails with EEXIST rather than replacing a backlog a session or another window made in
  * the meantime; where hard links aren't supported, an exclusive create. The target is never opened for writing otherwise.
- * No `documentation\` folder yet: it is made first, and the sync-docs .gitignore block added; if either fails, whatever
- * this call made is taken back. -> { ok: true, created: boolean, made?: { dir, gitignore? } } | { ok: false, reason: 'no-backlog' | 'write-failed' }
+ * No `documentation\` folder yet (or an empty one with no .gitignore block): the sync-docs block goes in FIRST, then the
+ * folder, so an interruption leaves a block with no folder, never a folder git doesn't ignore (Dexter D5); if anything
+ * fails, whatever this call made is taken back.
+ * -> { ok: true, created: boolean, made?: { dir?, gitignore?, ignoreSkipped? } }
+ *  | { ok: false, reason: 'no-backlog' | 'write-failed' | 'docs-blocked' | 'gitignore-blocked' }  (the last two are permanent)
  */
 function createBacklog(docs, { beforeCreate = () => {}, link = fs.linkSync } = {}) {
   if (!docs || docs.canCreate !== true) return { ok: false, reason: 'no-backlog' };
+  const home = path.dirname(docs.dir);
+  let dirStat = null;
+  try { dirStat = fs.statSync(docs.dir); } catch { dirStat = null; }
+  if (dirStat !== null && !dirStat.isDirectory()) return { ok: false, reason: 'docs-blocked' };     // a FILE named documentation
   const made = {};
-  try {
-    if (!fs.existsSync(docs.dir)) {
-      try { fs.mkdirSync(docs.dir); made.dir = true; } catch (err) { if (!(err && err.code === 'EEXIST')) throw err; }
-      if (made.dir) {
-        const g = addGitignoreBlock(path.dirname(docs.dir));
-        if (!g.ok) throw new Error('the .gitignore could not be updated');
-        if (g.how !== 'present') made.gitignore = { how: g.how, text: g.text };
+  const hasBlock = () => { try { return fs.readFileSync(path.join(home, '.gitignore'), 'utf8').includes(GITIGNORE_MARKER); } catch { return false; } };
+  let emptyUnignored = false;
+  try { emptyUnignored = dirStat !== null && fs.readdirSync(docs.dir).length === 0 && !hasBlock(); } catch { emptyUnignored = false; }
+  if (dirStat === null || emptyUnignored) {
+    const g = addGitignoreBlock(home);
+    if (!g.ok) return { ok: false, reason: g.reason };
+    if (g.how === 'skipped') made.ignoreSkipped = g.why;
+    else if (g.how !== 'present') made.gitignore = { how: g.how, text: g.text };
+    if (dirStat === null) {
+      try { fs.mkdirSync(docs.dir); made.dir = true; } catch (err) {
+        if (!(err && err.code === 'EEXIST')) { unmake(docs.dir, made, { force: true }); return { ok: false, reason: blockedOr(err) === 'gitignore-blocked' ? 'docs-blocked' : 'write-failed' }; }
       }
     }
-  } catch {
-    unmake(docs.dir, made.dir ? { dir: true, gitignore: made.gitignore } : null);
-    return { ok: false, reason: 'write-failed' };
   }
   const tmp = path.join(docs.dir, `.${path.basename(docs.backlog)}.${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`);
   let result;
@@ -336,8 +447,8 @@ function createBacklog(docs, { beforeCreate = () => {}, link = fs.linkSync } = {
   } finally {
     try { fs.rmSync(tmp, { force: true }); } catch { /* nothing left to clean */ }
   }
-  if (!result.ok) { unmake(docs.dir, made.dir ? { dir: true, gitignore: made.gitignore } : null); return result; }
-  return result.created && made.dir ? { ...result, made: { dir: true, ...(made.gitignore ? { gitignore: made.gitignore } : {}) } } : result;
+  if (!result.ok) { unmake(docs.dir, made, { force: true }); return result; }
+  return result.created && Object.keys(made).length > 0 ? { ...result, made } : result;
 }
 
 /** The backlog exists after this, or why not. -> { ok: true, created: boolean } | { ok: false, reason } */
@@ -369,6 +480,7 @@ function fileNote({ docs, stamp, text, beforeRename, beforeCreate, link, rename,
     created = c.created;
     made = c.made || null;
     r = rewrite();
+    if (!r.ok && created) takeBack(docs, made);       // the note didn't go in: nothing this call made is left behind (Dexter D2)
   }
   if (!r.ok) return { ok: false, reason: r.reason === 'missing' ? 'no-backlog' : r.reason };
   if (!created) return { ok: true, where: { file: docs.backlog }, record: r.record };
@@ -400,7 +512,8 @@ const leavesPristine = (text, record) => { const u = doc.removeEntry(text, recor
  * lands after the check is either in the copy (then it isn't pristine and the file is put back) or in a new file at the
  * old name; it is never deleted unseen. -> null (not applicable or not pristine: do the ordinary Undo) | { ok, reason? }
  */
-function deleteIfPristine(file, record, { rename = fs.renameSync, unlink = fs.unlinkSync, beforeDelete = () => {}, readFile, sleep } = {}) {
+function deleteIfPristine(file, record, opts = {}) {
+  const { rename = fs.renameSync, unlink = fs.unlinkSync, beforeDelete = () => {}, readFile, sleep } = opts;
   const read = readDoc(file, { readFile, sleep });
   if (!read.ok || !leavesPristine(read.text, record)) return null;
   beforeDelete();
@@ -411,8 +524,9 @@ function deleteIfPristine(file, record, { rename = fs.renameSync, unlink = fs.un
   if (moved.ok && leavesPristine(moved.text, record)) {
     try {
       unlink(aside);
-      unmake(path.dirname(file), record.made, { readFile, sleep });     // the folder and the .gitignore block this note made, if nothing else is in them
-      return { ok: true };
+      // the folder and the .gitignore block this note made, if nothing else is in them and git hasn't seen them committed
+      const kept = unmake(path.dirname(file), record.made, { gitStatus: opts.gitStatus });
+      return kept.length > 0 ? { ok: true, kept } : { ok: true };
     } catch { failure = { ok: false, reason: 'write-failed' }; }
   }
   // Not what it was (or couldn't be deleted): put it back, unless something new is at the old name already.
@@ -439,4 +553,4 @@ function undoNote(file, record, opts) {
   return { ok: false, reason: r.reason === 'write-failed' || r.reason === 'busy' ? r.reason : 'changed' };
 }
 
-module.exports = { docsOf, fileNote, findNote, undoNote, ensureBacklog, pristineOf };
+module.exports = { docsOf, fileNote, findNote, undoNote, ensureBacklog, takeBack, pristineOf };

@@ -106,3 +106,13 @@ test('short: a long note is cut for one line, never mid surrogate pair', () => {
   assert.ok(d.short('x'.repeat(70), 64).endsWith('…'));
   assert.ok(!/[\uD800-\uDBFF]…$/.test(d.short('a'.repeat(62) + '😀😀', 64)));
 });
+
+test('toastModel (#146 D3): a .gitignore that was left alone is said so', () => {
+  const m = d.toastModel({ state: 'filed', text: 'x', undoable: true, createdBacklog: true, createdFolder: true, createdIgnore: false, ignoreSkipped: true });
+  assert.strictEqual(m.line, "Created documentation\\ and the backlog, and filed your note. Your .gitignore wasn't changed.");
+});
+
+test('reasonText (#146 D4): the two permanent create failures have words', () => {
+  assert.match(d.reasonText('docs-blocked'), /file named documentation/);
+  assert.match(d.reasonText('gitignore-blocked'), /\.gitignore can't be changed/);
+});

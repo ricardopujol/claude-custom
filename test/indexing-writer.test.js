@@ -11,6 +11,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { tmpDir } = require('./tmp-dir');
 
 const w = require('../host/indexing-writer');
@@ -499,9 +500,12 @@ const BLOCK = (nl = '\n') => [MARKER, '# documentation/ is mirrored to the Obsid
   '# default. Only the index README is tracked. Delete this block to push the docs.', 'documentation/*', '!documentation/README.md',
   '# --- end sync-docs (gitignore) ---'].join(nl) + nl;
 
+const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, windowsHide: true, stdio: 'pipe', encoding: 'utf8' });
+
+// A REAL repo: Undo asks git whether the .gitignore it made has been committed since (Dexter D6).
 function gitRoot() {
   const dev = tmpDir('cc-iw-');
-  makeGit(dev);
+  git(dev, 'init', '-q');
   return { dev, docsDir: path.join(dev, 'documentation'), ignore: path.join(dev, '.gitignore') };
 }
 const fileFirst = (g, extra = {}) => w.fileNote({ docs: w.docsOf({ root: g.dev, dev: g.dev }), stamp: STAMP, text: 'first', ...extra });
@@ -546,9 +550,10 @@ test('R2: a .gitignore that already has the block is left alone (idempotent by i
   assert.deepStrictEqual(r.record.made, { dir: true });
 });
 
-test('R2: a documentation folder that is already there: the .gitignore is not touched, even when it has no block', () => {
+test('R2: a documentation folder that already holds docs: the .gitignore is not touched, even when it has no block', () => {
   const g = gitRoot();
   fs.mkdirSync(g.docsDir);
+  fs.writeFileSync(path.join(g.docsDir, 'README.md'), 'x');
   fs.writeFileSync(g.ignore, 'keep/\n');
   const r = fileFirst(g);
   assert.strictEqual(r.result, 'created-backlog');
@@ -597,20 +602,20 @@ test('R2: Undo leaves a .gitignore that changed after the block was added', () =
   fs.writeFileSync(g.ignore, 'a/\n');
   const r = fileFirst(g);
   fs.appendFileSync(g.ignore, 'later/\n');
-  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true, kept: ['gitignore'] });
   assert.strictEqual(fs.existsSync(g.docsDir), false);
   assert.strictEqual(read(g.ignore), 'a/\n\n' + BLOCK() + 'later/\n', 'not ours to edit any more');
   const g2 = gitRoot();
   const r2 = fileFirst(g2);
   fs.appendFileSync(g2.ignore, 'later/\n');
-  assert.deepStrictEqual(w.undoNote(r2.where.file, r2.record), { ok: true });
+  assert.deepStrictEqual(w.undoNote(r2.where.file, r2.record), { ok: true, kept: ['gitignore'] });
   assert.strictEqual(read(g2.ignore), BLOCK() + 'later/\n', 'a created file someone added to stays');
 });
 
-test('R2: a .gitignore that cannot be written is write-failed and the folder this call made is taken back', () => {
+test('R2 (D4): a .gitignore that is not a file is a permanent "gitignore-blocked", and no folder is made', () => {
   const g = gitRoot();
   fs.mkdirSync(g.ignore);                                           // a directory where the file should be
-  assert.deepStrictEqual(fileFirst(g), { ok: false, reason: 'write-failed' });
+  assert.deepStrictEqual(fileFirst(g), { ok: false, reason: 'gitignore-blocked' });
   assert.strictEqual(fs.existsSync(g.docsDir), false);
 });
 
@@ -627,4 +632,188 @@ test('R2: a drive root and a non-git folder never get a folder made', () => {
   const dev = tmpDir('cc-iw-');
   assert.deepStrictEqual(w.docsOf({ root: dev, dev }), { ok: false, reason: 'no-docs' });
   assert.deepStrictEqual(fs.readdirSync(dev), []);
+});
+
+// --- PR #146 review (Dexter D1-D7, Miguel 1-3) ----------------------------------------------------------------------
+
+test('D1: a flat linked worktree of a repo with no docs files into the MAIN checkout, and its own .gitignore is untouched', () => {
+  const main = gitRoot();
+  const wt = tmpDir('cc-iw-');
+  fs.mkdirSync(path.join(main.dev, '.git', 'worktrees', 'feat'), { recursive: true });
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(main.dev, '.git', 'worktrees', 'feat').replace(/\\/g, '/')}\n`);
+  fs.writeFileSync(path.join(wt, '.gitignore'), 'tracked/\n');
+  const docs = w.docsOf({ root: wt, dev: wt });
+  assert.strictEqual(docs.dir, main.docsDir);
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'from a worktree' });
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.ok(fs.existsSync(main.docsDir));
+  assert.ok(read(main.ignore).includes(MARKER), 'the block went into the main checkout');
+  assert.strictEqual(fs.existsSync(path.join(wt, 'documentation')), false);
+  assert.strictEqual(read(path.join(wt, '.gitignore')), 'tracked/\n', 'the worktree\'s .gitignore is byte for byte what it was');
+});
+
+test('D1: a nested .claude\\worktrees\\* worktree does the same', () => {
+  const main = gitRoot();
+  const wt = path.join(main.dev, '.claude', 'worktrees', 'agent-ab12');
+  fs.mkdirSync(wt, { recursive: true });
+  fs.mkdirSync(path.join(main.dev, '.git', 'worktrees', 'agent-ab12'), { recursive: true });
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(main.dev, '.git', 'worktrees', 'agent-ab12').replace(/\\/g, '/')}\n`);
+  const docs = w.docsOf({ root: wt, dev: wt });
+  assert.strictEqual(docs.dir, main.docsDir);
+  w.fileNote({ docs, stamp: STAMP, text: 'nested' });
+  assert.strictEqual(fs.existsSync(path.join(wt, 'documentation')), false);
+  assert.strictEqual(fs.existsSync(path.join(wt, '.gitignore')), false);
+});
+
+test('D1: a worktree whose main checkout is not a project root (the home folder) gets nothing made', () => {
+  const main = gitRoot();
+  const wt = tmpDir('cc-iw-');
+  fs.mkdirSync(path.join(main.dev, '.git', 'worktrees', 'feat'), { recursive: true });
+  fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${path.join(main.dev, '.git', 'worktrees', 'feat')}\n`);
+  const os = require('os');
+  const real = os.homedir;
+  os.homedir = () => main.dev;
+  try { assert.deepStrictEqual(w.docsOf({ root: wt, dev: wt }), { ok: false, reason: 'no-docs' }); } finally { os.homedir = real; }
+});
+
+test('D2: the backlog was made and the note could not be written into it (busy): everything this call made is taken back', () => {
+  const g = gitRoot();
+  const docs = w.docsOf({ root: g.dev, dev: g.dev });
+  const readFile = (f, enc) => {
+    if (fs.existsSync(docs.backlog)) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });   // a scanner holds the new file
+    return fs.readFileSync(f, enc);
+  };
+  const r = w.fileNote({ docs, stamp: STAMP, text: 'first', readFile, sleep: () => {} });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'busy');
+  assert.strictEqual(fs.existsSync(g.docsDir), false, 'no folder left behind');
+  assert.strictEqual(fs.existsSync(g.ignore), false, 'no unannounced .gitignore edit');
+  const again = fileFirst(g);                                       // the retry is the creating note, record intact
+  assert.strictEqual(again.result, 'created-backlog');
+  assert.deepStrictEqual(again.record.made, { dir: true, gitignore: { how: 'created', text: BLOCK() } });
+});
+
+test('D3: a .gitignore saved as Windows-1252 is left byte for byte; the folder is still made and the record says so', () => {
+  const g = gitRoot();
+  const orig = Buffer.from('# caf\xE9\nnode_modules/\n', 'latin1');
+  fs.writeFileSync(g.ignore, orig);
+  const r = fileFirst(g);
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.ok(fs.readFileSync(g.ignore).equals(orig));
+  assert.deepStrictEqual(r.record.made, { dir: true, ignoreSkipped: 'encoding' });
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.ok(fs.readFileSync(g.ignore).equals(orig), 'Undo does not touch it either');
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+});
+
+test('D3: a UTF-16LE .gitignore (PowerShell 5 redirect, BOM FF FE) is left byte for byte', () => {
+  const g = gitRoot();
+  const orig = Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from('node_modules\r\n', 'utf16le')]);
+  fs.writeFileSync(g.ignore, orig);
+  const r = fileFirst(g);
+  assert.ok(fs.readFileSync(g.ignore).equals(orig));
+  assert.strictEqual(r.record.made.ignoreSkipped, 'encoding');
+});
+
+test('D3: a UTF-8 .gitignore with non-ASCII text keeps every byte and gets the block appended', () => {
+  const g = gitRoot();
+  const orig = Buffer.from('# caf\u00e9 \u2713\n', 'utf8');
+  fs.writeFileSync(g.ignore, orig);
+  const r = fileFirst(g);
+  const now = fs.readFileSync(g.ignore);
+  assert.ok(now.subarray(0, orig.length).equals(orig));
+  assert.strictEqual(now.subarray(orig.length).toString('utf8'), '\n' + BLOCK());
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.ok(fs.readFileSync(g.ignore).equals(orig));
+});
+
+test('D3: a symlinked .gitignore is never replaced', (t) => {
+  const g = gitRoot();
+  const real = path.join(g.dev, 'ignore-target');
+  fs.writeFileSync(real, 'a/\n');
+  try { fs.symlinkSync(real, g.ignore); } catch { t.skip('no symlink privilege here'); return; }
+  const r = fileFirst(g);
+  assert.ok(fs.lstatSync(g.ignore).isSymbolicLink());
+  assert.strictEqual(read(real), 'a/\n');
+  assert.strictEqual(r.record.made.ignoreSkipped, 'symlink');
+});
+
+test('D4: a read-only .gitignore is a permanent "gitignore-blocked": nothing is made, and nothing is retried into existence', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'a/\n');
+  fs.chmodSync(g.ignore, 0o444);
+  try {
+    assert.deepStrictEqual(fileFirst(g), { ok: false, reason: 'gitignore-blocked' });
+    assert.strictEqual(fs.existsSync(g.docsDir), false);
+    assert.strictEqual(read(g.ignore), 'a/\n');
+  } finally { fs.chmodSync(g.ignore, 0o666); }
+});
+
+test('D4: a FILE named documentation at the root is a permanent "docs-blocked"', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.docsDir, 'not a folder');
+  assert.deepStrictEqual(fileFirst(g), { ok: false, reason: 'docs-blocked' });
+  assert.strictEqual(fs.readFileSync(g.docsDir, 'utf8'), 'not a folder');
+  assert.strictEqual(fs.existsSync(g.ignore), false);
+});
+
+test('D5: an empty documentation folder with no block (an interrupted create) gets the block, and the folder is not taken for docs', () => {
+  const g = gitRoot();
+  fs.mkdirSync(g.docsDir);
+  const r = fileFirst(g);
+  assert.strictEqual(r.result, 'created-backlog');
+  assert.strictEqual(read(g.ignore), BLOCK());
+  assert.deepStrictEqual(r.record.made, { gitignore: { how: 'created', text: BLOCK() } }, 'no dir: it was already there');
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true });
+  assert.ok(fs.existsSync(g.docsDir), 'the folder was not this note\'s to remove');
+  assert.strictEqual(fs.existsSync(g.ignore), false, 'the block it added goes while the folder is empty');
+});
+
+test('D5: the block goes in BEFORE the folder: when the block cannot be written no folder exists', () => {
+  const g = gitRoot();
+  fs.mkdirSync(g.ignore);
+  w.fileNote({ docs: w.docsOf({ root: g.dev, dev: g.dev }), stamp: STAMP, text: 'x' });
+  assert.strictEqual(fs.existsSync(g.docsDir), false);
+});
+
+test('D6: a .gitignore the session committed since is history: Undo leaves the block and says so', () => {
+  const g = gitRoot();
+  const r = fileFirst(g);
+  git(g.dev, 'add', '-A');
+  git(g.dev, 'commit', '-q', '-m', 'wip');
+  const before = read(g.ignore);
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true, kept: ['gitignore'] });
+  assert.strictEqual(read(g.ignore), before);
+  assert.strictEqual(git(g.dev, 'status', '--porcelain'), '');
+});
+
+test('D6: an appended block that was committed since stays too', () => {
+  const g = gitRoot();
+  fs.writeFileSync(g.ignore, 'a/\n');
+  git(g.dev, 'add', '-A');
+  git(g.dev, 'commit', '-q', '-m', 'base');
+  const r = fileFirst(g);
+  git(g.dev, 'add', '-A');
+  git(g.dev, 'commit', '-q', '-m', 'wip');
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record), { ok: true, kept: ['gitignore'] });
+  assert.ok(read(g.ignore).includes(MARKER));
+});
+
+test('D6: when git cannot say, the block is left (unknown is not "ours")', () => {
+  const g = gitRoot();
+  const r = fileFirst(g);
+  assert.deepStrictEqual(w.undoNote(r.where.file, r.record, { gitStatus: () => null }), { ok: true, kept: ['gitignore'] });
+  assert.ok(fs.existsSync(g.ignore));
+});
+
+test('Miguel 3: a git repo that is the home folder and already has documentation\\ still gets its backlog created (as #138 did)', () => {
+  const p = project({ backlog: null });
+  const os = require('os');
+  const real = os.homedir;
+  os.homedir = () => p.dev;
+  try {
+    const docs = w.docsOf(p);
+    assert.strictEqual(docs.canCreate, true);
+    assert.strictEqual(w.fileNote({ docs, stamp: STAMP, text: 'x' }).result, 'created-backlog');
+  } finally { os.homedir = real; }
 });
