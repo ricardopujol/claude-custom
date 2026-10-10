@@ -35,6 +35,8 @@ function closeReasons(facts) {
   else if (f.agentsHere === 1) out.push('an agent is working here');
   else if (f.agentsHere > 1) out.push(`${f.agentsHere} agents are working here`);
   // The tab's OWN session (and the agents it launched, which its `working` covers) is what a stop actually ends.
+  // unsaved text in the tab's code reader (#50): a string naming the file, anything else is none
+  if (typeof f.readerUnsaved === 'string' && f.readerUnsaved !== '') out.push(`unsaved edits to ${f.readerUnsaved} in the file reader`);
   if (f.session === 'busy') out.push('Claude is still working in this tab');
   else if (f.session === 'waiting') out.push('Claude is waiting for you in this tab');
   else if (f.session !== 'idle') out.push("couldn't check what Claude is doing in this tab");

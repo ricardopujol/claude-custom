@@ -85,5 +85,5 @@ test('kills: `leave` changes nothing while closed, or while open with nothing ho
   const open = D.popoverStep(closed, { type: 'chip-click' }).state;
   assert.strictEqual(D.popoverStep(open, { type: 'leave' }).state, open);
   const hovered = D.popoverStep(open, { type: 'hover', kind: 'cpu', minutes: 5 }).state;
-  assert.deepStrictEqual(D.popoverStep(hovered, { type: 'leave' }).state, { open: true, hover: { cpu: null, mem: null } });
+  assert.deepStrictEqual(D.popoverStep(hovered, { type: 'leave' }).state, { open: true, hover: { cpu: null, mem: null, gpu: null, gpumem: null } });
 });

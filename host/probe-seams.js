@@ -8,7 +8,7 @@
  *   CLAUDE_CUSTOM_REVIEWS_DIR        the review reports come from here, not ~/.claude/reviews
  *   CLAUDE_CUSTOM_CLAUDE_HOME        the wand finds skills under here, not ~/.claude (verify/probe-wand.js)
  *   CLAUDE_CUSTOM_OLLAMA_URL         the where-are-we summary talks to this Ollama, not 127.0.0.1:11434 (verify/probe-where-summary.js)
- *   CLAUDE_CUSTOM_SUMMARY_DIR        its summaries and GPU slot live here, not in .harness/state
+ *   CLAUDE_CUSTOM_SUMMARY_DIR        its summaries, GPU slot and docs-drift notes live here, not in .harness/state
  *   CLAUDE_CUSTOM_SUMMARY_POWER      'mains' | 'battery': the power state it sees, so a probe doesn't depend on the charger
  *   CLAUDE_CUSTOM_INDEXING_JOURNAL   the indexing field's journal, not .harness/state (verify/probe-indexing-strip.js)
  *

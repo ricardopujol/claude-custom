@@ -30,7 +30,7 @@ test('capacity is an hour of 10 s samples, and the oldest falls off first', () =
 test('an unmeasured value is null, never 0 (the Number(null) trap)', () => {
   const h = H.createHistory();
   h.record({ at: 10000, cpu: null, cpuOurs: undefined, memUsed: '5', memOurs: NaN, memTotal: Infinity });
-  assert.deepStrictEqual(h.points()[0], { at: 10000, cpu: null, cpuOurs: null, memUsed: null, memOurs: null, memTotal: null });
+  assert.deepStrictEqual(h.points()[0], { at: 10000, cpu: null, cpuOurs: null, memUsed: null, memOurs: null, memTotal: null, gpu: null, gpuMemUsed: null, gpuMemTotal: null });
 });
 
 test('a real 0 stays 0', () => {
@@ -42,7 +42,7 @@ test('a real 0 stays 0', () => {
 test('a failed sample is a point with every figure null', () => {
   const h = H.createHistory();
   h.recordFailure(10000);
-  assert.deepStrictEqual(h.points(), [{ at: 10000, cpu: null, cpuOurs: null, memUsed: null, memOurs: null, memTotal: null }]);
+  assert.deepStrictEqual(h.points(), [{ at: 10000, cpu: null, cpuOurs: null, memUsed: null, memOurs: null, memTotal: null, gpu: null, gpuMemUsed: null, gpuMemTotal: null }]);
 });
 
 test('a point that is not after the last, or has no real time, is dropped', () => {
@@ -143,7 +143,7 @@ test('the ring keeps every point it is given in monotonic order, whatever wall t
 test('values are rounded when recorded: CPU to 0.1, bytes to whole numbers; a wall time is not stored', () => {
   const h = H.createHistory();
   h.record(good(1000, { cpu: 12.3456, cpuOurs: 0.04, memUsed: 1234.6, memOurs: 99.5, memTotal: 2000, wall: 5 }));
-  assert.deepStrictEqual(h.points()[0], { at: 1000, cpu: 12.3, cpuOurs: 0, memUsed: 1235, memOurs: 100, memTotal: 2000 });
+  assert.deepStrictEqual(h.points()[0], { at: 1000, cpu: 12.3, cpuOurs: 0, memUsed: 1235, memOurs: 100, memTotal: 2000, gpu: null, gpuMemUsed: null, gpuMemTotal: null });
 });
 
 test('a failure point can break too (after a minimise), and carries nulls', () => {

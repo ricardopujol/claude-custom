@@ -273,7 +273,7 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its eighteen members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-two members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
@@ -281,7 +281,9 @@ test('the strip bridge exposes its eighteen members -- and nothing else', () => 
   assert.deepStrictEqual(members,
     ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
       // #66, the indexing field (app/indexing-bridge.js answers them)
-      'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus']);
+      'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus',
+      // #62, lean mode (app/lean-bridge.js answers them)
+      'leanGet', 'leanSet', 'onLeanFaces', 'onLean']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
@@ -696,4 +698,123 @@ test('#63 paint (kill, #70): the refusal is `pct < 0`, so exactly 0 still draws 
   const [zero, below] = doc.byId.tabs.children;
   assert.strictEqual(child(zero, 'res-warn').textContent, '0%');
   assert.strictEqual(child(below, 'res-warn'), undefined);
+});
+
+// --- lean mode (BACKLOG #62): the ☾ Lean button and the chip -----------------------------------------------
+
+const { paintLean } = require('../app/tab-strip');
+function leanDoc() {
+  const cls = new Set();
+  const body = { classList: { toggle: (c, on) => { if (on) cls.add(c); else cls.delete(c); }, contains: (c) => cls.has(c) } };
+  const byId = { 'lean-btn': node('button'), 'lean-chip': node('span'), 'lean-chip-label': node('span'), 'lean-chip-night': node('span'), 'lean-back': node('button') };
+  byId['lean-chip'].hidden = true;
+  byId['lean-chip-night'].hidden = true;
+  return { body, byId, getElementById: (id) => byId[id] };
+}
+
+test('paintLean: normal shows the Lean button and no chip; the button turns it on', () => {
+  const doc = leanDoc();
+  const sets = [];
+  paintLean(doc, { on: false }, { leanSet: (on) => sets.push(on) });
+  assert.strictEqual(doc.byId['lean-btn'].hidden, false);
+  assert.strictEqual(doc.byId['lean-chip'].hidden, true);
+  assert.strictEqual(doc.body.classList.contains('lean'), false);
+  doc.byId['lean-btn'].onclick();
+  assert.deepStrictEqual(sets, [true]);
+});
+
+test('paintLean: lean by hand shows "lean" and Back to normal, hides the button, marks the body', () => {
+  const doc = leanDoc();
+  const sets = [];
+  paintLean(doc, { on: true }, { leanSet: (on) => sets.push(on) });
+  assert.strictEqual(doc.byId['lean-btn'].hidden, true);
+  assert.strictEqual(doc.byId['lean-chip'].hidden, false);
+  assert.strictEqual(doc.byId['lean-chip-label'].textContent, '☾ lean');
+  assert.strictEqual(doc.byId['lean-chip-night'].hidden, true);
+  assert.strictEqual(doc.byId['lean-back'].textContent, 'Back to normal');
+  assert.strictEqual(doc.body.classList.contains('lean'), true);
+  doc.byId['lean-back'].onclick();
+  assert.deepStrictEqual(sets, [false]);
+});
+
+test('paintLean: a night that started it adds "bedtime HH:MM"', () => {
+  const doc = leanDoc();
+  paintLean(doc, { on: true, byBedtime: true, bedtimeSince: new Date(2026, 9, 9, 23, 40).getTime() }, { leanSet() {} });
+  assert.strictEqual(doc.byId['lean-chip-night'].hidden, false);
+  assert.strictEqual(doc.byId['lean-chip-night'].textContent, 'bedtime 23:40');
+});
+
+test('paintLean: a missing state (the bridge has not answered) is normal, never lean', () => {
+  const doc = leanDoc();
+  paintLean(doc, undefined, { leanSet() {} });
+  assert.strictEqual(doc.byId['lean-chip'].hidden, true);
+  assert.strictEqual(doc.body.classList.contains('lean'), false);
+});
+
+test('tab-strip.html: the lean button and chip sit before ▾, the chip starts hidden, and the page loads lean-display.js', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const strip = html.slice(html.indexOf('<div id="strip">'), html.indexOf('<div id="pane"'));
+  assert.ok(strip.indexOf('id="lean-btn"') < strip.indexOf('id="bg"'));
+  assert.ok(strip.indexOf('id="lean-chip"') < strip.indexOf('id="bg"'));
+  assert.match(strip, /id="lean-chip"[^>]*\bhidden\b/);
+  assert.match(html, /body\.lean \.dot\.working\s*\{[^}]*animation:\s*none/);
+});
+
+// --- the working agents' portraits next to the lean chip (#62, option C): 0 / 2 / 7 agents ----------------------------------
+
+const { paintLeanFaces, LEAN_FACES_MAX } = require('../app/tab-strip');
+function facesDoc() {
+  const box = node('span');
+  box.hidden = true;
+  box.querySelectorAll = () => [];
+  const doc = { createElement: (tag) => { const n = node(tag); n.style = {}; n.dataset = {}; n.addEventListener = () => {}; n.getContext = () => ({ drawImage() {} }); return n; }, getElementById: (id) => (id === 'lean-faces' ? box : null) };
+  return { doc, box };
+}
+const agentFace = (name, extra = {}) => ({ agent: name, images: true, portrait: { kind: 'file', path: `C:/p/${name}.png`, media: 'image', tier: 'forge' }, ...extra });
+
+test('lean faces: none working shows nothing at all', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [], true);
+  assert.strictEqual(box.hidden, true);
+  assert.strictEqual(box.children.length, 0);
+});
+
+test('lean faces: two working agents are two round portraits with the name on hover, no "+N"', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [agentFace('amy'), agentFace('bob')], true);
+  assert.strictEqual(box.hidden, false);
+  assert.deepStrictEqual(box.children.map(c => c.title), ['amy', 'bob']);
+  assert.ok(box.children.every(c => c.className === 'lean-face'));
+  assert.strictEqual(box.children.some(c => c.className === 'lean-more'), false);
+});
+
+test('lean faces: seven working agents are six portraits and "+1"', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, Array.from({ length: 7 }, (_, i) => agentFace('a' + i)), true);
+  assert.strictEqual(LEAN_FACES_MAX, 6);
+  assert.strictEqual(box.children.length, 7);
+  assert.strictEqual(box.children.filter(c => c.className === 'lean-face').length, 6);
+  const more = box.children.find(c => c.className === 'lean-more');
+  assert.strictEqual(more.textContent, '+1');
+});
+
+test('lean faces: not lean shows none even if main still holds a list', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [agentFace('amy')], false);
+  assert.strictEqual(box.hidden, true);
+  assert.strictEqual(box.children.length, 0);
+});
+
+test('lean faces: a name is text, never markup (title and initials set as plain strings)', () => {
+  const { doc, box } = facesDoc();
+  paintLeanFaces(doc, [{ agent: '<img onerror=x>', images: false, portrait: null }], true);
+  assert.strictEqual(box.children[0].title, '<img onerror=x>');
+  assert.strictEqual(box.children[0].children[0].className, 'face-media face-placeholder', 'images off: the initials placeholder');
+});
+
+test('tab-strip.html: the faces sit left of the lean chip, 18 px round, and the page may load file images and media', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.ok(html.indexOf('id="lean-faces"') < html.indexOf('id="lean-chip"'));
+  assert.match(html, /\.lean-face \{[^}]*width: 18px; height: 18px; border-radius: 50%/);
+  assert.match(html, /img-src 'self'; media-src 'self'/);
 });

@@ -28,9 +28,18 @@ const { killTree, killPidTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
+const { userGlobalDir, migrationCandidates, adoptOnStart } = require('./global-portrait-store');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
+const { createMedals } = require('./medals');
+const { validGive, validRemove } = require('../app/medals-display');
+const { createBubbles, createBubbleSettings } = require('./bubbles');
+const { createBubbleGate } = require('./bubble-gate');
+const { createActivity: createBubbleActivity } = require('./bubble-activity');
+const { createVoiceReader } = require('./bubble-voice');
+const { createAskOllama } = require('./ask-ollama');
+const { createChangeWatch } = require('./state-watch');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats, createStatsMemo } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
@@ -42,6 +51,7 @@ const { projectDirName } = require('./project-dir');
 const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
 const { readHistory, readOrigin } = require('./git-history');
+const { readGraph, createGitGraphService } = require('./git-graph');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
 const { readOpenPrs, parseOpenPrs } = require('./open-prs');
 const { readSeams, announce, fixtureReader } = require('./probe-seams');
@@ -87,6 +97,11 @@ const { createSlot } = require('./summary-slot');
 const { createOllamaClient } = require('./summary-ollama');
 const { createSummaryStore } = require('./summary-store');
 const { createPowerProbe } = require('./summary-power');
+const { createLeanGate } = require('./lean-gate');
+const { createDriftService, TICK_MS: DRIFT_TICK_MS, GENERATE_TIMEOUT_MS: DRIFT_GENERATE_MS } = require('./drift-service');
+const { createDriftStore } = require('./drift-store');
+const { createDriftGit } = require('./drift-git');
+const { readDocsDir } = require('./drift-docs-fs');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -102,6 +117,9 @@ const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
+// BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
+const { isSideEnv, siblingSessions } = require('./side-session');
+const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
 const { createOccupancyProducer, isOccupancyOnly, teammateFromMeta, withoutFileText } = require('./occupancy-producer');
@@ -356,6 +374,14 @@ const canvasMcp = helperExists && canvasMcpEnabled({ env: process.env, stateDir:
   ? { nodePath: process.versions.electron ? 'node' : process.execPath, scriptPath: path.join(__dirname, 'canvas-mcp.js'),
     root: path.join(HARNESS_DIR, 'state'), pointerFile: CANVAS_POINTER_FILE }
   : null;
+// A side host runs claude in plan mode, takes no session lock (below) and says so in its identity, so it never holds the
+// worktree's writer role and the port walk never mistakes it for the folder's own host.
+const SIDE = isSideEnv(process.env);
+// This build's identity files: which other hosts serve this folder (a side host and the folder's own host see each other).
+const INSTALL = path.join(__dirname, '..');
+function ownIdentities() {
+  try { return identitiesIn(INSTALL); } catch { return []; }
+}
 
 if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
@@ -383,6 +409,17 @@ const PORTRAITS_DIR =
 // instead of the developer's real pictures (Miguel I1, PR #64).
 const UPLOADS_DIR = process.env.CLAUDE_CUSTOM_UPLOADS || path.join(HARNESS_DIR, 'portraits');
 const SHIPPED_DIR = path.join(__dirname, '..', 'app', 'assets');
+// The default agent picture is USER-WIDE (BACKLOG #3, Ricardo 2026-10-09): one folder in the user
+// profile for every project, worktree and install, not UPLOADS_DIR's per-install `_global`. The
+// first run with none there adopts the newest per-install one (a copy; the old files stay).
+const GLOBAL_PORTRAIT_DIR = userGlobalDir({ env: process.env, home: os.homedir() });
+// Assumes the repo layout: each checkout (dev, feat-*) keeps its pictures in <checkout>/.harness/portraits.
+// Best effort and one-shot (a Reset is remembered); a probe's override keeps it inside its own folder.
+adoptOnStart({
+  userDir: GLOBAL_PORTRAIT_DIR,
+  candidateDirs: () => migrationCandidates({ env: process.env, uploadsDir: UPLOADS_DIR, hostDir: __dirname }),
+  log: (line) => console.log(line),
+});
 const theme = resolveTheme(PROJECT_ROOT, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
@@ -407,6 +444,8 @@ const gitTree = createGitTreeService({
   readRemote: readOrigin,
   readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
 });
+// The Git panel's Graph view: the last 50 commits of develop, main and the open branches, with their lanes.
+const gitGraph = createGitGraphService({ cwd: CWD, read: readGraph });
 // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff for THIS host's worktree
 // (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
 const repoService = createRepoService({
@@ -526,10 +565,15 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 // The ONE portrait lookup in this file, carrying all three tiers: the Inactive
 // tab's call sites once passed only portraitsDir, so an upload showed there as
 // "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
-const portraitOf = (agent, state) => portraitFor(agent, state, {
-  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR,
+const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
+  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR, baseState,
 });
-const describe = (agent, state) => ({ agent, state, portrait: portraitOf(agent, state) });
+// `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
+// nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
+const describe = (agent, state, detail) => {
+  const d = detail || state;
+  return { agent, state, detail: d, portrait: portraitOf(agent, d, state) };
+};
 
 // Generated once per project folder and reused by every context window on it.
 const BACKGROUNDS_DIR = process.env.CLAUDE_CUSTOM_BACKGROUNDS || path.join(__dirname, '..', 'backgrounds');
@@ -575,6 +619,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   occupancy: true,
   // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
   bedtime: true,
+  // PermissionRequest, observe-only, so "waiting on you" can name the agent (BACKLOG #55; host/settings-writer.js).
+  permissionRequest: true,
   statusRelay: {
     nodePath: process.versions.electron ? 'node' : process.execPath,
     scriptPath: path.join(__dirname, 'status-relay.js'),
@@ -592,7 +638,7 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
     stateDir: path.join(HARNESS_DIR, 'state'),
   },
 }, PORT);
-const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp });
+const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side: SIDE });
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
@@ -898,14 +944,14 @@ function handleDrop(msg, ws) {
 // What the Style tab's "Default agent picture" row shows: set or not, never
 // blank, and the file's own name so the row can say where the picture came from.
 function globalPortraitInfo() {
-  const g = globalPortrait(UPLOADS_DIR);
+  const g = globalPortrait(GLOBAL_PORTRAIT_DIR);
   return g ? { set: true, file: g.file, media: g.media } : { set: false, file: null, media: null };
 }
 
 // A file-tier change under _global alters what EVERY face without its own
 // picture resolves to, so re-describe all of them rather than guessing which.
 function repaintAllPortraits() {
-  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state) });
+  for (const r of mood.roster()) broadcastControl({ type: 'mood', ...describe(r.agent, r.state, r.detail) });
   lastRosterIndex = {
     ...lastRosterIndex,
     agents: lastRosterIndex.agents.map(a => ({ ...a, portrait: portraitOf(a.agent, 'sleeping') })),
@@ -913,12 +959,12 @@ function repaintAllPortraits() {
   broadcastControl({ type: 'rosterIndex', rosterIndex: lastRosterIndex });
 }
 
-// Every project window is its own host, but the uploads folder is install-wide:
+// Every project window is its own host, but the global picture is user-wide:
 // a change to the global picture made in ANOTHER window must reach this one, or
 // its idle faces keep pointing at a deleted file (Dexter F3, PR #64). `quiet`
 // tells the renderer to update the Style row without announcing a change this
 // window's user did not make.
-watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
+watchGlobalDir(path.join(GLOBAL_PORTRAIT_DIR, '_global'), () => {
   broadcastControl({ type: 'portrait', global: true, ok: true, quiet: true, globalPortrait: globalPortraitInfo() });
   repaintAllPortraits();
 });
@@ -928,9 +974,9 @@ watchGlobalDir(path.join(UPLOADS_DIR, '_global'), () => {
 // reason as the per-agent upload above.
 function handleGlobalPortrait(msg) {
   const out = handleGlobalPortraitMessage(msg, {
-    uploadsDir: UPLOADS_DIR,
+    uploadsDir: GLOBAL_PORTRAIT_DIR,
     stat: (p) => fs.lstatSync(p),
-    resolve: () => (globalPortrait(UPLOADS_DIR) || {}).path || null,
+    resolve: () => (globalPortrait(GLOBAL_PORTRAIT_DIR) || {}).path || null,
   });
   if (!out.reply.ok) console.log('[host] global portrait refused:', msg && msg.action, '-', out.reply.reason);
   broadcastControl({ type: 'portrait', ...out.reply, globalPortrait: globalPortraitInfo() });
@@ -953,7 +999,10 @@ function handlePortraitUpload(msg) {
   // Re-describe rather than assuming the tier that now applies -- describe()
   // re-reads the real filesystem, so a stale idea of "the upload obviously
   // won" can never disagree with what portraitFor actually resolves.
-  if (out.mood) broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state) });
+  if (out.mood) {
+    const row = mood.roster().find(r => r.agent === out.mood.agent);
+    broadcastControl({ type: 'mood', ...describe(out.mood.agent, out.mood.state, row && row.state === out.mood.state ? row.detail : undefined) });
+  }
   if (out.repaintIndex) {
     lastRosterIndex = {
       ...lastRosterIndex,
@@ -1181,9 +1230,85 @@ const summary = createSummaryService({
   broadcast: (m) => broadcastControl(m),
   log: (...a) => console.log(...a),
 });
-const summaryTimer = setInterval(() => { summary.tick().catch(() => { /* logged inside */ }); }, TICK_MS);
+// Lean mode (#62): while every attached window is lean the summary job's only reader (the terminal bar) is hidden, so no job is started
+// (host/lean-gate.js). The tick only starts jobs, so a paused tick costs nothing and a resumed one catches up at once.
+const leanGate = createLeanGate();
+const summaryTimer = setInterval(() => {
+  if (leanGate.paused(clients.size)) return;
+  summary.tick().catch(() => { /* logged inside */ });
+}, TICK_MS);
 summaryTimer.unref();
 summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep at start: old summaries, orphan temp files
+
+// Backlog #39 job 2: docs drift. After a merge into develop the local model reads the diff next to the build log's "Now" and
+// the design docs it touches, and flags sentences the merge now contradicts (host/drift-service.js). READ-ONLY toward the
+// project: it reads documentation\ and git, and writes only its own notes under .harness\state\docs-drift. It shares the
+// summaries' GPU slot, so one Ollama job runs at a time across every tab; each tab's host looks, and the shared mark in the
+// notes file keeps a merge from being read twice.
+const DRIFT_FILE = path.join(seams.summaryDir ? path.join(seams.summaryDir, 'docs-drift') : path.join(HARNESS_DIR, 'state', 'docs-drift'),
+  require('crypto').createHash('sha1').update(String(STATE_ROOT).toLowerCase()).digest('hex').slice(0, 16) + '.json');
+const drift = createDriftService({
+  git: createDriftGit({ cwd: STATE_ROOT }),
+  readDocs: () => readDocsDir(path.join(STATE_ROOT, 'documentation')),
+  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: DRIFT_GENERATE_MS }),
+  store: createDriftStore({ file: DRIFT_FILE }),
+  slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
+  broadcast: (m) => broadcastControl(m),
+  log: (...a) => console.log(...a),
+});
+const driftTimer = setInterval(() => { drift.tick().catch(() => { /* logged inside */ }); }, DRIFT_TICK_MS);
+driftTimer.unref();
+const driftFirst = setTimeout(() => { drift.tick().catch(() => { /* logged inside */ }); }, 10_000);
+driftFirst.unref();
+
+// Backlog #80 (+ #55's bubbles): medals Ricardo gives agents (install-wide, host/medals.js) and the speech bubbles a LOCAL model
+// writes on a state change (host/bubbles.js). The bubbles share the summaries' GPU slot file, so a bubble never runs beside a
+// summary; they are decoration only and never an error (Ollama down: nothing). The probe seams point both at a fake Ollama.
+const medals = createMedals({ store });
+const bubbleSettings = createBubbleSettings({ store });
+const bubbleActivity = createBubbleActivity();
+const bubbles = createBubbles({
+  gate: createBubbleGate(),
+  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: 20_000 }),
+  slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
+  voiceOf: createVoiceReader({ configDir: claudeConfigDir(), cwd: CWD }).voiceOf,
+  contextOf: (agent) => ({ ...bubbleActivity.of(agent), task: mood.taskOf(agent) }),
+  settings: bubbleSettings,
+  broadcast: (m) => broadcastControl(m),
+  log: (...a) => console.log(...a),
+});
+function handleMedalMessage(msg) {
+  let out;
+  if (msg.action === 'give') {
+    const req = validGive(msg);
+    out = req ? medals.give(req.agent, req.kind, req.reason) : { ok: false, reason: 'invalid', medals: medals.all() };
+  } else if (msg.action === 'remove') {
+    const req = validRemove(msg);
+    out = req ? medals.remove(req.agent, req.id) : { ok: false, reason: 'invalid', medals: medals.all() };
+  } else {
+    out = { ok: false, reason: 'invalid', medals: medals.all() };
+  }
+  if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
+  broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
+  medalsWatch.note(out.medals);
+}
+// The medals and the bubbles' switch are install-wide files, but every tab is its own host: a change made through ANOTHER host reaches
+// this host's windows through these watches (polled from the 1 s clock below, host/state-watch.js).
+const medalsWatch = createChangeWatch({ read: () => medals.all(), onChange: (v) => broadcastControl({ type: 'medals', medals: v, ok: true, reason: null }) });
+const bubblesWatch = createChangeWatch({ read: () => { const v = bubbleSettings.peek(); if (v === null) throw new Error('bubbles setting unreadable'); return v; }, onChange: (v) => broadcastControl({ type: 'bubbles', enabled: v }) });
+// A window tells its host whether it can show a bubble (agent images off, lean mode): per SOCKET, so one window can't cancel another,
+// and a window that closes stops counting (dropViewer in its close handler).
+function handleBubblesMessage(msg, ws) {
+  if (msg.action === 'set-enabled') {
+    const out = bubbleSettings.set(msg.enabled);
+    if (!out.ok) console.log('[host] bubbles setting refused:', out.reason);
+    const told = bubbleSettings.enabled();
+    broadcastControl({ type: 'bubbles', enabled: told });
+    bubblesWatch.note(told);      // what was just said, not a second read
+  } else if (msg.action === 'visible') {
+    bubbles.setViewer(ws, msg.visible === true);
+  }
+}
 
 // The OpenRouter catalogue and the council seats.
 //
@@ -1255,6 +1380,8 @@ const occupancy = createOccupancyProducer({
     const inv = mood.invocations().find(i => i.agentId === agentId);
     return inv ? inv.name : null;
   },
+  // #81: what a side session's agents claim, they read.
+  role: SIDE ? 'reader' : undefined,
   // A teammate's SubagentStop ends a turn, not the agent: its claim is kept while it idles.
   isTeammate: teammateFromMeta,
   log: (...a) => console.log(...a),
@@ -1298,7 +1425,9 @@ if (helperExists) {
     // And attention's shell wait: a main-session Read or Edit means the session is working, so a timer that would
     // raise "finished" is cancelled here (BACKLOG #78, PR #147 Dexter D1); `handle` below never sees these events.
     attention.activity(ev);
-    if (isOccupancyOnly(ev)) return;
+    // ...but the mood engine reads them for one thing only: which tool an agent is using now (reading, writing,
+    // BACKLOG #55). They open no run and touch no panel; a Read is never a process.
+    if (isOccupancyOnly(ev)) { mood.handle(ev); return; }
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
     if (isBedtimeOnly(ev)) return;
@@ -1317,6 +1446,7 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      if (SIDE) republishIdentity();     // the identity names it, for the producers that read transcripts
       canvasControl.sessionChanged(sessionId);
       // the roster cards match an agent's worktree claim on it (backlog #57): a /clear starts a new one
       broadcastControl({ type: 'session', sessionId });
@@ -1384,6 +1514,7 @@ if (helperExists) {
       }));
     }
     attention.handle(ev);
+    bubbleActivity.note(ev);
     mood.handle(ev);
     // A backstop ending a call means that call's own close never arrived --
     // logged, because a lost event nobody can see is how PostToolUseFailure
@@ -1564,7 +1695,7 @@ function cleanEnv() {
 // blocked, until the person picks *Open anyway*. Every use of `term` below is
 // guarded for that. Design: documentation/PLAN_WORKTREE_TABS.md, Extension X.
 let term = null;
-const SESSION_LOCK = lockPathFor(CWD);
+const SESSION_LOCK = SIDE ? null : lockPathFor(CWD);
 let lockOwner = null;                  // what we wrote into the lock, once taken
 let lockState = { state: 'pending' };  // host/session-gate.js documents the shapes
 // WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE (Extension X3),
@@ -1804,14 +1935,17 @@ function wireTerm(t) {
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
 // owns the clock and the transitions stay reproducible in tests.
-mood.on('change', ({ agent, state }) => {
-  broadcastControl({ type: 'mood', ...describe(agent, state) });
+mood.on('change', ({ agent, state, detail }) => {
+  broadcastControl({ type: 'mood', ...describe(agent, state, detail) });
+  bubbles.onMood({ agent, state });      // fire and forget: never throws, never makes the card wait (host/bubbles.js)
   // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
   // applies the same rule itself, but the host persists it and is authoritative.
   if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
 });
+let installWideTicks = 0;
 const moodTimer = setInterval(() => {
   mood.tick();
+  if (++installWideTicks % 3 === 0) { medalsWatch.tick(); bubblesWatch.tick(); }      // another tab's medals / switch, every 3 s
   processes.sweep();
   occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   night.tick();              // a night that went overdue: a verdict of time, pushed when the clock makes it
@@ -2003,7 +2137,10 @@ async function refreshTerminals() {
     // holder's own session as "another session in this worktree".
     const holder = lockState.holder ? (readHolder(SESSION_LOCK) || lockState.holder) : null;
     const pids = [term && term.pid, holder && holder.claudePid].filter(p => Number.isInteger(p));
-    const next = await liveSessionsIn(CWD, { exclude: { pids, sessionIds: sessionId ? [sessionId] : [] } });
+    // #81: the folder's side host (or, in a side host, the folder's own host) is not "another session": it is the other half of
+    // this one's pair, and never a second writer.
+    const sibs = siblingSessions(ownIdentities(), { cwd: CWD, side: SIDE, ownPort: PORT });
+    const next = await liveSessionsIn(CWD, { exclude: { pids: [...pids, ...sibs.pids], sessionIds: [...(sessionId ? [sessionId] : []), ...sibs.sessionIds] } });
     if (next.format === 'unknown' && (!terminalSessions || terminalSessions.format !== 'unknown')) {
       console.log('[host] session registry: unknown format -- terminal sessions not checked (see verify/probe-session-registry.js)');
     } else if (next.format === 'ok' && !next.verified && (!terminalSessions || terminalSessions.verified)) {
@@ -2150,7 +2287,7 @@ wss.on('connection', (ws, req) => {
     background: styleResolved.background,
     style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look, cliTheme: RUNNING_CLI_THEME },
     usage: currentUsage(),
-    roster: mood.roster().map(r => describe(r.agent, r.state)),
+    roster: mood.roster().map(r => describe(r.agent, r.state, r.detail)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
@@ -2159,9 +2296,13 @@ wss.on('connection', (ws, req) => {
     // Backlog #39: this session's "where are we" summary (null: none yet) and why there is no fresh one (null: nothing wrong).
     summary: summaryNow.summary,
     summaryOff: summaryNow.off,
+    // Backlog #39 job 2: docs that may be out of date after a merge into develop, and why the check is off (null: nothing wrong).
+    docsDrift: drift.snapshot(),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
+    medals: medals.all(),
+    bubbles: { enabled: bubbleSettings.enabled() },
     globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
@@ -2379,6 +2520,10 @@ wss.on('connection', (ws, req) => {
       runHealth().catch(() => {});   // broadcasts on start and on finish
       return;
     }
+    if (msg.type === 'lean') {
+      leanGate.set(ws, msg.on === true);
+      return;
+    }
     if (msg.type === 'input') {
       // Miguel, 2026-09-15: unvalidated, `term.write(undefined)` reaches
       // node-pty's deferred write queue and can throw OUTSIDE this function's
@@ -2530,6 +2675,14 @@ wss.on('connection', (ws, req) => {
       handleRosterMessage(msg);
       return;
     }
+    if (msg.type === 'medal') {
+      handleMedalMessage(msg);
+      return;
+    }
+    if (msg.type === 'bubbles') {
+      handleBubblesMessage(msg, ws);
+      return;
+    }
     if (canvasControl.handles(msg.type)) {
       // Answered by a broadcast `canvas` frame (host/canvas-control.js), the refusal included.
       canvasControl.handle(msg);
@@ -2574,11 +2727,33 @@ wss.on('connection', (ws, req) => {
       });
       return;
     }
+    if (msg.type === 'docs-drift') {
+      // Dismiss a note (hidden for good, on every window of the project) or ask for the list again. The host only ever
+      // hides a note: no document is touched.
+      if (msg.action === 'dismiss' && typeof msg.id === 'string') {
+        const r = drift.dismiss(msg.id);
+        // A good dismissal was just broadcast to every window (this one too); a failed one is said, to the window that asked.
+        if (!r.ok) {
+          console.log('[drift] dismiss failed:', r.error);
+          sendControl(ws, { type: 'docs-drift', ...drift.snapshot(), error: `Couldn't hide that note: ${r.error}` });
+        }
+        return;
+      }
+      sendControl(ws, { type: 'docs-drift', ...drift.snapshot() });
+      return;
+    }
     if (msg.type === 'git-tree') {
       // The Git panel (documentation/PLAN_GIT_TREE.md). gitTree.get() never rejects: a failure
       // arrives as { ok: false, error }, so the panel can say so instead of waiting forever.
       gitTree.get().then(tree => {
         try { ws.send(JSON.stringify({ type: 'git-tree', ...tree })); } catch { /* the client went away */ }
+      });
+      return;
+    }
+    if (msg.type === 'git-graph') {
+      // The Graph view. Like git-tree, it never rejects: a failure arrives as { ok: false, error }.
+      gitGraph.get().then(graph => {
+        try { ws.send(JSON.stringify({ type: 'git-graph', ...graph })); } catch { /* the client went away */ }
       });
       return;
     }
@@ -2693,6 +2868,8 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     clients.delete(ws);
+    leanGate.drop(ws);
+    bubbles.dropViewer(ws);      // BACKLOG #80: a window that left can't show a bubble
     // A WINDOW leaving (not a one-shot control client) starts stop-if-idle's
     // grace: it may be reloading, and its session is in use.
     if (leftAsWindow(ws.openedAt, Date.now())) lastWindowLeftAt = Date.now();
@@ -2734,7 +2911,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined,
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -2751,7 +2928,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -2830,7 +3007,7 @@ process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOC
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

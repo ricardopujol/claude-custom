@@ -324,7 +324,7 @@ function paintBarNow() {
     bedtime: bar.bedtime,
     occupancy: chip,
     summary: panel,
-    focusMode: document.body.classList.contains('focus-mode'),
+    focusMode: document.body.classList.contains('focus-mode') || leanOn,
   });
   bar.summaryShown = !!m.summary;
   if (!m.prompt) bar.fullOpen = false;
@@ -464,7 +464,17 @@ function applyBarPrompt(prompt, live) {
 
 
 
-function applyBedtime(payload) {
+// Lean mode follows the HOST's word about the night (main's app/lean-state.js decides what it means); a dropped socket
+// says nothing, so it never ends a night here.
+let lastLeanNight;
+function reportLeanNight() {
+  const at = bar.bedtime !== null ? bar.bedtime.startedAt : null;
+  if (at === lastLeanNight) return;
+  lastLeanNight = at;
+  if (window.harness && window.harness.lean) window.harness.lean.night(at);
+}
+
+function applyBedtime(payload, { fromHost = true } = {}) {
   bar.bedtime = payload && typeof payload === 'object' && typeof payload.startedAt === 'number' && Number.isFinite(payload.startedAt) ? payload : null;
   // A new night forgets the last one's answer (its id is never seen again); the same night returning keeps it.
   if (bar.bedtime !== null) {
@@ -473,6 +483,7 @@ function applyBedtime(payload) {
     bar.nightKey = key;
   }
   if (occupancy.confirm) occupancy.confirm.setClaims(confirmClaims());
+  if (fromHost) reportLeanNight();
   paintBar();
   reportTabStatus();
 }
@@ -523,7 +534,7 @@ async function jumpToFolder(folder) {
 }
 
 // The minutes on the bar (the prompt's age, "wake due") go stale between pushes.
-setInterval(() => { if (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0 || sum.pinned) paintBar(); }, 30000);
+setInterval(() => { if (!leanOn && (bar.prompt || bar.bedtime !== null || occupancy.here.length > 0 || sum.pinned)) paintBar(); }, 30000);
 
 // --- the where-are-we summary (backlog #39 job 1) ----------------------------------------------------------
 // The host's local-model summary of this session (host/summary-service.js). Every decision is in
@@ -793,10 +804,32 @@ const repoBrowser = window.repoBrowser.create({
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
+  // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
+  onDirty: (rel) => { try { if (window.harness && window.harness.readerDirty) window.harness.readerDirty(rel); } catch {} },
+  confirmDiscard: async (message) => window.confirm(message),
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
+// the window-close question's Save: main asks every page to save its unsaved reader text
+if (window.harness && window.harness.onReaderSave) window.harness.onReaderSave(() => { repoBrowser.reader.save(); });
 
+// --- docs drift (backlog #39 job 2) --------------------------------------------------------------------------
+// The host's list of docs the local model flagged after a merge into develop (host/drift-service.js), drawn above the git dial
+// by app/docs-drift-display.js. Dismiss tells the host to hide the note; nothing here edits a document.
+let docsDrift = null;
+function paintDocsDrift() {
+  const el = document.getElementById('drift-list');
+  if (!el || !window.docsDriftDisplay) return;
+  docsDriftDisplay.render(el, docsDrift, Date.now(), {
+    onDismiss: (id) => { try { ws.send(JSON.stringify({ type: 'docs-drift', action: 'dismiss', id })); } catch {} },
+  });
+}
+function applyDocsDrift(p) {
+  docsDrift = p && typeof p === 'object' ? { notes: Array.isArray(p.notes) ? p.notes : [], off: p.off && typeof p.off === 'object' ? p.off : null, error: typeof p.error === 'string' ? p.error : null } : null;
+  paintDocsDrift();
+}
+// The ages on the notes go stale between pushes.
+setInterval(() => { if (docsDrift) paintDocsDrift(); }, 60 * 1000);
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
 // Asked for when the panel opens, on reconnect, and every 30s while it's showing:
 // branches and spend move while you work. The host shares one read between
@@ -807,12 +840,77 @@ function requestGitTree() {
   try { ws.send(JSON.stringify({ type: 'git-tree' })); } catch {}
 }
 setInterval(() => {
-  if (shownModules.has('git') && document.visibilityState === 'visible') requestGitTree();
+  if (shownModules.has('git') && document.visibilityState === 'visible') {
+    requestGitTree();
+    if (gitView === 'graph') requestGitGraph();
+  }
 }, GIT_TREE_EVERY_MS);
 // Back from hidden: ask now, not up to 30s later with an old tree on screen (PR #85 Dexter F9).
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && shownModules.has('git')) requestGitTree();
+  if (document.visibilityState === 'visible' && shownModules.has('git')) {
+    requestGitTree();
+    if (gitView === 'graph') requestGitGraph();
+  }
 });
+// The Graph view next to Rings (BACKLOG #2 follow-up): the same panel, the other drawing. The choice is kept per
+// project (the tree's answer names it), and only the shown view is re-asked; the commit log is a separate, cheap read.
+let gitView = 'rings';
+let gitViewProject = null;
+let gitViewChosen = false;       // a button was pressed: the project's saved view must not overrule it when it arrives
+let lastGitGraph = null;
+// Nothing is sent to a host that doesn't list `git-graph` in its hello: it would TYPE the frame into the session
+// (the asker keeps that rule, with tests); the panel says the session needs restarting instead.
+const gitGraphAsker = window.gitGraphDisplay.createAsker(frame => {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+  try { ws.send(frame); return true; } catch { return false; }
+});
+function requestGitGraph() {
+  const r = gitGraphAsker.ask();
+  if (r.note) document.getElementById('git-graph-status').textContent = r.note;
+}
+function renderGitGraph() {
+  // only the shown view is drawn; nothing answered yet: the status line says "reading the commits…"
+  if (gitView !== 'graph' || lastGitGraph === null) return;
+  window.gitGraphDisplay.render(document.getElementById('git-body'), lastGitGraph, {
+    tree: lastGitTree,
+    tabs: lastGitTabs,
+    onJump: folder => window.harness.selectFolder(folder),
+    onOpenUrl: url => window.harness.openExternal(url),
+    onCopy: async (text) => {
+      const r = await window.harness.writeClipboard(text);
+      if (!r || r.ok !== true) throw new Error((r && r.error) || 'the clipboard refused it');
+    },
+  });
+}
+function setGitView(view, { save = true, chosen = true } = {}) {
+  gitView = window.gitGraphDisplay.normalizeView(view);
+  if (chosen) gitViewChosen = true;
+  const graph = gitView === 'graph';
+  document.getElementById('git-dial').hidden = graph;
+  document.getElementById('git-status').hidden = graph;
+  document.getElementById('git-graph').hidden = !graph;
+  const gs = document.getElementById('git-graph-status');
+  gs.hidden = !graph;
+  for (const b of document.querySelectorAll('#git-view button')) b.setAttribute('aria-pressed', b.dataset.view === gitView ? 'true' : 'false');
+  if (save && gitViewProject !== null) window.gitGraphDisplay.writeView(storageOrNull(), gitViewProject, gitView);
+  if (graph) {
+    if (lastGitGraph === null) gs.textContent = 'reading the commits…';
+    requestGitGraph();
+    renderGitGraph();
+  }
+}
+const storageOrNull = () => { try { return localStorage; } catch { return null; } };
+document.getElementById('git-view').addEventListener('click', e => {
+  const b = e.target.closest ? e.target.closest('button[data-view]') : null;
+  if (b) setGitView(b.dataset.view);
+});
+// The first tree answer names the project: its saved view is applied once, and from then on the buttons save it.
+function adoptGitViewProject(tree) {
+  if (!tree || typeof tree.project !== 'string' || tree.project === gitViewProject) return;
+  gitViewProject = tree.project;
+  const a = window.gitGraphDisplay.adoptView({ chosen: gitViewChosen, current: gitView, saved: window.gitGraphDisplay.readView(storageOrNull(), gitViewProject) });
+  setGitView(a.view, { save: a.persist, chosen: false });
+}
 let lastGitTree = null;
 // What the shell knows of each listed worktree's tab (Enhancement #46): [{ folder, open, started, known,
 // working, needsInput }], or null when it couldn't be asked -- unknown, never "idle".
@@ -834,6 +932,8 @@ function renderGitTree(tree) {
       return r;
     },
   });
+  adoptGitViewProject(tree);
+  renderGitGraph();        // the graph's strip reads the tree's address and worktrees
 }
 // The tabs' states move faster than the tree does (a session starts and stops working), so they're asked
 // for on their own, every couple of seconds while the panel is showing, and with every tree.
@@ -1068,6 +1168,10 @@ let dragLayout = null;           // a divider being dragged: drawn, not yet save
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let shownModules = new Set();
+let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
+let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
+let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
+let leanOn = false;              // lean mode, BACKLOG #62: the whole window is terminal-only; main's word, see the lean block below
 let layoutPushes = 0;            // layouts pushed to this window by main: the probe counts the store writes with it
 
 // This window's selection. A window that has none yet is seeded ONCE from L1's
@@ -1093,9 +1197,40 @@ function dockViewport() {
   return { width: dock.clientWidth, height: dock.clientHeight };
 }
 
+// --- the Games panel (BACKLOG #41) -----------------------------------------------------------------------------------------
+// GAMES-BEGIN
+// app/games-display.js builds the panel and runs the rounds; the rules are in app/games-rules.js and app/games-round.js, the bests are
+// kept by main (host/game-scores.js). What is here is the three facts only this page knows: whether the panel is on screen, whether
+// the terminal holds the keyboard, and when Claude needs Ricardo (the attention message below calls gamesHandBack).
+const gamesRoot = document.getElementById('games-root');
+const gamesPanel = gamesRoot ? window.gamesDisplay.mount({
+  doc: document,
+  root: gamesRoot,
+  bridge: window.harness && window.harness.games ? window.harness.games : null,
+  focusTerminal: () => term.focus(),
+  terminalHasFocus: () => !!(term.element && term.element.contains(document.activeElement)),
+  raf: (fn) => requestAnimationFrame(fn),
+  caf: (id) => cancelAnimationFrame(id),
+  now: () => performance.now(),
+  later: (fn, ms) => setTimeout(fn, ms),
+  css: (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
+}) : null;
+// Lean mode unmounts every dock panel, so it reaches the games as "not shown": no separate lean flag is needed.
+function gamesView() {
+  if (gamesPanel) gamesPanel.setView({ shown: shownModules.has('games'), pageVisible: document.visibilityState === 'visible' });
+}
+// Claude needs Ricardo (a permission prompt, a question) or its turn finished: a running round freezes and the keyboard goes
+// back to the terminal.
+function gamesHandBack() { if (gamesPanel) gamesPanel.handBack(); }
+let gamesHides = 0;                 // probe: how many times this page was told it is hidden
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') gamesHides += 1; gamesView(); });
+// The page is going away mid-round: bank the score it has (best effort; the raise is the same safe write as at a round's end).
+window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
+// GAMES-END
+
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
-  if (id === 'git') requestGitTree();
+  if (id === 'git') { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
@@ -1133,8 +1268,8 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  // each figure with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
-  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow());
+  // each figure (CPU, memory, and the GPU's when the payload has one) with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow(), c.gpuText);
   tbResourcesEl.setAttribute('aria-label', c.text);
   tbResourcesEl.title = c.title;
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
@@ -1200,7 +1335,8 @@ function renderResources() {
   // The markup is replaced on every draw: keep the keyboard on the same row or button.
   const focused = document.activeElement && resRoot.contains(document.activeElement) ? document.activeElement : null;
   const keep = focused && focused.dataset ? { act: focused.dataset.resAct, key: focused.dataset.resKey, pid: focused.dataset.resPid } : null;
-  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState));
+  // the GPU section's last-hour graphs come from the history display (it loads after resources-display.js, so it is handed in)
+  resRoot.innerHTML = window.resourcesDisplay.html(window.resourcesDisplay.view(resState), { gpuGraphs: window.resourcesHistoryDisplay.gpuGraphs(resHistory(), resHistoryNow()) });
   if (!keep) return;
   const again = [...resRoot.querySelectorAll('[data-res-act]')].find(el => el.dataset.resAct === keep.act
     && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);
@@ -1490,14 +1626,17 @@ function onVaultLeft() {
 // the user acted (PR #82 Dexter F2, Miguel B1).
 // `refit: false` is for a redraw that cannot change the terminal's rectangle (a float's move or resize): the
 // pty is not told again and no timer is queued for it (PR #102 Miguel Y2).
-function renderLayout({ userAction = false, refit = true } = {}) {
+function renderLayout({ userAction = false, refit = true, quiet = false } = {}) {
   const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize });
   lastPlan = plan;
   window.dockTreeView.applyBoxes(plan, document);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
-  const now = new Set(plan.shown);
-  const fx = window.dockZones.renderEffects(shownModules, now, { userAction });
+  // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
+  // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
+  const now = new Set(leanOn ? [] : plan.shown);
+  const fx = window.dockZones.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
+  gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   for (const id of fx.newlyShown) onModuleShown(id);
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
@@ -2632,6 +2771,58 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         renderGitTree(t);
         break;
       }
+      // The Graph view (verify/probe-git-graph.js): read it, switch to it, click a commit, press a key, redraw it.
+      case 'ggState': {
+        const body = document.getElementById('git-body');
+        const g = document.getElementById('git-graph');
+        const st = g.ggState || {};
+        const scroll = g.querySelector('.gg-scroll');
+        const detail = g.querySelector('.gg-detail');
+        const shown = el => !!el && !el.hidden && getComputedStyle(el).display !== 'none';
+        return JSON.stringify({
+          ok: true, view: gitView,
+          graphShown: shown(g), dialShown: shown(document.getElementById('git-dial')),
+          pressed: [...document.querySelectorAll('#git-view button')].map(b => b.dataset.view + ':' + b.getAttribute('aria-pressed')),
+          status: document.getElementById('git-graph-status').textContent,
+          rows: [...g.querySelectorAll('.gg-row')].map(r => ({ hash: r.dataset.hash, msg: r.querySelector('.gg-msg').textContent,
+            refs: [...r.querySelectorAll('.gg-ref')].map(x => x.textContent), sel: r.classList.contains('sel'), rect: rectOf(r) })),
+          dots: [...g.querySelectorAll('.gg-dot')].map(d => ({ cx: Number(d.getAttribute('cx')), cy: Number(d.getAttribute('cy')),
+            cls: d.getAttribute('class') })),
+          edges: g.querySelectorAll('.gg-edge').length,
+          curves: [...g.querySelectorAll('.gg-edge')].filter(p => p.getAttribute('d').includes('C')).length,
+          svg: g.querySelector('.gg-svg') ? rectOf(g.querySelector('.gg-svg')) : null, panel: rectOf(body),
+          scroll: scroll ? { top: scroll.scrollTop, height: scroll.scrollHeight, client: scroll.clientHeight, rect: rectOf(scroll) } : null,
+          detail: shown(detail) ? { title: detail.querySelector('.gg-detail-title').textContent, meta: detail.querySelector('.gg-detail-meta').textContent,
+            rect: rectOf(detail),
+            acts: [...detail.querySelectorAll('.git-act')].map(b => ({ act: b.dataset.act, label: b.textContent, disabled: b.getAttribute('aria-disabled') === 'true',
+              why: ((b.parentElement && b.parentElement.querySelector('.git-act-why')) || {}).textContent || null })) } : null,
+          said: (g.querySelector('.gg-said') || {}).textContent || '',
+          renders: st.renders || 0, wired: st.wired || 0,
+          saved: window.gitGraphDisplay.readView(storageOrNull(), gitViewProject),
+          focused: document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.hash || null : null,
+          lineHeightOk: [...g.querySelectorAll('.gg-row')].every(r => Math.round(r.getBoundingClientRect().height) === window.gitGraphDisplay.ROW_H),
+        });
+      }
+      case 'ggView': setGitView(String(a.view), { save: a.save !== false }); break;
+      case 'ggClick': {
+        const r = [...document.querySelectorAll('#git-graph .gg-row')].find(x => x.dataset.hash === a.hash || x.dataset.hash.startsWith(String(a.hash)));
+        if (!r) return JSON.stringify({ ok: false, error: 'no such commit' });
+        r.focus();       // a real click on a row focuses it
+        r.click();
+        break;
+      }
+      case 'ggAct': {
+        const btn = document.querySelector('#git-graph .gg-detail .git-act[data-act="' + String(a.act) + '"]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no action ' + a.act });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'ggKey': {
+        const target = document.activeElement || document.body;
+        target.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, bubbles: true, cancelable: true }));
+        break;
+      }
+      case 'ggRerender': renderGitGraph(); break;
       case 'gitKey': {
         // a key on the focused element, as a keyboard would send it
         const target = document.activeElement || document.body;
@@ -2685,6 +2876,24 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
       // this tab's own terminal screen: what its session's pty has shown
       case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
+      // docs drift (verify/probe-docs-drift.js): the list as painted, and a click on a note's Dismiss button
+      case 'driftState': {
+        const el = document.getElementById('drift-list');
+        const box = el.getBoundingClientRect();
+        return JSON.stringify({
+          ok: true, hidden: el.hidden, text: el.textContent, html: el.innerHTML, shown: box.width > 0 && box.height > 0,
+          rows: [...el.querySelectorAll('.drift-row')].map(r => ({ doc: r.querySelector('.drift-doc b').textContent, sentence: r.querySelector('.drift-sentence').textContent, why: r.querySelector('.drift-why').textContent, meta: r.querySelector('.drift-meta').textContent })),
+          note: (el.querySelector('.drift-note') || {}).textContent || null,
+          label: (el.querySelector('.drift-label') || {}).textContent || null,
+          color: getComputedStyle(el).color, background: getComputedStyle(document.getElementById('git-body')).backgroundColor,
+        });
+      }
+      case 'driftDismiss': {
+        const btn = document.querySelector('#drift-list [data-drift-dismiss]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no note to dismiss' });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
       // backlog #44 + #47 (verify/probe-worktree-occupancy.js): the banner, the confirm and the card lines as
       // painted; a keystroke through xterm's own input path (term.input fires onData as typing does); a click on
       // one of the page's occupancy controls; and the session's turn, as the host's `turn` message would set it.
@@ -2830,7 +3039,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
           chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
-          rows: q('.res-row').map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
+          // the GPU section's rows are read separately (gpuSec): this list is the session, self and window rows
+          rows: q('.res-row').filter(r => !r.closest('.res-gpu')).map(r => ({ key: r.dataset.resKey || null, name: (r.querySelector('.res-name') || {}).textContent || '', open: r.classList.contains('open'),
             fit: cellFit(r.querySelector('.res-name'), !r.classList.contains('res-plain')),
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
@@ -2851,13 +3061,26 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
               chipRect: chip && !chip.hidden ? rect(chip) : null,
               chipClipped: chip ? chip.scrollWidth > chip.clientWidth : null,
               barClipped: bar ? bar.scrollWidth > bar.clientWidth : null,
-              winW: window.innerWidth,
+              winW: window.innerWidth, winH: window.innerHeight,
               link: !!(pop && pop.querySelector('button.hg-link[data-hist-act="open-panel"]')),
               open: !!pop && !pop.hidden, expanded: chip ? chip.getAttribute('aria-expanded') : null,
               popRect: pop && !pop.hidden ? rect(pop) : null,
               graphs: pop ? [...pop.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, ours: g.querySelectorAll('.hg-ours').length,
                 latest: g.querySelectorAll('.hg-latest').length, dots: g.querySelectorAll('.hg-dot-rest').length, axis: (g.querySelector('.hg-axis') || {}).textContent || '', readout: (g.querySelector('.hg-readout') || {}).textContent || '',
                 empty: !!g.querySelector('.hg-empty'), cursor: !!g.querySelector('.hg-cursor') })) : [],
+            };
+          })(),
+          // backlog #82: verify/probe-gpu-usage.js reads the GPU section of the Resources tab
+          gpuSec: (() => {
+            const sec = document.querySelector('#resources-root .res-gpu');
+            if (!sec) return null;
+            const box = document.getElementById('resources-root').getBoundingClientRect();
+            return {
+              graphs: [...sec.querySelectorAll('.hg')].map(g => ({ kind: g.dataset.histGraph, rest: g.querySelectorAll('.hg-rest').length, dots: g.querySelectorAll('.hg-dot-rest').length, ours: g.querySelectorAll('.hg-ours').length })),
+              rows: [...sec.querySelectorAll('.res-row.res-plain')].map((r) => {
+                const b = r.getBoundingClientRect();
+                return { name: (r.querySelector('.res-name') || {}).textContent || '', figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent), inside: b.left >= box.left - 1 && b.right <= box.right + 1 };
+              }),
             };
           })(),
           panelFocused: document.activeElement === document.getElementById('resources-root'),
@@ -2878,6 +3101,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       }
       // #63 follow-up: the popover's other ways to close, and the hover readout, as the page would see them
       case 'resourcesHistoryDo': {
+        // backlog #82: bring the Resources tab's GPU section to the top of the panel, so a screenshot shows its process list
+        if (a.op === 'scroll-gpu') {
+          const sec = document.querySelector('#resources-root .res-gpu');
+          if (!sec) return JSON.stringify({ ok: false, error: 'no GPU section' });
+          sec.scrollIntoView({ block: 'start' });
+          return JSON.stringify({ ok: true });
+        }
         if (a.op === 'esc') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return JSON.stringify({ ok: true }); }
         if (a.op === 'outside') { document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return JSON.stringify({ ok: true }); }
         if (a.op === 'link') {
@@ -2946,6 +3176,54 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
           document.body.appendChild(box);
         }
+        return JSON.stringify({ ok: true });
+      }
+      // backlog #41 (verify/probe-games.js): read the Games panel, and operate it as a pointer, a keyboard or Claude would
+      case 'gamesState': {
+        if (!gamesPanel) return JSON.stringify({ ok: false, error: 'no games panel' });
+        const cv = document.querySelector('#games-root .games-canvas');
+        const cover = document.querySelector('#games-root .games-cover');
+        const act = document.activeElement;
+        // how many pixels of the board are not the plain background: a blank canvas (a game that never drew) reads 0
+        let inked = null;
+        try {
+          const px = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
+          const seen = new Set();
+          for (let i = 0; i < px.length; i += 4 * 97) seen.add((px[i] << 16) | (px[i + 1] << 8) | px[i + 2]);
+          inked = seen.size;
+        } catch { /* unreadable */ }
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.gamesDisplay === 'object' && typeof window.gamesRules === 'object' && typeof window.gamesRound === 'object',
+          shown: document.querySelector('.panel[data-panel="games"]').classList.contains('on'),
+          state: gamesPanel.state(),
+          visibility: document.visibilityState, hides: gamesHides,
+          cover: { hidden: cover.hidden, text: cover.querySelector('.games-cover-text').textContent, button: cover.querySelector('.games-cover-btn').textContent },
+          best: document.querySelector('#games-root .games-best').textContent,
+          score: document.querySelector('#games-root .games-score').textContent,
+          time: document.querySelector('#games-root .games-time').textContent,
+          picks: [...document.querySelectorAll('#games-root .games-pick')].map(b => [b.dataset.game, b.classList.contains('on')]),
+          canvas: rectOf(cv), colours: inked,
+          focus: { terminal: !!(term.element && term.element.contains(act)), panel: !!(act && gamesRoot.contains(act)), tag: act ? act.tagName : null },
+          accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        });
+      }
+      case 'gamesDo': {
+        if (!gamesPanel) return JSON.stringify({ ok: false, error: 'no games panel' });
+        const root = document.getElementById('games-root');
+        const cv = root.querySelector('.games-canvas');
+        const at = (x, y) => { const r = cv.getBoundingClientRect(); return { clientX: r.left + x * r.width / 400, clientY: r.top + y * r.height / 300, bubbles: true }; };
+        if (a.op === 'pick') { const b = [...root.querySelectorAll('.games-pick')].find(x => x.dataset.game === a.game); if (!b) return JSON.stringify({ ok: false, error: 'no game ' + a.game }); b.click(); }
+        else if (a.op === 'go') root.querySelector('.games-cover-btn').click();
+        else if (a.op === 'focusBoard') cv.focus();
+        // a key at whatever holds focus: the terminal's own input when it has it, so this is the "typing for Claude" case
+        else if (a.op === 'keyAtFocus') (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: String(a.key), code: a.code || '', bubbles: true, cancelable: true }));
+        else if (a.op === 'click') { cv.dispatchEvent(new PointerEvent('pointerdown', at(a.x, a.y))); cv.dispatchEvent(new PointerEvent('pointerup', at(a.x, a.y))); cv.dispatchEvent(new MouseEvent('click', at(a.x, a.y))); }
+        else if (a.op === 'resume') { cv.dispatchEvent(new PointerEvent('pointerdown', at(200, 150))); }
+        // the real control-message path: the same function the host's attention message goes through
+        else if (a.op === 'attention') handleControl({ type: 'attention', urgent: a.urgent === true, title: 'games probe', body: 'games probe' });
+        else if (a.op === 'termFocus') term.focus();
+        else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
         return JSON.stringify({ ok: true });
       }
       case 'resourcesClick': {
@@ -3079,6 +3357,26 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           }, 150);
         }, 50);
       });
+      // Backlog #62 (verify/probe-lean.js): lean mode as this page has it -- the class, what the dock still shows,
+      // the terminal's renderer and scrollback, the background layer and the working-agents strip.
+      case 'leanState': {
+        const buf = term.buffer.active;
+        const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
+        const bgEl = document.getElementById('bg');
+        const cs = getComputedStyle(document.documentElement);
+        return JSON.stringify({
+          ok: true, leanOn, bodyLean: document.body.classList.contains('lean'), shown: [...shownModules],
+          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length, headerVisible: visible(document.querySelector('header')),
+          barVisible: visible(document.getElementById('terminal-bar')),
+          webgl: !!webglAddon, termRect: rectOf(document.getElementById('termwrap')), page: { width: window.innerWidth, height: window.innerHeight },
+          buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
+          bg: { cssImage: bgEl.style.backgroundImage, still: bgStillEl ? { width: bgStillEl.width, height: bgStillEl.height } : null,
+            video: bgVideoEl ? { paused: bgVideoEl.paused, currentTime: bgVideoEl.currentTime } : null, hasBg: document.body.classList.contains('has-bg') },
+          look: { accent: cs.getPropertyValue('--accent').trim(), bg: cs.getPropertyValue('--bg').trim(), text: cs.getPropertyValue('--text').trim() },
+          termTheme: term.options.theme ? { background: term.options.theme.background || null, foreground: term.options.theme.foreground || null } : null,
+          typedFocus: !!(term.element && term.element.contains(document.activeElement)), focusId: (document.activeElement && document.activeElement.id) || '',
+        });
+      }
       // Backlog #34 (verify/probe-video-background.js): the background layer as it is on screen --
       // the video's own state, the classes and variables the look paints, and the Style tab's note.
       case 'bgState': {
@@ -4043,6 +4341,16 @@ function inactiveRowHtml(row) {
 // set and sends it in `hello` and in `hidden` frames; this list is only its
 // mirror, and a click sends a request rather than editing it.
 let hiddenAgentNames = [];
+
+// BACKLOG #80 (+ #55's bubbles). The medals Ricardo gave, as the host last said ([{ agent, medals }]; app/medals-display.js), and
+// the speech bubbles: the host's on/off switch (null until `hello`), the live bubbles, and whether the window is in lean mode
+// (#62's lean lane sets it; until it lands nothing is lean). Decisions are in app/bubble-display.js.
+let medalList = null;      // null: not read yet, or the host couldn't read the file (unknown, never "no medals")
+const cleanMedalList = (list) => (Array.isArray(list) ? list.filter((e) => e && typeof e.agent === 'string' && Array.isArray(e.medals)) : null);
+let bubblesEnabled = null;
+let leanMode = false;
+const bubbleBoard = window.bubbleDisplay.createBoard();
+let bubbleTimer = null;
 let showHiddenAgents = false;
 
 function sendRosterAction(action, agent) {
@@ -4073,6 +4381,7 @@ function paintAgents(html) {
   // Through setRosterHtml, not innerHTML: a live avatar video keeps its node
   // across a repaint, per PR #64. The unchanged-markup skip from PR #66 runs first.
   setRosterHtml(html);
+  paintBubbles();       // a repaint replaced the cards, so the bubbles go back on (BACKLOG #80)
 }
 
 // Delegated on #agents, the ONE click handler for the roster's cards. No
@@ -4102,6 +4411,8 @@ document.getElementById('roster-show-hidden').addEventListener('click', () => {
 });
 
 function renderRoster() {
+  // Lean mode keeps only a strip of the working agents' still portraits; the panel is not drawn (nor its videos churned).
+  if (leanOn) { paintLeanFaces(); return; }
   const showBtnEl = document.getElementById('roster-show-hidden');
   showBtnEl.hidden = true;   // Active tab only; the Active branch below un-hides it when n > 0
   const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
@@ -4139,9 +4450,8 @@ function renderRoster() {
   }
   // Active agents first, then alphabetical, so the thing you care about is at
   // the top without the list reshuffling on every tick.
-  const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
-  const rows = [...roster.values()].sort((a, b) =>
-    (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
+  // A card waiting on you floats to the top, then base state, then name (app/agent-state-display.js sortRows).
+  const rows = window.agentStateDisplay.sortRows([...roster.values()]);
   const counts = instanceCounts(latestParty);
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
@@ -4174,13 +4484,18 @@ function renderRoster() {
 
   paintAgents(shown.map(r => {
     const entry = rosterIndexEntry(r.agent);
-    return `<div class="agent" data-state="${r.state}" data-agent="${escapeHtml(r.agent)}"` +
+    // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
+    // `data-detail`, drawn as a corner badge and as words under the name.
+    const look = window.agentStateDisplay.describeState(r.state, r.detail);
+    return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
+      window.medalsDisplay.cardButtonHtml(r.agent) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
+      window.agentStateDisplay.badgeHtml(r.state, r.detail) +
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
-      `<div class="state">${r.state}</div>` +
+      `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
@@ -4225,6 +4540,7 @@ function renderAgentLogPanel() {
   // survives a live log), rebuilds otherwise, and keeps the reader's scroll
   // place -- all in the display module's paint function.
   window.agentLogDisplay.paint(agentLogEl, agentLog);
+  paintMedalShelf();       // BACKLOG #80: the medals under the log
 }
 
 function sendAgentLog(action, agent) {
@@ -4255,6 +4571,152 @@ if (agentLogEl) {
     }
   });
 }
+
+// --- medals and the speech bubbles (BACKLOG #80) ---------------------------------------------------
+// Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
+// medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
+function sendJson(obj) {
+  try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
+}
+
+function bubblesAllowed() {
+  return window.bubbleDisplay.canShow({ enabled: bubblesEnabled, imagesEnabled: agentImagesEnabled, lean: leanMode });
+}
+
+// Put each live bubble on its card and take expired ones off; look again when the next one expires.
+function paintBubbles() {
+  window.bubbleDisplay.attach(agentsEl, bubbleBoard, bubblesAllowed());
+  clearTimeout(bubbleTimer);
+  const next = bubbleBoard.nextExpiryIn();
+  bubbleTimer = next === null ? null : setTimeout(paintBubbles, next + 25);
+  paintBubblesToggle();
+}
+
+// The host asks the model only while this window could show the answer (agent images off or lean: no GPU spent).
+function tellHostBubblesVisible() {
+  sendJson({ type: 'bubbles', action: 'visible', visible: bubblesAllowed() });
+}
+
+function paintBubblesToggle() {
+  const bubblesToggleBtn = document.getElementById('bubbles-toggle');
+  if (!bubblesToggleBtn) return;
+  bubblesToggleBtn.classList.toggle('off', bubblesEnabled !== true);
+  if (typeof bubblesEnabled === 'boolean') bubblesToggleBtn.setAttribute('aria-pressed', String(bubblesEnabled));
+  else bubblesToggleBtn.removeAttribute('aria-pressed');
+  bubblesToggleBtn.title = bubblesEnabled === true
+    ? 'Speech bubbles are on (jokes from a local model). Click to turn them off.'
+    : bubblesEnabled === false ? 'Speech bubbles are off. Click to turn them on.' : 'Speech bubbles: reading the setting';
+}
+const bubblesToggleEl = document.getElementById('bubbles-toggle');
+if (bubblesToggleEl) {
+  bubblesToggleEl.addEventListener('click', () => {
+    if (typeof bubblesEnabled === 'boolean') sendJson({ type: 'bubbles', action: 'set-enabled', enabled: !bubblesEnabled });
+  });
+}
+
+function applyBubblesSwitch(enabled) {
+  bubblesEnabled = typeof enabled === 'boolean' ? enabled : null;
+  if (bubblesEnabled !== true) bubbleBoard.clear();
+  paintBubbles();
+  tellHostBubblesVisible();
+}
+
+// The shelf: every medal of the agent whose log is open, with reason and date, each removable.
+const medalShelfEl = document.getElementById('agent-medals');
+let medalRemovePending = null;      // the medal whose x was clicked once: its button reads "Remove?" until confirmed or 4 s pass
+let medalRemoveTimer = null;
+function paintMedalShelf() {
+  if (!medalShelfEl) return;
+  const html = agentLog.open
+    ? window.medalsDisplay.shelfHtml(agentLog.agent, medalList === null ? null : (medalList.find((e) => e.agent === agentLog.agent) || {}).medals, medalRemovePending)
+    : '';
+  if (medalShelfEl.dataset.sig === html) return;
+  medalShelfEl.dataset.sig = html;
+  medalShelfEl.innerHTML = html;
+}
+if (medalShelfEl) {
+  medalShelfEl.addEventListener('click', (e) => {
+    const btn = e.target.closest && e.target.closest('[data-medal-remove]');
+    if (!btn || !agentLog.open) return;
+    const step = window.medalsDisplay.reduceRemove(medalRemovePending, btn.dataset.medalRemove);
+    medalRemovePending = step.pending;
+    clearTimeout(medalRemoveTimer);
+    if (step.send) sendJson({ type: 'medal', action: 'remove', agent: agentLog.agent, id: btn.dataset.medalRemove });
+    else medalRemoveTimer = setTimeout(() => { medalRemovePending = window.medalsDisplay.disarm(); paintMedalShelf(); }, 4000);
+    paintMedalShelf();
+  });
+}
+
+function applyMedals(list) {
+  medalList = cleanMedalList(list);
+  renderRoster();
+  paintMedalShelf();
+}
+
+// The give-a-medal menu: opened by a right-click on a card or its 🏅 button.
+const medalMenuEl = document.getElementById('medal-menu');
+let medalMenu = null;     // { agent, kind, reason } while open
+function paintMedalMenu() {
+  if (!medalMenuEl) return;
+  if (!medalMenu) { medalMenuEl.hidden = true; medalMenuEl.innerHTML = ''; return; }
+  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.kind);
+  medalMenuEl.hidden = false;
+  const input = medalMenuEl.querySelector('.medal-reason-input');
+  if (input) { input.value = medalMenu.reason; input.focus(); }
+}
+function openMedalMenu(agent, x, y) {
+  if (!medalMenuEl) return;
+  medalMenu = { agent, kind: null, reason: '' };
+  paintMedalMenu();
+  const w = medalMenuEl.offsetWidth || 260;
+  const h = medalMenuEl.offsetHeight || 200;
+  medalMenuEl.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+  medalMenuEl.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+}
+function closeMedalMenu() {
+  if (!medalMenu) return false;
+  medalMenu = null;
+  paintMedalMenu();
+  return true;
+}
+function giveMedal() {
+  if (!medalMenu || !medalMenu.kind) return;
+  sendJson({ type: 'medal', action: 'give', agent: medalMenu.agent, kind: medalMenu.kind, reason: medalMenu.reason });
+  closeMedalMenu();
+}
+if (medalMenuEl) {
+  medalMenuEl.addEventListener('click', (e) => {
+    const kind = e.target.closest && e.target.closest('[data-medal-kind]');
+    if (kind) { medalMenu.kind = kind.dataset.medalKind; paintMedalMenu(); return; }
+    if (e.target.closest('[data-medal-give]')) giveMedal();
+    else if (e.target.closest('[data-medal-cancel]')) closeMedalMenu();
+  });
+  medalMenuEl.addEventListener('input', (e) => {
+    if (medalMenu && e.target.classList && e.target.classList.contains('medal-reason-input')) medalMenu.reason = e.target.value;
+  });
+  medalMenuEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('medal-reason-input')) { e.preventDefault(); giveMedal(); }
+  });
+}
+window.addEventListener('mousedown', (e) => {
+  if (medalMenu && medalMenuEl && !medalMenuEl.contains(e.target)) closeMedalMenu();
+});
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && closeMedalMenu()) { e.preventDefault(); e.stopPropagation(); }
+}, true);
+agentsEl.addEventListener('contextmenu', (e) => {
+  const card = e.target.closest && e.target.closest('.agent:not([data-state="inactive"])');
+  if (!card || !card.dataset.agent) return;
+  e.preventDefault();
+  openMedalMenu(card.dataset.agent, e.clientX, e.clientY);
+});
+agentsEl.addEventListener('click', (e) => {
+  const btn = e.target.closest && e.target.closest('[data-medal-open]');
+  const card = btn && btn.closest('.agent');
+  if (!card || !card.dataset.agent) return;
+  const r = btn.getBoundingClientRect();
+  openMedalMenu(card.dataset.agent, r.left, r.bottom + 2);
+});
 
 function handleAgentLogFrame(msg) {
   const next = window.agentLogDisplay.applyFrame(agentLog, msg);
@@ -4656,14 +5118,13 @@ function renderCooldowns(list) {
 
 // Counted down locally so the remaining time is honest between broadcasts;
 // the host stays the source of truth for what is ON cooldown.
-setInterval(() => {
+// The countdown step is lean-display's (tested with a fake clock); a resume after a long lean runs it too (PR #140 Dexter F7).
+function stepCooldowns() {
   if (!cooldownState.length) return;
-  const now = Date.now();
-  cooldownState = cooldownState
-    .map(c => ({ ...c, remainingMs: c.remainingMs - (now - (c._tick || now)), _tick: now }))
-    .filter(c => c.remainingMs > 0);
+  cooldownState = leanDisplay.advanceCooldowns(cooldownState, Date.now());
   renderCooldowns();
-}, 15000);
+}
+setInterval(() => { if (!leanOn) stepCooldowns(); }, 15000);
 
 // --- token spend ------------------------------------------------------------
 const usageEl = document.getElementById('usage');
@@ -4776,7 +5237,7 @@ function renderQuota(quota) {
 // The countdown in every tooltip goes stale on its own, with no message from
 // the host -- so it is recomputed locally. Cheap: it re-renders from the last
 // payload and makes no request.
-setInterval(() => { if (lastQuotaPayload) renderQuota(); }, 30000);
+setInterval(() => { if (!leanOn && lastQuotaPayload) renderQuota(); }, 30000);
 
 // A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
 // depletes an allowance, never goes red, and never warns. The same geometry
@@ -4858,6 +5319,10 @@ function flourish(milestone) {
 // `kind` (backlog #34): 'video' draws a muted looping <video> inside #bg, under the
 // same veil; anything else is the CSS background image it always was.
 let bgVideoEl = null;       // the <video> in #bg, or null
+let bgImageUrl = null;      // the image shown as #bg's CSS background (or stilled in lean mode), or null
+let bgStillEl = null;       // lean mode: the <canvas> holding a GIF background's first frame, or null
+let bgImageHeld = false;    // the image layer is currently showing its captured still (lean and not allowed to move)
+let bgStillToken = 0;       // a newer background paint cancels an older still's late load
 let failedBgUrl = null;     // a video the engine refused: not retried until the file changes
 
 // What the video's play rule is fed (app/bg-media-display.js shouldPlay). `visible` joins the
@@ -4872,6 +5337,7 @@ function backgroundPlaybackState() {
     minimised: bgPlayback.minimised,
     onBattery: bgPlayback.onBattery,
     reducedMotion: reducedMotionQuery.matches,
+    lean: leanHeld(),   // BACKLOG #62: lean mode holds a video on its first frame, except while focused and no night (Ricardo's rule)
   };
 }
 
@@ -4947,7 +5413,7 @@ function showBackgroundVideo(url) {
 // No background at all: the theme's own colours show through, as before one was set.
 function clearBackgroundLayer() {
   removeBackgroundVideo();
-  document.getElementById('bg').style.backgroundImage = '';
+  paintBackgroundImage(null);
   backgroundUrl = null;
   backgroundSetAt = null;
   document.body.classList.remove('has-bg', 'has-custom-bg');
@@ -4964,11 +5430,11 @@ function applyBackground(filePath, { custom = false, version = '', kind = 'image
   if (media.tag === 'video' && url === failedBgUrl) return;     // already known not to play
   failedBgUrl = null;
   if (media.tag === 'video') {
-    document.getElementById('bg').style.backgroundImage = '';
+    paintBackgroundImage(null);
     showBackgroundVideo(media.attrs.src);
   } else {
     removeBackgroundVideo();
-    document.getElementById('bg').style.backgroundImage = `url("${media.url}")`;
+    paintBackgroundImage(media.url);
   }
   backgroundUrl = url;
   backgroundSetAt = custom && version ? version : null;
@@ -4985,6 +5451,141 @@ function applyBackground(filePath, { custom = false, version = '', kind = 'image
     webglAddon = null;
     console.info('[renderer] WebGL disabled: incompatible with a transparent background');
   }
+}
+
+// The background IMAGE layer. Normally the CSS background; while lean, a GIF/APNG is replaced by a canvas holding its
+// first frame (a CSS background GIF keeps decoding and compositing frame after frame). A canvas, not a blob: URL: the
+// page's CSP admits no blob:/data: image, and a canvas that is only displayed is never read back, so file: taint is moot.
+function clearBackgroundStill() {
+  bgStillToken += 1;
+  if (bgStillEl) { bgStillEl.remove(); bgStillEl = null; }
+}
+function paintBackgroundImage(url) {
+  const bgEl = document.getElementById('bg');
+  clearBackgroundStill();
+  bgImageUrl = url;
+  if (!url) { bgEl.style.backgroundImage = ''; return; }
+  bgImageHeld = leanHeld() && leanDisplay.mayAnimate(url);
+  if (!bgImageHeld) { bgEl.style.backgroundImage = `url("${url}")`; return; }
+  bgEl.style.backgroundImage = '';
+  const token = bgStillToken;
+  const img = new Image();
+  img.onload = () => {
+    if (token !== bgStillToken || !leanHeld()) return;
+    const c = document.createElement('canvas');
+    c.className = 'bg-still';
+    // a viewBox-only SVG (the generated art) reports 0: size from the window and draw into that box, so cover fills it (Dexter N2)
+    const size = leanDisplay.stillSize(img.naturalWidth, img.naturalHeight, window.innerWidth, window.innerHeight, /\.svg$/i.test(url.split('#')[0].split('?')[0]));
+    c.width = size.width;
+    c.height = size.height;
+    try { c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); } catch { return; }       // cannot be drawn: no background, never a moving one
+    bgEl.prepend(c);
+    bgStillEl = c;
+  };
+  img.src = url;
+}
+
+// --- lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md) --------------------------------------------------
+// Main owns ONE window-level state (app/lean-state.js) and tells every tab page; this page does what that means here:
+// only the terminal shows, every panel / poller / animation is suspended, the terminal swaps WebGL for the default
+// renderer, and a GIF or video background holds a still frame. What stays is what makes the project itself: its colours,
+// its terminal theme, a still background, the strip's tab marks and names. app/lean-display.js holds the decisions;
+// every suspendable thing registers a suspend/resume pair on the one registry below, so a new poller has one place to
+// say how it stops. The page keeps the terminal and the pty untouched: typing, scrollback and `claude` carry on.
+const leanBridge = window.harness && window.harness.lean;
+const leanSuspender = leanDisplay.createSuspender();
+let leanFacesKey = '';
+
+// The dock: no panel is "shown" while lean (renderLayout), so each panel's hide effect runs and coming back refreshes them.
+// QUIET: panels coming back are not the person opening them, so the vault (open before lean) takes no keyboard focus (PR #140 Dexter F1).
+leanSuspender.register('dock', { suspend: () => renderLayout({ quiet: true }), resume: () => renderLayout({ quiet: true }) });
+
+// The minute-ticks (the bar's ages, quota countdowns, cooldowns) skip while lean; on return they are redrawn at once.
+leanSuspender.register('ticks', {
+  suspend: () => { paintBar(); },
+  resume: () => { paintBar(); if (lastQuotaPayload) renderQuota(); stepCooldowns(); renderCooldowns(); },
+});
+
+// The roster panel is not drawn while lean (no face videos churn); the working agents get a strip of still portraits.
+leanSuspender.register('roster', {
+  // the face videos are UNLOADED, not just hidden: a hidden <video> keeps its decoded buffers (PR #140 Miguel S5)
+  suspend: () => { paintAgents(''); paintLeanFaces(); },
+  resume: () => { paintLeanFaces(); renderRoster(); },
+});
+
+// xterm: the WebGL addon goes while lean and comes back after, only if no background forbids it (applyBackground). The
+// buffer lives in xterm, not in the renderer, so scrollback survives the swap.
+function setTerminalRenderer() {
+  const want = leanDisplay.wantWebgl({
+    lean: leanOn, hasBackground: document.body.classList.contains('has-bg'), supported: typeof WebglAddon !== 'undefined',
+  });
+  if (!want && webglAddon) {
+    try { webglAddon.dispose(); } catch {}
+    webglAddon = null;
+  } else if (want && !webglAddon) {
+    try {
+      const addon = new WebglAddon.WebglAddon();
+      addon.onContextLoss(() => addon.dispose());
+      term.loadAddon(addon);
+      webglAddon = addon;
+    } catch (e) { console.warn('[renderer] WebGL addon unavailable, using fallback:', e.message); }
+  }
+  try { term.refresh(0, term.rows - 1); } catch {}
+}
+// The host's local-model summary job: its only reader (the terminal bar) is hidden, so the host starts none while every window is lean
+// (host/lean-gate.js). Main's process-tree sampler is NOT stopped: it drives Leftovers' 15-minute auto-reap, which matters most overnight.
+function tellHostLean() {
+  // ONLY to a host that lists it: an older host (they outlive app updates) would type the frame into the session as JSON (PR #140 Dexter N1)
+  if (!leanDisplay.hostListsLean(hostControls)) return;
+  if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify({ type: 'lean', on: leanOn })); } catch { /* not attached: the hello says it again */ } }
+}
+leanSuspender.register('summary-job', { suspend: tellHostLean, resume: tellHostLean });
+leanSuspender.register('terminal-renderer', { suspend: setTerminalRenderer, resume: setTerminalRenderer });
+
+// The background: a video holds its first frame (backgroundPlaybackState carries `lean`); a GIF becomes its first frame.
+// Ricardo's rule (2026-10-09): while lean, an animated background (video, GIF, anything that mayAnimate) PLAYS only while the window is focused
+// AND no /bedtime night is on; otherwise its captured still frame. Not lean: nothing changes. leanHeld() is that decision (lean-display).
+function leanHeld() {
+  return leanDisplay.holdStill({ lean: leanOn, focused: windowFocused, night: leanNight });
+}
+function syncLeanMotion() {
+  syncBackgroundPlayback();
+  if (bgImageUrl && (leanHeld() && leanDisplay.mayAnimate(bgImageUrl)) !== bgImageHeld) paintBackgroundImage(bgImageUrl);
+}
+leanSuspender.register('background', { suspend: syncLeanMotion, resume: syncLeanMotion });
+
+// The working agents go to MAIN, which hands the tab strip the window's whole set to draw as still portraits next to the lean chip
+// (BACKLOG #62, Ricardo's option C; app/lean-faces.js, app/tab-strip.js). They come from the roster events already arriving: no polling.
+// Not lean: an empty list, so the strip shows none.
+function paintLeanFaces() {
+  const list = leanOn
+    ? leanDisplay.workingFaces([...roster.values()], { limit: 24 }).faces.map(f => ({ agent: f.agent, images: agentImagesEnabled, portrait: f.portrait }))
+    : [];
+  const key = JSON.stringify(list);
+  if (key === leanFacesKey) return;
+  leanFacesKey = key;
+  if (leanBridge) leanBridge.faces(list);
+}
+
+function applyLean(payload) {
+  const s = leanDisplay.normalize(payload);
+  const on = s.on;
+  const nightChanged = s.night !== leanNight;
+  leanNight = s.night;
+  if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
+  leanOn = on;
+  document.body.classList.toggle('lean', on);
+  closeLayoutMenu();
+  const { failed } = leanSuspender.set(on);
+  if (failed.length) console.warn('[renderer] lean mode: these did not ' + (on ? 'suspend' : 'resume') + ': ' + failed.join(', '));
+  // the keyboard is the terminal's in both directions: lean's own unmount and remount move it nowhere else
+  term.focus();
+}
+if (leanBridge) {
+  // A push that arrives before the first answer wins over it.
+  let leanPushed = false;
+  leanBridge.onChange((state) => { leanPushed = true; applyLean(state); });
+  Promise.resolve(leanBridge.get()).then((state) => { if (!leanPushed) applyLean(state); }, () => { /* main has no answer: normal */ });
 }
 
 // --- running processes ------------------------------------------------------
@@ -6286,6 +6887,8 @@ function applyAgentImages(enabled) {
       : 'Agent images are off (initials only). Click to turn them on.';
   }
   if (changed) { renderRoster(); renderStylePanel(); }
+  paintBubbles();          // agent images off means none of these (BACKLOG #80)
+  tellHostBubblesVisible();
 }
 
 function refreshAgentImages() {
@@ -6384,6 +6987,8 @@ if (window.harness && window.harness.onWindowFocus) {
   window.harness.onWindowFocus(({ focused, dim }) => {
     applyDim(dim);
     document.body.classList.toggle('unfocused', !focused);
+    windowFocused = focused === true;
+    syncLeanMotion();
   });
 }
 refreshDim();
@@ -6408,6 +7013,10 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    hostControls = Array.isArray(msg.controls) ? msg.controls : [];
+    // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
+    gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
+    if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
     renderTitle();
@@ -6461,11 +7070,18 @@ function handleControl(msg) {
     // from an older host, which is "none", never a stale one.
     applyBarPrompt(msg.prompt, false);
     applyBedtime(msg.bedtime);
+    if (leanOn) tellHostLean();      // a (re)attached host does not know this window is lean
     applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
+    applyDocsDrift(msg.docsDrift);
     paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
+    // BACKLOG #80: the medals, and the bubbles' switch (these two don't repaint: renderRoster below does).
+    medalList = cleanMedalList(msg.medals);
+    bubblesEnabled = msg.bubbles && typeof msg.bubbles.enabled === 'boolean' ? msg.bubbles.enabled : null;
+    paintBubblesToggle();
+    tellHostBubblesVisible();
     // Before renderRoster, so the first paint already carries the careers and
     // the models rather than flashing the roster without them.
     if (msg.sessionModel) sessionModel = msg.sessionModel;
@@ -6514,6 +7130,19 @@ function handleControl(msg) {
     // Another claude-custom asked to be taken to this session (Go to that
     // session): the shell selects this tab and brings its window forward.
     if (window.harness && window.harness.raise) window.harness.raise();
+    return;
+  }
+  if (msg.type === 'medals') {
+    applyMedals(msg.medals);
+    if (msg.ok === false) flashAttention({ urgent: false, title: 'Couldn\'t save the medal (' + String(msg.reason) + ')' });
+    return;
+  }
+  if (msg.type === 'bubbles') {
+    applyBubblesSwitch(msg.enabled);
+    return;
+  }
+  if (msg.type === 'bubble') {
+    if (bubblesAllowed() && bubbleBoard.show(msg)) paintBubbles();
     return;
   }
   if (msg.type === 'hidden') {
@@ -6608,6 +7237,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'attention') {
+    gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
     // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
     // skipped the toast whenever the window had focus, which silenced the one
     // case the feature was built for: watching the terminal while a long task
@@ -6660,6 +7290,10 @@ function handleControl(msg) {
     applySummary(msg, false);
     return;
   }
+  if (msg.type === 'docs-drift') {
+    applyDocsDrift(msg);
+    return;
+  }
   if (msg.type === 'bedtime') {
     applyBedtime(msg.bedtime);
     return;
@@ -6675,6 +7309,11 @@ function handleControl(msg) {
   if (msg.type === 'git-tree') {
     renderGitTree(msg);
     requestGitTabs();
+    return;
+  }
+  if (msg.type === 'git-graph') {
+    lastGitGraph = msg;
+    renderGitGraph();
     return;
   }
   if (msg.type === 'bugvault') {
@@ -6842,13 +7481,14 @@ function connect() {
     socketOpened = true;
     if (window.dockZones.focusOnOpen(first, window.dockZones.describeFocus(document.activeElement, term.element))) term.focus();
     sendResize();
+    tellHostBubblesVisible();      // a host that restarted forgot (BACKLOG #80)
     // A log open across a reattach is asked for again: the host's log session
     // belongs to the old socket and died with it.
     if (agentLog.open) openAgentLog(agentLog.agent);
     // The tab is restored before the socket is open, so a fog request made at
     // load is thrown away. Ask again once there is somewhere to ask.
     if (shownModules.has('fog')) repoBrowser.show();
-    if (shownModules.has('git')) requestGitTree();
+    if (shownModules.has('git')) { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
     if (shownModules.has('projects')) requestProjects();
     // Dexter, PR #60, F3: the same silent drop, for models. requestModels()'s
     // `ws.send` throws (InvalidStateError) while the socket is still
@@ -6893,11 +7533,13 @@ function connect() {
     dot.classList.remove('on');
     // a Files ask in flight will never be answered by this socket: fail it now, not after its timeout
     repoBrowser.failAll('the connection to the session dropped');
+    // the next socket may reach another host, an older one: nothing is asked of it until ITS hello (PR #95 D7)
+    gitGraphAsker.forget();
     cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
-    if (bar.bedtime !== null) applyBedtime(null);
+    if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just
     // keep trying to reattach.
     setTimeout(connect, 1000);
@@ -7039,7 +7681,8 @@ term.attachCustomKeyEventHandler((e) => {
   // line. Returning false is what stops the terminal taking it.
   if (isPanelToggle(e)) {
     // In focus mode the panels are hidden behind it: Ctrl+B brings them back.
-    if (focusOn && focusBridge) focusBridge.set(false); else toggleAllZones();
+    // Lean mode shows no panel, so folding the dock would only hide the panels Back to normal should return (PR #140 Dexter F6).
+    if (focusOn && focusBridge) focusBridge.set(false); else if (!leanOn) toggleAllZones();
     e.preventDefault();
     return false;
   }

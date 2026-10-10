@@ -173,7 +173,7 @@ function moveTargets(layout, id) {
  * focus to the terminal on those sent the rest of a half-typed secret into
  * the session (PR #82 Dexter F2, Miguel B1).
  */
-function renderEffects(before, after, { userAction = false } = {}) {
+function renderEffects(before, after, { userAction = false, quiet = false } = {}) {
   const newlyShown = [...after].filter(id => !before.has(id));
   const vaultLeft = before.has('vault') && !after.has('vault');
   const vaultOpened = after.has('vault') && !before.has('vault');
@@ -183,6 +183,9 @@ function renderEffects(before, after, { userAction = false } = {}) {
   // The user's own click or key: typing goes back to the session, as the old
   // setTab did -- but never while the vault is showing.
   else if (userAction && !after.has('vault')) focus = 'term';
+  // `quiet`: the panels come back without anyone opening them (lean mode ending, #62): a vault that was open before is not
+  // "opened" now, and the keyboard stays where it is (PR #140 Dexter F1).
+  if (quiet) focus = null;
   return { newlyShown, vaultLeft, focus };
 }
 

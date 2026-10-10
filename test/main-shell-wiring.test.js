@@ -134,7 +134,7 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
   const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
-  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT \}\)/);
+  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);
@@ -191,14 +191,15 @@ test('the probe driver does nothing without its env var, and only listens locall
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
   assert.match(MAIN, /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
   assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
-  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason \}\);\r?\n\s+return reason === '';/,
+  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
 });
 
 test('a hand close asks first, every time', () => {
   assert.match(MAIN, /dialog\.showMessageBox\(win, \{/);
   assert.match(MAIN, /message: `End the session in \$\{label\}\?`/);
-  assert.match(MAIN, /: 'The folder stays\.'/);
+  // the detail line is app/reader-unsaved.js closeDetail: 'The folder stays.' plus the reader's unsaved file (#50)
+  assert.match(MAIN, /detail: closeDetail\(\{ reason, unsaved \}\)/);
 });
 
 test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
@@ -206,7 +207,7 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
   assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
   assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
-  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\) \}/);
+  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\), readerUnsaved: \(tab\) => readerUnsaved\.pathFor\(tab\.key\) \}/);
   assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/,
     'a Ctrl+click close asks the service whether it could look (#77 D2)');
   // the context menu and the plain x stay plain
@@ -223,7 +224,7 @@ test('there is NO application menu bar: it is nulled once, before the window, an
 
 test('override and close live in the right-click popup only', () => {
   const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const body = MAIN.slice(at, at + 600);
+  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
   assert.match(body, /\.popup\(/);
