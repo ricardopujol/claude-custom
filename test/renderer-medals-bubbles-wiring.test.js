@@ -93,3 +93,10 @@ test('visibility is per socket: a window that closes is dropped, and the install
 test('a settled bubble does not replay its fade-in', () => {
   assert.match(html, /\.agent-bubble\[data-settled\] \{ animation: bubble-out/);
 });
+
+test('the shelf removes a medal in two clicks through reduceRemove, with no confirm() dialog', () => {
+  assert.match(renderer, /window\.medalsDisplay\.reduceRemove\(medalRemovePending/);
+  assert.match(renderer, /if \(step\.send\) sendJson\(\{ type: 'medal', action: 'remove'/);
+  assert.ok(!/\bconfirm\(/.test(renderer.slice(renderer.indexOf('medalRemovePending'), renderer.indexOf('medalRemovePending') + 1500)));
+  assert.match(html, /\.medal-remove\.confirm/);
+});

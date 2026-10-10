@@ -325,3 +325,42 @@ test('the shelf says it could not read the medals, never "No medals yet", for an
   assert.match(html, /read the medals/);
   assert.ok(!/No medals yet/.test(html));
 });
+
+// --- removing a hand-given medal takes two steps, in place ----------------------------------------
+
+const medalRow = { id: 'm1', kind: 'fast', reason: 'quick', at: 1 };
+
+test('the first click on x only arms it (nothing is sent); a second click on the SAME medal confirms', () => {
+  const first = md.reduceRemove(null, 'm1');
+  assert.deepStrictEqual(first, { pending: 'm1', send: false });
+  assert.deepStrictEqual(md.reduceRemove(first.pending, 'm1'), { pending: null, send: true });
+});
+
+test('a click on a different medal re-arms that one instead of confirming the first', () => {
+  assert.deepStrictEqual(md.reduceRemove('m1', 'm2'), { pending: 'm2', send: false });
+});
+
+test('timing out, or any other click, disarms: the next click on x arms again', () => {
+  assert.deepStrictEqual(md.reduceRemove(md.disarm(), 'm1'), { pending: 'm1', send: false });
+  assert.strictEqual(md.disarm(), null);
+});
+
+test('PROPERTY: a remove is only ever sent by two consecutive clicks on the same id', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.array(fc.constantFrom('a', 'b', 'c', 'off'), { maxLength: 30 }), (clicks) => {
+    let pending = null; let prev = null;
+    for (const c of clicks) {
+      if (c === 'off') { pending = md.disarm(); prev = null; continue; }
+      const r = md.reduceRemove(pending, c);
+      assert.strictEqual(r.send, prev === c);
+      pending = r.pending; prev = r.send ? null : c;
+    }
+  }), { numRuns: 100 });
+});
+
+test('an armed medal shows an in-place "Remove?" button (no browser dialog); the others still show x', () => {
+  const html = md.shelfHtml('miguel', [medalRow, { id: 'm2', kind: 'spot-on', reason: '', at: 2 }], 'm1');
+  assert.match(html, /class="medal-remove confirm" data-medal-remove="m1"[^>]*>Remove\?</);
+  assert.match(html, /class="medal-remove" data-medal-remove="m2"[^>]*>&times;</);
+  assert.ok(!md.shelfHtml('miguel', [medalRow]).includes('Remove?'));
+});

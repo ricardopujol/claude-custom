@@ -4320,10 +4320,12 @@ function applyBubblesSwitch(enabled) {
 
 // The shelf: every medal of the agent whose log is open, with reason and date, each removable.
 const medalShelfEl = document.getElementById('agent-medals');
+let medalRemovePending = null;      // the medal whose x was clicked once: its button reads "Remove?" until confirmed or 4 s pass
+let medalRemoveTimer = null;
 function paintMedalShelf() {
   if (!medalShelfEl) return;
   const html = agentLog.open
-    ? window.medalsDisplay.shelfHtml(agentLog.agent, medalList === null ? null : (medalList.find((e) => e.agent === agentLog.agent) || {}).medals)
+    ? window.medalsDisplay.shelfHtml(agentLog.agent, medalList === null ? null : (medalList.find((e) => e.agent === agentLog.agent) || {}).medals, medalRemovePending)
     : '';
   if (medalShelfEl.dataset.sig === html) return;
   medalShelfEl.dataset.sig = html;
@@ -4332,7 +4334,13 @@ function paintMedalShelf() {
 if (medalShelfEl) {
   medalShelfEl.addEventListener('click', (e) => {
     const btn = e.target.closest && e.target.closest('[data-medal-remove]');
-    if (btn && agentLog.open) sendJson({ type: 'medal', action: 'remove', agent: agentLog.agent, id: btn.dataset.medalRemove });
+    if (!btn || !agentLog.open) return;
+    const step = window.medalsDisplay.reduceRemove(medalRemovePending, btn.dataset.medalRemove);
+    medalRemovePending = step.pending;
+    clearTimeout(medalRemoveTimer);
+    if (step.send) sendJson({ type: 'medal', action: 'remove', agent: agentLog.agent, id: btn.dataset.medalRemove });
+    else medalRemoveTimer = setTimeout(() => { medalRemovePending = window.medalsDisplay.disarm(); paintMedalShelf(); }, 4000);
+    paintMedalShelf();
   });
 }
 

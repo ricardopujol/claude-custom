@@ -179,6 +179,8 @@ app.whenReady().then(async () => {
     check('the shelf is visible under the log', await js('getComputedStyle(document.getElementById("agent-medals")).display !== "none"'));
     await shot('4-medal-shelf');
     await js('document.querySelector("#agent-medals [data-medal-remove]").click()');
+    check('the first click only arms it: the button reads Remove? and the medal is still there', await until('document.getElementById("agent-medals").textContent.indexOf("Remove?") >= 0 && /Bug hunter/.test(document.getElementById("agent-medals").textContent)'));
+    await js('document.querySelector("#agent-medals [data-medal-remove]").click()');
     check('removing the medal empties the shelf', await until('/No medals yet/.test(document.getElementById("agent-medals").textContent)'));
     await js('document.querySelector("[data-agent-log-close]").click()');
     check('and the chip is gone from the card', await until('!document.querySelector("#agents .agent[data-agent=code-reviewer] .medal-chip")'));

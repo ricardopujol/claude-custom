@@ -78,7 +78,16 @@ function dateText(at) {
 }
 
 /** The shelf on an agent's log page: every medal with its reason and date, newest first, each removable. */
-function shelfHtml(agent, medals) {
+/**
+ * Taking a hand-given medal off takes TWO clicks, in place (no browser confirm()): the first arms the medal's button (it reads
+ * "Remove?"), a second click on the same one confirms. `pending` is the armed id or null.
+ */
+function reduceRemove(pending, id) {
+  return pending === id ? { pending: null, send: true } : { pending: id, send: false };
+}
+const disarm = () => null;
+
+function shelfHtml(agent, medals, pendingId = null) {
   // null is UNKNOWN (the host couldn't read the file), which is not the same as none.
   if (medals === null) return `<div class="medal-shelf" data-agent="${escapeHtml(agent)}"><div class="medal-shelf-title">Medals</div><div class="medal-none">Couldn't read the medals just now. Trying again.</div></div>`;
   const rows = (Array.isArray(medals) ? medals : [])
@@ -90,8 +99,10 @@ function shelfHtml(agent, medals) {
       return `<div class="medal-row"><span class="medal-icon" title="${escapeHtml(k.label)}">${k.icon}</span>` +
         `<span class="medal-label">${escapeHtml(k.label)}</span>${reason}` +
         `<span class="medal-date">${escapeHtml(dateText(m.at))}</span>` +
-        `<button type="button" class="medal-remove" data-medal-remove="${escapeHtml(m.id)}" ` +
-        `title="Take this medal off ${escapeHtml(agent)}">&times;</button></div>`;
+        (m.id === pendingId
+          ? `<button type="button" class="medal-remove confirm" data-medal-remove="${escapeHtml(m.id)}" title="Click again to take this medal off ${escapeHtml(agent)}">Remove?</button>`
+          : `<button type="button" class="medal-remove" data-medal-remove="${escapeHtml(m.id)}" title="Take this medal off ${escapeHtml(agent)}">&times;</button>`) +
+        '</div>';
     });
   const body = rows.length ? rows.join('') : '<div class="medal-none">No medals yet.</div>';
   return `<div class="medal-shelf" data-agent="${escapeHtml(agent)}"><div class="medal-shelf-title">Medals</div>${body}</div>`;
@@ -113,7 +124,7 @@ function menuHtml(agent, selected) {
     `<button type="button" data-medal-cancel>Cancel</button></div>`;
 }
 
-const api = { cardButtonHtml, menuHtml, KINDS, REASON_MAX, AGENT_MAX, PER_AGENT_MAX, kindOf, cleanReason, validGive, validRemove, countOf, chipHtml, shelfHtml };
+const api = { reduceRemove, disarm, cardButtonHtml, menuHtml, KINDS, REASON_MAX, AGENT_MAX, PER_AGENT_MAX, kindOf, cleanReason, validGive, validRemove, countOf, chipHtml, shelfHtml };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
