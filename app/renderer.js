@@ -6593,6 +6593,8 @@ function handleControl(msg) {
     // Our Pause's TaskStop, seen as the CLI's own tool call (app/agent-pause-display.js: "paused" needs it).
     for (const p of Array.isArray(msg.running) ? msg.running : []) {
       if (p && p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt, p.taskId);
+      // ...and one that FAILED stopped nothing (PR #158 Dexter R3 N4).
+      if (p && p.tool === 'TaskStop' && p.failed === true && typeof p.startedAt === 'number') agentPauses.stopFailed(p.startedAt, p.taskId);
     }
     latestParty = msg.party || [];
     renderParty(msg.party);
@@ -6685,6 +6687,8 @@ function handleControl(msg) {
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
     agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
+    // ...so the card is drawn again PAUSE_TIMEOUT_MS after it, not only after the click: a quiet idle session sends no other frame (PR #158 Dexter R3 N5).
+    if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
     paintBar();
     reportTabStatus();
     return;

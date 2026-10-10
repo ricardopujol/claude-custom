@@ -103,7 +103,14 @@ function createProcessTracker({ now = Date.now } = {}) {
       // A close with an id closes that id or nothing. Falling back by label
       // there deleted a still-running twin whose sibling had been swept
       // (Dexter F2).
-      if (p.tool_use_id) { running.delete(keyFor(p)); return 0; }
+      if (p.tool_use_id) {
+        const k = keyFor(p);
+        const v = running.get(k);
+        // A TaskStop that FAILED is kept (ended, flagged): the page needs to know our stop did not happen (PR #158 Dexter R3 N4).
+        if (event === 'PostToolUseFailure' && v && v.tool === 'TaskStop' && v.endedAt === null) { v.endedAt = now(); v.failed = true; return 0; }
+        running.delete(k);
+        return 0;
+      }
       // No id at all: fall back to a matching label so a missing correlator does
       // not leak an entry -- but only a RUNNING call of the SAME owner, or it
       // closes a stale row and leaves the live one running forever (Miguel 1),
@@ -152,6 +159,7 @@ function createProcessTracker({ now = Date.now } = {}) {
         tool: v.tool,
         label: v.label,
         ...(v.taskId ? { taskId: v.taskId } : {}),
+        ...(v.failed ? { failed: true } : {}),
         state: v.endedAt === null ? 'running' : 'stale',
         startedAt: v.startedAt,
         elapsedMs: (v.endedAt ?? t) - v.startedAt,

@@ -380,3 +380,43 @@ test('property: "paused" is only ever claimed after a Pause was typed AND a Task
     assert.ok(lastStop >= -1);
   }), { numRuns: 300 });
 });
+
+// ---- PR #158 Dexter round 3 ---------------------------------------------------------------------------------------------------
+
+test('N4: a TaskStop that FAILED after its start undoes "stop seen": the agent then finishing by itself is not a pause', () => {
+  const s = D.createAgentPauses();
+  s.begin('rev', 'pause', 0, 'X');
+  s.sawTaskStop(10, 'X');
+  s.stopFailed(10, 'X');
+  s.seen(counts({}), 40_000, BUSY);
+  assert.notStrictEqual(s.view('rev', 0).kind, 'paused');
+});
+
+test('N4: a retry after the failure counts again, and the old failed row repeated in later frames does not undo it', () => {
+  const s = D.createAgentPauses();
+  s.begin('rev', 'pause', 0, 'X');
+  s.sawTaskStop(10, 'X');
+  s.stopFailed(10, 'X');
+  s.sawTaskStop(500, 'X');         // the retry
+  s.stopFailed(10, 'X');           // the first failure, still listed as stale
+  s.seen(counts({}), 40_000, BUSY);
+  assert.strictEqual(s.view('rev', 0).kind, 'paused');
+});
+
+test('N4: a failure of a TaskStop of another task changes nothing', () => {
+  const s = D.createAgentPauses();
+  s.begin('rev', 'pause', 0, 'X');
+  s.sawTaskStop(10, 'X');
+  s.stopFailed(11, 'OTHER');
+  s.seen(counts({}), 40_000, BUSY);
+  assert.strictEqual(s.view('rev', 0).kind, 'paused');
+});
+
+test('N5: waiting() says whether a card is pausing or resuming, so the page knows a redraw is owed at the idle edge', () => {
+  const s = D.createAgentPauses();
+  assert.strictEqual(s.waiting(), false);
+  s.begin('rev', 'pause', 0);
+  assert.strictEqual(s.waiting(), true);
+  s.refused('rev');
+  assert.strictEqual(s.waiting(), false);
+});

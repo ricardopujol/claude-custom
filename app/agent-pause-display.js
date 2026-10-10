@@ -109,9 +109,22 @@ function createAgentPauses() {
       if (typeof startedAt !== 'number' || !Number.isFinite(startedAt) || typeof taskId !== 'string' || taskId === '') return;
       for (const [agent, s] of state) {
         if (s.phase !== 'pausing' || s.stopSeen || startedAt < s.at - STOP_SLACK_MS) continue;
-        if (taskId === agent || (s.id !== null && taskId === s.id)) state.set(agent, { ...s, stopSeen: true });
+        if (taskId === agent || (s.id !== null && taskId === s.id)) state.set(agent, { ...s, stopSeen: true, stopAt: startedAt });
       }
     },
+    /**
+     * The TaskStop that started at `startedAt` FAILED (the host keeps such a call listed, ended and flagged): it stopped nothing, so "stop seen" is
+     * undone for the agent it named, and only for that call: a retry (a later start) stands (PR #158 Dexter R3 N4).
+     */
+    stopFailed(startedAt, taskId) {
+      if (typeof startedAt !== 'number' || typeof taskId !== 'string' || taskId === '') return;
+      for (const [agent, s] of state) {
+        if (s.phase !== 'pausing' || !s.stopSeen || s.stopAt !== startedAt) continue;
+        if (taskId === agent || (s.id !== null && taskId === s.id)) state.set(agent, { ...s, stopSeen: false, stopAt: null });
+      }
+    },
+    /** Is any card pausing or resuming (its timeout, and so a redraw, is owed)? */
+    waiting() { for (const s of state.values()) if (s.phase === 'pausing' || s.phase === 'resuming') return true; return false; },
     /** The session's turn state from a `turn` frame ('idle' | 'turn' | 'prompt' | null), when it arrives. */
     turnIs(turn, at) { stamp(turn, at); },
     /**

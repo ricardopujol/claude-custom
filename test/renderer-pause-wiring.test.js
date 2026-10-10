@@ -108,3 +108,14 @@ test('the agent pause machine is fed what it needs: the turn state, the CLI\'s T
   assert.ok(code.includes('const taskId = ids.length === 1 ? ids[0] : undefined;'));
   assert.ok(code.includes("window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false }"), 'the line is typed with the kind planTyping accepts');
 });
+
+test('N4: a failed TaskStop in a processes frame undoes "stop seen" (stopFailed), next to the running one that sets it', () => {
+  assert.match(RAW, /p\.tool === 'TaskStop' && p\.failed === true && typeof p\.startedAt === 'number'\) agentPauses\.stopFailed\(p\.startedAt, p\.taskId\)/);
+});
+
+test('N5: the idle edge of the turn re-arms the redraw that ends a pause\'s timeout (the click-time timer fires too early after a long turn)', () => {
+  const at = RAW.indexOf('agentPauses.turnIs(sessionTurn, Date.now())');
+  assert.ok(at !== -1);
+  const after = RAW.slice(at, at + 500);
+  assert.match(after, /sessionTurn === 'idle' && agentPauses\.waiting\(\)\) setTimeout\(renderRoster, window\.agentPauseDisplay\.PAUSE_TIMEOUT_MS \+ 500\)/);
+});
