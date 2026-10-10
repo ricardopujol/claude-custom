@@ -4139,9 +4139,8 @@ function renderRoster() {
   }
   // Active agents first, then alphabetical, so the thing you care about is at
   // the top without the list reshuffling on every tick.
-  const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
-  const rows = [...roster.values()].sort((a, b) =>
-    (rank[a.state] ?? 9) - (rank[b.state] ?? 9) || a.agent.localeCompare(b.agent));
+  // A card waiting on you floats to the top, then base state, then name (app/agent-state-display.js sortRows).
+  const rows = window.agentStateDisplay.sortRows([...roster.values()]);
   const counts = instanceCounts(latestParty);
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering

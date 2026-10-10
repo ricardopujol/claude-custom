@@ -77,3 +77,29 @@ test('property: whatever arrives, the result is one of the known details and mar
     assert.strictEqual(html === '', d.badge === null);
   }));
 });
+
+// Ricardo, #55: a card waiting on you floats above the base-state order; among waiting cards the old order (state, then name) holds.
+test('sortRows: waiting on you floats to the top, the rest keep the base-state then name order', () => {
+  const { sortRows } = agentStateDisplay;
+  const rows = [
+    { agent: 'zed', state: 'working', detail: 'working' },
+    { agent: 'amy', state: 'sleeping', detail: 'sleeping' },
+    { agent: 'bob', state: 'stressed', detail: 'waiting' },
+    { agent: 'cat', state: 'happy', detail: 'happy' },
+    { agent: 'dan', state: 'working', detail: 'waiting' },
+    { agent: 'eve', state: 'working', detail: 'reading' },
+  ];
+  assert.deepStrictEqual(sortRows(rows).map(r => r.agent), ['dan', 'bob', 'eve', 'zed', 'cat', 'amy'],
+    'dan (working, waiting) before bob (stressed, waiting): their existing order');
+  assert.deepStrictEqual(rows.map(r => r.agent), ['zed', 'amy', 'bob', 'cat', 'dan', 'eve'], 'the input is not reordered');
+});
+
+test('sortRows: a detail that does not fit the state is not "waiting", and unknown states sort last', () => {
+  const { sortRows } = agentStateDisplay;
+  const out = sortRows([
+    { agent: 'a', state: 'sleeping', detail: 'waiting' },
+    { agent: 'b', state: 'working' },
+    { agent: 'c', state: 'mystery', detail: 'waiting' },
+  ]).map(r => r.agent);
+  assert.deepStrictEqual(out, ['b', 'a', 'c']);
+});

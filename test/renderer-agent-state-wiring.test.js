@@ -43,3 +43,9 @@ test('the host asks for the observe-only PermissionRequest hook, and the mood en
   assert.match(read('host/host.js'), /permissionRequest: true,/);
   assert.match(read('host/mood-machine.js'), /if \(event === 'PermissionRequest'\) \{ permissionRequest\(p\); return; \}/);
 });
+
+test('the roster is ordered by sortRows (waiting on you first), not by an inline rank', () => {
+  const js = read('app/renderer.js');
+  assert.ok(js.includes('const rows = window.agentStateDisplay.sortRows([...roster.values()]);'));
+  assert.doesNotMatch(js, /const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };/);
+});
