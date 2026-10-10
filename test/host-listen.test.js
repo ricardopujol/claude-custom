@@ -89,13 +89,13 @@ test('the identity file is NOT removed by a host that never owned it', () => {
 // got there first, and from boot once it knows -- but only as the port's owner.
 test('the identity carries the OS start time, from whichever of bind and boot finishes last', () => {
   const idx = HOST.indexOf('writeIdentity({');
-  const call = HOST.slice(idx, idx + 200);
+  const call = HOST.slice(idx, HOST.indexOf('} catch (err) {', idx));
   assert.match(call, /processStartedAt: lockOwner \? lockOwner\.processStartedAt : undefined/);
   const boot = HOST.indexOf('lockOwner = { pid: process.pid, processStartedAt');
   assert.ok(boot !== -1);
   const after = HOST.slice(boot, boot + 900);
   assert.match(after, /if \(boundPort === PORT && typeof processStartedAt === 'string'\)/);
-  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, processStartedAt, claudePid: term \? term\.pid : undefined \}\)/);
+  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE \? sessionId : undefined, processStartedAt, claudePid: term \? term\.pid : undefined \}\)/);
 });
 
 // Dexter, PR #83 F1: a stop waits for the host's claude, so the identity names

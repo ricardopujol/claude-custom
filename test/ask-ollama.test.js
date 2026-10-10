@@ -72,6 +72,15 @@ test('generate: sends the system prompt, the settings per request, and unloads a
   assert.strictEqual(b.think, false, 'a thinking model must answer, not deliberate for 40 s');
 });
 
+test('generate: numPredict raises the reply budget for one call; a bad value falls back to the default', async () => {
+  const { c, calls } = client(() => json(200, { response: 'x' }));
+  await c.generate({ system: 'S', prompt: 'P', numPredict: 700 });
+  await c.generate({ system: 'S', prompt: 'P', numPredict: -5 });
+  await c.generate({ system: 'S', prompt: 'P', numPredict: 'lots' });
+  await c.generate({ system: 'S', prompt: 'P' });
+  assert.deepStrictEqual(calls.map(x => x.body.options.num_predict), [700, 350, 350, 350]);
+});
+
 test('generate: an empty reply is a bad reply, never a silent empty answer', async () => {
   const { c } = client(() => json(200, { response: '   ' }));
   assert.deepStrictEqual(await c.generate({ system: 'S', prompt: 'P' }), { ok: false, reason: 'bad-reply' });
@@ -97,4 +106,14 @@ test('M2/D8: a deadline that hits while the body is still being read is a timeou
   }), { generateTimeoutMs: 20, embedTimeoutMs: 20 });
   assert.deepStrictEqual(await slowBody.c.generate({ system: '', prompt: 'p' }), { ok: false, reason: 'timeout' });
   assert.deepStrictEqual(await slowBody.c.embed(['a']), { ok: false, reason: 'timeout' });
+});
+
+test('generate: numPredict and temperature are per-request options (the speech bubbles ask for a short, lively line), default unchanged', async () => {
+  const { c, calls } = client(() => json(200, { response: 'Hi.' }));
+  await c.generate({ system: 'S', prompt: 'P' });
+  assert.deepStrictEqual([calls[0].body.options.num_predict, calls[0].body.options.temperature], [350, 0]);
+  await c.generate({ system: 'S', prompt: 'P', numPredict: 60, temperature: 0.9 });
+  assert.deepStrictEqual([calls[1].body.options.num_predict, calls[1].body.options.temperature], [60, 0.9]);
+  await c.generate({ system: 'S', prompt: 'P', numPredict: -1, temperature: 'hot' });
+  assert.deepStrictEqual([calls[2].body.options.num_predict, calls[2].body.options.temperature], [350, 0]);
 });

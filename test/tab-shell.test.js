@@ -1867,6 +1867,25 @@ test('handleProbeCommand: Stop all in this project, from the ▾ list (Windowles
   assert.strictEqual(asked, 1);
 });
 
+test('handleProbeCommand: strip-lean presses only the Lean button or Back to normal (#62)', async () => {
+  const seen = [];
+  const api = { stripLean: async (b) => { seen.push(b); return { ok: true, clicked: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-lean', button: 'lean-btn' }), api), { ok: true, clicked: true });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-lean', button: 'lean-back' }), api), { ok: true, clicked: true });
+  for (const button of [undefined, 'plus', 'lean-btn; alert(1)', 5]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-lean', button }), api),
+      { ok: false, error: 'strip-lean needs lean-btn or lean-back' }, String(button));
+  }
+  assert.deepStrictEqual(seen, ['lean-btn', 'lean-back']);
+});
+
+test('handleProbeCommand: leanState is one of the named view actions (#62)', async () => {
+  const seen = [];
+  const api = { view: async (a) => { seen.push(a); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'view', action: 'leanState' }), api), { ok: true });
+  assert.deepStrictEqual(seen, ['leanState']);
+});
+
 test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
   const seen = [];
   const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };
@@ -2847,4 +2866,30 @@ test('ctrl-close F4: a live claim whose `also` names the tab\'s folder asks, lik
   const unproven = await mergedHarness({ occupancy: { claims: () => [], known: (f) => f !== wt('feat-a') } });
   assert.strictEqual((await ctrlClose(unproven)).cancelled, true);
   assert.deepStrictEqual(asked(unproven), ["couldn't check for agents"]);
+});
+
+test('handleProbeCommand: windowBlur reaches the driver (lean video rule, #62)', async () => {
+  let n = 0;
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'windowBlur' }), { windowBlur: async () => { n += 1; return { ok: true }; } }), { ok: true });
+  assert.strictEqual(n, 1);
+});
+
+// #50: a tab whose code reader holds unsaved edits is never closed silently by Ctrl+click.
+test('ctrl-close: unsaved edits in the file reader make an otherwise safe tab ASK, naming them', async () => {
+  const h = await mergedHarness({ safety: { facts: async () => h.facts, readerUnsaved: () => 'src/app.js' } });
+  const r = await ctrlClose(h);
+  assert.strictEqual(r.cancelled, true);
+  assert.strictEqual(h.confirms.length, 1);
+  assert.match(h.confirms[0].reason, /unsaved edits to src\/app\.js in the file reader/);
+});
+
+test('ctrl-close: with nothing unsaved (null) or a reader that throws, the safe tab still closes silently', async () => {
+  for (const readerUnsaved of [() => null, () => '']) {
+    const h = await mergedHarness({ safety: { facts: async () => h.facts, readerUnsaved } });
+    const r = await ctrlClose(h);
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(h.confirms.length, 0);
+  }
+  const h = await mergedHarness({ safety: { facts: async () => h.facts, readerUnsaved: () => { throw new Error('x'); } } });
+  assert.strictEqual((await ctrlClose(h)).ok, true, 'a broken hook is not a reason to refuse');
 });

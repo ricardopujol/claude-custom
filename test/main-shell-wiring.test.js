@@ -23,7 +23,23 @@ const fs = require('fs');
 const path = require('path');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-const MAIN = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8'));
+// app/main.js has CRLF endings on a core.autocrlf checkout; the slices below anchor on '\n}\n'.
+const MAIN = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n'));
+
+// A top-level function body, up to its closing brace at column 0. A missing end FAILS instead of reading to EOF.
+const topLevelBody = (at) => {
+  const end = MAIN.indexOf('\n}\n', at);
+  assert.ok(at !== -1 && end !== -1, 'the function must exist and close at column 0');
+  return MAIN.slice(at, end);
+};
+
+// A slice from `at` up to the next `end` marker. A missing start or end FAILS instead of reading to EOF.
+const sliceTo = (at, end) => {
+  assert.ok(at !== -1, 'the slice must start somewhere');
+  const stop = MAIN.indexOf(end, at);
+  assert.ok(stop !== -1, 'the slice must end at ' + JSON.stringify(end));
+  return MAIN.slice(at, stop);
+};
 
 const channelsIn = (src) => [...src.matchAll(/ipcMain\.(on|handle)\(\s*'([^']+)'/g)]
   .map(m => ({ kind: m[1], name: m[2], at: m.index }));
@@ -133,8 +149,8 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
-  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT \}\)/);
+  const body = topLevelBody(at);
+  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);
@@ -174,7 +190,7 @@ test('CLAUDE_CUSTOM_PORT keeps a window single-tab, so every existing probe work
 
 test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
   const at = MAIN.indexOf('function listWorktrees()');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const body = topLevelBody(at);
   assert.match(body, /'worktree', 'list', '--porcelain'/);
   assert.match(body, /LC_ALL: 'C'/);
   assert.match(body, /timeout: 5000/);
@@ -191,14 +207,15 @@ test('the probe driver does nothing without its env var, and only listens locall
   assert.match(MAIN, /const PROBE_PORT = Number\(process\.env\.CLAUDE_CUSTOM_TABS_PROBE\) \|\| 0/);
   assert.match(MAIN, /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
   assert.match(MAIN, /server\.listen\(port, '127\.0\.0\.1'/);
-  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason \}\);\r?\n\s+return reason === '';/,
+  assert.match(MAIN, /if \(PROBE_PORT\) \{\r?\n\s+probeConfirms\.push\(\{ label: tab\.branch \|\| projectLabel\(tab\.cwd\), reason, unsaved \}\);\r?\n\s+return reason === '';/,
     'the confirm is auto-yes only under the driver, and only for a close that had no reason to ask');
 });
 
 test('a hand close asks first, every time', () => {
   assert.match(MAIN, /dialog\.showMessageBox\(win, \{/);
   assert.match(MAIN, /message: `End the session in \$\{label\}\?`/);
-  assert.match(MAIN, /: 'The folder stays\.'/);
+  // the detail line is app/reader-unsaved.js closeDetail: 'The folder stays.' plus the reader's unsaved file (#50)
+  assert.match(MAIN, /detail: closeDetail\(\{ reason, unsaved \}\)/);
 });
 
 test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
@@ -206,7 +223,7 @@ test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exac
   assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
   assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
-  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\) \}/);
+  assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\), readerUnsaved: \(tab\) => readerUnsaved\.pathFor\(tab\.key\) \}/);
   assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/,
     'a Ctrl+click close asks the service whether it could look (#77 D2)');
   // the context menu and the plain x stay plain
@@ -223,7 +240,7 @@ test('there is NO application menu bar: it is nulled once, before the window, an
 
 test('override and close live in the right-click popup only', () => {
   const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const body = MAIN.slice(at, at + 600);
+  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
   assert.match(body, /\.popup\(/);
@@ -266,7 +283,7 @@ test('each tab view is shown only when selected and laid out below the strip', (
 
 test('every tab view is created with context isolation on and node integration off', () => {
   const at = MAIN.indexOf('function createTabView(');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const body = topLevelBody(at);
   assert.match(body, /contextIsolation: true/);
   assert.match(body, /nodeIntegration: false/);
   assert.match(body, /preload: path\.join\(__dirname, 'preload\.js'\)/);
@@ -288,7 +305,7 @@ test('only the headless paths switch native occlusion tracking off (an occluded 
 test('F4 (Dexter, PR #75): applySelection focuses by view IDENTITY via focusStep, not by a changed selection key', () => {
   const start = MAIN.indexOf('function applySelection(');
   assert.ok(start !== -1);
-  const body = MAIN.slice(start, MAIN.indexOf('\n}', start));
+  const body = sliceTo(start, '\n}');
   assert.ok(/focusStep\(\s*lastFocusedView\s*,/.test(body), 'applySelection must ask focusStep');
   assert.ok(/lastFocusedView\s*=\s*\w+\.lastFocused/.test(body),
     'and keep what focusStep says holds the keyboard, including null (R2-4)');
@@ -304,7 +321,7 @@ test('R2-4 (Dexter, PR #75): the strip page taking focus means no view has the k
 test('F4: the window-focus path records which view it focused, so applySelection does not repeat it', () => {
   const i = MAIN.indexOf('const focusSelected = ()');
   assert.ok(i !== -1);
-  const body = MAIN.slice(i, MAIN.indexOf('};', i));
+  const body = sliceTo(i, '};');
   assert.ok(/lastFocusedView\s*=/.test(body));
 });
 
@@ -312,7 +329,7 @@ test('F4: the window-focus path records which view it focused, so applySelection
 
 test('PR 3: the shell gets the marker reader, the three-answer probe and the contract scripts', () => {
   const at = MAIN.indexOf('tabShell = createShell({');
-  const call = MAIN.slice(at, MAIN.indexOf('\n  });', at));
+  const call = sliceTo(at, '\n  });');
   assert.match(call, /marker: readMergedMarker/);
   assert.match(call, /probe: \(port\) => probePort\(port\)/);
   assert.match(call, /ops: createOps\(\{ dir: scriptsDir\(process\.env\) \}\)/);
@@ -421,7 +438,7 @@ test('nothing reaches shell.openExternal unchecked -- above all the about:blank 
   assert.deepStrictEqual(calls, ['target']);
   const at = MAIN.indexOf('function openInBrowser(');
   assert.ok(at !== -1, 'openInBrowser exists');
-  const fn = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const fn = topLevelBody(at);
   assert.match(fn, /const target = externalUrl\(url\);/);
   assert.match(fn, /shell\.openExternal\(target\)\.catch\(/);
   const handler = MAIN.slice(MAIN.indexOf('wc.setWindowOpenHandler('), MAIN.indexOf('});', MAIN.indexOf('wc.setWindowOpenHandler(')));
@@ -519,10 +536,10 @@ test('D1: the preload exposes layoutTree with one listener at a time, on its own
 
 test('L1 #1: focus mode lifts the tab view over the strip, and every view is told', () => {
   assert.match(MAIN, /\nlet focusMode = false;/);
-  const lv = MAIN.slice(MAIN.indexOf('function layoutView('), MAIN.indexOf('\n}', MAIN.indexOf('function layoutView(')));
+  const lv = sliceTo(MAIN.indexOf('function layoutView('), '\n}');
   assert.match(lv, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
   assert.match(lv, /y: top,/);
-  const set = MAIN.slice(MAIN.indexOf('function setFocusMode('), MAIN.indexOf('\n}', MAIN.indexOf('function setFocusMode(')));
+  const set = sliceTo(MAIN.indexOf('function setFocusMode('), '\n}');
   assert.match(set, /forEachView\(layoutView\)/);
   assert.match(set, /send\('focus-mode', focusMode\)/);
 });
@@ -540,7 +557,7 @@ test('L1 #1: Ctrl+Shift+F toggles it, and only a tab view may ask through IPC', 
 test('L1 #1: a tab view that loads while focus mode is on hears it too', () => {
   const at = MAIN.indexOf("wc.on('did-finish-load', () => {");
   assert.ok(at !== -1);
-  assert.match(MAIN.slice(at, MAIN.indexOf('\n  });', at)), /if \(focusMode\) wc\.send\('focus-mode', true\);/);
+  assert.match(sliceTo(at, '\n  });'), /if \(focusMode\) wc\.send\('focus-mode', true\);/);
 });
 
 test('L1 S7: the window keeps room for the terminal and two side zones', () => {

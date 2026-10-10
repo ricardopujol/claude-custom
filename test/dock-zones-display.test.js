@@ -256,3 +256,15 @@ test('Dexter F7: a zone squeezed below its minimum is drawn as its rail, panel h
   assert.strictEqual(p.zones.right.tabs.find(t => t.id === 'agents').on, true, 'still the selected tab');
   assert.strictEqual(l.active.right, 'agents', 'the layout itself is untouched');
 });
+
+// --- lean mode (#62, PR #140 Dexter F1): a remount that is not the person opening the vault takes no focus ---------------
+
+test('renderEffects: quiet (lean mode putting the panels back) never moves the focus to the vault; what left is still reported', () => {
+  const none = new Set();
+  const withVault = new Set(['vault', 'git']);
+  assert.strictEqual(renderEffects(none, withVault, { userAction: false }).focus, 'vault', 'a person opening the vault still takes it');
+  const quiet = renderEffects(none, withVault, { userAction: false, quiet: true });
+  assert.strictEqual(quiet.focus, null);
+  assert.deepStrictEqual(quiet.newlyShown.sort(), ['git', 'vault'], 'the panels still load');
+  assert.strictEqual(renderEffects(withVault, none, { quiet: true }).vaultLeft, true, 'its secrets still go out of sight');
+});
