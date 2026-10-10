@@ -6,7 +6,7 @@
        page-title-updated so the page can never take it back. -->
   <title>claude-custom</title>
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+        content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; media-src 'self'" />
   <link rel="stylesheet" href="agent-colour.css" />
   <style>
     :root {
@@ -35,6 +35,12 @@
     .agent-tag { font-size: 9px; line-height: 1; padding: 1px 3px; border-radius: 3px; color: var(--agent);
       border: 1px solid color-mix(in srgb, var(--agent) 55%, transparent); font-variant-numeric: tabular-nums; }
     .tab.occupied-warn .agent-tag { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+    /* #81: only readers are in this folder (an agent of a read-only side session): the initials stay, dimmed, with no
+       hatched edge, because nobody is writing here. */
+    .tab.reading .agent-tag { opacity: 0.6; border-style: dashed; }
+    /* #81: a branch tab's read-only side session, right after it: smaller than a branch tab, dashed where it joins. */
+    .tab.side { font-size: 11px; max-width: 170px; padding: 0 8px; border-left: 1px dashed var(--border); }
+    .tab.side .label { font-style: italic; }
     .tab:hover { background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); }
     .tab.selected { background: var(--bg); box-shadow: inset 0 -2px 0 var(--accent); }
     /* The night tab (#52). After .selected so it wins the background; the accent line still says which tab is open.
@@ -43,6 +49,27 @@
     .tab.night:hover { background: color-mix(in srgb, var(--night) 82%, white); }
     .tab.night .label { color: color-mix(in srgb, var(--text) 85%, var(--night-edge)); }
     .moon { font-size: 11px; line-height: 1; }
+    /* Lean mode (#62): the button and the chip. The chip is a still pill; Back to normal is the way out. */
+    #lean-btn { flex: 0 0 auto; align-self: center; margin-right: 4px; height: 20px; border: 1px solid var(--border);
+      background: transparent; color: var(--dim); border-radius: 4px; cursor: pointer; font-size: 11px; padding: 0 8px; }
+    #lean-btn:hover { color: var(--text); border-color: var(--dim); }
+    #lean-btn[hidden], #lean-chip[hidden], #lean-chip-night[hidden] { display: none; }
+    #lean-chip { flex: 0 0 auto; align-self: center; display: flex; align-items: center; gap: 6px; margin-right: 4px; height: 20px;
+      padding: 0 3px 0 8px; border-radius: 4px; border: 1px solid var(--night-edge); background: var(--night); color: var(--text); font-size: 11px; }
+    #lean-chip-night { color: color-mix(in srgb, var(--text) 80%, var(--night-edge)); font-variant-numeric: tabular-nums; }
+    #lean-back { height: 14px; border: 0; border-radius: 3px; background: color-mix(in srgb, var(--night-edge) 25%, transparent);
+      color: var(--text); cursor: pointer; font-size: 10px; padding: 0 6px; }
+    #lean-back:hover { background: color-mix(in srgb, var(--night-edge) 45%, transparent); }
+    body.frameless #lean-btn, body.frameless #lean-chip { -webkit-app-region: no-drag; }
+    body.lean .dot.working { animation: none; }
+    /* the working agents' still portraits, left of the chip (#62, option C): 18 px, round, at most six then +N */
+    #lean-faces { flex: 0 0 auto; align-self: center; display: flex; align-items: center; gap: 3px; margin-right: 6px; }
+    #lean-faces[hidden] { display: none; }
+    .lean-face { width: 18px; height: 18px; border-radius: 50%; overflow: hidden; flex: 0 0 auto; display: flex;
+      outline: 1px solid var(--agent, var(--accent)); outline-offset: 0; }
+    .lean-face .face-media { width: 100%; height: 100%; object-fit: cover; display: block; font-size: 8px; line-height: 18px;
+      text-align: center; color: #12141c; }
+    .lean-more { font-size: 10px; color: var(--dim); padding: 0 2px; }
     .tab.dim .label { color: var(--dim); }
     .tab.dim { opacity: 0.75; }
     .label { overflow: hidden; text-overflow: ellipsis; }
@@ -177,7 +204,10 @@
       placeholder="Note an idea, a bug, a fix…" spellcheck="false" maxlength="10000"
       aria-label="Note for the indexing assistant (Ctrl+Alt+N)" /><button type="button" id="index-chip"
       title="Adds to this project's backlog inbox. Click to switch project.">…</button></form><button type="button" id="index-count"
-      aria-expanded="false" title="Today's notes: Undo, or Copy one that wasn't filed">0 filed</button><button type="button" id="bg" title="Running sessions">▾</button><button
+      aria-expanded="false" title="Today's notes: Undo, or Copy one that wasn't filed">0 filed</button><button type="button" id="lean-btn"
+      title="Lean mode: just the terminal. Panels, pollers and animations stop; the look stays. A /bedtime night turns it on by itself.">☾ Lean</button><span id="lean-faces" hidden></span><span
+      id="lean-chip" hidden><span id="lean-chip-label"></span><span id="lean-chip-night" hidden></span><button type="button"
+      id="lean-back" title="Panels and animations come back">Back to normal</button></span><button type="button" id="bg" title="Running sessions">▾</button><button
       type="button" id="win-min" class="win-btn" title="Minimise" aria-label="Minimise" hidden>&#x2013;</button><button
       type="button" id="win-close" class="win-btn" title="Close window (sessions keep running)" aria-label="Close window"
       hidden>&#x2715;</button></div>
@@ -186,6 +216,8 @@
     <button type="button" id="pane-retry" hidden>Retry</button>
   </div>
   <script src="./indexing-display.js"></script>
+  <script src="./portrait-media-display.js"></script>
+  <script src="./lean-display.js"></script>
   <script src="./tab-strip.js"></script>
 </body>
 </html>

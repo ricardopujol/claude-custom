@@ -18,6 +18,12 @@
  *                                  withLock and readState: a file it could not
  *                                  read is never written over.
  *
+ *   .harness/state/medals.json     host/medals.js, STORE_KEY 'medals' (BACKLOG #80: the medals
+ *                                  Ricardo gives agents). Install-wide, keyed by agent name. Given
+ *                                  by hand, so like the wand it opts in to withLock and readState.
+ *   .harness/state/bubbles.json    host/bubbles.js, STORE_KEY 'bubbles' (BACKLOG #80: the speech
+ *                                  bubbles' on/off switch). Install-wide, regenerable.
+ *
  *   .harness/state/vault.json      host/bugvault.js, STORE_KEY 'vault' (the bug
  *                                  vault; irreplaceable, so it opts in to
  *                                  withLock and readState).
@@ -26,6 +32,9 @@
  *   .harness/state/provider.json   host/host.js READS 'provider'. Nothing in
  *                                  this repo writes it; a missing file is the
  *                                  default, 'claude-max'.
+ *   'wait-games'                   written by Electron MAIN, app/main.js (the games' score store, host/game-scores.js,
+ *                                  BACKLOG #41): the best of each wait game, install-wide. It opts in to withLock for a
+ *                                  raise, since another window may be raising the same file.
  *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
  *                                  not by the host (see below).
  *
@@ -59,7 +68,8 @@
  *
  * The host owns every write. The GUI reads through the control protocol and
  * never writes. ONE EXCEPTION (Miguel, feat/project-look #2): Electron MAIN
- * writes the 'look-global' key -- the install-wide unfocused-window dim --
+ * writes the 'look-global' key -- the install-wide unfocused-window dim, and
+ * lean mode's list of dismissed /bedtime nights (#62, `leanDismissed`) --
  * because focus is a fact only main knows and no host is involved. Its own
  * key, regenerable, last-writer-wins by design: two windows moving the same
  * slider should end on whichever moved last.

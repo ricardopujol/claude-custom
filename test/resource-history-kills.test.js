@@ -91,7 +91,7 @@ test('record: cpu figures round to a tenth, memory to a whole byte; non-finite f
 test('recordFailure: a point with every figure null', () => {
   const h = createHistory();
   h.recordFailure(1, 1);
-  assert.deepStrictEqual(h.points(), [{ at: 1, cpu: null, cpuOurs: null, memUsed: null, memOurs: null, memTotal: null }]);
+  assert.deepStrictEqual(h.points(), [{ at: 1, cpu: null, cpuOurs: null, memUsed: null, memOurs: null, memTotal: null, gpu: null, gpuMemUsed: null, gpuMemTotal: null }]);
 });
 
 test('points: returns copies, so a caller cannot edit the ring', () => {

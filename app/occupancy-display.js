@@ -68,12 +68,16 @@ function distinctAgents(claims) {
 }
 
 const nameOf = c => (isStr(c.agent) ? c.agent : 'an agent');
+// #81: an agent of a read-only side session is a reader. It is shown, and it is never an agent WORKING in the folder.
+const isReader = c => c.role === 'reader';
+const READING = 'reading only';
 
 function lineFor(c, now) {
   const parts = [nameOf(c)];
   if (isStr(c.fromBranch)) parts.push(`from ${c.fromBranch}`);
   const since = minutesLabel(c.firstAt, now);
   if (since !== null) parts.push(since);
+  if (isReader(c)) parts.push(READING);
   return parts.join(SEP);
 }
 
@@ -86,7 +90,9 @@ function tabOccupancy(claims, key, { keyOf = identity, turn, now, withAlso = fal
     (withAlso === true && Array.isArray(c.also) && c.also.some(a => isStr(a) && keyOf(a) === key));
   const mine = distinctAgents((Array.isArray(claims) ? claims : []).filter(c => isClaim(c) && here(c)));
   if (mine.length === 0) return null;
-  const warn = turn === 'turn';
+  // Only a writer can be the second one writing, and only a writer counts as "an agent working here".
+  const writers = mine.filter(c => !isReader(c)).length;
+  const warn = turn === 'turn' && writers > 0;
   const lines = mine.map(c => lineFor(c, now));
   if (warn) lines.push(OWN_WRITING);
   return {
@@ -94,12 +100,13 @@ function tabOccupancy(claims, key, { keyOf = identity, turn, now, withAlso = fal
     more: Math.max(0, mine.length - TAGS_MAX),
     warn,
     lines,
-    count: mine.length,
+    count: writers,
+    readersOnly: writers === 0,
   };
 }
 
 function bannerModel(here, { turn, now } = {}) {
-  const mine = distinctAgents(here);
+  const mine = distinctAgents(here).filter(c => !isReader(c));
   if (mine.length === 0) return null;
   const lead = mine[0];
   const others = mine.slice(1);
@@ -123,7 +130,7 @@ function bannerModel(here, { turn, now } = {}) {
  * strip's mark and the banner (distinctAgents, lineFor, bannerModel's jump), so the three never disagree.
  */
 function chipModel(here, { turn, now } = {}) {
-  const mine = distinctAgents(here);
+  const mine = distinctAgents(here).filter(c => !isReader(c));
   if (mine.length === 0) return null;
   const warn = turn === 'turn';
   const lines = mine.map(c => lineFor(c, now));
@@ -176,6 +183,7 @@ const PAGE_FIELDS = ['agentId', 'agent', 'worktree', 'also', 'fromBranch', 'from
 const forPage = (c) => {
   const out = {};
   for (const f of PAGE_FIELDS) out[f] = f === 'also' ? (Array.isArray(c.also) ? c.also.filter(isStr) : []) : (c[f] === undefined ? null : c[f]);
+  if (isReader(c)) out.role = 'reader';     // only a reader carries it: a writer's page payload is what it always was
   return out;
 };
 
