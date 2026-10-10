@@ -23,7 +23,15 @@ const fs = require('fs');
 const path = require('path');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-const MAIN = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8'));
+// app/main.js has CRLF endings on a core.autocrlf checkout; the slices below anchor on '\n}\n'.
+const MAIN = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n'));
+
+// A top-level function body, up to its closing brace at column 0. A missing end FAILS instead of reading to EOF.
+const topLevelBody = (at) => {
+  const end = MAIN.indexOf('\n}\n', at);
+  assert.ok(at !== -1 && end !== -1, 'the function must exist and close at column 0');
+  return MAIN.slice(at, end);
+};
 
 const channelsIn = (src) => [...src.matchAll(/ipcMain\.(on|handle)\(\s*'([^']+)'/g)]
   .map(m => ({ kind: m[1], name: m[2], at: m.index }));
@@ -133,7 +141,7 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const body = topLevelBody(at);
   assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
@@ -174,7 +182,7 @@ test('CLAUDE_CUSTOM_PORT keeps a window single-tab, so every existing probe work
 
 test('the worktree list runs with LC_ALL=C and a 5 s timeout, from dev', () => {
   const at = MAIN.indexOf('function listWorktrees()');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const body = topLevelBody(at);
   assert.match(body, /'worktree', 'list', '--porcelain'/);
   assert.match(body, /LC_ALL: 'C'/);
   assert.match(body, /timeout: 5000/);
@@ -266,7 +274,7 @@ test('each tab view is shown only when selected and laid out below the strip', (
 
 test('every tab view is created with context isolation on and node integration off', () => {
   const at = MAIN.indexOf('function createTabView(');
-  const body = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const body = topLevelBody(at);
   assert.match(body, /contextIsolation: true/);
   assert.match(body, /nodeIntegration: false/);
   assert.match(body, /preload: path\.join\(__dirname, 'preload\.js'\)/);
@@ -421,7 +429,7 @@ test('nothing reaches shell.openExternal unchecked -- above all the about:blank 
   assert.deepStrictEqual(calls, ['target']);
   const at = MAIN.indexOf('function openInBrowser(');
   assert.ok(at !== -1, 'openInBrowser exists');
-  const fn = MAIN.slice(at, MAIN.indexOf('\n}\n', at));
+  const fn = topLevelBody(at);
   assert.match(fn, /const target = externalUrl\(url\);/);
   assert.match(fn, /shell\.openExternal\(target\)\.catch\(/);
   const handler = MAIN.slice(MAIN.indexOf('wc.setWindowOpenHandler('), MAIN.indexOf('});', MAIN.indexOf('wc.setWindowOpenHandler(')));
