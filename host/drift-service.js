@@ -27,7 +27,7 @@
  * SAYING WHAT IS WRONG (never a silent empty state). `off`: ollama-down, model-missing (never pulled from here), failed (it
  * answered, but not usefully: `detail`), no-develop (no develop branch to watch), no-docs (no documentation folder). While
  * Ollama is off the mark does not move, so the merge is read as soon as it is back; it is asked again at most once a minute
- * (RETRY_MS). A reply that is not a list at all is said (`bad-reply`) and that merge is let go, so it is not retried forever. A merge that
+ * (RETRY_MS). A reply that is not a list at all is retried like a git failure and, after MAX_ATTEMPTS, the merge is let go, so it is not retried forever. A merge that
  * fails for its OWN reasons (its diff can't be produced, the model times out on it, a 500) is tried MAX_ATTEMPTS times and then let go and
  * said, so it can't hold the shared GPU slot every minute for good. The off line is cleared on every path that finds nothing left to do,
  * including when another host read the merge. A project with no documents is said once and costs no diff, no model and no slot. A notes
@@ -137,17 +137,16 @@ function createDriftService({
       if (!r.ok && (r.reason === 'ollama-down' || r.reason === 'model-missing')) { holdOff(failOff(r.reason)); return 'stop'; }
       // The model timing out or answering 5xx, or any other reason Ollama gives, is the machine's condition, not this merge's: it waits.
       if (!r.ok && r.reason !== 'bad-reply' && r.reason !== 'error') { holdOff(failOff(r.reason)); return 'stop'; }
-      if (!r.ok && r.reason === 'error') {
+      // The merge's OWN failures count: git refusing its diff, or the model answering with something that is not a list.
+      if (!r.ok) {
         const n = (attempts.get(merge.sha) || 0) + 1;
-        if (n < MAX_ATTEMPTS) { attempts.set(merge.sha, n); holdOff(failOff('error')); return 'stop'; }
+        if (n < MAX_ATTEMPTS) { attempts.set(merge.sha, n); holdOff(failOff(r.reason === 'bad-reply' ? 'bad-reply' : 'error')); return 'stop'; }
         attempts.delete(merge.sha);
-        letGo(merge, `git refused its diff ${n} times (${thrown})`);
+        letGo(merge, r.reason === 'bad-reply' ? `the model did not answer with a list ${n} times` : `git refused its diff ${n} times (${thrown})`);
       } else if (r.ok) {
         const put = store.addNotes(merge, r.flags, now());
         if (!put.ok) log('[drift] could not save notes:', put.error);
         jobOff = null;
-      } else {
-        letGo(merge, 'the model did not answer with a list');
       }
       const moved = store.setProcessed(merge.sha);
       if (!moved.ok) { log('[drift] could not save the mark:', moved.error); holdOff(jobOff); return 'stop'; }

@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 const { tmpDir } = require('./tmp-dir');
-const { createDriftService, analyzeMerge, RETRY_MS, REPLY_TOKENS } = require('../host/drift-service');
+const { createDriftService, analyzeMerge, RETRY_MS, REPLY_TOKENS, GENERATE_TIMEOUT_MS, MAX_ATTEMPTS } = require('../host/drift-service');
 const { createDriftStore } = require('../host/drift-store');
 const { STALE_MS } = require('../host/summary-slot');
 const { TIMEOUT_MS: GIT_TIMEOUT_MS } = require('../host/drift-git');
@@ -139,14 +139,40 @@ test('a generate that fails (timeout) is said, leaves the merge unprocessed, and
   assert.strictEqual(store.read().processed, H('b'));
 });
 
-test('a reply that is not a JSON list is dropped for that merge and said once, not retried forever', async () => {
-  const { svc, store, calls } = rig({ reply: { ok: true, text: 'The docs look fine to me.' } });
-  await svc.tick();
+test('a reply that is not a JSON list is retried, and after MAX_ATTEMPTS the merge is let go as a note, not retried forever', async () => {
+  const { svc, store, calls, t } = rig({ reply: { ok: true, text: 'The docs look fine to me.' } });
+  for (let i = 0; i < MAX_ATTEMPTS + 3; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.strictEqual(calls.generate, MAX_ATTEMPTS);
   assert.strictEqual(store.read().processed, H('b'));
-  assert.strictEqual(svc.snapshot().off, null, 'it is a note now (R2-2), not an off line the next tick would wipe');
+  assert.strictEqual(svc.snapshot().off, null, 'it is a note (R2-2), not an off line the next tick would wipe');
   assert.match(svc.snapshot().notes[0].doc, /not checked/);
+});
+
+test('two replies that are not lists and then a good one: the merge is read and its notes stored, nothing let go', async () => {
+  const { svc, store, calls, r, t } = rig({ reply: { ok: true, text: 'not a list' } });
+  await svc.tick(); t.now += RETRY_MS + 1;
+  await svc.tick(); t.now += RETRY_MS + 1;
+  assert.strictEqual(store.read().processed, H('a'), 'still waiting after two');
+  r.reply = { ok: true, text: GOOD };
   await svc.tick();
-  assert.strictEqual(calls.generate, 1);
+  assert.strictEqual(calls.generate, 3);
+  assert.strictEqual(store.read().processed, H('b'));
+  const notes = svc.snapshot().notes;
+  assert.strictEqual(notes.length, 1);
+  assert.strictEqual(notes[0].doc, 'DESIGN_ASK_REPO.md');
+});
+
+test('bad replies and timeouts do not add up: only the merge\'s own bad replies count, and a good answer resets nothing it should not', async () => {
+  const { svc, store, r, t } = rig({ reply: { ok: true, text: 'not a list' } });
+  await svc.tick(); t.now += RETRY_MS + 1;
+  r.reply = { ok: false, reason: 'timeout' };
+  for (let i = 0; i < 5; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
+  assert.strictEqual(store.read().processed, H('a'), 'timeouts never count');
+  r.reply = { ok: true, text: 'not a list' };
+  await svc.tick(); t.now += RETRY_MS + 1;
+  assert.strictEqual(store.read().processed, H('a'), 'two bad replies so far');
+  await svc.tick();
+  assert.strictEqual(store.read().processed, H('b'), 'the third lets it go');
 });
 
 test('the queue drops when busy: a held GPU slot means no job now, no note lost, tried again next tick', async () => {
@@ -271,7 +297,6 @@ test('one job (the host gives the model 60 s, see test/host-drift-wiring.test.js
 });
 
 // ---- PR #153 review fixes ----------------------------------------------------------------------------------------
-const { GENERATE_TIMEOUT_MS, MAX_ATTEMPTS } = require('../host/drift-service');
 
 function failingDiff(err) {
   const base = rig();
@@ -327,9 +352,9 @@ test('a held GPU slot never counts against a merge either', async () => {
   assert.strictEqual(store.read().processed, H('b'));
 });
 
-test('a reply that is not a list on a valid diff is the merge\'s own failure: let go, and said (R2-1)', async () => {
-  const { svc, store } = rig({ reply: { ok: true, text: 'The docs look fine to me.' } });
-  await svc.tick();
+test('a reply that is not a list on a valid diff is the merge\'s own failure: after MAX_ATTEMPTS it is let go, and said (R2-1)', async () => {
+  const { svc, store, t } = rig({ reply: { ok: true, text: 'The docs look fine to me.' } });
+  for (let i = 0; i < MAX_ATTEMPTS; i++) { await svc.tick(); t.now += RETRY_MS + 1; }
   assert.strictEqual(store.read().processed, H('b'));
   assert.match(svc.snapshot().notes[0].doc + svc.snapshot().notes[0].sentence, LETGO_NOTE);
 });
