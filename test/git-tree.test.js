@@ -148,3 +148,8 @@ test('personOf: roles and named teammates fold to the person; anything else is i
     'general-purpose', 'Explore'].map(personOf),
   ['Dexter', 'Dexter', 'Miguel', 'Miguel', 'Mortimer', 'Paris', 'Paris', 'Vera', 'Vera', 'Naomi', 'Dewey', 'general', 'Explore']);
 });
+
+test('personOf: El Gordo and Vladimir, by role and by one-job name', () => {
+  assert.deepStrictEqual(['el-gordo', 'gordo-pr42', 'Gordo', 'vladimir', 'vladimir-pr42'].map(personOf),
+    ['El Gordo', 'El Gordo', 'El Gordo', 'Vladimir', 'Vladimir']);
+});
