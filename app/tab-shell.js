@@ -1295,6 +1295,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
   // the Graph view: verify/probe-git-graph.js
   'ggState', 'ggView', 'ggClick', 'ggAct', 'ggKey', 'ggRerender',
+  // backlog #39 job 2: verify/probe-docs-drift.js reads the docs-drift list and clicks a note's Dismiss
+  'driftState', 'driftDismiss',
   // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
   'gitTermInput',
   // the repo browser and code reader: verify/probe-repo-browser.js

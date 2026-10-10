@@ -90,6 +90,11 @@ const { createOllamaClient } = require('./summary-ollama');
 const { createSummaryStore } = require('./summary-store');
 const { createPowerProbe } = require('./summary-power');
 const { createLeanGate } = require('./lean-gate');
+const { createDriftService, TICK_MS: DRIFT_TICK_MS, GENERATE_TIMEOUT_MS: DRIFT_GENERATE_MS } = require('./drift-service');
+const { createDriftStore } = require('./drift-store');
+const { createDriftGit } = require('./drift-git');
+const { readDocsDir } = require('./drift-docs-fs');
+const { createAskOllama } = require('./ask-ollama');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
@@ -1195,6 +1200,27 @@ const summaryTimer = setInterval(() => {
 summaryTimer.unref();
 summaryStore.sweep().catch(() => { /* best effort */ });     // one prune sweep at start: old summaries, orphan temp files
 
+// Backlog #39 job 2: docs drift. After a merge into develop the local model reads the diff next to the build log's "Now" and
+// the design docs it touches, and flags sentences the merge now contradicts (host/drift-service.js). READ-ONLY toward the
+// project: it reads documentation\ and git, and writes only its own notes under .harness\state\docs-drift. It shares the
+// summaries' GPU slot, so one Ollama job runs at a time across every tab; each tab's host looks, and the shared mark in the
+// notes file keeps a merge from being read twice.
+const DRIFT_FILE = path.join(seams.summaryDir ? path.join(seams.summaryDir, 'docs-drift') : path.join(HARNESS_DIR, 'state', 'docs-drift'),
+  require('crypto').createHash('sha1').update(String(STATE_ROOT).toLowerCase()).digest('hex').slice(0, 16) + '.json');
+const drift = createDriftService({
+  git: createDriftGit({ cwd: STATE_ROOT }),
+  readDocs: () => readDocsDir(path.join(STATE_ROOT, 'documentation')),
+  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: DRIFT_GENERATE_MS }),
+  store: createDriftStore({ file: DRIFT_FILE }),
+  slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
+  broadcast: (m) => broadcastControl(m),
+  log: (...a) => console.log(...a),
+});
+const driftTimer = setInterval(() => { drift.tick().catch(() => { /* logged inside */ }); }, DRIFT_TICK_MS);
+driftTimer.unref();
+const driftFirst = setTimeout(() => { drift.tick().catch(() => { /* logged inside */ }); }, 10_000);
+driftFirst.unref();
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
@@ -2169,6 +2195,8 @@ wss.on('connection', (ws, req) => {
     // Backlog #39: this session's "where are we" summary (null: none yet) and why there is no fresh one (null: nothing wrong).
     summary: summaryNow.summary,
     summaryOff: summaryNow.off,
+    // Backlog #39 job 2: docs that may be out of date after a merge into develop, and why the check is off (null: nothing wrong).
+    docsDrift: drift.snapshot(),
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
@@ -2586,6 +2614,21 @@ wss.on('connection', (ws, req) => {
       repoService.handle(msg).then(reply => {
         try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
       });
+      return;
+    }
+    if (msg.type === 'docs-drift') {
+      // Dismiss a note (hidden for good, on every window of the project) or ask for the list again. The host only ever
+      // hides a note: no document is touched.
+      if (msg.action === 'dismiss' && typeof msg.id === 'string') {
+        const r = drift.dismiss(msg.id);
+        // A good dismissal was just broadcast to every window (this one too); a failed one is said, to the window that asked.
+        if (!r.ok) {
+          console.log('[drift] dismiss failed:', r.error);
+          sendControl(ws, { type: 'docs-drift', ...drift.snapshot(), error: `Couldn't hide that note: ${r.error}` });
+        }
+        return;
+      }
+      sendControl(ws, { type: 'docs-drift', ...drift.snapshot() });
       return;
     }
     if (msg.type === 'git-tree') {

@@ -813,6 +813,23 @@ const repoBrowser = window.repoBrowser.create({
 // the window-close question's Save: main asks every page to save its unsaved reader text
 if (window.harness && window.harness.onReaderSave) window.harness.onReaderSave(() => { repoBrowser.reader.save(); });
 
+// --- docs drift (backlog #39 job 2) --------------------------------------------------------------------------
+// The host's list of docs the local model flagged after a merge into develop (host/drift-service.js), drawn above the git dial
+// by app/docs-drift-display.js. Dismiss tells the host to hide the note; nothing here edits a document.
+let docsDrift = null;
+function paintDocsDrift() {
+  const el = document.getElementById('drift-list');
+  if (!el || !window.docsDriftDisplay) return;
+  docsDriftDisplay.render(el, docsDrift, Date.now(), {
+    onDismiss: (id) => { try { ws.send(JSON.stringify({ type: 'docs-drift', action: 'dismiss', id })); } catch {} },
+  });
+}
+function applyDocsDrift(p) {
+  docsDrift = p && typeof p === 'object' ? { notes: Array.isArray(p.notes) ? p.notes : [], off: p.off && typeof p.off === 'object' ? p.off : null, error: typeof p.error === 'string' ? p.error : null } : null;
+  paintDocsDrift();
+}
+// The ages on the notes go stale between pushes.
+setInterval(() => { if (docsDrift) paintDocsDrift(); }, 60 * 1000);
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
 // Asked for when the panel opens, on reconnect, and every 30s while it's showing:
 // branches and spend move while you work. The host shares one read between
@@ -2859,6 +2876,24 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitTabs': return requestGitTabs().then(() => JSON.stringify({ ok: true, tabs: lastGitTabs }));
       // this tab's own terminal screen: what its session's pty has shown
       case 'gitScreen': return JSON.stringify({ ok: true, text: screenLines().join('\n') });
+      // docs drift (verify/probe-docs-drift.js): the list as painted, and a click on a note's Dismiss button
+      case 'driftState': {
+        const el = document.getElementById('drift-list');
+        const box = el.getBoundingClientRect();
+        return JSON.stringify({
+          ok: true, hidden: el.hidden, text: el.textContent, html: el.innerHTML, shown: box.width > 0 && box.height > 0,
+          rows: [...el.querySelectorAll('.drift-row')].map(r => ({ doc: r.querySelector('.drift-doc b').textContent, sentence: r.querySelector('.drift-sentence').textContent, why: r.querySelector('.drift-why').textContent, meta: r.querySelector('.drift-meta').textContent })),
+          note: (el.querySelector('.drift-note') || {}).textContent || null,
+          label: (el.querySelector('.drift-label') || {}).textContent || null,
+          color: getComputedStyle(el).color, background: getComputedStyle(document.getElementById('git-body')).backgroundColor,
+        });
+      }
+      case 'driftDismiss': {
+        const btn = document.querySelector('#drift-list [data-drift-dismiss]');
+        if (!btn) return JSON.stringify({ ok: false, error: 'no note to dismiss' });
+        btn.click();
+        return JSON.stringify({ ok: true });
+      }
       // backlog #44 + #47 (verify/probe-worktree-occupancy.js): the banner, the confirm and the card lines as
       // painted; a keystroke through xterm's own input path (term.input fires onData as typing does); a click on
       // one of the page's occupancy controls; and the session's turn, as the host's `turn` message would set it.
@@ -6862,6 +6897,7 @@ function handleControl(msg) {
     applyBedtime(msg.bedtime);
     if (leanOn) tellHostLean();      // a (re)attached host does not know this window is lean
     applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
+    applyDocsDrift(msg.docsDrift);
     paintBar();
     reportTabStatus();
     // The persisted hidden set (BACKLOG #14), before the first paint.
@@ -7059,6 +7095,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'summary') {
     applySummary(msg, false);
+    return;
+  }
+  if (msg.type === 'docs-drift') {
+    applyDocsDrift(msg);
     return;
   }
   if (msg.type === 'bedtime') {

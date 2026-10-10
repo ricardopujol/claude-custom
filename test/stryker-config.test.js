@@ -65,6 +65,7 @@ const REPO_SCANNING = new Set([
   'status-relay-process.test.js',
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
+  'drift-git-process.test.js',    // docs drift (PR #153 Miguel I1): the real git on a throwaway repo and a real child that outlives a timeout; its pure tests (drift-git.test.js) are in the command
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 

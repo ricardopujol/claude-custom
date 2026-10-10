@@ -101,6 +101,8 @@ const CONTROL_TYPES = new Set([
   // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff, by `action`
   // (host/repo-service.js). Off this list a `read` frame would be TYPED into the pty as JSON.
   'repo',
+  // Docs drift (BACKLOG #39 job 2): dismiss a note / ask for the list. Off this list a dismiss would be TYPED into the pty as JSON.
+  'docs-drift',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed

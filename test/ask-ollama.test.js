@@ -72,6 +72,15 @@ test('generate: sends the system prompt, the settings per request, and unloads a
   assert.strictEqual(b.think, false, 'a thinking model must answer, not deliberate for 40 s');
 });
 
+test('generate: numPredict raises the reply budget for one call; a bad value falls back to the default', async () => {
+  const { c, calls } = client(() => json(200, { response: 'x' }));
+  await c.generate({ system: 'S', prompt: 'P', numPredict: 700 });
+  await c.generate({ system: 'S', prompt: 'P', numPredict: -5 });
+  await c.generate({ system: 'S', prompt: 'P', numPredict: 'lots' });
+  await c.generate({ system: 'S', prompt: 'P' });
+  assert.deepStrictEqual(calls.map(x => x.body.options.num_predict), [700, 350, 350, 350]);
+});
+
 test('generate: an empty reply is a bad reply, never a silent empty answer', async () => {
   const { c } = client(() => json(200, { response: '   ' }));
   assert.deepStrictEqual(await c.generate({ system: 'S', prompt: 'P' }), { ok: false, reason: 'bad-reply' });
