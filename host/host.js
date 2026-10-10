@@ -102,7 +102,6 @@ const { createDriftService, TICK_MS: DRIFT_TICK_MS, GENERATE_TIMEOUT_MS: DRIFT_G
 const { createDriftStore } = require('./drift-store');
 const { createDriftGit } = require('./drift-git');
 const { readDocsDir } = require('./drift-docs-fs');
-const { createAskOllama } = require('./ask-ollama');
 const { milestoneFor, nextMilestone, progressTo, describeSpend,
         createAnnouncer } = require('./milestones');
 const { detectRunner, parseResults, healthFrom } = require('./health');
