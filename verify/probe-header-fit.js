@@ -22,6 +22,7 @@
 
 const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
+const { loadWithRetry } = require('./lib/load-with-retry');
 
 if (!process.versions.electron) {
   const env = { ...process.env };
@@ -82,11 +83,11 @@ const MEASURE = `(() => {
   return JSON.stringify({ vw, kids: out });
 })()`;
 
-const bail = setTimeout(() => { console.error('TIMED OUT'); process.exit(2); }, 90000);
+const bail = setTimeout(() => { console.error('TIMED OUT'); process.exit(2); }, 240000);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // A capture taken before the window has painted comes back empty (the first of a later window did): retry until it has pixels.
 async function shot(win, rect, file) {
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 20; i++) {
     const png = (await win.webContents.capturePage(rect)).toPNG();
     if (png.length > 0) { fs.writeFileSync(file, png); return png.length; }
     await sleep(400);
@@ -102,9 +103,12 @@ app.on('ready', async () => {
   try {
     fs.mkdirSync(OUT_DIR, { recursive: true });
     for (const width of WIDTHS) {
-      const win = new BrowserWindow({ width, height: 640, show: true, frame: false, useContentSize: true,
-        webPreferences: { contextIsolation: true, nodeIntegration: false } });
-      await win.loadFile(path.join(APP_ROOT, 'app', 'renderer.html'));
+      // A load that hangs or fails (ERR_FAILED -2) on a busy machine is retried in a fresh window, not read as a clip.
+      const win = await loadWithRetry({
+        open: () => new BrowserWindow({ width, height: 640, show: true, frame: false, useContentSize: true,
+          webPreferences: { contextIsolation: true, nodeIntegration: false } }),
+        load: (w) => w.loadFile(path.join(APP_ROOT, 'app', 'renderer.html')), attempts: 3, timeoutMs: 40000,
+      });
       // The page is ready when its renderer script has defined what the fixture calls (a fixed sleep raced on a cold start).
       for (let i = 0; i < 50; i++) {
         if (await win.webContents.executeJavaScript("typeof renderUsage === 'function' && typeof renderQuota === 'function'")) break;
