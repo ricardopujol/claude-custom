@@ -96,6 +96,8 @@ const CONTROL_TYPES = new Set([
   // Layout pass L3: the Git panel asks for the tree (documentation/PLAN_GIT_TREE.md). Off this list,
   // its every 30s re-ask would be TYPED into the session as JSON.
   'git-tree',
+  // The Git panel's Graph view asks for the last 50 commits (host/git-graph.js), every 30s while it shows. Same hole.
+  'git-graph',
   // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff, by `action`
   // (host/repo-service.js). Off this list a `read` frame would be TYPED into the pty as JSON.
   'repo',

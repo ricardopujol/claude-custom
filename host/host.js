@@ -43,6 +43,7 @@ const { projectDirName } = require('./project-dir');
 const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
 const { readHistory, readOrigin } = require('./git-history');
+const { readGraph, createGitGraphService } = require('./git-graph');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
 const { readOpenPrs, parseOpenPrs } = require('./open-prs');
 const { readSeams, announce, fixtureReader } = require('./probe-seams');
@@ -455,6 +456,8 @@ const gitTree = createGitTreeService({
   readRemote: readOrigin,
   readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
 });
+// The Git panel's Graph view: the last 50 commits of develop, main and the open branches, with their lanes.
+const gitGraph = createGitGraphService({ cwd: CWD, read: readGraph });
 // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff for THIS host's worktree
 // (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
 const repoService = createRepoService({
@@ -2590,6 +2593,13 @@ wss.on('connection', (ws, req) => {
       // arrives as { ok: false, error }, so the panel can say so instead of waiting forever.
       gitTree.get().then(tree => {
         try { ws.send(JSON.stringify({ type: 'git-tree', ...tree })); } catch { /* the client went away */ }
+      });
+      return;
+    }
+    if (msg.type === 'git-graph') {
+      // The Graph view. Like git-tree, it never rejects: a failure arrives as { ok: false, error }.
+      gitGraph.get().then(graph => {
+        try { ws.send(JSON.stringify({ type: 'git-graph', ...graph })); } catch { /* the client went away */ }
       });
       return;
     }

@@ -102,7 +102,7 @@ function createGitTreeService(d) {
       projectRoot: d.projectRoot, current: d.currentBranch(d.cwd) });
     try { if (d.readReviews && d.readReviews.refresh) d.readReviews.refresh(); } catch { /* the reader lists again next time */ }
     const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name) }));
-    return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk };
+    return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk, project: d.projectRoot };
   }
 
   function get() {

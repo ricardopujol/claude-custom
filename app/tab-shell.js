@@ -1293,6 +1293,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
   'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
+  // the Graph view: verify/probe-git-graph.js
+  'ggState', 'ggView', 'ggClick', 'ggAct', 'ggKey', 'ggRerender',
   // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
   'gitTermInput',
   // the repo browser and code reader: verify/probe-repo-browser.js
