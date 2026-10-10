@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld('harness', {
   openPath: (p) => ipcRenderer.invoke('tab:openPath', p),
   // The Files tab (#45): a path RELATIVE to this tab's worktree. Main re-runs the realpath guard against the
   // tab's own folder, then shows it in Explorer / starts an OS drag of the file. Neither ever opens or runs it.
+  // The code reader's unsaved file (a path relative to the worktree) or null, so ending this tab can warn (#50).
+  // main asks every page to save its reader (the window-close question's Save): the page answers by reporting null
+  onReaderSave: (fn) => { ipcRenderer.on('reader-save', () => { try { fn(); } catch (err) { console.error('[preload] reader-save listener threw', err); } }); },
+  readerDirty: (rel) => ipcRenderer.send('tab:readerDirty', rel === null ? null : String(rel)),
   repoReveal: (rel) => ipcRenderer.invoke('tab:repoReveal', rel),
   repoDrag: (rel) => ipcRenderer.invoke('tab:repoDrag', rel),
   // drag-out, in the gesture (PR #95 Miguel M2): prepare when the pointer reaches a row, then a SYNCHRONOUS start
@@ -226,6 +230,12 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(state); } catch (err) { console.error('[preload] playback-state listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('playback-state')),
   },
+  // The Games panel (BACKLOG #41): the best of each wait game, install-wide. main keeps them (host/game-scores.js) and refuses
+  // anything but one of the three games and a whole count.
+  games: {
+    scores: () => ipcRenderer.invoke('games:scores'),
+    submit: (game, score) => ipcRenderer.invoke('games:submit', game, score),
+  },
   // The Resources panel and the top bar's machine chip (BACKLOG #63). Main owns the sampler (host/resource-sampler.js
   // through app/resources-service.js); the page hears each payload
   // `{ model, status, machine }` (onState replaces its one listener), and asks for a Stop by pid and start time:
@@ -278,6 +288,20 @@ contextBridge.exposeInMainWorld('harness', {
       (_e, on) => {
         try { fn(on === true); } catch (err) { console.error('[preload] focus-mode listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('focus-mode')),
+  },
+  // Lean mode (BACKLOG #62; main's half is app/lean-bridge.js): one window-level state. `get` asks it, `set` is the
+  // button, `night` forwards THIS session's /bedtime night (its start in ms, or null when it ended: the host's word),
+  // and `onChange` replaces its one listener.
+  lean: {
+    get: () => ipcRenderer.invoke('lean:get'),
+    set: (on) => ipcRenderer.send('lean:set', on === true),
+    // this page's working agents (name, images flag, portrait result), for the strip's portraits
+    faces: (list) => ipcRenderer.send('lean:faces', Array.isArray(list) ? list.slice(0, 48) : []),
+    night: (startedAt) => ipcRenderer.send('lean:night', typeof startedAt === 'number' && Number.isFinite(startedAt) ? startedAt : null),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('lean-state'), ipcRenderer.on('lean-state',
+      (_e, state) => {
+        try { fn(state); } catch (err) { console.error('[preload] lean-state listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('lean-state')),
   },
   // The global dock layout (layout pass L1) -- see app/layout-bridge.js. `get`
   // answers null when nothing is saved yet (the page migrates); `onChange`

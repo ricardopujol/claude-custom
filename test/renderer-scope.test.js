@@ -83,10 +83,14 @@ const ALLOWED_GLOBALS = new Set([
   'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
+  // app/agent-state-display.js (BACKLOG #55): ONE name leaves its IIFE.
+  'agentStateDisplay',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
   'wandDisplay',
+  // app/games-rules.js, app/games-round.js, app/games-display.js (BACKLOG #41): the wait games. ONE name leaves each IIFE.
+  'gamesRules', 'gamesRound', 'gamesDisplay',
   // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
   'resourcesDisplay',
   // app/canvas-display.js (BACKLOG #71): Claude's panel. ONE name leaves its IIFE.
@@ -98,6 +102,8 @@ const ALLOWED_GLOBALS = new Set([
   'portraitMedia',
   // app/bg-media-display.js (BACKLOG #34): one namespace object, IIFE-wrapped.
   'bgMedia',
+  // app/lean-display.js (BACKLOG #62, lean mode): one namespace object, IIFE-wrapped; also loaded by the strip page.
+  'leanDisplay',
   // app/colour-seeds.js (BACKLOG #34): one namespace object, IIFE-wrapped.
   'colourSeeds',
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
@@ -108,6 +114,8 @@ const ALLOWED_GLOBALS = new Set([
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
+  // app/medals-display.js, app/bubble-display.js (BACKLOG #80): one namespace each, reached through `window.`.
+  'medalsDisplay', 'bubbleDisplay',
   // app/top-bar-display.js (FF12)
   'modelFamily', 'cueColour', 'chosenAccent', 'withChosenAccent', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
@@ -126,6 +134,8 @@ const ALLOWED_GLOBALS = new Set([
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
   'terminalBar',
   'summaryDisplay',
+  // app/docs-drift-display.js (backlog #39 job 2): one namespace object, IIFE-wrapped.
+  'docsDriftDisplay',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/accent-preview.js (backlog #64): one namespace object, IIFE-wrapped.
@@ -134,8 +144,10 @@ const ALLOWED_GLOBALS = new Set([
   'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.
   'gitRings', 'gitRingsDisplay',
+  // app/git-graph-display.js (BACKLOG #2 follow-up, the Graph view): one namespace object, IIFE-wrapped.
+  'gitGraphDisplay',
   // app/repo-*.js (#45 + #32, the Files tab and the code reader): one namespace object each, IIFE-wrapped.
-  'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoBrowser',
+  'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoLineDiff', 'repoBrowser',
   // app/git-swing.js + app/git-actions.js (Enhancement #46): one namespace object each, IIFE-wrapped.
   'gitSwing', 'gitActions',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from

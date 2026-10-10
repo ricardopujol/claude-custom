@@ -38,6 +38,8 @@ function closeReasons(facts) {
   if (!known(f.agentsHere)) out.push("Couldn't check for agents.");
   else if (f.agentsHere === 1) out.push('An agent is working here.');
   else if (f.agentsHere > 1) out.push(`${f.agentsHere} agents are working here.`);
+  // unsaved text in the tab's code reader (#50): a string naming the file, anything else is none
+  if (typeof f.readerUnsaved === 'string' && f.readerUnsaved !== '') out.push(`You have unsaved edits to ${f.readerUnsaved} in the file reader.`);
   return out;
 }
 

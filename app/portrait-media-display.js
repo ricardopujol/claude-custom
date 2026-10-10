@@ -132,7 +132,11 @@ function faceMediaHtml(result, opts) {
   if (d.tag === 'img') {
     return `<img class="face-media" src="${esc(a.src)}" alt="" title="${esc(a.title)}" />`;
   }
-  // The hue is forced numeric so it can't carry markup into the style.
+  return placeholderHtml(a);
+}
+
+// The hue is forced numeric so it can't carry markup into the style.
+function placeholderHtml(a) {
   return `<span class="face-media face-placeholder" title="${esc(a.title)}" style="width:100%;height:100%;display:flex;align-items:center;` +
          `justify-content:center;background:hsl(${Number(a.hue) || 0} 42% 62%)">${esc(a.initials)}</span>`;
 }

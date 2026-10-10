@@ -49,17 +49,24 @@ const levelOf = pct => (!isNum(pct) ? null : pct >= RED ? 'red' : pct >= AMBER ?
 // ---- the top-bar chip -------------------------------------------------------------------------------------
 
 /**
- * `{ text, cpuText, memText, level, dim, title }` for the chip: `CPU 71%  21.4 GB / 32.0 GB`, amber from 40%, red from 75%.
- * The two figures also come apart, because a one-hour sparkline sits after each (app/resources-history-display.js).
+ * `{ text, cpuText, memText, gpuText, level, dim, title }` for the chip: `CPU 71%  21.4 GB / 32.0 GB  GPU 12%`, amber from 40%, red from 75%
+ * (the CPU's, as before: the GPU's figure never lights the chip). The figures also come apart, because a one-hour sparkline sits after
+ * each (app/resources-history-display.js). `gpuText` is null when the payload carries no GPU part at all (BACKLOG #82); when it
+ * does and the counters could not be read, it is "GPU —". An expired sample keeps the segment as "GPU —" (the figure is unknown, the
+ * segment is not absent), so the chip does not change width when the CPU and memory go to dashes.
  */
 function chipView(payload) {
   const title = 'Machine total and the last hour. Click for the graphs.';
   const status = payload && payload.status ? payload.status : {};
   const m = payload && payload.machine ? payload.machine : null;
-  if (!m || status.expired === true) return { text: 'CPU —  — / —', cpuText: 'CPU —', memText: '— / —', level: null, dim: status.stale === true, title };
+  if (!m || status.expired === true) {
+    const gpuText = m && m.gpu && typeof m.gpu === 'object' ? 'GPU —' : null;
+    return { text: `CPU —  — / —${gpuText ? `  ${gpuText}` : ''}`, cpuText: 'CPU —', memText: '— / —', gpuText, level: null, dim: status.stale === true, title };
+  }
   const mem = m.mem && isNum(m.mem.usedBytes) && isNum(m.mem.totalBytes) ? `${fmtBytes(m.mem.usedBytes)} / ${fmtBytes(m.mem.totalBytes)}` : '— / —';
   const cpuText = `CPU ${fmtCpu(m.cpu)}`;
-  return { text: `${cpuText}  ${mem}`, cpuText, memText: mem, level: levelOf(m.cpu), dim: status.stale === true, title };
+  const gpuText = m.gpu && typeof m.gpu === 'object' ? `GPU ${fmtCpu(m.gpu.busy)}` : null;
+  return { text: `${cpuText}  ${mem}${gpuText ? `  ${gpuText}` : ''}`, cpuText, memText: mem, gpuText, level: levelOf(m.cpu), dim: status.stale === true, title };
 }
 
 // ---- state --------------------------------------------------------------------------------------------------
@@ -290,6 +297,22 @@ function view(state) {
     level: expired ? null : levelOf(m.cpu),
   };
 
+  // The GPU section (BACKLOG #82): busy % and dedicated memory used of the total, then the processes holding GPU memory, biggest
+  // first. Absent when the payload has no GPU part; every figure that was not measured is "—", never 0, and the memory bar needs a
+  // known total to be drawn.
+  const pg = p.machine && p.machine.gpu && typeof p.machine.gpu === 'object' ? p.machine.gpu : null;
+  const gm = pg && pg.mem && isNum(pg.mem.usedBytes) ? pg.mem : null;
+  const gTotal = gm && isNum(gm.totalBytes) && gm.totalBytes > 0 ? gm.totalBytes : null;
+  const gpuRows = p.gpuProcs && Array.isArray(p.gpuProcs.rows) ? p.gpuProcs.rows : [];
+  const gpu = pg ? {
+    busyFig: cpuFig(pg.busy),
+    busyBar: !expired && isNum(pg.busy) ? { ours: 0, rest: clampPct(pg.busy) } : null,
+    memFig: expired || !gm ? '—' : `${fmtBytes(gm.usedBytes)} / ${gTotal === null ? '—' : fmtBytes(gTotal)}`,
+    memBar: !expired && gm && gTotal !== null ? { ours: 0, rest: clampPct((gm.usedBytes / gTotal) * 100) } : null,
+    procs: expired ? [] : gpuRows.map(r => ({ label: isStr(r.name) && r.name !== '' ? r.name : `PID ${r.pid}`, pid: r.pid, cpuFig: cpuFig(r.busy), memFig: memFig(r.bytes), meter: meter(r.busy) })),
+    more: !expired && p.gpuProcs && isNum(p.gpuProcs.more) && p.gpuProcs.more > 0 ? p.gpuProcs.more : 0,
+  } : null;
+
   const proj = model.project || { rows: [], self: { parts: [] } };
   const childView = (c) => {
     const same = x => !!x && x.pid === c.pid && x.start === c.start;
@@ -317,6 +340,7 @@ function view(state) {
     loading: false,
     stale: { dim: status.stale === true, text: status.stale === true && isNum(status.ageMs) ? `last updated ${Math.round(status.ageMs / 1000)} s ago` : null },
     machine,
+    gpu,
     leftovers: leftoversView(p.leftovers, { busy: state.leftBusy, note: state.leftNote }),
     project: { sum: { cpuFig: cpuFig(proj.cpu), memFig: memFig(proj.bytes) }, rows, self },
     windows: (model.windows || []).map(w => ({ label: w.label, ...sumRow(w) })),
@@ -361,7 +385,22 @@ function rowHtml(r, body) {
     + `<span class="res-name">${esc(r.label)}</span>${meterHtml(r.meter)}<span class="res-fig">${esc(r.cpuFig)}</span><span class="res-fig">${esc(r.memFig)}</span></div>${r.expanded ? body : ''}`;
 }
 
-function html(v) {
+/** The GPU section's inside: the two bars, the last-hour graphs (`graphs`, markup from app/resources-history-display.js), the processes. */
+function gpuHtml(g, graphs) {
+  if (!g) return '';
+  const proc = x => `<div class="res-row res-plain" title="PID ${esc(x.pid)}"><span class="res-name">${esc(x.label)}</span>${meterHtml(x.meter)}<span class="res-fig">${esc(x.cpuFig)}</span><span class="res-fig">${esc(x.memFig)}</span></div>`;
+  return `<section class="res-sec res-gpu"><h3>GPU <span class="res-sum">${esc(g.busyFig)} · ${esc(g.memFig)}</span></h3>`
+    + `<div class="res-bar-row"><span class="res-bl">Busy</span>${bar(g.busyBar)}<span class="res-fig">${esc(g.busyFig)}</span></div>`
+    + `<div class="res-bar-row"><span class="res-bl">Memory</span>${bar(g.memBar)}<span class="res-fig">${esc(g.memFig)}</span></div>`
+    + (graphs || '')
+    + '<div class="res-sub"><span>Holding GPU memory</span><span class="res-side">busy · memory</span></div>'
+    + (g.procs.length ? g.procs.map(proc).join('') : '<div class="res-note">none listed</div>')
+    + (g.more > 0 ? `<div class="res-note">+${esc(g.more)} more</div>` : '')
+    + '</section>';
+}
+
+/** `extras.gpuGraphs`: the GPU's last-hour graphs as markup (renderer.js passes resourcesHistoryDisplay.gpuGraphs(...)). */
+function html(v, extras) {
   if (v.loading) return '<div class="res-note">measuring…</div>';
   const sessionRowsHtml = v.project.rows.map((r) => rowHtml(r,
     `<div class="res-kids">${r.children.map(childHtml).join('')}${r.moreText ? `<div class="res-note">${esc(r.moreText)}</div>` : ''}</div>`)).join('');
@@ -376,6 +415,7 @@ function html(v) {
     + `<div class="res-bar-row"><span class="res-bl">CPU</span>${bar(v.machine.cpuBar)}<span class="res-fig">${esc(v.machine.cpuFig)}</span></div>`
     + `<div class="res-bar-row"><span class="res-bl">Memory</span>${bar(v.machine.memBar)}<span class="res-fig">${esc(v.machine.memFig)}</span></div>`
     + `<div class="res-legend">${esc(v.machine.cpuLegend)}</div><div class="res-legend">${esc(v.machine.memLegend)}</div></section>`
+    + gpuHtml(v.gpu, extras && isStr(extras.gpuGraphs) ? extras.gpuGraphs : '')
     + `<section class="res-sec"><h3>This project <span class="res-sum">${esc(v.project.sum.cpuFig)} · ${esc(v.project.sum.memFig)}</span></h3>${sessionRowsHtml}${selfHtml}</section>`
     + (others.length ? `<section class="res-sec"><h3>Other windows</h3>${others.join('')}</section>` : '')
     + '<div class="res-footer">Every 10 s · paused while minimised</div></div>';

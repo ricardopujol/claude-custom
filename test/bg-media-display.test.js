@@ -176,3 +176,26 @@ test('PROPERTY M2: whenever the play rule stops a visible video for battery or m
     assert.strictEqual(pausedNote(s) !== null, !shouldPlay(s), JSON.stringify(s));
   }));
 });
+
+// --- lean mode (BACKLOG #62): a video holds its first frame, never plays ------------------------------
+
+test('lean: a video background never plays, however visible the window is; it holds frame zero like reduced motion', () => {
+  assert.strictEqual(shouldPlay({ ...BASE, lean: true }), false);
+  assert.strictEqual(playbackAction({ ...BASE, lean: true }), 'still');
+  assert.strictEqual(playbackAction({ ...BASE, lean: false }), 'play');
+  assert.strictEqual(playbackAction({ ...BASE, lean: 'yes' }), 'play', 'only a real true is lean');
+});
+
+test('lean: applyPlayback pauses a playing video and seeks it to frame zero', () => {
+  const calls = [];
+  const v = { currentTime: 3, play: () => calls.push('play'), pause: () => calls.push('pause') };
+  assert.strictEqual(applyPlayback(v, { ...BASE, lean: true }), 'still');
+  assert.deepStrictEqual(calls, ['pause']);
+  assert.strictEqual(v.currentTime, 0);
+});
+
+test('lean: the Style tab explains a held video, and says lean mode (not battery) when that is why', () => {
+  const { pausedNote } = require('../app/bg-media-display');
+  assert.match(pausedNote({ ...BASE, lean: true }), /[Ll]ean/);
+  assert.strictEqual(pausedNote(BASE), null);
+});

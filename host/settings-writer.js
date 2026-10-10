@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { SIDE_ALLOWED_TOOLS, SIDE_DENIED_TOOLS } = require('./side-session');
 
 // Hooks run synchronously in the critical path of tool execution, so the
 // matchers stay deliberately narrow. A '*' matcher would tax every Read, Grep
@@ -63,6 +64,13 @@ const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 // Running panel, which would show a ScheduleWakeup as a process. One call per wake (~every 25 min), so no tax.
 const BEDTIME_MATCHER = 'ScheduleWakeup';
 const HOOK_TIMEOUT_SECONDS = 5;
+// Backlog #55 ("waiting on you"): the CLI's PermissionRequest hook runs BEFORE a permission prompt is shown and is the one event of the
+// prompt that carries the asking agent's agent_id (a Notification never does: CLI 2.1.296 builds it with no tool context). OBSERVE-ONLY:
+// the native helper prints nothing and always exits 0, and the CLI decides a PermissionRequest only from a hook's JSON output
+// (permissionRequestResult allow|deny), so the prompt is shown exactly as before. It is awaited, so the timeout is short: a helper
+// that cannot connect gives up in milliseconds, and a stuck one costs the prompt at most these seconds, never a decision.
+// Opt-in (`permissionRequest: true`), so a host that doesn't ask writes the same settings as before.
+const PERMISSION_HOOK_TIMEOUT_SECONDS = 2;
 
 const quote = s => `"${s}"`;
 
@@ -127,7 +135,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -168,6 +176,9 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
       UserPromptSubmit: [entry('', 'UserPromptSubmit')],
     },
   };
+  if (permissionRequest === true) {
+    settings.hooks.PermissionRequest = [{ matcher: '', hooks: [{ type: 'command', command: command('PermissionRequest'), timeout: PERMISSION_HOOK_TIMEOUT_SECONDS }] }];
+  }
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
@@ -263,12 +274,20 @@ function canvasMcpConfig(c) {
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists, canvasMcp } = {}) {
-  const args = ['--dangerously-skip-permissions'];
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false } = {}) {
+  // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
+  // override it, so the two never go together; and it is offered no panel of Claude's own.
+  // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
+  // a deny rule holds in every mode (host/side-session.js).
+  // --tools is the fence: only the named built-in tools exist in the session (an allow-list, so a new CLI tool is off until it is
+  // classified); --disallowedTools is a second wall by name; --strict-mcp-config (with no --mcp-config) loads no MCP server.
+  const args = side === true
+    ? ['--permission-mode', 'plan', '--tools', SIDE_ALLOWED_TOOLS.join(','), '--disallowedTools', SIDE_DENIED_TOOLS.join(','), '--strict-mcp-config']
+    : ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
   // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
-  const mcp = helperExists ? canvasMcpConfig(canvasMcp) : null;
+  const mcp = helperExists && side !== true ? canvasMcpConfig(canvasMcp) : null;
   if (mcp) args.push('--mcp-config', mcp);
   return args;
 }

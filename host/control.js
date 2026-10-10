@@ -55,6 +55,8 @@ function validResizeDims(cols, rows) {
 // fall-through for everything else.
 const CONTROL_TYPES = new Set([
   'resize', 'health', 'input', 'models', 'seat', 'fog', 'drop',
+  // Lean mode's "this window is lean" (#62): off the list it would be TYPED into the pty as JSON.
+  'lean',
   // Both sides of this merge added a type. Taking either alone makes the
   // other's frames fall through to `term.write` -- verbatim JSON typed into
   // a session running --dangerously-skip-permissions. That has happened
@@ -74,6 +76,8 @@ const CONTROL_TYPES = new Set([
   // BACKLOG #10: open/close an agent's activity log. Listed here or the frame
   // is typed into the pty (see the comment above).
   'agent-log',
+  // BACKLOG #80: give / remove a medal, and the speech bubbles' switch. Off this list the frame is TYPED into the pty as JSON.
+  'medal', 'bubbles',
   // Extension X1: *Open anyway* on a window the session lock blocked. Typed
   // into the pty instead, it would reach a pty that doesn't exist yet.
   'lock-override',
@@ -94,9 +98,13 @@ const CONTROL_TYPES = new Set([
   // Layout pass L3: the Git panel asks for the tree (documentation/PLAN_GIT_TREE.md). Off this list,
   // its every 30s re-ask would be TYPED into the session as JSON.
   'git-tree',
+  // The Git panel's Graph view asks for the last 50 commits (host/git-graph.js), every 30s while it shows. Same hole.
+  'git-graph',
   // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff, by `action`
   // (host/repo-service.js). Off this list a `read` frame would be TYPED into the pty as JSON.
   'repo',
+  // Docs drift (BACKLOG #39 job 2): dismiss a note / ask for the list. Off this list a dismiss would be TYPED into the pty as JSON.
+  'docs-drift',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
