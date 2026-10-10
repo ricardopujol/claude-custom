@@ -26,6 +26,9 @@
  *   .harness/state/provider.json   host/host.js READS 'provider'. Nothing in
  *                                  this repo writes it; a missing file is the
  *                                  default, 'claude-max'.
+ *   'wait-games'                   written by Electron MAIN, app/main.js (the games' score store, host/game-scores.js,
+ *                                  BACKLOG #41): the best of each wait game, install-wide. It opts in to withLock for a
+ *                                  raise, since another window may be raising the same file.
  *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
  *                                  not by the host (see below).
  *

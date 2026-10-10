@@ -109,6 +109,7 @@ const { claudeConfigDir } = require('../host/claude-config-dir');
 const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
+const { createScoreStore } = require('../host/game-scores');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
@@ -129,6 +130,7 @@ const { createIndexingBridge } = require('./indexing-bridge');
 const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
+const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -970,6 +972,10 @@ function registerIpc() {
   ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
     ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
     : null));
+  // The Games panel (#41): the bests for the panel's title, and a raise at the end of a round. The store refuses anything that is
+  // not one of our games or not a whole count, so the page can't write anything else.
+  ipcMain.handle('games:scores', (e) => (isTabView(e.sender) ? gameScores.read() : null));
+  ipcMain.handle('games:submit', (e, game, score) => (isTabView(e.sender) ? gameScores.submit(game, score) : null));
   ipcMain.on('resources:chipOn', (e) => { e.returnValue = isTabView(e.sender) ? resourceChip.read() !== false : true; });
   ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources

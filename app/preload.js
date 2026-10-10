@@ -230,6 +230,12 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(state); } catch (err) { console.error('[preload] playback-state listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('playback-state')),
   },
+  // The Games panel (BACKLOG #41): the best of each wait game, install-wide. main keeps them (host/game-scores.js) and refuses
+  // anything but one of the three games and a whole count.
+  games: {
+    scores: () => ipcRenderer.invoke('games:scores'),
+    submit: (game, score) => ipcRenderer.invoke('games:submit', game, score),
+  },
   // The Resources panel and the top bar's machine chip (BACKLOG #63). Main owns the sampler (host/resource-sampler.js
   // through app/resources-service.js); the page hears each payload
   // `{ model, status, machine }` (onState replaces its one listener), and asks for a Stop by pid and start time:

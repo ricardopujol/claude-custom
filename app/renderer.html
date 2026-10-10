@@ -1236,6 +1236,32 @@
     .cv-host { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
     .cv-host-name { flex: 1; min-width: 0; color: var(--text); word-break: break-all; }
     .cv-host-state { font-size: 11px; }
+    /* The Games panel (BACKLOG #41). Markup from app/games-display.js; colours are the project's tokens, so the accent follows
+       the project. The cover sits over the board, so a click that resumes a paused round never lands on it. */
+    #games-body { padding: 8px 6px; }
+    #games-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; display: flex; flex-direction: column; gap: 6px; }
+    .zone[data-shape="wide"] .panel.on > #games-root { flex: 1 1 auto; min-width: 260px; max-width: none; }
+    .games-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .games-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .games-best { font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--ok); }
+    .games-picks { display: flex; gap: 4px; flex-wrap: wrap; }
+    .games-pick { font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; }
+    .games-pick:hover { border-color: var(--accent); }
+    .games-pick.on { border-color: var(--accent); color: var(--accent); }
+    .games-pick:focus-visible, .games-cover-btn:focus-visible, .games-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .games-bar { display: flex; align-items: baseline; gap: 4px; font-size: 11px; color: var(--dim); }
+    .games-bar b { color: var(--text); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    .games-score, .games-time { min-width: 2ch; text-align: right; }
+    .games-sp { flex: 1; }
+    .games-stage { position: relative; background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .games-canvas { display: block; width: 100%; height: auto; max-width: 100%; aspect-ratio: 4 / 3; touch-action: none; outline: none; }
+    .games-cover { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 12px;
+      background: color-mix(in srgb, var(--bg) 82%, transparent); }
+    .games-cover[hidden] { display: none; }
+    .games-cover-text { margin: 0 0 6px; max-width: 36ch; font-weight: 600; }
+    .games-cover-note { margin: 0 0 8px; max-width: 36ch; font-size: 12px; color: var(--dim); }
+    .games-cover-note:empty { display: none; }
+    .games-cover-btn { font: inherit; font-size: 12px; padding: 3px 12px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--accent); border-radius: 4px; }
     /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
        two segments, claude-custom in the accent colour and everything else neutral. */
     #resources-body { padding: 8px 4px; }
@@ -1992,6 +2018,10 @@
         <div class="panel" data-panel="resources" id="resources-body">
           <div id="resources-root" tabindex="-1"><div class="res-note">measuring…</div></div>
         </div>
+        <!-- BACKLOG #41: the wait games. app/games-display.js builds everything inside #games-root. -->
+        <div class="panel" data-panel="games" id="games-body">
+          <div id="games-root" tabindex="-1"></div>
+        </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
         </div>
@@ -2032,6 +2062,9 @@
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
+  <script src="./games-rules.js"></script>
+  <script src="./games-round.js"></script>
+  <script src="./games-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
   <div id="res-popover" hidden role="region" aria-label="CPU, memory and GPU over the last hour"></div>
   <script src="./canvas-display.js"></script>
