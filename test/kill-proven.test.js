@@ -148,6 +148,16 @@ test('killProvenBatch: 200 pending pids are ONE spawn, every pid and start in it
   assert.strictEqual(out.get(1000), 'killed');
 });
 
+test('killProvenBatch: ONE taskkill for the whole batch, after every pid is proved (PR #161 Dexter 1)', () => {
+  const items = Array.from({ length: 200 }, (_, i) => ({ pid: 1000 + i, start: String(134000000000000000n + BigInt(i)) }));
+  let script = '';
+  killProvenBatch(items, { toleranceTicks: 20000, run: (exe, args) => { script = args[args.length - 1]; return { stdout: '' }; } });
+  assert.strictEqual(script.split('taskkill').length - 1, 1, 'one taskkill in the script, not one per pid');
+  assert.ok(script.indexOf('taskkill') > script.indexOf('MISMATCH'), 'every pid is proved before anything is killed');
+  const loopEnd = script.indexOf('\n}\n');
+  assert.ok(loopEnd > 0 && script.indexOf('taskkill') > loopEnd, 'the taskkill sits after the proving loop, not inside it');
+});
+
 test('killProvenBatch: each pid gets its own answer; a pid with no answer, a failed run and bad items are unknown or skipped', () => {
   const items = [{ pid: 11, start: '1' }, { pid: 12, start: '2' }, { pid: 13, start: '3' }, { pid: 14, start: '4' }];
   const out = killProvenBatch(items, { run: () => ({ stdout: '11 KILLED 0\r\n12 MISMATCH\r\n13 GONE\r\nnoise\r\n' }) });
