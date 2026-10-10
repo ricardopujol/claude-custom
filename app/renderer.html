@@ -105,6 +105,15 @@
       background: color-mix(in srgb, var(--bg) 25%, #000); opacity: var(--bg-darkness);
     }
 
+    /* Backlog #25: in a light look the veil is LIGHT (mostly white with a quarter of the app colour). Over the
+       person's own picture its strength is the "Brightness" slider; over the generated art, which is already
+       dark, it is fixed and strong enough to keep dark text readable, and the art's own colours show through. */
+    html[data-look-mode="light"] body.has-bg #bg::after {
+      content: ''; position: absolute; inset: 0;
+      background: color-mix(in srgb, var(--bg) 25%, #fff); opacity: var(--bg-light-art-veil, 0.7);
+    }
+    html[data-look-mode="light"] body.has-custom-bg #bg::after { opacity: var(--bg-darkness); }
+
     /* The unfocused-window dim: the window you are NOT typing into goes dark,
        so the one you are is unmistakable. Below the attention cue's z-index on
        purpose -- that cue exists for unfocused windows and must stay bright. */
@@ -1539,6 +1548,7 @@
       border: 1px solid var(--border); border-radius: 4px;
     }
     .style-section button:disabled { opacity: .45; cursor: default; }
+    .style-section button.seated { border-color: var(--accent); color: var(--accent); }
 
     .model:hover { background: var(--panel); border-color: var(--border); }
     .model.seated { border-color: var(--accent); background: var(--panel); }
