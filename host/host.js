@@ -32,6 +32,14 @@ const { userGlobalDir, migrationCandidates, adoptOnStart } = require('./global-p
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
+const { createMedals } = require('./medals');
+const { validGive, validRemove } = require('../app/medals-display');
+const { createBubbles, createBubbleSettings } = require('./bubbles');
+const { createBubbleGate } = require('./bubble-gate');
+const { createActivity: createBubbleActivity } = require('./bubble-activity');
+const { createVoiceReader } = require('./bubble-voice');
+const { createAskOllama } = require('./ask-ollama');
+const { createChangeWatch } = require('./state-watch');
 const { readUsage, EMPTY } = require('./usage');
 const { readAgentStats, createStatsMemo } = require('./agent-stats');
 const { createLogSession } = require('./agent-log-session');
@@ -1221,6 +1229,55 @@ driftTimer.unref();
 const driftFirst = setTimeout(() => { drift.tick().catch(() => { /* logged inside */ }); }, 10_000);
 driftFirst.unref();
 
+// Backlog #80 (+ #55's bubbles): medals Ricardo gives agents (install-wide, host/medals.js) and the speech bubbles a LOCAL model
+// writes on a state change (host/bubbles.js). The bubbles share the summaries' GPU slot file, so a bubble never runs beside a
+// summary; they are decoration only and never an error (Ollama down: nothing). The probe seams point both at a fake Ollama.
+const medals = createMedals({ store });
+const bubbleSettings = createBubbleSettings({ store });
+const bubbleActivity = createBubbleActivity();
+const bubbles = createBubbles({
+  gate: createBubbleGate(),
+  ollama: createAskOllama({ baseUrl: seams.ollamaUrl || undefined, generateTimeoutMs: 20_000 }),
+  slot: createSlot({ file: path.join(SUMMARY_DIR, '.job.lock') }),
+  voiceOf: createVoiceReader({ configDir: claudeConfigDir(), cwd: CWD }).voiceOf,
+  contextOf: (agent) => ({ ...bubbleActivity.of(agent), task: mood.taskOf(agent) }),
+  settings: bubbleSettings,
+  broadcast: (m) => broadcastControl(m),
+  log: (...a) => console.log(...a),
+});
+function handleMedalMessage(msg) {
+  let out;
+  if (msg.action === 'give') {
+    const req = validGive(msg);
+    out = req ? medals.give(req.agent, req.kind, req.reason) : { ok: false, reason: 'invalid', medals: medals.all() };
+  } else if (msg.action === 'remove') {
+    const req = validRemove(msg);
+    out = req ? medals.remove(req.agent, req.id) : { ok: false, reason: 'invalid', medals: medals.all() };
+  } else {
+    out = { ok: false, reason: 'invalid', medals: medals.all() };
+  }
+  if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
+  broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
+  medalsWatch.note(out.medals);
+}
+// The medals and the bubbles' switch are install-wide files, but every tab is its own host: a change made through ANOTHER host reaches
+// this host's windows through these watches (polled from the 1 s clock below, host/state-watch.js).
+const medalsWatch = createChangeWatch({ read: () => medals.all(), onChange: (v) => broadcastControl({ type: 'medals', medals: v, ok: true, reason: null }) });
+const bubblesWatch = createChangeWatch({ read: () => { const v = bubbleSettings.peek(); if (v === null) throw new Error('bubbles setting unreadable'); return v; }, onChange: (v) => broadcastControl({ type: 'bubbles', enabled: v }) });
+// A window tells its host whether it can show a bubble (agent images off, lean mode): per SOCKET, so one window can't cancel another,
+// and a window that closes stops counting (dropViewer in its close handler).
+function handleBubblesMessage(msg, ws) {
+  if (msg.action === 'set-enabled') {
+    const out = bubbleSettings.set(msg.enabled);
+    if (!out.ok) console.log('[host] bubbles setting refused:', out.reason);
+    const told = bubbleSettings.enabled();
+    broadcastControl({ type: 'bubbles', enabled: told });
+    bubblesWatch.note(told);      // what was just said, not a second read
+  } else if (msg.action === 'visible') {
+    bubbles.setViewer(ws, msg.visible === true);
+  }
+}
+
 // The OpenRouter catalogue and the council seats.
 //
 // The catalogue endpoint is PUBLIC, so this needs no key and spends nothing --
@@ -1420,6 +1477,7 @@ if (helperExists) {
       }));
     }
     attention.handle(ev);
+    bubbleActivity.note(ev);
     mood.handle(ev);
     // A backstop ending a call means that call's own close never arrived --
     // logged, because a lost event nobody can see is how PostToolUseFailure
@@ -1842,12 +1900,15 @@ function wireTerm(t) {
 // owns the clock and the transitions stay reproducible in tests.
 mood.on('change', ({ agent, state }) => {
   broadcastControl({ type: 'mood', ...describe(agent, state) });
+  bubbles.onMood({ agent, state });      // fire and forget: never throws, never makes the card wait (host/bubbles.js)
   // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
   // applies the same rule itself, but the host persists it and is authoritative.
   if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
 });
+let installWideTicks = 0;
 const moodTimer = setInterval(() => {
   mood.tick();
+  if (++installWideTicks % 3 === 0) { medalsWatch.tick(); bubblesWatch.tick(); }      // another tab's medals / switch, every 3 s
   processes.sweep();
   occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   night.tick();              // a night that went overdue: a verdict of time, pushed when the clock makes it
@@ -2200,6 +2261,8 @@ wss.on('connection', (ws, req) => {
     // Persisted across restarts (BACKLOG #14); reconciled first so a fresh
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
+    medals: medals.all(),
+    bubbles: { enabled: bubbleSettings.enabled() },
     globalPortrait: globalPortraitInfo(),
     running: processes.list(),
     party: mood.stack(),
@@ -2572,6 +2635,14 @@ wss.on('connection', (ws, req) => {
       handleRosterMessage(msg);
       return;
     }
+    if (msg.type === 'medal') {
+      handleMedalMessage(msg);
+      return;
+    }
+    if (msg.type === 'bubbles') {
+      handleBubblesMessage(msg, ws);
+      return;
+    }
     if (canvasControl.handles(msg.type)) {
       // Answered by a broadcast `canvas` frame (host/canvas-control.js), the refusal included.
       canvasControl.handle(msg);
@@ -2747,6 +2818,7 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     clients.delete(ws);
     leanGate.drop(ws);
+    bubbles.dropViewer(ws);      // BACKLOG #80: a window that left can't show a bubble
     // A WINDOW leaving (not a one-shot control client) starts stop-if-idle's
     // grace: it may be reloading, and its session is in use.
     if (leftAsWindow(ws.openedAt, Date.now())) lastWindowLeftAt = Date.now();

@@ -76,6 +76,8 @@ const CONTROL_TYPES = new Set([
   // BACKLOG #10: open/close an agent's activity log. Listed here or the frame
   // is typed into the pty (see the comment above).
   'agent-log',
+  // BACKLOG #80: give / remove a medal, and the speech bubbles' switch. Off this list the frame is TYPED into the pty as JSON.
+  'medal', 'bubbles',
   // Extension X1: *Open anyway* on a window the session lock blocked. Typed
   // into the pty instead, it would reach a pty that doesn't exist yet.
   'lock-override',

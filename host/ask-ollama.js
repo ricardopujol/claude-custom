@@ -7,7 +7,7 @@
  *                            | { ok: false, reason: 'ollama-down' }
  *                            | { ok: false, reason: 'model-missing', model, embed }   (the ANSWER model)
  *   embed(texts[])          -> { ok: true, vectors } | { ok: false, reason: 'ollama-down'|'timeout'|'model-missing'|'bad-reply'|'http', ... }
- *   generate({system,prompt,numPredict?}) -> { ok: true, text } | { ok: false, reason: same set }
+ *   generate({system,prompt,numPredict?,temperature?}) -> { ok: true, text } | { ok: false, reason: same set }
  *   unload()                -> asks Ollama to drop the answer model now (keep_alive 0)
  *
  * A missing EMBED model is not fatal: the index then runs on keywords alone and the panel says so. A missing answer model
@@ -91,11 +91,11 @@ function createAskOllama({
     return good ? { ok: true, vectors: v } : { ok: false, reason: 'bad-reply' };
   }
 
-  async function generate({ system, prompt, numPredict }) {
+  async function generate({ system, prompt, numPredict, temperature }) {
     const r = await call('/api/generate', {
       method: 'POST',
       timeoutMs: generateMs,
-      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: '5m', options: { num_ctx: NUM_CTX, temperature: 0, num_predict: usable(numPredict, NUM_PREDICT) } },
+      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: '5m', options: { num_ctx: NUM_CTX, temperature: typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 ? temperature : 0, num_predict: usable(numPredict, NUM_PREDICT) } },
     });
     const bad = failure(r, answerModel);
     if (bad) return bad;

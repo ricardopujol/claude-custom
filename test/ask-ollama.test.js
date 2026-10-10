@@ -107,3 +107,13 @@ test('M2/D8: a deadline that hits while the body is still being read is a timeou
   assert.deepStrictEqual(await slowBody.c.generate({ system: '', prompt: 'p' }), { ok: false, reason: 'timeout' });
   assert.deepStrictEqual(await slowBody.c.embed(['a']), { ok: false, reason: 'timeout' });
 });
+
+test('generate: numPredict and temperature are per-request options (the speech bubbles ask for a short, lively line), default unchanged', async () => {
+  const { c, calls } = client(() => json(200, { response: 'Hi.' }));
+  await c.generate({ system: 'S', prompt: 'P' });
+  assert.deepStrictEqual([calls[0].body.options.num_predict, calls[0].body.options.temperature], [350, 0]);
+  await c.generate({ system: 'S', prompt: 'P', numPredict: 60, temperature: 0.9 });
+  assert.deepStrictEqual([calls[1].body.options.num_predict, calls[1].body.options.temperature], [60, 0.9]);
+  await c.generate({ system: 'S', prompt: 'P', numPredict: -1, temperature: 'hot' });
+  assert.deepStrictEqual([calls[2].body.options.num_predict, calls[2].body.options.temperature], [350, 0]);
+});
