@@ -57,7 +57,7 @@ test('attention hears every hook event BEFORE the occupancy-only return: a main-
   const body = handlerBody();
   const activity = body.indexOf('attention.activity(ev);');
   assert.ok(activity !== -1, 'attention.activity(ev) is called');
-  assert.ok(activity < body.indexOf('if (isOccupancyOnly(ev)) return;'), 'before the occupancy-only return');
+  assert.ok(activity < body.indexOf('if (isOccupancyOnly(ev)) { mood.handle(ev); return; }'), 'before the occupancy-only return');
   assert.ok(activity > body.indexOf("if (ev.event === 'Status')"), 'after the Status document, which is not a hook');
   assert.strictEqual((body.match(/attention\.activity\(/g) || []).length, 1);
 });
