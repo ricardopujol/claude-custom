@@ -174,6 +174,7 @@ function sanitizeStatus(s) {
  *   occupancy.claims()     -> [claim]    the LIVE worktree-occupancy claims (host/occupancy-service.js); optional
  *   now()                  -> ms         the clock the "4 min" labels read; optional
  *   safety.facts(cwd)      -> Promise<{ dirtyCount, unpushedCount }>  the folder's git facts for a Ctrl+click close (#77); optional
+ *   safety.readerUnsaved(tab) -> string|null  the file with unsaved edits in the tab's code reader (#50); optional
  *   ui.confirmClose(tab, { reason }?) -> Promise<boolean>   `reason` only when a Ctrl+click close wasn't safe
  *   ui.changed(snapshot)
  *   ui.focusWindow()       restore + show + focus + flash
@@ -687,6 +688,15 @@ function createShell(deps) {
     return typeof tab.idleSince === 'number' && now() - tab.idleSince >= IDLE_SETTLE_MS ? 'idle' : 'busy';
   }
 
+  /** The file with unsaved edits in the tab's code reader (#50), or null. A hook that throws says nothing. */
+  function readerUnsavedOf(tab) {
+    if (!safety || typeof safety.readerUnsaved !== 'function') return null;
+    try { return safety.readerUnsaved(tab); } catch (err) {
+      log('[shell] safety.readerUnsaved threw:', err && err.message);
+      return null;
+    }
+  }
+
   /**
    * The facts closeReason judges: git's (read earlier, passed in) with everything cheap read fresh. Merged is
    * the marker for the branch that is checked out NOW AND that commit being on origin/develop (Dexter D5): a
@@ -705,6 +715,7 @@ function createShell(deps) {
     return {
       merged, dirtyCount: f.dirtyCount, unpushedCount: f.unpushedCount,
       agentsHere: agentsHereOf(tab), session: sessionOf(tab, hostFound),
+      readerUnsaved: readerUnsavedOf(tab),
     };
   }
 

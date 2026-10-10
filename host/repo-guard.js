@@ -77,4 +77,47 @@ async function guardPath(root, input, { realpath = nativeRealpath } = {}) {
   return { ok: true, abs: lex.abs, rel: lex.rel, real: String(real) };
 }
 
-module.exports = { lexical, guardPath, MAX_INPUT };
+// Is any folder on this path (relative to the worktree, either slash) a `.git`? Short names are the OS's to
+// canonicalise: the REAL path is what is passed in, so GIT~1 has already become .git.
+const underGit = (rel) => String(rel).split(/[\\/]/).some(seg => seg.toLowerCase() === '.git');
+
+/**
+ * The SAVE's guard (PR #155): like guardPath, with two differences.
+ *   - a file that is GONE is allowed (saving recreates it) when the FOLDER it was in exists, is a directory and
+ *     is itself inside the worktree after links: `{ ok: true, created: true, real }` where `real` is the real
+ *     folder + the file's name. A missing folder is `gone`.
+ *   - nothing whose REAL path has a `.git` folder anywhere on it (the repo's own, a nested repo or submodule,
+ *     through a link or junction) is writable: `protected`. The spelling doesn't matter, the real place does.
+ * A real path that can't be resolved for any reason but "gone" is refused, never guessed.
+ */
+async function guardWrite(root, input, { realpath = nativeRealpath } = {}) {
+  const lex = lexical(root, input);
+  if (!lex.ok) return lex;
+  let realRoot;
+  try {
+    realRoot = String(await realpath(win.normalize(root).replace(/\\+$/, '') || root));
+  } catch {
+    return refuse('the worktree itself is unreadable');
+  }
+  let real;
+  let created = false;
+  try {
+    real = String(await realpath(lex.abs));
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') return refuse('unreadable');
+    try {
+      const parent = String(await realpath(win.dirname(lex.abs)));
+      if (!(await fs.promises.stat(parent)).isDirectory()) return refuse('gone');
+      real = win.join(parent, win.basename(lex.abs));
+    } catch {
+      return refuse('gone');
+    }
+    created = true;
+  }
+  const relReal = relativeInside(realRoot, real);
+  if (relReal === null) return refuse('outside the worktree (a link leads out)');
+  if (underGit(relReal) || underGit(lex.rel)) return refuse('protected');
+  return { ok: true, abs: lex.abs, rel: lex.rel, real, created };
+}
+
+module.exports = { lexical, guardPath, guardWrite, MAX_INPUT };

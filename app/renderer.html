@@ -285,6 +285,30 @@
     #reader-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px;
       background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border-bottom: 1px solid var(--accent); }
     #reader-bar-text { flex: 1; }
+    /* edit mode (#50): the unsaved dot, the conflict banner and the Compare view */
+    #reader-dirty { color: var(--accent); font-size: 10px; line-height: 1; }
+    #reader-dirty[hidden], #reader-conflict[hidden], #reader-compare[hidden] { display: none; }
+    #reader-head button:disabled { opacity: .45; cursor: default; }
+    #reader-head button:disabled:hover { border-color: var(--border); color: var(--text); }
+    #reader-conflict { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 5px 8px; font-size: 11px;
+      background: color-mix(in srgb, var(--bad) 18%, var(--chrome)); border-bottom: 1px solid var(--bad); }
+    #reader-conflict-text { flex: 1 1 200px; }
+    #reader-conflict button, #reader-compare button { background: transparent; color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
+    #reader-conflict button:hover, #reader-compare button:hover { border-color: var(--accent); color: var(--accent); }
+    #reader-conflict button[hidden] { display: none; }
+    #reader-compare { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #reader-compare-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px;
+      font-size: 10.5px; color: var(--dim); background: var(--chrome); border-bottom: 1px solid var(--border); }
+    #reader-compare-rows { flex: 1; min-height: 0; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); }
+    .cmp-row { display: block; white-space: pre; padding: 0 8px 0 5.5em; position: relative; min-width: max-content; }
+    .cmp-row::before { content: attr(data-d) " " attr(data-m); position: absolute; left: 0; width: 5em; text-align: right; color: var(--dim); font-size: 10.5px; }
+    .cmp-row.del { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+    .cmp-row.del::after { content: "on disk"; position: absolute; right: 6px; color: var(--dim); font-size: 10px; }
+    .cmp-row.add { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+    .cmp-row.add::after { content: "yours"; position: absolute; right: 6px; color: var(--dim); font-size: 10px; }
+    .cmp-row.gap { color: var(--dim); font-style: italic; background: var(--chrome); }
+    .cmp-row.gap::before { content: ""; }
     #reader-body { flex: 1; min-height: 0; overflow: hidden; }
     #reader-body .cm-editor { height: 100%; }
     .reader-plain { margin: 0; padding: 8px 10px; height: 100%; overflow: auto; box-sizing: border-box; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); white-space: pre; }
@@ -1747,6 +1771,9 @@
       <section id="reader" aria-label="File reader" hidden>
         <header id="reader-head">
           <span id="reader-path"></span>
+          <span id="reader-dirty" title="Unsaved changes" aria-label="Unsaved changes" role="img" hidden>&#9679;</span>
+          <button type="button" id="reader-edit" title="Edit this file (Ctrl+S saves)" aria-pressed="false" hidden>Edit</button>
+          <button type="button" id="reader-save" title="Save (Ctrl+S)" hidden disabled>Save</button>
           <button type="button" id="reader-diff" title="What Claude changed in this file" aria-pressed="false" hidden>Diff</button>
           <button type="button" id="reader-mention" title="Type @this-file (or the selected lines) into the prompt; you press Enter">@ in prompt</button>
           <button type="button" id="reader-reveal" title="Show this file in Explorer">Show in Explorer</button>
@@ -1754,6 +1781,8 @@
           <span id="reader-meta" role="status"></span>
         </header>
         <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
+        <div id="reader-conflict" role="alert" hidden><span id="reader-conflict-text"></span><button type="button" id="reader-conflict-reload" title="Drop your changes and show the file as it is on disk">Reload</button><button type="button" id="reader-conflict-keep" title="Keep your text; the next save replaces the disk version">Keep mine</button><button type="button" id="reader-conflict-compare" title="Show the two versions line by line">Compare</button></div>
+        <div id="reader-compare" hidden><div id="reader-compare-head"><span>On disk now, against yours</span><button type="button" id="reader-compare-back">Back to editing</button></div><div id="reader-compare-rows" tabindex="0" aria-label="Line by line differences"></div></div>
         <div id="reader-body"></div>
         <div id="reader-note" role="status" hidden><span id="reader-note-text"></span><button type="button" id="reader-note-reveal" hidden>Show in Explorer</button></div>
       </section>
@@ -1987,6 +2016,7 @@
   <script src="./repo-requester.js"></script>
   <script src="./repo-refresh.js"></script>
   <script src="./repo-files-panel.js"></script>
+  <script src="./repo-linediff.js"></script>
   <script src="./repo-reader.js"></script>
   <script src="./repo-browser.js"></script>
   <script src="./renderer.js"></script>

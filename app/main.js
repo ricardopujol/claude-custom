@@ -72,6 +72,7 @@ const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
+const { createUnsaved, closeDetail, guardWindowClose } = require('./reader-unsaved');
 // What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
@@ -82,6 +83,8 @@ const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
 // would cost an async lookup that must finish before the pointer moves on.
 let repoDragIcon = null;
+// The code reader's unsaved edits per tab (#50), reported by the page, so ending a tab can say they'd be lost.
+const readerUnsaved = createUnsaved();
 const repoActions = createRepoActions({
   shell,
   icon: () => {
@@ -523,6 +526,27 @@ function createWindow() {
   // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
   // so the next selection -- even of the same tab -- focuses its view again.
   win.webContents.on('focus', () => { lastFocusedView = null; });
+  // Closing the window (X, Alt+F4, app quit) ends every page, so unsaved text in a code reader (#50) is asked about
+  // first: Save / Discard / Cancel (app/reader-unsaved.js guardWindowClose). Once answered, the close goes through.
+  let closeGuarded = false;
+  win.on('close', (e) => {
+    if (closeGuarded || readerUnsaved.all().length === 0) return;
+    e.preventDefault();
+    if (closeAsking) return;
+    closeAsking = true;
+    guardWindowClose({
+      list: () => readerUnsaved.all(),
+      ask: askWindowClose,
+      notify: (detail) => { if (!PROBE_PORT && win && !win.isDestroyed()) dialog.showMessageBox(win, { type: 'info', message: 'The window was not closed', detail }); },
+      saveAll: () => { if (win && !win.isDestroyed()) win.webContents.send('reader-save'); forEachView((v) => v.webContents.send('reader-save')); },
+      waitCleared: async () => {
+        for (let i = 0; i < 80; i++) { if (readerUnsaved.all().length === 0) return true; await new Promise(r => setTimeout(r, 100)); }
+        return false;
+      },
+    }).then((ok) => {
+      if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
+    }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
+  });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
   return win;
 }
@@ -602,10 +626,10 @@ function createTabView(tab) {
   });
   // A crashed renderer keeps its view but its page is gone: its night and its faces must not outlive it (the next morning's backgrounds would
   // stay frozen by a night nobody reports ending; PR #140 Dexter r3 #1). A reloaded page reports again from its hello.
-  wc.on('render-process-gone', (_e, d) => {
-    if (leanBridge) leanBridge.dropOwner(leanOwnerId);
-    console.error(`[main] ${tab.key}: renderer gone:`, d.reason);
-  });
+  // Its unsaved reader text goes with it too (PR #155).
+  wc.on('render-process-gone', (_e, d) => { readerUnsaved.clear(tab.key); if (leanBridge) leanBridge.dropOwner(leanOwnerId); console.error(`[main] ${tab.key}: renderer gone:`, d.reason); });
+  // a fresh page (a reload, a crash recovery) starts with no unsaved text and never says so: forget the old entry
+  wc.on('did-start-navigation', (_e, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) readerUnsaved.clear(tab.key); });
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -683,6 +707,7 @@ function destroyTabView(tab) {
   // a closed tab's /bedtime night cannot keep the window lean for ever
   // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
   if (leanBridge && view.leanOwnerId !== undefined) leanBridge.dropOwner(view.leanOwnerId);
+  readerUnsaved.clear(tab.key);      // its page is going: whatever it held unsaved goes with it, so no phantom question later
   try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
   try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
 }
@@ -793,13 +818,31 @@ async function closeTabFlow(key, { ifSafe = false } = {}) {
   return tabShell.closeTab(key, { ifSafe });
 }
 
+let closeAsking = false;     // the window-close question is up: a second close gesture doesn't stack another
+// The window's own close with unsaved reader text (#50): 'save' | 'discard' | 'cancel'. The probe driver has nobody
+// to click: it discards, like a plain tab close is answered yes.
+async function askWindowClose(files) {
+  if (PROBE_PORT) { probeConfirms.push({ label: 'window', reason: '', unsaved: files.join(', ') }); return 'discard'; }
+  const list = files.length === 1 ? files[0] : `${files.length} files (${files.slice(0, 3).join(', ')}${files.length > 3 ? ', ...' : ''})`;
+  const r = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Save and close', 'Discard and close', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message: 'Close with unsaved changes?',
+    detail: `The file reader has unsaved edits to ${list}.`,
+  });
+  return ['save', 'discard', 'cancel'][r.response] || 'cancel';
+}
+
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
 // `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
   // to ask (#77), keeping what it was asked so the probe can read the reason back.
+  const unsaved = readerUnsaved.pathFor(tab.key);
   if (PROBE_PORT) {
-    probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason });
+    probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason, unsaved });
     return reason === '';
   }
   const label = tab.branch || projectLabel(tab.cwd);
@@ -809,8 +852,9 @@ async function confirmClose(tab, { reason = '' } = {}) {
     defaultId: 1,
     cancelId: 1,
     message: `End the session in ${label}?`,
-    detail: reason ? `Not closed without asking: ${reason}.\nThe folder stays.` : 'The folder stays.',
+    detail: closeDetail({ reason, unsaved }),
   });
+  if (r.response === 0) readerUnsaved.clear(tab.key);
   return r.response === 0;
 }
 
@@ -1074,6 +1118,12 @@ function registerIpc() {
     // Quoted: a path with a newline in it can't forge a log line (PR #92 Miguel S3).
     console.log(`[main] ${tab.key}: file link ${JSON.stringify(String(p).slice(0, 200))}`);
     return fileLink.open(p, tab.cwd, fileFs, shell);
+  });
+  // The code reader's unsaved file, or null (#50): kept per tab for the close questions (app/reader-unsaved.js).
+  // Only a tab view reports (a single-session window has none, so its reader isn't tracked).
+  ipcMain.on('tab:readerDirty', (e, p) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    if (tab) readerUnsaved.report(tab.key, p);
   });
   // The Files tab (#45): Show in Explorer and drag-out. Main resolves the path against THAT tab's own
   // worktree and re-runs the realpath guard; the page only names a path relative to it.
@@ -1471,6 +1521,7 @@ function startProbeDriver(port) {
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
@@ -1736,7 +1787,7 @@ app.whenReady().then(async () => {
     // `known`: whether "no claims" can be believed (#77: a Ctrl+click close treats an unreadable service as unknown).
     occupancy: { claims: () => occupancyService.current(), known: (folder) => occupancyService.known(folder) },
     // #77: a Ctrl+click close reads the folder's git facts (uncommitted, unpushed) before deciding to skip the confirm.
-    safety: { facts: (folder) => readCloseFacts(folder) },
+    safety: { facts: (folder) => readCloseFacts(folder), readerUnsaved: (tab) => readerUnsaved.pathFor(tab.key) },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points

@@ -271,8 +271,8 @@ test("the shell's Run /merged path sends no Enter and no raw input anywhere", ()
 
 // The repo browser and code reader (#45 / #32). Here, not beside the unit tests: those are in the mutation
 // command and these modules are mutated, so reading their source there aborts the gate's dry run.
-const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-diff', 'repo-service', 'tool-calls'];
-const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-browser'];
+const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-write', 'repo-diff', 'repo-service', 'tool-calls'];
+const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-linediff', 'repo-browser'];
 const repoSources = () => [
   ...REPO_HOST.map(n => [`host/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'host', `${n}.js`), 'utf8')]),
   ...REPO_APP.map(n => [`app/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'app', `${n}.js`), 'utf8')]),
@@ -323,6 +323,85 @@ test('main re-runs the guard against the asking tab\'s own folder for reveal and
     const body = main.slice(at, main.indexOf('\n  });', at));
     assert.match(body, /isTabView\(e\.sender\)/, `${ch} answers only a tab view`);
     assert.match(body, /tab\.cwd/, `${ch} resolves against the asking tab's folder`);
+  }
+});
+
+test('#50: the reader\'s unsaved file reaches main only from a tab view, and the page wires its question and its report', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf("ipcMain.on('tab:readerDirty'");
+  assert.ok(at !== -1, 'main takes the report');
+  const body = main.slice(at, main.indexOf('\n  });', at));
+  assert.match(body, /isTabView\(e\.sender\)/, 'only a tab view may report');
+  assert.match(body, /readerUnsaved\.report\(tab\.key, p\)/, 'keyed by the asking tab, never by a name the page sends');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(preload, /readerDirty: \(rel\) => ipcRenderer\.send\('tab:readerDirty'/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(renderer, /onDirty: \(rel\) => \{[^}]*window\.harness\.readerDirty\(rel\)/);
+  assert.match(renderer, /confirmDiscard: async \(message\) => window\.confirm\(message\)/);
+  // a vetoed beforeunload pins a tab view with no way to close it: the reader never installs one
+  for (const f of ['app/repo-reader.js', 'app/repo-browser.js']) {
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), /beforeunload/, f);
+  }
+});
+
+test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text, with Save wired through the pages', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf("win.on('close', (e) => {");
+  assert.ok(at !== -1, 'the window has a close handler');
+  const body = main.slice(at, main.indexOf("win.on('closed'", at));
+  assert.match(body, /readerUnsaved\.all\(\)\.length === 0\) return;/, 'with nothing unsaved the close goes through untouched');
+  assert.match(body, /e\.preventDefault\(\)/);
+  assert.match(body, /guardWindowClose\(/);
+  assert.match(body, /webContents\.send\('reader-save'\)/, 'Save asks the pages to save');
+  assert.match(body, /closeGuarded = true; win\.close\(\)/, 'once answered the close goes through, not looping');
+  assert.match(main, /buttons: \['Save and close', 'Discard and close', 'Cancel'\]/);
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(preload, /onReaderSave: \(fn\) =>/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(renderer, /window\.harness\.onReaderSave\(\(\) => \{ repoBrowser\.reader\.save\(\); \}\)/);
+});
+
+test('#50 (PR #155 Miguel I1): a reloaded or crashed page can no longer leave main believing it has unsaved text', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(main, /wc\.on\('render-process-gone', \(_e, d\) => \{ readerUnsaved\.clear\(tab\.key\);/);
+  assert.match(main, /wc\.on\('did-start-navigation', \(_e, _url, isInPlace, isMainFrame\) => \{ if \(isMainFrame && !isInPlace\) readerUnsaved\.clear\(tab\.key\); \}\);/);
+});
+
+test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...) are reachable only through the probe driver', () => {
+  const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  for (const f of ['app/preload.js', 'app/repo-browser.js', 'app/repo-files-panel.js']) {
+    assert.doesNotMatch(read(f), /confirmAnswer|repoProbe/, f);
+  }
+  const renderer = read('app', 'renderer.js');
+  assert.strictEqual((renderer.match(/repoBrowser\.probe\(/g) || []).length, 1, 'one call site');
+  assert.match(renderer, /case 'repoProbe': \{\s*const r = repoBrowser\.probe\(a\.what, a\);/);
+  // that case is inside the view-action switch, which only the probe driver's `view` command reaches, behind a whitelist
+  assert.match(read('app', 'tab-shell.js'), /VIEW_PROBE_ACTIONS = new Set\(\[[^\]]*'repoProbe'/);
+  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
+  // the answer hook is read in exactly one place besides probe(): confirmLeave
+  const reader = read('app', 'repo-reader.js');
+  const uses = (reader.match(/probeAnswer/g) || []).length;
+  assert.ok(uses <= 9, `probeAnswer is used ${uses} times: keep it to confirmLeave and the two probe actions`);
+});
+
+test('#50 (PR #155 r2 N1): destroying a tab view clears its unsaved entry (a removed worktree leaves no phantom question)', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf('function destroyTabView(tab) {');
+  assert.ok(at !== -1);
+  assert.match(main.slice(at, main.indexOf('\n}\n', at)), /readerUnsaved\.clear\(tab\.key\)/);
+});
+
+test('#50 (PR #155 Miguel I2): the Files panel highlight goes back when the person declines to leave unsaved text', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'repo-browser.js'), 'utf8');
+  assert.match(src, /onOpen: async \(path\) => \{ if \(\(await reader\.open\(path\)\) === false\) panel\.setSelected\(reader\.path\(\)\); \}/);
+});
+
+test('#50: the host\'s write is the repo service\'s alone and goes through the guard; nothing else in the repo browser writes a file', () => {
+  const svc = fs.readFileSync(path.join(__dirname, '..', 'host', 'repo-service.js'), 'utf8');
+  assert.match(svc, /case 'write': \{[\s\S]*?await guardSave\(root, msg\.path\)[\s\S]*?write\(g\.real \|\| g\.abs,/);
+  for (const [file, src] of repoSources()) {
+    if (file === 'host/repo-write.js') continue;
+    assert.doesNotMatch(src, /writeFile|appendFile|createWriteStream|\.rename\(|unlink|rmSync|\.open\([^)]*'w/, `${file} must not write or delete files`);
   }
 });
 

@@ -804,9 +804,14 @@ const repoBrowser = window.repoBrowser.create({
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
+  // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
+  onDirty: (rel) => { try { if (window.harness && window.harness.readerDirty) window.harness.readerDirty(rel); } catch {} },
+  confirmDiscard: async (message) => window.confirm(message),
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
+// the window-close question's Save: main asks every page to save its unsaved reader text
+if (window.harness && window.harness.onReaderSave) window.harness.onReaderSave(() => { repoBrowser.reader.save(); });
 
 // --- the git tree (layout pass L3, documentation/PLAN_GIT_TREE.md) -------------
 // Asked for when the panel opens, on reconnect, and every 30s while it's showing:
