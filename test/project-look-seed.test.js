@@ -133,7 +133,7 @@ test('missing look + no history -> a generated look is written, and it passes ev
   const r = seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(5) });
   assert.strictEqual(r.seeded, true);
   const look = readLook(cwd);
-  assert.deepStrictEqual(lookFailures(look), []);
+  assert.deepStrictEqual(lookFailures(look, { mode: look.mode }), []);
   assert.strictEqual(look.appColor, r.look.appColor);
   assert.notStrictEqual(look.appColor, null);
 });
@@ -200,14 +200,19 @@ test('a foreign (linked) look folder is never written through by a seed', () => 
   assert.deepStrictEqual(fs.readdirSync(elsewhere), []);
 });
 
-test('Dexter F1: under a theme no generated look reads on, seeding writes NOTHING', () => {
+test('Dexter F1 (#25): under a theme no DARK look reads on, seeding gives a LIGHT look and never a dark one', () => {
   // A light-background terminal theme: every dark app colour, SAFE_LOOK
-  // included, would hide the CLI's own text.
-  const cwd = tmpDir('cc-seed-fg-');
-  const r = seedLookIfNew({ cwd, hasHistory: () => false, rng: mulberry32(1), terminalForeground: '#202020' });
-  assert.strictEqual(r.seeded, false);
-  assert.match(r.reason, /terminal/);
-  assert.strictEqual(fs.existsSync(path.join(cwd, LOOK_DIR_NAME)), false);
+  // included, would hide the CLI's own text. A light look needs no terminal text, so a project whose
+  // first draw said dark (rng 0.1 first) is seeded light instead of left with none.
+  for (const first of [0.1, 0.9]) {
+    const cwd = tmpDir('cc-seed-fg-');
+    let n = 0;
+    const rng = () => (n++ === 0 ? first : 0.5);
+    const r = seedLookIfNew({ cwd, hasHistory: () => false, rng, terminalForeground: '#202020' });
+    assert.strictEqual(r.seeded, true);
+    assert.strictEqual(r.look.mode, 'light');
+    assert.deepStrictEqual(lookFailures(r.look, { mode: 'light' }), []);
+  }
 });
 
 test('seedLookIfNew with no project open writes nothing', () => {

@@ -6505,6 +6505,8 @@ function applyStyleMessage(msg) {
   const source = (msg.style && msg.style.source) || msg.source;
   const setAt = (msg.style ? msg.style.setAt : msg.setAt) || '';
   const kind = (msg.style ? msg.style.kind : msg.kind) === 'video' ? 'video' : 'image';
+  // Backlog #25: a light look puts a white veil over the art (renderer.html), whichever picture it is.
+  document.documentElement.setAttribute('data-look-mode', look.mode === 'light' ? 'light' : 'dark');
   applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
   if (typeof look.darkness === 'number') {
     document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
@@ -6580,6 +6582,10 @@ function renderStyleSection(section) {
     return (
       `<section class="style-section" data-section="colours">${header}` +
       `<div class="style-current">This project only. Every window opened in this folder uses it.</div>` +
+      `<span class="style-label">Mode</span><div class="style-row">` +
+      `<button type="button" id="style-mode-dark" aria-pressed="${v.mode === 'dark'}"${v.mode === 'dark' ? ' class="seated"' : ''}>Dark</button>` +
+      `<button type="button" id="style-mode-light" aria-pressed="${v.mode === 'light'}"${v.mode === 'light' ? ' class="seated"' : ''}>Light</button></div>` +
+      (v.cliNote ? `<div class="style-note" id="style-mode-note">${escapeHtml(v.cliNote)}</div>` : '') +
       colourRow('App', v.app, 'id="style-app"', 'id="style-app-hex"', 'id="style-app-reset"') +
       colourRow('Text', v.text, 'id="style-text"', 'id="style-text-hex"', 'id="style-text-reset"') +
       colourRow('Accent', v.accent, 'id="style-accent"', 'id="style-accent-hex"', 'id="style-accent-reset"') +
@@ -6601,7 +6607,7 @@ function renderStyleSection(section) {
       (v.note ? `<div class="style-note">${escapeHtml(v.note)}</div>` : '') +
       ((pn) => `<div class="style-paused" id="style-bg-paused"${pn ? '' : ' hidden'}>${escapeHtml(pn || '')}</div>`)(pausedNoteText()) +
       (v.isOverride
-        ? `<span class="style-label">Darkness</span><div class="style-row">` +
+        ? `<span class="style-label">${escapeHtml(v.veilLabel)}</span><div class="style-row">` +
           `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +
           `<span class="style-val" id="style-dark-val">${dark === null ? '—' : dark + '%'}</span></div>`
         : '') +
@@ -6742,6 +6748,11 @@ function bindStyleSections() {
 
   const reroll = document.getElementById('style-reroll');
   if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
+
+  const modeDark = document.getElementById('style-mode-dark');
+  if (modeDark) modeDark.addEventListener('click', () => sendStyle('colours', { action: 'set-mode', mode: 'dark' }));
+  const modeLight = document.getElementById('style-mode-light');
+  if (modeLight) modeLight.addEventListener('click', () => sendStyle('colours', { action: 'set-mode', mode: 'light' }));
 
   const match = document.getElementById('style-match');
   if (match) {
