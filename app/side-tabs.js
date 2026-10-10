@@ -44,6 +44,9 @@ const TABS = [
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.
   { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
+  // BACKLOG #41: three wait games (app/games-display.js). An ordinary module like the rest. It pauses itself and hands the keyboard
+  // back to the terminal whenever Claude needs Ricardo or finishes, and it draws only while it is on screen.
+  { id: 'games', label: 'Games', title: 'Stack the PRs, Merge 2048 and Pipeline: something to do while Claude works. It stops when Claude needs you' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

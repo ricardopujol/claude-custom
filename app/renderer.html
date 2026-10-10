@@ -89,7 +89,7 @@
     /* A video background (backlog #34): the same layer, filled edge to edge. The darkness veil is
        #bg::after, which comes later in paint order, so it sits OVER the video exactly as it does
        over an image. */
-    #bg .bg-video {
+    #bg .bg-video, #bg .bg-still {
       position: absolute; inset: 0; width: 100%; height: 100%;
       object-fit: cover; pointer-events: none;
     }
@@ -144,6 +144,19 @@
     #git-body { padding: 6px 8px; gap: 4px; }
     #git-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
     #git-status:empty { display: none; }
+    /* Docs drift (BACKLOG #39 job 2): notes from the local model, above the dial. app/docs-drift-display.js */
+    #drift-list { flex: 0 0 auto; max-height: 38%; overflow-x: hidden; overflow-y: auto; font-size: 11px; line-height: 1.4; }
+    #drift-list[hidden] { display: none; }
+    #drift-list h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 2px 0 4px; font-weight: 600; }
+    #drift-list .drift-label { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    #drift-list .drift-note { color: var(--dim); margin-bottom: 4px; }
+    #drift-list .drift-error { margin-bottom: 4px; font-weight: 600; }
+    #drift-list .drift-row { border-left: 2px solid var(--accent); padding: 2px 0 2px 6px; margin-bottom: 5px; }
+    #drift-list .drift-doc { display: flex; gap: 6px; align-items: baseline; justify-content: space-between; min-width: 0; }
+    #drift-list .drift-meta { color: var(--dim); overflow-wrap: anywhere; }
+    #drift-list .drift-sentence { font-style: italic; overflow-wrap: anywhere; }
+    #drift-list .drift-why { color: var(--dim); overflow-wrap: anywhere; }
+    #drift-list .drift-dismiss { cursor: pointer; font-size: 10px; padding: 0 6px; }
     #git-dial { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
     /* fits BOTH ways (viewBox, meet): a short bottom zone shrinks it by height, not clips it */
     .git-svg { display: block; width: 100%; height: 100%; flex: 1; min-height: 0; }
@@ -230,6 +243,45 @@
       font-variant-numeric: tabular-nums; }
     .git-foot b { color: var(--text); font-weight: 600; }
     .git-foot-row { display: flex; justify-content: space-between; gap: 8px; }
+    /* --- the Graph view (BACKLOG #2 follow-up; app/git-graph-display.js): lanes, dots, merges as curves, the message beside
+       each commit. Still: no animation. Lane colours are the theme's, through currentColor. --- */
+    #git-view { display: flex; gap: 4px; flex: 0 0 auto; }
+    #git-view button { background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; }
+    #git-view button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+    #git-view button:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+    #git-graph-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
+    #git-graph-status:empty, #git-status[hidden], #git-graph-status[hidden] { display: none; }
+    #git-dial[hidden], #git-graph[hidden] { display: none; }
+    #git-graph { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+    .gg-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+    .gg-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .gg-wrap { display: flex; align-items: flex-start; }
+    .gg-svg { flex: 0 0 auto; display: block; }
+    .gg-rows { flex: 1; min-width: 0; }
+    .gg-row { box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 6px; font-size: 11.5px;
+      white-space: nowrap; overflow: hidden; cursor: pointer; border-radius: 4px; outline: none; }
+    .gg-row:hover { background: var(--panel); }
+    .gg-row:focus-visible { outline: 1px solid var(--accent); }
+    .gg-row.sel { background: var(--panel); box-shadow: inset 2px 0 0 var(--accent); }
+    .gg-msg { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .gg-ref { flex: 0 0 auto; font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; }
+    .gg-ref.remote { color: var(--dim); border-color: var(--border); }
+    .gg-edge { fill: none; stroke: currentColor; stroke-width: 1.6; }
+    .gg-edge.merge { stroke-dasharray: none; opacity: .85; }
+    .gg-dot { fill: currentColor; stroke: var(--bg); stroke-width: 1; }
+    .gg-dot.merge { fill: var(--panel); stroke: currentColor; stroke-width: 1.6; }
+    .gg-l0 { color: var(--accent); } .gg-l1 { color: var(--ok); } .gg-l2 { color: var(--warn); }
+    .gg-l3 { color: color-mix(in srgb, var(--accent) 50%, var(--text)); } .gg-l4 { color: var(--text); } .gg-l5 { color: var(--dim); }
+    .gg-empty { color: var(--dim); font-size: 11px; }
+    .gg-detail { flex: 0 0 auto; box-sizing: border-box; overflow: auto; max-height: 45%; padding: 8px 10px; display: grid; gap: 4px;
+      align-content: start; background: var(--chrome); border: 1px solid var(--accent); border-radius: 6px; font-size: 11.5px; color: var(--text); }
+    .gg-detail[hidden] { display: none; }
+    .gg-detail-title { overflow-wrap: anywhere; }
+    .gg-detail-meta, .gg-detail-refs { color: var(--dim); font-size: 10.5px; overflow-wrap: anywhere; }
+    .gg-said:empty { display: none; }
+    .gg-said { flex: 0 0 auto; color: var(--text); font-size: 10.5px; }
     /* --- the Files tab (#45) -------------------------------------------------
        This worktree's files, with what Claude touched marked on them: edited rows
        bright with a count, read rows fainter, folders rolling their files up.
@@ -270,7 +322,7 @@
     #reader-split[hidden], #reader[hidden] { display: none; }
     body.reader-resizing { user-select: none; cursor: col-resize; }
     #reader { position: absolute; z-index: 30; box-sizing: border-box; display: flex; flex-direction: column; min-width: 240px; min-height: 0; background: var(--bg); }
-    body.focus-mode #reader, body.focus-mode #reader-split { display: none; }
+    body.focus-mode #reader, body.focus-mode #reader-split, body.lean #reader, body.lean #reader-split { display: none; }
     #reader-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 8px; font-size: 11px;
       background: var(--chrome); border-bottom: 1px solid var(--border); }
     #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
@@ -285,6 +337,30 @@
     #reader-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px;
       background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border-bottom: 1px solid var(--accent); }
     #reader-bar-text { flex: 1; }
+    /* edit mode (#50): the unsaved dot, the conflict banner and the Compare view */
+    #reader-dirty { color: var(--accent); font-size: 10px; line-height: 1; }
+    #reader-dirty[hidden], #reader-conflict[hidden], #reader-compare[hidden] { display: none; }
+    #reader-head button:disabled { opacity: .45; cursor: default; }
+    #reader-head button:disabled:hover { border-color: var(--border); color: var(--text); }
+    #reader-conflict { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 5px 8px; font-size: 11px;
+      background: color-mix(in srgb, var(--bad) 18%, var(--chrome)); border-bottom: 1px solid var(--bad); }
+    #reader-conflict-text { flex: 1 1 200px; }
+    #reader-conflict button, #reader-compare button { background: transparent; color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
+    #reader-conflict button:hover, #reader-compare button:hover { border-color: var(--accent); color: var(--accent); }
+    #reader-conflict button[hidden] { display: none; }
+    #reader-compare { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #reader-compare-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px;
+      font-size: 10.5px; color: var(--dim); background: var(--chrome); border-bottom: 1px solid var(--border); }
+    #reader-compare-rows { flex: 1; min-height: 0; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); }
+    .cmp-row { display: block; white-space: pre; padding: 0 8px 0 5.5em; position: relative; min-width: max-content; }
+    .cmp-row::before { content: attr(data-d) " " attr(data-m); position: absolute; left: 0; width: 5em; text-align: right; color: var(--dim); font-size: 10.5px; }
+    .cmp-row.del { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+    .cmp-row.del::after { content: "on disk"; position: absolute; right: 6px; color: var(--dim); font-size: 10px; }
+    .cmp-row.add { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+    .cmp-row.add::after { content: "yours"; position: absolute; right: 6px; color: var(--dim); font-size: 10px; }
+    .cmp-row.gap { color: var(--dim); font-style: italic; background: var(--chrome); }
+    .cmp-row.gap::before { content: ""; }
     #reader-body { flex: 1; min-height: 0; overflow: hidden; }
     #reader-body .cm-editor { height: 100%; }
     .reader-plain { margin: 0; padding: 8px 10px; height: 100%; overflow: auto; box-sizing: border-box; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); white-space: pre; }
@@ -659,7 +735,7 @@
       border: 1px solid var(--border);
     }
     #terminal-bar[hidden], #occupancy-confirm[hidden], #bar-prompt[hidden], #bar-prompt-full[hidden] { display: none; }
-    body.focus-mode #terminal-bar { display: none; }
+    body.focus-mode #terminal-bar, body.lean #terminal-bar { display: none; }
     #bar-prompt {
       flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
       background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
@@ -924,11 +1000,13 @@
     .zone[data-shape="wide"] .panel.on > #projects-list,
     /* the Git dial takes the whole wide zone, so its drawer can sit beside it (#46) */
     .zone[data-shape="wide"] .panel.on > #git-dial,
+    .zone[data-shape="wide"] .panel.on > #git-graph,
     .zone[data-shape="wide"] .panel.on > #style-sections { flex: 1 1 auto; min-width: 280px; max-width: none; }
     /* ...and the zone's full HEIGHT: a wide panel lays its children out flex-start, so without a definite
        height the svg's height:100% fell back to its aspect ratio -- a dial 3x the zone, clipped, with its
        text hidden as "narrow" (window probe 3b, PR #93) */
-    .zone[data-shape="wide"] .panel.on > #git-dial { align-self: stretch; height: 100%; overflow: hidden; }
+    .zone[data-shape="wide"] .panel.on > #git-dial,
+    .zone[data-shape="wide"] .panel.on > #git-graph { align-self: stretch; height: 100%; overflow: hidden; }
     /* Agents in a row: the roster flows as a grid of cards, not one tall list. */
     .zone[data-shape="wide"] #agents {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -946,7 +1024,7 @@
        not removed, so the roster re-appears exactly as it was left. */
     #agents .agent { cursor: pointer; }
     #agent-log { display: none; }
-    .panel.logging > :not(#agent-log) { display: none; }
+    .panel.logging > :not(#agent-log):not(#agent-medals) { display: none; }
     .panel.logging > #agent-log { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .alog-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
       border-bottom: 1px solid var(--border); }
@@ -1077,6 +1155,58 @@
     .agent:hover .agent-hide, .agent .agent-hide:focus-visible { opacity: 1; }
     .agent .agent-hide:hover { color: var(--accent); border-color: var(--accent); }
     .agent[data-hidden="true"] { outline: 1px dashed var(--border); outline-offset: -1px; }
+    /* BACKLOG #80: medals. The card shows a count chip only; the shelf (under an agent's log) shows each medal. */
+    .agent .agent-medal-btn {
+      position: absolute; top: 3px; right: 56px;
+      font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--dim);
+      cursor: pointer; opacity: 0; transition: opacity .15s;
+    }
+    .agent:hover .agent-medal-btn, .agent .agent-medal-btn:focus-visible { opacity: 1; }
+    .agent .agent-medal-btn:hover { border-color: var(--accent); }
+    .medal-chip { margin-left: 6px; font-size: 10px; color: var(--accent); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0 5px; text-transform: none; cursor: default; }
+    #agent-medals { display: none; }
+    .panel.logging > #agent-medals { display: block; flex: 0 0 auto; max-height: 34%; overflow-y: auto;
+      border-top: 1px solid var(--border); padding: 4px 8px; font-size: 11px; }
+    #agent-medals:empty { display: none !important; }
+    .medal-shelf-title { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 2px; }
+    .medal-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; padding: 2px 0; }
+    .medal-label { font-weight: 600; flex: 0 0 auto; }
+    .medal-reason { order: 5; flex: 1 0 100%; padding-left: 22px; color: var(--dim); overflow-wrap: anywhere; }
+    .medal-date { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+    .medal-remove { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0 3px; }
+    .medal-remove:hover { color: #e06c75; }
+    .medal-remove.confirm { color: #e06c75; border: 1px solid #e06c75; border-radius: 4px; font-size: 10px; }
+    .medal-none { color: var(--dim); }
+    #medal-menu { position: fixed; z-index: 60; width: 250px; padding: 8px; border-radius: 8px;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+    #medal-menu[hidden] { display: none; }
+    .medal-menu-title { font-weight: 600; margin-bottom: 6px; }
+    .medal-kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
+    .medal-kind, .medal-menu-actions button { font: inherit; font-size: 11px; color: var(--text); background: transparent;
+      border: 1px solid var(--border); border-radius: 5px; padding: 3px 5px; cursor: pointer; text-align: left; }
+    .medal-kind:hover, .medal-menu-actions button:hover:not(:disabled) { border-color: var(--accent); }
+    .medal-kind.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+    .medal-reason-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; padding: 3px 5px;
+      color: var(--text); background: var(--bg, transparent); border: 1px solid var(--border); border-radius: 5px; }
+    .medal-menu-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+    .medal-menu-actions button:disabled { opacity: .4; cursor: default; }
+    /* BACKLOG #80 / #55: speech bubbles. A joke over the card, never a status: italic, in quotes, clicks pass through. */
+    #bubbles-toggle { cursor: pointer; }
+    #bubbles-toggle.off { opacity: .45; }
+    .agent-bubble {
+      position: absolute; bottom: 4px; right: 8px; z-index: 5; max-width: 72%; pointer-events: none;
+      padding: 2px 9px; border-radius: 11px; font-size: 11px; font-style: italic; line-height: 1.35;
+      color: var(--text); background: var(--panel); border: 1px solid var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,.4);
+      animation: bubble-in .18s ease-out, bubble-out .6s ease-in var(--bubble-fade-delay, 7400ms) forwards;
+    }
+    .agent-bubble::before { content: '\201C'; }
+    .agent-bubble::after { content: '\201D'; }
+    .agent-bubble[data-settled] { animation: bubble-out .6s ease-in var(--bubble-fade-delay, 0ms) forwards; }
+    @keyframes bubble-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes bubble-out { from { opacity: 1; } to { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .agent-bubble, .agent-bubble[data-settled] { animation: none; } }
     #roster-show-hidden {
       display: block; width: 100%; margin: 0 0 4px; padding: 3px 6px; text-align: left;
       font-size: 10px; color: var(--dim); background: transparent;
@@ -1191,6 +1321,32 @@
     .cv-host { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
     .cv-host-name { flex: 1; min-width: 0; color: var(--text); word-break: break-all; }
     .cv-host-state { font-size: 11px; }
+    /* The Games panel (BACKLOG #41). Markup from app/games-display.js; colours are the project's tokens, so the accent follows
+       the project. The cover sits over the board, so a click that resumes a paused round never lands on it. */
+    #games-body { padding: 8px 6px; }
+    #games-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; display: flex; flex-direction: column; gap: 6px; }
+    .zone[data-shape="wide"] .panel.on > #games-root { flex: 1 1 auto; min-width: 260px; max-width: none; }
+    .games-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .games-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .games-best { font: 11px ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--ok); }
+    .games-picks { display: flex; gap: 4px; flex-wrap: wrap; }
+    .games-pick { font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; }
+    .games-pick:hover { border-color: var(--accent); }
+    .games-pick.on { border-color: var(--accent); color: var(--accent); }
+    .games-pick:focus-visible, .games-cover-btn:focus-visible, .games-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .games-bar { display: flex; align-items: baseline; gap: 4px; font-size: 11px; color: var(--dim); }
+    .games-bar b { color: var(--text); font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+    .games-score, .games-time { min-width: 2ch; text-align: right; }
+    .games-sp { flex: 1; }
+    .games-stage { position: relative; background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .games-canvas { display: block; width: 100%; height: auto; max-width: 100%; aspect-ratio: 4 / 3; touch-action: none; outline: none; }
+    .games-cover { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 12px;
+      background: color-mix(in srgb, var(--bg) 82%, transparent); }
+    .games-cover[hidden] { display: none; }
+    .games-cover-text { margin: 0 0 6px; max-width: 36ch; font-weight: 600; }
+    .games-cover-note { margin: 0 0 8px; max-width: 36ch; font-size: 12px; color: var(--dim); }
+    .games-cover-note:empty { display: none; }
+    .games-cover-btn { font: inherit; font-size: 12px; padding: 3px 12px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--accent); border-radius: 4px; }
     /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
        two segments, claude-custom in the accent colour and everything else neutral. */
     #resources-body { padding: 8px 4px; }
@@ -1293,6 +1449,9 @@
     .hg-readout { min-height: 14px; margin-top: 3px; font-variant-numeric: tabular-nums; }
     .hg-empty { color: var(--dim); padding: 14px 0; }
     .hg-key { color: var(--dim); font-size: 10.5px; }
+    /* the GPU section of the Resources tab (BACKLOG #82) holds the same two graphs: they follow the panel's width */
+    .res-gpu .hg-plot { width: 100% !important; max-width: 300px; }
+    .res-gpu .hg-plot svg { width: 100%; height: auto; }
     .hg-link { display: block; margin-top: 8px; padding: 0; font: inherit; font-size: 10.5px; color: var(--accent); background: none; border: 0; cursor: pointer; }
     .hg-link:hover { text-decoration: underline; }
     .hg-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
@@ -1455,6 +1614,25 @@
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
 
+    /* BACKLOG #55, look A: the finer states. `data-state` keeps the ring above; `data-detail` adds a corner badge on
+       the portrait (app/agent-state-display.js) and colours the words under the name. The badge is a sibling of
+       .face, not inside it, because .face clips its content. */
+    .agent .state { text-transform: none; }
+    .agent .state::first-letter { text-transform: uppercase; }
+    .agent .state-badge {
+      position: absolute; left: calc(6px + var(--face, 34px) - 11px); top: calc(50% + var(--face, 34px) / 2 - 13px);
+      width: 15px; height: 15px; line-height: 15px; text-align: center; font-size: 10px;
+      border-radius: 50%; background: var(--panel); border: 1px solid var(--border); pointer-events: none;
+    }
+    .agent[data-detail="reading"] .state, .agent[data-detail="writing"] .state, .agent[data-detail="running"] .state { color: var(--agent); }
+    .agent[data-detail="waiting"] .state { color: var(--warn); }
+    .agent[data-detail="waiting"] .state-badge { border-color: var(--warn); animation: badge-pulse 1.8s ease-in-out infinite; }
+    .agent[data-detail="stuck"] .state { color: var(--bad); }
+    .agent[data-detail="stuck"] .state-badge { border-color: var(--bad); }
+    .agent[data-detail="helper"] .state { color: var(--accent); }
+    @keyframes badge-pulse { 50% { box-shadow: 0 0 0 3px rgba(230,195,74,.35); } }
+    @media (prefers-reduced-motion: reduce) { .agent[data-detail="waiting"] .state-badge { animation: none; } }
+
     /* --- top bar: model / effort ---------------------------------------------
        FF12. Model and effort are CONTROLS, not labels -- clicking either opens
        a small picker that types the matching /model or /effort command into
@@ -1543,6 +1721,11 @@
     body.focus-mode .dgutter, body.focus-mode .drail, body.focus-mode #dock-overlay { display: none; }
     /* ...and the terminal takes the whole area, wherever the layout last put it (inline rect). */
     body.focus-mode #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
+    /* Lean mode (#62): only the terminal, like focus mode but with the strip kept (it carries the tab marks and the
+       way back). Nothing else changes: the colours, the terminal theme and the background are the project's own. */
+    body.lean header, body.lean .zone, body.lean #diag,
+    body.lean .dgutter, body.lean .drail, body.lean #dock-overlay { display: none; }
+    body.lean #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
@@ -1759,6 +1942,9 @@
       <section id="reader" aria-label="File reader" hidden>
         <header id="reader-head">
           <span id="reader-path"></span>
+          <span id="reader-dirty" title="Unsaved changes" aria-label="Unsaved changes" role="img" hidden>&#9679;</span>
+          <button type="button" id="reader-edit" title="Edit this file (Ctrl+S saves)" aria-pressed="false" hidden>Edit</button>
+          <button type="button" id="reader-save" title="Save (Ctrl+S)" hidden disabled>Save</button>
           <button type="button" id="reader-diff" title="What Claude changed in this file" aria-pressed="false" hidden>Diff</button>
           <button type="button" id="reader-mention" title="Type @this-file (or the selected lines) into the prompt; you press Enter">@ in prompt</button>
           <button type="button" id="reader-reveal" title="Show this file in Explorer">Show in Explorer</button>
@@ -1766,6 +1952,8 @@
           <span id="reader-meta" role="status"></span>
         </header>
         <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
+        <div id="reader-conflict" role="alert" hidden><span id="reader-conflict-text"></span><button type="button" id="reader-conflict-reload" title="Drop your changes and show the file as it is on disk">Reload</button><button type="button" id="reader-conflict-keep" title="Keep your text; the next save replaces the disk version">Keep mine</button><button type="button" id="reader-conflict-compare" title="Show the two versions line by line">Compare</button></div>
+        <div id="reader-compare" hidden><div id="reader-compare-head"><span>On disk now, against yours</span><button type="button" id="reader-compare-back">Back to editing</button></div><div id="reader-compare-rows" tabindex="0" aria-label="Line by line differences"></div></div>
         <div id="reader-body"></div>
         <div id="reader-note" role="status" hidden><span id="reader-note-text"></span><button type="button" id="reader-note-reveal" hidden>Show in Explorer</button></div>
       </section>
@@ -1801,6 +1989,7 @@
             </span>
             <button type="button" id="roster-search-btn" aria-pressed="false" aria-label="Search the agents in this tab" title="Search the agents in this tab">🔍</button>
             <button type="button" id="images-toggle" aria-label="Show agent images" title="Agent images: reading the setting">🖼</button>
+            <button type="button" id="bubbles-toggle" aria-label="Speech bubbles" title="Speech bubbles: reading the setting">💬</button>
           </nav>
           <div id="roster-search-row" hidden>
             <input type="search" id="roster-search" autocomplete="off" spellcheck="false"
@@ -1814,6 +2003,8 @@
           <!-- BACKLOG #10: filled by app/agent-log-display.js while a log is
                open; the panel gets `.logging` and the rest of it steps aside. -->
           <div id="agent-log"></div>
+          <!-- BACKLOG #80: the medals of the agent whose log is open (app/medals-display.js), under the log. -->
+          <div id="agent-medals"></div>
           <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
           <div id="cooldowns"></div>
         <div id="procs">
@@ -1903,8 +2094,16 @@
           <div id="files-tree" role="tree" aria-label="Files in this worktree"></div>
         </div>
         <div class="panel" data-panel="git" id="git-body">
+          <!-- Rings | Graph (BACKLOG #2 follow-up): the choice is kept per project (renderer.js setGitView) -->
+          <div id="git-view" role="group" aria-label="Git view">
+            <button type="button" data-view="rings" aria-pressed="true">Rings</button>
+            <button type="button" data-view="graph" aria-pressed="false">Graph</button>
+          </div>
           <div id="git-status">reading the history…</div>
+          <div id="drift-list" hidden></div>
           <div id="git-dial"></div>
+          <div id="git-graph-status" hidden></div>
+          <div id="git-graph" hidden></div>
         </div>
         <div class="panel" data-panel="projects" id="projects-body">
           <div id="projects-note" class="dim">reading your projects…</div>
@@ -1928,6 +2127,10 @@
         <!-- BACKLOG #63: the Resources panel. app/resources-display.js draws it from main's payload. -->
         <div class="panel" data-panel="resources" id="resources-body">
           <div id="resources-root" tabindex="-1"><div class="res-note">measuring…</div></div>
+        </div>
+        <!-- BACKLOG #41: the wait games. app/games-display.js builds everything inside #games-root. -->
+        <div class="panel" data-panel="games" id="games-body">
+          <div id="games-root" tabindex="-1"></div>
         </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
@@ -1961,15 +2164,24 @@
   <script src="./projects-display.js"></script>
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
+  <script src="./agent-state-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
+  <script src="./lean-display.js"></script>
   <script src="./colour-seeds.js"></script>
+  <!-- BACKLOG #80: the give-a-medal menu (a right-click on a card, or its medal button). Before the scripts: renderer.js looks it up when it runs. -->
+  <div id="medal-menu" hidden></div>
   <script src="./agent-log-display.js"></script>
+  <script src="./medals-display.js"></script>
+  <script src="./bubble-display.js"></script>
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
+  <script src="./games-rules.js"></script>
+  <script src="./games-round.js"></script>
+  <script src="./games-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
-  <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
+  <div id="res-popover" hidden role="region" aria-label="CPU, memory and GPU over the last hour"></div>
   <script src="./canvas-display.js"></script>
   <script src="./resources-display.js"></script>
   <script src="./resources-history-display.js"></script>
@@ -1987,6 +2199,7 @@
   <script src="./occupancy-confirm.js"></script>
   <script src="./terminal-bar.js"></script>
   <script src="./summary-display.js"></script>
+  <script src="./docs-drift-display.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
@@ -1994,12 +2207,14 @@
   <script src="./git-swing.js"></script>
   <script src="./git-actions.js"></script>
   <script src="./git-rings-display.js"></script>
+  <script src="./git-graph-display.js"></script>
   <script src="./repo-language.js"></script>
   <script src="./repo-mention.js"></script>
   <script src="./repo-tree-display.js"></script>
   <script src="./repo-requester.js"></script>
   <script src="./repo-refresh.js"></script>
   <script src="./repo-files-panel.js"></script>
+  <script src="./repo-linediff.js"></script>
   <script src="./repo-reader.js"></script>
   <script src="./repo-browser.js"></script>
   <script src="./renderer.js"></script>

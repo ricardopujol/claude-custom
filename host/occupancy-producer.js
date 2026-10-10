@@ -91,7 +91,7 @@ function couldClaim(event) {
 
 function createOccupancyProducer({
   writer, roots, ownRoot, fromBranch = () => null, hostPid, hostStartedAt = () => null, nameOf = () => null,
-  isTeammate = () => false, now = Date.now, log = () => {}, idleMs = IDLE_MS,
+  isTeammate = () => false, now = Date.now, log = () => {}, idleMs = IDLE_MS, role,
 } = {}) {
   const book = new Map();      // agentId -> Map(normPath(worktree) -> { worktree, firstAt, lastAt, count })
   const idle = new Set();      // teammates that ended a turn and have not touched anything since
@@ -151,6 +151,7 @@ function createOccupancyProducer({
       hostPid,
       hostStartedAt: started,
       touches: [...touches.values()],
+      role,
     });
     if (rec === null) return;
     const out = writer.write(rec);

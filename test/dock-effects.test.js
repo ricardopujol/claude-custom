@@ -123,3 +123,15 @@ test('after the user\'s own click or key, focus returns to the terminal -- unles
   assert.strictEqual(renderEffects(S('vault'), S('vault', 'fog'), { userAction: true }).focus, null);
   assert.strictEqual(renderEffects(S('agents'), S('fog'), { userAction: false }).focus, null);
 });
+
+// --- lean mode (#62, PR #140 Dexter F1): a remount that is not the person opening the vault takes no focus ---------------
+
+test('renderEffects: quiet (lean mode putting the panels back) never moves the focus to the vault; what left is still reported', () => {
+  const none = new Set();
+  const withVault = new Set(['vault', 'git']);
+  assert.strictEqual(renderEffects(none, withVault, { userAction: false }).focus, 'vault', 'a person opening the vault still takes it');
+  const quiet = renderEffects(none, withVault, { userAction: false, quiet: true });
+  assert.strictEqual(quiet.focus, null);
+  assert.deepStrictEqual(quiet.newlyShown.sort(), ['git', 'vault'], 'the panels still load');
+  assert.strictEqual(renderEffects(withVault, none, { quiet: true }).vaultLeft, true, 'its secrets still go out of sight');
+});

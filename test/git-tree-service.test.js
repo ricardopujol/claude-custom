@@ -232,3 +232,8 @@ test('#46: a failing history is still just { ok: false, error }: nothing of the 
   const d = deps({ readHistory: async () => ({ ok: false, error: 'x' }), readRemote: async () => 'https://github.com/o/r' });
   assert.deepStrictEqual(await createGitTreeService(d).get(), { ok: false, error: 'x' });
 });
+
+test('the answer names the project it is for, so the panel can remember its view per project', async () => {
+  const got = await createGitTreeService(deps()).get();
+  assert.strictEqual(got.project, 'C:\\p');
+});

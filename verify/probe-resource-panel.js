@@ -229,9 +229,9 @@ async function main() {
   const strip = async () => ((await command(app, { cmd: 'state' })).stripDom || []);
 
   // 1 -----------------------------------------------------------------------------
-  const chip0 = await waitFor(async () => { const s = await rs(); return s && s.ok !== false && s.hasPayload && s.chip && /^CPU .* GB \/ .* GB$/.test(s.chip.text) ? s : null; }, 40000, 300);
+  const chip0 = await waitFor(async () => { const s = await rs(); return s && s.ok !== false && s.hasPayload && s.chip && /^CPU .* GB \/ .* GB( {2}GPU .*)?$/.test(s.chip.text) ? s : null; }, 40000, 300);
   check('1: the chip shows the machine total from the machine sample, with the panel never opened',
-    !!chip0 && /^CPU (\d+(\.\d)?%|—)  \d+(\.\d)? GB \/ \d+(\.\d)? GB$/.test(chip0.chip.text), JSON.stringify(chip0 && chip0.chip));
+    !!chip0 && /^CPU (\d+(\.\d)?%|—)  \d+(\.\d)? GB \/ \d+(\.\d)? GB( {2}GPU (\d+(\.\d)?%|<1%|—))?$/.test(chip0.chip.text), JSON.stringify(chip0 && chip0.chip));
   check('1: the chip says what it is on hover', !!chip0 && /Machine total and the last hour\. Click for the graphs\./.test(chip0.chip.title));
   // Q1 (Ricardo): the process tree is sampled with the panel CLOSED, so the tab warning works with it closed.
   const closedFull = await waitFor(async () => { const s = await rs(); return s.payloadHasModel ? s : null; }, 40000, 500);
@@ -253,22 +253,22 @@ async function main() {
   check('2: the footer says how often it samples and that it pauses while minimised', /Every 10 s · paused while minimised/.test(full.text));
   const second = await waitFor(async () => { const s = await rs(); return s && s.payloadHasModel && !/measuring…/.test(s.text) ? s : null; }, 40000, 500);
   check('2: after the second sample every CPU figure is real: no "measuring…", and nothing prints a bare NaN or undefined', !!second && !/NaN|undefined|null/.test(second.text), JSON.stringify(second && second.text.slice(0, 160)));
-  check('2: the chip reads `CPU n%  x GB / y GB`', !!second && /^CPU \d+(\.\d)?%  \d+(\.\d)? GB \/ \d+(\.\d)? GB$/.test(second.chip.text), JSON.stringify(second && second.chip));
+  check('2: the chip reads `CPU n%  x GB / y GB`', !!second && /^CPU \d+(\.\d)?%  \d+(\.\d)? GB \/ \d+(\.\d)? GB( {2}GPU (\d+(\.\d)?%|<1%|—))?$/.test(second.chip.text), JSON.stringify(second && second.chip));
   check('2: the legend gives claude-custom and everything else', !!second && /claude-custom [^·]+· everything else/.test(second.text));
   await view(app, 'resourcesClick', { act: 'toggle', key: sessionKey });
 
   // 8 -----------------------------------------------------------------------------
   // The one-hour history. By now there are several samples, so the sparklines have lines in them.
-  const withHist = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.points >= 3 && s.hist.spark.length === 2 && s.hist.spark.every(k => k.polylines >= 1) ? s : null; }, 60000, 500);
+  const withHist = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.points >= 3 && s.hist.spark.length >= 2 && s.hist.spark.slice(0, 2).every(k => k.polylines >= 1) ? s : null; }, 60000, 500);
   check('8: the chip has a sparkline after the CPU and after the memory figure, each with a line in it', !!withHist, JSON.stringify(withHist ? withHist.hist.spark : (await rs()).hist));
   const bigBefore = (await rs()).hist;
   check('8: the chip still fits the top bar at this window width (nothing clips)', bigBefore.chipClipped === false && bigBefore.barClipped === false && bigBefore.chipRect && bigBefore.chipRect.x >= 0 && bigBefore.chipRect.x + bigBefore.chipRect.w <= bigBefore.winW,
     JSON.stringify({ chip: bigBefore.chipRect, win: bigBefore.winW, clipped: [bigBefore.chipClipped, bigBefore.barClipped], spark: bigBefore.spark }));
   check('8: the popover is closed until the chip is clicked', bigBefore.open === false && bigBefore.expanded === 'false');
   await view(app, 'resourcesClick', { chip: true });
-  const popped = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length === 2 ? s : null; }, 5000, 150);
-  check('8: clicking the chip opens the popover with a CPU and a memory graph', !!popped && popped.hist.graphs.map(g => g.kind).join() === 'cpu,mem' && popped.hist.expanded === 'true', JSON.stringify(popped && popped.hist.graphs));
-  check('8: each graph draws its area, marks the latest point and has the 60 / 30 / now axis', !!popped && popped.hist.graphs.every(g => g.rest >= 1 && g.latest === 1 && /60 min\s*30\s*now/.test(g.axis)), JSON.stringify(popped && popped.hist.graphs));
+  const popped = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length >= 2 ? s : null; }, 5000, 150);
+  check('8: clicking the chip opens the popover with a CPU and a memory graph', !!popped && /^cpu,mem(,gpu,gpumem)?$/.test(popped.hist.graphs.map(g => g.kind).join()) && popped.hist.expanded === 'true', JSON.stringify(popped && popped.hist.graphs));
+  check('8: each graph draws its area, marks the latest point and has the 60 / 30 / now axis', !!popped && popped.hist.graphs.slice(0, 2).every(g => g.rest >= 1 && g.latest === 1 && /60 min\s*30\s*now/.test(g.axis)), JSON.stringify(popped && popped.hist.graphs));
   check('8: the popover sits fully inside the window, under the chip', !!popped && popped.hist.popRect.x >= 0 && popped.hist.popRect.x + popped.hist.popRect.w <= popped.hist.winW && popped.hist.popRect.y >= popped.hist.chipRect.y + popped.hist.chipRect.h, JSON.stringify(popped && [popped.hist.popRect, popped.hist.chipRect]));
   await view(app, 'resourcesHistoryDo', { op: 'hover', kind: 'cpu', frac: 0.995 });   // the right edge: "now", where a sample is
   const hovered = await waitFor(async () => { const s = await rs(); const g = s.hist.graphs.find(x => x.kind === 'cpu'); return g && g.cursor && /^now · CPU \d+(\.\d)?%, ours (\d+(\.\d)?%|<1%)/.test(g.readout) ? s : null; }, 5000, 150);
@@ -463,7 +463,7 @@ async function main() {
   let seen6 = 0; let lastText6 = null;
   const noModel = await waitFor(async () => { const s = await rs(); if (s.payloadHasModel && s.machine && JSON.stringify(s.machine) !== lastText6) { lastText6 = JSON.stringify(s.machine); seen6++; } return seen6 >= 2 && s.payloadHasModel ? s : null; }, 40000, 500);
   check('6: hiding the panel does NOT stop the process-tree sample: the model keeps arriving', !!noModel, String(Date.now() - before6));
-  check('6: the chip keeps its machine figures', !!noModel && /^CPU .* GB \/ .* GB$/.test(noModel.chip.text) && !/NaN|undefined/.test(noModel.chip.text), JSON.stringify(noModel && noModel.chip));
+  check('6: the chip keeps its machine figures', !!noModel && /^CPU .* GB \/ .* GB( {2}GPU .*)?$/.test(noModel.chip.text) && !/NaN|undefined/.test(noModel.chip.text), JSON.stringify(noModel && noModel.chip));
 
   // 7 (Q2) the Window menu's chip toggle -----------------------------------------------
   const untick = await view(app, 'resourcesChipMenu');
@@ -493,7 +493,7 @@ async function main() {
   const runsAfter = await runsNow();
   check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0', !!afterGap && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
   await view(app, 'resourcesClick', { chip: true });
-  const gapPop = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length === 2 ? s : null; }, 5000, 150);
+  const gapPop = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length >= 2 ? s : null; }, 5000, 150);
   check('8: the popover draws the break too (two or more marks in the memory graph: areas and dots)', !!gapPop && gapPop.hist.graphs[1].rest + gapPop.hist.graphs[1].dots >= 2, JSON.stringify(gapPop && gapPop.hist.graphs[1]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'resource-history-gap.png') });
   await view(app, 'resourcesHistoryDo', { op: 'esc' });

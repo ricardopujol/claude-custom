@@ -28,7 +28,7 @@ test('Dexter F2 / Miguel B1: a redraw moves focus only as renderEffects says -- 
   // renderLayout called term.focus() on every redraw with the vault showing: a
   // resize mid-secret typed the rest of the secret into the session.
   const body = fnBody('renderLayout');
-  assert.match(body, /const fx = window\.dockEffects\.renderEffects\(shownModules, now, \{ userAction \}\);/);
+  assert.match(body, /const fx = window\.dockEffects\.renderEffects\(shownModules, now, \{ userAction, quiet \}\);/);
   const focusCalls = [...body.matchAll(/term\.focus\(\)/g)];
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
   assert.match(body, /if \(fx\.focus === 'term'\) term\.focus\(\);/);
@@ -186,7 +186,7 @@ test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows 
   assert.match(JS, /if \(!d\.frame\) d\.frame = requestAnimationFrame\(\(\) => drawDrag\(d\)\);/, 'one draw per animation frame');
   assert.match(JS, /renderLayout\(\{ refit: false \}\)/, 'a float move does not change the terminal\'s rectangle');
   assert.match(JS, /const same = placementOf\(incoming\) === placementOf\(globalLayout\);\r?\n\s+globalLayout = incoming;\r?\n\s+if \(!ownLayout && !same\) renderLayout\(\);/, 'the echo of this window\'s own save is not redrawn (it would refit the terminal)');
-  assert.match(JS, /function renderLayout\(\{ userAction = false, refit = true, settle = false \} = \{\}\)/);
+  assert.match(JS, /function renderLayout\(\{ userAction = false, refit = true, quiet = false \} = \{\}\)/);
   assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ fit\.fit\(\); sendResize\(\); \} catch \{\} \}, 0\);/);
 });
 
