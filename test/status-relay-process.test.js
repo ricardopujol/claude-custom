@@ -608,3 +608,31 @@ test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on 
     assert.ok(lastStart < firstWait, `a sleeper was waited on before the whole level had been started on: ${lines.join(', ')}`);
   } finally { for (const k of kids) { try { process.kill(k); } catch { /* gone */ } } }
 });
+
+test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in time still has its newborns ended, and the sweep is not clean until it has exited', { skip: !onWin, timeout: 180000 }, async () => {
+  // The Dexter-3 sabotage (every kill's wait reports "still running") on the #72 spawner tree. A killed-not-exited parent used to fall to
+  // the $known-only branch: the sleepers it started after the snapshot were never adopted, and the sweep exited 0, so no fallback ran.
+  const { child, marker, cleanup } = await spawnerTree('relay-slow-exit-spawner');
+  const seen = {};
+  try {
+    killTree(child, 0, { run: sabotagedAll([['if($r.p.HasExited){', 'if($false){']], seen) });
+    assert.ok(seen.sweep, 'the sweep did not run');
+    const left = await noneLeft(marker);
+    assert.deepStrictEqual(left, [], `${left.length} sleepers survived (sweep status ${seen.sweep.status}, ${String(seen.sweep.stdout).split(/\r?\n/).length} lines)`);
+  } finally { cleanup(); }
+});
+
+test('#72 PR #161 Dexter R2-2: a sweep cut off after a level\'s Kill() calls but inside its wait still seeds the rescan with THAT level', { skip: !onWin, timeout: 180000 }, async () => {
+  // The 2nd KillWait (the spawner's level) hangs past the sweep's timeout. The ENDED line used to be written after the waits, so the
+  // rescan was seeded with the level above (cmd) and the spawner's newborns were in no list.
+  const { child, marker, cleanup } = await spawnerTree('relay-cut-in-wait');
+  const seen = {};
+  const hangSecondWait = 'function KillWait($r,$ms){$script:w++;if($script:w -ge 2){Start-Sleep -Seconds 120};';
+  try {
+    killTree(child, 0, { sweepTimeoutMs: 8000, run: sabotagedAll([['function KillWait($r,$ms){', hangSecondWait]], seen) });
+    assert.ok(seen.sweep.error, 'the sweep was not cut off inside the wait');
+    assert.ok((seen.rescans || []).length === 1, 'the fallback did not rescan');
+    const left = await noneLeft(marker);
+    assert.deepStrictEqual(left, [], `${left.length} sleepers survived a sweep cut off in a wait`);
+  } finally { cleanup(); }
+});
