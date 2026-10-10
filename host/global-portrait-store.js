@@ -102,7 +102,7 @@ function migrateGlobalDefault({
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     copyFile(best.file, tmp);
     beforeCommit();
-    if (newestDefaultIn(userDir)) {
+    if (newestDefaultIn(userDir) || isMarked(userDir)) {
       return { migrated: false, from: best.file, reason: 'a user-wide default was set meanwhile' };
     }
     link(tmp, dest);

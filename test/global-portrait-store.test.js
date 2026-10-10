@@ -243,3 +243,62 @@ test('I1: the startup adoption logs what it adopted', () => {
   assert.strictEqual(out.migrated, true);
   assert.ok(lines.some(l => l.includes(file)));
 });
+
+// ---- PR #151 Dexter r2 (L1-L3) ----------------------------------------------------------------
+
+const { isMarked } = require('../host/global-migration-marker');
+
+test('L1: a default set and then Reset by another window inside the first-start copy is not brought back', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  const src = path.join(tmpDir('cc-gps-src-'), 'mine.png');
+  fs.writeFileSync(src, 'mine');
+  const deps = { uploadsDir: user, stat: (p) => fs.statSync(p), resolve: () => (globalPortrait(user) || {}).path || null };
+  const out = migrateGlobalDefault({
+    userDir: user, candidateDirs: [a],
+    beforeCommit: () => {
+      handleGlobalPortraitMessage({ action: 'set-global', path: src }, deps);
+      handleGlobalPortraitMessage({ action: 'reset-global' }, deps);
+    },
+  });
+  assert.strictEqual(out.migrated, false);
+  assert.strictEqual(globalPortrait(user), null);
+});
+
+test('L2: a Reset that removes a default marks the folder, on its own', () => {
+  const user = tmpDir('cc-gps-user-');
+  put(user, 'default.png', 'x');
+  assert.strictEqual(isMarked(user), false);
+  handleGlobalPortraitMessage({ action: 'reset-global' }, { uploadsDir: user });
+  assert.strictEqual(isMarked(user), true);
+});
+
+test('L2: a successful set marks the folder, on its own', () => {
+  const user = tmpDir('cc-gps-user-');
+  put(user, 'default.png', 'x');
+  const src = path.join(tmpDir('cc-gps-src-'), 'mine.png');
+  fs.writeFileSync(src, 'mine');
+  assert.strictEqual(isMarked(user), false);
+  const out = handleGlobalPortraitMessage({ action: 'set-global', path: src }, {
+    uploadsDir: user, stat: (p) => fs.statSync(p), resolve: () => (globalPortrait(user) || {}).path || null,
+  });
+  assert.strictEqual(out.reply.ok, true);
+  assert.strictEqual(isMarked(user), true);
+});
+
+test('L3: the publish is an exclusive link, never a rename that would overwrite a late default', () => {
+  const user = tmpDir('cc-gps-user-');
+  const a = tmpDir('cc-gps-a-');
+  put(a, 'default.png', 'old');
+  const dest = path.join(user, '_global', 'default.png');
+  const real = fs.linkSync;
+  let called = 0;
+  fs.linkSync = (from, to) => { called += 1; fs.writeFileSync(to, 'theirs'); return real(from, to); };
+  let out;
+  try { out = migrateGlobalDefault({ userDir: user, candidateDirs: [a] }); } finally { fs.linkSync = real; }
+  assert.strictEqual(called, 1);
+  assert.strictEqual(out.migrated, false);
+  assert.strictEqual(fs.readFileSync(dest, 'utf8'), 'theirs');
+  assert.deepStrictEqual(fs.readdirSync(path.join(user, '_global')), ['default.png']);
+});
