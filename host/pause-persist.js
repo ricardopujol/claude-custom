@@ -22,13 +22,13 @@ const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic } = require('./atomic-write');
 
-const NAME = /^paused-(\d+)-(\d+)\.json$/;
+const NAME = /^paused-(\d+)-(\d+|unknown)\.json$/;
 const isStart = s => typeof s === 'string' && /^\d+$/.test(s);
 const isEntry = e => !!e && Number.isInteger(e.pid) && e.pid > 0 && isStart(e.start)
   && Array.isArray(e.pids) && e.pids.length > 0 && e.pids.every(p => p && Number.isInteger(p.pid) && p.pid > 0 && isStart(p.start));
 
 function createPausePersist({ dir, ownPid, ownStart, ownerState = async () => null, log = () => {}, fsx = fs } = {}) {
-  const startPart = isStart(ownStart) ? ownStart : '0';
+  const startPart = isStart(ownStart) ? ownStart : 'unknown';
   const fileOf = (pid, start) => path.join(dir, `paused-${pid}-${start}.json`);
   const own = fileOf(ownPid, startPart);
 
@@ -53,7 +53,8 @@ function createPausePersist({ dir, ownPid, ownStart, ownerState = async () => nu
         if (!m || (Number(m[1]) === ownPid && m[2] === startPart)) continue;
         let state = null;
         try { state = await ownerState(Number(m[1])); } catch { state = null; }
-        const dead = state === 'absent' || (isStart(state) && state !== m[2]);
+        // An owner whose own start was never read ('unknown') can't be told from a reused pid: dead only when its pid isn't running (N2).
+        const dead = state === 'absent' || (isStart(state) && isStart(m[2]) && state !== m[2]);
         if (!dead) continue;
         const file = path.join(dir, name);
         let doc;

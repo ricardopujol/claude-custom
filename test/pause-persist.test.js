@@ -115,3 +115,13 @@ test('save drops entries that are not proven processes (no start, no members)', 
   p.save([{ pid: 1 }, { pid: 2, start: 'x', pids: [] }, entry(30)]);
   assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'paused-4-40.json'), 'utf8')).entries.map(e => e.pid), [30]);
 });
+
+test('N2: a window whose own start could not be read is not read as dead by a sibling while it runs, and is swept once it is gone', async () => {
+  const dir = dirOf();
+  createPausePersist({ dir, ownPid: 7, ownStart: null }).save([entry(24)]);
+  const sibling = state => createPausePersist({ dir, ownPid: 9, ownStart: '9', ownerState: states({ 7: state }) });
+  const live = await sibling('1339').takeDead();
+  assert.deepStrictEqual(live.entries, [], 'a live owner of unknown start is alive');
+  const gone = await sibling('absent').takeDead();
+  assert.deepStrictEqual(gone.entries.map(e => e.pid), [24]);
+});
