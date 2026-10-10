@@ -2638,7 +2638,7 @@ wss.on('connection', (ws, req) => {
       if (msg.action === 'set-mode') {
         // Backlog #25: Dark / Light. host/style.js swaps the project's two looks (rolling a palette the first
         // time a mode is chosen); the CLI's own theme follows on the next launch (LAUNCH_CLI_THEME).
-        const r = setMode({ cwd: STATE_ROOT, mode: msg.mode, terminalForeground: theme.terminal && theme.terminal.foreground });
+        const r = setMode({ cwd: STATE_ROOT, mode: msg.mode, userTheme: USER_CLI_THEME, terminalForeground: theme.terminal && theme.terminal.foreground });
         if (!r.ok) {
           refuse(r.reason);
           return;

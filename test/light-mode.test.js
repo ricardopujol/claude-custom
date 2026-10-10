@@ -279,6 +279,34 @@ test('D1: setMode light rolls a palette when the stored other look has no colour
   }
 });
 
+test('#25 pick: Dark on a project with no chosen mode, run by a person whose own theme is light, means "make Claude dark"', () => {
+  const { cwd } = projectWithDarkLook();
+  const r = setMode({ cwd, mode: 'dark', userTheme: 'light' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.look.mode, 'dark');
+  assert.strictEqual(cliThemeFor(readLook(cwd), 'light'), 'dark');
+  assert.strictEqual(cliThemeFor(readLook(cwd), 'light-ansi'), 'dark-ansi');
+  // a second click writes nothing more
+  const mtime = fs.statSync(lookFile(cwd)).mtimeMs;
+  setMode({ cwd, mode: 'dark', userTheme: 'light' });
+  assert.strictEqual(fs.statSync(lookFile(cwd)).mtimeMs, mtime);
+});
+
+test('#25 pick: that exception is only for a light own theme -- a dark, auto or unknown one still writes nothing', () => {
+  for (const userTheme of ['dark', 'dark-ansi', 'auto', null, undefined]) {
+    const { cwd } = projectWithDarkLook();
+    const before = fs.readFileSync(lookFile(cwd), 'utf8');
+    setMode({ cwd, mode: 'dark', userTheme });
+    assert.strictEqual(fs.readFileSync(lookFile(cwd), 'utf8'), before, String(userTheme));
+  }
+});
+
+test('#25 pick: the restart note clears once the host restarts with the written dark theme', () => {
+  const before = coloursSectionView({ appColor: '#111111', mode: 'dark', cliTheme: 'light' }).cliNote;
+  assert.ok(before, 'dark look over a running light theme: told');
+  assert.strictEqual(coloursSectionView({ appColor: '#111111', mode: 'dark', cliTheme: 'dark' }).cliNote, null);
+});
+
 test('D1/N2: Reset App in light, flip to dark and back keeps the person own Text and Accent and still paints light', () => {
   const { cwd } = projectWithDarkLook();
   setMode({ cwd, mode: 'light', rng: mulberry32(5) });

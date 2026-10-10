@@ -329,16 +329,23 @@ function noGeneratedReason(mode, terminalForeground) {
  * same contrast gates (a Dark flip with no stored dark look does the same). Asking for the mode already
  * showing writes nothing. `generate` replaces the generator, for tests.
  */
-function setMode({ cwd, mode, rng, terminalForeground, fsImpl = fs, generate = generateLook } = {}) {
+function setMode({ cwd, mode, rng, terminalForeground, userTheme, fsImpl = fs, generate = generateLook } = {}) {
   if (mode !== 'dark' && mode !== 'light') return { ok: false, reason: 'the mode must be dark or light' };
   if (typeof cwd !== 'string' || !cwd.trim()) return { ok: false, reason: 'no project is open' };
   const state = readLookState(cwd, fsImpl);
   const refused = refusalFor(state, cwd);
   if (refused) return { ok: false, reason: refused };
   const cur = state.look;
-  // Already showing: nothing to write. Writing an explicit mode here would make the CLI launch with a theme the person
-  // never chose (Dexter D3).
-  if (effectiveMode(cur) === mode) return { ok: true, look: cur };
+  // Already showing: nothing to write -- an explicit mode would make the CLI launch with a theme the person never chose
+  // (Dexter D3). One exception, Ricardo's pick: a project with no chosen mode whose person runs a LIGHT theme, asked for
+  // Dark, means "make Claude dark" (the seated Dark is only the default reading), so Dark is written.
+  const wantsDarkOverLightTheme = mode === 'dark' && cur.mode === null && typeof userTheme === 'string' && userTheme.startsWith('light');
+  if (effectiveMode(cur) === mode && !wantsDarkOverLightTheme) return { ok: true, look: cur };
+  if (effectiveMode(cur) === mode) {
+    try { return { ok: true, look: writeLook(cwd, { ...cur, mode }, { fsImpl }) }; } catch (err) {
+      return { ok: false, reason: `could not save the look: ${err.message}` };
+    }
+  }
   let incoming = cur.other;
   // A stored look with NO colours at all is not a light look (a hand-edited `other: {}`): roll one (Dexter D1). One that
   // still holds any of the person's own picks is kept, even with App reset: the painter puts it on a light surface (N2).
