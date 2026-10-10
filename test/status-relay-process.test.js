@@ -507,11 +507,13 @@ test('#27: quiet still forwards the document to the host', async () => {
 // A still-spawning user command (the #72 spawner, detached sleepers), cut with `intervalMs` 25 until ~150 sleepers are live.
 async function spawnerTree(name, { enough = 150 } = {}) {
   const dir = tmpDir(name);
+  try { reapDeadOwners('cc161'); reapDeadOwners('cc161s'); } catch { /* a leftover sweep must never fail the test */ }
   const marker = `cc161-${process.pid}-${Date.now()}`;
   const spawnerMarker = `cc161s-${process.pid}-${Date.now()}`;
   RUN_MARKERS.push(marker, spawnerMarker);
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawnerFile = path.join(dir, 'spawner.js');
+  // kill-test-ok: the sleepers and the spawner carry markers, reaped by cleanup(), the exit hook and the next run's reapDeadOwners
   fs.writeFileSync(spawnerFile, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 170000, parentPid: process.pid, detached: true }));
   const child = spawn(`"${process.execPath}" "${spawnerFile.replace(/\\/g, '/')}" ${spawnerMarker}`, { shell: true, stdio: 'ignore', windowsHide: true });
   await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
@@ -589,6 +591,7 @@ test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on 
   // three sleepers must be all KillStart lines, then the KillWait lines. No clock.
   const dir = tmpDir('relay-level-order');
   const pidFile = path.join(dir, 'pids').replace(/\\/g, '/');
+  // kill-test-ok: the three sleepers are ended by the sweep under test, and by pid in this test's finally
   const prog = `const{spawn}=require('child_process');const k=[1,2,3].map(()=>spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',detached:true}).pid);require('fs').writeFileSync('${pidFile}',k.join(','));setInterval(()=>{},1000)`;
   const child = spawn(`"${process.execPath}" -e "${prog}"`, { shell: true, stdio: 'ignore', windowsHide: true });
   const kids = (await waitUntil(() => { try { return fs.readFileSync(pidFile, 'utf8'); } catch { return false; } }, 'the three sleepers', 60000)).toString().split(',').map(Number);
