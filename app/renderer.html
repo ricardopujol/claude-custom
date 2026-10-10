@@ -110,7 +110,7 @@
        dark, it is fixed and strong enough to keep dark text readable, and the art's own colours show through. */
     html[data-look-mode="light"] body.has-bg #bg::after {
       content: ''; position: absolute; inset: 0;
-      background: color-mix(in srgb, var(--bg) 25%, #fff); opacity: var(--bg-light-art-veil, 0.85);
+      background: color-mix(in srgb, var(--bg) 25%, #fff); opacity: var(--bg-light-art-veil, 0.7);
     }
     html[data-look-mode="light"] body.has-custom-bg #bg::after { opacity: var(--bg-darkness); }
 
