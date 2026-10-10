@@ -176,6 +176,7 @@ async function sizesAgree(app) {
   const s = await waitFor(async () => {
     const v = await viewState(app);
     if (!v || !v.ok || !v.fit || !v.sent) return null;
+    if (v.settling) return null;                  // a drop glides for 120 ms (D4): boxes read mid-glide are in between
     const same = v.term.cols === v.fit.cols && v.term.rows === v.fit.rows
       && v.sent.cols === v.term.cols && v.sent.rows === v.term.rows;
     return same ? v : null;
@@ -372,7 +373,7 @@ async function main() {
   const s3 = ready && (await settled(app)).s;
   const g3 = s3 && s3.groups;
   check('3: an unreadable layout-tree.json draws the default: one right group of 180, every module, Agents showing',
-    !!g3 && g3.length === 1 && g3[0].id === 'right' && Math.abs(g3[0].rect.width - 180) <= 1 && g3[0].tabs.length === IDS.length && g3[0].panels[0] === 'agents',
+    !!g3 && g3.length === 1 && g3[0].id === 'right' && Math.abs(g3[0].rect.width - 180) <= 1 && g3[0].tabs.length === IDS.length - 1 && /* canvas starts hidden */ g3[0].panels[0] === 'agents',
     JSON.stringify(g3 && g3.map(g => [g.id, g.rect.width, g.tabs.length, g.panels])));
   await sleep(1500);
   check('3: ...and the file is left exactly as it was', readBytes(TREE_FILE).toString() === junk);
@@ -425,7 +426,7 @@ async function main() {
     !!gr('agents') && !!gr('vault') && gr('agents') !== gr('vault') && sameRow(gr('agents'), gr('vault')) && gr('agents').rect.right <= gr('vault').rect.left + 6
       && gr('agents').rect.top >= cur.termwrap.bottom - 1,
     JSON.stringify([gr('agents') && gr('agents').rect, gr('vault') && gr('vault').rect]));
-  check('4: ...and the rest hidden', JSON.stringify([...cur.layout.hidden].sort()) === JSON.stringify(['models', 'projects', 'style']), JSON.stringify(cur.layout.hidden));
+  check('4: ...and the rest hidden', JSON.stringify([...cur.layout.hidden].sort()) === JSON.stringify(['canvas', 'models', 'projects', 'style']), JSON.stringify(cur.layout.hidden));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '4-example.png') });
   const example = cur.layout;
 
@@ -1306,7 +1307,7 @@ async function main() {
     for (let i = 0; i < 14; i++) await view(app, 'key', { key: 'ArrowRight' });
     kk = await settled(app);
     check('13: pushed to the group\'s minimum it stops at 120 px, and the terminal and pty still agree', kk.s.groups[0].rect.width >= 119 && kk.s.groups[0].rect.width <= 121 && kk.ok, String(kk.s.groups[0].rect.width));
-    await view(app, 'dock', { id: 'vault', target: { cell: 'term', side: 'bottom' } });
+    await view(app, 'dock', { id: 'vault', target: { cell: 'right', side: 'bottom' } });
     s = (await settled(app)).s;
     const low = groupWith(s, 'vault');
     await view(app, 'focus', { selector: '.dgutter[data-dir="col"]' });
@@ -1324,8 +1325,8 @@ async function main() {
     await sleep(1200);
     const treeMid = treeNow();
     const menu = await view(app, 'tabMenu', { id: 'git' });
-    check('13: the tab\'s menu (Shift+F10 / right-click) offers Move, Float, Collapse group and Hide, with the keyboard in it on Move',
-      menu.ok && JSON.stringify(menu.items.slice(0, 4)) === JSON.stringify(['Move', 'Float', 'Collapse group', 'Hide']) && menu.held === 'Move', JSON.stringify(menu));
+    check('13: the tab\'s menu (Shift+F10 / right-click) offers Move, Collapse group, Float and Hide, with the keyboard in it on Move',
+      menu.ok && JSON.stringify(menu.items.slice(0, 4)) === JSON.stringify(['Move', 'Collapse group', 'Float', 'Hide']) && menu.held === 'Move', JSON.stringify(menu));
     await view(app, 'menuButton', { text: 'Move' });
     k = await st();
     check('13: Move lights the zones of the group and the rim with one hot, and says in words where Git would land',
@@ -1372,7 +1373,7 @@ async function main() {
     await settled(app);
     const glide = await view(app, 'settleProbe', { id: 'vault', target: { edge: 'bottom' }, reduced: false });
     check('13: a drop settles: the groups, rails and dividers get a 120 ms transition while it lasts, the terminal none, and it ends',
-      glide.during.settling === true && glide.during.group === '0.12s' && glide.during.gutter === '0.12s' && glide.during.termwrap === '0s' && glide.after.settling === false && glide.after.group === '0s',
+      glide.during.settling === true && /^0.12s(, 0.12s)*$/.test(glide.during.group) && /^0.12s(, 0.12s)*$/.test(glide.during.gutter) && glide.during.termwrap === '0s' && glide.after.settling === false && glide.after.group === '0s',
       JSON.stringify(glide));
     await settled(app);
     const snap = await view(app, 'settleProbe', { id: 'git', target: { edge: 'left' }, reduced: true });

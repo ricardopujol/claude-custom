@@ -1065,6 +1065,7 @@ let globalLayout = DTm.defaultLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
 let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
 let dragLayout = null;           // a divider being dragged: drawn, not yet saved
+let flushKeyBurst = null;        // saves a divider's pending arrow-key burst (set where the keys are handled)
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved
@@ -1573,6 +1574,7 @@ function saveGlobalLayout(l) {
 // `userAction: false` is for a change that is not a click or a key (a float's move or resize): it leaves keyboard
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
 function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
+  if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   peek = null;                              // any change of the placement closes a rail's popover
@@ -5403,6 +5405,7 @@ let dividerDrag = null;     // { path, i, dir, start, base, split, node, gutter,
     if (rebased) commitPlacement(DTm.setSplitSizes(committedLayout(), b.path, rebased), { userAction: false });
     else renderLayout();
   };
+  flushKeyBurst = flushKeys;
   window.addEventListener('pagehide', flushKeys);
   document.getElementById('dock').addEventListener('focusout', (e) => { if (e.target.closest && e.target.closest('.dgutter')) flushKeys(); });
   document.getElementById('dock').addEventListener('keydown', (e) => {

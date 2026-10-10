@@ -354,3 +354,9 @@ test('PR #159 Miguel S1 / S3 / S5: focus into the tab menu only from the keyboar
   assert.match(JS, /No zone further that way\./);
   assert.match(JS, /if \(e\.repeat\) return;/);
 });
+
+test('a change of placement ends a pending arrow-key burst first, so its drawn sizes cannot hide the change for 400 ms', () => {
+  // A drop made while dragLayout still held the burst was saved but drawn as the old picture until the flush.
+  assert.match(fnBody('commitPlacement'), /^function commitPlacement[^\n]*\n\s+if \(flushKeyBurst\) flushKeyBurst\(\);/);
+  assert.match(JS, /flushKeyBurst = flushKeys;/);
+});
