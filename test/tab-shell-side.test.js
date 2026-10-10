@@ -335,7 +335,7 @@ test('...while a writing agent in the same folder still asks', async () => {
   const h = await mergedHarness([writerClaim('feat-a')]);
   const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
   assert.strictEqual(r.cancelled, true);
-  assert.deepStrictEqual(h.confirms.map(c => c.reason), ['an agent is working here']);
+  assert.deepStrictEqual(h.confirms.map(c => c.reason), ["Ctrl+click only closes a tab that's merged, saved and pushed. An agent is working here."]);
 });
 
 test('Ctrl+click close with a side session OPEN still closes silently, and ends the side session with it', async () => {
