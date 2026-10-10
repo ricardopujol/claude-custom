@@ -3,6 +3,7 @@
  * The one-hour history in the top-bar chip and its popover (BACKLOG #63 follow-up, documentation/DESIGN_RESOURCE_PANEL.md
  * "Follow-up: one-hour history", option B): the tiny sparklines and the two larger stacked-area graphs. Pure geometry and
  * SVG/HTML strings; main's ring (host/resource-history.js) is where the points come from. renderer.js wires the clicks.
+ * The four graph kinds: 'cpu', 'mem', and (BACKLOG #82) 'gpu' (busy %) and 'gpumem' (dedicated memory used of the total).
  *
  * A GAP IS A BREAK, NEVER A DROP TO 0 (CLAUDE.md, the `Number(null)` trap). A null figure (a failed sample, or a CPU not
  * measurable yet) and a point marked `brk` by main (samples were missed: a minimised window, a long silence, a step of the
@@ -38,15 +39,20 @@ function figuresOf(p) {
   const memTotal = isNum(q.memTotal) && q.memTotal > 0 ? q.memTotal : null;
   const cpu = isNum(q.cpu) ? Math.min(100, Math.max(0, q.cpu)) : null;
   const memUsed = memTotal !== null && isNum(q.memUsed) ? Math.min(memTotal, Math.max(0, q.memUsed)) : null;
+  // the GPU's memory is drawn as used OF the total, so an unknown total (no registry entry) leaves the graph unmeasured
+  const gpuMemTotal = isNum(q.gpuMemTotal) && q.gpuMemTotal > 0 ? q.gpuMemTotal : null;
+  const gpuMemUsed = gpuMemTotal !== null && isNum(q.gpuMemUsed) ? Math.min(gpuMemTotal, Math.max(0, q.gpuMemUsed)) : null;
   return {
     cpu,
     cpuOurs: cpu !== null && isNum(q.cpuOurs) ? Math.min(cpu, Math.max(0, q.cpuOurs)) : null,
     memUsed, memTotal,
     memOurs: memUsed !== null && isNum(q.memOurs) ? Math.min(memUsed, Math.max(0, q.memOurs)) : null,
+    gpu: isNum(q.gpu) ? Math.min(100, Math.max(0, q.gpu)) : null,
+    gpuMemUsed, gpuMemTotal,
   };
 }
 
-/** A point's figures as 0..1 fractions, each null when it was not measured: `{ at, brk, cpu, cpuOurs, mem, memOurs }`. */
+/** A point's figures as 0..1 fractions, each null when it was not measured: `{ at, brk, cpu, cpuOurs, mem, memOurs, gpu, gpumem }`. */
 function fractions(p) {
   const f = figuresOf(p);
   return {
@@ -55,6 +61,8 @@ function fractions(p) {
     cpuOurs: f.cpuOurs === null ? null : f.cpuOurs / 100,
     mem: f.memUsed === null ? null : f.memUsed / f.memTotal,
     memOurs: f.memOurs === null ? null : f.memOurs / f.memTotal,
+    gpu: f.gpu === null ? null : f.gpu / 100,
+    gpumem: f.gpuMemUsed === null ? null : f.gpuMemUsed / f.gpuMemTotal,
   };
 }
 
@@ -71,7 +79,7 @@ function runsOf(frs, key) {
   return runs;
 }
 
-/** The runs of one figure ('cpu' | 'cpuOurs' | 'mem' | 'memOurs'): consecutive measured points, `[{ at, v }]`. */
+/** The runs of one figure ('cpu' | 'cpuOurs' | 'mem' | 'memOurs' | 'gpu' | 'gpumem'): consecutive measured points, `[{ at, v }]`. */
 const segments = (points, key) => (Array.isArray(points) ? runsOf(points.map(fractions), key) : []);
 
 const inWindow = (runs, nowAt) => runs
@@ -100,17 +108,30 @@ function minutesAgo(frac) {
   return Math.round((1 - clamp01(frac)) * 60);
 }
 
+// Per graph kind: its name, the figure of figuresOf the readout and the description read, and how that figure is written.
+const KINDS = {
+  cpu: { name: 'CPU', key: 'cpu', fmt: v => R.fmtCpu(v) },
+  mem: { name: 'Memory', key: 'memUsed', fmt: v => R.fmtBytes(v) },
+  gpu: { name: 'GPU', key: 'gpu', fmt: v => R.fmtCpu(v) },
+  gpumem: { name: 'GPU memory', key: 'gpuMemUsed', fmt: v => R.fmtBytes(v) },
+};
+const KIND_IDS = Object.keys(KINDS);
+const noHover = () => ({ cpu: null, mem: null, gpu: null, gpumem: null });
+
 const when = m => (m === 0 ? 'now' : `${m} min ago`);
 
 /**
- * "12 min ago · CPU 54%, ours 41%" (memory: "12 min ago · memory 21.4 GB, ours 3.2 GB"), from the nearest MEASURED point within
+ * "12 min ago · CPU 54%, ours 41%" (memory: "12 min ago · memory 21.4 GB, ours 3.2 GB"; GPU: "12 min ago · GPU 54%" and
+ * "12 min ago · GPU memory 4.2 GB of 8.0 GB"), from the nearest MEASURED point within
  * half a minute of the hovered minute (a nearer failure does not hide it); "no data" for a minute with none. The figures are the
  * same clipped ones the graph draws.
  */
 function readout(points, nowAt, minutes, kind) {
   if (!isNum(minutes)) return '';
   const target = nowAt - minutes * 60000;
-  const key = kind === 'cpu' ? 'cpu' : 'memUsed';
+  const k = KINDS[kind];
+  if (!k) return '';
+  const key = k.key;
   let best = null;
   for (const p of Array.isArray(points) ? points : []) {
     if (!isNum(p && p.at)) continue;
@@ -122,14 +143,15 @@ function readout(points, nowAt, minutes, kind) {
   if (!best) return `${when(minutes)} · no data`;
   const f = best.f;
   if (kind === 'cpu') return `${when(minutes)} · CPU ${R.fmtCpu(f.cpu)}, ours ${f.cpuOurs !== null ? R.fmtCpu(f.cpuOurs) : '—'}`;
+  if (kind === 'gpu') return `${when(minutes)} · GPU ${R.fmtCpu(f.gpu)}`;
+  if (kind === 'gpumem') return `${when(minutes)} · GPU memory ${R.fmtBytes(f.gpuMemUsed)} of ${R.fmtBytes(f.gpuMemTotal)}`;
   return `${when(minutes)} · memory ${R.fmtBytes(f.memUsed)}, ours ${f.memOurs !== null ? R.fmtBytes(f.memOurs) : '—'}`;
 }
 
 /** A graph's name for a screen reader: "CPU, last hour: now 42%, peak 71% 23 min ago". */
 function describe(points, nowAt, kind) {
-  const name = kind === 'cpu' ? 'CPU' : 'Memory';
-  const key = kind === 'cpu' ? 'cpu' : 'memUsed';
-  const fmt = kind === 'cpu' ? R.fmtCpu : R.fmtBytes;
+  const k = KINDS[kind] || KINDS.mem;
+  const { name, key, fmt } = k;
   let latest = null;
   let peak = null;
   for (const p of Array.isArray(points) ? points : []) {
@@ -161,9 +183,12 @@ function graph(points, kind, nowAt, { w = 300, h = 64, hover = null } = {}) {
   const total = inWindow(runsOf(frs, kind), nowAt);
   const mine = inWindow(runsOf(frs, `${kind}Ours`), nowAt);
   const minutes = isNum(hover) ? hover : 0;
-  const name = kind === 'cpu' ? 'CPU' : 'Memory';
+  const name = (KINDS[kind] || KINDS.mem).name;
   if (total.length === 0) {
-    return `<div class="hg" data-hist-graph="${kind}"><div class="hg-name">${name}</div><div class="hg-empty">Collecting data…</div></div>`;
+    // "measurable but never will be": GPU memory used is reported but its total is not (no sized registry key), so no point can be drawn
+    const never = kind === 'gpumem' && Array.isArray(points) && points.length > 0
+      && points.some(p => isNum(p && p.gpuMemUsed)) && !points.some(p => figuresOf(p).gpuMemUsed !== null);
+    return `<div class="hg" data-hist-graph="${kind}"><div class="hg-name">${name}</div><div class="hg-empty">${never ? 'Unknown: this GPU does not report its total memory' : 'Collecting data…'}</div></div>`;
   }
   let svg = '';
   const yOf = v => (h - 2) - v * (h - 4) + 1;
@@ -183,18 +208,31 @@ function graph(points, kind, nowAt, { w = 300, h = 64, hover = null } = {}) {
     + `<div class="hg-readout">${esc(readout(points, nowAt, minutes, kind))}</div></div>`;
 }
 
-/** The popover's body: the two graphs and what the colours mean. `hover` is `{ cpu, mem }` minutes ago or null. */
+/** True when any point has a GPU figure: a machine with no GPU counters never gets two graphs that only say "Collecting data…". */
+const hasGpu = points => Array.isArray(points) && points.some((p) => { const f = figuresOf(p); return f.gpu !== null || f.gpuMemUsed !== null; });
+
+/**
+ * The GPU's two graphs for the Resources tab (BACKLOG #82): busy % and memory used of the total, not hoverable there (the
+ * readout says "now"). Empty when the machine has no GPU figures.
+ */
+function gpuGraphs(points, nowAt) {
+  return hasGpu(points) ? graph(points, 'gpu', nowAt, { w: 300 }) + graph(points, 'gpumem', nowAt, { w: 300 }) : '';
+}
+
+/** The popover's body: the graphs (the GPU's two only on a machine that has GPU figures) and what the colours mean. `hover` is `{ cpu, mem, gpu, gpumem }` minutes ago or null. */
 function popover(points, nowAt, hover = {}) {
   const h = hover || {};
   return graph(points, 'cpu', nowAt, { hover: h.cpu }) + graph(points, 'mem', nowAt, { hover: h.mem })
+    + (hasGpu(points) ? graph(points, 'gpu', nowAt, { hover: h.gpu }) + graph(points, 'gpumem', nowAt, { hover: h.gpumem }) : '')
     + '<div class="hg-key"><i class="hg-sw hg-sw-ours"></i>claude-custom <i class="hg-sw hg-sw-rest"></i>everything else</div>'
     + '<button type="button" class="hg-link" data-hist-act="open-panel">Open Resources panel →</button>';
 }
 
-/** The chip's inside: the CPU figure and its sparkline, then the memory figure and its sparkline. */
-function chipHtml(cpuText, memText, points, nowAt) {
+/** The chip's inside: the CPU figure and its sparkline, the memory figure and its sparkline, then (when there is one) the GPU's. */
+function chipHtml(cpuText, memText, points, nowAt, gpuText = null) {
   return `<span class="tbr-n">${esc(cpuText)}</span>${sparkline(points, 'cpu', nowAt)}`
-    + `<span class="tbr-n">${esc(memText)}</span>${sparkline(points, 'mem', nowAt)}`;
+    + `<span class="tbr-n">${esc(memText)}</span>${sparkline(points, 'mem', nowAt)}`
+    + (typeof gpuText === 'string' ? `<span class="tbr-n">${esc(gpuText)}</span>${sparkline(points, 'gpu', nowAt)}` : '');
 }
 
 // ---- the popover's state machine ------------------------------------------------------------------------------------
@@ -202,18 +240,18 @@ function chipHtml(cpuText, memText, points, nowAt) {
 /**
  * The chip popover's open/hover state, as pure steps (the renderer only wires events to it, so this is what is unit-tested):
  * `popoverStep(state, event) -> { state, consumed }`. Events: `chip-click`, `key {key}`, `pointerdown {inside}`, `blur`,
- * `hidden` (the page is hidden), `chip-off`, `panel-link` (the "Open Resources panel" button), `hover {kind, minutes}`, `leave` (the pointer is anywhere but on a graph's plot).
+ * `hidden` (the page is hidden), `chip-off`, `panel-link` (the "Open Resources panel" button), `hover {kind, minutes}` (kind: cpu | mem | gpu | gpumem), `leave` (the pointer is anywhere but on a graph's plot).
  * `consumed` is true when the event was Esc that closed it, so the caller keeps it from reaching anything else (an Esc that leaks
  * to the terminal interrupts a running turn). A state that did not change is returned as the same object.
  */
-const popoverInit = () => ({ open: false, hover: { cpu: null, mem: null } });
+const popoverInit = () => ({ open: false, hover: noHover() });
 
 function popoverStep(state, ev) {
   const st = state && typeof state === 'object' ? state : popoverInit();
   const same = { state: st, consumed: false };
   const close = () => ({ state: st.open ? popoverInit() : st, consumed: false });
   switch (ev && ev.type) {
-    case 'chip-click': return { state: st.open ? popoverInit() : { open: true, hover: { cpu: null, mem: null } }, consumed: false };
+    case 'chip-click': return { state: st.open ? popoverInit() : { open: true, hover: noHover() }, consumed: false };
     case 'key': {
       if (ev.key !== 'Escape' || !st.open) return same;
       return { state: popoverInit(), consumed: true };
@@ -221,28 +259,28 @@ function popoverStep(state, ev) {
     case 'pointerdown': return ev.inside === true ? same : close();
     case 'blur': case 'hidden': case 'chip-off': case 'panel-link': return close();
     case 'hover': {
-      if (!st.open || (ev.kind !== 'cpu' && ev.kind !== 'mem') || !isNum(ev.minutes)) return same;
-      return { state: { open: true, hover: { cpu: null, mem: null, [ev.kind]: ev.minutes } }, consumed: false };
+      if (!st.open || !KIND_IDS.includes(ev.kind) || !isNum(ev.minutes)) return same;
+      return { state: { open: true, hover: { ...noHover(), [ev.kind]: ev.minutes } }, consumed: false };
     }
     case 'leave': {
-      if (!st.open || (st.hover.cpu === null && st.hover.mem === null)) return same;
-      return { state: { open: true, hover: { cpu: null, mem: null } }, consumed: false };
+      if (!st.open || KIND_IDS.every(k => st.hover[k] === null)) return same;
+      return { state: { open: true, hover: noHover() }, consumed: false };
     }
     default: return same;
   }
 }
 
-/** What each graph shows for a hover state: `{ cpu: { cursor (% across | null), readout }, mem: ... }`; "now" when not hovered. */
+/** What each graph shows for a hover state: `{ cpu: { cursor (% across | null), readout }, mem: ..., gpu: ..., gpumem: ... }`; "now" when not hovered. */
 function hoverView(points, nowAt, hover) {
   const h = hover || {};
   const one = kind => ({
     cursor: isNum(h[kind]) ? (1 - h[kind] / 60) * 100 : null,
     readout: readout(points, nowAt, isNum(h[kind]) ? h[kind] : 0, kind),
   });
-  return { cpu: one('cpu'), mem: one('mem') };
+  return { cpu: one('cpu'), mem: one('mem'), gpu: one('gpu'), gpumem: one('gpumem') };
 }
 
-const API = { popoverInit, popoverStep, hoverView, describe, chipHtml, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
+const API = { popoverInit, popoverStep, hoverView, describe, chipHtml, gpuGraphs, hasGpu, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesHistoryDisplay = API;

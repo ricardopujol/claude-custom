@@ -21,6 +21,7 @@ const GLYPHS = {
 };
 // PR 3: a merged worktree (finishing, removing, kept), or one that failed to go.
 const BADGES = { merged: 'merged', warn: String.fromCodePoint(0x26a0) };
+const SIDE_TITLE = 'A side session: it starts in plan mode and has only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite. No Bash, PowerShell, Edit, Write or MCP, whatever mode it is switched to. It ends when this branch\'s tab closes.';
 const GLYPH_TITLES = {
   open: 'Second session in this worktree (lock overridden, not saved)',
   warn: 'No session lock: a second window on this worktree would not be stopped',
@@ -97,6 +98,8 @@ function occupancyOf(o) {
     tags,
     more: Number.isInteger(o.more) && o.more > 0 ? o.more : 0,
     warn: o.warn === true,
+    // #81: only readers here (an agent of a read-only side session): shown, but nobody is WORKING in the folder.
+    readersOnly: o.readersOnly === true,
     lines: Array.isArray(o.lines) ? o.lines.filter(nonEmpty) : [],
   };
 }
@@ -121,7 +124,9 @@ function paintTab(doc, entry, bridge) {
   if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
   // The hatched lower edge. It NEVER animates: movement on the strip means "needs you".
   const occ = occupancyOf(entry.occupancy);
-  if (occ) cls.push(occ.warn ? 'occupied occupied-warn' : 'occupied');
+  if (occ) cls.push(occ.readersOnly ? 'reading' : (occ.warn ? 'occupied occupied-warn' : 'occupied'));
+  // #81: a branch tab's read-only side session: a small tab, no close button of its own (it ends with its branch tab).
+  if (entry.side === true) cls.push('side');
   // Backlog #52: a /bedtime night turns the tab deep blue. Distinct from #31's pulse, which still wins while the tab
   // needs you (the pulse animates the background; the night is a still colour).
   const night = entry.night === true;
@@ -130,6 +135,7 @@ function paintTab(doc, entry, bridge) {
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
+  if (entry.side === true) tab.title = [tab.title, SIDE_TITLE].join('\n');
   // One line per agent under the name, from the model (it has the minutes and the two-writers line).
   if (occ && occ.lines.length) tab.title = [tab.title, ...occ.lines].join('\n');
   // Backlog #39: the local model's "where are we", under every other line. The shell worked the lines out
@@ -295,7 +301,61 @@ function paintAccent(doc, hex) {
   return true;
 }
 
-const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, windowChrome, GLYPHS };
+/**
+ * Lean mode (BACKLOG #62): the ☾ Lean button while normal, and while lean the chip `☾ lean` (+ `bedtime HH:MM` when a
+ * night started it) with Back to normal. The state is main's (app/lean-state.js); this only draws it and sends the
+ * button's word. The body class stops the working dots' pulse (CSS in tab-strip.html); a tab that NEEDS you keeps its
+ * pulse, because a notification is not an animation to save. A missing state is normal: nothing says lean until main does.
+ */
+function paintLean(doc, state, bridge) {
+  const lean = typeof module !== 'undefined' && module.exports ? require('./lean-display') : root.leanDisplay;
+  const chip = lean.chip(state);
+  const btn = doc.getElementById('lean-btn');
+  const box = doc.getElementById('lean-chip');
+  if (doc.body && doc.body.classList) doc.body.classList.toggle('lean', chip !== null);
+  if (btn) { btn.hidden = chip !== null; btn.onclick = () => bridge.leanSet(true); }
+  if (!box) return;
+  box.hidden = chip === null;
+  const label = doc.getElementById('lean-chip-label');
+  const night = doc.getElementById('lean-chip-night');
+  const back = doc.getElementById('lean-back');
+  if (label) label.textContent = chip ? chip.label : '';
+  if (night) { night.textContent = chip && chip.night ? chip.night : ''; night.hidden = !(chip && chip.night); }
+  if (back) { back.textContent = chip ? chip.back : ''; back.onclick = () => bridge.leanSet(false); }
+}
+
+const LEAN_FACES_MAX = 6;
+
+/**
+ * The working agents' portraits next to the lean chip (BACKLOG #62, Ricardo's option C): 18 px round STILL images (app/lean-display.js
+ * stillNode), at most six then "+N", the agent's name on hover, only while lean, nothing at all when none work. `faces` is main's set
+ * for the whole window (app/lean-faces.js); the DOM is built with createElement and textContent, never innerHTML.
+ */
+function paintLeanFaces(doc, faces, on) {
+  const box = doc.getElementById('lean-faces');
+  if (!box) return;
+  const list = on === true && Array.isArray(faces) ? faces : [];
+  box.hidden = list.length === 0;
+  const lean = typeof module !== 'undefined' && module.exports ? require('./lean-display') : root.leanDisplay;
+  const pm = typeof module !== 'undefined' && module.exports ? require('./portrait-media-display') : root.portraitMedia;
+  const nodes = list.slice(0, LEAN_FACES_MAX).map((f) => {
+    const span = doc.createElement('span');
+    span.className = 'lean-face';
+    span.title = String(f.agent);
+    span.appendChild(lean.stillNode(doc, f, pm));
+    return span;
+  });
+  if (list.length > LEAN_FACES_MAX) {
+    const more = doc.createElement('span');
+    more.className = 'lean-more';
+    more.textContent = '+' + (list.length - LEAN_FACES_MAX);
+    more.title = `${list.length - LEAN_FACES_MAX} more working`;
+    nodes.push(more);
+  }
+  box.replaceChildren(...nodes);
+}
+
+const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, paintLean, paintLeanFaces, windowChrome, GLYPHS, LEAN_FACES_MAX };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
@@ -306,6 +366,24 @@ if (typeof module !== 'undefined' && module.exports) {
   }
   if (root.strip && typeof root.strip.onAccent === 'function') {
     root.strip.onAccent((hex) => paintAccent(root.document, hex));
+  }
+  if (root.strip && typeof root.strip.onLean === 'function') {
+    // the state on load; a push that already arrived is not undone by a slower answer
+    let pushed = false;
+    let faces = [];
+    let leanOn = false;
+    const take = (state) => {
+      paintLean(root.document, state, root.strip);
+      leanOn = root.leanDisplay.normalize(state).on;
+      paintLeanFaces(root.document, faces, leanOn);
+    };
+    root.strip.onLean((state) => { pushed = true; take(state); });
+    if (typeof root.strip.onLeanFaces === 'function') {
+      root.strip.onLeanFaces((list) => { faces = Array.isArray(list) ? list : []; paintLeanFaces(root.document, faces, leanOn); });
+    }
+    if (typeof root.strip.leanGet === 'function') {
+      Promise.resolve(root.strip.leanGet()).then((state) => { if (!pushed) take(state); }, () => {});
+    }
   }
   if (root.strip && typeof root.strip.onModel === 'function') {
     root.strip.onModel((payload) => paint(root.document, payload, root.strip));

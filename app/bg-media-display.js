@@ -17,9 +17,12 @@
  *   - `unplayableNote(error)`: the Style tab's words for a video the engine
  *     refused (codec, corruption). The file stays; there is just no background.
  *   - `pausedNote(state)`: the Style tab's words for a video that is held still
- *     ON PURPOSE -- on battery, or reduced motion -- so a still background is
+ *     ON PURPOSE -- lean mode, on battery, or reduced motion -- so a still background is
  *     never mistaken for a broken one (Miguel M2, PR #91). Minimised or hidden
  *     get none: nobody can see the Style tab then.
+ *
+ * Lean mode (BACKLOG #62): `lean: true` holds a video on its first frame exactly as reduced motion does, wherever
+ * else the inputs say it could play.
  *
  * "Not yet known" is asymmetric on purpose. `visible` must be exactly `true`:
  * a window that has not said it is on screen is not decoding video. The three
@@ -36,13 +39,13 @@
 
 function shouldPlay(state) {
   const s = state && typeof state === 'object' ? state : {};
-  return s.visible === true && s.minimised !== true && s.onBattery !== true && s.reducedMotion !== true;
+  return s.visible === true && s.minimised !== true && s.onBattery !== true && s.reducedMotion !== true && s.lean !== true;
 }
 
 /** 'play', 'pause', or 'still' (reduced motion: the first frame, held). */
 function playbackAction(state) {
   const s = state && typeof state === 'object' ? state : {};
-  if (s.reducedMotion === true) return 'still';
+  if (s.reducedMotion === true || s.lean === true) return 'still';
   return shouldPlay(s) ? 'play' : 'pause';
 }
 
@@ -108,6 +111,7 @@ function unplayableNote(error) {
 
 function pausedNote(state) {
   const s = state && typeof state === 'object' ? state : {};
+  if (s.lean === true) return 'Held on its first frame while lean mode is on; it plays again when you go back to normal';
   if (s.reducedMotion === true) return 'Held on its first frame: your system asks for reduced motion';
   if (s.onBattery === true) return 'Paused while on battery; it plays again when you plug in';
   return null;

@@ -151,7 +151,7 @@ function touchesOf(state) {
 // --- the producer -----------------------------------------------------------------------------------------
 
 function createTranscriptScanner({
-  projectsDir, roots, writer, dir, ownPid, ownStartedAt, liveClaims = () => [],
+  projectsDir, roots, writer, dir, ownPid, ownStartedAt, liveClaims = () => [], readerSessions = () => [],
   fsp = fs.promises, fsImpl = fs, now = Date.now, log = () => {},
   staleMs = STALE_MS, tailBytes = TAIL_BYTES, passMs = PASS_MS,
   setTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t && t.unref) t.unref(); return t; },
@@ -274,6 +274,9 @@ function createTranscriptScanner({
     // a transcript under a folder that couldn't be listed: unseen this pass, which says nothing about it
     const unseen = file => listing.failed.some(d => isInside(file, d));
 
+    // #81: the sessions that are a side host's (read-only): their agents' claims are readers', whoever writes them.
+    let readers = new Set();
+    try { const l = readerSessions(); if (Array.isArray(l)) readers = new Set(l); } catch { readers = new Set(); }
     const wanted = new Map();        // agent id -> the claim record its transcript makes
     const fresh = new Set();
     for (const f of listing.files) {
@@ -291,6 +294,7 @@ function createTranscriptScanner({
       const rec = buildClaim({
         agentId: state.agentId, agent: state.name, fromBranch: state.branch, fromRoot: f.root, sessionId: f.session,
         hostPid: ownPid, hostStartedAt: started, touches: touchesOf(state),
+        role: readers.has(f.session) ? 'reader' : undefined,
       });
       if (rec !== null) { wanted.set(state.agentId, rec); source.set(state.agentId, f.file); }
     }

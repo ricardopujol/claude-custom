@@ -196,13 +196,24 @@ function killProvenBatch(items, { run = spawnSync, powershell = POWERSHELL, tole
   if (!valid.length) return out;
   const script = [
     `$items = @(${valid.map((t) => `@(${t.pid}, ${t.start})`).join(', ')})`,
+    '$held = New-Object System.Collections.ArrayList',
     'foreach ($t in $items) {',
     '  $id = $t[0]',
     '  try { $p = Get-Process -Id $id -ErrorAction Stop } catch { "$id GONE"; continue }',
     '  try { $null = $p.Handle; $s = $p.StartTime.ToFileTimeUtc() } catch { "$id UNKNOWN"; continue }',
     `  if ([math]::Abs([long]$s - $t[1]) -gt ${toleranceTicks}) { "$id MISMATCH"; continue }`,
     '  if ($p.HasExited) { "$id GONE"; continue }',
-    '  & taskkill.exe /PID $id /T /F *> $null; "$id KILLED $LASTEXITCODE"',
+    '  [void]$held.Add($p)',
+    '}',
+    // Every pid is proved on a held handle first, then ALL the proven ones are ended by ONE taskkill /T (PR #161 Dexter 1: a
+    // taskkill.exe per pid, each a Defender-scanned process creation and a whole-table snapshot, left the tail of 200 pids running
+    // when the batch hit its timeout). The held handles keep the proven pids from being reused meanwhile, and each answer is read
+    // back from the process itself.
+    'if ($held.Count) {',
+    '  $tk = @("/F", "/T"); foreach ($p in $held) { $tk += "/PID"; $tk += [string]$p.Id }',
+    '  & taskkill.exe @tk *> $null',
+    '  $sw = [Diagnostics.Stopwatch]::StartNew()',
+    '  foreach ($p in $held) { $left = [math]::Max(0, 3000 - $sw.ElapsedMilliseconds); if ($p.WaitForExit([int]$left)) { "$($p.Id) KILLED 0" } else { "$($p.Id) KILLED 1" } }',
     '}',
   ].join('\n');
   const r = run(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: timeoutMs });
