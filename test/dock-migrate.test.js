@@ -11,6 +11,7 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const M = require('../app/dock-migrate');
+const ZONES = ['left', 'right', 'top', 'bottom'];
 const T = require('../app/dock-tree');
 
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'models', 'projects', 'style'];
@@ -155,9 +156,9 @@ const v1Arb = fc.oneof(
 test('P1: whatever L1 saved, normalizeV1 places every module exactly once, and reading it again changes nothing', () => {
   fc.assert(fc.property(v1Arb, (raw) => {
     const l = M.normalizeV1(raw, IDS);
-    const all = [...M.ZONES.flatMap(z => l.zones[z]), ...l.hidden];
+    const all = [...ZONES.flatMap(z => l.zones[z]), ...l.hidden];
     assert.deepStrictEqual([...all].sort(), [...IDS].sort());
-    for (const z of M.ZONES) assert.ok(Number.isInteger(l.size[z]) && l.size[z] >= (z === 'left' || z === 'right' ? 120 : 80) && l.size[z] <= 10000, `${z} ${l.size[z]}`);
+    for (const z of ZONES) assert.ok(Number.isInteger(l.size[z]) && l.size[z] >= (z === 'left' || z === 'right' ? 120 : 80) && l.size[z] <= 10000, `${z} ${l.size[z]}`);
     assert.deepStrictEqual(M.normalizeV1(l, IDS), l);
   }), RUNS);
 });

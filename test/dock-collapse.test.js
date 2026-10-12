@@ -32,12 +32,12 @@ const stack = () => T.normalize(v2(col([
 
 // --- the selection --------------------------------------------------------------------------
 
-test('a selection carries the groups this window collapsed: only a real true on a string key survives', () => {
+test('a selection carries the groups this window collapsed: only a list of module ids on a string key survives', () => {
   assert.deepEqual(T.cleanSelection(null).collapsed, {});
-  assert.deepEqual(T.cleanSelection({ collapsed: { a: true, b: false, c: 1, d: 'yes', e: null, f: {} } }).collapsed, { a: true });
-  assert.deepEqual(T.cleanSelection({ collapsed: [true, true] }).collapsed, {});
+  assert.deepEqual(T.cleanSelection({ collapsed: { a: ['git'], b: false, c: 1, d: 'yes', e: null, f: {}, g: true } }).collapsed, { a: ['git'] });
+  assert.deepEqual(T.cleanSelection({ collapsed: [['git'], ['git']] }).collapsed, {});
   assert.deepEqual(T.cleanSelection({ collapsed: 'a' }).collapsed, {});
-  assert.deepEqual(T.cleanSelection({ collapsed: { '': true } }).collapsed, {}, 'no empty names');
+  assert.deepEqual(T.cleanSelection({ collapsed: { '': ['git'] } }).collapsed, {}, 'no empty names');
 });
 
 test('a collapse may carry the tabs of the group it was made on: only a non-empty list of strings counts, capped', () => {
@@ -47,7 +47,7 @@ test('a collapse may carry the tabs of the group it was made on: only a non-empt
 });
 
 test('a damaged file can\'t grow the collapsed list without end', () => {
-  const many = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`g${i}`, true]));
+  const many = Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`g${i}`, ['git']]));
   assert.ok(Object.keys(T.cleanSelection({ collapsed: many }).collapsed).length <= 64);
 });
 
@@ -64,9 +64,9 @@ test('toggleCollapse collapses a group and expands it again', () => {
 });
 
 test('toggleCollapse leaves everything else in the selection alone', () => {
-  const s = { active: { right: 'vault' }, foldAll: true, floatOrder: ['f'], collapsed: { other: true } };
+  const s = { active: { right: 'vault' }, foldAll: true, floatOrder: ['f'], collapsed: { other: ['git'] } };
   const next = T.toggleCollapse(s, ex(), 'right');
-  assert.deepEqual(next, { ...s, collapsed: { other: true, right: ['agents', 'vault'] } });
+  assert.deepEqual(next, { ...s, collapsed: { other: ['git'], right: ['agents', 'vault'] } });
 });
 
 test('only a group in the tree collapses: not the terminal, a float, an unknown name or junk', () => {
@@ -78,15 +78,15 @@ test('only a group in the tree collapses: not the terminal, a float, an unknown 
 });
 
 test('selecting a tab in a collapsed group opens the group (a dropped or ticked panel must be seen)', () => {
-  const s = T.selectTab(sel({ right: true, other: true }), ex(), 'vault');
-  assert.deepEqual(s.collapsed, { other: true });
+  const s = T.selectTab(sel({ right: ['agents', 'vault'], other: ['git'] }), ex(), 'vault');
+  assert.deepEqual(s.collapsed, { other: ['git'] });
   assert.equal(s.active.right, 'vault');
 });
 
 test('pruneCollapsed forgets groups that no longer exist, so a reused name starts open', () => {
   const l = ex();
-  assert.deepEqual(T.pruneCollapsed(sel({ right: true, g9: true }), l).collapsed, { right: true });
-  const s = sel({ right: true });
+  assert.deepEqual(T.pruneCollapsed(sel({ right: ['agents', 'vault'], g9: ['git'] }), l).collapsed, { right: ['agents', 'vault'] });
+  const s = sel({ right: ['agents', 'vault'] });
   assert.equal(T.pruneCollapsed(s, l), s, 'the very same selection when nothing was stale');
 });
 
@@ -97,7 +97,7 @@ test('nothing collapsed draws what it always did', () => {
 });
 
 test('a collapsed group beside the terminal is a 28 px rail on its edge; the terminal takes the room', () => {
-  const b = boxesOf(ex(), sel({ right: true }));
+  const b = boxesOf(ex(), sel({ right: ['agents', 'vault'] }));
   assert.deepEqual(kinds(b), ['term', 'rail']);
   assert.deepEqual(b[0].rect, R(0, 0, 972, 600));
   assert.deepEqual(b[1].rect, R(972, 0, 28, 600));
@@ -107,14 +107,14 @@ test('a collapsed group beside the terminal is a 28 px rail on its edge; the ter
 
 test('a collapsed group under the terminal is a 30 px horizontal rail', () => {
   const l = T.normalize(v2(col([term, g('foot', 'agents', 'vault')], [0, 160]), { hidden: IDS.slice(2) }), IDS);
-  const b = boxesOf(l, sel({ foot: true }));
+  const b = boxesOf(l, sel({ foot: ['agents', 'vault'] }));
   assert.deepEqual(b[0].rect, R(0, 0, 1000, 570));
   assert.deepEqual(b[1], { kind: 'rail', dir: 'h', modules: ['agents', 'vault'], groups: [{ id: 'foot', tabs: ['agents', 'vault'] }], rect: R(0, 570, 1000, 30) });
 });
 
 test('in a column of groups, a collapsed one is a rail and the others share the rest without a gutter against it', () => {
   const l = stack();
-  const b = boxesOf(l, sel({ mid: true }));
+  const b = boxesOf(l, sel({ mid: ['vault'] }));
   const mid = b.find(x => x.kind === 'rail' && x.modules.includes('vault'));
   assert.equal(mid.dir, 'h');
   assert.equal(mid.rect.height, 30);
@@ -167,7 +167,7 @@ test('Dexter 2 (option A): a selection from a tab click on one group of a folded
 
 test('collapsing the group beside the terminal while another is open leaves one rail and one panel', () => {
   const l = T.normalize(v2(row([g('l', 'git'), term, g('r', 'agents')], [150, 0, 200]), { hidden: IDS.filter(i => !['git', 'agents'].includes(i)) }), IDS);
-  const b = boxesOf(l, sel({ l: true }));
+  const b = boxesOf(l, sel({ l: ['git'] }));
   assert.deepEqual(kinds(b), ['rail', 'term', 'gutter', 'group']);
   assert.deepEqual(b[0].rect, R(0, 0, 28, 600));
   assert.deepEqual(b[1].rect, R(28, 0, 767, 600));
@@ -176,20 +176,20 @@ test('collapsing the group beside the terminal while another is open leaves one 
 
 test('the stored layout and the selection are never changed by drawing a collapse', () => {
   const l = JSON.stringify(ex());
-  const s = Object.freeze({ ...NONE, collapsed: Object.freeze({ right: true }) });
+  const s = Object.freeze({ ...NONE, collapsed: Object.freeze({ right: ['agents', 'vault'] }) });
   T.fit(ex(), s, VP);
   assert.equal(JSON.stringify(ex()), l);
 });
 
 test('a float is never collapsed by this: its id in the list changes nothing', () => {
   const l = T.dock(ex(), 'vault', { float: { x: 40, y: 40 } });
-  assert.deepEqual(T.fit(l, sel({ [l.floats[0].id]: true }), VP), T.fit(l, NONE, VP));
+  assert.deepEqual(T.fit(l, sel({ [l.floats[0].id]: ['vault'] }), VP), T.fit(l, NONE, VP));
 });
 
 test('a collapsed group still folds the rest by the usual rule when the window is tight', () => {
   const l = T.normalize(v2(row([g('l', 'git'), term, g('r', 'agents')], [200, 0, 200]), { hidden: IDS.filter(i => !['git', 'agents'].includes(i)) }), IDS);
   // 520 wide: the terminal's 320 + 28 for the collapsed rail leaves 172 for the other, under nothing of its own -> it asked 200, gets what fits
-  const b = boxesOf(l, sel({ l: true }), { width: 520, height: 600 });
+  const b = boxesOf(l, sel({ l: ['git'] }), { width: 520, height: 600 });
   const term0 = b.find(x => x.kind === 'term');
   assert.ok(term0.rect.width >= 320);
 });
@@ -204,20 +204,20 @@ const twoRight = () => T.normalize(v2(row([term, g('g1', 'vault'), g('g2', 'git'
 const column = () => T.normalize(v2(row([term, col([g('c1', 'vault'), g('c2', 'git'), g('c3', 'fog')], [1, 1, 1])], [0, 300]), { hidden: IDS.filter(i => !['vault', 'git', 'fog'].includes(i)) }), IDS);
 
 test('D1: ArrowRight on the divider between a collapsed group and the next stores the open one only; the rail keeps its 180', () => {
-  const next = dkey(twoRight(), sel({ g1: true }), { width: 1200, height: 800 }, [], 2, 'ArrowRight');
+  const next = dkey(twoRight(), sel({ g1: ['vault'] }), { width: 1200, height: 800 }, [], 2, 'ArrowRight');
   assert.ok(next, 'it moves');
   assert.equal(next.root.sizes[1], 180, 'the collapsed group\'s stored size is untouched');
   assert.equal(next.root.sizes[2], 184, 'the open one gave 16 px to the terminal');
 });
 
 test('D1: ...and the open group can still grow, toward the terminal\'s side', () => {
-  const next = dkey(twoRight(), sel({ g1: true }), { width: 1200, height: 800 }, [], 2, 'ArrowLeft');
+  const next = dkey(twoRight(), sel({ g1: ['vault'] }), { width: 1200, height: 800 }, [], 2, 'ArrowLeft');
   assert.deepEqual([next.root.sizes[1], next.root.sizes[2]], [180, 216]);
 });
 
 test('D1: in a column, a divider beside a collapsed group keeps the rail\'s share of the column', () => {
   const l = column();
-  const next = dkey(l, sel({ c1: true }), { width: 1200, height: 900 }, [1], 2, 'ArrowDown');
+  const next = dkey(l, sel({ c1: ['vault'] }), { width: 1200, height: 900 }, [1], 2, 'ArrowDown');
   assert.ok(next);
   const sizes = next.root.kids[1].sizes;
   const share = sizes[0] / (sizes[0] + sizes[1] + sizes[2]);
@@ -227,7 +227,7 @@ test('D1: in a column, a divider beside a collapsed group keeps the rail\'s shar
 
 test('D1: a drag asks the same thing of the same rules (sizesAfterDrag), so a pointer cannot store a rail either', () => {
   const l = twoRight();
-  const p = V.treePlan(l, sel({ g1: true }), TABS, { width: 1200, height: 800 }, {});
+  const p = V.treePlan(l, sel({ g1: ['vault'] }), TABS, { width: 1200, height: 800 }, {});
   const out = V.sizesAfterDrag(l.root, p.splits[0], 2, 16);
   assert.equal(out[1], 180);
 });
@@ -237,7 +237,7 @@ test('D1 property: whatever is collapsed and whichever divider key is pressed, t
   fc.assert(fc.property(fc.array(sizeArb, { minLength: 3, maxLength: 3 }), fc.array(fc.boolean(), { minLength: 3, maxLength: 3 }), fc.integer({ min: 1, max: 3 }), fc.constantFrom('ArrowLeft', 'ArrowRight'), fc.integer({ min: 700, max: 2000 }), (sz, shut, i, key, width) => {
     const l = T.normalize(v2(row([g('a', 'vault'), term, g('b', 'git'), g('c', 'fog')], [sz[0], 0, sz[1], sz[2]]), { hidden: IDS.filter(x => !['vault', 'git', 'fog'].includes(x)) }), IDS);
     const collapsed = {};
-    ['a', 'b', 'c'].forEach((id, k) => { if (shut[k]) collapsed[id] = true; });
+    ['a', 'b', 'c'].forEach((id, k) => { if (shut[k]) collapsed[id] = [['vault'], ['git'], ['fog']][k]; });
     const next = dkey(l, sel(collapsed), { width, height: 800 }, [], i, key);
     fc.pre(next !== null);
     ['a', 'b', 'c'].forEach((id, k) => {
@@ -268,9 +268,8 @@ test('D3: the same group with a tab added or taken away stays collapsed', () => 
   assert.equal(T.pruneCollapsed(s, more), s);
 });
 
-test('D3: isCollapsed reads both forms: a remembered tab list, and a plain true (any group of that name)', () => {
+test('D3: isCollapsed reads a remembered tab list: the group that held one of its tabs', () => {
   const gr = { id: 'right', tabs: ['git'] };
-  assert.equal(T.isCollapsed({ collapsed: { right: true } }, gr), true);
   assert.equal(T.isCollapsed({ collapsed: { right: ['git', 'fog'] } }, gr), true);
   assert.equal(T.isCollapsed({ collapsed: { right: ['vault'] } }, gr), false);
   assert.equal(T.isCollapsed({ collapsed: {} }, gr), false);

@@ -528,12 +528,12 @@ test('D4: a divider that changes direction under the same key is relabelled, not
 test('D4: a rail\'s buttons announce a popover, and the open one says so', () => {
   const w = makeDoc();
   const l = T.defaultLayout(IDS);
-  V.applyBoxes(planD4(l, { collapsed: { right: true } }), w.doc);
+  V.applyBoxes(planD4(l, { collapsed: { right: ['agents'] } }), w.doc);
   const rail = w.dock.children.find(e => e.classes.has('drail'));
   assert.ok(rail.children.length > 1);
   assert.ok(rail.children.every(b => b.getAttribute('aria-haspopup') === 'true' && b.getAttribute('aria-expanded') === 'false'));
   const buttons = [...rail.children];
-  V.applyBoxes(planD4(l, { collapsed: { right: true } }, { module: 'vault' }), w.doc);
+  V.applyBoxes(planD4(l, { collapsed: { right: ['agents'] } }, { module: 'vault' }), w.doc);
   assert.deepStrictEqual([...rail.children], buttons, 'the same buttons: only the expanded mark moved');
   assert.deepStrictEqual(rail.children.filter(b => b.getAttribute('aria-expanded') === 'true').map(b => b.dataset.module), ['vault']);
 });
@@ -541,7 +541,7 @@ test('D4: a rail\'s buttons announce a popover, and the open one says so', () =>
 test('D4: a rail\'s popover is one element in the floats layer, holding the panel and its tabs', () => {
   const w = makeDoc();
   const l = T.defaultLayout(IDS);
-  V.applyBoxes(planD4(l, { collapsed: { right: true } }, { module: 'vault' }), w.doc);
+  V.applyBoxes(planD4(l, { collapsed: { right: ['agents'] } }, { module: 'vault' }), w.doc);
   const el = peekEl(w);
   assert.ok(el, 'made');
   assert.ok(el.classes.has('zone'), 'a .zone, so every panel\'s own styles apply inside it');
@@ -562,7 +562,7 @@ test('D4: a rail\'s popover is one element in the floats layer, holding the pane
 test('D4: the popover is reused while open, switches panel by moving it, and takes its panel away when it closes', () => {
   const w = makeDoc();
   const l = T.defaultLayout(IDS);
-  const sel = { collapsed: { right: true } };
+  const sel = { collapsed: { right: ['agents'] } };
   V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
   const el = peekEl(w);
   const moves = w.panels.vault.moves;
@@ -582,7 +582,7 @@ test('D4: the popover is reused while open, switches panel by moving it, and tak
 test('D4: a popover whose rail went away (the window grew, the group was opened) is removed with its panel put back', () => {
   const w = makeDoc();
   const l = T.defaultLayout(IDS);
-  V.applyBoxes(planD4(l, { collapsed: { right: true } }, { module: 'vault' }), w.doc);
+  V.applyBoxes(planD4(l, { collapsed: { right: ['agents'] } }, { module: 'vault' }), w.doc);
   assert.ok(peekEl(w));
   V.applyBoxes(planD4(l, {}, { module: 'vault' }), w.doc);
   assert.strictEqual(peekEl(w), undefined);
@@ -593,7 +593,7 @@ test('D4: a popover whose rail went away (the window grew, the group was opened)
 test('D4: focus on a popover tab survives the popover being redrawn', () => {
   const w = makeDoc();
   const l = T.defaultLayout(IDS);
-  const sel = { collapsed: { right: true } };
+  const sel = { collapsed: { right: ['agents'] } };
   V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
   const tab = peekEl(w).querySelector('.zone-tabs').children.find(b => b.dataset.module === 'git');
   tab.focus();

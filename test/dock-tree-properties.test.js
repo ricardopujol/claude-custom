@@ -290,7 +290,7 @@ test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 stored 
     const tree = T.fromV1(l1, IDS);
     assertWellFormed(tree);
     const f = T.fit(tree, { active: {}, foldAll: false }, v);
-    const open = M.ZONES.filter(z => l1.zones[z].length);
+    const open = ['left', 'right', 'top', 'bottom'].filter(z => l1.zones[z].length);
     // The tree spends GUTTER px per open zone on a divider (L1 never did): only when the window has room for the
     // zones, their dividers and the terminal's minimum is "the same picture" the claim. Squeezed, the tree folds one
     // zone at a time (the edge first), which is the design (plan Task 6).
@@ -404,7 +404,7 @@ test('P15 (D4): a collapsed group is drawn on a rail holding its tabs (a column 
     const l = run(T.normalize(raw, IDS), ops);
     const gs = T.groups(l);
     fc.pre(gs.length > 0);
-    const shut = Object.fromEntries(picks.map(p => [gs[p % gs.length].id, true]));
+    const shut = Object.fromEntries(picks.map(p => [gs[p % gs.length].id, [...gs[p % gs.length].tabs]]));
     const f = T.fit(l, { ...T.cleanSelection(null), collapsed: shut }, v);
     const base = T.fit(l, T.cleanSelection(null), v);
     for (const gr of gs) {

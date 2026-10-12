@@ -565,14 +565,13 @@ function cleanSelection(raw) {
   const order = (Array.isArray(r.floatOrder) ? r.floatOrder : []).filter(x => typeof x === 'string' && x !== '');
   // Unique, keeping each id's LAST place (that is where it was last raised).
   const floatOrder = order.filter((x, i) => order.lastIndexOf(x) === i).slice(-MAX_FLOAT_ORDER);
-  // Only a real `true` collapses: `1`, `'yes'` and `{}` are damage, not a choice.
+  // Only a non-empty list of ids collapses: `true`, `1`, `'yes'` and `{}` are damage, not a choice.
   const collapsed = {};
   if (isObject(r.collapsed)) {
     for (const [k, v] of Object.entries(r.collapsed)) {
       if (k === '' || Object.keys(collapsed).length >= MAX_COLLAPSED) continue;
-      // `true`: any group of that name. A list of module ids: the group that held them when it was collapsed.
-      if (v === true) collapsed[k] = true;
-      else if (Array.isArray(v)) {
+      // The module ids of the group when it was collapsed: another layout can hand its name to a different group.
+      if (Array.isArray(v)) {
         const ids = v.filter(x => typeof x === 'string' && x !== '').slice(0, MAX_COLLAPSED_TABS);
         if (ids.length) collapsed[k] = ids;
       }
@@ -633,7 +632,6 @@ function isShut(n, sel) {
 /** Whether this window collapsed THIS group: its name is in the list and (when the choice remembers tabs) it still holds one of them. */
 function isCollapsed(sel, group) {
   const rec = isObject(sel) && isObject(sel.collapsed) && isObject(group) ? sel.collapsed[group.id] : undefined;
-  if (rec === true) return true;
   return Array.isArray(rec) && Array.isArray(group.tabs) && group.tabs.some(t => rec.includes(t));
 }
 

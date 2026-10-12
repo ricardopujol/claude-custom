@@ -216,6 +216,8 @@ const selArb = fc.record({
   foldAll: fc.boolean(),
   collapsed: fc.dictionary(fc.constantFrom('a', 'b', 'c', 'g1', 'g2', 'right'), fc.constant(true)),
 });
+// The selection's `true` is the intent "this group is collapsed"; the stored form carries the group's tabs.
+const concrete = (l, s) => ({ ...s, collapsed: Object.fromEntries(Object.entries(s.collapsed).flatMap(([id]) => { const gr = T.groups(l).find(x => x.id === id); return gr ? [[id, [...gr.tabs]]] : []; })) });
 const vpArb = fc.record({ width: fc.integer({ min: 320, max: 2500 }), height: fc.integer({ min: 160, max: 1500 }) });
 const keyArb = fc.constantFrom('ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown');
 const stepsArb = fc.array(keyArb, { minLength: 1, maxLength: 12 });
@@ -228,7 +230,8 @@ function wholeLayout(l) {
 }
 
 test('P1: a step lands on a zone that exists (or stays), and always goes the way the key says', () => {
-  fc.assert(fc.property(layoutArb, selArb, vpArb, stepsArb, (l, sel, vp, keys) => {
+  fc.assert(fc.property(layoutArb, selArb, vpArb, stepsArb, (l, sel0, vp, keys) => {
+    const sel = concrete(l, sel0);
     const boxes = T.fit(l, sel, vp).boxes;
     const cands = D.candidates(boxes, vp);
     let t = D.startTarget(boxes, IDS[0]);
@@ -253,7 +256,8 @@ test('P1: a step lands on a zone that exists (or stays), and always goes the way
 });
 
 test('P1b: Tab reaches every zone there is, from wherever the move began (arrows alone can miss a zone behind another)', () => {
-  fc.assert(fc.property(layoutArb, selArb, vpArb, fc.nat(7), (l, sel, vp, which) => {
+  fc.assert(fc.property(layoutArb, selArb, vpArb, fc.nat(7), (l, sel0, vp, which) => {
+    const sel = concrete(l, sel0);
     const boxes = T.fit(l, sel, vp).boxes;
     const own = T.floatOf(l, IDS[which % IDS.length]);
     const opts = { exclude: own ? own.id : null };
@@ -266,7 +270,8 @@ test('P1b: Tab reaches every zone there is, from wherever the move began (arrows
 });
 
 test('P2: every zone the keyboard can reach is a drop the model accepts: any panel, any zone, a whole layout back', () => {
-  fc.assert(fc.property(layoutArb, selArb, vpArb, fc.nat(7), (l, sel, vp, which) => {
+  fc.assert(fc.property(layoutArb, selArb, vpArb, fc.nat(7), (l, sel0, vp, which) => {
+    const sel = concrete(l, sel0);
     const boxes = T.fit(l, sel, vp).boxes;
     const id = IDS[which % IDS.length];
     const own = T.floatOf(l, id);
@@ -279,7 +284,8 @@ test('P2: every zone the keyboard can reach is a drop the model accepts: any pan
 });
 
 test('P3: zonesFor lights exactly one zone for a target that is a candidate, and the target comes back', () => {
-  fc.assert(fc.property(layoutArb, selArb, vpArb, fc.nat(60), (l, sel, vp, pick) => {
+  fc.assert(fc.property(layoutArb, selArb, vpArb, fc.nat(60), (l, sel0, vp, pick) => {
+    const sel = concrete(l, sel0);
     const boxes = T.fit(l, sel, vp).boxes;
     const cands = D.candidates(boxes, vp);
     fc.pre(cands.length > 0);

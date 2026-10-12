@@ -79,7 +79,7 @@ function fromLegacy(legacy, moduleIds) {
   return normalizeV1(l, moduleIds);
 }
 
-const API = { ZONES, DEFAULT_SIZE, defaultV1, normalizeV1, fromLegacy };
+const API = { defaultV1, normalizeV1, fromLegacy };
 
 // One namespace on the page (`window.dockMigrate`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

@@ -88,7 +88,7 @@ test('D1: #dock changing size without a window resize (the header wrapping) re-f
 });
 
 test('entering focus mode gives the terminal the keyboard, never an invisible panel field', () => {
-  // Found by verify/probe-dock-zones.js: focus left in #vault-secret stayed in a
+  // Found by L1's probe (verify/probe-dock-zones.js, since replaced by probe-dock-tree.js): focus left in #vault-secret stayed in a
   // hidden input -- typing went into it and Ctrl+B never reached the terminal.
   assert.match(fnBody('applyFocusMode'), /if \(on\) term\.focus\(\);/);
 });

@@ -66,7 +66,7 @@ test('a window too small for 280 gives the popover what is left beside the rail'
 
 test('peekFor reads rails out of fit: a collapsed group beside the terminal', () => {
   const l = T.defaultLayout(IDS);
-  const f = T.fit(l, { collapsed: { right: true } }, VP);
+  const f = T.fit(l, { collapsed: { right: ['agents', 'vault'] } }, VP);
   const p = T.peekFor(f.boxes, 'vault', VP);
   assert.equal(p.dir, 'v');
   assert.deepEqual(p.modules, IDS.filter(id => id !== 'canvas'));
@@ -128,7 +128,7 @@ test('junk in changes nothing it can\'t explain', () => {
 const plan = (layout, sel, peek) => V.treePlan(layout, sel, TABS, VP, { faceSize: () => 77, peek });
 
 test('treePlan draws the popover of a rail with its tabs, the chosen one on, and counts its panel as shown', () => {
-  const sel = { collapsed: { right: true } };
+  const sel = { collapsed: { right: ['agents', 'vault'] } };
   const p = plan(T.defaultLayout(TABS.map(t => t.id)), sel, { module: 'vault' });
   assert.equal(p.peek.module, 'vault');
   assert.equal(p.peek.rect.width, 280);
@@ -142,12 +142,12 @@ test('treePlan has no popover when the module is not on a rail (the group is ope
   const p = plan(T.defaultLayout(TABS.map(t => t.id)), {}, { module: 'vault' });
   assert.equal(p.peek, null);
   assert.ok(!p.shown.includes('vault'));
-  assert.equal(plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: true } }, null).peek, null);
-  assert.equal(plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: true } }, undefined).peek, null);
+  assert.equal(plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: ['agents', 'vault'] } }, null).peek, null);
+  assert.equal(plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: ['agents', 'vault'] } }, undefined).peek, null);
 });
 
 test('treePlan: the module the popover shows is not also shown by another group', () => {
-  const p = plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: true } }, { module: 'git' });
+  const p = plan(T.defaultLayout(TABS.map(t => t.id)), { collapsed: { right: ['agents', 'vault'] } }, { module: 'git' });
   assert.equal(p.shown.filter(id => id === 'git').length, 1);
 });
 
@@ -165,7 +165,8 @@ test('P2: every rail `fit` draws, in any layout and window, opens a popover that
   const layoutArb = fc.record({ version: fc.constant(2), root: nodeArb, hidden: tabsArb }).map(raw => T.normalize(raw, IDS));
   const selArb = fc.record({ foldAll: fc.boolean(), collapsed: fc.dictionary(fc.constantFrom('a', 'b', 'c', 'g1', 'g2', 'right'), fc.constant(true)) });
   const vp = fc.record({ width: fc.integer({ min: 100, max: 2500 }), height: fc.integer({ min: 100, max: 1500 }) });
-  fc.assert(fc.property(layoutArb, selArb, vp, (l, sel, v) => {
+  fc.assert(fc.property(layoutArb, selArb, vp, (l, sel0, v) => {
+    const sel = { ...sel0, collapsed: Object.fromEntries(Object.keys(sel0.collapsed).flatMap(id => { const gr = T.groups(l).find(x => x.id === id); return gr ? [[id, [...gr.tabs]]] : []; })) };
     const boxes = T.fit(l, sel, v).boxes;
     for (const rail of boxes.filter(b => b.kind === 'rail')) {
       const p = T.peekFor(boxes, rail.modules[0], v);

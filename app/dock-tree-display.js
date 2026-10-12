@@ -187,6 +187,8 @@ function dividerStep(key, dir) {
  * The layout after a key moves the divider before kid `i` of the split at `path`, by the same rules as dragging it
  * (neither neighbour under its minimum, the terminal's side still flexing), or null when nothing moves: not an arrow
  * along it, no such split or divider, a neighbour already at its minimum.
+ * The page itself saves a burst of keys through dividerKeySizes + rebaseDrag; this whole-layout form is the tested reference
+ * for what one press means (the tests call it), kept exported for them.
  * @param splits `fit`'s per-split { path, px, min }
  */
 function dividerKey(layout, splits, path, i, key) {
