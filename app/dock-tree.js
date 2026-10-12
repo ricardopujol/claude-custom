@@ -512,9 +512,10 @@ const along = (n, dir) => minSize(n)[dir === 'row' ? 'width' : 'height'];
 // and no gutter is drawn against a rail. `setSplitSizes` stays on the selection-blind `minSize`: it stores the shared layout.
 function minSizeSel(n, sel) {
   if (n.type === 'term') return { ...TERM_MIN };
-  if (n.type === 'group') return isCollapsed(sel, n) ? { width: RAIL.side, height: RAIL.wide } : { ...MIN };
+  if (isShut(n, sel)) return { width: RAIL.side, height: RAIL.wide };
+  if (n.type === 'group') return { ...MIN };
   const ms = n.kids.map(k => minSizeSel(k, sel));
-  const open = n.kids.map(k => !(k.type === 'group' && isCollapsed(sel, k)));
+  const open = n.kids.map(k => !isShut(k, sel));
   // With the terminal in the split every open fixed kid has one gutter on the spine's side; without it, two open kids side by side share one.
   const gaps = hasTerm(n) ? open.filter((o, i) => o && !hasTerm(n.kids[i])).length : open.filter((o, i) => o && i > 0 && open[i - 1]).length;
   if (n.dir === 'row') return { width: ms.reduce((s, m) => s + m.width, 0) + GUTTER * gaps, height: Math.max(...ms.map(m => m.height)) };
@@ -620,6 +621,15 @@ function pruneCollapsed(sel, layout) {
   return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(keepsRail)) });
 }
 
+/**
+ * Whether a node is drawn as a rail because of what this window collapsed: a collapsed group, or a split with no terminal
+ * in it whose every kid is (a column of folded groups is one rail, whose popover lists them all; PR #159 Dexter 2).
+ */
+function isShut(n, sel) {
+  if (n.type === 'group') return isCollapsed(sel, n);
+  return n.type === 'split' && !hasTerm(n) && n.kids.every(k => isShut(k, sel));
+}
+
 /** Whether this window collapsed THIS group: its name is in the list and (when the choice remembers tabs) it still holds one of them. */
 function isCollapsed(sel, group) {
   const rec = isObject(sel) && isObject(sel.collapsed) && isObject(group) ? sel.collapsed[group.id] : undefined;
@@ -665,8 +675,8 @@ function wholePixels(shares, total) {
 // `shut[i]`: kid i is a group this window collapsed -- a rail, with no gutter against it; the others share the rest.
 function plainLengths(n, length, shut, sel) {
   const rail = n.dir === 'row' ? RAIL.side : RAIL.wide;
-  // Every kid collapsed would leave nothing to take the room, and rails that don't fit are no choice anyone made:
-  // either way the split is drawn open.
+  // (A split whose every kid is collapsed is a rail in ITS parent, so it never gets here; the root always holds the
+  // terminal.) Rails that don't fit are no choice anyone made: the split is drawn open.
   const folded = shut.every(Boolean) || rail * shut.filter(Boolean).length > length ? shut.map(() => false) : shut;
   const idx = n.kids.map((_, i) => i).filter(i => !folded[i]);
   const room = length - rail * (n.kids.length - idx.length);
@@ -774,7 +784,7 @@ function place(n, rect, path, ctx) {
   }
   const isRow = n.dir === 'row';
   const length = isRow ? rect.width : rect.height;
-  const shut = n.kids.map(k => k.type === 'group' && isCollapsed(ctx.sel, k));
+  const shut = n.kids.map(k => isShut(k, ctx.sel));
   const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut, ctx.sel) : plainLengths(n, length, shut, ctx.sel);
   ctx.splits.push({
     path, dir: n.dir, px: len, state,

@@ -131,10 +131,38 @@ test('an open pair keeps its gutter; collapsing neither is the old picture', () 
   assert.equal(b.filter(x => x.kind === 'gutter' && x.path.join('.') === '0.1').length, 2);
 });
 
-test('a column whose every group is collapsed keeps them open: a split with nothing to take the room would leave a hole', () => {
-  const all = boxesOf(stack(), sel({ top: true, mid: true, low: true }));
-  assert.equal(all.filter(x => x.kind === 'rail').length, 0);
-  assert.deepEqual(all, boxesOf(stack(), NONE));
+test('Dexter 2 (option A): a column whose every group is collapsed is drawn as ONE rail, so what is drawn is what was chosen', () => {
+  const all = boxesOf(stack(), sel({ top: ['agents'], mid: ['vault'], low: ['git'] }));
+  const rails = all.filter(x => x.kind === 'rail');
+  assert.equal(rails.length, 1, 'one rail for the whole column');
+  assert.deepEqual(rails[0].modules, ['agents', 'vault', 'git']);
+  assert.equal(rails[0].dir, 'v');
+  assert.equal(rails[0].rect.width, 28);
+  assert.equal(all.filter(x => x.kind === 'group' && ['top', 'mid', 'low'].includes(x.id)).length, 0);
+  assert.ok(all.find(x => x.kind === 'term').rect.width >= 320);
+});
+
+test('Dexter 2 (option A): collapsing the last open group of a column folds the column and opens nothing else', () => {
+  const two = boxesOf(stack(), sel({ top: ['agents'], mid: ['vault'] }));
+  assert.deepEqual(two.filter(x => x.kind === 'group').map(x => x.id).sort(), ['foot', 'low']);
+  const three = boxesOf(stack(), sel({ top: ['agents'], mid: ['vault'], low: ['git'] }));
+  assert.deepEqual(three.filter(x => x.kind === 'group').map(x => x.id), ['foot']);
+});
+
+test('Dexter 2 (option A): opening one group of a folded column draws it open and keeps the others as rails', () => {
+  const b = boxesOf(stack(), sel({ top: ['agents'], mid: ['vault'] }));
+  assert.ok(boxOf(b, 'low'), 'low is open');
+  assert.equal(b.filter(x => x.kind === 'rail').length, 2);
+});
+
+test('Dexter 2 (option A): a selection from a tab click on one group of a folded column leaves the others folded', () => {
+  const l = stack();
+  const s = sel({ top: ['agents'], mid: ['vault'], low: ['git'] });
+  const next = T.selectTab(s, l, 'vault');
+  assert.deepEqual(Object.keys(next.collapsed).sort(), ['low', 'top']);
+  const b = boxesOf(l, next);
+  assert.ok(boxOf(b, 'mid'));
+  assert.equal(b.filter(x => x.kind === 'rail').length, 2);
 });
 
 test('collapsing the group beside the terminal while another is open leaves one rail and one panel', () => {

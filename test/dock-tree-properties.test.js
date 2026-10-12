@@ -398,7 +398,7 @@ test('P14 (D4): any mix of layout moves and collapses keeps fit whole: inside th
   }), RUNS);
 });
 
-test('P15 (D4): a collapsed group is drawn as a rail holding exactly its tabs, or open when its split would have nothing left to take the room', () => {
+test('P15 (D4): a collapsed group is drawn on a rail holding its tabs (a column of folded groups shares one rail), never as a panel', () => {
   const vp = fc.record({ width: fc.integer({ min: 700, max: 3000 }), height: fc.integer({ min: 500, max: 2000 }) });
   fc.assert(fc.property(rawArb, opsArb, fc.array(fc.nat(12), { maxLength: 6 }), vp, (raw, ops, picks, v) => {
     const l = run(T.normalize(raw, IDS), ops);
@@ -409,10 +409,10 @@ test('P15 (D4): a collapsed group is drawn as a rail holding exactly its tabs, o
     const base = T.fit(l, T.cleanSelection(null), v);
     for (const gr of gs) {
       const asGroup = f.boxes.find(b => b.kind === 'group' && b.id === gr.id);
-      const asRail = f.boxes.find(b => b.kind === 'rail' && b.modules.length === gr.tabs.length && b.modules.every((m, i) => m === gr.tabs[i]));
+      const asRail = f.boxes.find(b => b.kind === 'rail' && gr.tabs.every(m => b.modules.includes(m)));
       if (!shut[gr.id]) continue;
-      // Open again only when nothing else in its split could take the room, or the window folds it anyway (then it is a rail too).
-      assert.ok(asGroup || asRail || !base.boxes.find(b => b.kind === 'group' && b.id === gr.id), `${gr.id} is neither a rail nor a group`);
+      // Never a panel (the window is big enough for every rail here).
+      assert.ok(!asGroup && (asRail || !base.boxes.find(b => b.kind === 'group' && b.id === gr.id)), `${gr.id} is not on a rail`);
     }
   }), RUNS);
 });
