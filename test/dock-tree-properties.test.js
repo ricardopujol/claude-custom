@@ -429,3 +429,20 @@ test('P16 (D4): collapsing and opening a group again gives back the same picture
     assert.deepStrictEqual(T.fit(l, twice, v), T.fit(l, sel, v));
   }), RUNS);
 });
+
+test('P17 (Dexter 3): collapsing one more group never turns another open group into a rail or takes the terminal\'s room', () => {
+  const vp = fc.record({ width: fc.integer({ min: 400, max: 3000 }), height: fc.integer({ min: 300, max: 2000 }) });
+  fc.assert(fc.property(rawArb, opsArb, fc.nat(12), vp, (raw, ops, pick, v) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    const gs = T.groups(l);
+    fc.pre(gs.length > 1);
+    const target = gs[pick % gs.length];
+    const sel = T.cleanSelection(null);
+    const before = T.fit(l, sel, v);
+    const after = T.fit(l, T.toggleCollapse(sel, l, target.id), v);
+    for (const b of before.boxes) {
+      if (b.kind !== 'group' || b.id === target.id) continue;
+      assert.ok(after.boxes.some(a => a.kind === 'group' && a.id === b.id), `${b.id} turned into a rail when ${target.id} was collapsed`);
+    }
+  }), RUNS);
+});

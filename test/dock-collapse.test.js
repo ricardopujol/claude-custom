@@ -248,3 +248,29 @@ test('D3: isCollapsed reads both forms: a remembered tab list, and a plain true 
   assert.equal(T.isCollapsed({ collapsed: {} }, gr), false);
   assert.equal(T.isCollapsed(null, gr), false);
 });
+
+// --- PR #159 Dexter 3: a rail costs a rail, not a panel's minimum ---------------------------------
+
+// Dropping gB below the terminal, then gL left of it, then gR on the far right.
+const nested = () => T.normalize(v2(row([
+  col([row([g('gL', 'git'), term], [180, 0]), g('gB', 'fog')], [0, 160]),
+  g('gR', 'agents'),
+], [0, 180]), { hidden: IDS.filter(i => !['git', 'fog', 'agents'].includes(i)) }), IDS);
+const boxOf = (bs, id) => bs.find(x => x.id === id);
+
+test('Dexter 3: collapsing a group beside the terminal never makes another group fold (the rail costs 28, not 120)', () => {
+  const vp = { width: 520, height: 600 };
+  const open = boxesOf(nested(), NONE, vp);
+  const shut = boxesOf(nested(), sel({ gL: ['git'] }), vp);
+  assert.ok(boxOf(shut, 'gR'), 'gR is still a panel');
+  assert.ok(boxOf(shut, 'gR').rect.width >= 120);
+  assert.ok(shut.find(x => x.kind === 'term').rect.width >= 320);
+  assert.equal(shut.filter(x => x.kind === 'rail').length, 1, 'only the group that was collapsed is a rail');
+  assert.ok(open.filter(x => x.kind === 'rail').length >= shut.filter(x => x.kind === 'rail').length - 1);
+});
+
+test('Dexter 3: the divider beside a split that holds a rail is held to the rail\'s minimum, not the panel\'s', () => {
+  const f = T.fit(nested(), sel({ gL: ['git'] }), { width: 900, height: 600 });
+  const root = f.splits.find(s => s.path.length === 0);
+  assert.equal(root.min[0], 28 + 320, 'the column on the left needs a rail and the terminal');
+});

@@ -508,6 +508,20 @@ function minSize(n) {
 }
 const along = (n, dir) => minSize(n)[dir === 'row' ? 'width' : 'height'];
 
+// What `fit` needs of a subtree in THIS window: a group the window collapsed costs its rail (not a panel's minimum),
+// and no gutter is drawn against a rail. `setSplitSizes` stays on the selection-blind `minSize`: it stores the shared layout.
+function minSizeSel(n, sel) {
+  if (n.type === 'term') return { ...TERM_MIN };
+  if (n.type === 'group') return isCollapsed(sel, n) ? { width: RAIL.side, height: RAIL.wide } : { ...MIN };
+  const ms = n.kids.map(k => minSizeSel(k, sel));
+  const open = n.kids.map(k => !(k.type === 'group' && isCollapsed(sel, k)));
+  // With the terminal in the split every open fixed kid has one gutter on the spine's side; without it, two open kids side by side share one.
+  const gaps = hasTerm(n) ? open.filter((o, i) => o && !hasTerm(n.kids[i])).length : open.filter((o, i) => o && i > 0 && open[i - 1]).length;
+  if (n.dir === 'row') return { width: ms.reduce((s, m) => s + m.width, 0) + GUTTER * gaps, height: Math.max(...ms.map(m => m.height)) };
+  return { width: Math.max(...ms.map(m => m.width)), height: ms.reduce((s, m) => s + m.height, 0) + GUTTER * gaps };
+}
+const alongSel = (n, dir, sel) => minSizeSel(n, sel)[dir === 'row' ? 'width' : 'height'];
+
 /**
  * A divider drag's result: the sizes of the split at `path` (child indexes from
  * the root). Rounded, never under a kid's minimum, never over MAX_SIZE, the kid
@@ -649,7 +663,7 @@ function wholePixels(shares, total) {
 
 // The pixels of a split with no terminal in it: sizes are proportions, a kid under its minimum is raised.
 // `shut[i]`: kid i is a group this window collapsed -- a rail, with no gutter against it; the others share the rest.
-function plainLengths(n, length, shut) {
+function plainLengths(n, length, shut, sel) {
   const rail = n.dir === 'row' ? RAIL.side : RAIL.wide;
   // Every kid collapsed would leave nothing to take the room, and rails that don't fit are no choice anyone made:
   // either way the split is drawn open.
@@ -659,7 +673,7 @@ function plainLengths(n, length, shut) {
   const gaps = idx.filter((i, k) => k > 0 && idx[k - 1] === i - 1).length;   // two open kids side by side
   const gutter = room >= GUTTER * gaps ? GUTTER : 0;                         // a window too small for them has none
   const avail = room - gutter * gaps;
-  const mins = idx.map(i => along(n.kids[i], n.dir));
+  const mins = idx.map(i => alongSel(n.kids[i], n.dir, sel));
   const total = idx.reduce((a, i) => a + n.sizes[i], 0);
   let w = idx.map(i => (total > 0 ? avail * n.sizes[i] / total : avail / idx.length));
   if (mins.reduce((a, b) => a + b, 0) <= avail && w.some((x, i) => x < mins[i])) {
@@ -692,13 +706,13 @@ function plainLengths(n, length, shut) {
  *      the rails, farthest first.
  * `foldAll` (Ctrl+B) starts at c with everything folded.
  */
-function spineLengths(n, length, foldAll, shut) {
+function spineLengths(n, length, foldAll, shut, sel) {
   const { dir, kids } = n;
   const s = kids.findIndex(hasTerm);
   const termMin = dir === 'row' ? TERM_MIN.width : TERM_MIN.height;
   const rail = dir === 'row' ? RAIL.side : RAIL.wide;
-  const need = along(kids[s], dir);
-  const mins = kids.map(k => along(k, dir));
+  const need = alongSel(kids[s], dir, sel);
+  const mins = kids.map(k => alongSel(k, dir, sel));
   const ask = i => Math.max(mins[i], Math.round(n.sizes[i]));
   const fixed = kids.map((_, i) => i).filter(i => i !== s);
   // Farthest from the spine folds first. The groups this window collapsed are rails already: they head the order,
@@ -761,11 +775,11 @@ function place(n, rect, path, ctx) {
   const isRow = n.dir === 'row';
   const length = isRow ? rect.width : rect.height;
   const shut = n.kids.map(k => k.type === 'group' && isCollapsed(ctx.sel, k));
-  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut) : plainLengths(n, length, shut);
+  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut, ctx.sel) : plainLengths(n, length, shut, ctx.sel);
   ctx.splits.push({
     path, dir: n.dir, px: len, state,
     // A rail is as small as it gets, so a divider drag can't ask it for less.
-    min: n.kids.map((k, i) => (state[i] === 'open' ? along(k, n.dir) : len[i])),
+    min: n.kids.map((k, i) => (state[i] === 'open' ? alongSel(k, n.dir, ctx.sel) : len[i])),
   });
   let pos = isRow ? rect.x : rect.y;
   n.kids.forEach((k, i) => {
