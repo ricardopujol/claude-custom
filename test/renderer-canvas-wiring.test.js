@@ -36,7 +36,7 @@ test("every attaching window's hello feeds the panel's state, and a `canvas` fra
 test('the panel docks itself only when canvasDisplay says Claude wrote a page: shown if hidden, selected if shown', () => {
   const dock = BLOCK.slice(BLOCK.indexOf('function canvasOnFrame('), BLOCK.indexOf('function canvasOnFrame(') + 900);
   assert.match(dock, /if \(window\.canvasDisplay\.shouldDock\(frame\)\) canvasDock\(\);/);
-  assert.match(BLOCK, /commitPlacement\(DTm\.show\(placementLayout\(\), 'canvas'\), \{ select: 'canvas' \}\)/);
+  assert.match(BLOCK, /commitPlacement\(DTm\.show\(settledLayout\(\), 'canvas'\), \{ select: 'canvas' \}\)/);
   assert.match(BLOCK, /else selectModule\('canvas'\);/);
 });
 

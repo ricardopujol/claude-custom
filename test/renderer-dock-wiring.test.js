@@ -307,7 +307,7 @@ test('D4: the keyboard move takes every key while it lasts, drops through the ta
   const handler = JS.slice(at, JS.indexOf('\n  }, true);', at));
   assert.match(handler, /e\.preventDefault\(\); e\.stopPropagation\(\);/, 'no key reaches the terminal');
   assert.ok(handler.indexOf('e.stopPropagation()') < handler.indexOf("e.key === 'Escape'"), 'swallowed before any key is read');
-  assert.match(handler, /DTm\.dock\(placementLayout\(\), id, landingFor\(target, at, vp\)\)/);
+  assert.match(handler, /DTm\.dock\(settledLayout\(\), id, landingFor\(target, at, vp\)\)/);
   assert.match(handler, /commitPlacement\(next, \{ select: id \}\)/);
   assert.match(handler, /nextZone\(boxes\(\), dockViewport\(\), kbMove\.target, e\.key === 'Tab' && e\.shiftKey \? 'ShiftTab' : e\.key/);
   const end = JS.indexOf('ws.onclose = () => {');
@@ -387,4 +387,11 @@ test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on o
   assert.match(body, /if \(goes === 'terminal'\) \{\n\s+if \(!shownModules\.has\('vault'\)\) term\.focus\(\);/);
   assert.match(body, /goes === 'popover' \? document\.querySelector\('\.dpeek \.zone-tabs button\.on'\)/);
   assert.match(JS, /const chosen = document\.querySelector\('\.dpeek \.zone-tabs button\.on'\);[^\n]*\n\s+if \(chosen\) chosen\.focus\(\);/, 'a tab pressed in the popover keeps the focus in it after the redraw');
+});
+
+test('PR #159 Dexter 6: an operation on the placement is built on the layout AFTER a pending key burst is saved, so a push that arrived in the burst survives', () => {
+  assert.match(JS, /function settledLayout\(\) \{ if \(flushKeyBurst\) flushKeyBurst\(\); return placementLayout\(\); \}/);
+  assert.doesNotMatch(JS, /DTm\.(dock|hide|show)\(placementLayout\(\)/, 'a dock / hide / show built on the drawn layout would carry a stale whole into the save');
+  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 12, 'every operation site');
+  assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
 });

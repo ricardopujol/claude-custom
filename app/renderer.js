@@ -1196,6 +1196,9 @@ function saveSelection() {
 // What is SAVED for this window, without a divider drag's drawn-only layout on top.
 function committedLayout() { return ownLayout || globalLayout; }
 function placementLayout() { return dragLayout || committedLayout(); }
+// The layout an operation (dock, hide, show) is built on: a pending arrow-key burst is saved first, so the operation starts from the
+// placement as it is now -- not from the burst's drawn copy, which would put back a change another window pushed meanwhile (PR #159 Dexter 6).
+function settledLayout() { if (flushKeyBurst) flushKeyBurst(); return placementLayout(); }
 
 // The area the tree fills: #dock, which already gives the diagnostics pane its own room.
 function dockViewport() {
@@ -1421,7 +1424,7 @@ if (tbResourcesEl && resPopoverEl) {
     const btn = e.target && e.target.closest ? e.target.closest('[data-hist-act="open-panel"]') : null;
     if (!btn) return;
     resPopStep({ type: 'panel-link' });
-    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(placementLayout(), 'resources'), { select: 'resources' });
+    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(settledLayout(), 'resources'), { select: 'resources' });
     else selectModule('resources');
     setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
   });
@@ -1528,7 +1531,7 @@ function canvasFetchIfNeeded() {
 
 // Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
 function canvasDock() {
-  if (placementLayout().hidden.includes('canvas')) commitPlacement(DTm.show(placementLayout(), 'canvas'), { select: 'canvas' });
+  if (placementLayout().hidden.includes('canvas')) commitPlacement(DTm.show(settledLayout(), 'canvas'), { select: 'canvas' });
   else selectModule('canvas');
 }
 
@@ -1857,7 +1860,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
     layoutMenu.appendChild(node('button', {
       type: 'button', text: 'Float', title: 'Take this panel out of its group into a window of its own over the dock',
       on: { click: () => {
-        commitPlacement(DTm.dock(placementLayout(), id, { float: true }), { justThisTab: check.box.checked, select: id });
+        commitPlacement(DTm.dock(settledLayout(), id, { float: true }), { justThisTab: check.box.checked, select: id });
         closeLayoutMenu();
       } },
     }));
@@ -1865,7 +1868,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
   layoutMenu.appendChild(node('button', {
     type: 'button', text: 'Hide',
     on: { click: () => {
-      commitPlacement(DTm.hide(placementLayout(), id), { justThisTab: check.box.checked });
+      commitPlacement(DTm.hide(settledLayout(), id), { justThisTab: check.box.checked });
       closeLayoutMenu();
     } },
   }));
@@ -1894,7 +1897,7 @@ function openLayoutMenu() {
     const box = node('input', { type: 'checkbox', checked: row.shown });
     box.dataset.module = row.id;
     box.addEventListener('change', () => {
-      const l = placementLayout();
+      const l = settledLayout();
       if (box.checked) commitPlacement(DTm.show(l, row.id), { justThisTab: check.box.checked, select: row.id });
       else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
       openLayoutMenu();                           // redrawn in place, still open
@@ -2315,7 +2318,7 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     if (!d.target) return;
     // The terminal's middle floats the panel where it was dropped: the model says where (D2).
     const target = landingFor(d.target, d.at, d.viewport);
-    commitPlacement(DTm.dock(placementLayout(), d.id, target), { select: d.id });
+    commitPlacement(DTm.dock(settledLayout(), d.id, target), { select: d.id });
   });
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
@@ -2379,7 +2382,7 @@ let cancelKeyboardMove = () => {};
       if (!hot.target) { say('Move cancelled: that place is gone.'); refocus(id); return; }
       const zone = hot.zones.find(z => z.hot);
       const at = { x: zone.rect.x + zone.rect.width / 2, y: zone.rect.y + zone.rect.height / 2 };
-      const next = DTm.dock(placementLayout(), id, landingFor(target, at, vp));
+      const next = DTm.dock(settledLayout(), id, landingFor(target, at, vp));
       const moved = placementOf(DTm.normalize(next, MODULE_IDS)) !== placementOf(placementLayout());
       commitPlacement(next, { select: id });
       say(window.dockDrag.describeDrop(moved, labelOf(id), window.dockDrag.describeTarget(target, nameOf)));
@@ -2753,11 +2756,11 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'layout':
         if (a.layout !== undefined) commitPlacement(a.layout, { justThisTab: a.justThisTab === true });
         return JSON.stringify({ ok: true, layout: placementLayout() });
-      case 'dock': commitPlacement(DTm.dock(placementLayout(), a.id, a.target), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
-      case 'hide': commitPlacement(DTm.hide(placementLayout(), a.id), { justThisTab: a.justThisTab === true }); break;
-      case 'show': commitPlacement(DTm.show(placementLayout(), a.id), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'dock': commitPlacement(DTm.dock(settledLayout(), a.id, a.target), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'hide': commitPlacement(DTm.hide(settledLayout(), a.id), { justThisTab: a.justThisTab === true }); break;
+      case 'show': commitPlacement(DTm.show(settledLayout(), a.id), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
       // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
-      case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(placementLayout(), a.id) : DTm.dock(placementLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
+      case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(settledLayout(), a.id) : DTm.dock(settledLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
       case 'select': selectModule(a.id); break;
       case 'foldAll': case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
@@ -2936,7 +2939,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'settleProbe': return (async () => {
         const dockEl = document.getElementById('dock');
         window.matchMedia = q => ({ matches: a.reduced === true && /prefers-reduced-motion/.test(String(q)), media: String(q), addEventListener() {}, removeEventListener() {} });
-        commitPlacement(DTm.dock(placementLayout(), a.id, a.target), { select: String(a.id) });
+        commitPlacement(DTm.dock(settledLayout(), a.id, a.target), { select: String(a.id) });
         const dur = sel => { const el = document.querySelector(sel); return el ? getComputedStyle(el).transitionDuration : null; };
         const during = { settling: dockEl.classList.contains('settling'), group: dur('#dock > .dgroup'), gutter: dur('#dock > .dgutter'), termwrap: dur('#termwrap') };
         await new Promise(r => setTimeout(r, 400));
