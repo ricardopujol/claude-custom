@@ -307,7 +307,8 @@ test('D4: the keyboard move takes every key while it lasts, drops through the ta
   const handler = JS.slice(at, JS.indexOf('\n  }, true);', at));
   assert.match(handler, /e\.preventDefault\(\); e\.stopPropagation\(\);/, 'no key reaches the terminal');
   assert.ok(handler.indexOf('e.stopPropagation()') < handler.indexOf("e.key === 'Escape'"), 'swallowed before any key is read');
-  assert.match(handler, /commitPlacement\(DTm\.dock\(placementLayout\(\), id, landingFor\(target, at, vp\)\), \{ select: id \}\)/);
+  assert.match(handler, /DTm\.dock\(placementLayout\(\), id, landingFor\(target, at, vp\)\)/);
+  assert.match(handler, /commitPlacement\(next, \{ select: id \}\)/);
   assert.match(handler, /nextZone\(boxes\(\), dockViewport\(\), kbMove\.target, e\.key === 'Tab' && e\.shiftKey \? 'ShiftTab' : e\.key/);
   const end = JS.indexOf('ws.onclose = () => {');
   assert.match(JS.slice(end, end + 600), /cancelKeyboardMove\(\);/, 'the socket closing drops a keyboard move in flight');
@@ -365,4 +366,10 @@ test('PR #159 Dexter 1: a collapse is forgotten only after the hello has said wh
   assert.match(fnBody('renderLayout'), /if \(window\.dockEffects\.pruneReady\(layoutLoaded, helloSeen\)\) \{/);
   assert.match(JS, /helloSeen = true;\n\s+if \('layoutOverride' in msg\) applyLayoutOverride\(msg\.layoutOverride\);/, 'the hello sets it before its redraw');
   assert.strictEqual([...JS.matchAll(/helloSeen = true;/g)].length, 1, 'set nowhere else');
+});
+
+test('PR #159 Dexter 5 / Miguel S4: the keyboard drop says what dock did, and focus returns to a rail button when there is no tab', () => {
+  assert.match(JS, /const moved = placementOf\(DTm\.normalize\(next, MODULE_IDS\)\) !== placementOf\(placementLayout\(\)\);\n\s+commitPlacement\(next, \{ select: id \}\);\n\s+say\(window\.dockDrag\.describeDrop\(moved, labelOf\(id\), window\.dockDrag\.describeTarget\(target, nameOf\)\)\);/);
+  assert.doesNotMatch(JS, /say\(`Moved /);
+  assert.match(JS, /const refocus = id => \{ const b = document\.querySelector\(`\.zone-tabs button\[data-module="\$\{CSS\.escape\(id\)\}"\], \.drail button\[data-module="\$\{CSS\.escape\(id\)\}"\]`\); if \(b\) b\.focus\(\); \};/);
 });

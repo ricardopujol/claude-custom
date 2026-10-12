@@ -290,3 +290,59 @@ test('P3: zonesFor lights exactly one zone for a target that is a candidate, and
     assert.ok(same(lit.target, target));
   }), RUNS);
 });
+
+// --- PR #159 Dexter 4 / Miguel S6: a move that starts on a rail ------------------------------------------------------------
+
+const railBoxes = () => [
+  { kind: 'term', rect: R(0, 0, 972, 600) },
+  { kind: 'rail', dir: 'v', modules: ['git', 'fog'], rect: R(972, 0, 28, 600), groups: [{ id: 'gA', tabs: ['git'] }, { id: 'gB', tabs: ['fog'] }] },
+];
+
+test('Dexter 4: a panel on a rail starts on its own group\'s zone (lit over the rail), not on the terminal\'s float zone', () => {
+  const boxes = railBoxes();
+  assert.deepEqual(D.startTarget(boxes, 'git'), { cell: 'gA', side: 'center' });
+  assert.deepEqual(D.startTarget(boxes, 'fog'), { cell: 'gB', side: 'center' }, 'a folded column: the group that holds it');
+  const lit = D.zonesFor(boxes, VP, D.startTarget(boxes, 'git'));
+  assert.deepEqual(lit.target, { cell: 'gA', side: 'center' }, 'the start is on screen: Enter right away finds a place to drop');
+  assert.deepEqual(lit.zones.find(z => z.hot).rect, R(972, 0, 28, 600));
+});
+
+test('Dexter 4: ...and a key from there goes on to the zones around it', () => {
+  const boxes = railBoxes();
+  const from = D.startTarget(boxes, 'git');
+  const left = D.nextZone(boxes, VP, from, 'ArrowLeft');
+  assert.ok(left && !same(left, from), 'the arrow left of the rail finds the terminal\'s side of it');
+  const next = D.nextZone(boxes, VP, from, 'Tab');
+  const prev = D.nextZone(boxes, VP, from, 'ShiftTab');
+  assert.ok(next && prev && !same(next, from) && !same(prev, from));
+  assert.ok(D.candidates(boxes, VP).some(z => same(z.target, next)) && D.candidates(boxes, VP).some(z => same(z.target, prev)));
+});
+
+test('Dexter 4: dock treats that start as the group it already is in: nothing changes', () => {
+  const l = T.normalize({ version: 2, root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'group', id: 'gA', tabs: ['git', 'fog'] }], sizes: [0, 180] }, floats: [], hidden: IDS.filter(i => !['git', 'fog'].includes(i)), seat: {} }, IDS);
+  const boxes = T.fit(l, { collapsed: { gA: ['git', 'fog'] } }, VP).boxes;
+  const start = D.startTarget(boxes, 'git');
+  assert.deepEqual(start, { cell: 'gA', side: 'center' });
+  assert.deepEqual(T.dock(l, 'git', start), l);
+});
+
+test('a rail knows the groups it holds (fit): one per group, a folded column lists each', () => {
+  const l = T.normalize({ version: 2, root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'split', dir: 'col', kids: [{ type: 'group', id: 'gA', tabs: ['git'] }, { type: 'group', id: 'gB', tabs: ['fog'] }], sizes: [1, 1] }], sizes: [0, 180] }, floats: [], hidden: IDS.filter(i => !['git', 'fog'].includes(i)), seat: {} }, IDS);
+  const rail = T.fit(l, { collapsed: { gA: ['git'], gB: ['fog'] } }, VP).boxes.find(b => b.kind === 'rail');
+  assert.deepEqual(rail.groups, [{ id: 'gA', tabs: ['git'] }, { id: 'gB', tabs: ['fog'] }]);
+});
+
+// --- PR #159 Dexter 5: the words follow what dock did ----------------------------------------------------------------------
+
+test('Dexter 5: a drop dock refused is announced as not moved, never as "Moved"', () => {
+  assert.equal(D.describeDrop(true, 'Git', 'right of the Fog group'), 'Moved Git right of the Fog group.');
+  assert.match(D.describeDrop(false, 'Git', 'right of the Git group'), /^Not moved/);
+  assert.doesNotMatch(D.describeDrop(false, 'Git', 'as a tab in the Git group'), /Moved/);
+});
+
+test('Dexter 5: dock returns the same layout for a lone panel\'s own band, its own centre, and a lone panel\'s touching rim', () => {
+  const l = T.normalize({ version: 2, root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'group', id: 'g2', tabs: ['git'] }], sizes: [0, 180] }, floats: [], hidden: IDS.filter(i => i !== 'git'), seat: {} }, IDS);
+  const same2 = (t) => JSON.stringify(T.dock(l, 'git', t)) === JSON.stringify(l);
+  assert.ok(same2({ cell: 'g2', side: 'right' }), 'right of its own group');
+  assert.ok(same2({ cell: 'g2', side: 'center' }), 'its own centre');
+});

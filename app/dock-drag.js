@@ -138,13 +138,16 @@ function candidates(boxes, viewport, { tabBar = TAB_BAR, exclude = null } = {}) 
 }
 
 /**
- * Where a move starts: the middle of the group (or float) the module sits in, else the terminal's float zone. The boxes are
+ * Where a move starts: the middle of the group (or float) the module sits in -- for a group folded to a rail, that group,
+ * lit over its rail, so Enter at once drops where the panel already is -- else the terminal's float zone. The boxes are
  * the page's plan, whose tabs are { id, label, ... } objects (a bare list of ids is read too).
  */
 function startTarget(boxes, id) {
   const holds = b => Array.isArray(b.tabs) && b.tabs.some(t => t === id || (isObject(t) && t.id === id));
   const own = (Array.isArray(boxes) ? boxes : []).find(b => hasRect(b) && (b.kind === 'group' || b.kind === 'float') && holds(b));
-  return own ? { cell: own.id, side: 'center' } : { float: true };
+  if (own) return { cell: own.id, side: 'center' };
+  const onRail = (Array.isArray(boxes) ? boxes : []).filter(b => hasRect(b) && b.kind === 'rail' && Array.isArray(b.groups)).flatMap(b => b.groups).find(gr => isObject(gr) && typeof gr.id === 'string' && holds(gr));
+  return onRail ? { cell: onRail.id, side: 'center' } : { float: true };
 }
 
 const STEPS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
@@ -209,7 +212,10 @@ function zonesFor(boxes, viewport, target, { tabBar = TAB_BAR } = {}) {
   const owner = t.float === true ? list.find(isTerm)
     : typeof t.cell === 'string' ? list.find(b => (t.cell === 'term' ? isTerm(b) : hasRect(b) && (b.kind === 'group' || b.kind === 'float') && b.id === t.cell))
       : null;
-  if (owner && owner.kind === 'float') zones.push({ rect: { ...owner.rect }, target: { cell: owner.id, side: 'center' } });
+  // A group folded to a rail has no box of its own: the move that starts on it lights the rail (not a place to step to).
+  const railOf = !owner && typeof t.cell === 'string' ? list.find(b => hasRect(b) && b.kind === 'rail' && Array.isArray(b.groups) && b.groups.some(gr => isObject(gr) && gr.id === t.cell)) : null;
+  if (railOf) zones.push({ rect: { ...railOf.rect }, target: { cell: t.cell, side: 'center' } });
+  else if (owner && owner.kind === 'float') zones.push({ rect: { ...owner.rect }, target: { cell: owner.id, side: 'center' } });
   else if (owner) zones.push(...cellZones(owner, barPx));
   // A group's tab bar and its middle are both "join it": the middle (listed last) is the one that is hot.
   const hot = [...zones].reverse().find(z => sameTarget(z.target, target));
@@ -234,7 +240,12 @@ function describeTarget(target, nameOf) {
   }
 }
 
-const API = { RIM, BAND, TAB_BAR, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget };
+/** What a keyboard drop says once it is done: `moved` is whether the layout changed (dock refuses a drop where the panel already is). */
+function describeDrop(moved, panel, where) {
+  return moved ? `Moved ${panel} ${where}.` : `Not moved: ${panel} is already there.`;
+}
+
+const API = { RIM, BAND, TAB_BAR, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

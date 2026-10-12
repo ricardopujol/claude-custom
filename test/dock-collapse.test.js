@@ -109,7 +109,7 @@ test('a collapsed group under the terminal is a 30 px horizontal rail', () => {
   const l = T.normalize(v2(col([term, g('foot', 'agents', 'vault')], [0, 160]), { hidden: IDS.slice(2) }), IDS);
   const b = boxesOf(l, sel({ foot: true }));
   assert.deepEqual(b[0].rect, R(0, 0, 1000, 570));
-  assert.deepEqual(b[1], { kind: 'rail', dir: 'h', modules: ['agents', 'vault'], rect: R(0, 570, 1000, 30) });
+  assert.deepEqual(b[1], { kind: 'rail', dir: 'h', modules: ['agents', 'vault'], groups: [{ id: 'foot', tabs: ['agents', 'vault'] }], rect: R(0, 570, 1000, 30) });
 });
 
 test('in a column of groups, a collapsed one is a rail and the others share the rest without a gutter against it', () => {

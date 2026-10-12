@@ -541,7 +541,7 @@ test('fit: 445 wide is the last width where the column stays open, at its minimu
 
 test('fit: 440 wide folds the column to a rail of 28 and the terminal keeps 320', () => {
   const f = T.fit(example(), NO_SEL, { width: 440, height: 700 });
-  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], rect: R(412, 0, 28, 700) }]);
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], groups: [{ id: 'c', tabs: ['git'] }, { id: 'd', tabs: ['fog'] }, { id: 'e', tabs: ['bugvault'] }], rect: R(412, 0, 28, 700) }]);
   assert.equal(rectOf(f, 'term').width, 412);
   assert.equal(kindOf(f, 'group').length, 2);
   assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], state: ['open', 'rail'], min: [320, 28] });
@@ -561,7 +561,7 @@ const threeAcross = () => T.normalize(v2(row([g('l1', 'agents'), g('l2', 'vault'
 test('fit: two fixed kids on one axis, the one farther from the terminal folds first', () => {
   // All open needs 785; at 690 folding the outer left one is enough.
   const f = T.fit(threeAcross(), NO_SEL, { width: 690, height: 400 });
-  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], rect: R(0, 0, 28, 400) }]);
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], groups: [{ id: 'l1', tabs: ['agents'] }], rect: R(0, 0, 28, 400) }]);
   assert.deepEqual(rectOf(f, 'l2'), R(28, 0, 150, 400));
   assert.deepEqual(rectOf(f, 'term'), R(183, 0, 352, 400));
   assert.deepEqual(rectOf(f, 'r'), R(540, 0, 150, 400));

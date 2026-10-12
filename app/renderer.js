@@ -2349,7 +2349,8 @@ let cancelKeyboardMove = () => {};
     paintZones([]);
     document.body.classList.remove('dock-moving');
   }
-  const refocus = id => { const b = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(id)}"]`); if (b) b.focus(); };
+  // A module on a rail has no tab in a bar: its rail button takes the focus, so it never falls to the body (PR #159 Miguel S4).
+  const refocus = id => { const b = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(id)}"], .drail button[data-module="${CSS.escape(id)}"]`); if (b) b.focus(); };
   startKeyboardMove = (id) => {
     cancelTabDrag();
     if (peek) { peek = null; renderLayout({ refit: false }); }     // the popover goes off the screen too, not only out of the state (PR #159 Dexter 4)
@@ -2374,8 +2375,10 @@ let cancelKeyboardMove = () => {};
       if (!hot.target) { say('Move cancelled: that place is gone.'); refocus(id); return; }
       const zone = hot.zones.find(z => z.hot);
       const at = { x: zone.rect.x + zone.rect.width / 2, y: zone.rect.y + zone.rect.height / 2 };
-      commitPlacement(DTm.dock(placementLayout(), id, landingFor(target, at, vp)), { select: id });
-      say(`Moved ${labelOf(id)} ${window.dockDrag.describeTarget(target, nameOf)}.`);
+      const next = DTm.dock(placementLayout(), id, landingFor(target, at, vp));
+      const moved = placementOf(DTm.normalize(next, MODULE_IDS)) !== placementOf(placementLayout());
+      commitPlacement(next, { select: id });
+      say(window.dockDrag.describeDrop(moved, labelOf(id), window.dockDrag.describeTarget(target, nameOf)));
       refocus(id);
       return;
     }

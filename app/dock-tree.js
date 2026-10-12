@@ -803,7 +803,8 @@ function place(n, rect, path, ctx) {
     const r = isRow ? { x: pos, y: rect.y, width: len[i], height: rect.height } : { x: rect.x, y: pos, width: rect.width, height: len[i] };
     pos += len[i];
     if (state[i] === 'gone') return;
-    if (state[i] === 'rail') ctx.boxes.push({ kind: 'rail', dir: isRow ? 'v' : 'h', modules: modulesUnder(k), rect: r });
+    // `groups`: the groups behind the rail (a folded column holds several), so a keyboard move can start on the one that holds a panel.
+    if (state[i] === 'rail') ctx.boxes.push({ kind: 'rail', dir: isRow ? 'v' : 'h', modules: modulesUnder(k), groups: groups({ root: k }).map(gr => ({ id: gr.id, tabs: [...gr.tabs] })), rect: r });
     else place(k, r, [...path, i], ctx);
   });
 }
