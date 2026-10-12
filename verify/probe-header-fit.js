@@ -1,8 +1,8 @@
 'use strict';
 /* Does the tab header fit? Measured in the REAL renderer.html at 1000 / 1200 / 1600 px, with a busy header.
  *
- *     node verify/probe-header-fit.js [outDir]        (exit 0 = nothing clips at 1200 and 1600)
- *     HEADER_FIT_BASELINE=1 node ...                  only measure and print, never fail (the before-run for BACKLOG #42)
+ *     node verify/probe-header-fit.js [outDir]        (exit 0 = nothing clips at 1200 and 1600; 1 = a check failed; 2 = a width was not measured)
+ *     HEADER_FIT_BASELINE=1 node ...                  measure and print, never fail on a clip (the before-run for BACKLOG #42); still exits 2 if a width wasn't measured
  *
  * WHAT IT DOES. Loads app/renderer.html (same CSS, same markup path as the real tab view; no host, no claude), fills
  * the header with a fixture as busy as a real session's (long folder, model + effort, resources chip, cost/lines/time,
@@ -23,6 +23,7 @@
 const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
 const { loadWithRetry } = require('./lib/load-with-retry');
+const { headerFitVerdict } = require('./lib/header-fit-verdict');
 
 if (!process.versions.electron) {
   const env = { ...process.env };
@@ -100,6 +101,8 @@ app.on('window-all-closed', () => {});
 
 app.on('ready', async () => {
   let failed = 0;
+  const measured = [];   // widths whose whole iteration completed; a width not in here was NOT measured, which is not a clip
+  let error = null;
   try {
     fs.mkdirSync(OUT_DIR, { recursive: true });
     for (const width of WIDTHS) {
@@ -170,14 +173,16 @@ app.on('ready', async () => {
         console.log(`  shot ${file2}`);
       }
       win.destroy();
+      measured.push(width);
     }
   } catch (err) {
     console.error('probe failed:', err && err.stack);
-    failed++;
+    error = err && err.message ? err.message : String(err);
   } finally {
     clearTimeout(bail);
-    console.log(failed && !BASELINE ? `\n${failed} width(s) clip` : '\nno clipping at 1200 / 1600 (or baseline run)');
-    process.exitCode = failed && !BASELINE ? 1 : 0;
+    const verdict = headerFitVerdict({ widths: WIDTHS, measured, failures: failed, error, baseline: BASELINE });
+    console.log(verdict.lines.join('\n'));
+    process.exitCode = verdict.exitCode;
     app.quit();
   }
 });
