@@ -247,7 +247,7 @@ test('PR #100 Miguel S3: every save of the global layout goes through one helper
 
 test('D4: a redraw forgets collapsed groups that are gone and hands the open popover to the plan', () => {
   const body = fnBody('renderLayout');
-  assert.match(body, /if \(layoutLoaded\) \{\s+const pruned = DTm\.pruneCollapsed\(selection, placementLayout\(\)\);/, 'and only once the stored layout is in: the launch placeholder has none of the groups a saved collapse names');
+  assert.match(body, /if \(window\.dockEffects\.pruneReady\(layoutLoaded, helloSeen\)\) \{\s+const pruned = DTm\.pruneCollapsed\(selection, placementLayout\(\)\);/, 'and only once the stored layout is in: the launch placeholder has none of the groups a saved collapse names');
   const load = fnBody('loadLayout');
   assert.strictEqual([...load.matchAll(/layoutLoaded = true;/g)].length, 3, 'set in the three branches that draw a layout that was read, never when it was unreadable (nothing to prune against)');
   assert.match(body, /\{ faceSize: window\.faceSize, peek \}\)/);
@@ -359,4 +359,10 @@ test('a change of placement ends a pending arrow-key burst first, so its drawn s
   // A drop made while dragLayout still held the burst was saved but drawn as the old picture until the flush.
   assert.match(fnBody('commitPlacement'), /^function commitPlacement[^\n]*\n\s+if \(flushKeyBurst\) flushKeyBurst\(\);/);
   assert.match(JS, /flushKeyBurst = flushKeys;/);
+});
+
+test('PR #159 Dexter 1: a collapse is forgotten only after the hello has said whether this tab has its own layout', () => {
+  assert.match(fnBody('renderLayout'), /if \(window\.dockEffects\.pruneReady\(layoutLoaded, helloSeen\)\) \{/);
+  assert.match(JS, /helloSeen = true;\n\s+if \('layoutOverride' in msg\) applyLayoutOverride\(msg\.layoutOverride\);/, 'the hello sets it before its redraw');
+  assert.strictEqual([...JS.matchAll(/helloSeen = true;/g)].length, 1, 'set nowhere else');
 });

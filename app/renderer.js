@@ -1169,6 +1169,7 @@ let flushKeyBurst = null;        // saves a divider's pending arrow-key burst (s
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved
+let helloSeen = false;           // the host has said whether this tab has its own layout, in the hello; a collapse is forgotten only after that
 let layoutLoaded = false;        // the stored layout has been read: until then the default is only a placeholder, whose groups mean nothing to a saved collapse
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
 let kbRefresh = () => {};        // redraws the keyboard move's zones after the dock was redrawn (set by initKeyboardMove)
@@ -1636,7 +1637,7 @@ function onVaultLeft() {
 function renderLayout({ userAction = false, refit = true, settle = false, quiet = false } = {}) {
   // A collapsed group that is gone is forgotten here, so a group later handed its name doesn't start collapsed -- but only
   // once the stored layout is in: the placeholder default drawn at launch has none of the groups a saved collapse names.
-  if (layoutLoaded) {
+  if (window.dockEffects.pruneReady(layoutLoaded, helloSeen)) {
     const pruned = DTm.pruneCollapsed(selection, placementLayout());
     if (pruned !== selection) { selection = pruned; saveSelection(); }
   }
@@ -7358,7 +7359,9 @@ function handleControl(msg) {
     renderTitle();
     // Layout pass L1: this tab's own layout survives a reattach because the host
     // kept it. Absent on an older host -> the global layout, as before.
+    helloSeen = true;
     if ('layoutOverride' in msg) applyLayoutOverride(msg.layoutOverride);
+    else renderLayout();               // an older host has no own layout to wait for: the pruning the hello unblocks happens now
     // PR 1b: absent on an older host -> no overlay, no banner, no marker.
     renderLock(msg.lock);
     renderTerminalSessions(msg.terminalSessions);

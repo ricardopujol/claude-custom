@@ -91,7 +91,17 @@ function overrideOnHello(pending, incoming) {
   return { apply: pending.layout, resend: true, settled: false };
 }
 
-const API = { renderEffects, describeFocus, focusOnOpen, overrideOnHello, WIDE_FACE_CHROME };
+/**
+ * Whether a redraw may forget the collapsed groups the layout no longer has (PR #159 Dexter 1). That needs the layout this
+ * window will DRAW: the stored global one is in (`layoutLoaded`) and the host has said whether the tab has its own
+ * (`helloSeen`). Before the hello a tab with its own layout would be pruned against the global one, losing every collapse
+ * of a group only its own layout has.
+ */
+function pruneReady(layoutLoaded, helloSeen) {
+  return layoutLoaded === true && helloSeen === true;
+}
+
+const API = { renderEffects, describeFocus, focusOnOpen, overrideOnHello, pruneReady, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockEffects`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

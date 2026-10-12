@@ -6,7 +6,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { renderEffects, describeFocus, focusOnOpen, overrideOnHello, WIDE_FACE_CHROME } = require('../app/dock-effects');
+const { renderEffects, describeFocus, focusOnOpen, overrideOnHello, pruneReady, WIDE_FACE_CHROME } = require('../app/dock-effects');
+const T = require('../app/dock-tree');
 
 test('the wide-group portrait chrome is the card name line plus the tab bar', () => {
   assert.strictEqual(WIDE_FACE_CHROME, 60);
@@ -134,4 +135,32 @@ test('renderEffects: quiet (lean mode putting the panels back) never moves the f
   assert.strictEqual(quiet.focus, null);
   assert.deepStrictEqual(quiet.newlyShown.sort(), ['git', 'vault'], 'the panels still load');
   assert.strictEqual(renderEffects(withVault, none, { quiet: true }).vaultLeft, true, 'its secrets still go out of sight');
+});
+
+// --- PR #159 Dexter 1: forget a collapse only against the layout this window will draw ---------------------------------
+
+test('pruneReady: the stored layout is in AND the host has said whether this tab has its own layout', () => {
+  assert.strictEqual(pruneReady(false, false), false, 'the launch placeholder');
+  assert.strictEqual(pruneReady(true, false), false, 'the global layout is in but the tab may have its own: that comes with the hello');
+  assert.strictEqual(pruneReady(false, true), false);
+  assert.strictEqual(pruneReady(true, true), true);
+  assert.strictEqual(pruneReady(true, undefined), false, 'unknown is not ready');
+});
+
+test('Dexter 1: a tab whose own layout holds the collapsed group keeps it when the global read beats the hello', () => {
+  const g = (id, ...tabs) => ({ type: 'group', id, tabs });
+  const v2 = root => ({ version: 2, root, floats: [], hidden: [], seat: {} });
+  const row = (kids, sizes) => ({ type: 'split', dir: 'row', kids, sizes });
+  const IDS = ['agents', 'models', 'git'];
+  const global = T.normalize(v2(row([{ type: 'term' }, g('g1', 'agents')], [0, 180])), IDS);
+  const own = T.normalize(v2(row([{ type: 'term' }, g('g1', 'agents'), g('g3', 'models')], [0, 180, 180])), IDS);
+  let selection = T.toggleCollapse(T.cleanSelection(null), own, 'g3');
+  // The order the page ran in: the tree-get answer first, the hello after.
+  const redraw = (layout, ready) => { if (ready) selection = T.pruneCollapsed(selection, layout); };
+  redraw(global, pruneReady(true, false));
+  assert.deepStrictEqual(Object.keys(selection.collapsed), ['g3'], 'not pruned against the layout this tab does not use');
+  redraw(own, pruneReady(true, true));
+  assert.deepStrictEqual(Object.keys(selection.collapsed), ['g3'], 'and still there once the own layout is known');
+  // The rule it replaces would have lost it:
+  assert.deepStrictEqual(Object.keys(T.pruneCollapsed(T.toggleCollapse(T.cleanSelection(null), own, 'g3'), global).collapsed), []);
 });
