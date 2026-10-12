@@ -15,6 +15,9 @@
  *    runs the user's own command and passes its output through, and it keeps
  *    every other field of theirs. Anything else the harness needs travels
  *    through the pty environment, never through settings.
+ *    The one other exception is the CLI's colour THEME (backlog #25, measured on CLI v2.1.283, see BACKLOG
+ *    "25. Per-project light mode": `--settings` applies it per window and writes nothing). It is read once at the CLI's start, so a
+ *    project's dark/light switch takes effect on the next launch.
  *
  * 2. `hooks`, unlike single-valued keys, ACCUMULATES across layers. The harness
  *    therefore contributes only its OWN matchers and never copies the user's in.
@@ -71,6 +74,9 @@ const HOOK_TIMEOUT_SECONDS = 5;
 // that cannot connect gives up in milliseconds, and a stuck one costs the prompt at most these seconds, never a decision.
 // Opt-in (`permissionRequest: true`), so a host that doesn't ask writes the same settings as before.
 const PERMISSION_HOOK_TIMEOUT_SECONDS = 2;
+
+// The CLI's own themes a project's mode maps to (its daltonized and ANSI families survive a flip).
+const CLI_THEMES = Object.freeze(['dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi']);
 
 const quote = s => `"${s}"`;
 
@@ -135,7 +141,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest, theme } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -179,6 +185,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
   if (permissionRequest === true) {
     settings.hooks.PermissionRequest = [{ matcher: '', hooks: [{ type: 'command', command: command('PermissionRequest'), timeout: PERMISSION_HOOK_TIMEOUT_SECONDS }] }];
   }
+  // Only the themes a project's mode can mean (host/look.js cliThemeFor); anything else leaves the CLI's own choice alone.
+  if (CLI_THEMES.includes(theme)) settings.theme = theme;
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
@@ -213,6 +221,47 @@ function findUserStatusLine({ configDir, cwd } = {}) {
     const runnable = sl && typeof sl === 'object' && sl.type === 'command'
       && typeof sl.command === 'string' && sl.command;
     return runnable ? sl : null;
+  }
+  return null;
+}
+
+const THEME_RE = /^(?:auto|(?:dark|light)(?:-(?:daltonized|ansi))?)$/;
+
+/**
+ * The CLI theme the person already uses, or null: the first layer that names one, in the CLI's own precedence
+ * (project-local, project, user settings, then the global config `.claude.json`). A value that isn't one of the CLI's
+ * themes is skipped, and so is an unreadable layer.
+ */
+// Another tab's CLI may be rewriting its config as this host starts, so a file that fails to PARSE is read once more
+// shortly after before it counts as having no theme (an absent file is not retried).
+const RETRY_WAIT_MS = 60;
+const sleepSync = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no wait available */ } };
+
+function readJsonRetry(file, fsImpl, sleep) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return JSON.parse(fsImpl.readFileSync(file, 'utf8'));
+    } catch (err) {
+      if (attempt === 1 || !(err instanceof SyntaxError)) return undefined;
+      sleep(RETRY_WAIT_MS);
+    }
+  }
+}
+
+function findUserTheme({ configDir, cwd, fsImpl = fs, sleep = sleepSync } = {}) {
+  const candidates = [];
+  if (cwd) {
+    candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
+    candidates.push(path.join(cwd, '.claude', 'settings.json'));
+  }
+  if (configDir) {
+    candidates.push(path.join(configDir, 'settings.json'));
+    candidates.push(path.join(configDir, '.claude.json'));
+    if (path.basename(configDir) === '.claude') candidates.push(path.join(path.dirname(configDir), '.claude.json'));
+  }
+  for (const file of candidates) {
+    const parsed = readJsonRetry(file, fsImpl, sleep);
+    if (parsed && typeof parsed === 'object' && typeof parsed.theme === 'string' && THEME_RE.test(parsed.theme)) return parsed.theme;
   }
   return null;
 }
@@ -292,4 +341,4 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false }
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };

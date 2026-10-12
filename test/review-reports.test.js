@@ -96,7 +96,7 @@ test("Dexter F7: a re-review the next day (round 1 again) beats yesterday's roun
 });
 
 test('property: exactly one entry per reviewer present, each the latest (date, round) of its files', () => {
-  const reviewer = fc.constantFrom('dexter', 'miguel', 'mortimer');
+  const reviewer = fc.constantFrom('dexter', 'miguel', 'mortimer', 'gordo', 'vladimir');
   fc.assert(fc.property(fc.array(fc.record({ reviewer, round: fc.integer({ min: 1, max: 6 }), day: fc.integer({ min: 1, max: 28 }) }), { maxLength: 20 }),
     (files) => {
       const names = files.map(f => `2026-10-${String(f.day).padStart(2, '0')}-feat-x-${f.reviewer}-r${f.round}.md`);
@@ -346,4 +346,25 @@ test('read: a folder that cannot be listed is no reports', () => {
   const fs = { readdirSync: () => { throw new Error('EACCES'); }, readFileSync: () => '' };
   assert.deepStrictEqual(R.read({ reviewsRoot: '/x', project: 'proj', branch: 'feat/a', fs }), []);
   assert.deepStrictEqual(R.createReader({ reviewsRoot: '/x', project: 'proj', fs })('feat/a'), []);
+});
+
+test('cast: Gordo and Vladimir reports are found, with their rounds', () => {
+  assert.deepStrictEqual(R.parseName('2026-10-10-feat-x-gordo.md', 'feat-x'), { date: '2026-10-10', reviewer: 'gordo', round: 1 });
+  assert.deepStrictEqual(R.parseName('2026-10-10-feat-x-gordo-r2.md', 'feat-x'), { date: '2026-10-10', reviewer: 'gordo', round: 2 });
+  assert.deepStrictEqual(R.parseName('2026-10-10-feat-x-vladimir.md', 'feat-x'), { date: '2026-10-10', reviewer: 'vladimir', round: 1 });
+});
+
+test('cast: REVIEWERS keeps its original order and the new two come after', () => {
+  assert.deepStrictEqual(R.REVIEWERS, ['dexter', 'miguel', 'mortimer', 'gordo', 'vladimir']);
+});
+
+test('cast: read shows El Gordo and Vladimir by display name, after the original three', () => {
+  const dir = path.join('/home/r/.claude/reviews', 'proj');
+  const fs = fakeFs({ [dir]: {
+    '2026-10-10-feat-a-vladimir.md': '## Verdict: **HARSH**',
+    '2026-10-10-feat-a-gordo.md': '## Verdict: **LEAN**',
+    '2026-10-10-feat-a-dexter.md': '## Verdict: **CLEAN**',
+  } });
+  const got = R.read({ reviewsRoot: '/home/r/.claude/reviews', project: 'proj', branch: 'feat/a', fs });
+  assert.deepStrictEqual(got.map(g => [g.reviewer, g.verdict]), [['Dexter', 'CLEAN'], ['El Gordo', 'LEAN'], ['Vladimir', 'HARSH']]);
 });

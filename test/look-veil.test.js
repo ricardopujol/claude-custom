@@ -25,6 +25,19 @@ test('Dexter F8: the image darkness veil darkens for EVERY app colour -- mixed w
   assert.match(veil, /opacity:\s*var\(--bg-darkness\)/);
 });
 
+test('#25: in a light look the veil is WHITE-based, over the own picture and over the generated art alike', () => {
+  const generated = rule('html[data-look-mode="light"] body.has-bg #bg::after');
+  assert.match(generated, /background:\s*color-mix\(in srgb,\s*var\(--bg\)\s*\d+%,\s*#fff\)/);
+  assert.doesNotMatch(generated, /#000/);
+  assert.match(generated, /opacity:\s*var\(--bg-light-art-veil,\s*[\d.]+\)/);
+  const custom = rule('html[data-look-mode="light"] body.has-custom-bg #bg::after');
+  assert.match(custom, /opacity:\s*var\(--bg-darkness\)/, 'the own picture keeps the Brightness slider');
+  assert.doesNotMatch(custom, /#000/);
+  // dark is untouched: the generated art gets no veil of its own (it bakes in its dimming)
+  const withoutLight = html.split('html[data-look-mode="light"] body.has-bg #bg::after {').join('');
+  assert.ok(!/[^\w-]body\.has-bg #bg::after \{/.test(withoutLight));
+});
+
 test('the unfocused veil never eats a click and sits below the attention cue', () => {
   const veil = rule('#focus-veil');
   assert.match(veil, /pointer-events:\s*none/, 'a click on an unfocused window must still focus it');
