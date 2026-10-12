@@ -1762,13 +1762,17 @@ function toggleGroupCollapse(groupId) {
 }
 
 // A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
-// placement and no selection, so nothing is saved, the pty isn't told and the keyboard stays where it was -- unless the
-// press was a key (Enter on the button), when the person is in the popover: its chosen tab has focus.
+// placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
+// mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
   peek = window.dockTreeView.peekAfter(peek, { type: 'rail', module: id });
   renderLayout({ refit: false });
-  if (!byKeyboard) return;
-  const target = peek ? document.querySelector('.dpeek .zone-tabs button.on') : document.querySelector(`.drail button[data-module="${CSS.escape(id)}"]`);
+  const goes = window.dockTreeView.peekFocus(!!peek, byKeyboard);
+  if (goes === 'terminal') {
+    if (!shownModules.has('vault')) term.focus();        // never into the session while a secret may be half typed
+    return;
+  }
+  const target = goes === 'popover' ? document.querySelector('.dpeek .zone-tabs button.on') : document.querySelector(`.drail button[data-module="${CSS.escape(id)}"]`);
   if (target) target.focus();
 }
 
@@ -2530,6 +2534,8 @@ document.addEventListener('click', (e) => {
     // Another tab of the same rail: the popover shows that panel. Nothing is saved; the pty is not told.
     peek = window.dockTreeView.peekAfter(peek, { type: 'tab', module: id });
     renderLayout({ refit: false });
+    const chosen = document.querySelector('.dpeek .zone-tabs button.on');       // the redraw replaced the button that was pressed
+    if (chosen) chosen.focus();
     return;
   }
   selectModule(id);
@@ -2563,10 +2569,14 @@ document.addEventListener('pointerdown', (e) => {
   renderLayout({ refit: false });
 });
 
-// Double-clicking a group's tab bar folds the group to its rail; double-clicking its rail opens it again (this window only).
+// Double-clicking the empty part of a group's tab bar folds the group to its rail (a double-click on a tab is just a click on
+// it, twice); double-clicking its rail opens it again (this window only).
 document.addEventListener('dblclick', (e) => {
   const bar = e.target.closest && e.target.closest('.dgroup:not(.dfloat) > .zone-tabs');
-  if (bar) { toggleGroupCollapse(bar.parentNode.dataset.group); return; }
+  if (bar) {
+    if (e.target === bar) toggleGroupCollapse(bar.parentNode.dataset.group);
+    return;
+  }
   const rail = e.target.closest && e.target.closest('.drail button[data-module]');
   const home = rail ? DTm.groupOf(placementLayout(), rail.dataset.module) : null;
   if (home && DTm.isCollapsed(selection, home)) toggleGroupCollapse(home.id);

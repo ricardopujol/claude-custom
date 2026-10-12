@@ -176,3 +176,17 @@ test('P2: every rail `fit` draws, in any layout and window, opens a popover that
     }
   }), RUNS);
 });
+
+// --- PR #159 Miguel I1: where the focus goes when a rail's popover opens or closes ----------------------------------
+
+test('Miguel I1: a popover that opens takes the focus (a mouse press left it on the rail button); one closed by the mouse gives it back to the terminal', () => {
+  assert.equal(V.peekFocus(true, false), 'popover', 'opened by a mouse press');
+  assert.equal(V.peekFocus(true, true), 'popover', 'opened with Enter, as before');
+  assert.equal(V.peekFocus(false, false), 'terminal', 'closed by a second press on the rail: typing goes to the session again');
+  assert.equal(V.peekFocus(false, true), 'rail', 'closed from the keyboard: the focus stays on the rail button, as before');
+});
+
+test('Miguel I1: junk reads as a mouse press that closed it', () => {
+  assert.equal(V.peekFocus(undefined, undefined), 'terminal');
+  assert.equal(V.peekFocus(null, 'yes'), 'terminal');
+});

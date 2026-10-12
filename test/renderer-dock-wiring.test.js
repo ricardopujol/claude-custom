@@ -373,3 +373,18 @@ test('PR #159 Dexter 5 / Miguel S4: the keyboard drop says what dock did, and fo
   assert.doesNotMatch(JS, /say\(`Moved /);
   assert.match(JS, /const refocus = id => \{ const b = document\.querySelector\(`\.zone-tabs button\[data-module="\$\{CSS\.escape\(id\)\}"\], \.drail button\[data-module="\$\{CSS\.escape\(id\)\}"\]`\); if \(b\) b\.focus\(\); \};/);
 });
+
+test('PR #159 Miguel I2: only a double-click on the EMPTY part of a tab bar folds the group; on a tab it does nothing new', () => {
+  const at = JS.indexOf("document.addEventListener('dblclick', (e) => {");
+  assert.ok(at !== -1, 'the dblclick handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(handler, /if \(bar\) \{\n\s+if \(e\.target === bar\) toggleGroupCollapse\(bar\.parentNode\.dataset\.group\);\n\s+return;\n\s+\}/);
+});
+
+test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on open, terminal on a mouse close (never over the vault), rail on Enter', () => {
+  const body = fnBody('openPeek');
+  assert.match(body, /const goes = window\.dockTreeView\.peekFocus\(!!peek, byKeyboard\);/);
+  assert.match(body, /if \(goes === 'terminal'\) \{\n\s+if \(!shownModules\.has\('vault'\)\) term\.focus\(\);/);
+  assert.match(body, /goes === 'popover' \? document\.querySelector\('\.dpeek \.zone-tabs button\.on'\)/);
+  assert.match(JS, /const chosen = document\.querySelector\('\.dpeek \.zone-tabs button\.on'\);[^\n]*\n\s+if \(chosen\) chosen\.focus\(\);/, 'a tab pressed in the popover keeps the focus in it after the redraw');
+});

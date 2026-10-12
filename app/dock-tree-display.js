@@ -108,6 +108,16 @@ function peekAfter(state, ev) {
 }
 
 /**
+ * Where the keyboard goes after a rail's button was pressed (PR #159 Miguel I1). A mouse press leaves the focus on the button, so
+ * the popover that opens takes it ('popover'); when it closes, a press hands it back to the terminal ('terminal'), and Enter on
+ * the button keeps it on the button ('rail'), where the person is.
+ */
+function peekFocus(opened, byKeyboard) {
+  if (opened === true) return 'popover';
+  return byKeyboard === true ? 'rail' : 'terminal';
+}
+
+/**
  * The sizes of a split with the divider before kid `i` moved by `delta`: that
  * kid and the one before it trade pixels, neither goes under its minimum.
  * Null when anything is junk, and when a neighbour is ALREADY under its minimum
@@ -538,7 +548,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, peekAfter, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, peekAfter, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

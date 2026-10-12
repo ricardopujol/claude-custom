@@ -1268,6 +1268,10 @@ async function main() {
     p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
     check('13: double-clicking the rail opens the group again, in this window only (the selection forgets it, the file is untouched)',
       !!p && !p.selection.collapsed.right && same(treeNow(), treeBefore) && p.pushes === pushes0, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.length]));
+    await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs button' });
+    await sleep(300);
+    p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    check('13: double-clicking a TAB does not fold its group', !!p && !p.selection.collapsed.right);
     await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs' });
     p = await stFor(v => v.groups.length === 0 && v.rails.length === 1);
     check('13: double-clicking a group\'s tab bar folds it', !!p && !!p.selection.collapsed.right);
