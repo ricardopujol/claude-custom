@@ -601,9 +601,9 @@ function toggleCollapse(sel, layout, groupId) {
  */
 function pruneCollapsed(sel, layout) {
   const grs = groups(layout);
-  const still = ([k, v]) => { const gr = grs.find(x => x.id === k); return !!gr && isCollapsed({ collapsed: { [k]: v } }, gr); };
-  if (!isObject(sel) || !isObject(sel.collapsed) || Object.entries(sel.collapsed).every(still)) return sel;
-  return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(still)) });
+  const keepsRail = ([k, v]) => { const gr = grs.find(x => x.id === k); return !!gr && isCollapsed({ collapsed: { [k]: v } }, gr); };
+  if (!isObject(sel) || !isObject(sel.collapsed) || Object.entries(sel.collapsed).every(keepsRail)) return sel;
+  return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(keepsRail)) });
 }
 
 /** Whether this window collapsed THIS group: its name is in the list and (when the choice remembers tabs) it still holds one of them. */
