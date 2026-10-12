@@ -12,8 +12,9 @@ const fc = require('fast-check');
 const { tmpDir } = require('./tmp-dir');
 
 const {
-  claimPoller, releasePoller, recordPoll, readShared, formatLine,
-  DATA_STALE_MS, LEASE_STALE_MS, QUOTA_FILE, LEASE_FILE,
+  claimPoller, renewPoller, releasePoller, recordPoll, readShared, formatLine, createSharedQuota, createHostQuota,
+  accountKey, quotaPath, leasePath,
+  DATA_STALE_MS, LEASE_STALE_MS, POLL_INTERVAL_MS, POLL_TIMEOUT_MS,
 } = require('../host/quota-share');
 
 const T0 = 1_800_000_000_000;
@@ -41,6 +42,7 @@ test('the poller renews its own lease, which keeps it past the staleness bound',
   for (let i = 0; i < 5; i++) {
     t += 60_000;
     assert.strictEqual(claimPoller({ dir: d, owner: 'a', pid: 1, now: () => t, isAlive: alive }), true);
+    renewPoller({ dir: d, owner: 'a', pid: 1, now: () => t });
     assert.strictEqual(claimPoller({ dir: d, owner: 'b', pid: 2, now: () => t, isAlive: alive }), false);
   }
 });
@@ -62,9 +64,9 @@ test('a lease older than the bound is taken over even if its pid looks alive (hu
 
 test('a corrupt or empty lease file is taken over, not treated as held forever', () => {
   const d = dir();
-  fs.writeFileSync(path.join(d, LEASE_FILE), '{not json');
+  fs.writeFileSync(leasePath(d), '{not json');
   assert.strictEqual(claimPoller({ dir: d, owner: 'b', pid: 2, now: () => T0, isAlive: alive }), true);
-  fs.writeFileSync(path.join(d, LEASE_FILE), '');
+  fs.writeFileSync(leasePath(d), '');
   assert.strictEqual(claimPoller({ dir: d, owner: 'c', pid: 3, now: () => T0, isAlive: alive }), true);
 });
 
@@ -121,18 +123,18 @@ test('data older than the bound reads as unknown, and the reason says how old', 
 test('no file, an unparseable file and a wrong-shaped file are all unknown', () => {
   const d = dir();
   assert.strictEqual(readShared({ dir: d, now: () => T0 }).state, 'absent');
-  fs.writeFileSync(path.join(d, QUOTA_FILE), '{truncat');
+  fs.writeFileSync(quotaPath(d), '{truncat');
   assert.strictEqual(readShared({ dir: d, now: () => T0 }).state, 'absent');
   for (const body of ['null', '[]', '{}', '{"readAt":null,"windows":[]}', '{"readAt":"x","windows":[]}',
     `{"readAt":${T0},"windows":"no"}`, `{"readAt":${T0 + 10 * 60_000},"windows":[]}`]) {
-    fs.writeFileSync(path.join(d, QUOTA_FILE), body);
+    fs.writeFileSync(quotaPath(d), body);
     assert.strictEqual(readShared({ dir: d, now: () => T0 }).state, 'absent', body);
   }
 });
 
 test('a window whose percent is missing or not a number stays null, not 0', () => {
   const d = dir();
-  fs.writeFileSync(path.join(d, QUOTA_FILE), JSON.stringify({
+  fs.writeFileSync(quotaPath(d), JSON.stringify({
     readAt: T0, windows: [{ key: 'k', label: 'l', percent: null }, { key: 'k2', label: 'm', percent: '5' }, { key: 'k3', label: 'n' }],
   }));
   const r = readShared({ dir: d, now: () => T0 });
@@ -142,12 +144,12 @@ test('a window whose percent is missing or not a number stays null, not 0', () =
 test('the write is atomic: no temp file is left and the old file is intact if the write throws', () => {
   const d = dir();
   recordPoll({ dir: d, result: GOOD(), now: () => T0 });
-  const before = fs.readFileSync(path.join(d, QUOTA_FILE), 'utf8');
+  const before = fs.readFileSync(quotaPath(d), 'utf8');
   assert.throws(() => recordPoll({
     dir: d, now: () => T0 + 1,
     result: { ok: true, windows: [{ get percent() { throw new Error('encode failed'); } }] },
   }), /encode failed/);
-  assert.strictEqual(fs.readFileSync(path.join(d, QUOTA_FILE), 'utf8'), before);
+  assert.strictEqual(fs.readFileSync(quotaPath(d), 'utf8'), before);
   assert.deepStrictEqual(fs.readdirSync(d).filter(f => f.includes('.tmp')), []);
 });
 
@@ -173,7 +175,7 @@ test('property: nothing but a fresh, well-formed file ever yields a window with 
     fc.integer({ min: 0, max: 10_000_000 }),
     (content, age) => {
       const d = dir();
-      if (content !== undefined) fs.writeFileSync(path.join(d, QUOTA_FILE), content);
+      if (content !== undefined) fs.writeFileSync(quotaPath(d), content);
       const r = readShared({ dir: d, now: () => T0 + age });
       if (r.state === 'absent') {
         assert.deepStrictEqual(r.windows, []);
@@ -186,7 +188,6 @@ test('property: nothing but a fresh, well-formed file ever yields a window with 
 });
 
 test('two hosts sharing a dir: only one polls, both report the same figure, and a dead poller is replaced', async () => {
-  const { createSharedQuota } = require('../host/quota-share');
   const d = dir();
   let t = T0;
   let calls = 0;
@@ -210,7 +211,6 @@ test('two hosts sharing a dir: only one polls, both report the same figure, and 
 });
 
 test('a poller whose read throws still reports the shared file, and a 429 keeps the last good figure', async () => {
-  const { createSharedQuota } = require('../host/quota-share');
   const d = dir();
   let t = T0;
   let mode = 'good';
@@ -223,6 +223,6 @@ test('a poller whose read throws still reports the shared file, and a 429 keeps 
   assert.deepStrictEqual(r.windows.map(w => w.percent), [42, 61]);
   mode = 'throw'; t += 60_000;
   assert.strictEqual((await h.refresh()).state, 'fresh');
-  t += 200_000; // never recovered: now unknown
+  t += 2 * DATA_STALE_MS; // never recovered: now unknown
   assert.strictEqual((await h.refresh()).state, 'absent');
 });
