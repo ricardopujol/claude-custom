@@ -444,6 +444,26 @@ function applyTabs(doc, nav, tabs) {
   }
 }
 
+// The Pin / Pinned button at the end of a tab bar (BACKLOG #85), for the module in `spec` ({ module, pinned }), or none. It is no
+// tab (`data-pin`, never `data-module`), so the tab handlers and the focus search never meet it, and it is made once and kept
+// across renders; a bar rebuilt around it has lost it, and it is made again.
+function syncPin(doc, nav, spec) {
+  let btn = nav.querySelector('.dpin');
+  if (!spec) { if (btn) btn.remove(); return; }
+  if (!btn) {
+    btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dpin';
+  }
+  if (btn.parentNode !== nav || nav.children[nav.children.length - 1] !== btn) nav.appendChild(btn);
+  btn.dataset.pin = spec.module;
+  btn.textContent = spec.pinned ? 'Pinned' : 'Pin';
+  btn.setAttribute('aria-pressed', spec.pinned ? 'true' : 'false');
+  btn.title = spec.pinned
+    ? 'Pinned: docked beside the terminal. Press to unpin it to the rail, where it slides open on hover'
+    : 'Pin it: dock this panel beside the terminal and keep it open';
+}
+
 // The module whose tab or rail button is `el` (what holds keyboard focus), or null.
 function moduleOfButton(el) {
   const holder = el && el.parentNode;
@@ -495,7 +515,7 @@ function applyBoxes(plan, doc) {
   };
   const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, makeGutter, overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
-  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
+  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.id || b.modules.join(','), () => mk('div', 'drail'), overlay);
 
   let floatsDrawn = 0;
   for (const b of groupBoxes) {
@@ -516,6 +536,7 @@ function applyBoxes(plan, doc) {
       el.appendChild(g);
     } else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
+    syncPin(doc, el.querySelector('.zone-tabs'), b.pinnable ? { module: b.pinnable, pinned: true } : null);
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
       const p = doc.querySelector(`.panel[data-panel="${b.panel}"]`);
@@ -540,6 +561,7 @@ function applyBoxes(plan, doc) {
   for (const b of rails) {
     const el = railPool.elOf.get(b);
     el.dataset.dir = b.dir;
+    if (b.id) el.dataset.rail = b.id; else delete el.dataset.rail;      // the dock's own rail (#85): its tabs open on hover
     setRect(el, b.rect);
     const sig = b.modules.join(',');
     if (el.dataset.sig !== sig) {
@@ -574,7 +596,9 @@ function applyBoxes(plan, doc) {
     popover.dataset.shape = plan.peek.shape;
     popover.dataset.dir = plan.peek.dir;
     setRect(popover, plan.peek.rect);
+    popover.dataset.from = plan.peek.from;
     applyTabs(doc, popover.querySelector('.zone-tabs'), plan.peek.tabs);
+    syncPin(doc, popover.querySelector('.zone-tabs'), plan.peek.pin ? { module: plan.peek.module, pinned: false } : null);
     const holder = popover.querySelector('.zone-panels');
     const p = doc.querySelector(`.panel[data-panel="${plan.peek.module}"]`);
     if (p && p.parentNode !== holder) holder.appendChild(p);
