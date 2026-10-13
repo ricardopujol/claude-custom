@@ -107,6 +107,50 @@ function peekAfter(state, ev) {
   }
 }
 
+/** The rail's hover state when nothing is open or waiting (see `railAfter`). */
+const RAIL_IDLE = Object.freeze({ module: null, held: false, pending: null, leaving: false });
+
+/**
+ * The hover behaviour of the dock's rail tabs (BACKLOG #85), pure and timer-free: the page owns the two timers (a hover waits
+ * 200 ms before it opens a panel; leaving waits 400 ms before it closes one) and feeds `open-timer` / `close-timer` back in.
+ * State { module, held, pending, leaving }: the open panel; whether a click or Enter holds it open (leaving then closes
+ * nothing); the tab hovered and waiting for its timer; whether the pointer left and the close timer is running.
+ *   enter {module}      the pointer is on a rail tab: opens it at once when another is open, else waits (`pending`)
+ *   enter-panel         the pointer is in the open panel: the grace is cancelled
+ *   leave               the pointer left the tab and the panel: a wait is dropped, an unheld panel starts its grace
+ *   open-timer {module} the wait ran out: opens that tab if it is still the one waiting
+ *   close-timer         the grace ran out: closes an unheld panel
+ *   click {module}      opens and holds; on the open one: holds it, and on a held one closes it
+ *   tab {module}        a tab inside the open panel switches it
+ *   escape / outside / drop / gone   closes it
+ * Anything else, and any junk, changes nothing (a junk state reads as idle).
+ */
+function railAfter(state, ev) {
+  const s = isObject(state) && typeof state.module === 'string' && state.module !== ''
+    ? { module: state.module, held: state.held === true, pending: null, leaving: state.held !== true && state.leaving === true }
+    : { module: null, held: false, pending: isObject(state) && typeof state.pending === 'string' && state.pending !== '' ? state.pending : null, leaving: false };
+  const e = isObject(ev) ? ev : {};
+  const mod = typeof e.module === 'string' && e.module !== '' ? e.module : null;
+  switch (e.type) {
+    case 'enter':
+      if (mod === null) return s;
+      return s.module !== null ? { ...s, module: mod, pending: null, leaving: false } : { ...s, pending: mod };
+    case 'enter-panel': return { ...s, leaving: false };
+    case 'leave':
+      if (s.module === null) return { ...s, pending: null };
+      return s.held ? s : { ...s, leaving: true };
+    case 'open-timer': return s.module === null && mod !== null && s.pending === mod ? { ...RAIL_IDLE, module: mod } : s;
+    case 'close-timer': return s.module !== null && s.leaving && !s.held ? RAIL_IDLE : s;
+    case 'click':
+      if (mod === null) return s;
+      if (s.module === mod && s.held) return RAIL_IDLE;
+      return { module: mod, held: true, pending: null, leaving: false };
+    case 'tab': return s.module !== null && mod !== null ? { ...s, module: mod, leaving: false } : s;
+    case 'escape': case 'outside': case 'drop': case 'gone': return RAIL_IDLE;
+    default: return s;
+  }
+}
+
 /**
  * Where the keyboard goes after a rail's button was pressed (PR #159 Miguel I1). A mouse press leaves the focus on the button, so
  * the popover that opens takes it ('popover'); when it closes, a press hands it back to the terminal ('terminal'), and Enter on
@@ -550,7 +594,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, peekAfter, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, peekAfter, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
