@@ -191,12 +191,9 @@ if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
 // networking, which this does not touch), and the panel reaches approved hosts through main (app/canvas-fetch.js).
 app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
 
-// A NEW WINDOW MUST NOT WAIT FOR THE E-CORES. Measured 2026-10-13 on the Katana (i7-13620H, 6 P-cores + 4 E-cores):
-// Chromium starts every renderer as a background process (Idle priority, EcoQoS) and Windows runs EcoQoS threads on the
-// E-cores. With those at 100% (Defender, WMI, telemetry, every open window's resource sampler) a new window's strip and
-// tab pages stayed `loading: true` with an empty URL for over 60 s while the P-cores sat idle: a blank window whose tab
-// never reached its host. With this switch the same launch connected in ~8 s. It changes only the renderers' scheduling
-// priority, not how much they do; hidden pages are still throttled by Chromium's own timers.
+// A new window must not wait for the E-cores: Chromium starts renderers as background (Idle + EcoQoS), Windows runs those
+// on the E-cores only, and with them saturated a new window stayed blank for 60+ s (measured 2026-10-13, the story is in
+// test/renderer-backgrounding-wiring.test.js). Priority only: hidden pages are still throttled by Chromium's timers.
 app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
 // `hosts/<port>.token`, and nothing else: written only by the host that won
