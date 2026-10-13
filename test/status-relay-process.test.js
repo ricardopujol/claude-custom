@@ -69,7 +69,7 @@ let n = 0;
 const pipeName = () => `cc-relay-test-${process.pid}-${n++}`;
 const DOC = JSON.stringify({ model: { id: 'claude-sonnet-5' }, effort: { level: 'high' } });
 
-test('the relay forwards the document to the host as a Status event', async () => {
+test('the relay forwards the document to the host as a Status event', { timeout: 120000 }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -88,7 +88,7 @@ test('the relay forwards the document to the host as a Status event', async () =
   assert.strictEqual(res.code, 0);
 });
 
-test("the user's command gets the same stdin, and its output is the status line", async () => {
+test("the user's command gets the same stdin, and its output is the status line", { timeout: 120000 }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -98,7 +98,7 @@ test("the user's command gets the same stdin, and its output is the status line"
   assert.strictEqual(res.out, 'USER:claude-sonnet-5');
 });
 
-test("no host listening: the user's status line still renders", async () => {
+test("no host listening: the user's status line still renders", { timeout: 120000 }, async () => {
   // Process start-up (the relay, then cmd.exe, then the user's node) is what a
   // wall-clock bound here really measured, and it blew 5 s under full-suite
   // load. "Promptly" is asserted deterministically in the next test instead.
@@ -112,7 +112,7 @@ test("no host listening: the user's status line still renders", async () => {
   assert.strictEqual(res.code, 0);
 });
 
-test('unparseable stdin is not forwarded, and the user command still runs', async () => {
+test('unparseable stdin is not forwarded, and the user command still runs', { timeout: 120000 }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -159,7 +159,7 @@ test("a hung user statusLine is killed, grandchild and all, and the relay still 
   assert.ok(gone, `the user's command (pid ${pid}) is still running`);
 });
 
-test('a user command that finishes in time is not killed', async () => {
+test('a user command that finishes in time is not killed', { timeout: 120000 }, async () => {
   const quick = `"${process.execPath}" -e "process.exit(0)"`;
   assert.strictEqual(await runUser(b64(quick), DOC, { timeoutMs: 5000 }), 0);
 });
@@ -207,7 +207,7 @@ const { spawnerSource } = require('../verify/lib/spawner-source');
 const RUN_MARKERS = [];
 process.on('exit', () => { for (const m of RUN_MARKERS) { try { reapMarked(m); } catch { /* best effort at exit */ } } });
 
-test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 120000 }, async (t) => {
+test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 600000 }, async (t) => {
   try { reapDeadOwners('cc72'); reapDeadOwners('cc72s'); } catch { /* a leftover sweep must never fail the test */ }
   // taskkill /T reads the tree once and then ends it. A process the tree started after that read (cmd.exe still
   // creating the user's command, under load) outlived the kill, and kept the relay's stdout open: MEASURED, a relay
@@ -219,20 +219,19 @@ test('#72: a user command that is still starting processes while it is killed le
   RUN_MARKERS.push(marker, spawnerMarker);
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawner = path.join(dir, 'spawner.js');
-  fs.writeFileSync(spawner, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 170000, parentPid: process.pid, detached: true }));   // the deadline stays past the test's 120 s timeout
+  fs.writeFileSync(spawner, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 700000, parentPid: process.pid, detached: true }));   // the deadline stays past the test's 600 s timeout
   const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${spawnerMarker}`;
   try {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const ran = runUser(b64(cmd), DOC, { timeoutMs: 1500 });
-    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
+    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 150000);
     // Positive control: the same read must SEE the spawned processes before the kill, or "none left" proves nothing.
     // (the scan matches the sleepers' marker only, never the spawner's own: PR #135 Dexter 4)
     assert.ok(markedPids(marker).length > 0, 'the marker scan finds none of the running spawned processes');
     t.mock.timers.tick(1500);                         // the timeout fires now, mid-spawning
     assert.strictEqual(await ran, 1, 'a killed command is not a success');
     t.mock.timers.reset();
-    let left = markedPids(marker);
-    for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
+    const left = await noneLeft(marker);
     assert.deepStrictEqual(left, [], 'processes the user command started are still running after the kill');
   } finally {
     try { reapMarked(marker); reapMarked(spawnerMarker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ }
@@ -462,14 +461,14 @@ const writeChrome = (dir, value) => {
 };
 const ECHO = `"${process.execPath}" -e "process.stdout.write('USER-ROW')"`;
 
-test('#27: statusInHeader true -> the user command does not run and nothing is printed', async () => {
+test('#27: statusInHeader true -> the user command does not run and nothing is printed', { timeout: 120000 }, async () => {
   const file = writeChrome(tmpDir('relay-quiet'), { statusInHeader: true });
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
   assert.strictEqual(res.out, '');
   assert.strictEqual(res.code, 0);
 });
 
-test('#27: statusInHeader false, missing, or not exactly true -> the user row prints as before', async () => {
+test('#27: statusInHeader false, missing, or not exactly true -> the user row prints as before', { timeout: 120000 }, async () => {
   const dir = tmpDir('relay-loud');
   for (const value of [{ statusInHeader: false }, {}, { statusInHeader: 'true' }, { statusInHeader: 1 }, null, [true]]) {
     const file = writeChrome(dir, value);
@@ -478,7 +477,7 @@ test('#27: statusInHeader false, missing, or not exactly true -> the user row pr
   }
 });
 
-test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', async () => {
+test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', { timeout: 120000 }, async () => {
   const dir = tmpDir('relay-bad');
   const corrupt = path.join(dir, 'chrome-global.json');
   fs.writeFileSync(corrupt, '{not json');
@@ -491,7 +490,7 @@ test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (
   }
 });
 
-test('#27: quiet still forwards the document to the host', async () => {
+test('#27: quiet still forwards the document to the host', { timeout: 120000 }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -504,8 +503,9 @@ test('#27: quiet still forwards the document to the host', async () => {
 });
 
 // --- PR #161: the sweep must reach, and end, every process of a still-spawning command even when it is cut off or its reads fail ---
-// A still-spawning user command (the #72 spawner, detached sleepers), cut with `intervalMs` 25 until ~150 sleepers are live.
-async function spawnerTree(name, { enough = 150 } = {}) {
+// A still-spawning user command (the #72 spawner, detached sleepers), cut with `intervalMs` 25 until `enough` sleepers are live (at most `liveMax`).
+// A sweep over ~200 of them took 77 s on a loaded machine and its rescan 42 s (MEASURED), so only the test that needs the batch's size has them.
+async function spawnerTree(name, { enough = 150, liveMax = 200 } = {}) {
   const dir = tmpDir(name);
   try { reapDeadOwners('cc161'); reapDeadOwners('cc161s'); } catch { /* a leftover sweep must never fail the test */ }
   const marker = `cc161-${process.pid}-${Date.now()}`;
@@ -514,16 +514,21 @@ async function spawnerTree(name, { enough = 150 } = {}) {
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawnerFile = path.join(dir, 'spawner.js');
   // kill-test-ok: the sleepers and the spawner carry markers, reaped by cleanup(), the exit hook and the next run's reapDeadOwners
-  fs.writeFileSync(spawnerFile, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 170000, parentPid: process.pid, detached: true }));
+  fs.writeFileSync(spawnerFile, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 700000, liveMax, parentPid: process.pid, detached: true }));
   const child = spawn(`"${process.execPath}" "${spawnerFile.replace(/\\/g, '/')}" ${spawnerMarker}`, { shell: true, stdio: 'ignore', windowsHide: true });
-  await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 60000);
-  await waitUntil(() => markedPids(marker).length >= enough, `about ${enough} sleepers`, 60000);
+  await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 150000);
+  await waitUntil(() => markedPids(marker).length >= enough, `about ${enough} sleepers`, 150000);
   const cleanup = () => { try { reapMarked(marker); reapMarked(spawnerMarker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ } };
   return { child, marker, cleanup };
 }
+// A process query that fails under load (CIM exit 1: MEASURED once in the diagnosis) is asked again; three failures in a row still throw,
+// never an empty list that would read as "nothing left" (Miguel Y2).
+function scan(marker) {
+  for (let i = 0; ; i++) { try { return markedPids(marker); } catch (e) { if (i >= 2) throw e; sleepSync(500); } }
+}
 async function noneLeft(marker) {
-  let left = markedPids(marker);
-  for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = markedPids(marker); }
+  let left = scan(marker);
+  for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = scan(marker); }
   return left;
 }
 // `sabotaged` with several edits at once (each `from` must be in the script).
@@ -538,25 +543,83 @@ function sabotagedAll(pairs, seen) {
   };
 }
 
-test('#72 PR #161 Dexter 1: a sweep cut off after it listed ~150 sleepers still leaves none of them running (the fallback is one proven batch)', { skip: !onWin, timeout: 180000 }, async () => {
-  // The F1-stall sabotage: the 3rd table read hangs, the sweep is cut off at 8 s, and everything it listed is the fallback's. One
-  // taskkill.exe per pid could not end 200 of them inside the batch's 10 s.
-  const { child, marker, cleanup } = await spawnerTree('relay-fallback-batch');
-  const seen = {};
-  const stallThird = `$script:n=0\nfunction ReadProcs{$script:n++;if($script:n -ge 3){Start-Sleep -Seconds 120};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
-  try {
-    const before = markedPids(marker).length;
-    const t0 = Date.now();
-    killTree(child, 0, { sweepTimeoutMs: 8000, run: sabotagedAll([[READ_PROCS, stallThird]], seen) });
-    const took = Date.now() - t0;
-    assert.ok(seen.sweep.error, `the stalled sweep was not cut off (status ${seen.sweep.status}); the fallback was never exercised`);
-    const listed = sweepPids(seen.sweep.stdout).length;
-    const left = await noneLeft(marker);
-    assert.deepStrictEqual(left, [], `${left.length} of ${before} sleepers survived the fallback (it listed ${listed}; killTree took ${took} ms; sweep stdout ${String(seen.sweep.stdout).split(/\r?\n/).map(l => l.slice(0, 40)).join(' | ')})`);
-  } finally { cleanup(); }
-});
+// BACKLOG #72 (the flake): these two tests cut the sweep off by a wall clock (`sweepTimeoutMs: 8000`), so on a loaded machine the cut
+// landed before the sweep had printed its snapshot (PowerShell start-up plus a table read of ~200 node.exe took over 8 s: MEASURED, 4 of 4
+// runs under the other lanes' load), the fallback had nothing to list, and the sleepers born since survived. The cut now falls when the
+// sabotaged script SAYS it has reached its stall (it writes `flag`), however long that took, and the rescan (not what is under test)
+// gets a bound that load cannot reach. A slow start is run on purpose (`slowStartSec` over the old 8 s), so the cutoff cannot slip back to a clock.
+// The sweeps under test do not depend on how many processes there are, only the batch test's size does.
+const LIGHT = { enough: 30, liveMax: 40 };
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const mkFlag = (dir) => path.join(dir, 'stalled').replace(/\\/g, '/');
+// `killTree`'s `run`: the FIRST powershell call is cut the moment `flag` exists (or reported as ended-early if it finishes without
+// ever stalling); a later one (the rescan) runs as usual, with a bound that load cannot reach. Every call has `pairs` applied.
+function cutAtStall(pairs, seen, flag, { maxMs = 300000, rescanMs = 240000 } = {}) {
+  return (cmd, args, o) => {
+    if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
+    let script = args[3];
+    for (const [from, to] of pairs) { assert.ok(script.includes(from), `the sweep script no longer contains ${from}`); script = script.replace(from, () => to); }
+    if (seen.sweep) {
+      const r = spawnSync(cmd, [...args.slice(0, 3), script], { ...o, timeout: rescanMs });
+      (seen.rescans = seen.rescans || []).push(r);
+      return r;
+    }
+    const outFile = `${flag}.out`;
+    const fd = fs.openSync(outFile, 'w');
+    const ps = spawn(cmd, [...args.slice(0, 3), script], { windowsHide: true, stdio: ['ignore', fd, 'ignore'] });
+    const end = Date.now() + maxMs;
+    let stalled = false;
+    for (; Date.now() < end; sleepSync(50)) {
+      if (fs.existsSync(flag)) { stalled = true; break; }
+      if (!alive(ps.pid)) break;
+    }
+    ps.kill();
+    for (let i = 0; i < 100 && alive(ps.pid); i++) sleepSync(50);
+    fs.closeSync(fd);
+    const stdout = fs.readFileSync(outFile, 'utf8');
+    seen.sweep = stalled
+      ? { status: null, error: Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout }
+      : { status: 0, error: undefined, stdout, endedEarly: true };
+    return seen.sweep;
+  };
+}
+// The sweep can end on its own before it reaches the stall (MEASURED, 2 of 5 runs with the table read stretched by load: it found no child under
+// the killed cmd.exe and left the tree to the fallback). Then there is no cut to test: a scenario that did not happen, neither a pass nor a fail.
+// `attempt` answers false for that, and a fresh tree is built, three times at most.
+async function untilStalled(attempt) {
+  for (let i = 1; i <= 3; i++) if (await attempt()) return;
+  assert.fail('the sweep ended by itself before reaching its stall in 3 tries; the cut was never exercised');
+}
+const stallNote = (flag) => `[IO.File]::WriteAllText('${flag}','x');Start-Sleep -Seconds 120`;
+// The sweep's first table read waits `sec` seconds, as a loaded machine's would (not in a rescan: `$seeded` is only set there).
+const slowStart = (sec) => `if((-not $seeded) -and $script:n -eq 1){Start-Sleep -Seconds ${sec}};`;
 
-test('#72 PR #161 Dexter 2: sleepers born between the snapshot and the spawner\'s kill are ended when the read after that kill fails', { skip: !onWin, timeout: 180000 }, async () => {
+for (const slowStartSec of [0, 10]) {
+  test(`#72 PR #161 Dexter 1: a sweep cut off after it listed ~${slowStartSec ? 30 : 150} sleepers still leaves none of them running (the fallback is one proven batch)${slowStartSec ? `, the sweep starting ${slowStartSec} s late` : ''}`, { skip: !onWin, timeout: 600000 }, async () => {
+    // The F1-stall sabotage: the 3rd table read hangs, the sweep is cut off there, and everything it listed is the fallback's. One
+    // taskkill.exe per pid could not end 200 of them inside the batch's 10 s.
+    await untilStalled(async () => {
+    const flag = mkFlag(tmpDir('relay-fallback-batch-flag'));
+    const { child, marker, cleanup } = await spawnerTree('relay-fallback-batch', slowStartSec ? LIGHT : {});
+    const seen = {};
+    const stallThird = `$script:n=0\nfunction ReadProcs{$script:n++;${slowStart(slowStartSec)}if(($script:n -ge 3) -and (-not $seeded)){${stallNote(flag)}};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
+    try {
+      const before = markedPids(marker).length;
+      const t0 = Date.now();
+      killTree(child, 0, { run: cutAtStall([[READ_PROCS, stallThird]], seen, flag) });
+      const took = Date.now() - t0;
+      if (seen.sweep.endedEarly) return false;
+      assert.ok(seen.sweep.error, `the stalled sweep was not cut off (status ${seen.sweep.status}); the fallback was never exercised`);
+      const listed = sweepPids(seen.sweep.stdout).length;
+      const left = await noneLeft(marker);
+      assert.deepStrictEqual(left, [], `${left.length} of ${before} sleepers survived the fallback (it listed ${listed}; killTree took ${took} ms; sweep stdout ${String(seen.sweep.stdout).split(/\r?\n/).map(l => l.slice(0, 40)).join(' | ')})`);
+      return true;
+    } finally { cleanup(); }
+    });
+  });
+}
+
+test('#72 PR #161 Dexter 2: sleepers born between the snapshot and the spawner\'s kill are ended when the read after that kill fails', { skip: !onWin, timeout: 600000 }, async () => {
   // failThird: read 1 is the snapshot, read 2 lists the spawner, read 3 (after the spawner is dead) fails. Every sleeper the spawner
   // started since the snapshot is in no ALIVE line: only a second look under the parents the sweep ended can reach it.
   const { child, marker, cleanup } = await spawnerTree('relay-newborns');
@@ -609,7 +672,7 @@ test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on 
   } finally { for (const k of kids) { try { process.kill(k); } catch { /* gone */ } } }
 });
 
-test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in time still has its newborns ended, and the sweep is not clean until it has exited', { skip: !onWin, timeout: 180000 }, async () => {
+test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in time still has its newborns ended, and the sweep is not clean until it has exited', { skip: !onWin, timeout: 600000 }, async () => {
   // The Dexter-3 sabotage (every kill's wait reports "still running") on the #72 spawner tree. A killed-not-exited parent used to fall to
   // the $known-only branch: the sleepers it started after the snapshot were never adopted, and the sweep exited 0, so no fallback ran.
   const { child, marker, cleanup } = await spawnerTree('relay-slow-exit-spawner');
@@ -622,17 +685,25 @@ test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in tim
   } finally { cleanup(); }
 });
 
-test('#72 PR #161 Dexter R2-2: a sweep cut off after a level\'s Kill() calls but inside its wait still seeds the rescan with THAT level', { skip: !onWin, timeout: 180000 }, async () => {
-  // The 2nd KillWait (the spawner's level) hangs past the sweep's timeout. The ENDED line used to be written after the waits, so the
-  // rescan was seeded with the level above (cmd) and the spawner's newborns were in no list.
-  const { child, marker, cleanup } = await spawnerTree('relay-cut-in-wait');
-  const seen = {};
-  const hangSecondWait = 'function KillWait($r,$ms){$script:w++;if($script:w -ge 2){Start-Sleep -Seconds 120};';
-  try {
-    killTree(child, 0, { sweepTimeoutMs: 8000, run: sabotagedAll([['function KillWait($r,$ms){', hangSecondWait]], seen) });
-    assert.ok(seen.sweep.error, 'the sweep was not cut off inside the wait');
-    assert.ok((seen.rescans || []).length === 1, 'the fallback did not rescan');
-    const left = await noneLeft(marker);
-    assert.deepStrictEqual(left, [], `${left.length} sleepers survived a sweep cut off in a wait`);
-  } finally { cleanup(); }
-});
+for (const slowStartSec of [0, 10]) {
+  test(`#72 PR #161 Dexter R2-2: a sweep cut off after a level's Kill() calls but inside its wait still seeds the rescan with THAT level${slowStartSec ? `, the sweep starting ${slowStartSec} s late` : ''}`, { skip: !onWin, timeout: 600000 }, async () => {
+    // The 2nd KillWait (the spawner's level) hangs and the sweep is cut off there. The ENDED line used to be written after the waits, so
+    // the rescan was seeded with the level above (cmd) and the spawner's newborns were in no list.
+    await untilStalled(async () => {
+    const flag = mkFlag(tmpDir('relay-cut-in-wait-flag'));
+    const { child, marker, cleanup } = await spawnerTree('relay-cut-in-wait', LIGHT);
+    const seen = {};
+    const hangSecondWait = `function KillWait($r,$ms){$script:w++;if(($script:w -ge 2) -and (-not $seeded)){${stallNote(flag)}};`;
+    const slowFirstRead = ['function ReadProcs{', `function ReadProcs{$script:n++;${slowStart(slowStartSec)}`];
+    try {
+      killTree(child, 0, { run: cutAtStall([['function KillWait($r,$ms){', hangSecondWait], ...(slowStartSec ? [slowFirstRead] : [])], seen, flag) });
+      if (seen.sweep.endedEarly) return false;
+      assert.ok(seen.sweep.error, 'the sweep was not cut off inside the wait');
+      assert.ok((seen.rescans || []).length === 1, 'the fallback did not rescan');
+      const left = await noneLeft(marker);
+      assert.deepStrictEqual(left, [], `${left.length} sleepers survived a sweep cut off in a wait`);
+      return true;
+    } finally { cleanup(); }
+    });
+  });
+}
