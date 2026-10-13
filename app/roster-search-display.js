@@ -17,9 +17,9 @@
 
 const MODES = ['role', 'name'];
 
-/** 'name' or 'role'; anything else (a missing, corrupt or old stored value) is the default, 'role'. */
+/** 'role' or 'name'; anything else (a missing, corrupt or old stored value) is the default, 'name'. */
 function normalizeMode(v) {
-  return v === 'name' ? 'name' : 'role';
+  return v === 'role' ? 'role' : 'name';
 }
 
 function personaOf(entry) {
@@ -30,6 +30,8 @@ function personaOf(entry) {
 function cardNames(agent, entry, mode) {
   const persona = personaOf(entry);
   if (!persona) return { big: agent, small: null };
+  // A persona that is the role again ignoring case (cedar -> Cedar) is shown once, as written: no small duplicate.
+  if (persona.toLowerCase() === String(agent).toLowerCase()) return { big: persona, small: null };
   return normalizeMode(mode) === 'name' ? { big: persona, small: agent } : { big: agent, small: persona };
 }
 

@@ -1129,8 +1129,9 @@
     /* The small name stays readable: when both don't fit on one line it wraps under the big one (PR #141, Miguel 1). */
     .agent .name { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; white-space: normal; }
     .agent .name .name-big { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* A role in the small slot (the default is Name now) is long and has no spaces: it may break inside the word rather than be cut. */
     .agent .name .name-alt {
-      max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 10px; font-weight: 400; color: var(--dim);
+      max-width: 100%; white-space: normal; overflow-wrap: anywhere; font-size: 10px; font-weight: 400; color: var(--dim);
       font-family: ui-monospace, Consolas, monospace;
     }
     .roster-hidden-note { text-align: left; }

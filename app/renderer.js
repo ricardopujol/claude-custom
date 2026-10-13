@@ -4625,8 +4625,8 @@ function setRosterTab(tab) {
 // --- two names, the Role/Name toggle and the search (BACKLOG #76) -------------
 // Decisions are in app/roster-search-display.js; this is state and drawing.
 // `rosterNamesMode` is install-wide, kept by main beside the agent-images switch
-// (app/avatar-bridge.js); until main answers, or with no bridge, it's 'role'.
-let rosterNamesMode = 'role';
+// (app/avatar-bridge.js); until main answers, or with no bridge, it's 'name'.
+let rosterNamesMode = 'name';
 let rosterQuery = '';
 const rosterSearchEl = document.getElementById('roster-search');
 const rosterSearchRowEl = document.getElementById('roster-search-row');
@@ -4693,10 +4693,10 @@ if (rosterSearchEl) {
     if (e.key === 'Escape') { e.preventDefault(); setRosterSearch(false); if (rosterSearchBtnEl) rosterSearchBtnEl.focus(); }
   });
 }
-applyRosterNames('role');
+applyRosterNames('name');
 if (window.harness && window.harness.avatar && window.harness.avatar.getRosterNames) {
   window.harness.avatar.onRosterNames(applyRosterNames);
-  window.harness.avatar.getRosterNames().then(applyRosterNames).catch(() => { /* stays 'role' */ });
+  window.harness.avatar.getRosterNames().then(applyRosterNames).catch(() => { /* stays 'name' */ });
 }
 
 for (const b of document.querySelectorAll('#roster-subtabs button[data-roster-tab]')) {

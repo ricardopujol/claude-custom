@@ -31,7 +31,7 @@ function createUnsaved() {
 }
 
 function closeDetail({ reason = '', unsaved = null } = {}) {
-  const lines = [reason ? `Not closed without asking: ${reason}.` : null, 'The folder stays.'];
+  const lines = [reason ? reason : null, 'The folder stays.'];
   // a Ctrl+click close already says it in its reason (host/close-safety.js): once is enough
   if (typeof unsaved === 'string' && unsaved !== '' && !/unsaved edits/.test(reason)) lines.push(`You have unsaved edits to ${unsaved} in the file reader; they will be lost.`);
   return lines.filter(l => l !== null).join('\n');

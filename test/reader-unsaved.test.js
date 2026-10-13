@@ -48,7 +48,7 @@ test('a hostile path is capped in length', () => {
 
 test('the dialog detail is unchanged with nothing unsaved', () => {
   assert.strictEqual(closeDetail({}), 'The folder stays.');
-  assert.strictEqual(closeDetail({ reason: 'two agents are working' }), 'Not closed without asking: two agents are working.\nThe folder stays.');
+  assert.strictEqual(closeDetail({ reason: 'Two agents are working.' }), 'Two agents are working.\nThe folder stays.');
   assert.strictEqual(closeDetail({ unsaved: null }), 'The folder stays.');
   assert.strictEqual(closeDetail({ unsaved: '' }), 'The folder stays.');
 });
@@ -150,6 +150,6 @@ test('anything but save / discard (a throw, a junk answer) keeps the window open
 });
 
 test('Miguel S3: the dialog does not say it twice when the reason already names the unsaved file', () => {
-  const d = closeDetail({ reason: 'unsaved edits to a.js in the file reader', unsaved: 'a.js' });
-  assert.strictEqual(d, 'Not closed without asking: unsaved edits to a.js in the file reader.\nThe folder stays.');
+  const d = closeDetail({ reason: 'You have unsaved edits to a.js in the file reader.', unsaved: 'a.js' });
+  assert.strictEqual(d, 'You have unsaved edits to a.js in the file reader.\nThe folder stays.');
 });
