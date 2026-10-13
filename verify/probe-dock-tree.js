@@ -1237,12 +1237,18 @@ async function main() {
     check('13: another tab of the popover switches it (Git shows, the Vault panel waits in the store), and it still saves nothing',
       !!p && p.popover.panels[0] === 'git' && !p.shown.includes('vault') && p.shown.includes('git') && p.vaultNode === tag0 && same(treeNow(), treeBefore),
       p && JSON.stringify([p.popover.panels, p.shown]));
-    // Esc is the popover's only when focus is in it; with focus in the terminal it is Claude's interrupt and must pass
-    await view(app, 'focus', { selector: '.xterm-helper-textarea' });
-    const passed = await view(app, 'key', { key: 'Escape' });
+    // A popover opened by a mouse press takes the focus (PR #159 Miguel I1: the press left it on the rail button)
     p = await st();
-    check('13: Esc with the keyboard in the terminal is left alone (the interrupt reaches Claude) and the popover stays', passed.prevented === false && !!p.popover);
-    await view(app, 'focus', { selector: '.dpeek .zone-tabs button.on' });
+    check('13: a popover tab pressed with the mouse keeps the keyboard in the popover (the redraw replaced its button)', !!p.held && /zone-tabs/.test(p.held.parent || '') && p.held.module === 'git', JSON.stringify(p.held));
+    // Esc is the popover's only when focus is in it; the keyboard leaving it for the terminal closes it, and then Esc is Claude's interrupt
+    await view(app, 'focus', { selector: '.xterm-helper-textarea' });
+    p = await stFor(v => !v.popover);
+    check('13: the keyboard going to the terminal closes the popover', !!p && p.peek === null);
+    const passed = await view(app, 'key', { key: 'Escape' });
+    check('13: Esc with the keyboard in the terminal is left alone (the interrupt reaches Claude)', passed.prevented === false);
+    await view(app, 'railClick', { id: 'git' });
+    p = await stFor(v => v.popover);
+    check('13: a mouse press on the rail opens it again, with the keyboard in it', !!p && !!p.held && /zone-tabs/.test(p.held.parent || '') && p.held.module === 'git', p && JSON.stringify(p.held));
     await view(app, 'key', { key: 'Escape' });
     p = await stFor(v => !v.popover);
     check('13: Esc in the popover closes it, and the keyboard goes back to its rail button',
