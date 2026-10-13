@@ -69,6 +69,7 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
       ...b,
       shape,
       panel: b.active,
+      pinnable: b.active,                                            // the Pinned button unpins the panel the group shows
       tabs: named(b.tabs).map(t => ({ ...t, on: t.id === b.active })),
     };
   });
@@ -77,7 +78,12 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
   const at = isObject(peek) ? treeApi.peekFor(boxes, peek.module, viewport) : null;
   if (at) {
     const shape = shapeOf(at.rect);
-    popover = { ...at, shape, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
+    // Pin shows only on a panel of the dock's own rail (#85): one a folded group put on a rail was never unpinned.
+    // `from`: the side of the popover its rail is on, which is where it slides in from.
+    const rb = boxes.find(x => x.kind === 'rail' && x.modules.includes(at.module));
+    const from = at.dir === 'v' ? (at.rect.x < rb.rect.x ? 'right' : 'left') : (at.rect.y < rb.rect.y ? 'bottom' : 'top');
+    const pin = rb.id === 'dock' && Array.isArray(layout.rail) && layout.rail.includes(at.module);
+    popover = { ...at, shape, from, pin, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
     if (popover.tabs.some(t => t.id === at.module)) {
       shown.push(at.module);
       if (at.module === 'agents') face = shape === 'tall' ? (typeof faceSize === 'function' ? faceSize(at.rect.width) : null) : faceForWide(at.rect.height);
@@ -351,8 +357,9 @@ function layoutSaved(answer) { return isObject(answer); }
  * menu is how a float is hidden, and how it comes back (to its own rectangle).
  */
 function menuRows(layout, tabs) {
-  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden]);
-  return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id) }));
+  const railed = Array.isArray(layout.rail) ? layout.rail : [];
+  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden, ...railed]);
+  return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id), railed: railed.includes(t.id) }));
 }
 
 /**
