@@ -2808,7 +2808,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (a.focusTerm === true) term.focus();
         const groupInfo = el => ({
           id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
-          tabs: [...el.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
+          tabs: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => b.dataset.module),
           on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
           panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
           panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
@@ -2849,14 +2849,17 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           vaultNode: vaultField ? vaultField.__probeTag : null,
           // D4: a rail's popover, the keyboard move, the settle class, what a screen reader is told, and what holds focus.
           peek: peek ? peek.module : null,
+          railState: railSt,           // #85: the dock rail's hover state
           popover: (() => {
             const pe = document.querySelector('#dock-floats > .dpeek');
             if (!pe) return null;
             return {
-              module: pe.dataset.module, rect: rectOf(pe), z: getComputedStyle(pe).zIndex,
+              module: pe.dataset.module, rect: rectOf(pe), z: getComputedStyle(pe).zIndex, from: pe.dataset.from || null,
+              pin: (() => { const b = pe.querySelector('.dpin'); return b ? { text: b.textContent, pressed: b.getAttribute('aria-pressed') } : null; })(),
+              animation: getComputedStyle(pe).animationName,
               // Is the popover what is on top at its own middle (above the terminal, the floats and the rails)?
               hit: (() => { const r = pe.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!top && !!top.closest && !!top.closest('.dpeek'); })(),
-              tabs: [...pe.querySelectorAll('.zone-tabs button')].map(b => b.dataset.module),
+              tabs: [...pe.querySelectorAll('.zone-tabs button[data-module]')].map(b => b.dataset.module),
               on: [...pe.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
               panels: [...pe.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
               panelRects: [...pe.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
@@ -3060,6 +3063,21 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const b = document.querySelector(`.drail button[data-module="${CSS.escape(String(a.id))}"]`);
         if (!b) return JSON.stringify({ ok: false, error: 'no such rail button' });
         b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: a.byKey === true ? 0 : 1 }));
+        return JSON.stringify({ ok: true });
+      }
+      // #85 (verify/probe-dock-autohide.js): the pointer moved onto a dock-rail tab (`module`), onto the open panel (`on: 'panel'`) or
+      // onto the terminal (`on: 'terminal'`), as pointerover events a mouse makes; and the Pin / Pinned button pressed.
+      case 'hover': {
+        const el = a.module ? document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.module))}"]`)
+          : a.on === 'panel' ? document.querySelector('.dpeek') : document.getElementById('termwrap');
+        if (!el) return JSON.stringify({ ok: false, error: 'nothing to hover' });
+        el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
+        return JSON.stringify({ ok: true });
+      }
+      case 'pinClick': {
+        const b = a.on === 'panel' ? document.querySelector('.dpeek .dpin') : document.querySelector(`.dgroup .dpin[data-pin="${CSS.escape(String(a.module))}"]`);
+        if (!b) return JSON.stringify({ ok: false, error: 'no Pin button' });
+        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
         return JSON.stringify({ ok: true });
       }
       case 'peekTabClick': {

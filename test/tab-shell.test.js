@@ -2309,6 +2309,11 @@ test('the probe may drive the collapse, popover, keyboard and settle actions, by
   for (const a of ['collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
+test('the probe may hover the dock rail and press the Pin button, by name only (#85)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['hover', 'pinClick']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
 test('the probe may read and operate the wand, by name only (#51)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
