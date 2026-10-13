@@ -1168,7 +1168,12 @@ let dragLayout = null;           // a divider being dragged: drawn, not yet save
 let flushKeyBurst = null;        // saves a divider's pending arrow-key burst (set where the keys are handled)
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
-let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved
+let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved. Set only by railEvent
+let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's hover state, BACKLOG #85: peek is what it says is open
+const RAIL_OPEN_MS = 200;
+const RAIL_CLOSE_MS = 400;
+let railOpenTimer = null;
+let railCloseTimer = null;
 let helloSeen = false;           // the host has said whether this tab has its own layout, in the hello; a collapse is forgotten only after that
 let layoutLoaded = false;        // the stored layout has been read: until then the default is only a placeholder, whose groups mean nothing to a saved collapse
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
@@ -1531,7 +1536,9 @@ function canvasFetchIfNeeded() {
 
 // Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
 function canvasDock() {
-  if (placementLayout().hidden.includes('canvas')) commitPlacement(DTm.show(settledLayout(), 'canvas'), { select: 'canvas' });
+  const l = placementLayout();
+  if (l.hidden.includes('canvas')) commitPlacement(DTm.show(settledLayout(), 'canvas'), { select: 'canvas' });
+  else if ((l.rail || []).includes('canvas')) { if (railSt.module !== 'canvas') { railEvent({ type: 'click', module: 'canvas' }); renderLayout({ refit: false }); } }   // unpinned: its panel opens, held
   else selectModule('canvas');
 }
 
@@ -1646,7 +1653,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   }
   const plan = window.dockTreeView.treePlan(placementLayout(), selection, TABS, dockViewport(), { faceSize: window.faceSize, peek });
   lastPlan = plan;
-  if (peek && !plan.peek) peek = null;     // its rail went (the window grew, the group was opened): so does the popover
+  if (peek && !plan.peek) railEvent({ type: 'gone' });     // its rail went (the window grew, the group was opened): so does the popover
   if (settle) settleDock();
   window.dockTreeView.applyBoxes(plan, document);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
@@ -1720,7 +1727,7 @@ function commitPlacement(next, { justThisTab = false, select = null, userAction 
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
-  peek = null;                              // any change of the placement closes a rail's popover
+  railEvent({ type: 'gone' });              // any change of the placement closes a rail's popover
   if (placementOf(l) === placementOf(toOwn && ownLayout ? ownLayout : globalLayout) && (!justThisTab || ownLayout)) {
     renderLayout({ userAction, refit });
     return;
@@ -1760,15 +1767,41 @@ function openEveryGroup() {
 
 // Fold one group to its rail in this window, or open it again (D4). The window's choice: the shared layout is untouched.
 function toggleGroupCollapse(groupId) {
-  peek = null;
+  railEvent({ type: 'gone' });
   commitSelection(DTm.toggleCollapse(selection, placementLayout(), groupId));
+}
+
+// The dock rail's hover (BACKLOG #85). app/dock-tree-display.js railAfter decides; this owns the two timers it asks for: a hover
+// waits RAIL_OPEN_MS before it opens a panel (a pass across the rail opens nothing), and leaving waits RAIL_CLOSE_MS before it
+// closes one (a diagonal move into the panel isn't leaving). Answers whether the open panel changed, so the caller redraws.
+function railEvent(ev) {
+  const was = railSt;
+  railSt = window.dockTreeView.railAfter(railSt, ev);
+  peek = railSt.module === null ? null : { module: railSt.module };
+  if (railSt.pending === null) { clearTimeout(railOpenTimer); railOpenTimer = null; }
+  else if (railSt.pending !== was.pending) {
+    clearTimeout(railOpenTimer);
+    const m = railSt.pending;
+    railOpenTimer = setTimeout(() => { railOpenTimer = null; if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
+  }
+  if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
+  else if (!was.leaving) {
+    railCloseTimer = setTimeout(() => { railCloseTimer = null; if (railEvent({ type: 'close-timer' })) renderLayout({ refit: false }); }, RAIL_CLOSE_MS);
+  }
+  return railSt.module !== was.module;
+}
+
+// Pin or unpin a panel from its button (BACKLOG #85): a railed panel is docked beside the terminal, a docked one goes to the rail.
+function togglePin(id) {
+  const l = settledLayout();
+  commitPlacement((l.rail || []).includes(id) ? DTm.pin(l, id) : DTm.unpin(l, id), { select: id });
 }
 
 // A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
-  peek = window.dockTreeView.peekAfter(peek, { type: 'rail', module: id });
+  railEvent({ type: 'click', module: id });
   renderLayout({ refit: false });
   const goes = window.dockTreeView.peekFocus(!!peek, byKeyboard);
   if (goes === 'terminal') {
@@ -1840,23 +1873,39 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const check = justThisTabCheck();
   layoutMenu.appendChild(node('div', { className: 'lm-title', text: label }));
-  layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Move', title: 'Choose where this panel goes with the arrow keys; Enter drops it, Esc cancels',
-    on: { click: () => { closeLayoutMenu(); startKeyboardMove(id); } },
-  }));
-  // A group of the tree folds to its rail (this window only); a float has no rail to fold to.
-  const home = DTm.groupOf(placementLayout(), id);
-  if (home) {
-    const shut = DTm.isCollapsed(selection, home);
+  // A panel on the dock's rail (#85) is pinned beside the terminal or hidden; moving and floating are for pinned panels.
+  const railed = (placementLayout().rail || []).includes(id);
+  if (railed) {
     layoutMenu.appendChild(node('button', {
-      type: 'button', text: shut ? 'Expand group' : 'Collapse group',
-      title: shut ? 'Open this group again' : 'Fold this group to its rail in this window; its button on the rail opens the panel over the terminal',
+      type: 'button', text: 'Pin', title: 'Dock this panel beside the terminal and keep it open',
+      on: { click: () => { closeLayoutMenu(); togglePin(id); } },
+    }));
+  } else {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Move', title: 'Choose where this panel goes with the arrow keys; Enter drops it, Esc cancels',
+      on: { click: () => { closeLayoutMenu(); startKeyboardMove(id); } },
+    }));
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you hover it',
+      on: { click: () => { closeLayoutMenu(); togglePin(id); } },
+    }));
+  }
+  // A group of the tree folded to a rail in this window (Ctrl+B, an older fold) opens again; a float has no rail to fold to.
+  const home = DTm.groupOf(placementLayout(), id);
+  if (home && DTm.isCollapsed(selection, home)) {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Expand group', title: 'Open this group again',
       on: { click: () => { closeLayoutMenu(); toggleGroupCollapse(home.id); } },
+    }));
+  } else if (home) {
+    layoutMenu.appendChild(node('button', {
+      type: 'button', text: 'Unpin group', title: 'Send every panel of this group to the rail on the right edge',
+      on: { click: () => { closeLayoutMenu(); commitPlacement(DTm.unpinGroup(settledLayout(), home.id), { justThisTab: check.box.checked }); } },
     }));
   }
   // A panel that is already alone in its float has nothing to float out of.
   const own = DTm.floatOf(placementLayout(), id);
-  if (!own || own.tabs.length > 1) {
+  if (!railed && (!own || own.tabs.length > 1)) {
     layoutMenu.appendChild(node('button', {
       type: 'button', text: 'Float', title: 'Take this panel out of its group into a window of its own over the dock',
       on: { click: () => {
@@ -1866,7 +1915,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
     }));
   }
   layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Hide',
+    type: 'button', text: railed ? `Hide ${label}` : 'Hide', title: 'Take this panel off the screen; the Window menu brings it back',
     on: { click: () => {
       commitPlacement(DTm.hide(settledLayout(), id), { justThisTab: check.box.checked });
       closeLayoutMenu();
@@ -1898,7 +1947,7 @@ function openLayoutMenu() {
     box.dataset.module = row.id;
     box.addEventListener('change', () => {
       const l = settledLayout();
-      if (box.checked) commitPlacement(DTm.show(l, row.id), { justThisTab: check.box.checked, select: row.id });
+      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab (#85)
       else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
       openLayoutMenu();                           // redrawn in place, still open
     });
@@ -2364,7 +2413,7 @@ let cancelKeyboardMove = () => {};
   const refocus = id => { const b = document.querySelector(`.zone-tabs button[data-module="${CSS.escape(id)}"], .drail button[data-module="${CSS.escape(id)}"]`); if (b) b.focus(); };
   startKeyboardMove = (id) => {
     cancelTabDrag();
-    if (peek) { peek = null; renderLayout({ refit: false }); }     // the popover goes off the screen too, not only out of the state (PR #159 Dexter 4)
+    if (peek) { railEvent({ type: 'drop' }); renderLayout({ refit: false }); }     // the popover goes off the screen too, not only out of the state (PR #159 Dexter 4)
     kbMove = { id, target: window.dockDrag.startTarget(boxes(), id) };
     document.body.classList.add('dock-moving');
     show();
@@ -2533,13 +2582,15 @@ for (const id of ['focus-btn', 'focus-exit']) {
 // A tab in a group, a tab in a rail's popover, or a button on a rail. (The click a finished tab drag leaves
 // behind lands on the drop's common ancestor, not on a tab: nothing to swallow.)
 document.addEventListener('click', (e) => {
+  const pinButton = e.target.closest('.dpin');
+  if (pinButton) { togglePin(pinButton.dataset.pin); return; }
   const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
   const id = button.dataset.module;
   if (button.parentNode.classList.contains('drail')) { openPeek(id, e.detail === 0); return; }
   if (button.closest('.dpeek')) {
     // Another tab of the same rail: the popover shows that panel. Nothing is saved; the pty is not told.
-    peek = window.dockTreeView.peekAfter(peek, { type: 'tab', module: id });
+    railEvent({ type: 'tab', module: id });
     renderLayout({ refit: false });
     const chosen = document.querySelector('.dpeek .zone-tabs button.on');       // the redraw replaced the button that was pressed
     if (chosen) chosen.focus();
@@ -2556,7 +2607,7 @@ window.addEventListener('keydown', (e) => {
   const held = document.activeElement;
   if (!held || !held.closest || !held.closest('.dpeek, .drail')) return;
   const was = peek.module;
-  peek = window.dockTreeView.peekAfter(peek, { type: 'escape' });
+  railEvent({ type: 'escape' });
   renderLayout({ refit: false });
   e.preventDefault(); e.stopPropagation();
   const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
@@ -2567,21 +2618,37 @@ window.addEventListener('keydown', (e) => {
 document.addEventListener('focusout', (e) => {
   const to = e.relatedTarget;
   if (!peek || !to || !to.closest || to.closest('.dpeek, .drail')) return;
-  peek = window.dockTreeView.peekAfter(peek, { type: 'outside' });
+  railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
 document.addEventListener('pointerdown', (e) => {
   if (!peek || (e.target.closest && e.target.closest('.dpeek, .drail'))) return;
-  peek = window.dockTreeView.peekAfter(peek, { type: 'outside' });
+  railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
 
-// Double-clicking the empty part of a group's tab bar folds the group to its rail (a double-click on a tab is just a click on
-// it, twice); double-clicking its rail opens it again (this window only).
+// Hovering a tab of the dock's rail slides its panel open over the terminal (BACKLOG #85); moving off the tab and the panel
+// slides it back after a short grace. The pointer is judged by what it is over now: a rail tab, the panel (or the rail's
+// strip), or anything else. Touch has no hover.
+document.addEventListener('pointerover', (e) => {
+  const t = e.target;
+  if (e.pointerType === 'touch' || !t || !t.closest) return;
+  const tab = t.closest('.drail[data-rail="dock"] button[data-module]');
+  let ev = null;
+  if (tab) ev = { type: 'enter', module: tab.dataset.module };
+  else if (t.closest('.dpeek, .drail[data-rail="dock"]')) ev = { type: 'enter-panel' };
+  else if (railSt.module !== null || railSt.pending !== null) ev = { type: 'leave' };
+  if (ev && railEvent(ev)) renderLayout({ refit: false });
+});
+document.documentElement.addEventListener('pointerleave', () => { if (railEvent({ type: 'leave' })) renderLayout({ refit: false }); });
+
+// Double-clicking the empty part of a group's tab bar unpins the group: every tab goes to the rail (a double-click on a tab is
+// just a click on it, twice). A group a window folded to a rail before (Ctrl+B, or an older fold) opens again by double-clicking
+// its rail (this window only).
 document.addEventListener('dblclick', (e) => {
   const bar = e.target.closest && e.target.closest('.dgroup:not(.dfloat) > .zone-tabs');
   if (bar) {
-    if (e.target === bar) toggleGroupCollapse(bar.parentNode.dataset.group);
+    if (e.target === bar) commitPlacement(DTm.unpinGroup(settledLayout(), bar.parentNode.dataset.group));
     return;
   }
   const rail = e.target.closest && e.target.closest('.drail button[data-module]');
