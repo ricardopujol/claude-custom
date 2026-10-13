@@ -1948,6 +1948,17 @@ test('shortcutFor: F12 and Ctrl+Shift+I (either case) toggle DevTools', () => {
   assert.strictEqual(shortcutFor(kd('i', { control: true, shift: true })), 'devtools');
 });
 
+test('shortcutFor: bare F1 opens the shortcuts page; F1 with any modifier, and F10/F11, are left alone (#43)', () => {
+  assert.strictEqual(shortcutFor(kd('F1')), 'shortcuts');
+  assert.strictEqual(shortcutFor(kd('f1')), 'shortcuts');
+  for (const mods of [{ control: true }, { shift: true }, { alt: true }, { meta: true }]) {
+    assert.strictEqual(shortcutFor(kd('F1', mods)), null, JSON.stringify(mods));
+  }
+  assert.strictEqual(shortcutFor(kd('F10')), null);
+  assert.strictEqual(shortcutFor(kd('F11')), null);
+  assert.strictEqual(shortcutFor({ ...kd('F1'), type: 'keyUp' }), null);
+});
+
 test('shortcutFor: everything the terminal owns is left alone', () => {
   for (const [key, mods] of [
     ['c', { control: true }], ['v', { control: true }], ['Enter', { shift: true }],
@@ -2038,7 +2049,7 @@ test('PROPERTY: an input with no control/meta and a key other than F12 is never 
   fc.assert(fc.property(
     fc.string(), fc.boolean(), fc.boolean(), fc.constantFrom('keyDown', 'keyUp', 'char'), fc.boolean(),
     (key, shift, alt, type, isAutoRepeat) => {
-      fc.pre(key.toLowerCase() !== 'f12');
+      fc.pre(key.toLowerCase() !== 'f12' && !(key.toLowerCase() === 'f1' && !shift && !alt));
       assert.strictEqual(shortcutFor({ type, key, shift, alt, control: false, meta: false, isAutoRepeat }), null);
     }));
 });

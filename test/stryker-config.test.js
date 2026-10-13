@@ -67,6 +67,10 @@ const REPO_SCANNING = new Set([
   'status-relay-process.test.js',
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
+  // #43 shortcuts page: source text of tab-shell.js / main.js / renderer.js against the key table. It requires shortcut-table only for the rows,
+  // which shortcut-table.test.js pins itself.
+  'shortcut-table-wiring.test.js',
+  'shortcuts-display-script.test.js',   // runs the two files as plain <script>s in a vm (reads their text)
   'drift-git-process.test.js',    // docs drift (PR #153 Miguel I1): the real git on a throwaway repo and a real child that outlives a timeout; its pure tests (drift-git.test.js) are in the command
   // #55 wiring: renderer.html / renderer.js / host.js source text. It requires nothing from a mutated module.
   'renderer-agent-state-wiring.test.js',

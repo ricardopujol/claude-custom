@@ -41,10 +41,11 @@ test('Miguel L2 Y1: the fields give way first in a crowded header (shrink, clip 
   assert.match(rule, /overflow:\s*hidden/);
   assert.match(rule, /text-overflow:\s*ellipsis/);
   assert.match(rule, /flex-shrink:\s*[1-9]/);
-  // ...but only after the keyboard hints: alone, it shrank to 0px in a 1200px window (measured).
-  const hint = (HTML.match(/header \.hint\s*\{[^}]*\}/) || [''])[0];
-  assert.match(hint, /flex:\s*0\s+1000\s+auto/);
-  assert.match(hint, /min-width:\s*0/);
+  // #42: the keyboard hints that used to give way before the fields are one "?" button now. A button never shrinks (.hdr-btn is
+  // flex: 0 0 auto), so the controls stay on screen and the fields are the first to clip.
+  const btn = (HTML.match(/\.hdr-btn\s*\{[^}]*\}/) || [''])[0];
+  assert.match(btn, /flex:\s*0\s+0\s+auto/);
+  assert.ok(!/header \.hint\s*\{/.test(HTML), 'the .hint rule went with the hints');
 });
 
 test('renderer.html loads the module before renderer.js', () => {
