@@ -99,6 +99,19 @@ function formatCountdown(resetsAt, now = Date.now()) {
 }
 
 /**
+ * The reset as the header shows it (#42): the local clock time when it is within a day, the short weekday beyond, null when
+ * there is no usable future time (the tooltip says "reset time unknown" / "resetting now" instead).
+ */
+function formatResetClock(resetsAt, now = Date.now()) {
+  if (typeof resetsAt !== 'string') return null;
+  const at = Date.parse(resetsAt);
+  if (!Number.isFinite(at) || at <= now) return null;
+  const d = new Date(at);
+  if (at - now < 24 * 3600000) return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return d.toLocaleDateString('en-US', { weekday: 'short' });
+}
+
+/**
  * @param quota the `{ ok, state, windows, error }` payload from host/quota.js
  * @param now   injected so the countdown is testable
  *
@@ -145,6 +158,8 @@ function quotaDisplay(quota, now = Date.now()) {
       // file exists to never say falsely. The twin module reached the same
       // answer for `<1m`, on the same day, for the same reason.
       text: pct === null ? UNKNOWN : formatPercent(pct),
+      // The header's wording (#42): "41% · 18:00", the reset on the binding window only so three meters fit a 1200px header. The tooltip (`title`) keeps the long form.
+      short: pct === null ? UNKNOWN : (!w.isActive || formatResetClock(w.resetsAt, now) === null ? formatPercent(pct) : `${formatPercent(pct)} · ${formatResetClock(w.resetsAt, now)}`),
       // How full to draw the bar. Clamped, because a server that ever reports
       // over 100 should overflow the meaning, not the layout.
       fill: pct === null ? 0 : Math.max(0, Math.min(100, pct)),
@@ -161,7 +176,7 @@ function quotaDisplay(quota, now = Date.now()) {
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { quotaDisplay, formatCountdown, formatPercent, toneFor, UNKNOWN, WARN_AT, CRITICAL_AT };
+  module.exports = { quotaDisplay, formatResetClock, formatCountdown, formatPercent, toneFor, UNKNOWN, WARN_AT, CRITICAL_AT };
 } else {
   root.quotaDisplay = quotaDisplay;
   // The warning flourish needs the countdown too, and a second implementation

@@ -52,6 +52,8 @@ const ALLOWED_GLOBALS = new Set([
   'createMask', 'surfacesFor',
   // the display modules
   'usageDisplay', 'spendOf', 'cacheReadOf',
+  // app/usage-display.js tokText, app/shortcut-table.js, app/shortcuts-display.js (#42 + #43): the header's short wording, and one namespace each.
+  'tokText', 'shortcutTable', 'shortcutsDisplay',
   // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
   // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
   'rosterWidth', 'rosterMax', 'faceSize',
