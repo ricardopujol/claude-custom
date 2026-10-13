@@ -155,6 +155,9 @@ function cleanSeat(raw, hiddenIds, liveGroups) {
       // A lone floating panel comes back floating where it was: its rectangle rides in the seat.
       const f = s.float;
       if (isObject(f) && isNum(f.x) && isNum(f.y) && isSize(f.w) && isSize(f.h)) seat[id].float = floatRect(f);
+      // The modules that shared its group when it left (BACKLOG #85): pinning one joins a mate that is pinned by then.
+      const mates = (Array.isArray(s.mates) ? s.mates : []).filter(m => typeof m === 'string' && m !== id).slice(0, 32);
+      if (mates.length) seat[id].mates = [...new Set(mates)];
     }
   }
   return seat;
@@ -509,11 +512,22 @@ function show(layout, id) {
 
 /** Unpin a docked or floating module: it leaves the layout for the end of the rail, and remembers its seat for `pin`. */
 function unpin(layout, id) {
-  if (typeof id !== 'string' || (!groupOf(layout, id) && !floatOf(layout, id))) return layout;
+  const tree = typeof id === 'string' ? groupOf(layout, id) : null;
+  const host = tree || (typeof id === 'string' ? floatOf(layout, id) : null);
+  if (!host) return layout;
   const away = hide(layout, id);                                             // the seat is made exactly as for a hidden panel
   const l = clone(away);
   l.hidden = l.hidden.filter(h => h !== id);
   l.rail = [...railOf(l), id];
+  // Its mates: the tabs still in its group, and the tabs of the same group already on the rail. Pinning any of them later
+  // rejoins whichever is pinned by then, so a group unpinned and pinned again is one group in any order (PR #168 Dexter 2).
+  const railedMates = railOf(layout).filter(r => ((layout.seat[r] || {}).mates || []).includes(id));
+  const mates = [...new Set([...host.tabs.filter(t => t !== id), ...railedMates])];
+  if (mates.length) l.seat[id] = { ...l.seat[id], mates };
+  // The last tab out takes the group with it: the mates already on the rail learn where the group stood.
+  if (tree && host.tabs.length === 1 && l.seat[id]) {
+    for (const r of railedMates) if (l.seat[r]) l.seat[r] = { ...l.seat[r], group: null, beside: l.seat[id].beside, side: l.seat[id].side };
+  }
   return normalize(l, modulesIn(layout));
 }
 
@@ -523,7 +537,10 @@ function pin(layout, id) {
   const l = clone(layout);
   l.rail = l.rail.filter(r => r !== id);
   l.hidden.push(id);
-  return show(normalize(l, modulesIn(layout)), id);
+  const back = normalize(l, modulesIn(layout));
+  const mate = ((back.seat[id] || {}).mates || []).map(m => groupOf(back, m)).find(Boolean);
+  if (mate) return dock(back, id, { cell: mate.id, side: 'center' });       // a mate of its old group is pinned: join it
+  return show(back, id);
 }
 
 /** Bring a hidden module back as a rail tab (unpinned, the default), keeping the seat `pin` will use. */
@@ -918,15 +935,27 @@ function fit(layout, selection, viewport) {
   const vp = isObject(viewport) ? viewport : {};
   const ctx = { layout, sel: cleanSelection(selection), boxes: [], splits: [] };
   const whole = { width: dim(vp.width), height: dim(vp.height) };
+  const run = (width) => {
+    const c = { layout, sel: ctx.sel, boxes: [], splits: [] };
+    const a = { width, height: whole.height };
+    place(layout.root, { x: 0, y: 0, ...a }, [], c);
+    if (!c.sel.foldAll) placeFloats(layout, c, a);
+    return c;
+  };
+  const termWidth = c => c.boxes.find(b => b.kind === 'term').rect.width;
+  const shutRails = c => c.boxes.filter(b => b.kind === 'rail').length;
   // Unpinned panels are tabs on one rail at the right edge (BACKLOG #85). It is a strip of its own, so the terminal's width
-  // never depends on whether a rail panel is open; a window too narrow to give it a strip and keep a tree draws none.
+  // never depends on whether a rail panel is open. The terminal wins (PR #168 Dexter 4): when the strip would take the terminal
+  // under its minimum, or cost a folded group its rail, the window is too small for it and none is drawn.
   const railIds = railOf(layout);
-  const strip = railIds.length && whole.width > RAIL.side ? RAIL.side : 0;
-  const area = { width: whole.width - strip, height: whole.height };
-  place(layout.root, { x: 0, y: 0, ...area }, [], ctx);
-  if (!ctx.sel.foldAll) placeFloats(layout, ctx, area);
-  if (strip) ctx.boxes.push({ kind: 'rail', id: 'dock', dir: 'v', modules: [...railIds], groups: [], rect: { x: area.width, y: 0, width: strip, height: whole.height } });
-  return { boxes: ctx.boxes, splits: ctx.splits };
+  let drawn = run(whole.width);
+  let strip = 0;
+  if (railIds.length && whole.width > RAIL.side) {
+    const narrower = run(whole.width - RAIL.side);
+    if (termWidth(narrower) >= TERM_MIN.width && shutRails(narrower) >= shutRails(drawn)) { drawn = narrower; strip = RAIL.side; }
+  }
+  if (strip) drawn.boxes.push({ kind: 'rail', id: 'dock', dir: 'v', modules: [...railIds], groups: [], rect: { x: whole.width - strip, y: 0, width: strip, height: whole.height } });
+  return { boxes: drawn.boxes, splits: drawn.splits };
 }
 
 const API = {

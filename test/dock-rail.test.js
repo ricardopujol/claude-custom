@@ -239,3 +239,105 @@ test('P: fit never gives the tree or the rail a negative or overlapping rectangl
     if (rail) for (const b of boxes.filter(x => x.kind === 'group' || x.kind === 'term')) assert.ok(b.rect.x + b.rect.width <= rail.rect.x);
   }), RUNS);
 });
+
+// --- review fixes (PR #168 Dexter 2, 4): a group unpinned and re-pinned stays one group; the strip yields to the terminal ---------
+
+const two = () => T.normalize({
+  version: 2, floats: [], rail: [], hidden: [], seat: {},
+  root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'group', id: 'g1', tabs: ['git', 'vault'] }], sizes: [0, 180] },
+}, ['git', 'vault']);
+const pinAll = (l, ids) => ids.reduce(T.pin, l);
+const oneGroupWith = (l, ids) => {
+  const gs = T.groups(l);
+  assert.equal(gs.length, 1, JSON.stringify(gs.map(g => g.tabs)));
+  assert.deepEqual(sorted(gs[0].tabs), sorted(ids));
+};
+
+test('Dexter 2: unpinGroup, then pin in rail order, gives one group again', () => {
+  const u = T.unpinGroup(two(), 'g1');
+  assert.deepEqual(u.rail, ['git', 'vault']);
+  oneGroupWith(pinAll(u, ['git', 'vault']), ['git', 'vault']);
+});
+
+test('Dexter 2: ...and in the reverse order', () => {
+  oneGroupWith(pinAll(T.unpinGroup(two(), 'g1'), ['vault', 'git']), ['git', 'vault']);
+});
+
+test('Dexter 2: the same for tabs unpinned one by one, in either pin order', () => {
+  const u = T.unpin(T.unpin(two(), 'git'), 'vault');
+  oneGroupWith(pinAll(u, ['git', 'vault']), ['git', 'vault']);
+  oneGroupWith(pinAll(u, ['vault', 'git']), ['git', 'vault']);
+});
+
+test('Dexter 2: a group of three with a neighbour comes back as one group (placed as a hidden panel is, beside its old neighbour), whichever tab is pinned first', () => {
+  const ids = ['agents', 'git', 'vault', 'fog'];
+  const l = T.normalize({
+    version: 2, floats: [], rail: [], hidden: [], seat: {},
+    root: { type: 'split', dir: 'row', kids: [{ type: 'group', id: 'a', tabs: ['agents'] }, { type: 'term' }, { type: 'group', id: 'b', tabs: ['git', 'vault', 'fog'] }], sizes: [150, 0, 200] },
+  }, ids);
+  for (const order of [['git', 'vault', 'fog'], ['fog', 'git', 'vault'], ['vault', 'fog', 'git']]) {
+    const p = pinAll(T.unpinGroup(l, 'b'), order);
+    assert.equal(T.groups(p).length, 2, order.join());
+    const gb = T.groupOf(p, 'git');
+    assert.deepEqual(sorted(gb.tabs), ['fog', 'git', 'vault']);
+    assert.equal(T.groupOf(p, 'agents').tabs.join(), 'agents', 'the neighbour keeps its own group');
+  }
+});
+
+test('Dexter 2: a mate pinned somewhere else is joined where it is now', () => {
+  const u = T.unpinGroup(two(), 'g1');
+  const moved = T.dock(T.pin(u, 'git'), 'git', { edge: 'left' });
+  const p = T.pin(moved, 'vault');
+  assert.equal(T.groupOf(p, 'vault').id, T.groupOf(p, 'git').id);
+});
+
+test('P: every pin order of an unpinned group lands in one group, and the layout stays normalized', () => {
+  const perms = [['git', 'vault'], ['vault', 'git']];
+  fc.assert(fc.property(fc.constantFrom(...perms), fc.boolean(), (order, byGroup) => {
+    const l = byGroup ? T.unpinGroup(two(), 'g1') : T.unpin(T.unpin(two(), 'git'), 'vault');
+    const p = pinAll(l, order);
+    assert.equal(T.groups(p).length, 1);
+    assert.deepEqual(T.normalize(p, ['git', 'vault']), p);
+  }), RUNS);
+});
+
+// --- fit: the strip yields to the terminal -----------------------------------------------------------------------------
+
+test('Dexter 4: a window with no room for a strip and the terminal draws no strip: the terminal keeps its minimum', () => {
+  const d = T.unpin(T.defaultLayout(['agents', 'git']), 'git');
+  for (const width of [T.TERM_MIN.width + 1, T.TERM_MIN.width + 27, T.TERM_MIN.width + 28 - 1]) {
+    const { boxes } = T.fit(d, null, { width, height: 600 });
+    assert.ok(boxes.find(b => b.kind === 'term').rect.width >= T.TERM_MIN.width, `at ${width}`);
+  }
+  const wide = T.fit(d, null, { width: T.TERM_MIN.width + 28 + 120 + 5, height: 600 });
+  assert.ok(wide.boxes.some(b => b.kind === 'rail' && b.id === 'dock'), 'with room the strip is there');
+});
+
+test('Dexter 4: a folded group\'s rail is not dropped for the strip', () => {
+  const l = T.normalize({
+    version: 2, floats: [], rail: ['vault'], hidden: [], seat: {},
+    root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'group', id: 'g1', tabs: ['git'] }], sizes: [0, 180] },
+  }, ['git', 'vault']);
+  const sel = T.toggleCollapse(null, l, 'g1');
+  const withRail = T.fit(l, sel, { width: 356, height: 600 });
+  const tree = withRail.boxes.filter(b => b.kind === 'rail');
+  assert.ok(tree.some(b => b.id !== 'dock'), 'the folded group still has its rail');
+  assert.ok(withRail.boxes.find(b => b.kind === 'term').rect.width >= T.TERM_MIN.width);
+});
+
+test('P: whatever the window, an unpinned panel never takes the terminal under its minimum or removes a folded rail', () => {
+  fc.assert(fc.property(fc.integer({ min: 200, max: 900 }), fc.boolean(), (width, fold) => {
+    const base = T.normalize({
+      version: 2, floats: [], rail: [], hidden: [], seat: {},
+      root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'group', id: 'g1', tabs: ['git'] }], sizes: [0, 180] },
+    }, ['git', 'vault']);
+    const railed = T.unpin(base, 'vault');
+    const sel = fold ? T.toggleCollapse(null, base, 'g1') : null;
+    const a = T.fit(base, sel, { width, height: 600 });
+    const b = T.fit(railed, sel, { width, height: 600 });
+    const termA = a.boxes.find(x => x.kind === 'term').rect.width;
+    const termB = b.boxes.find(x => x.kind === 'term').rect.width;
+    assert.ok(termB >= Math.min(termA, T.TERM_MIN.width));
+    assert.ok(b.boxes.filter(x => x.kind === 'rail' && x.id !== 'dock').length >= a.boxes.filter(x => x.kind === 'rail').length);
+  }), RUNS);
+});
