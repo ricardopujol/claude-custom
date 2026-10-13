@@ -69,7 +69,7 @@ function defaultLayout(ids) {
   const rootNode = tabs.length
     ? { type: 'split', dir: 'row', kids: [TERM(), { type: 'group', id: 'right', tabs }], sizes: [0, DEFAULT_SIZE.row] }
     : TERM();
-  return { version: VERSION, root: rootNode, floats: [], hidden: away, seat: {} };
+  return { version: VERSION, root: rootNode, floats: [], rail: [], hidden: away, seat: {} };
 }
 
 const hasTerm = n => n.type === 'term' || (n.type === 'split' && n.kids.some(hasTerm));
@@ -175,7 +175,7 @@ function normalize(raw, ids) {
     },
   };
   let r = clean(raw.root, st, 0);
-  // Each module is claimed in the tree first, then in a float, then as hidden: the first place that lists it keeps it.
+  // Each module is claimed in the tree first, then in a float, then on the rail, then as hidden: the first place that lists it keeps it.
   const floats = (Array.isArray(raw.floats) ? raw.floats : []).map(f => cleanFloat(f, st)).filter(Boolean);
   const reserved = seatGroups(raw.seat);
   if (r) walk(r, (n) => { if (n.type === 'group' && n.id === null) n.id = freshId(st.ids, reserved); });
@@ -187,6 +187,8 @@ function normalize(raw, ids) {
     else r = { type: 'split', dir: 'row', kids: [TERM(), r], sizes: [0, DEFAULT_SIZE.row] };
   }
 
+  // The rail (BACKLOG #85) is the unpinned panels, in order; a layout from a build before it has none, and nothing moves.
+  const railIds = (Array.isArray(raw.rail) ? raw.rail : []).filter(id => st.claim(id));
   const hiddenIds = (Array.isArray(raw.hidden) ? raw.hidden : []).filter(id => st.claim(id));
   const missing = [...known].filter(id => !placed.has(id) && !HIDDEN_UNTIL_USED.includes(id));
   for (const id of known) if (!placed.has(id) && HIDDEN_UNTIL_USED.includes(id)) hiddenIds.push(id);
@@ -198,7 +200,7 @@ function normalize(raw, ids) {
   }
 
   const live = new Set([...groups({ root: r }).map(x => x.id), ...floats.map(f => f.id)]);
-  return { version: VERSION, root: r, floats, hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds, live) };
+  return { version: VERSION, root: r, floats, rail: railIds, hidden: hiddenIds, seat: cleanSeat(raw.seat, [...hiddenIds, ...railIds], live) };
 }
 
 // Only a plain object of string -> string survives; nothing else a window stored is trusted.
@@ -243,7 +245,8 @@ function selectionFromV1(raw) {
 // --- docking, hiding, showing -------------------------------------------------
 
 const clone = v => JSON.parse(JSON.stringify(v));
-const modulesIn = layout => [...groups(layout).flatMap(gr => gr.tabs), ...layout.floats.flatMap(f => f.tabs), ...layout.hidden];
+const railOf = layout => (Array.isArray(layout.rail) ? layout.rail : []);
+const modulesIn = layout => [...groups(layout).flatMap(gr => gr.tabs), ...layout.floats.flatMap(f => f.tabs), ...railOf(layout), ...layout.hidden];
 const groupOf = (layout, id) => groups(layout).find(gr => gr.tabs.includes(id)) || null;
 /** The float that holds a module, or null. (`groups` and `groupOf` are the TREE's: everything that walks the tree relies on that.) */
 const floatOf = (layout, id) => layout.floats.find(f => f.tabs.includes(id)) || null;
@@ -271,7 +274,7 @@ function replaceCell(l, cell, wrap) {
 function dock(layout, id, target) {
   const fromTree = groupOf(layout, id);
   const from = fromTree || floatOf(layout, id);                             // the tree group or the float it sits in
-  if (!from && !layout.hidden.includes(id)) return layout;                  // unknown module
+  if (!from && !layout.hidden.includes(id) && !railOf(layout).includes(id)) return layout;   // unknown module
   if (!isObject(target)) return layout;
   const byFloat = Object.prototype.hasOwnProperty.call(target, 'float');
   const byEdge = typeof target.edge === 'string';
@@ -294,6 +297,7 @@ function dock(layout, id, target) {
   const src = groupOf(l, id) || floatOf(l, id);
   if (src) src.tabs = src.tabs.filter(t => t !== id);
   l.hidden = l.hidden.filter(h => h !== id);
+  l.rail = railOf(l).filter(r => r !== id);
   delete l.seat[id];
 
   const used = new Set(allGroups(l).map(gr => gr.id));
@@ -456,6 +460,12 @@ function hideFloating(layout, id) {
  * shared (design section 4's op table).
  */
 function hide(layout, id) {
+  if (railOf(layout).includes(id)) {                                         // off the rail: its seat (where pinning would put it) stays
+    const l = clone(layout);
+    l.rail = l.rail.filter(r => r !== id);
+    l.hidden.push(id);
+    return normalize(l, modulesIn(layout));
+  }
   const gr = groupOf(layout, id);
   if (!gr) return hideFloating(layout, id);                                  // a float's panel, or unknown, or already hidden
   const order = groups(layout).flatMap(x => x.tabs);                         // tree order
@@ -493,6 +503,43 @@ function show(layout, id) {
     if (nearFloat) return dock(layout, id, { cell: nearFloat.id, side: 'center' });
   }
   return dock(layout, id, { edge: 'right' });
+}
+
+// --- the rail: pinned and unpinned panels (BACKLOG #85) ----------------------------
+
+/** Unpin a docked or floating module: it leaves the layout for the end of the rail, and remembers its seat for `pin`. */
+function unpin(layout, id) {
+  if (typeof id !== 'string' || (!groupOf(layout, id) && !floatOf(layout, id))) return layout;
+  const away = hide(layout, id);                                             // the seat is made exactly as for a hidden panel
+  const l = clone(away);
+  l.hidden = l.hidden.filter(h => h !== id);
+  l.rail = [...railOf(l), id];
+  return normalize(l, modulesIn(layout));
+}
+
+/** Pin a railed module: a real panel again, back at its seat (else a new group beside the terminal, on the right). */
+function pin(layout, id) {
+  if (typeof id !== 'string' || !railOf(layout).includes(id)) return layout;
+  const l = clone(layout);
+  l.rail = l.rail.filter(r => r !== id);
+  l.hidden.push(id);
+  return show(normalize(l, modulesIn(layout)), id);
+}
+
+/** Bring a hidden module back as a rail tab (unpinned, the default), keeping the seat `pin` will use. */
+function showOnRail(layout, id) {
+  if (typeof id !== 'string' || !layout.hidden.includes(id)) return layout;
+  const l = clone(layout);
+  l.hidden = l.hidden.filter(h => h !== id);
+  l.rail = [...railOf(l), id];
+  return normalize(l, modulesIn(layout));
+}
+
+/** Unpin every tab of a tree group (a fold, open question 2), in tab order. */
+function unpinGroup(layout, groupId) {
+  const gr = groups(layout).find(x => x.id === groupId);
+  if (!gr) return layout;
+  return [...gr.tabs].reduce((l, id) => unpin(l, id), layout);
 }
 
 // --- sizes ---------------------------------------------------------------------
@@ -870,15 +917,21 @@ function peekFor(boxes, module, viewport) {
 function fit(layout, selection, viewport) {
   const vp = isObject(viewport) ? viewport : {};
   const ctx = { layout, sel: cleanSelection(selection), boxes: [], splits: [] };
-  const area = { width: dim(vp.width), height: dim(vp.height) };
+  const whole = { width: dim(vp.width), height: dim(vp.height) };
+  // Unpinned panels are tabs on one rail at the right edge (BACKLOG #85). It is a strip of its own, so the terminal's width
+  // never depends on whether a rail panel is open; a window too narrow to give it a strip and keep a tree draws none.
+  const railIds = railOf(layout);
+  const strip = railIds.length && whole.width > RAIL.side ? RAIL.side : 0;
+  const area = { width: whole.width - strip, height: whole.height };
   place(layout.root, { x: 0, y: 0, ...area }, [], ctx);
   if (!ctx.sel.foldAll) placeFloats(layout, ctx, area);
+  if (strip) ctx.boxes.push({ kind: 'rail', id: 'dock', dir: 'v', modules: [...railIds], groups: [], rect: { x: area.width, y: 0, width: strip, height: whole.height } });
   return { boxes: ctx.boxes, splits: ctx.splits };
 }
 
 const API = {
   HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
+  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, unpin, pin, showOnRail, unpinGroup, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, isCollapsed, activeOf, fit, peekFor, PEEK,
 };
 
