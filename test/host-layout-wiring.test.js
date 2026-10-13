@@ -3,7 +3,7 @@
  * host.js's half of a tab's own layout (layout pass L1, S6): source assertions
  * in the style of test/host-session-wiring.test.js, because host.js can't be
  * loaded by a unit test. The behaviour runs end to end in
- * verify/probe-dock-zones.js (check 5: the override survives a reattach).
+ * L1's probe (verify/probe-dock-zones.js, since replaced by probe-dock-tree.js; check 5: the override survives a reattach).
  *
  * Repo-scanning, so deliberately NOT in Stryker's command.
  */

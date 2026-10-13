@@ -425,30 +425,30 @@ test('setSplitSizes never changes its input', () => {
 // --- selection (belongs to the window, not to the layout) -----------------------
 
 test('cleanSelection reads anything: only string-to-string entries and a real true survive', () => {
-  assert.deepEqual(T.cleanSelection(null), { active: {}, foldAll: false, floatOrder: [] });
-  assert.deepEqual(T.cleanSelection('x'), { active: {}, foldAll: false, floatOrder: [] });
-  assert.deepEqual(T.cleanSelection({ active: { a: 'agents', b: 7, c: null, d: {} }, foldAll: 'yes' }), { active: { a: 'agents' }, foldAll: false, floatOrder: [] });
-  assert.deepEqual(T.cleanSelection({ active: [1, 2], foldAll: true }), { active: {}, foldAll: true, floatOrder: [] });
+  assert.deepEqual(T.cleanSelection(null), { active: {}, foldAll: false, floatOrder: [], collapsed: {} });
+  assert.deepEqual(T.cleanSelection('x'), { active: {}, foldAll: false, floatOrder: [], collapsed: {} });
+  assert.deepEqual(T.cleanSelection({ active: { a: 'agents', b: 7, c: null, d: {} }, foldAll: 'yes' }), { active: { a: 'agents' }, foldAll: false, floatOrder: [], collapsed: {} });
+  assert.deepEqual(T.cleanSelection({ active: [1, 2], foldAll: true }), { active: {}, foldAll: true, floatOrder: [], collapsed: {} });
   assert.deepEqual(T.cleanSelection({ active: { a: 'agents' }, foldAll: 1 }).foldAll, false);
 });
 
 test('selectTab shows that module in its group and unfolds everything', () => {
   const sel = T.selectTab({ active: { c: 'git' }, foldAll: true }, example(), 'vault');
-  assert.deepEqual(sel, { active: { c: 'git', b: 'vault' }, foldAll: false, floatOrder: [] });
+  assert.deepEqual(sel, { active: { c: 'git', b: 'vault' }, foldAll: false, floatOrder: [], collapsed: {} });
 });
 
 test('selectTab for a hidden or unknown module changes nothing but still returns a clean selection', () => {
   const l = example();
-  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'models'), { active: { a: 'agents' }, foldAll: true, floatOrder: [] });
-  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'nope'), { active: { a: 'agents' }, foldAll: true, floatOrder: [] });
-  assert.deepEqual(T.selectTab(7, l, 'nope'), { active: {}, foldAll: false, floatOrder: [] });
+  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'models'), { active: { a: 'agents' }, foldAll: true, floatOrder: [], collapsed: {} });
+  assert.deepEqual(T.selectTab({ active: { a: 'agents' }, foldAll: true }, l, 'nope'), { active: { a: 'agents' }, foldAll: true, floatOrder: [], collapsed: {} });
+  assert.deepEqual(T.selectTab(7, l, 'nope'), { active: {}, foldAll: false, floatOrder: [], collapsed: {} });
 });
 
 test('toggleFoldAll flips Ctrl+B and keeps what each group shows', () => {
-  const sel = { active: { a: 'agents' }, foldAll: false, floatOrder: [] };
-  assert.deepEqual(T.toggleFoldAll(sel), { active: { a: 'agents' }, foldAll: true, floatOrder: [] });
+  const sel = { active: { a: 'agents' }, foldAll: false, floatOrder: [], collapsed: {} };
+  assert.deepEqual(T.toggleFoldAll(sel), { active: { a: 'agents' }, foldAll: true, floatOrder: [], collapsed: {} });
   assert.deepEqual(T.toggleFoldAll(T.toggleFoldAll(sel)), sel);
-  assert.deepEqual(T.toggleFoldAll(null), { active: {}, foldAll: true, floatOrder: [] });
+  assert.deepEqual(T.toggleFoldAll(null), { active: {}, foldAll: true, floatOrder: [], collapsed: {} });
 });
 
 test('activeOf: the window\'s choice if the group still holds it, else the group\'s first tab', () => {
@@ -489,7 +489,7 @@ test('fit: the default in 1000 x 600 is the terminal, a gutter and the group at 
   assert.deepEqual(rectOf(f, 'term'), R(0, 0, 815, 600));
   assert.deepEqual(kindOf(f, 'gutter'), [{ kind: 'gutter', path: [], i: 1, dir: 'row', rect: R(815, 0, 5, 600) }]);
   assert.deepEqual(kindOf(f, 'group'), [{ kind: 'group', id: 'right', tabs: IDS, active: 'agents', rect: R(820, 0, 180, 600) }]);
-  assert.deepEqual(f.splits, [{ path: [], dir: 'row', px: [815, 180], min: [320, 120] }]);
+  assert.deepEqual(f.splits, [{ path: [], dir: 'row', px: [815, 180], state: ['open', 'open'], min: [320, 120] }]);
 });
 
 test('fit: a group shows this window\'s choice', () => {
@@ -541,10 +541,10 @@ test('fit: 445 wide is the last width where the column stays open, at its minimu
 
 test('fit: 440 wide folds the column to a rail of 28 and the terminal keeps 320', () => {
   const f = T.fit(example(), NO_SEL, { width: 440, height: 700 });
-  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], rect: R(412, 0, 28, 700) }]);
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], groups: [{ id: 'c', tabs: ['git'] }, { id: 'd', tabs: ['fog'] }, { id: 'e', tabs: ['bugvault'] }], rect: R(412, 0, 28, 700) }]);
   assert.equal(rectOf(f, 'term').width, 412);
   assert.equal(kindOf(f, 'group').length, 2);
-  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], min: [320, 28] });
+  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], state: ['open', 'rail'], min: [320, 28] });
   assertTiles(f, 440, 700);
 });
 
@@ -561,7 +561,7 @@ const threeAcross = () => T.normalize(v2(row([g('l1', 'agents'), g('l2', 'vault'
 test('fit: two fixed kids on one axis, the one farther from the terminal folds first', () => {
   // All open needs 785; at 690 folding the outer left one is enough.
   const f = T.fit(threeAcross(), NO_SEL, { width: 690, height: 400 });
-  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], rect: R(0, 0, 28, 400) }]);
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], groups: [{ id: 'l1', tabs: ['agents'] }], rect: R(0, 0, 28, 400) }]);
   assert.deepEqual(rectOf(f, 'l2'), R(28, 0, 150, 400));
   assert.deepEqual(rectOf(f, 'term'), R(183, 0, 352, 400));
   assert.deepEqual(rectOf(f, 'r'), R(540, 0, 150, 400));
@@ -616,7 +616,7 @@ test('fit: in a column of proportions a kid under its minimum is raised, the big
   const l = T.normalize(v2(row([term, col([g('a', 'agents'), g('b', 'vault'), g('c', ...IDS.slice(2))], [10, 1, 1])], [0, 180])), IDS);
   const f = T.fit(l, NO_SEL, { width: 800, height: 600 });
   assert.deepEqual([rectOf(f, 'a').height, rectOf(f, 'b').height, rectOf(f, 'c').height], [430, 80, 80]);
-  assert.deepEqual(f.splits.find(s => s.path.length === 1), { path: [1], dir: 'col', px: [430, 80, 80], min: [80, 80, 80] });
+  assert.deepEqual(f.splits.find(s => s.path.length === 1), { path: [1], dir: 'col', px: [430, 80, 80], state: ['open', 'open', 'open'], min: [80, 80, 80] });
 });
 
 test('fit: pixels that do not divide go to the biggest remainders and the column still adds up', () => {
@@ -650,7 +650,7 @@ test('fit never changes the layout or the selection and reads a junk selection',
 
 // --- migration from L1 --------------------------------------------------------
 
-const DL = require('../app/dock-layout');
+const DL = { defaultLayout: require('../app/dock-migrate').defaultV1 };   // L1's default shape (D4: dock-layout.js is gone)
 const v1 = (zones, extra = {}) => ({
   version: 1,
   zones: { left: [], right: [], top: [], bottom: [], ...zones },
@@ -710,9 +710,9 @@ test('readAny: version 2 normalizes, an L1 shape migrates, anything else is the 
 
 test('selectionFromV1: a window\'s L1 choices map straight across (group ids are the zone names)', () => {
   const sel = T.selectionFromV1({ active: { right: 'vault', left: null, top: 7, bottom: 'git' } });
-  assert.deepEqual(sel, { active: { right: 'vault', bottom: 'git' }, foldAll: false, floatOrder: [] });
+  assert.deepEqual(sel, { active: { right: 'vault', bottom: 'git' }, foldAll: false, floatOrder: [], collapsed: {} });
   for (const junk of [null, 7, {}, { active: 5 }]) {
-    assert.deepEqual(T.selectionFromV1(junk), { active: {}, foldAll: false, floatOrder: [] });
+    assert.deepEqual(T.selectionFromV1(junk), { active: {}, foldAll: false, floatOrder: [], collapsed: {} });
   }
 });
 

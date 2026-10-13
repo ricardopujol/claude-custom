@@ -14,9 +14,9 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const T = require('../app/dock-tree');
-const DL = require('../app/dock-layout');
+const M = require('../app/dock-migrate');
 
-const { TERM_MIN, MIN, GUTTER } = T;
+const { TERM_MIN, GUTTER } = T;
 const IDS = ['agents', 'vault', 'bugvault', 'fog', 'git', 'models', 'projects', 'style'];
 const RUNS = { numRuns: Number(process.env.LAYOUT_RUNS) || 300 };
 
@@ -82,7 +82,10 @@ const opArb = fc.oneof(
 const opsArb = fc.array(opArb, { maxLength: 25, size: 'medium' });
 
 const selArb = fc.oneof(
-  fc.record({ active: fc.dictionary(groupIdArb.filter(x => typeof x === 'string'), idOrJunk), foldAll: fc.boolean(), floatOrder: fc.array(groupIdArb, { maxLength: 6 }) }),
+  fc.record({
+    active: fc.dictionary(groupIdArb.filter(x => typeof x === 'string'), idOrJunk), foldAll: fc.boolean(), floatOrder: fc.array(groupIdArb, { maxLength: 6 }),
+    collapsed: fc.dictionary(groupIdArb.filter(x => typeof x === 'string'), fc.oneof(fc.boolean(), junk)),
+  }),
   fc.anything(),
 );
 const viewportArb = fc.record({ width: fc.integer({ min: 0, max: 4000 }), height: fc.integer({ min: 0, max: 4000 }) });
@@ -274,7 +277,7 @@ test('P7b: fit of the same inputs twice gives the same answer', () => {
   }), RUNS);
 });
 
-test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 gave it, in a roomy window', () => {
+test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 stored for it, in a roomy window', () => {
   const sizeV1 = fc.integer({ min: 120, max: 700 });
   const v1Arb = fc.record({
     zones: fc.record({ left: tabsArb, right: tabsArb, top: tabsArb, bottom: tabsArb }, { requiredKeys: [] }),
@@ -283,27 +286,24 @@ test('P8: an L1 layout migrated by fromV1 draws each zone at the size L1 gave it
   });
   const vp = fc.record({ width: fc.integer({ min: 640, max: 4000 }), height: fc.integer({ min: 480, max: 3000 }) });
   fc.assert(fc.property(v1Arb, vp, (raw, v) => {
-    const l1 = DL.normalizeLayout(raw, IDS);
-    // Every non-empty zone showing: L1 collapses a zone on purpose, the tree keeps that in the window's selection.
-    for (const z of DL.ZONES) l1.active[z] = l1.zones[z].length ? l1.zones[z][0] : null;
-    const want = DL.fitSizes(l1, v);
+    const l1 = M.normalizeV1(raw, IDS);
     const tree = T.fromV1(l1, IDS);
     assertWellFormed(tree);
     const f = T.fit(tree, { active: {}, foldAll: false }, v);
-    const open = DL.ZONES.filter(z => l1.zones[z].length);
-    // The tree spends GUTTER px per open zone on a divider, which L1 never did: only when the window has
-    // room for that as well is "the same picture" the claim. Squeezed, the tree folds one zone at a time
-    // (the edge first) where L1 folds an axis together, which is the design (plan Task 6).
-    const w = TERM_MIN.width + GUTTER * open.filter(z => z === 'left' || z === 'right').length;
-    const h = TERM_MIN.height + GUTTER * open.filter(z => z === 'top' || z === 'bottom').length;
-    const roomy = v.width >= w + want.left + want.right && v.height >= h + want.top + want.bottom
-      && want.left >= MIN.width && want.right >= MIN.width;
+    const open = ['left', 'right', 'top', 'bottom'].filter(z => l1.zones[z].length);
+    // The tree spends GUTTER px per open zone on a divider (L1 never did): only when the window has room for the
+    // zones, their dividers and the terminal's minimum is "the same picture" the claim. Squeezed, the tree folds one
+    // zone at a time (the edge first), which is the design (plan Task 6).
+    const across = open.filter(z => z === 'left' || z === 'right');
+    const down = open.filter(z => z === 'top' || z === 'bottom');
+    const roomy = v.width >= TERM_MIN.width + GUTTER * across.length + across.reduce((s, z) => s + l1.size[z], 0)
+      && v.height >= TERM_MIN.height + GUTTER * down.length + down.reduce((s, z) => s + l1.size[z], 0);
     fc.pre(roomy);
     for (const z of open) {
       const box = f.boxes.find(b => b.kind === 'group' && b.id === z);
       assert.ok(box, `${z} has no box`);
       const got = z === 'left' || z === 'right' ? box.rect.width : box.rect.height;
-      assert.ok(Math.abs(got - want[z]) <= 1, `${z}: ${got} vs L1's ${want[z]}`);
+      assert.ok(Math.abs(got - l1.size[z]) <= 1, `${z}: ${got} vs the stored ${l1.size[z]}`);
     }
   }), RUNS);
 });
@@ -353,5 +353,96 @@ test('P12 (PR #102 Dexter 1): the Window menu has one row per known module, what
     const rows = V.menuRows(l, TABS);
     assert.deepStrictEqual(rows.map(r => r.id), IDS);
     for (const r of rows) assert.strictEqual(r.shown, !l.hidden.includes(r.id), `${r.id} shown ${r.shown}`);
+  }), RUNS);
+});
+
+// --- D4: collapsing one group ---------------------------------------------------------------
+
+// Selection moves a window makes, applied between layout moves: `pick` indexes the groups that exist at that moment.
+const selOpArb = fc.oneof(
+  fc.record({ sop: fc.constant('collapse'), pick: fc.nat(12) }),
+  fc.record({ sop: fc.constant('collapse'), pick: fc.nat(12) }),
+  fc.record({ sop: fc.constant('select'), id: idOrJunk }),
+  fc.record({ sop: fc.constant('fold') }),
+  fc.record({ sop: fc.constant('prune') }),
+);
+const mixedArb = fc.array(fc.oneof(opArb, selOpArb), { maxLength: 30, size: 'medium' });
+
+function stepBoth(state, o) {
+  if (o.sop === undefined) return { ...state, l: step(state.l, o) };
+  const gs = T.groups(state.l).map(gr => gr.id);
+  if (o.sop === 'collapse') return { ...state, sel: T.toggleCollapse(state.sel, state.l, gs.length ? gs[o.pick % gs.length] : 'nope') };
+  if (o.sop === 'select') return { ...state, sel: T.selectTab(state.sel, state.l, o.id) };
+  if (o.sop === 'fold') return { ...state, sel: T.toggleFoldAll(state.sel) };
+  return { ...state, sel: T.pruneCollapsed(state.sel, state.l) };
+}
+
+test('P14 (D4): any mix of layout moves and collapses keeps fit whole: inside the window, no overlap, the terminal its room', () => {
+  const vp = fc.record({ width: fc.integer({ min: TERM_MIN.width, max: 3000 }), height: fc.integer({ min: TERM_MIN.height, max: 2000 }) });
+  fc.assert(fc.property(rawArb, mixedArb, vp, (raw, ops, v) => {
+    let st = { l: T.normalize(raw, IDS), sel: T.cleanSelection(null) };
+    for (const o of ops) {
+      st = stepBoth(st, o);
+      assertWellFormed(st.l);
+      assert.deepStrictEqual(T.cleanSelection(st.sel), st.sel, 'a selection move returned something cleanSelection would change');
+    }
+    const f = T.fit(st.l, st.sel, v);
+    for (const b of f.boxes) {
+      for (const x of Object.values(b.rect)) assert.ok(Number.isInteger(x) && x >= 0, JSON.stringify(b));
+      assert.ok(b.rect.x + b.rect.width <= v.width && b.rect.y + b.rect.height <= v.height, `${JSON.stringify(b)} leaves ${v.width}x${v.height}`);
+    }
+    const tree = f.boxes.filter(b => b.kind !== 'float');
+    tree.forEach((a, i) => tree.slice(i + 1).forEach(b => assert.ok(!overlap(a.rect, b.rect), `${JSON.stringify(a)} overlaps ${JSON.stringify(b)}`)));
+    const term = f.boxes.find(b => b.kind === 'term');
+    assert.ok(term.rect.width >= TERM_MIN.width && term.rect.height >= TERM_MIN.height, `${JSON.stringify(term.rect)} in ${v.width}x${v.height}`);
+  }), RUNS);
+});
+
+test('P15 (D4): a collapsed group is drawn on a rail holding its tabs (a column of folded groups shares one rail), never as a panel', () => {
+  const vp = fc.record({ width: fc.integer({ min: 700, max: 3000 }), height: fc.integer({ min: 500, max: 2000 }) });
+  fc.assert(fc.property(rawArb, opsArb, fc.array(fc.nat(12), { maxLength: 6 }), vp, (raw, ops, picks, v) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    const gs = T.groups(l);
+    fc.pre(gs.length > 0);
+    const shut = Object.fromEntries(picks.map(p => [gs[p % gs.length].id, [...gs[p % gs.length].tabs]]));
+    const f = T.fit(l, { ...T.cleanSelection(null), collapsed: shut }, v);
+    const base = T.fit(l, T.cleanSelection(null), v);
+    for (const gr of gs) {
+      const asGroup = f.boxes.find(b => b.kind === 'group' && b.id === gr.id);
+      const asRail = f.boxes.find(b => b.kind === 'rail' && gr.tabs.every(m => b.modules.includes(m)));
+      if (!shut[gr.id]) continue;
+      // Never a panel (the window is big enough for every rail here).
+      assert.ok(!asGroup && (asRail || !base.boxes.find(b => b.kind === 'group' && b.id === gr.id)), `${gr.id} is not on a rail`);
+    }
+  }), RUNS);
+});
+
+test('P16 (D4): collapsing and opening a group again gives back the same picture', () => {
+  fc.assert(fc.property(rawArb, opsArb, fc.nat(12), viewportArb, (raw, ops, pick, v) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    const gs = T.groups(l);
+    fc.pre(gs.length > 0);
+    const id = gs[pick % gs.length].id;
+    const sel = T.cleanSelection(null);
+    const twice = T.toggleCollapse(T.toggleCollapse(sel, l, id), l, id);
+    assert.deepStrictEqual(twice, sel);
+    assert.deepStrictEqual(T.fit(l, twice, v), T.fit(l, sel, v));
+  }), RUNS);
+});
+
+test('P17 (Dexter 3): collapsing one more group never turns another open group into a rail or takes the terminal\'s room', () => {
+  const vp = fc.record({ width: fc.integer({ min: 400, max: 3000 }), height: fc.integer({ min: 300, max: 2000 }) });
+  fc.assert(fc.property(rawArb, opsArb, fc.nat(12), vp, (raw, ops, pick, v) => {
+    const l = run(T.normalize(raw, IDS), ops);
+    const gs = T.groups(l);
+    fc.pre(gs.length > 1);
+    const target = gs[pick % gs.length];
+    const sel = T.cleanSelection(null);
+    const before = T.fit(l, sel, v);
+    const after = T.fit(l, T.toggleCollapse(sel, l, target.id), v);
+    for (const b of before.boxes) {
+      if (b.kind !== 'group' || b.id === target.id) continue;
+      assert.ok(after.boxes.some(a => a.kind === 'group' && a.id === b.id), `${b.id} turned into a rail when ${target.id} was collapsed`);
+    }
   }), RUNS);
 });
