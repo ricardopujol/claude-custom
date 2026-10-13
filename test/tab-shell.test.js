@@ -2304,6 +2304,11 @@ test('the probe may drive the floating panels\' actions, by name only (dockable 
   for (const a of ['floatDrag', 'floatPress', 'secretField', 'floatSecret']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
+test('the probe may drive the collapse, popover, keyboard and settle actions, by name only (dockable panels D4)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
 test('the probe may read and operate the wand, by name only (#51)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['wandState', 'wandClick', 'wandSetField', 'wandDrag']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);

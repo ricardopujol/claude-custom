@@ -41,9 +41,9 @@ const ALLOWED_GLOBALS = new Set([
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
   'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
-  // app/dock-layout.js, app/dock-zones-display.js (layout pass L1): one
+  // app/dock-migrate.js, app/dock-effects.js (L1's survivors, dockable panels D4): one
   // namespace each, reached through `window.`.
-  'dockLayout', 'dockZones',
+  'dockMigrate', 'dockEffects',
   // app/dock-tree.js, app/dock-drag.js, app/dock-tree-display.js (dockable panels D1): the same.
   'dockTree', 'dockDrag', 'dockTreeView',
   // app/dock-presets.js (dockable panels D3): the layout presets, one namespace.

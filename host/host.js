@@ -84,6 +84,7 @@ const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleSt
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
+const { createHostQuota } = require('./quota-share');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
@@ -759,28 +760,16 @@ function checkMilestone(usage) {
 // the account's own windows are 5 hours and 7 days, so a minute of staleness is
 // invisible, and a failed call must never hold the loop the hook bridge runs on.
 let lastQuota = null;
-let quotaPending = null;
 const quotaAnnouncer = createQuotaAnnouncer();
+// ONE host per machine polls the usage endpoint (a lease in ~/.claude-custom, per account); every
+// host, this one included, shows what the shared file says. BACKLOG #83, host/quota-share.js.
+const hostQuota = createHostQuota({
+  readQuota,
+  log: (m) => console.log('[host]', m),
+  onQuota: (q) => { lastQuota = q; checkQuotaWarning(q); },
+});
 
-function refreshQuota() {
-  if (quotaPending) return quotaPending;
-  quotaPending = readQuota({})
-    .then((q) => {
-      lastQuota = q;
-      checkQuotaWarning(q);
-      return q;
-    })
-    .catch((err) => {
-      // readQuota already turns every failure into an `absent` result, so
-      // reaching here means a bug rather than a network problem. Say so, and
-      // keep ABSENCE rather than a stale-but-confident figure.
-      console.log('[host] quota read threw:', err && err.message);
-      lastQuota = { ok: false, state: 'absent', windows: [], error: 'read failed' };
-      return lastQuota;
-    })
-    .finally(() => { quotaPending = null; });
-  return quotaPending;
-}
+function refreshQuota() { return hostQuota.refresh(); }
 
 // A window crossing a threshold is an EVENT, announced once per window
 // INSTANCE -- see host/quota.js for why the milestone announcer could not be
@@ -2991,6 +2980,8 @@ process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 // silently -- release() only ever removes our own lock, so running it twice
 // (here and in shutdown) is harmless.
 process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOCK, lockOwner); });
+// The quota poller's lease goes too, so another host polls on its next tick, not after the bound.
+process.on('exit', () => { hostQuota.release(); });
 
 // --- boot: the session lock, then the session (Extension X1/X3) -------------
 // Our own OS start time (for the lock's pid-reuse check: one powershell.exe,

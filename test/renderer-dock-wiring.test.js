@@ -1,7 +1,7 @@
 'use strict';
 /**
  * renderer.js's dock-zone wiring (layout pass L1, PR #82 review). The rules
- * live in pure, tested modules (app/dock-layout.js, app/dock-zones-display.js);
+ * live in pure, tested modules (app/dock-effects.js, app/dock-tree.js, app/dock-tree-display.js);
  * this pins that the page actually USES them where the reviewers found the
  * page going wrong. Source assertions, because renderer.js needs a real DOM;
  * verify/probe-dock-tree.js drives the same paths in a real window (check 6: a
@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('path');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-const JS = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8'));
+const JS = strip(fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8').replace(/\r\n/g, '\n'));   // a CRLF checkout reads the same
 
 function fnBody(name) {
   const start = JS.indexOf(`function ${name}(`);
@@ -28,7 +28,7 @@ test('Dexter F2 / Miguel B1: a redraw moves focus only as renderEffects says -- 
   // renderLayout called term.focus() on every redraw with the vault showing: a
   // resize mid-secret typed the rest of the secret into the session.
   const body = fnBody('renderLayout');
-  assert.match(body, /const fx = window\.dockZones\.renderEffects\(shownModules, now, \{ userAction, quiet \}\);/);
+  assert.match(body, /const fx = window\.dockEffects\.renderEffects\(shownModules, now, \{ userAction, quiet \}\);/);
   const focusCalls = [...body.matchAll(/term\.focus\(\)/g)];
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
   assert.match(body, /if \(fx\.focus === 'term'\) term\.focus\(\);/);
@@ -69,7 +69,7 @@ test('Dexter F4: the window seeds its own selection ONCE at load, and draws thro
 });
 
 test('Dexter F8: a tab\'s own layout goes through sendOverride, and the host\'s word through overrideOnHello', () => {
-  assert.match(fnBody('applyLayoutOverride'), /window\.dockZones\.overrideOnHello\(pendingOverride, incoming\)/);
+  assert.match(fnBody('applyLayoutOverride'), /window\.dockEffects\.overrideOnHello\(pendingOverride, incoming\)/);
   assert.match(fnBody('sendOverride'), /pendingOverride = \{ layout \};/);
   const direct = [...JS.matchAll(/type: 'layout-override'/g)].length;
   assert.strictEqual(direct, 2, 'sent from sendOverride and the resend in applyLayoutOverride only');
@@ -88,7 +88,7 @@ test('D1: #dock changing size without a window resize (the header wrapping) re-f
 });
 
 test('entering focus mode gives the terminal the keyboard, never an invisible panel field', () => {
-  // Found by verify/probe-dock-zones.js: focus left in #vault-secret stayed in a
+  // Found by L1's probe (verify/probe-dock-zones.js, since replaced by probe-dock-tree.js): focus left in #vault-secret stayed in a
   // hidden input -- typing went into it and Ctrl+B never reached the terminal.
   assert.match(fnBody('applyFocusMode'), /if \(on\) term\.focus\(\);/);
 });
@@ -103,7 +103,7 @@ test('#36: the socket opening focuses the terminal only as focusOnOpen says -- n
   assert.match(handler, /sendResize\(\);/, 'the slice reaches past the focus line');
   assert.match(handler, /const first = !socketOpened;\s+socketOpened = true;/, '"first" is a flag, not read from focus');
   assert.strictEqual(focusCalls.length, 1, 'exactly one, and it is gated');
-  assert.match(handler, /if \(window\.dockZones\.focusOnOpen\(first, window\.dockZones\.describeFocus\(document\.activeElement, term\.element\)\)\) term\.focus\(\);/);
+  assert.match(handler, /if \(window\.dockEffects\.focusOnOpen\(first, window\.dockEffects\.describeFocus\(document\.activeElement, term\.element\)\)\) term\.focus\(\);/);
 });
 
 test('PR #100 Dexter F6 / F3: a divider release is applied to the placement as it is NOW, and a drag that asks for nothing stores nothing', () => {
@@ -173,7 +173,8 @@ test('D2: a float move or resize is drawn while it goes and saved once on releas
   assert.match(JS, /if \(e\.buttons === 0\) \{ cancelFloatDrag\(e\); return; \}/, 'the move handler ends a drag whose release never came');
   // The tab drag excludes the float its panel is dragged out of, and a drop on the terminal's middle asks the model where.
   assert.match(JS, /DTm\.floatOf\(placementLayout\(\), press\.id\)/);
-  assert.match(JS, /d\.target\.float === true \? \{ float: DTm\.floatSpotAt\(d\.at, d\.viewport\) \} : d\.target/);
+  assert.match(JS, /const landingFor = \(target, at, viewport\) => \(target\.float === true \? \{ float: DTm\.floatSpotAt\(at, viewport\) \} : target\);/);
+  assert.match(JS, /const target = landingFor\(d\.target, d\.at, d\.viewport\);/, 'the tab drag and the keyboard move land a drop the same way');
 });
 
 test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows its own pointer, remembers the tabs it grabbed, and draws once per frame without a terminal refit', () => {
@@ -185,7 +186,7 @@ test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows 
   assert.match(JS, /if \(!d\.frame\) d\.frame = requestAnimationFrame\(\(\) => drawDrag\(d\)\);/, 'one draw per animation frame');
   assert.match(JS, /renderLayout\(\{ refit: false \}\)/, 'a float move does not change the terminal\'s rectangle');
   assert.match(JS, /const same = placementOf\(incoming\) === placementOf\(globalLayout\);\r?\n\s+globalLayout = incoming;\r?\n\s+if \(!ownLayout && !same\) renderLayout\(\);/, 'the echo of this window\'s own save is not redrawn (it would refit the terminal)');
-  assert.match(JS, /function renderLayout\(\{ userAction = false, refit = true, quiet = false \} = \{\}\)/);
+  assert.match(JS, /function renderLayout\(\{ userAction = false, refit = true, settle = false, quiet = false \} = \{\}\)/);
   assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ fit\.fit\(\); sendResize\(\); \} catch \{\} \}, 0\);/);
 });
 
@@ -240,4 +241,157 @@ test('PR #100 Miguel S3: every save of the global layout goes through one helper
   assert.match(body, /Couldn\\'t save the layout/);
   assert.match(body, /, notSaved\);/, 'and so is a rejection');
   assert.strictEqual([...JS.matchAll(/saveGlobalLayout\(/g)].length, 5, 'definition + commitPlacement + dropOwnLayout + the two migrations');
+});
+
+// --- dockable panels D4 -----------------------------------------------------------------------------
+
+test('D4: a redraw forgets collapsed groups that are gone and hands the open popover to the plan', () => {
+  const body = fnBody('renderLayout');
+  assert.match(body, /if \(window\.dockEffects\.pruneReady\(layoutLoaded, helloSeen\)\) \{\s+const pruned = DTm\.pruneCollapsed\(selection, placementLayout\(\)\);/, 'and only once the stored layout is in: the launch placeholder has none of the groups a saved collapse names');
+  const load = fnBody('loadLayout');
+  assert.strictEqual([...load.matchAll(/layoutLoaded = true;/g)].length, 3, 'set in the three branches that draw a layout that was read, never when it was unreadable (nothing to prune against)');
+  assert.match(body, /\{ faceSize: window\.faceSize, peek \}\)/);
+  assert.match(body, /if \(peek && !plan\.peek\) peek = null;/, 'a popover whose rail is gone closes itself');
+});
+
+test('D4: a rail\'s button opens its popover instead of selecting a tab nobody can see; a popover tab only switches it', () => {
+  const at = JS.indexOf("document.addEventListener('click', (e) => {\n  const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');");
+  assert.ok(at !== -1, 'the tab and rail click handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(handler, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{ openPeek\(id, e\.detail === 0\); return; \}/);
+  assert.match(handler, /peekAfter\(peek, \{ type: 'tab', module: id \}\)/);
+  assert.match(handler, /renderLayout\(\{ refit: false \}\)/, 'a popover never changes the terminal\'s rectangle');
+  assert.ok(handler.indexOf('openPeek') < handler.indexOf('selectModule(id)'), 'the rail is decided before the plain tab');
+  assert.match(fnBody('openPeek'), /renderLayout\(\{ refit: false \}\)/);
+});
+
+test('D4: any change of the placement closes the popover; a press outside it, and Esc, close it too', () => {
+  assert.match(fnBody('commitPlacement'), /peek = null;/);
+  assert.match(JS, /peekAfter\(peek, \{ type: 'outside' \}\)/);
+  assert.match(JS, /peekAfter\(peek, \{ type: 'escape' \}\)/);
+  assert.match(JS, /if \(e\.key !== 'Escape' \|\| !peek \|\| kbMove\) return;/, 'a keyboard move owns Esc while it lasts');
+});
+
+test('D4: collapsing is the window\'s selection: it goes through commitSelection, never the shared layout', () => {
+  const body = fnBody('toggleGroupCollapse');
+  assert.match(body, /commitSelection\(DTm\.toggleCollapse\(selection, placementLayout\(\), groupId\)\);/);
+  assert.doesNotMatch(body, /commitPlacement|saveGlobalLayout|sendOverride/);
+});
+
+test('D4: Reset layout and applying a preset open every group in this window first (group names are handed out again by the next layout)', () => {
+  assert.match(JS, /on: \{ click: \(\) => \{ openEveryGroup\(\); commitPlacement\(DTm\.defaultLayout\(MODULE_IDS\), \{ justThisTab: check\.box\.checked \}\); closeLayoutMenu\(\); \} \},/);
+  assert.match(fnBody('applyPreset'), /openEveryGroup\(\);\s+commitPlacement\(r\.layout, \{ justThisTab \}\);/);
+  assert.match(fnBody('openEveryGroup'), /collapsed: \{\}/);
+});
+
+test('D4: a divider moves with the arrow keys by the drag\'s rules, and keeps the keyboard where it is', () => {
+  const at = JS.indexOf("document.getElementById('dock').addEventListener('keydown', (e) => {\n    const g = e.target.closest && e.target.closest('.dgutter');");
+  assert.ok(at !== -1, 'the divider key handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n  });', at));
+  assert.match(handler, /dividerKeySizes\(placementLayout\(\), lastPlan\.splits, path, Number\(g\.dataset\.i\), e\.key\)/);
+  assert.doesNotMatch(handler, /commitPlacement/, 'a key press is drawn, not saved: a held key would write ~30 times a second (PR #159 Miguel I4)');
+  assert.match(handler, /dragLayout = DTm\.setSplitSizes\(placementLayout\(\), path, moved\.sizes\);\s+renderLayout\(\);/);
+  assert.match(handler, /if \(dividerDrag \|\| floatDrag\) return;/, 'a float or divider drag owns dragLayout (PR #159 Dexter r2 N2)');
+  assert.match(handler, /keyFlush = setTimeout\(flushKeys, 400\)/);
+  const flush = JS.slice(JS.indexOf('const flushKeys = () => {'), JS.indexOf('};', JS.indexOf('const flushKeys = () => {')));
+  assert.match(flush, /const rebased = window\.dockTreeView\.rebaseDrag\(committedLayout\(\), b\);\s+if \(rebased\) commitPlacement\(DTm\.setSplitSizes\(committedLayout\(\), b\.path, rebased\), \{ userAction: false \}\);/, 'one save when the burst ends, on the placement as it is NOW (PR #159 Dexter r2 N1); userAction false: focus stays on the divider');
+  assert.doesNotMatch(flush, /commitPlacement\(l\b|const l = dragLayout/, 'never the stale whole layout');
+  assert.match(flush, /if \(dividerDrag \|\| floatDrag\) return;/);
+  assert.match(JS, /window\.addEventListener\('pagehide', flushKeys\);/, 'a closing window keeps the last presses (N3)');
+  assert.match(JS, /flushKeys\(\);\s+\/\/ a key burst still waiting to be saved is saved first/, 'a pointer drag starts from what was pressed');
+});
+
+test('D4: the keyboard move takes every key while it lasts, drops through the tab drag\'s own landing and commit, and ends on Esc', () => {
+  const at = JS.indexOf("window.addEventListener('keydown', (e) => {\n    if (!kbMove) return;");
+  assert.ok(at !== -1, 'the keyboard move handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n  }, true);', at));
+  assert.match(handler, /e\.preventDefault\(\); e\.stopPropagation\(\);/, 'no key reaches the terminal');
+  assert.ok(handler.indexOf('e.stopPropagation()') < handler.indexOf("e.key === 'Escape'"), 'swallowed before any key is read');
+  assert.match(handler, /DTm\.dock\(settledLayout\(\), id, landingFor\(target, at, vp\)\)/);
+  assert.match(handler, /commitPlacement\(next, \{ select: id \}\)/);
+  assert.match(handler, /nextZone\(boxes\(\), dockViewport\(\), kbMove\.target, e\.key === 'Tab' && e\.shiftKey \? 'ShiftTab' : e\.key/);
+  const end = JS.indexOf('ws.onclose = () => {');
+  assert.match(JS.slice(end, end + 600), /cancelKeyboardMove\(\);/, 'the socket closing drops a keyboard move in flight');
+  assert.match(fnBody('renderLayout'), /kbRefresh\(\);/, 'a redraw under a move lights the zones of the dock as it is now');
+});
+
+test('D4: the settle motion is for what the person did, and reads the reduced-motion setting', () => {
+  assert.match(fnBody('commitPlacement'), /renderLayout\(\{ userAction, refit, settle: userAction \}\)/, 'a float\'s move (userAction false) never glides');
+  assert.match(fnBody('commitSelection'), /renderLayout\(\{ userAction: true, settle: true \}\)/);
+  const body = fnBody('settleDock');
+  assert.match(body, /matchMedia\('\(prefers-reduced-motion: reduce\)'\)\.matches/);
+  assert.match(body, /window\.dockTreeView\.settleMs\(reduced\)/);
+  // Nothing animates while a divider or a float is dragged: those redraws are plain renderLayout() calls.
+  assert.doesNotMatch(JS.slice(JS.indexOf('function initDividers'), JS.indexOf("document.getElementById('dock').addEventListener('keydown'")), /settle: true/);
+});
+
+test('D4: the page\'s CSS settles only the groups, rails and dividers, only while the dock has .settling, and snaps under prefers-reduced-motion', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const rule = html.match(/#dock\.settling > \.dgroup, #dock\.settling > \.drail, #dock\.settling > \.dgutter \{\s*transition: ([^;]+);/);
+  assert.ok(rule, 'the settle rule must be findable');
+  assert.match(rule[1], /^left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out$/, 'about 120 ms, geometry only');
+  assert.doesNotMatch(html, /#termwrap\s*\{[^}]*transition/, 'xterm refits to the rectangle it ends in: the terminal never glides');
+  const reduced = html.match(/@media \(prefers-reduced-motion: reduce\) \{\s*#dock\.settling > \.dgroup, #dock\.settling > \.drail, #dock\.settling > \.dgutter \{ transition: none; \}\s*\}/);
+  assert.ok(reduced, 'reduced motion switches the glide off');
+  assert.ok(html.indexOf(reduced[0]) > html.indexOf(rule[0]), 'and comes after it, so it wins');
+});
+
+test('PR #159 Miguel B1: Escape is the popover\'s only when focus is in it or on its rail; the terminal\'s interrupt is never taken', () => {
+  const at = JS.indexOf("window.addEventListener('keydown', (e) => {\n  if (e.key !== 'Escape' || !peek || kbMove) return;");
+  assert.ok(at !== -1);
+  const handler = JS.slice(at, JS.indexOf('\n}, true);', at));
+  assert.match(handler, /const held = document\.activeElement;\s+if \(!held \|\| !held\.closest \|\| !held\.closest\('\.dpeek, \.drail'\)\) return;/);
+  assert.ok(handler.indexOf('.closest(') < handler.indexOf('preventDefault'), 'decided before any key is taken');
+});
+
+test('PR #159 Miguel I2 / Dexter 4: the popover closes when the keyboard leaves it, and a keyboard move starting from it draws it away', () => {
+  assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+const to = e\.relatedTarget;\s+if \(!peek \|\| !to \|\| !to\.closest \|\| to\.closest\('\.dpeek, \.drail'\)\) return;/);
+  assert.match(JS, /if \(peek\) \{ peek = null; renderLayout\(\{ refit: false \}\); \}/);
+});
+
+test('PR #159 Miguel S1 / S3 / S5: focus into the tab menu only from the keyboard; "no zone further" is said; a held Enter does not drop', () => {
+  assert.match(JS, /if \(first && byKeyboard\) first\.focus\(\);/);
+  assert.match(JS, /e\.button !== 2\);/);
+  assert.match(JS, /No zone further that way\./);
+  assert.match(JS, /if \(e\.repeat\) return;/);
+});
+
+test('a change of placement ends a pending arrow-key burst first, so its drawn sizes cannot hide the change for 400 ms', () => {
+  // A drop made while dragLayout still held the burst was saved but drawn as the old picture until the flush.
+  assert.match(fnBody('commitPlacement'), /^function commitPlacement[^\n]*\n\s+if \(flushKeyBurst\) flushKeyBurst\(\);/);
+  assert.match(JS, /flushKeyBurst = flushKeys;/);
+});
+
+test('PR #159 Dexter 1: a collapse is forgotten only after the hello has said whether this tab has its own layout', () => {
+  assert.match(fnBody('renderLayout'), /if \(window\.dockEffects\.pruneReady\(layoutLoaded, helloSeen\)\) \{/);
+  assert.match(JS, /helloSeen = true;\n\s+if \('layoutOverride' in msg\) applyLayoutOverride\(msg\.layoutOverride\);/, 'the hello sets it before its redraw');
+  assert.strictEqual([...JS.matchAll(/helloSeen = true;/g)].length, 1, 'set nowhere else');
+});
+
+test('PR #159 Dexter 5 / Miguel S4: the keyboard drop says what dock did, and focus returns to a rail button when there is no tab', () => {
+  assert.match(JS, /const moved = placementOf\(DTm\.normalize\(next, MODULE_IDS\)\) !== placementOf\(placementLayout\(\)\);\n\s+commitPlacement\(next, \{ select: id \}\);\n\s+say\(window\.dockDrag\.describeDrop\(moved, labelOf\(id\), window\.dockDrag\.describeTarget\(target, nameOf\)\)\);/);
+  assert.doesNotMatch(JS, /say\(`Moved /);
+  assert.match(JS, /const refocus = id => \{ const b = document\.querySelector\(`\.zone-tabs button\[data-module="\$\{CSS\.escape\(id\)\}"\], \.drail button\[data-module="\$\{CSS\.escape\(id\)\}"\]`\); if \(b\) b\.focus\(\); \};/);
+});
+
+test('PR #159 Miguel I2: only a double-click on the EMPTY part of a tab bar folds the group; on a tab it does nothing new', () => {
+  const at = JS.indexOf("document.addEventListener('dblclick', (e) => {");
+  assert.ok(at !== -1, 'the dblclick handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(handler, /if \(bar\) \{\n\s+if \(e\.target === bar\) toggleGroupCollapse\(bar\.parentNode\.dataset\.group\);\n\s+return;\n\s+\}/);
+});
+
+test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on open, terminal on a mouse close (never over the vault), rail on Enter', () => {
+  const body = fnBody('openPeek');
+  assert.match(body, /const goes = window\.dockTreeView\.peekFocus\(!!peek, byKeyboard\);/);
+  assert.match(body, /if \(goes === 'terminal'\) \{\n\s+if \(!shownModules\.has\('vault'\)\) term\.focus\(\);/);
+  assert.match(body, /goes === 'popover' \? document\.querySelector\('\.dpeek \.zone-tabs button\.on'\)/);
+  assert.match(JS, /const chosen = document\.querySelector\('\.dpeek \.zone-tabs button\.on'\);[^\n]*\n\s+if \(chosen\) chosen\.focus\(\);/, 'a tab pressed in the popover keeps the focus in it after the redraw');
+});
+
+test('PR #159 Dexter 6: an operation on the placement is built on the layout AFTER a pending key burst is saved, so a push that arrived in the burst survives', () => {
+  assert.match(JS, /function settledLayout\(\) \{ if \(flushKeyBurst\) flushKeyBurst\(\); return placementLayout\(\); \}/);
+  assert.doesNotMatch(JS, /DTm\.(dock|hide|show)\(placementLayout\(\)/, 'a dock / hide / show built on the drawn layout would carry a stale whole into the save');
+  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 12, 'every operation site');
+  assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
 });

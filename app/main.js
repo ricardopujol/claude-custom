@@ -191,6 +191,11 @@ if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
 // networking, which this does not touch), and the panel reaches approved hosts through main (app/canvas-fetch.js).
 app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
 
+// A new window must not wait for the E-cores: Chromium starts renderers as background (Idle + EcoQoS), Windows runs those
+// on the E-cores only, and with them saturated a new window stayed blank for 60+ s (measured 2026-10-13, the story is in
+// test/renderer-backgrounding-wiring.test.js). Priority only: hidden pages are still throttled by Chromium's timers.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+
 // `hosts/<port>.token`, and nothing else: written only by the host that won
 // that port's bind (PR #75 F2), so it names whoever is listening. Null when it
 // can't be read.
@@ -465,7 +470,7 @@ function createWindow() {
     // minimise and close (app/tab-strip.js windowChrome). The title still
     // feeds alt-tab and the taskbar.
     frame: !chrome.framelessWindow,
-    // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
+    // Room for the terminal's minimum and two side panels (app/dock-tree.js).
     minWidth: 640,
     minHeight: 480,
     // The project's own app colour when it has one, so a window does not

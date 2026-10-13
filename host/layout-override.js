@@ -6,7 +6,7 @@
  * gone when the session ends (the host exits with its claude).
  *
  * The host doesn't judge the layout's shape: every page runs it through
- * app/dock-layout.js normalizeLayout before drawing it, and a newer build may
+ * app/dock-tree.js readAny before drawing it, and a newer build may
  * know modules this host has never heard of. It only refuses what could hurt
  * the host itself -- something that isn't a layout-shaped value at all, or one
  * big enough to bloat every hello and broadcast.
