@@ -1,124 +1,16 @@
 'use strict';
 /**
- * What the page draws for a layout (layout pass L1, Task 5): the pure half of
- * app/dock-zones-display.js. The DOM half (applyPlan) only copies this onto
- * elements; verify/probe-dock-zones.js measures the result in a real window.
+ * What a redraw may do besides drawing, and the page's focus rules (layout pass L1, PR #82; backlog #36): the
+ * tested half of app/dock-effects.js (these rules lived in app/dock-zones-display.js until dockable panels D4).
  */
 const test = require('node:test');
 const assert = require('node:assert');
 
-const { zonePlan, dragSize, layoutRows, moveTargets, renderEffects, describeFocus, focusOnOpen, afterLayoutGet, overrideOnHello } = require('../app/dock-zones-display');
-const { defaultLayout, moveModule, selectModule, MIN, RAIL } = require('../app/dock-layout');
-const { TABS } = require('../app/side-tabs');
-const { faceSize } = require('../app/roster-width');
+const { renderEffects, describeFocus, focusOnOpen, overrideOnHello, pruneReady, WIDE_FACE_CHROME } = require('../app/dock-effects');
+const T = require('../app/dock-tree');
 
-const IDS = TABS.map(t => t.id);
-const VP = { width: 1200, height: 800 };
-const plan = (layout, vp = VP) => zonePlan(layout, TABS, vp, { faceSize });
-
-test('the default layout draws today\'s window: one right zone, seven tabs, Agents on, 180 wide', () => {
-  const p = plan(defaultLayout(IDS));
-  const r = p.zones.right;
-  assert.strictEqual(r.empty, false);
-  assert.strictEqual(r.collapsed, false);
-  assert.strictEqual(r.shape, 'tall');
-  assert.strictEqual(r.size, 180);
-  assert.strictEqual(r.panel, 'agents');
-  assert.deepStrictEqual(r.tabs.map(t => t.id), IDS);
-  assert.deepStrictEqual(r.tabs.filter(t => t.on).map(t => t.id), ['agents']);
-  assert.deepStrictEqual(r.tabs[1], { id: 'vault', label: 'Vault', title: 'Local encrypted secrets', on: false });
-  for (const z of ['left', 'top', 'bottom']) {
-    assert.strictEqual(p.zones[z].empty, true, z);
-    assert.strictEqual(p.zones[z].size, 0, z);
-    assert.strictEqual(p.zones[z].panel, null, z);
-  }
-  assert.deepStrictEqual(p.shown, ['agents']);
-  assert.strictEqual(p.face, faceSize(180));
-});
-
-test('a collapsed zone keeps its tabs and shows no panel', () => {
-  const p = plan(selectModule(defaultLayout(IDS), 'agents'));
-  assert.strictEqual(p.zones.right.collapsed, true);
-  assert.strictEqual(p.zones.right.panel, null);
-  assert.strictEqual(p.zones.right.size, RAIL.side);
-  assert.strictEqual(p.zones.right.tabs.length, IDS.length);
-  assert.deepStrictEqual(p.shown, []);
-});
-
-test('top and bottom zones are wide; every zone that shows a module lists it in shown', () => {
-  const l = moveModule(moveModule(defaultLayout(IDS), 'vault', 'top'), 'fog', 'left');
-  const p = plan(l);
-  assert.strictEqual(p.zones.top.shape, 'wide');
-  assert.strictEqual(p.zones.top.panel, 'vault');
-  assert.strictEqual(p.zones.left.shape, 'tall');
-  assert.deepStrictEqual([...p.shown].sort(), ['agents', 'fog', 'vault']);
-});
-
-test('hidden modules get no tab anywhere', () => {
-  const p = plan(moveModule(defaultLayout(IDS), 'style', 'hide'));
-  for (const z of Object.values(p.zones)) assert.ok(!z.tabs.some(t => t.id === 'style'));
-});
-
-test('portraits follow the Agents zone: its width when tall, its height when wide', () => {
-  const tall = plan(defaultLayout(IDS));
-  assert.strictEqual(tall.face, faceSize(180));
-  const wide = plan(moveModule(defaultLayout(IDS), 'agents', 'bottom'));
-  assert.strictEqual(wide.face, Math.max(28, Math.min(150, wide.zones.bottom.size - 60)));
-});
-
-test('with Agents not showing, the portrait size is left alone (null)', () => {
-  assert.strictEqual(plan(selectModule(defaultLayout(IDS), 'vault')).face, null);
-});
-
-test('the sizes are the fitted ones, not the stored ones', () => {
-  const l = { ...defaultLayout(IDS), size: { left: 180, right: 5000, top: 160, bottom: 160 } };
-  assert.strictEqual(plan(l).zones.right.size, VP.width - 320);
-});
-
-// --- dragSize: the size under the pointer while a grip is dragged -------------
-
-const RECT = { left: 100, right: 1100, top: 50, bottom: 750 };
-
-test('each zone is measured from its own anchored edge', () => {
-  assert.strictEqual(dragSize('right', { x: 900, y: 0 }, RECT), 200);
-  assert.strictEqual(dragSize('left', { x: 340, y: 0 }, RECT), 240);
-  assert.strictEqual(dragSize('top', { x: 0, y: 250 }, RECT), 200);
-  assert.strictEqual(dragSize('bottom', { x: 0, y: 600 }, RECT), 150);
-});
-
-test('a pointer past the anchored edge or a junk point gives null, not a negative size', () => {
-  assert.strictEqual(dragSize('right', { x: 1200, y: 0 }, RECT), null);
-  assert.strictEqual(dragSize('left', { x: NaN, y: 0 }, RECT), null);
-  assert.strictEqual(dragSize('middle', { x: 500, y: 500 }, RECT), null);
-  assert.strictEqual(dragSize('top', { x: 0, y: 10 }, null), null);
-});
-
-test('MIN is respected later by setSize, so dragSize may answer below it', () => {
-  assert.ok(dragSize('right', { x: 1090, y: 0 }, RECT) < MIN.side);
-});
-
-// --- the layout menu and the right-click menu (Task 7) ------------------------
-
-test('the layout menu lists every module with where it is, hidden ones included', () => {
-  const l = moveModule(moveModule(defaultLayout(IDS), 'vault', 'left'), 'style', 'hide');
-  const rows = layoutRows(l, TABS);
-  assert.deepStrictEqual(rows.map(r => r.id), IDS);           // TABS order, stable
-  assert.deepStrictEqual(rows.find(r => r.id === 'vault'), { id: 'vault', label: 'Vault', at: 'left' });
-  assert.strictEqual(rows.find(r => r.id === 'style').at, 'hidden');
-  assert.strictEqual(rows.find(r => r.id === 'agents').at, 'right');
-});
-
-test('the right-click menu offers every zone and Hide, except where the module already is', () => {
-  const t = moveTargets(defaultLayout(IDS), 'vault');
-  assert.deepStrictEqual(t.map(x => x.target), ['left', 'right', 'top', 'bottom', 'hide']);
-  assert.deepStrictEqual(t.map(x => x.label), ['Left', 'Right', 'Top', 'Bottom', 'Hide']);
-  assert.deepStrictEqual(t.filter(x => !x.enabled).map(x => x.target), ['right']);
-  const hidden = moveTargets(moveModule(defaultLayout(IDS), 'vault', 'hide'), 'vault');
-  assert.deepStrictEqual(hidden.filter(x => !x.enabled).map(x => x.target), ['hide']);
-});
-
-test('an unknown module has nowhere to go', () => {
-  assert.deepStrictEqual(moveTargets(defaultLayout(IDS), 'ghost'), []);
+test('the wide-group portrait chrome is the card name line plus the tab bar', () => {
+  assert.strictEqual(WIDE_FACE_CHROME, 60);
 });
 
 // --- what a redraw may do (PR #82 Dexter F2, Miguel B1) ------------------------
@@ -204,19 +96,6 @@ test('describeFocus reads an element into the descriptor focusOnOpen decides on'
   assert.strictEqual(describeFocus(div, termEl).type, null);
   assert.strictEqual(describeFocus(field, null).isTerminal, false, 'no terminal yet');
 });
-
-// --- reading the stored layout (PR #82 Dexter F3, Miguel I1) -------------------
-
-test('only a MISSING store file means "migrate"; unreadable or corrupt never overwrites it', () => {
-  assert.strictEqual(afterLayoutGet({ status: 'ok', layout: { version: 1 } }), 'use');
-  assert.strictEqual(afterLayoutGet({ status: 'missing', layout: null }), 'migrate');
-  for (const st of ['unreadable', 'corrupt', 'whatever']) {
-    assert.strictEqual(afterLayoutGet({ status: st, layout: null }), 'keep', st);
-  }
-  assert.strictEqual(afterLayoutGet({ status: 'ok', layout: [] }), 'keep', 'ok but not a layout object');
-  for (const bad of [null, undefined, 'x', 7]) assert.strictEqual(afterLayoutGet(bad), 'keep', String(bad));
-});
-
 // --- a tab's own layout changed while the socket was down (Dexter F8) ---------
 
 test('with nothing pending, the host\'s word is applied', () => {
@@ -246,17 +125,6 @@ test('after the user\'s own click or key, focus returns to the terminal -- unles
   assert.strictEqual(renderEffects(S('agents'), S('fog'), { userAction: false }).focus, null);
 });
 
-test('Dexter F7: a zone squeezed below its minimum is drawn as its rail, panel hidden, selection kept', () => {
-  const l = defaultLayout(IDS);                           // Agents showing on the right
-  const p = zonePlan(l, TABS, { width: 400, height: 800 }, { faceSize });   // 80 px for the zone: < 120
-  assert.strictEqual(p.zones.right.collapsed, true);
-  assert.strictEqual(p.zones.right.panel, null);
-  assert.strictEqual(p.zones.right.size, RAIL.side);
-  assert.deepStrictEqual(p.shown, []);
-  assert.strictEqual(p.zones.right.tabs.find(t => t.id === 'agents').on, true, 'still the selected tab');
-  assert.strictEqual(l.active.right, 'agents', 'the layout itself is untouched');
-});
-
 // --- lean mode (#62, PR #140 Dexter F1): a remount that is not the person opening the vault takes no focus ---------------
 
 test('renderEffects: quiet (lean mode putting the panels back) never moves the focus to the vault; what left is still reported', () => {
@@ -267,4 +135,32 @@ test('renderEffects: quiet (lean mode putting the panels back) never moves the f
   assert.strictEqual(quiet.focus, null);
   assert.deepStrictEqual(quiet.newlyShown.sort(), ['git', 'vault'], 'the panels still load');
   assert.strictEqual(renderEffects(withVault, none, { quiet: true }).vaultLeft, true, 'its secrets still go out of sight');
+});
+
+// --- PR #159 Dexter 1: forget a collapse only against the layout this window will draw ---------------------------------
+
+test('pruneReady: the stored layout is in AND the host has said whether this tab has its own layout', () => {
+  assert.strictEqual(pruneReady(false, false), false, 'the launch placeholder');
+  assert.strictEqual(pruneReady(true, false), false, 'the global layout is in but the tab may have its own: that comes with the hello');
+  assert.strictEqual(pruneReady(false, true), false);
+  assert.strictEqual(pruneReady(true, true), true);
+  assert.strictEqual(pruneReady(true, undefined), false, 'unknown is not ready');
+});
+
+test('Dexter 1: a tab whose own layout holds the collapsed group keeps it when the global read beats the hello', () => {
+  const g = (id, ...tabs) => ({ type: 'group', id, tabs });
+  const v2 = root => ({ version: 2, root, floats: [], hidden: [], seat: {} });
+  const row = (kids, sizes) => ({ type: 'split', dir: 'row', kids, sizes });
+  const IDS = ['agents', 'models', 'git'];
+  const global = T.normalize(v2(row([{ type: 'term' }, g('g1', 'agents')], [0, 180])), IDS);
+  const own = T.normalize(v2(row([{ type: 'term' }, g('g1', 'agents'), g('g3', 'models')], [0, 180, 180])), IDS);
+  let selection = T.toggleCollapse(T.cleanSelection(null), own, 'g3');
+  // The order the page ran in: the tree-get answer first, the hello after.
+  const redraw = (layout, ready) => { if (ready) selection = T.pruneCollapsed(selection, layout); };
+  redraw(global, pruneReady(true, false));
+  assert.deepStrictEqual(Object.keys(selection.collapsed), ['g3'], 'not pruned against the layout this tab does not use');
+  redraw(own, pruneReady(true, true));
+  assert.deepStrictEqual(Object.keys(selection.collapsed), ['g3'], 'and still there once the own layout is known');
+  // The rule it replaces would have lost it:
+  assert.deepStrictEqual(Object.keys(T.pruneCollapsed(T.toggleCollapse(T.cleanSelection(null), own, 'g3'), global).collapsed), []);
 });

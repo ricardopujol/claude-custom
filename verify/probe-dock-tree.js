@@ -34,6 +34,14 @@
  *      delete asks, then removes; a second tab sees the list; an unreadable layout-presets.json is left
  *      untouched, shown as "couldn't read", saving is off, and it recovers when the file becomes readable
  *
+ *  13  dockable panels D4: a group collapsed to its rail in this window only (the layout file and the push count do
+ *      not move); a rail's button opens its panel as a popover (on top, inside the window, nothing resized or saved,
+ *      switching tabs, Esc / a press outside / the button again close it, Enter on the button puts focus in it,
+ *      widening the window or opening the group closes it); dividers as focusable separators moved 16 px by the
+ *      arrow keys along them, stopping at the minimum; the tab's menu and its Move (zones lit with one hot, the
+ *      words, arrows, Esc, Enter, Tab to the float zone); the settle class and transition, and none under
+ *      reduced motion
+ *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* variable are deleted before the window is launched; registry, portraits,
  * uploads and user data are temp folders. The window's store is `<worktree>/.harness/state`: the
@@ -168,6 +176,7 @@ async function sizesAgree(app) {
   const s = await waitFor(async () => {
     const v = await viewState(app);
     if (!v || !v.ok || !v.fit || !v.sent) return null;
+    if (v.settling) return null;                  // a drop glides for 120 ms (D4): boxes read mid-glide are in between
     const same = v.term.cols === v.fit.cols && v.term.rows === v.fit.rows
       && v.sent.cols === v.term.cols && v.sent.rows === v.term.rows;
     return same ? v : null;
@@ -364,7 +373,7 @@ async function main() {
   const s3 = ready && (await settled(app)).s;
   const g3 = s3 && s3.groups;
   check('3: an unreadable layout-tree.json draws the default: one right group of 180, every module, Agents showing',
-    !!g3 && g3.length === 1 && g3[0].id === 'right' && Math.abs(g3[0].rect.width - 180) <= 1 && g3[0].tabs.length === IDS.length && g3[0].panels[0] === 'agents',
+    !!g3 && g3.length === 1 && g3[0].id === 'right' && Math.abs(g3[0].rect.width - 180) <= 1 && g3[0].tabs.length === IDS.length - 1 && /* canvas starts hidden */ g3[0].panels[0] === 'agents',
     JSON.stringify(g3 && g3.map(g => [g.id, g.rect.width, g.tabs.length, g.panels])));
   await sleep(1500);
   check('3: ...and the file is left exactly as it was', readBytes(TREE_FILE).toString() === junk);
@@ -417,7 +426,7 @@ async function main() {
     !!gr('agents') && !!gr('vault') && gr('agents') !== gr('vault') && sameRow(gr('agents'), gr('vault')) && gr('agents').rect.right <= gr('vault').rect.left + 6
       && gr('agents').rect.top >= cur.termwrap.bottom - 1,
     JSON.stringify([gr('agents') && gr('agents').rect, gr('vault') && gr('vault').rect]));
-  check('4: ...and the rest hidden', JSON.stringify([...cur.layout.hidden].sort()) === JSON.stringify(['models', 'projects', 'style']), JSON.stringify(cur.layout.hidden));
+  check('4: ...and the rest hidden', JSON.stringify([...cur.layout.hidden].sort()) === JSON.stringify(['canvas', 'models', 'projects', 'style']), JSON.stringify(cur.layout.hidden));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '4-example.png') });
   const example = cur.layout;
 
@@ -1177,6 +1186,210 @@ async function main() {
     check('12: ...and a save leaves them in the file as they were, unknown fields included, with the new preset after them',
       Array.isArray(fl) && fl.length === 4 && fl[0].pinned === true && fl[1] === 'junk' && JSON.stringify(fl[2]) === '{"shape":"later"}' && fl[3].name === 'Plus', JSON.stringify(fl).slice(0, 300));
     await view(app, 'closeMenu');
+  }
+
+  // 13 (dockable panels D4: collapse one group, a rail's panel over the terminal, the keyboard, the settle motion) ------
+  {
+    const st = () => viewState(app);
+    const stFor = (pred, ms = 3000) => waitFor(async () => { const v = await st(); return v && v.ok && pred(v) ? v : null; }, ms, 100);
+    const treeNow = () => readBytes(TREE_FILE);
+    const same = (a, b) => !!a && !!b && Buffer.compare(a, b) === 0;
+    await view(app, 'reducedMotion', { on: false });                 // this machine's own setting must not decide the checks below
+    await view(app, 'openMenu', { which: 'layout' });
+    await view(app, 'menuButton', { text: 'Reset layout' });
+    await view(app, 'closeMenu');
+    let s = (await settled(app)).s;
+    await sleep(1200);                                              // the reset's write has landed
+    const treeBefore = treeNow();
+    const pushes0 = (await st()).pushes;
+    const visible = IDS.filter(id => !['canvas'].includes(id));
+
+    // collapse: this window folds one group to its rail; the shared layout is not touched
+    await view(app, 'collapse', { id: 'right' });
+    const folded = await settled(app);
+    s = folded.s;
+    check('13: collapsing the right group folds it to one 28 px rail on the right edge, the terminal takes the room, nothing overlaps',
+      s.groups.length === 0 && s.rails.length === 1 && Math.abs(s.rails[0].rect.width - 28) <= 1 && s.rails[0].dir === 'v'
+        && Math.abs(s.termwrap.width - (s.dock.width - 28)) <= 2 && tiles(s).length === 0 && s.rails[0].modules.length === visible.length,
+      JSON.stringify([s.groups.length, s.rails.map(r => [r.dir, r.rect.width, r.modules.length]), s.termwrap.width, s.dock.width, tiles(s)]));
+    check('13: ...terminal, fit and pty agree', folded.ok, sizeText(s));
+    check('13: ...the choice is this window\'s: the selection says so, the layout file is byte-identical and no push reached the page',
+      !!s.selection.collapsed.right && same(treeNow(), treeBefore) && s.pushes === pushes0, JSON.stringify([s.selection.collapsed, s.pushes, pushes0]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-collapsed.png') });
+
+    // a rail's panel over the terminal
+    const term0 = s.term;
+    const sent0 = JSON.stringify(s.sent);
+    const tag0 = s.vaultNode;
+    await view(app, 'railClick', { id: 'vault' });
+    let p = await stFor(v => v.popover);
+    check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with the rail\'s tabs and the Vault panel inside it',
+      !!p && p.popover.module === 'vault' && p.popover.on[0] === 'vault' && p.popover.panels[0] === 'vault' && p.popover.tabs.length === visible.length
+        && p.popover.hit && Math.abs(p.popover.rect.width - 280) <= 1 && p.popover.rect.right <= p.rails[0].rect.left + 1 && p.popover.rect.left >= p.dock.left - 1
+        && p.popover.panelRects[0].left >= p.popover.rect.left - 1 && p.popover.panelRects[0].right <= p.popover.rect.right + 1 && p.popover.panelRects[0].height > 100,
+      p && JSON.stringify(p.popover));
+    check('13: ...which resizes nothing and saves nothing: the terminal and the last size sent are as they were, the file and the push count too, the Vault\'s field is the same node',
+      !!p && p.term.cols === term0.cols && p.term.rows === term0.rows && JSON.stringify(p.sent) === sent0 && same(treeNow(), treeBefore) && p.pushes === pushes0 && p.vaultNode === tag0,
+      p && JSON.stringify([p.term, p.sent, sent0, p.pushes, p.vaultNode === tag0]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-rail-popover.png') });
+    await view(app, 'peekTabClick', { id: 'git' });
+    p = await stFor(v => v.popover && v.popover.module === 'git');
+    check('13: another tab of the popover switches it (Git shows, the Vault panel waits in the store), and it still saves nothing',
+      !!p && p.popover.panels[0] === 'git' && !p.shown.includes('vault') && p.shown.includes('git') && p.vaultNode === tag0 && same(treeNow(), treeBefore),
+      p && JSON.stringify([p.popover.panels, p.shown]));
+    // A popover opened by a mouse press takes the focus (PR #159 Miguel I1: the press left it on the rail button)
+    p = await st();
+    check('13: a popover tab pressed with the mouse keeps the keyboard in the popover (the redraw replaced its button)', !!p.held && /zone-tabs/.test(p.held.parent || '') && p.held.module === 'git', JSON.stringify(p.held));
+    // Esc is the popover's only when focus is in it; the keyboard leaving it for the terminal closes it, and then Esc is Claude's interrupt
+    await view(app, 'focus', { selector: '.xterm-helper-textarea' });
+    p = await stFor(v => !v.popover);
+    check('13: the keyboard going to the terminal closes the popover', !!p && p.peek === null);
+    const passed = await view(app, 'key', { key: 'Escape' });
+    check('13: Esc with the keyboard in the terminal is left alone (the interrupt reaches Claude)', passed.prevented === false);
+    await view(app, 'railClick', { id: 'git' });
+    p = await stFor(v => v.popover);
+    check('13: a mouse press on the rail opens it again, with the keyboard in it', !!p && !!p.held && /zone-tabs/.test(p.held.parent || '') && p.held.module === 'git', p && JSON.stringify(p.held));
+    await view(app, 'key', { key: 'Escape' });
+    p = await stFor(v => !v.popover);
+    check('13: Esc in the popover closes it, and the keyboard goes back to its rail button',
+      !!p && p.peek === null && !!p.held && p.held.module === 'git' && /drail/.test(p.held.parent || ''), p && JSON.stringify(p.held));
+    await view(app, 'railClick', { id: 'agents' });
+    await stFor(v => v.popover);
+    await view(app, 'outsidePress', { selector: '#termwrap' });
+    p = await stFor(v => !v.popover);
+    check('13: a press outside it closes it', !!p && p.peek === null);
+    await view(app, 'railClick', { id: 'agents' });
+    await stFor(v => v.popover);
+    await view(app, 'railClick', { id: 'agents' });
+    p = await stFor(v => !v.popover);
+    check('13: pressing its rail button again closes it', !!p && p.peek === null);
+    await view(app, 'railClick', { id: 'models', byKey: true });
+    p = await stFor(v => v.popover && v.held);
+    check('13: opened with the keyboard (Enter on the button), focus is in the popover on the chosen tab',
+      !!p && p.held.module === 'models' && /zone-tabs/.test(p.held.parent || '') && /\bon\b/.test(p.held.cls || ''), p && JSON.stringify(p.held));
+    await view(app, 'key', { key: 'Escape' });
+    await stFor(v => !v.popover);
+    // the popover goes with its rail: widening the window, or opening the group, closes it by itself
+    await view(app, 'dblclick', { selector: '.drail button[data-module="agents"]' });
+    p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    check('13: double-clicking the rail opens the group again, in this window only (the selection forgets it, the file is untouched)',
+      !!p && !p.selection.collapsed.right && same(treeNow(), treeBefore) && p.pushes === pushes0, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.length]));
+    await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs button' });
+    await sleep(300);
+    p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    check('13: double-clicking a TAB does not fold its group', !!p && !p.selection.collapsed.right);
+    await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs' });
+    p = await stFor(v => v.groups.length === 0 && v.rails.length === 1);
+    check('13: double-clicking a group\'s tab bar folds it', !!p && !!p.selection.collapsed.right);
+    await view(app, 'railClick', { id: 'vault' });
+    await stFor(v => v.popover);
+    await view(app, 'collapse', { id: 'right' });
+    p = await stFor(v => v.groups.length === 1 && !v.popover);
+    check('13: ...and opening the group closes the popover of its rail', !!p && p.peek === null && !p.popover, p && JSON.stringify([p.peek, p.shown]));
+
+    // a window too narrow for the group folds it by force; its rail opens the same popover, and widening closes it
+    await view(app, 'squeeze', { width: 420 });
+    p = await stFor(v => v.rails.length === 1 && v.groups.length === 0, 4000);
+    check('13: a window too narrow for the group folds it to a rail, as before', !!p, p && JSON.stringify(p.rails.map(r => r.rect.width)));
+    await view(app, 'railClick', { id: 'git' });
+    p = await stFor(v => v.popover);
+    check('13: ...and that rail opens its panel as well, inside the window', !!p && p.popover.rect.left >= p.dock.left - 1 && p.popover.rect.right <= p.dock.right + 1 && p.popover.hit, p && JSON.stringify(p.popover && p.popover.rect));
+    await view(app, 'squeeze', {});
+    p = await stFor(v => v.groups.length === 1 && !v.popover, 4000);
+    check('13: widening the window brings the group back and closes the popover of the rail that went', !!p && p.peek === null, p && JSON.stringify([p.groups.length, p.peek]));
+
+    // dividers by keyboard
+    s = (await settled(app)).s;
+    const w0 = s.groups[0].rect.width;
+    await view(app, 'focus', { selector: '.dgutter' });
+    let k = await st();
+    check('13: a divider is a focusable separator and holds the keyboard', !!k.held && k.held.role === 'separator' && /dgutter/.test(k.held.cls || ''), JSON.stringify(k.held));
+    await view(app, 'key', { key: 'ArrowLeft' });
+    let kk = await settled(app);
+    check('13: ArrowLeft on the divider beside the terminal gives the group on the right 16 px, and the keyboard stays on the divider',
+      Math.abs(kk.s.groups[0].rect.width - (w0 + 16)) <= 1 && kk.ok && kk.s.held && kk.s.held.role === 'separator', JSON.stringify([w0, kk.s.groups[0].rect.width, kk.s.held]));
+    await view(app, 'key', { key: 'ArrowRight' });
+    kk = await settled(app);
+    check('13: ArrowRight takes them back', Math.abs(kk.s.groups[0].rect.width - w0) <= 1 && kk.ok);
+    const wrong = await view(app, 'key', { key: 'ArrowUp' });
+    kk = await settled(app);
+    check('13: an arrow across the divider moves nothing and is left alone', wrong.prevented === false && Math.abs(kk.s.groups[0].rect.width - w0) <= 1);
+    for (let i = 0; i < 14; i++) await view(app, 'key', { key: 'ArrowRight' });
+    kk = await settled(app);
+    check('13: pushed to the group\'s minimum it stops at 120 px, and the terminal and pty still agree', kk.s.groups[0].rect.width >= 119 && kk.s.groups[0].rect.width <= 121 && kk.ok, String(kk.s.groups[0].rect.width));
+    await view(app, 'dock', { id: 'vault', target: { cell: 'right', side: 'bottom' } });
+    s = (await settled(app)).s;
+    const low = groupWith(s, 'vault');
+    await view(app, 'focus', { selector: '.dgutter[data-dir="col"]' });
+    await view(app, 'key', { key: 'ArrowUp' });
+    kk = await settled(app);
+    check('13: ArrowUp on a column\'s divider gives the group below it 16 px',
+      Math.abs(groupWith(kk.s, 'vault').rect.height - (low.rect.height + 16)) <= 1 && kk.ok, JSON.stringify([low.rect.height, groupWith(kk.s, 'vault').rect.height]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-divider-focus.png') });
+
+    // keyboard move
+    await view(app, 'openMenu', { which: 'layout' });
+    await view(app, 'menuButton', { text: 'Reset layout' });
+    await view(app, 'closeMenu');
+    s = (await settled(app)).s;
+    await sleep(1200);
+    const treeMid = treeNow();
+    const menu = await view(app, 'tabMenu', { id: 'git' });
+    check('13: the tab\'s menu (Shift+F10 / right-click) offers Move, Collapse group, Float and Hide, with the keyboard in it on Move',
+      menu.ok && JSON.stringify(menu.items.slice(0, 4)) === JSON.stringify(['Move', 'Collapse group', 'Float', 'Hide']) && menu.held === 'Move', JSON.stringify(menu));
+    await view(app, 'menuButton', { text: 'Move' });
+    k = await st();
+    check('13: Move lights the zones of the group and the rim with one hot, and says in words where Git would land',
+      !!k.kbMove && k.kbMove.id === 'git' && k.overlay.zones > 4 && k.overlay.hot === 1 && /Moving Git: as a tab in the .* group/.test(k.announce), JSON.stringify([k.kbMove, k.overlay, k.announce]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-keyboard-move.png') });
+    const gitGroupBefore = groupWith(s, 'git').id;
+    const arrow = await view(app, 'key', { key: 'ArrowLeft', selector: 'body' });
+    k = await st();
+    check('13: ArrowLeft steps to the group\'s left band (the key is taken, none reaches the terminal) and the words follow',
+      arrow.prevented === true && k.kbMove.target.cell === gitGroupBefore && k.kbMove.target.side === 'left' && /left of the .* group/.test(k.announce), JSON.stringify([k.kbMove, k.announce]));
+    await view(app, 'key', { key: 'Escape' });
+    k = (await settled(app)).s;
+    check('13: Esc cancels: nothing lit, nothing moved, nothing saved, and it says so',
+      !k.kbMove && k.overlay.zones === 0 && JSON.stringify(k.layout) === JSON.stringify(s.layout) && k.announce === 'Move cancelled.' && same(treeNow(), treeMid), JSON.stringify([k.kbMove, k.overlay, k.announce]));
+    await view(app, 'tabMenu', { id: 'git' });
+    await view(app, 'menuButton', { text: 'Move' });
+    await view(app, 'key', { key: 'ArrowLeft', selector: 'body' });
+    await view(app, 'key', { key: 'Enter', selector: 'body' });
+    k = await settled(app);
+    const git = groupWith(k.s, 'git');
+    const agents = groupWith(k.s, 'agents');
+    check('13: Enter drops it there: Git is a group of its own to the left of the one it came from, sizes agree and the boxes tile',
+      !!git && !!agents && git !== agents && git.tabs.length === 1 && git.rect.right <= agents.rect.left + 6 && k.ok && tiles(k.s).length === 0 && !k.s.kbMove,
+      JSON.stringify([git && git.rect, agents && agents.rect]));
+    // Tab walks every zone: it reaches the float zone, and Enter there floats the panel
+    await view(app, 'tabMenu', { id: 'vault' });
+    await view(app, 'menuButton', { text: 'Move' });
+    let reached = false;
+    for (let i = 0; i < 60 && !reached; i++) {
+      await view(app, 'key', { key: 'Tab', selector: 'body' });
+      const q = await st();
+      reached = !!q.kbMove && q.kbMove.target.float === true;
+    }
+    check('13: Tab walks the zones one by one until it reaches the terminal\'s float zone', reached);
+    await view(app, 'key', { key: 'Enter', selector: 'body' });
+    k = await settled(app);
+    check('13: Enter on the float zone floats the panel: one float holding Vault, inside the window', k.s.floats.length === 1 && k.s.floats[0].tabs[0] === 'vault'
+      && k.s.floats[0].rect.left >= k.s.dock.left - 1 && k.s.floats[0].rect.right <= k.s.dock.right + 1, JSON.stringify(k.s.floats.map(f => [f.tabs, f.rect])));
+
+    // the settle motion
+    await view(app, 'openMenu', { which: 'layout' });
+    await view(app, 'menuButton', { text: 'Reset layout' });
+    await view(app, 'closeMenu');
+    await settled(app);
+    const glide = await view(app, 'settleProbe', { id: 'vault', target: { edge: 'bottom' }, reduced: false });
+    check('13: a drop settles: the groups, rails and dividers get a 120 ms transition while it lasts, the terminal none, and it ends',
+      glide.during.settling === true && /^0.12s(, 0.12s)*$/.test(glide.during.group) && /^0.12s(, 0.12s)*$/.test(glide.during.gutter) && glide.during.termwrap === '0s' && glide.after.settling === false && glide.after.group === '0s',
+      JSON.stringify(glide));
+    await settled(app);
+    const snap = await view(app, 'settleProbe', { id: 'git', target: { edge: 'left' }, reduced: true });
+    check('13: with prefers-reduced-motion the boxes snap: no settling class, no transition', snap.during.settling === false && snap.during.group === '0s', JSON.stringify(snap));
+    await view(app, 'reducedMotion', { on: false });
+    await settled(app);
   }
 
   await quitApp(app);
