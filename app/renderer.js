@@ -1797,7 +1797,7 @@ function togglePin(id, { justThisTab = false } = {}) {
   commitPlacement(unpinning ? DTm.unpin(l, id) : DTm.pin(l, id), { select: id, justThisTab });
   const label = (TABS.find(t => t.id === id) || {}).label || id;
   const now = (placementLayout().rail || []).includes(id);
-  const next = document.querySelector(now ? `.drail[data-rail="dock"] button[data-module="${CSS.escape(id)}"]` : `.zone-tabs button[data-module="${CSS.escape(id)}"]`);
+  const next = document.querySelector(now ? `.drail[data-rail="dock"] button[data-module="${CSS.escape(id)}"]` : `.dgroup .zone-tabs button[data-module="${CSS.escape(id)}"]`);   // not the sliding-out popover's own tab
   if (next) next.focus();
   document.getElementById('dock-announce').textContent = now ? `${label} unpinned: it is on the rail.` : `${label} pinned beside the terminal.`;
 }
@@ -2846,6 +2846,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (vaultField && !vaultField.__probeTag) vaultField.__probeTag = Math.random().toString(36).slice(2);
         const rails = [...document.querySelectorAll('#dock > .drail')].map(el => ({
           dir: el.dataset.dir, rect: rectOf(el), modules: [...el.querySelectorAll('button')].map(b => b.dataset.module),
+          // #85: where every tab is, and whether the rail can scroll to the ones it cannot fit (PR #168 Miguel Y4)
+          tabRects: [...el.querySelectorAll('button')].map(b => rectOf(b)), id: el.dataset.rail || null,
+          scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY },
         }));
         const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
           path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
@@ -2878,7 +2881,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             return {
               module: pe.dataset.module, rect: rectOf(pe), z: getComputedStyle(pe).zIndex, from: pe.dataset.from || null,
               pin: (() => { const b = pe.querySelector('.dpin'); return b ? { text: b.textContent, pressed: b.getAttribute('aria-pressed') } : null; })(),
-              animation: getComputedStyle(pe).animationName,
+              animation: getComputedStyle(pe).animationName, bg: getComputedStyle(pe).backgroundColor, closing: !!pe.dataset.closing,
               // Is the popover what is on top at its own middle (above the terminal, the floats and the rails)?
               hit: (() => { const r = pe.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!top && !!top.closest && !!top.closest('.dpeek'); })(),
               tabs: [...pe.querySelectorAll('.zone-tabs button[data-module]')].map(b => b.dataset.module),
@@ -3100,6 +3103,20 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const b = a.on === 'panel' ? document.querySelector('.dpeek .dpin') : document.querySelector(`.dgroup .dpin[data-pin="${CSS.escape(String(a.module))}"]`);
         if (!b) return JSON.stringify({ ok: false, error: 'no Pin button' });
         b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+        return JSON.stringify({ ok: true });
+      }
+      // #85: the tab menu's "Just this tab" box ticked as a pointer would, and the dock rail scrolled to its end.
+      case 'menuCheck': {
+        const box = [...layoutMenu.querySelectorAll('label')].find(l => /Just this tab/.test(l.textContent));
+        const input = box && box.querySelector('input');
+        if (!input || input.disabled) return JSON.stringify({ ok: false, error: 'no usable Just this tab box' });
+        if (!input.checked) input.click();
+        return JSON.stringify({ ok: true });
+      }
+      case 'railScroll': {
+        const el = document.querySelector('#dock > .drail[data-rail="dock"]');
+        if (!el) return JSON.stringify({ ok: false, error: 'no dock rail' });
+        el.scrollTop = a.to === 'end' ? el.scrollHeight : 0;
         return JSON.stringify({ ok: true });
       }
       case 'peekTabClick': {

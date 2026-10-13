@@ -20,6 +20,12 @@
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
  *
+ * Hover is REAL pointer movement (the host's `mouseMove` command: webContents.sendInputEvent), not a dispatched event, and a
+ * float sits where the panel opens, so a stacking fault (PR #168 B1: a missing `;` dropped `z-index: 1000`) fails check 3. Also:
+ *   4  the slide-out stage     5/6  where the keyboard is after Pin and Pinned     7b  focus inside a hover-opened panel holds it
+ *   8c the tab menus: Pin / Hide <name> on a rail tab; Unpin with "Just this tab" leaves the saved layout untouched
+ *   10 every tab reachable with all unpinned in a short window     11  reduced motion (the OS setting, emulated): no animation
+ *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_*
  * variable are deleted before the window is launched; registry, portraits, uploads and user data are temp folders. The window's
  * store is `<worktree>/.harness/state`: the layout files in it are snapshotted and put back. It REFUSES (exit 2) while a live
@@ -294,6 +300,17 @@ const pinned = (v, id) => v.groups.some(g => g.tabs.includes(id));
 const railMods = (v) => v.rails.flatMap(r => r.modules);
 const termWidth = (v) => Math.round(v.termwrap.width);
 
+// REAL pointer movement (webContents.sendInputEvent mouseMove, BACKLOG #85 / PR #168 Miguel Y7): the page's own hit-testing
+// decides what is under the pointer, so a layer covering a rail tab, or a missing pointer-events, shows up here.
+const centre = (r) => ({ x: Math.round((r.left + r.right) / 2), y: Math.round((r.top + r.bottom) / 2) });
+const moveTo = (app, r) => command(app, { cmd: 'mouseMove', ...centre(r) });
+const railTab = (v, id) => { const r = v.rails.find(x => x.id === 'dock'); return r ? r.tabRects[r.modules.indexOf(id)] : null; };
+const hoverTab = async (app, id) => moveTo(app, railTab(await viewState(app), id));
+const hoverTerm = async (app) => moveTo(app, (await viewState(app)).termwrap);
+const hoverPanel = async (app) => moveTo(app, (await viewState(app)).popover.rect);
+const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+const heldIs = (v, module, parent) => !!v.held && v.held.module === module && String(v.held.parent || '').includes(parent);
+
 async function main() {
   const foreign = await liveForeignHost();
   if (foreign) {
@@ -333,71 +350,101 @@ async function main() {
     `${t0} -> ${t1}; ${tiles(s2).join('; ')}; ${sizeText(s2)}`);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-unpinned.png') });
 
+  // A float over the place the panel will open: the stacking is measured with one present (PR #168 B1).
+  await view(app, 'dock', { id: 'fog', target: { float: { x: 840, y: 10, w: 330, h: 2000 } } });
+  const sf = (await settled(app)).s;
+  check('2: a float is up, over where the rail panel will open', sf.floats.length === 1, JSON.stringify(sf.floats.map(f => [f.id, f.rect.left, f.rect.right])));
+
   // 3 ---------------------------------------------------------------------------------
-  const pushes0 = s2.pushes;
-  const sentBefore = JSON.stringify(s2.sent);
+  const pushes0 = sf.pushes;
+  const sentBefore = JSON.stringify(sf.sent);
+  const tab0 = railTab(sf, 'git');
   const h0 = Date.now();
-  await view(app, 'hover', { module: 'git' });
+  await moveTo(app, tab0);
   await sleep(60);
   const early = await viewState(app);
-  check('3: a hover waits: nothing is open 60 ms in', early.popover === null && early.railState.pending === 'git', JSON.stringify(early.railState));
+  check('3: a REAL pointer on the tab starts a hover wait, and nothing is open 60 ms in', early.popover === null && early.railState.pending === 'git', JSON.stringify(early.railState));
   const open = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   const took = Date.now() - h0;
-  check('3: ...then the panel is open, within about 200 ms plus the timer and a frame', !!open && took >= 190 && took <= 700, `${took} ms`);
+  check('3: ...then the panel is open, within about 200 ms plus the timer and a frame', !!open && took >= 190 && took <= 800, `${took} ms`);
   if (open) {
-    check('3: ...with a Pin button that is not pressed', !!open.popover.pin && open.popover.pin.text === 'Pin' && open.popover.pin.pressed === 'false', JSON.stringify(open.popover.pin));
-    check('3: ...and the slide is the page\'s (an animation is set on it)', open.popover.animation !== 'none', open.popover.animation);
     await sleep(250);
-    const settledOpen = await viewState(app);
-    const pr = settledOpen.popover.rect;
-    check('3: ...once it has slid in, it holds git, sits inside the window, left of the rail, on top of what is under it, and says where it slid in from',
-      settledOpen.popover.module === 'git' && pr.left >= 0 && pr.right <= settledOpen.dock.right + 1 && pr.right <= strip.left + 1 && settledOpen.popover.hit && settledOpen.popover.from === 'right',
-      JSON.stringify([settledOpen.popover.module, pr.left, pr.right, strip.left, settledOpen.popover.hit, settledOpen.popover.from]));
+    const so = await viewState(app);
+    const pr = so.popover.rect;
+    check('3: ...once it has slid in, it holds git, sits inside the window, left of the rail, and says where it slid in from',
+      so.popover.module === 'git' && pr.left >= 0 && pr.right <= so.dock.right + 1 && pr.right <= strip.left + 1 && so.popover.from === 'right',
+      JSON.stringify([so.popover.module, pr.left, pr.right, strip.left, so.popover.from]));
+    check('3: ...it is ABOVE the float it overlaps: z-index 1000, an opaque background, and the element at its middle is the panel (PR #168 B1)',
+      overlaps(pr, so.floats[0].rect) && so.popover.z === '1000' && so.popover.bg !== 'rgba(0, 0, 0, 0)' && so.popover.bg !== 'transparent' && so.popover.hit,
+      JSON.stringify([overlaps(pr, so.floats[0].rect), so.popover.z, so.popover.bg, so.popover.hit]));
+    check('3: ...with a Pin button that is not pressed', !!so.popover.pin && so.popover.pin.text === 'Pin' && so.popover.pin.pressed === 'false', JSON.stringify(so.popover.pin));
+    check('3: ...and the slide is a named animation of the page\'s (the one for the right edge)', so.popover.animation === 'dpeek-from-right' || so.popover.animation === 'none', so.popover.animation);
     check('3: ...the terminal did not move or resize, the pty was told nothing new, and nothing was saved',
-      termWidth(settledOpen) === t1 && JSON.stringify(settledOpen.sent) === sentBefore && settledOpen.pushes === pushes0 && !!settledOpen.popover,
-      `${termWidth(settledOpen)} vs ${t1}; pushes ${settledOpen.pushes} vs ${pushes0}`);
+      termWidth(so) === t1 && JSON.stringify(so.sent) === sentBefore && so.pushes === pushes0,
+      `${termWidth(so)} vs ${t1}; pushes ${so.pushes} vs ${pushes0}`);
     await command(app, { cmd: 'screenshot', file: path.join(shots, '3-hover-open.png') });
   }
 
   // 4 ---------------------------------------------------------------------------------
-  await view(app, 'hover', { on: 'terminal' });
+  await hoverTerm(app);
   await sleep(200);
   const grace = await viewState(app);
   check('4: leaving: the panel is still there 200 ms later (the grace)', !!grace.popover && grace.railState.leaving === true, JSON.stringify(grace.railState));
-  await view(app, 'hover', { on: 'panel' });
+  await hoverPanel(app);
   await sleep(500);
   const back = await viewState(app);
   check('4: ...and coming back into the panel inside the grace keeps it open past the grace', !!back.popover && back.railState.leaving === false, JSON.stringify(back.railState));
-  await view(app, 'hover', { on: 'terminal' });
+  await hoverTerm(app);
+  const sliding = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.closing ? v : null; }, 3000, 8);
+  check('4: ...then leaving for good slides it out first (the popover is marked closing and still holds its panel)', !!sliding && sliding.popover.panels.join() === 'git', JSON.stringify(sliding && sliding.popover.panels));
   const gone = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
-  check('4: ...then leaving for good closes it', !!gone && gone.railState.module === null);
+  check('4: ...and is gone once the slide ran', !!gone && gone.railState.module === null);
 
   // 5 ---------------------------------------------------------------------------------
-  await view(app, 'hover', { module: 'git' });
+  await hoverTab(app, 'git');
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
+  await view(app, 'focus', { selector: '.dpeek .dpin' });
   await view(app, 'pinClick', { on: 'panel' });
   const a5 = await settled(app);
   const s5 = a5.s;
   check('5: Pin on the open panel docks it: git is in a group again, the rail is gone, the popover closed',
     pinned(s5, 'git') && s5.rails.length === 0 && s5.popover === null && s5.layout.rail.length === 0, JSON.stringify([railMods(s5), s5.layout.rail]));
   check('5: ...the terminal is back to its width without a rail, the boxes tile, terminal === fit === pty', Math.abs(termWidth(s5) - t0) <= 1 && tiles(s5).length === 0 && a5.ok, `${termWidth(s5)} vs ${t0}; ${tiles(s5).join('; ')}`);
+  check('5: ...and the keyboard followed the panel: focus is on its tab in the group, not on the page (PR #168 Y1)', heldIs(s5, 'git', 'zone-tabs'), JSON.stringify(s5.held));
 
   // 6 ---------------------------------------------------------------------------------
   await view(app, 'select', { id: 'git' });
+  await view(app, 'focus', { selector: '.dgroup .dpin' });
   await view(app, 'pinClick', { module: 'git' });
   const a6 = await settled(app);
-  check('6: Unpin again: the rail is back and the terminal is as wide as with it before', railMods(a6.s).join() === 'git' && Math.abs(termWidth(a6.s) - t1) <= 1 && a6.ok, `${termWidth(a6.s)} vs ${t1}`);
+  check('6: Pinned again unpins: the rail is back and the terminal is as wide as with it before', railMods(a6.s).join() === 'git' && Math.abs(termWidth(a6.s) - t1) <= 1 && a6.ok, `${termWidth(a6.s)} vs ${t1}`);
+  check('6: ...focus is on the panel\'s tab on the rail, so a second Enter opens it and unpins nothing else (PR #168 Y1, Y5)', heldIs(a6.s, 'git', 'drail') && /unpinned/.test(a6.s.announce), JSON.stringify([a6.s.held, a6.s.announce]));
 
   // 7 ---------------------------------------------------------------------------------
   await view(app, 'railClick', { id: 'git' });
   await sleep(100);
-  await view(app, 'hover', { on: 'terminal' });
+  await hoverTerm(app);
   await sleep(700);
   const held = await viewState(app);
   check('7: a click holds the panel open: leaving the panel for 700 ms does not close it', !!held.popover && held.railState.held === true, JSON.stringify(held.railState));
+  await view(app, 'key', { key: 'Escape' });
+  const esc = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
+  check('7: ...Esc closes it and the keyboard goes back to the tab on the rail', !!esc && heldIs(esc, 'git', 'drail'), JSON.stringify(esc && esc.held));
+  await view(app, 'railClick', { id: 'git' });
   await view(app, 'outsidePress', { selector: '#termwrap' });
   const out = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('7: ...and a press outside closes it', !!out);
+
+  // 7b: a hover-opened panel is held by the keyboard being in it (PR #168 Y2)
+  await hoverTab(app, 'git');
+  await waitFor(async () => (await viewState(app)).popover, 3000, 20);
+  await view(app, 'focus', { selector: '.dpeek .dpin' });
+  await hoverTerm(app);
+  await sleep(800);
+  const typing = await viewState(app);
+  check('7b: focus inside a hover-opened panel holds it: the pointer leaving for 800 ms does not close it', !!typing.popover && typing.railState.held === true, JSON.stringify(typing.railState));
+  await view(app, 'outsidePress', { selector: '#termwrap' });
+  await waitFor(async () => (await viewState(app)).popover === null, 3000, 50);
 
   // 8 ---------------------------------------------------------------------------------
   await view(app, 'hide', { id: 'git' });
@@ -409,12 +456,53 @@ async function main() {
   check('8: ...and ticking it in the Window menu brings it back as a rail tab (unpinned, the default)', railMods(s8b).join() === 'git' && !s8b.layout.hidden.includes('git'), JSON.stringify([railMods(s8b), s8b.layout.hidden]));
   await view(app, 'closeMenu');
 
+  // 8c: the tab menus (PR #168 B2, and the shortcut the design asks for)
+  const railMenu = await view(app, 'tabMenu', { id: 'git' });
+  check('8c: right-click on a rail tab offers Pin and Hide <name>, and no Move or Float', railMenu.items.includes('Pin') && railMenu.items.some(i => /^Hide \S/.test(i)) && !railMenu.items.includes('Move') && !railMenu.items.includes('Float'), JSON.stringify(railMenu.items));
+  await view(app, 'closeMenu');
+  const treeBefore = readBytes(TREE_FILE);
+  await view(app, 'openMenu', { which: 'move', id: 'vault' });
+  await view(app, 'menuCheck');
+  await view(app, 'menuButton', { text: 'Unpin' });
+  const s8d = (await settled(app)).s;
+  await sleep(500);
+  check('8c: Unpin from the tab menu with "Just this tab" ticked changes this tab only: it has its own layout and the saved global one is byte-identical (PR #168 B2)',
+    s8d.own === true && s8d.layout.rail.includes('vault') && Buffer.compare(readBytes(TREE_FILE) || Buffer.alloc(0), treeBefore || Buffer.alloc(0)) === 0, JSON.stringify([s8d.own, s8d.layout.rail]));
+  await view(app, 'dropOwn', {});
+  await settled(app);
+
   // 9 ---------------------------------------------------------------------------------
   await view(app, 'dblclick', { selector: '.dgroup:not(.dfloat) > .zone-tabs' });
   const a9 = await settled(app);
-  check('9: a double-click on the empty tab bar unpins every tab of the group: no group is left, every module is on the rail',
-    a9.s.groups.length === 0 && railMods(a9.s).length === IDS.length - 1 && a9.ok && tiles(a9.s).length === 0, JSON.stringify([a9.s.groups.length, railMods(a9.s).length, tiles(a9.s)]));
+  const onRail = railMods(a9.s).length;
+  check('9: a double-click on the empty tab bar unpins every tab of the group: no group is left, the rest of the modules are on the rail (the float stays)',
+    a9.s.groups.length === 0 && onRail === IDS.length - 2 && a9.ok && tiles(a9.s).length === 0, JSON.stringify([a9.s.groups.length, onRail, tiles(a9.s)]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-all-unpinned.png') });
+
+  // 10: every tab stays reachable on a short window (PR #168 Y4)
+  await view(app, 'squeeze', { height: 320 });
+  const s10 = (await settled(app)).s;
+  const dr = s10.rails.find(r => r.id === 'dock');
+  check('10: with every panel unpinned in a short window, the rail scrolls (overflow auto, more tabs than room)', !!dr && dr.scroll.overflowY === 'auto' && dr.scroll.scrollHeight > dr.scroll.clientHeight, JSON.stringify(dr && dr.scroll));
+  await view(app, 'railScroll', { to: 'end' });
+  const s10b = await viewState(app);
+  const dr2 = s10b.rails.find(r => r.id === 'dock');
+  const last = dr2.tabRects[dr2.tabRects.length - 1];
+  check('10: ...and scrolled to its end the last tab is inside the rail, reachable', last.top >= dr2.rect.top - 1 && last.bottom <= dr2.rect.bottom + 1, JSON.stringify([last.top, last.bottom, dr2.rect.top, dr2.rect.bottom]));
+  await view(app, 'railScroll', { to: 'start' });
+  await view(app, 'squeeze', {});
+  await settled(app);
+
+  // 11: reduced motion: no slide in, none out, and it still closes (PR #168 Y6, G2)
+  await command(app, { cmd: 'reduced-motion', on: true });          // the OS setting, emulated: the CSS media query and matchMedia both see it
+  const first = railMods((await viewState(app)))[0];
+  await hoverTab(app, first);
+  const r11 = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
+  check('11: under reduced motion the panel opens without an animation', !!r11 && r11.popover.animation === 'none', r11 && r11.popover.animation);
+  await hoverTerm(app);
+  let sawClosing = false;
+  const r11b = await waitFor(async () => { const v = await viewState(app); if (v.popover && v.popover.closing) sawClosing = true; return v.popover === null ? v : null; }, 3000, 8);
+  check('11: ...and closes at once when the grace ends, with no slide-out stage', !!r11b && !sawClosing);
 
   await quitApp(app);
 }

@@ -447,6 +447,7 @@ test('#85 PR #168 Miguel B2: the tab menu Pin, Unpin and Unpin group follow the 
 test('#85 PR #168 Miguel Y1 / Y5: after Pin or Pinned the keyboard follows the panel and the change is said', () => {
   const body = fnBody('togglePin');
   assert.match(body, /if \(next\) next\.focus\(\);/);
+  assert.match(body, /: `\.dgroup \.zone-tabs button\[data-module=/, 'a group tab, never the tab of the popover that is still sliding out (it comes first in the document)');
   assert.match(body, /\.drail\[data-rail="dock"\] button\[data-module=/);
   assert.match(body, /getElementById\('dock-announce'\)\.textContent = /);
 });
