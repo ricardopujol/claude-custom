@@ -418,7 +418,7 @@ test('#85: hovering a dock-rail tab enters it, the panel or the strip keeps it, 
   assert.match(handler, /e\.pointerType === 'touch'/);
   assert.match(handler, /t\.closest\('\.drail\[data-rail="dock"\] button\[data-module\]'\)/, 'only the dock\'s own rail hovers: a folded group\'s rail stays click-only');
   assert.match(handler, /\{ type: 'enter', module: tab\.dataset\.module \}/);
-  assert.match(handler, /t\.closest\('\.dpeek, \.drail\[data-rail="dock"\]'\)\) ev = \{ type: 'enter-panel' \}/);
+  assert.match(handler, /t\.closest\('\.dpeek'\)\) ev = \{ type: 'enter-panel' \}/, 'the rail strip is not the panel (Dexter 3)');
   assert.match(handler, /ev = \{ type: 'leave' \}/);
   assert.match(handler, /if \(ev && railEvent\(ev\)\) renderLayout\(\{ refit: false \}\);/, 'a hover never changes the terminal\'s rectangle');
   assert.match(JS, /document\.documentElement\.addEventListener\('pointerleave', \(\) => \{ if \(railEvent\(\{ type: 'leave' \}\)\)/);
@@ -430,4 +430,9 @@ test('#85: the Pin button, the menu and the fold all go through the model\'s pin
   assert.match(pin, /const l = settledLayout\(\);/);
   assert.match(JS, /commitPlacement\(DTm\.showOnRail\(l, row\.id\)/, 'ticking a hidden panel in the Window menu brings it back as a rail tab');
   assert.match(JS, /commitPlacement\(DTm\.unpinGroup\(settledLayout\(\), home\.id\)/);
+});
+
+test('#85 Miguel Y2: a press or focus inside the open panel holds it open', () => {
+  assert.match(JS, /if \(inside\) \{ railEvent\(\{ type: 'hold' \}\); return; \}/);
+  assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(peek && e\.target\.closest && e\.target\.closest\('\.dpeek'\)\) railEvent\(\{ type: 'hold' \}\);/);
 });

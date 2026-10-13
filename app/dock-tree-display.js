@@ -121,8 +121,9 @@ const RAIL_IDLE = Object.freeze({ module: null, held: false, pending: null, leav
  * 200 ms before it opens a panel; leaving waits 400 ms before it closes one) and feeds `open-timer` / `close-timer` back in.
  * State { module, held, pending, leaving }: the open panel; whether a click or Enter holds it open (leaving then closes
  * nothing); the tab hovered and waiting for its timer; whether the pointer left and the close timer is running.
- *   enter {module}      the pointer is on a rail tab: opens it at once when another is open, else waits (`pending`)
- *   enter-panel         the pointer is in the open panel: the grace is cancelled
+ *   enter {module}      the pointer is on a rail tab: opens it at once (unheld) when another is open, else waits (`pending`)
+ *   enter-panel         the pointer is in the open panel: the grace is cancelled, a hover wait dropped
+ *   hold                a press or the keyboard is inside the open panel: it stays until Esc or a press outside (Miguel Y2)
  *   leave               the pointer left the tab and the panel: a wait is dropped, an unheld panel starts its grace
  *   open-timer {module} the wait ran out: opens that tab if it is still the one waiting
  *   close-timer         the grace ran out: closes an unheld panel
@@ -140,8 +141,10 @@ function railAfter(state, ev) {
   switch (e.type) {
     case 'enter':
       if (mod === null) return s;
-      return s.module !== null ? { ...s, module: mod, pending: null, leaving: false } : { ...s, pending: mod };
-    case 'enter-panel': return { ...s, leaving: false };
+      // A swap by hover is a hover: the hold belongs to the click that made it, not to whichever panel is open (PR #168 Dexter 1).
+      return s.module !== null ? { module: mod, held: false, pending: null, leaving: false } : { ...s, pending: mod };
+    case 'enter-panel': return { ...s, pending: null, leaving: false };
+    case 'hold': return s.module !== null ? { ...s, held: true, leaving: false } : s;
     case 'leave':
       if (s.module === null) return { ...s, pending: null };
       return s.held ? s : { ...s, leaving: true };

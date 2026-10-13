@@ -2622,21 +2622,28 @@ document.addEventListener('focusout', (e) => {
   renderLayout({ refit: false });
 });
 document.addEventListener('pointerdown', (e) => {
-  if (!peek || (e.target.closest && e.target.closest('.dpeek, .drail'))) return;
+  if (!peek) return;
+  const inside = e.target.closest && e.target.closest('.dpeek');
+  if (inside) { railEvent({ type: 'hold' }); return; }        // using the panel holds it open, like a click on its tab (PR #168 Miguel Y2)
+  if (e.target.closest && e.target.closest('.drail')) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
+// ...and so does the keyboard being in it: typing in a field of a hover-opened panel must not lose it to the pointer leaving.
+document.addEventListener('focusin', (e) => {
+  if (peek && e.target.closest && e.target.closest('.dpeek')) railEvent({ type: 'hold' });
+});
 
 // Hovering a tab of the dock's rail slides its panel open over the terminal (BACKLOG #85); moving off the tab and the panel
-// slides it back after a short grace. The pointer is judged by what it is over now: a rail tab, the panel (or the rail's
-// strip), or anything else. Touch has no hover.
+// slides it back after a short grace. The pointer is judged by what it is over now: a rail tab, the panel, or anything else
+// (the rail's empty strip is anything else: it is neither a tab nor the panel, PR #168 Dexter 3). Touch has no hover.
 document.addEventListener('pointerover', (e) => {
   const t = e.target;
   if (e.pointerType === 'touch' || !t || !t.closest) return;
   const tab = t.closest('.drail[data-rail="dock"] button[data-module]');
   let ev = null;
   if (tab) ev = { type: 'enter', module: tab.dataset.module };
-  else if (t.closest('.dpeek, .drail[data-rail="dock"]')) ev = { type: 'enter-panel' };
+  else if (t.closest('.dpeek')) ev = { type: 'enter-panel' };
   else if (railSt.module !== null || railSt.pending !== null) ev = { type: 'leave' };
   if (ev && railEvent(ev)) renderLayout({ refit: false });
 });

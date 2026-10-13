@@ -118,3 +118,27 @@ test('P: Esc always lands on the idle state, from anywhere', () => {
     assert.deepEqual(railAfter(run(events), { type: 'escape' }), RAIL_IDLE);
   }), RUNS);
 });
+
+// --- review fixes (PR #168: Dexter 1 and 3, Miguel Y2) -------------------------------------------
+
+test('Dexter 1: a hover swap drops the hold: click git, hover vault, leave, grace -> nothing stays open', () => {
+  const s = run([{ type: 'click', module: 'git' }, { type: 'enter', module: 'vault' }]);
+  assert.deepEqual(s, open('vault'), 'vault opens unheld');
+  assert.deepEqual(run([{ type: 'leave' }, { type: 'close-timer' }], s), RAIL_IDLE);
+  assert.deepEqual(run([{ type: 'click', module: 'git' }, { type: 'enter', module: 'vault' }, { type: 'leave' }, { type: 'close-timer' }]), RAIL_IDLE);
+});
+
+test('Dexter 3: the panel\'s own pointer-over clears a hover wait (a rest on the rail\'s strip opens nothing)', () => {
+  const s = railAfter({ ...RAIL_IDLE, pending: 'git' }, { type: 'enter-panel' });
+  assert.deepEqual(s, RAIL_IDLE);
+  assert.deepEqual(railAfter(s, { type: 'open-timer', module: 'git' }), RAIL_IDLE);
+});
+
+test('Miguel Y2: a press or the keyboard inside the open panel holds it, like a click on its tab; with nothing open it does nothing', () => {
+  assert.deepEqual(railAfter(open('git', { leaving: true }), { type: 'hold' }), open('git', { held: true }));
+  assert.deepEqual(railAfter(open('git'), { type: 'hold' }), open('git', { held: true }));
+  assert.deepEqual(railAfter(RAIL_IDLE, { type: 'hold' }), RAIL_IDLE);
+  assert.deepEqual(railAfter({ ...RAIL_IDLE, pending: 'git' }, { type: 'hold' }), { ...RAIL_IDLE, pending: 'git' });
+  const s = run([{ type: 'enter', module: 'git' }, { type: 'open-timer', module: 'git' }, { type: 'hold' }, { type: 'leave' }, { type: 'close-timer' }]);
+  assert.deepEqual(s, open('git', { held: true }), 'typing in a hover-opened panel survives the pointer leaving');
+});
