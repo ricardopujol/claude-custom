@@ -59,5 +59,5 @@ test('the #72 test scans sleepers by a marker its spawner does not carry, and it
   const src = fs.readFileSync(path.join(__dirname, 'status-relay-process.test.js'), 'utf8');
   assert.match(src, /cc72s-/);
   assert.doesNotMatch(src, /n >= 400/);
-  assert.match(src, /deadlineMs: 170000/);
+  assert.match(src, /deadlineMs: 700000/);   // past the tests' 600 s timeout (BACKLOG #72: they now wait out a loaded machine)
 });
