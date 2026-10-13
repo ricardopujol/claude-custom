@@ -686,3 +686,71 @@ test('#85: switching the popover to another rail tab moves the Pin button to it'
   assert.strictEqual(pinOf(peekEl(w)), pin);
   assert.strictEqual(pin.dataset.pin, 'vault');
 });
+
+// --- PR #168 Miguel Y6: the panel slides back out ----------------------------------------------------------------------
+
+// A page that allows motion and keeps its timers for the test to run.
+const withMotion = (w, reduced = false) => {
+  const timers = [];
+  w.doc.defaultView = { matchMedia: () => ({ matches: reduced }), setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; } };
+  return timers;
+};
+
+test('Y6: with motion allowed, a closing popover stays, marked, holding its panel, until the slide ends', () => {
+  const w = makeDoc();
+  const timers = withMotion(w);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const el = peekEl(w);
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(peekEl(w), el, 'still there');
+  assert.ok(el.dataset.closing, 'marked closing, for the CSS slide-out');
+  assert.strictEqual(w.panels.git.parentNode, el.querySelector('.zone-panels'), 'its panel has not gone to the store yet');
+  assert.ok(w.panels.git.classes.has('on'), 'and is still drawn');
+  assert.strictEqual(timers.length, 1);
+  assert.ok(timers[0].ms >= V.SLIDE_MS, 'the removal waits for the slide');
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(timers.length, 1, 'a redraw while it closes starts no second timer');
+  timers[0].fn();
+  assert.strictEqual(peekEl(w), undefined, 'gone when the slide ends');
+  assert.strictEqual(w.panels.git.parentNode, w.store, 'and its panel waits in the store');
+  assert.ok(!w.panels.git.classes.has('on'));
+});
+
+test('Y6: under reduced motion, or with no way to ask, it closes at once', () => {
+  const w = makeDoc();
+  const timers = withMotion(w, true);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(peekEl(w), undefined);
+  assert.strictEqual(w.panels.git.parentNode, w.store);
+  assert.strictEqual(timers.length, 0);
+});
+
+test('Y6: opening again while it closes reuses the element, clears the mark, and the old timer does nothing', () => {
+  const w = makeDoc();
+  const timers = withMotion(w);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const el = peekEl(w);
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  assert.strictEqual(peekEl(w), el);
+  assert.ok(!el.dataset.closing);
+  timers[0].fn();
+  assert.strictEqual(peekEl(w), el, 'the stale timer leaves an open popover alone');
+  assert.strictEqual(w.panels.git.parentNode, el.querySelector('.zone-panels'));
+});
+
+test('Y6: pinning the panel while its popover slides out hands the panel to its group, and the timer takes nothing from it', () => {
+  const w = makeDoc();
+  const timers = withMotion(w);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  V.applyBoxes(planD4(T.pin(l, 'git'), { active: { right: 'git' }, foldAll: false }, null), w.doc);
+  assert.strictEqual(w.panels.git.parentNode, groupEl(w.dock, 'right').querySelector('.zone-panels'));
+  timers[0].fn();
+  assert.strictEqual(w.panels.git.parentNode, groupEl(w.dock, 'right').querySelector('.zone-panels'));
+  assert.strictEqual(peekEl(w), undefined);
+});

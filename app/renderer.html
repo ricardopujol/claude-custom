@@ -939,6 +939,8 @@
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    /* The dock's own rail (#85) holds every unpinned panel, so it scrolls instead of clipping the tabs it cannot fit (PR #168 Miguel Y4). */
+    .drail[data-rail="dock"] { overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
     .drail button {
       flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
       cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
@@ -1001,7 +1003,17 @@
     @keyframes dpeek-from-left { from { transform: translateX(-40px); opacity: 0; } }
     @keyframes dpeek-from-top { from { transform: translateY(-40px); opacity: 0; } }
     @keyframes dpeek-from-bottom { from { transform: translateY(40px); opacity: 0; } }
-    @media (prefers-reduced-motion: reduce) { .dpeek { animation: none; } }
+    /* Out again: the page marks the popover data-closing and removes it when the slide has run (renderer: dock-tree-display.js). */
+    .dpeek[data-closing] { pointer-events: none; animation-duration: 160ms; animation-timing-function: ease-in; animation-fill-mode: forwards; }
+    .dpeek[data-closing][data-from="right"] { animation-name: dpeek-to-right; }
+    .dpeek[data-closing][data-from="left"] { animation-name: dpeek-to-left; }
+    .dpeek[data-closing][data-from="top"] { animation-name: dpeek-to-top; }
+    .dpeek[data-closing][data-from="bottom"] { animation-name: dpeek-to-bottom; }
+    @keyframes dpeek-to-right { to { transform: translateX(40px); opacity: 0; } }
+    @keyframes dpeek-to-left { to { transform: translateX(-40px); opacity: 0; } }
+    @keyframes dpeek-to-top { to { transform: translateY(-40px); opacity: 0; } }
+    @keyframes dpeek-to-bottom { to { transform: translateY(40px); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .dpeek, .dpeek[data-from], .dpeek[data-closing], .dpeek[data-closing][data-from] { animation: none; } }
 
     /* Only the showing panel is in the layout at all -- a hidden panel that
        still occupies space is the usual way a tab strip goes wrong. */

@@ -41,4 +41,33 @@ test('the rail panel is opaque with a background image too', () => {
   assert.equal(rule('body.has-bg .dpeek').background, 'var(--chrome)');
 });
 
+test('Y4: the dock rail scrolls instead of clipping its tabs', () => {
+  const r = rule('.drail[data-rail="dock"]');
+  assert.equal(r['overflow-y'], 'auto');
+  assert.equal(r['overflow-x'], 'hidden');
+  assert.ok(css.indexOf('.drail[data-rail="dock"] {') > css.indexOf('.drail { position: absolute'), 'after the base rule, so it wins');
+});
+
+test('Y6: the slide out has a keyframe set and a name per side, and reduced motion switches every one off (G2)', () => {
+  for (const side of ['right', 'left', 'top', 'bottom']) {
+    assert.match(css, new RegExp(`@keyframes dpeek-from-${side} \{`), `in: ${side}`);
+    assert.match(css, new RegExp(`@keyframes dpeek-to-${side} \{`), `out: ${side}`);
+    assert.equal(rule(`.dpeek[data-closing][data-from="${side}"]`)['animation-name'], `dpeek-to-${side}`);
+    if (side !== 'right') assert.equal(rule(`.dpeek[data-from="${side}"]`)['animation-name'], `dpeek-from-${side}`);       // right is the default, set on .dpeek itself
+  }
+  assert.equal(rule('.dpeek[data-closing]')['animation-fill-mode'], 'forwards');
+  assert.equal(rule('.dpeek[data-closing]')['pointer-events'], 'none', 'a panel on its way out takes no hover');
+  const reduced = /@media \(prefers-reduced-motion: reduce\) \{ ([^}]*) \{ animation: none; \} \}/.exec(css);
+  assert.ok(reduced, 'the reduced-motion rule must be findable');
+  for (const sel of ['.dpeek', '.dpeek[data-from]', '.dpeek[data-closing]', '.dpeek[data-closing][data-from]']) assert.ok(reduced[1].split(',').map(x => x.trim()).includes(sel), sel);
+  assert.ok(css.indexOf(reduced[0]) > css.indexOf('.dpeek[data-closing][data-from="bottom"]'), 'after the rules it overrides');
+});
+
+test('Y6: the CSS and the page agree on how long the slide is', () => {
+  const V = require('../app/dock-tree-display');
+  assert.equal(V.SLIDE_MS, 160);
+  assert.equal(rule('.dpeek[data-closing]')['animation-duration'], `${V.SLIDE_MS}ms`);
+  assert.match(css, /\.dpeek \{ animation: dpeek-from-right 160ms ease-out; \}/);
+});
+
 module.exports = { rule, css };

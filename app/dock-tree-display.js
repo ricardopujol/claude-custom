@@ -206,6 +206,8 @@ function sizesAfterDrag(node, split, i, delta) {
 const DIVIDER_STEP = 16;                       // px one arrow key moves a divider
 /** How long boxes take to settle into their new places after a drop (D4); a drag itself never animates. */
 const SETTLE_MS = 120;
+/** How long the rail panel takes to slide in or out (BACKLOG #85); the CSS animation is the same number. */
+const PEEK_SLIDE_MS = 160;
 
 /** The pixels a key moves a divider: the arrow that points along it (left/right for a row's, up/down for a column's), else null. */
 function dividerStep(key, dir) {
@@ -571,6 +573,7 @@ function applyBoxes(plan, doc) {
       popover.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
       layer.appendChild(popover);
     }
+    delete popover.dataset.closing;                       // opened again while it was sliding out: it stays
     popover.dataset.module = plan.peek.module;
     popover.setAttribute('role', 'group');
     popover.setAttribute('aria-label', `${(plan.peek.tabs.find(t => t.on) || { label: plan.peek.module }).label} panel, opened from its rail`);
@@ -585,15 +588,38 @@ function applyBoxes(plan, doc) {
     if (p && p.parentNode !== holder) holder.appendChild(p);
   }
 
+  // A panel closing slides back out (BACKLOG #85): the popover stays, marked, with its panel in it and drawn, until the slide has
+  // run; then the panel goes to the store. Under reduced motion (or a page that cannot say) it closes at once, as before.
+  let closingPanel = null;
+  let closeNow = false;
+  if (popover && !plan.peek) {
+    const win = doc.defaultView;
+    const motion = !!win && typeof win.matchMedia === 'function' && typeof win.setTimeout === 'function'
+      && !win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!motion) closeNow = true;
+    else {
+      closingPanel = popover.dataset.module;
+      if (!popover.dataset.closing) {
+        popover.dataset.closing = '1';
+        const el = popover;
+        win.setTimeout(() => {
+          if (!el.dataset.closing) return;                // opened again meanwhile
+          for (const p of el.querySelectorAll('.panel[data-panel]')) { p.classList.remove('on'); store.appendChild(p); }
+          el.remove();
+        }, PEEK_SLIDE_MS + 40);
+      }
+    }
+  }
+
   // Panels no group is showing wait in the store; that includes every panel of a group about to be removed.
   const showing = new Set(plan.shown);
   for (const p of doc.querySelectorAll('.panel[data-panel]')) {
-    const on = showing.has(p.dataset.panel);
+    const on = showing.has(p.dataset.panel) || p.dataset.panel === closingPanel;
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
   const stale = [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale];
-  if (popover && !plan.peek) stale.push(popover);
+  if (closeNow) stale.push(popover);
   for (const el of stale) el.remove();
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
@@ -606,7 +632,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
