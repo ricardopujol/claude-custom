@@ -393,7 +393,7 @@ test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on o
 test('PR #159 Dexter 6: an operation on the placement is built on the layout AFTER a pending key burst is saved, so a push that arrived in the burst survives', () => {
   assert.match(JS, /function settledLayout\(\) \{ if \(flushKeyBurst\) flushKeyBurst\(\); return placementLayout\(\); \}/);
   assert.doesNotMatch(JS, /DTm\.(dock|hide|show)\(placementLayout\(\)/, 'a dock / hide / show built on the drawn layout would carry a stale whole into the save');
-  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 12, 'every operation site');
+  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 11, 'every operation site');
   assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
 });
 
@@ -426,7 +426,7 @@ test('#85: hovering a dock-rail tab enters it, the panel or the strip keeps it, 
 
 test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
   const pin = fnBody('togglePin');
-  assert.match(pin, /\(l\.rail \|\| \[\]\)\.includes\(id\) \? DTm\.pin\(l, id\) : DTm\.unpin\(l, id\)/);
+  assert.match(pin, /unpinning \? DTm\.unpin\(l, id\) : DTm\.pin\(l, id\)/);
   assert.match(pin, /const l = settledLayout\(\);/);
   assert.match(JS, /commitPlacement\(DTm\.showOnRail\(l, row\.id\)/, 'ticking a hidden panel in the Window menu brings it back as a rail tab');
   assert.match(JS, /commitPlacement\(DTm\.unpinGroup\(settledLayout\(\), home\.id\)/);
@@ -435,4 +435,26 @@ test('#85: the Pin button, the menu and the fold all go through the model\'s pin
 test('#85 Miguel Y2: a press or focus inside the open panel holds it open', () => {
   assert.match(JS, /if \(inside\) \{ railEvent\(\{ type: 'hold' \}\); return; \}/);
   assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(peek && e\.target\.closest && e\.target\.closest\('\.dpeek'\)\) railEvent\(\{ type: 'hold' \}\);/);
+});
+
+test('#85 PR #168 Miguel B2: the tab menu Pin, Unpin and Unpin group follow the Just this tab check', () => {
+  assert.match(fnBody('togglePin'), /commitPlacement\([^\n]*\{ select: id, justThisTab \}\)/);
+  assert.match(fnBody('togglePin'), /^function togglePin\(id, \{ justThisTab = false \} = \{\}\)/);
+  assert.strictEqual([...JS.matchAll(/togglePin\(id, \{ justThisTab: check\.box\.checked \}\)/g)].length, 2, 'Pin and Unpin');
+  assert.match(JS, /unpinGroup\(settledLayout\(\), home\.id\), \{ justThisTab: check\.box\.checked \}/);
+});
+
+test('#85 PR #168 Miguel Y1 / Y5: after Pin or Pinned the keyboard follows the panel and the change is said', () => {
+  const body = fnBody('togglePin');
+  assert.match(body, /if \(next\) next\.focus\(\);/);
+  assert.match(body, /\.drail\[data-rail="dock"\] button\[data-module=/);
+  assert.match(body, /getElementById\('dock-announce'\)\.textContent = /);
+});
+
+test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the canvas) goes through revealModule, which opens a railed panel held', () => {
+  const body = fnBody('revealModule');
+  assert.match(body, /railEvent\(\{ type: 'click', module: id \}\)/);
+  assert.match(body, /!\(railSt\.module === id && railSt\.held\)/, 'a panel already held open is not closed by asking to show it');
+  assert.match(body, /DTm\.show\(settledLayout\(\), id\)/);
+  assert.doesNotMatch(JS.replace(body, ''), /if \(placementLayout\(\)\.hidden\.includes\(/, 'no path decides hidden-or-not by itself');
 });

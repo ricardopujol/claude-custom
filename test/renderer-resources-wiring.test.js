@@ -114,7 +114,7 @@ test('the history goes to the selected page only: a newly selected page is re-se
 });
 
 test('the popover Open Resources panel button closes it, shows the panel when hidden, selects and focuses it', () => {
-  assert.match(BLOCK, /closest\('\[data-hist-act="open-panel"\]'\)[\s\S]*?resPopStep\(\{ type: 'panel-link' \}\);\s*if \(placementLayout\(\)\.hidden\.includes\('resources'\)\) commitPlacement\(DTm\.show\(settledLayout\(\), 'resources'\), \{ select: 'resources' \}\);\s*else selectModule\('resources'\);[\s\S]*?resRoot\.focus\(\)/);
+  assert.match(BLOCK, /closest\('\[data-hist-act="open-panel"\]'\)[\s\S]*?resPopStep\(\{ type: 'panel-link' \}\);\s*revealModule\('resources'\);[\s\S]*?resRoot\.focus\(\)/);
 });
 
 test('Leftovers Stop (B): the bridge, the gated IPC handler and the page\'s click all line up, and the page names rows, never processes', () => {

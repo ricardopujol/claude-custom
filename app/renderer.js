@@ -1429,8 +1429,7 @@ if (tbResourcesEl && resPopoverEl) {
     const btn = e.target && e.target.closest ? e.target.closest('[data-hist-act="open-panel"]') : null;
     if (!btn) return;
     resPopStep({ type: 'panel-link' });
-    if (placementLayout().hidden.includes('resources')) commitPlacement(DTm.show(settledLayout(), 'resources'), { select: 'resources' });
-    else selectModule('resources');
+    revealModule('resources');
     setTimeout(() => { if (resRoot) resRoot.focus(); }, 0);
   });
   resPopoverEl.addEventListener('mouseleave', () => { resPopStep({ type: 'leave' }); });
@@ -1536,10 +1535,7 @@ function canvasFetchIfNeeded() {
 
 // Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
 function canvasDock() {
-  const l = placementLayout();
-  if (l.hidden.includes('canvas')) commitPlacement(DTm.show(settledLayout(), 'canvas'), { select: 'canvas' });
-  else if ((l.rail || []).includes('canvas')) { if (railSt.module !== 'canvas') { railEvent({ type: 'click', module: 'canvas' }); renderLayout({ refit: false }); } }   // unpinned: its panel opens, held
-  else selectModule('canvas');
+  revealModule('canvas');
 }
 
 function canvasOnFrame(frame) {
@@ -1792,9 +1788,28 @@ function railEvent(ev) {
 }
 
 // Pin or unpin a panel from its button (BACKLOG #85): a railed panel is docked beside the terminal, a docked one goes to the rail.
-function togglePin(id) {
+// `justThisTab` is the tab menu's check, like every other write of that menu (PR #168 Miguel B2); the buttons on a panel have
+// none and follow the tab's own layout when it has one. The keyboard follows the panel (it was on the button just pressed, which
+// is gone): to its new tab, and the change is said (Miguel Y1, Y5).
+function togglePin(id, { justThisTab = false } = {}) {
   const l = settledLayout();
-  commitPlacement((l.rail || []).includes(id) ? DTm.pin(l, id) : DTm.unpin(l, id), { select: id });
+  const unpinning = !(l.rail || []).includes(id);
+  commitPlacement(unpinning ? DTm.unpin(l, id) : DTm.pin(l, id), { select: id, justThisTab });
+  const label = (TABS.find(t => t.id === id) || {}).label || id;
+  const now = (placementLayout().rail || []).includes(id);
+  const next = document.querySelector(now ? `.drail[data-rail="dock"] button[data-module="${CSS.escape(id)}"]` : `.zone-tabs button[data-module="${CSS.escape(id)}"]`);
+  if (next) next.focus();
+  document.getElementById('dock-announce').textContent = now ? `${label} unpinned: it is on the rail.` : `${label} pinned beside the terminal.`;
+}
+
+// "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
+// panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
+function revealModule(id) {
+  const l = placementLayout();
+  if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
+  else if ((l.rail || []).includes(id)) {
+    if (!(railSt.module === id && railSt.held)) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
+  } else selectModule(id);
 }
 
 // A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
@@ -1878,7 +1893,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
   if (railed) {
     layoutMenu.appendChild(node('button', {
       type: 'button', text: 'Pin', title: 'Dock this panel beside the terminal and keep it open',
-      on: { click: () => { closeLayoutMenu(); togglePin(id); } },
+      on: { click: () => { closeLayoutMenu(); togglePin(id, { justThisTab: check.box.checked }); } },
     }));
   } else {
     layoutMenu.appendChild(node('button', {
@@ -1887,7 +1902,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
     }));
     layoutMenu.appendChild(node('button', {
       type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you hover it',
-      on: { click: () => { closeLayoutMenu(); togglePin(id); } },
+      on: { click: () => { closeLayoutMenu(); togglePin(id, { justThisTab: check.box.checked }); } },
     }));
   }
   // A group of the tree folded to a rail in this window (Ctrl+B, an older fold) opens again; a float has no rail to fold to.
