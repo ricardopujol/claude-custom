@@ -34,6 +34,17 @@ const relayOpts = (userStatusLine) => ({
   statusRelay: { nodePath: 'C:\\Program Files\\nodejs\\node.exe', scriptPath: 'C:\\cc\\host\\status-relay.js', userStatusLine },
 });
 const b64 = s => Buffer.from(s, 'utf8').toString('base64');
+const { killProvenBatch } = require('../host/kill-tree');
+
+// BACKLOG #72: bounds that load cannot reach (PowerShell took 45 s to start under load; the relay's own 20 s / 10 s bounds are production
+// trade-offs, not what these tests ask about). The spawners outlive the tests, and test/straddle-trial.test.js pins that link.
+const TEST_MS = 600000;                         // one test
+const SWEEP_MS = 240000;                        // one sweep, rescan or batch
+const WAIT_MS = 150000;                         // a process tree to come up
+const SPAWNER_DEADLINE_MS = TEST_MS + 100000;
+const STALL_CUT_MS = 90000;                     // the F1 stall test's real spawnSync timeout: past a slow start, short of a 300 s stall
+const STALL_WAIT_MS = 300000;                   // how long a cut test waits for its sabotaged script to say it reached the stall
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // --- settings ---------------------------------------------------------------
 
@@ -69,7 +80,7 @@ let n = 0;
 const pipeName = () => `cc-relay-test-${process.pid}-${n++}`;
 const DOC = JSON.stringify({ model: { id: 'claude-sonnet-5' }, effort: { level: 'high' } });
 
-test('the relay forwards the document to the host as a Status event', { timeout: 600000 }, async () => {
+test('the relay forwards the document to the host as a Status event', { timeout: TEST_MS }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -88,7 +99,7 @@ test('the relay forwards the document to the host as a Status event', { timeout:
   assert.strictEqual(res.code, 0);
 });
 
-test("the user's command gets the same stdin, and its output is the status line", { timeout: 600000 }, async () => {
+test("the user's command gets the same stdin, and its output is the status line", { timeout: TEST_MS }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -98,7 +109,7 @@ test("the user's command gets the same stdin, and its output is the status line"
   assert.strictEqual(res.out, 'USER:claude-sonnet-5');
 });
 
-test("no host listening: the user's status line still renders", { timeout: 600000 }, async () => {
+test("no host listening: the user's status line still renders", { timeout: TEST_MS }, async () => {
   // Process start-up (the relay, then cmd.exe, then the user's node) is what a
   // wall-clock bound here really measured, and it blew 5 s under full-suite
   // load. "Promptly" is asserted deterministically in the next test instead.
@@ -112,7 +123,7 @@ test("no host listening: the user's status line still renders", { timeout: 60000
   assert.strictEqual(res.code, 0);
 });
 
-test('unparseable stdin is not forwarded, and the user command still runs', { timeout: 600000 }, async () => {
+test('unparseable stdin is not forwarded, and the user command still runs', { timeout: TEST_MS }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -134,7 +145,7 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 // A pid file read mid-write must not become a truncated pid that process.kill then aims at some other process (Miguel G1).
 const readPid = (file) => { const s = fs.readFileSync(file, 'utf8'); return /^\d+$/.test(s) ? Number(s) : false; };
 
-test("a hung user statusLine is killed, grandchild and all, and the relay still exits", { timeout: 600000 }, async (t) => {
+test("a hung user statusLine is killed, grandchild and all, and the relay still exits", { timeout: TEST_MS }, async (t) => {
   // shell:true puts a shell between the relay and the user's command. Killing
   // only the shell (child.kill) leaves the real command running, one more
   // orphan every time the status line re-fires.
@@ -159,24 +170,25 @@ test("a hung user statusLine is killed, grandchild and all, and the relay still 
   assert.ok(gone, `the user's command (pid ${pid}) is still running`);
 });
 
-test('a user command that finishes in time is not killed', { timeout: 600000 }, async () => {
+test('a user command that finishes in time is not killed', { timeout: TEST_MS }, async () => {
   const quick = `"${process.execPath}" -e "process.exit(0)"`;
   assert.strictEqual(await runUser(b64(quick), DOC, { timeoutMs: 5000 }), 0);
 });
 
-test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', { timeout: 600000 }, async () => {
+test('the whole relay SCRIPT exits promptly on a hung user command (Miguel #51 1)', { timeout: TEST_MS }, async () => {
   // "Promptly" is the relay ending, with the command's output closed: a relay
   // stuck on a hung command, or an orphan holding its stdout open (the #72
   // race, MEASURED at 685 s), never closes. The bound is generous on purpose:
   // the worst legitimate path is the 5 s timeout plus the sweep (6.4 s measured
   // under one full-suite run, a 20 s sweep timeout at worst), and a tight
-  // bound flaked (Miguel Y3). 60 s still tells that from a 685 s hold.
+  // bound flaked (Miguel Y3). PowerShell alone took 45 s to start under load (MEASURED, BACKLOG #72), so the bound is 150 s, which still
+  // tells that from a 685 s hold.
   const dir = tmpDir('relay-hang-script');
   const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
   const hang = `"${process.execPath}" -e "require('fs').writeFileSync('${pidFile}', String(process.pid)); setInterval(() => {}, 1000)"`;
   const t0 = Date.now();
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(hang)], DOC);
-  assert.ok(Date.now() - t0 < 60000, `the relay took ${Date.now() - t0} ms to exit on a hung command`);
+  assert.ok(Date.now() - t0 < 150000, `the relay took ${Date.now() - t0} ms to exit on a hung command`);
   assert.notStrictEqual(res.code, 0);
   const pid = readPid(pidFile);
   assert.ok(pid, 'the user command never wrote its pid');
@@ -207,7 +219,7 @@ const { spawnerSource } = require('../verify/lib/spawner-source');
 const RUN_MARKERS = [];
 process.on('exit', () => { for (const m of RUN_MARKERS) { try { reapMarked(m); } catch { /* best effort at exit */ } } });
 
-test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: 600000 }, async () => {
+test('#72: a user command that is still starting processes while it is killed leaves none of them running', { skip: process.platform !== 'win32', timeout: TEST_MS }, async () => {
   try { reapDeadOwners('cc72'); reapDeadOwners('cc72s'); } catch { /* a leftover sweep must never fail the test */ }
   // taskkill /T reads the tree once and then ends it. A process the tree started after that read (cmd.exe still
   // creating the user's command, under load) outlived the kill, and kept the relay's stdout open: MEASURED, a relay
@@ -219,7 +231,7 @@ test('#72: a user command that is still starting processes while it is killed le
   RUN_MARKERS.push(marker, spawnerMarker);
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawner = path.join(dir, 'spawner.js');
-  fs.writeFileSync(spawner, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 700000, parentPid: process.pid, detached: true }));   // the deadline stays past the test's 600 s timeout
+  fs.writeFileSync(spawner, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: SPAWNER_DEADLINE_MS, parentPid: process.pid, detached: true }));   // the deadline stays past the test's timeout
   const cmd = `"${process.execPath}" "${spawner.replace(/\\/g, '/')}" ${spawnerMarker}`;
   try {
     // The kill is the one runUser makes on its timeout (its wiring is the 'hung user statusLine' test's). The production sweep gives up
@@ -227,11 +239,11 @@ test('#72: a user command that is still starting processes while it is killed le
     // 45 s to start under load (MEASURED, BACKLOG #72), so this test's question, whether the SWEEP ends a still-spawning tree, is asked
     // with a bound that load cannot reach.
     const child = spawn(cmd, { shell: true, stdio: 'ignore', windowsHide: true });
-    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 150000);
+    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', WAIT_MS);
     // Positive control: the same read must SEE the spawned processes before the kill, or "none left" proves nothing.
     // (the scan matches the sleepers' marker only, never the spawner's own: PR #135 Dexter 4)
     assert.ok(markedPids(marker).length > 0, 'the marker scan finds none of the running spawned processes');
-    killTree(child, 0, { sweepTimeoutMs: 240000 });   // mid-spawning
+    killTree(child, 0, { sweepTimeoutMs: SWEEP_MS });   // mid-spawning
     const left = await noneLeft(marker);
     assert.deepStrictEqual(left, [], 'processes the user command started are still running after the kill');
   } finally {
@@ -254,24 +266,28 @@ async function hangTree(dir) {
   return { child, since, grandchild };
 }
 // killTree's `run`, with the sweep script edited: `from` must be in it, so a rename of the script cannot make this vacuous.
+function patchScript(script, pairs) {
+  for (const [from, to] of pairs) { assert.ok(script.includes(from), `the sweep script no longer contains ${from}`); script = script.replace(from, () => to); }
+  return script;
+}
 // Unless `cut`, every call gets a bound load cannot reach: these tests ask what the sweep DOES, and the relay's 20 s / 10 s bounds are
 // production trade-offs that cut a sweep before it ran when PowerShell took 45 s to start (MEASURED, BACKLOG #72).
-function sabotaged(from, to, seen, { cut = false } = {}) {
+function sabotagedAll(pairs, seen, { cut = false } = {}) {
   return (cmd, args, o) => {
     if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
-    assert.ok(args[3].includes(from), `the sweep script no longer contains ${from}`);
-    const r = spawnSync(cmd, [...args.slice(0, 3), args[3].replace(from, () => to)], cut ? o : { ...o, timeout: 240000 });
+    const r = spawnSync(cmd, [...args.slice(0, 3), patchScript(args[3], pairs)], cut ? o : { ...o, timeout: SWEEP_MS });
     // The first call is the sweep; the fallback's rescan of the parents it ended is a second one (PR #161 Dexter 2).
     if (!seen.sweep) seen.sweep = r; else (seen.rescans = seen.rescans || []).push(r);
     return r;
   };
 }
+const sabotaged = (from, to, seen, opts) => sabotagedAll([[from, to]], seen, opts);
 async function gone(pid) {
   for (let i = 0; i < 30 && alive(pid); i++) await new Promise(r => setTimeout(r, 150));
   return !alive(pid);
 }
 
-test('#72 Dexter F1 / Miguel Y1: the sweep fails after the first kill, and the grandchild still dies', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 Dexter F1 / Miguel Y1: the sweep fails after the first kill, and the grandchild still dies', { skip: !onWin, timeout: TEST_MS }, async () => {
   // The root cmd.exe is already dead when the children read fails, so `taskkill /pid <root> /T` finds nothing:
   // the fallback must end the pids the sweep had seen.
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-fail'));
@@ -283,17 +299,21 @@ test('#72 Dexter F1 / Miguel Y1: the sweep fails after the first kill, and the g
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#72 Dexter F1: the sweep stalls after the first kill until it is cut off, and the grandchild still dies', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 Dexter F1: the sweep stalls after the first kill until it is cut off, and the grandchild still dies', { skip: !onWin, timeout: TEST_MS }, async () => {
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-stall'));
   const seen = {};
   try {
-    killTree(child, since, { sweepTimeoutMs: 8000, run: sabotaged('$rows=@(ReadProcs)', '$rows=@(Start-Sleep -Seconds 120)', seen, { cut: true }) });
+    // A REAL spawnSync timeout (the one path where the error and the partial stdout are not built by hand), cut well past a slow start. A cut
+    // that lands before the sweep printed its snapshot has nothing to list and the test would pass on the root's own taskkill: the ALIVE line
+    // proves the sweep reached the stall (Miguel Y2).
+    killTree(child, since, { sweepTimeoutMs: STALL_CUT_MS, run: sabotaged('$rows=@(ReadProcs)', '$rows=@(Start-Sleep -Seconds 300)', seen, { cut: true }) });
     assert.ok(seen.sweep.error, 'the stalled sweep was not cut off by its timeout');
+    assert.ok(sweepPids(seen.sweep.stdout).length > 0, `the sweep was cut before it listed anything (stdout ${String(seen.sweep.stdout).trim()}): the stall after the first kill was never reached`);
     assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived a stalled sweep`);
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#72 Dexter F2: a sweep that hits its level cap with the tree alive does not exit 0, and the tree still dies', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 Dexter F2: a sweep that hits its level cap with the tree alive does not exit 0, and the tree still dies', { skip: !onWin, timeout: TEST_MS }, async () => {
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-cap'));
   const seen = {};
   try {
@@ -303,16 +323,16 @@ test('#72 Dexter F2: a sweep that hits its level cap with the tree alive does no
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#72 Dexter F4: the root is killed even when the wall clock says it started after the kill was begun', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 Dexter F4: the root is killed even when the wall clock says it started after the kill was begun', { skip: !onWin, timeout: TEST_MS }, async () => {
   // A clock stepped back reads every start time as "before since". The root's pid is held by libuv, so it needs no bound.
   const { child, grandchild } = await hangTree(tmpDir('relay-sweep-clock'));
   try {
-    killTree(child, Date.now() + 3600 * 1000, { sweepTimeoutMs: 240000 });
+    killTree(child, Date.now() + 3600 * 1000, { sweepTimeoutMs: SWEEP_MS });
     assert.ok(await gone(child.pid), `the root (pid ${child.pid}) survived`);
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#72 Dexter F5: a command that already exited leaves its background child alone, as taskkill /T always did', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 Dexter F5: a command that already exited leaves its background child alone, as taskkill /T always did', { skip: !onWin, timeout: TEST_MS }, async () => {
   // The timer can fire in the same tick the command finishes. Its `start /b` refresher is meant to outlive it.
   const dir = tmpDir('relay-sweep-exited');
   const pidFile = path.join(dir, 'pid').replace(/\\/g, '/');
@@ -323,7 +343,7 @@ test('#72 Dexter F5: a command that already exited leaves its background child a
   const refresher = await waitUntil(() => readPid(pidFile), 'the background refresher to start', 60000);
   try {
     await exited;
-    killTree(child, since, { sweepTimeoutMs: 240000 });
+    killTree(child, since, { sweepTimeoutMs: SWEEP_MS });
     assert.ok(alive(refresher), `the background child (pid ${refresher}) was killed with a command that had already exited`);
   } finally { try { process.kill(refresher); } catch { /* gone */ } }
 });
@@ -332,7 +352,7 @@ test('#72 Dexter F5: a command that already exited leaves its background child a
 const READ_PROCS = 'function ReadProcs{Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}';
 const sweepLines = (stdout) => String(stdout || '').split(/\r?\n/).filter(l => /^ALIVE/.test(l));
 
-test('#73 S7-1 (Dexter): a pid the sweep already ENDED is not in its last ALIVE line, even though the sweep then failed', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 S7-1 (Dexter): a pid the sweep already ENDED is not in its last ALIVE line, even though the sweep then failed', { skip: !onWin, timeout: TEST_MS }, async () => {
   // cmd.exe (root) -> node (the grandchild). The 3rd table read fails: by then both are ended. The last `ALIVE` line must be empty,
   // or the fallback would re-kill a pid that Windows may have handed to someone else.
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-ended'));
@@ -352,7 +372,7 @@ test('#73 S7-1 (Dexter): a pid the sweep already ENDED is not in its last ALIVE 
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#73 S7-2 (Dexter): the Z / P / C reuse sequence -- a child that STARTED BEFORE its named parent is not adopted', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 S7-2 (Dexter): the Z / P / C reuse sequence -- a child that STARTED BEFORE its named parent is not adopted', { skip: !onWin, timeout: TEST_MS }, async () => {
   // P (pid 2000000001) started Z (2000000002, ppid P) and exited; the pid was reused for C, a real child of the root. Z's start is
   // BEFORE C's, so it cannot be C's child. W (2000000003) started after C: a real child. since-based code adopted Z.
   const root = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
@@ -368,7 +388,7 @@ test('#73 S7-2 (Dexter): the Z / P / C reuse sequence -- a child that STARTED BE
   } finally { try { root.kill(); } catch { /* gone */ } }
 });
 
-test('#73 S7-2: a process that started AFTER its named parent was ended is not that parent\'s child (a stranger reused the pid)', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 S7-2: a process that started AFTER its named parent was ended is not that parent\'s child (a stranger reused the pid)', { skip: !onWin, timeout: TEST_MS }, async () => {
   // After the real grandchild is killed, a table row names it as parent but started an hour LATER than its exit: not a child.
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-late'));
   const seen = {};
@@ -381,10 +401,10 @@ test('#73 S7-2: a process that started AFTER its named parent was ended is not t
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#73 F4: the sweep reads no wall clock -- a stepped-back clock (since far in the future) still ends the whole tree', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 F4: the sweep reads no wall clock -- a stepped-back clock (since far in the future) still ends the whole tree', { skip: !onWin, timeout: TEST_MS }, async () => {
   const { child, grandchild } = await hangTree(tmpDir('relay-sweep-noclock'));
   try {
-    killTree(child, Date.now() + 3600 * 1000, { sweepTimeoutMs: 240000 });
+    killTree(child, Date.now() + 3600 * 1000, { sweepTimeoutMs: SWEEP_MS });
     assert.ok(await gone(child.pid), 'the root survived');
     assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived a sweep given a future since`);
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
@@ -396,7 +416,7 @@ const synthRow = (id, ppid, ms, t0) => `[pscustomobject]@{ProcessId=${id};Parent
 const aliveSleeper = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
 const pidsOf = (stdout) => sweepLines(stdout).flatMap(l => (l.match(/\d+(?=:)/g) || []).map(Number));
 
-test('#73 F1 / Y1 (Dexter): `a | b` -- b exits, pid 7004 is taken by a stranger S, K(b) is a MISMATCH: S\'s child, started after b died, is NOT adopted', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 F1 / Y1 (Dexter): `a | b` -- b exits, pid 7004 is taken by a stranger S, K(b) is a MISMATCH: S\'s child, started after b died, is NOT adopted', { skip: !onWin, timeout: TEST_MS }, async () => {
   // The root R is a real sleeper; "b" is the REAL sleeper S (so K sees a live process whose start differs from the one the table gave
   // for b: MISMATCH). S1 names b's pid as its parent and started after S did, so after b died: it is the stranger's child.
   const root = aliveSleeper(); const reuser = aliveSleeper();
@@ -411,7 +431,7 @@ test('#73 F1 / Y1 (Dexter): `a | b` -- b exits, pid 7004 is taken by a stranger 
   } finally { for (const c of [root, reuser]) { try { c.kill(); } catch { /* gone */ } } }
 });
 
-test('#73 F1 (GONE path): a parent that vanished before K, whose pid the next read shows reused, does not adopt the reuser\'s child; one with no bound adopts nothing new', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 F1 (GONE path): a parent that vanished before K, whose pid the next read shows reused, does not adopt the reuser\'s child; one with no bound adopts nothing new', { skip: !onWin, timeout: TEST_MS }, async () => {
   // P = 2000000001 is not running (K: gone, exit unknown). Read 2 shows a holder of P's pid that started at +400: W (+300) is P's, Z (+500) is the
   // holder's. A second parent Q = 2000000002 has no holder at all: a NEW child of Q (+900) has no bound and is not adopted.
   const root = aliveSleeper();
@@ -427,21 +447,22 @@ test('#73 F1 (GONE path): a parent that vanished before K, whose pid the next re
   } finally { try { root.kill(); } catch { /* gone */ } }
 });
 
-test('#73 F2 (Dexter): one row with a null CreationDate (System Idle Process) does not abort the sweep', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 F2 (Dexter): one row with a null CreationDate (System Idle Process) does not abort the sweep', { skip: !onWin, timeout: TEST_MS }, async () => {
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-null'));
   const seen = {};
   const withNull = `function ReadProcs{$r=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8);$r+[pscustomobject]@{ProcessId=0;ParentProcessId=0;CreationDate=$null}}`;
   try {
     killTree(child, since, { proveBatch: () => new Map(), run: sabotaged(READ_PROCS, withNull, seen) });
     // What a null date would do is abort the sweep (3: no snapshot, 4: no read). 5 is "ran to the end, but did not SEE every kill land":
-    // a killed process that has not exited within the level's 2 s wait, which a loaded machine stretches (MEASURED, 24 busy loops); the
-    // fallback is made for that and the grandchild check below is the proof.
+    // a killed process that has not exited within the level's 2 s wait, which a loaded machine stretches (MEASURED, 24 busy loops). On 5 the
+    // seeded rescan can end the grandchild, so `gone` shows only that the sweep did not abort; on 0 the sweep must have left nothing pending.
     assert.ok([0, 5].includes(seen.sweep.status), `the sweep failed on a null date: status ${seen.sweep.status}; stdout ${String(seen.sweep.stdout).trim()}`);
+    if (seen.sweep.status === 0) assert.deepStrictEqual(sweepPids(seen.sweep.stdout), [], 'a sweep that exited 0 still listed something to end');
     assert.ok(await gone(grandchild), `the grandchild (pid ${grandchild}) survived`);
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#73 F3 (Dexter): a snapshot-listed process that exits on its own is done -- the sweep still exits 0, not 5', { skip: !onWin, timeout: 600000 }, async () => {
+test('#73 F3 (Dexter): a snapshot-listed process that exits on its own is done -- the sweep still exits 0, not 5', { skip: !onWin, timeout: TEST_MS }, async () => {
   const root = aliveSleeper();
   const seen = {};
   const batched = [];
@@ -467,14 +488,14 @@ const writeChrome = (dir, value) => {
 };
 const ECHO = `"${process.execPath}" -e "process.stdout.write('USER-ROW')"`;
 
-test('#27: statusInHeader true -> the user command does not run and nothing is printed', { timeout: 600000 }, async () => {
+test('#27: statusInHeader true -> the user command does not run and nothing is printed', { timeout: TEST_MS }, async () => {
   const file = writeChrome(tmpDir('relay-quiet'), { statusInHeader: true });
   const res = await runRelay(['--pipe', pipeName(), '--then', b64(ECHO), '--quiet-when', file], DOC);
   assert.strictEqual(res.out, '');
   assert.strictEqual(res.code, 0);
 });
 
-test('#27: statusInHeader false, missing, or not exactly true -> the user row prints as before', { timeout: 600000 }, async () => {
+test('#27: statusInHeader false, missing, or not exactly true -> the user row prints as before', { timeout: TEST_MS }, async () => {
   const dir = tmpDir('relay-loud');
   for (const value of [{ statusInHeader: false }, {}, { statusInHeader: 'true' }, { statusInHeader: 1 }, null, [true]]) {
     const file = writeChrome(dir, value);
@@ -483,7 +504,7 @@ test('#27: statusInHeader false, missing, or not exactly true -> the user row pr
   }
 });
 
-test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', { timeout: 600000 }, async () => {
+test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (fail toward showing)', { timeout: TEST_MS }, async () => {
   const dir = tmpDir('relay-bad');
   const corrupt = path.join(dir, 'chrome-global.json');
   fs.writeFileSync(corrupt, '{not json');
@@ -496,7 +517,7 @@ test('#27: a missing, corrupt or unreadable toggle file -> the user row prints (
   }
 });
 
-test('#27: quiet still forwards the document to the host', { timeout: 600000 }, async () => {
+test('#27: quiet still forwards the document to the host', { timeout: TEST_MS }, async () => {
   const name = pipeName();
   const bridge = createHookBridge({ pipeName: `\\\\.\\pipe\\${name}` });
   await bridge.listening;
@@ -520,11 +541,13 @@ async function spawnerTree(name, { enough = 150, liveMax = 200 } = {}) {
   const ready = path.join(dir, 'ready').replace(/\\/g, '/');
   const spawnerFile = path.join(dir, 'spawner.js');
   // kill-test-ok: the sleepers and the spawner carry markers, reaped by cleanup(), the exit hook and the next run's reapDeadOwners
-  fs.writeFileSync(spawnerFile, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: 700000, liveMax, parentPid: process.pid, detached: true }));
+  fs.writeFileSync(spawnerFile, spawnerSource({ sleeperSrc: SLEEPER_SRC, marker, readyFile: ready, intervalMs: 25, deadlineMs: SPAWNER_DEADLINE_MS, liveMax, parentPid: process.pid, detached: true }));
   const child = spawn(`"${process.execPath}" "${spawnerFile.replace(/\\/g, '/')}" ${spawnerMarker}`, { shell: true, stdio: 'ignore', windowsHide: true });
-  await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', 150000);
-  await waitUntil(() => markedPids(marker).length >= enough, `about ${enough} sleepers`, 150000);
   const cleanup = () => { try { reapMarked(marker); reapMarked(spawnerMarker); } catch { /* cleanup only; the exit hook and the next run's sweep try again */ } };
+  try {
+    await waitUntil(() => fs.existsSync(ready), 'the user command to start spawning', WAIT_MS);
+    await waitUntil(() => markedPids(marker).length >= enough, `about ${enough} sleepers`, WAIT_MS);
+  } catch (e) { cleanup(); throw e; }   // nothing owns this tree yet: a caller's finally does not exist (Miguel G3)
   return { child, marker, cleanup };
 }
 // A process query that fails under load (CIM exit 1: MEASURED once in the diagnosis) is asked again; three failures in a row still throw,
@@ -537,53 +560,42 @@ async function noneLeft(marker) {
   for (let i = 0; i < 10 && left.length; i++) { await new Promise(r => setTimeout(r, 300)); left = scan(marker); }
   return left;
 }
-// `sabotaged` with several edits at once (each `from` must be in the script).
-function sabotagedAll(pairs, seen) {
-  return (cmd, args, o) => {
-    if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
-    let script = args[3];
-    for (const [from, to] of pairs) { assert.ok(script.includes(from), `the sweep script no longer contains ${from}`); script = script.replace(from, () => to); }
-    // These tests ask what the sweep and its rescan DO, not how fast PowerShell starts: the relay's 20 s / 10 s bounds are production
-    // trade-offs, and under load they cut the sweep before it ran (MEASURED: status null, BACKLOG #72). The cut tests use cutAtStall.
-    const r = spawnSync(cmd, [...args.slice(0, 3), script], { ...o, timeout: 240000 });
-    if (!seen.sweep) seen.sweep = r; else (seen.rescans = seen.rescans || []).push(r);
-    return r;
-  };
-}
-
-// BACKLOG #72 (the flake): these two tests cut the sweep off by a wall clock (`sweepTimeoutMs: 8000`), so on a loaded machine the cut
+// BACKLOG #72 (the flake): these tests cut the sweep off by a wall clock (`sweepTimeoutMs: 8000`), so on a loaded machine the cut
 // landed before the sweep had printed its snapshot (PowerShell start-up plus a table read of ~200 node.exe took over 8 s: MEASURED, 4 of 4
 // runs under the other lanes' load), the fallback had nothing to list, and the sleepers born since survived. The cut now falls when the
 // sabotaged script SAYS it has reached its stall (it writes `flag`), however long that took, and the rescan (not what is under test)
 // gets a bound that load cannot reach. A slow start is run on purpose (`slowStartSec` over the old 8 s), so the cutoff cannot slip back to a clock.
 // The sweeps under test do not depend on how many processes there are, only the batch test's size does.
+// Not exercised here: a REAL spawnSync timeout (the flag tests build the error and the partial stdout by hand); the F1 stall test keeps that path.
 const LIGHT = { enough: 30, liveMax: 40 };
-const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const mkFlag = (dir) => path.join(dir, 'stalled').replace(/\\/g, '/');
+// The fallback's one proven batch, with a bound load cannot reach (the relay's own is FALLBACK_BATCH_TIMEOUT_MS, 10 s: PowerShell alone
+// took 45 s to start under load). The 150-sleeper test is the exception and keeps the production bound, because one proven batch inside it
+// is what that test asserts (one taskkill.exe per pid could not end 200 sleepers in 10 s).
+const patientBatch = (items, o) => killProvenBatch(items, { ...o, timeoutMs: SWEEP_MS });
 // `killTree`'s `run`: the FIRST powershell call is cut the moment `flag` exists (or reported as ended-early if it finishes without
 // ever stalling); a later one (the rescan) runs as usual, with a bound that load cannot reach. Every call has `pairs` applied.
-function cutAtStall(pairs, seen, flag, { maxMs = 300000, rescanMs = 240000 } = {}) {
+function cutAtStall(pairs, seen, flag) {
   return (cmd, args, o) => {
     if (cmd !== 'powershell.exe') return spawnSync(cmd, args, o);
-    let script = args[3];
-    for (const [from, to] of pairs) { assert.ok(script.includes(from), `the sweep script no longer contains ${from}`); script = script.replace(from, () => to); }
+    const script = patchScript(args[3], pairs);
     if (seen.sweep) {
-      const r = spawnSync(cmd, [...args.slice(0, 3), script], { ...o, timeout: rescanMs });
+      const r = spawnSync(cmd, [...args.slice(0, 3), script], { ...o, timeout: SWEEP_MS });
       (seen.rescans = seen.rescans || []).push(r);
       return r;
     }
     const outFile = `${flag}.out`;
     const fd = fs.openSync(outFile, 'w');
-    const ps = spawn(cmd, [...args.slice(0, 3), script], { windowsHide: true, stdio: ['ignore', fd, 'ignore'] });
-    const end = Date.now() + maxMs;
     let stalled = false;
-    for (; Date.now() < end; sleepSync(50)) {
-      if (fs.existsSync(flag)) { stalled = true; break; }
-      if (!alive(ps.pid)) break;
-    }
-    ps.kill();
-    for (let i = 0; i < 100 && alive(ps.pid); i++) sleepSync(50);
-    fs.closeSync(fd);
+    try {
+      const ps = spawn(cmd, [...args.slice(0, 3), script], { windowsHide: true, stdio: ['ignore', fd, 'ignore'] });
+      for (const end = Date.now() + STALL_WAIT_MS; Date.now() < end; sleepSync(50)) {
+        if (fs.existsSync(flag)) { stalled = true; break; }
+        if (!alive(ps.pid)) break;
+      }
+      ps.kill();
+      for (let i = 0; i < 100 && alive(ps.pid); i++) sleepSync(50);
+    } finally { fs.closeSync(fd); }
     const stdout = fs.readFileSync(outFile, 'utf8');
     seen.sweep = stalled
       ? { status: null, error: Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }), stdout }
@@ -591,43 +603,53 @@ function cutAtStall(pairs, seen, flag, { maxMs = 300000, rescanMs = 240000 } = {
     return seen.sweep;
   };
 }
-// The sweep can end on its own before it reaches the stall (MEASURED, 2 of 5 runs with the table read stretched by load: it found no child under
-// the killed cmd.exe and left the tree to the fallback). Then there is no cut to test: a scenario that did not happen, neither a pass nor a fail.
-// `attempt` answers false for that, and a fresh tree is built, three times at most.
-async function untilStalled(attempt) {
-  for (let i = 1; i <= 3; i++) if (await attempt()) return;
-  assert.fail('the sweep ended by itself before reaching its stall in 3 tries; the cut was never exercised');
-}
-const stallNote = (flag) => `[IO.File]::WriteAllText('${flag}','x');Start-Sleep -Seconds 120`;
-// The sweep's first table read waits `sec` seconds, as a loaded machine's would (not in a rescan: `$seeded` is only set there).
-const slowStart = (sec) => `if((-not $seeded) -and $script:n -eq 1){Start-Sleep -Seconds ${sec}};`;
-
-for (const slowStartSec of [0, 10]) {
-  test(`#72 PR #161 Dexter 1: a sweep cut off after it listed ~${slowStartSec ? 30 : 150} sleepers still leaves none of them running (the fallback is one proven batch)${slowStartSec ? `, the sweep starting ${slowStartSec} s late` : ''}`, { skip: !onWin, timeout: 600000 }, async () => {
-    // The F1-stall sabotage: the 3rd table read hangs, the sweep is cut off there, and everything it listed is the fallback's. One
-    // taskkill.exe per pid could not end 200 of them inside the batch's 10 s.
-    await untilStalled(async () => {
-    const flag = mkFlag(tmpDir('relay-fallback-batch-flag'));
-    const { child, marker, cleanup } = await spawnerTree('relay-fallback-batch', slowStartSec ? LIGHT : {});
+// One cut scenario: build a still-spawning tree, kill it with the sweep cut at its stall, and hand the result to `check`. The sweep can end
+// on its own before it reaches the stall (MEASURED, 2 of 5 runs with the table read stretched by load: it found no child under the killed
+// cmd.exe and left the tree to the fallback). Then there is no cut to test, and a fresh tree is built, three times at most. But an early
+// end that left sleepers running while its last ALIVE line listed nothing is not load: a sweep that exits 0 with survivors is the #72
+// defect itself (no fallback runs, the relay's stdout stays held), so it fails at once instead of being retried.
+async function cutScenario({ name, light, patient, pairs }, check) {
+  let early = 0;
+  for (let i = 1; i <= 3; i++) {
+    const flag = mkFlag(tmpDir(`${name}-flag`));
+    const { child, marker, cleanup } = await spawnerTree(name, light ? LIGHT : {});
     const seen = {};
-    const stallThird = `$script:n=0\nfunction ReadProcs{$script:n++;${slowStart(slowStartSec)}if(($script:n -ge 3) -and (-not $seeded)){${stallNote(flag)}};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
     try {
       const before = markedPids(marker).length;
       const t0 = Date.now();
-      killTree(child, 0, { run: cutAtStall([[READ_PROCS, stallThird]], seen, flag) });
+      killTree(child, 0, { run: cutAtStall(pairs(flag), seen, flag), ...(patient ? { proveBatch: patientBatch } : {}) });
       const took = Date.now() - t0;
-      if (seen.sweep.endedEarly) return false;
+      if (seen.sweep.endedEarly) {
+        const left = await noneLeft(marker);
+        assert.ok(!left.length || sweepPids(seen.sweep.stdout).length, `${left.length} sleepers survived a sweep that ended by itself and listed nothing to end: that is the #72 defect, not load (stdout ${String(seen.sweep.stdout).trim()})`);
+        early++;
+        continue;
+      }
+      await check({ seen, marker, before, took });
+      return;
+    } finally { cleanup(); }
+  }
+  assert.fail(`the sweep ended by itself before reaching its stall in ${early} of 3 tries; the cut was never exercised`);
+}
+const stallNote = (flag) => `[IO.File]::WriteAllText('${flag}','x');Start-Sleep -Seconds 300`;
+// The sweep's first table read waits `sec` seconds, as a loaded machine's would (not in a rescan: `$seeded` is only set there).
+const slowStart = (sec) => (sec ? `if((-not $seeded) -and $script:n -eq 1){Start-Sleep -Seconds ${sec}};` : '');
+
+for (const slowStartSec of [0, 10]) {
+  test(`#72 PR #161 Dexter 1: a sweep cut off after it listed ~${slowStartSec ? 30 : 150} sleepers still leaves none of them running (the fallback is one proven batch)${slowStartSec ? `, the sweep starting ${slowStartSec} s late` : ''}`, { skip: !onWin, timeout: TEST_MS }, async () => {
+    // The F1-stall sabotage: the 3rd table read hangs, the sweep is cut off there, and everything it listed is the fallback's. One
+    // taskkill.exe per pid could not end 200 of them inside the batch's 10 s.
+    const stallThird = (flag) => `$script:n=0\nfunction ReadProcs{$script:n++;${slowStart(slowStartSec)}if(($script:n -ge 3) -and (-not $seeded)){${stallNote(flag)}};Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate -OperationTimeoutSec 8}`;
+    await cutScenario({ name: 'relay-fallback-batch', light: slowStartSec > 0, patient: slowStartSec > 0, pairs: (flag) => [[READ_PROCS, stallThird(flag)]] }, async ({ seen, marker, before, took }) => {
       assert.ok(seen.sweep.error, `the stalled sweep was not cut off (status ${seen.sweep.status}); the fallback was never exercised`);
       const listed = sweepPids(seen.sweep.stdout).length;
       const left = await noneLeft(marker);
       assert.deepStrictEqual(left, [], `${left.length} of ${before} sleepers survived the fallback (it listed ${listed}; killTree took ${took} ms; sweep stdout ${String(seen.sweep.stdout).split(/\r?\n/).map(l => l.slice(0, 40)).join(' | ')})`);
-      return true;
-    } finally { cleanup(); }
     });
   });
 }
 
-test('#72 PR #161 Dexter 2: sleepers born between the snapshot and the spawner\'s kill are ended when the read after that kill fails', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 PR #161 Dexter 2: sleepers born between the snapshot and the spawner\'s kill are ended when the read after that kill fails', { skip: !onWin, timeout: TEST_MS }, async () => {
   // failThird: read 1 is the snapshot, read 2 lists the spawner, read 3 (after the spawner is dead) fails. Every sleeper the spawner
   // started since the snapshot is in no ALIVE line: only a second look under the parents the sweep ended can reach it.
   const { child, marker, cleanup } = await spawnerTree('relay-newborns');
@@ -643,7 +665,7 @@ test('#72 PR #161 Dexter 2: sleepers born between the snapshot and the spawner\'
   } finally { cleanup(); }
 });
 
-test('#72 PR #161 Dexter 3: a process we killed whose exit was not seen in time adopts nothing unbounded (a stranger that reused its pid is spared)', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 PR #161 Dexter 3: a process we killed whose exit was not seen in time adopts nothing unbounded (a stranger that reused its pid is spared)', { skip: !onWin, timeout: TEST_MS }, async () => {
   // The S7-2 stranger case with the exit forced to be "not seen": every kill's wait reports "still running". The row 2000000005 names
   // the killed grandchild as its parent but started an hour later; it was adopted as an alive parent's child, and the sweep exited 5.
   const { child, since, grandchild } = await hangTree(tmpDir('relay-sweep-slow-exit'));
@@ -657,7 +679,7 @@ test('#72 PR #161 Dexter 3: a process we killed whose exit was not seen in time 
   } finally { try { process.kill(grandchild); } catch { /* gone */ } }
 });
 
-test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on before the first of them is waited on', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on before the first of them is waited on', { skip: !onWin, timeout: TEST_MS }, async () => {
   // cmd.exe -> node (P) -> three sleepers. The sweep's KillStart and KillWait are made to say which pid they touch; the level of the
   // three sleepers must be all KillStart lines, then the KillWait lines. No clock.
   const dir = tmpDir('relay-level-order');
@@ -680,7 +702,7 @@ test('#72 PR #161 Dexter 4 / Miguel 1-2: every process of a level is started on 
   } finally { for (const k of kids) { try { process.kill(k); } catch { /* gone */ } } }
 });
 
-test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in time still has its newborns ended, and the sweep is not clean until it has exited', { skip: !onWin, timeout: 600000 }, async () => {
+test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in time still has its newborns ended, and the sweep is not clean until it has exited', { skip: !onWin, timeout: TEST_MS }, async () => {
   // The Dexter-3 sabotage (every kill's wait reports "still running") on the #72 spawner tree. A killed-not-exited parent used to fall to
   // the $known-only branch: the sleepers it started after the snapshot were never adopted, and the sweep exited 0, so no fallback ran.
   const { child, marker, cleanup } = await spawnerTree('relay-slow-exit-spawner');
@@ -694,24 +716,16 @@ test('#72 PR #161 Dexter R2-1: a spawner we killed whose exit is not seen in tim
 });
 
 for (const slowStartSec of [0, 10]) {
-  test(`#72 PR #161 Dexter R2-2: a sweep cut off after a level's Kill() calls but inside its wait still seeds the rescan with THAT level${slowStartSec ? `, the sweep starting ${slowStartSec} s late` : ''}`, { skip: !onWin, timeout: 600000 }, async () => {
+  test(`#72 PR #161 Dexter R2-2: a sweep cut off after a level's Kill() calls but inside its wait still seeds the rescan with THAT level${slowStartSec ? `, the sweep starting ${slowStartSec} s late` : ''}`, { skip: !onWin, timeout: TEST_MS }, async () => {
     // The 2nd KillWait (the spawner's level) hangs and the sweep is cut off there. The ENDED line used to be written after the waits, so
     // the rescan was seeded with the level above (cmd) and the spawner's newborns were in no list.
-    await untilStalled(async () => {
-    const flag = mkFlag(tmpDir('relay-cut-in-wait-flag'));
-    const { child, marker, cleanup } = await spawnerTree('relay-cut-in-wait', LIGHT);
-    const seen = {};
-    const hangSecondWait = `function KillWait($r,$ms){$script:w++;if(($script:w -ge 2) -and (-not $seeded)){${stallNote(flag)}};`;
     const slowFirstRead = ['function ReadProcs{', `function ReadProcs{$script:n++;${slowStart(slowStartSec)}`];
-    try {
-      killTree(child, 0, { run: cutAtStall([['function KillWait($r,$ms){', hangSecondWait], ...(slowStartSec ? [slowFirstRead] : [])], seen, flag) });
-      if (seen.sweep.endedEarly) return false;
+    const pairs = (flag) => [['function KillWait($r,$ms){', `function KillWait($r,$ms){$script:w++;if(($script:w -ge 2) -and (-not $seeded)){${stallNote(flag)}};`], ...(slowStartSec ? [slowFirstRead] : [])];
+    await cutScenario({ name: 'relay-cut-in-wait', light: true, patient: true, pairs }, async ({ seen, marker }) => {
       assert.ok(seen.sweep.error, 'the sweep was not cut off inside the wait');
       assert.ok((seen.rescans || []).length === 1, 'the fallback did not rescan');
       const left = await noneLeft(marker);
       assert.deepStrictEqual(left, [], `${left.length} sleepers survived a sweep cut off in a wait`);
-      return true;
-    } finally { cleanup(); }
     });
   });
 }
