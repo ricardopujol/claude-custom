@@ -69,7 +69,6 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
       ...b,
       shape,
       panel: b.active,
-      pinnable: b.active,                                            // the Pinned button unpins the panel the group shows
       tabs: named(b.tabs).map(t => ({ ...t, on: t.id === b.active })),
     };
   });
@@ -90,27 +89,6 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
     } else popover = null;
   }
   return { boxes: drawn, splits, shown, face, peek: popover };
-}
-
-/**
- * What a rail's popover does with what the user does (D4). The page keeps only `{ module }` or null, never saved:
- *   rail     a rail's button: opens that module, moves it from another rail's, closes it if it is the open one
- *   tab      a tab inside the popover: switches it
- *   escape / outside / drop / gone   (Esc, a press outside it, a tab drop, its rail no longer exists): closes
- * Anything else changes nothing.
- */
-function peekAfter(state, ev) {
-  const cur = isObject(state) && typeof state.module === 'string' && state.module !== '' ? { module: state.module } : null;
-  const e = isObject(ev) ? ev : {};
-  const mod = typeof e.module === 'string' && e.module !== '' ? e.module : null;
-  switch (e.type) {
-    case 'rail':
-      if (mod === null) return cur;
-      return cur && cur.module === mod ? null : { module: mod };
-    case 'tab': return cur && mod !== null ? { module: mod } : cur;
-    case 'escape': case 'outside': case 'drop': case 'gone': return null;
-    default: return cur;
-  }
 }
 
 /** The rail's hover state when nothing is open or waiting (see `railAfter`). */
@@ -539,7 +517,7 @@ function applyBoxes(plan, doc) {
       el.appendChild(g);
     } else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
-    syncPin(doc, el.querySelector('.zone-tabs'), b.pinnable ? { module: b.pinnable, pinned: true } : null);
+    syncPin(doc, el.querySelector('.zone-tabs'), b.panel ? { module: b.panel, pinned: true } : null);       // Pinned unpins the panel the group shows
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
       const p = doc.querySelector(`.panel[data-panel="${b.panel}"]`);
@@ -628,7 +606,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, peekAfter, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

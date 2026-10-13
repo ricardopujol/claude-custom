@@ -39,12 +39,6 @@ test('a panel opened from a folded group\'s rail has no Pin button (it was never
   assert.equal(plan.peek.pin, false);
 });
 
-test('every docked group and float says which module its button unpins: the one it shows', () => {
-  const l = T.dock(base(), 'fog', { float: true });
-  const plan = V.treePlan(l, null, TABS, VP, {});
-  for (const b of plan.boxes.filter(x => x.kind === 'group' || x.kind === 'float')) assert.equal(b.pinnable, b.panel);
-});
-
 test('a peek on a module that is not on any rail draws nothing', () => {
   const plan = V.treePlan(base(), null, TABS, VP, { peek: { module: 'git' } });
   assert.equal(plan.peek, null);
