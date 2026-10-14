@@ -105,6 +105,9 @@ const CONTROL_TYPES = new Set([
   'repo',
   // Docs drift (BACKLOG #39 job 2): dismiss a note / ask for the list. Off this list a dismiss would be TYPED into the pty as JSON.
   'docs-drift',
+  // "Ask the repo" (BACKLOG #33): status / places / ask / explain / start-ollama, by `op` (host/ask-service.js). Off this list a question
+  // would be TYPED into the pty as JSON.
+  'ask',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
