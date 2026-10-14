@@ -90,3 +90,15 @@ test('the shipped record file parses and no model passes on a measurement that m
   const real = createModels({ localModel: 'qwen3.5:4b' });
   assert.strictEqual(real.explainerOn('local'), false, 'qwen3.5:4b missed the bar (7/10 and 3/10 on the blind grade)');
 });
+
+test('the shipped record: Haiku and Sonnet passed (the lower of two graders\' readings, blind check passed); the local model did not', () => {
+  const fs = require('fs');
+  const { RECORD_FILE } = require('../host/ask-models');
+  const rec = JSON.parse(fs.readFileSync(RECORD_FILE, 'utf8')).passed;
+  const real = createModels({ localModel: 'qwen3.5:4b' });
+  assert.strictEqual(real.explainerOn('haiku'), true);
+  assert.strictEqual(real.explainerOn('sonnet'), true);
+  assert.strictEqual(real.explainerOn('local'), false);
+  assert.deepStrictEqual([rec.haiku.new, rec.haiku.comfortable, rec.haiku.blindCheck], [9, 8, 'passed'], 'Haiku Comfortable is exactly at the bar');
+  assert.deepStrictEqual([rec.sonnet.new, rec.sonnet.comfortable, rec.sonnet.blindCheck], [9, 10, 'passed']);
+});

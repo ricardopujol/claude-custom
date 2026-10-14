@@ -1389,8 +1389,9 @@
     .ask-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
     .ask-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ask-for { font-size: 11px; color: var(--dim); }
-    .ask-portrait { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; background: var(--panel); border: 1px solid var(--border); }
-    .ask-portrait-emoji { display: grid; place-items: center; font-size: 17px; line-height: 1; }
+    /* The explainer's face is an agent's picture, drawn by app/portrait-media-display.js (the roster's code): fill the round frame. */
+    .ask-portrait { width: 30px; height: 30px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; flex: 0 0 auto; background: var(--panel); border: 1px solid var(--border); }
+    .ask-portrait .face-media, .ask-face .face-media { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; font-size: 11px; }
     .ask-gear, .ask-chip, .ask-primary, .ask-go, .ask-face { font: inherit; font-size: 11px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; }
     .ask-gear { font-size: 13px; line-height: 1; padding: 3px 6px; background: transparent; color: var(--dim); }
     .ask-gear:hover, .ask-chip:hover, .ask-go:hover, .ask-face:hover, .ask-example:hover { border-color: var(--accent); color: var(--text); }
@@ -1409,7 +1410,7 @@
     .ask-input { font: inherit; font-size: 12px; min-width: 0; padding: 4px 6px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
     .ask-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--dim); }
     .ask-chips, .ask-faces, .ask-actions, .ask-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
-    .ask-face { font-size: 17px; line-height: 1; padding: 3px; width: 30px; height: 30px; object-fit: cover; }
+    .ask-face { font-size: 15px; line-height: 1; padding: 0; width: 36px; height: 36px; overflow: hidden; border-radius: 50%; }
     .ask-steps { margin: 4px 0 4px 18px; padding: 0; }
     .ask-examples { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
     .ask-example { font: inherit; font-size: 12px; text-align: left; width: 100%; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }

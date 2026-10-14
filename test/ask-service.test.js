@@ -6,7 +6,7 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
-const { createAskService, whyFor, placesFromCitations, examplesFrom } = require('../host/ask-service');
+const { createAskService, EXPLAINER_AGENT, whyFor, placesFromCitations, examplesFrom } = require('../host/ask-service');
 const { createModels } = require('../host/ask-models');
 
 const CWD = 'C:\\proj';
@@ -39,6 +39,7 @@ function rig(over = {}) {
     repoFor: () => repo,
     readSelection: over.readSelection || (async () => ({ ok: true, text: lines(30).join('\n') })),
     spawnOllama: async () => { calls.spawn += 1; return over.spawn || { ok: true }; },
+    portraitOf: over.portraitOf, forgeAgents: over.forgeAgents,
   });
   return { svc, calls };
 }
@@ -72,6 +73,40 @@ test('status: index, Ollama, the three models with where they run, examples; war
   ]);
   assert.ok(Array.isArray(r.examples) && r.examples.length <= 3);
   assert.strictEqual(calls.refresh, 0, 'a ready index is not rebuilt by opening the panel');
+});
+
+const forge = (agent) => ({ kind: 'file', tier: 'forge', agent, state: 'sleeping', path: 'C:\\p\\' + agent + '.png', media: 'image', mtimeMs: 1 });
+
+test('status: the explainer\'s own picture and the agents\' generated pictures to choose from (the agents\' picker)', async () => {
+  const asked = [];
+  const { svc } = rig({
+    forgeAgents: () => ['ada', 'bea', 'cy', 'dee', 'eve', 'fay', 'gus', 'hal', 'ivy', 'jo'],
+    portraitOf: (agent, state) => { asked.push([agent, state]); return agent === EXPLAINER_AGENT ? { kind: 'file', tier: 'uploaded', agent, path: 'C:\\u\\x.png' } : forge(agent); },
+  });
+  const r = await svc.handle({ type: 'ask', op: 'status', seq: 1 });
+  assert.strictEqual(EXPLAINER_AGENT, 'ask-explainer');
+  assert.strictEqual(r.portraits.own.tier, 'uploaded');
+  assert.deepStrictEqual(r.portraits.suggestions.map(s => s.agent), ['ada', 'bea', 'cy', 'dee', 'eve', 'fay', 'gus', 'hal'], 'eight, in the forge\'s order');
+  assert.ok(asked.every(([, state]) => state === 'sleeping'));
+});
+
+test('status: only a generated picture is a suggestion (an agent with a placeholder is not offered); no pictures at all is an honest empty list', async () => {
+  const { svc } = rig({
+    forgeAgents: () => ['ada', 'bea'],
+    portraitOf: (agent) => (agent === 'ada' ? forge('ada') : { kind: 'text', tier: 'text', initials: 'B', hue: 3 }),
+  });
+  const r = await svc.handle({ type: 'ask', op: 'status', seq: 1 });
+  assert.deepStrictEqual(r.portraits.suggestions.map(s => s.agent), ['ada']);
+  assert.strictEqual(r.portraits.own.tier, 'text');
+  const none = await rig({}).svc.handle({ type: 'ask', op: 'status', seq: 1 });
+  assert.deepStrictEqual(none.portraits, { own: null, suggestions: [] });
+});
+
+test('status: a portrait lookup that throws is no picture, never a failed status', async () => {
+  const { svc } = rig({ forgeAgents: () => { throw new Error('EACCES'); }, portraitOf: () => { throw new Error('boom'); } });
+  const r = await svc.handle({ type: 'ask', op: 'status', seq: 1 });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.portraits, { own: null, suggestions: [] });
 });
 
 test('status on a worktree with no index starts building it, once, without waiting for it', async () => {

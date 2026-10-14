@@ -76,3 +76,17 @@ test('every class the panel builds has a rule in renderer.html', () => {
   const missing = [...classes].filter(c => !STRUCTURAL.has(c) && !new RegExp(`\\.${c.replace(/[-]/g, '\\-')}\\b`).test(HTML));
   assert.deepStrictEqual(missing, []);
 });
+
+test('the explainer\'s face follows the roster\'s agent-images switch, which is declared further down renderer.js: read inside a try (a temporal-dead-zone read killed the whole page once), and repainted when it changes', () => {
+  assert.match(JS, /imagesEnabled: \(\) => \{ try \{ return agentImagesEnabled === true; \} catch \{ return false; \} \},/);
+  const at = JS.indexOf('function applyAgentImages(enabled) {');
+  const body = JS.slice(at, JS.indexOf('\n}', at));
+  assert.match(body, /if \(changed && askPanel\) askPanel\.repaint\(\);/);
+  assert.ok(JS.indexOf('const askPanel = ') < JS.indexOf('let agentImagesEnabled'), 'the panel is mounted before the switch exists: that is why the read is guarded');
+});
+
+test('the explainer\'s picture goes through the agents\' own picker and upload message, and a new picture is re-read from the host', () => {
+  assert.match(JS, /window\.harness\.avatar\.pick\(\)\.then\(\(path\) => \{\n\s+if \(!path\) return false;\n\s+try \{ ws\.send\(JSON\.stringify\(\{ type: 'portrait', action: 'set', agent: 'ask-explainer', state: 'sleeping', path \}\)\); return true; \} catch \{ return false; \}/);
+  assert.match(JS, /if \(msg\.agent === 'ask-explainer' && askPanel\) askPanel\.refresh\(\);/);
+  assert.doesNotMatch(JS, /askShrinkImage|toDataURL/, 'no picker of the panel\'s own');
+});

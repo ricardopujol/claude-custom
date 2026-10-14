@@ -8,9 +8,9 @@
  *   setLevel / setAboutMe / setModel (profile, value) -> profile                    strict: an unknown value changes nothing
  *
  * One profile per person, user-wide: every tab's page shares one localStorage, so the key does not name a tab. The level starts at
- * Comfortable and is never asked (round 4); the explainer is named once, on first use (round 5); the portrait is an emoji or a small image
- * the person uploads (round 6: the agents' avatar picker is main-process machinery; the panel keeps its own picker, see the PR notes).
- * An uploaded image is stored as a data URL, so it is held to PNG / JPEG / WebP / GIF (SVG can carry script) and to a size cap.
+ * Comfortable and is never asked (round 4); the explainer is named once, on first use (round 5). The PORTRAIT is the AGENTS' picker's (Ricardo,
+ * 2026-10-13): either one of the agents' generated pictures ({ kind: 'agent', agent }), or the picture the person uploaded for the explainer
+ * through the agents' own upload ({ kind: 'upload' }, kept by the host under the agent name `ask-explainer`, so the profile holds no image).
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `askProfile`.
  */
@@ -19,26 +19,22 @@
 const KEY = 'askRepoProfile';
 const NAME_SUGGESTIONS = Object.freeze(['Professor Byte', 'Ada', 'Echo', 'Sage', 'Tutor']);
 const DEFAULT_NAME = NAME_SUGGESTIONS[0];
-const PORTRAITS = Object.freeze(['🦉', '🤖', '🦊', '🐙', '🧙', '🐢', '🦄', '🐼']);
 const LEVEL_IDS = Object.freeze(['new', 'learning', 'comfortable', 'expert']);
 const MODEL_IDS = Object.freeze(['local', 'haiku', 'sonnet']);
 const NAME_MAX = 24;
 const ABOUT_ME_MAX = 600;
-const IMAGE_MAX_CHARS = 150_000;
-const IMAGE_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/;
+// An agent's name is a file name on the host's side: the same rule host/bubble-voice.js holds names to.
+const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const defaults = () => ({
-  named: false, name: '', portrait: { kind: 'emoji', value: PORTRAITS[0] }, level: 'comfortable', aboutMe: '', model: 'local',
+  named: false, name: '', portrait: { kind: 'upload' }, level: 'comfortable', aboutMe: '', model: 'local',
 });
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const oneLine = (s, max) => String(s).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
 
 function cleanPortrait(p) {
-  if (isObj(p) && p.kind === 'image' && typeof p.dataUrl === 'string' && p.dataUrl.length <= IMAGE_MAX_CHARS && IMAGE_RE.test(p.dataUrl)) {
-    return { kind: 'image', dataUrl: p.dataUrl };
-  }
-  if (isObj(p) && p.kind === 'emoji' && PORTRAITS.includes(p.value)) return { kind: 'emoji', value: p.value };
-  return { kind: 'emoji', value: PORTRAITS[0] };
+  if (isObj(p) && p.kind === 'agent' && typeof p.agent === 'string' && AGENT_RE.test(p.agent)) return { kind: 'agent', agent: p.agent };
+  return { kind: 'upload' };
 }
 
 function clean(raw) {
@@ -81,7 +77,7 @@ const setAboutMe = (p, text) => ({ ...p, aboutMe: typeof text === 'string' ? tex
 const setModel = (p, model) => ({ ...p, model: MODEL_IDS.includes(model) ? model : 'local' });
 
 const API = {
-  KEY, NAME_SUGGESTIONS, DEFAULT_NAME, PORTRAITS, LEVEL_IDS, MODEL_IDS, NAME_MAX, ABOUT_ME_MAX, IMAGE_MAX_CHARS,
+  KEY, NAME_SUGGESTIONS, DEFAULT_NAME, LEVEL_IDS, MODEL_IDS, NAME_MAX, ABOUT_ME_MAX,
   load, save, name, setLevel, setAboutMe, setModel,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

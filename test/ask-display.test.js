@@ -12,8 +12,10 @@ const S = require('../app/ask-panel-state');
 const P = require('../app/ask-profile');
 
 const named = { ...P.load(null), named: true, name: 'Professor Byte' };
+const file = (tier, agent, ext = 'png') => ({ kind: 'file', tier, media: ext === 'mp4' ? 'video' : 'image', agent, state: 'sleeping', path: 'C:\\p\\' + agent + '.' + ext, mtimeMs: 7, fallback: { initials: 'X', hue: 10 } });
+const PORTRAITS = { own: file('uploaded', 'ask-explainer'), suggestions: ['naomi', 'paris', 'dexter'].map(a => ({ agent: a, portrait: file('forge', a) })) };
 const HOST = {
-  index: { state: 'ready', files: 3, chunks: 9 }, examples: ['What does alpha do?', 'How does beta work?'],
+  index: { state: 'ready', files: 3, chunks: 9 }, examples: ['What does alpha do?', 'How does beta work?'], portraits: PORTRAITS,
   models: [
     { id: 'local', model: 'qwen3.5:4b', where: 'qwen3.5:4b · local', explainer: false },
     { id: 'haiku', model: 'Haiku', where: 'Haiku · Claude, uses your plan', explainer: true },
@@ -22,7 +24,7 @@ const HOST = {
 };
 const place = (file, line, extra = {}) => ({ file, line, endLine: line + 1, why: 'because', lines: [{ n: line, text: 'const x = 1;' }], ...extra });
 const model = (over = {}) => ({
-  profile: named, host: HOST, hostError: null, ui: { settings: false, naming: { name: 'Professor Byte', portrait: { kind: 'emoji', value: '🦉' }, error: '' }, startMsg: '' },
+  profile: named, host: HOST, hostError: null, ui: { settings: false, naming: { name: 'Professor Byte', portrait: { kind: 'upload' }, error: '' }, startMsg: '' },
   entry: null, trail: [], history: [], view: 'empty', ...over,
 });
 const entryOf = (over) => ({ id: 1, kind: 'question', label: 'where?', request: {}, parent: null, model: 'local', phase: 'done', stage: 'writing', places: [], reply: null, ...over });
@@ -85,10 +87,54 @@ test('before the explainer is named: the naming card with the chips, the faces a
   const h = D.bodyHtml(model({ profile: P.load(null), view: 'naming' }));
   assert.match(h, /Name your explainer/);
   for (const n of P.NAME_SUGGESTIONS) assert.match(h, new RegExp(`data-act="chip" data-name="${n}"`));
-  assert.strictEqual((h.match(/data-act="face"/g) || []).length, P.PORTRAITS.length);
+  assert.strictEqual((h.match(/data-act="face"/g) || []).length, 3, 'the agents\' generated pictures from the host');
+  assert.match(h, /data-act="face" data-agent="naomi"/);
   assert.match(h, /data-act="upload"/);
+  assert.doesNotMatch(h, /🦉|🤖|🦊/, 'no picker of the panel\'s own');
   assert.match(h, /value="Professor Byte"/);
   assert.match(h, /data-act="name-save"/);
+});
+
+test('the agents\' picker on the naming card: the explainer\'s own picture opens the file picker, each generated picture is a choice, the chosen one is marked', () => {
+  const m = model({ profile: P.load(null), view: 'naming' });
+  m.ui.naming.portrait = { kind: 'agent', agent: 'paris' };
+  const h = D.bodyHtml(m);
+  assert.match(h, /<button type="button" class="ask-face ask-upload" data-act="upload" title="Choose your own picture, GIF or video"><img class="face-media"/);
+  assert.match(h, /class="ask-face on" data-act="face" data-agent="paris"/);
+  assert.doesNotMatch(h, /class="ask-face on" data-act="face" data-agent="naomi"/);
+  const own = model({ profile: P.load(null), view: 'naming' });
+  assert.match(D.bodyHtml(own), /class="ask-face ask-upload on" data-act="upload"/, 'the default choice is the explainer\'s own picture');
+});
+
+test('the naming card says so when the host has no pictures to offer, and still offers the upload', () => {
+  const m = model({ profile: P.load(null), view: 'naming', host: { ...HOST, portraits: { own: null, suggestions: [] } } });
+  const h = D.bodyHtml(m);
+  assert.strictEqual((h.match(/data-act="face"/g) || []).length, 0);
+  assert.match(h, /data-act="upload"[^>]*>＋<\/button>/);
+  const before = model({ profile: P.load(null), view: 'naming', host: null });
+  assert.match(D.bodyHtml(before), /data-act="upload"/, 'before the host has answered the upload is still there');
+});
+
+test('the header face is drawn by the agents\' own face code: tier wording, the images-off switch, and a video for a video', () => {
+  const up = D.headerHtml({ ...model(), images: true });
+  assert.match(up, /<span class="ask-portrait" aria-hidden="true"><img class="face-media" src="file:\/\/\/C:\/p\/ask-explainer\.png\?v=7"/);
+  assert.match(up, /title="your upload"/);
+  const chosen = D.headerHtml({ ...model({ profile: { ...named, portrait: { kind: 'agent', agent: 'dexter' } } }), images: true });
+  assert.match(chosen, /dexter\.png/);
+  assert.match(chosen, /title="generated"/);
+  const off = D.headerHtml({ ...model(), images: false });
+  assert.doesNotMatch(off, /<img|file:\/\//, 'agent images off: a placeholder, no file URL in the page');
+  assert.match(off, /face-placeholder/);
+  const vid = D.headerHtml({ ...model({ host: { ...HOST, portraits: { own: file('uploaded', 'ask-explainer', 'mp4'), suggestions: [] } } }), images: true });
+  assert.match(vid, /<video class="face-media"/);
+  const unknown = D.headerHtml({ ...model({ host: null }), images: true });
+  assert.match(unknown, /<span class="ask-portrait" aria-hidden="true">·<\/span>/, 'before the host has said: a dot, not a made-up face');
+});
+
+test('a chosen agent that is no longer offered falls back to the explainer\'s own picture, never a blank', () => {
+  const r = D.portraitResult({ kind: 'agent', agent: 'gone' }, { portraits: PORTRAITS });
+  assert.strictEqual(r.tier, 'uploaded');
+  assert.strictEqual(D.portraitResult({ kind: 'upload' }, null), null);
 });
 
 test('a naming error is said', () => {
@@ -199,7 +245,7 @@ test('a host error is said above whatever else is showing', () => {
 });
 
 test('the settings: name, level, About me, model with its explaining state', () => {
-  const h = D.bodyHtml(model({ ui: { settings: true, naming: { name: '', portrait: { kind: 'emoji', value: '🦉' }, error: '' }, startMsg: '' } }));
+  const h = D.bodyHtml(model({ ui: { settings: true, naming: { name: '', portrait: { kind: 'upload' }, error: '' }, startMsg: '' } }));
   assert.match(h, /id="ask-set-name" type="text" maxlength="24" value="Professor Byte"/);
   assert.match(h, /<option value="comfortable" selected>/);
   assert.match(h, /id="ask-set-about"/);

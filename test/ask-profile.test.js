@@ -21,12 +21,11 @@ test('a first-time person has no name yet, starts at Comfortable, on the local m
 test('the naming card suggests five names and a pre-filled one', () => {
   assert.deepStrictEqual(P.NAME_SUGGESTIONS, ['Professor Byte', 'Ada', 'Echo', 'Sage', 'Tutor']);
   assert.strictEqual(P.DEFAULT_NAME, 'Professor Byte');
-  assert.ok(P.PORTRAITS.length >= 6);
 });
 
 test('naming: the name is trimmed, kept on one line and capped; an empty one is refused', () => {
   const p0 = P.load(mem());
-  const ok = P.name(p0, '  Ada\nLovelace  ', { kind: 'emoji', value: P.PORTRAITS[0] });
+  const ok = P.name(p0, '  Ada\nLovelace  ', { kind: 'upload' });
   assert.strictEqual(ok.ok, true);
   assert.strictEqual(ok.profile.name, 'Ada Lovelace');
   assert.strictEqual(ok.profile.named, true);
@@ -34,15 +33,17 @@ test('naming: the name is trimmed, kept on one line and capped; an empty one is 
   assert.strictEqual(P.name(p0, 'x'.repeat(100), null).profile.name.length, P.NAME_MAX);
 });
 
-test('the portrait is an emoji from the list or a small image; nothing else', () => {
+test('the portrait is the agents\' picker\'s: one of the agents\' pictures, or the explainer\'s own upload; nothing else, and no image is kept in the profile', () => {
   const p0 = P.load(mem());
-  assert.strictEqual(P.name(p0, 'Ada', { kind: 'emoji', value: '<script>' }).profile.portrait.value, P.PORTRAITS[0]);
-  const img = 'data:image/png;base64,AAAA';
-  assert.deepStrictEqual(P.name(p0, 'Ada', { kind: 'image', dataUrl: img }).profile.portrait, { kind: 'image', dataUrl: img });
-  assert.strictEqual(P.name(p0, 'Ada', { kind: 'image', dataUrl: 'javascript:alert(1)' }).profile.portrait.kind, 'emoji');
-  assert.strictEqual(P.name(p0, 'Ada', { kind: 'image', dataUrl: 'data:text/html;base64,AAAA' }).profile.portrait.kind, 'emoji');
-  assert.strictEqual(P.name(p0, 'Ada', { kind: 'image', dataUrl: 'data:image/png;base64,' + 'A'.repeat(P.IMAGE_MAX_CHARS) }).profile.portrait.kind, 'emoji');
-  assert.strictEqual(P.name(p0, 'Ada', { kind: 'image', dataUrl: 'data:image/svg+xml;base64,AAAA' }).profile.portrait.kind, 'emoji', 'svg can carry script');
+  assert.deepStrictEqual(p0.portrait, { kind: 'upload' }, 'the default is the explainer\'s own picture (an upload, or the agents\' fallback)');
+  assert.deepStrictEqual(P.name(p0, 'Ada', { kind: 'agent', agent: 'naomi' }).profile.portrait, { kind: 'agent', agent: 'naomi' });
+  assert.deepStrictEqual(P.name(p0, 'Ada', { kind: 'agent', agent: 'code-reviewer.v2_x' }).profile.portrait, { kind: 'agent', agent: 'code-reviewer.v2_x' });
+  for (const bad of [{ kind: 'agent', agent: '../x' }, { kind: 'agent', agent: 'a/b' }, { kind: 'agent', agent: 'a\\b' }, { kind: 'agent', agent: '' }, { kind: 'agent', agent: 'x'.repeat(65) },
+    { kind: 'agent', agent: 5 }, { kind: 'agent' }, { kind: 'image', dataUrl: 'data:image/png;base64,AAAA' }, { kind: 'emoji', value: '🦉' }, 'naomi', null]) {
+    assert.deepStrictEqual(P.name(p0, 'Ada', bad).profile.portrait, { kind: 'upload' }, JSON.stringify(bad));
+  }
+  assert.strictEqual(P.PORTRAITS, undefined, 'the panel has no picker of its own any more');
+  assert.strictEqual(P.IMAGE_MAX_CHARS, undefined);
 });
 
 test('level, About me and model are set strictly', () => {
@@ -66,7 +67,7 @@ test('save then load round-trips; a broken or hostile stored value falls back to
     const q = P.load(mem(raw));
     assert.strictEqual(q.level, 'comfortable');
     assert.strictEqual(q.model, 'local');
-    assert.strictEqual(q.portrait.kind, 'emoji');
+    assert.strictEqual(q.portrait.kind, 'upload');
     assert.strictEqual(q.named, false, 'a name that is not a string is no name');
   }
 });

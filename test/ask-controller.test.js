@@ -112,10 +112,28 @@ test('naming: a name and a face are saved, and an empty name is refused with wor
   assert.strictEqual(r.c.saveNaming(), false);
   assert.match(r.c.state().ui.naming.error, /name/i);
   r.c.setNamingName('Ada');
-  r.c.setNamingPortrait({ kind: 'emoji', value: P.PORTRAITS[2] });
+  r.c.setNamingPortrait({ kind: 'agent', agent: 'naomi' });
   assert.strictEqual(r.c.saveNaming(), true);
-  assert.deepStrictEqual([r.c.state().profile.named, r.c.state().profile.name, r.c.state().profile.portrait.value], [true, 'Ada', P.PORTRAITS[2]]);
+  assert.deepStrictEqual([r.c.state().profile.named, r.c.state().profile.name, r.c.state().profile.portrait], [true, 'Ada', { kind: 'agent', agent: 'naomi' }]);
   assert.strictEqual(r.c.state().view, 'empty');
+});
+
+test('the agents\' picker: choosing a picture opens the file picker through the page, and only a sent file becomes the explainer\'s own picture', async () => {
+  const picks = [];
+  const mk = (result) => create({ request: async () => ({ ok: true }), storage: mem(null), pickPortrait: async () => { picks.push(1); return result; }, onChange: () => {} });
+  const yes = mk(true);
+  yes.setNamingPortrait({ kind: 'agent', agent: 'naomi' });
+  assert.strictEqual(await yes.choosePicture(), true);
+  assert.deepStrictEqual(yes.state().ui.naming.portrait, { kind: 'upload' });
+  const cancelled = mk(false);
+  cancelled.setNamingPortrait({ kind: 'agent', agent: 'naomi' });
+  assert.strictEqual(await cancelled.choosePicture(), false, 'the person cancelled the dialog');
+  assert.deepStrictEqual(cancelled.state().ui.naming.portrait, { kind: 'agent', agent: 'naomi' }, 'nothing changed');
+  assert.strictEqual(picks.length, 2);
+  const none = create({ request: async () => ({ ok: true }), storage: mem(null), onChange: () => {} });
+  assert.strictEqual(await none.choosePicture(), false, 'no picker in this page: nothing happens');
+  const throws = create({ request: async () => ({ ok: true }), storage: mem(null), pickPortrait: async () => { throw new Error('dialog failed'); }, onChange: () => {} });
+  assert.strictEqual(await throws.choosePicture(), false);
 });
 
 test('a selection clicked before naming waits, and is explained once the name is saved', async () => {

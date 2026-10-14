@@ -9,7 +9,7 @@
  *     ask(question, opts?)      a typed question          explain({ file, start, end }, opts?)   the code selected in the reader
  *     reask('simpler'|'deeper') drill(words)              askClaude()   select(id)   startOllama()
  *     toggleSettings() / saveSettings({ name, level, aboutMe, model }) / rename()
- *     setNamingName(text) / setNamingPortrait(p) / saveNaming() -> boolean
+ *     setNamingName(text) / setNamingPortrait(p) / choosePicture() / saveNaming() -> boolean
  *
  * THE ORDER OF A QUESTION (round 7: places first): the host is asked for the PLACES (the search alone) and for the ANSWER at once; the
  * places come back first and show as cards while the words are still being written; the answer then finishes the entry. A reply for an
@@ -34,7 +34,7 @@ const CLAUDE_DEFAULT = 'haiku';
 const isStr = (x) => typeof x === 'string';
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 
-function create({ request, storage = null, onChange = () => {}, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout } = {}) {
+function create({ request, storage = null, pickPortrait = null, onChange = () => {}, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout } = {}) {
   let profile = P.load(storage);
   let st = S.create();
   let host = null;
@@ -158,6 +158,14 @@ function create({ request, storage = null, onChange = () => {}, setTimer = (fn, 
 
   function setNamingName(text) { ui.naming.name = isStr(text) ? text : ''; }
   function setNamingPortrait(p) { ui.naming.portrait = p; changed(); }
+  // The agents' upload: `pickPortrait()` opens the OS file picker and hands the file to the host as the explainer's own picture (true when it did).
+  async function choosePicture() {
+    if (typeof pickPortrait !== 'function') return false;
+    let ok = false;
+    try { ok = (await pickPortrait()) === true; } catch { ok = false; }
+    if (ok) { ui.naming.portrait = { kind: 'upload' }; changed(); }
+    return ok;
+  }
   function saveNaming() {
     const r = P.name(profile, ui.naming.name, ui.naming.portrait);
     if (!r.ok) { ui.naming.error = 'Give it a name first.'; changed(); return false; }
@@ -192,7 +200,7 @@ function create({ request, storage = null, onChange = () => {}, setTimer = (fn, 
     show() { shown = true; nonePolls = NONE_POLLS; return refreshStatus(); },
     hide() { shown = false; if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; } },
     refreshStatus, ask, explain, reask, drill, askClaude, select, startOllama,
-    toggleSettings, saveSettings, rename, setNamingName, setNamingPortrait, saveNaming,
+    toggleSettings, saveSettings, rename, setNamingName, setNamingPortrait, choosePicture, saveNaming,
     state: () => ({
       profile, host, hostError, ui, entry: S.current(st), trail: S.trail(st), history: S.history(st), view: S.viewOf(st, profile),
     }),

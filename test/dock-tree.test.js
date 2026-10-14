@@ -866,6 +866,22 @@ test('320 is the panel\'s own default only: the module before it keeps its size,
   assert.ok(T.groups(shownStyle).some(gr => gr.tabs.includes('style')));
 });
 
+// Ricardo, 2026-10-13 (#33): the Ask panel, in a cell of its own beside the terminal, opens 360 px wide. In a shared group it follows the group.
+test('the Ask panel opens 360 px wide in a cell of its own, and only there', () => {
+  const ids = [...IDS, 'ask'];
+  const alone = T.dock(T.defaultLayout(ids), 'ask', { cell: 'term', side: 'right' });
+  assert.deepEqual(sizeOfCell(alone, 'ask'), { dir: 'row', size: 360 });
+  assert.ok(!T.groups(alone).some(gr => gr.tabs.includes('ask') && gr.tabs.length > 1), 'a cell of its own');
+  // in the shared group (the default), nothing about it sets a width: the group keeps its 180
+  assert.deepEqual(sizeOfCell(T.defaultLayout(ids), 'agents'), { dir: 'row', size: 180 });
+  assert.ok(T.groups(T.defaultLayout(ids)).some(gr => gr.tabs.includes('ask') && gr.tabs.includes('agents')));
+});
+
+test('the Ask panel\'s own width is a row width only: docked under the terminal it gets the usual height', () => {
+  const l = T.dock(T.defaultLayout([...IDS, 'ask']), 'ask', { cell: 'term', side: 'bottom' });
+  assert.deepEqual(sizeOfCell(l, 'ask'), { dir: 'col', size: 160 });
+});
+
 test('a column default is unchanged for the panel (320 is a width): docked under the terminal it gets the usual height', () => {
   const l = T.dock(T.show(T.defaultLayout([...IDS, 'canvas']), 'canvas'), 'canvas', { cell: 'term', side: 'bottom' });
   assert.equal(sizeOfCell(l, 'canvas').dir, 'col');

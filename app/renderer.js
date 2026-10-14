@@ -1256,32 +1256,16 @@ const askRequester = window.askRequester.createRequester({
     try { ws.send(JSON.stringify(obj)); return true; } catch { return false; }
   },
 });
-// The portrait upload: a picture is shrunk to a small square and kept as a data URL (the profile caps its size and type).
-function askShrinkImage() {
-  return new Promise((resolve) => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
-    input.addEventListener('change', () => {
-      const file = input.files && input.files[0];
-      if (!file) { resolve(null); return; }
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      img.onload = () => {
-        const size = 96;
-        const c = document.createElement('canvas');
-        c.width = size; c.height = size;
-        const side = Math.min(img.width, img.height);
-        c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
-        URL.revokeObjectURL(url);
-        resolve(c.toDataURL('image/png'));
-      };
-      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-      img.src = url;
-    });
-    input.click();
+// The explainer's picture goes through the AGENTS' picker: the OS file dialog (avatar:pick), then the same `portrait set` the roster's pencil
+// sends, under the agent name the host keeps for it (host/ask-service.js EXPLAINER_AGENT). True when a file was chosen and sent.
+function askPickPortrait() {
+  if (!(window.harness && window.harness.avatar)) return Promise.resolve(false);
+  return window.harness.avatar.pick().then((path) => {
+    if (!path) return false;
+    try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent: 'ask-explainer', state: 'sleeping', path })); return true; } catch { return false; }
   });
 }
+
 const askPanel = askRoot ? window.askDisplay.mount({
   doc: document,
   root: askRoot,
@@ -1289,7 +1273,9 @@ const askPanel = askRoot ? window.askDisplay.mount({
   request: (op, body) => askRequester.request(op, body),
   openAt: (file, line) => { repoBrowser.openAt(file, line); },
   getSelection: () => window.getSelection(),
-  shrinkImage: askShrinkImage,
+  pickPortrait: askPickPortrait,
+  // the roster's own switch (declared further down this file: before it is set, or if it is off, the face is a placeholder)
+  imagesEnabled: () => { try { return agentImagesEnabled === true; } catch { return false; } },
 }) : null;
 let askWasShown = false;
 function askView() {
@@ -3794,6 +3780,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           html: root.querySelector('.ask-body').innerHTML.slice(0, 12000),
           label: (root.querySelector('.ask-label') || {}).textContent || null,
           top: root.querySelector('.ask-top').textContent,
+          topHtml: root.querySelector('.ask-top').innerHTML.slice(0, 3000),
+          portraits: st.host && st.host.portraits ? { own: st.host.portraits.own && { tier: st.host.portraits.own.tier, agent: st.host.portraits.own.agent }, suggestions: st.host.portraits.suggestions.map(s => s.agent) } : null,
           status: (root.querySelector('.ask-status') || {}).textContent || null,
           cards: [...root.querySelectorAll('.ask-card')].map(c => ({ where: c.querySelector('.ask-card-where').textContent, file: c.dataset.file, line: c.dataset.line, why: (c.querySelector('.ask-card-why') || {}).textContent || '', code: (c.querySelector('.ask-card-code') || {}).textContent || '' })),
           stages: [...root.querySelectorAll('.ask-stage')].map(s => [s.className, s.textContent]),
@@ -3827,6 +3815,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
         }
         else if (a.op === 'refresh') { askPanel.probe('refresh', {}); }
+        else if (a.op === 'portraitSet') { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent: 'ask-explainer', state: 'sleeping', path: String(a.path) })); }
         else if (a.op === 'settings') {
           // open the settings, set what was named, press Save (as a person would)
           if (!root.querySelector('#ask-set-level')) { const g = byAct('settings'); if (g) g.click(); }
@@ -7574,6 +7563,7 @@ function applyAgentImages(enabled) {
   if (typeof enabled !== 'boolean') return;
   const changed = agentImagesEnabled !== enabled;
   agentImagesEnabled = enabled;
+  if (changed && askPanel) askPanel.repaint();      // the Ask panel's face follows the same switch
   styleState = reduceImagesEnabled(styleState, enabled);
   const btn = document.getElementById('images-toggle');
   if (btn) {
@@ -8118,6 +8108,8 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'portrait') {
+    // The explainer's own picture (Ask panel): read the new picture from the host.
+    if (msg.agent === 'ask-explainer' && askPanel) askPanel.refresh();
     // The mood message that follows a successful upload redraws the face
     // itself; this is only the "was it accepted, and if not, why" the drop
     // note pattern above already established for granting a directory.

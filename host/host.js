@@ -466,6 +466,9 @@ const askService = createAskService({
   cwd: CWD, index: askIndex, ollama: askOllama, claude: askClaude,
   models: createAskModels({ localModel: askOllama.answerModel, readRecord: seams.askRecord ? () => fs.readFileSync(seams.askRecord, 'utf8') : undefined }),
   repoFor: createRepoFactory({ index: askIndex, ollama: askOllama, claude: askClaude }),
+  // the explainer's picture is an agent's picture: uploaded through `portrait set`, chosen from the forge's generated agents
+  portraitOf: (agent, state) => portraitOf(agent, state),
+  forgeAgents: () => fs.readdirSync(PORTRAITS_DIR, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_')).map(d => d.name).sort(),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });

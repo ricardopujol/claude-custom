@@ -12,7 +12,7 @@
  *
  *   1  the scripts loaded in the shared scope; the panel opens from its tab on the NAMING card (first use), name pre-filled with chips;
  *      NOTHING was indexed before the panel was first opened
- *   2  naming it: a name and a face; the label reads "<name> · <model> · local"; the empty panel has the two steps and real example questions;
+ *   2  naming it: a name and a face from the AGENTS' picker (their generated pictures; the upload goes through the agents' own `portrait set`); the label reads "<name> · <model> · local"; the empty panel has the two steps and real example questions;
  *      opening the panel started the first index, and the status line says so
  *   3  a typed question: the waiting view shows the three named steps and the "Where to look" cards BEFORE the words; then the answer,
  *      with its citation as a link; a click on a card opens the code reader AT that line
@@ -159,6 +159,10 @@ async function viewReady(app) {
   }, 45000);
 }
 
+// a 1x1 PNG: the forge's generated pictures (tmp/portraits/<agent>/sleeping.png) and the person's own upload are this
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+const ownPicture = path.join(tmp, 'my-face.png');
+
 const LOCK_JS = [
   "'use strict';",
   '// A tiny lock used by the probe.',
@@ -194,6 +198,8 @@ async function main() {
   git(dev, 'commit', '-q', '-m', 'init');
   for (const f of [LAYOUT_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
   fs.writeFileSync(recordFile, JSON.stringify({ version: 1, passed: {} }));
+  for (const agent of ['naomi', 'paris']) { fs.mkdirSync(path.join(tmp, 'portraits', agent), { recursive: true }); fs.writeFileSync(path.join(tmp, 'portraits', agent, 'sleeping.png'), PNG); }
+  fs.writeFileSync(ownPicture, PNG);
 
   const fake = await startFakeOllama({
     models: ['qwen3.5:4b'],
@@ -225,18 +231,22 @@ async function main() {
   if (!s1) return;
   check('1: the five ask scripts loaded in the shared plain-script scope', s1.scope === true);
   check('1: first use shows the naming card, and no question box yet', s1.view === 'naming' && s1.form.hidden === true, JSON.stringify([s1.view, s1.form]));
-  check('1: the name is pre-filled and there are chips, faces and an upload', /value="Professor Byte"/.test(s1.html) && /data-act="chip" data-name="Ada"/.test(s1.html) && /data-act="face"/.test(s1.html) && /data-act="upload"/.test(s1.html));
+  const s1p = await waitFor(async () => { const s = await st(); return s.portraits && s.portraits.suggestions.length === 2 ? s : null; }, 15000, 200);
+  check('1: the host offers exactly the forge\'s pictures (the agents\' picker)', !!s1p && JSON.stringify(s1p.portraits.suggestions) === JSON.stringify(['naomi', 'paris']), JSON.stringify(s1p && s1p.portraits));
+  check('1: the name is pre-filled; there are chips, the agents\' generated pictures to choose from, and the upload', !!s1p && /value="Professor Byte"/.test(s1p.html) && /data-act="chip" data-name="Ada"/.test(s1p.html) && /data-act="face" data-agent="naomi"/.test(s1p.html) && /data-act="face" data-agent="paris"/.test(s1p.html) && /data-act="upload"/.test(s1p.html));
+  check('1: the pictures are the agents\' own face code: real images', !!s1p && /<img class="face-media" src="file:\/\/\/[^"]*naomi\/sleeping\.png/.test(s1p.html), s1p && s1p.html.slice(0, 300));
   check('1: the reader\'s What\'s this? button is there', s1.readerAsk.hidden === false);
   await shot('ask-1-naming.png');
 
   // 2 -----------------------------------------------------------------------------------------------------------------------
   await doIt({ op: 'click', act: 'chip', text: 'Ada' });
-  await doIt({ op: 'click', act: 'face' });
+  await doIt({ op: 'click', act: 'face', text: '' });
   await doIt({ op: 'click', act: 'name-save' });
   const s2 = await waitFor(async () => { const s = await st(); return s.view === 'empty' ? s : null; }, 8000, 150);
   check('2: saving the name leaves the empty panel', !!s2);
   if (!s2) return;
   check('2: the label reads name, model and where it runs', s2.label === 'Ada · qwen3.5:4b · local', s2.label);
+  check('2: the chosen agent picture is the explainer\'s face in the header', !!s2 && /naomi\/sleeping\.png/.test(s2.topHtml) && /title="generated"/.test(s2.topHtml), s2 && s2.topHtml.slice(0, 260));
   check('2: the question box is there; the two steps and real example questions show', s2.form.hidden === false && /Select code in a file/.test(s2.text) && s2.buttons.filter(b => b.act === 'example').length >= 1, JSON.stringify(s2.buttons.filter(b => b.act === 'example').map(b => b.text)));
   const s2b = await waitFor(async () => { const s = await st(); return s.status && /files read/.test(s.status) ? s : null; }, 30000, 300);
   check('2: opening the panel started the first index; the status line says how many files', !!s2b, JSON.stringify(s2b && s2b.status));
@@ -245,6 +255,13 @@ async function main() {
   check('2: the index is on disk now', indexAfter === indexBefore + 1, `${indexBefore} -> ${indexAfter}`);
   check('2: the explainer is off on the local model (no passed record), said in the status line', !!s2b && /explaining code is off on this model/.test(s2b.status));
   await shot('ask-2-empty.png');
+
+  // 2b: the person's own picture goes through the agents' own `portrait set` (the OS file dialog itself can't be driven here)
+  await doIt({ op: 'portraitSet', path: ownPicture });
+  const up = await waitFor(async () => { const s = await st(); return s.portraits && s.portraits.own && s.portraits.own.tier === 'uploaded' ? s : null; }, 15000, 300);
+  check('2b: an uploaded picture becomes the explainer\'s own (tier "uploaded", agent ask-explainer)', !!up, JSON.stringify(up && up.portraits));
+  const uploadedFile = fs.existsSync(path.join(tmp, 'uploads', 'ask-explainer')) ? fs.readdirSync(path.join(tmp, 'uploads', 'ask-explainer')) : [];
+  check('2b: the file is in the agents\' uploads folder under that name', uploadedFile.some(f => /^sleeping\./.test(f)), JSON.stringify(uploadedFile));
 
   // 3 -----------------------------------------------------------------------------------------------------------------------
   await doIt({ op: 'type', text: 'Where is the lock released?' });

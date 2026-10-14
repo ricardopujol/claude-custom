@@ -3,7 +3,7 @@
  * The "Ask the repo" panel (BACKLOG #33, DESIGN_ASK_REPO.md "The design, in full" + Round 8): a dock tab, 360 px, that explains and
  * finds code with a local model (or Haiku / Sonnet through the real claude CLI), named and pictured by its owner.
  *
- *   mount({ doc, root, request, openAt, storage, setTimer, clearTimer, getSelection, shrinkImage }) ->
+ *   mount({ doc, root, request, openAt, storage, setTimer, clearTimer, getSelection, pickPortrait, imagesEnabled }) ->
  *     { show(), hide(), ask(question), explainSelection({ file, start, end }), state(), profile(), probe(action, args) }
  *
  *   request(op, body) -> Promise<reply>   app/ask-requester.js, over the tab's own host socket; the page never names a worktree
@@ -90,10 +90,27 @@ function cardsHtml(places, title) {
   return `<section class="ask-places" aria-label="${esc(title)}"><h4 class="ask-h">${esc(title)}</h4>${places.map(cardHtml).join('')}</section>`;
 }
 
-function portraitHtml(profile) {
-  const p = profile.portrait;
-  if (p && p.kind === 'image') return `<img class="ask-portrait" alt="" src="${esc(p.dataUrl)}">`;
-  return `<span class="ask-portrait ask-portrait-emoji" aria-hidden="true">${esc(p && p.value ? p.value : P.PORTRAITS[0])}</span>`;
+// The explainer's face is an AGENT's picture, drawn by the same code as the roster's faces (app/portrait-media-display.js), so the tier
+// wording, the "agent images off" switch and the placeholder behave exactly as they do there. The host sends the results (status.portraits).
+const PM = typeof module !== 'undefined' && module.exports ? require('./portrait-media-display') : root.portraitMedia;
+
+/** The portrait result the profile points at: a chosen agent's picture, else the explainer's own; null until the host has said. */
+function portraitResult(portrait, host) {
+  const ps = isObj(host) && isObj(host.portraits) ? host.portraits : null;
+  if (!ps) return null;
+  if (portrait && portrait.kind === 'agent' && Array.isArray(ps.suggestions)) {
+    const s = ps.suggestions.find(x => isObj(x) && x.agent === portrait.agent);
+    if (s && isObj(s.portrait)) return s.portrait;
+  }
+  return isObj(ps.own) ? ps.own : null;
+}
+
+function faceHtml(result, images) {
+  return result ? PM.faceMediaHtml(result, { imagesEnabled: images !== false }) : '';
+}
+
+function portraitHtml(profile, host, images) {
+  return `<span class="ask-portrait" aria-hidden="true">${faceHtml(portraitResult(profile.portrait, host), images) || '·'}</span>`;
 }
 
 const whereOf = (host, id) => {
@@ -113,7 +130,7 @@ function headerHtml(m) {
   if (!profile.named) return '<div class="ask-head"><span class="ask-title">Ask the repo</span></div>';
   const lvl = LEVELS.find(l => l.id === profile.level) || LEVELS[2];
   const explains = S.canExplain(host, profile.model);
-  return `<div class="ask-head">${portraitHtml(profile)}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
+  return `<div class="ask-head">${portraitHtml(profile, host, m.images)}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
     + (explains ? `<span class="ask-for">explaining for: ${esc(lvl.label)} · <button type="button" class="ask-link" data-act="settings">change</button></span>` : '')
     + '</div><button type="button" class="ask-gear" data-act="settings" title="Name, level, About me and model" aria-label="Settings" aria-expanded="'
     + (m.ui.settings ? 'true' : 'false') + '">⚙</button></div>';
@@ -122,12 +139,15 @@ function headerHtml(m) {
 function namingHtml(m) {
   const d = m.ui.naming;
   const chips = P.NAME_SUGGESTIONS.map(n => `<button type="button" class="ask-chip${d.name === n ? ' on' : ''}" data-act="chip" data-name="${esc(n)}">${esc(n)}</button>`).join('');
-  const faces = P.PORTRAITS.map((e, i) => `<button type="button" class="ask-face${d.portrait.kind === 'emoji' && d.portrait.value === e ? ' on' : ''}" data-act="face" data-i="${i}" aria-label="Portrait ${i + 1}">${esc(e)}</button>`).join('');
-  const up = d.portrait.kind === 'image' ? `<img class="ask-face on" alt="Your upload" src="${esc(d.portrait.dataUrl)}">` : '';
+  // The agents' picker: the explainer's own picture first (an upload, or what the agents fall back to; a click opens the OS file picker),
+  // then the agents' generated pictures to choose from.
+  const ps = isObj(m.host) && isObj(m.host.portraits) ? m.host.portraits : { own: null, suggestions: [] };
+  const own = `<button type="button" class="ask-face ask-upload${d.portrait.kind === 'upload' ? ' on' : ''}" data-act="upload" title="Choose your own picture, GIF or video">${faceHtml(isObj(ps.own) ? ps.own : null, m.images) || '＋'}</button>`;
+  const faces = (Array.isArray(ps.suggestions) ? ps.suggestions : []).map(s => `<button type="button" class="ask-face${d.portrait.kind === 'agent' && d.portrait.agent === s.agent ? ' on' : ''}" data-act="face" data-agent="${esc(s.agent)}" title="${esc(s.agent)}" aria-label="Picture of ${esc(s.agent)}">${faceHtml(s.portrait, m.images)}</button>`).join('');
   return '<section class="ask-naming"><h3 class="ask-h3">Name your explainer</h3>'
-    + '<p class="ask-note">It explains code for you. Pick a name and a face; you can change both later in ⚙.</p>'
+    + '<p class="ask-note">It explains code for you. Pick a name and a face (one of the agents\' pictures, or your own); you can change both later in ⚙.</p>'
     + `<input class="ask-input" id="ask-name" type="text" maxlength="${P.NAME_MAX}" value="${esc(d.name)}" aria-label="Name" autocomplete="off">`
-    + `<div class="ask-chips">${chips}</div><div class="ask-faces">${faces}${up}<button type="button" class="ask-face ask-upload" data-act="upload" title="Upload a picture">＋</button></div>`
+    + `<div class="ask-chips">${chips}</div><div class="ask-faces">${own}${faces}</div>`
     + (d.error ? `<p class="ask-bad">${esc(d.error)}</p>` : '')
     + '<button type="button" class="ask-primary" data-act="name-save">Save</button></section>';
 }
@@ -233,7 +253,7 @@ function footHtml(m) {
 // ---- mounting -----------------------------------------------------------------------------------------------------------------
 
 function mount({
-  doc, root: host, request, openAt, storage = null, setTimer, clearTimer, getSelection = null, shrinkImage = null,
+  doc, root: host, request, openAt, storage = null, setTimer, clearTimer, getSelection = null, pickPortrait = null, imagesEnabled = () => true,
 } = {}) {
   const Controller = typeof module !== 'undefined' && module.exports ? require('./ask-controller') : root.askController;
   const timers = setTimer ? { setTimer, clearTimer } : {};
@@ -250,10 +270,10 @@ function mount({
 
   let highlighted = '';
 
-  const ctl = Controller.create({ request, storage, onChange: () => paint(), ...timers });
+  const ctl = Controller.create({ request, storage, pickPortrait, onChange: () => paint(), ...timers });
 
   function paint() {
-    const m = ctl.state();
+    const m = { ...ctl.state(), images: imagesEnabled() === true };
     top.innerHTML = headerHtml(m);
     body.innerHTML = bodyHtml(m);
     foot.innerHTML = footHtml(m);
@@ -297,16 +317,6 @@ function mount({
   const dataOf = (el, k) => el.getAttribute('data-' + k);
   const valueOf = (sel) => { const n = body.querySelector(sel); return n ? n.value : undefined; };
 
-  async function pickImage() {
-    ctl.setNamingName(valueOf('#ask-name'));
-    if (typeof shrinkImage !== 'function') return;
-    const url = await shrinkImage();
-    if (!url || typeof url !== 'string') return;
-    const ok = P.name(ctl.state().profile, 'x', { kind: 'image', dataUrl: url });
-    if (ok.ok && ok.profile.portrait.kind === 'image') ctl.setNamingPortrait(ok.profile.portrait);
-    else { ctl.state().ui.naming.error = 'That picture is too big or not a PNG, JPEG, WebP or GIF.'; paint(); }
-  }
-
   function onClick(e) {
     const hit = actOf(e.target);
     if (!hit) return;
@@ -317,8 +327,8 @@ function mount({
       case 'goto': ctl.select(Number(dataOf(el, 'id'))); break;
       case 'settings': ctl.toggleSettings(); break;
       case 'chip': ctl.setNamingName(dataOf(el, 'name')); paint(); break;
-      case 'face': ctl.setNamingName(valueOf('#ask-name')); ctl.setNamingPortrait({ kind: 'emoji', value: P.PORTRAITS[Number(dataOf(el, 'i'))] }); break;
-      case 'upload': pickImage(); break;
+      case 'face': ctl.setNamingName(valueOf('#ask-name')); ctl.setNamingPortrait({ kind: 'agent', agent: dataOf(el, 'agent') }); break;
+      case 'upload': ctl.setNamingName(valueOf('#ask-name')); ctl.choosePicture(); break;
       case 'name-save': ctl.setNamingName(valueOf('#ask-name')); ctl.saveNaming(); break;
       case 'rename': ctl.rename(); break;
       case 'settings-save':
@@ -351,6 +361,8 @@ function mount({
     ask: (q) => ctl.ask(q),
     explainSelection: (sel) => ctl.explain(sel),
     profile: () => ctl.state().profile,
+    refresh: () => ctl.refreshStatus(),
+    repaint: () => paint(),
     state: () => ctl.state(),
     // verify/probe-ask-panel.js: named actions, JSON answers
     probe(action, a) {
@@ -361,7 +373,7 @@ function mount({
   };
 }
 
-const API = { mount, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, esc, LEVELS };
+const API = { mount, portraitHtml, portraitResult, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, esc, LEVELS };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.askDisplay = API;
 

@@ -8,7 +8,8 @@
  * A message is { type: 'ask', op, seq, ...body }; the reply echoes `op` and `seq`. `handle` never rejects: every failure is
  * { ok: false, reason, ... } with the reason in words the page turns into a note (app/ask-panel-state.js noticeOf).
  *
- *   status        -> { ok, index, ollama, models: [{ id, kind, name, model, where, explainer }], examples }   `warm` starts a first index
+ *   status        -> { ok, index, ollama, models: [{ id, kind, name, model, where, explainer }], examples, portraits }   `warm` starts a first index
+ *                    `portraits` = { own, suggestions }: the explainer's own picture and the agents' generated ones to pick from (below)
  *   places        -> { ok, places }     the search alone: the best few ranges as cards, so they show while the words are written
  *   ask           -> { ok, text, places, model, ... }      a typed question: the 9/10 path (short answer + "Where to look")
  *   explain       -> the same, for a SELECTION and a level (the explainer; refused for a model with no passed record)
@@ -29,6 +30,10 @@ const { extractCitations } = require('./ask-citations');
 const { buildExplain, clipSelection } = require('./ask-explain');
 const { createAskRepo } = require('./ask-repo');
 
+// The explainer's picture is an AGENT's picture: it is uploaded through the agents' own path (`portrait set`, host/portrait-upload.js) under
+// this name, and the suggestions are the forge's generated agents (host/portraits.js tier 'forge'). Ricardo, 2026-10-13: "the agents' picker".
+const EXPLAINER_AGENT = 'ask-explainer';
+const SUGGESTION_MAX = 8;
 const CARD_MAX = 6;
 const PREVIEW_MAX = 5;
 const CARD_LINES = 4;
@@ -176,6 +181,7 @@ function createRepoFactory({ index, ollama, claude }) {
 
 function createAskService({
   cwd, index, ollama, claude, models, repoFor, readSelection = defaultReadSelection, spawnOllama = defaultSpawnOllama,
+  portraitOf = () => null, forgeAgents = () => [],
 } = {}) {
   const dataNow = () => (index && typeof index.get === 'function' ? index.get(cwd) : null);
   const modelOf = (msg) => models.choose(msg && msg.model);
@@ -207,7 +213,22 @@ function createAskService({
       ollama: ol.ok ? { ok: true } : { ok: false, reason: ol.reason, ...(ol.model ? { model: ol.model } : {}) },
       models: models.list(),
       examples: examplesFrom(dataNow()).slice(0, 3),
+      portraits: portraits(),
     };
+  }
+
+  /** The explainer's own picture, and up to SUGGESTION_MAX generated agent pictures to choose from. A throwing lookup is no picture. */
+  function portraits() {
+    const safe = (agent) => { try { return portraitOf(agent, 'sleeping') || null; } catch { return null; } };
+    let names = [];
+    try { names = forgeAgents(); } catch { names = []; }
+    const suggestions = [];
+    for (const agent of Array.isArray(names) ? names : []) {
+      const p = safe(agent);
+      if (p && p.kind === 'file' && p.tier === 'forge') suggestions.push({ agent, portrait: p });
+      if (suggestions.length >= SUGGESTION_MAX) break;
+    }
+    return { own: safe(EXPLAINER_AGENT), suggestions };
   }
 
   /** The selection a message names: { ok, sel (clipped), query } or { ok: false, reason: 'bad-selection', detail }. */
@@ -319,4 +340,4 @@ function createAskService({
   return { handle };
 }
 
-module.exports = { createAskService, createRepoFactory, claudeAsOllama, whyFor, placesFromCitations, placesFromRanges, examplesFrom, linesOf };
+module.exports = { EXPLAINER_AGENT, createAskService, createRepoFactory, claudeAsOllama, whyFor, placesFromCitations, placesFromRanges, examplesFrom, linesOf };
