@@ -35,6 +35,7 @@
  */
 
 const { isInfraError } = require('./drift-git');
+const { KEEP_ALIVE_BACKGROUND } = require('./ask-ollama');
 const { changedFilesOf, buildLogNow, candidateDocs, buildPrompt, parseReply } = require('./drift-text');
 
 const RETRY_MS = 60_000;
@@ -60,7 +61,7 @@ async function analyzeMerge({ git, readDocs, ollama, docs: given }, { sha, subje
   const { system, prompt, diff: shownDiff, docs: shown } = buildPrompt({
     subject, sha, diff, now: buildLogNow(docs.buildLog), nowRel: docs.buildLogName || undefined, docs: candidates,
   });
-  const res = await ollama.generate({ system, prompt, numPredict: REPLY_TOKENS });
+  const res = await ollama.generate({ system, prompt, numPredict: REPLY_TOKENS, keepAlive: KEEP_ALIVE_BACKGROUND });
   if (!res.ok) return { ok: false, reason: res.reason, ...(res.model ? { model: res.model } : {}) };
   const flags = parseReply(res.text, shown, shownDiff);
   if (flags === null) return { ok: false, reason: 'bad-reply' };

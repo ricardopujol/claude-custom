@@ -72,6 +72,15 @@ test('generate: sends the system prompt, the settings per request, and unloads a
   assert.strictEqual(b.think, false, 'a thinking model must answer, not deliberate for 40 s');
 });
 
+test('generate: keepAlive is per call (background callers pass 45s); the default and a blank/non-string value stay 5m, num_ctx never changes', async () => {
+  for (const [keepAlive, want] of [['45s', '45s'], [undefined, '5m'], ['', '5m'], ['  ', '5m'], [45, '5m']]) {
+    const { c, calls } = client(() => json(200, { response: 'x' }));
+    await c.generate({ system: 'S', prompt: 'P', keepAlive });
+    assert.strictEqual(calls[0].body.keep_alive, want);
+    assert.strictEqual(calls[0].body.options.num_ctx, 8192);
+  }
+});
+
 test('generate: numPredict raises the reply budget for one call; a bad value falls back to the default', async () => {
   const { c, calls } = client(() => json(200, { response: 'x' }));
   await c.generate({ system: 'S', prompt: 'P', numPredict: 700 });

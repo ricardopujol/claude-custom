@@ -7,7 +7,7 @@
  *                            | { ok: false, reason: 'ollama-down' }
  *                            | { ok: false, reason: 'model-missing', model, embed }   (the ANSWER model)
  *   embed(texts[])          -> { ok: true, vectors } | { ok: false, reason: 'ollama-down'|'timeout'|'model-missing'|'bad-reply'|'http', ... }
- *   generate({system,prompt,numPredict?,temperature?}) -> { ok: true, text } | { ok: false, reason: same set }
+ *   generate({system,prompt,numPredict?,temperature?,keepAlive?}) -> { ok: true, text } | { ok: false, reason: same set }
  *   unload()                -> asks Ollama to drop the answer model now (keep_alive 0)
  *
  * A missing EMBED model is not fatal: the index then runs on keywords alone and the panel says so. A missing answer model
@@ -26,6 +26,9 @@ const DEFAULT_ANSWER_MODEL = 'qwen3.5:4b';
 const DEFAULT_EMBED_MODEL = 'snowflake-arctic-embed2:latest';
 const NUM_CTX = 8192;
 const NUM_PREDICT = 350;
+// Background callers (speech bubbles, the docs-drift check) pass this as `keepAlive`: they are rare, fire-and-forget decoration or
+// housekeeping, so the 3.2 GB answer model needn't stay warm 5 minutes for them (BACKLOG #91). Ask answers keep the 5m default.
+const KEEP_ALIVE_BACKGROUND = '45s';
 
 const usable = (n, fallback) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : fallback);
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
@@ -92,11 +95,11 @@ function createAskOllama({
     return good ? { ok: true, vectors: v } : { ok: false, reason: 'bad-reply' };
   }
 
-  async function generate({ system, prompt, numPredict, temperature }) {
+  async function generate({ system, prompt, numPredict, temperature, keepAlive }) {
     const r = await call('/api/generate', {
       method: 'POST',
       timeoutMs: generateMs,
-      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: '5m', options: { num_ctx: NUM_CTX, temperature: typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 ? temperature : 0, num_predict: usable(numPredict, NUM_PREDICT) } },
+      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: typeof keepAlive === 'string' && keepAlive.trim() ? keepAlive : '5m', options: { num_ctx: NUM_CTX, temperature: typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 ? temperature : 0, num_predict: usable(numPredict, NUM_PREDICT) } },
     });
     const bad = failure(r, answerModel);
     if (bad) return bad;
@@ -111,4 +114,4 @@ function createAskOllama({
   return { check, embed, generate, unload, answerModel, embedModel };
 }
 
-module.exports = { createAskOllama, DEFAULT_URL, DEFAULT_ANSWER_MODEL, DEFAULT_EMBED_MODEL, NUM_CTX, NUM_PREDICT };
+module.exports = { createAskOllama, DEFAULT_URL, DEFAULT_ANSWER_MODEL, DEFAULT_EMBED_MODEL, NUM_CTX, NUM_PREDICT, KEEP_ALIVE_BACKGROUND };

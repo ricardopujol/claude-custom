@@ -28,6 +28,7 @@
 
 const { buildPrompt, cleanLine, STATES } = require('./bubble-prompt');
 const { monotonic } = require('./bubble-gate');
+const { KEEP_ALIVE_BACKGROUND } = require('./ask-ollama');
 
 const TTL_MS = 8000;
 const FAILURE_COOLDOWN_MS = 60_000;
@@ -64,7 +65,7 @@ function createBubbles({ gate, ollama, slot, voiceOf, contextOf, settings, broad
         if (!built) return drop('ignored');
         let res;
         try {
-          res = await ollama.generate({ ...built, numPredict: NUM_PREDICT, temperature: TEMPERATURE });
+          res = await ollama.generate({ ...built, numPredict: NUM_PREDICT, temperature: TEMPERATURE, keepAlive: KEEP_ALIVE_BACKGROUND });
         } catch (err) {
           res = { ok: false, reason: 'threw', message: err && err.message };
         }
