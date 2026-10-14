@@ -583,6 +583,20 @@ if (window.harness && window.harness.occupancy) {
   window.harness.occupancy.get().then(applyOccupancy).catch(() => { /* the next push carries it */ });
 }
 
+// --- fonts and plain colour (BACKLOG #88, #92) ---------------------------------
+// Declared before the terminal because applyTheme (called from many places) reads them. `null` = not yet known.
+let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont }
+let projectTerminalFont = null;     // this project's look.terminalFont: the override over the app-wide one
+let plainColourOn = false;          // this project's look.backgroundMode === 'colour': no media, the app colour is the background
+let fontFamilies = null;            // every installed family main listed (null = not listed yet)
+let fontListError = null;           // why the list is missing, in words, or null
+let fontListAt = 0;                 // when it was last asked for: asked again after FONT_LIST_REFRESH_MS, so a new font appears
+let fontListBusy = false;
+const FONT_LIST_REFRESH_MS = 30000;
+const FONT_ROWS_SHOWN = 80;         // a search narrows a long list; this keeps the panel light before the person types
+const fontQueries = { term: '', ui: '', project: '' };
+const fixedFamilyCache = new Map(); // family -> true when it is fixed pitch; measured once, by the canvas the renderer itself draws with
+
 // --- terminal ---------------------------------------------------------------
 const term = new Terminal({
   allowProposedApi: true,          // required by the unicode11 addon
@@ -3972,14 +3986,14 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           if (!up && Date.now() - t0 < 10000) return;
           clearInterval(poll);
           setTimeout(() => {
-            const heldId = document.activeElement && document.activeElement.id;
+            const id = document.activeElement && document.activeElement.id;
             const inTerm = !!(term.element && term.element.contains(document.activeElement));
             document.execCommand('insertText', false, 'tail');
             setTimeout(() => {
               sub.dispose();
               const value = field.value;
               field.value = '';   // nothing left over for the next step
-              resolve(JSON.stringify({ ok: true, reattached: up, startedIn, heldId, inTerm, value, sent }));
+              resolve(JSON.stringify({ ok: true, reattached: up, startedIn, id, inTerm, value, sent }));
             }, 150);
           }, 150);
         }, 50);
@@ -4029,6 +4043,56 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           reducedMotion: reducedMotionQuery.matches, playback: backgroundPlaybackState(),
           renderer: rectOf(document.getElementById('bg')),
         });
+      }
+      // Backlog #88 + #92 (verify/probe-fonts-colour.js): the fonts as painted -- the terminal's options, the interface and
+      // monospace variables and what real elements compute from them -- and the plain-colour background's classes and veil.
+      case 'fontsState': {
+        const css = getComputedStyle(document.documentElement);
+        const comp = (sel) => { const el = document.querySelector(sel); return el ? getComputedStyle(el).fontFamily : null; };
+        const bgEl = document.getElementById('bg');
+        const fixedCount = fontFamilies ? fontFamilies.filter(isFixedFamily).length : null;
+        return JSON.stringify({
+          ok: true,
+          settings: fontSettings, projectFont: projectTerminalFont,
+          term: { fontFamily: term.options.fontFamily, fontSize: term.options.fontSize },
+          vars: { ui: css.getPropertyValue('--font-ui').trim(), mono: css.getPropertyValue('--font-mono').trim() },
+          computed: { body: getComputedStyle(document.body).fontFamily, filesTree: comp('#files-tree'), readerPath: comp('#reader-path') },
+          list: { loaded: !!fontFamilies, count: fontFamilies ? fontFamilies.length : null, fixed: fixedCount, error: fontListError },
+          picker: { term: !!document.getElementById('style-font-term-list'), rows: document.querySelectorAll('#style-font-term-list .font-row').length },
+          bg: {
+            plainColour: plainColourOn, hasPlainClass: document.body.classList.contains('has-plain-colour'),
+            hasBg: document.body.classList.contains('has-bg'), hasCustomBg: document.body.classList.contains('has-custom-bg'),
+            video: !!bgVideoEl, still: !!bgStillEl, image: bgEl.style.backgroundImage,
+            color: getComputedStyle(bgEl).backgroundColor, veil: parseFloat(getComputedStyle(bgEl, '::after').opacity),
+            appColor: css.getPropertyValue('--bg').trim(), darkness: css.getPropertyValue('--bg-darkness').trim(),
+            veilColor: getComputedStyle(bgEl, '::after').backgroundColor,
+            modeButtons: { image: !!document.getElementById('style-bg-mode-image'), colour: !!document.getElementById('style-bg-mode-colour') },
+            slider: !!document.getElementById('style-dark'),
+          },
+        });
+      }
+      // The Fonts pickers as a click would use them: the app-wide settings through main, a search typed into a box.
+      case 'fontsSet': {
+        if (!(window.harness && window.harness.fonts)) return JSON.stringify({ ok: false, error: 'no fonts bridge' });
+        return window.harness.fonts.set(a.settings).then((saved) => JSON.stringify({ ok: !!saved, saved }));
+      }
+      case 'fontsSearch': {
+        // Ids written out in full (test/renderer-scope.test.js): one pair per picker.
+        const pair = a.kind === 'ui' ? [document.getElementById('style-font-ui-search'), document.getElementById('style-font-ui-list')]
+          : a.kind === 'project' ? [document.getElementById('style-font-project-search'), document.getElementById('style-font-project-list')]
+            : [document.getElementById('style-font-term-search'), document.getElementById('style-font-term-list')];
+        if (!pair[0] || !pair[1]) return JSON.stringify({ ok: false, error: 'no search box' });
+        pair[0].value = String(a.query || '');
+        pair[0].dispatchEvent(new Event('input'));
+        return JSON.stringify({ ok: true, rows: [...pair[1].querySelectorAll('.font-row')].map((r) => r.dataset.font) });
+      }
+      case 'fontsPick': {
+        const list = a.kind === 'ui' ? document.getElementById('style-font-ui-list')
+          : a.kind === 'project' ? document.getElementById('style-font-project-list') : document.getElementById('style-font-term-list');
+        const row = list && [...list.querySelectorAll('.font-row')].find((r) => r.dataset.font === a.font);
+        if (!row) return JSON.stringify({ ok: false, error: 'no such row' });
+        row.click();
+        return JSON.stringify({ ok: true });
       }
       // The Style tab's own sends, as the drop zone would make them: a path the host copies in.
       case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}) }); break;
@@ -4599,7 +4663,7 @@ function applyTheme(theme) {
   if (!theme) return;
   lastTheme = theme;
   const terminal = { ...theme.terminal };
-  if (backgroundUrl) {
+  if (backgroundUrl || plainColourOn) {
     terminal.background = hexToRgba(terminal.background, TERM_ALPHA);
     term.options.allowTransparency = true;
   }
@@ -4609,6 +4673,7 @@ function applyTheme(theme) {
     if (theme.font.size) term.options.fontSize = theme.font.size;
     if (theme.font.lineHeight) term.options.lineHeight = theme.font.lineHeight;
   }
+  applyFonts();       // the person's own picks sit over the registry theme's font
   const c = theme.chrome || {};
   const root = document.documentElement.style;
   // NAMING TRAP (Miguel, feat/project-look #5): the theme's `panel` colour is
@@ -6073,6 +6138,26 @@ function clearBackgroundLayer() {
   if (lastTheme) applyTheme(lastTheme);
 }
 
+// #92: no picture, no video: #bg is the app colour (renderer.html), darkened by the same veil as a picture. Like a picture it
+// makes the terminal and panels translucent, so the colour shows through them the same way.
+function setPlainColour(on) {
+  plainColourOn = on;
+  document.body.classList.toggle('has-plain-colour', on);
+}
+function applyPlainColour() {
+  removeBackgroundVideo();
+  paintBackgroundImage(null);
+  backgroundUrl = null;
+  backgroundSetAt = null;
+  failedBgUrl = null;
+  setPlainColour(true);
+  document.body.classList.add('has-bg', 'has-custom-bg');
+  if (webglAddon) {          // as applyBackground: the WebGL renderer cannot draw over a transparent background
+    try { webglAddon.dispose(); } catch {}
+    webglAddon = null;
+  }
+}
+
 function applyBackground(filePath, { custom = false, version = '', kind = 'image' } = {}) {
   if (!filePath) return;
   const url = bgMedia.fileUrl(filePath, version);
@@ -7107,11 +7192,20 @@ function applyStyleMessage(msg) {
   const kind = (msg.style ? msg.style.kind : msg.kind) === 'video' ? 'video' : 'image';
   // Backlog #25: a light look puts a white veil over the art (renderer.html), whichever picture it is.
   document.documentElement.setAttribute('data-look-mode', look.mode === 'light' ? 'light' : 'dark');
-  applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
+  // #92: Plain colour shows the app colour and no media; the picture's file stays, so leaving it paints the picture again.
+  if (look.backgroundMode === 'colour') {
+    applyPlainColour();
+  } else {
+    setPlainColour(false);
+    applyBackground(msg.background, { custom: source === 'override', version: setAt, kind });
+  }
   if (typeof look.darkness === 'number') {
     document.documentElement.style.setProperty('--bg-darkness', String(look.darkness));
   }
+  // #88: the project's own terminal font (a message with no look at all says nothing about it).
+  if (msg.style ? msg.style.look : msg.look) projectTerminalFont = fontsDisplay.sanitizeFamily(look.terminalFont);
   if (msg.theme) applyTheme(msg.theme);
+  else applyFonts();
 }
 
 // The picture's pixels, small: the image, or the video's CURRENT frame, drawn onto a 64x64
@@ -7196,17 +7290,41 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'fonts') {
+    const f = fontsDisplay.sectionView(fontSettings, projectTerminalFont);
+    if (!f.known) {
+      return `<section class="style-section" data-section="fonts">${header}<div class="style-current">reading…</div></section>`;
+    }
+    // Ids written out in full: test/renderer-scope.test.js finds them by text.
+    return (
+      `<section class="style-section" data-section="fonts">${header}` +
+      `<div class="style-current">Every window uses these. The terminal list shows fixed-width fonts only.</div>` +
+      fontPickerHtml('Terminal font', 'term', f.terminalFont, 'Default (the theme)',
+        'id="style-font-term-search"', 'id="style-font-term-list"', 'id="style-font-term-reset"') +
+      `<span class="style-label">Terminal size</span><div class="style-row">` +
+      `<input type="range" id="style-font-size" min="${fontsDisplay.MIN_TERMINAL_SIZE}" max="${fontsDisplay.MAX_TERMINAL_SIZE}" step="1" value="${f.size}">` +
+      `<span class="style-val" id="style-font-size-val">${f.size} px</span></div>` +
+      fontPickerHtml('Interface font', 'ui', f.uiFont, 'Default (Segoe UI)',
+        'id="style-font-ui-search"', 'id="style-font-ui-list"', 'id="style-font-ui-reset"') +
+      fontPickerHtml("This project's terminal font", 'project', f.projectFont, 'Same as every window',
+        'id="style-font-project-search"', 'id="style-font-project-list"', 'id="style-font-project-reset"') +
+      `</section>`
+    );
+  }
   if (section.id === 'background' && v) {
     const dark = v.darknessPercent;
     return (
       `<section class="style-section" data-section="background">${header}` +
       `<div class="style-current">${escapeHtml(v.description)}</div>` +
+      `<span class="style-label">Background</span><div class="style-row">` +
+      `<button type="button" id="style-bg-mode-image" aria-pressed="${!v.plainColour}"${v.plainColour ? '' : ' class="seated"'}>Image / video</button>` +
+      `<button type="button" id="style-bg-mode-colour" aria-pressed="${v.plainColour}"${v.plainColour ? ' class="seated"' : ''}>Plain colour</button></div>` +
       `<div class="style-dropzone" id="style-bg-drop" tabindex="0">drop an image or a short video here, or ` +
       `<label class="style-browse">choose a file<input type="file" id="style-bg-file" ` +
       `accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,video/webm,video/mp4" hidden></label></div>` +
       (v.note ? `<div class="style-note">${escapeHtml(v.note)}</div>` : '') +
       ((pn) => `<div class="style-paused" id="style-bg-paused"${pn ? '' : ' hidden'}>${escapeHtml(pn || '')}</div>`)(pausedNoteText()) +
-      (v.isOverride
+      (v.showVeil
         ? `<span class="style-label">${escapeHtml(v.veilLabel)}</span><div class="style-row">` +
           `<input type="range" id="style-dark" min="0" max="95" step="1" value="${dark === null ? 50 : dark}">` +
           `<span class="style-val" id="style-dark-val">${dark === null ? '—' : dark + '%'}</span></div>`
@@ -7301,8 +7419,16 @@ function paintAccentPreview(hex) {
 function renderStylePanel() {
   const container = document.getElementById('style-sections');
   if (!container) return;
+  // A redraw replaces every element: a font search box the person is typing in must keep its focus and caret.
+  const active = document.activeElement;
+  const id = active && container.contains(active) && active.classList.contains('font-search') ? active.id : null;
+  const caret = id ? active.selectionStart : null;
   container.innerHTML = styleDisplay(styleState).map(renderStyleSection).join('');
   bindStyleSections();
+  if (id) {
+    const again = document.getElementById(id);
+    if (again) { again.focus(); try { again.setSelectionRange(caret, caret); } catch { /* not a text field */ } }
+  }
 }
 
 // Bound fresh on every render, since the elements themselves are replaced by
@@ -7345,6 +7471,7 @@ function bindStyleSections() {
   }
 
   bindAvatarSection();
+  bindFontSection();
 
   const reroll = document.getElementById('style-reroll');
   if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
@@ -7376,6 +7503,12 @@ function bindStyleSections() {
     });
   }
 
+  // #92: Image / video and Plain colour. The picture's file is never touched by either.
+  const modeImage = document.getElementById('style-bg-mode-image');
+  if (modeImage) modeImage.addEventListener('click', () => sendStyle('background', { action: 'set-look', look: { backgroundMode: null } }));
+  const modeColour = document.getElementById('style-bg-mode-colour');
+  if (modeColour) modeColour.addEventListener('click', () => sendStyle('background', { action: 'set-look', look: { backgroundMode: 'colour' } }));
+
   const resetBtn = document.getElementById('style-bg-reset');
   if (resetBtn) {
     resetBtn.addEventListener('click', () => sendStyle('background', { action: 'reset-background' }));
@@ -7387,7 +7520,7 @@ function bindStyleSections() {
     const root = document.documentElement.style;
     root.setProperty('--bg', hex);
     root.setProperty('--chrome', hex);
-    if (!backgroundUrl) term.options.theme = { ...term.options.theme, background: hex };
+    if (!backgroundUrl && !plainColourOn) term.options.theme = { ...term.options.theme, background: hex };
   });
   bindColour(document.getElementById('style-text'), document.getElementById('style-text-hex'),
     document.getElementById('style-text-reset'), 'textColor',
@@ -7682,6 +7815,156 @@ if (window.harness && window.harness.onWindowFocus) {
   });
 }
 refreshDim();
+
+// --- fonts (BACKLOG #88) -------------------------------------------------------
+// What decides the fonts is app/fonts-display.js; main stores the app-wide pick (app/fonts-bridge.js) and a project's look can
+// override the terminal font. This is the wiring: paint the terminal and the two CSS variables, and draw the pickers.
+let fontFitTimer = null;
+function applyFonts() {
+  const themeFont = lastTheme && lastTheme.font ? lastTheme.font : null;
+  const eff = fontsDisplay.effectiveTerminal({ settings: fontSettings, projectFont: projectTerminalFont, themeFont });
+  const root = document.documentElement.style;
+  const picked = fontsDisplay.sanitizeFamily(projectTerminalFont) || (fontSettings && fontsDisplay.sanitizeFamily(fontSettings.terminalFont));
+  // The monospace UI (code reader, Files tree, ...) follows the terminal's PICK; with none it keeps its own stack.
+  if (picked) root.setProperty('--font-mono', fontsDisplay.stackFor(picked, 'mono'));
+  else root.removeProperty('--font-mono');
+  const ui = fontSettings && fontsDisplay.sanitizeFamily(fontSettings.uiFont);
+  if (ui) root.setProperty('--font-ui', fontsDisplay.stackFor(ui, 'ui'));
+  else root.removeProperty('--font-ui');
+  if (term.options.fontFamily === eff.fontFamily && term.options.fontSize === eff.fontSize) return;
+  term.options.fontFamily = eff.fontFamily;
+  term.options.fontSize = eff.fontSize;
+  // A font change alters the cell size, so the pty must be told the new geometry or Ink's layout corrupts.
+  clearTimeout(fontFitTimer);
+  fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+}
+
+function takeFontSettings(raw) {
+  fontSettings = fontsDisplay.sanitizeSettings(raw);
+  applyFonts();
+  renderStylePanel();
+}
+
+function refreshFontSettings() {
+  if (!(window.harness && window.harness.fonts)) return;
+  window.harness.fonts.get().then((r) => {
+    // ok / missing / corrupt are all answers (a corrupt record reads as the defaults, and the next pick repairs it).
+    // Unreadable (a transient lock) says nothing about the person's choice: stay unknown and ask again.
+    if (r && (r.status === 'ok' || r.status === 'missing' || r.status === 'corrupt')) takeFontSettings(r.settings);
+    else setTimeout(refreshFontSettings, 1000);
+  }).catch(() => setTimeout(refreshFontSettings, 1000));
+}
+
+// Send the DESIRED settings; main answers what it stored, and null (a failed save) re-reads the truth instead of trusting the click.
+function setFontSettings(patch) {
+  if (!(window.harness && window.harness.fonts) || !fontSettings) return;
+  window.harness.fonts.set({ ...fontSettings, ...patch })
+    .then((saved) => { if (saved) takeFontSettings(saved); else refreshFontSettings(); })
+    .catch(refreshFontSettings);
+}
+
+if (window.harness && window.harness.fonts) {
+  window.harness.fonts.onChange(takeFontSettings);     // another window's pick
+  refreshFontSettings();
+}
+
+let fontMeasureCtx = null;
+function isFixedFamily(name) {
+  if (fixedFamilyCache.has(name)) return fixedFamilyCache.get(name);
+  if (!fontMeasureCtx) fontMeasureCtx = document.createElement('canvas').getContext('2d');
+  const ctx = fontMeasureCtx;
+  // The generic fallback is a PROPORTIONAL face on purpose: a family that is not really there measures proportional, never fixed.
+  const fixed = fontsDisplay.isFixedWidth((text) => { ctx.font = `16px "${name}", serif`; return ctx.measureText(text).width; });
+  fixedFamilyCache.set(name, fixed);
+  return fixed;
+}
+
+function ensureFontList(force) {
+  if (!(window.harness && window.harness.fonts) || fontListBusy) return;
+  if (!force && fontFamilies && Date.now() - fontListAt < FONT_LIST_REFRESH_MS) return;
+  fontListBusy = true;
+  window.harness.fonts.list().then((r) => {
+    fontListAt = Date.now();
+    if (r && r.ok === true && Array.isArray(r.families)) {
+      const changed = !fontFamilies || fontFamilies.join('\n') !== r.families.join('\n');
+      fontFamilies = r.families;
+      fontListError = null;
+      if (changed) { fixedFamilyCache.clear(); renderStylePanel(); }
+    } else {
+      fontListError = (r && r.error) || "couldn't list the installed fonts";
+      renderStylePanel();
+    }
+  }).catch((err) => {
+    fontListAt = Date.now();
+    fontListError = `couldn't list the installed fonts: ${(err && err.message) || 'unknown reason'}`;
+    renderStylePanel();
+  }).finally(() => { fontListBusy = false; });
+}
+
+function fontRowsHtml(kind, current) {
+  if (fontListError) return `<div class="font-empty">${escapeHtml(fontListError)}</div>`;
+  if (!fontFamilies) return `<div class="font-empty">listing the installed fonts…</div>`;
+  const all = fontsDisplay.filterFonts(fontFamilies, fontQueries[kind], { fixedOnly: kind !== 'ui', isFixed: isFixedFamily });
+  if (!all.length) return `<div class="font-empty">${kind !== 'ui' ? 'no fixed-width font matches' : 'no font matches'}</div>`;
+  const rows = all.slice(0, FONT_ROWS_SHOWN).map((name) =>
+    `<button type="button" class="font-row${name === current ? ' seated' : ''}" data-font="${escapeHtml(name)}">${escapeHtml(name)}</button>`);
+  if (all.length > FONT_ROWS_SHOWN) rows.push(`<div class="font-empty">${all.length - FONT_ROWS_SHOWN} more: keep typing to narrow the list</div>`);
+  return rows.join('');
+}
+
+// The id attributes come in WHOLE, as literals (see colourRow): test/renderer-scope.test.js guards every id this file looks up.
+function fontPickerHtml(label, kind, current, unsetText, searchAttr, listAttr, resetAttr) {
+  return (
+    `<span class="style-label">${escapeHtml(label)}</span>` +
+    `<div class="style-note" data-font-now="${kind}">${current ? `Now: ${escapeHtml(current)}` : escapeHtml(unsetText)}</div>` +
+    `<div class="style-row"><input type="text" class="style-hex font-search" ${searchAttr} placeholder="Search fonts" ` +
+    `spellcheck="false" autocomplete="off" value="${escapeHtml(fontQueries[kind])}">` +
+    `<button type="button" ${resetAttr}${current ? '' : ' disabled'}>Reset</button></div>` +
+    `<div class="font-list" ${listAttr}>${fontRowsHtml(kind, current)}</div>`
+  );
+}
+
+// Each row is drawn in its own font. Set from here, not as inline markup, so no family name is ever part of a CSS string in HTML.
+function paintFontRows(listEl) {
+  for (const row of listEl.querySelectorAll('.font-row')) row.style.fontFamily = fontsDisplay.stackFor(row.dataset.font, 'ui');
+}
+
+function bindFontPicker(searchEl, listEl, resetEl, kind, onPick) {
+  if (!searchEl || !listEl) return;
+  paintFontRows(listEl);
+  searchEl.addEventListener('input', () => {
+    fontQueries[kind] = searchEl.value;
+    // Only the list is redrawn, never the whole panel, so the box keeps focus while the person types.
+    const current = kind === 'term' ? (fontSettings && fontSettings.terminalFont)
+      : kind === 'ui' ? (fontSettings && fontSettings.uiFont) : projectTerminalFont;
+    listEl.innerHTML = fontRowsHtml(kind, current);
+    paintFontRows(listEl);
+  });
+  listEl.addEventListener('click', (e) => {
+    const row = e.target && e.target.closest ? e.target.closest('.font-row') : null;
+    if (row && row.dataset.font) { fontQueries[kind] = ''; onPick(row.dataset.font); }
+  });
+  if (resetEl) resetEl.addEventListener('click', () => { fontQueries[kind] = ''; onPick(null); });
+}
+
+function bindFontSection() {
+  const termSearch = document.getElementById('style-font-term-search');
+  if (!termSearch) return;       // the section is still "reading…"
+  ensureFontList(false);
+  bindFontPicker(termSearch, document.getElementById('style-font-term-list'), document.getElementById('style-font-term-reset'),
+    'term', (name) => setFontSettings({ terminalFont: name }));
+  bindFontPicker(document.getElementById('style-font-ui-search'), document.getElementById('style-font-ui-list'),
+    document.getElementById('style-font-ui-reset'), 'ui', (name) => setFontSettings({ uiFont: name }));
+  bindFontPicker(document.getElementById('style-font-project-search'), document.getElementById('style-font-project-list'),
+    document.getElementById('style-font-project-reset'), 'project',
+    (name) => sendStyle('colours', { action: 'set-look', look: { terminalFont: name } }));
+  const size = document.getElementById('style-font-size');
+  if (size) {
+    const label = document.getElementById('style-font-size-val');
+    size.addEventListener('input', () => { if (label) label.textContent = size.value + ' px'; });
+    size.addEventListener('change', () => setFontSettings({ terminalSize: Number(size.value) }));
+  }
+}
 
 // One image at a time. `webUtils.getPathForFile` across the preload bridge is
 // the only way to get a dropped/chosen file's real path -- `File.path` was

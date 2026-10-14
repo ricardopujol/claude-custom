@@ -29,6 +29,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES } = require('./layout-bridge');
+const { registerFontHandlers, FONT_NAMES } = require('./fonts-bridge');
 const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
@@ -1365,6 +1366,15 @@ function registerIpc() {
   watchLayout({
     store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToViews,
     file: path.join(__dirname, '..', '.harness', 'state', `${PRESET_NAMES.key}.json`),
+  });
+
+  // Fonts (BACKLOG #88): the install-wide terminal and interface fonts, the list of installed families, and the same
+  // follow-the-other-windows poll the layouts use (watchLayout reads the key and push channel from FONT_NAMES).
+  const fontsSync = {};
+  registerFontHandlers({ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushToViews });
+  watchLayout({
+    store: uiStore, sync: fontsSync, names: FONT_NAMES, send: pushToViews,
+    file: path.join(__dirname, '..', '.harness', 'state', `${FONT_NAMES.key}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is

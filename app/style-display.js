@@ -24,6 +24,7 @@
 
 const STYLE_SECTIONS = [
   { id: 'colours', title: 'Colours' },
+  { id: 'fonts', title: 'Fonts' },
   { id: 'background', title: 'Background' },
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
@@ -124,9 +125,14 @@ function describeSource(state) {
 
 function backgroundSectionView(state) {
   const isOverride = !!(state && state.source === 'override');
+  // #92: Plain colour paints the project's app colour instead of the picture (the picture's file stays on disk).
+  const plainColour = !!(state && state.backgroundMode === 'colour');
   const note = (state && typeof state.videoError === 'string' && state.videoError) || null;
   return {
-    description: describeSource(state),
+    description: plainColour ? 'Plain colour: your app colour, no picture' : describeSource(state),
+    plainColour,
+    // The darkness slider needs something to darken: your own picture, or the plain colour.
+    showVeil: isOverride || plainColour,
     // Only meaningful once there IS an override -- resetting a generated
     // background to itself is not an action, so the button starts disabled.
     isOverride,
@@ -135,7 +141,7 @@ function backgroundSectionView(state) {
     note,
     // "Match colours to this background" needs the person's own picture, and a
     // frame to take colours from -- a video that won't play has none.
-    canMatch: isOverride && note === null,
+    canMatch: isOverride && note === null && !plainColour,
     darknessPercent: toPercent(state && state.darkness),
     // In light mode the veil over the picture is light, so the slider is how bright it gets.
     veilLabel: modeOf(state && state.mode) === 'light' ? 'Brightness' : 'Darkness',
@@ -246,7 +252,7 @@ const ASKABLE = ['colours', 'background'];
 function emptyStyleState() {
   return {
     colours: null,
-    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null, mode: null },
+    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null, mode: null, backgroundMode: null },
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
@@ -303,7 +309,7 @@ function reduceStyle(prev, msg) {
     },
     background: {
       source: style.source || 'generated', kind: style.kind === 'video' ? 'video' : 'image', setAt: style.setAt || null,
-      darkness: look.darkness, mode: look.mode, error: keep('background'),
+      darkness: look.darkness, mode: look.mode, backgroundMode: look.backgroundMode === 'colour' ? 'colour' : null, error: keep('background'),
       // The note is about ONE file: the same file re-announced (a darkness change) is not reloaded, so
       // it stands; a different file, kind or a reset is tried afresh.
       videoError: sameBackground(state.background, style) ? (state.background.videoError || null) : null,

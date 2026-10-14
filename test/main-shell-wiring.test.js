@@ -494,7 +494,7 @@ test('D1: the tree layout is a second registration under TREE_NAMES, with its ow
   assert.match(watch, /sync: treeSync/);
   assert.match(watch, /`\$\{TREE_NAMES\.key\}\.json`/);
   assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 3, 'the L1 pair stays, for older windows and the one migration read; D3 adds the presets as the third');
-  assert.strictEqual(MAIN.split('watchLayout({').length - 1, 3);
+  assert.strictEqual(MAIN.split('watchLayout({').length - 1, 4, 'the three layout records, plus the fonts record (#88), which reuses the same poll');
 });
 
 test('D3: the preset list is a third registration under PRESET_NAMES, with its own sync and its own store file', () => {

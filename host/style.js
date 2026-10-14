@@ -31,6 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
 const { sanitizeLook, effectiveMode, DEFAULT_LOOK, ACCEPTED_EXTENSIONS } = require('./look');
+const { sanitizeFamily } = require('../app/fonts-display');
 const {
   generateLook, generateLookFrom, noLookReason, noSeedsReason, seedParts, DEFAULT_TERMINAL_FG,
 } = require('./palette-gen');
@@ -50,7 +51,7 @@ const GITIGNORE_BODY =
 // The fields a person sets through the Style tab. `background` is absent on
 // purpose: only setBackground/resetBackground may change it, so a control
 // message can never point the look at a file the harness did not copy.
-const PATCHABLE = Object.freeze(['appColor', 'textColor', 'accentColor', 'secondaryColor', 'darkness']);
+const PATCHABLE = Object.freeze(['appColor', 'textColor', 'accentColor', 'secondaryColor', 'darkness', 'terminalFont', 'backgroundMode']);
 
 function lookDir(cwd) {
   return path.join(String(cwd), LOOK_DIR_NAME);
@@ -208,6 +209,12 @@ function patchValueRefusal(key, value) {
   if (value === null) return null;
   if (key === 'darkness') {
     return typeof value === 'number' && Number.isFinite(value) ? null : 'darkness must be a number';
+  }
+  if (key === 'terminalFont') {
+    return sanitizeFamily(value) ? null : 'that font name can\'t be used';
+  }
+  if (key === 'backgroundMode') {
+    return value === 'colour' ? null : 'the background mode must be colour, or null for the picture';
   }
   return typeof value === 'string' && HEX_RE.test(value) ? null : `"${String(value)}" is not a colour -- use #rrggbb`;
 }
@@ -501,7 +508,8 @@ async function setBackground({ source, cwd, fsImpl = fs } = {}) {
   const setAt = new Date().toISOString();
   let look;
   try {
-    look = writeLook(cwd, { ...state.look, background: { file, setAt } }, { fsImpl });
+    // Choosing a new picture is choosing the picture: it leaves Plain colour (#92), which would otherwise hide it.
+    look = writeLook(cwd, { ...state.look, background: { file, setAt }, backgroundMode: null }, { fsImpl });
   } catch (err) {
     tryUnlink(fsImpl, plan.dest);
     if (setAside) { try { renameWithRetry(bak, plan.dest, rename); } catch { /* best effort */ } }

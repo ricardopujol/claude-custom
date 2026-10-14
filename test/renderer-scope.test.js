@@ -106,6 +106,8 @@ const ALLOWED_GLOBALS = new Set([
   'portraitMedia',
   // app/bg-media-display.js (BACKLOG #34): one namespace object, IIFE-wrapped.
   'bgMedia',
+  // app/fonts-display.js (BACKLOG #88): one namespace object, IIFE-wrapped.
+  'fontsDisplay',
   // app/lean-display.js (BACKLOG #62, lean mode): one namespace object, IIFE-wrapped; also loaded by the strip page.
   'leanDisplay',
   // app/colour-seeds.js (BACKLOG #34): one namespace object, IIFE-wrapped.
