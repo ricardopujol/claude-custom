@@ -56,6 +56,15 @@ test('hovering another tab while one is open swaps to it at once, no second dela
   assert.deepEqual(railAfter(open('git', { leaving: true }), { type: 'enter', module: 'vault' }), open('vault'));
 });
 
+test('hovering the tab whose panel is already open keeps its hold (a late pointerover after a click redraws the rail)', () => {
+  const held = open('git', { held: true });
+  assert.deepEqual(railAfter(held, { type: 'enter', module: 'git' }), held);
+});
+
+test('hovering the open tab during the grace of an unheld panel cancels the grace and keeps the panel', () => {
+  assert.deepEqual(railAfter(open('git', { leaving: true }), { type: 'enter', module: 'git' }), open('git'));
+});
+
 test('a held panel does not close by leaving or by the close timer', () => {
   const held = open('git', { held: true });
   assert.deepEqual(railAfter(held, { type: 'leave' }), held);
