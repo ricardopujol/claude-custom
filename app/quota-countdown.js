@@ -91,7 +91,7 @@ function waitingUntil(w, now) {
 
 /**
  * `{ state: 'normal' }` or `{ state: 'usedUp', key, resetAtMs, text }` (Claude-wide: the unscoped window that resets last, since
- * Claude is back only when all are), plus `texts` (window key -> its "back" wording, scoped windows included) and `soonestMs`
+ * Claude is back only when all are; every unscoped window that is out still has its own text in `texts`), plus `texts` (window key -> its "back" wording, scoped windows included) and `soonestMs`
  * (the nearest reset among every window used up, or null) for the tick.
  */
 function countdownState(quota, now = Date.now()) {
@@ -104,12 +104,14 @@ function countdownState(quota, now = Date.now()) {
     if (at === null) continue;
     soonest = soonest === null ? at : Math.min(soonest, at);
     if (isScoped(w)) texts[w.key] = backText(w.resetsAt, now, typeof w.label === 'string' && w.label ? w.label : 'That model');
-    else if (best === null || at > best.resetAtMs) best = { key: w.key, resetAtMs: at, resetsAt: w.resetsAt };
+    else {
+      texts[w.key] = backText(w.resetsAt, now);        // every Claude-wide window that is out says when it is back
+      if (best === null || at > best.resetAtMs) best = { key: w.key, resetAtMs: at, resetsAt: w.resetsAt };
+    }
   }
   const soonestMs = soonest === null ? null : soonest - now;
   if (best === null) return { state: 'normal', texts, soonestMs };
-  const text = backText(best.resetsAt, now);
-  texts[best.key] = text;
+  const text = texts[best.key];
   return { state: 'usedUp', key: best.key, resetAtMs: best.resetAtMs, text, texts, soonestMs };
 }
 

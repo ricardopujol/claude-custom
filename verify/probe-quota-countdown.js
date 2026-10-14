@@ -83,12 +83,19 @@ app.on('ready', async () => {
       while (Date.now() < end) { if (await pred()) return; await sleep(100); }
       throw new Error(`FAILED: timed out waiting for ${what} (header: ${JSON.stringify(await text())}, visible: ${await js("quotaHeaderVisible() + \" \" + document.visibilityState + \" \" + leanOn + \" \" + document.querySelector(\"header\").getBoundingClientRect().height")})`);
     };
-    const fits = (what) => js(`(() => { const q = document.getElementById('quota'); const p = q.querySelector('.meter.back .pct');
-      const qr = q.getBoundingClientRect(), pr = p.getBoundingClientRect();
-      return { qScroll: q.scrollWidth, qClient: q.clientWidth, pScroll: p.scrollWidth, pClient: p.clientWidth, pRight: pr.right, qRight: qr.right, win: innerWidth }; })()`)
+    // Every countdown text is whole (no clipping, ellipsis or overflow) and inside the quota area, which is inside the window.
+    const fits = (what, { ellipsisOk = false } = {}) => js(`(() => { const q = document.getElementById('quota'); const qr = q.getBoundingClientRect();
+      const ps = [...q.querySelectorAll('.meter.back .pct')];
+      return { qScroll: q.scrollWidth, qClient: q.clientWidth, qRight: qr.right, win: innerWidth, n: ps.length,
+        pushedOff: [...document.querySelectorAll('header *')].filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().right > innerWidth + 1).length,
+        texts: ps.map(p => ({ scroll: p.scrollWidth, client: p.clientWidth, right: p.getBoundingClientRect().right })) }; })()`)
       .then((f) => {
         console.log('fit', what, JSON.stringify(f));
-        check(f.qScroll <= f.qClient + 1 && f.pScroll <= f.pClient + 1 && f.pRight <= f.qRight + 1 && f.qRight <= f.win, `${what} not clipped at ${WIDTH}px`);
+        // Narrow, two countdowns share a capped width and may END IN AN ELLIPSIS (the tooltip has the whole text); what may never
+        // happen is a text running outside its area or the header's buttons being pushed off the window.
+        const whole = f.qScroll <= f.qClient + 1 && f.texts.every(p => p.scroll <= p.client + 1);
+        check(f.n >= 1 && f.pushedOff === 0 && (ellipsisOk || whole) && f.texts.every(p => p.right <= f.qRight + 1) && f.qRight <= f.win, `${what} not clipped at ${WIDTH}px${whole ? '' : ' (ellipsis)'}`);
+        return f;
       });
 
     // 1. used up, 2h 14m to go
@@ -159,6 +166,18 @@ app.on('ready', async () => {
     await js(`renderQuota(); true;`);
     await sleep(200);
     check(!/Claude is back/.test(await text()), 'and it is not shown a second time');
+
+    // 1b2. both Claude-wide windows used up: each meter shows its own "Claude back" text
+    await render({ ok: true, state: 'fresh', windows: [
+      { key: 'session', label: '5h', percent: 100, severity: 'critical', resetsAt: inMs(134 * 60000 - 20000), isActive: true, lockedReason: null },
+      { key: 'weekly_all', label: 'week', percent: 100, severity: 'critical', resetsAt: inMs(3 * 86400000), isActive: false, lockedReason: null },
+    ] });
+    await sleep(350);
+    t = await text();
+    check(/Claude back in 2h 14m/.test(t) && /Claude back [A-Z][a-z]{2} \d\d:\d\d/.test(t), `both windows show their own countdown (${JSON.stringify(t)})`);
+    check(await js(`document.querySelectorAll('#quota .meter.back').length`) === 2, 'two meters carry a countdown');
+    await fits('two countdowns', { ellipsisOk: WIDTH <= 900 });
+    await shot('both');
 
     console.log('\nwrote', path.resolve(OUT_DIR));
   } catch (err) {

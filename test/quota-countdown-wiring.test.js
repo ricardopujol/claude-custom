@@ -63,3 +63,10 @@ test('the host re-sends a used-up payload every poll, so its readAt never ages o
   assert.match(body, /w\.percent >= 100/);
   assert.match(body, /w\.lockedReason/);
 });
+
+test('Ricardo: every Claude-wide window that is out gets its own countdown; the binding one is marked, and narrow widths keep only it', () => {
+  const body = fnBody(renderer, 'renderQuota');
+  assert.match(body, /cs\.texts\[m\.key\] \? ' back' : ''/);
+  assert.match(body, /m\.key === cs\.key \? ' bind' : ''/);
+  assert.match(html, /@media \(max-width: 860px\) \{ #quota\.has-back \.meter\.back:not\(\.bind\) \{ display: none; \} \}/);
+});

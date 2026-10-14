@@ -5922,7 +5922,7 @@ function renderQuota(quota) {
   }
 
   const meterHtml = (m, text) =>
-    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${cs.texts[m.key] ? ' back' : ''}" title="${escapeHtml(m.title)}">` +
+    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${cs.texts[m.key] ? ' back' : ''}${cs.texts[m.key] && m.key === cs.key ? ' bind' : ''}" title="${escapeHtml(m.title)}">` +
       `<span class="lbl">${escapeHtml(m.label)}</span>` +
       `<span class="track"><span class="fill" style="width:${m.fill}%"></span></span>` +
       // #42: "41% · 18:00" in the header; the countdown and the rest are in the tooltip. #90: used up -> "Claude back in 2h 14m".

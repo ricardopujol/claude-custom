@@ -99,10 +99,16 @@ test('over 100% counts too; 99.9% does not', () => {
   assert.strictEqual(countdownState(fresh([win({ percent: 99.9 })]), NOW).state, 'normal');
 });
 
-test('two unscoped windows used up: the one that resets last is the binding one', () => {
+test('Ricardo: two Claude-wide windows used up each show their own "Claude back" text; the one that resets last is the binding state', () => {
   const s = countdownState(fresh([win(), win({ key: 'weekly', label: 'week', resetsAt: iso(NOW + 3 * DAY) })]), NOW);
+  assert.strictEqual(s.state, 'usedUp');
   assert.strictEqual(s.key, 'weekly');
-  assert.deepStrictEqual(Object.keys(s.texts), ['weekly']);
+  assert.deepStrictEqual(Object.keys(s.texts).sort(), ['session', 'weekly']);
+  assert.strictEqual(s.texts.session, 'Claude back in 2h 14m');
+  assert.match(s.texts.weekly, /^Claude back [A-Z][a-z]{2} \d\d:\d\d$/);
+  // a window that has already reset shows no text, the other keeps its own
+  const half = countdownState(fresh([win({ percent: 3 }), win({ key: 'weekly', resetsAt: iso(NOW + 3 * DAY) })]), NOW);
+  assert.deepStrictEqual(Object.keys(half.texts), ['weekly']);
 });
 
 test('Dexter 1: a model-scoped window at 100% is not Claude being out', () => {
@@ -411,4 +417,19 @@ test('loaded as a plain <script> it defines its names on the window and leaks no
   }
   // and it works against the clock helpers the display script exported
   assert.match(ctx.quotaBackText(iso(NOW + 3 * DAY), NOW), /^Claude back [A-Z][a-z]{2} \d\d:\d\d$/);
+});
+
+test('property: every unscoped window that is out has its own text, no other does, and the binding one resets last', () => {
+  fc.assert(fc.property(
+    fc.array(fc.record({ pct: fc.constantFrom(0, 50, 99.9, 100, 120, null), min: fc.integer({ min: 1, max: 20000 }), locked: fc.boolean() }), { minLength: 2, maxLength: 2 }),
+    (rows) => {
+      const keys = ['session', 'weekly'];
+      const windows = rows.map((r, i) => win({ key: keys[i], percent: r.pct, resetsAt: iso(NOW + r.min * MIN), lockedReason: r.locked ? 'x' : null }));
+      const out = windows.filter((w, i) => rows[i].locked || (rows[i].pct !== null && rows[i].pct >= 100));
+      const s = countdownState(fresh(windows), NOW);
+      if (JSON.stringify(Object.keys(s.texts).sort()) !== JSON.stringify(out.map(w => w.key).sort())) return false;
+      if (out.length === 0) return s.state === 'normal';
+      const last = out.reduce((a, b) => (Date.parse(b.resetsAt) > Date.parse(a.resetsAt) ? b : a));
+      return s.state === 'usedUp' && s.key === last.key && s.text === s.texts[last.key];
+    }), { numRuns: 300 });
 });
