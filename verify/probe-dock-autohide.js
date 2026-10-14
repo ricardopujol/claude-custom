@@ -11,7 +11,7 @@
  *   1  a layout stored before the rail existed (no `rail`) draws as it did: no rail, the same groups, a Pinned button on each
  *   2  the Pinned button unpins a panel: its tab is on a rail strip at the right edge, the terminal is narrower by that strip
  *      only, the boxes tile, terminal === fit === pty
- *   3  hovering the tab: nothing at once (a pass opens nothing), the panel is up within ~200 ms + the timer's slack, over the
+ *   3  hovering the tab: nothing at once (a pass opens nothing), the panel is up within RAIL_OPEN_MS (100 ms) + the timer's slack, over the
  *      terminal, inside the window, with a Pin button; the terminal's width and the pty did not change and nothing was saved
  *   4  leaving: the panel stays through the grace, then goes; hovering back inside the grace keeps it
  *   5  Pin on the open panel: the tab leaves the rail, the panel is a real one beside the terminal, the terminal is narrower
@@ -39,6 +39,10 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
+// The rail's two hover timers, read from the page so this probe follows the constants instead of repeating them.
+const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'app', 'renderer.js'), 'utf8');
+const RAIL_OPEN_MS = Number(/const RAIL_OPEN_MS = (\d+);/.exec(RENDERER_SRC)[1]);
+const RAIL_CLOSE_MS = Number(/const RAIL_CLOSE_MS = (\d+);/.exec(RENDERER_SRC)[1]);
 const HARNESS_DIR = path.join(ROOT, '.harness');
 const STATE_DIR = path.join(HARNESS_DIR, 'state');
 const V1_FILE = path.join(STATE_DIR, 'layout-global.json');
@@ -361,12 +365,12 @@ async function main() {
   const tab0 = railTab(sf, 'git');
   const h0 = Date.now();
   await moveTo(app, tab0);
-  await sleep(60);
+  await sleep(Math.round(RAIL_OPEN_MS * 0.4));
   const early = await viewState(app);
-  check('3: a REAL pointer on the tab starts a hover wait, and nothing is open 60 ms in', early.popover === null && early.railState.pending === 'git', JSON.stringify(early.railState));
+  check('3: a REAL pointer on the tab starts a hover wait, and nothing is open ' + Math.round(RAIL_OPEN_MS * 0.4) + ' ms in', early.popover === null && early.railState.pending === 'git', JSON.stringify(early.railState));
   const open = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   const took = Date.now() - h0;
-  check('3: ...then the panel is open, within about 200 ms plus the timer and a frame', !!open && took >= 190 && took <= 800, `${took} ms`);
+  check('3: ...then the panel is open, within about RAIL_OPEN_MS plus the timer and a frame', !!open && took >= RAIL_OPEN_MS - 10 && took <= RAIL_OPEN_MS + 500, `${took} ms`);
   if (open) {
     await sleep(250);
     const so = await viewState(app);
@@ -387,9 +391,9 @@ async function main() {
 
   // 4 ---------------------------------------------------------------------------------
   await hoverTerm(app);
-  await sleep(200);
+  await sleep(Math.round(RAIL_CLOSE_MS * 0.4));
   const grace = await viewState(app);
-  check('4: leaving: the panel is still there 200 ms later (the grace)', !!grace.popover && grace.railState.leaving === true, JSON.stringify(grace.railState));
+  check('4: leaving: the panel is still there ' + Math.round(RAIL_CLOSE_MS * 0.4) + ' ms later (inside the grace)', !!grace.popover && grace.railState.leaving === true, JSON.stringify(grace.railState));
   await hoverPanel(app);
   await sleep(500);
   const back = await viewState(app);
