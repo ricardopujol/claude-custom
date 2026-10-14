@@ -59,8 +59,8 @@ function renderChunk(rel, c) {
   return { last, body: `### ${rel}:${c.start}-${last}\n${out.join('\n')}` };
 }
 
-/** The prompt for a question and its top chunks (best first), and the ranges it really contains. */
-function buildPrompt(question, top) {
+/** The excerpt text for the top chunks (best first), within the budget, and the ranges it really contains. */
+function buildExcerpts(top) {
   const parts = [];
   const sent = [];
   let used = 0;
@@ -71,7 +71,13 @@ function buildPrompt(question, top) {
     sent.push({ file: rel, start: chunk.start, end: r.last });
     used += r.body.length + 2;
   }
-  return { prompt: parts.join('\n\n') + `\n\nQuestion: ${question}\nAnswer with file:line citations.`, sent };
+  return { body: parts.join('\n\n'), sent };
+}
+
+/** The prompt for a question and its top chunks (best first), and the ranges it really contains. */
+function buildPrompt(question, top) {
+  const { body, sent } = buildExcerpts(top);
+  return { prompt: body + `\n\nQuestion: ${question}\nAnswer with file:line citations.`, sent };
 }
 
 function createAskRepo({
@@ -108,11 +114,11 @@ function createAskRepo({
     return result;
   }
 
-  async function ask(worktree, question) {
-    const q = typeof question === 'string' ? question.trim().slice(0, MAX_QUESTION_CHARS) : '';
-    if (!q) return { ok: false, reason: 'empty-question' };
-    const started = now();
-
+  /**
+   * Is there an index to answer from? { ok: true, data, stale, refreshError? } or { ok: false, failure } where `failure` is the
+   * reply ask() gives: 'index-failed' (named, retried only after a backoff) or 'index-building' (with its progress).
+   */
+  async function ready(worktree) {
     let data = await index.load(worktree);
     const progress = () => index.progress(worktree);
     if (!data || progress().partial) {
@@ -121,14 +127,14 @@ function createAskRepo({
         // A build that already failed (even long after the watch below ended) is named, and only retried after a backoff.
         const p = progress();
         if (p.error && typeof p.failedAt === 'number' && now() - p.failedAt < retryAfterMs) {
-          return { ok: false, reason: 'index-failed', error: p.error, partial };
+          return { ok: false, failure: { ok: false, reason: 'index-failed', error: p.error, partial } };
         }
         const w = await startAndWatch(worktree, buildProbeMs);
-        if (w.outcome === 'failed') return { ok: false, reason: 'index-failed', error: w.error, partial };
+        if (w.outcome === 'failed') return { ok: false, failure: { ok: false, reason: 'index-failed', error: w.error, partial } };
         if (w.outcome === 'done') data = index.get(worktree) || null;
         if (data && progress().partial) data = null; // still partial: not answerable
       }
-      if (!data || progress().partial) return { ok: false, reason: 'index-building', progress: progress(), partial };
+      if (!data || progress().partial) return { ok: false, failure: { ok: false, reason: 'index-building', progress: progress(), partial } };
     }
 
     // The newest state of the files, unless that takes too long or fails.
@@ -141,7 +147,11 @@ function createAskRepo({
       stale = true;
     }
     data = index.get(worktree) || data;
+    return { ok: true, data, stale, ...(refreshError ? { refreshError } : {}) };
+  }
 
+  /** The top chunks for `q` over `data`: keyword + vector when the embedder answers. Also the model status, asked once. */
+  async function search(data, q, want) {
     const status = await ollama.check();
     const embedUp = status.ok ? status.embed !== false : status.reason === 'model-missing' && status.embed === true;
     // Vectors of one model are meaningless against another's (PR #136 D7): a mismatch is keywords only, said so.
@@ -153,8 +163,21 @@ function createAskRepo({
       if (e.ok) queryVec = e.vectors[0];
     }
     const { entries, refs } = prepare(data);
-    const top = hybridRank({ question: q, queryVec, entries, k }).map(id => refs[id]);
+    const top = hybridRank({ question: q, queryVec, entries, k: want }).map(id => refs[id]);
     const keywordOnly = queryVec === null || entries.some(e => e.vec === null);
+    return { status, top, keywordOnly };
+  }
+
+  async function ask(worktree, question) {
+    const q = typeof question === 'string' ? question.trim().slice(0, MAX_QUESTION_CHARS) : '';
+    if (!q) return { ok: false, reason: 'empty-question' };
+    const started = now();
+
+    const rdy = await ready(worktree);
+    if (!rdy.ok) return rdy.failure;
+    const { data, stale, refreshError } = rdy;
+
+    const { status, top, keywordOnly } = await search(data, q, k);
     const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}) };
 
     if (!top.length) return { ok: false, reason: 'no-matches', ...extra };
@@ -163,7 +186,7 @@ function createAskRepo({
 
     const g = await ollama.generate({ system: SYSTEM, prompt });
     if (!g.ok) {
-      return { ok: false, reason: g.reason, ...(g.model ? { model: g.model } : {}), ...(g.status ? { status: g.status } : {}), hits: toHits(sent), ...extra };
+      return { ok: false, reason: g.reason, ...(g.model ? { model: g.model } : {}), ...(g.status ? { status: g.status } : {}), ...(g.detail ? { detail: g.detail } : {}), hits: toHits(sent), ...extra };
     }
     // Citations are checked against what the model was SHOWN: only files and line ranges that were in the prompt.
     const ranges = new Map();
@@ -180,6 +203,28 @@ function createAskRepo({
     };
   }
 
+  /**
+   * The excerpts to explain a SELECTION or to preview a question's places (BACKLOG #33): the best chunks for `query`, the selection's own
+   * lines left out (`exclude` = { file, start, end }), as the numbered text a prompt carries.
+   *   -> { ok: true, body, sent, lineCounts, keywordOnly, stale, refreshError?, ollamaStatus }   (no match is ok, with an empty body)
+   *    | the same failure ask() gives while the index isn't ready ('index-building' with progress, 'index-failed')
+   * `wantK` is how many chunks to offer (default k). Pure retrieval: no model is asked to write anything.
+   */
+  async function excerptsFor(worktree, query, { exclude, k: wantK } = {}) {
+    const q = typeof query === 'string' ? query.trim().slice(0, MAX_QUESTION_CHARS) : '';
+    if (!q) return { ok: false, reason: 'empty-question' };
+    const rdy = await ready(worktree);
+    if (!rdy.ok) return rdy.failure;
+    const { data, stale, refreshError } = rdy;
+    const want = Number.isInteger(wantK) && wantK > 0 ? wantK : k;
+    const { status, top, keywordOnly } = await search(data, q, want + 4);
+    const overlaps = (r) => !!exclude && r.rel === exclude.file && r.chunk.start <= exclude.end && r.chunk.end >= exclude.start;
+    const { body, sent } = buildExcerpts(top.filter(r => !overlaps(r)).slice(0, want));
+    const lineCounts = new Map();
+    for (const s of sent) lineCounts.set(s.file, data.files.find(f => f.rel === s.file).lines);
+    return { ok: true, body, sent, lineCounts, keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ollamaStatus: status };
+  }
+
   async function status(worktree) {
     const data = await index.load(worktree);
     const progress = index.progress(worktree);
@@ -193,7 +238,7 @@ function createAskRepo({
     };
   }
 
-  return { ask, status };
+  return { ask, status, excerptsFor };
 }
 
-module.exports = { createAskRepo, buildPrompt, SYSTEM, DEFAULT_K, PROMPT_MAX_CHARS };
+module.exports = { createAskRepo, buildPrompt, buildExcerpts, SYSTEM, DEFAULT_K, PROMPT_MAX_CHARS };

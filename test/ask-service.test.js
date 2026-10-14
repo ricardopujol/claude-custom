@@ -90,9 +90,9 @@ test('status on a worktree with no index starts building it, once, without waiti
   const a = await svc2.handle({ type: 'ask', op: 'status', seq: 1, warm: true });
   assert.strictEqual(a.ok, true);
   assert.deepStrictEqual(a.ollama, { ok: false, reason: 'ollama-down' });
-  await svc2.handle({ type: 'ask', op: 'status', seq: 2, warm: true });
-  assert.strictEqual(started, 2 - 1 + 1 - 1 + 1 - 1 + 0 || started, started);
-  assert.ok(started >= 1);
+  assert.strictEqual(started, 1);
+  await svc2.handle({ type: 'ask', op: 'status', seq: 2 });
+  assert.strictEqual(started, 1, 'only warm starts a build');
   void svc;
 });
 
