@@ -365,6 +365,11 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
     'summary-slot-kills.test.js',  // one node -e child whose pid is then free
     'proc-start.test.js',          // one real powershell holder (pre-#63)
     'window-count.test.js',        // the real proc-start exec (pre-#63)
+    // BACKLOG #94: quota-share and quota-cli joined `mutate`. Each of these starts a plain node child (tens of ms): the CLI itself, or
+    // `node -e ""` to get a pid that is really dead for the default pid check.
+    'quota-share.test.js',
+    'quota-cli.test.js',
+    'quota-cli-review.test.js',
   ]);
 
   const cmd = conf.commandRunner.command;
