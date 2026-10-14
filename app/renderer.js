@@ -3785,6 +3785,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           label: (root.querySelector('.ask-label') || {}).textContent || null,
           top: root.querySelector('.ask-top').textContent,
           topHtml: root.querySelector('.ask-top').innerHTML.slice(0, 3000),
+          active: (() => { const a = document.activeElement; return a && root.contains(a) ? { id: a.id || null, tag: a.tagName, value: a.value === undefined ? null : a.value, start: a.selectionStart === undefined ? null : a.selectionStart } : null; })(),
+          live: (root.querySelector('.ask-live') || {}).textContent || '',
           portraits: st.host && st.host.portraits ? { own: st.host.portraits.own && { tier: st.host.portraits.own.tier, agent: st.host.portraits.own.agent }, suggestions: st.host.portraits.suggestions.map(s => s.agent) } : null,
           status: (root.querySelector('.ask-status') || {}).textContent || null,
           cards: [...root.querySelectorAll('.ask-card')].map(c => ({ where: c.querySelector('.ask-card-where').textContent, file: c.dataset.file, line: c.dataset.line, why: (c.querySelector('.ask-card-why') || {}).textContent || '', code: (c.querySelector('.ask-card-code') || {}).textContent || '' })),
@@ -3819,6 +3821,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
         }
         else if (a.op === 'refresh') { askPanel.probe('refresh', {}); }
+        else if (a.op === 'typeIn') { const n = root.querySelector(String(a.sel)); if (!n) return JSON.stringify({ ok: false, error: 'no ' + a.sel }); n.focus(); n.value = String(a.text); n.setSelectionRange(Number(a.caret), Number(a.caret)); n.dispatchEvent(new Event('input', { bubbles: true })); }
+        else if (a.op === 'drillWords') { const n = root.querySelector('#ask-drill-term'); if (!n) return JSON.stringify({ ok: false, error: 'no drill box' }); n.value = String(a.text); n.closest('form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true })); }
         else if (a.op === 'portraitSet') { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent: ASK_AGENT, state: 'sleeping', path: String(a.path) })); }
         else if (a.op === 'settings') {
           // open the settings, set what was named, press Save (as a person would)

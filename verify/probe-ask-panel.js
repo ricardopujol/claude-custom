@@ -238,6 +238,15 @@ async function main() {
   check('1: the reader\'s What\'s this? button is there', s1.readerAsk.hidden === false);
   await shot('ask-1-naming.png');
 
+  // 1b: typing in the name box across a status poll keeps the focus, the text and the caret (PR #169 Miguel B1)
+  await doIt({ op: 'typeIn', sel: '#ask-name', text: 'Ada Lovelace', caret: 3 });
+  await doIt({ op: 'refresh' });
+  await doIt({ op: 'refresh' });
+  await sleep(800);
+  const typed = await st();
+  check('1b: the name box still has the focus, the text and the caret after status polls repainted the panel', !!typed.active && typed.active.id === 'ask-name' && typed.active.value === 'Ada Lovelace' && typed.active.start === 3, JSON.stringify(typed.active));
+  await doIt({ op: 'typeIn', sel: '#ask-name', text: 'Professor Byte', caret: 14 });
+
   // 2 -----------------------------------------------------------------------------------------------------------------------
   await doIt({ op: 'click', act: 'chip', text: 'Ada' });
   await doIt({ op: 'click', act: 'face', text: '' });
@@ -277,6 +286,8 @@ async function main() {
   check('3: the words, with the citation as a link to a place we know', /released in/.test(a3.text) && a3.buttons.some(b => b.act === 'open' && /lib\/lock\.js:6-9/.test(b.text)), JSON.stringify(a3.buttons.filter(b => b.act === 'open').map(b => b.text)));
   check('3: the cards come from the checked citations, with their lines and why', a3.cards.some(c => c.file === 'lib/lock.js' && c.line === '6' && /releaseLock/.test(c.code)) && a3.cards.some(c => /comment marks/.test(c.why)), JSON.stringify(a3.cards.map(c => [c.where, c.why])));
   check('3: it says who answered, "Ada · qwen3.5:4b · local"', /Ada · qwen3\.5:4b · local/.test(a3.text));
+  check('3: a fresh index gives no "a little behind" note (one retrieval per ask)', !/a little behind/.test(a3.text), a3.text.slice(0, 300));
+  check('3: the live region says the answer is ready (one persistent element)', /Answer ready/.test(a3.live), a3.live);
   check('3: a typed question has Ask Claude instead, and no Simpler / Deeper', a3.buttons.some(b => b.act === 'ask-claude') && !a3.buttons.some(b => b.act === 'reask'));
   await shot('ask-3-answer.png');
   const askedFake = fake.requests.filter(r => r.path === '/api/generate').length;
@@ -299,6 +310,7 @@ async function main() {
   await doIt({ op: 'settings', model: 'haiku', level: 'new', aboutMe: 'Learning Python, background in C# audio.' });
   const s5 = await waitFor(async () => { const s = await st(); return s.profile.model === 'haiku' ? s : null; }, 5000, 100);
   check('5: choosing Haiku in the settings changes the label: Claude, on your plan', !!s5 && s5.label === 'Ada · Haiku · Claude, uses your plan', s5 && s5.label);
+  check('5: a Claude model says, under its name, that the question and the code go to Anthropic on the plan', !!s5 && /go to Anthropic \(Claude\), on your plan/.test(s5.top), s5 && s5.top);
   check('5: the profile kept the level and About me', !!s5 && s5.profile.level === 'new');
   await doIt({ op: 'settings', model: 'local', level: 'comfortable' });
   const s5b = await waitFor(async () => { const s = await st(); return s.profile.model === 'local' ? s : null; }, 5000, 100);
@@ -326,6 +338,8 @@ async function main() {
   check('6: Simpler asks again once; the new answer is its own step', !!sim);
   const simReq = fake.requests.filter(r => r.path === '/api/generate').at(-1).body;
   check('6: and the model was told to make it simpler', /simpler/i.test(simReq.system));
+  const viaForm = await waitFor(async () => { const s = await st(); return /ask-drill-term/.test(s.html) ? s : null; }, 5000, 150);
+  check('6: an explanation offers the keyboard way into the drill-down (type the words)', !!viaForm);
   await doIt({ op: 'select', chars: 11 });
   const hl = await waitFor(async () => { const s = await st(); return s.highlight && s.highlight.hidden === false ? s : null; }, 5000, 150);
   check('6: highlighting words of the answer offers "What\'s this?" for them', !!hl, JSON.stringify(hl && hl.highlight));
