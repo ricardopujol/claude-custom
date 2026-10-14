@@ -399,9 +399,9 @@ test('PR #159 Dexter 6: an operation on the placement is built on the layout AFT
 
 // --- #85: the dock rail's hover, the Pin button ----------------------------------------------------------------
 
-test('#85: the rail\'s state is fed only through railEvent, which owns the two timers (200 ms open, 400 ms grace)', () => {
-  assert.match(JS, /const RAIL_OPEN_MS = 200;/);
-  assert.match(JS, /const RAIL_CLOSE_MS = 400;/);
+test('#85: the rail\'s state is fed only through railEvent, which owns the two timers (100 ms open, 100 ms grace)', () => {
+  assert.match(JS, /const RAIL_OPEN_MS = 100;/);
+  assert.match(JS, /const RAIL_CLOSE_MS = 100;/);
   const body = fnBody('railEvent');
   assert.match(body, /railSt = window\.dockTreeView\.railAfter\(railSt, ev\);/);
   assert.match(body, /peek = railSt\.module === null \? null : \{ module: railSt\.module \};/, 'peek is derived, never set elsewhere');

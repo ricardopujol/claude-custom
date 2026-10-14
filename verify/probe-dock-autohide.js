@@ -11,7 +11,7 @@
  *   1  a layout stored before the rail existed (no `rail`) draws as it did: no rail, the same groups, a Pinned button on each
  *   2  the Pinned button unpins a panel: its tab is on a rail strip at the right edge, the terminal is narrower by that strip
  *      only, the boxes tile, terminal === fit === pty
- *   3  hovering the tab: nothing at once (a pass opens nothing), the panel is up within ~200 ms + the timer's slack, over the
+ *   3  hovering the tab: nothing at once (a pass opens nothing), the panel is up within RAIL_OPEN_MS + the timer's slack, over the
  *      terminal, inside the window, with a Pin button; the terminal's width and the pty did not change and nothing was saved
  *   4  leaving: the panel stays through the grace, then goes; hovering back inside the grace keeps it
  *   5  Pin on the open panel: the tab leaves the rail, the panel is a real one beside the terminal, the terminal is narrower
@@ -39,6 +39,15 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
+// The rail's two hover timers, read from the page so this probe follows the constants instead of repeating them.
+const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'app', 'renderer.js'), 'utf8');
+const railConst = (name) => {
+  const m = new RegExp('const ' + name + ' = (\\d+);').exec(RENDERER_SRC);
+  if (!m) throw new Error('probe-dock-autohide: app/renderer.js has no "const ' + name + ' = <number>;" line, so the hover timers cannot be read');
+  return Number(m[1]);
+};
+const RAIL_OPEN_MS = railConst('RAIL_OPEN_MS');
+const RAIL_CLOSE_MS = railConst('RAIL_CLOSE_MS');
 const HARNESS_DIR = path.join(ROOT, '.harness');
 const STATE_DIR = path.join(HARNESS_DIR, 'state');
 const V1_FILE = path.join(STATE_DIR, 'layout-global.json');
@@ -356,17 +365,29 @@ async function main() {
   check('2: a float is up, over where the rail panel will open', sf.floats.length === 1, JSON.stringify(sf.floats.map(f => [f.id, f.rect.left, f.rect.right])));
 
   // 3 ---------------------------------------------------------------------------------
+  // A pointer move and a state read are each a round trip, and on a loaded machine the two can outlast the hover timer. So the
+  // "nothing is open yet" read only counts when it came back inside RAIL_OPEN_MS of the move; a late read retries from the start.
   const pushes0 = sf.pushes;
   const sentBefore = JSON.stringify(sf.sent);
   const tab0 = railTab(sf, 'git');
-  const h0 = Date.now();
-  await moveTo(app, tab0);
-  await sleep(60);
-  const early = await viewState(app);
-  check('3: a REAL pointer on the tab starts a hover wait, and nothing is open 60 ms in', early.popover === null && early.railState.pending === 'git', JSON.stringify(early.railState));
+  let h0, early, earlyMs;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) {
+      await hoverTerm(app);
+      await waitFor(async () => (await viewState(app)).popover === null, 3000, 20);
+    }
+    h0 = Date.now();
+    await moveTo(app, tab0);
+    // the synthetic move reaches the page a beat after the command returns: poll until the page has seen it
+    early = await waitFor(async () => { const v = await viewState(app); return v.railState.pending === 'git' || v.popover ? v : null; }, 1000, 3) || await viewState(app);
+    earlyMs = Date.now() - h0;
+    if (earlyMs < RAIL_OPEN_MS) break;
+  }
+  check('3: a REAL pointer on the tab starts a hover wait (pending git) and nothing is open yet, read ' + earlyMs + ' ms after the move (inside the ' + RAIL_OPEN_MS + ' ms wait)',
+    earlyMs < RAIL_OPEN_MS && early.popover === null && early.railState.pending === 'git', JSON.stringify([earlyMs, early.railState]));
   const open = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   const took = Date.now() - h0;
-  check('3: ...then the panel is open, within about 200 ms plus the timer and a frame', !!open && took >= 190 && took <= 800, `${took} ms`);
+  check('3: ...then the panel is open, within about RAIL_OPEN_MS plus the timer and a frame', !!open && took >= RAIL_OPEN_MS - 10 && took <= RAIL_OPEN_MS + 500, `${took} ms`);
   if (open) {
     await sleep(250);
     const so = await viewState(app);
@@ -386,14 +407,33 @@ async function main() {
   }
 
   // 4 ---------------------------------------------------------------------------------
-  await hoverTerm(app);
-  await sleep(200);
-  const grace = await viewState(app);
-  check('4: leaving: the panel is still there 200 ms later (the grace)', !!grace.popover && grace.railState.leaving === true, JSON.stringify(grace.railState));
-  await hoverPanel(app);
-  await sleep(500);
+  // Leave and look (or leave and come back) in as few round trips as possible, with the rects fetched beforehand, and count the
+  // sample only if it finished inside RAIL_CLOSE_MS of the leave; a slow one re-opens the panel and tries again.
+  const withinGrace = async (fn) => {
+    let out;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let v = await viewState(app);
+      if (!v.popover) {
+        await hoverTab(app, 'git');
+        v = await waitFor(async () => { const x = await viewState(app); return x.popover ? x : null; }, 3000, 20);
+      }
+      const termRect = v.termwrap, panelRect = v.popover.rect;
+      const t0 = Date.now();
+      await moveTo(app, termRect);
+      out = await fn(panelRect);
+      if (out.v === undefined) out.v = null;
+      out.ms = Date.now() - t0;
+      if (out.ms < RAIL_CLOSE_MS) break;
+    }
+    return out;
+  };
+  const g1 = await withinGrace(async () => ({ v: await waitFor(async () => { const x = await viewState(app); return x.railState.leaving ? x : null; }, 1000, 3) || await viewState(app) }));
+  check('4: leaving: the panel is still there inside the grace (read ' + g1.ms + ' ms after the leave, grace ' + RAIL_CLOSE_MS + ' ms)',
+    g1.ms < RAIL_CLOSE_MS && !!g1.v.popover && g1.v.railState.leaving === true, JSON.stringify([g1.ms, g1.v.railState]));
+  const g2 = await withinGrace(async (panelRect) => { await moveTo(app, panelRect); return {}; });
+  await sleep(RAIL_CLOSE_MS * 4);
   const back = await viewState(app);
-  check('4: ...and coming back into the panel inside the grace keeps it open past the grace', !!back.popover && back.railState.leaving === false, JSON.stringify(back.railState));
+  check('4: ...and coming back into the panel inside the grace (' + g2.ms + ' ms) keeps it open past the grace', g2.ms < RAIL_CLOSE_MS && !!back.popover && back.railState.leaving === false, JSON.stringify([g2.ms, back.railState]));
   await hoverTerm(app);
   const sliding = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.closing ? v : null; }, 3000, 8);
   check('4: ...then leaving for good slides it out first (the popover is marked closing and still holds its panel)', !!sliding && sliding.popover.panels.join() === 'git', JSON.stringify(sliding && sliding.popover.panels));
