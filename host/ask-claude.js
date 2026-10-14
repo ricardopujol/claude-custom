@@ -49,12 +49,14 @@ const SIGNED_OUT = /\/login|not logged in|invalid api key/i;
 const usable = (n, fallback) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : fallback);
 
 /** The environment the child gets: only the allow-listed names of the caller's (any case), and only string values. */
-function childEnv(env) {
+function childEnv(env, { anchor = process.cwd() } = {}) {
   const out = {};
   for (const [k, v] of Object.entries(env || {})) {
     const up = String(k).toUpperCase();
     if (typeof v !== 'string' || !(ENV_ALLOW.includes(up) || up.startsWith('LC_'))) continue;
-    out[k] = v;
+    // The child runs in an empty folder of its own, so a RELATIVE config dir would be looked up there and find no login: it means a folder under
+    // the host's cwd, as it does for the tab's own claude (PR #169 Dexter N5).
+    out[k] = up === 'CLAUDE_CONFIG_DIR' && v !== '' && !path.isAbsolute(v) ? path.resolve(anchor, v) : v;
   }
   return out;
 }
@@ -69,7 +71,7 @@ const missingOrFailed = (e) => (e && e.code === 'ENOENT' ? { ok: false, reason: 
 const short = (s) => String(s).replace(/\s+/g, ' ').trim().slice(0, DETAIL_CHARS);
 
 function createClaudeAnswerer({
-  spawn = childProcess.spawn, claudeBin = 'claude', env = process.env, cwd, timeoutMs, killFn = killChildTree, maxOutputBytes,
+  spawn = childProcess.spawn, claudeBin = 'claude', env = process.env, cwd, timeoutMs, killFn = killChildTree, maxOutputBytes, anchor,
 } = {}) {
   const deadline = usable(timeoutMs, TIMEOUT_MS);
   const cap = usable(maxOutputBytes, MAX_OUTPUT_BYTES);
@@ -93,7 +95,7 @@ function createClaudeAnswerer({
         resolve(r);
       };
       try {
-        child = spawn(claudeBin, args, { cwd: cwd || neutralCwd(), env: childEnv(env), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        child = spawn(claudeBin, args, { cwd: cwd || neutralCwd(), env: childEnv(env, { anchor }), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (err) {
         settle(missingOrFailed(err));
         return;

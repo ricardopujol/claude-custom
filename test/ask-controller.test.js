@@ -318,6 +318,44 @@ test('PR #169 Miguel G4 / G6: "Ollama is starting" does not stay on later notes;
   assert.strictEqual(r.c.state().history[0].name, 'Professor Byte', 'renaming does not relabel an earlier answer');
 });
 
+test('PR #169 Miguel Y-R2-1: what is typed in the drill-down box lives in the controller, and is cleared when it is used', async () => {
+  const on = { ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: true })) };
+  const r = rig({ host: on });
+  r.c.show(); await r.answerStatus(on);
+  const d1 = r.c.explain({ file: 'a.js', start: 1, end: 2 });
+  await tick();
+  r.last('explain').resolve({ ok: true, text: 'It sends an HTTP request.', places: [], model: 'local' });
+  await d1;
+  r.c.setDrillText('HTTP req');
+  assert.strictEqual(r.c.state().ui.drillText, 'HTTP req');
+  r.c.show(); await r.answerStatus(on);                  // a poll repaints: the text is still held
+  assert.strictEqual(r.c.state().ui.drillText, 'HTTP req');
+  r.c.drill('HTTP request');
+  assert.strictEqual(r.c.state().ui.drillText, '', 'used');
+  r.c.setDrillText(42);
+  assert.strictEqual(r.c.state().ui.drillText, '', 'only text');
+});
+
+test('PR #169 Miguel Y-R2-2: an explain waiting for the first status is not left hanging when that request is superseded: it gets the newest good status', async () => {
+  const on = { ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: true })) };
+  const r = rig({ profile: JSON.stringify({ ...JSON.parse(NAMED), model: 'haiku' }), host: on });
+  const done = r.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
+  const first = r.all('status')[0];
+  r.c.show();                                            // a second status request supersedes the one the explain waits on
+  const second = r.all('status')[1];
+  first.resolve({ ...on, index: { state: 'ready', files: 1 } });
+  await tick();
+  assert.strictEqual(r.c.state().entry, null, 'the older reply did not decide anything');
+  second.resolve({ ...on, index: { state: 'ready', files: 3 } });
+  await tick(); await tick();
+  assert.strictEqual(r.all('places').length, 1, 'the explain went ahead on the newest status');
+  assert.strictEqual(r.c.state().host.index.files, 3);
+  r.last('explain').resolve({ ok: true, text: 'x', places: [], model: 'haiku' });
+  await done;
+  assert.strictEqual(r.c.state().view, 'answer');
+});
+
 test('a blank question asks nothing', () => {
   const r = rig();
   r.c.ask('   ');

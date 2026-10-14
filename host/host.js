@@ -461,7 +461,7 @@ const repoService = createRepoService({
 // person's plan (host/ask-claude.js: no tools, no API key in its environment). The index is per worktree, kept under the harness state.
 const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
 const askIndex = createAskIndex({ dir: seams.askIndexDir || path.join(HARNESS_DIR, 'state', 'ask-index'), embed: (t) => askOllama.embed(t), embedModel: askOllama.embedModel });
-const askClaude = createClaudeAnswerer({ claudeBin: CLAUDE_BIN });
+const askClaude = createClaudeAnswerer({ claudeBin: CLAUDE_BIN, anchor: CWD });
 const askService = createAskService({
   cwd: CWD, index: askIndex, ollama: askOllama, claude: askClaude,
   models: createAskModels({ localModel: askOllama.answerModel, readRecord: seams.askRecord ? () => fs.readFileSync(seams.askRecord, 'utf8') : undefined }),

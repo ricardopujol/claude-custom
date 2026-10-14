@@ -97,7 +97,7 @@ test('PR #169 Dexter 3 (Round 7): while the first index is being built, a questi
   const { repo } = building({ snapshot: SNAP });
   const r = await repo.ask(WT, 'where is withFileLock defined?');
   assert.strictEqual(r.ok, true, 'not a refusal');
-  assert.deepStrictEqual(r.building, { state: 'building', done: 1, total: 9, partial: false });
+  assert.deepStrictEqual(r.building, { state: 'building', done: 1, total: 9, partial: false, files: 1 }, 'how many files this answer could see');
   assert.strictEqual(r.stale, true);
   assert.strictEqual(r.sources[0].file, 'host/file-lock.js');
 });
@@ -108,6 +108,14 @@ test('the same for an explanation\'s excerpts and the places preview', async () 
   assert.strictEqual(r.ok, true);
   assert.ok(r.building);
   assert.ok(r.sent.some(s => s.file === 'host/file-lock.js'));
+});
+
+test('PR #169 Dexter N1: nothing found in a partial index is still a partial-index answer: it carries how much was read, and which index it read', async () => {
+  const { repo } = building({ snapshot: SNAP, check: { ok: true, answer: true, embed: false } });   // keywords only
+  const r = await repo.ask(WT, 'zzzqqq nonexistentterm');
+  assert.deepStrictEqual([r.ok, r.reason], [false, 'no-matches']);
+  assert.deepStrictEqual([r.building.files, r.building.total], [1, 9]);
+  assert.strictEqual(r._data, SNAP, 'the index THIS answer was computed from (the card previews read it)');
 });
 
 test('with nothing indexed yet (no file so far) it is still "building", with its progress', async () => {

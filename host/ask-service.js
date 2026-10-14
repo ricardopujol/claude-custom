@@ -327,15 +327,16 @@ function createAskService({
     if (!ex.ok) return ex;
     const key = isStr(msg.file) ? selectionKey(msg) : query.trim().slice(0, QUESTION_KEY_CHARS);
     const retrieval = keepRetrieval(isStr(msg.file) ? 'selection' : 'question', key, modelId, ex);
-    return { ok: true, places: placesFromRanges(ex.sent, dataNow()), keywordOnly: ex.keywordOnly, stale: ex.stale, retrieval, ...(ex.building ? { building: ex.building } : {}) };
+    return { ok: true, places: placesFromRanges(ex.sent, (ex.prepared && ex.prepared.data) || dataNow()), keywordOnly: ex.keywordOnly, stale: ex.stale, retrieval, ...(ex.building ? { building: ex.building } : {}) };
   }
 
   async function ask(msg) {
     if (!isStr(msg.question) || !msg.question.trim()) return { ok: false, reason: 'empty-question' };
     const modelId = modelOf(msg);
     const reused = takeRetrieval(msg.retrieval, 'question', msg.question.trim().slice(0, QUESTION_KEY_CHARS), modelId);
-    const r = await repoFor(modelId).ask(cwd, msg.question, reused ? { prepared: reused.prepared } : undefined);
-    const data = dataNow();
+    const { _data, ...r } = await repoFor(modelId).ask(cwd, msg.question, reused ? { prepared: reused.prepared } : undefined);
+    // the card previews are read from the index the ANSWER was computed from, not from the build as it moves on (PR #169 Dexter N2)
+    const data = _data || dataNow();
     if (!r.ok) return failure(r, data, { model: modelId });
     return success(
       { model: modelId, keywordOnly: r.keywordOnly === true, stale: r.stale === true, dropped: r.dropped || [], ms: r.ms, ...(r.building ? { building: r.building } : {}) },
@@ -352,7 +353,7 @@ function createAskService({
     const reused = takeRetrieval(msg.retrieval, 'selection', selectionKey(msg), modelId);
     const ex = reused || await repo.excerptsFor(cwd, s.query, { exclude: { file: msg.file, start: msg.start, end: msg.end } });
     if (!ex.ok) return { ...ex, model: modelId };
-    const data = dataNow();
+    const data = (ex.prepared && ex.prepared.data) || dataNow();
     const previews = () => placesFromRanges(ex.sent, data);
     const st = ex.ollamaStatus;
     if (modelId === 'local' && st && st.ok === false) {

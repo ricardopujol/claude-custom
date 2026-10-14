@@ -127,7 +127,7 @@ function createAskRepo({
         // The first index (or an interrupted one) is still being built: answer from the files indexed so far, as Round 7 decided
         // ("questions work at once"), and say so; only with nothing indexed yet is it "building".
         const snap = typeof index.snapshot === 'function' ? index.snapshot(worktree) : null;
-        return snap && Array.isArray(snap.files) && snap.files.length ? { ok: true, data: snap, stale: true, building: progress() } : null;
+        return snap && Array.isArray(snap.files) && snap.files.length ? { ok: true, data: snap, stale: true, building: { ...progress(), files: snap.files.length } } : null;
       };
       const partial = Boolean(data);
       if (!index.isRunning(worktree)) {
@@ -193,7 +193,8 @@ function createAskRepo({
       ctx = { data: rdy.data, stale: rdy.stale, refreshError: rdy.refreshError, building: rdy.building, status: st0, top: top0, keywordOnly: kw0 };
     }
     const { data, stale, refreshError, building, status, top, keywordOnly } = ctx;
-    const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ...(building ? { building } : {}) };
+    // `_data` is the index THIS answer was computed from: the service reads the card previews from it, not from the build as it moves on (Dexter N2)
+    const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ...(building ? { building } : {}), _data: data };
 
     if (!top.length) return { ok: false, reason: 'no-matches', ...extra };
     const { prompt, sent } = buildPrompt(q, top);

@@ -44,19 +44,26 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
   let pollTimer = null;
   let pendingExplain = null;
   let nonePolls = NONE_POLLS;
-  const ui = { settings: false, draft: null, naming: { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' }, startMsg: '' };
+  const ui = { settings: false, draft: null, drillText: '', naming: { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' }, startMsg: '' };
 
   const changed = () => { try { onChange(); } catch { /* a display that threw must not stop the asks */ } };
 
   // ---- host status and the first index ---------------------------------------------------------------------------------------
   let statusSeq = 0;
-  async function refreshStatus({ fresh = false } = {}) {
+  let newestStatus = null;
+  // An older reply never overwrites a newer one (PR #169 Miguel G9), but whoever WAITED on the older request (an explain that needs the host's
+  // word) gets the newest answer, not nothing (Miguel Y-R2-2): a superseded request resolves when the newest has been applied.
+  function refreshStatus({ fresh = false } = {}) {
     const mine = ++statusSeq;
-    const r = await request('status', { ...(warmedOk ? {} : { warm: true }), ...(fresh ? { fresh: true } : {}) });
-    if (mine !== statusSeq) return;     // a newer status was asked for meanwhile: an older answer never overwrites it (PR #169 Miguel G9)
-    if (isObj(r) && r.ok === true) { host = r; hostError = null; warmedOk = true; } else { hostError = (isObj(r) && r.error) || 'The session did not answer.'; }
-    changed();
-    schedulePoll();
+    const p = (async () => {
+      const r = await request('status', { ...(warmedOk ? {} : { warm: true }), ...(fresh ? { fresh: true } : {}) });
+      if (mine !== statusSeq) { await newestStatus; return; }
+      if (isObj(r) && r.ok === true) { host = r; hostError = null; warmedOk = true; } else { hostError = (isObj(r) && r.error) || 'The session did not answer.'; }
+      changed();
+      schedulePoll();
+    })();
+    newestStatus = p;
+    return p;
   }
   function schedulePoll() {
     if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; }
@@ -153,10 +160,13 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     return explain({ file, start, end }, { parent: cur.parent, modelId: cur.model, label: cur.label, direction, term, answer });
   }
 
+  // the box a keyboard user types the words into is rebuilt with the body: what is typed lives here (PR #169 Miguel Y-R2-1)
+  function setDrillText(text) { ui.drillText = isStr(text) ? text : ''; }
   function drill(words) {
     const cur = S.current(st);
     const t = isStr(words) ? words.trim() : '';
     if (!cur || !t) return undefined;
+    ui.drillText = '';
     if (cur.kind === 'explain') {
       const { file, start, end } = cur.request;
       return explain({ file, start, end }, { parent: cur.id, modelId: cur.model, term: t, answer: cur.reply && cur.reply.text });
@@ -245,7 +255,7 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     show() { shown = true; nonePolls = NONE_POLLS; return refreshStatus(); },
     hide() { shown = false; if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; } },
     refreshStatus, ask, explain, reask, drill, askClaude, select, startOllama,
-    toggleSettings, setSettingsDraft, saveSettings, rename, setNamingName, setNamingPortrait, choosePicture, saveNaming,
+    toggleSettings, setSettingsDraft, setDrillText, saveSettings, rename, setNamingName, setNamingPortrait, choosePicture, saveNaming,
     state: () => ({
       profile, host, hostError, ui, entry: S.current(st), trail: S.trail(st), history: S.history(st), view: S.viewOf(st, profile),
     }),

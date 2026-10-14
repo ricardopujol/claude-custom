@@ -264,6 +264,23 @@ test('createPainter: focus outside the region is not touched', () => {
   assert.strictEqual(outside.focused, 0);
 });
 
+test('PR #169 Miguel Y-R2-3: the "change" link and the gear are two controls with two focus keys', () => {
+  const on = { ...HOST, models: HOST.models.map(m => ({ ...m, explainer: true })) };
+  const h = D.headerHtml({ ...model({ profile: { ...named, model: 'haiku' }, host: on }), images: true });
+  assert.match(h, /data-act="settings" data-from="change">change</);
+  assert.match(h, /data-act="settings" data-from="gear" title/);
+  const el = (attrs) => ({ id: '', getAttribute: (a) => (a in attrs ? attrs[a] : null) });
+  assert.notStrictEqual(D.keyOf(el({ 'data-act': 'settings', 'data-from': 'change' })), D.keyOf(el({ 'data-act': 'settings', 'data-from': 'gear' })));
+});
+
+test('PR #169 Miguel Y-R2-1: the drill-down box shows what was typed in it', () => {
+  const on = { ...HOST, models: HOST.models.map(m => ({ ...m, explainer: true })) };
+  const e = entryOf({ kind: 'explain', request: { file: 'a.js' }, reply: { ok: true, text: 'The idea.' }, places: [] });
+  const m = model({ host: on, entry: e, view: 'answer' });
+  m.ui.drillText = 'HTTP "req';
+  assert.match(D.bodyHtml(m), /id="ask-drill-term" type="text" maxlength="120" value="HTTP &quot;req"/);
+});
+
 test('keyOf: an id, else the data-act with what tells the control apart; a plain element has none', () => {
   const el = (id, attrs) => ({ id, getAttribute: (a) => (a in attrs ? attrs[a] : null) });
   assert.strictEqual(D.keyOf(el('ask-name', {})), '#ask-name');
@@ -361,6 +378,13 @@ test('the first index: the progress line with files done of total, and no button
   assert.match(h, /Questions work meanwhile, from the files read so far\./);
   assert.doesNotMatch(h, /\.\./, 'one full stop');
   assert.doesNotMatch(h, /<button[^>]*data-act="(start-ollama|ask-claude)"/);
+});
+
+test('PR #169 Dexter N4: the refusal while nothing has been read yet does not promise that questions work', () => {
+  const e = entryOf({ reply: { ok: false, reason: 'index-building', progress: { state: 'building', done: 0, total: 120 } } });
+  const h = D.bodyHtml(model({ entry: e, view: 'note' }));
+  assert.match(h, /Starting to read this repo for the first time; ask again in a moment\./);
+  assert.doesNotMatch(h, /Questions work meanwhile/);
 });
 
 test('explaining off on this model: said with the way out', () => {

@@ -133,9 +133,9 @@ function headerHtml(m) {
   const lvl = LEVELS.find(l => l.id === profile.level) || LEVELS[2];
   const explains = S.canExplain(host, profile.model);
   return `<div class="ask-head">${portraitHtml(profile, host, m.images)}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
-    + (explains ? `<span class="ask-for">explaining for: ${esc(lvl.label)} · <button type="button" class="ask-link" data-act="settings">change</button></span>` : '')
+    + (explains ? `<span class="ask-for">explaining for: ${esc(lvl.label)} · <button type="button" class="ask-link" data-act="settings" data-from="change">change</button></span>` : '')
     + (profile.model !== 'local' ? `<span class="ask-privacy">${esc(PRIVACY_CLAUDE)}</span>` : '')
-    + '</div><button type="button" class="ask-gear" data-act="settings" title="Name, level, About me and model" aria-label="Settings" aria-expanded="'
+    + '</div><button type="button" class="ask-gear" data-act="settings" data-from="gear" title="Name, level, About me and model" aria-label="Settings" aria-expanded="'
     + (m.ui.settings ? 'true' : 'false') + '">⚙</button></div>';
 }
 
@@ -214,7 +214,7 @@ function answerHtml(m) {
   return `<section class="ask-answer-wrap">${trailHtml(m.trail)}<h4 class="ask-h">${esc(e.label)}</h4>`
     + `<div class="ask-answer" data-answer="${e.id}">${formatText(r.text, files)}</div>`
     + (canDrill ? `<div class="ask-highlight" hidden><button type="button" class="ask-chip" data-act="drill">What's this? <span class="ask-hl-text"></span></button></div>`
-      + '<form class="ask-drill" data-form="drill" autocomplete="off"><input class="ask-input" id="ask-drill-term" type="text" maxlength="120" placeholder="A word or phrase from this answer" aria-label="A word or phrase from this answer to explain"><button type="submit" class="ask-chip">What\'s this?</button></form>' : '')
+      + '<form class="ask-drill" data-form="drill" autocomplete="off"><input class="ask-input" id="ask-drill-term" type="text" maxlength="120" value="' + esc(m.ui.drillText || '') + '" placeholder="A word or phrase from this answer" aria-label="A word or phrase from this answer to explain"><button type="submit" class="ask-chip">What\'s this?</button></form>' : '')
     + `<div class="ask-actions">${actions}</div>`
     + (note.length ? `<p class="ask-note">${esc(note.join('; '))}.</p>` : '')
     + `<p class="ask-from">${esc(labelOf({ ...m.profile, name: isStr(e.name) ? e.name : m.profile.name, model: e.model }, m.host))}</p>`
@@ -278,7 +278,7 @@ function announceOf(m) {
 }
 
 // A selector for "the same control" after the body has been rebuilt: its id, else its data-act and the data-* that tell it apart.
-const KEY_ATTRS = ['data-act', 'data-name', 'data-agent', 'data-dir', 'data-id', 'data-q', 'data-file', 'data-line'];
+const KEY_ATTRS = ['data-act', 'data-from', 'data-name', 'data-agent', 'data-dir', 'data-id', 'data-q', 'data-file', 'data-line'];
 function keyOf(el) {
   if (!el) return null;
   if (el.id) return `#${el.id}`;
@@ -424,6 +424,7 @@ function mount({
     const t = e && e.target;
     if (!t || !t.id) return;
     if (t.id === 'ask-name') ctl.setNamingName(t.value);
+    else if (t.id === 'ask-drill-term') ctl.setDrillText(t.value);
     else if (t.id === 'ask-set-name') ctl.setSettingsDraft({ name: t.value });
     else if (t.id === 'ask-set-level') ctl.setSettingsDraft({ level: t.value });
     else if (t.id === 'ask-set-about') ctl.setSettingsDraft({ aboutMe: t.value });

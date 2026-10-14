@@ -155,6 +155,25 @@ test('notices say what is wrong in plain words and offer the way out', () => {
   assert.match(n({ ok: false, reason: 'something-new' }).text, /something-new/, 'an unknown reason is still said, never blank');
 });
 
+test('PR #169 Dexter N1: "no matches" over a partial index is about the files read so far, never "nothing in this repo"', () => {
+  const n = S.noticeOf({ ok: false, reason: 'no-matches', building: { files: 40, done: 38, total: 2000 } }, { name: 'Ada', kind: 'question' });
+  assert.strictEqual(n.text, 'Nothing matched in the 40 files read so far (of 2000); the rest are still being read. Ask again in a moment.');
+  assert.doesNotMatch(n.text, /in this repo/);
+  assert.match(S.noticeOf({ ok: false, reason: 'no-matches', building: { files: 1, total: 9 } }, {}).text, /in the 1 file read so far/);
+  assert.match(S.noticeOf({ ok: false, reason: 'no-matches', building: {} }, {}).text, /Nothing matched in the files read so far; the rest/);
+  assert.match(S.noticeOf({ ok: false, reason: 'no-matches' }, {}).text, /Nothing in this repo matched that/, 'a finished index: the plain sentence');
+});
+
+test('PR #169 Dexter N4: with nothing read yet it is starting up, and does not say questions work meanwhile', () => {
+  for (const progress of [{ done: 0, total: 120 }, {}, undefined]) {
+    const l = S.indexLine({ state: 'building', progress });
+    assert.match(l.text, /starting to read this repo for the first time; ask again in a moment/);
+    assert.doesNotMatch(l.text, /Questions work meanwhile/);
+    assert.strictEqual(l.busy, true);
+  }
+  assert.match(S.indexLine({ state: 'building', progress: { done: 3, total: 120 } }).text, /3 of 120 files\. Questions work meanwhile/);
+});
+
 test('Ollama-down is a local-model problem: for a Claude model it is not offered Start Ollama', () => {
   const a = S.noticeOf({ ok: false, reason: 'claude-failed', detail: 'x' }, { name: 'Ada', kind: 'explain', modelId: 'haiku', modelName: 'Haiku' });
   assert.ok(!a.actions.some(x => x.id === 'start-ollama'));

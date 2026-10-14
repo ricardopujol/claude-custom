@@ -95,9 +95,27 @@ test('childEnv: routing, headers, model remaps, provider switches, cloud credent
 });
 
 test('childEnv: what the CLI needs to run and to find the person\'s own login does pass, with its own case', () => {
-  const ok = { Path: 'p', SystemRoot: 'C:\\Windows', USERPROFILE: 'u', APPDATA: 'a', LOCALAPPDATA: 'l', TEMP: 't', TMP: 't', HOME: 'h', CLAUDE_CONFIG_DIR: 'c', CLAUDE_CODE_OAUTH_TOKEN: 'o', LC_ALL: 'C', lang: 'en' };
+  const ok = { Path: 'p', SystemRoot: 'C:\\Windows', USERPROFILE: 'u', APPDATA: 'a', LOCALAPPDATA: 'l', TEMP: 't', TMP: 't', HOME: 'h', CLAUDE_CONFIG_DIR: 'C:\\cfg', CLAUDE_CODE_OAUTH_TOKEN: 'o', LC_ALL: 'C', lang: 'en' };
   assert.deepStrictEqual(childEnv(ok), ok);
   assert.ok(ENV_ALLOW.includes('PATH') && !ENV_ALLOW.some(n => n.startsWith('ANTHROPIC')), 'no ANTHROPIC name on the list');
+});
+
+test('PR #169 Dexter N5: a relative CLAUDE_CONFIG_DIR is resolved against the host\'s cwd (the child runs elsewhere), an absolute one is kept', () => {
+  const path = require('path');
+  const anchor = path.resolve('proj-dir');
+  assert.strictEqual(childEnv({ CLAUDE_CONFIG_DIR: '.cc' }, { anchor }).CLAUDE_CONFIG_DIR, path.join(anchor, '.cc'));
+  assert.strictEqual(childEnv({ claude_config_dir: '..\\other' }, { anchor }).claude_config_dir, path.resolve(anchor, '..\\other'));
+  const abs = path.resolve('C:/Users/x/.claude');
+  assert.strictEqual(childEnv({ CLAUDE_CONFIG_DIR: abs }, { anchor }).CLAUDE_CONFIG_DIR, abs);
+  assert.strictEqual(childEnv({ CLAUDE_CONFIG_DIR: '' }, { anchor }).CLAUDE_CONFIG_DIR, '', 'empty is left as it is');
+});
+
+test('the spawned child gets the resolved config dir', async () => {
+  const path = require('path');
+  const f = fakeSpawn((c) => finish(c, 0, okJson('x')));
+  const a = createClaudeAnswerer({ spawn: f.spawn, claudeBin: 'c', env: { CLAUDE_CONFIG_DIR: '.cc', PATH: 'p' }, anchor: path.resolve('proj-dir'), killFn: () => true });
+  await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.strictEqual(f.calls[0].opts.env.CLAUDE_CONFIG_DIR, path.join(path.resolve('proj-dir'), '.cc'));
 });
 
 test('childEnv: a value that is not a string is dropped, and a missing environment is empty', () => {

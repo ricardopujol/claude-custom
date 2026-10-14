@@ -131,8 +131,16 @@ function noticeOf(reply, { name, kind, modelId, modelName, hasPlaces } = {}) {
       return { text: `${who}'s model (${isStr(r.model) ? r.model : modelName || 'the local model'}) isn't installed in Ollama, so it can't ${verb} this yet.${tail}`, actions: claudeWay };
     case 'timeout':
       return { text: `${who} took too long to ${verb} this.${tail}`, actions: claudeWay };
-    case 'no-matches':
+    case 'no-matches': {
+      // while the first index is being built "nothing matched" is about the files read SO FAR, not the repo (PR #169 Dexter N1)
+      const b = isObj(r.building) ? r.building : null;
+      if (b) {
+        const n = isCount(b.files) ? b.files : (isCount(b.done) ? b.done : null);
+        const of = isCount(b.total) && b.total > 0 ? ` (of ${b.total})` : '';
+        return { text: `Nothing matched in ${n === null ? 'the files' : `the ${n} file${n === 1 ? '' : 's'}`} read so far${of}; the rest are still being read. Ask again in a moment.`, actions: [] };
+      }
       return { text: 'Nothing in this repo matched that. Try other words.', actions: [] };
+    }
     case 'empty-question':
       return { text: 'Type a question first.', actions: [] };
     case 'index-failed':
@@ -165,7 +173,8 @@ function indexLine(index) {
   }
   if (index.state === 'building' || index.state === 'partial') {
     const p = isObj(index.progress) ? index.progress : {};
-    const where = isCount(p.done) && isCount(p.total) && p.total > 0 ? `${p.done} of ${p.total} files` : 'starting';
+    if (p.done === 0 || !isCount(p.done)) return { text: 'starting to read this repo for the first time; ask again in a moment', busy: true };
+    const where = isCount(p.total) && p.total > 0 ? `${p.done} of ${p.total} files` : `${p.done} files`;
     return { text: `reading this repo for the first time: ${where}. Questions work meanwhile, from the files read so far.`, busy: true };
   }
   if (index.state === 'failed') return { text: `couldn't read this repo: ${isStr(index.error) && index.error ? index.error : 'unknown reason'}`, busy: false };

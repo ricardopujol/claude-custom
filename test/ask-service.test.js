@@ -110,6 +110,34 @@ test('status: a portrait lookup that throws is no picture, never a failed status
   assert.deepStrictEqual(r.portraits, { own: null, suggestions: [] });
 });
 
+const BUILDING = { state: 'building', done: 5, total: 120, files: 5 };
+
+test('PR #169 Dexter N3: "answered from the files read so far" crosses the service unchanged, for ask, places and explain (and for a no-match)', async () => {
+  const ask = rig({ askResult: { ok: true, text: 'x', citations: [], dropped: [], sources: [], model: 'm', keywordOnly: false, stale: true, building: BUILDING, ms: 1 } });
+  assert.deepStrictEqual((await ask.svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q' })).building, BUILDING);
+  const none = rig({ askResult: { ok: false, reason: 'no-matches', building: BUILDING, keywordOnly: true, stale: true } });
+  const nm = await none.svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q' });
+  assert.deepStrictEqual([nm.ok, nm.reason, nm.building], [false, 'no-matches', BUILDING]);
+  const plain = rig({ ex: { ok: true, body: '', sent: [], lineCounts: new Map(), keywordOnly: true, stale: true, building: BUILDING, ollamaStatus: { ok: true }, prepared: {} } });
+  assert.deepStrictEqual((await plain.svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'q' })).building, BUILDING);
+  const expl = rig({ passed: PASS, ex: { ok: true, body: 'b', sent: [], lineCounts: new Map(), keywordOnly: true, stale: true, building: BUILDING, ollamaStatus: { ok: true }, prepared: {} } });
+  assert.deepStrictEqual((await expl.svc.handle({ type: 'ask', op: 'explain', seq: 1, file: 'host/a.js', start: 3, end: 5, model: 'local' })).building, BUILDING);
+  const finished = await rig().svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q' });
+  assert.strictEqual(finished.building, undefined);
+});
+
+test('PR #169 Dexter N2: the card previews are the lines of the index the ANSWER used, not of the build as it moves on; the data never travels in the reply', async () => {
+  const used = { files: [{ rel: 'host/a.js', lines: 30, chunks: [{ start: 1, end: 30, text: Array.from({ length: 30 }, (_, i) => 'OLD ' + (i + 1)).join('\n') }] }] };
+  const { svc } = rig({ askResult: { ok: true, text: 'It is in host/a.js:3-4.', citations: [{ file: 'host/a.js', line: 3, endLine: 4 }], dropped: [], sources: [], model: 'm', keywordOnly: false, stale: false, ms: 1, _data: used } });
+  const r = await svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q' });
+  assert.deepStrictEqual(r.places[0].lines, [{ n: 3, text: 'OLD 3' }, { n: 4, text: 'OLD 4' }], 'not the live build\'s line 3');
+  assert.strictEqual(JSON.stringify(r).includes('OLD 30'), false, 'no index in the reply');
+  assert.strictEqual('_data' in r, false);
+  const pl = rig({ ex: { ok: true, body: '', sent: [{ file: 'host/a.js', start: 1, end: 30 }], lineCounts: new Map(), keywordOnly: false, stale: false, ollamaStatus: { ok: true }, prepared: { data: used } } });
+  const p = await pl.svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'q' });
+  assert.strictEqual(p.places[0].lines[0].text, 'OLD 1');
+});
+
 test('PR #169 El Gordo 1: one ask is one retrieval: places keeps its hits under an id, and the answer that names the id uses them (the engine is not asked to search again)', async () => {
   const { svc, calls } = rig();
   const p = await svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'where is a?', model: 'local' });
