@@ -70,6 +70,11 @@ test('the local record is keyed by the MODEL it measured, so swapping the local 
   assert.strictEqual(make(record, { localModel: 'qwen3.5:9b' }).explainerOn('local'), false);
 });
 
+test('list() says where each runs, for the page to build its label', () => {
+  const m = make(rec({}));
+  assert.deepStrictEqual(m.list().map(x => x.where), ['qwen3.5:4b · local', 'Haiku · Claude, uses your plan', 'Sonnet · Claude, uses your plan']);
+});
+
 test('list() carries the explainer flag for the page', () => {
   const m = make(rec({ haiku: { new: 8, comfortable: 8, of: 10 } }));
   assert.deepStrictEqual(m.list().map(x => [x.id, x.explainer]), [['local', false], ['haiku', true], ['sonnet', false]]);

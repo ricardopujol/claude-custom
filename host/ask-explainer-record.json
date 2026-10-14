@@ -1,5 +1,8 @@
 {
   "version": 1,
-  "note": "A model's explainer (What's this?, levels, drill-down) is on only if its entry here passes the bar (host/ask-models.js BAR): 8 of 10 at New to coding AND at Comfortable, on the 10 selections of verify/eval-ask-explain.js. Local is keyed by its Ollama model name, a Claude model by haiku / sonnet. An entry is added by hand from a measurement report; the bar is re-checked at load.",
-  "passed": {}
+  "note": "A model's explainer (What's this?, levels, drill-down) is on only if its entry here passes the bar (host/ask-models.js BAR): 8 of 10 at New to coding AND at Comfortable, on the 10 selections of verify/eval-ask-explain.js. Local is keyed by its Ollama model name, a Claude model by haiku / sonnet. An entry is added by hand from a measurement report (reviews/claude-custom/2026-10-13-ask-explain-measure.md, Round 3, the LOWER readings); the bar is re-checked at load. qwen3.5:4b has no entry: it missed (9/7 first grade, 7/3 blind grade).",
+  "passed": {
+    "haiku": { "new": 9, "comfortable": 9, "of": 10, "date": "2026-10-13", "report": "2026-10-13-ask-explain-measure.md Round 3", "blindCheck": "pending" },
+    "sonnet": { "new": 9, "comfortable": 10, "of": 10, "date": "2026-10-13", "report": "2026-10-13-ask-explain-measure.md Round 3", "blindCheck": "pending" }
+  }
 }

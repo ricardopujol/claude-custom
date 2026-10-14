@@ -56,6 +56,7 @@ function createModels({ localModel = 'qwen3.5:4b', readRecord = () => fs.readFil
   const keyOf = (id) => (id === 'local' ? localModel : id);
   const nameOf = (id) => (id === 'local' ? localModel : CLAUDE_NAMES[id]);
 
+  const whereOf = (id) => (id === 'local' ? `${nameOf('local')} · local` : `${nameOf(id)} · Claude, uses your plan`);
   const explainerOn = (id) => CHOICES.includes(id) && passesBar(load()[keyOf(id)]);
 
   return {
@@ -64,11 +65,12 @@ function createModels({ localModel = 'qwen3.5:4b', readRecord = () => fs.readFil
       return CHOICES.map(id => ({
         id, kind: id === 'local' ? 'ollama' : 'claude', name: id === 'local' ? 'Local' : CLAUDE_NAMES[id], model: nameOf(id),
         explainer: passesBar(rec[keyOf(id)]),
+        where: whereOf(id),
       }));
     },
     choose: (id) => (CHOICES.includes(id) ? id : DEFAULT_MODEL),
     label(id, givenName) {
-      const where = id === 'local' ? `${nameOf('local')} · local` : `${nameOf(id)} · Claude, uses your plan`;
+      const where = whereOf(id);
       const who = typeof givenName === 'string' ? givenName.trim() : '';
       return who ? `${who} · ${where}` : where;
     },
