@@ -228,3 +228,247 @@ test('the thresholds are a stated ladder, not magic numbers in a branch', () => 
   assert.ok(Array.isArray(QUOTA_THRESHOLDS) && QUOTA_THRESHOLDS.length >= 2);
   assert.ok(QUOTA_THRESHOLDS.every(t => typeof t === 'number' && t > 0 && t <= 100));
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+// Each of these pins a branch the suite above only reached without asserting it.
+
+function credsWith(contents) {
+  const dir = tmpDir('cc-quota-');
+  const p = path.join(dir, '.credentials.json');
+  fs.writeFileSync(p, contents);
+  return p;
+}
+
+test('an empty access token is ABSENCE with its own reason, and no request is made', async () => {
+  let calls = 0;
+  const r = await readQuota({
+    credentialsPath: credsFile(''),
+    fetchImpl: async () => { calls += 1; return okFetch()(); },
+  });
+  assert.deepStrictEqual(r, { ok: false, state: 'absent', windows: [], error: 'no access token' });
+  assert.strictEqual(calls, 0, 'no token, so nothing is sent');
+});
+
+test('a credentials file with no claudeAiOauth block is ABSENCE, with the parse error as the reason', async () => {
+  const r = await readQuota({ credentialsPath: credsWith('{}'), fetchImpl: okFetch() });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.state, 'absent');
+  assert.deepStrictEqual(r.windows, []);
+  assert.ok(r.error && r.error !== 'no credentials', 'carries the thrown message');
+});
+
+test('a throw with no message falls back to the stated reason', async () => {
+  const r = await readQuota({
+    credentialsPath: credsFile(),
+    fetchImpl: async () => { throw {}; }, // eslint-disable-line no-throw-literal
+  });
+  assert.deepStrictEqual(r, { ok: false, state: 'absent', windows: [], error: 'request failed' });
+});
+
+test('a network throw reports ok:false with its message and no windows', async () => {
+  const r = await readQuota({
+    credentialsPath: credsFile(),
+    fetchImpl: async () => { throw new Error('ENOTFOUND'); },
+  });
+  assert.deepStrictEqual(r, { ok: false, state: 'absent', windows: [], error: 'ENOTFOUND' });
+});
+
+test('a 401 carries its status, and a missing response says so', async () => {
+  const r401 = await readQuota({
+    credentialsPath: credsFile(),
+    fetchImpl: async () => ({ ok: false, status: 401 }),
+  });
+  assert.deepStrictEqual(r401,
+    { ok: false, state: 'absent', windows: [], error: 'usage endpoint returned 401' });
+  const none = await readQuota({ credentialsPath: credsFile(), fetchImpl: async () => undefined });
+  assert.deepStrictEqual(none,
+    { ok: false, state: 'absent', windows: [], error: 'usage endpoint returned no response' });
+});
+
+test('an unparseable body is ABSENCE, not an empty fresh read', async () => {
+  const r = await readQuota({
+    credentialsPath: credsFile(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('x'); } }),
+  });
+  assert.deepStrictEqual(r, { ok: false, state: 'absent', windows: [], error: 'x' });
+});
+
+test('a body whose json() throws with no message gets the unparseable reason', async () => {
+  const r = await readQuota({
+    credentialsPath: credsFile(),
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => { throw {}; } }), // eslint-disable-line no-throw-literal
+  });
+  assert.deepStrictEqual(r, { ok: false, state: 'absent', windows: [], error: 'unparseable response' });
+});
+
+test('a good read has error null', async () => {
+  const r = await readQuota({ credentialsPath: credsFile(), fetchImpl: okFetch() });
+  assert.strictEqual(r.error, null);
+});
+
+test('an error message is cut to 200 characters, and 200 or fewer are kept whole', async () => {
+  const fail = (len) => readQuota({
+    credentialsPath: credsFile(),
+    fetchImpl: async () => { throw new Error('e'.repeat(len)); },
+  });
+  assert.strictEqual((await fail(201)).error, 'e'.repeat(200));
+  assert.strictEqual((await fail(200)).error, 'e'.repeat(200));
+  assert.strictEqual((await fail(199)).error, 'e'.repeat(199));
+  assert.strictEqual((await fail(1000)).error.length, 200);
+});
+
+test('normalizeWindows fills every omitted field with its stated default', () => {
+  const [w] = normalizeWindows({ limits: [{ kind: 'session', percent: 10 }] });
+  assert.deepStrictEqual(w, {
+    key: 'session', label: '5h', percent: 10, resetsAt: null, severity: 'normal',
+    isActive: false, usedDollars: null, remainingDollars: null, lockedReason: null,
+  });
+});
+
+test('normalizeWindows keeps the fields that are present, exactly', () => {
+  const [w] = normalizeWindows({ limits: [{
+    kind: 'weekly_all', percent: 0, severity: 'warning', resets_at: 'R',
+    is_active: true, locked_reason: 'x',
+  }] });
+  assert.deepStrictEqual(w, {
+    key: 'weekly_all', label: 'week', percent: 0, resetsAt: 'R', severity: 'warning',
+    isActive: true, usedDollars: null, remainingDollars: null, lockedReason: 'x',
+  });
+});
+
+test('is_active is true only for the boolean true', () => {
+  const act = (v) => normalizeWindows({ limits: [{ kind: 'session', is_active: v }] })[0].isActive;
+  assert.strictEqual(act(true), true);
+  assert.strictEqual(act(false), false);
+  assert.strictEqual(act('true'), false);
+  assert.strictEqual(act(1), false);
+  assert.strictEqual(act(undefined), false);
+});
+
+test('a window with no percent reads as null, never as zero', () => {
+  const pct = (v) => normalizeWindows({ limits: [{ kind: 'session', percent: v }] })[0].percent;
+  assert.strictEqual(pct(undefined), null);
+  assert.strictEqual(pct(null), null);
+  assert.strictEqual(pct('50'), null);
+  assert.strictEqual(pct(NaN), null);
+  assert.strictEqual(pct(Infinity), null);
+  assert.strictEqual(pct(0), 0);
+});
+
+test('a scoped window is keyed by kind AND scope, an unscoped one by kind alone', () => {
+  const [a, b, c] = normalizeWindows({ limits: [
+    { kind: 'weekly_scoped', scope: { model: { display_name: 'Fable' } } },
+    { kind: 'weekly_scoped', scope: { model: { display_name: 'Opus' } } },
+    { kind: 'weekly_scoped', scope: { model: { display_name: '' } } },
+  ] });
+  assert.strictEqual(a.key, 'weekly_scoped:Fable');
+  assert.strictEqual(b.key, 'weekly_scoped:Opus');
+  assert.strictEqual(c.key, 'weekly_scoped');
+});
+
+test('an unknown kind is labelled with its underscores as spaces, and a missing kind as limit', () => {
+  const [a, b] = normalizeWindows({ limits: [{ kind: 'monthly_big_one' }, {}] });
+  assert.strictEqual(a.label, 'monthly big one');
+  assert.strictEqual(b.label, 'limit');
+});
+
+test('normalizeWindows reads nothing from a body without a limits array', () => {
+  assert.deepStrictEqual(normalizeWindows(null), []);
+  assert.deepStrictEqual(normalizeWindows({}), []);
+  assert.deepStrictEqual(normalizeWindows({ limits: 'x' }), []);
+});
+
+test('a percent exactly on a threshold announces it, one under does not', () => {
+  const at = (percent) => ([{ key: 'session', label: '5h', percent, resetsAt: 'A' }]);
+  const a = createQuotaAnnouncer();
+  assert.strictEqual(a.check(at(QUOTA_THRESHOLDS[0] - 0.1)), null);
+  const hit = a.check(at(QUOTA_THRESHOLDS[0]));
+  assert.ok(hit);
+  assert.strictEqual(hit.threshold, QUOTA_THRESHOLDS[0]);
+  assert.strictEqual(createQuotaAnnouncer().check(at(QUOTA_THRESHOLDS[1] - 0.1)).threshold, QUOTA_THRESHOLDS[0]);
+  assert.strictEqual(createQuotaAnnouncer().check(at(QUOTA_THRESHOLDS[1])).threshold, QUOTA_THRESHOLDS[1]);
+});
+
+test('the announcement carries the window identity and a rounded text', () => {
+  const hit = createQuotaAnnouncer().check([
+    { key: 'k', label: 'L', percent: 84.6, resetsAt: 'R' },
+  ]);
+  assert.deepStrictEqual(hit, {
+    key: 'k', label: 'L', threshold: 80, percent: 84.6, resetsAt: 'R', text: 'L usage at 85%',
+  });
+});
+
+test('of two windows crossing in one batch the higher rung wins, and the loser resurfaces next time', () => {
+  const a = createQuotaAnnouncer();
+  const batch = [
+    { key: 'one', label: '1', percent: 85, resetsAt: 'A' },
+    { key: 'two', label: '2', percent: 97, resetsAt: 'B' },
+  ];
+  assert.strictEqual(a.check(batch).key, 'two');
+  assert.strictEqual(a.check(batch).key, 'one', 'the loser was not recorded as told');
+  assert.strictEqual(a.check(batch), null);
+  // The same two in the other order: the higher rung still wins.
+  const b = createQuotaAnnouncer();
+  assert.strictEqual(b.check([batch[1], batch[0]]).key, 'two');
+  // Equal rungs: the first one listed wins, not the last.
+  const c = createQuotaAnnouncer();
+  assert.strictEqual(c.check([
+    { key: 'one', label: '1', percent: 85, resetsAt: 'A' },
+    { key: 'two', label: '2', percent: 86, resetsAt: 'B' },
+  ]).key, 'one');
+});
+
+test('a rung already told for a window instance is not told again', () => {
+  const a = createQuotaAnnouncer();
+  const w = [{ key: 's', label: '5h', percent: 96, resetsAt: 'A' }];
+  assert.strictEqual(a.check(w).threshold, 95);
+  assert.strictEqual(a.check(w), null, 'same rung, same instance');
+  assert.strictEqual(a.check([{ ...w[0], percent: 99 }]), null);
+});
+
+test('a window without a reset time announces every time it is seen, and keeps no ladder', () => {
+  const a = createQuotaAnnouncer();
+  const w = [{ key: 's', label: '5h', percent: 90, resetsAt: null }];
+  assert.ok(a.check(w));
+  assert.ok(a.check(w), 'risk announcing twice rather than go permanently silent');
+  assert.strictEqual(a.state().size, 0);
+});
+
+test('non-numeric and missing percents never announce', () => {
+  const a = createQuotaAnnouncer();
+  assert.strictEqual(a.check([null, { key: 's', percent: '96', resetsAt: 'A' },
+    { key: 's', percent: null, resetsAt: 'A' }, { key: 's', percent: NaN, resetsAt: 'A' },
+    { key: 's', percent: Infinity, resetsAt: 'A' }]), null);
+  assert.strictEqual(a.check('nope'), null);
+  assert.strictEqual(a.check(undefined), null);
+});
+
+test('a window that rolls over drops only its own old ladder entries', () => {
+  const a = createQuotaAnnouncer();
+  const both = [
+    { key: 'session', label: '5h', percent: 85, resetsAt: 'S1' },
+    { key: 'session2', label: '5h2', percent: 85, resetsAt: 'T1' },
+  ];
+  a.check(both);
+  a.check(both);
+  assert.deepStrictEqual([...a.state().keys()].sort(), ['session2@T1', 'session@S1']);
+  // session rolls over; its old key goes, session2 (a key that merely shares a prefix) stays.
+  a.check([{ key: 'session', label: '5h', percent: 5, resetsAt: 'S2' }]);
+  assert.deepStrictEqual([...a.state().keys()], ['session2@T1']);
+});
+
+test('a reading with no reset time never wipes the ladder of its own earlier instance', () => {
+  const a = createQuotaAnnouncer();
+  assert.ok(a.check([{ key: 's', label: '5h', percent: 85, resetsAt: 'A' }]));
+  a.check([{ key: 's', label: '5h', percent: 85, resetsAt: null }]);
+  assert.deepStrictEqual([...a.state().entries()], [['s@A', 80]]);
+});
+
+test('absence of a window from a batch does not forget what was told', () => {
+  const a = createQuotaAnnouncer();
+  const w = { key: 's', label: '5h', percent: 85, resetsAt: 'A' };
+  assert.ok(a.check([w]));
+  assert.strictEqual(a.check([]), null);
+  assert.strictEqual(a.check([w]), null, 'not re-announced after a partial response');
+  assert.deepStrictEqual([...a.state().entries()], [['s@A', 80]]);
+});
