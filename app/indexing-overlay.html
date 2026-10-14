@@ -17,7 +17,7 @@
        height in vh: the view's size comes FROM the reported height, so a vh cap would feed back into itself. */
     html { overflow-x: hidden; overflow-y: auto; }
     html, body { margin: 0; background: transparent; color: var(--text);
-      font: 12.5px/1.45 "Segoe UI", system-ui, sans-serif; }
+      font: 12.5px/1.45 var(--font-ui, "Segoe UI", system-ui, sans-serif); }
     #root { display: block; }
     button { font: inherit; font-size: 12px; background: var(--chrome); color: var(--text);
       border: 1px solid var(--border); border-radius: 5px; padding: 2px 9px; cursor: pointer; }

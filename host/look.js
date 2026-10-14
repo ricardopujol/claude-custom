@@ -25,6 +25,8 @@
 // Images and short video loops (backlog #34): host/background-media.js owns which is which.
 const { IMAGE_EXTENSIONS, VIDEO_EXTENSIONS } = require('./background-media');
 const ACCEPTED_EXTENSIONS = Object.freeze([...IMAGE_EXTENSIONS, ...VIDEO_EXTENSIONS]);
+// One rule for what a font family may be (app/fonts-display.js), shared with the renderer that paints it.
+const { sanitizeFamily } = require('../app/fonts-display');
 
 // A darkness of 1 would paint the veil fully opaque and the image would be
 // gone -- that is "remove the image", which has its own button.
@@ -38,6 +40,11 @@ const DEFAULT_LOOK = Object.freeze({
   secondaryColor: null,
   darkness: 0.5,
   background: null,
+  // Backlog #88: this project's own terminal font, over the app-wide pick. null = follow the app-wide one.
+  terminalFont: null,
+  // Backlog #92: 'colour' paints the app colour (under the darkness veil) instead of the picture. The picture's file
+  // and record stay, so null (the picture) restores it.
+  backgroundMode: null,
   // Backlog #25. 'dark' | 'light' | null (never chosen: reads as dark, and the CLI is sent no theme, so an
   // existing project keeps whatever theme the person had). The fields above are the look of THIS mode;
   // `other` holds the colours and veil of the opposite mode, so a flip swaps them without losing either.
@@ -163,6 +170,8 @@ function sanitizeLook(raw) {
     secondaryColor: normalHex(raw.secondaryColor),
     darkness: sanitizeDarkness(raw.darkness),
     background: sanitizeBackground(raw.background),
+    terminalFont: sanitizeFamily(raw.terminalFont),
+    backgroundMode: raw.backgroundMode === 'colour' ? 'colour' : null,
     mode: sanitizeMode(raw.mode),
     other: sanitizeOther(raw.other),
   };

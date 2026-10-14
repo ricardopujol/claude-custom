@@ -1486,8 +1486,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'askState', 'askDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
   'canvasState', 'canvasClick', 'canvasOverlay', 'canvasMcpBox',
-  // backlog #34: verify/probe-video-background.js
-  'bgState', 'bgStyle', 'bgMatch',
+  // backlog #34: verify/probe-video-background.js; #88 + #92: the font and plain-colour actions of verify/probe-fonts-colour.js
+  'bgState', 'bgStyle', 'bgMatch', 'fontsState', 'fontsSet', 'fontsSearch', 'fontsPick',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
   'occState', 'occKey', 'occClick', 'occTurn',
   // backlog #49 + #52: verify/probe-terminal-bar.js
