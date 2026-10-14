@@ -66,6 +66,7 @@ const { startFakeOllama } = require('./lib/fake-ollama');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { projectDirName } = require(path.join(ROOT, 'host', 'project-dir'));
 const { INSTRUCTION } = require(path.join(ROOT, 'host', 'summary-text'));
+const { KEEP_ALIVE } = require(path.join(ROOT, 'host', 'summary-ollama'));
 const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
 
 const hygiene = createHygieneRegistry();
@@ -331,8 +332,8 @@ async function main() {
   check('B2: ...and NOT the tool call, the tool result or the skill injection',
     !/TOOLRESULT-SECRET-CONTENT|Base directory for this skill|SKILL-BODY-TEXT|drawer\.js|tool_use|tool_result/.test(prompt));
   check('B2: ...the instruction comes AFTER the transcript', prompt.endsWith(INSTRUCTION) && prompt.indexOf('DEV-MARKER') < prompt.indexOf(INSTRUCTION));
-  check('B2: llama3.2:3b, num_ctx 8192, keep_alive 5m, not streamed', !!devReq && devReq.body.model === 'llama3.2:3b' && devReq.body.options.num_ctx === 8192
-    && devReq.body.keep_alive === '5m' && devReq.body.stream === false, JSON.stringify(devReq && { m: devReq.body.model, o: devReq.body.options, k: devReq.body.keep_alive }));
+  check('B2: llama3.2:3b, num_ctx 8192, keep_alive ' + KEEP_ALIVE + ', not streamed', !!devReq && devReq.body.model === 'llama3.2:3b' && devReq.body.options.num_ctx === 8192
+    && devReq.body.keep_alive === KEEP_ALIVE && devReq.body.stream === false, JSON.stringify(devReq && { m: devReq.body.model, o: devReq.body.options, k: devReq.body.keep_alive }));
   const hoverOf = async (label, wanted, ms = 40000) => waitFor(async () => {
     const t = await stripTab(app, label);
     return t && t.title.includes(wanted) ? t : null;

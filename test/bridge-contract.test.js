@@ -453,12 +453,17 @@ test('stop runs shutdown() and then exits', () => {
 
 // An async wait between shutdown() and process.exit() reopens the event loop on a half-torn-down host (a boot still in flight can
 // spawn a claude nobody owns; node-pty's onExit races the wait). PR #172's Ollama unload-on-exit was dropped for exactly this.
-test('every exit that follows shutdown() is synchronous: nothing is awaited between shutdown() and process.exit()', () => {
+test('every exit that follows shutdown() is synchronous: shutdown is a plain function and process.exit() follows each call directly', () => {
   const code = HOST_SRC.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
-  const calls = [...code.matchAll(/(?<!function )\bshutdown\((?:\{[^}]*\})?\)/g)];
-  assert.ok(calls.length >= 6, 'the pin still sees the shutdown() call sites');
+  const defAt = code.search(/\bfunction\s+shutdown\s*\(/);
+  assert.ok(defAt !== -1, 'shutdown is declared with `function`');
+  assert.doesNotMatch(code.slice(Math.max(0, defAt - 10), defAt), /async\s*$/, 'shutdown is not async');
+  const body = code.slice(defAt, code.indexOf('\n}', defAt));
+  assert.doesNotMatch(body, /\bawait\b|\.then\s*\(|setTimeout|setImmediate|nextTick|new Promise/, 'nothing deferred inside shutdown');
+  const calls = [...code.matchAll(/(?<!function\s)\bshutdown\s*\(([^)]*)\)/g)];
+  assert.strictEqual(calls.length, 7, 'the pin sees exactly the 7 call sites (update with a new quit path, and keep it synchronous)');
   for (const m of calls) {
-    assert.match(code.slice(m.index + m[0].length), /^;\s*process\.exit\(\d\)/, `shutdown() at offset ${m.index} is followed directly by process.exit()`);
+    assert.match(code.slice(m.index + m[0].length), /^\s*;\s*process\.exit\(\s*\d\s*\)/, `shutdown(${m[1]}) at offset ${m.index} is followed directly by process.exit()`);
   }
   assert.doesNotMatch(code, /exitAfter|unloadOnLastExit/);
 });

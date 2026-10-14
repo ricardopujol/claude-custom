@@ -61,7 +61,7 @@ test('the model is asked with the trimmed prompt, a small budget and a lively te
 test('a bubble keeps the model warm for 45 s only, not 5 minutes like the Ask panel (BACKLOG #91)', async () => {
   const r = rig();
   await r.svc.onMood({ agent: 'miguel', state: 'working' });
-  assert.strictEqual(r.calls[0].keepAlive, '45s');
+  assert.deepStrictEqual([r.calls[0].keepAlive, r.calls[0].neverShorten], ['45s', true]);
 });
 
 test("the agent's own voice reaches the system prompt", async () => {

@@ -65,7 +65,7 @@ function createBubbles({ gate, ollama, slot, voiceOf, contextOf, settings, broad
         if (!built) return drop('ignored');
         let res;
         try {
-          res = await ollama.generate({ ...built, numPredict: NUM_PREDICT, temperature: TEMPERATURE, keepAlive: KEEP_ALIVE_BACKGROUND });
+          res = await ollama.generate({ ...built, numPredict: NUM_PREDICT, temperature: TEMPERATURE, keepAlive: KEEP_ALIVE_BACKGROUND, neverShorten: true });
         } catch (err) {
           res = { ok: false, reason: 'threw', message: err && err.message };
         }
