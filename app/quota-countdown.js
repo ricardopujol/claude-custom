@@ -159,7 +159,7 @@ function createResetWatcher() {
       if (!row) continue;
       const pct = finiteOrNull(row.percent);
       const at = resetMs(row.resetsAt);
-      if (pct !== null && pct < 100 && !isLocked(row) && at !== null && at > wait.at + RESET_MOVED_MS) wait.done = true;
+      if (pct !== null && pct < 100 && at !== null && at > wait.at + RESET_MOVED_MS) wait.done = true;
     }
     for (const wait of waits.values()) if (!wait.done) return { ...s, toast: false };
     waits = null;

@@ -216,6 +216,7 @@ test('a stale payload does not end an episode early either', () => {
 test('Dexter 2 / Miguel Y1: a fresh read that does not KNOW the window is under 100 never ends the episode', () => {
   for (const unknown of [
     fresh([win({ percent: null })]),
+    fresh([win({ percent: null, resetsAt: iso(NOW + 5 * HOUR) })]),      // Dexter r2: unknown percent WITH a moved reset
     fresh([win({ resetsAt: null, percent: 3 })]),
     fresh([]),
     fresh([win({ percent: NaN })]),
