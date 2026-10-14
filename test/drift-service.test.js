@@ -77,6 +77,7 @@ test('the model is given room for a whole reply (the default cut a real one off 
   const { svc, calls } = rig();
   await svc.tick();
   assert.strictEqual(calls.prompts[0].numPredict, REPLY_TOKENS);
+  assert.deepStrictEqual([calls.prompts[0].keepAlive, calls.prompts[0].neverShorten], ['45s', true], 'a drift check keeps the model warm 45 s, not 5 minutes (BACKLOG #91)');
   assert.ok(REPLY_TOKENS >= 600);
 });
 

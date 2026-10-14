@@ -58,6 +58,11 @@ test('the model is asked with the trimmed prompt, a small budget and a lively te
   assert.ok(req.numPredict <= 80);
   assert.ok(req.temperature >= 0.7);
 });
+test('a bubble keeps the model warm for 45 s only, not 5 minutes like the Ask panel (BACKLOG #91)', async () => {
+  const r = rig();
+  await r.svc.onMood({ agent: 'miguel', state: 'working' });
+  assert.deepStrictEqual([r.calls[0].keepAlive, r.calls[0].neverShorten], ['45s', true]);
+});
 
 test("the agent's own voice reaches the system prompt", async () => {
   const r = rig({ voice: { description: 'Reviewer who writes in Spanish', signOff: 'Sign off with Hasta luego.' } });
