@@ -89,6 +89,18 @@ test('hooks only the events the harness actually consumes', () => {
   );
 });
 
+test('every registered event has exactly one entry whose command names that event (an emptied list or a wrong event fails)', () => {
+  const s = buildHarnessSettings(opts);
+  for (const [event, entries] of Object.entries(s.hooks)) {
+    assert.strictEqual(entries.length, 1, `${event} has its one entry`);
+    assert.strictEqual(entries[0].hooks.length, 1, `${event} runs one command`);
+    assert.match(entries[0].hooks[0].command, new RegExp(`--event ${event}$`), `${event} reports itself`);
+  }
+  // Attention (blocked on input) and turn-finished must not be droppable unnoticed.
+  assert.strictEqual(s.hooks.Notification[0].matcher, '');
+  assert.strictEqual(s.hooks.Stop[0].matcher, '');
+});
+
 test('UserPromptSubmit is hooked, every prompt, so the host knows a main-session turn opened (PR #93 Dexter F1)', () => {
   // The subagent roster can't see a turn that calls no agent: Type /merged typed into one. The helper prints
   // nothing and always exits 0 (helper/hook-helper.cs), so the hook can never add to or block a prompt.
