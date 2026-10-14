@@ -298,7 +298,9 @@ test('D14: the probe seam is parsed strictly', () => {
 
 test('S5: the full payload (command lines) goes to the page showing the panel; a light one, machine figures only, to the rest', () => {
   const calls = [];
-  const r = rig({ send: (full, light) => calls.push([full, light]) });
+  // A fixed monotonic clock: `historyNow` is Math.round(mono()) read once per payload, so on the real clock two payloads built a
+  // moment apart straddle a millisecond and differ by one (BACKLOG #87, 3 of 20 runs). A fixed clock still pins every other field.
+  const r = rig({ send: (full, light) => calls.push([full, light]), mono: () => 100000 });
   r.svc.onUpdate(fullSnap(2, 50));
   const [full, light] = calls.at(-1);
   assert.ok(full.model);
