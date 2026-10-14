@@ -34,6 +34,10 @@ const { createAskRepo } = require('./ask-repo');
 // this name, and the suggestions are the forge's generated agents (host/portraits.js tier 'forge'). Ricardo, 2026-10-13: "the agents' picker".
 const EXPLAINER_AGENT = 'ask-explainer';
 const SUGGESTION_MAX = 8;
+const QUESTION_KEY_CHARS = 500;
+const RETRIEVAL_MAX = 8;
+const RETRIEVAL_TTL_MS = 60_000;
+const PORTRAITS_TTL_MS = 10_000;
 const CARD_MAX = 6;
 const PREVIEW_MAX = 5;
 const CARD_LINES = 4;
@@ -112,20 +116,36 @@ function placesFromRanges(ranges, data, max = PREVIEW_MAX) {
   return out;
 }
 
-/** Three example questions about real functions of three different files (the biggest files first), the same every time. */
+// A definition of a named function or class, per language this repo (and most repos) holds: JS / TS, Python, PowerShell, C#, Go, Rust, Java.
+const DEFINITION = new RegExp('(?:^|\\n)[ \\t]*(?:'
+  + '(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?function\\*?\\s+([A-Za-z_$][\\w$-]{3,})\\s*[({]'       // JS, TS ( ... ), PowerShell (function Get-Thing { )
+  + '|(?:async\\s+)?def\\s+([A-Za-z_][\\w]{3,})\\s*\\('                                     // Python
+  + '|class\\s+([A-Za-z_][\\w]{3,})\\b'                                                // JS, Python, C#, Java
+  + '|func\\s+(?:\\([^)]*\\)\\s*)?([A-Za-z_][\\w]{3,})\\s*\\('                                // Go
+  + '|(?:pub\\s+)?(?:async\\s+)?fn\\s+([A-Za-z_][\\w]{3,})\\s*[(<]'                         // Rust
+  + ')');
+const examplesCache = new WeakMap();
+
+/** Up to three example questions about real things in three different files (the biggest first), the same every time; file-based when no
+ *  definition is found, and none at all when there is nothing to ask about (never invented ones). */
 function examplesFrom(data) {
   if (!isObj(data) || !Array.isArray(data.files)) return [];
+  if (examplesCache.has(data)) return examplesCache.get(data);
   const files = [...data.files].sort((a, b) => (Number(b.size) || 0) - (Number(a.size) || 0));
   const names = new Set();
   const out = [];
   for (const f of files) {
     if (out.length >= EXAMPLE_TEMPLATES.length) break;
     const text = (f.chunks || []).map(c => (isStr(c.text) ? c.text : '')).join('\n');
-    const m = /(?:^|\n)[ \t]*(?:async\s+)?function\s+([A-Za-z_$][\w$]{3,})\s*\(/.exec(text);
-    if (!m || names.has(m[1])) continue;
-    names.add(m[1]);
-    out.push(EXAMPLE_TEMPLATES[out.length](m[1]));
+    const m = DEFINITION.exec(text);
+    const name = m ? m.slice(1).find(Boolean) : null;
+    if (name && !names.has(name)) { names.add(name); out.push(EXAMPLE_TEMPLATES[out.length](name)); }
   }
+  // a repo with no definitions we can read (docs, config, an unfamiliar language): ask about the biggest files themselves
+  if (!out.length) {
+    for (const f of files.slice(0, EXAMPLE_TEMPLATES.length)) if (isStr(f.rel) && f.rel) out.push(`What is ${f.rel} for?`);
+  }
+  examplesCache.set(data, out);
   return out;
 }
 
@@ -138,18 +158,30 @@ async function defaultReadSelection(cwd, file) {
   return r.ok ? { ok: true, text: r.text } : { ok: false, why: r.why };
 }
 
-function defaultSpawnOllama() {
-  return new Promise((resolve) => {
+/** `ollama serve` must not inherit the harness's own markers (CLAUDE_CUSTOM_*, ELECTRON_RUN_AS_NODE): it outlives this host (PR #169 Miguel G8). */
+function serveEnv(env) {
+  const out = {};
+  for (const [k, v] of Object.entries(env || {})) {
+    const up = String(k).toUpperCase();
+    if (up === 'ELECTRON_RUN_AS_NODE' || up.startsWith('CLAUDE_CUSTOM_')) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+function createSpawnOllama({ spawn = childProcess.spawn, env = process.env, settleMs = 400 } = {}) {
+  return () => new Promise((resolve) => {
     let done = false;
     const fin = (r) => { if (!done) { done = true; resolve(r); } };
     try {
-      const child = childProcess.spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+      const child = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore', windowsHide: true, env: serveEnv(env) });
       child.on('error', (e) => fin({ ok: false, reason: e && e.code === 'ENOENT' ? 'ollama-not-installed' : 'spawn-failed' }));
       child.unref();
-      setTimeout(() => fin({ ok: true }), 400);
+      setTimeout(() => fin({ ok: true }), settleMs);
     } catch { fin({ ok: false, reason: 'spawn-failed' }); }
   });
 }
+const defaultSpawnOllama = createSpawnOllama();
 
 /** For a Claude model, the engine sees the local Ollama only for its embedder; the ANSWER comes from the claude CLI. */
 function claudeAsOllama({ ollama, claude, modelId }) {
@@ -181,40 +213,70 @@ function createRepoFactory({ index, ollama, claude }) {
 
 function createAskService({
   cwd, index, ollama, claude, models, repoFor, readSelection = defaultReadSelection, spawnOllama = defaultSpawnOllama,
-  portraitOf = () => null, forgeAgents = () => [],
+  portraitOf = () => null, forgeAgents = () => [], now = Date.now,
 } = {}) {
-  const dataNow = () => (index && typeof index.get === 'function' ? index.get(cwd) : null);
+  // the index as far as it goes: while the first build runs, the files indexed so far (cards and examples come from them)
+  const dataNow = () => (index && typeof index.snapshot === 'function' ? index.snapshot(cwd) : (index && typeof index.get === 'function' ? index.get(cwd) : null));
+
+  // One ask is ONE retrieval (PR #169 El Gordo 1): `places` searches and keeps its hits under an id; the answer that follows names the id and
+  // uses the same hits instead of searching (and refreshing the index) a second time. Short-lived, small, taken once.
+  const retrievals = new Map();
+  let retrievalSeq = 0;
+  const keepRetrieval = (kind, key, modelId, ex) => {
+    const id = String(++retrievalSeq);
+    retrievals.set(id, { kind, key, modelId, ex, at: now() });
+    while (retrievals.size > RETRIEVAL_MAX) retrievals.delete(retrievals.keys().next().value);
+    return id;
+  };
+  const takeRetrieval = (id, kind, key, modelId) => {
+    const e = isStr(id) ? retrievals.get(id) : null;
+    if (e) retrievals.delete(id);
+    return e && now() - e.at <= RETRIEVAL_TTL_MS && e.kind === kind && e.key === key && e.modelId === modelId ? e.ex : null;
+  };
+  const selectionKey = (m) => `${m.file}:${m.start}-${m.end}:${isStr(m.term) ? m.term.trim() : ''}`;
   const modelOf = (msg) => models.choose(msg && msg.model);
 
   function failure(reply, data, extra = {}) {
     const hits = Array.isArray(reply.hits) ? reply.hits : [];
     const { hits: _drop, ...rest } = reply;
     void _drop;
-    return { ...rest, ok: false, ...extra, ...(hits.length ? { places: placesFromRanges(hits, data) } : {}) };
+    // the engine's own `model` (the missing Ollama model's NAME) wins over the choice's id (PR #169 Dexter 5)
+    return { ...extra, ...rest, ok: false, ...(hits.length ? { places: placesFromRanges(hits, data) } : {}) };
   }
 
+  // A typed question's places are the point, so with no citation the best search hits stand in; an EXPLANATION of a pure idea with no place
+  // gets none (design round 3, PR #169 Miguel Y8).
   function success(base, data, text, citations, sources, extra) {
     let places = placesFromCitations(text, citations, data);
-    if (!places.length) places = placesFromRanges(sources, data, 3);
+    if (!places.length && extra.kind !== 'explain') places = placesFromRanges(sources, data, 3);
     return { ...extra, ok: true, text, places, ...base };
   }
 
   async function status(msg) {
     const repo = repoFor('local');
     let [idx, ol] = await Promise.all([repo.status(cwd), ollama.check()]);
-    if (msg.warm === true && idx && idx.state === 'none' && !(index.isRunning && index.isRunning(cwd))) {
-      // the first open of this worktree: start reading it, and report it as started (the page polls its progress)
+    const running = () => !!(index.isRunning && index.isRunning(cwd));
+    if (msg.warm === true && idx && (idx.state === 'none' || idx.state === 'partial') && !running()) {
+      // the first open of this worktree (or an interrupted build): start (resume) reading it and report it as started; the page polls it
       Promise.resolve(index.refresh(cwd)).catch(() => {});
       idx = await repo.status(cwd);
     }
     return {
       ok: true,
-      index: idx,
+      index: idx && typeof idx === 'object' ? { ...idx, running: running() } : idx,
       ollama: ol.ok ? { ok: true } : { ok: false, reason: ol.reason, ...(ol.model ? { model: ol.model } : {}) },
       models: models.list(),
       examples: examplesFrom(dataNow()).slice(0, 3),
-      portraits: portraits(),
+      portraits: cachedPortraits(msg.fresh === true),
     };
+  }
+
+  // The agents' pictures are read from disk: not on every status poll (PR #169 Miguel Y11). A new upload asks `fresh`.
+  let portraitsCache = null;
+  function cachedPortraits(fresh) {
+    if (!fresh && portraitsCache && now() - portraitsCache.at <= PORTRAITS_TTL_MS) return portraitsCache.value;
+    portraitsCache = { at: now(), value: portraits() };
+    return portraitsCache.value;
   }
 
   /** The explainer's own picture, and up to SUGGESTION_MAX generated agent pictures to choose from. A throwing lookup is no picture. */
@@ -263,17 +325,20 @@ function createAskService({
     }
     const ex = await repo.excerptsFor(cwd, query, { exclude });
     if (!ex.ok) return ex;
-    return { ok: true, places: placesFromRanges(ex.sent, dataNow()), keywordOnly: ex.keywordOnly, stale: ex.stale };
+    const key = isStr(msg.file) ? selectionKey(msg) : query.trim().slice(0, QUESTION_KEY_CHARS);
+    const retrieval = keepRetrieval(isStr(msg.file) ? 'selection' : 'question', key, modelId, ex);
+    return { ok: true, places: placesFromRanges(ex.sent, dataNow()), keywordOnly: ex.keywordOnly, stale: ex.stale, retrieval, ...(ex.building ? { building: ex.building } : {}) };
   }
 
   async function ask(msg) {
     if (!isStr(msg.question) || !msg.question.trim()) return { ok: false, reason: 'empty-question' };
     const modelId = modelOf(msg);
-    const r = await repoFor(modelId).ask(cwd, msg.question);
+    const reused = takeRetrieval(msg.retrieval, 'question', msg.question.trim().slice(0, QUESTION_KEY_CHARS), modelId);
+    const r = await repoFor(modelId).ask(cwd, msg.question, reused ? { prepared: reused.prepared } : undefined);
     const data = dataNow();
     if (!r.ok) return failure(r, data, { model: modelId });
     return success(
-      { model: modelId, keywordOnly: r.keywordOnly === true, stale: r.stale === true, dropped: r.dropped || [], ms: r.ms },
+      { model: modelId, keywordOnly: r.keywordOnly === true, stale: r.stale === true, dropped: r.dropped || [], ms: r.ms, ...(r.building ? { building: r.building } : {}) },
       data, r.text, r.citations, r.sources, { kind: 'question' },
     );
   }
@@ -284,7 +349,8 @@ function createAskService({
     const s = await selectionOf(msg);
     if (!s.ok) return s;
     const repo = repoFor(modelId);
-    const ex = await repo.excerptsFor(cwd, s.query, { exclude: { file: msg.file, start: msg.start, end: msg.end } });
+    const reused = takeRetrieval(msg.retrieval, 'selection', selectionKey(msg), modelId);
+    const ex = reused || await repo.excerptsFor(cwd, s.query, { exclude: { file: msg.file, start: msg.start, end: msg.end } });
     if (!ex.ok) return { ...ex, model: modelId };
     const data = dataNow();
     const previews = () => placesFromRanges(ex.sent, data);
@@ -312,7 +378,7 @@ function createAskService({
     if (!counts.has(msg.file)) counts.set(msg.file, s.total);
     const { citations, dropped } = extractCitations(g.text, counts, { ranges });
     return success(
-      { model: modelId, keywordOnly: ex.keywordOnly, stale: ex.stale, dropped, ms: 0 },
+      { model: modelId, keywordOnly: ex.keywordOnly, stale: ex.stale, dropped, ms: 0, ...(ex.building ? { building: ex.building } : {}) },
       data, g.text, citations, ex.sent, { kind: 'explain', clipped: s.sel.clipped === true },
     );
   }
@@ -340,4 +406,4 @@ function createAskService({
   return { handle };
 }
 
-module.exports = { EXPLAINER_AGENT, createAskService, createRepoFactory, claudeAsOllama, whyFor, placesFromCitations, placesFromRanges, examplesFrom, linesOf };
+module.exports = { EXPLAINER_AGENT, createSpawnOllama, serveEnv, createAskService, createRepoFactory, claudeAsOllama, whyFor, placesFromCitations, placesFromRanges, examplesFrom, linesOf };

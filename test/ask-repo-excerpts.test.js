@@ -14,12 +14,13 @@ const DATA = {
   ],
 };
 
-function build({ data = DATA, check = { ok: true, answer: true, embed: true }, embed, running = false, progressImpl, generate } = {}) {
+function build({ data = DATA, check = { ok: true, answer: true, embed: true }, embed, running = false, progressImpl, generate, snapshot } = {}) {
   const calls = { embed: [], generate: [] };
   const index = {
     load: async () => data, get: () => data, isRunning: () => running,
     progress: () => (progressImpl ? progressImpl() : { state: data ? 'ready' : 'building', done: 1, total: 4 }),
     refresh: async () => ({ ok: true }),
+    ...(snapshot ? { snapshot: () => snapshot } : {}),
   };
   const ollama = {
     answerModel: 'm', embedModel: 'e', check: async () => check,
@@ -89,9 +90,93 @@ test('excerptsFor never asks a model to write anything', async () => {
   assert.strictEqual(calls.generate.length, 0);
 });
 
+const SNAP = { embedModel: 'e', builtAt: 1, files: [DATA.files[0]] };
+const building = (over = {}) => build({ data: null, running: true, progressImpl: () => ({ state: 'building', done: 1, total: 9, partial: false }), ...over });
+
+test('PR #169 Dexter 3 (Round 7): while the first index is being built, a question is answered from the files indexed so far, and says so', async () => {
+  const { repo } = building({ snapshot: SNAP });
+  const r = await repo.ask(WT, 'where is withFileLock defined?');
+  assert.strictEqual(r.ok, true, 'not a refusal');
+  assert.deepStrictEqual(r.building, { state: 'building', done: 1, total: 9, partial: false });
+  assert.strictEqual(r.stale, true);
+  assert.strictEqual(r.sources[0].file, 'host/file-lock.js');
+});
+
+test('the same for an explanation\'s excerpts and the places preview', async () => {
+  const { repo } = building({ snapshot: SNAP });
+  const r = await repo.excerptsFor(WT, 'withFileLock');
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.building);
+  assert.ok(r.sent.some(s => s.file === 'host/file-lock.js'));
+});
+
+test('with nothing indexed yet (no file so far) it is still "building", with its progress', async () => {
+  for (const snapshot of [undefined, { embedModel: 'e', builtAt: 1, files: [] }, null]) {
+    const { repo } = building({ snapshot });
+    const r = await repo.ask(WT, 'anything');
+    assert.deepStrictEqual([r.ok, r.reason, r.progress.done], [false, 'index-building', 1]);
+  }
+});
+
+test('a finished index is not marked as building', async () => {
+  const { repo } = build({ snapshot: SNAP });
+  const r = await repo.ask(WT, 'where is withFileLock defined?');
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.building, undefined);
+});
+
 test('ask: a model failure carries the answerer\'s own words (a Claude run says why), not just a reason', async () => {
   const { repo } = build({ generate: async () => ({ ok: false, reason: 'claude-failed', detail: 'Overloaded' }) });
   const r = await repo.ask(WT, 'withFileLock');
   assert.deepStrictEqual([r.ok, r.reason, r.detail], [false, 'claude-failed', 'Overloaded']);
   assert.ok(Array.isArray(r.hits) && r.hits.length > 0, 'the places the search found still come back');
+});
+
+// ---- one retrieval per ask (PR #169 El Gordo 1, Miguel Y10), against a REAL index over a fake file world ----
+const { createIndex } = require('../host/ask-index');
+const { tmpDir } = require('./tmp-dir');
+
+function realRepo() {
+  const files = new Map([['lib/lock.js', { text: 'function releaseLock(path) {\n  // the lock is released here\n}\n', mtimeMs: 1 }], ['lib/bar.js', { text: 'function toolbar() {}\n', mtimeMs: 1 }]]);
+  const calls = { refresh: 0, embed: 0, generate: 0 };
+  const index = createIndex({
+    dir: tmpDir(), embedModel: 'e',
+    listFiles: async () => [...files.keys()].sort(),
+    statFile: async (_w, rel) => { const f = files.get(rel); return f ? { size: f.text.length, mtimeMs: f.mtimeMs } : null; },
+    readFile: async (_w, rel) => files.get(rel).text,
+    embed: async (texts) => { calls.embed += 1; return { ok: true, vectors: texts.map(() => [1, 0]) }; },
+  });
+  const realRefresh = index.refresh;
+  index.refresh = (wt) => { calls.refresh += 1; return realRefresh(wt); };
+  const ollama = {
+    answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, answer: true, embed: true }),
+    embed: async (t) => { calls.embed += 1; return { ok: true, vectors: t.map(() => [1, 0]) }; },
+    generate: async () => { calls.generate += 1; return { ok: true, text: 'It is in lib/lock.js:2.' }; },
+  };
+  return { repo: createAskRepo({ index, ollama, k: 8 }), calls, index };
+}
+
+test('a fresh index gives NO "index may be a little behind" note: places then the answer on the same hits is one retrieval, one freshness check', async () => {
+  const { repo, calls, index } = realRepo();
+  await index.refresh(WT);
+  const refreshesBefore = calls.refresh;
+  const embedsBefore = calls.embed;
+  const ex = await repo.excerptsFor(WT, 'where is the lock released?');
+  assert.strictEqual(ex.ok, true);
+  assert.strictEqual(ex.stale, false);
+  const r = await repo.ask(WT, 'where is the lock released?', { prepared: ex.prepared });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stale, false, 'no stale note on a fresh index');
+  assert.strictEqual(calls.refresh - refreshesBefore, 1, 'one freshness check for the whole ask');
+  assert.strictEqual(calls.embed - embedsBefore, 1, 'one query embedding for the whole ask');
+  assert.deepStrictEqual(r.sources, ex.sent.map(s => ({ file: s.file, line: s.start, endLine: s.end })), 'the answer used the places\' own hits');
+});
+
+test('prepared retrieval is used as given: ask() does not search again, and a prepared miss is still no-matches', async () => {
+  const { repo, calls } = realRepo();
+  const none = { data: { files: [] }, stale: false, status: { ok: true }, top: [], keywordOnly: false };
+  const r = await repo.ask(WT, 'whatever', { prepared: none });
+  assert.deepStrictEqual([r.ok, r.reason], [false, 'no-matches']);
+  assert.strictEqual(calls.refresh, 0);
+  assert.strictEqual(calls.embed, 0);
 });

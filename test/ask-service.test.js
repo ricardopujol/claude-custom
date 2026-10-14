@@ -6,23 +6,24 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
-const { createAskService, EXPLAINER_AGENT, whyFor, placesFromCitations, examplesFrom } = require('../host/ask-service');
+const { createAskService, EXPLAINER_AGENT, createSpawnOllama, serveEnv, whyFor, placesFromCitations, examplesFrom } = require('../host/ask-service');
 const { createModels } = require('../host/ask-models');
 
 const CWD = 'C:\\proj';
 const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1}`);
 
 function rig(over = {}) {
-  const calls = { ask: [], excerpts: [], generate: [], claude: [], spawn: 0, refresh: 0 };
+  const calls = { ask: [], excerpts: [], generate: [], claude: [], spawn: 0, refresh: 0, askOpts: undefined };
   const data = {
     files: [{ rel: 'host/a.js', lines: 30, chunks: [{ start: 1, end: 30, text: lines(30).join('\n') }] }],
   };
   const ex = over.ex || {
     ok: true, body: '### host/a.js:1-30\n1: line 1', sent: [{ file: 'host/a.js', start: 1, end: 30 }],
     lineCounts: new Map([['host/a.js', 30]]), keywordOnly: false, stale: false, ollamaStatus: { ok: true, answer: true, embed: true },
+    prepared: { marker: 'the places\' own hits' },
   };
   const repo = {
-    ask: async (cwd, q) => { calls.ask.push([cwd, q]); return over.askResult || { ok: true, text: 'It is in host/a.js:3-4.', citations: [{ file: 'host/a.js', line: 3, endLine: 4 }], dropped: [], sources: [{ file: 'host/a.js', line: 1, endLine: 30 }], model: 'qwen3.5:4b', keywordOnly: false, stale: false, ms: 5 }; },
+    ask: async (cwd, q, opts) => { calls.ask.push([cwd, q]); calls.askOpts = opts; return over.askResult || { ok: true, text: 'It is in host/a.js:3-4.', citations: [{ file: 'host/a.js', line: 3, endLine: 4 }], dropped: [], sources: [{ file: 'host/a.js', line: 1, endLine: 30 }], model: 'qwen3.5:4b', keywordOnly: false, stale: false, ms: 5 }; },
     excerptsFor: async (cwd, query, opts) => { calls.excerpts.push([cwd, query, opts]); return typeof ex === 'function' ? ex(query, opts) : ex; },
     status: async () => ({ state: 'ready', files: 1, chunks: 1, builtAt: 1, keywordOnly: false, progress: { state: 'ready', done: 1, total: 1 } }),
   };
@@ -39,7 +40,7 @@ function rig(over = {}) {
     repoFor: () => repo,
     readSelection: over.readSelection || (async () => ({ ok: true, text: lines(30).join('\n') })),
     spawnOllama: async () => { calls.spawn += 1; return over.spawn || { ok: true }; },
-    portraitOf: over.portraitOf, forgeAgents: over.forgeAgents,
+    portraitOf: over.portraitOf, forgeAgents: over.forgeAgents, now: over.now,
   });
   return { svc, calls };
 }
@@ -107,6 +108,133 @@ test('status: a portrait lookup that throws is no picture, never a failed status
   const r = await svc.handle({ type: 'ask', op: 'status', seq: 1 });
   assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(r.portraits, { own: null, suggestions: [] });
+});
+
+test('PR #169 El Gordo 1: one ask is one retrieval: places keeps its hits under an id, and the answer that names the id uses them (the engine is not asked to search again)', async () => {
+  const { svc, calls } = rig();
+  const p = await svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'where is a?', model: 'local' });
+  assert.match(p.retrieval, /^\d+$/);
+  await svc.handle({ type: 'ask', op: 'ask', seq: 2, question: 'where is a?', model: 'local', retrieval: p.retrieval });
+  assert.deepStrictEqual(calls.askOpts, { prepared: { marker: 'the places\' own hits' } });
+  assert.strictEqual(calls.excerpts.length, 1, 'searched once');
+});
+
+test('a retrieval is used once, only for the same question and model, and only while fresh', async () => {
+  let t = 1000;
+  const { svc, calls } = rig({ now: () => t });
+  const take = async (over) => {
+    const p = await svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'where is a?', model: 'local' });
+    await svc.handle({ type: 'ask', op: 'ask', seq: 2, question: 'where is a?', model: 'local', retrieval: p.retrieval, ...over });
+    return calls.askOpts;
+  };
+  assert.ok(await take({}), 'same question, same model');
+  const p = await svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'where is a?', model: 'local' });
+  await svc.handle({ type: 'ask', op: 'ask', seq: 2, question: 'where is a?', model: 'local', retrieval: p.retrieval });
+  await svc.handle({ type: 'ask', op: 'ask', seq: 3, question: 'where is a?', model: 'local', retrieval: p.retrieval });
+  assert.strictEqual(calls.askOpts, undefined, 'the second use of the same id searches again');
+  assert.strictEqual(await take({ question: 'something else' }), undefined, 'another question');
+  assert.strictEqual(await take({ model: 'haiku' }), undefined, 'another model');
+  assert.strictEqual(await take({ retrieval: 'nope' }), undefined, 'an unknown id');
+  const q = await svc.handle({ type: 'ask', op: 'places', seq: 1, question: 'where is a?', model: 'local' });
+  t += 61_000;
+  await svc.handle({ type: 'ask', op: 'ask', seq: 2, question: 'where is a?', model: 'local', retrieval: q.retrieval });
+  assert.strictEqual(calls.askOpts, undefined, 'a retrieval older than a minute is stale');
+});
+
+test('an explanation reuses its places\' retrieval too (no second excerptsFor)', async () => {
+  const { svc, calls } = rig({ passed: PASS });
+  const sel = { file: 'host/a.js', start: 3, end: 5, model: 'local', level: 'comfortable' };
+  const p = await svc.handle({ type: 'ask', op: 'places', seq: 1, ...sel });
+  const r = await svc.handle({ type: 'ask', op: 'explain', seq: 2, ...sel, retrieval: p.retrieval });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(calls.excerpts.length, 1);
+  await svc.handle({ type: 'ask', op: 'explain', seq: 3, ...sel, end: 6, retrieval: p.retrieval });
+  assert.strictEqual(calls.excerpts.length, 2, 'another selection searches');
+});
+
+test('PR #169 Dexter 5: a missing Ollama model is named by its own name, not by "local"', async () => {
+  const { svc } = rig({ askResult: { ok: false, reason: 'model-missing', model: 'qwen3.5:4b', hits: [] } });
+  const r = await svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q', model: 'local' });
+  assert.deepStrictEqual([r.reason, r.model], ['model-missing', 'qwen3.5:4b']);
+  const other = rig({ askResult: { ok: false, reason: 'ollama-down', hits: [] } });
+  assert.strictEqual((await other.svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q', model: 'local' })).model, 'local', 'where the engine names none, the choice');
+});
+
+test('PR #169 Miguel Y8: an explanation that cites nothing gets NO cards (a pure idea has no place); a typed question keeps the search hits', async () => {
+  const { svc } = rig({ passed: PASS, generate: { ok: true, text: 'A lock file is a marker. It has no place in the code.' } });
+  const r = await svc.handle({ type: 'ask', op: 'explain', seq: 1, file: 'host/a.js', start: 3, end: 5, model: 'local', term: 'lock file', answer: 'x' });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.places, []);
+  const q = await rig({ askResult: { ok: true, text: 'Nothing cited.', citations: [], dropped: [], sources: [{ file: 'host/a.js', line: 1, endLine: 30 }], model: 'm', keywordOnly: false, stale: false, ms: 1 } }).svc.handle({ type: 'ask', op: 'ask', seq: 1, question: 'q' });
+  assert.ok(q.places.length >= 1);
+});
+
+test('PR #169 Miguel Y5: an interrupted (partial) index is resumed by the first status, like a missing one; the status says whether a build is running', async () => {
+  let started = 0;
+  let running = false;
+  const svc = createAskService({
+    cwd: CWD,
+    index: { get: () => null, load: async () => null, refresh: () => { started += 1; running = true; return new Promise(() => {}); }, progress: () => ({}), isRunning: () => running },
+    ollama: { answerModel: 'm', check: async () => ({ ok: true }) }, claude: { generate: async () => ({ ok: false }) },
+    models: createModels({ localModel: 'm', readRecord: () => '{}' }),
+    repoFor: () => ({ status: async () => ({ state: running ? 'building' : 'partial', files: 12 }) }),
+    readSelection: async () => ({ ok: false }), spawnOllama: async () => ({ ok: true }),
+  });
+  const a = await svc.handle({ type: 'ask', op: 'status', seq: 1, warm: true });
+  assert.strictEqual(started, 1);
+  assert.strictEqual(a.index.running, true);
+  await svc.handle({ type: 'ask', op: 'status', seq: 2, warm: true });
+  assert.strictEqual(started, 1, 'not started twice');
+  const idle = createAskService({
+    cwd: CWD, index: { get: () => null, load: async () => null, refresh: async () => ({}), progress: () => ({}), isRunning: () => false },
+    ollama: { answerModel: 'm', check: async () => ({ ok: true }) }, claude: { generate: async () => ({ ok: false }) }, models: createModels({ localModel: 'm', readRecord: () => '{}' }),
+    repoFor: () => ({ status: async () => ({ state: 'partial', files: 12 }) }), readSelection: async () => ({ ok: false }), spawnOllama: async () => ({ ok: true }),
+  });
+  assert.strictEqual((await idle.handle({ type: 'ask', op: 'status', seq: 1 })).index.running, false, 'not warm: it is only reported');
+});
+
+test('PR #169 Miguel Y11: the agents\' pictures are read from disk at most once in ten seconds, unless a new upload asks for them fresh', async () => {
+  let t = 5000;
+  let reads = 0;
+  const { svc } = rig({ now: () => t, forgeAgents: () => { reads += 1; return ['ada']; }, portraitOf: () => forge('ada') });
+  const status = (extra) => svc.handle({ type: 'ask', op: 'status', seq: 1, ...extra });
+  await status({}); await status({}); await status({});
+  assert.strictEqual(reads, 1);
+  await status({ fresh: true });
+  assert.strictEqual(reads, 2, 'a new upload is read at once');
+  t += 10_001;
+  await status({});
+  assert.strictEqual(reads, 3, 'and the cache expires');
+});
+
+test('PR #169 Miguel Y10: example questions cover the languages this repo has, fall back to the files themselves, and are never invented', () => {
+  const f = (rel, text, size = 100) => ({ rel, size, chunks: [{ text }] });
+  const py = examplesFrom({ files: [f('tools/a.py', 'import os\n\ndef rebuild_index(path):\n    pass\n', 300), f('tools/b.py', 'class IndexWriter:\n    pass\n', 200)] });
+  assert.match(py[0], /rebuild_index/);
+  assert.match(py[1], /IndexWriter/);
+  assert.match(examplesFrom({ files: [f('s/x.ps1', 'function Get-Thing {\n}\n')] })[0], /Get-Thing/);
+  assert.match(examplesFrom({ files: [f('m/x.go', 'func (s *Server) Handle(w int) {\n}\n')] })[0], /Handle/);
+  assert.match(examplesFrom({ files: [f('m/x.rs', 'pub async fn run_loop(x: u8) {\n}\n')] })[0], /run_loop/);
+  const none = examplesFrom({ files: [f('docs/readme.md', '# Title\n\nSome prose.\n', 500), f('config.yml', 'a: 1\n', 100)] });
+  assert.deepStrictEqual(none, ['What is docs/readme.md for?', 'What is config.yml for?'], 'file-based, from the repo\'s own files');
+  assert.deepStrictEqual(examplesFrom({ files: [] }), []);
+  const same = { files: [f('a.js', 'function alpha() {}\n')] };
+  assert.strictEqual(examplesFrom(same), examplesFrom(same), 'computed once per index');
+});
+
+test('PR #169 Miguel G8: ollama serve is started without the harness\'s own markers, as a detached process', async () => {
+  assert.deepStrictEqual(serveEnv({ PATH: 'p', OLLAMA_HOST: 'h', ELECTRON_RUN_AS_NODE: '1', claude_custom_port: '1', CLAUDE_CUSTOM_CWD: 'c' }), { PATH: 'p', OLLAMA_HOST: 'h' });
+  const seen = [];
+  const { EventEmitter } = require('events');
+  const spawn = (bin, args, opts) => { seen.push([bin, args, opts]); const c = new EventEmitter(); c.unref = () => {}; return c; };
+  const r = await createSpawnOllama({ spawn, env: { PATH: 'p', ELECTRON_RUN_AS_NODE: '1' }, settleMs: 1 })();
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(seen[0][0], 'ollama');
+  assert.deepStrictEqual(seen[0][1], ['serve']);
+  assert.strictEqual(seen[0][2].detached, true);
+  assert.deepStrictEqual(seen[0][2].env, { PATH: 'p' });
+  const missing = await createSpawnOllama({ spawn: () => { const c = new EventEmitter(); c.unref = () => {}; setImmediate(() => { const e = new Error('x'); e.code = 'ENOENT'; c.emit('error', e); }); return c; }, env: {}, settleMs: 50 })();
+  assert.deepStrictEqual(missing, { ok: false, reason: 'ollama-not-installed' });
 });
 
 test('status on a worktree with no index starts building it, once, without waiting for it', async () => {

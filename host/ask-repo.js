@@ -4,7 +4,8 @@
  * top chunks of that worktree's index, with citations that are checked to exist.
  *
  *   createAskRepo({ index, ollama, k, staleWaitMs, buildProbeMs }).ask(worktree, question)
- *     -> { ok: true, text, citations, dropped, sources, model, label: 'local model', keywordOnly, stale, refreshError?, ms }
+ *     -> { ok: true, text, citations, dropped, sources, model, label: 'local model', keywordOnly, stale, refreshError?, building?, ms }
+ *        `building` (the progress) is set when the answer came from the files indexed SO FAR because the first index is still being built
  *      | { ok: false, reason: 'empty-question' | 'index-building' | 'index-failed' | 'no-matches' | 'ollama-down'
  *                            | 'model-missing' | 'timeout' | 'http' | 'bad-reply', model?, progress?, partial?, error?, hits? }
  *   .status(worktree) -> { state: 'none' | 'building' | 'partial' | 'failed' | 'ready', files, chunks, builtAt, keywordOnly, model, progress, error? }
@@ -122,6 +123,12 @@ function createAskRepo({
     let data = await index.load(worktree);
     const progress = () => index.progress(worktree);
     if (!data || progress().partial) {
+      const building = () => {
+        // The first index (or an interrupted one) is still being built: answer from the files indexed so far, as Round 7 decided
+        // ("questions work at once"), and say so; only with nothing indexed yet is it "building".
+        const snap = typeof index.snapshot === 'function' ? index.snapshot(worktree) : null;
+        return snap && Array.isArray(snap.files) && snap.files.length ? { ok: true, data: snap, stale: true, building: progress() } : null;
+      };
       const partial = Boolean(data);
       if (!index.isRunning(worktree)) {
         // A build that already failed (even long after the watch below ended) is named, and only retried after a backoff.
@@ -134,7 +141,10 @@ function createAskRepo({
         if (w.outcome === 'done') data = index.get(worktree) || null;
         if (data && progress().partial) data = null; // still partial: not answerable
       }
-      if (!data || progress().partial) return { ok: false, failure: { ok: false, reason: 'index-building', progress: progress(), partial } };
+      if (!data || progress().partial) {
+        const b = building();
+        return b || { ok: false, failure: { ok: false, reason: 'index-building', progress: progress(), partial } };
+      }
     }
 
     // The newest state of the files, unless that takes too long or fails.
@@ -168,17 +178,22 @@ function createAskRepo({
     return { status, top, keywordOnly };
   }
 
-  async function ask(worktree, question) {
+  async function ask(worktree, question, { prepared } = {}) {
     const q = typeof question === 'string' ? question.trim().slice(0, MAX_QUESTION_CHARS) : '';
     if (!q) return { ok: false, reason: 'empty-question' };
     const started = now();
 
-    const rdy = await ready(worktree);
-    if (!rdy.ok) return rdy.failure;
-    const { data, stale, refreshError } = rdy;
-
-    const { status, top, keywordOnly } = await search(data, q, k);
-    const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}) };
+    // `prepared` is the retrieval excerptsFor() already did for this very question: the panel shows its places first and the answer then
+    // uses the same hits, so one ask is one retrieval (PR #169 El Gordo 1, Miguel Y10) and the freshness check isn't raced against itself.
+    let ctx = prepared;
+    if (!ctx) {
+      const rdy = await ready(worktree);
+      if (!rdy.ok) return rdy.failure;
+      const { status: st0, top: top0, keywordOnly: kw0 } = await search(rdy.data, q, k);
+      ctx = { data: rdy.data, stale: rdy.stale, refreshError: rdy.refreshError, building: rdy.building, status: st0, top: top0, keywordOnly: kw0 };
+    }
+    const { data, stale, refreshError, building, status, top, keywordOnly } = ctx;
+    const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ...(building ? { building } : {}) };
 
     if (!top.length) return { ok: false, reason: 'no-matches', ...extra };
     const { prompt, sent } = buildPrompt(q, top);
@@ -215,14 +230,17 @@ function createAskRepo({
     if (!q) return { ok: false, reason: 'empty-question' };
     const rdy = await ready(worktree);
     if (!rdy.ok) return rdy.failure;
-    const { data, stale, refreshError } = rdy;
+    const { data, stale, refreshError, building } = rdy;
     const want = Number.isInteger(wantK) && wantK > 0 ? wantK : k;
     const { status, top, keywordOnly } = await search(data, q, want + 4);
     const overlaps = (r) => !!exclude && r.rel === exclude.file && r.chunk.start <= exclude.end && r.chunk.end >= exclude.start;
-    const { body, sent } = buildExcerpts(top.filter(r => !overlaps(r)).slice(0, want));
+    const kept = top.filter(r => !overlaps(r)).slice(0, want);
+    const { body, sent } = buildExcerpts(kept);
     const lineCounts = new Map();
     for (const s of sent) lineCounts.set(s.file, data.files.find(f => f.rel === s.file).lines);
-    return { ok: true, body, sent, lineCounts, keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ollamaStatus: status };
+    return { ok: true, body, sent, lineCounts, keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ...(building ? { building } : {}), ollamaStatus: status,
+      // handed back to ask() so the answer uses these very hits
+      prepared: { data, stale, refreshError, building, status, top: kept, keywordOnly } };
   }
 
   async function status(worktree) {

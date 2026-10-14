@@ -9,8 +9,12 @@
  *                              | 'bad-reply', detail? }
  *
  * THE FOUNDING BET: it drives the real `claude` CLI on the person's plan and never touches the API. So:
- *   - the child's environment has no ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN (and no Bedrock / Vertex switch): whatever the host's
- *     own environment holds, this child cannot bill anything but the plan. `--bare` is NOT used: it only authenticates with an API key.
+ *   - the child's environment is an ALLOW-LIST (PR #169 Dexter 1, 2, 7, Miguel Y1): only what a process needs to run and to find the person's own
+ *     claude login (PATH, the profile and temp folders, CLAUDE_CONFIG_DIR, the plan's OAuth token). Everything else is dropped, so no
+ *     ANTHROPIC_* (key, token, BASE_URL, custom headers, model remaps), no Bedrock / Vertex / Foundry switch, no AWS / GCP credential and no
+ *     proxy can route the prompt anywhere but Anthropic on the plan, whatever the host's own environment holds. Names are matched without
+ *     regard to case (Windows env names are case-insensitive: `anthropic_api_key` is the same variable). `--bare` is NOT used: it only
+ *     authenticates with an API key.
  *   - it is read-only by what the CLI is given, not by what it is told: `--tools ""` (no built-in tool exists in it), `--strict-mcp-config`
  *     with no MCP config (no MCP server), `--no-session-persistence` (nothing saved), `--disable-slash-commands` (no skills),
  *     `--setting-sources ""` (no user, project or local settings, so none of their hooks, rules or CLAUDE.md memory is loaded).
@@ -28,21 +32,28 @@ const childProcess = require('child_process');
 const { killChildTree } = require('./kill-tree');
 
 const CLAUDE_MODELS = Object.freeze({ haiku: 'haiku', sonnet: 'sonnet' });
-const STRIPPED_ENV = Object.freeze([
-  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ELECTRON_RUN_AS_NODE',
-  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+// What the child may inherit, upper-cased. A name not listed here (and not LC_*) does not reach it.
+const ENV_ALLOW = Object.freeze([
+  'PATH', 'PATHEXT', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'OS', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+  'HOME', 'HOMEDRIVE', 'HOMEPATH', 'USERPROFILE', 'USERNAME', 'USERDOMAIN', 'LOGNAME', 'USER', 'SHELL',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+  'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LANGUAGE', 'TZ', 'TERM', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+  // where the CLI keeps (or is told) the person's own login: the plan, not an API key
+  'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN',
 ]);
 const TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 1_000_000;
 const DETAIL_CHARS = 300;
+const SIGNED_OUT = /\/login|not logged in|invalid api key/i;
 
 const usable = (n, fallback) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : fallback);
 
-/** The environment the child gets: the caller's, without anything that could bill or that marks it as part of the harness. */
+/** The environment the child gets: only the allow-listed names of the caller's (any case), and only string values. */
 function childEnv(env) {
   const out = {};
   for (const [k, v] of Object.entries(env || {})) {
-    if (STRIPPED_ENV.includes(k) || k.startsWith('CLAUDE_CUSTOM_')) continue;
+    const up = String(k).toUpperCase();
+    if (typeof v !== 'string' || !(ENV_ALLOW.includes(up) || up.startsWith('LC_'))) continue;
     out[k] = v;
   }
   return out;
@@ -93,7 +104,11 @@ function createClaudeAnswerer({
       let overflow = false;
       child.stdout.on('data', (d) => {
         outBytes += d.length;
-        if (outBytes > cap) { overflow = true; return; }
+        if (outBytes > cap) {
+          // a runaway child is ended now, not at the deadline
+          if (!overflow) { overflow = true; settle({ ok: false, reason: 'bad-reply' }); try { killFn(child); } catch { /* it ends on its own */ } }
+          return;
+        }
         out += d.toString('utf8');
       });
       child.stderr.on('data', (d) => { if (err.length < 4000) err += d.toString('utf8'); });
@@ -108,11 +123,16 @@ function createClaudeAnswerer({
         const isObj = j !== null && typeof j === 'object' && !Array.isArray(j);
         if (isObj && j.is_error === true) {
           const words = typeof j.result === 'string' ? j.result : '';
-          const signedOut = j.api_error_status === 401 || /\/login|not logged in|invalid api key/i.test(words);
+          const signedOut = j.api_error_status === 401 || SIGNED_OUT.test(words);
           settle(signedOut ? { ok: false, reason: 'not-signed-in', detail: short(words) } : { ok: false, reason: 'claude-failed', detail: short(words || err) });
           return;
         }
-        if (code !== 0) { settle({ ok: false, reason: 'claude-failed', detail: short(err || out) }); return; }
+        if (code !== 0) {
+          // a logged-out CLI may say so on stderr with no JSON at all (PR #169 Dexter 6)
+          const words = err || out;
+          settle(SIGNED_OUT.test(words) ? { ok: false, reason: 'not-signed-in', detail: short(words) } : { ok: false, reason: 'claude-failed', detail: short(words) });
+          return;
+        }
         const text = isObj && typeof j.result === 'string' ? j.result.trim() : '';
         settle(text ? { ok: true, text } : { ok: false, reason: 'bad-reply' });
       });
@@ -131,4 +151,4 @@ function createClaudeAnswerer({
   return { generate };
 }
 
-module.exports = { createClaudeAnswerer, CLAUDE_MODELS, STRIPPED_ENV, childEnv };
+module.exports = { createClaudeAnswerer, CLAUDE_MODELS, ENV_ALLOW, childEnv };

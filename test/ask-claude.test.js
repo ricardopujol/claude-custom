@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
-const { createClaudeAnswerer, CLAUDE_MODELS, STRIPPED_ENV } = require('../host/ask-claude');
+const { createClaudeAnswerer, CLAUDE_MODELS, ENV_ALLOW, childEnv } = require('../host/ask-claude');
 
 function fakeSpawn(script) {
   const calls = [];
@@ -71,18 +71,38 @@ test('generate: the CLI is read-only by construction: no tools, no MCP, no saved
   assert.deepStrictEqual(f.calls[0].opts.stdio, ['pipe', 'pipe', 'pipe']);
 });
 
-test('generate: the child can never bill: the API key and the harness variables are stripped from its environment', async () => {
+test('generate: the child can never bill or be routed elsewhere: its environment is an allow-list', async () => {
   const env = {
-    PATH: 'p', ANTHROPIC_API_KEY: 'sk-secret', ANTHROPIC_AUTH_TOKEN: 'tok', ELECTRON_RUN_AS_NODE: '1',
-    CLAUDE_CUSTOM_PORT: '1', CLAUDE_CUSTOM_CWD: 'c', HOME: 'h',
+    PATH: 'p', HOME: 'h', ANTHROPIC_API_KEY: 'sk-secret', ANTHROPIC_AUTH_TOKEN: 'tok', ELECTRON_RUN_AS_NODE: '1',
+    CLAUDE_CUSTOM_PORT: '1', CLAUDE_CUSTOM_CWD: 'c',
   };
   const f = fakeSpawn((c) => finish(c, 0, okJson('x')));
   const a = createClaudeAnswerer({ spawn: f.spawn, claudeBin: 'c', env, killFn: () => true });
   await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
-  const got = f.calls[0].opts.env;
-  assert.deepStrictEqual(Object.keys(got).sort(), ['HOME', 'PATH']);
-  assert.ok(STRIPPED_ENV.includes('ANTHROPIC_API_KEY'));
+  assert.deepStrictEqual(Object.keys(f.calls[0].opts.env).sort(), ['HOME', 'PATH']);
   assert.strictEqual(env.ANTHROPIC_API_KEY, 'sk-secret', 'the caller\'s own environment is not touched');
+});
+
+test('childEnv: routing, headers, model remaps, provider switches, cloud credentials and proxies never reach the child, in any case (PR #169 Dexter 1, 2, 7)', () => {
+  const hostile = {
+    anthropic_api_key: 'k', ANTHROPIC_BASE_URL: 'https://gateway.example', ANTHROPIC_CUSTOM_HEADERS: 'x: y', ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-opus',
+    ANTHROPIC_MODEL: 'm', Anthropic_Auth_Token: 't', ANTHROPIC_FOUNDRY_BASE_URL: 'u', CLAUDE_CODE_USE_BEDROCK: '1', claude_code_use_vertex: '1',
+    CLAUDE_CODE_USE_FOUNDRY: '1', AWS_ACCESS_KEY_ID: 'a', AWS_SECRET_ACCESS_KEY: 's', AWS_PROFILE: 'p', GOOGLE_APPLICATION_CREDENTIALS: 'g', CLOUD_ML_REGION: 'r',
+    HTTPS_PROXY: 'http://proxy', http_proxy: 'http://proxy', ALL_PROXY: 'p', NODE_OPTIONS: '--require x', ELECTRON_RUN_AS_NODE: '1',
+    claude_custom_cwd: 'c', CLAUDE_CUSTOM_PORT: '1', OPENAI_API_KEY: 'o', SOMETHING_ELSE: 'z',
+  };
+  assert.deepStrictEqual(childEnv(hostile), {}, 'nothing hostile survives, not one name');
+});
+
+test('childEnv: what the CLI needs to run and to find the person\'s own login does pass, with its own case', () => {
+  const ok = { Path: 'p', SystemRoot: 'C:\\Windows', USERPROFILE: 'u', APPDATA: 'a', LOCALAPPDATA: 'l', TEMP: 't', TMP: 't', HOME: 'h', CLAUDE_CONFIG_DIR: 'c', CLAUDE_CODE_OAUTH_TOKEN: 'o', LC_ALL: 'C', lang: 'en' };
+  assert.deepStrictEqual(childEnv(ok), ok);
+  assert.ok(ENV_ALLOW.includes('PATH') && !ENV_ALLOW.some(n => n.startsWith('ANTHROPIC')), 'no ANTHROPIC name on the list');
+});
+
+test('childEnv: a value that is not a string is dropped, and a missing environment is empty', () => {
+  assert.deepStrictEqual(childEnv({ PATH: undefined, HOME: 5, TEMP: 't' }), { TEMP: 't' });
+  assert.deepStrictEqual(childEnv(null), {});
 });
 
 test('generate: an unknown model is refused before anything runs', async () => {
@@ -107,6 +127,13 @@ test('generate: a CLI that says it is not signed in is named', async () => {
   const r = await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.reason, 'not-signed-in');
+});
+
+test('generate: "Not logged in" said on stderr with no JSON at all is not-signed-in too (PR #169 Dexter 6)', async () => {
+  const { a } = make((c) => finish(c, 1, '', 'Not logged in · Please run /login'));
+  const r = await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual([r.ok, r.reason], [false, 'not-signed-in']);
+  assert.match(r.detail, /Not logged in/);
 });
 
 test('generate: any other failed run keeps the CLI\'s own words (shortened), never an empty answer', async () => {
@@ -144,8 +171,10 @@ test('generate: a result that arrives after the deadline is nobody\'s (settles o
   assert.deepStrictEqual(await a.generate({ model: 'haiku', system: 's', prompt: 'p' }), { ok: false, reason: 'timeout' });
 });
 
-test('generate: stdout is capped so a runaway child cannot fill memory', async () => {
-  const { a } = make((c) => { c.stdout.emit('data', Buffer.alloc(3_000_000, 97)); finish(c, 0, ''); }, { maxOutputBytes: 1000 });
+test('generate: stdout is capped so a runaway child cannot fill memory, and it is ended at once, not at the deadline', async () => {
+  const killed = [];
+  const { a, f } = make((c) => { c.stdout.emit('data', Buffer.alloc(3_000_000, 97)); }, { maxOutputBytes: 1000, killFn: (child) => { killed.push(child.pid); return true; } });
   const r = await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
   assert.deepStrictEqual(r, { ok: false, reason: 'bad-reply' });
+  assert.deepStrictEqual(killed, [f.calls[0].child.pid]);
 });
