@@ -43,7 +43,7 @@ test('effectiveTerminal: project override wins over the app-wide pick, which win
   const theme = { family: 'Theme Font, monospace', size: 12 };
   const settings = { terminalFont: 'Global', terminalSize: 18, uiFont: null };
   assert.deepStrictEqual(fd.effectiveTerminal({ settings, projectFont: 'Project', themeFont: theme }),
-    { fontFamily: fd.stackFor('Project', 'mono'), fontSize: 18 });
+    { fontFamily: fd.stackForChain(['Project', 'Global'], 'mono'), fontSize: 18 });
   assert.deepStrictEqual(fd.effectiveTerminal({ settings, projectFont: null, themeFont: theme }),
     { fontFamily: fd.stackFor('Global', 'mono'), fontSize: 18 });
   assert.deepStrictEqual(fd.effectiveTerminal({ settings: fd.sanitizeSettings(null), projectFont: null, themeFont: theme }),
@@ -97,4 +97,45 @@ test('sectionView says "reading" before the settings are known and never shows a
   assert.strictEqual(v.terminalFont, 'Fira Code');
   assert.strictEqual(v.uiFont, null);
   assert.strictEqual(v.projectFont, 'Project Font');
+});
+
+test('a family that is a mis-decoded name (U+FFFD) is refused everywhere, a real non-ASCII one is kept', () => {
+  assert.strictEqual(fd.sanitizeFamily('Se\ufffdor Mono'), null);
+  const out = fd.parseFamilyList('Arial\nSe\ufffdor Mono\n\u6e38\u30b4\u30b7\u30c3\u30af\nSe\u00f1or Mono\n');
+  assert.ok(out.includes('Se\u00f1or Mono') && out.includes('\u6e38\u30b4\u30b7\u30c3\u30af') && out.includes('Arial'));
+  assert.ok(!out.some((n) => n.includes('\ufffd')));
+});
+
+test('Dexter 2: an override naming an uninstalled font still shows the app-wide pick behind it, then the fallbacks', () => {
+  const r = fd.effectiveTerminal({ settings: { terminalFont: 'JetBrains Mono' }, projectFont: 'Iosevka', themeFont: null });
+  assert.strictEqual(r.fontFamily, `"Iosevka", "JetBrains Mono", ${fd.FALLBACK_MONO}`);
+  assert.strictEqual(fd.effectiveTerminal({ settings: { terminalFont: 'Same' }, projectFont: 'Same' }).fontFamily, `"Same", ${fd.FALLBACK_MONO}`, 'no repeat');
+  assert.strictEqual(fd.stackForChain(['A', 'a;b', null, 'B'], 'ui'), `"A", "B", ${fd.FALLBACK_UI}`);
+});
+
+test('Dexter 7: with no size picked the theme size is kept exactly, and the slider shows the real size', () => {
+  const none = fd.sanitizeSettings(null);
+  for (const size of [28, 9, 13.5]) assert.strictEqual(fd.effectiveTerminal({ settings: none, themeFont: { size } }).fontSize, size);
+  assert.strictEqual(fd.effectiveTerminal({ settings: none, themeFont: { size: 'big' } }).fontSize, fd.DEFAULT_TERMINAL_SIZE);
+  assert.strictEqual(fd.effectiveTerminal({ settings: { terminalSize: 16 }, themeFont: { size: 28 } }).fontSize, 16, 'a pick still wins');
+  assert.strictEqual(fd.sectionView(none, null, 13).size, 13);
+  assert.strictEqual(fd.sectionView(none, null, undefined).size, fd.DEFAULT_TERMINAL_SIZE);
+  assert.strictEqual(fd.sectionView({ terminalSize: 20 }, null, 13).size, 20);
+});
+
+test('symbol and icon fonts never reach the terminal list, even if they measure fixed', () => {
+  const list = ['Wingdings', 'Webdings', 'Segoe MDL2 Assets', 'Segoe Fluent Icons', 'Segoe UI Emoji', 'Symbol', 'Consolas'];
+  assert.deepStrictEqual(fd.filterFonts(list, '', { fixedOnly: true, isFixed: () => true }), ['Consolas']);
+  assert.strictEqual(fd.filterFonts(list, '', { fixedOnly: false }).length, list.length, 'the interface list keeps them');
+});
+
+test('F2: the list is asked for only once the Fonts section is in front of the person, and again only after the window', () => {
+  const base = { haveList: false, lastAt: 0, now: 1000, ttlMs: 30000, busy: false };
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: false }), false, 'not opened: no enumeration');
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: undefined }), false);
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: true }), true);
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: true, busy: true }), false);
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: true, haveList: true, lastAt: 500 }), false, 'fresh');
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: true, haveList: true, lastAt: 500, now: 31000 }), true, 'stale: a new font appears');
+  assert.strictEqual(fd.shouldAskForList({ ...base, visible: false, haveList: true, lastAt: 0, now: 99999 }), false);
 });

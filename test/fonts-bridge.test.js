@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const {
-  registerFontHandlers, createFontLister, FONT_NAMES, GET_CHANNEL, SET_CHANNEL, LIST_CHANNEL, PUSH_CHANNEL,
+  registerFontHandlers, createFontLister, firstFamilies, powershellPath, POWERSHELL_FONTS, FONT_NAMES, GET_CHANNEL, SET_CHANNEL, LIST_CHANNEL, PUSH_CHANNEL,
 } = require('../app/fonts-bridge');
 
 function fakeIpc() {
@@ -81,7 +81,7 @@ test('the lister runs the platform command once per window of time and parses it
   let now = 1000;
   const lister = createFontLister({
     platform: 'win32', now: () => now, ttlMs: 30000,
-    run: async (cmd, args) => { calls += 1; assert.match(cmd, /powershell/i); assert.ok(args.join(' ').includes('InstalledFontCollection')); return 'Zed\nArial\n@V\nArial\n'; },
+    run: async (cmd, args) => { calls += 1; assert.match(cmd, /System32.WindowsPowerShell.v1\.0.powershell\.exe$/i); assert.ok(args.join(' ').includes('InstalledFontCollection')); return 'Zed\nArial\n@V\nArial\n'; },
   });
   assert.deepStrictEqual(await lister.list(), ['Arial', 'Zed']);
   assert.deepStrictEqual(await lister.list(), ['Arial', 'Zed']);
@@ -124,9 +124,60 @@ test('main registers the fonts bridge for the tab views and follows other window
   const path = require('path');
   const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
   const PRELOAD = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
-  assert.match(MAIN, /registerFontHandlers\(\{ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushToViews \}\)/);
+  assert.match(MAIN, /registerFontHandlers\(\{ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushFonts \}\)/);
   assert.match(MAIN, /names: FONT_NAMES/);
   assert.match(MAIN, /`\$\{FONT_NAMES\.key\}\.json`/);
   for (const ch of [GET_CHANNEL, SET_CHANNEL, LIST_CHANNEL]) assert.ok(PRELOAD.includes(`invoke('${ch}'`), ch);
   assert.ok(PRELOAD.includes(`on('${PUSH_CHANNEL}'`));
+});
+
+test('Miguel F1: the PowerShell script sets UTF-8 output before it lists, so a non-ASCII family arrives intact', () => {
+  assert.ok(POWERSHELL_FONTS.startsWith('[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;'), POWERSHELL_FONTS);
+  assert.ok(POWERSHELL_FONTS.indexOf('OutputEncoding') < POWERSHELL_FONTS.indexOf('InstalledFontCollection'));
+});
+
+test('a name that still arrives mis-decoded (U+FFFD) is dropped, a real non-ASCII one is kept', async () => {
+  const lister = createFontLister({ platform: 'win32', now: () => 0, run: async () => 'Se\u00f1or Mono\nSe\ufffdor Mono\n\u6e38\u30b4\u30b7\u30c3\u30af\nArial\n' });
+  const list = await lister.list();
+  assert.ok(list.includes('Se\u00f1or Mono') && list.includes('\u6e38\u30b4\u30b7\u30c3\u30af'));
+  assert.ok(!list.some((n) => n.includes('\ufffd')));
+});
+
+test('F9: powershell is run by its full path under SystemRoot', () => {
+  assert.strictEqual(powershellPath({ SystemRoot: 'D:\\WIN' }), 'D:\\WIN\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  assert.match(powershellPath({}), /^C:\\Windows\\System32\\WindowsPowerShell/);
+});
+
+test('Dexter 3: set is a patch merged into the record as it is now, so another window\'s change is not undone', () => {
+  const ipc = fakeIpc();
+  const store = fakeStore({ terminalFont: null, terminalSize: null, uiFont: 'Inter' });
+  registerFontHandlers({ ipcMain: ipc, store, isSender, send() {}, lister: { list: async () => [] } });
+  const saved = ipc.call(SET_CHANNEL, { sender: view }, { terminalSize: 16 });
+  assert.deepStrictEqual(saved, { terminalFont: null, terminalSize: 16, uiFont: 'Inter' });
+  assert.deepStrictEqual(store.value, saved);
+  const cleared = ipc.call(SET_CHANNEL, { sender: view }, { uiFont: null });
+  assert.deepStrictEqual(cleared, { terminalFont: null, terminalSize: 16, uiFont: null }, 'a named null clears that field only');
+  const junk = ipc.call(SET_CHANNEL, { sender: view }, { terminalFont: 'a;b', other: 1 });
+  assert.deepStrictEqual(junk, { terminalFont: null, terminalSize: 16, uiFont: null }, 'an unsafe value is stored as unset; unknown keys ignored');
+});
+
+test('Dexter 5: fc-list escapes are removed and an escaped comma does not split a family (from a recorded sample)', () => {
+  const sample = 'DejaVu Sans,DejaVu Sans Light\nGo\\-Mono\nA\\, B,Alias\nNoto Mono\n';
+  const out = require('../app/fonts-display').parseFamilyList(firstFamilies(sample));
+  assert.deepStrictEqual(out, ['A, B', 'DejaVu Sans', 'Go-Mono', 'Noto Mono']);
+});
+
+test('Miguel F3: the interface font reaches the tab strip and the indexing overlay through --font-ui', () => {
+  const { uiFontScript } = require('../app/fonts-bridge');
+  const fs = require('fs');
+  const path = require('path');
+  assert.strictEqual(uiFontScript({ uiFont: 'Inter' }), `document.documentElement.style.setProperty('--font-ui', "\\"Inter\\", \\"Segoe UI\\", system-ui, sans-serif")`);
+  for (const none of [null, {}, { uiFont: null }, { uiFont: 'a;b' }]) assert.match(uiFontScript(none), /removeProperty\('--font-ui'\)/, JSON.stringify(none));
+  for (const page of ['tab-strip.html', 'indexing-overlay.html']) {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'app', page), 'utf8');
+    assert.match(html, /font: [\d.]+px\/[\d.]+ var\(--font-ui, "Segoe UI", system-ui, sans-serif\)/, page);
+  }
+  const MAIN = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  assert.match(MAIN, /uiFontScript/);
+  assert.match(MAIN, /did-finish-load/);
 });

@@ -31,7 +31,8 @@ const FALLBACK_MONO = '"Cascadia Mono", "CaskaydiaCove Nerd Font", Consolas, mon
 const FALLBACK_UI = '"Segoe UI", system-ui, sans-serif';
 
 // A family goes into a CSS value inside double quotes: anything that could close the quote, the declaration or the rule is refused.
-const UNSAFE_FAMILY = /["\\;{}<>\u0000-\u001f\u007f]/;
+// U+FFFD is what a mis-decoded name looks like: it resolves to no font, so it is refused rather than listed.
+const UNSAFE_FAMILY = /["\\;{}<>\u0000-\u001f\u007f\ufffd]/;
 
 function sanitizeFamily(v) {
   if (typeof v !== 'string') return null;
@@ -65,13 +66,37 @@ function stackFor(family, kind) {
 function effectiveTerminal({ settings, projectFont, themeFont } = {}) {
   const s = sanitizeSettings(settings);
   const t = themeFont && typeof themeFont === 'object' ? themeFont : {};
-  const picked = sanitizeFamily(projectFont) || s.terminalFont;
   const themeFamily = typeof t.family === 'string' && t.family ? t.family : null;
-  const themeSize = sanitizeSize(t.size);
+  // The project's pick, then the app-wide one, then the fallbacks: a pick that is not installed here (set on another PC) falls
+  // through to the next one the person made, not straight to the default.
+  const picks = pickedFamilies(projectFont, s.terminalFont);
+  const themeSize = themeSizeOf(t);
   return {
-    fontFamily: picked ? stackFor(picked, 'mono') : (themeFamily || FALLBACK_MONO),
+    fontFamily: picks.length ? stackForChain(picks, 'mono') : (themeFamily || FALLBACK_MONO),
     fontSize: s.terminalSize !== null ? s.terminalSize : (themeSize !== null ? themeSize : DEFAULT_TERMINAL_SIZE),
   };
+}
+
+/** The names the person picked for the terminal, most specific first, without repeats or unsafe values. */
+function pickedFamilies(projectFont, appFont) {
+  const out = [];
+  for (const f of [projectFont, appFont]) {
+    const name = sanitizeFamily(f);
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/** `"A", "B", <fallbacks>`: an unsafe name is skipped. */
+function stackForChain(names, kind) {
+  const fallback = kind === 'ui' ? FALLBACK_UI : FALLBACK_MONO;
+  const safe = (Array.isArray(names) ? names : []).map(sanitizeFamily).filter(Boolean);
+  return [...safe.map((n) => `"${n}"`), fallback].join(', ');
+}
+
+// The registry theme's own size is not the person's pick: it is kept exactly as the theme says (a presentation theme may say 28).
+function themeSizeOf(t) {
+  return t && typeof t.size === 'number' && Number.isFinite(t.size) && t.size > 0 ? t.size : null;
 }
 
 /**
@@ -107,11 +132,25 @@ function filterFonts(families, query, { fixedOnly = false, isFixed } = {}) {
   const q = typeof query === 'string' ? query.trim().toLowerCase() : '';
   return families.filter((f) => typeof f === 'string'
     && (!q || f.toLowerCase().includes(q))
-    && (!fixedOnly || (typeof isFixed === 'function' && isFixed(f) === true)));
+    && (!fixedOnly || (!SYMBOL_FAMILY.test(f) && typeof isFixed === 'function' && isFixed(f) === true)));
+}
+
+// Symbol and icon fonts draw every letter as a same-width glyph, so they measure "fixed" and are no use in a terminal.
+const SYMBOL_FAMILY = /wingdings|webdings|dingbats|^symbol$|marlett|emoji|\bicons?\b|segoe fluent icons|segoe mdl2/i;
+
+/**
+ * Should the page ask main for the installed fonts now? Only once the Fonts section is actually in front of the person (enumerating
+ * spawns a process and measuring touches every family), never while another ask is in flight, and again after `ttlMs` so a font
+ * installed later appears. `lastAt` is when the last answer came (0 = never).
+ */
+function shouldAskForList({ visible, haveList, lastAt, now, ttlMs, busy } = {}) {
+  if (visible !== true || busy === true) return false;
+  if (!haveList) return true;
+  return typeof now === 'number' && typeof lastAt === 'number' && now - lastAt >= ttlMs;
 }
 
 /** What the Style tab's Fonts section shows. `settings` null = main has not answered yet ("reading…", never a guessed size). */
-function sectionView(settings, projectFont) {
+function sectionView(settings, projectFont, themeSize) {
   if (!settings || typeof settings !== 'object') {
     return { known: false, terminalFont: null, size: null, uiFont: null, projectFont: sanitizeFamily(projectFont) };
   }
@@ -119,14 +158,15 @@ function sectionView(settings, projectFont) {
   return {
     known: true,
     terminalFont: s.terminalFont,
-    size: s.terminalSize !== null ? s.terminalSize : DEFAULT_TERMINAL_SIZE,
+    // The size the terminal really has: the pick, else the theme's own, else the default (never a constant that differs from the screen).
+    size: s.terminalSize !== null ? s.terminalSize : (themeSizeOf({ size: themeSize }) !== null ? themeSizeOf({ size: themeSize }) : DEFAULT_TERMINAL_SIZE),
     uiFont: s.uiFont,
     projectFont: sanitizeFamily(projectFont),
   };
 }
 
 const API = {
-  sanitizeFamily, sanitizeSize, sanitizeSettings, stackFor, effectiveTerminal, isFixedWidth, parseFamilyList, filterFonts, sectionView,
+  sanitizeFamily, sanitizeSize, sanitizeSettings, stackFor, stackForChain, shouldAskForList, effectiveTerminal, isFixedWidth, parseFamilyList, filterFonts, sectionView,
   MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE, DEFAULT_TERMINAL_SIZE, FALLBACK_MONO, FALLBACK_UI,
 };
 

@@ -595,6 +595,7 @@ let fontListBusy = false;
 const FONT_LIST_REFRESH_MS = 30000;
 const FONT_ROWS_SHOWN = 80;         // a search narrows a long list; this keeps the panel light before the person types
 const fontQueries = { term: '', ui: '', project: '' };
+let fontFocusAfter = null;          // which picker's search box gets the keyboard back once a pick has redrawn the panel
 const fixedFamilyCache = new Map(); // family -> true when it is fixed pitch; measured once, by the canvas the renderer itself draws with
 
 // --- terminal ---------------------------------------------------------------
@@ -1728,6 +1729,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
+  ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   for (const id of fx.newlyShown) onModuleShown(id);
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
@@ -4668,12 +4670,10 @@ function applyTheme(theme) {
     term.options.allowTransparency = true;
   }
   term.options.theme = terminal;
-  if (theme.font) {
-    if (theme.font.family) term.options.fontFamily = theme.font.family;
-    if (theme.font.size) term.options.fontSize = theme.font.size;
-    if (theme.font.lineHeight) term.options.lineHeight = theme.font.lineHeight;
-  }
-  applyFonts();       // the person's own picks sit over the registry theme's font
+  if (theme.font && theme.font.lineHeight) term.options.lineHeight = theme.font.lineHeight;
+  // The font family and size are decided in one place (applyFonts: the person's picks over the registry theme's font), so a theme
+  // application never writes the theme's font and then the pick's -- each write makes xterm rebuild its glyph atlas.
+  applyFonts();
   const c = theme.chrome || {};
   const root = document.documentElement.style;
   // NAMING TRAP (Miguel, feat/project-look #5): the theme's `panel` colour is
@@ -4690,6 +4690,7 @@ function applyTheme(theme) {
   // default (the theme's dark label) must come back, not a stale override.
   if (c.onAccent) root.setProperty('--on-accent', c.onAccent);
   else root.removeProperty('--on-accent');
+  paintPlainColour(theme);
   // FF12 tints the cursor and --model-accent from the theme. The line above
   // term.options.theme = ... REPLACED the tinted cursor, and a look changed
   // during a session, per #47, never reached FF12's cached theme -- re-tint.
@@ -6143,6 +6144,14 @@ function clearBackgroundLayer() {
 function setPlainColour(on) {
   plainColourOn = on;
   document.body.classList.toggle('has-plain-colour', on);
+  paintPlainColour(lastTheme);
+}
+// The colour behind the translucent terminal in Plain colour: kept readable against the CLI's text (app/bg-media-display.js).
+function paintPlainColour(theme) {
+  const root = document.documentElement.style;
+  const hex = plainColourOn ? bgMedia.plainColourOf(theme) : null;
+  if (hex) root.setProperty('--plain-colour', hex);
+  else root.removeProperty('--plain-colour');
 }
 function applyPlainColour() {
   removeBackgroundVideo();
@@ -7291,7 +7300,7 @@ function renderStyleSection(section) {
     );
   }
   if (section.id === 'fonts') {
-    const f = fontsDisplay.sectionView(fontSettings, projectTerminalFont);
+    const f = fontsDisplay.sectionView(fontSettings, projectTerminalFont, lastTheme && lastTheme.font ? lastTheme.font.size : null);
     if (!f.known) {
       return `<section class="style-section" data-section="fonts">${header}<div class="style-current">reading…</div></section>`;
     }
@@ -7520,6 +7529,7 @@ function bindStyleSections() {
     const root = document.documentElement.style;
     root.setProperty('--bg', hex);
     root.setProperty('--chrome', hex);
+    if (plainColourOn) root.setProperty('--plain-colour', hex);
     if (!backgroundUrl && !plainColourOn) term.options.theme = { ...term.options.theme, background: hex };
   });
   bindColour(document.getElementById('style-text'), document.getElementById('style-text-hex'),
@@ -7855,10 +7865,10 @@ function refreshFontSettings() {
   }).catch(() => setTimeout(refreshFontSettings, 1000));
 }
 
-// Send the DESIRED settings; main answers what it stored, and null (a failed save) re-reads the truth instead of trusting the click.
+// Send ONLY the changed field(s) -- main merges them into the record as it is now; it answers what it stored, and null (a failed save) re-reads the truth instead of trusting the click.
 function setFontSettings(patch) {
   if (!(window.harness && window.harness.fonts) || !fontSettings) return;
-  window.harness.fonts.set({ ...fontSettings, ...patch })
+  window.harness.fonts.set(patch)
     .then((saved) => { if (saved) takeFontSettings(saved); else refreshFontSettings(); })
     .catch(refreshFontSettings);
 }
@@ -7879,17 +7889,26 @@ function isFixedFamily(name) {
   return fixed;
 }
 
-function ensureFontList(force) {
-  if (!(window.harness && window.harness.fonts) || fontListBusy) return;
-  if (!force && fontFamilies && Date.now() - fontListAt < FONT_LIST_REFRESH_MS) return;
+// Whether the Fonts section is in front of the person: the Style panel is on screen (and the window is not in lean mode).
+function fontsSectionShown() { return shownModules.has('style') && !leanOn; }
+
+// Asked only once the Fonts section is shown (enumerating spawns a process, measuring touches every family), and again after
+// FONT_LIST_REFRESH_MS so a font installed later appears. A FAILED answer counts as an answer for the timing (`fontListAt`), so a
+// broken enumeration is retried after the window, not on every redraw.
+function ensureFontList() {
+  if (!(window.harness && window.harness.fonts)) return;
+  if (!fontsDisplay.shouldAskForList({ visible: fontsSectionShown(), haveList: fontListAt > 0, lastAt: fontListAt, now: Date.now(),
+    ttlMs: FONT_LIST_REFRESH_MS, busy: fontListBusy })) return;
   fontListBusy = true;
   window.harness.fonts.list().then((r) => {
     fontListAt = Date.now();
     if (r && r.ok === true && Array.isArray(r.families)) {
       const changed = !fontFamilies || fontFamilies.join('\n') !== r.families.join('\n');
+      const hadError = fontListError !== null;
       fontFamilies = r.families;
       fontListError = null;
-      if (changed) { fixedFamilyCache.clear(); renderStylePanel(); }
+      // An error that clears must be redrawn away even when the list itself is the same one.
+      if (changed || hadError) { if (changed) fixedFamilyCache.clear(); renderStylePanel(); }
     } else {
       fontListError = (r && r.error) || "couldn't list the installed fonts";
       renderStylePanel();
@@ -7906,8 +7925,12 @@ function fontRowsHtml(kind, current) {
   if (!fontFamilies) return `<div class="font-empty">listing the installed fonts…</div>`;
   const all = fontsDisplay.filterFonts(fontFamilies, fontQueries[kind], { fixedOnly: kind !== 'ui', isFixed: isFixedFamily });
   if (!all.length) return `<div class="font-empty">${kind !== 'ui' ? 'no fixed-width font matches' : 'no font matches'}</div>`;
-  const rows = all.slice(0, FONT_ROWS_SHOWN).map((name) =>
-    `<button type="button" class="font-row${name === current ? ' seated' : ''}" data-font="${escapeHtml(name)}">${escapeHtml(name)}</button>`);
+  // A listbox with one tab stop (the picked row, else the first); the arrow keys move between rows (bindFontPicker).
+  const shown = all.slice(0, FONT_ROWS_SHOWN);
+  const stop = shown.includes(current) ? current : shown[0];
+  const rows = shown.map((name) =>
+    `<button type="button" role="option" class="font-row${name === current ? ' seated' : ''}" aria-selected="${name === current}" ` +
+    `tabindex="${name === stop ? 0 : -1}" data-font="${escapeHtml(name)}">${escapeHtml(name)}</button>`);
   if (all.length > FONT_ROWS_SHOWN) rows.push(`<div class="font-empty">${all.length - FONT_ROWS_SHOWN} more: keep typing to narrow the list</div>`);
   return rows.join('');
 }
@@ -7917,10 +7940,10 @@ function fontPickerHtml(label, kind, current, unsetText, searchAttr, listAttr, r
   return (
     `<span class="style-label">${escapeHtml(label)}</span>` +
     `<div class="style-note" data-font-now="${kind}">${current ? `Now: ${escapeHtml(current)}` : escapeHtml(unsetText)}</div>` +
-    `<div class="style-row"><input type="text" class="style-hex font-search" ${searchAttr} placeholder="Search fonts" ` +
+    `<div class="style-row"><input type="text" class="style-hex font-search" ${searchAttr} placeholder="Search fonts" aria-label="Search fonts: ${escapeHtml(label)}" ` +
     `spellcheck="false" autocomplete="off" value="${escapeHtml(fontQueries[kind])}">` +
     `<button type="button" ${resetAttr}${current ? '' : ' disabled'}>Reset</button></div>` +
-    `<div class="font-list" ${listAttr}>${fontRowsHtml(kind, current)}</div>`
+    `<div class="font-list" ${listAttr} role="listbox" aria-label="${escapeHtml(label)}">${fontRowsHtml(kind, current)}</div>`
   );
 }
 
@@ -7942,15 +7965,27 @@ function bindFontPicker(searchEl, listEl, resetEl, kind, onPick) {
   });
   listEl.addEventListener('click', (e) => {
     const row = e.target && e.target.closest ? e.target.closest('.font-row') : null;
-    if (row && row.dataset.font) { fontQueries[kind] = ''; onPick(row.dataset.font); }
+    if (row && row.dataset.font) { fontQueries[kind] = ''; fontFocusAfter = kind; onPick(row.dataset.font); }
   });
-  if (resetEl) resetEl.addEventListener('click', () => { fontQueries[kind] = ''; onPick(null); });
+  // Arrow keys, Home and End move between the rows (one tab stop for the whole list; Enter or Space picks, as a button does).
+  listEl.addEventListener('keydown', (e) => {
+    const rows = [...listEl.querySelectorAll('.font-row')];
+    const at = rows.indexOf(document.activeElement);
+    if (at < 0) return;
+    const to = e.key === 'ArrowDown' ? at + 1 : e.key === 'ArrowUp' ? at - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? rows.length - 1 : null;
+    if (to === null) return;
+    e.preventDefault();
+    const next = rows[Math.max(0, Math.min(rows.length - 1, to))];
+    for (const r of rows) r.tabIndex = r === next ? 0 : -1;
+    next.focus();
+  });
+  if (resetEl) resetEl.addEventListener('click', () => { fontQueries[kind] = ''; fontFocusAfter = kind; onPick(null); });
 }
 
 function bindFontSection() {
   const termSearch = document.getElementById('style-font-term-search');
   if (!termSearch) return;       // the section is still "reading…"
-  ensureFontList(false);
+  ensureFontList();
   bindFontPicker(termSearch, document.getElementById('style-font-term-list'), document.getElementById('style-font-term-reset'),
     'term', (name) => setFontSettings({ terminalFont: name }));
   bindFontPicker(document.getElementById('style-font-ui-search'), document.getElementById('style-font-ui-list'),
@@ -7958,6 +7993,13 @@ function bindFontSection() {
   bindFontPicker(document.getElementById('style-font-project-search'), document.getElementById('style-font-project-list'),
     document.getElementById('style-font-project-reset'), 'project',
     (name) => sendStyle('colours', { action: 'set-look', look: { terminalFont: name } }));
+  // After a pick the panel was redrawn and the focused row is gone: keyboard focus goes back to that picker's search box.
+  if (fontFocusAfter) {
+    const box = fontFocusAfter === 'ui' ? document.getElementById('style-font-ui-search')
+      : fontFocusAfter === 'project' ? document.getElementById('style-font-project-search') : termSearch;
+    fontFocusAfter = null;
+    if (box) box.focus();
+  }
   const size = document.getElementById('style-font-size');
   if (size) {
     const label = document.getElementById('style-font-size-val');

@@ -111,8 +111,9 @@
     }
 
     /* Backlog #92, Plain colour: no picture, so #bg itself is the project's app colour; the veil above (has-custom-bg is set
-       with it) darkens it, 0 = the colour as it is. */
-    body.has-plain-colour #bg { background-color: var(--bg); }
+       with it) darkens it, 0 = the colour as it is. --plain-colour is that colour kept readable against the CLI's own text
+       (renderer.js paintPlainColour), the same guard the terminal's background has without a picture. */
+    body.has-plain-colour #bg { background-color: var(--plain-colour, var(--bg)); }
 
     /* Backlog #25: in a light look the veil is LIGHT (mostly white with a quarter of the app colour). Over the
        person's own picture its strength is the "Brightness" slider; over the generated art, which is already

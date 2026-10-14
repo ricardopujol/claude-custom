@@ -471,8 +471,10 @@ async function setBackground({ source, cwd, fsImpl = fs } = {}) {
   if (!plan.ok) return plan;
 
   // Checked before the copy too: a refused folder never costs a 100MB copy.
-  const early = refusalFor(readLookState(cwd, fsImpl), cwd);
+  const first = readLookState(cwd, fsImpl);
+  const early = refusalFor(first, cwd);
   if (early) return { ok: false, reason: early };
+  const modeAtStart = first.look.backgroundMode;
 
   const seq = ++copySeq;
   const temp = `${plan.dest}.tmp${process.pid}-${seq}`;
@@ -508,8 +510,10 @@ async function setBackground({ source, cwd, fsImpl = fs } = {}) {
   const setAt = new Date().toISOString();
   let look;
   try {
-    // Choosing a new picture is choosing the picture: it leaves Plain colour (#92), which would otherwise hide it.
-    look = writeLook(cwd, { ...state.look, background: { file, setAt }, backgroundMode: null }, { fsImpl });
+    // Choosing a new picture leaves Plain colour (#92), which would otherwise hide it -- unless Plain colour was chosen AFTER this
+    // picture was asked for (during the copy): the later click wins.
+    const backgroundMode = state.look.backgroundMode !== modeAtStart ? state.look.backgroundMode : null;
+    look = writeLook(cwd, { ...state.look, background: { file, setAt }, backgroundMode }, { fsImpl });
   } catch (err) {
     tryUnlink(fsImpl, plan.dest);
     if (setAside) { try { renameWithRetry(bak, plan.dest, rename); } catch { /* best effort */ } }

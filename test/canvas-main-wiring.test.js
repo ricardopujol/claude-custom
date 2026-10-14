@@ -109,7 +109,9 @@ test('host/canvas-store.js depends on no app/ module: the origin rule lives on t
 test("the panel's MCP switch is answered only to a tab view, only writes a real boolean, and reads and writes the folder the host reads (#71 question 8)", () => {
   assert.match(CODE, /ipcMain\.handle\('canvas:settings-get', \(e\) => \(isTabView\(e\.sender\) \? readMcpSetting\(uiStore\.dir\) : null\)\);/);
   assert.match(CODE, /ipcMain\.handle\('canvas:settings-set', \(e, on\) => \(isTabView\(e\.sender\) && typeof on === 'boolean' \? writeMcpSetting\(uiStore\.dir, on\) : null\)\);/);
-  assert.match(CODE, /const uiStore = createStore\(\{ dir: path\.join\(__dirname, '\.\.', '\.harness', 'state'\) \}\);/);
+  // Unset in real use, the store is the .harness/state folder the host reads; only a probe seam (uiStateDir) moves it.
+  assert.match(CODE, /const UI_STATE_DIR = readSeams\(process\.env\)\.uiStateDir \|\| path\.join\(__dirname, '\.\.', '\.harness', 'state'\);/);
+  assert.match(CODE, /const uiStore = createStore\(\{ dir: UI_STATE_DIR \}\);/);
   const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
   assert.match(host, /canvasMcpEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/, 'the host reads the same folder');
   const pre = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');

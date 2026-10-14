@@ -78,7 +78,26 @@ test('choosing a new picture while on Plain colour switches back to the picture'
   assert.ok(readLook(cwd).background);
 });
 
-test('"Reset to generated" drops the picture and also leaves plain-colour mode behind', () => {
+test('a Plain colour click made DURING the picture copy wins: the later action is not overwritten when the copy lands', async () => {
+  const { setBackground } = require('../host/style');
+  const cwd = tmpDir('cc-look-fc-');
+  const src = tmpDir('cc-look-fc-src-');
+  const png = path.join(src, 'chosen.png');
+  fs.writeFileSync(png, Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]));
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const slow = { ...fs, promises: { ...fs.promises, copyFile: async (a, b) => { await gate; return fs.promises.copyFile(a, b); } } };
+  const pending = setBackground({ source: png, cwd, fsImpl: slow });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(setLook({ cwd, patch: { backgroundMode: 'colour' } }).ok, true);
+  release();
+  const r = await pending;
+  assert.strictEqual(r.ok, true, r.reason);
+  assert.strictEqual(readLook(cwd).backgroundMode, 'colour', 'the click after the request stays');
+  assert.ok(readLook(cwd).background, 'and the picture is in place for when the person goes back');
+});
+
+test('a reset of the picture does not change the background mode (on Plain colour the screen stays as it is)', () => {
   const cwd = tmpDir('cc-look-fc-');
   setLook({ cwd, patch: { backgroundMode: 'colour' } });
   resetBackground({ cwd });

@@ -21,8 +21,8 @@
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* the
  * probe does not set are deleted; registry, portraits, uploads and user data are temp folders; the project is a temp git repo.
- * The one shared file it touches is this install's `.harness/state/fonts-global.json` (main keeps the app-wide fonts there): it is
- * saved first and put back, or removed if it was not there, however the probe ends. Only PIDs this probe started are killed
+ * Main's install-wide records (the app-wide fonts, layouts, toggles) go to a temp folder through the probe seam
+ * CLAUDE_CUSTOM_UI_STATE_DIR, so the real `.harness/state` and any window of the person's own are never touched. Only PIDs this probe started are killed
  * (verify/lib/process-hygiene.js), never a process by name.
  */
 
@@ -53,16 +53,10 @@ const userData = path.join(tmp, 'user-data');
 const shots = process.env.FONTS_PROBE_SHOTS || path.join(tmp, 'shots');
 fs.mkdirSync(shots, { recursive: true });
 
-// The one shared file: put back whatever was there.
-const FONTS_FILE = path.join(HARNESS_DIR, 'state', 'fonts-global.json');
-const savedFonts = fs.existsSync(FONTS_FILE) ? fs.readFileSync(FONTS_FILE) : null;
-function restoreFonts() {
-  try {
-    if (savedFonts) fs.writeFileSync(FONTS_FILE, savedFonts);
-    else fs.rmSync(FONTS_FILE, { force: true });
-  } catch { /* best effort */ }
-}
-hygiene.addCleanup(restoreFonts);
+// main's install-wide records for THIS run only (the probe seam in host/probe-seams.js).
+const uiState = path.join(tmp, 'ui-state');
+fs.mkdirSync(uiState, { recursive: true });
+const FONTS_FILE = path.join(uiState, 'fonts-global.json');
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -129,9 +123,10 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
     CLAUDE_CUSTOM_SIDE_TAB: 'style',
+    CLAUDE_CUSTOM_UI_STATE_DIR: uiState,
   };
   const keep = ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN',
-    'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_SIDE_TAB'];
+    'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_SIDE_TAB', 'CLAUDE_CUSTOM_UI_STATE_DIR'];
   for (const k of Object.keys(env)) if (k.startsWith('CLAUDE_CUSTOM_') && !keep.includes(k)) delete env[k];
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
@@ -224,7 +219,7 @@ async function main() {
   console.log(`   list: ${first.list.count} families, ${first.list.fixed} fixed-width (listed and measured in ${Date.now() - t0} ms incl. startup wait)`);
   check('1: it is a real list (dozens of families), not a stub', first.list.count >= 30, String(first.list.count));
   check('1: some, but not all, are fixed-width (the filter filters)', first.list.fixed >= 1 && first.list.fixed < first.list.count, `${first.list.fixed} of ${first.list.count}`);
-  check('1: the settings arrived from main and are unset on a fresh install', first.settings.terminalFont === null || savedFonts !== null, JSON.stringify(first.settings));
+  check('1: the settings arrived from main and are unset on a fresh install', first.settings.terminalFont === null && first.settings.terminalSize === null && first.settings.uiFont === null, JSON.stringify(first.settings));
   const term = await view(app, 'fontsSearch', { kind: 'term', query: '' });
   const allRows = new Set(term.rows || []);
   const ui = await view(app, 'fontsSearch', { kind: 'ui', query: '' });
@@ -282,6 +277,13 @@ async function main() {
   const back = await waitFor(async () => { const s = await fontsState(app); return s.projectFont === null && startsWithFamily(s.term.fontFamily, mono) ? s : null; }, 8000);
   check('5: Reset hands the terminal back to the app-wide font', !!back, JSON.stringify((await fontsState(app)).term));
 
+  // an override naming a font that is not installed here still shows the app-wide pick behind it (Dexter 2, PR #175)
+  await view(app, 'fontsSet', { settings: { terminalFont: mono } });
+  await view(app, 'bgStyle', { action: 'set-look', look: { terminalFont: 'Iosevka Not Installed' } });
+  const chain = await waitFor(async () => { const s = await fontsState(app); return startsWithFamily(s.term.fontFamily, 'Iosevka Not Installed') ? s : null; }, 8000);
+  check('5: an uninstalled override keeps the app-wide pick behind it', !!chain && chain.term.fontFamily.startsWith(`"Iosevka Not Installed", "${mono}", `), chain && chain.term.fontFamily);
+  await view(app, 'bgStyle', { action: 'set-look', look: { terminalFont: null } });
+
   // 6 -----------------------------------------------------------------------------
   await view(app, 'fontsSet', { settings: { terminalFont: 'Nonexistent Font XYZ', terminalSize: 14, uiFont: null } });
   const missing = await waitFor(async () => { const s = await fontsState(app); return startsWithFamily(s.term.fontFamily, 'Nonexistent') ? s : null; }, 8000);
@@ -312,6 +314,12 @@ async function main() {
   const dark = await waitFor(async () => { const s = await fontsState(app); return s.bg.veil === 0.6 ? s : null; }, 8000);
   check('8: raising the darkness darkens the colour (veil 0.6, not clear)', !!dark && dark.bg.veilColor !== 'rgba(0, 0, 0, 0)', dark && `${dark.bg.veil} ${dark.bg.veilColor}`);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-plain-colour.png') });
+  // an app colour equal to the CLI's own text (#c7cede) must not hide it in Plain colour (Dexter 1, PR #175)
+  await view(app, 'bgStyle', { action: 'set-look', look: { appColor: '#c7cede', darkness: 0 } });
+  const same = await waitFor(async () => { const s = await fontsState(app); return s.bg.appColor === '#c7cede' && s.bg.veil === 0 ? s : null; }, 8000);
+  check('8: an app colour equal to the CLI text is painted readable in Plain colour, not as that colour', !!same && same.bg.color !== 'rgb(199, 206, 222)', same && same.bg.color);
+  await view(app, 'bgStyle', { action: 'set-look', look: { appColor: '#204060' } });
+  await waitFor(async () => { const s = await fontsState(app); return s.bg.appColor === '#204060' ? s : null; }, 8000);
   await view(app, 'bgStyle', { action: 'set-look', look: { backgroundMode: null } });
   const again = await waitFor(async () => { const s = await fontsState(app); return !s.bg.plainColour && s.bg.hasCustomBg && s.bg.image.includes('background.png') ? s : null; }, 10000);
   check('8: Image / video brings the picture back (restored from the file that stayed)', !!again, JSON.stringify(again && again.bg));
@@ -325,7 +333,6 @@ main()
   .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
   .finally(() => {
     hygiene._emergencyCleanup('done');     // kills the window and, via the cleanup, every host it started
-    restoreFonts();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     if (process.env.FONTS_PROBE_SHOTS) console.log(`screenshots: ${shots}`);
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');

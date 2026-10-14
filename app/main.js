@@ -29,7 +29,7 @@ const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES } = require('./layout-bridge');
-const { registerFontHandlers, FONT_NAMES } = require('./fonts-bridge');
+const { registerFontHandlers, FONT_NAMES, uiFontScript, readFontSettings } = require('./fonts-bridge');
 const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
@@ -129,7 +129,9 @@ const { createIndexingBridge } = require('./indexing-bridge');
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
 // its own key, so neither side can clobber the other's file.
-const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
+// A probe seam (host/probe-seams.js, uiStateDir) moves these records into the probe's own folder; unset in real use.
+const UI_STATE_DIR = readSeams(process.env).uiStateDir || path.join(__dirname, '..', '.harness', 'state');
+const uiStore = createStore({ dir: UI_STATE_DIR });
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
@@ -415,6 +417,7 @@ let resources = null;              // the Resources panel's service (#63), built
 let resourceSampler = null;
 let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
 let transcriptOccupancy = null;    // ...and the fallback producer: claims read off the subagent transcripts
+const indexingPages = new Set();       // the indexing overlay's pages (toast, list): they get the interface font like the strip does
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
@@ -1308,7 +1311,7 @@ function registerIpc() {
   // Other project windows are other mains sharing this store: follow their toggle.
   watchImagesEnabled({
     store: uiStore, win, sync: avatarSync, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+    file: path.join(UI_STATE_DIR, `${AVATAR_KEY}.json`),
   });
 
   // Layout pass L2: "status line in the header" (#27; host/status-relay.js
@@ -1318,7 +1321,7 @@ function registerIpc() {
   registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
   watchChromeSettings({
     store: uiStore, sync: chromeSync, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
+    file: path.join(UI_STATE_DIR, `${CHROME_KEY}.json`),
   });
 
   // Backlog #34: the background video plays only while the window is on screen and on mains.
@@ -1350,7 +1353,7 @@ function registerIpc() {
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
   watchLayout({
     store: uiStore, sync: layoutSync, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${LAYOUT_KEY}.json`),
+    file: path.join(UI_STATE_DIR, `${LAYOUT_KEY}.json`),
   });
   // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
   // window still writes it, and it is read once to migrate into the tree, never written by this build.
@@ -1358,23 +1361,35 @@ function registerIpc() {
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
   watchLayout({
     store: uiStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${TREE_NAMES.key}.json`),
+    file: path.join(UI_STATE_DIR, `${TREE_NAMES.key}.json`),
   });
   // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
   const presetSync = {};
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToViews });
   watchLayout({
     store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${PRESET_NAMES.key}.json`),
+    file: path.join(UI_STATE_DIR, `${PRESET_NAMES.key}.json`),
   });
 
   // Fonts (BACKLOG #88): the install-wide terminal and interface fonts, the list of installed families, and the same
   // follow-the-other-windows poll the layouts use (watchLayout reads the key and push channel from FONT_NAMES).
+  // The tab strip and the indexing overlay are their own pages: they get the interface font as a --font-ui they read (uiFontScript).
   const fontsSync = {};
-  registerFontHandlers({ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushToViews });
+  const pushFonts = (channel, settings) => {
+    pushToViews(channel, settings);
+    const script = uiFontScript(settings);
+    for (const wc of [win && win.webContents, ...indexingPages]) {
+      try { if (wc && !wc.isDestroyed()) wc.executeJavaScript(script).catch(() => {}); } catch { /* the page is going away */ }
+    }
+  };
+  const giveUiFont = (wc) => wc.on('did-finish-load', () => {
+    try { wc.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
+  });
+  giveUiFont(win.webContents);
+  registerFontHandlers({ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushFonts });
   watchLayout({
-    store: uiStore, sync: fontsSync, names: FONT_NAMES, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${FONT_NAMES.key}.json`),
+    store: uiStore, sync: fontsSync, names: FONT_NAMES, send: pushFonts,
+    file: path.join(UI_STATE_DIR, `${FONT_NAMES.key}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
@@ -1770,6 +1785,11 @@ function startIndexing(seams) {
         webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload-indexing.js') },
       });
       v.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      indexingPages.add(v.webContents);
+      v.webContents.once('destroyed', () => indexingPages.delete(v.webContents));
+      v.webContents.on('did-finish-load', () => {
+        try { v.webContents.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* going away */ }
+      });
       if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
         v.webContents.on('console-message', (_e, level, message) => console.log(`[indexing-overlay] ${message}`));
       }
@@ -1948,7 +1968,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   // Other project windows are other mains sharing the saved file: follow their change of the chip, live, as the panels do.
-  watchChip({ file: path.join(__dirname, '..', '.harness', 'state', `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
+  watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
 
