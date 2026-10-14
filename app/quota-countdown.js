@@ -47,7 +47,7 @@ function resetMs(resetsAt) {
 
 /**
  * "Claude back in 2h 14m" within a day (minutes; seconds under a minute), "Claude back Thu 09:00" beyond it, and with the date
- * ("Tue 21 Oct 09:00") from six days out so it can't read like today. Rounds UP, so it never reads 0m or 0s while still
+ * ("21 Oct 09:00", no weekday: it must fit a narrow header) from six days out so it can't read like today. Rounds UP, so it never reads 0m or 0s while still
  * waiting, never "60s", and never goes negative: null when there is no future time. `who` is "Claude" or a model's name.
  */
 function backText(resetsAt, now = Date.now(), who = 'Claude') {
@@ -58,7 +58,7 @@ function backText(resetsAt, now = Date.now(), who = 'Claude') {
   if (ms >= DAY_MS) {
     const d = new Date(at);
     const when = ms >= 6 * DAY_MS
-      ? `${clockOf.weekdayText(d)} ${d.getDate()} ${d.toLocaleDateString('en-US', { month: 'short' })}`
+      ? `${d.getDate()} ${d.toLocaleDateString('en-US', { month: 'short' })}`
       : clockOf.weekdayText(d);
     return `${who} back ${when} ${clockOf.clockText(d)}`;
   }
@@ -98,21 +98,27 @@ function countdownState(quota, now = Date.now()) {
   const rows = usableWindows(quota, now);
   const texts = {};
   let best = null;
+  let bestScoped = null;
   let soonest = null;
   for (const w of rows || []) {
     const at = waitingUntil(w, now);
     if (at === null) continue;
     soonest = soonest === null ? at : Math.min(soonest, at);
-    if (isScoped(w)) texts[w.key] = backText(w.resetsAt, now, typeof w.label === 'string' && w.label ? w.label : 'That model');
+    if (isScoped(w)) {
+      texts[w.key] = backText(w.resetsAt, now, typeof w.label === 'string' && w.label ? w.label : 'That model');
+      if (bestScoped === null || at > bestScoped.at) bestScoped = { key: w.key, at };
+    }
     else {
       texts[w.key] = backText(w.resetsAt, now);        // every Claude-wide window that is out says when it is back
       if (best === null || at > best.resetAtMs) best = { key: w.key, resetAtMs: at, resetsAt: w.resetsAt };
     }
   }
   const soonestMs = soonest === null ? null : soonest - now;
-  if (best === null) return { state: 'normal', texts, soonestMs };
+  // `bindKey`: the meter that stays when the header is too narrow for them all (the Claude-wide binding one, else the scoped one
+  // that resets last), so a narrow strip is never left blank.
+  if (best === null) return { state: 'normal', texts, soonestMs, bindKey: bestScoped === null ? null : bestScoped.key };
   const text = texts[best.key];
-  return { state: 'usedUp', key: best.key, resetAtMs: best.resetAtMs, text, texts, soonestMs };
+  return { state: 'usedUp', key: best.key, resetAtMs: best.resetAtMs, text, texts, soonestMs, bindKey: best.key };
 }
 
 /** How long until the header next needs a look: every second in the last 90 s of a used-up window, else every 30 s. */

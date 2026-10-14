@@ -60,16 +60,19 @@ test('over a day it names the weekday and the clock time, the clock as the heade
   assert.strictEqual(backText(iso(at), NOW), `Claude back ${weekdayText(d)} ${clockText(d)}`);
 });
 
-test('six days out or more adds the date, so a same-weekday reset cannot read like today', () => {
+test('six days out or more says the date instead of the weekday, so it cannot read like today and still fits a narrow header', () => {
   const at = NOW + 6 * DAY + 23 * HOUR;
   const d = new Date(at);
   const text = backText(iso(at), NOW);
-  assert.match(text, new RegExp(`^Claude back ${d.toLocaleDateString('en-US', { weekday: 'short' })} ${d.getDate()} [A-Z][a-z]{2} \\d\\d:\\d\\d$`));
+  assert.strictEqual(text, `Claude back ${d.getDate()} ${d.toLocaleDateString('en-US', { month: 'short' })} ${clockText(d)}`);
+  assert.match(text, /^Claude back \d{1,2} [A-Z][a-z]{2} \d\d:\d\d$/);
   // 5 days 23 h is still the bare weekday form
   assert.match(backText(iso(NOW + 5 * DAY + 23 * HOUR), NOW), /^Claude back [A-Z][a-z]{2} \d\d:\d\d$/);
   // the edge itself
-  assert.match(backText(iso(NOW + 6 * DAY), NOW), /^Claude back [A-Z][a-z]{2} \d+ [A-Z][a-z]{2} \d\d:\d\d$/);
+  assert.match(backText(iso(NOW + 6 * DAY), NOW), /^Claude back \d{1,2} [A-Z][a-z]{2} \d\d:\d\d$/);
   assert.match(backText(iso(NOW + 6 * DAY - 1), NOW), /^Claude back [A-Z][a-z]{2} \d\d:\d\d$/);
+  // a model's name keeps the same shape
+  assert.match(backText(iso(NOW + 7 * DAY), NOW, 'Fable'), /^Fable back \d{1,2} [A-Z][a-z]{2} \d\d:\d\d$/);
 });
 
 test('a scoped window names its model, not Claude', () => {
@@ -431,5 +434,33 @@ test('property: every unscoped window that is out has its own text, no other doe
       if (out.length === 0) return s.state === 'normal';
       const last = out.reduce((a, b) => (Date.parse(b.resetsAt) > Date.parse(a.resetsAt) ? b : a));
       return s.state === 'usedUp' && s.key === last.key && s.text === s.texts[last.key];
+    }), { numRuns: 300 });
+});
+
+test('Dexter r3: bindKey is the meter that stays when the header is narrow: the Claude-wide binding one, else the scoped one that resets last, else none', () => {
+  // only a scoped window out: it binds, so a narrow header is never blank
+  const scopedOnly = countdownState(fresh([win({ percent: 20 }), win({ key: 'weekly', percent: 40 }), scoped()]), NOW);
+  assert.strictEqual(scopedOnly.state, 'normal');
+  assert.strictEqual(scopedOnly.bindKey, 'weekly_scoped:Fable');
+  // two scoped windows out: the one that resets last
+  const two = countdownState(fresh([scoped(), scoped({ key: 'weekly_scoped:Opus', label: 'Opus', resetsAt: iso(NOW + 5 * DAY) })]), NOW);
+  assert.strictEqual(two.bindKey, 'weekly_scoped:Opus');
+  // a Claude-wide window out beats any scoped one
+  const both = countdownState(fresh([win(), scoped()]), NOW);
+  assert.strictEqual(both.bindKey, 'session');
+  assert.strictEqual(both.bindKey, both.key);
+  // nothing out: none
+  assert.strictEqual(countdownState(fresh([win({ percent: 5 })]), NOW).bindKey, null);
+  assert.strictEqual(countdownState(null, NOW).bindKey, null);
+});
+
+test('property: whenever any window has a countdown text, exactly one of them is the bindKey', () => {
+  fc.assert(fc.property(
+    fc.array(fc.record({ scoped: fc.boolean(), pct: fc.constantFrom(10, 100), min: fc.integer({ min: 1, max: 20000 }) }), { minLength: 0, maxLength: 4 }),
+    (rows) => {
+      const windows = rows.map((r, i) => win({ key: r.scoped ? `weekly_scoped:M${i}` : `w${i}`, label: `L${i}`, percent: r.pct, resetsAt: iso(NOW + r.min * MIN) }));
+      const s = countdownState(fresh(windows), NOW);
+      const texted = Object.keys(s.texts);
+      return texted.length === 0 ? s.bindKey === null : texted.includes(s.bindKey);
     }), { numRuns: 300 });
 });
