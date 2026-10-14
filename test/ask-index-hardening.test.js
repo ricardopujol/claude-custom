@@ -495,3 +495,118 @@ test('S8: a kept file still waiting for vectors is embedded from memory, not rea
   assert.strictEqual(r.embedded, 2);
   assert.strictEqual(before[0].chunks[0].vec instanceof Float32Array, true, 'the same file objects were filled in');
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M9) --------------------------------------------------------
+
+test('M9: isIndexable: minified files and lockfiles are out by their NAME, wherever they sit; extension case does not matter', () => {
+  for (const out of ['dist2/app.min.mjs', 'a/x.min.js', 'a/X.MIN.JS', 'package-lock.js', 'a/pnpm-lock.js', 'package-locker.js']) assert.strictEqual(isIndexable(out), false, out);
+  for (const keep of ['foo.min.config.js', 'x.minx.js', 'my-package-lock.js', 'README.MD', 'src/X.JS', 'a.min/b.js', 'docs/minutes.md']) assert.strictEqual(isIndexable(keep), true, keep);
+});
+
+test('M9: the saved index file is named by a 16-character hash of the worktree, case-folded', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  await createIndex({ dir, ...w.deps }).refresh('C:\\Proj\\WT');
+  const names = fs.readdirSync(dir);
+  assert.strictEqual(names.length, 1);
+  assert.match(names[0], /^[0-9a-f]{16}\.json$/);
+  const idx = createIndex({ dir, ...w.deps });
+  const r = await idx.refresh('c:\\proj\\wt');
+  assert.deepStrictEqual([r.embedded, r.reused], [0, 1], 'the same folder in another case is the same index');
+});
+
+test('M9: a saved index that stays busy is tried four times, with the pause doubling between tries', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  await createIndex({ dir, ...w.deps }).refresh(WT);
+  const stamps = [];
+  const idx = createIndex({ dir, ...w.deps, readIndexFile: async () => { stamps.push(Date.now()); throw Object.assign(new Error('busy'), { code: 'EBUSY' }); } });
+  await assert.rejects(idx.refresh(WT), /unreadable right now/);
+  assert.strictEqual(stamps.length, 4, 'four attempts, no more');
+  assert.ok(stamps[3] - stamps[0] >= 150, `25 + 50 + 100 ms of waiting, not ${stamps[3] - stamps[0]}`);
+  assert.ok(stamps[1] - stamps[0] >= 20 && stamps[2] - stamps[1] >= 45 && stamps[3] - stamps[2] >= 90, stamps.map((s, i) => (i ? s - stamps[i - 1] : 0)).join(','));
+});
+
+test('M9: a save that fails is said once with its reason, leaves no temp file, and the old index stays', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  await createIndex({ dir, ...w.deps }).refresh(WT);
+  const file = path.join(dir, fs.readdirSync(dir)[0]);
+  const before = fs.readFileSync(file, 'utf8');
+  w.edit('a.js', 'changed');
+  const warned = [];
+  const realWarn = console.warn;
+  console.warn = (...a) => warned.push(a);
+  try {
+    const idx = createIndex({ dir, ...w.deps, writeIndexFile: async (p, s) => { await fsp.writeFile(p, s.slice(0, 10)); throw new Error('disk full'); } });
+    await idx.refresh(WT);
+  } finally { console.warn = realWarn; }
+  assert.deepStrictEqual(warned, [['[ask-index] could not save the index:', 'disk full']]);
+  assert.deepStrictEqual(fs.readdirSync(dir), [path.basename(file)], 'no .tmp left behind');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), before);
+});
+
+test('M9: sweep removes an orphan temp file only when it is OLDER than an hour', async () => {
+  const dir = tmpDir();
+  const T0 = 1_800_000_000_000;
+  const tmp = path.join(dir, 'abc.123.tmp');
+  fs.writeFileSync(tmp, 'x');
+  fs.utimesSync(tmp, new Date(T0), new Date(T0));
+  const realNow = Date.now;
+  const idx = createIndex({ dir, ...world().deps });
+  try {
+    Date.now = () => T0 + 3_600_000;
+    assert.deepStrictEqual(await idx.sweep(), { removedIndexes: 0, removedTmp: 0 }, 'exactly an hour is still young');
+    assert.ok(fs.existsSync(tmp));
+    Date.now = () => T0 + 3_600_001;
+    assert.deepStrictEqual(await idx.sweep(), { removedIndexes: 0, removedTmp: 1 });
+    assert.ok(!fs.existsSync(tmp));
+  } finally { Date.now = realNow; }
+});
+
+test('M9: sweep reads only .json and .tmp names, and an index of a folder that still exists is kept', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  const here = tmpDir('cc-wt-');
+  await createIndex({ dir, ...w.deps }).refresh(here);
+  fs.writeFileSync(path.join(dir, 'notes.txt'), '{"worktree":"C:\\\\definitely\\\\gone"}');
+  assert.deepStrictEqual(await createIndex({ dir, ...w.deps }).sweep(), { removedIndexes: 0, removedTmp: 0 });
+  assert.strictEqual(fs.readdirSync(dir).length, 2);
+});
+
+const hasGit = require('child_process').spawnSync('git', ['--version']).status === 0;
+
+test('M9: the real listing is git\'s: tracked and untracked files, not the ignored ones, as plain relative names', { skip: !hasGit }, async () => {
+  const { spawnSync } = require('child_process');
+  const repo = tmpDir('cc-ls-');
+  const git = (...a) => assert.strictEqual(spawnSync('git', a, { cwd: repo }).status, 0, a.join(' '));
+  git('init', '-q');
+  fs.writeFileSync(path.join(repo, '.gitignore'), 'ignored.js\n');
+  fs.mkdirSync(path.join(repo, 'sub'));
+  for (const f of ['b.js', 'ignored.js', 'package-lock.js', 'a.min.js', 'sub/c.js']) fs.writeFileSync(path.join(repo, f), `// ${f}\n`);
+  const listed = await realDeps.listFiles(repo);
+  assert.deepStrictEqual([...listed].sort(), ['.gitignore', 'a.min.js', 'b.js', 'package-lock.js', 'sub/c.js']);
+  assert.ok(listed.every(n => n !== ''), 'no empty names');
+  const w = world();
+  const idx = createIndex({ dir: tmpDir(), ...w.deps, listFiles: realDeps.listFiles, statFile: realDeps.statFile, readFile: realDeps.readFile });
+  await idx.refresh(repo);
+  assert.deepStrictEqual(idx.get(repo).files.map(f => f.rel), ['b.js', 'sub/c.js'], 'the lockfile and the minified file are not indexed');
+});
+
+test('M9: the real listing of a folder that is not a repository is a rejection, not an empty list', { skip: !hasGit }, async () => {
+  const notRepo = tmpDir('cc-notrepo-');
+  await assert.rejects(realDeps.listFiles(notRepo));
+  await assert.rejects(realDeps.listFiles(path.join(notRepo, 'missing')));
+});
+
+test('M9: the real stat reports a regular file and nothing else: a folder, or a missing name, is null', async () => {
+  const root = tmpDir('cc-stat-');
+  fs.mkdirSync(path.join(root, 'adir'));
+  fs.writeFileSync(path.join(root, 'f.js'), 'abc');
+  const st = await realDeps.statFile(root, 'f.js');
+  assert.strictEqual(st.size, 3);
+  assert.strictEqual(typeof st.mtimeMs, 'number');
+  assert.strictEqual(await realDeps.statFile(root, 'adir'), null);
+  assert.strictEqual(await realDeps.statFile(root, 'missing.js'), null);
+  assert.strictEqual(await realDeps.readFile(root, 'f.js'), 'abc');
+});
