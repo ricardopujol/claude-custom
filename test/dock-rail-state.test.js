@@ -1,7 +1,7 @@
 'use strict';
 /**
- * The rail's hover state machine (BACKLOG #85), pure and timer-free: the page owns the two timers (200 ms before a hover opens a
- * panel, 400 ms of grace before leaving closes it) and feeds `open-timer` / `close-timer` events back in.
+ * The rail's hover state machine (BACKLOG #85), pure and timer-free: the page owns the two timers (100 ms before a hover opens a
+ * panel, 100 ms of grace before leaving closes it) and feeds `open-timer` / `close-timer` events back in.
  * State: { module, held, pending, leaving } -- the open panel, whether a click or key holds it open, the tab hovered and
  * waiting for its timer, and whether the pointer left and the close timer is running.
  */

@@ -96,7 +96,7 @@ const RAIL_IDLE = Object.freeze({ module: null, held: false, pending: null, leav
 
 /**
  * The hover behaviour of the dock's rail tabs (BACKLOG #85), pure and timer-free: the page owns the two timers (a hover waits
- * 200 ms before it opens a panel; leaving waits 400 ms before it closes one) and feeds `open-timer` / `close-timer` back in.
+ * 100 ms before it opens a panel; leaving waits 100 ms before it closes one) and feeds `open-timer` / `close-timer` back in.
  * State { module, held, pending, leaving }: the open panel; whether a click or Enter holds it open (leaving then closes
  * nothing); the tab hovered and waiting for its timer; whether the pointer left and the close timer is running.
  *   enter {module}      the pointer is on a rail tab: opens it at once (unheld) when another is open, else waits (`pending`)
