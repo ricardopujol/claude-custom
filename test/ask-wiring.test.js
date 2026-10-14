@@ -26,6 +26,6 @@ test('host.js dispatches ask to the service and answers on the same socket', () 
 });
 
 test('the host builds the Claude answerer from the claude it resolved for the session, with no API key of its own', () => {
-  assert.match(HOST_SRC, /createClaudeAnswerer\(\{ claudeBin: CLAUDE_BIN \}\)/);
+  assert.match(HOST_SRC, /createClaudeAnswerer\(\{ claudeBin: CLAUDE_BIN, anchor: CWD \}\)/, 'the tab\'s own cwd anchors a relative CLAUDE_CONFIG_DIR (PR #169 Dexter N5)');
   assert.doesNotMatch(HOST_SRC, /ANTHROPIC_API_KEY/);
 });
