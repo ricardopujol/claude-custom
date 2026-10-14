@@ -576,6 +576,8 @@
        confident claim that the plan is untouched. */
     #quota .none { opacity: .7; font-size: 10.5px; }
     /* #90: a used-up window reads "Claude back in 2h 14m"; at the reset "Claude is back" shows once, in the strip. */
+    @media (max-width: 900px) { #quota.has-back .meter:not(.back) { display: none; } }   /* narrow: only the wait is shown */
+    #quota.has-back { flex-shrink: 0; }   /* the wait is the news: it keeps its width and the neighbours give way */
     #quota .meter.back .pct { color: var(--text); opacity: 1; font-weight: 600; }
     #quota .back-toast {
       font-size: 11px; font-weight: 600; color: var(--text); padding: 1px 9px; border-radius: 9px;

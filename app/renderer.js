@@ -5898,6 +5898,7 @@ function renderQuota(quota) {
     return;
   }
 
+  quotaEl.classList.toggle('has-back', cs.state === 'usedUp' && !!cs.text);
   quotaEl.innerHTML = d.meters.map(m => {
     const back = cs.state === 'usedUp' && m.key === cs.key && cs.text;
     return `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${back ? ' back' : ''}" title="${escapeHtml(m.title)}">` +
