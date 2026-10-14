@@ -139,7 +139,8 @@ const plan = (layout, sel = NO_SEL, vp = { width: 1000, height: 600 }) => V.tree
 const groupEls = dock => dock.children.filter(e => e.classes.has('dgroup'));
 const groupEl = (dock, id) => groupEls(dock).find(e => e.dataset.group === id);
 const floatEl = (w, id) => w.layer.children.find(e => e.dataset.group === id);          // floats live in #dock-floats, not under #dock
-const tabButtons = el => el.querySelector('.zone-tabs').children;
+const tabButtons = el => el.querySelector('.zone-tabs').children.filter(b => !b.classes.has('dpin'));      // the Pin button (#85) is no tab
+const tabsOf = nav => nav.children.filter(b => !b.classes.has('dpin'));
 
 // --- tests ---------------------------------------------------------------------------
 
@@ -232,19 +233,19 @@ test('tab buttons are rebuilt only when the tabs change: a selection change keep
   const l = T.defaultLayout(IDS);
   V.applyBoxes(plan(l), w.doc);
   const nav = groupEl(w.dock, 'right').querySelector('.zone-tabs');
-  const before = [...nav.children];
+  const before = tabsOf(nav);
   assert.deepStrictEqual(before.map(b => b.dataset.module), SHOWN);
   assert.deepStrictEqual(before.map(b => b.textContent), SHOWN_TABS.map(t => t.label));
   assert.deepStrictEqual(before.map(b => b.title), SHOWN_TABS.map(t => t.title));
   assert.ok(before.every(b => b.type === 'button'));
   assert.deepStrictEqual(before.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['agents']);
   V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
-  assert.deepStrictEqual([...nav.children], before, 'the very same button objects (so a focused one stays focused)');
+  assert.deepStrictEqual(tabsOf(nav), before, 'the very same button objects (so a focused one stays focused)');
   assert.deepStrictEqual(before.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['vault']);
   // A different set of tabs is a rebuild.
   V.applyBoxes(plan(T.hide(l, 'style')), w.doc);
-  assert.strictEqual(nav.children.length, SHOWN.length - 1);
-  assert.ok(nav.children.every(b => !before.includes(b)), 'new buttons');
+  assert.strictEqual(tabsOf(nav).length, SHOWN.length - 1);
+  assert.ok(tabsOf(nav).every(b => !before.includes(b)), 'new buttons');
 });
 
 test('a tab\'s label or title changing is a rebuild too', () => {
@@ -252,11 +253,11 @@ test('a tab\'s label or title changing is a rebuild too', () => {
   const l = T.defaultLayout(IDS);
   V.applyBoxes(plan(l), w.doc);
   const nav = groupEl(w.dock, 'right').querySelector('.zone-tabs');
-  const first = nav.children[0];
+  const first = tabsOf(nav)[0];
   const renamed = TABS.map(t => (t.id === 'agents' ? { ...t, label: 'Crew' } : t));
   V.applyBoxes(V.treePlan(l, NO_SEL, renamed, { width: 1000, height: 600 }, { faceSize: () => 77 }), w.doc);
-  assert.notStrictEqual(nav.children[0], first);
-  assert.strictEqual(nav.children[0].textContent, 'Crew');
+  assert.notStrictEqual(tabsOf(nav)[0], first);
+  assert.strictEqual(tabsOf(nav)[0].textContent, 'Crew');
 });
 
 test('rails and dividers: made per key, reused, removed when gone; a rail\'s buttons are rebuilt only when its modules change', () => {
@@ -319,11 +320,11 @@ test('I4: the showing tab is aria-pressed, the others are not, and a selection c
   const l = T.defaultLayout(IDS);
   V.applyBoxes(plan(l), w.doc);
   const nav = groupEl(w.dock, 'right').querySelector('.zone-tabs');
-  const before = [...nav.children];
+  const before = tabsOf(nav);
   assert.ok(before.every(b => b.tagName === 'BUTTON'), 'they stay buttons');
   assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), SHOWN.map(id => (id === 'agents' ? 'true' : 'false')));
   V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc);
-  assert.deepStrictEqual([...nav.children], before);
+  assert.deepStrictEqual(tabsOf(nav), before);
   assert.deepStrictEqual(before.map(b => b.getAttribute('aria-pressed')), SHOWN.map(id => (id === 'vault' ? 'true' : 'false')));
 });
 
@@ -608,4 +609,148 @@ test('PR #159 Miguel I1: a divider announces its position: the size of the panel
   assert.deepStrictEqual([g.getAttribute('aria-valuenow'), g.getAttribute('aria-valuemin'), g.getAttribute('aria-valuemax')], ['815', '320', '875']);
   V.applyBoxes(planD4(T.setSplitSizes(T.defaultLayout(IDS), [], [1, 200])), w.doc);
   assert.deepStrictEqual([g.getAttribute('aria-valuenow'), g.getAttribute('aria-valuemax')], ['795', '875'], 'follows the divider after a move');
+});
+
+// --- #85: the dock's rail, the Pin and Pinned buttons -----------------------------------------
+
+const pinOf = el => el.querySelector('.zone-tabs').children.find(b => b.classes.has('dpin'));
+
+test('#85: the dock rail is one element keyed "dock", marked as the dock\'s, kept as tabs come and go', () => {
+  const w = makeDoc();
+  const l1 = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l1), w.doc);
+  const rail = w.dock.children.find(e => e.classes.has('drail'));
+  assert.strictEqual(rail.dataset.rail, 'dock');
+  assert.deepStrictEqual(rail.children.map(b => b.dataset.module), ['git']);
+  V.applyBoxes(planD4(T.unpin(l1, 'vault')), w.doc);
+  assert.strictEqual(w.dock.children.find(e => e.classes.has('drail')), rail, 'the same element');
+  assert.deepStrictEqual(rail.children.map(b => b.dataset.module), ['git', 'vault']);
+  V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
+  assert.ok(!w.dock.children.some(e => e.classes.has('drail')), 'an empty rail is gone');
+});
+
+test('#85: a docked group has a Pinned button for the panel it shows, pressed, kept across tab changes', () => {
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
+  const pin = pinOf(groupEl(w.dock, 'right'));
+  assert.strictEqual(pin.textContent, 'Pinned');
+  assert.strictEqual(pin.getAttribute('aria-pressed'), 'true');
+  assert.strictEqual(pin.dataset.pin, 'agents');
+  assert.ok(!('module' in pin.dataset), 'no data-module: it is not a tab');
+  V.applyBoxes(planD4(T.defaultLayout(IDS), { active: { right: 'git' } }), w.doc);
+  assert.strictEqual(pinOf(groupEl(w.dock, 'right')), pin, 'the same button');
+  assert.strictEqual(pin.dataset.pin, 'git', 'it follows the shown tab');
+  assert.strictEqual(groupEl(w.dock, 'right').querySelector('.zone-tabs').children.at(-1), pin, 'last in the bar');
+});
+
+test('#85: the Pinned button comes back after the tab bar is rebuilt around it', () => {
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
+  V.applyBoxes(planD4(T.unpin(T.defaultLayout(IDS), 'git')), w.doc);       // the group lost a tab: its bar is rebuilt
+  const bar = groupEl(w.dock, 'right').querySelector('.zone-tabs');
+  assert.strictEqual(bar.children.filter(b => b.classes.has('dpin')).length, 1);
+  assert.ok(!bar.children.some(b => b.dataset.module === 'git'));
+});
+
+test('#85: a float has the button too', () => {
+  const w = makeDoc();
+  const l = T.dock(T.defaultLayout(IDS), 'fog', { float: true });
+  V.applyBoxes(planD4(l), w.doc);
+  const f = w.layer.children.find(e => e.classes.has('dfloat'));
+  assert.strictEqual(pinOf(f).dataset.pin, 'fog');
+});
+
+test('#85: the popover of a dock-rail panel has a Pin button (not pressed); one from a folded group has none', () => {
+  const w = makeDoc();
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const el = peekEl(w);
+  const pin = pinOf(el);
+  assert.strictEqual(pin.textContent, 'Pin');
+  assert.strictEqual(pin.getAttribute('aria-pressed'), 'false');
+  assert.strictEqual(pin.dataset.pin, 'git');
+  assert.strictEqual(el.dataset.from, 'right');
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(peekEl(w), undefined);
+  const w2 = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS), { collapsed: { right: ['agents'] } }, { module: 'vault' }), w2.doc);
+  assert.strictEqual(pinOf(peekEl(w2)), undefined);
+});
+
+test('#85: switching the popover to another rail tab moves the Pin button to it', () => {
+  const w = makeDoc();
+  const l = T.unpin(T.unpin(T.defaultLayout(IDS), 'git'), 'vault');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const pin = pinOf(peekEl(w));
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
+  assert.strictEqual(pinOf(peekEl(w)), pin);
+  assert.strictEqual(pin.dataset.pin, 'vault');
+});
+
+// --- PR #168 Miguel Y6: the panel slides back out ----------------------------------------------------------------------
+
+// A page that allows motion and keeps its timers for the test to run.
+const withMotion = (w, reduced = false) => {
+  const timers = [];
+  w.doc.defaultView = { matchMedia: () => ({ matches: reduced }), setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; } };
+  return timers;
+};
+
+test('Y6: with motion allowed, a closing popover stays, marked, holding its panel, until the slide ends', () => {
+  const w = makeDoc();
+  const timers = withMotion(w);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const el = peekEl(w);
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(peekEl(w), el, 'still there');
+  assert.ok(el.dataset.closing, 'marked closing, for the CSS slide-out');
+  assert.strictEqual(w.panels.git.parentNode, el.querySelector('.zone-panels'), 'its panel has not gone to the store yet');
+  assert.ok(w.panels.git.classes.has('on'), 'and is still drawn');
+  assert.strictEqual(timers.length, 1);
+  assert.ok(timers[0].ms >= V.SLIDE_MS, 'the removal waits for the slide');
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(timers.length, 1, 'a redraw while it closes starts no second timer');
+  timers[0].fn();
+  assert.strictEqual(peekEl(w), undefined, 'gone when the slide ends');
+  assert.strictEqual(w.panels.git.parentNode, w.store, 'and its panel waits in the store');
+  assert.ok(!w.panels.git.classes.has('on'));
+});
+
+test('Y6: under reduced motion, or with no way to ask, it closes at once', () => {
+  const w = makeDoc();
+  const timers = withMotion(w, true);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  assert.strictEqual(peekEl(w), undefined);
+  assert.strictEqual(w.panels.git.parentNode, w.store);
+  assert.strictEqual(timers.length, 0);
+});
+
+test('Y6: opening again while it closes reuses the element, clears the mark, and the old timer does nothing', () => {
+  const w = makeDoc();
+  const timers = withMotion(w);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const el = peekEl(w);
+  V.applyBoxes(planD4(l, NO_SEL, null), w.doc);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  assert.strictEqual(peekEl(w), el);
+  assert.ok(!el.dataset.closing);
+  timers[0].fn();
+  assert.strictEqual(peekEl(w), el, 'the stale timer leaves an open popover alone');
+  assert.strictEqual(w.panels.git.parentNode, el.querySelector('.zone-panels'));
+});
+
+test('Y6: pinning the panel while its popover slides out hands the panel to its group, and the timer takes nothing from it', () => {
+  const w = makeDoc();
+  const timers = withMotion(w);
+  const l = T.unpin(T.defaultLayout(IDS), 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  V.applyBoxes(planD4(T.pin(l, 'git'), { active: { right: 'git' }, foldAll: false }, null), w.doc);
+  assert.strictEqual(w.panels.git.parentNode, groupEl(w.dock, 'right').querySelector('.zone-panels'));
+  timers[0].fn();
+  assert.strictEqual(w.panels.git.parentNode, groupEl(w.dock, 'right').querySelector('.zone-panels'));
+  assert.strictEqual(peekEl(w), undefined);
 });

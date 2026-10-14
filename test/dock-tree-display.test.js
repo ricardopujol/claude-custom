@@ -185,7 +185,7 @@ test('menuRows lists every module in registry order, hidden ones included, with 
   const rows = V.menuRows(l, TABS);
   assert.deepStrictEqual(rows.map(r => r.id), IDS);
   assert.deepStrictEqual(rows.filter(r => !r.shown).map(r => r.id), ['vault', 'style', 'canvas']);
-  assert.deepStrictEqual(rows[0], { id: 'agents', label: 'Agents', shown: true });
+  assert.deepStrictEqual(rows[0], { id: 'agents', label: 'Agents', shown: true, railed: false });
 });
 
 test('menuRows still lists everything when every module is hidden: it is the way back', () => {
@@ -201,7 +201,7 @@ test('menuRows lists a floating module, shown (PR #102 Dexter 1)', () => {
   const l = T.dock(T.defaultLayout(IDS), 'vault', { float: true });
   const rows = V.menuRows(l, TABS);
   assert.deepStrictEqual(rows.map(r => r.id), IDS);
-  assert.deepStrictEqual(rows.find(r => r.id === 'vault'), { id: 'vault', label: 'Vault', shown: true });
+  assert.deepStrictEqual(rows.find(r => r.id === 'vault'), { id: 'vault', label: 'Vault', shown: true, railed: false });
 });
 
 test('menuRows with every module floating still lists every module, so Ctrl+B with only floats leaves a way back (PR #102 Dexter 1 and 4)', () => {

@@ -45,8 +45,8 @@ test('What\'s this? on the reader brings the panel on screen (un-hiding it) befo
   assert.match(JS, /onAsk: \(sel\) => \{ askExplain\(sel\); \},/);
   const at = JS.indexOf('function askExplain(sel) {');
   const body = JS.slice(at, JS.indexOf('\n}', at));
-  assert.match(body, /placementLayout\(\)\.hidden\.includes\('ask'\)/);
-  assert.match(body, /commitPlacement\(DTm\.show\(settledLayout\(\), 'ask'\), \{ select: 'ask' \}\)/);
+  assert.match(body, /revealModule\('ask'\);/, "#168's helper: a hidden panel returns on the rail, a railed one opens held");
+  assert.doesNotMatch(body, /DTm\./, 'no operation site of its own');
   assert.match(body, /askPanel\.explainSelection\(sel\)/);
 });
 

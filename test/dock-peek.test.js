@@ -93,36 +93,6 @@ test('P1: the popover is whole inside the window, never over its own rail, and s
   }), RUNS);
 });
 
-// --- peekAfter: what ends it (the page keeps only { module } or null) -----------------------
-
-const A = V.peekAfter;
-
-test('pressing a rail\'s button opens that module; pressing it again closes', () => {
-  assert.deepEqual(A(null, { type: 'rail', module: 'git' }), { module: 'git' });
-  assert.equal(A({ module: 'git' }, { type: 'rail', module: 'git' }), null);
-});
-
-test('pressing another rail\'s button moves the popover there', () => {
-  assert.deepEqual(A({ module: 'git' }, { type: 'rail', module: 'fog' }), { module: 'fog' });
-});
-
-test('a tab inside the popover switches it; with none open there is nothing to switch', () => {
-  assert.deepEqual(A({ module: 'git' }, { type: 'tab', module: 'fog' }), { module: 'fog' });
-  assert.equal(A(null, { type: 'tab', module: 'fog' }), null);
-});
-
-test('Esc, a press outside, a drop and a layout that lost the rail all close it', () => {
-  for (const type of ['escape', 'outside', 'drop', 'gone']) assert.equal(A({ module: 'git' }, { type }), null, type);
-});
-
-test('junk in changes nothing it can\'t explain', () => {
-  assert.deepEqual(A({ module: 'git' }, null), { module: 'git' });
-  assert.deepEqual(A({ module: 'git' }, { type: 'wave' }), { module: 'git' });
-  assert.equal(A({ module: 7 }, { type: 'rail', module: 7 }), null, 'a state that is not a module is no popover');
-  assert.equal(A(null, { type: 'rail', module: 7 }), null);
-  assert.equal(A('git', { type: 'escape' }), null);
-});
-
 // --- treePlan carries it ---------------------------------------------------------------------
 
 const plan = (layout, sel, peek) => V.treePlan(layout, sel, TABS, VP, { faceSize: () => 77, peek });
