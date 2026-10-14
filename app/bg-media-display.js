@@ -117,7 +117,18 @@ function pausedNote(state) {
   return null;
 }
 
-const API = { shouldPlay, playbackAction, applyPlayback, mediaFor, fileUrl, unplayableNote, pausedNote };
+/**
+ * The colour Plain colour (#92) paints behind the translucent terminal (Dexter 1): the TERMINAL'S background as the look resolved it,
+ * which host/look.js keeps readable against the CLI's own text -- not the raw app colour, which can equal that text. Falls back to the
+ * chrome's own background, then to null (the CSS then uses --bg).
+ */
+function plainColourOf(theme) {
+  const hex = (v) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : null);
+  const t = theme && typeof theme === 'object' ? theme : {};
+  return hex(t.terminal && t.terminal.background) || hex(t.chrome && t.chrome.bg);
+}
+
+const API = { plainColourOf, shouldPlay, playbackAction, applyPlayback, mediaFor, fileUrl, unplayableNote, pausedNote };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.bgMedia = API;

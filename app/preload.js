@@ -314,6 +314,17 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(layout); } catch (err) { console.error('[preload] layout-global listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('layout-global')),
   },
+  // Fonts (BACKLOG #88) -- see app/fonts-bridge.js. `get` answers { status, settings }, `set` the settings main stored (null: not saved),
+  // `list` { ok, families } of every installed family; `onChange` replaces its one listener.
+  fonts: {
+    get: () => ipcRenderer.invoke('fonts:get'),
+    set: (settings) => ipcRenderer.invoke('fonts:set', settings),
+    list: () => ipcRenderer.invoke('fonts:list'),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('fonts-global'), ipcRenderer.on('fonts-global',
+      (_e, settings) => {
+        try { fn(settings); } catch (err) { console.error('[preload] fonts-global listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('fonts-global')),
+  },
   // The split-tree layout (dockable panels D1): the same shape under its own key. The page reads
   // `layout` once, to migrate from it, and never writes it.
   layoutTree: {
