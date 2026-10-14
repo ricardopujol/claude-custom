@@ -265,3 +265,233 @@ test('r2 #1: a build that fails after the watch window is remembered with a time
   await idx.refresh(WT);
   assert.strictEqual(idx.progress(WT).failedAt, undefined);
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+const savedFile = (dir) => path.join(dir, fs.readdirSync(dir).find(n => n.endsWith('.json')));
+const MANY = Array.from({ length: 400 }, (_, i) => `line number ${i} of text`).join('\n');
+
+test('S8: a saved index of another version, or none, or the wrong shape, is not trusted: everything is embedded again', async () => {
+  for (const damage of [
+    (p) => ({ ...p, version: p.version - 1 }),
+    (p) => ({ ...p, version: p.version + 1 }),
+    (p) => { const { version, ...rest } = p; return rest; }, // eslint-disable-line no-unused-vars
+    (p) => ({ ...p, files: 'not an array' }),
+  ]) {
+    const dir = tmpDir();
+    const w = world({ 'a.js': 'one', 'b.js': 'two' });
+    await createIndex({ dir, ...w.deps }).refresh(WT);
+    const f = savedFile(dir);
+    fs.writeFileSync(f, JSON.stringify(damage(JSON.parse(fs.readFileSync(f, 'utf8')))));
+    const next = createIndex({ dir, ...w.deps });
+    await next.load(WT);
+    assert.strictEqual(next.get(WT), null, 'nothing was loaded from it');
+    const r = await next.refresh(WT);
+    assert.deepStrictEqual([r.embedded, r.reused], [2, 0]);
+  }
+});
+
+test('S8: a saved file that is the JSON literal null is an empty index, not a crash', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  await createIndex({ dir, ...w.deps }).refresh(WT);
+  fs.writeFileSync(savedFile(dir), 'null');
+  const r = await createIndex({ dir, ...w.deps }).refresh(WT);
+  assert.deepStrictEqual([r.embedded, r.reused], [1, 0]);
+});
+
+test('S8: a file deleted between two builds is gone from the second index and from the saved one', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one', 'b.js': 'two', 'c.js': 'three' });
+  const idx = createIndex({ dir, ...w.deps });
+  await idx.refresh(WT);
+  w.remove('b.js');
+  const r = await idx.refresh(WT);
+  assert.strictEqual(r.removed, 1);
+  assert.deepStrictEqual(idx.get(WT).files.map(f => f.rel), ['a.js', 'c.js']);
+  const reloaded = createIndex({ dir, ...w.deps });
+  await reloaded.load(WT);
+  assert.deepStrictEqual(reloaded.get(WT).files.map(f => f.rel), ['a.js', 'c.js']);
+  const again = await idx.refresh(WT);
+  assert.strictEqual(again.removed, 0, 'nothing more to remove');
+});
+
+test('S8: the save yields to the event loop every 20 files, no more and no less', async () => {
+  const yields = async (n) => {
+    const names = Object.fromEntries(Array.from({ length: n }, (_, i) => [`f${String(i).padStart(2, '0')}.js`, `line ${i}`]));
+    const w = world(names);
+    const real = global.setImmediate;
+    let count = 0;
+    global.setImmediate = (fn, ...rest) => {
+      if (new Error().stack.includes('ask-index.js')) count += 1;
+      return real(fn, ...rest);
+    };
+    try { await createIndex({ dir: tmpDir(), ...w.deps, now: () => 1000 }).refresh(WT); } finally { global.setImmediate = real; }
+    return count;
+  };
+  assert.deepStrictEqual([await yields(19), await yields(20), await yields(39), await yields(40), await yields(45)], [0, 1, 1, 2, 2]);
+});
+
+test('S8: a file still waiting for its vectors is written out again once it has them (the text cache is for finished files only)', async () => {
+  const dir = tmpDir();
+  const w = world({ 'a.js': 'one' });
+  let up = false;
+  const embed = async (t) => (up ? w.deps.embed(t) : { ok: false, reason: 'ollama-down' });
+  const idx = createIndex({ dir, ...w.deps, embed });
+  await idx.refresh(WT);
+  up = true;
+  const r = await idx.refresh(WT);
+  assert.deepStrictEqual([r.keywordOnly, r.embedded, r.reused], [false, 1, 0]);
+  const fresh = createIndex({ dir, ...w.deps, embed });
+  await fresh.load(WT);
+  assert.ok(fresh.get(WT).files[0].chunks[0].vec, 'the saved copy carries the vector');
+});
+
+test('S8: a file of exactly the size cap is indexed, one byte over is not; a listed file that vanished is skipped', async () => {
+  const w = world({ 'ok.js': 'a', 'big.js': 'b', 'gone.js': 'c' });
+  const sizes = { 'ok.js': 400_000, 'big.js': 400_001 };
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps,
+    statFile: async (_wt, rel) => (rel === 'gone.js' ? null : { size: sizes[rel], mtimeMs: 1 }),
+  });
+  const r = await idx.refresh(WT);
+  assert.deepStrictEqual(idx.get(WT).files.map(f => f.rel), ['ok.js']);
+  assert.strictEqual(r.files, 1);
+});
+
+test('S8: only indexable files are read, in sorted order, however the listing arrives', async () => {
+  const w = world({ 'b.js': 'bee', 'a.js': 'ay', 'logo.png': 'x', 'test/t.js': 'x' });
+  const order = [];
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps,
+    listFiles: async () => ['b.js', 'logo.png', 'a.js', 'test/t.js', 'b.js'],
+    readFile: async (_wt, rel) => { order.push(rel); return w.files.get(rel).text; },
+  });
+  const r = await idx.refresh(WT);
+  assert.deepStrictEqual(order, ['a.js', 'b.js'], 'sorted, deduplicated, filtered');
+  assert.strictEqual(r.files, 2);
+});
+
+test('S8: embeds go out in batches no larger than batchSize, never empty, and no text longer than the input cap', async () => {
+  const w = world({ 'a.js': MANY, 'long.js': 'x'.repeat(5000) });
+  const calls = [];
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps, batchSize: 3,
+    embed: async (texts) => { calls.push(texts); return w.deps.embed(texts); },
+  });
+  const r = await idx.refresh(WT);
+  assert.ok(r.chunks > 6, 'the file really has several chunks');
+  assert.ok(calls.every(c => c.length >= 1 && c.length <= 3), calls.map(c => c.length).join(','));
+  assert.strictEqual(calls.reduce((n, c) => n + c.length, 0), r.chunks, 'each chunk is embedded exactly once');
+  assert.ok(calls.flat().every(t => t.length <= 2000));
+  assert.ok(calls.flat().some(t => t.length === 2000), 'the over-long chunk is cut to the cap, not dropped');
+  assert.ok(calls.flat()[0].startsWith('a.js:1-'), 'the text leads with rel:start-end');
+});
+
+test('S8: progress.done counts up one file at a time, and the unreadable ones count too', async () => {
+  const w = world({ 'a.js': 'one', 'b.js': 'two', 'c.js': 'three' });
+  const seen = [];
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps,
+    readFile: async (_wt, rel) => { seen.push(idx.progress(WT).done); if (rel === 'b.js') throw new Error('EBUSY'); return w.files.get(rel).text; },
+  });
+  await idx.refresh(WT);
+  assert.deepStrictEqual(seen, [0, 1, 2]);
+  assert.deepStrictEqual([idx.progress(WT).state, idx.progress(WT).done, idx.progress(WT).total], ['ready', 3, 3]);
+});
+
+test('S8: keywordOnly is true when ANY file lacks vectors; reused does not count files that were re-embedded', async () => {
+  const w = world({ 'a.js': 'one', 'b.js': 'two' });
+  let calls = 0;
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps,
+    embed: async (t) => (++calls === 1 ? w.deps.embed(t) : { ok: false, reason: 'ollama-down' }),
+  });
+  const r1 = await idx.refresh(WT);
+  assert.strictEqual(r1.keywordOnly, true, 'a has vectors, b has none');
+  assert.strictEqual(r1.embedded, 1);
+  const r2 = await idx.refresh(WT);
+  assert.strictEqual(r2.reused, 1, 'a was kept as it was; b went through the embedder again');
+});
+
+test('S8: timed saves fire when the clock has moved exactly saveEveryMs, and not before', async () => {
+  const names = { 'a.js': 'one', 'b.js': 'two', 'c.js': 'three' };
+  const writes = async (step, every) => {
+    const w = world(names);
+    let clock = 10_000;
+    const out = [];
+    await createIndex({
+      dir: tmpDir(), ...w.deps, now: () => clock, saveEveryMs: every,
+      embed: async (t) => { clock += step; return w.deps.embed(t); },
+      writeIndexFile: async (p, s) => { out.push(p); await fsp.writeFile(p, s); },
+    }).refresh(WT);
+    return out.length;
+  };
+  assert.strictEqual(await writes(5000, 5000), 4, 'exactly on the interval saves after every file, and once at the end');
+  assert.strictEqual(await writes(3000, 5000), 2, 'every second file, and once at the end');
+  assert.strictEqual(await writes(1000, 5000), 1, 'only the final save');
+});
+
+test('S8: once the embedder has failed, no further batch or file is sent to it in that build', async () => {
+  const w = world({ 'a.js': 'one', 'b.js': 'two', 'c.js': 'three', 'd.js': '' });
+  let calls = 0;
+  const idx = createIndex({ dir: tmpDir(), ...w.deps, embed: async () => { calls += 1; return { ok: false, reason: 'ollama-down' }; } });
+  const r = await idx.refresh(WT);
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(r.embedFailure, 'ollama-down');
+  assert.strictEqual(r.keywordOnly, true);
+});
+
+test('S8: a chunk count that is an exact multiple of batchSize sends no trailing empty batch', async () => {
+  const w = world({ 'a.js': MANY });
+  const n = (await createIndex({ dir: tmpDir(), ...w.deps }).refresh(WT)).chunks;
+  assert.ok(n >= 2, n + ' chunks');
+  const calls = [];
+  await createIndex({
+    dir: tmpDir(), ...w.deps, batchSize: n,
+    embed: async (texts) => { calls.push(texts.length); return w.deps.embed(texts); },
+  }).refresh(WT);
+  assert.deepStrictEqual(calls, [n]);
+});
+
+test('S8: a file whose second batch fails is kept with NO vectors at all (all or nothing)', async () => {
+  const w = world({ 'a.js': MANY });
+  let calls = 0;
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps, batchSize: 3,
+    embed: async (t) => (++calls === 2 ? { ok: false, reason: 'ollama-down' } : w.deps.embed(t)),
+  });
+  const r = await idx.refresh(WT);
+  assert.strictEqual(r.keywordOnly, true);
+  assert.ok(idx.get(WT).files[0].chunks.every(c => c.vec === null), 'the first batch\'s vectors were dropped too');
+  assert.strictEqual(r.embedded, 0);
+});
+
+test('S8: an unchanged mtime with a different size is a changed file', async () => {
+  const w = world({ 'a.js': 'one' });
+  let size = 3;
+  const idx = createIndex({ dir: tmpDir(), ...w.deps, statFile: async () => ({ size, mtimeMs: 7 }) });
+  await idx.refresh(WT);
+  size = 4;
+  const r = await idx.refresh(WT);
+  assert.deepStrictEqual([r.embedded, r.reused], [1, 0]);
+});
+
+test('S8: a kept file still waiting for vectors is embedded from memory, not read and chunked again', async () => {
+  const w = world({ 'a.js': 'one', 'b.js': 'two' });
+  let up = false;
+  let reads = 0;
+  const idx = createIndex({
+    dir: tmpDir(), ...w.deps,
+    embed: async (t) => (up ? w.deps.embed(t) : { ok: false, reason: 'ollama-down' }),
+    readFile: async (_wt, rel) => { reads += 1; return w.files.get(rel).text; },
+  });
+  await idx.refresh(WT);
+  assert.strictEqual(reads, 2);
+  up = true;
+  const before = idx.get(WT).files;
+  const r = await idx.refresh(WT);
+  assert.strictEqual(reads, 2, 'nothing was read again');
+  assert.strictEqual(r.embedded, 2);
+  assert.strictEqual(before[0].chunks[0].vec instanceof Float32Array, true, 'the same file objects were filled in');
+});
