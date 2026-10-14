@@ -77,6 +77,27 @@ test('while the first index is building, the status is polled until it is ready;
   assert.strictEqual(r.timers.filter(t => t.live).length, 0);
 });
 
+test('a worktree reported as not read yet is polled a few times (its first index is starting), then left alone', async () => {
+  const r = rig();
+  const none = { ...HOST_OFF, index: { state: 'none', files: 0 } };
+  r.c.show();
+  await r.answerStatus(none);
+  let polls = 0;
+  for (let i = 0; i < 20; i += 1) {
+    const live = r.timers.filter(t => t.live);
+    if (!live.length) break;
+    polls += 1;
+    live[0].live = false;
+    live[0].fn();
+    await r.answerStatus(none);
+  }
+  assert.strictEqual(polls, 8, 'a bounded look, not a loop that never ends');
+  assert.strictEqual(r.timers.filter(t => t.live).length, 0);
+  r.c.show();
+  await r.answerStatus(none);
+  assert.strictEqual(r.timers.filter(t => t.live).length, 1, 'opening the panel again looks again');
+});
+
 test('nothing is asked of the model before the explainer is named; the question waits for the naming card', async () => {
   const r = rig({ profile: null });
   r.c.ask('where is x?');

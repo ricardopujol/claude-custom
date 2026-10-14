@@ -3670,6 +3670,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           text: root.querySelector('.ask-body').textContent.slice(0, 4000),
           html: root.querySelector('.ask-body').innerHTML.slice(0, 12000),
           label: (root.querySelector('.ask-label') || {}).textContent || null,
+          top: root.querySelector('.ask-top').textContent,
           status: (root.querySelector('.ask-status') || {}).textContent || null,
           cards: [...root.querySelectorAll('.ask-card')].map(c => ({ where: c.querySelector('.ask-card-where').textContent, file: c.dataset.file, line: c.dataset.line, why: (c.querySelector('.ask-card-why') || {}).textContent || '', code: (c.querySelector('.ask-card-code') || {}).textContent || '' })),
           stages: [...root.querySelectorAll('.ask-stage')].map(s => [s.className, s.textContent]),
@@ -3677,6 +3678,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           form: { hidden: root.querySelector('.ask-form').hidden },
           rect: rectOf(root),
           readerAsk: { hidden: document.getElementById('reader-ask').hidden },
+          highlight: (() => { const b = root.querySelector('.ask-highlight'); return b ? { hidden: b.hidden, text: b.querySelector('.ask-hl-text').textContent } : null; })(),
         });
       }
       case 'askDo': {
@@ -3700,6 +3702,15 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           range.setStart(first, 0); range.setEnd(first, Math.min(first.length, Number(a.chars) || 12));
           const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
           el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        }
+        else if (a.op === 'refresh') { askPanel.probe('refresh', {}); }
+        else if (a.op === 'settings') {
+          // open the settings, set what was named, press Save (as a person would)
+          if (!root.querySelector('#ask-set-level')) { const g = byAct('settings'); if (g) g.click(); }
+          const put = (sel, v) => { const n = root.querySelector(sel); if (n && v !== undefined) n.value = String(v); };
+          put('#ask-set-name', a.name); put('#ask-set-level', a.level); put('#ask-set-about', a.aboutMe); put('#ask-set-model', a.model);
+          const save = byAct('settings-save');
+          if (save) save.click();
         }
         else if (a.op === 'show') { if (placementLayout().hidden.includes('ask')) commitPlacement(DTm.show(settledLayout(), 'ask'), { select: 'ask' }); else selectModule('ask'); }
         else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });

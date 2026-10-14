@@ -25,6 +25,8 @@ const S = typeof module !== 'undefined' && module.exports ? require('./ask-panel
 const P = typeof module !== 'undefined' && module.exports ? require('./ask-profile') : root.askProfile;
 
 const POLL_MS = 2500;
+// the first index is started by the first status; until the host reports it as building the state is 'none', so a few polls look for it
+const NONE_POLLS = 8;
 const WRITING_AFTER_MS = Object.freeze({ local: 4000, claude: 2500 });
 const DIRECTIONS = Object.freeze(['simpler', 'deeper']);
 const CLAUDE_DEFAULT = 'haiku';
@@ -41,6 +43,7 @@ function create({ request, storage = null, onChange = () => {}, setTimer = (fn, 
   let warmedOk = false;        // the first index starts with the first status that is ANSWERED, not the first one that is asked
   let pollTimer = null;
   let pendingExplain = null;
+  let nonePolls = NONE_POLLS;
   const ui = { settings: false, naming: { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' }, startMsg: '' };
 
   const changed = () => { try { onChange(); } catch { /* a display that threw must not stop the asks */ } };
@@ -55,7 +58,9 @@ function create({ request, storage = null, onChange = () => {}, setTimer = (fn, 
   function schedulePoll() {
     if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; }
     const idx = host && host.index;
-    if (shown && isObj(idx) && (idx.state === 'building' || idx.state === 'partial')) {
+    const looking = isObj(idx) && idx.state === 'none' && nonePolls > 0;
+    if (looking) nonePolls -= 1;
+    if (shown && isObj(idx) && (idx.state === 'building' || idx.state === 'partial' || looking)) {
       pollTimer = setTimer(() => { pollTimer = null; refreshStatus(); }, POLL_MS);
     }
   }
@@ -184,7 +189,7 @@ function create({ request, storage = null, onChange = () => {}, setTimer = (fn, 
   }
 
   return {
-    show() { shown = true; return refreshStatus(); },
+    show() { shown = true; nonePolls = NONE_POLLS; return refreshStatus(); },
     hide() { shown = false; if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; } },
     refreshStatus, ask, explain, reask, drill, askClaude, select, startOllama,
     toggleSettings, saveSettings, rename, setNamingName, setNamingPortrait, saveNaming,

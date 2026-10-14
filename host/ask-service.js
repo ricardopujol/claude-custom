@@ -194,9 +194,12 @@ function createAskService({
   }
 
   async function status(msg) {
-    const [idx, ol] = await Promise.all([repoFor('local').status(cwd), ollama.check()]);
+    const repo = repoFor('local');
+    let [idx, ol] = await Promise.all([repo.status(cwd), ollama.check()]);
     if (msg.warm === true && idx && idx.state === 'none' && !(index.isRunning && index.isRunning(cwd))) {
+      // the first open of this worktree: start reading it, and report it as started (the page polls its progress)
       Promise.resolve(index.refresh(cwd)).catch(() => {});
+      idx = await repo.status(cwd);
     }
     return {
       ok: true,

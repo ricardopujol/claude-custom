@@ -704,11 +704,14 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
           barShown: !el.bar.hidden, barText: el.barText.textContent, reloadShown: !el.reload.hidden,
           noteShown: !el.note.hidden, noteText: el.noteText.textContent, noteRevealShown: !el.noteReveal.hidden,
           width: r.width, rect: { left: r.left, right: r.right, top: r.top, bottom: r.bottom },
+          selection: selectionInfo(), askShown: !!el.ask && !el.ask.hidden,
           diffClasses: cm ? { add: cm.querySelectorAll('.cm-diff-add').length, del: cm.querySelectorAll('.cm-diff-del').length, hunk: cm.querySelectorAll('.cm-diff-hunk').length } : null,
           heap: root.performance && root.performance.memory ? root.performance.memory.usedJSHeapSize : null,
         };
       }
       case 'open': return open(a.path).then(() => ({ ok: true }));
+      case 'openAt': return openAt(a.path, a.line, a.endLine).then(() => ({ ok: true }));
+      case 'ask': askSelection(); return { ok: true };
       case 'close': return close(a).then((closed) => ({ ok: true, closed }));
       case 'toggleDiff': return toggleDiff().then(() => ({ ok: true }));
       case 'checkStale': return checkStale().then(() => ({ ok: true }));

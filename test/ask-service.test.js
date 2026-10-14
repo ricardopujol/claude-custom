@@ -76,6 +76,7 @@ test('status: index, Ollama, the three models with where they run, examples; war
 
 test('status on a worktree with no index starts building it, once, without waiting for it', async () => {
   let started = 0;
+  let statusCalls = 0;
   const { svc } = rig();
   const svc2 = createAskService({
     cwd: CWD,
@@ -83,7 +84,7 @@ test('status on a worktree with no index starts building it, once, without waiti
     ollama: { answerModel: 'm', check: async () => ({ ok: false, reason: 'ollama-down' }) },
     claude: { generate: async () => ({ ok: false }) },
     models: createModels({ localModel: 'm', readRecord: () => '{}' }),
-    repoFor: () => ({ status: async () => ({ state: 'none', files: 0, progress: { state: 'building', done: 3, total: 10 } }) }),
+    repoFor: () => ({ status: async () => { statusCalls += 1; return { state: 'none', files: 0, progress: { state: 'building', done: 3, total: 10 } }; } }),
     readSelection: async () => ({ ok: false }),
     spawnOllama: async () => ({ ok: true }),
   });
@@ -91,6 +92,7 @@ test('status on a worktree with no index starts building it, once, without waiti
   assert.strictEqual(a.ok, true);
   assert.deepStrictEqual(a.ollama, { ok: false, reason: 'ollama-down' });
   assert.strictEqual(started, 1);
+  assert.strictEqual(statusCalls, 2, 'the status is read again after the build is started, so the page hears "building"');
   await svc2.handle({ type: 'ask', op: 'status', seq: 2 });
   assert.strictEqual(started, 1, 'only warm starts a build');
   void svc;
