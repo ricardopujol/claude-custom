@@ -182,10 +182,10 @@ test('stop-if-idle: the holder counts its windows and stops in ONE step (Dexter 
   assert.match(branch, /idleStopVerdict\(\{ windows: targets\.length, lastWindowLeftAt, now: Date\.now\(\) \}\)/);
   assert.match(branch, /const targets = raiseTargets\(clients, ws\)/, 'the asking client is not a window');
   // Refused: its windows come forward and the asker is told; nothing ends.
-  const refused = branch.slice(0, branch.indexOf('exitAfterUnload()'));
+  const refused = branch.slice(0, branch.indexOf('shutdown()'));
   assert.match(refused, /if \(!v\.stop\) \{[\s\S]*for \(const w of targets\) sendControl\(w, \{ type: 'raise' \}\)[\s\S]*stopped: false[\s\S]*return;/);
   // Stopped: the answer is flushed before the host goes.
-  assert.match(branch, /ws\.send\(JSON\.stringify\(\{ type: 'stop-if-idle', stopped: true \}\), \(\) => \{[\s\S]*exitAfterUnload\(\)/);
+  assert.match(branch, /ws\.send\(JSON\.stringify\(\{ type: 'stop-if-idle', stopped: true \}\), \(\) => \{[\s\S]*shutdown\(\)/);
 });
 
 test('a window leaving starts the grace; a one-shot control client does not', () => {

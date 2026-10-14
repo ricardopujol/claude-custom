@@ -445,10 +445,20 @@ test('raise answers the sender with raised + a window count, and tells every win
   assert.doesNotMatch(branch, /clients\.size/);
 });
 
-test('stop runs shutdown() and then exits (through exitAfterUnload, which unloads Ollama only on the last host)', () => {
+test('stop runs shutdown() and then exits', () => {
   const at = HOST_SRC.indexOf("msg.type === 'stop'");
   const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
-  assert.match(branch, /exitAfterUnload\(\)/);
-  const fn = HOST_SRC.slice(HOST_SRC.indexOf('function exitAfterUnload()'), HOST_SRC.indexOf('function shutdown('));
-  assert.ok(fn.indexOf('shutdown()') !== -1 && fn.indexOf('process.exit(0)') > fn.indexOf('shutdown()'));
+  assert.ok(branch.indexOf('shutdown()') !== -1 && branch.indexOf('process.exit(0)') > branch.indexOf('shutdown()'));
+});
+
+// An async wait between shutdown() and process.exit() reopens the event loop on a half-torn-down host (a boot still in flight can
+// spawn a claude nobody owns; node-pty's onExit races the wait). PR #172's Ollama unload-on-exit was dropped for exactly this.
+test('every exit that follows shutdown() is synchronous: nothing is awaited between shutdown() and process.exit()', () => {
+  const code = HOST_SRC.split('\n').filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const calls = [...code.matchAll(/(?<!function )\bshutdown\((?:\{[^}]*\})?\)/g)];
+  assert.ok(calls.length >= 6, 'the pin still sees the shutdown() call sites');
+  for (const m of calls) {
+    assert.match(code.slice(m.index + m[0].length), /^;\s*process\.exit\(\d\)/, `shutdown() at offset ${m.index} is followed directly by process.exit()`);
+  }
+  assert.doesNotMatch(code, /exitAfter|unloadOnLastExit/);
 });
