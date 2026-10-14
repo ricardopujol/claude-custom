@@ -6,7 +6,7 @@
  * network), never at startup. If it can't load, the file is still shown as plain text.
  *
  *   create({ doc, requester, harness, storage, storageKey, typeMention, onClose }) ->
- *     { open(path), close(), isOpen(), path(), setOverlay(overlay), onRepoChanged(), probe(action, args) }
+ *     { open(path), openAt(path, line, endLine), selectionInfo(), close(), isOpen(), path(), setOverlay(overlay), onRepoChanged(), probe(action, args) }
  *
  *   Diff toggle    only on a file the overlay says Claude edited. Claude's own Edit / Write calls first, git
  *                  diff HEAD as the fallback (host/repo-diff.js); "no changes recorded" when neither.
@@ -72,7 +72,7 @@ const saveFailure = (r) => (r && SAVE_WHY[r.why] ? SAVE_WHY[r.why](r) : (r && (r
 
 const OLD_HOST = "this session's host is older than this window and can't save; restart the session to edit";
 
-function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose, termRect, confirmDiscard, onDirty } = {}) {
+function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose, termRect, confirmDiscard, onDirty, onAsk } = {}) {
   const keyNow = () => (typeof storageKey === 'function' ? storageKey() : storageKey);
   const lang = root.repoLanguage || (typeof require === 'function' ? require('./repo-language') : null);
   const mention = root.repoMention || (typeof require === 'function' ? require('./repo-mention') : null);
@@ -80,7 +80,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   const $ = (id) => doc.getElementById(id);
   const el = {
     pane: $('reader'), split: $('reader-split'), path: $('reader-path'), meta: $('reader-meta'),
-    diff: $('reader-diff'), mention: $('reader-mention'), reveal: $('reader-reveal'), close: $('reader-close'),
+    diff: $('reader-diff'), mention: $('reader-mention'), ask: $('reader-ask'), reveal: $('reader-reveal'), close: $('reader-close'),
     bar: $('reader-bar'), barText: $('reader-bar-text'), reload: $('reader-reload'),
     body: $('reader-body'), note: $('reader-note'), noteText: $('reader-note-text'), noteReveal: $('reader-note-reveal'),
     termwrap: $('termwrap'),
@@ -581,11 +581,38 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     });
   }
 
+  // ---- "What's this?" and "open at line" (Ask the repo, BACKLOG #33) ----
+
+  /** The selected lines of the file on screen as { file, start, end } (1-based, a bare cursor is none), or null. */
+  function selectionInfo() {
+    if (!state.path || state.mode !== 'file' || !state.editor) return null;
+    const range = mention.rangeOfLines(state.editor.selection());
+    return range ? { file: state.path, start: range.from, end: range.to } : null;
+  }
+
+  function askSelection() {
+    const sel = selectionInfo();
+    if (!sel) { state.status = "select some code first, then click What's this?"; paintHead(); return; }
+    state.status = '';
+    paintHead();
+    if (typeof onAsk === 'function') onAsk(sel);
+  }
+
+  /** Open a file with line `line` (to `endLine`) selected and scrolled to: a card or a citation in the Ask panel. */
+  async function openAt(path, line, endLine) {
+    const r = await open(path);
+    if (r === false || state.path !== path || state.mode !== 'file' || !state.editor || typeof state.editor.setSelection !== 'function') return r;
+    if (!Number.isInteger(line) || line < 1) return r;
+    state.editor.setSelection(line, Number.isInteger(endLine) && endLine >= line ? endLine : line);
+    return r;
+  }
+
   // ---- events ----
 
   el.close.addEventListener('click', () => { close(); });
   el.diff.addEventListener('click', toggleDiff);
   el.mention.addEventListener('click', mentionSelection);
+  if (el.ask) { el.ask.hidden = typeof onAsk !== 'function'; el.ask.addEventListener('click', askSelection); }
   // the plain Reload bar only rises over a file with no unsaved edits, so there is nothing to ask about
   // The bar rose over a file with no unsaved edits, but edits can be typed after that: ask again at click time.
   el.reload.addEventListener('click', async () => {
@@ -728,7 +755,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   }
 
   return {
-    open, close, isOpen: () => !el.pane.hidden, path: () => state.path, hasUnsaved: isDirty, save,
+    open, openAt, selectionInfo, close, isOpen: () => !el.pane.hidden, path: () => state.path, hasUnsaved: isDirty, save,
     setOverlay, onRepoChanged: checkStale, probe, layout,
     editor: () => state.editor,
   };

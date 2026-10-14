@@ -178,12 +178,13 @@ function create(parent, { onSelection, onChange } = {}) {
     replaceAll(text) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: String(text) }, userEvent: 'input.type' });
     },
-    // Whole lines from..to (1-based), as dragging the mouse down them would select (the probe uses it).
+    // Whole lines from..to (1-based), as dragging the mouse down them would select (the probe uses it). It scrolls the first line to the
+    // middle of the view, so "open at file:line" from the Ask panel (BACKLOG #33) lands on the line instead of at the top of the file.
     setSelection(fromLine, toLine) {
       const doc = view.state.doc;
       const a = doc.line(Math.max(1, Math.min(doc.lines, fromLine)));
       const b = doc.line(Math.max(1, Math.min(doc.lines, toLine)));
-      view.dispatch({ selection: { anchor: a.from, head: b.to } });
+      view.dispatch({ selection: { anchor: a.from, head: b.to }, effects: EditorView.scrollIntoView(a.from, { y: 'center' }) });
     },
     lines: () => view.state.doc.lines,
     text: () => view.state.doc.toString(),
