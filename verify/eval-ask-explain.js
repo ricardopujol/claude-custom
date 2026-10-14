@@ -16,6 +16,7 @@ const os = require('os');
 const path = require('path');
 const { createIndex } = require('../host/ask-index');
 const { createAskOllama } = require('../host/ask-ollama');
+const { createClaudeAnswerer, CLAUDE_MODELS } = require('../host/ask-claude');
 const { buildPrompt } = require('../host/ask-repo');
 const { tokenize, hybridRank } = require('../host/ask-retrieve');
 const { extractCitations } = require('../host/ask-citations');
@@ -96,7 +97,10 @@ function mentionsIt(text, selection) {
   return (text.match(IDENT) || []).some(t => rare.has(t));
 }
 (async () => {
-  const ollama = createAskOllama({ answerModel: model });
+  const viaClaude = Object.prototype.hasOwnProperty.call(CLAUDE_MODELS, model);
+  // a Claude model answers through the real CLI (plan quota, no API key); retrieval still uses the local embedder either way
+  const ollama = createAskOllama(viaClaude ? {} : { answerModel: model });
+  const claude = viaClaude ? createClaudeAnswerer({ claudeBin: process.env.CLAUDE_BIN || 'claude' }) : null;
   const status = await ollama.check();
   console.log('ollama:', JSON.stringify(status));
   if (!status.ok && status.reason === 'ollama-down') { console.log('Ollama is not running: nothing to measure.'); process.exit(2); }
@@ -136,7 +140,7 @@ function mentionsIt(text, selection) {
       const system = `${BASE}${variant !== 'v1' ? TUNED : ''}\n\nReader level: ${label}. ${LEVEL_RULES[lvl]}`;
       const prompt = `Selected code (${rel}, lines ${a}-${b}):\n${code}\n\nExcerpts from elsewhere in the repository:\n\n${body}\n\nExplain what the selected code is doing.`;
       const t1 = Date.now();
-      const g = await ollama.generate({ system, prompt, numPredict: 450 });
+      const g = viaClaude ? await claude.generate({ model, system, prompt }) : await ollama.generate({ system, prompt, numPredict: 450 });
       const ms = Date.now() - t1;
       // citations may point into the selection too: its own range is "shown"
       const ranges = new Map();
