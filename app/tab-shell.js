@@ -1462,6 +1462,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'floatDrag', 'floatPress', 'secretField', 'floatSecret',
   // dockable panels D4: collapse, a rail's popover, the keyboard, the settle motion
   'collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
+  // BACKLOG #85: the dock rail's hover and the Pin button
+  'hover', 'pinClick', 'menuCheck', 'railScroll',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
@@ -1529,6 +1531,12 @@ async function handleProbeCommand(line, api, expectedToken) {
         // #77: a real Ctrl+click on the strip's tab, so the page's own handler runs.
         if (typeof cmd.label !== 'string') return { ok: false, error: 'ctrlClick needs a label' };
         return await api.ctrlClick(cmd.label);
+      case 'mouseMove': {
+        // BACKLOG #85: a real pointer move over the selected view, so hover is judged by hit-testing and not by a dispatched event.
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseMove needs whole-number x and y' };
+        return await api.mouseMove(cmd.x, cmd.y);
+      }
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };

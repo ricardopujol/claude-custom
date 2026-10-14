@@ -77,7 +77,12 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
   const at = isObject(peek) ? treeApi.peekFor(boxes, peek.module, viewport) : null;
   if (at) {
     const shape = shapeOf(at.rect);
-    popover = { ...at, shape, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
+    // Pin shows only on a panel of the dock's own rail (#85): one a folded group put on a rail was never unpinned.
+    // `from`: the side of the popover its rail is on, which is where it slides in from.
+    const rb = boxes.find(x => x.kind === 'rail' && x.modules.includes(at.module));
+    const from = at.dir === 'v' ? (at.rect.x < rb.rect.x ? 'right' : 'left') : (at.rect.y < rb.rect.y ? 'bottom' : 'top');
+    const pin = rb.id === 'dock' && Array.isArray(layout.rail) && layout.rail.includes(at.module);
+    popover = { ...at, shape, from, pin, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
     if (popover.tabs.some(t => t.id === at.module)) {
       shown.push(at.module);
       if (at.module === 'agents') face = shape === 'tall' ? (typeof faceSize === 'function' ? faceSize(at.rect.width) : null) : faceForWide(at.rect.height);
@@ -86,24 +91,50 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
   return { boxes: drawn, splits, shown, face, peek: popover };
 }
 
+/** The rail's hover state when nothing is open or waiting (see `railAfter`). */
+const RAIL_IDLE = Object.freeze({ module: null, held: false, pending: null, leaving: false });
+
 /**
- * What a rail's popover does with what the user does (D4). The page keeps only `{ module }` or null, never saved:
- *   rail     a rail's button: opens that module, moves it from another rail's, closes it if it is the open one
- *   tab      a tab inside the popover: switches it
- *   escape / outside / drop / gone   (Esc, a press outside it, a tab drop, its rail no longer exists): closes
- * Anything else changes nothing.
+ * The hover behaviour of the dock's rail tabs (BACKLOG #85), pure and timer-free: the page owns the two timers (a hover waits
+ * 200 ms before it opens a panel; leaving waits 400 ms before it closes one) and feeds `open-timer` / `close-timer` back in.
+ * State { module, held, pending, leaving }: the open panel; whether a click or Enter holds it open (leaving then closes
+ * nothing); the tab hovered and waiting for its timer; whether the pointer left and the close timer is running.
+ *   enter {module}      the pointer is on a rail tab: opens it at once (unheld) when another is open, else waits (`pending`)
+ *   enter-panel         the pointer is in the open panel: the grace is cancelled, a hover wait dropped
+ *   hold                a press or the keyboard is inside the open panel: it stays until Esc or a press outside (Miguel Y2)
+ *   leave               the pointer left the tab and the panel: a wait is dropped, an unheld panel starts its grace
+ *   open-timer {module} the wait ran out: opens that tab if it is still the one waiting
+ *   close-timer         the grace ran out: closes an unheld panel
+ *   click {module}      opens and holds; on the open one: holds it, and on a held one closes it
+ *   tab {module}        a tab inside the open panel switches it
+ *   escape / outside / drop / gone   closes it
+ * Anything else, and any junk, changes nothing (a junk state reads as idle).
  */
-function peekAfter(state, ev) {
-  const cur = isObject(state) && typeof state.module === 'string' && state.module !== '' ? { module: state.module } : null;
+function railAfter(state, ev) {
+  const s = isObject(state) && typeof state.module === 'string' && state.module !== ''
+    ? { module: state.module, held: state.held === true, pending: null, leaving: state.held !== true && state.leaving === true }
+    : { module: null, held: false, pending: isObject(state) && typeof state.pending === 'string' && state.pending !== '' ? state.pending : null, leaving: false };
   const e = isObject(ev) ? ev : {};
   const mod = typeof e.module === 'string' && e.module !== '' ? e.module : null;
   switch (e.type) {
-    case 'rail':
-      if (mod === null) return cur;
-      return cur && cur.module === mod ? null : { module: mod };
-    case 'tab': return cur && mod !== null ? { module: mod } : cur;
-    case 'escape': case 'outside': case 'drop': case 'gone': return null;
-    default: return cur;
+    case 'enter':
+      if (mod === null) return s;
+      // A swap by hover is a hover: the hold belongs to the click that made it, not to whichever panel is open (PR #168 Dexter 1).
+      return s.module !== null ? { module: mod, held: false, pending: null, leaving: false } : { ...s, pending: mod };
+    case 'enter-panel': return { ...s, pending: null, leaving: false };
+    case 'hold': return s.module !== null ? { ...s, held: true, leaving: false } : s;
+    case 'leave':
+      if (s.module === null) return { ...s, pending: null };
+      return s.held ? s : { ...s, leaving: true };
+    case 'open-timer': return s.module === null && mod !== null && s.pending === mod ? { ...RAIL_IDLE, module: mod } : s;
+    case 'close-timer': return s.module !== null && s.leaving && !s.held ? RAIL_IDLE : s;
+    case 'click':
+      if (mod === null) return s;
+      if (s.module === mod && s.held) return RAIL_IDLE;
+      return { module: mod, held: true, pending: null, leaving: false };
+    case 'tab': return s.module !== null && mod !== null ? { ...s, module: mod, leaving: false } : s;
+    case 'escape': case 'outside': case 'drop': case 'gone': return RAIL_IDLE;
+    default: return s;
   }
 }
 
@@ -175,6 +206,8 @@ function sizesAfterDrag(node, split, i, delta) {
 const DIVIDER_STEP = 16;                       // px one arrow key moves a divider
 /** How long boxes take to settle into their new places after a drop (D4); a drag itself never animates. */
 const SETTLE_MS = 120;
+/** How long the rail panel takes to slide in or out (BACKLOG #85); the CSS animation is the same number. */
+const PEEK_SLIDE_MS = 160;
 
 /** The pixels a key moves a divider: the arrow that points along it (left/right for a row's, up/down for a column's), else null. */
 function dividerStep(key, dir) {
@@ -307,8 +340,9 @@ function layoutSaved(answer) { return isObject(answer); }
  * menu is how a float is hidden, and how it comes back (to its own rectangle).
  */
 function menuRows(layout, tabs) {
-  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden]);
-  return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id) }));
+  const railed = Array.isArray(layout.rail) ? layout.rail : [];
+  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden, ...railed]);
+  return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id), railed: railed.includes(t.id) }));
 }
 
 /**
@@ -393,6 +427,26 @@ function applyTabs(doc, nav, tabs) {
   }
 }
 
+// The Pin / Pinned button at the end of a tab bar (BACKLOG #85), for the module in `spec` ({ module, pinned }), or none. It is no
+// tab (`data-pin`, never `data-module`), so the tab handlers and the focus search never meet it, and it is made once and kept
+// across renders; a bar rebuilt around it has lost it, and it is made again.
+function syncPin(doc, nav, spec) {
+  let btn = nav.querySelector('.dpin');
+  if (!spec) { if (btn) btn.remove(); return; }
+  if (!btn) {
+    btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dpin';
+  }
+  if (btn.parentNode !== nav || nav.children[nav.children.length - 1] !== btn) nav.appendChild(btn);
+  btn.dataset.pin = spec.module;
+  btn.textContent = spec.pinned ? 'Pinned' : 'Pin';
+  btn.setAttribute('aria-pressed', spec.pinned ? 'true' : 'false');
+  btn.title = spec.pinned
+    ? 'Pinned: docked beside the terminal. Press to unpin it to the rail, where it slides open on hover'
+    : 'Pin it: dock this panel beside the terminal and keep it open';
+}
+
 // The module whose tab or rail button is `el` (what holds keyboard focus), or null.
 function moduleOfButton(el) {
   const holder = el && el.parentNode;
@@ -444,7 +498,7 @@ function applyBoxes(plan, doc) {
   };
   const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, makeGutter, overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
-  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
+  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.id || b.modules.join(','), () => mk('div', 'drail'), overlay);
 
   let floatsDrawn = 0;
   for (const b of groupBoxes) {
@@ -465,6 +519,7 @@ function applyBoxes(plan, doc) {
       el.appendChild(g);
     } else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
+    syncPin(doc, el.querySelector('.zone-tabs'), b.panel ? { module: b.panel, pinned: true } : null);       // Pinned unpins the panel the group shows
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
       const p = doc.querySelector(`.panel[data-panel="${b.panel}"]`);
@@ -489,6 +544,7 @@ function applyBoxes(plan, doc) {
   for (const b of rails) {
     const el = railPool.elOf.get(b);
     el.dataset.dir = b.dir;
+    if (b.id) el.dataset.rail = b.id; else delete el.dataset.rail;      // the dock's own rail (#85): its tabs open on hover
     setRect(el, b.rect);
     const sig = b.modules.join(',');
     if (el.dataset.sig !== sig) {
@@ -517,27 +573,53 @@ function applyBoxes(plan, doc) {
       popover.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
       layer.appendChild(popover);
     }
+    delete popover.dataset.closing;                       // opened again while it was sliding out: it stays
     popover.dataset.module = plan.peek.module;
     popover.setAttribute('role', 'group');
     popover.setAttribute('aria-label', `${(plan.peek.tabs.find(t => t.on) || { label: plan.peek.module }).label} panel, opened from its rail`);
     popover.dataset.shape = plan.peek.shape;
     popover.dataset.dir = plan.peek.dir;
     setRect(popover, plan.peek.rect);
+    popover.dataset.from = plan.peek.from;
     applyTabs(doc, popover.querySelector('.zone-tabs'), plan.peek.tabs);
+    syncPin(doc, popover.querySelector('.zone-tabs'), plan.peek.pin ? { module: plan.peek.module, pinned: false } : null);
     const holder = popover.querySelector('.zone-panels');
     const p = doc.querySelector(`.panel[data-panel="${plan.peek.module}"]`);
     if (p && p.parentNode !== holder) holder.appendChild(p);
   }
 
+  // A panel closing slides back out (BACKLOG #85): the popover stays, marked, with its panel in it and drawn, until the slide has
+  // run; then the panel goes to the store. Under reduced motion (or a page that cannot say) it closes at once, as before.
+  let closingPanel = null;
+  let closeNow = false;
+  if (popover && !plan.peek) {
+    const win = doc.defaultView;
+    const motion = !!win && typeof win.matchMedia === 'function' && typeof win.setTimeout === 'function'
+      && !win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!motion) closeNow = true;
+    else {
+      closingPanel = popover.dataset.module;
+      if (!popover.dataset.closing) {
+        popover.dataset.closing = '1';
+        const el = popover;
+        win.setTimeout(() => {
+          if (!el.dataset.closing) return;                // opened again meanwhile
+          for (const p of el.querySelectorAll('.panel[data-panel]')) { p.classList.remove('on'); store.appendChild(p); }
+          el.remove();
+        }, PEEK_SLIDE_MS + 40);
+      }
+    }
+  }
+
   // Panels no group is showing wait in the store; that includes every panel of a group about to be removed.
   const showing = new Set(plan.shown);
   for (const p of doc.querySelectorAll('.panel[data-panel]')) {
-    const on = showing.has(p.dataset.panel);
+    const on = showing.has(p.dataset.panel) || p.dataset.panel === closingPanel;
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
   const stale = [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale];
-  if (popover && !plan.peek) stale.push(popover);
+  if (closeNow) stale.push(popover);
   for (const el of stale) el.remove();
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
@@ -550,7 +632,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, peekAfter, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

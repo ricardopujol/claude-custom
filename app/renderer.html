@@ -919,9 +919,11 @@
     /* A rail's panel opened over the terminal (D4): a .zone in the floats' layer, above the floats (ranked 0, 1, 2...), beside
        its rail. It takes the pointer, unlike the layer. Focus mode hides it like any zone. */
     .dpeek {
-      position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: auto; z-index: 1000;
+      position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: auto; z-index: 1000; background: var(--chrome);
       border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
     }
+    /* It lies over other panels and the terminal, so it is opaque, with a background image too (#85). */
+    body.has-bg .dpeek { background: var(--chrome); }
     .drail button[aria-expanded="true"] { color: var(--model-accent); }
     /* The settle motion (D4): after a drop or a collapse the boxes glide to their new places for about
        120 ms. Only while the dock has .settling (never during a drag), and never the terminal (xterm refits to the
@@ -937,6 +939,8 @@
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    /* The dock's own rail (#85) holds every unpinned panel, so it scrolls instead of clipping the tabs it cannot fit (PR #168 Miguel Y4). */
+    .drail[data-rail="dock"] { overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
     .drail button {
       flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
       cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
@@ -983,6 +987,33 @@
        --model-accent is byte-equal to --accent, so this is a no-op look
        until a model is known. */
     .zone-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
+    /* Pin / Pinned (BACKLOG #85): the last item of a tab bar, never squeezed by the tabs. Pressed (pinned) wears the model colour. */
+    .zone-tabs button.dpin {
+      flex: 0 0 auto; padding: 8px 8px; text-transform: none; letter-spacing: 0; font-size: 10px;
+      border-left: 1px solid var(--border); border-bottom-color: transparent;
+    }
+    .zone-tabs button.dpin[aria-pressed="true"] { color: var(--model-accent); }
+    /* The dock rail's panel slides in from its rail's side (about 160 ms, ease-out); switching tabs keeps the element, so it only
+       plays when a panel opens. prefers-reduced-motion: it just appears. */
+    .dpeek { animation: dpeek-from-right 160ms ease-out; }
+    .dpeek[data-from="left"] { animation-name: dpeek-from-left; }
+    .dpeek[data-from="top"] { animation-name: dpeek-from-top; }
+    .dpeek[data-from="bottom"] { animation-name: dpeek-from-bottom; }
+    @keyframes dpeek-from-right { from { transform: translateX(40px); opacity: 0; } }
+    @keyframes dpeek-from-left { from { transform: translateX(-40px); opacity: 0; } }
+    @keyframes dpeek-from-top { from { transform: translateY(-40px); opacity: 0; } }
+    @keyframes dpeek-from-bottom { from { transform: translateY(40px); opacity: 0; } }
+    /* Out again: the page marks the popover data-closing and removes it when the slide has run (renderer: dock-tree-display.js). */
+    .dpeek[data-closing] { pointer-events: none; animation-duration: 160ms; animation-timing-function: ease-in; animation-fill-mode: forwards; }
+    .dpeek[data-closing][data-from="right"] { animation-name: dpeek-to-right; }
+    .dpeek[data-closing][data-from="left"] { animation-name: dpeek-to-left; }
+    .dpeek[data-closing][data-from="top"] { animation-name: dpeek-to-top; }
+    .dpeek[data-closing][data-from="bottom"] { animation-name: dpeek-to-bottom; }
+    @keyframes dpeek-to-right { to { transform: translateX(40px); opacity: 0; } }
+    @keyframes dpeek-to-left { to { transform: translateX(-40px); opacity: 0; } }
+    @keyframes dpeek-to-top { to { transform: translateY(-40px); opacity: 0; } }
+    @keyframes dpeek-to-bottom { to { transform: translateY(40px); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .dpeek, .dpeek[data-from], .dpeek[data-closing], .dpeek[data-closing][data-from] { animation: none; } }
 
     /* Only the showing panel is in the layout at all -- a hidden panel that
        still occupies space is the usual way a tab strip goes wrong. */

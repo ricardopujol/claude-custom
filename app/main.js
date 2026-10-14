@@ -1613,6 +1613,14 @@ function startProbeDriver(port) {
       win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
       return { ok: true };
     },
+    // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
+    // pointer events decide what is hovered, as for a mouse.
+    async mouseMove(x, y) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      return { ok: true };
+    },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
     // request is passed as JSON data, never spliced in as code.

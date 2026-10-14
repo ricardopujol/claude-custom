@@ -2021,6 +2021,16 @@ test('handleProbeCommand: ctrlClick reaches the driver with a tab label (#77); i
   assert.deepStrictEqual(seen, ['feat/a']);
 });
 
+test('handleProbeCommand: mouseMove reaches the driver with whole-number coordinates (#85); anything else is refused', async () => {
+  const seen = [];
+  const api = { mouseMove: async (x, y) => { seen.push([x, y]); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseMove', x: 10, y: 20 }), api), { ok: true });
+  for (const bad of [{}, { x: 1 }, { x: 1.5, y: 2 }, { x: -1, y: 0 }, { x: '1', y: 2 }, { x: 10001, y: 0 }]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseMove', ...bad }), api), { ok: false, error: 'mouseMove needs whole-number x and y' });
+  }
+  assert.deepStrictEqual(seen, [[10, 20]]);
+});
+
 test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
   const seen = [];
   const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };
@@ -2307,6 +2317,11 @@ test('the probe may drive the floating panels\' actions, by name only (dockable 
 test('the probe may drive the collapse, popover, keyboard and settle actions, by name only (dockable panels D4)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   for (const a of ['collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+});
+
+test('the probe may hover the dock rail and press the Pin button, by name only (#85)', () => {
+  const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
+  for (const a of ['hover', 'pinClick', 'menuCheck', 'railScroll']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
 test('the probe may read and operate the wand, by name only (#51)', () => {

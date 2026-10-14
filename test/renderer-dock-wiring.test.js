@@ -251,24 +251,25 @@ test('D4: a redraw forgets collapsed groups that are gone and hands the open pop
   const load = fnBody('loadLayout');
   assert.strictEqual([...load.matchAll(/layoutLoaded = true;/g)].length, 3, 'set in the three branches that draw a layout that was read, never when it was unreadable (nothing to prune against)');
   assert.match(body, /\{ faceSize: window\.faceSize, peek \}\)/);
-  assert.match(body, /if \(peek && !plan\.peek\) peek = null;/, 'a popover whose rail is gone closes itself');
+  assert.match(body, /if \(peek && !plan\.peek\) railEvent\(\{ type: 'gone' \}\);/, 'a popover whose rail is gone closes itself');
 });
 
 test('D4: a rail\'s button opens its popover instead of selecting a tab nobody can see; a popover tab only switches it', () => {
-  const at = JS.indexOf("document.addEventListener('click', (e) => {\n  const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');");
+  const at = JS.indexOf("document.addEventListener('click', (e) => {\n  const pinButton = e.target.closest('.dpin');");
   assert.ok(at !== -1, 'the tab and rail click handler must be findable');
   const handler = JS.slice(at, JS.indexOf('\n});', at));
   assert.match(handler, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{ openPeek\(id, e\.detail === 0\); return; \}/);
-  assert.match(handler, /peekAfter\(peek, \{ type: 'tab', module: id \}\)/);
+  assert.match(handler, /railEvent\(\{ type: 'tab', module: id \}\)/);
+  assert.match(handler, /if \(pinButton\) \{ togglePin\(pinButton\.dataset\.pin\); return; \}/, 'the Pin button is no tab (#85)');
   assert.match(handler, /renderLayout\(\{ refit: false \}\)/, 'a popover never changes the terminal\'s rectangle');
   assert.ok(handler.indexOf('openPeek') < handler.indexOf('selectModule(id)'), 'the rail is decided before the plain tab');
   assert.match(fnBody('openPeek'), /renderLayout\(\{ refit: false \}\)/);
 });
 
 test('D4: any change of the placement closes the popover; a press outside it, and Esc, close it too', () => {
-  assert.match(fnBody('commitPlacement'), /peek = null;/);
-  assert.match(JS, /peekAfter\(peek, \{ type: 'outside' \}\)/);
-  assert.match(JS, /peekAfter\(peek, \{ type: 'escape' \}\)/);
+  assert.match(fnBody('commitPlacement'), /railEvent\(\{ type: 'gone' \}\);/);
+  assert.match(JS, /railEvent\(\{ type: 'outside' \}\)/);
+  assert.match(JS, /railEvent\(\{ type: 'escape' \}\)/);
   assert.match(JS, /if \(e\.key !== 'Escape' \|\| !peek \|\| kbMove\) return;/, 'a keyboard move owns Esc while it lasts');
 });
 
@@ -346,7 +347,7 @@ test('PR #159 Miguel B1: Escape is the popover\'s only when focus is in it or on
 
 test('PR #159 Miguel I2 / Dexter 4: the popover closes when the keyboard leaves it, and a keyboard move starting from it draws it away', () => {
   assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+const to = e\.relatedTarget;\s+if \(!peek \|\| !to \|\| !to\.closest \|\| to\.closest\('\.dpeek, \.drail'\)\) return;/);
-  assert.match(JS, /if \(peek\) \{ peek = null; renderLayout\(\{ refit: false \}\); \}/);
+  assert.match(JS, /if \(peek\) \{ railEvent\(\{ type: 'drop' \}\); renderLayout\(\{ refit: false \}\); \}/);
 });
 
 test('PR #159 Miguel S1 / S3 / S5: focus into the tab menu only from the keyboard; "no zone further" is said; a held Enter does not drop', () => {
@@ -374,11 +375,11 @@ test('PR #159 Dexter 5 / Miguel S4: the keyboard drop says what dock did, and fo
   assert.match(JS, /const refocus = id => \{ const b = document\.querySelector\(`\.zone-tabs button\[data-module="\$\{CSS\.escape\(id\)\}"\], \.drail button\[data-module="\$\{CSS\.escape\(id\)\}"\]`\); if \(b\) b\.focus\(\); \};/);
 });
 
-test('PR #159 Miguel I2: only a double-click on the EMPTY part of a tab bar folds the group; on a tab it does nothing new', () => {
+test('PR #159 Miguel I2 / #85: only a double-click on the EMPTY part of a tab bar unpins the group; on a tab it does nothing new', () => {
   const at = JS.indexOf("document.addEventListener('dblclick', (e) => {");
   assert.ok(at !== -1, 'the dblclick handler must be findable');
   const handler = JS.slice(at, JS.indexOf('\n});', at));
-  assert.match(handler, /if \(bar\) \{\n\s+if \(e\.target === bar\) toggleGroupCollapse\(bar\.parentNode\.dataset\.group\);\n\s+return;\n\s+\}/);
+  assert.match(handler, /if \(bar\) \{\n\s+if \(e\.target === bar\) commitPlacement\(DTm\.unpinGroup\(settledLayout\(\), bar\.parentNode\.dataset\.group\)\);\n\s+return;\n\s+\}/);
 });
 
 test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on open, terminal on a mouse close (never over the vault), rail on Enter', () => {
@@ -392,6 +393,69 @@ test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on o
 test('PR #159 Dexter 6: an operation on the placement is built on the layout AFTER a pending key burst is saved, so a push that arrived in the burst survives', () => {
   assert.match(JS, /function settledLayout\(\) \{ if \(flushKeyBurst\) flushKeyBurst\(\); return placementLayout\(\); \}/);
   assert.doesNotMatch(JS, /DTm\.(dock|hide|show)\(placementLayout\(\)/, 'a dock / hide / show built on the drawn layout would carry a stale whole into the save');
-  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 12, 'every operation site');
+  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 11, 'every operation site');
   assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
+});
+
+// --- #85: the dock rail's hover, the Pin button ----------------------------------------------------------------
+
+test('#85: the rail\'s state is fed only through railEvent, which owns the two timers (200 ms open, 400 ms grace)', () => {
+  assert.match(JS, /const RAIL_OPEN_MS = 200;/);
+  assert.match(JS, /const RAIL_CLOSE_MS = 400;/);
+  const body = fnBody('railEvent');
+  assert.match(body, /railSt = window\.dockTreeView\.railAfter\(railSt, ev\);/);
+  assert.match(body, /peek = railSt\.module === null \? null : \{ module: railSt\.module \};/, 'peek is derived, never set elsewhere');
+  assert.match(body, /railEvent\(\{ type: 'open-timer', module: m \}\)[^\n]*RAIL_OPEN_MS/);
+  assert.match(body, /railEvent\(\{ type: 'close-timer' \}\)[^\n]*RAIL_CLOSE_MS/);
+  assert.strictEqual([...JS.matchAll(/^\s+peek = /gm)].length, 1, 'one assignment: in railEvent');
+  assert.doesNotMatch(JS, /peekAfter\(/, 'the page uses railAfter');
+});
+
+test('#85: hovering a dock-rail tab enters it, the panel or the strip keeps it, anything else leaves; touch has no hover', () => {
+  const at = JS.indexOf("document.addEventListener('pointerover', (e) => {");
+  assert.ok(at !== -1, 'the hover handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(handler, /e\.pointerType === 'touch'/);
+  assert.match(handler, /t\.closest\('\.drail\[data-rail="dock"\] button\[data-module\]'\)/, 'only the dock\'s own rail hovers: a folded group\'s rail stays click-only');
+  assert.match(handler, /\{ type: 'enter', module: tab\.dataset\.module \}/);
+  assert.match(handler, /t\.closest\('\.dpeek'\)\) ev = \{ type: 'enter-panel' \}/, 'the rail strip is not the panel (Dexter 3)');
+  assert.match(handler, /ev = \{ type: 'leave' \}/);
+  assert.match(handler, /if \(ev && railEvent\(ev\)\) renderLayout\(\{ refit: false \}\);/, 'a hover never changes the terminal\'s rectangle');
+  assert.match(JS, /document\.documentElement\.addEventListener\('pointerleave', \(\) => \{ if \(railEvent\(\{ type: 'leave' \}\)\)/);
+});
+
+test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
+  const pin = fnBody('togglePin');
+  assert.match(pin, /unpinning \? DTm\.unpin\(l, id\) : DTm\.pin\(l, id\)/);
+  assert.match(pin, /const l = settledLayout\(\);/);
+  assert.match(JS, /commitPlacement\(DTm\.showOnRail\(l, row\.id\)/, 'ticking a hidden panel in the Window menu brings it back as a rail tab');
+  assert.match(JS, /commitPlacement\(DTm\.unpinGroup\(settledLayout\(\), home\.id\)/);
+});
+
+test('#85 Miguel Y2: a press or focus inside the open panel holds it open', () => {
+  assert.match(JS, /if \(inside\) \{ railEvent\(\{ type: 'hold' \}\); return; \}/);
+  assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(peek && e\.target\.closest && e\.target\.closest\('\.dpeek'\)\) railEvent\(\{ type: 'hold' \}\);/);
+});
+
+test('#85 PR #168 Miguel B2: the tab menu Pin, Unpin and Unpin group follow the Just this tab check', () => {
+  assert.match(fnBody('togglePin'), /commitPlacement\([^\n]*\{ select: id, justThisTab \}\)/);
+  assert.match(fnBody('togglePin'), /^function togglePin\(id, \{ justThisTab = false \} = \{\}\)/);
+  assert.strictEqual([...JS.matchAll(/togglePin\(id, \{ justThisTab: check\.box\.checked \}\)/g)].length, 2, 'Pin and Unpin');
+  assert.match(JS, /unpinGroup\(settledLayout\(\), home\.id\), \{ justThisTab: check\.box\.checked \}/);
+});
+
+test('#85 PR #168 Miguel Y1 / Y5: after Pin or Pinned the keyboard follows the panel and the change is said', () => {
+  const body = fnBody('togglePin');
+  assert.match(body, /if \(next\) next\.focus\(\);/);
+  assert.match(body, /: `\.dgroup \.zone-tabs button\[data-module=/, 'a group tab, never the tab of the popover that is still sliding out (it comes first in the document)');
+  assert.match(body, /\.drail\[data-rail="dock"\] button\[data-module=/);
+  assert.match(body, /getElementById\('dock-announce'\)\.textContent = /);
+});
+
+test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the canvas) goes through revealModule, which opens a railed panel held', () => {
+  const body = fnBody('revealModule');
+  assert.match(body, /railEvent\(\{ type: 'click', module: id \}\)/);
+  assert.match(body, /!\(railSt\.module === id && railSt\.held\)/, 'a panel already held open is not closed by asking to show it');
+  assert.match(body, /DTm\.show\(settledLayout\(\), id\)/);
+  assert.doesNotMatch(JS.replace(body, ''), /if \(placementLayout\(\)\.hidden\.includes\(/, 'no path decides hidden-or-not by itself');
 });
