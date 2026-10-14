@@ -591,6 +591,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   }
 
   function askSelection() {
+    // The host explains the file as it is on DISK; with unsaved edits the buffer's line numbers would name different code (PR #169 Miguel Y3).
+    if (isDirty()) { state.status = "save the file first, then click What's this? (it explains the saved file)"; paintHead(); return; }
     const sel = selectionInfo();
     if (!sel) { state.status = "select some code first, then click What's this?"; paintHead(); return; }
     state.status = '';

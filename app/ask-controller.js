@@ -44,13 +44,16 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
   let pollTimer = null;
   let pendingExplain = null;
   let nonePolls = NONE_POLLS;
-  const ui = { settings: false, naming: { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' }, startMsg: '' };
+  const ui = { settings: false, draft: null, naming: { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' }, startMsg: '' };
 
   const changed = () => { try { onChange(); } catch { /* a display that threw must not stop the asks */ } };
 
   // ---- host status and the first index ---------------------------------------------------------------------------------------
-  async function refreshStatus() {
-    const r = await request('status', warmedOk ? {} : { warm: true });
+  let statusSeq = 0;
+  async function refreshStatus({ fresh = false } = {}) {
+    const mine = ++statusSeq;
+    const r = await request('status', { ...(warmedOk ? {} : { warm: true }), ...(fresh ? { fresh: true } : {}) });
+    if (mine !== statusSeq) return;     // a newer status was asked for meanwhile: an older answer never overwrites it (PR #169 Miguel G9)
     if (isObj(r) && r.ok === true) { host = r; hostError = null; warmedOk = true; } else { hostError = (isObj(r) && r.error) || 'The session did not answer.'; }
     changed();
     schedulePoll();
@@ -60,23 +63,40 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     const idx = host && host.index;
     const looking = isObj(idx) && idx.state === 'none' && nonePolls > 0;
     if (looking) nonePolls -= 1;
-    if (shown && isObj(idx) && (idx.state === 'building' || idx.state === 'partial' || looking)) {
+    // an interrupted (partial) index is polled only while a build is actually running it (PR #169 Miguel Y5)
+    const building = isObj(idx) && (idx.state === 'building' || (idx.state === 'partial' && idx.running === true));
+    if (shown && isObj(idx) && (building || looking)) {
       pollTimer = setTimer(() => { pollTimer = null; refreshStatus(); }, POLL_MS);
     }
   }
 
   // ---- one ask ----------------------------------------------------------------------------------------------------------------
+  const writingTimers = new Map();
+  const stopWriting = (entryId) => { if (writingTimers.has(entryId)) { clearTimer(writingTimers.get(entryId)); writingTimers.delete(entryId); } };
+
+  // ONE retrieval per ask (PR #169 El Gordo 1): the host searches for the PLACES first and keeps its hits under an id; the cards show at
+  // once (round 7: places first), and the answer that follows names the id, so it is written from the very same hits.
   async function run(entryId, op, body, modelId) {
     const claude = modelId !== 'local';
     const sent = { ...body, model: modelId };
-    request('places', sent).then((r) => {
-      st = S.setPlaces(st, entryId, r);
+    const pr = await request('places', sent);
+    st = S.setPlaces(st, entryId, pr);
+    changed();
+    if (!(isObj(pr) && pr.ok === true)) {
+      // the search itself failed (the index is still empty, unreadable, a bad selection ...): that is the answer, in words
+      st = S.finish(st, entryId, pr);
       changed();
-      if (isObj(r) && r.ok === true) {
-        setTimer(() => { st = S.setStage(st, entryId, 'writing'); changed(); }, claude ? WRITING_AFTER_MS.claude : WRITING_AFTER_MS.local);
-      }
-    });
-    const reply = await request(op, sent);
+      if (isObj(pr) && pr.reason === 'index-building') refreshStatus();
+      return;
+    }
+    writingTimers.set(entryId, setTimer(() => {
+      writingTimers.delete(entryId);
+      const before = st;
+      st = S.setStage(st, entryId, 'writing');
+      if (st !== before) changed();      // an answer that has landed is never repainted by a late timer (PR #169 Miguel B1)
+    }, claude ? WRITING_AFTER_MS.claude : WRITING_AFTER_MS.local));
+    const reply = await request(op, { ...sent, ...(pr.retrieval ? { retrieval: pr.retrieval } : {}) });
+    stopWriting(entryId);
     st = S.finish(st, entryId, reply);
     changed();
     if (isObj(reply) && reply.ok === false && reply.reason === 'index-building') refreshStatus();
@@ -87,24 +107,41 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     if (!q) return undefined;
     if (!profile.named) { changed(); return undefined; }
     const mid = modelId || profile.model;
-    st = S.begin(st, { kind: 'question', label: q, request: { question: q, ...(direction ? { direction } : {}) }, parent, model: mid });
+    ui.startMsg = '';
+    st = S.begin(st, { kind: 'question', label: q, request: { question: q, ...(direction ? { direction } : {}) }, parent, model: mid, name: profile.name });
     changed();
     return run(S.current(st).id, 'ask', { question: q }, mid);
   }
 
-  function explain(sel, { parent, direction, modelId, label, term, answer } = {}) {
+  function explain(sel, opts = {}) {
     const { file, start, end } = sel || {};
     if (!profile.named) { pendingExplain = { file, start, end }; changed(); return undefined; }
+    // The host has not said yet (the panel was never opened in this window): ask first. Silence is not "the model hasn't passed"
+    // (PR #169 Dexter 4, Miguel B2).
+    if (host === null) return refreshStatus().then(() => explainNow(sel, opts));
+    return explainNow(sel, opts);
+  }
+
+  function explainNow(sel, { parent, direction, modelId, label, term, answer } = {}) {
+    const { file, start, end } = sel || {};
     const mid = modelId || profile.model;
     const lab = label || (term || `${file}:${start}${end > start ? '-' + end : ''}`);
+    if (host === null) {
+      // still nothing from the host: say that, in its own words, not a verdict on the model
+      st = S.begin(st, { kind: 'explain', label: lab, request: { file, start, end }, parent, model: mid, name: profile.name });
+      st = S.finish(st, S.current(st).id, { ok: false, error: hostError || 'The session did not answer, so this can\'t be explained yet.' });
+      changed();
+      return undefined;
+    }
+    ui.startMsg = '';
     if (!S.canExplain(host, mid)) {
-      st = S.begin(st, { kind: 'explain', label: lab, request: { file, start, end }, parent, model: mid });
+      st = S.begin(st, { kind: 'explain', label: lab, request: { file, start, end }, parent, model: mid, name: profile.name });
       st = S.finish(st, S.current(st).id, { ok: false, reason: 'explainer-off' });
       changed();
       return undefined;
     }
     const body = { file, start, end, level: profile.level, aboutMe: profile.aboutMe, ...(term ? { term, answer } : {}), ...(direction ? { direction } : {}) };
-    st = S.begin(st, { kind: 'explain', label: lab, request: body, parent, model: mid });
+    st = S.begin(st, { kind: 'explain', label: lab, request: body, parent, model: mid, name: profile.name });
     changed();
     return run(S.current(st).id, 'explain', body, mid);
   }
@@ -180,10 +217,17 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
   function rename() {
     ui.naming = { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' };
     ui.settings = false;
+    ui.draft = null;
     saveProfile({ ...profile, named: false });
     changed();
   }
-  function toggleSettings() { ui.settings = !ui.settings; changed(); }
+  // The settings boxes are rebuilt with the body, so what is typed in them lives here until Save (PR #169 Miguel B1).
+  function toggleSettings() {
+    ui.settings = !ui.settings;
+    ui.draft = ui.settings ? { name: profile.name, level: profile.level, aboutMe: profile.aboutMe, model: profile.model } : null;
+    changed();
+  }
+  function setSettingsDraft(partial) { if (ui.draft && isObj(partial)) ui.draft = { ...ui.draft, ...partial }; }
   function saveSettings({ name, level, aboutMe, model } = {}) {
     let next = profile;
     const nm = P.name(next, name, next.portrait);
@@ -193,6 +237,7 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     next = P.setModel(next, model);
     saveProfile(next);
     ui.settings = false;
+    ui.draft = null;
     changed();
   }
 
@@ -200,7 +245,7 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     show() { shown = true; nonePolls = NONE_POLLS; return refreshStatus(); },
     hide() { shown = false; if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; } },
     refreshStatus, ask, explain, reask, drill, askClaude, select, startOllama,
-    toggleSettings, saveSettings, rename, setNamingName, setNamingPortrait, choosePicture, saveNaming,
+    toggleSettings, setSettingsDraft, saveSettings, rename, setNamingName, setNamingPortrait, choosePicture, saveNaming,
     state: () => ({
       profile, host, hostError, ui, entry: S.current(st), trail: S.trail(st), history: S.history(st), view: S.viewOf(st, profile),
     }),

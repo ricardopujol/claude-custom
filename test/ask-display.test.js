@@ -99,7 +99,7 @@ test('the agents\' picker on the naming card: the explainer\'s own picture opens
   const m = model({ profile: P.load(null), view: 'naming' });
   m.ui.naming.portrait = { kind: 'agent', agent: 'paris' };
   const h = D.bodyHtml(m);
-  assert.match(h, /<button type="button" class="ask-face ask-upload" data-act="upload" title="Choose your own picture, GIF or video"><img class="face-media"/);
+  assert.match(h, /<button type="button" class="ask-face ask-upload" data-act="upload" aria-pressed="false" title="Choose your own picture, GIF or video"><img class="face-media"/);
   assert.match(h, /class="ask-face on" data-act="face" data-agent="paris"/);
   assert.doesNotMatch(h, /class="ask-face on" data-act="face" data-agent="naomi"/);
   const own = model({ profile: P.load(null), view: 'naming' });
@@ -135,6 +135,142 @@ test('a chosen agent that is no longer offered falls back to the explainer\'s ow
   const r = D.portraitResult({ kind: 'agent', agent: 'gone' }, { portraits: PORTRAITS });
   assert.strictEqual(r.tier, 'uploaded');
   assert.strictEqual(D.portraitResult({ kind: 'upload' }, null), null);
+});
+
+test('PR #169 Dexter 3: an answer given while the first index was still being built says so, with how far it had got', () => {
+  const e = entryOf({ reply: { ok: true, text: 'x', building: { state: 'building', done: 12, total: 120 }, stale: true } });
+  const h = D.bodyHtml(model({ entry: e, view: 'answer' }));
+  assert.match(h, /answered from the files read so far \(12 of 120\): the first index is still being built/);
+  assert.doesNotMatch(h, /a little behind/, 'one note, not two');
+  const noTotal = D.bodyHtml(model({ entry: entryOf({ reply: { ok: true, text: 'x', building: {} } }), view: 'answer' }));
+  assert.match(noTotal, /answered from the files read so far: the first index/);
+});
+
+test('PR #169 Miguel Y2: what leaves the machine is said where the choice is made, and under the name on a Claude model', () => {
+  const local = D.bodyHtml(model({ ui: { settings: true, draft: { ...named, model: 'local' }, naming: { name: '', portrait: { kind: 'upload' }, error: '' }, startMsg: '' } }));
+  assert.match(local, /Runs on this computer\. Nothing leaves it\./);
+  assert.doesNotMatch(local, /Anthropic/);
+  const claude = D.bodyHtml(model({ ui: { settings: true, draft: { ...named, model: 'haiku' }, naming: { name: '', portrait: { kind: 'upload' }, error: '' }, startMsg: '' } }));
+  assert.match(claude, /Your question and the code it reads go to Anthropic \(Claude\), on your plan\./);
+  assert.doesNotMatch(claude, /Nothing is sent to anything else/, 'the sentence that was false');
+  assert.doesNotMatch(D.headerHtml(model()), /Anthropic/, 'Local: no note under the label');
+  assert.match(D.headerHtml(model({ profile: { ...named, model: 'sonnet' } })), /<span class="ask-privacy">Your question and the code it reads go to Anthropic \(Claude\), on your plan\.<\/span>/);
+  const e = entryOf({ reply: { ok: true, text: 'x' }, model: 'local' });
+  assert.match(D.bodyHtml(model({ entry: e, view: 'answer' })), /data-act="ask-claude" title="Sends this question and the code excerpts to Claude \(Anthropic\), on your plan, only on this click"/);
+});
+
+test('PR #169 Miguel B1: the settings boxes show what is being typed (the draft), not what was last saved', () => {
+  const m = model({ ui: { settings: true, draft: { name: 'Ad', level: 'new', aboutMe: 'half a sentence', model: 'sonnet' }, naming: { name: '', portrait: { kind: 'upload' }, error: '' }, startMsg: '' } });
+  const h = D.bodyHtml(m);
+  assert.match(h, /id="ask-set-name" type="text" maxlength="24" value="Ad"/);
+  assert.match(h, /<option value="new" selected>/);
+  assert.match(h, />half a sentence<\/textarea>/);
+  assert.match(h, /<option value="sonnet" selected>/);
+});
+
+test('PR #169 Miguel Y6: an answer offers a keyboard way into the drill-down (type the words); the live region is one element, not rebuilt text', () => {
+  const on = { ...HOST, models: HOST.models.map(m => ({ ...m, explainer: true })) };
+  const e = entryOf({ kind: 'explain', request: { file: 'a.js' }, reply: { ok: true, text: 'The idea.' }, places: [] });
+  const h = D.bodyHtml(model({ host: on, entry: e, view: 'answer' }));
+  assert.match(h, /<form class="ask-drill" data-form="drill"[^>]*><input class="ask-input" id="ask-drill-term" type="text" maxlength="120"/);
+  assert.doesNotMatch(D.bodyHtml(model({ entry: entryOf({ reply: { ok: true, text: 'x' } }), view: 'answer' })), /ask-drill-term/, 'only where drilling in is possible');
+  const waiting = D.bodyHtml(model({ entry: entryOf({ phase: 'waiting', stage: 'loading', places: [] }), view: 'waiting' }));
+  assert.doesNotMatch(waiting, /aria-live|role="status"/, 'a live region created together with its text is not announced: the shell holds one');
+  assert.doesNotMatch(D.bodyHtml(model({ hostError: 'x' })), /role="status"/);
+});
+
+test('announceOf: one sentence for the one live region: the step it is on, the answer ready, or the note', () => {
+  const waiting = model({ entry: entryOf({ phase: 'waiting', stage: 'loading', places: [place('a.js', 1)] }), view: 'waiting' });
+  assert.match(D.announceOf(waiting), /where\?: loading the model/);
+  assert.strictEqual(D.announceOf(model({ entry: entryOf({ reply: { ok: true, text: 'x' } }), view: 'answer' })), 'Answer ready: where?');
+  assert.match(D.announceOf(model({ entry: entryOf({ reply: { ok: false, reason: 'timeout' } }), view: 'note' })), /took too long/);
+  assert.strictEqual(D.announceOf(model({ view: 'empty', hostError: 'Waiting for the session to connect.' })), 'Waiting for the session to connect.');
+  assert.strictEqual(D.announceOf(model({ view: 'empty' })), '');
+});
+
+test('a card carries the end of its range so a click selects all of it; an old answer keeps the name it was given by', () => {
+  assert.match(D.cardHtml(place('a.js', 3)), /data-line="3" data-end="4"/);
+  assert.doesNotMatch(D.cardHtml({ file: 'a.js', line: 3, endLine: 3, why: '', lines: [] }), /data-end/);
+  const e = entryOf({ reply: { ok: true, text: 'x' }, name: 'Old Name' });
+  assert.match(D.bodyHtml(model({ entry: e, view: 'answer' })), /<p class="ask-from">Old Name · qwen3\.5:4b · local<\/p>/);
+});
+
+// ---- the painter: a repaint never costs the person their place (PR #169 Miguel B1, Y4) ----------------------------------------
+
+function rigPaint() {
+  const doc = { activeElement: null };
+  const makeInput = (id, extra = {}) => ({ id, selectionStart: 0, selectionEnd: 0, focused: 0, selection: null, getAttribute: () => null, focus() { this.focused += 1; doc.activeElement = this; }, setSelectionRange(a, b) { this.selection = [a, b]; }, ...extra });
+  const el = {
+    writes: [], children: new Map(), innerHTML: '',
+    contains: (n) => !!n && [...el.children.values()].includes(n),
+    querySelector: (sel) => el.children.get(sel) || null,
+  };
+  let html = '';
+  Object.defineProperty(el, 'innerHTML', { get: () => html, set: (v) => { html = v; el.writes.push(v); el.children = new Map(el.next || []); }, configurable: true });
+  return { doc, el, makeInput, painter: D.createPainter(doc) };
+}
+
+test('createPainter: a region whose HTML did not change is not written at all (a face video, a selection or a scroll position is left alone)', () => {
+  const r = rigPaint();
+  assert.strictEqual(r.painter('top', r.el, '<b>a</b>'), true);
+  assert.strictEqual(r.painter('top', r.el, '<b>a</b>'), false);
+  assert.strictEqual(r.painter('top', r.el, '<b>a</b>'), false);
+  assert.strictEqual(r.el.writes.length, 1);
+  assert.strictEqual(r.painter('top', r.el, '<b>b</b>'), true);
+  assert.strictEqual(r.painter('foot', r.el, '<b>b</b>'), true, 'regions are independent of each other');
+});
+
+test('createPainter: typing in the name box across a status poll: the rebuilt box gets the focus and the caret back', () => {
+  const r = rigPaint();
+  const box = r.makeInput('ask-name', { selectionStart: 3, selectionEnd: 3 });
+  r.el.next = [['#ask-name', box]];
+  r.painter('body', r.el, '<input id="ask-name" value="Ada">');
+  box.focus();
+  const reborn = r.makeInput('ask-name');
+  r.el.next = [['#ask-name', reborn]];            // the rebuilt DOM holds a NEW box with the same id
+  const changed = r.painter('body', r.el, '<input id="ask-name" value="Ada"><p>the status moved</p>');
+  assert.strictEqual(changed, true);
+  assert.strictEqual(reborn.focused, 1, 'focus is back on the box');
+  assert.deepStrictEqual(reborn.selection, [3, 3], 'and the caret where the person left it');
+  assert.strictEqual(r.doc.activeElement, reborn);
+});
+
+test('createPainter: a button that had focus gets it back by its data-act and data attributes; a control that is gone gets nothing (and nothing throws)', () => {
+  const r = rigPaint();
+  const attrs = { 'data-act': 'chip', 'data-name': 'Ada' };
+  const chip = r.makeInput('', { getAttribute: (a) => (a in attrs ? attrs[a] : null) });
+  r.el.next = [];
+  r.painter('body', r.el, 'one');
+  r.el.children = new Map([['x', chip]]);
+  chip.focus();
+  const again = r.makeInput('', { getAttribute: (a) => (a in attrs ? attrs[a] : null) });
+  r.el.next = [['[data-act="chip"][data-name="Ada"]', again]];
+  r.painter('body', r.el, 'two');
+  assert.strictEqual(again.focused, 1);
+  r.el.children = new Map([['x', again]]);
+  again.focus();
+  r.el.next = [];
+  assert.doesNotThrow(() => r.painter('body', r.el, 'three'));
+});
+
+test('createPainter: focus outside the region is not touched', () => {
+  const r = rigPaint();
+  const outside = r.makeInput('ask-q');
+  r.doc.activeElement = outside;
+  r.el.next = [];
+  r.painter('body', r.el, 'x');
+  r.painter('body', r.el, 'y');
+  assert.strictEqual(r.doc.activeElement, outside);
+  assert.strictEqual(outside.focused, 0);
+});
+
+test('keyOf: an id, else the data-act with what tells the control apart; a plain element has none', () => {
+  const el = (id, attrs) => ({ id, getAttribute: (a) => (a in attrs ? attrs[a] : null) });
+  assert.strictEqual(D.keyOf(el('ask-name', {})), '#ask-name');
+  assert.strictEqual(D.keyOf(el('', { 'data-act': 'face', 'data-agent': 'naomi' })), '[data-act="face"][data-agent="naomi"]');
+  assert.strictEqual(D.keyOf(el('', { 'data-q': 'a "quoted" one', 'data-act': 'example' })), '[data-act="example"][data-q="a \\"quoted\\" one"]');
+  assert.strictEqual(D.keyOf(el('', {})), null);
+  assert.strictEqual(D.keyOf(null), null);
 });
 
 test('a naming error is said', () => {
@@ -222,7 +358,8 @@ test('the first index: the progress line with files done of total, and no button
   const e = entryOf({ reply: { ok: false, reason: 'index-building', progress: { state: 'building', done: 59, total: 318 } } });
   const h = D.bodyHtml(model({ entry: e, view: 'note' }));
   assert.match(h, /59 of 318 files/);
-  assert.match(h, /keywords only/);
+  assert.match(h, /Questions work meanwhile, from the files read so far\./);
+  assert.doesNotMatch(h, /\.\./, 'one full stop');
   assert.doesNotMatch(h, /<button[^>]*data-act="(start-ollama|ask-claude)"/);
 });
 

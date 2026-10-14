@@ -32,12 +32,14 @@ const isCount = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 
 const create = () => ({ entries: [], currentId: null, nextId: 1 });
 
-function begin(state, { kind, label, request, parent, model } = {}) {
+function begin(state, { kind, label, request, parent, model, name } = {}) {
   const id = state.nextId;
   const entry = {
     id, kind: kind === 'explain' ? 'explain' : 'question', label: isStr(label) ? label : '', request: request || {},
     parent: Number.isInteger(parent) ? parent : null, model: isStr(model) ? model : 'local',
     phase: 'waiting', stage: 'searching', places: null, reply: null,
+    // who answered, by the name it had THEN (a later rename does not relabel an old answer)
+    name: isStr(name) ? name : null,
   };
   const entries = [...state.entries, entry];
   while (entries.length > HISTORY_MAX) entries.shift();
@@ -45,9 +47,12 @@ function begin(state, { kind, label, request, parent, model } = {}) {
 }
 
 const find = (state, id) => state.entries.find(e => e.id === id) || null;
+// An entry that is not changed leaves the STATE the very same object (a late timer or reply that changes nothing repaints nothing).
 function patch(state, id, fn) {
-  if (!find(state, id)) return state;
-  return { ...state, entries: state.entries.map(e => (e.id === id ? fn(e) : e)) };
+  const e = find(state, id);
+  if (!e) return state;
+  const next = fn(e);
+  return next === e ? state : { ...state, entries: state.entries.map(x => (x.id === id ? next : x)) };
 }
 
 const placesOf = (reply) => (isObj(reply) && Array.isArray(reply.places) ? reply.places : null);
@@ -153,10 +158,15 @@ function noticeOf(reply, { name, kind, modelId, modelName, hasPlaces } = {}) {
 
 function indexLine(index) {
   if (!isObj(index)) return { text: 'checking this repo…', busy: false };
+  if (index.state === 'partial' && index.running !== true) {
+    // nothing is building it: not "N of N files", which would look finished
+    const n = isCount(index.files) ? `${index.files} files` : 'some files';
+    return { text: `the saved index is incomplete (${n} read) and nothing is building it; opening the panel again resumes it`, busy: false };
+  }
   if (index.state === 'building' || index.state === 'partial') {
     const p = isObj(index.progress) ? index.progress : {};
     const where = isCount(p.done) && isCount(p.total) && p.total > 0 ? `${p.done} of ${p.total} files` : 'starting';
-    return { text: `reading this repo for the first time: ${where}. Questions work meanwhile, on keywords only.`, busy: true };
+    return { text: `reading this repo for the first time: ${where}. Questions work meanwhile, from the files read so far.`, busy: true };
   }
   if (index.state === 'failed') return { text: `couldn't read this repo: ${isStr(index.error) && index.error ? index.error : 'unknown reason'}`, busy: false };
   if (index.state === 'none') return { text: 'this repo is not read yet; opening the panel starts it', busy: false };

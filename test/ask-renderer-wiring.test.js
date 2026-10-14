@@ -51,7 +51,7 @@ test('What\'s this? on the reader brings the panel on screen (un-hiding it) befo
 });
 
 test('a card or a citation opens the reader at the line through the browser, which keeps the Files tab\'s highlight in step', () => {
-  assert.match(JS, /openAt: \(file, line\) => \{ repoBrowser\.openAt\(file, line\); \},/);
+  assert.match(JS, /openAt: \(file, line, endLine\) => \{ repoBrowser\.openAt\(file, line, endLine\)\.catch\(\(\) => \{[^}]*\}\); \},/, 'the whole range, and a failed open is not an unhandled rejection (PR #169 Miguel G1)');
   const browser = fs.readFileSync(path.join(APP, 'repo-browser.js'), 'utf8');
   assert.match(browser, /openAt: async \(path, line, endLine\) => \{ const r = await reader\.openAt\(path, line, endLine\); panel\.setSelected\(reader\.path\(\)\); return r; \},/);
 });
@@ -86,7 +86,12 @@ test('the explainer\'s face follows the roster\'s agent-images switch, which is 
 });
 
 test('the explainer\'s picture goes through the agents\' own picker and upload message, and a new picture is re-read from the host', () => {
-  assert.match(JS, /window\.harness\.avatar\.pick\(\)\.then\(\(path\) => \{\n\s+if \(!path\) return false;\n\s+try \{ ws\.send\(JSON\.stringify\(\{ type: 'portrait', action: 'set', agent: 'ask-explainer', state: 'sleeping', path \}\)\); return true; \} catch \{ return false; \}/);
-  assert.match(JS, /if \(msg\.agent === 'ask-explainer' && askPanel\) askPanel\.refresh\(\);/);
+  // ONE helper sends it, for the roster's pencil and the Ask panel alike (PR #169 El Gordo 2), and the agent's name is one constant
+  assert.match(JS, /function pickAndSetPortrait\(agent, state\) \{[\s\S]*?window\.harness\.avatar\.pick\(\)\.then\(\(path\) => \{[\s\S]*?\{ type: 'portrait', action: 'set', agent, state, path \}/);
+  assert.strictEqual((JS.match(/\{ type: 'portrait', action: 'set', agent, state, path \}/g) || []).length, 1, 'one send for every portrait pick');
+  assert.match(JS, /function askPickPortrait\(\) \{ return pickAndSetPortrait\(ASK_AGENT, 'sleeping'\); \}/);
+  assert.match(JS, /pickAndSetPortrait\(agent, state\);\n\}\);/, 'the roster\'s pencil uses it too');
+  assert.strictEqual((JS.match(/'ask-explainer'/g) || []).length, 1, 'the name is typed once: const ASK_AGENT');
+  assert.match(JS, /if \(msg\.agent === ASK_AGENT && askPanel\) askPanel\.refresh\(\);/);
   assert.doesNotMatch(JS, /askShrinkImage|toDataURL/, 'no picker of the panel\'s own');
 });

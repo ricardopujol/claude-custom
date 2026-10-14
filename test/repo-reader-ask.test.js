@@ -44,8 +44,9 @@ function fakeCodeMirror() {
   const made = [];
   return {
     made,
-    create() {
+    create(_parent, opts) {
       const ed = {
+        editableNow: false, setEditable(on) { this.editableNow = on === true; }, editable() { return this.editableNow; }, type(t) { this.txt = t; opts.onChange(); },
         txt: '', sel: { fromLine: 1, toLine: 1, empty: true, toCol0: false }, picked: [],
         show({ text }) { this.txt = text; },
         text() { return this.txt; },
@@ -108,6 +109,22 @@ test('clicking What\'s this? sends the selection to the panel, and says what to 
   s.cm.made[0].sel = { fromLine: 1, toLine: 2, empty: false, toCol0: false };
   s.el('reader-ask').click();
   assert.deepStrictEqual(asked, [{ file: 'src/a.js', start: 1, end: 2 }]);
+});
+
+test('PR #169 Miguel Y3: with unsaved edits What\'s this? refuses plainly instead of explaining lines of the buffer that the disk does not have', async () => {
+  const asked = [];
+  const s = setup({ onAsk: (sel) => asked.push(sel) });
+  await openFile(s);
+  s.el('reader-edit').click();
+  for (let i = 0; i < 6; i += 1) await tick();
+  const ed = s.cm.made[0];
+  ed.sel = { fromLine: 1, toLine: 2, empty: false, toCol0: false };
+  s.el('reader-ask').click();
+  assert.strictEqual(asked.length, 1, 'edit mode with nothing typed is still the saved file');
+  ed.type('one\ntwo\nchanged\n');
+  s.el('reader-ask').click();
+  assert.strictEqual(asked.length, 1, 'with unsaved edits nothing is asked');
+  assert.match(s.el('reader-meta').textContent, /save the file first/);
 });
 
 test('openAt: opens the file, then selects the line (and the range when given)', async () => {

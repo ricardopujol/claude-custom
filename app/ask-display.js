@@ -3,7 +3,7 @@
  * The "Ask the repo" panel (BACKLOG #33, DESIGN_ASK_REPO.md "The design, in full" + Round 8): a dock tab, 360 px, that explains and
  * finds code with a local model (or Haiku / Sonnet through the real claude CLI), named and pictured by its owner.
  *
- *   mount({ doc, root, request, openAt, storage, setTimer, clearTimer, getSelection, pickPortrait, imagesEnabled }) ->
+ *   mount({ doc, root, request, openAt(file, line, endLine), storage, setTimer, clearTimer, getSelection, pickPortrait, imagesEnabled }) ->
  *     { show(), hide(), ask(question), explainSelection({ file, start, end }), state(), profile(), probe(action, args) }
  *
  *   request(op, body) -> Promise<reply>   app/ask-requester.js, over the tab's own host socket; the page never names a worktree
@@ -18,7 +18,8 @@
  *
  * The pure half (what to show) is app/ask-panel-state.js and what the panel DOES is app/ask-controller.js; this file draws it. Everything from the host or the model
  * is escaped; every control is a <button> (data-act), and the body is rebuilt from state, so the page holds nothing it cannot rebuild.
- * The question box and the About-me / name boxes are NOT rebuilt while the person types in them.
+ * A region is written only when its HTML changed, and a rebuild puts the focus and the caret back (createPainter); what is typed in the name and
+ * settings boxes lives in the controller's state, so a repaint never costs the person their text.
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `askDisplay`.
  */
@@ -41,6 +42,7 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 const esc = (s) => String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, (c) => ESCAPES[c]);
 const isObj = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const isStr = (x) => typeof x === 'string';
+const isCountN = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 
 // ---- the words of an answer ---------------------------------------------------------------------------------------------------
 
@@ -78,7 +80,7 @@ function cardHtml(p) {
   const lines = Array.isArray(p.lines) ? p.lines.slice(0, CARD_LINES) : [];
   const code = lines.map(l => `<span class="ask-ln">${esc(l.n)}</span>${esc(l.text)}`).join('\n');
   const end = Number.isInteger(p.endLine) && p.endLine > p.line ? `-${p.endLine}` : '';
-  return `<button type="button" class="ask-card" data-act="open" data-file="${esc(p.file)}" data-line="${esc(p.line)}">`
+  return `<button type="button" class="ask-card" data-act="open" data-file="${esc(p.file)}" data-line="${esc(p.line)}"${Number.isInteger(p.endLine) && p.endLine > p.line ? ` data-end="${esc(p.endLine)}"` : ''}>`
     + `<span class="ask-card-where">${esc(p.file)}:${esc(p.line)}${esc(end)}</span>`
     + (isStr(p.why) && p.why ? `<span class="ask-card-why">${esc(p.why)}</span>` : '')
     + (code ? `<pre class="ask-card-code">${code}</pre>` : '')
@@ -132,18 +134,19 @@ function headerHtml(m) {
   const explains = S.canExplain(host, profile.model);
   return `<div class="ask-head">${portraitHtml(profile, host, m.images)}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
     + (explains ? `<span class="ask-for">explaining for: ${esc(lvl.label)} · <button type="button" class="ask-link" data-act="settings">change</button></span>` : '')
+    + (profile.model !== 'local' ? `<span class="ask-privacy">${esc(PRIVACY_CLAUDE)}</span>` : '')
     + '</div><button type="button" class="ask-gear" data-act="settings" title="Name, level, About me and model" aria-label="Settings" aria-expanded="'
     + (m.ui.settings ? 'true' : 'false') + '">⚙</button></div>';
 }
 
 function namingHtml(m) {
   const d = m.ui.naming;
-  const chips = P.NAME_SUGGESTIONS.map(n => `<button type="button" class="ask-chip${d.name === n ? ' on' : ''}" data-act="chip" data-name="${esc(n)}">${esc(n)}</button>`).join('');
+  const chips = P.NAME_SUGGESTIONS.map(n => `<button type="button" class="ask-chip${d.name === n ? ' on' : ''}" data-act="chip" data-name="${esc(n)}" aria-pressed="${d.name === n ? 'true' : 'false'}">${esc(n)}</button>`).join('');
   // The agents' picker: the explainer's own picture first (an upload, or what the agents fall back to; a click opens the OS file picker),
   // then the agents' generated pictures to choose from.
   const ps = isObj(m.host) && isObj(m.host.portraits) ? m.host.portraits : { own: null, suggestions: [] };
-  const own = `<button type="button" class="ask-face ask-upload${d.portrait.kind === 'upload' ? ' on' : ''}" data-act="upload" title="Choose your own picture, GIF or video">${faceHtml(isObj(ps.own) ? ps.own : null, m.images) || '＋'}</button>`;
-  const faces = (Array.isArray(ps.suggestions) ? ps.suggestions : []).map(s => `<button type="button" class="ask-face${d.portrait.kind === 'agent' && d.portrait.agent === s.agent ? ' on' : ''}" data-act="face" data-agent="${esc(s.agent)}" title="${esc(s.agent)}" aria-label="Picture of ${esc(s.agent)}">${faceHtml(s.portrait, m.images)}</button>`).join('');
+  const own = `<button type="button" class="ask-face ask-upload${d.portrait.kind === 'upload' ? ' on' : ''}" data-act="upload" aria-pressed="${d.portrait.kind === 'upload' ? 'true' : 'false'}" title="Choose your own picture, GIF or video">${faceHtml(isObj(ps.own) ? ps.own : null, m.images) || '＋'}</button>`;
+  const faces = (Array.isArray(ps.suggestions) ? ps.suggestions : []).map(s => `<button type="button" class="ask-face${d.portrait.kind === 'agent' && d.portrait.agent === s.agent ? ' on' : ''}" data-act="face" data-agent="${esc(s.agent)}" aria-pressed="${d.portrait.kind === 'agent' && d.portrait.agent === s.agent ? 'true' : 'false'}" title="${esc(s.agent)}" aria-label="Picture of ${esc(s.agent)}">${faceHtml(s.portrait, m.images)}</button>`).join('');
   return '<section class="ask-naming"><h3 class="ask-h3">Name your explainer</h3>'
     + '<p class="ask-note">It explains code for you. Pick a name and a face (one of the agents\' pictures, or your own); you can change both later in ⚙.</p>'
     + `<input class="ask-input" id="ask-name" type="text" maxlength="${P.NAME_MAX}" value="${esc(d.name)}" aria-label="Name" autocomplete="off">`
@@ -153,7 +156,8 @@ function namingHtml(m) {
 }
 
 function settingsHtml(m) {
-  const { profile, host } = m;
+  const { host } = m;
+  const profile = m.ui.draft || m.profile;       // what is being typed, not what was saved (the body is rebuilt now and then)
   const lv = LEVELS.map(l => `<option value="${l.id}"${l.id === profile.level ? ' selected' : ''}>${esc(l.label)}</option>`).join('');
   const models = (isObj(host) && Array.isArray(host.models) && host.models.length ? host.models : [{ id: 'local', model: 'local' }, { id: 'haiku', model: 'Haiku' }, { id: 'sonnet', model: 'Sonnet' }])
     .map(x => `<option value="${esc(x.id)}"${x.id === profile.model ? ' selected' : ''}>${esc(x.id === 'local' ? `Local (${x.model})` : `${x.model} (Claude, uses your plan)`)}${x.explainer ? '' : ' - explaining off'}</option>`).join('');
@@ -162,7 +166,7 @@ function settingsHtml(m) {
     + `<label class="ask-field">Explain for<select class="ask-input" id="ask-set-level">${lv}</select></label>`
     + `<label class="ask-field">About me (optional)<textarea class="ask-input" id="ask-set-about" rows="3" maxlength="${P.ABOUT_ME_MAX}" placeholder="e.g. learning Python, background in C# audio: comparisons come from there">${esc(profile.aboutMe)}</textarea></label>`
     + `<label class="ask-field">Model<select class="ask-input" id="ask-set-model">${models}</select></label>`
-    + '<p class="ask-note">A Claude model answers through your own claude sign-in and uses your plan. Nothing is sent to anything else.</p>'
+    + `<p class="ask-note">${esc(profile.model === 'local' ? PRIVACY_LOCAL : PRIVACY_CLAUDE)}${profile.model === 'local' ? '' : ' It answers through your own claude sign-in.'}</p>`
     + '<div class="ask-row"><button type="button" class="ask-primary" data-act="settings-save">Save</button><button type="button" class="ask-link" data-act="rename">Change portrait</button></div></section>';
 }
 
@@ -174,7 +178,7 @@ function emptyHtml(m) {
 }
 
 function stagesHtml(entry, modelId) {
-  return `<ol class="ask-stages" aria-live="polite">${S.stagesOf(entry, modelId).map(s => `<li class="ask-stage ${s.state}">${esc(s.text)}</li>`).join('')}</ol>`;
+  return `<ol class="ask-stages">${S.stagesOf(entry, modelId).map(s => `<li class="ask-stage ${s.state}">${esc(s.text)}</li>`).join('')}</ol>`;
 }
 
 function trailHtml(trail) {
@@ -198,18 +202,22 @@ function answerHtml(m) {
   const canDrill = e.kind === 'explain' || S.canExplain(m.host, e.model);
   const note = [];
   if (r.keywordOnly === true) note.push('answered from keyword search only (no embedding model)');
-  if (r.stale === true) note.push('the index may be a little behind your latest edits');
+  if (isObj(r.building)) {
+    const b = r.building;
+    note.push(isCountN(b.done) && isCountN(b.total) && b.total > 0 ? `answered from the files read so far (${b.done} of ${b.total}): the first index is still being built` : 'answered from the files read so far: the first index is still being built');
+  } else if (r.stale === true) note.push('the index may be a little behind your latest edits');
   if (r.dropped && r.dropped.length) note.push(`${r.dropped.length} cited place${r.dropped.length === 1 ? '' : 's'} could not be checked and ${r.dropped.length === 1 ? 'was' : 'were'} left out`);
   const reasked = isStr(e.request && e.request.direction);
   const actions = (e.kind === 'explain' && S.canExplain(m.host, e.model)
     ? `<button type="button" class="ask-chip" data-act="reask" data-dir="simpler"${reasked ? ' disabled' : ''}>Simpler</button><button type="button" class="ask-chip" data-act="reask" data-dir="deeper"${reasked ? ' disabled' : ''}>Deeper</button>` : '')
-    + (m.profile.model === 'local' ? '<button type="button" class="ask-chip" data-act="ask-claude" title="Ask the same thing of Claude (uses your plan, only on this click)">Ask Claude instead</button>' : '');
+    + (m.profile.model === 'local' ? '<button type="button" class="ask-chip" data-act="ask-claude" title="Sends this question and the code excerpts to Claude (Anthropic), on your plan, only on this click">Ask Claude instead</button>' : '');
   return `<section class="ask-answer-wrap">${trailHtml(m.trail)}<h4 class="ask-h">${esc(e.label)}</h4>`
     + `<div class="ask-answer" data-answer="${e.id}">${formatText(r.text, files)}</div>`
-    + (canDrill ? `<div class="ask-highlight" hidden><button type="button" class="ask-chip" data-act="drill">What's this? <span class="ask-hl-text"></span></button></div>` : '')
+    + (canDrill ? `<div class="ask-highlight" hidden><button type="button" class="ask-chip" data-act="drill">What's this? <span class="ask-hl-text"></span></button></div>`
+      + '<form class="ask-drill" data-form="drill" autocomplete="off"><input class="ask-input" id="ask-drill-term" type="text" maxlength="120" placeholder="A word or phrase from this answer" aria-label="A word or phrase from this answer to explain"><button type="submit" class="ask-chip">What\'s this?</button></form>' : '')
     + `<div class="ask-actions">${actions}</div>`
     + (note.length ? `<p class="ask-note">${esc(note.join('; '))}.</p>` : '')
-    + `<p class="ask-from">${esc(labelOf({ ...m.profile, model: e.model }, m.host))}</p>`
+    + `<p class="ask-from">${esc(labelOf({ ...m.profile, name: isStr(e.name) ? e.name : m.profile.name, model: e.model }, m.host))}</p>`
     + cardsHtml(e.places, 'Where to look') + '</section>';
 }
 
@@ -217,10 +225,10 @@ function noteHtml(m) {
   const e = m.entry;
   const n = S.noticeOf(e.reply, { name: m.profile.name, kind: e.kind, modelId: e.model, modelName: modelNameOf(m.host, e.model), hasPlaces: Array.isArray(e.places) && e.places.length > 0 });
   const prog = e.reply && e.reply.reason === 'index-building' ? S.indexLine({ state: 'building', progress: e.reply.progress }) : null;
-  const text = prog ? prog.text.charAt(0).toUpperCase() + prog.text.slice(1) + '.' : n.text;
+  const text = prog ? prog.text.charAt(0).toUpperCase() + prog.text.slice(1).replace(/\.?$/, '.') : n.text;
   const acts = prog ? [] : n.actions;
   return `<section class="ask-note-wrap">${trailHtml(m.trail)}<h4 class="ask-h">${esc(e.label)}</h4>`
-    + `<p class="ask-notice" role="status">${esc(text)}</p>`
+    + `<p class="ask-notice">${esc(text)}</p>`
     + (acts.length ? `<div class="ask-actions">${acts.map(a => `<button type="button" class="ask-chip" data-act="${esc(a.id)}">${esc(a.label)}</button>`).join('')}</div>` : '')
     + (m.ui.startMsg ? `<p class="ask-note">${esc(m.ui.startMsg)}</p>` : '')
     + cardsHtml(e.places, 'Where to look') + '</section>';
@@ -240,7 +248,7 @@ function bodyHtml(m) {
   else if (m.view === 'waiting') main = waitingHtml(m);
   else if (m.view === 'answer') main = answerHtml(m);
   else main = noteHtml(m);
-  const hostNote = m.hostError ? `<p class="ask-bad" role="status">${esc(m.hostError)}</p>` : '';
+  const hostNote = m.hostError ? `<p class="ask-bad">${esc(m.hostError)}</p>` : '';
   return hostNote + (m.ui.settings && m.profile.named ? settingsHtml(m) : '') + main + (m.view === 'naming' ? '' : historyHtml(m));
 }
 
@@ -248,6 +256,58 @@ function footHtml(m) {
   if (!m.profile.named) return '';
   const idx = S.statusLine(m.host, m.profile.model);
   return `<div class="ask-status">${esc(idx)}</div>`;
+}
+
+// ---- painting without destroying what the person is doing ------------------------------------------------------------------------
+
+const PRIVACY_CLAUDE = 'Your question and the code it reads go to Anthropic (Claude), on your plan.';
+const PRIVACY_LOCAL = 'Runs on this computer. Nothing leaves it.';
+
+/** What a screen reader is told, in one place that exists before it changes (PR #169 Miguel Y6). */
+function announceOf(m) {
+  if (m.view === 'waiting' && m.entry) {
+    const live = S.stagesOf(m.entry, m.entry.model).find(s => s.state === 'active');
+    return live ? `${m.entry.label}: ${live.text}` : '';
+  }
+  if (m.view === 'answer' && m.entry) return `Answer ready: ${m.entry.label}`;
+  if (m.view === 'note' && m.entry) {
+    const n = S.noticeOf(m.entry.reply, { name: m.profile.name, kind: m.entry.kind, modelId: m.entry.model, modelName: modelNameOf(m.host, m.entry.model), hasPlaces: false });
+    return n.text;
+  }
+  return m.hostError || '';
+}
+
+// A selector for "the same control" after the body has been rebuilt: its id, else its data-act and the data-* that tell it apart.
+const KEY_ATTRS = ['data-act', 'data-name', 'data-agent', 'data-dir', 'data-id', 'data-q', 'data-file', 'data-line'];
+function keyOf(el) {
+  if (!el) return null;
+  if (el.id) return `#${el.id}`;
+  const parts = KEY_ATTRS.map(a => [a, el.getAttribute ? el.getAttribute(a) : null]).filter(([, v]) => v !== null && v !== undefined);
+  if (!parts.length) return null;
+  return parts.map(([a, v]) => `[${a}="${String(v).replace(/(["\\])/g, '\\$1')}"]`).join('');
+}
+
+/**
+ * Writes a region's HTML, and ONLY when it changed (so a face video, a text selection and a scroll position inside an untouched region
+ * are never disturbed), and when it did, puts the focus (and the caret of a text box) back on the same control (PR #169 Miguel B1, Y4).
+ */
+function createPainter(doc) {
+  const last = new Map();
+  return function paintRegion(name, el, html) {
+    if (last.get(name) === html) return false;
+    last.set(name, html);
+    const active = doc && doc.activeElement;
+    const had = active && el.contains && el.contains(active) ? { key: keyOf(active), start: active.selectionStart, end: active.selectionEnd } : null;
+    el.innerHTML = html;
+    if (had && had.key) {
+      const again = el.querySelector(had.key);
+      if (again && typeof again.focus === 'function') {
+        again.focus();
+        if (Number.isInteger(had.start) && typeof again.setSelectionRange === 'function') { try { again.setSelectionRange(had.start, had.end); } catch { /* a control with no caret */ } }
+      }
+    }
+    return true;
+  };
 }
 
 // ---- mounting -----------------------------------------------------------------------------------------------------------------
@@ -260,25 +320,31 @@ function mount({
 
   host.innerHTML = '<div class="ask-root"><div class="ask-top"></div><div class="ask-body" tabindex="-1"></div><div class="ask-foot"></div>'
     + '<form class="ask-form" autocomplete="off"><input class="ask-q" type="text" maxlength="500" placeholder="Ask about this repo..." aria-label="Ask about this repo">'
-    + '<button type="submit" class="ask-go">Ask</button></form></div>';
+    + '<button type="submit" class="ask-go">Ask</button></form>'
+    + '<div class="ask-live" role="status" aria-live="polite"></div></div>';
   const $ = (sel) => host.querySelector(sel);
   const top = $('.ask-top');
   const body = $('.ask-body');
   const foot = $('.ask-foot');
   const form = $('.ask-form');
   const input = $('.ask-q');
+  const live = $('.ask-live');
+  const painter = createPainter(doc);
 
   let highlighted = '';
+  let lastSaid = '';
 
   const ctl = Controller.create({ request, storage, pickPortrait, onChange: () => paint(), ...timers });
 
   function paint() {
     const m = { ...ctl.state(), images: imagesEnabled() === true };
-    top.innerHTML = headerHtml(m);
-    body.innerHTML = bodyHtml(m);
-    foot.innerHTML = footHtml(m);
+    painter('top', top, headerHtml(m));
+    const bodyChanged = painter('body', body, bodyHtml(m));
+    painter('foot', foot, footHtml(m));
     form.hidden = !m.profile.named;
-    wireHighlight();
+    if (bodyChanged) highlighted = '';
+    const said = announceOf(m);
+    if (said !== lastSaid) { lastSaid = said; live.textContent = said; }
   }
 
   // ---- highlight inside an answer -> "What's this?" again -------------------------------------------------------------------
@@ -287,8 +353,8 @@ function mount({
     const sel = getSelection();
     if (!sel || sel.isCollapsed || typeof sel.toString !== 'function') return '';
     const answer = body.querySelector('.ask-answer');
-    const anchor = sel.anchorNode;
-    if (!answer || !anchor || !answer.contains(anchor)) return '';
+    // BOTH ends inside the answer: a drag that runs on into the cards below is not "words of the answer" (PR #169 Miguel G10)
+    if (!answer || !sel.anchorNode || !sel.focusNode || !answer.contains(sel.anchorNode) || !answer.contains(sel.focusNode)) return '';
     const t = sel.toString().replace(/\s+/g, ' ').trim();
     return t.length >= MIN_HIGHLIGHT && t.length <= MAX_HIGHLIGHT ? t : '';
   }
@@ -300,14 +366,8 @@ function mount({
     const span = bar.querySelector('.ask-hl-text');
     if (span) span.textContent = highlighted ? `"${highlighted.length > 28 ? highlighted.slice(0, 27) + '…' : highlighted}"` : '';
   }
-  function wireHighlight() {
-    highlighted = '';
-    const answer = body.querySelector('.ask-answer');
-    if (!answer) return;
-    const soon = () => { Promise.resolve().then(showHighlight); };
-    answer.addEventListener('mouseup', soon);
-    answer.addEventListener('keyup', soon);
-  }
+  // one listener for the page: a mouse drag and a keyboard selection both end in a selection change
+  if (doc && typeof doc.addEventListener === 'function') doc.addEventListener('selectionchange', () => { Promise.resolve().then(showHighlight); });
 
   // ---- clicks ---------------------------------------------------------------------------------------------------------------
   const actOf = (target) => {
@@ -322,7 +382,7 @@ function mount({
     if (!hit) return;
     const { el, act } = hit;
     switch (act) {
-      case 'open': if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line'))); break;
+      case 'open': if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line')), Number(dataOf(el, 'end')) || undefined); break;
       case 'example': ctl.ask(dataOf(el, 'q')); break;
       case 'goto': ctl.select(Number(dataOf(el, 'id'))); break;
       case 'settings': ctl.toggleSettings(); break;
@@ -349,9 +409,28 @@ function mount({
     input.value = '';
     ctl.ask(q);
   });
-  host.addEventListener('input', (e) => {
-    if (e && e.target && e.target.id === 'ask-name') ctl.setNamingName(e.target.value);
+  // the keyboard way into the drill-down: type the word or phrase (a keyboard cannot select words of a paragraph)
+  host.addEventListener('submit', (e) => {
+    const f = e && e.target && e.target.closest ? e.target.closest('[data-form="drill"]') : null;
+    if (!f) return;
+    if (e.preventDefault) e.preventDefault();
+    const field = f.querySelector('#ask-drill-term');
+    const words = field ? field.value : '';
+    if (field) field.value = '';
+    ctl.drill(words);
   });
+  // what is typed lives in the controller's state, so a repaint can put it back
+  const track = (e) => {
+    const t = e && e.target;
+    if (!t || !t.id) return;
+    if (t.id === 'ask-name') ctl.setNamingName(t.value);
+    else if (t.id === 'ask-set-name') ctl.setSettingsDraft({ name: t.value });
+    else if (t.id === 'ask-set-level') ctl.setSettingsDraft({ level: t.value });
+    else if (t.id === 'ask-set-about') ctl.setSettingsDraft({ aboutMe: t.value });
+    else if (t.id === 'ask-set-model') ctl.setSettingsDraft({ model: t.value });
+  };
+  host.addEventListener('input', track);
+  host.addEventListener('change', track);
 
   paint();
 
@@ -361,7 +440,7 @@ function mount({
     ask: (q) => ctl.ask(q),
     explainSelection: (sel) => ctl.explain(sel),
     profile: () => ctl.state().profile,
-    refresh: () => ctl.refreshStatus(),
+    refresh: () => ctl.refreshStatus({ fresh: true }),
     repaint: () => paint(),
     state: () => ctl.state(),
     // verify/probe-ask-panel.js: named actions, JSON answers
@@ -373,7 +452,7 @@ function mount({
   };
 }
 
-const API = { mount, portraitHtml, portraitResult, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, esc, LEVELS };
+const API = { mount, createPainter, announceOf, keyOf, portraitHtml, portraitResult, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, settingsHtml, esc, LEVELS, PRIVACY_CLAUDE, PRIVACY_LOCAL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.askDisplay = API;
 

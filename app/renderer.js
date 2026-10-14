@@ -1258,20 +1258,24 @@ const askRequester = window.askRequester.createRequester({
 });
 // The explainer's picture goes through the AGENTS' picker: the OS file dialog (avatar:pick), then the same `portrait set` the roster's pencil
 // sends, under the agent name the host keeps for it (host/ask-service.js EXPLAINER_AGENT). True when a file was chosen and sent.
-function askPickPortrait() {
+const ASK_AGENT = 'ask-explainer';
+// ONE way to choose a picture for an agent: the OS file dialog (avatar:pick), then the `portrait set` the host copies it in with. The roster's
+// pencil and the Ask panel's picker both go through it. True when a file was chosen and sent.
+function pickAndSetPortrait(agent, state) {
   if (!(window.harness && window.harness.avatar)) return Promise.resolve(false);
   return window.harness.avatar.pick().then((path) => {
     if (!path) return false;
-    try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent: 'ask-explainer', state: 'sleeping', path })); return true; } catch { return false; }
+    try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent, state, path })); return true; } catch { return false; /* not attached */ }
   });
 }
+function askPickPortrait() { return pickAndSetPortrait(ASK_AGENT, 'sleeping'); }
 
 const askPanel = askRoot ? window.askDisplay.mount({
   doc: document,
   root: askRoot,
   storage: (() => { try { return localStorage; } catch { return null; } })(),
   request: (op, body) => askRequester.request(op, body),
-  openAt: (file, line) => { repoBrowser.openAt(file, line); },
+  openAt: (file, line, endLine) => { repoBrowser.openAt(file, line, endLine).catch(() => { /* the reader says why in its own note */ }); },
   getSelection: () => window.getSelection(),
   pickPortrait: askPickPortrait,
   // the roster's own switch (declared further down this file: before it is set, or if it is off, the face is a placeholder)
@@ -3815,7 +3819,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
         }
         else if (a.op === 'refresh') { askPanel.probe('refresh', {}); }
-        else if (a.op === 'portraitSet') { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent: 'ask-explainer', state: 'sleeping', path: String(a.path) })); }
+        else if (a.op === 'portraitSet') { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent: ASK_AGENT, state: 'sleeping', path: String(a.path) })); }
         else if (a.op === 'settings') {
           // open the settings, set what was named, press Save (as a person would)
           if (!root.querySelector('#ask-set-level')) { const g = byAct('settings'); if (g) g.click(); }
@@ -7622,11 +7626,7 @@ agentsEl.addEventListener('click', (e) => {
   const agent = row && row.dataset.agent;
   const state = row && row.dataset.state;
   if (!agent || !state || !(window.harness && window.harness.avatar)) return;
-  window.harness.avatar.pick().then((path) => {
-    if (!path) return;
-    try { ws.send(JSON.stringify({ type: 'portrait', action: 'set', agent, state, path })); }
-    catch { /* not attached */ }
-  });
+  pickAndSetPortrait(agent, state);
 });
 
 const HEX_INPUT = /^#[0-9a-f]{6}$/i;
@@ -8109,7 +8109,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'portrait') {
     // The explainer's own picture (Ask panel): read the new picture from the host.
-    if (msg.agent === 'ask-explainer' && askPanel) askPanel.refresh();
+    if (msg.agent === ASK_AGENT && askPanel) askPanel.refresh();
     // The mood message that follows a successful upload redraws the face
     // itself; this is only the "was it accepted, and if not, why" the drop
     // note pattern above already established for granting a directory.

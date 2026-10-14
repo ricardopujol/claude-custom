@@ -77,6 +77,16 @@ test('a failure keeps the places the search found (they come back as hits) and i
   assert.strictEqual(S.current(st).places.length, 1);
 });
 
+test('a stage or places that change nothing return the very same state (so a late timer repaints nothing)', () => {
+  let st = S.begin(S.create(), { kind: 'question', label: 'q', request: {} });
+  st = S.finish(st, 1, { ok: true, text: 'x', places: [] });
+  assert.strictEqual(S.setStage(st, 1, 'writing'), st, 'a finished entry has no stage to move');
+  assert.strictEqual(S.setPlaces(st, 1, { ok: true, places: [place('a.js', 1)] }), st);
+  const waiting = S.begin(S.create(), { kind: 'question', label: 'q', request: {} });
+  assert.strictEqual(S.setStage(waiting, 1, 'nonsense'), waiting);
+  assert.notStrictEqual(S.setStage(waiting, 1, 'writing'), waiting);
+});
+
 test('a reply for an entry that no longer exists is ignored', () => {
   const st = S.begin(S.create(), { kind: 'question', label: 'q', request: {} });
   assert.strictEqual(S.finish(st, 99, { ok: true, text: 'x' }), st);

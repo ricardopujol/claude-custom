@@ -20,7 +20,7 @@ const HOST_OFF = {
 };
 const place = (file, line) => ({ file, line, endLine: line + 1, why: '', lines: [] });
 
-function rig({ profile = NAMED, host = HOST_OFF } = {}) {
+function rig({ profile = NAMED, host = HOST_OFF, manualPlaces = false } = {}) {
   const asked = [];
   const timers = [];
   let changes = 0;
@@ -29,6 +29,8 @@ function rig({ profile = NAMED, host = HOST_OFF } = {}) {
     const call = { op, body, resolve: (r) => resolve(r) };
     asked.push(call);
     pending.set(call, true);
+    // the search comes back at once unless a test drives it: the answer is only asked AFTER it (one retrieval, PR #169 El Gordo 1)
+    if (op === 'places' && !manualPlaces) resolve({ ok: true, places: [], retrieval: 'r' + asked.length });
   });
   const c = create({
     request, storage: mem(profile), onChange: () => { changes += 1; },
@@ -101,6 +103,7 @@ test('a worktree reported as not read yet is polled a few times (its first index
 test('nothing is asked of the model before the explainer is named; the question waits for the naming card', async () => {
   const r = rig({ profile: null });
   r.c.ask('where is x?');
+  await tick();
   assert.strictEqual(r.asked.length, 0);
   assert.strictEqual(r.c.state().view, 'naming');
 });
@@ -141,36 +144,54 @@ test('a selection clicked before naming waits, and is explained once the name is
   r.c.show();
   await r.answerStatus({ ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: true })) });
   r.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
   assert.strictEqual(r.all('explain').length, 0);
   r.c.setNamingName('Echo');
   r.c.saveNaming();
-  assert.strictEqual(r.all('explain').length, 1, 'now it asks');
-  assert.strictEqual(r.all('places').length, 1);
+  await tick();
+  assert.strictEqual(r.all('places').length, 1, 'now it searches');
+  assert.strictEqual(r.all('explain').length, 1, 'and asks');
 });
 
-test('a typed question: places are asked, the answer is asked, the cards show before the words', async () => {
-  const r = rig();
+test('a typed question: the places are asked FIRST and show as cards; the answer is asked only after them, on the same retrieval', async () => {
+  const r = rig({ manualPlaces: true });
   r.c.show(); await r.answerStatus();
   const done = r.c.ask('where is the lock?');
+  await tick();
   assert.strictEqual(r.c.state().view, 'waiting');
   assert.deepStrictEqual(r.last('places').body, { question: 'where is the lock?', model: 'local' });
-  assert.deepStrictEqual(r.last('ask').body, { question: 'where is the lock?', model: 'local' });
-  r.last('places').resolve({ ok: true, places: [place('a.js', 1), place('b.js', 2)] });
+  assert.strictEqual(r.all('ask').length, 0, 'the answer is not asked until the search has come back (one retrieval per ask)');
+  r.last('places').resolve({ ok: true, places: [place('a.js', 1), place('b.js', 2)], retrieval: 'R7' });
   await tick();
   const e = r.c.state().entry;
-  assert.strictEqual(e.places.length, 2);
+  assert.strictEqual(e.places.length, 2, 'the cards show while the words are still being written');
   assert.strictEqual(e.stage, 'loading');
   assert.strictEqual(r.c.state().view, 'waiting');
+  assert.deepStrictEqual(r.last('ask').body, { question: 'where is the lock?', model: 'local', retrieval: 'R7' });
   r.last('ask').resolve({ ok: true, text: 'It is in a.js:1.', places: [place('a.js', 1)], model: 'local' });
   await done;
   assert.strictEqual(r.c.state().view, 'answer');
   assert.strictEqual(r.c.state().entry.reply.text, 'It is in a.js:1.');
 });
 
+test('when the search itself fails (the index is still empty), that is the answer, in words, and no model is asked', async () => {
+  const r = rig({ manualPlaces: true });
+  r.c.show(); await r.answerStatus();
+  const done = r.c.ask('q');
+  await tick();
+  r.last('places').resolve({ ok: false, reason: 'index-building', progress: { done: 1, total: 9 } });
+  await done;
+  assert.strictEqual(r.all('ask').length, 0);
+  assert.strictEqual(r.c.state().view, 'note');
+  assert.strictEqual(r.c.state().entry.reply.reason, 'index-building');
+  assert.strictEqual(r.all('status').length, 2, 'and the status is read again so the progress moves');
+});
+
 test('the third waiting step comes after a pause once the places are in (the model is loading, then writing)', async () => {
   const r = rig();
   r.c.show(); await r.answerStatus();
   r.c.ask('q');
+  await tick();
   r.last('places').resolve({ ok: true, places: [place('a.js', 1)] });
   await tick();
   const t = r.timers.filter(x => x.live).at(-1);
@@ -183,6 +204,7 @@ test('for a Claude model the middle step is short and nothing is said about load
   const r = rig({ profile: JSON.stringify({ ...JSON.parse(NAMED), model: 'haiku' }) });
   r.c.show(); await r.answerStatus();
   r.c.ask('q');
+  await tick();
   assert.strictEqual(r.last('ask').body.model, 'haiku');
   r.last('places').resolve({ ok: true, places: [place('a.js', 1)] });
   await tick();
@@ -193,6 +215,7 @@ test('a failed ask is a note that keeps the places the search found', async () =
   const r = rig();
   r.c.show(); await r.answerStatus();
   const done = r.c.ask('q');
+  await tick();
   r.last('places').resolve({ ok: true, places: [place('a.js', 1)] });
   r.last('ask').resolve({ ok: false, reason: 'ollama-down', places: [place('a.js', 1)] });
   await done;
@@ -204,8 +227,10 @@ test('the answer of an earlier question does not overwrite the question asked af
   const r = rig();
   r.c.show(); await r.answerStatus();
   const first = r.c.ask('first');
+  await tick();
   const firstAsk = r.last('ask');
   const second = r.c.ask('second');
+  await tick();
   firstAsk.resolve({ ok: true, text: 'A1', places: [], model: 'local' });
   await first;
   assert.strictEqual(r.c.state().entry.label, 'second', 'the second question is still the one on screen');
@@ -214,6 +239,83 @@ test('the answer of an earlier question does not overwrite the question asked af
   await second;
   assert.strictEqual(r.c.state().entry.reply.text, 'A2');
   assert.strictEqual(r.c.state().history.find(e => e.label === 'first').reply.text, 'A1');
+});
+
+test('PR #169 Miguel B1: the writing timer is cleared when the answer lands, and a late one repaints nothing', async () => {
+  const r = rig({ manualPlaces: true });
+  r.c.show(); await r.answerStatus();
+  const done = r.c.ask('q');
+  await tick();
+  r.last('places').resolve({ ok: true, places: [place('a.js', 1)], retrieval: 'R' });
+  await tick();
+  const timer = r.timers.findIndex(t => t.live);
+  assert.ok(timer >= 0, 'armed once the places are in');
+  r.last('ask').resolve({ ok: true, text: 'answer', places: [], model: 'local' });
+  await done;
+  assert.strictEqual(r.timers[timer].live, false, 'cleared by the answer');
+  const before = r.changes();
+  r.timers[timer].fn();       // a timer that fires anyway
+  assert.strictEqual(r.changes(), before, 'an answer that has landed is not repainted by it');
+});
+
+test('PR #169 Miguel G9: an older status reply never overwrites a newer one (the progress never goes backwards)', async () => {
+  const r = rig();
+  r.c.show();
+  const first = r.last('status');
+  r.c.show();
+  const second = r.all('status')[1];
+  second.resolve({ ...HOST_OFF, index: { state: 'building', progress: { done: 8, total: 10 } } });
+  await tick();
+  first.resolve({ ...HOST_OFF, index: { state: 'building', progress: { done: 2, total: 10 } } });
+  await tick();
+  assert.strictEqual(r.c.state().host.index.progress.done, 8);
+});
+
+test('PR #169 Miguel Y5: an interrupted (partial) index is polled only while a build is running it', async () => {
+  const r = rig();
+  r.c.show();
+  await r.answerStatus({ ...HOST_OFF, index: { state: 'partial', files: 12, running: false } });
+  assert.strictEqual(r.timers.filter(t => t.live).length, 0, 'nothing is building it: no polling');
+  r.c.show();
+  await r.answerStatus({ ...HOST_OFF, index: { state: 'partial', files: 12, running: true } });
+  assert.strictEqual(r.timers.filter(t => t.live).length, 1);
+});
+
+test('a fresh status can be asked for (a new picture), and carries that to the host', async () => {
+  const r = rig();
+  r.c.show(); await r.answerStatus();
+  r.c.refreshStatus({ fresh: true });
+  assert.deepStrictEqual(r.last('status').body, { fresh: true });
+});
+
+test('PR #169 Miguel B1: what is typed in the settings survives a repaint: it lives in the draft until Save', async () => {
+  const r = rig();
+  r.c.toggleSettings();
+  assert.deepStrictEqual(r.c.state().ui.draft, { name: 'Professor Byte', level: 'comfortable', aboutMe: 'C# audio', model: 'local' });
+  r.c.setSettingsDraft({ aboutMe: 'typing about me' });
+  r.c.show(); await r.answerStatus();                 // a poll repaints
+  assert.strictEqual(r.c.state().ui.draft.aboutMe, 'typing about me');
+  r.c.setSettingsDraft({ level: 'new' });
+  assert.deepStrictEqual([r.c.state().ui.draft.aboutMe, r.c.state().ui.draft.level], ['typing about me', 'new']);
+  r.c.toggleSettings();
+  assert.strictEqual(r.c.state().ui.draft, null, 'closed: no draft');
+  r.c.setSettingsDraft({ aboutMe: 'ignored' });
+  assert.strictEqual(r.c.state().ui.draft, null);
+});
+
+test('PR #169 Miguel G4 / G6: "Ollama is starting" does not stay on later notes; an old answer keeps the name it was given by', async () => {
+  const r = rig();
+  r.c.show(); await r.answerStatus();
+  r.c.startOllama();
+  r.last('start-ollama').resolve({ ok: true });
+  await tick();
+  assert.match(r.c.state().ui.startMsg, /starting/);
+  r.c.ask('next');
+  await tick();
+  assert.strictEqual(r.c.state().ui.startMsg, '', 'cleared by the next ask');
+  assert.strictEqual(r.c.state().entry.name, 'Professor Byte');
+  r.c.saveSettings({ name: 'Ada', level: 'comfortable', aboutMe: '', model: 'local' });
+  assert.strictEqual(r.c.state().history[0].name, 'Professor Byte', 'renaming does not relabel an earlier answer');
 });
 
 test('a blank question asks nothing', () => {
@@ -226,22 +328,56 @@ test('explain on a model that has not passed: refused in the page too, no reques
   const r = rig();
   r.c.show(); await r.answerStatus();
   r.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
   assert.strictEqual(r.all('explain').length, 0);
   assert.strictEqual(r.c.state().view, 'note');
   assert.strictEqual(r.c.state().entry.reply.reason, 'explainer-off');
 });
 
-test('explain on a passed model sends the selection with the level and About me; the places go first', async () => {
+test('explain on a passed model sends the selection with the level and About me, after the places', async () => {
   const on = { ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: true })) };
-  const r = rig({ host: on });
+  const r = rig({ host: on, manualPlaces: true });
   r.c.show(); await r.answerStatus(on);
   const done = r.c.explain({ file: 'host/a.js', start: 3, end: 5 });
-  assert.deepStrictEqual(r.last('explain').body, { file: 'host/a.js', start: 3, end: 5, level: 'comfortable', aboutMe: 'C# audio', model: 'local' });
+  await tick();
+  assert.deepStrictEqual(r.last('places').body, { file: 'host/a.js', start: 3, end: 5, level: 'comfortable', aboutMe: 'C# audio', model: 'local' });
+  assert.strictEqual(r.all('explain').length, 0);
   assert.strictEqual(r.c.state().entry.label, 'host/a.js:3-5');
-  r.last('places').resolve({ ok: true, places: [place('b.js', 1)] });
+  r.last('places').resolve({ ok: true, places: [place('b.js', 1)], retrieval: 'R9' });
+  await tick();
+  assert.deepStrictEqual(r.last('explain').body, { file: 'host/a.js', start: 3, end: 5, level: 'comfortable', aboutMe: 'C# audio', model: 'local', retrieval: 'R9' });
   r.last('explain').resolve({ ok: true, text: 'The idea.', places: [], model: 'local' });
   await done;
   assert.strictEqual(r.c.state().view, 'answer');
+});
+
+test('PR #169 Dexter 4 / Miguel B2: What\'s this? before the first status asks for the status and waits; silence is never "hasn\'t passed the quality check"', async () => {
+  const on = { ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: true })) };
+  const r = rig({ profile: JSON.stringify({ ...JSON.parse(NAMED), model: 'haiku' }), host: on });
+  const done = r.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
+  assert.strictEqual(r.c.state().entry, null, 'nothing is decided yet');
+  assert.strictEqual(r.all('status').length, 1, 'the status is asked');
+  await r.answerStatus(on);
+  await tick();
+  assert.strictEqual(r.all('places').length, 1, 'now it explains');
+  assert.notStrictEqual(r.c.state().entry.reply && r.c.state().entry.reply.reason, 'explainer-off');
+  r.last('explain').resolve({ ok: true, text: 'x', places: [], model: 'haiku' });
+  await done;
+  assert.strictEqual(r.c.state().view, 'answer');
+});
+
+test('and when the host never answers, the note is the host\'s silence in its own words, not a verdict on the model', async () => {
+  const r = rig({ profile: JSON.stringify({ ...JSON.parse(NAMED), model: 'haiku' }) });
+  const done = r.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
+  r.last('status').resolve({ ok: false, error: 'Waiting for the session to connect.' });
+  await done;
+  const e = r.c.state().entry;
+  assert.strictEqual(r.c.state().view, 'note');
+  assert.strictEqual(e.reply.reason, undefined, 'not explainer-off');
+  assert.match(e.reply.error, /Waiting for the session/);
+  assert.strictEqual(r.all('explain').length, 0);
 });
 
 test('Simpler / Deeper re-ask the same selection once, as a sibling, not a replacement', async () => {
@@ -249,9 +385,11 @@ test('Simpler / Deeper re-ask the same selection once, as a sibling, not a repla
   const r = rig({ host: on });
   r.c.show(); await r.answerStatus(on);
   const d1 = r.c.explain({ file: 'a.js', start: 1, end: 2 });
+  await tick();
   r.last('explain').resolve({ ok: true, text: 'first', places: [], model: 'local' });
   await d1;
   const d2 = r.c.reask('simpler');
+  await tick();
   assert.strictEqual(r.last('explain').body.direction, 'simpler');
   assert.strictEqual(r.last('explain').body.start, 1);
   r.last('explain').resolve({ ok: true, text: 'simpler text', places: [], model: 'local' });
@@ -267,9 +405,11 @@ test('the drill-down: highlighted words become a step from this answer, with the
   const r = rig({ host: on });
   r.c.show(); await r.answerStatus(on);
   const d1 = r.c.explain({ file: 'a.js', start: 1, end: 2 });
+  await tick();
   r.last('explain').resolve({ ok: true, text: 'It sends an HTTP request.', places: [], model: 'local' });
   await d1;
   const d2 = r.c.drill('HTTP request');
+  await tick();
   assert.deepStrictEqual(
     { term: r.last('explain').body.term, answer: r.last('explain').body.answer, file: r.last('explain').body.file },
     { term: 'HTTP request', answer: 'It sends an HTTP request.', file: 'a.js' },
@@ -285,9 +425,11 @@ test('drilling into a typed answer asks "what is X?" as a question', async () =>
   const r = rig();
   r.c.show(); await r.answerStatus();
   const d1 = r.c.ask('how does it log?');
+  await tick();
   r.last('ask').resolve({ ok: true, text: 'It uses a ring buffer.', places: [], model: 'local' });
   await d1;
   r.c.drill('ring buffer');
+  await tick();
   assert.strictEqual(r.last('ask').body.question, 'What is ring buffer?');
   assert.deepStrictEqual(r.c.state().trail.map(t => t.label), ['how does it log?', 'What is ring buffer?']);
 });
@@ -296,10 +438,12 @@ test('Ask Claude instead: a question goes to Haiku (not the local model) and onl
   const r = rig();
   r.c.show(); await r.answerStatus();
   const d1 = r.c.ask('where?');
+  await tick();
   r.last('ask').resolve({ ok: false, reason: 'ollama-down', places: [] });
   await d1;
   assert.strictEqual(r.all('ask').filter(a => a.body.model !== 'local').length, 0, 'nothing went to Claude by itself');
   r.c.askClaude();
+  await tick();
   assert.strictEqual(r.last('ask').body.model, 'haiku');
   assert.strictEqual(r.last('ask').body.question, 'where?');
 });
@@ -309,12 +453,16 @@ test('Ask Claude instead on a selection: Haiku explains it if Haiku has passed, 
   r.c.show(); await r.answerStatus();
   // the local explainer is off, so the click on a selection leaves a note; asking Claude then explains it (Haiku passed in HOST_OFF)
   r.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
   r.c.askClaude();
+  await tick();
   assert.strictEqual(r.last('explain').body.model, 'haiku');
   const noHaiku = rig({ host: { ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: false })) } });
   noHaiku.c.show(); await noHaiku.answerStatus({ ...HOST_OFF, models: HOST_OFF.models.map(m => ({ ...m, explainer: false })) });
   noHaiku.c.explain({ file: 'a.js', start: 1, end: 3 });
+  await tick();
   noHaiku.c.askClaude();
+  await tick();
   assert.strictEqual(noHaiku.all('explain').length, 0);
   assert.match(noHaiku.last('ask').body.question, /a\.js lines 1-3/);
   assert.strictEqual(noHaiku.last('ask').body.model, 'haiku');
@@ -324,8 +472,10 @@ test('Ask Claude instead uses the person\'s own Claude choice when they made one
   const r = rig({ profile: JSON.stringify({ ...JSON.parse(NAMED), model: 'sonnet' }) });
   r.c.show(); await r.answerStatus();
   r.c.ask('q');
+  await tick();
   assert.strictEqual(r.last('ask').body.model, 'sonnet');
   r.c.askClaude();
+  await tick();
   assert.strictEqual(r.last('ask').body.model, 'sonnet');
 });
 
@@ -373,6 +523,7 @@ test('a dropped host is said, and the panel does not crash on a reply with no bo
   await tick();
   assert.match(r.c.state().hostError, /did not answer/);
   const d = r.c.ask('q');
+  await tick();
   r.last('ask').resolve(undefined);
   r.last('places').resolve(null);
   await d;
