@@ -5866,8 +5866,29 @@ function renderUsage(usage) {
 const quotaEl = document.getElementById('quota');
 let lastQuotaPayload = null;
 
+// #90: when a window is used up the binding meter reads "Claude back in 2h 14m", and when it resets "Claude is back" shows once
+// in place of the meters for a few seconds. The strip is the only page this window owns (the tab views cover everything
+// under it), so the toast lives in the strip. All decisions are in app/quota-countdown.js.
+const quotaResetWatcher = createQuotaResetWatcher();
+const BACK_TOAST_MS = 8000;
+let backToastUntil = 0;
+let backToastTimer = null;
+let nextQuotaTickMs = 30000;
+
 function renderQuota(quota) {
   if (quota !== undefined) lastQuotaPayload = quota;
+  const nowMs = Date.now();
+  const cs = quotaResetWatcher.see(lastQuotaPayload, nowMs);
+  nextQuotaTickMs = cs.state === 'usedUp' && cs.resetAtMs - nowMs <= 90000 ? 1000 : 30000;
+  if (cs.toast) {
+    backToastUntil = nowMs + BACK_TOAST_MS;
+    clearTimeout(backToastTimer);
+    backToastTimer = setTimeout(() => renderQuota(), BACK_TOAST_MS + 50);
+  }
+  if (nowMs < backToastUntil) {
+    quotaEl.innerHTML = `<span class="back-toast" role="status">Claude is back</span>`;
+    return;
+  }
   const d = quotaDisplay(lastQuotaPayload);
 
   if (d.state !== 'ready') {
@@ -5877,20 +5898,24 @@ function renderQuota(quota) {
     return;
   }
 
-  quotaEl.innerHTML = d.meters.map(m =>
-    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}" title="${escapeHtml(m.title)}">` +
+  quotaEl.innerHTML = d.meters.map(m => {
+    const back = cs.state === 'usedUp' && m.key === cs.key && cs.text;
+    return `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${back ? ' back' : ''}" title="${escapeHtml(m.title)}">` +
       `<span class="lbl">${escapeHtml(m.label)}</span>` +
       `<span class="track"><span class="fill" style="width:${m.fill}%"></span></span>` +
-      // #42: "41% · 18:00" in the header; the countdown and the rest are in the tooltip.
-      `<span class="pct">${escapeHtml(m.short)}</span>` +
-    `</span>`
-  ).join('');
+      // #42: "41% · 18:00" in the header; the countdown and the rest are in the tooltip. #90: used up -> "Claude back in 2h 14m".
+      `<span class="pct">${escapeHtml(back ? cs.text : m.short)}</span>` +
+    `</span>`;
+  }).join('');
 }
 
 // The countdown in every tooltip goes stale on its own, with no message from
 // the host -- so it is recomputed locally. Cheap: it re-renders from the last
-// payload and makes no request.
-setInterval(() => { if (!leanOn && lastQuotaPayload) renderQuota(); }, 30000);
+// payload and makes no request. Every second in the last minute of a used-up window (#90).
+(function quotaTick() {
+  if (!leanOn && lastQuotaPayload) renderQuota();
+  setTimeout(quotaTick, nextQuotaTickMs);
+})();
 
 // A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
 // depletes an allowance, never goes red, and never warns. The same geometry

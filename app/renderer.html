@@ -575,6 +575,12 @@
     /* Absence draws NO bars at all, only why. Three bars at zero would be a
        confident claim that the plan is untouched. */
     #quota .none { opacity: .7; font-size: 10.5px; }
+    /* #90: a used-up window reads "Claude back in 2h 14m"; at the reset "Claude is back" shows once, in the strip. */
+    #quota .meter.back .pct { color: var(--text); opacity: 1; font-weight: 600; }
+    #quota .back-toast {
+      font-size: 11px; font-weight: 600; color: var(--text); padding: 1px 9px; border-radius: 9px;
+      border: 1px solid var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent);
+    }
 
     /* An UNKNOWN career: an em dash, dimmed, with the reason in the tooltip.
        Not blank -- blank is what "this agent never ran here" looks like, and
@@ -2301,6 +2307,7 @@
   <script src="./roster-search-display.js"></script>
   <script src="./hidden-agents-display.js"></script>
   <script src="./quota-display.js"></script>
+  <script src="./quota-countdown.js"></script>
   <script src="./bugvault-display.js"></script>
   <script src="./projects-display.js"></script>
   <script src="./style-display.js"></script>
