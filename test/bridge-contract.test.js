@@ -445,8 +445,10 @@ test('raise answers the sender with raised + a window count, and tells every win
   assert.doesNotMatch(branch, /clients\.size/);
 });
 
-test('stop runs shutdown() and then exits', () => {
+test('stop runs shutdown() and then exits (through exitAfterUnload, which unloads Ollama only on the last host)', () => {
   const at = HOST_SRC.indexOf("msg.type === 'stop'");
   const branch = HOST_SRC.slice(at, HOST_SRC.indexOf('if (msg.type ===', at + 10));
-  assert.ok(branch.indexOf('shutdown()') !== -1 && branch.indexOf('process.exit(0)') > branch.indexOf('shutdown()'));
+  assert.match(branch, /exitAfterUnload\(\)/);
+  const fn = HOST_SRC.slice(HOST_SRC.indexOf('function exitAfterUnload()'), HOST_SRC.indexOf('function shutdown('));
+  assert.ok(fn.indexOf('shutdown()') !== -1 && fn.indexOf('process.exit(0)') > fn.indexOf('shutdown()'));
 });

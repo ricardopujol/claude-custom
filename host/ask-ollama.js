@@ -15,9 +15,10 @@
  * code excerpts are never logged here.
  *
  * keep_alive: the answer model stays loaded 5 minutes after a question, the embedder 2. Measured 2026-10-09 (reviews/claude-custom/
- * 2026-10-09-ask-repo-measure.md): Ollama keeps ONE generation model in memory on the 8 GB GPU, so asking with a model other than
- * the summaries client's llama3.2:3b costs a 4-6 s load, and the next summary tick a ~4 s reload. Default answer model qwen3.5:4b
- * (best graded answers); it's a thinking-capable model, so `think: false` is sent (every measurement ran with it off).
+ * 2026-10-09-ask-repo-measure.md) Ollama swapped a second generation model in at a 4-6 s load; since flash attention and the q8_0 KV
+ * cache the server keeps TWO resident here (this model and the summaries client's llama3.2:3b: ~5.8 GB on the 8 GB card, measured
+ * 2026-10-13, reviews/claude-custom/2026-10-14-ollama-gpu-91.md), so the old swap isn't paid but the memory is. Default answer
+ * model qwen3.5:4b (best graded answers); it's a thinking-capable model, so `think: false` is sent (every measurement ran with it off).
  */
 
 const DEFAULT_URL = 'http://127.0.0.1:11434';

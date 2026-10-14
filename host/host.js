@@ -125,7 +125,9 @@ const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
 // BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
 const { isSideEnv, siblingSessions } = require('./side-session');
-const { identitiesIn } = require('./background-hosts');
+const { identitiesIn, listBackgroundHosts, installsBeside } = require('./background-hosts');
+const { unloadOnLastExit } = require('./ollama-unload');
+const { DEFAULT_MODEL: SUMMARY_MODEL } = require('./summary-ollama');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
 const { createOccupancyProducer, isOccupancyOnly, teammateFromMeta, withoutFileText } = require('./occupancy-producer');
@@ -2600,8 +2602,8 @@ wss.on('connection', (ws, req) => {
       console.log('[host] stop-if-idle: no window, stopping');
       // The answer is flushed before the host goes; a second later it goes
       // anyway. Whichever comes first exits, so the other never runs.
-      setTimeout(() => { shutdown(); process.exit(0); }, 1000);
-      ws.send(JSON.stringify({ type: 'stop-if-idle', stopped: true }), () => { shutdown(); process.exit(0); });
+      setTimeout(() => { exitAfterUnload(); }, 1000);
+      ws.send(JSON.stringify({ type: 'stop-if-idle', stopped: true }), () => { exitAfterUnload(); });
       return;
     }
     if (msg.type === 'stop') {
@@ -2609,8 +2611,8 @@ wss.on('connection', (ws, req) => {
       // release the lock, end the pty. Authorised like every control frame --
       // the connection already presented the session token at the handshake.
       console.log('[host] stop requested');
-      shutdown();
-      process.exit(0);
+      exitAfterUnload();
+      return;
     }
     if (msg.type === 'raise') {
       // *Go to that session*: every window attached here comes forward, and
@@ -2980,6 +2982,29 @@ wss.on('error', (err) => {
 // case: a bind that failed, where this process never owned the port and the
 // file belongs to whoever did. Deleting it there would make the LIVE host
 // unidentifiable -- Finding 1 from the other direction.
+// The quit paths that end in process.exit: tidy up, then (only when this is the LAST claude-custom host on the machine) ask Ollama
+// to drop the models claude-custom itself loaded, bounded at 3 s and never able to fail the quit (host/ollama-unload.js, BACKLOG #91).
+// shutdown() has already removed this host's identity, and the pid filter drops it anyway. Any doubt about the other hosts
+// (unverified listing, an error) counts as "not the last": the models then just run out their keep_alive, as before.
+let exiting = null;
+function exitAfterUnload() {
+  if (!exiting) {
+    shutdown();
+    exiting = unloadOnLastExit({
+      models: [SUMMARY_MODEL, askOllama.answerModel, askOllama.embedModel],
+      baseUrl: seams.ollamaUrl || undefined,
+      log: (line) => console.log(line),
+      anotherHostRunning: async () => {
+        const { rows, verified } = await listBackgroundHosts({ ownInstall: INSTALL },
+          { installs: () => installsBeside(INSTALL), identities: identitiesIn, startTimes, windowCounts: async () => null });
+        if (rows.some(r => r.pid !== process.pid)) return true;
+        return verified ? false : null;
+      },
+    }).catch(() => {});
+  }
+  return exiting.then(() => process.exit(0));
+}
+
 function shutdown({ removeIdentity = true } = {}) {
   if (term) { try { term.kill(); } catch {} }
   try { repoService.close(); } catch {}
@@ -2998,8 +3023,8 @@ function shutdown({ removeIdentity = true } = {}) {
 // SIGINT is not how this host usually dies: main.js spawns it DETACHED so it
 // survives the window closing. SIGTERM and exit are the paths that actually
 // fire, and leaving them unhandled is what orphans the child.
-process.on('SIGINT', () => { shutdown(); process.exit(0); });
-process.on('SIGTERM', () => { shutdown(); process.exit(0); });
+process.on('SIGINT', () => { exitAfterUnload(); });
+process.on('SIGTERM', () => { exitAfterUnload(); });
 // The lock goes on every exit path that runs JS. A host that is killed
 // outright leaves it behind with a dead pid, which the next window takes over
 // silently -- release() only ever removes our own lock, so running it twice
