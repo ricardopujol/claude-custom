@@ -323,7 +323,7 @@ test('S8: the save yields to the event loop every 20 files, no more and no less'
     const real = global.setImmediate;
     let count = 0;
     global.setImmediate = (fn, ...rest) => {
-      if (new Error().stack.includes('ask-index.js')) count += 1;
+      if (/ask-index\.js/.test(new Error().stack)) count += 1;   // a stack frame, not the module's text
       return real(fn, ...rest);
     };
     try { await createIndex({ dir: tmpDir(), ...w.deps, now: () => 1000 }).refresh(WT); } finally { global.setImmediate = real; }

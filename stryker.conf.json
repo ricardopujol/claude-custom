@@ -308,7 +308,15 @@
     "app/ask-profile.js",
     "app/ask-requester.js",
     "app/ask-controller.js",
-    "host/side-session.js"
+    "host/side-session.js",
+    "host/ask-chunks.js",
+    "host/ask-retrieve.js",
+    "host/ask-repo.js",
+    "host/ask-index.js",
+    "host/ask-citations.js",
+    "host/ask-ollama.js",
+    "host/quota-share.js",
+    "host/quota-cli.js"
   ],
   "reporters": [
     "clear-text",
