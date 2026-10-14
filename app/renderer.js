@@ -807,6 +807,8 @@ const repoBrowser = window.repoBrowser.create({
   // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
   onDirty: (rel) => { try { if (window.harness && window.harness.readerDirty) window.harness.readerDirty(rel); } catch {} },
   confirmDiscard: async (message) => window.confirm(message),
+  // What's this? on the reader (#33): the selected lines go to the Ask panel, which is brought on screen
+  onAsk: (sel) => { askExplain(sel); },
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
@@ -1237,6 +1239,69 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
 
+// --- the Ask panel (BACKLOG #33) ------------------------------------------------------------------------------------------
+// ASK-BEGIN
+// app/ask-display.js builds the panel; its questions go to THIS tab's host over the socket (app/ask-requester.js, the `ask` control), and
+// the host owns the index and the models. What is here is what only this page knows: the socket, the reader (a card or a citation opens a
+// file at a line; What's this? on the reader sends its selection here) and whether the panel is on screen.
+const askRoot = document.getElementById('ask-root');
+const askRequester = window.askRequester.createRequester({
+  send: (obj) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try { ws.send(JSON.stringify(obj)); return true; } catch { return false; }
+  },
+});
+// The portrait upload: a picture is shrunk to a small square and kept as a data URL (the profile caps its size and type).
+function askShrinkImage() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    input.addEventListener('change', () => {
+      const file = input.files && input.files[0];
+      if (!file) { resolve(null); return; }
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const size = 96;
+        const c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        const side = Math.min(img.width, img.height);
+        c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL('image/png'));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    });
+    input.click();
+  });
+}
+const askPanel = askRoot ? window.askDisplay.mount({
+  doc: document,
+  root: askRoot,
+  storage: (() => { try { return localStorage; } catch { return null; } })(),
+  request: (op, body) => askRequester.request(op, body),
+  openAt: (file, line) => { repoBrowser.openAt(file, line); },
+  getSelection: () => window.getSelection(),
+  shrinkImage: askShrinkImage,
+}) : null;
+let askWasShown = false;
+function askView() {
+  const now = shownModules.has('ask');
+  if (!askPanel || now === askWasShown) return;
+  askWasShown = now;
+  if (now) askPanel.show(); else askPanel.hide();
+}
+// What's this? on the reader: bring the panel on screen (un-hide it if the person hid it), then ask.
+function askExplain(sel) {
+  if (!askPanel) return;
+  if (placementLayout().hidden.includes('ask')) commitPlacement(DTm.show(settledLayout(), 'ask'), { select: 'ask' });
+  else selectModule('ask');
+  askPanel.explainSelection(sel);
+}
+// ASK-END
+
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
   if (id === 'git') { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
@@ -1656,6 +1721,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   const fx = window.dockEffects.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
+  askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   for (const id of fx.newlyShown) onModuleShown(id);
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
@@ -3587,6 +3653,57 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           focus: { terminal: !!(term.element && term.element.contains(act)), panel: !!(act && gamesRoot.contains(act)), tag: act ? act.tagName : null },
           accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
         });
+      }
+      // backlog #33 (verify/probe-ask-panel.js): read the Ask panel, and operate it as a pointer or a keyboard would
+      case 'askState': {
+        if (!askPanel) return JSON.stringify({ ok: false, error: 'no ask panel' });
+        const root = document.getElementById('ask-root');
+        const st = askPanel.state();
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.askDisplay === 'object' && typeof window.askPanelState === 'object' && typeof window.askProfile === 'object' && typeof window.askRequester === 'object',
+          shown: document.querySelector('.panel[data-panel="ask"]').classList.contains('on'),
+          view: st.view, trail: st.trail.map(t => t.label), hostError: st.hostError,
+          profile: { named: st.profile.named, name: st.profile.name, level: st.profile.level, model: st.profile.model },
+          host: st.host ? { index: st.host.index, ollama: st.host.ollama, models: st.host.models, examples: st.host.examples } : null,
+          entry: st.entry ? { id: st.entry.id, kind: st.entry.kind, phase: st.entry.phase, stage: st.entry.stage, places: st.entry.places ? st.entry.places.length : null, reason: st.entry.reply && st.entry.reply.reason, ok: st.entry.reply && st.entry.reply.ok } : null,
+          text: root.querySelector('.ask-body').textContent.slice(0, 4000),
+          html: root.querySelector('.ask-body').innerHTML.slice(0, 12000),
+          label: (root.querySelector('.ask-label') || {}).textContent || null,
+          status: (root.querySelector('.ask-status') || {}).textContent || null,
+          cards: [...root.querySelectorAll('.ask-card')].map(c => ({ where: c.querySelector('.ask-card-where').textContent, file: c.dataset.file, line: c.dataset.line, why: (c.querySelector('.ask-card-why') || {}).textContent || '', code: (c.querySelector('.ask-card-code') || {}).textContent || '' })),
+          stages: [...root.querySelectorAll('.ask-stage')].map(s => [s.className, s.textContent]),
+          buttons: [...root.querySelectorAll('button')].map(b => ({ act: b.dataset.act || null, text: b.textContent, disabled: b.disabled })),
+          form: { hidden: root.querySelector('.ask-form').hidden },
+          rect: rectOf(root),
+          readerAsk: { hidden: document.getElementById('reader-ask').hidden },
+        });
+      }
+      case 'askDo': {
+        if (!askPanel) return JSON.stringify({ ok: false, error: 'no ask panel' });
+        const root = document.getElementById('ask-root');
+        const byAct = (act, pick) => [...root.querySelectorAll('[data-act="' + act + '"]')].find(pick || (() => true));
+        if (a.op === 'type') { const q = root.querySelector('.ask-q'); q.value = String(a.text); }
+        else if (a.op === 'submit') root.querySelector('.ask-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        else if (a.op === 'ask') { askPanel.probe('ask', { question: String(a.question), model: a.model }); }
+        else if (a.op === 'click') { const b = byAct(String(a.act), a.text ? (x => x.textContent.includes(String(a.text))) : null); if (!b) return JSON.stringify({ ok: false, error: 'no button ' + a.act }); b.click(); }
+        else if (a.op === 'name') { const n = root.querySelector('#ask-name'); if (n) { n.value = String(a.name); n.dispatchEvent(new Event('input', { bubbles: true })); } }
+        else if (a.op === 'explain') askExplain({ file: String(a.file), start: Number(a.start), end: Number(a.end) });
+        else if (a.op === 'readerAsk') document.getElementById('reader-ask').click();
+        else if (a.op === 'select') {
+          // select the text of the answer (a drill-down), as the pointer would
+          const el = root.querySelector('.ask-answer');
+          if (!el) return JSON.stringify({ ok: false, error: 'no answer on screen' });
+          const range = document.createRange();
+          const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+          const first = w.nextNode();
+          range.setStart(first, 0); range.setEnd(first, Math.min(first.length, Number(a.chars) || 12));
+          const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+          el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        }
+        else if (a.op === 'show') { if (placementLayout().hidden.includes('ask')) commitPlacement(DTm.show(settledLayout(), 'ask'), { select: 'ask' }); else selectModule('ask'); }
+        else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
+        return JSON.stringify({ ok: true });
       }
       case 'gamesDo': {
         if (!gamesPanel) return JSON.stringify({ ok: false, error: 'no games panel' });
@@ -7459,6 +7576,9 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    // the Ask panel asks nothing of a host that doesn't list `ask` (an older host would type the frame into the session)
+    askRequester.setControls(Array.isArray(msg.controls) ? msg.controls : []);
+    if (askPanel && shownModules.has('ask')) askPanel.show();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
@@ -7754,6 +7874,10 @@ function handleControl(msg) {
     repoBrowser.onMessage(msg);
     return;
   }
+  if (msg.type === 'ask') {
+    askRequester.onMessage(msg);
+    return;
+  }
   if (msg.type === 'git-tree') {
     renderGitTree(msg);
     requestGitTabs();
@@ -7981,6 +8105,7 @@ function connect() {
     dot.classList.remove('on');
     // a Files ask in flight will never be answered by this socket: fail it now, not after its timeout
     repoBrowser.failAll('the connection to the session dropped');
+    askRequester.failAll('the connection to the session dropped');
     // the next socket may reach another host, an older one: nothing is asked of it until ITS hello (PR #95 D7)
     gitGraphAsker.forget();
     cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was

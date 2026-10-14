@@ -16,7 +16,7 @@
  * and honest notes: Ollama down or the model missing (the places still show, with Start Ollama and Ask Claude instead), the first
  * index with its progress, and "explaining is off on this model" until that model has passed the quality bar (host/ask-models.js).
  *
- * The pure half (what to show) is app/ask-panel-state.js; this file draws it and runs the asks. Everything from the host or the model
+ * The pure half (what to show) is app/ask-panel-state.js and what the panel DOES is app/ask-controller.js; this file draws it. Everything from the host or the model
  * is escaped; every control is a <button> (data-act), and the body is rebuilt from state, so the page holds nothing it cannot rebuild.
  * The question box and the About-me / name boxes are NOT rebuilt while the person types in them.
  *
@@ -33,8 +33,6 @@ const LEVELS = Object.freeze([
   { id: 'comfortable', label: 'Comfortable' },
   { id: 'expert', label: 'Expert' },
 ]);
-const POLL_MS = 2500;
-const WRITING_AFTER_MS = { local: 4000, claude: 2500 };
 const CARD_LINES = 4;
 const MIN_HIGHLIGHT = 2;
 const MAX_HIGHLIGHT = 120;
@@ -235,19 +233,10 @@ function footHtml(m) {
 // ---- mounting -----------------------------------------------------------------------------------------------------------------
 
 function mount({
-  doc, root: host, request, openAt, storage = null, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout,
-  getSelection = null, shrinkImage = null,
+  doc, root: host, request, openAt, storage = null, setTimer, clearTimer, getSelection = null, shrinkImage = null,
 } = {}) {
-  let profile = P.load(storage);
-  let st = S.create();
-  let hostStatus = null;
-  let hostError = null;
-  let shown = false;
-  let warmed = false;
-  let pollTimer = null;
-  let pendingExplain = null;
-  const ui = { settings: false, naming: { name: P.DEFAULT_NAME, portrait: { kind: 'emoji', value: P.PORTRAITS[0] }, error: '' }, startMsg: '' };
-  const timers = new Set();
+  const Controller = typeof module !== 'undefined' && module.exports ? require('./ask-controller') : root.askController;
+  const timers = setTimer ? { setTimer, clearTimer } : {};
 
   host.innerHTML = '<div class="ask-root"><div class="ask-top"></div><div class="ask-body" tabindex="-1"></div><div class="ask-foot"></div>'
     + '<form class="ask-form" autocomplete="off"><input class="ask-q" type="text" maxlength="500" placeholder="Ask about this repo..." aria-label="Ask about this repo">'
@@ -259,97 +248,20 @@ function mount({
   const form = $('.ask-form');
   const input = $('.ask-q');
 
-  const model = () => {
-    const entry = S.current(st);
-    return {
-      profile, host: hostStatus, hostError, ui, entry, trail: S.trail(st), history: S.history(st), view: S.viewOf(st, profile),
-    };
-  };
+  let highlighted = '';
+
+  const ctl = Controller.create({ request, storage, onChange: () => paint(), ...timers });
 
   function paint() {
-    const m = model();
+    const m = ctl.state();
     top.innerHTML = headerHtml(m);
     body.innerHTML = bodyHtml(m);
     foot.innerHTML = footHtml(m);
-    form.hidden = !profile.named;
+    form.hidden = !m.profile.named;
     wireHighlight();
   }
 
-  // ---- host status and the first index -----------------------------------------------------------------------------------
-  async function refreshStatus(warm) {
-    const r = await request('status', warm ? { warm: true } : {});
-    if (r && r.ok === true) { hostStatus = r; hostError = null; } else { hostError = (r && r.error) || 'The session did not answer.'; }
-    paint();
-    schedulePoll();
-  }
-  function schedulePoll() {
-    if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; }
-    const idx = hostStatus && hostStatus.index;
-    if (shown && idx && (idx.state === 'building' || idx.state === 'partial')) {
-      pollTimer = setTimer(() => { pollTimer = null; refreshStatus(false); }, POLL_MS);
-    }
-  }
-
-  // ---- asking -------------------------------------------------------------------------------------------------------------
-  const later = (fn, ms) => { const t = setTimer(() => { timers.delete(t); fn(); }, ms); timers.add(t); };
-
-  async function run(entryId, kind, body0, modelId) {
-    const claude = modelId !== 'local';
-    const placesBody = { ...body0, model: modelId };
-    const q1 = request('places', placesBody).then((r) => {
-      st = S.setPlaces(st, entryId, r);
-      const e = S.current(st);
-      if (e && e.id === entryId) paint();
-      if (r && r.ok === true) later(() => { st = S.setStage(st, entryId, 'writing'); paint(); }, claude ? WRITING_AFTER_MS.claude : WRITING_AFTER_MS.local);
-    });
-    const r = await request(kind === 'explain' ? 'explain' : 'ask', placesBody);
-    await q1;
-    st = S.finish(st, entryId, r);
-    paint();
-    if (r && r.ok === false && r.reason === 'index-building') { refreshStatus(false); }
-  }
-
-  function startQuestion(question, { parent, modelId, direction } = {}) {
-    const q = String(question || '').trim();
-    if (!q) return;
-    if (!profile.named) return;
-    const mid = modelId || profile.model;
-    st = S.begin(st, { kind: 'question', label: q, request: { question: q, direction }, parent, model: mid });
-    paint();
-    return run(S.current(st).id, 'question', { question: q }, mid);
-  }
-
-  function startExplain({ file, start, end, term, answer, parent, direction, modelId, label }) {
-    if (!profile.named) { pendingExplain = { file, start, end }; paint(); return; }
-    const mid = modelId || profile.model;
-    const lab = label || (term ? term : `${file}:${start}${end > start ? '-' + end : ''}`);
-    if (!S.canExplain(hostStatus, mid)) {
-      st = S.begin(st, { kind: 'explain', label: lab, request: { file, start, end }, parent, model: mid });
-      st = S.finish(st, S.current(st).id, { ok: false, reason: 'explainer-off' });
-      paint();
-      return;
-    }
-    const reqBody = { file, start, end, level: profile.level, aboutMe: profile.aboutMe, ...(term ? { term, answer } : {}), ...(direction ? { direction } : {}) };
-    st = S.begin(st, { kind: 'explain', label: lab, request: reqBody, parent, model: mid });
-    paint();
-    return run(S.current(st).id, 'explain', reqBody, mid);
-  }
-
-  // "Ask Claude instead": the same thing, once, of a Claude model (plan quota only on this click).
-  function askClaudeInstead() {
-    const e = S.current(st);
-    if (!e) return;
-    const claudeId = profile.model !== 'local' ? profile.model : 'haiku';
-    if (e.kind === 'explain') {
-      const r = e.request || {};
-      if (S.canExplain(hostStatus, claudeId)) return startExplain({ ...r, parent: e.parent, modelId: claudeId, label: e.label });
-      return startQuestion(`What is the code in ${r.file} lines ${r.start}-${r.end} doing?`, { parent: e.parent, modelId: claudeId });
-    }
-    return startQuestion((e.request && e.request.question) || e.label, { parent: e.parent, modelId: claudeId });
-  }
-
   // ---- highlight inside an answer -> "What's this?" again -------------------------------------------------------------------
-  let highlighted = '';
   function readHighlight() {
     if (typeof getSelection !== 'function') return '';
     const sel = getSelection();
@@ -369,84 +281,54 @@ function mount({
     if (span) span.textContent = highlighted ? `"${highlighted.length > 28 ? highlighted.slice(0, 27) + '…' : highlighted}"` : '';
   }
   function wireHighlight() {
+    highlighted = '';
     const answer = body.querySelector('.ask-answer');
-    if (!answer) { highlighted = ''; return; }
-    answer.addEventListener('mouseup', () => later(showHighlight, 0));
-    answer.addEventListener('keyup', () => later(showHighlight, 0));
+    if (!answer) return;
+    const soon = () => { Promise.resolve().then(showHighlight); };
+    answer.addEventListener('mouseup', soon);
+    answer.addEventListener('keyup', soon);
   }
 
   // ---- clicks ---------------------------------------------------------------------------------------------------------------
-  function actOf(target) {
+  const actOf = (target) => {
     const el = target && target.closest ? target.closest('[data-act]') : null;
     return el ? { el, act: el.getAttribute('data-act') } : null;
-  }
+  };
   const dataOf = (el, k) => el.getAttribute('data-' + k);
+  const valueOf = (sel) => { const n = body.querySelector(sel); return n ? n.value : undefined; };
 
-  function saveProfile(next) { profile = next; P.save(storage, profile); }
-
-  function readNaming() {
-    const n = body.querySelector('#ask-name');
-    if (n) ui.naming.name = n.value;
+  async function pickImage() {
+    ctl.setNamingName(valueOf('#ask-name'));
+    if (typeof shrinkImage !== 'function') return;
+    const url = await shrinkImage();
+    if (!url || typeof url !== 'string') return;
+    const ok = P.name(ctl.state().profile, 'x', { kind: 'image', dataUrl: url });
+    if (ok.ok && ok.profile.portrait.kind === 'image') ctl.setNamingPortrait(ok.profile.portrait);
+    else { ctl.state().ui.naming.error = 'That picture is too big or not a PNG, JPEG, WebP or GIF.'; paint(); }
   }
 
-  async function onClick(e) {
+  function onClick(e) {
     const hit = actOf(e.target);
     if (!hit) return;
     const { el, act } = hit;
-    if (act === 'open') { if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line'))); return; }
-    if (act === 'example') { startQuestion(dataOf(el, 'q')); return; }
-    if (act === 'goto') { st = S.select(st, Number(dataOf(el, 'id'))); paint(); return; }
-    if (act === 'settings') { ui.settings = !ui.settings; paint(); return; }
-    if (act === 'chip') { ui.naming.name = dataOf(el, 'name'); paint(); return; }
-    if (act === 'face') { readNaming(); ui.naming.portrait = { kind: 'emoji', value: P.PORTRAITS[Number(dataOf(el, 'i'))] }; paint(); return; }
-    if (act === 'upload') { await pickImage(); return; }
-    if (act === 'name-save') {
-      readNaming();
-      const r = P.name(profile, ui.naming.name, ui.naming.portrait);
-      if (!r.ok) { ui.naming.error = 'Give it a name first.'; paint(); return; }
-      ui.naming.error = '';
-      saveProfile(r.profile);
-      const pend = pendingExplain; pendingExplain = null;
-      paint();
-      if (pend) startExplain(pend);
-      return;
-    }
-    if (act === 'rename') { ui.naming = { name: profile.name || P.DEFAULT_NAME, portrait: profile.portrait, error: '' }; saveProfile({ ...profile, named: false }); ui.settings = false; paint(); return; }
-    if (act === 'settings-save') {
-      const v = (sel) => { const n = body.querySelector(sel); return n ? n.value : null; };
-      let next = profile;
-      const nm = P.name(next, v('#ask-set-name') || next.name, next.portrait);
-      if (nm.ok) next = nm.profile;
-      next = P.setLevel(next, v('#ask-set-level'));
-      next = P.setAboutMe(next, v('#ask-set-about') === null ? next.aboutMe : v('#ask-set-about'));
-      next = P.setModel(next, v('#ask-set-model') || next.model);
-      saveProfile(next);
-      ui.settings = false;
-      paint();
-      return;
-    }
-    if (act === 'reask') {
-      const cur = S.current(st);
-      if (cur && cur.kind === 'explain') startExplain({ ...cur.request, direction: dataOf(el, 'dir'), parent: cur.parent, modelId: cur.model, label: cur.label });
-      return;
-    }
-    if (act === 'drill') {
-      const cur = S.current(st);
-      if (cur && highlighted) {
-        const base = cur.kind === 'explain' ? cur.request : null;
-        if (base) startExplain({ file: base.file, start: base.start, end: base.end, term: highlighted, answer: cur.reply && cur.reply.text, parent: cur.id, modelId: cur.model });
-        else startQuestion(`What is ${highlighted}?`, { parent: cur.id, modelId: cur.model });
-      }
-      return;
-    }
-    if (act === 'ask-claude') { askClaudeInstead(); return; }
-    if (act === 'start-ollama') {
-      ui.startMsg = 'Starting Ollama…';
-      paint();
-      const r = await request('start-ollama', {});
-      ui.startMsg = r && r.ok === true ? 'Ollama is starting. Ask again in a few seconds.' : `Couldn't start Ollama${r && (r.reason || r.error) ? ': ' + (r.reason || r.error) : ''}.`;
-      paint();
-      refreshStatus(false);
+    switch (act) {
+      case 'open': if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line'))); break;
+      case 'example': ctl.ask(dataOf(el, 'q')); break;
+      case 'goto': ctl.select(Number(dataOf(el, 'id'))); break;
+      case 'settings': ctl.toggleSettings(); break;
+      case 'chip': ctl.setNamingName(dataOf(el, 'name')); paint(); break;
+      case 'face': ctl.setNamingName(valueOf('#ask-name')); ctl.setNamingPortrait({ kind: 'emoji', value: P.PORTRAITS[Number(dataOf(el, 'i'))] }); break;
+      case 'upload': pickImage(); break;
+      case 'name-save': ctl.setNamingName(valueOf('#ask-name')); ctl.saveNaming(); break;
+      case 'rename': ctl.rename(); break;
+      case 'settings-save':
+        ctl.saveSettings({ name: valueOf('#ask-set-name'), level: valueOf('#ask-set-level'), aboutMe: valueOf('#ask-set-about'), model: valueOf('#ask-set-model') });
+        break;
+      case 'reask': ctl.reask(dataOf(el, 'dir')); break;
+      case 'drill': if (highlighted) ctl.drill(highlighted); break;
+      case 'ask-claude': ctl.askClaude(); break;
+      case 'start-ollama': ctl.startOllama(); break;
+      default: break;
     }
   }
   host.addEventListener('click', onClick);
@@ -455,47 +337,31 @@ function mount({
     if (e && e.preventDefault) e.preventDefault();
     const q = input.value;
     input.value = '';
-    startQuestion(q);
+    ctl.ask(q);
   });
   host.addEventListener('input', (e) => {
-    if (e && e.target && e.target.id === 'ask-name') ui.naming.name = e.target.value;
+    if (e && e.target && e.target.id === 'ask-name') ctl.setNamingName(e.target.value);
   });
-
-  async function pickImage() {
-    readNaming();
-    if (typeof shrinkImage !== 'function') return;
-    const url = await shrinkImage();
-    if (isStr(url)) {
-      const probe = P.name(profile, 'x', { kind: 'image', dataUrl: url });
-      if (probe.ok && probe.profile.portrait.kind === 'image') { ui.naming.portrait = probe.profile.portrait; ui.naming.error = ''; } else ui.naming.error = 'That picture is too big or not a PNG, JPEG, WebP or GIF.';
-      paint();
-    }
-  }
 
   paint();
 
   return {
-    show() {
-      shown = true;
-      if (!warmed) { warmed = true; refreshStatus(true); } else { refreshStatus(false); }
-    },
-    hide() { shown = false; if (pollTimer !== null) { clearTimer(pollTimer); pollTimer = null; } },
-    ask: (q) => startQuestion(q),
-    explainSelection: (sel) => startExplain({ file: sel.file, start: sel.start, end: sel.end }),
-    onHostLost(reason) { hostError = reason || 'The session connection dropped.'; paint(); },
-    profile: () => profile,
-    state: () => ({ view: S.viewOf(st, profile), entry: S.current(st), trail: S.trail(st), history: S.history(st), host: hostStatus, hostError, profile, ui: { ...ui, naming: { ...ui.naming } } }),
+    show: () => ctl.show(),
+    hide: () => ctl.hide(),
+    ask: (q) => ctl.ask(q),
+    explainSelection: (sel) => ctl.explain(sel),
+    profile: () => ctl.state().profile,
+    state: () => ctl.state(),
     // verify/probe-ask-panel.js: named actions, JSON answers
     probe(action, a) {
-      if (action === 'refresh') return refreshStatus(false).then(() => ({ ok: true }));
-      if (action === 'ask') return startQuestion(a.question, { modelId: a.model }).then(() => ({ ok: true }));
-      if (action === 'explain') return startExplain({ file: a.file, start: a.start, end: a.end, modelId: a.model }).then(() => ({ ok: true }));
+      if (action === 'refresh') return ctl.refreshStatus().then(() => ({ ok: true }));
+      if (action === 'ask') return Promise.resolve(ctl.ask(a.question, { modelId: a.model })).then(() => ({ ok: true }));
       return { ok: false, error: 'unknown action ' + action };
     },
   };
 }
 
-const API = { mount, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, esc, LEVELS };
+const API = { mount, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, esc, LEVELS };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.askDisplay = API;
 

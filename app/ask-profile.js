@@ -19,7 +19,7 @@
 const KEY = 'askRepoProfile';
 const NAME_SUGGESTIONS = Object.freeze(['Professor Byte', 'Ada', 'Echo', 'Sage', 'Tutor']);
 const DEFAULT_NAME = NAME_SUGGESTIONS[0];
-const PORTRAITS = Object.freeze(['🦉', '🤖', '🦊', '🐙', '🧙', '🐢', '🦄', '🧑‍🏫']);
+const PORTRAITS = Object.freeze(['🦉', '🤖', '🦊', '🐙', '🧙', '🐢', '🦄', '🐼']);
 const LEVEL_IDS = Object.freeze(['new', 'learning', 'comfortable', 'expert']);
 const MODEL_IDS = Object.freeze(['local', 'haiku', 'sonnet']);
 const NAME_MAX = 24;

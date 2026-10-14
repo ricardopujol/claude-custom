@@ -1344,6 +1344,80 @@
     .cv-host { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
     .cv-host-name { flex: 1; min-width: 0; color: var(--text); word-break: break-all; }
     .cv-host-state { font-size: 11px; }
+    /* The Ask panel (BACKLOG #33). Markup from app/ask-display.js; colours are the project's tokens. A card is a button: it opens the reader at
+       its line. The question box sits at the bottom, outside the part that is rebuilt, so typing in it is never interrupted. */
+    #ask-body { padding: 6px; }
+    #ask-root { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+    .zone[data-shape="wide"] .panel.on > #ask-root { flex: 1 1 auto; min-width: 300px; max-width: none; }
+    .ask-root { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .ask-top { flex: 0 0 auto; }
+    .ask-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; font-size: 12px; line-height: 1.5; }
+    .ask-foot { flex: 0 0 auto; }
+    .ask-head { display: flex; align-items: center; gap: 8px; }
+    .ask-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .ask-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .ask-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ask-for { font-size: 11px; color: var(--dim); }
+    .ask-portrait { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex: 0 0 auto; background: var(--panel); border: 1px solid var(--border); }
+    .ask-portrait-emoji { display: grid; place-items: center; font-size: 17px; line-height: 1; }
+    .ask-gear, .ask-chip, .ask-primary, .ask-go, .ask-face { font: inherit; font-size: 11px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; }
+    .ask-gear { font-size: 13px; line-height: 1; padding: 3px 6px; background: transparent; color: var(--dim); }
+    .ask-gear:hover, .ask-chip:hover, .ask-go:hover, .ask-face:hover, .ask-example:hover { border-color: var(--accent); color: var(--text); }
+    .ask-chip:disabled { opacity: .4; cursor: default; }
+    .ask-chip.on, .ask-face.on { border-color: var(--accent); color: var(--accent); }
+    .ask-primary { border-color: var(--accent); }
+    .ask-link { font: inherit; font-size: 11px; padding: 0; cursor: pointer; background: none; border: 0; color: var(--accent); text-decoration: underline; }
+    .ask-gear:focus-visible, .ask-chip:focus-visible, .ask-primary:focus-visible, .ask-go:focus-visible, .ask-face:focus-visible, .ask-link:focus-visible,
+      .ask-card:focus-visible, .ask-example:focus-visible, .ask-cite:focus-visible, .ask-input:focus-visible, .ask-q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .ask-h { margin: 4px 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
+    .ask-h3 { margin: 4px 0 2px; font-size: 14px; }
+    .ask-note { margin: 4px 0; font-size: 11px; color: var(--dim); }
+    .ask-bad { margin: 4px 0; font-size: 11px; color: var(--bad); }
+    .ask-notice { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; background: var(--panel); }
+    .ask-naming, .ask-settings { display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+    .ask-input { font: inherit; font-size: 12px; min-width: 0; padding: 4px 6px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .ask-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--dim); }
+    .ask-chips, .ask-faces, .ask-actions, .ask-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+    .ask-face { font-size: 17px; line-height: 1; padding: 3px; width: 30px; height: 30px; object-fit: cover; }
+    .ask-steps { margin: 4px 0 4px 18px; padding: 0; }
+    .ask-examples { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .ask-example { font: inherit; font-size: 12px; text-align: left; width: 100%; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+    .ask-stages { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--dim); }
+    .ask-stage::before { content: "○ "; }
+    .ask-stage.done { color: var(--ok); }
+    .ask-stage.done::before { content: "✓ "; }
+    .ask-stage.active { color: var(--text); }
+    .ask-stage.active::before { content: "● "; color: var(--accent); }
+    .ask-placeholder { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+    .ask-placeholder i { display: block; height: 9px; border-radius: 4px; background: var(--panel); animation: ask-pulse 1.4s ease-in-out infinite; }
+    .ask-placeholder i:nth-child(2) { width: 85%; }
+    .ask-placeholder i:nth-child(3) { width: 60%; }
+    @keyframes ask-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .ask-placeholder i { animation: none; } }
+    .ask-answer p { margin: 4px 0; }
+    .ask-answer ul { margin: 4px 0 4px 16px; padding: 0; }
+    .ask-answer code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11px; background: var(--panel); padding: 0 3px; border-radius: 3px; }
+    .ask-cite { font: inherit; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11px; padding: 0; cursor: pointer; background: none; border: 0; color: var(--accent); text-decoration: underline; }
+    .ask-from { margin: 4px 0; font-size: 10.5px; color: var(--dim); }
+    .ask-highlight { margin: 4px 0; }
+    .ask-places { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .ask-card { display: flex; flex-direction: column; gap: 2px; text-align: left; width: 100%; font: inherit; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+    .ask-card:hover { border-color: var(--accent); }
+    .ask-card-where { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 11px; color: var(--accent); word-break: break-all; }
+    .ask-card-why { font-size: 11px; color: var(--text); }
+    .ask-card-code { margin: 2px 0 0; font: 10.5px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--dim); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+    .ask-ln { display: inline-block; min-width: 3ch; margin-right: 6px; text-align: right; opacity: .6; }
+    .ask-trail { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 2px 0 4px; font-size: 11px; }
+    .ask-trail-now { color: var(--text); font-weight: 600; }
+    .ask-sep { color: var(--dim); }
+    .ask-status { font-size: 10.5px; color: var(--dim); padding: 2px 0; }
+    .ask-history { margin-top: 10px; font-size: 11px; color: var(--dim); }
+    .ask-history ul { margin: 4px 0 0 14px; padding: 0; }
+    .ask-form { flex: 0 0 auto; display: flex; gap: 4px; }
+    .ask-form[hidden] { display: none; }
+    .ask-q { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 5px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .ask-go { border-color: var(--accent); }
+    #reader-ask { font: inherit; }
     /* The Games panel (BACKLOG #41). Markup from app/games-display.js; colours are the project's tokens, so the accent follows
        the project. The cover sits over the board, so a click that resumes a paused round never lands on it. */
     #games-body { padding: 8px 6px; }
@@ -2153,6 +2227,10 @@
         <div class="panel" data-panel="resources" id="resources-body">
           <div id="resources-root" tabindex="-1"><div class="res-note">measuring…</div></div>
         </div>
+        <!-- BACKLOG #33: Ask the repo. app/ask-display.js builds everything inside #ask-root. -->
+        <div class="panel" data-panel="ask" id="ask-body">
+          <div id="ask-root" tabindex="-1"></div>
+        </div>
         <!-- BACKLOG #41: the wait games. app/games-display.js builds everything inside #games-root. -->
         <div class="panel" data-panel="games" id="games-body">
           <div id="games-root" tabindex="-1"></div>
@@ -2204,6 +2282,11 @@
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
+  <script src="./ask-panel-state.js"></script>
+  <script src="./ask-profile.js"></script>
+  <script src="./ask-requester.js"></script>
+  <script src="./ask-controller.js"></script>
+  <script src="./ask-display.js"></script>
   <script src="./games-rules.js"></script>
   <script src="./games-round.js"></script>
   <script src="./games-display.js"></script>
