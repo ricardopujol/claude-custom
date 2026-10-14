@@ -68,6 +68,9 @@ const ALLOWED_GLOBALS = new Set([
   // app/hidden-agents-display.js (BACKLOG #14)
   'reconcileHidden', 'visibleRows', 'hideButtonFor', 'hiddenCount', 'rosterActionFromClick', 'repaintNeeded',
   'quotaDisplay', 'formatQuotaCountdown',
+  // app/quota-countdown.js (BACKLOG #90): deliberate exports from an IIFE-wrapped module
+  'quotaBackText', 'quotaCountdownState', 'createQuotaResetWatcher', 'createQuotaToastGate', 'quotaTickDelayMs',
+  'quotaSettlePastResets', 'quotaClockText', 'quotaWeekdayText',
   // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
   // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
   // "a name escaped into the shared scope" and "a module deliberately published

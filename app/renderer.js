@@ -5932,31 +5932,89 @@ function renderUsage(usage) {
 const quotaEl = document.getElementById('quota');
 let lastQuotaPayload = null;
 
+// #90: when a window is used up its meter reads "Claude back in 2h 14m" (a model-scoped one, "Fable back Thu 09:00"), and when
+// Claude is back "Claude is back" shows once in place of the meters for a few seconds. The strip is the only page this window
+// owns (the tab views cover everything under it), so the toast lives in the strip. Every decision is in app/quota-countdown.js.
+const quotaResetWatcher = createQuotaResetWatcher();
+const quotaToastGate = createQuotaToastGate();
+const quotaAnnounceEl = document.getElementById('quota-announce');
+const BACK_TOAST_MS = 8000;
+let backToastUntil = 0;
+let backToastTimer = null;
+let quotaTickTimer = null;
+let quotaSkeleton = null;       // the meters' markup without the countdown text: unchanged means only the text needs patching
+
+// "Visible" is what a person could see: the header is drawn (not lean, not focus mode) in a window that is showing.
+function quotaHeaderVisible() {
+  const header = document.querySelector('header');
+  return document.visibilityState === 'visible' && !leanOn && !!header && header.getBoundingClientRect().height > 0;
+}
+
+// The next look at the header: every second in the last 90 s of a used-up window, else every 30 s. Re-armed by every render, so a
+// payload that brings a reset nearer is not waited out, and armed FIRST in the tick so a throw can't end the chain.
+function armQuotaTick() {
+  clearTimeout(quotaTickTimer);
+  quotaTickTimer = setTimeout(quotaTick, quotaTickDelayMs(lastQuotaPayload, Date.now()));
+}
+
 function renderQuota(quota) {
   if (quota !== undefined) lastQuotaPayload = quota;
-  const d = quotaDisplay(lastQuotaPayload);
+  armQuotaTick();            // from the payload just taken, so a reset that came nearer is not waited out at the old pace
+  const nowMs = Date.now();
+  const cs = quotaResetWatcher.see(lastQuotaPayload, nowMs);
+  const showToast = quotaToastGate.step({ toast: cs.toast, usedUp: cs.state === 'usedUp', visible: quotaHeaderVisible() });
+  if (showToast) {
+    backToastUntil = nowMs + BACK_TOAST_MS;
+    clearTimeout(backToastTimer);
+    backToastTimer = setTimeout(() => { quotaAnnounceEl.textContent = ''; renderQuota(); }, BACK_TOAST_MS + 50);
+    quotaAnnounceEl.textContent = 'Claude is back';     // a live region that was already on the page, so it is announced
+  }
+  if (nowMs < backToastUntil) {
+    quotaSkeleton = null;
+    quotaEl.classList.remove('has-back');
+    quotaEl.innerHTML = `<span class="back-toast" aria-hidden="true">Claude is back</span>`;
+    return;
+  }
+  // A window still reported used up after its reset passed is drawn unknown, not as the old red 100% (the next poll says).
+  const d = quotaDisplay(quotaSettlePastResets(lastQuotaPayload, nowMs));
 
   if (d.state !== 'ready') {
     // No bars. Three tracks sitting at zero would claim the plan is untouched,
     // which is precisely what we do not know here.
+    quotaSkeleton = null;
+    quotaEl.classList.remove('has-back');
     quotaEl.innerHTML = `<span class="none" title="${escapeHtml(d.note || '')}">${escapeHtml(d.note || '')}</span>`;
     return;
   }
 
-  quotaEl.innerHTML = d.meters.map(m =>
-    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}" title="${escapeHtml(m.title)}">` +
+  const meterHtml = (m, text) =>
+    `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${cs.texts[m.key] ? ' back' : ''}${cs.texts[m.key] && m.key === cs.bindKey ? ' bind' : ''}" title="${escapeHtml(m.title)}">` +
       `<span class="lbl">${escapeHtml(m.label)}</span>` +
       `<span class="track"><span class="fill" style="width:${m.fill}%"></span></span>` +
-      // #42: "41% · 18:00" in the header; the countdown and the rest are in the tooltip.
-      `<span class="pct">${escapeHtml(m.short)}</span>` +
-    `</span>`
-  ).join('');
+      // #42: "41% · 18:00" in the header; the countdown and the rest are in the tooltip. #90: used up -> "Claude back in 2h 14m".
+      `<span class="pct">${escapeHtml(text)}</span>` +
+    `</span>`;
+  const skeleton = d.meters.map(m => meterHtml(m, cs.texts[m.key] ? '' : m.short)).join('');
+  quotaEl.classList.toggle('has-back', d.meters.some(m => cs.texts[m.key]));
+  if (skeleton === quotaSkeleton) {
+    // Only the countdown text moved: patch it, so the native tooltip under the pointer isn't torn down every second.
+    const pcts = quotaEl.querySelectorAll('.meter.back .pct');
+    d.meters.filter(m => cs.texts[m.key]).forEach((m, i) => { if (pcts[i] && pcts[i].textContent !== cs.texts[m.key]) pcts[i].textContent = cs.texts[m.key]; });
+    return;
+  }
+  quotaSkeleton = skeleton;
+  quotaEl.innerHTML = d.meters.map(m => meterHtml(m, cs.texts[m.key] || m.short)).join('');
 }
 
-// The countdown in every tooltip goes stale on its own, with no message from
-// the host -- so it is recomputed locally. Cheap: it re-renders from the last
-// payload and makes no request.
-setInterval(() => { if (!leanOn && lastQuotaPayload) renderQuota(); }, 30000);
+// The countdown in every tooltip goes stale on its own, with no message from the host -- so it is recomputed locally. Cheap: it
+// re-renders from the last payload and makes no request. Armed before anything that could throw (#90).
+function quotaTick() {
+  armQuotaTick();
+  if (!leanOn && lastQuotaPayload) renderQuota();
+}
+armQuotaTick();
+// A window that was hidden or minimised when Claude came back shows the held toast as soon as it is showing again.
+document.addEventListener('visibilitychange', () => { if (lastQuotaPayload) renderQuota(); });
 
 // A COUNTER, NEVER A LIMIT. The bar fills toward the next milestone; it never
 // depletes an allowance, never goes red, and never warns. The same geometry
@@ -8564,6 +8622,10 @@ function connect() {
     gitGraphAsker.forget();
     cancelTabDrag();                // a tab drag in flight is dropped, the layout left as it was
     cancelKeyboardMove();           // ...and so is a keyboard move
+    // Nobody vouches for the account figure either: unknown, so a countdown can't run on from a dead host (#90).
+    if (lastQuotaPayload && Object.keys(quotaCountdownState(lastQuotaPayload, Date.now()).texts).length) {
+      renderQuota({ ok: false, state: 'absent', windows: [], error: 'the connection to the session dropped' });
+    }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.

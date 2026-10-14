@@ -2202,7 +2202,11 @@ const QUOTA_POLL_MS = 60_000;
 const quotaTimer = setInterval(() => {
   const before = JSON.stringify(lastQuota && lastQuota.windows);
   refreshQuota().then((quota) => {
-    if (JSON.stringify(quota && quota.windows) !== before) {
+    // A used-up window is also re-sent every poll: the header's countdown (BACKLOG #90) ages the payload by its readAt, so a
+    // figure that never changed must keep arriving fresh or the page would call it stale after four minutes.
+    const usedUp = !!quota && quota.ok === true && Array.isArray(quota.windows)
+      && quota.windows.some(w => w && ((typeof w.percent === 'number' && w.percent >= 100) || w.lockedReason));
+    if (usedUp || JSON.stringify(quota && quota.windows) !== before) {
       broadcastControl({ type: 'quota', quota });
     }
   });

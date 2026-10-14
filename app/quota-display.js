@@ -98,6 +98,11 @@ function formatCountdown(resetsAt, now = Date.now()) {
   return h ? `${days}d${h}h` : `${days}d`;
 }
 
+// The clock and the weekday as the header writes them. Shared with app/quota-countdown.js, so "18:00" and "Thu" are one definition.
+const pad2 = n => String(n).padStart(2, '0');
+const clockText = d => `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+const weekdayText = d => d.toLocaleDateString('en-US', { weekday: 'short' });
+
 /**
  * The reset as the header shows it (#42): the local clock time when it is within a day, the short weekday beyond, null when
  * there is no usable future time (the tooltip says "reset time unknown" / "resetting now" instead).
@@ -107,8 +112,8 @@ function formatResetClock(resetsAt, now = Date.now()) {
   const at = Date.parse(resetsAt);
   if (!Number.isFinite(at) || at <= now) return null;
   const d = new Date(at);
-  if (at - now < 24 * 3600000) return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return d.toLocaleDateString('en-US', { weekday: 'short' });
+  if (at - now < 24 * 3600000) return clockText(d);
+  return weekdayText(d);
 }
 
 /**
@@ -176,12 +181,14 @@ function quotaDisplay(quota, now = Date.now()) {
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { quotaDisplay, formatResetClock, formatCountdown, formatPercent, toneFor, UNKNOWN, WARN_AT, CRITICAL_AT };
+  module.exports = { quotaDisplay, formatResetClock, clockText, weekdayText, formatCountdown, formatPercent, toneFor, UNKNOWN, WARN_AT, CRITICAL_AT };
 } else {
   root.quotaDisplay = quotaDisplay;
   // The warning flourish needs the countdown too, and a second implementation
   // of it in renderer.js is a second definition free to drift from this one.
   root.formatQuotaCountdown = formatCountdown;
+  root.quotaClockText = clockText;
+  root.quotaWeekdayText = weekdayText;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);
