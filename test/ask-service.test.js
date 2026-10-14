@@ -909,7 +909,7 @@ test('M3: createSpawnOllama: starts `ollama serve` detached with the harness mar
   assert.deepStrictEqual(await ok.run(), { ok: true });
   assert.deepStrictEqual(ok.calls[0][0], 'ollama');
   assert.deepStrictEqual(ok.calls[0][1], ['serve']);
-  assert.deepStrictEqual(ok.calls[0][2], { detached: true, stdio: 'ignore', windowsHide: true, env: { PATH: 'p', Keep: 'k' } });
+  assert.deepStrictEqual(Object.entries(ok.calls[0][2]), [['detached', true], ['stdio', 'ignore'], ['windowsHide', true], ['env', { PATH: 'p', Keep: 'k' }]]);
   assert.strictEqual(ok.calls.child.unrefed, true, 'it outlives this host');
   const missing = mk((c) => setImmediate(() => c.emit('error', Object.assign(new Error('x'), { code: 'ENOENT' }))));
   assert.deepStrictEqual(await missing.run(), { ok: false, reason: 'ollama-not-installed' });
