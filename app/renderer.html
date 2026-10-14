@@ -577,8 +577,9 @@
     #quota .none { opacity: .7; font-size: 10.5px; }
     /* #90: a used-up window reads "Claude back in 2h 14m"; at the reset "Claude is back" shows once, in the strip. */
     @media (max-width: 900px) { #quota.has-back .meter:not(.back) { display: none; } }   /* narrow: only the wait is shown */
-    #quota.has-back { flex-shrink: 0; }   /* the wait is the news: it keeps its width and the neighbours give way */
-    #quota .meter.back .pct { color: var(--text); opacity: 1; font-weight: 600; }
+    #quota.has-back { flex-shrink: 0; max-width: 100%; }   /* the wait is the news: it keeps its width and the neighbours give way */
+    #quota .meter.back { min-width: 0; }
+    #quota .meter.back .pct { color: var(--text); opacity: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     #quota .back-toast {
       font-size: 11px; font-weight: 600; color: var(--text); padding: 1px 9px; border-radius: 9px;
       border: 1px solid var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent);
@@ -942,7 +943,7 @@
     @media (prefers-reduced-motion: reduce) {
       #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter { transition: none; }
     }
-    #dock-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    #dock-announce, #quota-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
@@ -2105,6 +2106,7 @@
       <div id="dock-overlay"></div>
       <!-- What a keyboard move says in words (D4): where the panel would land. Read aloud, never seen. -->
       <div id="dock-announce" role="status" aria-live="polite"></div>
+      <div id="quota-announce" role="status" aria-live="polite"></div>
       </div>
       <aside id="diag">
         <h2>Key diagnostics</h2>
