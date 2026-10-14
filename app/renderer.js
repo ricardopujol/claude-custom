@@ -3712,7 +3712,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           const save = byAct('settings-save');
           if (save) save.click();
         }
-        else if (a.op === 'show') { if (placementLayout().hidden.includes('ask')) commitPlacement(DTm.show(settledLayout(), 'ask'), { select: 'ask' }); else selectModule('ask'); }
         else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
         return JSON.stringify({ ok: true });
       }

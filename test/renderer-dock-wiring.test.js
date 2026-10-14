@@ -392,6 +392,6 @@ test('PR #159 Miguel I1: the rail button press follows peekFocus -- popover on o
 test('PR #159 Dexter 6: an operation on the placement is built on the layout AFTER a pending key burst is saved, so a push that arrived in the burst survives', () => {
   assert.match(JS, /function settledLayout\(\) \{ if \(flushKeyBurst\) flushKeyBurst\(\); return placementLayout\(\); \}/);
   assert.doesNotMatch(JS, /DTm\.(dock|hide|show)\(placementLayout\(\)/, 'a dock / hide / show built on the drawn layout would carry a stale whole into the save');
-  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 12, 'every operation site');
+  assert.strictEqual([...JS.matchAll(/DTm\.(dock|hide|show)\(settledLayout\(\)/g)].length, 13, 'every operation site (the 13th is askExplain: What\'s this? un-hides the Ask panel, #33)');
   assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
 });
