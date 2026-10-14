@@ -4,7 +4,8 @@
  * top chunks of that worktree's index, with citations that are checked to exist.
  *
  *   createAskRepo({ index, ollama, k, staleWaitMs, buildProbeMs }).ask(worktree, question)
- *     -> { ok: true, text, citations, dropped, sources, model, label: 'local model', keywordOnly, stale, refreshError?, ms }
+ *     -> { ok: true, text, citations, dropped, sources, model, label: 'local model', keywordOnly, stale, refreshError?, building?, ms }
+ *        `building` (the progress) is set when the answer came from the files indexed SO FAR because the first index is still being built
  *      | { ok: false, reason: 'empty-question' | 'index-building' | 'index-failed' | 'no-matches' | 'ollama-down'
  *                            | 'model-missing' | 'timeout' | 'http' | 'bad-reply', model?, progress?, partial?, error?, hits? }
  *   .status(worktree) -> { state: 'none' | 'building' | 'partial' | 'failed' | 'ready', files, chunks, builtAt, keywordOnly, model, progress, error? }
@@ -59,8 +60,8 @@ function renderChunk(rel, c) {
   return { last, body: `### ${rel}:${c.start}-${last}\n${out.join('\n')}` };
 }
 
-/** The prompt for a question and its top chunks (best first), and the ranges it really contains. */
-function buildPrompt(question, top) {
+/** The excerpt text for the top chunks (best first), within the budget, and the ranges it really contains. */
+function buildExcerpts(top) {
   const parts = [];
   const sent = [];
   let used = 0;
@@ -71,7 +72,13 @@ function buildPrompt(question, top) {
     sent.push({ file: rel, start: chunk.start, end: r.last });
     used += r.body.length + 2;
   }
-  return { prompt: parts.join('\n\n') + `\n\nQuestion: ${question}\nAnswer with file:line citations.`, sent };
+  return { body: parts.join('\n\n'), sent };
+}
+
+/** The prompt for a question and its top chunks (best first), and the ranges it really contains. */
+function buildPrompt(question, top) {
+  const { body, sent } = buildExcerpts(top);
+  return { prompt: body + `\n\nQuestion: ${question}\nAnswer with file:line citations.`, sent };
 }
 
 function createAskRepo({
@@ -108,27 +115,36 @@ function createAskRepo({
     return result;
   }
 
-  async function ask(worktree, question) {
-    const q = typeof question === 'string' ? question.trim().slice(0, MAX_QUESTION_CHARS) : '';
-    if (!q) return { ok: false, reason: 'empty-question' };
-    const started = now();
-
+  /**
+   * Is there an index to answer from? { ok: true, data, stale, refreshError? } or { ok: false, failure } where `failure` is the
+   * reply ask() gives: 'index-failed' (named, retried only after a backoff) or 'index-building' (with its progress).
+   */
+  async function ready(worktree) {
     let data = await index.load(worktree);
     const progress = () => index.progress(worktree);
     if (!data || progress().partial) {
+      const building = () => {
+        // The first index (or an interrupted one) is still being built: answer from the files indexed so far, as Round 7 decided
+        // ("questions work at once"), and say so; only with nothing indexed yet is it "building".
+        const snap = typeof index.snapshot === 'function' ? index.snapshot(worktree) : null;
+        return snap && Array.isArray(snap.files) && snap.files.length ? { ok: true, data: snap, stale: true, building: { ...progress(), files: snap.files.length } } : null;
+      };
       const partial = Boolean(data);
       if (!index.isRunning(worktree)) {
         // A build that already failed (even long after the watch below ended) is named, and only retried after a backoff.
         const p = progress();
         if (p.error && typeof p.failedAt === 'number' && now() - p.failedAt < retryAfterMs) {
-          return { ok: false, reason: 'index-failed', error: p.error, partial };
+          return { ok: false, failure: { ok: false, reason: 'index-failed', error: p.error, partial } };
         }
         const w = await startAndWatch(worktree, buildProbeMs);
-        if (w.outcome === 'failed') return { ok: false, reason: 'index-failed', error: w.error, partial };
+        if (w.outcome === 'failed') return { ok: false, failure: { ok: false, reason: 'index-failed', error: w.error, partial } };
         if (w.outcome === 'done') data = index.get(worktree) || null;
         if (data && progress().partial) data = null; // still partial: not answerable
       }
-      if (!data || progress().partial) return { ok: false, reason: 'index-building', progress: progress(), partial };
+      if (!data || progress().partial) {
+        const b = building();
+        return b || { ok: false, failure: { ok: false, reason: 'index-building', progress: progress(), partial } };
+      }
     }
 
     // The newest state of the files, unless that takes too long or fails.
@@ -141,7 +157,11 @@ function createAskRepo({
       stale = true;
     }
     data = index.get(worktree) || data;
+    return { ok: true, data, stale, ...(refreshError ? { refreshError } : {}) };
+  }
 
+  /** The top chunks for `q` over `data`: keyword + vector when the embedder answers. Also the model status, asked once. */
+  async function search(data, q, want) {
     const status = await ollama.check();
     const embedUp = status.ok ? status.embed !== false : status.reason === 'model-missing' && status.embed === true;
     // Vectors of one model are meaningless against another's (PR #136 D7): a mismatch is keywords only, said so.
@@ -153,9 +173,28 @@ function createAskRepo({
       if (e.ok) queryVec = e.vectors[0];
     }
     const { entries, refs } = prepare(data);
-    const top = hybridRank({ question: q, queryVec, entries, k }).map(id => refs[id]);
+    const top = hybridRank({ question: q, queryVec, entries, k: want }).map(id => refs[id]);
     const keywordOnly = queryVec === null || entries.some(e => e.vec === null);
-    const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}) };
+    return { status, top, keywordOnly };
+  }
+
+  async function ask(worktree, question, { prepared } = {}) {
+    const q = typeof question === 'string' ? question.trim().slice(0, MAX_QUESTION_CHARS) : '';
+    if (!q) return { ok: false, reason: 'empty-question' };
+    const started = now();
+
+    // `prepared` is the retrieval excerptsFor() already did for this very question: the panel shows its places first and the answer then
+    // uses the same hits, so one ask is one retrieval (PR #169 El Gordo 1, Miguel Y10) and the freshness check isn't raced against itself.
+    let ctx = prepared;
+    if (!ctx) {
+      const rdy = await ready(worktree);
+      if (!rdy.ok) return rdy.failure;
+      const { status: st0, top: top0, keywordOnly: kw0 } = await search(rdy.data, q, k);
+      ctx = { data: rdy.data, stale: rdy.stale, refreshError: rdy.refreshError, building: rdy.building, status: st0, top: top0, keywordOnly: kw0 };
+    }
+    const { data, stale, refreshError, building, status, top, keywordOnly } = ctx;
+    // `_data` is the index THIS answer was computed from: the service reads the card previews from it, not from the build as it moves on (Dexter N2)
+    const extra = { keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ...(building ? { building } : {}), _data: data };
 
     if (!top.length) return { ok: false, reason: 'no-matches', ...extra };
     const { prompt, sent } = buildPrompt(q, top);
@@ -163,7 +202,7 @@ function createAskRepo({
 
     const g = await ollama.generate({ system: SYSTEM, prompt });
     if (!g.ok) {
-      return { ok: false, reason: g.reason, ...(g.model ? { model: g.model } : {}), ...(g.status ? { status: g.status } : {}), hits: toHits(sent), ...extra };
+      return { ok: false, reason: g.reason, ...(g.model ? { model: g.model } : {}), ...(g.status ? { status: g.status } : {}), ...(g.detail ? { detail: g.detail } : {}), hits: toHits(sent), ...extra };
     }
     // Citations are checked against what the model was SHOWN: only files and line ranges that were in the prompt.
     const ranges = new Map();
@@ -180,6 +219,31 @@ function createAskRepo({
     };
   }
 
+  /**
+   * The excerpts to explain a SELECTION or to preview a question's places (BACKLOG #33): the best chunks for `query`, the selection's own
+   * lines left out (`exclude` = { file, start, end }), as the numbered text a prompt carries.
+   *   -> { ok: true, body, sent, lineCounts, keywordOnly, stale, refreshError?, ollamaStatus }   (no match is ok, with an empty body)
+   *    | the same failure ask() gives while the index isn't ready ('index-building' with progress, 'index-failed')
+   * `wantK` is how many chunks to offer (default k). Pure retrieval: no model is asked to write anything.
+   */
+  async function excerptsFor(worktree, query, { exclude, k: wantK } = {}) {
+    const q = typeof query === 'string' ? query.trim().slice(0, MAX_QUESTION_CHARS) : '';
+    if (!q) return { ok: false, reason: 'empty-question' };
+    const rdy = await ready(worktree);
+    if (!rdy.ok) return rdy.failure;
+    const { data, stale, refreshError, building } = rdy;
+    const want = Number.isInteger(wantK) && wantK > 0 ? wantK : k;
+    const { status, top, keywordOnly } = await search(data, q, want + 4);
+    const overlaps = (r) => !!exclude && r.rel === exclude.file && r.chunk.start <= exclude.end && r.chunk.end >= exclude.start;
+    const kept = top.filter(r => !overlaps(r)).slice(0, want);
+    const { body, sent } = buildExcerpts(kept);
+    const lineCounts = new Map();
+    for (const s of sent) lineCounts.set(s.file, data.files.find(f => f.rel === s.file).lines);
+    return { ok: true, body, sent, lineCounts, keywordOnly, stale, ...(refreshError ? { refreshError } : {}), ...(building ? { building } : {}), ollamaStatus: status,
+      // handed back to ask() so the answer uses these very hits
+      prepared: { data, stale, refreshError, building, status, top: kept, keywordOnly } };
+  }
+
   async function status(worktree) {
     const data = await index.load(worktree);
     const progress = index.progress(worktree);
@@ -193,7 +257,7 @@ function createAskRepo({
     };
   }
 
-  return { ask, status };
+  return { ask, status, excerptsFor };
 }
 
-module.exports = { createAskRepo, buildPrompt, SYSTEM, DEFAULT_K, PROMPT_MAX_CHARS };
+module.exports = { createAskRepo, buildPrompt, buildExcerpts, SYSTEM, DEFAULT_K, PROMPT_MAX_CHARS };

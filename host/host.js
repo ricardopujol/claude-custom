@@ -109,6 +109,11 @@ const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { createRepoService } = require('./repo-service');
+// "Ask the repo" (BACKLOG #33): the panel's questions and explanations, answered from this worktree's index (host/ask-service.js).
+const { createAskService, createRepoFactory } = require('./ask-service');
+const { createIndex: createAskIndex } = require('./ask-index');
+const { createClaudeAnswerer } = require('./ask-claude');
+const { createModels: createAskModels } = require('./ask-models');
 const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
@@ -451,6 +456,19 @@ const gitGraph = createGitGraphService({ cwd: CWD, read: readGraph });
 // (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
 const repoService = createRepoService({
   root: CWD, projectsDir: seams.projectsDir || undefined, announce: (msg) => broadcastControl(msg),
+});
+// The `ask` conversation (BACKLOG #33). Local answers come from Ollama; a Claude model answers through the real claude CLI on the
+// person's plan (host/ask-claude.js: no tools, no API key in its environment). The index is per worktree, kept under the harness state.
+const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
+const askIndex = createAskIndex({ dir: seams.askIndexDir || path.join(HARNESS_DIR, 'state', 'ask-index'), embed: (t) => askOllama.embed(t), embedModel: askOllama.embedModel });
+const askClaude = createClaudeAnswerer({ claudeBin: CLAUDE_BIN, anchor: CWD });
+const askService = createAskService({
+  cwd: CWD, index: askIndex, ollama: askOllama, claude: askClaude,
+  models: createAskModels({ localModel: askOllama.answerModel, readRecord: seams.askRecord ? () => fs.readFileSync(seams.askRecord, 'utf8') : undefined }),
+  repoFor: createRepoFactory({ index: askIndex, ollama: askOllama, claude: askClaude }),
+  // the explainer's picture is an agent's picture: uploaded through `portrait set`, chosen from the forge's generated agents
+  portraitOf: (agent, state) => portraitOf(agent, state),
+  forgeAgents: () => fs.readdirSync(PORTRAITS_DIR, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_')).map(d => d.name).sort(),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
@@ -2712,6 +2730,13 @@ wss.on('connection', (ws, req) => {
       // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a
       // failure is { ok: false, why | error }, so the page can say so instead of waiting forever.
       repoService.handle(msg).then(reply => {
+        try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
+      });
+      return;
+    }
+    if (msg.type === 'ask') {
+      // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a failure is { ok: false, reason, ... }.
+      askService.handle(msg).then(reply => {
         try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
       });
       return;

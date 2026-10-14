@@ -18,7 +18,7 @@
  */
 (function (root) {
 
-function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect, confirmDiscard, onDirty } = {}) {
+function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect, confirmDiscard, onDirty, onAsk } = {}) {
   const R = root.repoRequester || (typeof require === 'function' ? require('./repo-requester') : null);
   const Panel = root.repoFilesPanel || (typeof require === 'function' ? require('./repo-files-panel') : null);
   const Reader = root.repoReader || (typeof require === 'function' ? require('./repo-reader') : null);
@@ -28,7 +28,7 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
   let said = () => {};
 
   const reader = Reader.create({
-    doc, requester, harness, storage, storageKey, typeMention, termRect, confirmDiscard, onDirty,
+    doc, requester, harness, storage, storageKey, typeMention, termRect, confirmDiscard, onDirty, onAsk,
     onClose: () => { panel.setSelected(null); if (focusTerminal) focusTerminal(); },
   });
 
@@ -66,6 +66,8 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
     probe: (action, a) => (typeof action === 'string' && action.startsWith('reader.') ? reader.probe(action.slice(7), a)
       : action === 'refresh' ? (panel.refresh(), { ok: true })
         : panel.probe(action, a)),
+    // "Ask the repo" (#33): a card or a citation opens the file at its line; the Files tab's highlight follows
+    openAt: async (path, line, endLine) => { const r = await reader.openAt(path, line, endLine); panel.setSelected(reader.path()); return r; },
     reader, panel,
   };
 }
