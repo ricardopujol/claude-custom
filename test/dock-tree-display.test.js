@@ -836,6 +836,19 @@ test('fitRowNameSize: names in a row share one size; 11 px when the row fits, el
   assert.strictEqual(V.fitRowNameSize([50], 10, 0), 11, 'no length known');
 });
 
+test('fitRow: names stay while they are at least 8 px; under that the row goes icons only (the threshold is pinned)', () => {
+  assert.strictEqual(V.ICONS_ONLY_BELOW, 8);
+  assert.deepStrictEqual(V.fitRow([40, 40], 82, 200), { size: 11, iconsOnly: false }, 'fits');
+  // names get 100 px of a 200 px row: 11 * (200 - 100) / 200 = 5.5 -> icons only
+  assert.deepStrictEqual(V.fitRow([100, 100], 100, 200), { size: 5.5, iconsOnly: true });
+  // 11 * (room - 100) / 200 = 8 at room 245.45..: 246 gives 8.03 (names stay), 245 gives 7.97 (icons only)
+  assert.strictEqual(V.fitRow([100, 100], 100, 246).iconsOnly, false);
+  assert.strictEqual(V.fitRow([100, 100], 100, 245).iconsOnly, true);
+  assert.strictEqual(V.fitRow([35, 35, 35, 35, 35], 205, 180).iconsOnly, true, 'the chrome alone is longer than the rail');
+  assert.strictEqual(V.fitRow([], 0, 100).iconsOnly, false);
+  assert.strictEqual(V.fitRow([50, NaN], 10, 20).iconsOnly, false, 'unmeasured: left alone');
+});
+
 test('fitRowNameSize: the fitted row is never longer than its room', () => {
   const fc = require('fast-check');
   fc.assert(fc.property(fc.array(fc.integer({ min: 1, max: 200 }), { minLength: 1, maxLength: 8 }), fc.integer({ min: 0, max: 300 }), fc.integer({ min: 50, max: 1500 }), (names, chrome, room) => {

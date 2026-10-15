@@ -38,31 +38,39 @@ const isSize = v => isNumber(v) && v > 0;
  * length (data-room is that width or length). Measured (a layout read) only when the buttons, the room, the direction or the UI
  * font changed since the last time. Where the page has no layout (the test document) nothing measures and names stay at 11 px.
  */
-function fitRailNames(el, doc) {
+function fitRailNames(el, doc, force) {
   const style = doc.documentElement && doc.documentElement.style;
   const font = style && typeof style.getPropertyValue === 'function' ? style.getPropertyValue('--font-ui') : '';
   const room = Number(el.dataset.room) || 0;
   const key = `${el.dataset.sig}|${el.dataset.dir}|${room}|${font}`;
-  if (el.dataset.fit === key) return;
-  el.dataset.fit = key;
+  if (!force && el.dataset.fit === key) return;
   const tabs = [...el.children].map(btn => ({ btn, name: btn.querySelector('.rail-name') })).filter(t => t.name);
-  for (const t of tabs) t.name.style.fontSize = '';           // measure at the stylesheet's 11 px
+  delete el.dataset.names;                                    // measure with the names showing
+  for (const t of tabs) t.name.style.fontSize = '';           // ...at the stylesheet's 11 px
+  // A rail that is not on screen (lean or focus mode, display: none) measures zeros. That is no measurement: store no key, so the
+  // fit runs when it shows (applyBoxes draws again on every lean/focus change).
+  if (tabs.length && !tabs.some(t => t.name.scrollWidth > 0)) { delete el.dataset.fit; return; }
+  el.dataset.fit = key;
   let sizes;
   if (el.dataset.dir === 'h') {
     const widths = tabs.map(t => t.name.scrollWidth);
     const chrome = tabs.reduce((sum, t) => sum + (t.btn.scrollWidth - t.name.scrollWidth), 0);
-    const one = fitRowNameSize(widths, chrome, room);
-    sizes = tabs.map(() => one);
+    const row = fitRow(widths, chrome, room);
+    if (row.iconsOnly) { el.dataset.names = 'off'; return; }  // the CSS hides the names; the row scrolls if the icons still do not fit
+    sizes = tabs.map(() => row.size);
   } else {
     sizes = tabs.map(t => fitNameSize(t.name.scrollWidth, room));
   }
   tabs.forEach((t, i) => { if (sizes[i] < NAME_MAX) t.name.style.fontSize = `${sizes[i]}px`; });
 }
 
-/** The UI font changed, or fonts finished loading: every rail's names are measured again (the page calls this; applyBoxes does the rest). */
-function refitRails(doc) {
+/**
+ * The UI font changed, or fonts finished loading: every rail's names are measured again (the page calls this; applyBoxes does the rest).
+ * `force` measures even when nothing in the key changed: a web font that finished loading changes widths without changing its name.
+ */
+function refitRails(doc, force) {
   const dock = doc.getElementById('dock');
-  if (dock) for (const el of dock.querySelectorAll(':scope > .drail')) fitRailNames(el, doc);
+  if (dock) for (const el of dock.querySelectorAll(':scope > .drail')) fitRailNames(el, doc, force === true);
 }
 
 /** A box at least twice as wide as tall lays its panel out as a row (every panel has both shapes from L1). */
@@ -92,6 +100,13 @@ function fitRowNameSize(names, chrome, room) {
   if (!(room > 0) || !names.every(n => n > 0 && Number.isFinite(n)) || !Number.isFinite(chrome) || sum + chrome <= room) return NAME_MAX;
   if (room <= chrome) return 0.01;
   return Math.max(0.01, Math.floor((NAME_MAX * (room - chrome) / sum) * 100) / 100);
+}
+/** A row whose names would be under this many px shows its tabs as icons only (Ricardo: "icons only when tight"). */
+const ICONS_ONLY_BELOW = 8;
+/** The row's verdict: the one name size, and whether the names give way to icons only. */
+function fitRow(names, chrome, room) {
+  const size = fitRowNameSize(names, chrome, room);
+  return { size, iconsOnly: size < ICONS_ONLY_BELOW };
 }
 function fitNameSize(natural, room) {
   if (!(natural > room && room > 0 && Number.isFinite(natural))) return NAME_MAX;      // fits, or nothing measured (NaN, 0, hidden)
@@ -704,7 +719,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

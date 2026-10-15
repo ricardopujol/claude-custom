@@ -2312,6 +2312,7 @@ test('the probe may drive the dock tree\'s actions, by name only (dockable panel
 test('the probe may switch the page Interface font by name (#85 follow-up), to see the rail names refit', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   assert.ok(VIEW_PROBE_ACTIONS.has('uiFont'));
+  assert.ok(VIEW_PROBE_ACTIONS.has('leanClass'));
 });
 
 test('the probe may drive the floating panels\' actions, by name only (dockable panels D2)', () => {

@@ -611,13 +611,38 @@ async function main() {
     const rowRail = a12n.s.rails.find(r => r.dir === 'h');
     check('12: collapsing the lower group of the narrow column gives a horizontal rail', !!rowRail, JSON.stringify(a12n.s.rails.map(r => [r.dir, r.modules])));
     if (rowRail) {
-      const fs12 = rowRail.faces.map(f => Math.round(f.fontPx * 100) / 100);
+      // Four tabs in 180 px: their names would be under 8 px, so the row is icons only (Ricardo: "icons only when tight")
       const lastRight = Math.max(...rowRail.tabRects.map(r => r.right));
-      check('12: every tab fits the length of the rail (none cut off) and the names shrank together below 11 px', lastRight <= rowRail.rect.right + 0.5 && new Set(fs12).size === 1 && fs12[0] < 11, JSON.stringify([lastRight, rowRail.rect.right, fs12]));
-      checkFaces('12: narrow row rail', rowRail);
+      check('12: the 180 px row of four tabs is icons only: the names are hidden, every tab fits the rail, nothing is cut off', rowRail.names === 'off' && rowRail.faces.every(f => f.nameRect.width === 0) && lastRight <= rowRail.rect.right + 0.5, JSON.stringify([rowRail.names, lastRight, rowRail.rect.right]));
+      check('12: ...the icons are 16 px and still named: each tab has its tooltip and aria-label', rowRail.faces.every(f => Math.abs(f.iconRect.width - 16) <= 0.5) && rowRail.tabTitles.every(([t, l]) => !!t && !!l), JSON.stringify(rowRail.tabTitles));
+      check('12: ...and a row of icons that cannot fit would scroll sideways (overflow-x auto)', rowRail.scroll.overflowX === 'auto', rowRail.scroll.overflowX);
     }
     await command(third.app, { cmd: 'screenshot', file: path.join(shots, '12b-narrow-row-rail.png') });
     await quitApp(third.app);
+  }
+
+  // 12: a rail that folds while the rails are hidden (lean mode) is fitted when they show again (Dexter r2 F1)
+  const lean = T.normalize({
+    version: 2, floats: [], rail: ['git'], hidden: IDS.filter(i => !['canvas', 'resources', 'git'].includes(i)), seat: {},
+    root: { type: 'split', dir: 'row', sizes: [0, 180], kids: [{ type: 'term' }, { type: 'group', id: 'gR', tabs: ['canvas', 'resources'] }] },
+  }, IDS);
+  fs.writeFileSync(TREE_FILE, JSON.stringify(lean));
+  const fourth = await launchReady(container);
+  check('12: the window came up with the lean-mode layout', !!fourth.ready);
+  if (fourth.ready) {
+    await view(fourth.app, 'squeeze', { width: 600, height: 520 });
+    const open600 = (await settled(fourth.app)).s;
+    check('12: at 600 px the group is open beside the terminal', open600.groups.some(g => g.tabs.includes('canvas')), JSON.stringify(open600.groups.map(g => g.tabs)));
+    await view(fourth.app, 'leanClass', { on: true });
+    await view(fourth.app, 'squeeze', { width: 480, height: 520 });
+    const folded = (await settled(fourth.app)).s;
+    check('12: lean on, resized to 480 px, the group folds into a rail', folded.rails.some(r => r.modules.includes('canvas')), JSON.stringify(folded.rails.map(r => [r.dir, r.modules])));
+    await view(fourth.app, 'leanClass', { on: false });
+    const shown = (await settled(fourth.app)).s;
+    const gr = shown.rails.find(r => r.modules.includes('canvas'));
+    check('12: lean off: the rail that folded while hidden is fitted: every name inside its room (scrollWidth <= 46)', !!gr && gr.faces.every(f => f.nameScrollWidth > 0 && f.nameScrollWidth <= 46), JSON.stringify(gr && gr.faces.map(f => [f.module, f.nameScrollWidth, f.fontPx])));
+    await command(fourth.app, { cmd: 'screenshot', file: path.join(shots, '12c-lean-off-fitted.png') });
+    await quitApp(fourth.app);
   }
 }
 

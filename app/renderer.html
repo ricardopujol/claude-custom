@@ -980,6 +980,11 @@
     .drail .rail-name { white-space: nowrap; }     /* one line, never wrapped: app/dock-tree-display.js shrinks it to fit the tab */
     .drail[data-dir="v"] button { flex-direction: column; padding: 6px 2px; gap: 1px; }
     .drail[data-dir="h"] button { flex-direction: row; padding: 0 10px; gap: 5px; }
+    /* Names that would be under 8 px give way to icons only (app/dock-tree-display.js sets data-names="off"); if the icons alone still
+       do not fit the row it scrolls sideways, like the dock rail does up and down. The label stays in aria-label and the tooltip. */
+    .drail[data-dir="h"][data-names="off"] { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    .drail[data-names="off"] .rail-name { display: none; }
+    .drail[data-dir="h"][data-names="off"] button { padding: 0 8px; gap: 0; }
     /* 16 px of icon with the 24 px design's 1 px line would be 0.67 px: the weight scales up so it still reads as 1 px. */
     .drail[data-dir="h"] .rail-icon { width: 16px; height: 16px; stroke-width: 1.5; }
     .drail button:hover { color: var(--text); }

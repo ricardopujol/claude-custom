@@ -888,6 +888,58 @@ test('a change of the UI font is fitted again: the font is part of the key, and 
   assert.strictEqual(log.reads, settled, 'nothing changed: nothing measured');
 });
 
+test('a rail measured while it is not on screen is not fitted, and is fitted when it shows (Dexter r2 F1)', () => {
+  const w = makeDoc();
+  let shown = false;
+  const log = measuring(w, { widthOf: name => (shown ? (name.textContent === 'Bug vault' ? 92 : 20) : 0) });
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, RAILED), w.doc);                 // lean mode: every scrollWidth is 0
+  const rail = railOf(w);
+  assert.strictEqual(sizeOf(rail, 'bugvault'), '');
+  assert.strictEqual(rail.dataset.fit, undefined, 'nothing measured: no key stored');
+  shown = true;
+  V.applyBoxes(planD4(l, RAILED), w.doc);                 // lean off: the same plan
+  assert.ok(sizeOf(rail, 'bugvault') !== '' && parseFloat(sizeOf(rail, 'bugvault')) < 11, 'now Bug vault is fitted');
+  assert.ok(log.reads > 0);
+});
+
+test('the font hooks force a measure: refitRails(doc, true) measures even when the key has not changed', () => {
+  const w = makeDoc();
+  const log = measuring(w);
+  V.applyBoxes(planD4(T.defaultLayout(IDS), RAILED), w.doc);
+  const before = log.reads;
+  V.refitRails(w.doc);
+  assert.strictEqual(log.reads, before, 'unforced: the key matches');
+  V.refitRails(w.doc, true);
+  assert.ok(log.reads > before, 'forced: measured again');
+});
+
+test('a row that would need names under 8 px shows icons only: names hidden, the label kept in the aria-label and the tooltip', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 60 });                  // 4 tabs: 164 of chrome + 240 of names in 180
+  const tabs = ['agents', 'vault', 'fog', 'bugvault'];
+  V.applyBoxes(planD4(footLayout(tabs), { collapsed: { foot: tabs } }, null, { width: 180, height: 600 }), w.doc);
+  const rail = railOf(w);
+  assert.strictEqual(rail.dataset.names, 'off');
+  assert.ok(rail.children.every(b => b.querySelector('.rail-name').style.fontSize === '' && b.getAttribute('aria-label') && b.title));
+});
+
+test('a row whose names stay at 8 px or more keeps them, and leaves icons-only when there is room again', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 60 });
+  const tabs = ['agents', 'vault', 'fog', 'bugvault'];
+  const l = footLayout(tabs);
+  const sel = { collapsed: { foot: tabs } };
+  V.applyBoxes(planD4(l, sel, null, { width: 180, height: 600 }), w.doc);
+  const rail = railOf(w);
+  assert.strictEqual(rail.dataset.names, 'off');
+  V.applyBoxes(planD4(l, sel, null, { width: 330, height: 600 }), w.doc);       // 164 + 240 = 404 needs 404: 330 gives 11*166/240 = 7.6: still off
+  assert.strictEqual(rail.dataset.names, 'off');
+  V.applyBoxes(planD4(l, sel, null, { width: 360, height: 600 }), w.doc);       // 11 * 196 / 240 = 8.98: names are back, shrunk
+  assert.strictEqual(rail.dataset.names, undefined);
+  assert.ok(parseFloat(rail.children[0].querySelector('.rail-name').style.fontSize) >= 8);
+});
+
 test('refitRails on a page with no rail does nothing', () => {
   const w = makeDoc();
   assert.doesNotThrow(() => V.refitRails(w.doc));
