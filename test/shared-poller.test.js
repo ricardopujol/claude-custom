@@ -7,9 +7,9 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const fc = require('fast-check');
+const { tmpDir } = require('./tmp-dir');
 
 const SP = require('../host/shared-poller');
 const policy = require('../host/poller-policy');
@@ -17,7 +17,7 @@ const policy = require('../host/poller-policy');
 const settle = async () => { for (let i = 0; i < 12; i++) await new Promise(r => setImmediate(r)); };
 
 function makeWorld() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-poller-'));
+  const dir = tmpDir('cc-poller-');
   let clock = 5_000_000;
   let id = 0;
   const timers = [];
