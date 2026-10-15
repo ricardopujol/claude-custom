@@ -39,7 +39,7 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 
 /** A shell whose every effect is a recording fake. */
-function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources, safety } = {}) {
+function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources, safety } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
@@ -155,6 +155,7 @@ function harness({ mode = 'tabs', list = porcelain(THREE), running = {}, launche
     h.prAsks.push([normPath(folder), branch]);
     return typeof h.openPr === 'function' ? h.openPr(branch) : h.openPr;
   } };
+  if (usage !== undefined) deps.usage = usage;
   if (marks !== undefined) deps.marks = marks;
   if (occupancy !== undefined) deps.occupancy = occupancy;
   if (resources !== undefined) deps.resources = resources;
@@ -2873,4 +2874,53 @@ test('ctrl-close: with nothing unsaved (null) or a reader that throws, the safe 
   }
   const h = await mergedHarness({ safety: { facts: async () => h.facts, readerUnsaved: () => { throw new Error('x'); } } });
   assert.strictEqual((await ctrlClose(h)).ok, true, 'a broken hook is not a reason to refuse');
+});
+
+// --- usage counters (audit move 2): fire and forget ---------------------------
+
+test('usage: tab:new-worktree counts on a successful create only; a shell without usage still works', async () => {
+  const seen = [];
+  const h = harness({ usage: (k) => seen.push(k) });
+  await h.shell.open();
+  await flush();
+  h.createResult = () => ({ ok: false, error: 'boom' });
+  await h.shell.createWorktree('feat/bad');
+  assert.deepStrictEqual(seen, []);
+  h.createResult = null;
+  const r = await h.shell.createWorktree('feat/demo');
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(seen, ['tab:new-worktree']);
+
+  const plain = harness();
+  await plain.shell.open();
+  await flush();
+  assert.strictEqual((await plain.shell.createWorktree('feat/demo')).ok, true);
+});
+
+test('usage: a throwing counter never aborts the tab setup', async () => {
+  const h = harness({ usage: () => { throw new Error('counter exploded'); } });
+  await h.shell.open();
+  await flush();
+  const r = await h.shell.createWorktree('feat/demo');
+  assert.strictEqual(r.ok, true);
+});
+
+test('usage: tab:merged-close counts a removal, not an already-removed row, a kept one or a failure', async () => {
+  const run = async (result) => {
+    const seen = [];
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, usage: (k) => seen.push(k) });
+    await h.shell.open();
+    await flush();
+    h.removeResult = result;
+    h.markers[key('feat-a')] = 'feat/a';
+    await h.shell.poll();
+    delete h.running[7701];
+    await h.shell.poll();
+    await flush();
+    return seen;
+  };
+  assert.deepStrictEqual(await run({ ok: true, already: false }), ['tab:merged-close']);
+  assert.deepStrictEqual(await run({ ok: true, already: true }), []);
+  assert.deepStrictEqual(await run({ ok: false, kept: true, reason: 'brief' }), []);
+  assert.deepStrictEqual(await run({ ok: false, error: 'x' }), []);
 });

@@ -313,6 +313,7 @@ function mount(opts) {
   function begin() {
     game().reset();
     s = round.start();
+    if (opts.onStart) { try { opts.onStart(current); } catch { /* counting never breaks a round */ } }
     paintLabels(); draw();
     if (typeof canvas.focus === 'function') canvas.focus();
     schedule();

@@ -62,6 +62,7 @@ const tabMarks = require('./tab-marks');
 const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
+const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
 const { sendControl } = require('../host/host-client');
@@ -132,6 +133,7 @@ const { createIndexingBridge } = require('./indexing-bridge');
 // A probe seam (host/probe-seams.js, uiStateDir) moves these records into the probe's own folder; unset in real use.
 const UI_STATE_DIR = readSeams(process.env).uiStateDir || path.join(__dirname, '..', '.harness', 'state');
 const uiStore = createStore({ dir: UI_STATE_DIR });
+const usageCounters = createUsageCounters({ store: uiStore });       // invisible feature-use counts (host/usage-counters.js); same file the hosts write
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
@@ -1860,6 +1862,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   tabShell = createShell({
+    usage: (key) => { try { usageCounters.bump(key); } catch { /* counting never breaks a tab */ } },
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,
     cwd: LAUNCH_CWD,

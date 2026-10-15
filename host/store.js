@@ -21,6 +21,9 @@
  *   .harness/state/medals.json     host/medals.js, STORE_KEY 'medals' (BACKLOG #80: the medals
  *                                  Ricardo gives agents). Install-wide, keyed by agent name. Given
  *                                  by hand, so like the wand it opts in to withLock and readState.
+ *   .harness/state/usage-counters.json  host/usage-counters.js, STORE_KEY 'usage-counters' (audit move 2: how often
+ *                                  each feature is used; keys and timestamps only). Install-wide, never shown in the UI;
+ *                                  it opts in to withLock and readState, and an unreadable file is never written over.
  *   .harness/state/ask-counts.json host/ask-counts.js, STORE_KEY 'ask-counts' (BACKLOG #33 gamification: the Ask
  *                                  explainer's questions answered and places opened). Install-wide, one explainer per
  *                                  person. A count can't be recomputed, so like the medals it opts in to withLock and
@@ -266,10 +269,10 @@ function createStore({ dir } = {}) {
    * So the vault opts in, and everything else keeps the old, documented,
    * accepted risk.
    */
-  function withLock(name, fn) {
+  function withLock(name, fn, opts) {
     const file = pathOf(name);          // validates the name before touching disk
     fs.mkdirSync(dir, { recursive: true });
-    return withFileLock(`${file}.lock`, fn);
+    return withFileLock(`${file}.lock`, fn, opts);
   }
 
   return { read, readState, write, update, withLock, pathOf, dir };

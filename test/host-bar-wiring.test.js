@@ -33,7 +33,7 @@ test('the keeper and the night are built once, and the night pushes through the 
   const block = HOST.slice(HOST.indexOf('const night = createNightStatus({'), HOST.indexOf('});', HOST.indexOf('const night = createNightStatus({')));
   assert.match(block, /bedtime: createBedtime\(\)/);
   assert.match(block, /countPrs: \(since\) => countNightPrs\(CWD, since\)/);
-  assert.match(block, /onChange: \(payload\) => broadcastControl\(\{ type: 'bedtime', bedtime: payload \}\)/);
+  assert.match(block, /onChange: \(payload\) => \{ noteNight\(payload\); broadcastControl\(\{ type: 'bedtime', bedtime: payload /);
 });
 
 test('every hook event reaches the keeper and the night, and a ScheduleWakeup goes no further than the night', () => {

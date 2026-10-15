@@ -706,6 +706,7 @@ function openFileLink(event, p) {
   const r = linkClick.shouldOpen(event, `file:${p}`, lastLinkOpened, Date.now());
   lastLinkOpened = r.last;
   if (!r.open || !window.harness || typeof window.harness.openPath !== 'function') return;
+  usage('terminal:file-link');
   Promise.resolve(window.harness.openPath(p)).then((res) => {
     if (!res || res.ok !== true) flashLinkTarget(linkClick.fileRefusedText(p, res && res.why));
   }, () => flashLinkTarget(linkClick.fileRefusedText(p, null)));
@@ -1029,6 +1030,7 @@ function renderProjects(msg) {
 document.getElementById('projects-list').addEventListener('click', (e) => {
   const row = e.target.closest('[data-open]');
   if (!row || !ws || ws.readyState !== WebSocket.OPEN) return;
+  usage('projects:switch');
   try { ws.send(JSON.stringify({ type: 'open', path: row.dataset.open })); } catch {}
   // Said out loud: the new window is a separate process that takes a moment to
   // appear, and a click with no feedback reads as a dead button.
@@ -1196,6 +1198,11 @@ let layoutLoaded = false;        // the stored layout has been read: until then 
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
 let kbRefresh = () => {};        // redraws the keyboard move's zones after the dock was redrawn (set by initKeyboardMove)
 let shownModules = new Set();
+// Usage counters: a panel counts as shown only after the layout loaded and within a moment of a user gesture (a tab, the rail, the
+// Window menu), so a launch, a layout load or leaving lean mode doesn't rank the default panels as most used.
+let usageGestureAt = -Infinity;
+const usageGesture = () => { usageGestureAt = Date.now(); };
+const usageGestureLive = () => layoutLoaded && helloSeen && Date.now() - usageGestureAt < 1500;
 let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
 let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
 let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
@@ -1240,6 +1247,7 @@ const gamesPanel = gamesRoot ? window.gamesDisplay.mount({
   bridge: window.harness && window.harness.games ? window.harness.games : null,
   focusTerminal: () => term.focus(),
   terminalHasFocus: () => !!(term.element && term.element.contains(document.activeElement)),
+  onStart: (game) => usage('game:' + game + ':start'),
   raf: (fn) => requestAnimationFrame(fn),
   caf: (id) => cancelAnimationFrame(id),
   now: () => performance.now(),
@@ -1295,7 +1303,7 @@ const askPanel = askRoot ? window.askDisplay.mount({
   storage: (() => { try { return localStorage; } catch { return null; } })(),
   request: (op, body) => askRequester.request(op, body),
   // resolves to what the reader said (false: it did not open), so a place that wasn't opened isn't counted; the reader says why in its own note
-  openAt: (file, line, endLine) => repoBrowser.openAt(file, line, endLine).catch(() => false),
+  openAt: (file, line, endLine) => repoBrowser.openAt(file, line, endLine).catch(() => false).then((r) => { if (r !== false) usage('ask:place-opened'); return r; }),
   getSelection: () => window.getSelection(),
   pickPortrait: askPickPortrait,
   // the roster's own switch (declared further down this file: before it is set, or if it is off, the face is a placeholder)
@@ -1337,7 +1345,7 @@ function askExplain(sel) {
 
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
-  if (id === 'git') { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
+  if (id === 'git') { usage('git:opened'); requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
@@ -1345,7 +1353,7 @@ function onModuleShown(id) {
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
-  if (id === 'vault') renderVault();
+  if (id === 'vault') { usage('vault:opened'); renderVault(); }
 }
 
 // --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
@@ -1754,7 +1762,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
-  for (const id of fx.newlyShown) onModuleShown(id);
+  for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -1816,6 +1824,7 @@ function saveGlobalLayout(l) {
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
 function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
+  usageGesture();
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   railEvent({ type: 'gone' });              // any change of the placement closes a rail's popover
@@ -1873,7 +1882,7 @@ function railEvent(ev) {
   else if (railSt.pending !== was.pending) {
     clearTimeout(railOpenTimer);
     const m = railSt.pending;
-    railOpenTimer = setTimeout(() => { railOpenTimer = null; if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
+    railOpenTimer = setTimeout(() => { railOpenTimer = null; usageGesture(); if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
   }
   if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
   else if (!was.leaving) {
@@ -1900,6 +1909,7 @@ function togglePin(id, { justThisTab = false } = {}) {
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
 // panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
 function revealModule(id) {
+  usageGesture();
   const l = placementLayout();
   if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
   else if ((l.rail || []).includes(id)) {
@@ -1911,6 +1921,7 @@ function revealModule(id) {
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
+  usageGesture();
   railEvent({ type: 'click', module: id });
   renderLayout({ refit: false });
   const goes = window.dockTreeView.peekFocus(!!peek, byKeyboard);
@@ -1923,7 +1934,7 @@ function openPeek(id, byKeyboard) {
 }
 
 // A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
-function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
+function selectModule(id) { usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
 // Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
@@ -2671,6 +2682,7 @@ let focusOn = false;
 function applyFocusMode(on) {
   if (on === focusOn) return;
   focusOn = on;
+  if (on) usage('focus:on');
   document.body.classList.toggle('focus-mode', on);
   closeLayoutMenu();
   // Focus mode hides the vault too, so it is "left": revealed secrets go.
@@ -5454,6 +5466,8 @@ if (agentLogEl) {
 // --- medals and the speech bubbles (BACKLOG #80) ---------------------------------------------------
 // Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
 // medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
+// Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
+function usage(key) { sendJson({ type: 'usage', key }); }
 function sendJson(obj) {
   try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
 }
@@ -6118,12 +6132,15 @@ function armQuotaTick() {
   quotaTickTimer = setTimeout(quotaTick, quotaTickDelayMs(lastQuotaPayload, Date.now()));
 }
 
+let quotaCountdownCounted = false;
 function renderQuota(quota) {
   if (quota !== undefined) lastQuotaPayload = quota;
   armQuotaTick();            // from the payload just taken, so a reset that came nearer is not waited out at the old pace
   const nowMs = Date.now();
   const cs = quotaResetWatcher.see(lastQuotaPayload, nowMs);
   const showToast = quotaToastGate.step({ toast: cs.toast, usedUp: cs.state === 'usedUp', visible: quotaHeaderVisible() });
+  if (cs.state === 'usedUp' && !quotaCountdownCounted) usage('quota:countdown-shown');       // the "Claude back in ..." countdown, once per used-up window
+  quotaCountdownCounted = cs.state === 'usedUp';
   if (showToast) {
     backToastUntil = nowMs + BACK_TOAST_MS;
     clearTimeout(backToastTimer);
@@ -6540,6 +6557,7 @@ function applyLean(payload) {
   leanNight = s.night;
   if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
   leanOn = on;
+  if (on) usage('lean:on');
   document.body.classList.toggle('lean', on);
   closeLayoutMenu();
   const { failed } = leanSuspender.set(on);
@@ -7184,7 +7202,7 @@ function wandAct(action) {
   if (action.kind === 'press') {
     const plan = wandDisplay.clickPlan(wandState, action.id, { cols: term.cols });
     if (!plan) return;
-    if (plan.kind === 'type') { wandType(plan); return; }
+    if (plan.kind === 'type') { usage('wand:click'); wandType(plan); return; }
     if (plan.kind === 'edit') wandFocusEditor = true;
     wandState = plan.kind === 'missing' || plan.kind === 'toolong' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
   } else if (action.kind === 'toggle-edit') {
@@ -7464,6 +7482,7 @@ async function sampleBackgroundFrame() {
 // refusal is shown where it belongs even with another request in flight.
 function sendStyle(section, payload) {
   try { ws.send(JSON.stringify({ type: 'style', ask: section, ...payload })); } catch { /* not attached */ }
+  usage('style:changed');
 }
 
 // A refusal means every preview on screen is uncommitted: repaint what the
@@ -8913,6 +8932,7 @@ dropZone.addEventListener('drop', (e) => {
     .filter(x => x.path);
 
   if (!entries.length) return;
+  usage('terminal:drop');
   // Through the confirm, like typing and pasting: a dropped file types its path into the prompt, and that is
   // the person's own act in a worktree an agent may be writing in (PR #96 Miguel S5).
   userInput(JSON.stringify({ type: 'drop', entries }));

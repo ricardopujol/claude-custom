@@ -393,3 +393,10 @@ test('createStore without a dir refuses immediately', () => {
   assert.throws(() => createStore({}), /dir is required/);
   assert.throws(() => createStore(), /dir is required/);
 });
+
+test('withLock passes its options to the lock: a held lock is given up on at the caller\'s deadline, not the default', () => {
+  const s = createStore({ dir: tmpDir('store-lock-opts') });
+  const t0 = Date.now();
+  assert.throws(() => s.withLock('held', () => s.withLock('held', () => 1, { deadlineMs: 50 })));
+  assert.ok(Date.now() - t0 < 2000, `waited ${Date.now() - t0} ms`);
+});
