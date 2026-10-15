@@ -145,6 +145,7 @@ function driver() {
             let other = null;
             if (kind === 'B') {
               await sleep(300);
+              // Not wrapped in probeWindowOptions on purpose: the trial is about real focus moving to another visible window.
               other = new BrowserWindow({ width: 200, height: 120, show: true });
               other.focus();
             }

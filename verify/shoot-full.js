@@ -40,6 +40,7 @@
    so the noise being judged was partly the compositor's, not the technique's. */
 
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const path = require('path');
 const fs = require('fs');
 
@@ -77,10 +78,10 @@ const check = (label, ok, detail) => {
 };
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({
+  const win = new BrowserWindow(probeWindowOptions({
     width, height: 900, show: false,
     webPreferences: { offscreen: true, deviceScaleFactor: 1 },
-  });
+  }));
 
   await win.loadFile(path.resolve(input));
 

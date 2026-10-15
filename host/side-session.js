@@ -23,7 +23,6 @@
 const SIDE_SUFFIX = '|side';
 // Not CLAUDE_CUSTOM_SIDE_TAB's neighbour by one letter: that one is the picker's (app/main.js), this one marks a side HOST.
 const SIDE_ENV = 'CLAUDE_CUSTOM_SIDE_SESSION';
-const SIDE_PERMISSION_MODE = 'plan';
 // Plain tool names: a rule with a pattern in it is one a permission prompt could be answered into widening.
 // MEASURED, no billed call (claude -p ... --output-format stream-json --verbose prints its init message, with the tool list, before
 // any model request; ANTHROPIC_BASE_URL on a dead port sends nothing): --tools "<names>" makes that list exactly those built-in
@@ -121,6 +120,6 @@ function readerSessionIds(identities) {
 }
 
 module.exports = {
-  SIDE_SUFFIX, SIDE_ENV, SIDE_PERMISSION_MODE, SIDE_ALLOWED_TOOLS, SIDE_DENIED_TOOLS, SIDE_REVIEWED_TOOLS, isSideKey, sideKeyOf, parentKeyOf, sideLabel, isSideEnv,
+  SIDE_SUFFIX, SIDE_ENV, SIDE_ALLOWED_TOOLS, SIDE_DENIED_TOOLS, SIDE_REVIEWED_TOOLS, isSideKey, sideKeyOf, parentKeyOf, sideLabel, isSideEnv,
   siblingSessions, sideHostsOf, readerSessionIds,
 };

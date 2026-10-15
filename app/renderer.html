@@ -308,7 +308,6 @@
     #fog-body { padding: 8px 10px; gap: 6px; }
     .fog-sum { font-size: 11px; color: var(--dim); line-height: 1.5; flex: 0 0 auto; }
     .fog-sum b { color: var(--text); font-variant-numeric: tabular-nums; }
-    .fog-sum .dark-count { color: var(--accent); }
     .fog-sum .fog-warn { color: var(--bad); }
     #files-note.fog-warn { color: var(--bad); }
     #files-bar { flex: 0 0 auto; }
@@ -964,18 +963,29 @@
       #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter { transition: none; }
     }
     #dock-announce, #quota-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-    /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
+    /* A folded cell: a rail of its modules' line icons with their names, the icon over the name beside the terminal (52 px wide) and in front of it above or below (34 tall). The icon is currentColor: dim at rest, bright on hover, the accent on the open tab. */
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
     /* The dock's own rail (#85) holds every unpinned panel, so it scrolls instead of clipping the tabs it cannot fit (PR #168 Miguel Y4). */
     .drail[data-rail="dock"] { overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
     .drail button {
-      flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
+      flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 13px; letter-spacing: 0;
       cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
+      display: flex; align-items: center; justify-content: center;
     }
-    .drail[data-dir="v"] button { writing-mode: vertical-rl; padding: 10px 0; }
-    .drail[data-dir="h"] button { padding: 0 10px; }
+    .drail .rail-icon-box { display: flex; }
+    .drail .rail-icon { width: 24px; height: 24px; flex: none; }
+    .drail .rail-name { white-space: nowrap; }     /* one line, never wrapped: app/dock-tree-display.js shrinks it to fit the tab */
+    .drail[data-dir="v"] button { flex-direction: column; padding: 6px 2px; gap: 1px; }
+    .drail[data-dir="h"] button { flex-direction: row; padding: 0 10px; gap: 5px; }
+    /* Names that would be under 8 px give way to icons only (app/dock-tree-display.js sets data-names="off"); if the icons alone still
+       do not fit the row it scrolls sideways, like the dock rail does up and down. The label stays in aria-label and the tooltip. */
+    .drail[data-dir="h"][data-names="off"] { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    .drail[data-names="off"] .rail-name { display: none; }
+    .drail[data-dir="h"][data-names="off"] button { padding: 0 8px; gap: 0; }
+    /* 16 px of icon with the 24 px design's 1 px line would be 0.67 px: the weight scales up so it still reads as 1 px. */
+    .drail[data-dir="h"] .rail-icon { width: 16px; height: 16px; stroke-width: 1.5; }
     .drail button:hover { color: var(--text); }
     /* Dragging a tab: every zone of the cell under the pointer is lit, the one under it filled. */
     #dock-overlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
@@ -1421,6 +1431,22 @@
     /* The explainer's face is an agent's picture, drawn by app/portrait-media-display.js (the roster's code): fill the round frame. */
     .ask-portrait { width: 30px; height: 30px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; flex: 0 0 auto; background: var(--panel); border: 1px solid var(--border); }
     .ask-portrait .face-media, .ask-face .face-media { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; font-size: 11px; }
+    /* The explainer as a roster member (BACKLOG #33 gamification; app/ask-explainer-display.js). Its header portrait wears the roster card's ring
+       and corner badge (the badge is the agents' own .state-badge, placed on the portrait's corner), and a 🏅 gives it a medal. */
+    .agent .agent-tag { margin-left: 6px; font-size: 9px; font-weight: 400; color: var(--dim); border: 1px solid var(--border); border-radius: 8px;
+      padding: 0 5px; vertical-align: middle; white-space: nowrap; }
+    .ask-avatar { position: relative; flex: 0 0 auto; display: inline-block; border-radius: 50%; line-height: 0; }
+    .ask-avatar[data-state="sleeping"] .ask-portrait { opacity: .42; }
+    .ask-avatar[data-state="working"] { box-shadow: 0 0 0 2px var(--agent); }
+    .ask-avatar[data-state="happy"] { box-shadow: 0 0 0 2px var(--ok); }
+    .ask-avatar[data-state="stressed"] { box-shadow: 0 0 0 2px var(--bad); }
+    .ask-avatar .state-badge { position: absolute; right: -5px; bottom: -4px; width: 15px; height: 15px; line-height: 15px; text-align: center; font-size: 10px;
+      border-radius: 50%; background: var(--panel); border: 1px solid var(--border); pointer-events: none; }
+    .ask-medal { font: inherit; font-size: 13px; line-height: 1; padding: 3px 6px; cursor: pointer; background: transparent; border: 1px solid transparent; border-radius: 4px; opacity: .7; }
+    .ask-medal:hover, .ask-medal:focus-visible { opacity: 1; border-color: var(--accent); }
+    .explainer-stats { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; }
+    .explainer-stat { font-size: 12px; color: var(--text); }
+    .explainer-stat b { font-size: 18px; margin-right: 4px; font-variant-numeric: tabular-nums; }
     .ask-gear, .ask-chip, .ask-primary, .ask-go, .ask-face { font: inherit; font-size: 11px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; }
     .ask-gear { font-size: 13px; line-height: 1; padding: 3px 6px; background: transparent; color: var(--dim); }
     .ask-gear:hover, .ask-chip:hover, .ask-go:hover, .ask-face:hover, .ask-example:hover { border-color: var(--accent); color: var(--text); }
@@ -2320,6 +2346,7 @@
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="./side-tabs.js"></script>
+  <script src="./rail-icons.js"></script>
   <script src="./dock-migrate.js"></script>
   <script src="./dock-effects.js"></script>
   <script src="./dock-tree.js"></script>
@@ -2359,6 +2386,7 @@
   <script src="./wand-display.js"></script>
   <script src="./ask-panel-state.js"></script>
   <script src="./ask-profile.js"></script>
+  <script src="./ask-explainer-display.js"></script>
   <script src="./ask-requester.js"></script>
   <script src="./ask-controller.js"></script>
   <script src="./ask-display.js"></script>

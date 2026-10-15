@@ -32,7 +32,8 @@ const migrateApi = typeof module !== 'undefined' && module.exports
 const VERSION = 2;
 const MIN = { width: 120, height: 80 };               // a panel
 const TERM_MIN = { width: 320, height: 160 };         // the terminal wins
-const RAIL = { side: 28, wide: 30 };
+// A rail tab is an emoji over a name (BACKLOG #85 follow-up): 52 px beside the terminal, 34 tall above or below it.
+const RAIL = { side: 52, wide: 34 };
 const GUTTER = 5;
 const DEFAULT_SIZE = { row: 180, col: 160 };          // a new cell beside / under the terminal
 // A module's OWN width when it gets a cell of its own beside the terminal (Ricardo, 2026-10-06, #71 question 1: Claude's panel docks itself at

@@ -4,6 +4,7 @@
  *
  *   createRequester({ send, setTimer, clearTimer }) ->
  *     request(op, body) -> Promise<reply>    never rejects; { type: 'ask', op, ok: false, error } when it can't be answered
+ *     notify(op, body)  -> boolean           a frame nobody waits on, through the same gate; false when it wasn't sent
  *     onMessage(msg)    -> boolean           true when the frame was an `ask` frame (an answer, or nobody's)
  *     setControls(list)                      `hello.controls`: what this host accepts
  *     failAll(reason)                        a dropped socket: every pending ask fails now
@@ -68,6 +69,12 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
       if (!msg || msg.type !== 'ask') return false;
       if (Number.isInteger(msg.seq)) settle(msg.seq, msg);
       return true;
+    },
+    // A frame nobody waits on (the panel's on-screen state, a place opened): sent only to a host that lists `ask`, like request(), so an
+    // older host never has it typed into the session. True when it was sent.
+    notify(op, body) {
+      if (!accepts(controls)) return false;
+      try { return send({ type: 'ask', op, ...(body || {}) }) !== false; } catch { return false; }
     },
     setControls(list) { controls = list; },
     failAll(reason) {

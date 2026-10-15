@@ -13,7 +13,8 @@
  *   - hooks see no unhooked tools, so silence means stuck only for a run with no background work, no Bash in flight and
  *     no foreground child, and its silence is refreshed by its own events and its foreground descendants' (up to a
  *     background run);
- *   - the retry loop is the NAME's (two runs of one agent share it);
+ *   - the retry loop is the NAME's (two runs of one agent share it), and it is re-signed by every result: a different
+ *     call, or a failed one, ends the repeat count (an interrupt ends the run but leaves the name's count untouched);
  *   - Stop ends the main session's foreground runs; an interrupt ends the run and its foreground descendants.
  *
  * Checked after every step, per card: (1) SHAPE, (2) NO STICKING and (3) PRIORITY (the detail equals what the live
@@ -135,6 +136,8 @@ function simulate(ops, onStep) {
         refresh(a);
         a.waiting = false;
         a.last = { kind: 'other' };          // a call whose only hook is its Post is still a newer call
+        // success:false is an error: the machine zeroes repeats and lastSignature (mood-machine.js 770-776)
+        loopOf(a.type).n = 0; loopOf(a.type).sig = null;
         break;
       }
       case 'mainPre':
@@ -165,6 +168,7 @@ function simulate(ops, onStep) {
         const a = pick(o.who);
         if (!a) break;
         send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), is_interrupt: true, ...by(a) });
+        refresh(a);          // the machine refreshes the run and its chain (mood-machine.js 760) before it returns at 766
         for (const x of subtree(a)) x.alive = false;
         break;
       }
@@ -224,7 +228,21 @@ test('property: a card shows exactly the finest name its live signals support, h
         assert.deepStrictEqual([last.state, last.detail], [r.state, r.detail], `${r.agent}: the roster is the last thing announced`);
       }
     });
-  }), { numRuns: 600 });
+  }), { numRuns: 600, examples: [[[
+    // BACKLOG #95 (Dexter F1): three identical ok Bash results trip the retry loop, then a failed SendMessage ends it.
+    { op: 'spawn', from: 0, type: 0, bg: false },
+    { op: 'bashPost', who: 0, kind: 'ok', same: true, ofLast: false },
+    { op: 'bashPost', who: 0, kind: 'ok', same: true, ofLast: false },
+    { op: 'bashPost', who: 0, kind: 'ok', same: true, ofLast: false },
+    { op: 'postOnly', who: 0 },
+  ]], [[
+    // PR #182 (Dexter 1): an interrupt is a hooked event of the run, so it refreshes the parent chain before the run ends.
+    { op: 'spawn', from: 0, type: 0, bg: false },
+    { op: 'spawn', from: 1, type: 1, bg: false },
+    { op: 'advance', ms: 20000 },
+    { op: 'advance', ms: 15000 },
+    { op: 'interrupt', who: 1 },
+  ]]] });
 });
 
 test('property: the same (agent, state, detail) is never announced twice in a row', () => {

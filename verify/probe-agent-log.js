@@ -60,9 +60,10 @@ async function main() {
 <script src="file:///${displayJs.replace(/\\/g, '/')}"></script>`);
   fs.writeFileSync(path.join(tmp, 'main.js'), `
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require(${JSON.stringify(path.join(__dirname, '..', 'host', 'probe-window'))});
 const frames = ${JSON.stringify(frames)};
 app.on('ready', async () => {
-  const win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false } });
+  const win = new BrowserWindow(probeWindowOptions({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false } }));
   await win.loadFile(${JSON.stringify(page)});
   const out = await win.webContents.executeJavaScript(\`(() => {
     const d = window.agentLogDisplay;

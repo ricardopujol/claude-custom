@@ -22,6 +22,7 @@
 (function (root) {
 
 // Loaded the way app/dock-tree.js loads its own helpers: required under Node, a page global in the window.
+const iconsApi = typeof module !== 'undefined' && module.exports ? require('./rail-icons') : root.railIcons;
 const treeApi = typeof module !== 'undefined' && module.exports ? require('./dock-tree') : root.dockTree;
 const effectsApi = typeof module !== 'undefined' && module.exports ? require('./dock-effects') : root.dockEffects;
 const { fit, hasTerm } = treeApi;
@@ -31,11 +32,86 @@ const isNumber = v => typeof v === 'number' && Number.isFinite(v);
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const isSize = v => isNumber(v) && v > 0;
 
+/**
+ * A name that doesn't fit its rail shrinks, never grows (11 px at most). Beside the terminal (data-dir v) each name must fit the
+ * rail's width; above or below it (h) the tabs sit in a row, so every name shrinks by the same factor until the row fits the rail's
+ * length (data-room is that width or length). Measured (a layout read) only when the buttons, the room, the direction or the UI
+ * font changed since the last time. Where the page has no layout (the test document) nothing measures and names stay at 11 px.
+ */
+function fitRailNames(el, doc, force) {
+  const style = doc.documentElement && doc.documentElement.style;
+  const font = style && typeof style.getPropertyValue === 'function' ? style.getPropertyValue('--font-ui') : '';
+  const room = Number(el.dataset.room) || 0;
+  const key = `${el.dataset.sig}|${el.dataset.dir}|${room}|${font}`;
+  if (!force && el.dataset.fit === key) return;
+  const tabs = [...el.children].map(btn => ({ btn, name: btn.querySelector('.rail-name') })).filter(t => t.name);
+  delete el.dataset.names;                                    // measure with the names showing
+  for (const t of tabs) t.name.style.fontSize = '';           // ...at the stylesheet's 11 px
+  // A rail that is not on screen (lean or focus mode, display: none) measures zeros. That is no measurement: store no key, so the
+  // fit runs when it shows (the page draws the dock again when lean or focus mode changes, and refits when a hidden tab becomes visible).
+  if (tabs.length && !tabs.some(t => t.name.scrollWidth > 0)) { delete el.dataset.fit; return; }
+  el.dataset.fit = key;
+  let sizes;
+  if (el.dataset.dir === 'h') {
+    const widths = tabs.map(t => t.name.scrollWidth);
+    const chrome = tabs.reduce((sum, t) => sum + (t.btn.scrollWidth - t.name.scrollWidth), 0);
+    const row = fitRow(widths, chrome, room);
+    if (row.iconsOnly) { el.dataset.names = 'off'; return; }  // the CSS hides the names; the row scrolls if the icons still do not fit
+    sizes = tabs.map(() => row.size);
+  } else {
+    sizes = tabs.map(t => fitNameSize(t.name.scrollWidth, room));
+  }
+  tabs.forEach((t, i) => { if (sizes[i] < NAME_MAX) t.name.style.fontSize = `${sizes[i]}px`; });
+}
+
+/**
+ * The UI font changed, or fonts finished loading: every rail's names are measured again (the page calls this; applyBoxes does the rest).
+ * `force` measures even when nothing in the key changed: a web font that finished loading changes widths without changing its name.
+ */
+function refitRails(doc, force) {
+  const dock = doc.getElementById('dock');
+  if (dock) for (const el of dock.querySelectorAll(':scope > .drail')) fitRailNames(el, doc, force === true);
+}
+
 /** A box at least twice as wide as tall lays its panel out as a row (every panel has both shapes from L1). */
 const shapeOf = rect => (rect.width >= 2 * rect.height ? 'wide' : 'tall');
 
 /** Portraits in a wide group: bounded by its height minus its tab bar and the card's name line. */
 const faceForWide = height => Math.max(28, Math.min(150, height - WIDE_FACE_CHROME));
+
+/** A rail tab's name is 11 px at most; one too wide for the tab shrinks in proportion until it fits on one line, with no floor. */
+const NAME_MAX = 11;
+/** The tab's side padding (2 px each), taken off the rail's inner width to get the room a name has. */
+const NAME_PAD = 4;
+/** The rail's own side borders (1 px each), and a pixel of slack because scrollWidth is a whole number. */
+const RAIL_BORDER = 2;
+const NAME_SLACK = 1;
+/** The room a name has inside a rail this wide, from the rail's rectangle: no layout read. 0 when there is none to speak of. */
+function nameRoom(railWidth) {
+  return isNumber(railWidth) ? Math.max(0, railWidth - RAIL_BORDER - NAME_PAD - NAME_SLACK) : 0;
+}
+/**
+ * One size for every name of a row of tabs: `names` are their widths at 11 px, `chrome` the rest of the row (padding, icons, gaps),
+ * `room` the row's length. 11 px when the row fits or something can't be measured; else the size that makes it fit exactly, never
+ * below 0.01 (no floor, but never zero or negative).
+ */
+function fitRowNameSize(names, chrome, room) {
+  const sum = names.reduce((a, b) => a + b, 0);
+  if (!(room > 0) || !names.every(n => n > 0 && Number.isFinite(n)) || !Number.isFinite(chrome) || sum + chrome <= room) return NAME_MAX;
+  if (room <= chrome) return 0.01;
+  return Math.max(0.01, Math.floor((NAME_MAX * (room - chrome) / sum) * 100) / 100);
+}
+/** A row whose names would be under this many px shows its tabs as icons only (Ricardo: "icons only when tight"). */
+const ICONS_ONLY_BELOW = 8;
+/** The row's verdict: the one name size, and whether the names give way to icons only. */
+function fitRow(names, chrome, room) {
+  const size = fitRowNameSize(names, chrome, room);
+  return { size, iconsOnly: size < ICONS_ONLY_BELOW };
+}
+function fitNameSize(natural, room) {
+  if (!(natural > room && room > 0 && Number.isFinite(natural))) return NAME_MAX;      // fits, or nothing measured (NaN, 0, hidden)
+  return Math.floor((NAME_MAX * room / natural) * 100) / 100;       // rounded down: the name is never a hair too wide
+}
 
 /**
  * @param layout   a normalized layout (app/dock-tree.js)
@@ -185,7 +261,7 @@ function dragSizes(px, min, i, delta) {
 function sizesAfterDrag(node, split, i, delta) {
   if (!isObject(node) || node.type !== 'split' || !isObject(split)) return null;
   // A kid drawn as a rail (collapsed in this window, or folded by a narrow one) is not the user's size to store: its
-  // 28 or 30 px is the rail's, and writing it would shrink the group in every other window (PR #159 Dexter 1).
+  // RAIL.side or RAIL.wide is the rail's, and writing it would shrink the group in every other window (PR #159 Dexter 1).
   const state = Array.isArray(split.state) && split.state.length === node.kids.length ? split.state : null;
   const open = k => state === null || state[k] === 'open';
   if (!Number.isInteger(i) || i < 1 || i >= node.kids.length) return null;
@@ -559,11 +635,18 @@ function applyBoxes(plan, doc) {
         btn.type = 'button';
         btn.dataset.module = t.id;
         btn.title = t.title;
-        btn.textContent = t.label;
+        const icon = mk('span', 'rail-icon-box');
+        icon.innerHTML = iconsApi.svgFor(t.id);               // constant vendored markup (app/rail-icons.js), never user data; aria-hidden inside
+        const name = mk('span', 'rail-name');
+        name.textContent = t.label;
+        btn.setAttribute('aria-label', t.label);              // the icon is decoration: the label alone names the button
+        btn.append(icon, name);
         btn.setAttribute('aria-haspopup', 'true');
         el.appendChild(btn);
       }
     }
+    el.dataset.room = String(b.dir === 'v' ? nameRoom(b.rect.width) : b.rect.width);      // from the rectangle the plan gave, not from the page
+    fitRailNames(el, doc);
     // Which button has its panel open over the terminal moves without rebuilding the buttons (focus stays on the one pressed).
     for (const btn of el.children) btn.setAttribute('aria-expanded', plan.peek && plan.peek.module === btn.dataset.module ? 'true' : 'false');
   }
@@ -636,7 +719,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

@@ -706,6 +706,7 @@ function openFileLink(event, p) {
   const r = linkClick.shouldOpen(event, `file:${p}`, lastLinkOpened, Date.now());
   lastLinkOpened = r.last;
   if (!r.open || !window.harness || typeof window.harness.openPath !== 'function') return;
+  usage('terminal:file-link');
   Promise.resolve(window.harness.openPath(p)).then((res) => {
     if (!res || res.ok !== true) flashLinkTarget(linkClick.fileRefusedText(p, res && res.why));
   }, () => flashLinkTarget(linkClick.fileRefusedText(p, null)));
@@ -1029,6 +1030,7 @@ function renderProjects(msg) {
 document.getElementById('projects-list').addEventListener('click', (e) => {
   const row = e.target.closest('[data-open]');
   if (!row || !ws || ws.readyState !== WebSocket.OPEN) return;
+  usage('projects:switch');
   try { ws.send(JSON.stringify({ type: 'open', path: row.dataset.open })); } catch {}
   // Said out loud: the new window is a separate process that takes a moment to
   // appear, and a click with no feedback reads as a dead button.
@@ -1196,6 +1198,11 @@ let layoutLoaded = false;        // the stored layout has been read: until then 
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
 let kbRefresh = () => {};        // redraws the keyboard move's zones after the dock was redrawn (set by initKeyboardMove)
 let shownModules = new Set();
+// Usage counters: a panel counts as shown only after the layout loaded and within a moment of a user gesture (a tab, the rail, the
+// Window menu), so a launch, a layout load or leaving lean mode doesn't rank the default panels as most used.
+let usageGestureAt = -Infinity;
+const usageGesture = () => { usageGestureAt = Date.now(); };
+const usageGestureLive = () => layoutLoaded && helloSeen && Date.now() - usageGestureAt < 1500;
 let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
 let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
 let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
@@ -1240,6 +1247,7 @@ const gamesPanel = gamesRoot ? window.gamesDisplay.mount({
   bridge: window.harness && window.harness.games ? window.harness.games : null,
   focusTerminal: () => term.focus(),
   terminalHasFocus: () => !!(term.element && term.element.contains(document.activeElement)),
+  onStart: (game) => usage('game:' + game + ':start'),
   raf: (fn) => requestAnimationFrame(fn),
   caf: (id) => cancelAnimationFrame(id),
   now: () => performance.now(),
@@ -1273,7 +1281,11 @@ const askRequester = window.askRequester.createRequester({
 });
 // The explainer's picture goes through the AGENTS' picker: the OS file dialog (avatar:pick), then the same `portrait set` the roster's pencil
 // sends, under the agent name the host keeps for it (host/ask-service.js EXPLAINER_AGENT). True when a file was chosen and sent.
-const ASK_AGENT = 'ask-explainer';
+// the ONE id the explainer's medals, counts and picture are kept under (app/ask-explainer-display.js; host/ask-service.js reads it from there too)
+const ASK_AGENT = window.askExplainerDisplay.AGENT;
+// The host's last `explainer` frame, cleaned (app/ask-explainer-display.js frameOf); null until the host has said (or from an older host).
+// Declared here, before the panel is mounted: mounting paints once, and the paint asks for it.
+let explainerFrame = null;
 // ONE way to choose a picture for an agent: the OS file dialog (avatar:pick), then the `portrait set` the host copies it in with. The roster's
 // pencil and the Ask panel's picker both go through it. True when a file was chosen and sent.
 function pickAndSetPortrait(agent, state) {
@@ -1290,18 +1302,38 @@ const askPanel = askRoot ? window.askDisplay.mount({
   root: askRoot,
   storage: (() => { try { return localStorage; } catch { return null; } })(),
   request: (op, body) => askRequester.request(op, body),
-  openAt: (file, line, endLine) => { repoBrowser.openAt(file, line, endLine).catch(() => { /* the reader says why in its own note */ }); },
+  // resolves to what the reader said (false: it did not open), so a place that wasn't opened isn't counted; the reader says why in its own note
+  openAt: (file, line, endLine) => repoBrowser.openAt(file, line, endLine).catch(() => false).then((r) => { if (r !== false) usage('ask:place-opened'); return r; }),
   getSelection: () => window.getSelection(),
   pickPortrait: askPickPortrait,
   // the roster's own switch (declared further down this file: before it is set, or if it is off, the face is a placeholder)
   imagesEnabled: () => { try { return agentImagesEnabled === true; } catch { return false; } },
+  // The explainer is a roster member (BACKLOG #33 gamification): its header wears the card's ring and badge, a 🏅 gives it a medal from
+  // here, and opening a place it found is counted by the host.
+  gamify: () => (explainerFrame ? { state: explainerFrame.state, detail: explainerFrame.detail } : null),
+  onMedal: (btn) => { const r = btn.getBoundingClientRect(); openMedalMenu(ASK_AGENT, r.left, r.bottom + 2); },
+  onOpenPlace: () => askRequester.notify('opened'),
+  onChange: () => explainerProfileChanged(),
 }) : null;
 let askWasShown = false;
+let askWasDocked = null;
+// Which windows have an Ask panel DOCKED anywhere in their layout (even behind another tab or on the rail; not hidden) decides whether the
+// explainer is on the roster's Active tab (host/ask-explainer.js; Ricardo's pick). Per socket on the host, so a reattach (hello) says it again.
+// Through the requester's gate: a host whose hello doesn't list `ask` would have the frame typed into the session (PR #178 Miguel B1).
+function sendAskPanel(open) { return askRequester.notify('panel', { open }); }
+// null while the layout isn't known: unknown is not "hidden"
+function askDockedNow() { try { return window.askExplainerDisplay.docked(placementLayout()); } catch { return null; } }
 function askView() {
+  if (!askPanel) return;
+  // on screen: the index status is read and polled only then
   const now = shownModules.has('ask');
-  if (!askPanel || now === askWasShown) return;
-  askWasShown = now;
-  if (now) askPanel.show(); else askPanel.hide();
+  if (now !== askWasShown) {
+    askWasShown = now;
+    if (now) askPanel.show(); else askPanel.hide();
+  }
+  // docked anywhere: only a CHANGE is told to the host
+  const docked = askDockedNow();
+  if (docked !== null && docked !== askWasDocked) { askWasDocked = docked; sendAskPanel(docked); }
 }
 // What's this? on the reader: bring the panel on screen (un-hide it if the person hid it), then ask.
 function askExplain(sel) {
@@ -1313,7 +1345,7 @@ function askExplain(sel) {
 
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
-  if (id === 'git') { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
+  if (id === 'git') { usage('git:opened'); requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
@@ -1321,7 +1353,7 @@ function onModuleShown(id) {
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
-  if (id === 'vault') renderVault();
+  if (id === 'vault') { usage('vault:opened'); renderVault(); }
 }
 
 // --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
@@ -1730,7 +1762,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
-  for (const id of fx.newlyShown) onModuleShown(id);
+  for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -1792,6 +1824,7 @@ function saveGlobalLayout(l) {
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
 function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
+  usageGesture();
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   railEvent({ type: 'gone' });              // any change of the placement closes a rail's popover
@@ -1849,7 +1882,7 @@ function railEvent(ev) {
   else if (railSt.pending !== was.pending) {
     clearTimeout(railOpenTimer);
     const m = railSt.pending;
-    railOpenTimer = setTimeout(() => { railOpenTimer = null; if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
+    railOpenTimer = setTimeout(() => { railOpenTimer = null; usageGesture(); if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
   }
   if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
   else if (!was.leaving) {
@@ -1876,6 +1909,7 @@ function togglePin(id, { justThisTab = false } = {}) {
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
 // panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
 function revealModule(id) {
+  usageGesture();
   const l = placementLayout();
   if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
   else if ((l.rail || []).includes(id)) {
@@ -1887,6 +1921,7 @@ function revealModule(id) {
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
+  usageGesture();
   railEvent({ type: 'click', module: id });
   renderLayout({ refit: false });
   const goes = window.dockTreeView.peekFocus(!!peek, byKeyboard);
@@ -1899,7 +1934,7 @@ function openPeek(id, byKeyboard) {
 }
 
 // A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
-function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
+function selectModule(id) { usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
 // Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
@@ -2647,6 +2682,7 @@ let focusOn = false;
 function applyFocusMode(on) {
   if (on === focusOn) return;
   focusOn = on;
+  if (on) usage('focus:on');
   document.body.classList.toggle('focus-mode', on);
   closeLayoutMenu();
   // Focus mode hides the vault too, so it is "left": revealed secrets go.
@@ -2658,6 +2694,7 @@ function applyFocusMode(on) {
   if (on) term.focus();
   paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
+  renderLayout();   // the rails are display:none while focus is on: draw the dock again so any rail that lost its fit then is fitted now
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
 if (focusBridge) focusBridge.onChange(applyFocusMode);
@@ -2919,7 +2956,22 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           dir: el.dataset.dir, rect: rectOf(el), modules: [...el.querySelectorAll('button')].map(b => b.dataset.module),
           // #85: where every tab is, and whether the rail can scroll to the ones it cannot fit (PR #168 Miguel Y4)
           tabRects: [...el.querySelectorAll('button')].map(b => rectOf(b)), id: el.dataset.rail || null,
-          scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY },
+          scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, overflowX: getComputedStyle(el).overflowX },
+          names: el.dataset.names || null,
+          tabTitles: [...el.querySelectorAll('button')].map(b => [b.title, b.getAttribute('aria-label')]),
+          // rail tabs as emoji + name: what each says, the name's computed size and whether it sits on one line inside its tab
+          faces: [...el.querySelectorAll('button')].map((b) => {
+            const icon = b.querySelector('.rail-icon'); const name = b.querySelector('.rail-name');
+            const cs = name ? getComputedStyle(name) : null;
+            const ics = icon ? getComputedStyle(icon) : null;
+            return {
+              module: b.dataset.module, label: b.getAttribute('aria-label'), name: name ? name.textContent : null,
+              fontPx: cs ? parseFloat(cs.fontSize) : null, writingMode: cs ? cs.writingMode : null, nameRect: name ? rectOf(name) : null,
+              nameScrollWidth: name ? name.scrollWidth : null, nameClientWidth: name ? name.clientWidth : null,
+              iconRect: icon ? rectOf(icon) : null, iconStroke: ics ? ics.stroke : null, iconStrokeWidth: ics ? parseFloat(ics.strokeWidth) : null,
+              iconHidden: icon ? icon.getAttribute('aria-hidden') : null, buttonColor: getComputedStyle(b).color,
+            };
+          }),
         }));
         const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
           path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
@@ -2995,6 +3047,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
       case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(settledLayout(), a.id) : DTm.dock(settledLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
       case 'select': selectModule(a.id); break;
+      case 'focusMode': applyFocusMode(a.on === true); break;      // probe: the real focus-mode path (the rails are display:none, then drawn again)
+      case 'leanClass': document.body.classList.toggle('lean', a.on === true); renderLayout(); break;      // probe: lean's display:none on the rails, and its resume draw
+      case 'uiFont': takeFontSettings({ ...(fontSettings || {}), uiFont: a.name }); break;      // probe: a different Interface font, not saved
       case 'foldAll': case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
       // A tab dragged to `to` ({ x, y } relative to #dock) by synthetic pointer events: down on the tab, two moves,
@@ -3848,6 +3903,58 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           const save = byAct('settings-save');
           if (save) save.click();
         }
+        else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
+        return JSON.stringify({ ok: true });
+      }
+      // backlog #33 gamification (verify/probe-ask-gamify.js): read the explainer's roster card, its panel header, its log page and the give menu,
+      // and operate them as a pointer would
+      case 'explainerState': {
+        const card = agentsEl.querySelector('.agent[data-agent="' + ASK_AGENT + '"]');
+        const root = document.getElementById('ask-root');
+        const avatar = root ? root.querySelector('.ask-avatar') : null;
+        const badgeOf = (el) => { const b = el && el.querySelector('.state-badge'); return b ? { detail: b.dataset.badge || null, icon: b.textContent } : null; };
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.askExplainerDisplay === 'object',
+          frame: explainerFrame, tab: activeRosterTab, namesMode: rosterNamesMode,
+          order: [...agentsEl.querySelectorAll('.agent')].map(x => x.dataset.agent),
+          card: card ? {
+            state: card.dataset.state, detail: card.dataset.detail, text: card.textContent,
+            name: (card.querySelector('.name-big') || {}).textContent || null, alt: (card.querySelector('.name-alt') || {}).textContent || null,
+            tag: (card.querySelector('.agent-tag') || {}).textContent || null,
+            words: (card.querySelector('.state') || {}).textContent || null,
+            counts: (card.querySelector('.explainer-counts') || {}).textContent || null,
+            unknownCounts: !!card.querySelector('.career-unknown'),
+            chip: (card.querySelector('.medal-chip') || {}).textContent || null,
+            medalBtn: !!card.querySelector('[data-medal-open]'), badge: badgeOf(card), hasFace: !!card.querySelector('.face .face-media'), faceSrc: (card.querySelector('.face .face-media') || {}).src || null,
+            ringShadow: getComputedStyle(card.querySelector('.face')).boxShadow,
+          } : null,
+          header: avatar ? { state: avatar.dataset.state, detail: avatar.dataset.detail, label: avatar.getAttribute('aria-label'), badge: badgeOf(avatar), medalBtn: !!root.querySelector('[data-act="medal"]'),
+            ringShadow: getComputedStyle(avatar).boxShadow } : null,
+          medalCount: (medalList || []).filter(e => e.agent === ASK_AGENT).reduce((n, e) => n + e.medals.length, 0),
+          log: { open: agentLog.open, agent: agentLog.agent, text: agentLogEl ? agentLogEl.textContent : null, shelf: medalShelfEl ? medalShelfEl.textContent : null },
+          menu: medalMenuEl ? { hidden: medalMenuEl.hidden, text: medalMenuEl.textContent } : null,
+        });
+      }
+      case 'explainerDo': {
+        const card = () => agentsEl.querySelector('.agent[data-agent="' + ASK_AGENT + '"]');
+        const root = document.getElementById('ask-root');
+        if (a.op === 'tab') setRosterTab(String(a.tab));
+        else if (a.op === 'names') applyRosterNames(String(a.mode));
+        else if (a.op === 'search') { rosterQuery = String(a.q); renderRoster(); }
+        else if (a.op === 'fakeAgent') { roster.set(String(a.agent), { agent: String(a.agent), state: String(a.state), detail: String(a.state), portrait: { kind: 'text', tier: 'text', initials: 'X', hue: 10 } }); renderRoster(); }
+        else if (a.op === 'clickCard') { const c = card(); if (!c) return JSON.stringify({ ok: false, error: 'no card' }); c.querySelector('.meta').click(); }
+        else if (a.op === 'cardMedal') { const c = card(); const b = c && c.querySelector('[data-medal-open]'); if (!b) return JSON.stringify({ ok: false, error: 'no medal button' }); b.click(); }
+        else if (a.op === 'headerMedal') { const b = root.querySelector('[data-act="medal"]'); if (!b) return JSON.stringify({ ok: false, error: 'no header medal' }); b.click(); }
+        else if (a.op === 'rightClick') { const c = card(); if (!c) return JSON.stringify({ ok: false, error: 'no card' }); c.querySelector('.meta').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 40 })); }
+        else if (a.op === 'giveMedal') {
+          const k = medalMenuEl.querySelector('[data-medal-kind="' + String(a.kind) + '"]'); if (!k) return JSON.stringify({ ok: false, error: 'no menu' });
+          k.click();
+          const input = medalMenuEl.querySelector('.medal-reason-input'); input.value = String(a.reason || ''); input.dispatchEvent(new Event('input', { bubbles: true }));
+          medalMenuEl.querySelector('[data-medal-give]').click();
+        }
+        else if (a.op === 'removeMedal') { const b = medalShelfEl.querySelector('[data-medal-remove]'); if (!b) return JSON.stringify({ ok: false, error: 'no medal on the shelf' }); b.click(); }
+        else if (a.op === 'closeLog') { const b = agentLogEl.querySelector('[data-agent-log-close]'); if (b) b.click(); }
         else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
         return JSON.stringify({ ok: true });
       }
@@ -5016,6 +5123,57 @@ for (const b of document.querySelectorAll('#roster-subtabs button[data-roster-ta
   b.addEventListener('click', () => setRosterTab(b.dataset.rosterTab));
 }
 
+// --- the Ask explainer on the roster (BACKLOG #33 gamification) -------------------------------------------------------------
+// Decisions are in app/ask-explainer-display.js; this is state and drawing. The host's last `explainer` frame (null: it hasn't said, or
+// it is an older host) and the person's profile (the naming card) decide whether it is on the roster, on which tab, and what its card says.
+const explainerProfile = () => (askPanel ? askPanel.profile() : null);
+function explainerPlacement() { return window.askExplainerDisplay.tabFor(explainerFrame, explainerProfile()); }
+// its name is a label only: medals and counts are keyed by ASK_AGENT
+function explainerLabel() { const p = explainerProfile(); return p && p.name ? p.name : ASK_AGENT; }
+function explainerCardHtml(inactive) {
+  const X = window.askExplainerDisplay;
+  const profile = explainerProfile();
+  const f = explainerFrame;
+  const look = inactive ? { state: 'inactive', detail: 'inactive', words: 'inactive' } : X.look(f.state, f.detail);
+  // the agent's picture the person picked on the naming card: the panel's own list of them first (the host sent exactly these), else the roster's
+  const offered = (((askPanel && askPanel.state().host) || {}).portraits || {}).suggestions;
+  const portrait = X.portraitFor(profile, f, (agent) => {
+    const given = Array.isArray(offered) ? offered.find(s => s && s.agent === agent) : null;
+    if (given && given.portrait) return given.portrait;
+    const live = roster.get(agent);
+    if (live && live.portrait) return live.portrait;
+    const known = rosterIndexEntry(agent);
+    return known && known.portrait ? known.portrait : null;
+  });
+  return `<div class="agent" data-state="${escapeHtml(look.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${ASK_AGENT}" data-explainer="true">` +
+    window.medalsDisplay.cardButtonHtml(ASK_AGENT, explainerLabel()) +
+    `<div class="face" data-tier="${escapeHtml((portrait && portrait.tier) || 'text')}">${faceHtml(portrait)}</div>` +
+    (inactive ? '' : window.agentStateDisplay.badgeHtml(f.state, f.detail)) +
+    `<div class="meta">` + agentNameHtml(X.ROLE, X.entry(profile), X.tagHtml()) +
+    `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, ASK_AGENT))}</div>` +
+    X.countsHtml(f.counts) +
+    `</div></div>`;
+}
+function explainerLogPage() {
+  return window.askExplainerDisplay.logPageHtml({ name: explainerLabel(), counts: explainerFrame ? explainerFrame.counts : null });
+}
+function applyExplainer(raw) {
+  explainerFrame = window.askExplainerDisplay.frameOf(raw);
+  renderRoster();
+  if (askPanel) askPanel.repaint();
+  if (agentLog.open && agentLog.agent === ASK_AGENT) { agentLog = { ...agentLog, page: explainerLogPage() }; renderAgentLogPanel(); }
+}
+// The naming card / settings changed its name or picture: the card follows (the panel itself repaints on its own).
+let explainerProfileSig = null;
+function explainerProfileChanged() {
+  const p = explainerProfile();
+  const sig = p ? JSON.stringify([p.named, p.name, p.portrait]) : null;
+  if (sig === explainerProfileSig) return;
+  explainerProfileSig = sig;
+  if (explainerFrame) renderRoster();
+  if (agentLog.open && agentLog.agent === ASK_AGENT) { agentLog = { ...agentLog, page: explainerLogPage() }; renderAgentLogPanel(); }
+}
+
 function inactiveRowHtml(row) {
   const entry = rosterIndexEntry(row.agent);
   // The scan is complete AND clean before a total stops being a lower bound --
@@ -5133,20 +5291,28 @@ function renderRoster() {
   if (leanOn) { paintLeanFaces(); return; }
   const showBtnEl = document.getElementById('roster-show-hidden');
   showBtnEl.hidden = true;   // Active tab only; the Active branch below un-hides it when n > 0
-  const { inactive } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
+  const { inactive: inactiveAll } = splitActiveInactive(wholeRosterEntries().map(a => a.agent), [...roster.keys()]);
+  const inactive = inactiveAll.filter(a => a !== ASK_AGENT);      // the explainer is placed by its own rules below, never twice
+  const exPlace = explainerPlacement();
+  const exProfile = explainerProfile();
+  const exRow = exPlace === 'active' ? window.askExplainerDisplay.row(explainerFrame, exProfile) : null;
+  const exMatches = () => window.askExplainerDisplay.matches(exProfile, rosterQuery);
 
   const searching = rosterQuery.trim() !== '';
   const noMatch = () => paintAgents(
     `<div class="empty">${escapeHtml(window.rosterSearchDisplay.emptyMessage(activeRosterTab, rosterQuery))}</div>`);
 
   if (activeRosterTab === 'inactive') {
-    if (inactive.length === 0) {
+    if (inactive.length === 0 && exPlace !== 'inactive') {
       paintAgents('<div class="empty">No other agents known yet.</div>');
       return;
     }
     const found = inactive.filter(rosterMatches);
-    if (found.length === 0) { noMatch(); return; }
-    const rows = sortRosterRows(found.map((agent) => {
+    const exHere = exPlace === 'inactive' && exMatches();
+    if (found.length === 0 && !exHere) { noMatch(); return; }
+    // the explainer has no lifetime tokens, so it sorts with the agents that have none
+    const rows = sortRosterRows([...found, ...(exHere ? [ASK_AGENT] : [])].map((agent) => {
+      if (agent === ASK_AGENT) return { agent, tokens: null, unreadable: false };
       const entry = rosterIndexEntry(agent);
       return {
         agent,
@@ -5156,11 +5322,11 @@ function renderRoster() {
         unreadable: !!(entry && entry.unreadable),
       };
     }));
-    paintAgents(rows.map(inactiveRowHtml).join(''));
+    paintAgents(rows.map(r => (r.agent === ASK_AGENT ? explainerCardHtml(true) : inactiveRowHtml(r))).join(''));
     return;
   }
 
-  if (roster.size === 0) {
+  if (roster.size === 0 && !exRow) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
     paintAgents(`<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`);
@@ -5169,7 +5335,7 @@ function renderRoster() {
   // Active agents first, then alphabetical, so the thing you care about is at
   // the top without the list reshuffling on every tick.
   // A card waiting on you floats to the top, then base state, then name (app/agent-state-display.js sortRows).
-  const rows = window.agentStateDisplay.sortRows([...roster.values()]);
+  const rows = window.agentStateDisplay.sortRows([...roster.values(), ...(exRow ? [exRow] : [])]);
   const counts = instanceCounts(latestParty);
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
@@ -5179,7 +5345,7 @@ function renderRoster() {
   const nHidden = hiddenCount(rows, hiddenAgentNames);
   if (nHidden === 0) showHiddenAgents = false;   // nothing left to reveal
   const visible = visibleRows(rows, hiddenAgentNames, showHiddenAgents);
-  const shown = searching ? visible.filter((r) => rosterMatches(r.agent)) : visible;
+  const shown = searching ? visible.filter((r) => (r.explainer ? exMatches() : rosterMatches(r.agent))) : visible;
   // A hidden agent is still on this tab: say so when it matches rather than claim there is no match (PR #141 F2).
   const hiddenMatches = searching && !showHiddenAgents
     ? rows.filter((r) => hiddenAgentNames.includes(r.agent) && rosterMatches(r.agent)) : [];
@@ -5201,6 +5367,7 @@ function renderRoster() {
   }
 
   paintAgents(shown.map(r => {
+    if (r.explainer) return explainerCardHtml(false);
     const entry = rosterIndexEntry(r.agent);
     // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
     // `data-detail`, drawn as a corner badge and as words under the name.
@@ -5267,13 +5434,19 @@ function sendAgentLog(action, agent) {
 }
 
 function openAgentLog(agent) {
+  // The explainer has no transcript: its page is its counts, and the medal shelf under it (BACKLOG #33 gamification).
+  if (agent === ASK_AGENT) {
+    agentLog = { ...window.agentLogDisplay.emptyLog(), open: true, agent, page: explainerLogPage() };
+    renderAgentLogPanel();
+    return;
+  }
   agentLog = window.agentLogDisplay.openLog(agent, agentLogShowUnknown);
   renderAgentLogPanel();
   sendAgentLog('open', agent);
 }
 
 function closeAgentLog() {
-  if (agentLog.open) sendAgentLog('close', agentLog.agent);
+  if (agentLog.open && agentLog.agent !== ASK_AGENT) sendAgentLog('close', agentLog.agent);
   agentLog = window.agentLogDisplay.closeLog();
   renderAgentLogPanel();
 }
@@ -5293,6 +5466,8 @@ if (agentLogEl) {
 // --- medals and the speech bubbles (BACKLOG #80) ---------------------------------------------------
 // Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
 // medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
+// Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
+function usage(key) { sendJson({ type: 'usage', key }); }
 function sendJson(obj) {
   try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
 }
@@ -5346,7 +5521,7 @@ let medalRemoveTimer = null;
 function paintMedalShelf() {
   if (!medalShelfEl) return;
   const html = agentLog.open
-    ? window.medalsDisplay.shelfHtml(agentLog.agent, medalList === null ? null : (medalList.find((e) => e.agent === agentLog.agent) || {}).medals, medalRemovePending)
+    ? window.medalsDisplay.shelfHtml(agentLog.agent, medalList === null ? null : (medalList.find((e) => e.agent === agentLog.agent) || {}).medals, medalRemovePending, agentLog.agent === ASK_AGENT ? explainerLabel() : agentLog.agent)
     : '';
   if (medalShelfEl.dataset.sig === html) return;
   medalShelfEl.dataset.sig = html;
@@ -5377,7 +5552,7 @@ let medalMenu = null;     // { agent, kind, reason } while open
 function paintMedalMenu() {
   if (!medalMenuEl) return;
   if (!medalMenu) { medalMenuEl.hidden = true; medalMenuEl.innerHTML = ''; return; }
-  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.kind);
+  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.kind, medalMenu.agent === ASK_AGENT ? explainerLabel() : medalMenu.agent);
   medalMenuEl.hidden = false;
   const input = medalMenuEl.querySelector('.medal-reason-input');
   if (input) { input.value = medalMenu.reason; input.focus(); }
@@ -5423,7 +5598,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && closeMedalMenu()) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 agentsEl.addEventListener('contextmenu', (e) => {
-  const card = e.target.closest && e.target.closest('.agent:not([data-state="inactive"])');
+  const card = e.target.closest && e.target.closest('.agent:not([data-state="inactive"]), .agent[data-explainer]');
   if (!card || !card.dataset.agent) return;
   e.preventDefault();
   openMedalMenu(card.dataset.agent, e.clientX, e.clientY);
@@ -5957,12 +6132,15 @@ function armQuotaTick() {
   quotaTickTimer = setTimeout(quotaTick, quotaTickDelayMs(lastQuotaPayload, Date.now()));
 }
 
+let quotaCountdownCounted = false;
 function renderQuota(quota) {
   if (quota !== undefined) lastQuotaPayload = quota;
   armQuotaTick();            // from the payload just taken, so a reset that came nearer is not waited out at the old pace
   const nowMs = Date.now();
   const cs = quotaResetWatcher.see(lastQuotaPayload, nowMs);
   const showToast = quotaToastGate.step({ toast: cs.toast, usedUp: cs.state === 'usedUp', visible: quotaHeaderVisible() });
+  if (cs.state === 'usedUp' && !quotaCountdownCounted) usage('quota:countdown-shown');       // the "Claude back in ..." countdown, once per used-up window
+  quotaCountdownCounted = cs.state === 'usedUp';
   if (showToast) {
     backToastUntil = nowMs + BACK_TOAST_MS;
     clearTimeout(backToastTimer);
@@ -6379,6 +6557,7 @@ function applyLean(payload) {
   leanNight = s.night;
   if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
   leanOn = on;
+  if (on) usage('lean:on');
   document.body.classList.toggle('lean', on);
   closeLayoutMenu();
   const { failed } = leanSuspender.set(on);
@@ -7023,7 +7202,7 @@ function wandAct(action) {
   if (action.kind === 'press') {
     const plan = wandDisplay.clickPlan(wandState, action.id, { cols: term.cols });
     if (!plan) return;
-    if (plan.kind === 'type') { wandType(plan); return; }
+    if (plan.kind === 'type') { usage('wand:click'); wandType(plan); return; }
     if (plan.kind === 'edit') wandFocusEditor = true;
     wandState = plan.kind === 'missing' || plan.kind === 'toolong' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
   } else if (action.kind === 'toggle-edit') {
@@ -7303,6 +7482,7 @@ async function sampleBackgroundFrame() {
 // refusal is shown where it belongs even with another request in flight.
 function sendStyle(section, payload) {
   try { ws.send(JSON.stringify({ type: 'style', ask: section, ...payload })); } catch { /* not attached */ }
+  usage('style:changed');
 }
 
 // A refusal means every preview on screen is uncommitted: repaint what the
@@ -7899,6 +8079,7 @@ function applyFonts() {
   const ui = fontSettings && fontsDisplay.sanitizeFamily(fontSettings.uiFont);
   if (ui) root.setProperty('--font-ui', fontsDisplay.stackFor(ui, 'ui'));
   else root.removeProperty('--font-ui');
+  window.dockTreeView.refitRails(document);        // the rail names are measured in the UI font, which may just have changed
   if (term.options.fontFamily === eff.fontFamily && term.options.fontSize === eff.fontSize) return;
   term.options.fontFamily = eff.fontFamily;
   term.options.fontSize = eff.fontSize;
@@ -7906,6 +8087,14 @@ function applyFonts() {
   clearTimeout(fontFitTimer);
   fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
+
+// A tab that was in the background misses a focus-mode or lean push, and its rails measured zero while hidden: fit them when it shows.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') window.dockTreeView.refitRails(document); });
+
+// A web font that finishes loading changes the names' widths too: fit the rails once the page's fonts are ready.
+// (The saved font arrives asynchronously through takeFontSettings -> applyFonts, which refits too; a web font that loads later fires loadingdone.)
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => window.dockTreeView.refitRails(document, true), () => {});
+if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', () => window.dockTreeView.refitRails(document, true));
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);
@@ -8089,6 +8278,8 @@ function handleControl(msg) {
     // the Ask panel asks nothing of a host that doesn't list `ask` (an older host would type the frame into the session)
     askRequester.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (askPanel && shownModules.has('ask')) askPanel.show();
+    askWasDocked = null;       // a (re)attached host knows nothing of this window: say it again
+    if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
@@ -8157,6 +8348,7 @@ function handleControl(msg) {
     hiddenAgentNames = Array.isArray(msg.hidden) ? msg.hidden : [];
     // BACKLOG #80: the medals, and the bubbles' switch (these two don't repaint: renderRoster below does).
     medalList = cleanMedalList(msg.medals);
+    explainerFrame = window.askExplainerDisplay.frameOf(msg.explainer);      // before the first paint; null from an older host
     bubblesEnabled = msg.bubbles && typeof msg.bubbles.enabled === 'boolean' ? msg.bubbles.enabled : null;
     paintBubblesToggle();
     tellHostBubblesVisible();
@@ -8208,6 +8400,10 @@ function handleControl(msg) {
     // Another claude-custom asked to be taken to this session (Go to that
     // session): the shell selects this tab and brings its window forward.
     if (window.harness && window.harness.raise) window.harness.raise();
+    return;
+  }
+  if (msg.type === 'explainer') {
+    applyExplainer(msg);
     return;
   }
   if (msg.type === 'medals') {
@@ -8736,6 +8932,7 @@ dropZone.addEventListener('drop', (e) => {
     .filter(x => x.path);
 
   if (!entries.length) return;
+  usage('terminal:drop');
   // Through the confirm, like typing and pasting: a dropped file types its path into the prompt, and that is
   // the person's own act in a worktree an agent may be writing in (PR #96 Miguel S5).
   userInput(JSON.stringify({ type: 'drop', entries }));

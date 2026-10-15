@@ -33,6 +33,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { createMedals } = require('./medals');
+const { createUsageCounters } = require('./usage-counters');
 const { validGive, validRemove } = require('../app/medals-display');
 const { createBubbles, createBubbleSettings } = require('./bubbles');
 const { createBubbleGate } = require('./bubble-gate');
@@ -110,7 +111,9 @@ const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { createRepoService } = require('./repo-service');
 // "Ask the repo" (BACKLOG #33): the panel's questions and explanations, answered from this worktree's index (host/ask-service.js).
-const { createAskService, createRepoFactory } = require('./ask-service');
+const { createAskService, createRepoFactory, EXPLAINER_AGENT } = require('./ask-service');
+const { createExplainer: createAskExplainer } = require('./ask-explainer');
+const { createAskCounts } = require('./ask-counts');
 const { createIndex: createAskIndex } = require('./ask-index');
 const { createClaudeAnswerer } = require('./ask-claude');
 const { createModels: createAskModels } = require('./ask-models');
@@ -432,6 +435,7 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
+const usageCounters = createUsageCounters({ store, log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
@@ -462,7 +466,21 @@ const repoService = createRepoService({
 const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
 const askIndex = createAskIndex({ dir: seams.askIndexDir || path.join(HARNESS_DIR, 'state', 'ask-index'), embed: (t) => askOllama.embed(t), embedModel: askOllama.embedModel });
 const askClaude = createClaudeAnswerer({ claudeBin: CLAUDE_BIN, anchor: CWD });
+// The explainer joins the roster (BACKLOG #33 gamification): its live state (host/ask-explainer.js, told by the service what happened) and its
+// two counts (host/ask-counts.js, install-wide like the medals). Every window of this host gets them as an `explainer` frame; the page puts it
+// on the roster only once the person has named it.
+const askExplainer = createAskExplainer();
+const askCounts = createAskCounts({ store });
+const explainerFrame = () => {
+  const s = askExplainer.snapshot();
+  return { type: 'explainer', state: s.state, detail: s.detail, panels: s.panels, counts: askCounts.read(), portrait: describe(EXPLAINER_AGENT, s.state, s.detail).portrait };
+};
+const broadcastExplainer = () => broadcastControl(explainerFrame());
+askExplainer.on('change', broadcastExplainer);
+// The counts are install-wide and another tab's host may raise them: tell OUR windows (polled from the 1 s clock, like the medals).
+const askCountsWatch = createChangeWatch({ read: () => askCounts.read(), onChange: broadcastExplainer });
 const askService = createAskService({
+  log: (...a) => console.log(...a), explainer: askExplainer, counts: askCounts, onCounts: () => { askCountsWatch.note(askCounts.read()); broadcastExplainer(); },
   cwd: CWD, index: askIndex, ollama: askOllama, claude: askClaude,
   models: createAskModels({ localModel: askOllama.answerModel, readRecord: seams.askRecord ? () => fs.readFileSync(seams.askRecord, 'utf8') : undefined }),
   repoFor: createRepoFactory({ index: askIndex, ollama: askOllama, claude: askClaude }),
@@ -488,7 +506,7 @@ watchLoadout({
 const canvasControl = createCanvasControl({
   stateDir: path.join(HARNESS_DIR, 'state'),
   getSessionId: () => sessionId,
-  emit: (frame) => broadcastControl(frame),
+  emit: (frame) => { if (frame && frame.type === 'canvas' && frame.changed === true) usageCounters.bump('canvas:render'); broadcastControl(frame); },
   watch: watchDir,
   log: (line) => console.log(line),
   pointerFile: canvasMcp ? CANVAS_POINTER_FILE : null,        // no tools offered, no pointer to keep (PR #125 Miguel S5)
@@ -1003,6 +1021,7 @@ function handlePortraitUpload(msg) {
   });
   if (!out.reply.ok) console.log('[host] portrait upload refused:', out.reply.agent, out.reply.state, '-', out.reply.reason);
   broadcastControl({ type: 'portrait', ...out.reply });
+  if (out.reply.ok && out.reply.agent === EXPLAINER_AGENT) broadcastExplainer();      // the explainer's card wears its new picture
   // Re-describe rather than assuming the tier that now applies -- describe()
   // re-reads the real filesystem, so a stale idea of "the upload obviously
   // won" can never disagree with what portraitFor actually resolves.
@@ -1295,6 +1314,7 @@ function handleMedalMessage(msg) {
   } else {
     out = { ok: false, reason: 'invalid', medals: medals.all() };
   }
+  if (out.ok === true && msg.action === 'give') usageCounters.bump('medal:given');
   if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
   broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
   medalsWatch.note(out.medals);
@@ -1367,10 +1387,15 @@ const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(ms
 
 // Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
 // calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.
+let nightWasOn = false;
+function noteNight(payload) {     // usage counters: a night counts once, when it begins
+  if (payload && !nightWasOn) usageCounters.bump('bedtime:start');
+  nightWasOn = Boolean(payload);
+}
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => broadcastControl({ type: 'bedtime', bedtime: payload }),
+  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
@@ -1952,7 +1977,8 @@ mood.on('change', ({ agent, state, detail }) => {
 let installWideTicks = 0;
 const moodTimer = setInterval(() => {
   mood.tick();
-  if (++installWideTicks % 3 === 0) { medalsWatch.tick(); bubblesWatch.tick(); }      // another tab's medals / switch, every 3 s
+  askExplainer.tick();       // the explainer's flash and idle clocks (host/ask-explainer.js)
+  if (++installWideTicks % 3 === 0) { medalsWatch.tick(); bubblesWatch.tick(); askCountsWatch.tick(); }      // another tab's medals / switch / counts, every 3 s
   processes.sweep();
   occupancy.tick();          // an idle teammate's claim, once it has been quiet for long enough
   night.tick();              // a night that went overdue: a verdict of time, pushed when the clock makes it
@@ -2313,6 +2339,7 @@ wss.on('connection', (ws, req) => {
     // window never starts with a flag on an agent that is awake.
     hidden: hiddenAtAttach(),
     medals: medals.all(),
+    explainer: explainerFrame(),
     bubbles: { enabled: bubbleSettings.enabled() },
     globalPortrait: globalPortraitInfo(),
     running: processes.list(),
@@ -2690,6 +2717,10 @@ wss.on('connection', (ws, req) => {
       handleMedalMessage(msg);
       return;
     }
+    if (msg.type === 'usage') {
+      usageCounters.bump(msg.key);       // junk keys and a file it can't read are refused inside; never an answer, never an error
+      return;
+    }
     if (msg.type === 'bubbles') {
       handleBubblesMessage(msg, ws);
       return;
@@ -2739,6 +2770,11 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (msg.type === 'ask') {
+      // Which windows have an Ask panel open (per socket, so one window can't cancel another): the explainer is Active while any does.
+      // Not answered: it asks for nothing.
+      if (msg.op === 'panel') { askExplainer.setPanel(ws, msg.open === true); return; }
+      if (msg.op === 'ask') usageCounters.bump('ask:question');
+      else if (msg.op === 'explain') usageCounters.bump('ask:explain');
       // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a failure is { ok: false, reason, ... }.
       askService.handle(msg).then(reply => {
         try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
@@ -2888,6 +2924,7 @@ wss.on('connection', (ws, req) => {
     clients.delete(ws);
     leanGate.drop(ws);
     bubbles.dropViewer(ws);      // BACKLOG #80: a window that left can't show a bubble
+    askExplainer.dropViewer(ws); // ... nor keep the Ask explainer Active
     // A WINDOW leaving (not a one-shot control client) starts stop-if-idle's
     // grace: it may be reloading, and its session is in use.
     if (leftAsWindow(ws.openedAt, Date.now())) lastWindowLeftAt = Date.now();

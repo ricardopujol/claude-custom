@@ -561,8 +561,9 @@ test('L1 #1: a tab view that loads while focus mode is on hears it too', () => {
 });
 
 test('L1 S7: the window keeps room for the terminal and two side zones', () => {
-  const at = MAIN.indexOf('win = new BrowserWindow({');
-  const opts = MAIN.slice(at, MAIN.indexOf('});', at));
+  const at = MAIN.indexOf('win = new BrowserWindow(forProbe({');
+  assert.ok(at !== -1);
+  const opts = MAIN.slice(at, MAIN.indexOf('}));', at));
   assert.match(opts, /minWidth: 640,/);
   assert.match(opts, /minHeight: 480,/);
 });

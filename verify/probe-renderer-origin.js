@@ -45,13 +45,14 @@ wss.on('listening', () => {
 
   fs.writeFileSync(path.join(tmp, 'main.js'), `
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require(${JSON.stringify(path.join(__dirname, '..', 'host', 'probe-window'))});
 app.on('ready', () => {
-  const win = new BrowserWindow({
+  const win = new BrowserWindow(probeWindowOptions({
     show: false,
     // The SAME webPreferences app/main.js uses, because these decide the
     // renderer's origin serialisation.
     webPreferences: { contextIsolation: true, nodeIntegration: false },
-  });
+  }));
   win.loadFile(${JSON.stringify(path.join(tmp, 'page.html'))});
   setTimeout(() => app.quit(), 4000);
 });

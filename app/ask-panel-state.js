@@ -202,8 +202,12 @@ function examplesOf(host) {
   return list.length ? list : [...GENERIC_EXAMPLES];
 }
 
+// Replies that are a verdict about the INPUT or about readiness, not a failure of the explainer: the page answers each with words and no way
+// out, and none has its cause in a model, Ollama or a sign-in. The explainer's roster state (host/ask-explainer.js) does not frown at them.
+const INPUT_VERDICTS = Object.freeze(['no-matches', 'empty-question', 'bad-selection', 'explainer-off', 'index-building']);
+
 const API = {
-  HISTORY_MAX, create, begin, setPlaces, setStage, finish, select, current, history, trail, viewOf, stagesOf, noticeOf,
+  INPUT_VERDICTS, HISTORY_MAX, create, begin, setPlaces, setStage, finish, select, current, history, trail, viewOf, stagesOf, noticeOf,
   indexLine, statusLine, canExplain, examplesOf, ACT,
 };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

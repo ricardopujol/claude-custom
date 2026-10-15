@@ -25,7 +25,7 @@ test('every canvas message is a KNOWN control type, or it is typed into the pty 
 
 test('the host builds the control on the state folder, the live session id and the shared watcher', () => {
   assert.match(HOST, /const \{ createCanvasControl \} = require\('\.\/canvas-control'\);/);
-  assert.match(HOST, /const canvasControl = createCanvasControl\(\{\s*stateDir: path\.join\(HARNESS_DIR, 'state'\),\s*getSessionId: \(\) => sessionId,\s*emit: \(frame\) => broadcastControl\(frame\),\s*watch: watchDir,/);
+  assert.match(HOST, /const canvasControl = createCanvasControl\(\{\s*stateDir: path\.join\(HARNESS_DIR, 'state'\),\s*getSessionId: \(\) => sessionId,\s*emit: \(frame\) => \{[^\n]*usageCounters\.bump\('canvas:render'\); broadcastControl\(frame\); \},\s*watch: watchDir,/);
 });
 
 test("every attaching window is told the panel's state in its hello", () => {

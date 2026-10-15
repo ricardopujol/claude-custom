@@ -62,6 +62,7 @@ const tabMarks = require('./tab-marks');
 const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
+const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
 const { sendControl } = require('../host/host-client');
@@ -132,6 +133,7 @@ const { createIndexingBridge } = require('./indexing-bridge');
 // A probe seam (host/probe-seams.js, uiStateDir) moves these records into the probe's own folder; unset in real use.
 const UI_STATE_DIR = readSeams(process.env).uiStateDir || path.join(__dirname, '..', '.harness', 'state');
 const uiStore = createStore({ dir: UI_STATE_DIR });
+const usageCounters = createUsageCounters({ store: uiStore });       // invisible feature-use counts (host/usage-counters.js); same file the hosts write
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
@@ -176,6 +178,8 @@ const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
 // handleProbeCommand refuses everything when it's missing or short.
 const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
 const PROBE_LINE_MAX = 64 * 1024;
+// A probe's window stays off the desktop and unfocused (host/probe-window.js); a person's window is untouched.
+const forProbe = (opts) => (PROBE_PORT ? require('../host/probe-window').probeWindowOptions(opts) : opts);
 
 // A window another window covers is "occluded", and Chromium then stops
 // painting it: capturePage answers an EMPTY image. That is the intermittent
@@ -467,7 +471,7 @@ function createWindow() {
   ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
-  win = new BrowserWindow({
+  win = new BrowserWindow(forProbe({
     width: 1200,
     height: 800,
     // Frameless: no OS title bar; the strip drags the window and draws its own
@@ -486,7 +490,7 @@ function createWindow() {
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload-strip.js'),
     },
-  });
+  }));
   win.loadFile(path.join(__dirname, 'tab-strip.html'), { query: chrome.framelessWindow ? { frameless: '1' } : {} });
   registerShortcuts(win.webContents);
 
@@ -1858,6 +1862,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   tabShell = createShell({
+    usage: (key) => { try { usageCounters.bump(key); } catch { /* counting never breaks a tab */ } },
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,
     cwd: LAUNCH_CWD,

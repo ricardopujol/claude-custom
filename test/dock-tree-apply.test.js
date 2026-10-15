@@ -104,7 +104,7 @@ function matcher(sel) {
 // #dock holds #termwrap and #dock-overlay; a .panel for every module waits in #panel-store.
 function makeDoc() {
   const html = new El('html');
-  html.style = { props: {}, setProperty(k, v) { this.props[k] = v; } };
+  html.style = { props: {}, setProperty(k, v) { this.props[k] = v; }, getPropertyValue(k) { return this.props[k] || ''; } };
   const body = new El('body');
   html.appendChild(body);
   const mk = (tag, id) => { const e = new El(tag); e.id = id; body.appendChild(e); return e; };
@@ -550,7 +550,7 @@ test('D4: a rail\'s popover is one element in the floats layer, holding the pane
   assert.strictEqual(el.dataset.module, 'vault');
   assert.strictEqual(el.getAttribute('role'), 'group');
   assert.strictEqual(el.getAttribute('aria-label'), `${TABS.find(t => t.id === 'vault').label} panel, opened from its rail`, 'named for a screen reader, by the panel it holds now');
-  assert.deepStrictEqual(el.style.left, '692px');
+  assert.deepStrictEqual(el.style.left, '668px');
   assert.deepStrictEqual([el.style.top, el.style.width, el.style.height], ['0px', '280px', '600px']);
   assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'), 'the vault panel was moved in, not rebuilt');
   assert.ok(w.panels.vault.classes.has('on'));
@@ -753,4 +753,194 @@ test('Y6: pinning the panel while its popover slides out hands the panel to its 
   timers[0].fn();
   assert.strictEqual(w.panels.git.parentNode, groupEl(w.dock, 'right').querySelector('.zone-panels'));
   assert.strictEqual(peekEl(w), undefined);
+});
+
+// --- rail tabs: icon + name ---------------------------------------------------------------------------------
+
+const railOf = w => w.dock.children.find(e => e.classes.has('drail'));
+const RAILED = { collapsed: { right: ['agents'] } };
+
+test('a rail button is an icon over a name, named for a screen reader by the label alone', () => {
+  const R = require('../app/rail-icons');
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS), RAILED), w.doc);
+  for (const b of railOf(w).children) {
+    const tab = TABS.find(t => t.id === b.dataset.module);
+    const [icon, name] = b.children;
+    assert.ok(icon.classes.has('rail-icon-box') && name.classes.has('rail-name'));
+    assert.strictEqual(icon.innerHTML, R.svgFor(tab.id));
+    assert.ok(icon.innerHTML.includes('aria-hidden="true"'));
+    assert.strictEqual(name.textContent, tab.label);
+    assert.strictEqual(b.getAttribute('aria-label'), tab.label);
+  }
+});
+
+// The fake document has no layout: a name's width is set by the test, and every read of it is counted.
+function measuring(w, { widthOf = name => (name.textContent.length > 6 ? 92 : 20) } = {}) {
+  const real = w.doc.createElement;
+  const log = { reads: 0 };
+  w.doc.createElement = (tag) => {
+    const e = real(tag);
+    // A button is its name plus 41 px of its own (10 + 10 padding, a 16 px icon, a 5 px gap).
+    Object.defineProperty(e, 'scrollWidth', { get() {
+      if (this.tagName === 'BUTTON') return widthOf(this.children[1]) + 41;
+      if (!this.classes.has('rail-name')) return 0;
+      log.reads += 1;
+      return widthOf(this);
+    } });
+    return e;
+  };
+  return log;
+}
+const sizeOf = (rail, id) => rail.children.find(b => b.dataset.module === id).querySelector('.rail-name').style.fontSize;
+
+test('a rail beside the terminal shrinks a name that is too wide for it; one that fits keeps 11 px', () => {
+  const w = makeDoc();
+  measuring(w);
+  V.applyBoxes(planD4(T.defaultLayout(IDS), RAILED), w.doc);
+  const rail = railOf(w);
+  assert.strictEqual(rail.dataset.dir, 'v');
+  assert.strictEqual(sizeOf(rail, 'git'), '', 'Git fits: the stylesheet\'s 11 px');
+  assert.strictEqual(sizeOf(rail, 'bugvault'), `${V.fitNameSize(92, V.nameRoom(52))}px`, 'Bug vault is shrunk to the room, which comes from the rail\'s rect');
+});
+
+test('the fit is measured once: the same buttons, width and font draw again without another read', () => {
+  const w = makeDoc();
+  const log = measuring(w);
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, RAILED), w.doc);
+  const first = log.reads;
+  assert.ok(first > 0);
+  V.applyBoxes(planD4(l, RAILED), w.doc);
+  V.applyBoxes(planD4(l, RAILED, { module: 'vault' }), w.doc);
+  assert.strictEqual(log.reads, first, 'no new layout read');
+});
+
+test('a rail of another width is fitted again', () => {
+  const w = makeDoc();
+  const log = measuring(w);
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, RAILED), w.doc);
+  const rail = railOf(w);
+  const before = log.reads;
+  const wider = planD4(l, RAILED);
+  const box = wider.boxes.find(b => b.kind === 'rail');
+  box.rect = { ...box.rect, width: 92 + 7 };           // room enough for the longest name
+  V.applyBoxes(wider, w.doc);
+  assert.ok(log.reads > before, 'measured again');
+  assert.strictEqual(sizeOf(rail, 'bugvault'), '', 'and now it fits at 11 px');
+});
+
+const footLayout = tabs => T.normalize({ version: 2, floats: [], rail: [], hidden: IDS.filter(i => !tabs.includes(i)), seat: {}, root: { type: 'split', dir: 'col', sizes: [0, 160], kids: [{ type: 'term' }, { type: 'group', id: 'foot', tabs }] } }, IDS);
+
+test('a rail above or below the terminal whose tabs fit keeps every name at 11 px', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 40 });
+  V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 400, height: 600 }), w.doc);
+  const rail = railOf(w);
+  assert.strictEqual(rail.dataset.dir, 'h');
+  assert.ok(rail.children.every(b => b.querySelector('.rail-name').style.fontSize === ''));
+});
+
+test('a rail above or below the terminal whose tabs do not fit shrinks all its names by the same factor, until they do', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 80 });                 // 3 tabs of 80 + 41 = 363 in 300
+  V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 300, height: 600 }), w.doc);
+  const rail = railOf(w);
+  const want = `${V.fitRowNameSize([80, 80, 80], 123, 300)}px`;
+  assert.ok(parseFloat(want) < 11 && parseFloat(want) > 0);
+  assert.deepStrictEqual(rail.children.map(b => b.querySelector('.rail-name').style.fontSize), [want, want, want]);
+  assert.ok(240 * (parseFloat(want) / 11) + 123 <= 300 + 1e-9, 'and the row fits');
+});
+
+test('a vertical rail is not affected by the row rule, and a row refits when its length changes', () => {
+  const w = makeDoc();
+  const log = measuring(w, { widthOf: () => 80 });
+  const l = footLayout(['agents', 'vault', 'fog']);
+  const sel = { collapsed: { foot: ['agents', 'vault', 'fog'] } };
+  V.applyBoxes(planD4(l, sel, null, { width: 300, height: 600 }), w.doc);
+  const rail = railOf(w);
+  const small = rail.children[0].querySelector('.rail-name').style.fontSize;
+  const reads = log.reads;
+  V.applyBoxes(planD4(l, sel, null, { width: 300, height: 600 }), w.doc);
+  assert.strictEqual(log.reads, reads, 'same length: no new read');
+  V.applyBoxes(planD4(l, sel, null, { width: 600, height: 600 }), w.doc);
+  assert.ok(log.reads > reads);
+  assert.notStrictEqual(rail.children[0].querySelector('.rail-name').style.fontSize, small);
+  assert.strictEqual(rail.children[0].querySelector('.rail-name').style.fontSize, '', 'room enough again: 11 px');
+});
+
+test('a change of the UI font is fitted again: the font is part of the key, and refitRails re-measures the page\'s rails', () => {
+  const w = makeDoc();
+  let wide = 92;
+  const log = measuring(w, { widthOf: name => (name.textContent === 'Bug vault' ? wide : 20) });
+  V.applyBoxes(planD4(T.defaultLayout(IDS), RAILED), w.doc);
+  const rail = railOf(w);
+  const before = log.reads;
+  assert.notStrictEqual(sizeOf(rail, 'bugvault'), '');
+  w.root.style.props['--font-ui'] = '"Narrow Sans", sans-serif';
+  wide = 30;                                            // the new font is narrower
+  V.refitRails(w.doc);
+  assert.ok(log.reads > before, 'measured again for the new font');
+  assert.strictEqual(sizeOf(rail, 'bugvault'), '', 'and Bug vault is back at 11 px');
+  const settled = log.reads;
+  V.refitRails(w.doc);
+  assert.strictEqual(log.reads, settled, 'nothing changed: nothing measured');
+});
+
+test('a rail measured while it is not on screen is not fitted, and is fitted when it shows (Dexter r2 F1)', () => {
+  const w = makeDoc();
+  let shown = false;
+  const log = measuring(w, { widthOf: name => (shown ? (name.textContent === 'Bug vault' ? 92 : 20) : 0) });
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(planD4(l, RAILED), w.doc);                 // lean mode: every scrollWidth is 0
+  const rail = railOf(w);
+  assert.strictEqual(sizeOf(rail, 'bugvault'), '');
+  assert.strictEqual(rail.dataset.fit, undefined, 'nothing measured: no key stored');
+  shown = true;
+  V.applyBoxes(planD4(l, RAILED), w.doc);                 // lean off: the same plan
+  assert.ok(sizeOf(rail, 'bugvault') !== '' && parseFloat(sizeOf(rail, 'bugvault')) < 11, 'now Bug vault is fitted');
+  assert.ok(log.reads > 0);
+});
+
+test('the font hooks force a measure: refitRails(doc, true) measures even when the key has not changed', () => {
+  const w = makeDoc();
+  const log = measuring(w);
+  V.applyBoxes(planD4(T.defaultLayout(IDS), RAILED), w.doc);
+  const before = log.reads;
+  V.refitRails(w.doc);
+  assert.strictEqual(log.reads, before, 'unforced: the key matches');
+  V.refitRails(w.doc, true);
+  assert.ok(log.reads > before, 'forced: measured again');
+});
+
+test('a row that would need names under 8 px shows icons only: names hidden, the label kept in the aria-label and the tooltip', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 60 });                  // 4 tabs: 164 of chrome + 240 of names in 180
+  const tabs = ['agents', 'vault', 'fog', 'bugvault'];
+  V.applyBoxes(planD4(footLayout(tabs), { collapsed: { foot: tabs } }, null, { width: 180, height: 600 }), w.doc);
+  const rail = railOf(w);
+  assert.strictEqual(rail.dataset.names, 'off');
+  assert.ok(rail.children.every(b => b.querySelector('.rail-name').style.fontSize === '' && b.getAttribute('aria-label') && b.title));
+});
+
+test('a row whose names stay at 8 px or more keeps them, and leaves icons-only when there is room again', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 60 });
+  const tabs = ['agents', 'vault', 'fog', 'bugvault'];
+  const l = footLayout(tabs);
+  const sel = { collapsed: { foot: tabs } };
+  V.applyBoxes(planD4(l, sel, null, { width: 180, height: 600 }), w.doc);
+  const rail = railOf(w);
+  assert.strictEqual(rail.dataset.names, 'off');
+  V.applyBoxes(planD4(l, sel, null, { width: 330, height: 600 }), w.doc);       // 164 + 240 = 404 needs 404: 330 gives 11*166/240 = 7.6: still off
+  assert.strictEqual(rail.dataset.names, 'off');
+  V.applyBoxes(planD4(l, sel, null, { width: 360, height: 600 }), w.doc);       // 11 * 196 / 240 = 8.98: names are back, shrunk
+  assert.strictEqual(rail.dataset.names, undefined);
+  assert.ok(parseFloat(rail.children[0].querySelector('.rail-name').style.fontSize) >= 8);
+});
+
+test('refitRails on a page with no rail does nothing', () => {
+  const w = makeDoc();
+  assert.doesNotThrow(() => V.refitRails(w.doc));
 });

@@ -34,6 +34,7 @@ const mainSource = () => `
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path'); const fs = require('fs');
 const ROOT = ${JSON.stringify(ROOT)};
+const { probeWindowOptions } = require(path.join(ROOT, 'host', 'probe-window'));
 const { registerAvatarHandlers } = require(path.join(ROOT, 'app', 'avatar-bridge'));
 const { createStore } = require(path.join(ROOT, 'host', 'store'));
 app.setPath('userData', ${JSON.stringify(path.join(tmp, 'userData'))});
@@ -43,8 +44,8 @@ const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 1100, height: 760, show: true, webPreferences: {
-    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } });
+  const win = new BrowserWindow(probeWindowOptions({ width: 1100, height: 760, show: true, webPreferences: {
+    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } }));
   registerAvatarHandlers({ ipcMain, store: createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} }), win, dialog });
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: { port: '1', cwd: ${JSON.stringify(tmp)}, project: 'probe', token: 'probe-token' } });
   win.webContents.on('console-message', (_e, level, message, line, src) => { if (level >= 2) console.log('[page]', message, src + ':' + line); });

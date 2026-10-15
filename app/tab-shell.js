@@ -202,6 +202,8 @@ const INTEGRATION = ['develop', 'main', 'master'];
 const errorText = (err) => (err && err.message) || String(err);
 
 function createShell(deps) {
+  // Usage counters are fire and forget: a throwing counter never aborts a tab's setup or removal.
+  const countUse = (key) => { try { if (typeof deps.usage === 'function') deps.usage(key); } catch { /* counting never breaks a tab */ } };
   const {
     mode = 'tabs', container = null, cwd = null, launchedFrom = null,
     git, hosts, ops, views, ui, log = () => {},
@@ -212,6 +214,7 @@ function createShell(deps) {
     // Worktree occupancy (#44 + #47): `claims()` -> the live claims. Optional; a reader that fails draws none.
     occupancy = null,
     now = Date.now,
+    // Usage counters (audit move 2): `deps.usage(key)`, fire and forget, optional (see countUse below).
     // How long Type /merged waits for the target page's answer; injected so a test doesn't wait.
     sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
     // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
@@ -637,6 +640,7 @@ function createShell(deps) {
         const what = r && r.ok === true ? (r.already ? 'already removed' : 'removed')
           : (r && r.kept === true ? `kept: ${r.reason}` : `failed: ${r && r.error}`);
         log(`[shell] remove ${keyOf(p)}: ${what}`);
+        if (r && r.ok === true && !r.already) countUse('tab:merged-close');
         const before = model();
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
@@ -904,6 +908,7 @@ function createShell(deps) {
       return { ok: false, error };
     }
 
+    countUse('tab:new-worktree');
     const key = keyOf(made.path);
     const withSetup = scriptsAvailable().setup;
     // Held from here, so the poll that lists it can't start its session early.
@@ -1464,6 +1469,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
   // BACKLOG #85: the dock rail's hover and the Pin button
   'hover', 'pinClick', 'menuCheck', 'railScroll',
+  // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
+  'uiFont', 'leanClass', 'focusMode',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
@@ -1483,7 +1490,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #41: verify/probe-games.js reads the Games panel and operates it
   'gamesState', 'gamesDo',
   // backlog #33: verify/probe-ask-panel.js reads the Ask panel and operates it
-  'askState', 'askDo',
+  'askState', 'askDo', 'explainerState', 'explainerDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
   'canvasState', 'canvasClick', 'canvasOverlay', 'canvasMcpBox',
   // backlog #34: verify/probe-video-background.js; #88 + #92: the font and plain-colour actions of verify/probe-fonts-colour.js
