@@ -1308,16 +1308,24 @@ const askPanel = askRoot ? window.askDisplay.mount({
   onChange: () => explainerProfileChanged(),
 }) : null;
 let askWasShown = false;
-// Which windows have an Ask panel on screen decides whether the explainer is on the roster's Active tab (host/ask-explainer.js); per
-// socket on the host, so a reattach (hello) says it again.
+let askWasDocked = null;
+// Which windows have an Ask panel DOCKED anywhere in their layout (even behind another tab or on the rail; not hidden) decides whether the
+// explainer is on the roster's Active tab (host/ask-explainer.js; Ricardo's pick). Per socket on the host, so a reattach (hello) says it again.
 // Through the requester's gate: a host whose hello doesn't list `ask` would have the frame typed into the session (PR #178 Miguel B1).
 function sendAskPanel(open) { return askRequester.notify('panel', { open }); }
+// null while the layout isn't known: unknown is not "hidden"
+function askDockedNow() { try { return window.askExplainerDisplay.docked(placementLayout()); } catch { return null; } }
 function askView() {
+  if (!askPanel) return;
+  // on screen: the index status is read and polled only then
   const now = shownModules.has('ask');
-  if (!askPanel || now === askWasShown) return;
-  askWasShown = now;
-  if (now) askPanel.show(); else askPanel.hide();
-  sendAskPanel(now);
+  if (now !== askWasShown) {
+    askWasShown = now;
+    if (now) askPanel.show(); else askPanel.hide();
+  }
+  // docked anywhere: only a CHANGE is told to the host
+  const docked = askDockedNow();
+  if (docked !== null && docked !== askWasDocked) { askWasDocked = docked; sendAskPanel(docked); }
 }
 // What's this? on the reader: bring the panel on screen (un-hide it if the person hid it), then ask.
 function askExplain(sel) {
@@ -8222,7 +8230,9 @@ function handleControl(msg) {
     repoBrowser.setControls(msg.controls);
     // the Ask panel asks nothing of a host that doesn't list `ask` (an older host would type the frame into the session)
     askRequester.setControls(Array.isArray(msg.controls) ? msg.controls : []);
-    if (askPanel && shownModules.has('ask')) { askPanel.show(); sendAskPanel(true); }
+    if (askPanel && shownModules.has('ask')) askPanel.show();
+    askWasDocked = null;       // a (re)attached host knows nothing of this window: say it again
+    if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);

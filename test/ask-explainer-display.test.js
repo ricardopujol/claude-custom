@@ -159,3 +159,14 @@ test('resting: the host\'s frame may say it, it is drawn awake with no ring or b
   assert.deepStrictEqual(agentStateDisplay.sortRows(rows).map(r => r.agent), ['working', 'stressed', 'happy', 'resting', 'sleeping']);
   assert.strictEqual(X.tabFor(X.frameOf(frame({ state: 'resting', detail: 'resting', panels: 1 })), NAMED), 'active');
 });
+
+// --- Ricardo's pick: Active = "docked anywhere" -------------------------------------------------------------------------------------
+
+test('docked: an Ask panel is in the layout (a group, a float, or the rail) unless the layout has it hidden; no layout is unknown, never "hidden"', () => {
+  assert.strictEqual(X.docked({ hidden: [] }), true);
+  assert.strictEqual(X.docked({ hidden: ['vault', 'ask'] }), false);
+  assert.strictEqual(X.docked({ hidden: ['vault'], rail: ['ask'] }), true, 'on the rail still counts');
+  assert.strictEqual(X.docked({}), true, 'a layout that lists nothing hidden');
+  for (const none of [null, undefined, 7, 'x', []]) assert.strictEqual(X.docked(none), null, String(none));
+  assert.strictEqual(X.docked({ hidden: 'ask' }), null, 'a malformed list is unknown');
+});

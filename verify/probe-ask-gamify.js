@@ -19,7 +19,8 @@
  *      the counts and the shelf with reasons, a medal comes off in two clicks
  *   E  a rename keeps the medals and the counts (they are keyed by the fixed id)
  *   F  Ollama stopped: stressed with the warning; the next good answer is not needed to see it, the panel's header wears the same
- *   G  the panel hidden: the card moves to Inactive (counts and medal kept); shown again: back on Active
+ *   G0 the Ask panel docked behind another tab (not on screen): still on Active (Ricardo: Active = docked anywhere)
+ *   G  the panel hidden from the layout: the card moves to Inactive (counts and medal kept); shown again: back on Active
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN) and NO step asks a Claude model, so nothing bills. ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; the project is a temp git repo; registry, portraits, uploads, user data,
@@ -209,7 +210,7 @@ async function main() {
   // A -----------------------------------------------------------------------------------------------------------------------
   const a0 = await ex();
   check('A: the shared-scope script loaded (askExplainerDisplay is defined in the real window)', a0.scope === true);
-  check('A: the host already sends the explainer\'s frame (asleep, no panel open, counts 0 and 0)', !!a0.frame && a0.frame.state === 'sleeping' && a0.frame.panels === 0 && a0.frame.counts && a0.frame.counts.questions === 0 && a0.frame.counts.places === 0, JSON.stringify(a0.frame));
+  check('A: the host already sends the explainer\'s frame (asleep, the Ask panel docked by default, counts 0 and 0)', !!a0.frame && a0.frame.state === 'sleeping' && a0.frame.panels === 1 && a0.frame.counts && a0.frame.counts.questions === 0 && a0.frame.counts.places === 0, JSON.stringify(a0.frame));
   check('A: not on the roster until it is named (neither tab)', a0.card === null && !a0.order.includes('ask-explainer'));
   await exDo({ op: 'tab', tab: 'inactive' });
   check('A: ... nor on Inactive', (await ex()).card === null);
@@ -322,10 +323,29 @@ async function main() {
   check('F: a failed answer is not counted as a question answered', !!f1 && /^1 question/.test(f1.card.counts || ''), f1 && f1.card.counts);
   await shot('gamify-F-stressed.png');
 
+  // G0 ----------------------------------------------------------------------------------------------------------------------
+  // Active = docked ANYWHERE (Ricardo): put the Ask tab back in the Agents group and look at the Agents tab, so the Ask panel is docked but
+  // not on screen. The explainer stays Active.
+  const lay = await view(app, 'layout');
+  const findGroup = (n) => {
+    if (!n || typeof n !== 'object') return null;
+    if (Array.isArray(n.tabs) && n.tabs.includes('agents')) return n.id;
+    for (const v of Object.values(n)) { const r = findGroup(v); if (r) return r; }
+    return null;
+  };
+  const gid = findGroup(lay && lay.layout && lay.layout.root);
+  check('G0: the Agents group was found in the layout', typeof gid === 'string', JSON.stringify(gid));
+  await view(app, 'dock', { id: 'ask', target: { cell: gid, side: 'center' } });
+  await view(app, 'select', { id: 'agents' });
+  const shownNow = await st();
+  check('G0: the Ask panel is docked behind another tab, not on screen', shownNow.shown === false, JSON.stringify(shownNow.shown));
+  const g0 = await until(s => s.frame && s.frame.panels === 1 && s.card !== null, 8000);
+  check('G0: it is still on Active: docked anywhere counts', !!g0, JSON.stringify(g0 && g0.frame));
+
   // G -----------------------------------------------------------------------------------------------------------------------
   await view(app, 'hide', { id: 'ask' });
   const g1 = await until(s => s.frame && s.frame.panels === 0 && s.card === null, 8000);
-  check('G: with no Ask panel open, it leaves the Active tab', !!g1, JSON.stringify(g1 && g1.frame));
+  check('G: with the Ask panel hidden from the layout (docked nowhere), it leaves the Active tab', !!g1, JSON.stringify(g1 && g1.frame));
   await exDo({ op: 'tab', tab: 'inactive' });
   const g2 = await until(s => s.card !== null, 5000);
   check('G: ... and is on Inactive, with its counts and its medal', !!g2 && g2.card.state === 'inactive' && /1 question/.test(g2.card.counts || '') && /🏅 1/.test(g2.card.chip || ''), g2 && JSON.stringify([g2.card.state, g2.card.counts, g2.card.chip]));

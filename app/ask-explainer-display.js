@@ -48,6 +48,17 @@ function tabFor(frame, profile) {
   return frame.panels > 0 ? 'active' : 'inactive';
 }
 
+/**
+ * Whether an Ask panel is docked in this window's layout (Ricardo: Active = "docked anywhere", even behind another tab or on the rail; only a
+ * hidden or closed panel is not). null when the layout isn't known: unknown is not "hidden".
+ */
+// 'ask' is the dock module's id, not the explainer's agent id
+function docked(layout) {
+  if (!isObj(layout)) return null;
+  if (layout.hidden === undefined) return true;
+  return Array.isArray(layout.hidden) ? !layout.hidden.includes('ask')   : null;
+}
+
 /** The Active tab's row: shaped like an agent's, so agentStateDisplay.sortRows orders it with them. */
 function row(frame, profile) {
   if (tabFor(frame, profile) !== 'active') return null;
@@ -103,7 +114,7 @@ function logPageHtml({ name, counts } = {}) {
   return `${head}<div class="alog-body">${body}</div>`;
 }
 
-const API = { AGENT, ROLE, TAG, WORDS, frameOf, tabFor, row, look, countsText, countsHtml, tagHtml, entry, matches, portraitFor, logPageHtml };
+const API = { AGENT, ROLE, TAG, WORDS, frameOf, tabFor, docked, row, look, countsText, countsHtml, tagHtml, entry, matches, portraitFor, logPageHtml };
 if (node) module.exports = API;
 else root.askExplainerDisplay = API;
 

@@ -38,7 +38,7 @@ test('the panel is told whether it is on screen after every layout, and only a C
   const at = JS.indexOf('function askView() {');
   const body = JS.slice(at, JS.indexOf('\n}', at));
   assert.match(body, /const now = shownModules\.has\('ask'\);/);
-  assert.match(body, /if \(!askPanel \|\| now === askWasShown\) return;/);
+  assert.match(body, /if \(now !== askWasShown\) \{\n\s+askWasShown = now;/);
 });
 
 test('What\'s this? on the reader brings the panel on screen (un-hiding it) before asking, and the reader is told how to ask', () => {
@@ -117,12 +117,16 @@ test('the frame\'s variable exists before the panel is mounted: mounting paints 
   assert.strictEqual((JS.match(/let explainerFrame\b/g) || []).length, 1);
 });
 
-test('the host is told when this window\'s Ask panel is on screen, on every change and again on a reattach', () => {
+test('the host is told when this window\'s Ask panel DOCKED anywhere (not hidden), on every change and again on a reattach', () => {
   assert.match(JS, /function sendAskPanel\(open\) \{ return askRequester\.notify\('panel', \{ open \}\); \}/);
   assert.doesNotMatch(JS, /sendJson\(\{ type: 'ask'/, 'no raw send of an ask frame: an older host would type it into the session (PR #178 Miguel B1)');
   const at = JS.indexOf('function askView() {');
-  assert.match(JS.slice(at, JS.indexOf('\n}', at)), /sendAskPanel\(now\);/);
-  assert.match(JS, /if \(askPanel && shownModules\.has\('ask'\)\) \{ askPanel\.show\(\); sendAskPanel\(true\); \}/);
+  const body = JS.slice(at, JS.indexOf('\n}', at));
+  assert.match(body, /const docked = askDockedNow\(\);/);
+  assert.match(body, /if \(docked !== null && docked !== askWasDocked\) \{ askWasDocked = docked; sendAskPanel\(docked\); \}/);
+  assert.doesNotMatch(body, /sendAskPanel\(now\)/, 'on screen is for the index polling only; Active follows docked (Ricardo)');
+  assert.match(JS, /function askDockedNow\(\) \{ try \{ return window\.askExplainerDisplay\.docked\(placementLayout\(\)\); \} catch \{ return null; \} \}/);
+  assert.match(JS, /askWasDocked = null;[^\n]*\n\s+if \(askPanel\) askView\(\);/, 'a reattach says it again');
 });
 
 test('opening a place from the panel tells the host (it counts the place and the explainer is happy), and its 🏅 opens the same give menu as the card, keyed by the fixed id', () => {
