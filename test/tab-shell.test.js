@@ -2313,6 +2313,7 @@ test('the probe may switch the page Interface font by name (#85 follow-up), to s
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
   assert.ok(VIEW_PROBE_ACTIONS.has('uiFont'));
   assert.ok(VIEW_PROBE_ACTIONS.has('leanClass'));
+  assert.ok(VIEW_PROBE_ACTIONS.has('focusMode'));
 });
 
 test('the probe may drive the floating panels\' actions, by name only (dockable panels D2)', () => {

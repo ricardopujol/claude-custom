@@ -48,7 +48,7 @@ function fitRailNames(el, doc, force) {
   delete el.dataset.names;                                    // measure with the names showing
   for (const t of tabs) t.name.style.fontSize = '';           // ...at the stylesheet's 11 px
   // A rail that is not on screen (lean or focus mode, display: none) measures zeros. That is no measurement: store no key, so the
-  // fit runs when it shows (applyBoxes draws again on every lean/focus change).
+  // fit runs when it shows (the page draws the dock again when lean or focus mode changes, and refits when a hidden tab becomes visible).
   if (tabs.length && !tabs.some(t => t.name.scrollWidth > 0)) { delete el.dataset.fit; return; }
   el.dataset.fit = key;
   let sizes;

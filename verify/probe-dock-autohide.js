@@ -642,6 +642,15 @@ async function main() {
     const gr = shown.rails.find(r => r.modules.includes('canvas'));
     check('12: lean off: the rail that folded while hidden is fitted: every name inside its room (scrollWidth <= 46)', !!gr && gr.faces.every(f => f.nameScrollWidth > 0 && f.nameScrollWidth <= 46), JSON.stringify(gr && gr.faces.map(f => [f.module, f.nameScrollWidth, f.fontPx])));
     await command(fourth.app, { cmd: 'screenshot', file: path.join(shots, '12c-lean-off-fitted.png') });
+    // Focus mode (Dexter r3): the rails are hidden while a font changes, and are fitted when focus goes off. (A background tab can't be
+    // emulated here: this is the page's own focus path, in the one window.)
+    await view(fourth.app, 'focusMode', { on: true });
+    await view(fourth.app, 'uiFont', { name: 'Verdana' });
+    await view(fourth.app, 'focusMode', { on: false });
+    await sleep(600);
+    const afterFocus = await viewState(fourth.app);
+    const gr2 = afterFocus.rails.find(r => r.modules.includes('canvas'));
+    check('12: focus on, a wider font picked, focus off: the rail is fitted (every name scrollWidth 1..46)', !!gr2 && gr2.faces.every(f => f.nameScrollWidth > 0 && f.nameScrollWidth <= 46), JSON.stringify(gr2 && gr2.faces.map(f => [f.module, f.nameScrollWidth, f.fontPx])));
     await quitApp(fourth.app);
   }
 }

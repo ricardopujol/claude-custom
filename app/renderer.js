@@ -2658,6 +2658,7 @@ function applyFocusMode(on) {
   if (on) term.focus();
   paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
+  renderLayout();   // the rails are display:none while focus is on: draw the dock again so any rail that lost its fit then is fitted now
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
 if (focusBridge) focusBridge.onChange(applyFocusMode);
@@ -3010,6 +3011,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
       case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(settledLayout(), a.id) : DTm.dock(settledLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
       case 'select': selectModule(a.id); break;
+      case 'focusMode': applyFocusMode(a.on === true); break;      // probe: the real focus-mode path (the rails are display:none, then drawn again)
       case 'leanClass': document.body.classList.toggle('lean', a.on === true); renderLayout(); break;      // probe: lean's display:none on the rails, and its resume draw
       case 'uiFont': takeFontSettings({ ...(fontSettings || {}), uiFont: a.name }); break;      // probe: a different Interface font, not saved
       case 'foldAll': case 'toggleAll': toggleAllZones(); break;
@@ -7924,6 +7926,9 @@ function applyFonts() {
   clearTimeout(fontFitTimer);
   fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
+
+// A tab that was in the background misses a focus-mode or lean push, and its rails measured zero while hidden: fit them when it shows.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') window.dockTreeView.refitRails(document); });
 
 // A web font that finishes loading changes the names' widths too: fit the rails once the page's fonts are ready.
 // (The saved font arrives asynchronously through takeFontSettings -> applyFonts, which refits too; a web font that loads later fires loadingdone.)
