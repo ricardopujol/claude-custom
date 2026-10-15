@@ -19,7 +19,8 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
     acquire: (o) => {
       events.push('acquire:' + o.label);
       if (acquireThrows) throw acquireThrows;
-      return { state, release: () => { events.push('release'); return state === 'held'; } };
+      let done = false;
+      return { state, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
     },
     spawn: (cmd, args, opts) => { events.push('spawn'); spawned = { cmd, args, opts }; return child; },
     killFn: (pid) => events.push('kill:' + pid),
@@ -119,4 +120,39 @@ test('no command given: usage, non-zero, no lock taken', async () => {
   const r = rig();
   assert.strictEqual(await main([], r.deps), 2);
   assert.ok(!r.events.some(e => e.startsWith('acquire')));
+});
+
+// Dexter 2 / 5, Miguel S3 / S5
+test('SIGHUP (a closed console): the tree is killed, THEN the slot is released, both before the child\'s exit event; result 129', async () => {
+  const r = rig();
+  const p = main(['node'], r.deps);
+  r.proc.emit('SIGHUP');
+  assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'kill:4242', 'release']);
+  r.child.emit('exit', null, 'SIGTERM');
+  assert.strictEqual(await p, 129);
+  assert.strictEqual(r.events.filter(e => e === 'release').length, 1);
+});
+
+test('SIGINT and SIGTERM also kill first and release at once', async () => {
+  for (const sig of ['SIGINT', 'SIGTERM']) {
+    const r = rig();
+    const p = main(['node'], r.deps);
+    r.proc.emit(sig);
+    assert.deepStrictEqual(plain(r).slice(-2), ['kill:4242', 'release'], sig);
+    r.child.emit('exit', null, null);
+    await p;
+  }
+});
+
+test('the process exiting under it (no child exit seen) still releases', async () => {
+  const r = rig();
+  main(['node'], r.deps);
+  r.proc.emit('exit', 1);
+  assert.ok(r.events.includes('release'));
+});
+
+test('a busy lock says what to do next and the command never runs', async () => {
+  const r = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub. Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1') });
+  assert.strictEqual(await main(['node'], r.deps), 1);
+  assert.ok(r.events.some(e => e.startsWith('log:') && /HEAVY_LOCK_HELD=1/.test(e)));
 });

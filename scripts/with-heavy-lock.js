@@ -5,7 +5,7 @@
  *   node scripts/with-heavy-lock.js node --test --test-concurrency=2 "test/**\/*.test.js"      (this is `npm test`)
  *
  * Takes the lock (host/heavy-lock.js; waits its turn behind other lanes), runs the command with HEAVY_LOCK_HELD=1 in its
- * environment, and releases on every way out: the command ending (any code), failing to start, SIGINT/SIGTERM (the
+ * environment, and releases on every way out: the command ending (any code), failing to start, SIGINT/SIGTERM/SIGHUP (the
  * command's tree is killed by its pid first), or this process exiting. If the lock stays busy the command does not run:
  * it says who holds it and exits 1. If the lock script isn't on this machine it warns once and runs anyway.
  *
@@ -28,10 +28,11 @@ async function main(argv, {
   let signalled = 0;
   let child = null;
   const hooks = [];
-  for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+  for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
     const h = () => {
       signalled = code;
       if (child) { try { killFn(child.pid); } catch { /* gone */ } }   // kill-ok(held-handle): the command this process spawned, handle held
+      lock.release();   // now, not after the child's exit event: a closed console gives the process about 10 s (kill first, then free the slot)
     };
     proc.on(sig, h);
     hooks.push([sig, h]);
@@ -49,7 +50,7 @@ async function main(argv, {
         child = spawnFn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...env, [heavy.ENV_VAR]: '1' } });
       } catch (err) { log(`[heavy-lock] could not start ${argv[0]}: ${err && err.message}`); return resolve(1); }
       child.on('error', (err) => { log(`[heavy-lock] could not start ${argv[0]}: ${err && err.message}`); resolve(1); });
-      child.on('exit', (code, sig) => resolve(code === null || code === undefined ? 1 : code));
+      child.on('exit', (code) => resolve(code === null || code === undefined ? 1 : code));
     });
     return signalled || result;
   } finally {

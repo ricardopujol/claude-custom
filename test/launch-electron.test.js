@@ -344,3 +344,27 @@ test('heavy lock: HEAVY_LOCK_HELD survives the env stripping, so a spawned node 
   const { probeEnv } = require('../verify/lib/launch-electron');
   assert.strictEqual(probeEnv({ HEAVY_LOCK_HELD: '1' }, { HEAVY_LOCK_HELD: '1' }).HEAVY_LOCK_HELD, '1');
 });
+
+// Miguel I3 / I4 / I5, Dexter 3: which processes take the lock, and what a refusal looks like.
+test('heavy lock: a unit test process is not a probe, so launching with no heavyLock option takes no lock', () => {
+  const { probeName } = require('../verify/lib/launch-electron');
+  assert.strictEqual(probeName(process.argv[1]), null);
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'test', 'x.test.js')), null);
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'verify', 'probe-dock-tree.js')), 'probe-dock-tree.js', 'the owner label names the probe');
+  assert.strictEqual(probeName(undefined), null);
+});
+
+test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other errors are thrown as they were', () => {
+  const { takeLock } = require('../verify/lib/launch-electron');
+  const { HeavyLockError } = require('../host/heavy-lock');
+  const said = []; const exits = [];
+  const busy = { ensure: () => { throw new HeavyLockError('busy', 'busy: hub. Wait and retry'); } };
+  assert.throws(() => takeLock(busy, (c) => exits.push(c), (m) => said.push(m)), HeavyLockError);   // the fake exit returns, so it rethrows
+  assert.deepStrictEqual(exits, [1]);
+  assert.strictEqual(said.length, 1);
+  assert.match(said[0], /did not run: busy: hub/);
+  const other = { ensure: () => { throw new TypeError('x'); } };
+  assert.throws(() => takeLock(other, (c) => exits.push(c), (m) => said.push(m)), TypeError);
+  assert.deepStrictEqual(exits, [1], 'no exit for an unexpected error');
+  assert.doesNotThrow(() => takeLock(null));
+});
