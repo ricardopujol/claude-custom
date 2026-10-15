@@ -964,18 +964,29 @@
       #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter { transition: none; }
     }
     #dock-announce, #quota-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-    /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
+    /* A folded cell: a rail of its modules' line icons with their names, the icon over the name beside the terminal (52 px wide) and in front of it above or below (34 tall). The icon is currentColor: dim at rest, bright on hover, the accent on the open tab. */
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
     /* The dock's own rail (#85) holds every unpinned panel, so it scrolls instead of clipping the tabs it cannot fit (PR #168 Miguel Y4). */
     .drail[data-rail="dock"] { overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
     .drail button {
-      flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
+      flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 13px; letter-spacing: 0;
       cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
+      display: flex; align-items: center; justify-content: center;
     }
-    .drail[data-dir="v"] button { writing-mode: vertical-rl; padding: 10px 0; }
-    .drail[data-dir="h"] button { padding: 0 10px; }
+    .drail .rail-icon-box { display: flex; }
+    .drail .rail-icon { width: 24px; height: 24px; flex: none; }
+    .drail .rail-name { white-space: nowrap; }     /* one line, never wrapped: app/dock-tree-display.js shrinks it to fit the tab */
+    .drail[data-dir="v"] button { flex-direction: column; padding: 6px 2px; gap: 1px; }
+    .drail[data-dir="h"] button { flex-direction: row; padding: 0 10px; gap: 5px; }
+    /* Names that would be under 8 px give way to icons only (app/dock-tree-display.js sets data-names="off"); if the icons alone still
+       do not fit the row it scrolls sideways, like the dock rail does up and down. The label stays in aria-label and the tooltip. */
+    .drail[data-dir="h"][data-names="off"] { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+    .drail[data-names="off"] .rail-name { display: none; }
+    .drail[data-dir="h"][data-names="off"] button { padding: 0 8px; gap: 0; }
+    /* 16 px of icon with the 24 px design's 1 px line would be 0.67 px: the weight scales up so it still reads as 1 px. */
+    .drail[data-dir="h"] .rail-icon { width: 16px; height: 16px; stroke-width: 1.5; }
     .drail button:hover { color: var(--text); }
     /* Dragging a tab: every zone of the cell under the pointer is lit, the one under it filled. */
     #dock-overlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
@@ -2336,6 +2347,7 @@
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="./side-tabs.js"></script>
+  <script src="./rail-icons.js"></script>
   <script src="./dock-migrate.js"></script>
   <script src="./dock-effects.js"></script>
   <script src="./dock-tree.js"></script>

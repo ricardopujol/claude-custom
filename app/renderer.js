@@ -2682,6 +2682,7 @@ function applyFocusMode(on) {
   if (on) term.focus();
   paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
+  renderLayout();   // the rails are display:none while focus is on: draw the dock again so any rail that lost its fit then is fitted now
   setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
 if (focusBridge) focusBridge.onChange(applyFocusMode);
@@ -2943,7 +2944,22 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           dir: el.dataset.dir, rect: rectOf(el), modules: [...el.querySelectorAll('button')].map(b => b.dataset.module),
           // #85: where every tab is, and whether the rail can scroll to the ones it cannot fit (PR #168 Miguel Y4)
           tabRects: [...el.querySelectorAll('button')].map(b => rectOf(b)), id: el.dataset.rail || null,
-          scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY },
+          scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY, scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, overflowX: getComputedStyle(el).overflowX },
+          names: el.dataset.names || null,
+          tabTitles: [...el.querySelectorAll('button')].map(b => [b.title, b.getAttribute('aria-label')]),
+          // rail tabs as emoji + name: what each says, the name's computed size and whether it sits on one line inside its tab
+          faces: [...el.querySelectorAll('button')].map((b) => {
+            const icon = b.querySelector('.rail-icon'); const name = b.querySelector('.rail-name');
+            const cs = name ? getComputedStyle(name) : null;
+            const ics = icon ? getComputedStyle(icon) : null;
+            return {
+              module: b.dataset.module, label: b.getAttribute('aria-label'), name: name ? name.textContent : null,
+              fontPx: cs ? parseFloat(cs.fontSize) : null, writingMode: cs ? cs.writingMode : null, nameRect: name ? rectOf(name) : null,
+              nameScrollWidth: name ? name.scrollWidth : null, nameClientWidth: name ? name.clientWidth : null,
+              iconRect: icon ? rectOf(icon) : null, iconStroke: ics ? ics.stroke : null, iconStrokeWidth: ics ? parseFloat(ics.strokeWidth) : null,
+              iconHidden: icon ? icon.getAttribute('aria-hidden') : null, buttonColor: getComputedStyle(b).color,
+            };
+          }),
         }));
         const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
           path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),
@@ -3019,6 +3035,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
       case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(settledLayout(), a.id) : DTm.dock(settledLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
       case 'select': selectModule(a.id); break;
+      case 'focusMode': applyFocusMode(a.on === true); break;      // probe: the real focus-mode path (the rails are display:none, then drawn again)
+      case 'leanClass': document.body.classList.toggle('lean', a.on === true); renderLayout(); break;      // probe: lean's display:none on the rails, and its resume draw
+      case 'uiFont': takeFontSettings({ ...(fontSettings || {}), uiFont: a.name }); break;      // probe: a different Interface font, not saved
       case 'foldAll': case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
       // A tab dragged to `to` ({ x, y } relative to #dock) by synthetic pointer events: down on the tab, two moves,
@@ -8041,6 +8060,7 @@ function applyFonts() {
   const ui = fontSettings && fontsDisplay.sanitizeFamily(fontSettings.uiFont);
   if (ui) root.setProperty('--font-ui', fontsDisplay.stackFor(ui, 'ui'));
   else root.removeProperty('--font-ui');
+  window.dockTreeView.refitRails(document);        // the rail names are measured in the UI font, which may just have changed
   if (term.options.fontFamily === eff.fontFamily && term.options.fontSize === eff.fontSize) return;
   term.options.fontFamily = eff.fontFamily;
   term.options.fontSize = eff.fontSize;
@@ -8048,6 +8068,14 @@ function applyFonts() {
   clearTimeout(fontFitTimer);
   fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
+
+// A tab that was in the background misses a focus-mode or lean push, and its rails measured zero while hidden: fit them when it shows.
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') window.dockTreeView.refitRails(document); });
+
+// A web font that finishes loading changes the names' widths too: fit the rails once the page's fonts are ready.
+// (The saved font arrives asynchronously through takeFontSettings -> applyFonts, which refits too; a web font that loads later fires loadingdone.)
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => window.dockTreeView.refitRails(document, true), () => {});
+if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', () => window.dockTreeView.refitRails(document, true));
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);

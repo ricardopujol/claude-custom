@@ -591,7 +591,7 @@ async function main() {
   small.push(['480: the terminal keeps at least 320 x 160', sq.termwrap.width >= 319 && sq.termwrap.height >= 159, `${sq.termwrap.width}x${sq.termwrap.height}`]);
   await view(app, 'squeeze', { width: 440, height: 520 });
   sq = (await settled(app)).s;
-  small.push(['440: the right column is a rail listing git, fog, bugvault', sq.rails.some(r => ['git', 'fog', 'bugvault'].every(m => r.modules.includes(m)) && r.rect.width <= 29), JSON.stringify(sq.rails.map(r => [r.dir, r.rect.width, r.modules]))]);
+  small.push(['440: the right column is a rail listing git, fog, bugvault', sq.rails.some(r => ['git', 'fog', 'bugvault'].every(m => r.modules.includes(m)) && r.rect.width <= 53), JSON.stringify(sq.rails.map(r => [r.dir, r.rect.width, r.modules]))]);
   small.push(['440: the terminal keeps at least 320 x 160, the boxes tile', sq.termwrap.width >= 319 && sq.termwrap.height >= 159 && tiles(sq).length === 0, `${sq.termwrap.width}x${sq.termwrap.height} ${tiles(sq).join('; ')}`]);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-small.png') });
   await view(app, 'squeeze', { width: 330, height: 520 });
@@ -1208,9 +1208,9 @@ async function main() {
     await view(app, 'collapse', { id: 'right' });
     const folded = await settled(app);
     s = folded.s;
-    check('13: collapsing the right group folds it to one 28 px rail on the right edge, the terminal takes the room, nothing overlaps',
-      s.groups.length === 0 && s.rails.length === 1 && Math.abs(s.rails[0].rect.width - 28) <= 1 && s.rails[0].dir === 'v'
-        && Math.abs(s.termwrap.width - (s.dock.width - 28)) <= 2 && tiles(s).length === 0 && s.rails[0].modules.length === visible.length,
+    check('13: collapsing the right group folds it to one 52 px rail on the right edge, the terminal takes the room, nothing overlaps',
+      s.groups.length === 0 && s.rails.length === 1 && Math.abs(s.rails[0].rect.width - 52) <= 1 && s.rails[0].dir === 'v'
+        && Math.abs(s.termwrap.width - (s.dock.width - 52)) <= 2 && tiles(s).length === 0 && s.rails[0].modules.length === visible.length,
       JSON.stringify([s.groups.length, s.rails.map(r => [r.dir, r.rect.width, r.modules.length]), s.termwrap.width, s.dock.width, tiles(s)]));
     check('13: ...terminal, fit and pty agree', folded.ok, sizeText(s));
     check('13: ...the choice is this window\'s: the selection says so, the layout file is byte-identical and no push reached the page',

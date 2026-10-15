@@ -151,15 +151,15 @@ test('dock moves a railed module to its target', () => {
 
 // --- fit ---------------------------------------------------------------------------------
 
-test('a non-empty rail takes a 28 px strip at the right edge and the tree fits in the rest', () => {
+test('a non-empty rail takes a 52 px strip at the right edge and the tree fits in the rest', () => {
   const d = T.unpin(T.defaultLayout(IDS), 'git');
   const { boxes } = T.fit(d, null, { width: 1000, height: 600 });
   const rail = boxes.find(b => b.kind === 'rail' && b.id === 'dock');
-  assert.deepEqual(rail.rect, { x: 972, y: 0, width: 28, height: 600 });
+  assert.deepEqual(rail.rect, { x: 948, y: 0, width: 52, height: 600 });
   assert.deepEqual(rail.modules, ['git']);
   assert.equal(rail.dir, 'v');
   const right = Math.max(...boxes.filter(b => b.kind !== 'rail').map(b => b.rect.x + b.rect.width));
-  assert.ok(right <= 972);
+  assert.ok(right <= 948);
 });
 
 test('an empty rail draws nothing and leaves the tree as it was', () => {
@@ -305,11 +305,11 @@ test('P: every pin order of an unpinned group lands in one group, and the layout
 
 test('Dexter 4: a window with no room for a strip and the terminal draws no strip: the terminal keeps its minimum', () => {
   const d = T.unpin(T.defaultLayout(['agents', 'git']), 'git');
-  for (const width of [T.TERM_MIN.width + 1, T.TERM_MIN.width + 27, T.TERM_MIN.width + 28 - 1]) {
+  for (const width of [T.TERM_MIN.width + 1, T.TERM_MIN.width + T.RAIL.side - 1]) {
     const { boxes } = T.fit(d, null, { width, height: 600 });
     assert.ok(boxes.find(b => b.kind === 'term').rect.width >= T.TERM_MIN.width, `at ${width}`);
   }
-  const wide = T.fit(d, null, { width: T.TERM_MIN.width + 28 + 120 + 5, height: 600 });
+  const wide = T.fit(d, null, { width: T.TERM_MIN.width + T.RAIL.side + 120 + 5, height: 600 });
   assert.ok(wide.boxes.some(b => b.kind === 'rail' && b.id === 'dock'), 'with room the strip is there');
 });
 
@@ -319,7 +319,7 @@ test('Dexter 4: a folded group\'s rail is not dropped for the strip', () => {
     root: { type: 'split', dir: 'row', kids: [{ type: 'term' }, { type: 'group', id: 'g1', tabs: ['git'] }], sizes: [0, 180] },
   }, ['git', 'vault']);
   const sel = T.toggleCollapse(null, l, 'g1');
-  const withRail = T.fit(l, sel, { width: 356, height: 600 });
+  const withRail = T.fit(l, sel, { width: 380, height: 600 });
   const tree = withRail.boxes.filter(b => b.kind === 'rail');
   assert.ok(tree.some(b => b.id !== 'dock'), 'the folded group still has its rail');
   assert.ok(withRail.boxes.find(b => b.kind === 'term').rect.width >= T.TERM_MIN.width);

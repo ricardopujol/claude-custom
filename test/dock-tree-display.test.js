@@ -769,3 +769,101 @@ test('M13: rebaseDrag: a split below the root is found by its path, and a plain 
   const three = plain.root.kids[1];
   assert.deepStrictEqual(V.rebaseDrag(plain, { path: [1], i: 1, node: three, sizes: [4, 6, 8] }), [4, 6, 8], 'every drawn size, not the stored proportions');
 });
+
+// --- rail tabs: icon + name (BACKLOG #85 follow-up) ----------------------------------------------------------
+
+test('every panel has a Lucide icon, in TABS order, the ones Ricardo picked', () => {
+  const R = require('../app/rail-icons');
+  const picked = ['users', 'lock', 'bug', 'folder', 'git-branch', 'brain', 'layout-grid', 'palette', 'wand-2', 'bar-chart-3', 'app-window', 'message-circle', 'gamepad-2'];
+  assert.deepStrictEqual(TABS.map(t => R.ICONS[t.id] && R.ICONS[t.id][0]), picked);
+  assert.deepStrictEqual(Object.keys(R.ICONS).sort(), IDS.slice().sort(), 'no icon for a panel that does not exist');
+});
+
+test('an icon is one-colour line art: inline, currentColor, no fill, round, weight 1, hidden from a screen reader, nothing fetched', () => {
+  const R = require('../app/rail-icons');
+  for (const id of IDS) {
+    const svg = R.svgFor(id);
+    assert.match(svg, /^<svg class="rail-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">/, id);
+    assert.ok(svg.endsWith('</svg>'), id);
+    assert.ok(/<(path|rect|circle|line)\b/.test(svg), `${id}: has shapes`);
+    assert.ok(!/https?:|href|<image|<script|\son\w+=|style=/i.test(svg), `${id}: nothing that loads or runs`);
+    assert.strictEqual((svg.match(/<svg/g) || []).length, 1, `${id}: one svg`);
+  }
+  assert.strictEqual(R.svgFor('nope'), '');
+  assert.strictEqual(R.svgFor('__proto__'), '');
+});
+
+test('the icon file keeps both licence notices', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'rail-icons.js'), 'utf8');
+  assert.match(src, /ISC License/);
+  assert.match(src, /Permission to use, copy, modify, and\/or distribute/);
+  assert.match(src, /The MIT License \(MIT\)/);
+  assert.match(src, /Cole Bemis/);
+});
+
+test('the rails are 52 wide beside the terminal and 34 tall above or below it', () => {
+  assert.deepStrictEqual(T.RAIL, { side: 52, wide: 34 });
+});
+
+test('nameRoom: what a name has inside a rail of this width: the borders, the tab padding and 1 px of slack come off', () => {
+  assert.strictEqual(V.nameRoom(52), 52 - 2 - V.NAME_PAD - 1);
+  assert.strictEqual(V.nameRoom(0), 0, 'no width: no room, so no fitting');
+  assert.strictEqual(V.nameRoom(NaN), 0);
+  assert.strictEqual(V.nameRoom(5), 0, 'never negative');
+});
+
+test('fitNameSize: 11 px when the name fits, smaller in proportion when it does not, never above 11, no floor', () => {
+  assert.strictEqual(V.NAME_MAX, 11);
+  assert.strictEqual(V.fitNameSize(30, 46), 11, 'fits');
+  assert.strictEqual(V.fitNameSize(46, 46), 11, 'fits exactly');
+  assert.strictEqual(V.fitNameSize(92, 46), 5.5, 'twice too wide: half the size');
+  assert.strictEqual(V.fitNameSize(920, 46), 0.55, 'no floor');
+  assert.strictEqual(V.fitNameSize(0, 46), 11, 'nothing measured: the largest');
+  assert.strictEqual(V.fitNameSize(60, 0), 11, 'no room measured (hidden): the largest');
+  assert.strictEqual(V.fitNameSize(NaN, 46), 11);
+  assert.strictEqual(V.fitNameSize(undefined, 46), 11);
+  assert.strictEqual(V.fitNameSize(Infinity, 46), 11);
+});
+
+test('fitRowNameSize: names in a row share one size; 11 px when the row fits, else just small enough that it does', () => {
+  assert.strictEqual(V.fitRowNameSize([40, 40], 82, 200), 11, 'fits');
+  assert.strictEqual(V.fitRowNameSize([40, 40], 82, 162), 11, 'fits exactly');
+  assert.strictEqual(V.fitRowNameSize([100, 100], 100, 200), 5.5, 'half the room left for names: half the size');
+  assert.strictEqual(V.fitRowNameSize([100, 100], 100, 100), 0.01, 'no room for names at all: the smallest positive size');
+  assert.strictEqual(V.fitRowNameSize([100], 100, 50), 0.01, 'less than the chrome: still positive');
+  assert.strictEqual(V.fitRowNameSize([], 0, 100), 11);
+  assert.strictEqual(V.fitRowNameSize([50, NaN], 10, 20), 11, 'something unmeasured: left alone');
+  assert.strictEqual(V.fitRowNameSize([50], 10, 0), 11, 'no length known');
+});
+
+test('fitRow: names stay while they are at least 8 px; under that the row goes icons only (the threshold is pinned)', () => {
+  assert.strictEqual(V.ICONS_ONLY_BELOW, 8);
+  assert.deepStrictEqual(V.fitRow([40, 40], 82, 200), { size: 11, iconsOnly: false }, 'fits');
+  // names get 100 px of a 200 px row: 11 * (200 - 100) / 200 = 5.5 -> icons only
+  assert.deepStrictEqual(V.fitRow([100, 100], 100, 200), { size: 5.5, iconsOnly: true });
+  // 11 * (room - 100) / 200 = 8 at room 245.45..: 246 gives 8.03 (names stay), 245 gives 7.97 (icons only)
+  assert.strictEqual(V.fitRow([100, 100], 100, 246).iconsOnly, false);
+  assert.strictEqual(V.fitRow([100, 100], 100, 245).iconsOnly, true);
+  assert.strictEqual(V.fitRow([35, 35, 35, 35, 35], 205, 180).iconsOnly, true, 'the chrome alone is longer than the rail');
+  assert.strictEqual(V.fitRow([], 0, 100).iconsOnly, false);
+  assert.strictEqual(V.fitRow([50, NaN], 10, 20).iconsOnly, false, 'unmeasured: left alone');
+});
+
+test('fitRowNameSize: the fitted row is never longer than its room', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.array(fc.integer({ min: 1, max: 200 }), { minLength: 1, maxLength: 8 }), fc.integer({ min: 0, max: 300 }), fc.integer({ min: 50, max: 1500 }), (names, chrome, room) => {
+    const s = V.fitRowNameSize(names, chrome, room);
+    assert.ok(s > 0 && s <= 11);
+    const sum = names.reduce((a, b) => a + b, 0);
+    if (room > chrome) assert.ok(sum * (s / 11) + chrome <= room + 1e-9, `${names} + ${chrome} at ${s}px in ${room}`);
+  }));
+});
+
+test('fitNameSize: the fitted name is never wider than the room', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.integer({ min: 1, max: 2000 }), fc.integer({ min: 10, max: 400 }), (natural, room) => {
+    const s = V.fitNameSize(natural, room);
+    assert.ok(s > 0 && s <= 11);
+    assert.ok(natural * (s / 11) <= room + 1e-9, `${natural} at ${s}px must fit in ${room}`);
+  }));
+});

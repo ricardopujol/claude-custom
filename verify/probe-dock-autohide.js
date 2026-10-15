@@ -19,6 +19,7 @@
  *   7  a click holds the panel open (leaving does not close it), a press outside closes it
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
+ *   12 rail tabs are a one-colour line icon over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
  *
  * Hover is REAL pointer movement (the host's `mouseMove` command: webContents.sendInputEvent), not a dispatched event, and a
  * float sits where the panel opens, so a stacking fault (PR #168 B1: a missing `;` dropped `z-index: 1000`) fails check 3. Also:
@@ -352,10 +353,10 @@ async function main() {
   const s2 = a2.s;
   const strip = s2.rails[0] && s2.rails[0].rect;
   check('2: Pinned unpins: git is on the rail, not in the group', railMods(s2).join() === 'git' && !pinned(s2, 'git'), JSON.stringify(railMods(s2)));
-  check('2: ...the rail is a strip 28 px wide on the right edge, the full height', !!strip && Math.abs(strip.width - 28) <= 1 && Math.abs(strip.right - s2.dock.right) <= 1 && Math.abs(strip.height - s2.dock.height) <= 1,
+  check('2: ...the rail is a strip 52 px wide on the right edge, the full height', !!strip && Math.abs(strip.width - 52) <= 1 && Math.abs(strip.right - s2.dock.right) <= 1 && Math.abs(strip.height - s2.dock.height) <= 1,
     strip && JSON.stringify([strip.width, strip.right, s2.dock.right]));
   const t1 = termWidth(s2);
-  check('2: ...the terminal is narrower by about that strip, the boxes tile, terminal === fit === pty', Math.abs((t0 - t1) - 28) <= 2 && tiles(s2).length === 0 && a2.ok,
+  check('2: ...the terminal is narrower by about that strip, the boxes tile, terminal === fit === pty', Math.abs((t0 - t1) - 52) <= 2 && tiles(s2).length === 0 && a2.ok,
     `${t0} -> ${t1}; ${tiles(s2).join('; ')}; ${sizeText(s2)}`);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-unpinned.png') });
 
@@ -518,6 +519,28 @@ async function main() {
   check('9: a double-click on the empty tab bar unpins every tab of the group: no group is left, the rest of the modules are on the rail (the float stays)',
     a9.s.groups.length === 0 && onRail === IDS.length - 2 && a9.ok && tiles(a9.s).length === 0, JSON.stringify([a9.s.groups.length, onRail, tiles(a9.s)]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-all-unpinned.png') });
+  checkFaces('12: the dock rail', a9.s.rails.find(r => r.id === 'dock'));
+  // The icon follows the tab's colour: dim at rest, the text colour under the pointer, the accent while its panel is open.
+  const first12 = railMods(a9.s)[0];
+  await hoverTab(app, first12);
+  const hov = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
+  const faceOf = (v, id) => v.rails.find(r => r.id === 'dock').faces.find(f => f.module === id);
+  const open12 = hov && faceOf(hov, first12);
+  const rest12 = hov && hov.rails.find(r => r.id === 'dock').faces.find(f => f.module !== first12);
+  check('12: the open tab\'s icon is a different colour from a resting tab\'s, and each icon is its tab\'s colour', !!open12 && !!rest12 && open12.iconStroke === open12.buttonColor && rest12.iconStroke === rest12.buttonColor && open12.buttonColor !== rest12.buttonColor,
+    JSON.stringify([open12 && [open12.iconStroke, open12.buttonColor], rest12 && [rest12.iconStroke, rest12.buttonColor]]));
+  await hoverTerm(app);
+  await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 20);
+  // A wider Interface font (Dexter F1): the names are measured again, so every one still fits the rail's width.
+  const nameWidths = (v) => v.rails.find(r => r.id === 'dock').faces.map(f => [f.module, f.nameScrollWidth, Math.round(f.fontPx * 100) / 100]);
+  await view(app, 'uiFont', { name: 'Verdana' });
+  await sleep(600);
+  const v12 = await viewState(app);
+  const widths12 = nameWidths(v12);
+  check('12: after switching the Interface font to Verdana every name on the vertical rail still fits (scrollWidth <= 46)', widths12.every(([, w]) => w <= 46), JSON.stringify(widths12));
+  check('12: ...and the font did change the page (a name measured differently from before)', JSON.stringify(widths12) !== JSON.stringify(nameWidths(a9.s)), JSON.stringify(widths12.slice(0, 3)));
+  await view(app, 'uiFont', { name: '' });
+  await sleep(300);
 
   // 10: every tab stays reachable on a short window (PR #168 Y4)
   await view(app, 'squeeze', { height: 320 });
@@ -545,6 +568,111 @@ async function main() {
   check('11: ...and closes at once when the grace ends, with no slide-out stage', !!r11b && !sawClosing);
 
   await quitApp(app);
+
+  // 12: a folded group's rails (#159) look the same: a vertical one beside the terminal, a horizontal one under it
+  const lay = T.normalize({
+    version: 2, floats: [], rail: [], hidden: T.HIDDEN_UNTIL_USED.slice(), seat: {},
+    root: { type: 'split', dir: 'col', sizes: [0, 160], kids: [
+      { type: 'split', dir: 'row', sizes: [0, 220], kids: [{ type: 'term' }, { type: 'group', id: 'side', tabs: ['agents', 'vault', 'bugvault', 'fog', 'git'] }] },
+      { type: 'group', id: 'foot', tabs: ['models', 'projects', 'style', 'resources', 'ask'] },
+    ] },
+  }, IDS);
+  fs.writeFileSync(TREE_FILE, JSON.stringify(lay));
+  const second = await launchReady(container);
+  check('12: the window came up again with the folded-group layout', !!second.ready);
+  if (second.ready) {
+    await view(second.app, 'foldAll');
+    const a12 = await settled(second.app);
+    const rails = a12.s.rails.filter(r => r.id !== 'dock');
+    check('12: folding makes a vertical rail beside the terminal and a horizontal one under it', rails.some(r => r.dir === 'v') && rails.some(r => r.dir === 'h'), JSON.stringify(rails.map(r => [r.dir, r.modules.length])));
+    for (const r of rails) checkFaces('12: folded ' + r.dir + ' rail', r);
+    const vr = rails.find(r => r.dir === 'v');
+    const hr = rails.find(r => r.dir === 'h');
+    check('12: the vertical rail is 52 wide, the horizontal one is 34 tall', !!vr && !!hr && Math.abs(vr.rect.width - 52) <= 1 && Math.abs(hr.rect.height - 34) <= 1, JSON.stringify([vr && vr.rect.width, hr && hr.rect.height]));
+    await command(second.app, { cmd: 'screenshot', file: path.join(shots, '12-folded-group-rails.png') });
+    await quitApp(second.app);
+  }
+
+  // 12: a collapsed group in a narrow column is a short horizontal rail: its names shrink together until every tab fits (Dexter F2)
+  const narrow = T.normalize({
+    version: 2, floats: [], rail: [], hidden: T.HIDDEN_UNTIL_USED.slice(), seat: {},
+    root: { type: 'split', dir: 'row', sizes: [0, 180], kids: [{ type: 'term' }, { type: 'split', dir: 'col', sizes: [100, 100], kids: [
+      { type: 'group', id: 'top', tabs: ['models', 'projects', 'style'] },
+      { type: 'group', id: 'low', tabs: ['agents', 'vault', 'fog', 'bugvault'] },
+    ] }] },
+  }, IDS);
+  fs.writeFileSync(TREE_FILE, JSON.stringify(narrow));
+  const third = await launchReady(container);
+  check('12: the window came up with a narrow column', !!third.ready);
+  if (third.ready) {
+    if ((await viewState(third.app)).groups.length === 0) { await view(third.app, 'foldAll'); await settled(third.app); }      // the window may remember the last run's fold-all
+    await view(third.app, 'collapse', { id: 'low' });
+    const a12n = await settled(third.app);
+    const rowRail = a12n.s.rails.find(r => r.dir === 'h');
+    check('12: collapsing the lower group of the narrow column gives a horizontal rail', !!rowRail, JSON.stringify(a12n.s.rails.map(r => [r.dir, r.modules])));
+    if (rowRail) {
+      // Four tabs in 180 px: their names would be under 8 px, so the row is icons only (Ricardo: "icons only when tight")
+      const lastRight = Math.max(...rowRail.tabRects.map(r => r.right));
+      check('12: the 180 px row of four tabs is icons only: the names are hidden, every tab fits the rail, nothing is cut off', rowRail.names === 'off' && rowRail.faces.every(f => f.nameRect.width === 0) && lastRight <= rowRail.rect.right + 0.5, JSON.stringify([rowRail.names, lastRight, rowRail.rect.right]));
+      check('12: ...the icons are 16 px and still named: each tab has its tooltip and aria-label', rowRail.faces.every(f => Math.abs(f.iconRect.width - 16) <= 0.5) && rowRail.tabTitles.every(([t, l]) => !!t && !!l), JSON.stringify(rowRail.tabTitles));
+      check('12: ...and a row of icons that cannot fit would scroll sideways (overflow-x auto)', rowRail.scroll.overflowX === 'auto', rowRail.scroll.overflowX);
+    }
+    await command(third.app, { cmd: 'screenshot', file: path.join(shots, '12b-narrow-row-rail.png') });
+    await quitApp(third.app);
+  }
+
+  // 12: a rail that folds while the rails are hidden (lean mode) is fitted when they show again (Dexter r2 F1)
+  const lean = T.normalize({
+    version: 2, floats: [], rail: ['git'], hidden: IDS.filter(i => !['canvas', 'resources', 'git'].includes(i)), seat: {},
+    root: { type: 'split', dir: 'row', sizes: [0, 180], kids: [{ type: 'term' }, { type: 'group', id: 'gR', tabs: ['canvas', 'resources'] }] },
+  }, IDS);
+  fs.writeFileSync(TREE_FILE, JSON.stringify(lean));
+  const fourth = await launchReady(container);
+  check('12: the window came up with the lean-mode layout', !!fourth.ready);
+  if (fourth.ready) {
+    await view(fourth.app, 'squeeze', { width: 600, height: 520 });
+    const open600 = (await settled(fourth.app)).s;
+    check('12: at 600 px the group is open beside the terminal', open600.groups.some(g => g.tabs.includes('canvas')), JSON.stringify(open600.groups.map(g => g.tabs)));
+    await view(fourth.app, 'leanClass', { on: true });
+    await view(fourth.app, 'squeeze', { width: 480, height: 520 });
+    const folded = (await settled(fourth.app)).s;
+    check('12: lean on, resized to 480 px, the group folds into a rail', folded.rails.some(r => r.modules.includes('canvas')), JSON.stringify(folded.rails.map(r => [r.dir, r.modules])));
+    await view(fourth.app, 'leanClass', { on: false });
+    const shown = (await settled(fourth.app)).s;
+    const gr = shown.rails.find(r => r.modules.includes('canvas'));
+    check('12: lean off: the rail that folded while hidden is fitted: every name inside its room (scrollWidth <= 46)', !!gr && gr.faces.every(f => f.nameScrollWidth > 0 && f.nameScrollWidth <= 46), JSON.stringify(gr && gr.faces.map(f => [f.module, f.nameScrollWidth, f.fontPx])));
+    await command(fourth.app, { cmd: 'screenshot', file: path.join(shots, '12c-lean-off-fitted.png') });
+    // Focus mode (Dexter r3): the rails are hidden while a font changes, and are fitted when focus goes off. (A background tab can't be
+    // emulated here: this is the page's own focus path, in the one window.)
+    await view(fourth.app, 'focusMode', { on: true });
+    await view(fourth.app, 'uiFont', { name: 'Verdana' });
+    await view(fourth.app, 'focusMode', { on: false });
+    await sleep(600);
+    const afterFocus = await viewState(fourth.app);
+    const gr2 = afterFocus.rails.find(r => r.modules.includes('canvas'));
+    check('12: focus on, a wider font picked, focus off: the rail is fitted (every name scrollWidth 1..46)', !!gr2 && gr2.faces.every(f => f.nameScrollWidth > 0 && f.nameScrollWidth <= 46), JSON.stringify(gr2 && gr2.faces.map(f => [f.module, f.nameScrollWidth, f.fontPx])));
+    await quitApp(fourth.app);
+  }
+}
+
+// Rail tabs as faces (the design: line icon over a horizontal name, 11 px at most, one line, inside the tab).
+function checkFaces(what, rail) {
+  const faces = (rail && rail.faces) || [];
+  check(what + ': has tabs', faces.length > 0, String(faces.length));
+  const tab = (f) => TABS.find(t => t.id === f.module);
+  const vertical = rail && rail.dir === 'v';
+  check(what + ': each tab shows its icon and its name, named for a screen reader by the label alone', faces.every(f => !!f.iconRect && f.iconHidden === 'true' && f.name === tab(f).label && f.label === tab(f).label), JSON.stringify(faces.filter(f => !f.iconRect || f.name !== tab(f).label).map(f => f.module)));
+  const px = vertical ? 24 : 16;
+  check(what + ': icons are ' + px + ' px, one colour (the tab\'s text colour), a line (weight ' + (vertical ? '1' : '1.5, which reads as 1 px at 16') + ')', faces.every(f => Math.abs(f.iconRect.width - px) <= 0.5 && Math.abs(f.iconRect.height - px) <= 0.5 && f.iconStroke === f.buttonColor && Math.abs(f.iconStrokeWidth - (vertical ? 1 : 1.5)) < 0.01), JSON.stringify(faces.slice(0, 2).map(f => [f.iconRect.width, f.iconStroke, f.buttonColor, f.iconStrokeWidth])));
+  check(what + ': no vertical text', faces.every(f => f.writingMode === 'horizontal-tb'), JSON.stringify([...new Set(faces.map(f => f.writingMode))]));
+  check(what + ': names are 11 px at most', faces.every(f => f.fontPx > 0 && f.fontPx <= 11), JSON.stringify(faces.map(f => [f.module, f.fontPx])));
+  check(what + ': every name is on one line', faces.every(f => f.nameRect.height <= 16), JSON.stringify(faces.map(f => [f.module, Math.round(f.nameRect.height)])));
+  if (vertical) {
+    check(what + ': every name sits inside the rail, none cut off', faces.every(f => f.nameRect.left >= rail.rect.left - 0.5 && f.nameRect.right <= rail.rect.right + 0.5), JSON.stringify(faces.map(f => [f.module, Math.round(f.nameRect.width), Math.round(f.fontPx * 10) / 10])));
+    check(what + ': the icon is above its name', faces.every(f => f.iconRect.bottom <= f.nameRect.top + 1), '');
+  } else {
+    check(what + ': the icon is in front of its name', faces.every(f => f.iconRect.right <= f.nameRect.left + 1), '');
+  }
 }
 
 main()
