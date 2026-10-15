@@ -87,3 +87,31 @@ test('hostNote: why the panel cannot work, in words', () => {
   assert.match(hostNote(undefined), /Waiting/);
   assert.match(hostNote([]), /older than this window/);
 });
+
+// --- notify: a frame nobody waits on (the panel's open/closed, a place opened) goes through the SAME gate as request (BACKLOG #33 gamification, PR #178 Miguel B1)
+
+test('notify sends nothing until the host\'s hello lists ask: an older host would type the frame into the session', () => {
+  const sent = [];
+  const r = createRequester({ send: (o) => { sent.push(o); return true; } });
+  assert.strictEqual(r.notify('panel', { open: true }), false, 'before any hello');
+  r.setControls([]);
+  assert.strictEqual(r.notify('panel', { open: true }), false, 'a host that lists nothing');
+  r.setControls(['lean', 'repo']);
+  assert.strictEqual(r.notify('opened'), false, 'a host that lists other things but not ask');
+  assert.deepStrictEqual(sent, []);
+});
+
+test('notify sends the frame, with no seq, when the host lists ask; a socket that is closed or throws is false, never a throw', () => {
+  const sent = [];
+  const r = createRequester({ send: (o) => { sent.push(o); return true; } });
+  r.setControls(['ask']);
+  assert.strictEqual(r.notify('panel', { open: true }), true);
+  assert.strictEqual(r.notify('opened'), true);
+  assert.deepStrictEqual(sent, [{ type: 'ask', op: 'panel', open: true }, { type: 'ask', op: 'opened' }]);
+  const closed = createRequester({ send: () => false });
+  closed.setControls(['ask']);
+  assert.strictEqual(closed.notify('opened'), false);
+  const boom = createRequester({ send: () => { throw new Error('x'); } });
+  boom.setControls(['ask']);
+  assert.strictEqual(boom.notify('opened'), false);
+});

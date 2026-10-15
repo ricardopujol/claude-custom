@@ -47,6 +47,7 @@ test('the host asks for the observe-only PermissionRequest hook, and the mood en
 
 test('the roster is ordered by sortRows (waiting on you first), not by an inline rank', () => {
   const js = read('app/renderer.js');
-  assert.ok(js.includes('const rows = window.agentStateDisplay.sortRows([...roster.values()]);'));
+  // the Ask explainer's row (BACKLOG #33 gamification) joins the agents' rows in the SAME sort
+  assert.ok(js.includes('const rows = window.agentStateDisplay.sortRows([...roster.values(), ...(exRow ? [exRow] : [])]);'));
   assert.doesNotMatch(js, /const rank = { working: 0, stressed: 1, happy: 2, sleeping: 3 };/);
 });

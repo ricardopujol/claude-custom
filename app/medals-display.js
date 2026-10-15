@@ -87,7 +87,7 @@ function reduceRemove(pending, id) {
 }
 const disarm = () => null;
 
-function shelfHtml(agent, medals, pendingId = null) {
+function shelfHtml(agent, medals, pendingId = null, label = agent) {
   // null is UNKNOWN (the host couldn't read the file), which is not the same as none.
   if (medals === null) return `<div class="medal-shelf" data-agent="${escapeHtml(agent)}"><div class="medal-shelf-title">Medals</div><div class="medal-none">Couldn't read the medals just now. Trying again.</div></div>`;
   const rows = (Array.isArray(medals) ? medals : [])
@@ -100,8 +100,8 @@ function shelfHtml(agent, medals, pendingId = null) {
         `<span class="medal-label">${escapeHtml(k.label)}</span>${reason}` +
         `<span class="medal-date">${escapeHtml(dateText(m.at))}</span>` +
         (m.id === pendingId
-          ? `<button type="button" class="medal-remove confirm" data-medal-remove="${escapeHtml(m.id)}" title="Click again to take this medal off ${escapeHtml(agent)}">Remove?</button>`
-          : `<button type="button" class="medal-remove" data-medal-remove="${escapeHtml(m.id)}" title="Take this medal off ${escapeHtml(agent)}">&times;</button>`) +
+          ? `<button type="button" class="medal-remove confirm" data-medal-remove="${escapeHtml(m.id)}" title="Click again to take this medal off ${escapeHtml(label)}">Remove?</button>`
+          : `<button type="button" class="medal-remove" data-medal-remove="${escapeHtml(m.id)}" title="Take this medal off ${escapeHtml(label)}">&times;</button>`) +
         '</div>';
     });
   const body = rows.length ? rows.join('') : '<div class="medal-none">No medals yet.</div>';
@@ -109,16 +109,16 @@ function shelfHtml(agent, medals, pendingId = null) {
 }
 
 /** The 🏅 action on a card (the other way in is a right-click on the card). */
-function cardButtonHtml(agent) {
-  return `<button type="button" class="agent-medal-btn" data-medal-open title="Give ${escapeHtml(agent)} a medal">🏅</button>`;
+function cardButtonHtml(agent, label = agent) {
+  return `<button type="button" class="agent-medal-btn" data-medal-open title="Give ${escapeHtml(label)} a medal">🏅</button>`;
 }
 
-/** The give-a-medal menu: six kinds, an optional one-line reason, Give / Cancel. `selected` is a kind or null. */
-function menuHtml(agent, selected) {
+/** The give-a-medal menu: six kinds, an optional one-line reason, Give / Cancel. `selected` is a kind or null. `label` is the name shown when it isn't the key. */
+function menuHtml(agent, selected, label = agent) {
   const kinds = KINDS.map((k) =>
     `<button type="button" class="medal-kind${k.kind === selected ? ' on' : ''}" data-medal-kind="${k.kind}" ` +
     `aria-pressed="${k.kind === selected}">${k.icon} ${escapeHtml(k.label)}</button>`).join('');
-  return `<div class="medal-menu-title">Give ${escapeHtml(agent)} a medal</div><div class="medal-kinds">${kinds}</div>` +
+  return `<div class="medal-menu-title">Give ${escapeHtml(label)} a medal</div><div class="medal-kinds">${kinds}</div>` +
     `<input type="text" class="medal-reason-input" maxlength="${REASON_MAX}" placeholder="Why? (optional, one line)" autocomplete="off" spellcheck="false">` +
     `<div class="medal-menu-actions"><button type="button" data-medal-give${selected ? '' : ' disabled'}>Give</button>` +
     `<button type="button" data-medal-cancel>Cancel</button></div>`;
