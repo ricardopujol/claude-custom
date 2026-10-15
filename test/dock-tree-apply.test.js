@@ -550,7 +550,7 @@ test('D4: a rail\'s popover is one element in the floats layer, holding the pane
   assert.strictEqual(el.dataset.module, 'vault');
   assert.strictEqual(el.getAttribute('role'), 'group');
   assert.strictEqual(el.getAttribute('aria-label'), `${TABS.find(t => t.id === 'vault').label} panel, opened from its rail`, 'named for a screen reader, by the panel it holds now');
-  assert.deepStrictEqual(el.style.left, '692px');
+  assert.deepStrictEqual(el.style.left, '668px');
   assert.deepStrictEqual([el.style.top, el.style.width, el.style.height], ['0px', '280px', '600px']);
   assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'), 'the vault panel was moved in, not rebuilt');
   assert.ok(w.panels.vault.classes.has('on'));
@@ -753,4 +753,38 @@ test('Y6: pinning the panel while its popover slides out hands the panel to its 
   timers[0].fn();
   assert.strictEqual(w.panels.git.parentNode, groupEl(w.dock, 'right').querySelector('.zone-panels'));
   assert.strictEqual(peekEl(w), undefined);
+});
+
+// --- rail tabs: emoji + name ---------------------------------------------------------------------------------
+
+test('a rail button is an emoji over a name, named for a screen reader by the label alone', () => {
+  const w = makeDoc();
+  V.applyBoxes(planD4(T.defaultLayout(IDS), { collapsed: { right: ['agents'] } }), w.doc);
+  const rail = w.dock.children.find(e => e.classes.has('drail'));
+  for (const b of rail.children) {
+    const tab = TABS.find(t => t.id === b.dataset.module);
+    const [emoji, name] = b.children;
+    assert.ok(emoji.classes.has('rail-emoji') && name.classes.has('rail-name'));
+    assert.strictEqual(emoji.textContent, tab.emoji);
+    assert.strictEqual(emoji.getAttribute('aria-hidden'), 'true');
+    assert.strictEqual(name.textContent, tab.label);
+    assert.strictEqual(b.getAttribute('aria-label'), tab.label);
+  }
+});
+
+test('a rail beside the terminal shrinks a name that is too wide for it; one that fits keeps 11 px', () => {
+  const w = makeDoc();
+  const real = w.doc.createElement;
+  w.doc.createElement = (tag) => {
+    const e = real(tag);
+    Object.defineProperty(e, 'scrollWidth', { get() { return this.classes.has('rail-name') ? (this.textContent.length > 6 ? 92 : 20) : 0; } });
+    Object.defineProperty(e, 'clientWidth', { get() { return this.classes.has('drail') ? 50 : 0; } });
+    return e;
+  };
+  V.applyBoxes(planD4(T.defaultLayout(IDS), { collapsed: { right: ['agents'] } }), w.doc);
+  const rail = w.dock.children.find(e => e.classes.has('drail'));
+  assert.strictEqual(rail.dataset.dir, 'v');
+  const sizeOf = id => rail.children.find(b => b.dataset.module === id).children[1].style.fontSize;
+  assert.strictEqual(sizeOf('git'), '', 'Git fits: the stylesheet\'s 11 px');
+  assert.strictEqual(sizeOf('bugvault'), `${V.fitNameSize(92, 50 - V.NAME_PAD)}px`, 'Bug vault is shrunk to the room');
 });

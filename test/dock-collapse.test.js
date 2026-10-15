@@ -96,20 +96,20 @@ test('nothing collapsed draws what it always did', () => {
   assert.deepEqual(T.fit(ex(), NONE, VP), T.fit(ex(), { active: {}, foldAll: false }, VP));
 });
 
-test('a collapsed group beside the terminal is a 28 px rail on its edge; the terminal takes the room', () => {
+test('a collapsed group beside the terminal is a 52 px rail on its edge; the terminal takes the room', () => {
   const b = boxesOf(ex(), sel({ right: ['agents', 'vault'] }));
   assert.deepEqual(kinds(b), ['term', 'rail']);
-  assert.deepEqual(b[0].rect, R(0, 0, 972, 600));
-  assert.deepEqual(b[1].rect, R(972, 0, 28, 600));
+  assert.deepEqual(b[0].rect, R(0, 0, 948, 600));
+  assert.deepEqual(b[1].rect, R(948, 0, 52, 600));
   assert.equal(b[1].dir, 'v');
   assert.deepEqual(b[1].modules, ['agents', 'vault']);
 });
 
-test('a collapsed group under the terminal is a 30 px horizontal rail', () => {
+test('a collapsed group under the terminal is a 34 px horizontal rail', () => {
   const l = T.normalize(v2(col([term, g('foot', 'agents', 'vault')], [0, 160]), { hidden: IDS.slice(2) }), IDS);
   const b = boxesOf(l, sel({ foot: ['agents', 'vault'] }));
-  assert.deepEqual(b[0].rect, R(0, 0, 1000, 570));
-  assert.deepEqual(b[1], { kind: 'rail', dir: 'h', modules: ['agents', 'vault'], groups: [{ id: 'foot', tabs: ['agents', 'vault'] }], rect: R(0, 570, 1000, 30) });
+  assert.deepEqual(b[0].rect, R(0, 0, 1000, 566));
+  assert.deepEqual(b[1], { kind: 'rail', dir: 'h', modules: ['agents', 'vault'], groups: [{ id: 'foot', tabs: ['agents', 'vault'] }], rect: R(0, 566, 1000, 34) });
 });
 
 test('in a column of groups, a collapsed one is a rail and the others share the rest without a gutter against it', () => {
@@ -117,13 +117,13 @@ test('in a column of groups, a collapsed one is a rail and the others share the 
   const b = boxesOf(l, sel({ mid: ['vault'] }));
   const mid = b.find(x => x.kind === 'rail' && x.modules.includes('vault'));
   assert.equal(mid.dir, 'h');
-  assert.equal(mid.rect.height, 30);
+  assert.equal(mid.rect.height, 34);
   assert.equal(mid.rect.width, b.find(x => x.id === 'top').rect.width, 'as wide as its column');
   const top = b.find(x => x.id === 'top');
   const low = b.find(x => x.id === 'low');
   assert.equal(top.rect.y + top.rect.height, mid.rect.y, 'no gutter between an open group and a rail');
   assert.equal(mid.rect.y + mid.rect.height, low.rect.y);
-  assert.equal(top.rect.height + 30 + low.rect.height, 600 - 120 - 5, 'the column spends its whole height (less the terminal row\'s foot, and one gutter)');
+  assert.equal(top.rect.height + 34 + low.rect.height, 600 - 120 - 5, 'the column spends its whole height (less the terminal row\'s foot, and one gutter)');
 });
 
 test('an open pair keeps its gutter; collapsing neither is the old picture', () => {
@@ -137,7 +137,7 @@ test('Dexter 2 (option A): a column whose every group is collapsed is drawn as O
   assert.equal(rails.length, 1, 'one rail for the whole column');
   assert.deepEqual(rails[0].modules, ['agents', 'vault', 'git']);
   assert.equal(rails[0].dir, 'v');
-  assert.equal(rails[0].rect.width, 28);
+  assert.equal(rails[0].rect.width, 52);
   assert.equal(all.filter(x => x.kind === 'group' && ['top', 'mid', 'low'].includes(x.id)).length, 0);
   assert.ok(all.find(x => x.kind === 'term').rect.width >= 320);
 });
@@ -169,8 +169,8 @@ test('collapsing the group beside the terminal while another is open leaves one 
   const l = T.normalize(v2(row([g('l', 'git'), term, g('r', 'agents')], [150, 0, 200]), { hidden: IDS.filter(i => !['git', 'agents'].includes(i)) }), IDS);
   const b = boxesOf(l, sel({ l: ['git'] }));
   assert.deepEqual(kinds(b), ['rail', 'term', 'gutter', 'group']);
-  assert.deepEqual(b[0].rect, R(0, 0, 28, 600));
-  assert.deepEqual(b[1].rect, R(28, 0, 767, 600));
+  assert.deepEqual(b[0].rect, R(0, 0, 52, 600));
+  assert.deepEqual(b[1].rect, R(52, 0, 743, 600));
   assert.deepEqual(b[3].rect, R(800, 0, 200, 600));
 });
 
@@ -188,7 +188,7 @@ test('a float is never collapsed by this: its id in the list changes nothing', (
 
 test('a collapsed group still folds the rest by the usual rule when the window is tight', () => {
   const l = T.normalize(v2(row([g('l', 'git'), term, g('r', 'agents')], [200, 0, 200]), { hidden: IDS.filter(i => !['git', 'agents'].includes(i)) }), IDS);
-  // 520 wide: the terminal's 320 + 28 for the collapsed rail leaves 172 for the other, under nothing of its own -> it asked 200, gets what fits
+  // 520 wide: the terminal's 320 + 52 for the collapsed rail leaves 148 for the other, under nothing of its own -> it asked 200, gets what fits
   const b = boxesOf(l, sel({ l: ['git'] }), { width: 520, height: 600 });
   const term0 = b.find(x => x.kind === 'term');
   assert.ok(term0.rect.width >= 320);
@@ -285,7 +285,7 @@ const nested = () => T.normalize(v2(row([
 ], [0, 180]), { hidden: IDS.filter(i => !['git', 'fog', 'agents'].includes(i)) }), IDS);
 const boxOf = (bs, id) => bs.find(x => x.id === id);
 
-test('Dexter 3: collapsing a group beside the terminal never makes another group fold (the rail costs 28, not 120)', () => {
+test('Dexter 3: collapsing a group beside the terminal never makes another group fold (the rail costs 52, not 120)', () => {
   const vp = { width: 520, height: 600 };
   const open = boxesOf(nested(), NONE, vp);
   const shut = boxesOf(nested(), sel({ gL: ['git'] }), vp);
@@ -299,5 +299,5 @@ test('Dexter 3: collapsing a group beside the terminal never makes another group
 test('Dexter 3: the divider beside a split that holds a rail is held to the rail\'s minimum, not the panel\'s', () => {
   const f = T.fit(nested(), sel({ gL: ['git'] }), { width: 900, height: 600 });
   const root = f.splits.find(s => s.path.length === 0);
-  assert.equal(root.min[0], 28 + 320, 'the column on the left needs a rail and the terminal');
+  assert.equal(root.min[0], 52 + 320, 'the column on the left needs a rail and the terminal');
 });

@@ -37,6 +37,15 @@ const shapeOf = rect => (rect.width >= 2 * rect.height ? 'wide' : 'tall');
 /** Portraits in a wide group: bounded by its height minus its tab bar and the card's name line. */
 const faceForWide = height => Math.max(28, Math.min(150, height - WIDE_FACE_CHROME));
 
+/** A rail tab's name is 11 px at most; one too wide for the tab shrinks in proportion until it fits on one line, with no floor. */
+const NAME_MAX = 11;
+/** The tab's side padding (2 px each), taken off the rail's inner width to get the room a name has. */
+const NAME_PAD = 4;
+function fitNameSize(natural, room) {
+  if (!(natural > 0) || !(room > 0) || !Number.isFinite(natural) || !Number.isFinite(room) || natural <= room) return NAME_MAX;
+  return Math.floor((NAME_MAX * room / natural) * 100) / 100;       // rounded down: the name is never a hair too wide
+}
+
 /**
  * @param layout   a normalized layout (app/dock-tree.js)
  * @param selection this window's choices ({ active, foldAll })
@@ -55,7 +64,7 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
   let face = null;
   const named = ids => ids.filter(id => byId.has(id)).map((id) => {
     const t = byId.get(id);
-    return { id, label: t.label, title: t.title };
+    return { id, label: t.label, title: t.title, emoji: t.emoji };
   });
   const drawn = boxes.map((b) => {
     if (b.kind === 'rail') return { ...b, tabs: named(b.modules) };
@@ -559,9 +568,29 @@ function applyBoxes(plan, doc) {
         btn.type = 'button';
         btn.dataset.module = t.id;
         btn.title = t.title;
-        btn.textContent = t.label;
+        const emoji = mk('span', 'rail-emoji');
+        emoji.textContent = t.emoji || '';
+        emoji.setAttribute('aria-hidden', 'true');
+        const name = mk('span', 'rail-name');
+        name.textContent = t.label;
+        btn.setAttribute('aria-label', t.label);              // the emoji is decoration: the label alone names the button
+        btn.append(emoji, name);
         btn.setAttribute('aria-haspopup', 'true');
         el.appendChild(btn);
+      }
+    }
+    // Beside the terminal the tab is as wide as the rail: a name that doesn't fit shrinks to. Measured only when the buttons or the
+    // rail's width changed (a layout read), and only where the page has layout (the test document has none).
+    const room = b.dir === 'v' && isNumber(el.clientWidth) ? el.clientWidth - NAME_PAD : 0;
+    const fitKey = `${sig}|${b.dir}|${room}`;
+    if (el.dataset.fit !== fitKey) {
+      el.dataset.fit = fitKey;
+      for (const btn of el.children) {
+        const name = btn.children[1];
+        if (!name) continue;
+        name.style.fontSize = '';                              // measure at the stylesheet's 11 px
+        const size = room > 0 && isNumber(name.scrollWidth) ? fitNameSize(name.scrollWidth, room) : NAME_MAX;
+        if (size < NAME_MAX) name.style.fontSize = `${size}px`;
       }
     }
     // Which button has its panel open over the terminal moves without rebuilding the buttons (focus stays on the one pressed).
@@ -636,7 +665,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

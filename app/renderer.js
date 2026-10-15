@@ -2920,6 +2920,16 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           // #85: where every tab is, and whether the rail can scroll to the ones it cannot fit (PR #168 Miguel Y4)
           tabRects: [...el.querySelectorAll('button')].map(b => rectOf(b)), id: el.dataset.rail || null,
           scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY },
+          // rail tabs as emoji + name: what each says, the name's computed size and whether it sits on one line inside its tab
+          faces: [...el.querySelectorAll('button')].map((b) => {
+            const emoji = b.querySelector('.rail-emoji'); const name = b.querySelector('.rail-name');
+            const cs = name ? getComputedStyle(name) : null;
+            return {
+              module: b.dataset.module, label: b.getAttribute('aria-label'), emoji: emoji ? emoji.textContent : null, name: name ? name.textContent : null,
+              fontPx: cs ? parseFloat(cs.fontSize) : null, writingMode: cs ? cs.writingMode : null, nameRect: name ? rectOf(name) : null,
+              nameScrollWidth: name ? name.scrollWidth : null, nameClientWidth: name ? name.clientWidth : null, emojiRect: emoji ? rectOf(emoji) : null,
+            };
+          }),
         }));
         const gutters = [...document.querySelectorAll('#dock > .dgutter')].map(el => ({
           path: el.dataset.path, i: Number(el.dataset.i), dir: el.dataset.dir, rect: rectOf(el),

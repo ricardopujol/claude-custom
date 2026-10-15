@@ -539,12 +539,12 @@ test('fit: 445 wide is the last width where the column stays open, at its minimu
   assert.equal(kindOf(f, 'rail').length, 0);
 });
 
-test('fit: 440 wide folds the column to a rail of 28 and the terminal keeps 320', () => {
+test('fit: 440 wide folds the column to a rail of 52 and the terminal keeps 320', () => {
   const f = T.fit(example(), NO_SEL, { width: 440, height: 700 });
-  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], groups: [{ id: 'c', tabs: ['git'] }, { id: 'd', tabs: ['fog'] }, { id: 'e', tabs: ['bugvault'] }], rect: R(412, 0, 28, 700) }]);
-  assert.equal(rectOf(f, 'term').width, 412);
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['git', 'fog', 'bugvault'], groups: [{ id: 'c', tabs: ['git'] }, { id: 'd', tabs: ['fog'] }, { id: 'e', tabs: ['bugvault'] }], rect: R(388, 0, 52, 700) }]);
+  assert.equal(rectOf(f, 'term').width, 388);
   assert.equal(kindOf(f, 'group').length, 2);
-  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [412, 28], state: ['open', 'rail'], min: [320, 28] });
+  assert.deepEqual(f.splits[0], { path: [], dir: 'row', px: [388, 52], state: ['open', 'rail'], min: [320, 52] });
   assertTiles(f, 440, 700);
 });
 
@@ -561,9 +561,9 @@ const threeAcross = () => T.normalize(v2(row([g('l1', 'agents'), g('l2', 'vault'
 test('fit: two fixed kids on one axis, the one farther from the terminal folds first', () => {
   // All open needs 785; at 690 folding the outer left one is enough.
   const f = T.fit(threeAcross(), NO_SEL, { width: 690, height: 400 });
-  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], groups: [{ id: 'l1', tabs: ['agents'] }], rect: R(0, 0, 28, 400) }]);
-  assert.deepEqual(rectOf(f, 'l2'), R(28, 0, 150, 400));
-  assert.deepEqual(rectOf(f, 'term'), R(183, 0, 352, 400));
+  assert.deepEqual(kindOf(f, 'rail'), [{ kind: 'rail', dir: 'v', modules: ['agents'], groups: [{ id: 'l1', tabs: ['agents'] }], rect: R(0, 0, 52, 400) }]);
+  assert.deepEqual(rectOf(f, 'l2'), R(52, 0, 150, 400));
+  assert.deepEqual(rectOf(f, 'term'), R(207, 0, 328, 400));
   assert.deepEqual(rectOf(f, 'r'), R(540, 0, 150, 400));
   assertTiles(f, 690, 400);
 });
@@ -572,8 +572,8 @@ test('fit: two fixed kids at the same distance, the later one folds first', () =
   const both = T.normalize(v2(row([g('l', 'agents'), term, g('r', ...IDS.slice(1))], [200, 0, 200])), IDS);
   const f = T.fit(both, NO_SEL, { width: 560, height: 400 });
   assert.deepEqual(kindOf(f, 'rail').map(r => r.modules), [IDS.slice(1)]);
-  assert.deepEqual(rectOf(f, 'l'), R(0, 0, 200, 400));
-  assert.deepEqual(rectOf(f, 'term'), R(205, 0, 327, 400));
+  assert.deepEqual(rectOf(f, 'l'), R(0, 0, 183, 400));
+  assert.deepEqual(rectOf(f, 'term'), R(188, 0, 320, 400));
   assertTiles(f, 560, 400);
 });
 
@@ -583,24 +583,24 @@ test('fit: 444 wide folds, 445 does not (the boundary is the terminal\'s 320 plu
 });
 
 test('fit: when even the rails leave the terminal too little, the farthest rail goes first', () => {
-  // Three rails of 28 leave 296 in 380; two leave 324.
-  const f = T.fit(threeAcross(), { active: {}, foldAll: true }, { width: 380, height: 400 });
+  // Three rails of 52 leave 284 in 440; two leave 336.
+  const f = T.fit(threeAcross(), { active: {}, foldAll: true }, { width: 440, height: 400 });
   assert.deepEqual(kindOf(f, 'rail').map(r => [r.modules, r.rect]), [
-    [['vault'], R(0, 0, 28, 400)],
-    [IDS.slice(2), R(352, 0, 28, 400)],
+    [['vault'], R(0, 0, 52, 400)],
+    [IDS.slice(2), R(388, 0, 52, 400)],
   ]);
-  assert.deepEqual(rectOf(f, 'term'), R(28, 0, 324, 400));
-  assertTiles(f, 380, 400);
+  assert.deepEqual(rectOf(f, 'term'), R(52, 0, 336, 400));
+  assertTiles(f, 440, 400);
 });
 
 test('fit: foldAll folds every fixed kid whatever the window size', () => {
   const f = T.fit(example(), { active: {}, foldAll: true }, { width: 1200, height: 700 });
   assert.equal(kindOf(f, 'group').length, 0);
   assert.deepEqual(kindOf(f, 'rail').map(r => [r.dir, r.modules, r.rect]), [
-    ['h', ['agents', 'vault'], R(0, 670, 1172, 30)],
-    ['v', ['git', 'fog', 'bugvault'], R(1172, 0, 28, 700)],
+    ['h', ['agents', 'vault'], R(0, 666, 1148, 34)],
+    ['v', ['git', 'fog', 'bugvault'], R(1148, 0, 52, 700)],
   ]);
-  assert.deepEqual(rectOf(f, 'term'), R(0, 0, 1172, 670));
+  assert.deepEqual(rectOf(f, 'term'), R(0, 0, 1148, 666));
   assert.equal(kindOf(f, 'gutter').length, 0);
   assertTiles(f, 1200, 700);
 });

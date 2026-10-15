@@ -26,7 +26,7 @@ test('the default in 1000 x 600: one group, every tab, Agents on, tall, its port
   assert.strictEqual(g.panel, 'agents');
   assert.deepStrictEqual(g.tabs.map(t => t.id), SHOWN);
   assert.deepStrictEqual(g.tabs.filter(t => t.on).map(t => t.id), ['agents']);
-  assert.deepStrictEqual(g.tabs[1], { id: 'vault', label: 'Vault', title: 'Local encrypted secrets', on: false });
+  assert.deepStrictEqual(g.tabs[1], { id: 'vault', emoji: '\u{1F510}', label: 'Vault', title: 'Local encrypted secrets', on: false });
   assert.deepStrictEqual(g.rect, { x: 820, y: 0, width: 180, height: 600 });
   assert.deepStrictEqual(p.shown, ['agents']);
   assert.strictEqual(p.face, faceSize(180));
@@ -768,4 +768,46 @@ test('M13: rebaseDrag: a split below the root is found by its path, and a plain 
   const plain = kv2(krow([kterm, kcol([kg('x', 'a'), kg('y', 'b'), kg('z', 'c')], [1, 1, 1])], [0, 200]));
   const three = plain.root.kids[1];
   assert.deepStrictEqual(V.rebaseDrag(plain, { path: [1], i: 1, node: three, sizes: [4, 6, 8] }), [4, 6, 8], 'every drawn size, not the stored proportions');
+});
+
+// --- rail tabs: emoji + name (BACKLOG #85 follow-up) ----------------------------------------------------------
+
+test('every panel has its emoji, the ones Ricardo picked', () => {
+  const picked = {
+    agents: '\u{1F465}', vault: '\u{1F510}', bugvault: '\u{1F41B}', fog: '\u{1F4C1}', git: '\u{1F33F}', models: '\u{1F9E0}',
+    projects: '\u{1F5C3}\uFE0F', style: '\u{1F3A8}', wand: '\u{1FA84}', resources: '\u{1F4CA}', canvas: '\u{1F5BC}\uFE0F',
+    ask: '\u{1F4AC}', games: '\u{1F3AE}',
+  };
+  assert.deepStrictEqual(Object.fromEntries(TABS.map(t => [t.id, t.emoji])), picked);
+});
+
+test('a rail tab in the plan carries its emoji next to the label', () => {
+  const p = plan(T.defaultLayout(IDS), { width: 440, height: 600 });
+  const rail = p.boxes.find(b => b.kind === 'rail');
+  assert.ok(rail && rail.tabs.length > 0);
+  for (const t of rail.tabs) assert.strictEqual(t.emoji, TABS.find(x => x.id === t.id).emoji);
+});
+
+test('the rails are 52 wide beside the terminal and 34 tall above or below it', () => {
+  assert.deepStrictEqual(T.RAIL, { side: 52, wide: 34 });
+});
+
+test('fitNameSize: 11 px when the name fits, smaller in proportion when it does not, never above 11, no floor', () => {
+  assert.strictEqual(V.NAME_MAX, 11);
+  assert.strictEqual(V.fitNameSize(30, 46), 11, 'fits');
+  assert.strictEqual(V.fitNameSize(46, 46), 11, 'fits exactly');
+  assert.strictEqual(V.fitNameSize(92, 46), 5.5, 'twice too wide: half the size');
+  assert.strictEqual(V.fitNameSize(920, 46), 0.55, 'no floor');
+  assert.strictEqual(V.fitNameSize(0, 46), 11, 'nothing measured: the largest');
+  assert.strictEqual(V.fitNameSize(60, 0), 11, 'no room measured (hidden): the largest');
+  assert.strictEqual(V.fitNameSize(NaN, 46), 11);
+});
+
+test('fitNameSize: the fitted name is never wider than the room', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.integer({ min: 1, max: 2000 }), fc.integer({ min: 10, max: 400 }), (natural, room) => {
+    const s = V.fitNameSize(natural, room);
+    assert.ok(s > 0 && s <= 11);
+    assert.ok(natural * (s / 11) <= room + 1e-9, `${natural} at ${s}px must fit in ${room}`);
+  }));
 });

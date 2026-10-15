@@ -19,6 +19,7 @@
  *   7  a click holds the panel open (leaving does not close it), a press outside closes it
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
+ *   12 rail tabs are an emoji over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
  *
  * Hover is REAL pointer movement (the host's `mouseMove` command: webContents.sendInputEvent), not a dispatched event, and a
  * float sits where the panel opens, so a stacking fault (PR #168 B1: a missing `;` dropped `z-index: 1000`) fails check 3. Also:
@@ -352,10 +353,10 @@ async function main() {
   const s2 = a2.s;
   const strip = s2.rails[0] && s2.rails[0].rect;
   check('2: Pinned unpins: git is on the rail, not in the group', railMods(s2).join() === 'git' && !pinned(s2, 'git'), JSON.stringify(railMods(s2)));
-  check('2: ...the rail is a strip 28 px wide on the right edge, the full height', !!strip && Math.abs(strip.width - 28) <= 1 && Math.abs(strip.right - s2.dock.right) <= 1 && Math.abs(strip.height - s2.dock.height) <= 1,
+  check('2: ...the rail is a strip 52 px wide on the right edge, the full height', !!strip && Math.abs(strip.width - 52) <= 1 && Math.abs(strip.right - s2.dock.right) <= 1 && Math.abs(strip.height - s2.dock.height) <= 1,
     strip && JSON.stringify([strip.width, strip.right, s2.dock.right]));
   const t1 = termWidth(s2);
-  check('2: ...the terminal is narrower by about that strip, the boxes tile, terminal === fit === pty', Math.abs((t0 - t1) - 28) <= 2 && tiles(s2).length === 0 && a2.ok,
+  check('2: ...the terminal is narrower by about that strip, the boxes tile, terminal === fit === pty', Math.abs((t0 - t1) - 52) <= 2 && tiles(s2).length === 0 && a2.ok,
     `${t0} -> ${t1}; ${tiles(s2).join('; ')}; ${sizeText(s2)}`);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-unpinned.png') });
 
@@ -518,6 +519,7 @@ async function main() {
   check('9: a double-click on the empty tab bar unpins every tab of the group: no group is left, the rest of the modules are on the rail (the float stays)',
     a9.s.groups.length === 0 && onRail === IDS.length - 2 && a9.ok && tiles(a9.s).length === 0, JSON.stringify([a9.s.groups.length, onRail, tiles(a9.s)]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-all-unpinned.png') });
+  checkFaces('12: the dock rail', a9.s.rails.find(r => r.id === 'dock'));
 
   // 10: every tab stays reachable on a short window (PR #168 Y4)
   await view(app, 'squeeze', { height: 320 });
@@ -545,6 +547,48 @@ async function main() {
   check('11: ...and closes at once when the grace ends, with no slide-out stage', !!r11b && !sawClosing);
 
   await quitApp(app);
+
+  // 12: a folded group's rails (#159) look the same: a vertical one beside the terminal, a horizontal one under it
+  const lay = T.normalize({
+    version: 2, floats: [], rail: [], hidden: T.HIDDEN_UNTIL_USED.slice(), seat: {},
+    root: { type: 'split', dir: 'col', sizes: [0, 160], kids: [
+      { type: 'split', dir: 'row', sizes: [0, 220], kids: [{ type: 'term' }, { type: 'group', id: 'side', tabs: ['agents', 'vault', 'bugvault', 'fog', 'git'] }] },
+      { type: 'group', id: 'foot', tabs: ['models', 'projects', 'style', 'resources', 'ask'] },
+    ] },
+  }, IDS);
+  fs.writeFileSync(TREE_FILE, JSON.stringify(lay));
+  const second = await launchReady(container);
+  check('12: the window came up again with the folded-group layout', !!second.ready);
+  if (second.ready) {
+    await view(second.app, 'foldAll');
+    const a12 = await settled(second.app);
+    const rails = a12.s.rails.filter(r => r.id !== 'dock');
+    check('12: folding makes a vertical rail beside the terminal and a horizontal one under it', rails.some(r => r.dir === 'v') && rails.some(r => r.dir === 'h'), JSON.stringify(rails.map(r => [r.dir, r.modules.length])));
+    for (const r of rails) checkFaces('12: folded ' + r.dir + ' rail', r);
+    const vr = rails.find(r => r.dir === 'v');
+    const hr = rails.find(r => r.dir === 'h');
+    check('12: the vertical rail is 52 wide, the horizontal one is 34 tall', !!vr && !!hr && Math.abs(vr.rect.width - 52) <= 1 && Math.abs(hr.rect.height - 34) <= 1, JSON.stringify([vr && vr.rect.width, hr && hr.rect.height]));
+    await command(second.app, { cmd: 'screenshot', file: path.join(shots, '12-folded-group-rails.png') });
+    await quitApp(second.app);
+  }
+}
+
+// Rail tabs as faces (the design: emoji over a horizontal name, 11 px at most, one line, inside the tab).
+function checkFaces(what, rail) {
+  const faces = (rail && rail.faces) || [];
+  check(what + ': has tabs', faces.length > 0, String(faces.length));
+  const tab = (f) => TABS.find(t => t.id === f.module);
+  const vertical = rail && rail.dir === 'v';
+  check(what + ': each tab shows its emoji and its name, named for a screen reader by the label', faces.every(f => f.emoji === tab(f).emoji && f.name === tab(f).label && f.label === tab(f).label), JSON.stringify(faces.filter(f => f.emoji !== tab(f).emoji || f.name !== tab(f).label).map(f => f.module)));
+  check(what + ': no vertical text', faces.every(f => f.writingMode === 'horizontal-tb'), JSON.stringify([...new Set(faces.map(f => f.writingMode))]));
+  check(what + ': names are 11 px at most', faces.every(f => f.fontPx > 0 && f.fontPx <= 11), JSON.stringify(faces.map(f => [f.module, f.fontPx])));
+  check(what + ': every name is on one line', faces.every(f => f.nameRect.height <= 16), JSON.stringify(faces.map(f => [f.module, Math.round(f.nameRect.height)])));
+  if (vertical) {
+    check(what + ': every name sits inside the rail, none cut off', faces.every(f => f.nameRect.left >= rail.rect.left - 0.5 && f.nameRect.right <= rail.rect.right + 0.5), JSON.stringify(faces.map(f => [f.module, Math.round(f.nameRect.width), Math.round(f.fontPx * 10) / 10])));
+    check(what + ': the emoji is above its name', faces.every(f => f.emojiRect.bottom <= f.nameRect.top + 1), '');
+  } else {
+    check(what + ': the emoji is in front of its name', faces.every(f => f.emojiRect.right <= f.nameRect.left + 1), '');
+  }
 }
 
 main()
