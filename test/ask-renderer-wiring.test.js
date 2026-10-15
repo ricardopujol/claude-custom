@@ -51,7 +51,7 @@ test('What\'s this? on the reader brings the panel on screen (un-hiding it) befo
 });
 
 test('a card or a citation opens the reader at the line through the browser, which keeps the Files tab\'s highlight in step', () => {
-  assert.match(JS, /openAt: \(file, line, endLine\) => \{ repoBrowser\.openAt\(file, line, endLine\)\.catch\(\(\) => \{[^}]*\}\); \},/, 'the whole range, and a failed open is not an unhandled rejection (PR #169 Miguel G1)');
+  assert.match(JS, /openAt: \(file, line, endLine\) => repoBrowser\.openAt\(file, line, endLine\)\.catch\(\(\) => false\),/, 'the whole range; a failed open is not an unhandled rejection (PR #169 Miguel G1) and reads as "did not open", so it is not counted (PR #178 Miguel S1)');
   const browser = fs.readFileSync(path.join(APP, 'repo-browser.js'), 'utf8');
   assert.match(browser, /openAt: async \(path, line, endLine\) => \{ const r = await reader\.openAt\(path, line, endLine\); panel\.setSelected\(reader\.path\(\)\); return r; \},/);
 });
@@ -91,7 +91,8 @@ test('the explainer\'s picture goes through the agents\' own picker and upload m
   assert.strictEqual((JS.match(/\{ type: 'portrait', action: 'set', agent, state, path \}/g) || []).length, 1, 'one send for every portrait pick');
   assert.match(JS, /function askPickPortrait\(\) \{ return pickAndSetPortrait\(ASK_AGENT, 'sleeping'\); \}/);
   assert.match(JS, /pickAndSetPortrait\(agent, state\);\n\}\);/, 'the roster\'s pencil uses it too');
-  assert.strictEqual((JS.match(/'ask-explainer'/g) || []).length, 1, 'the name is typed once: const ASK_AGENT');
+  assert.strictEqual((JS.match(/'ask-explainer'/g) || []).length, 0, 'the id is not typed here at all: it is the display module\'s AGENT');
+  assert.match(JS, /const ASK_AGENT = window\.askExplainerDisplay\.AGENT;/);
   assert.match(JS, /if \(msg\.agent === ASK_AGENT && askPanel\) askPanel\.refresh\(\);/);
   assert.doesNotMatch(JS, /askShrinkImage|toDataURL/, 'no picker of the panel\'s own');
 });
@@ -117,14 +118,15 @@ test('the frame\'s variable exists before the panel is mounted: mounting paints 
 });
 
 test('the host is told when this window\'s Ask panel is on screen, on every change and again on a reattach', () => {
-  assert.match(JS, /function sendAskPanel\(open\) \{ sendJson\(\{ type: 'ask', op: 'panel', open \}\); \}/);
+  assert.match(JS, /function sendAskPanel\(open\) \{ return askRequester\.notify\('panel', \{ open \}\); \}/);
+  assert.doesNotMatch(JS, /sendJson\(\{ type: 'ask'/, 'no raw send of an ask frame: an older host would type it into the session (PR #178 Miguel B1)');
   const at = JS.indexOf('function askView() {');
   assert.match(JS.slice(at, JS.indexOf('\n}', at)), /sendAskPanel\(now\);/);
   assert.match(JS, /if \(askPanel && shownModules\.has\('ask'\)\) \{ askPanel\.show\(\); sendAskPanel\(true\); \}/);
 });
 
 test('opening a place from the panel tells the host (it counts the place and the explainer is happy), and its 🏅 opens the same give menu as the card, keyed by the fixed id', () => {
-  assert.match(JS, /onOpenPlace: \(\) => sendJson\(\{ type: 'ask', op: 'opened', seq: 0 \}\)/);
+  assert.match(JS, /onOpenPlace: \(\) => askRequester\.notify\('opened'\)/);
   assert.match(JS, /onMedal: \(btn\) => \{ const r = btn\.getBoundingClientRect\(\); openMedalMenu\(ASK_AGENT, r\.left, r\.bottom \+ 2\); \}/);
   assert.match(JS, /gamify: \(\) => \(explainerFrame \? \{ state: explainerFrame\.state, detail: explainerFrame\.detail \} : null\)/);
 });

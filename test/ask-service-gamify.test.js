@@ -121,17 +121,59 @@ test('opened: counts a place and tells the explainer, answers ok', async () => {
   assert.deepStrictEqual(log, [['opened'], ['p'], ['counts-changed']], 'the explainer is told first, so the counts frame already shows it happy');
 });
 
-test('a count that could not be written does not stop the answer or the happy flash', async () => {
+test('a count that could not be written does not stop the answer or the happy flash, and the refusal is LOGGED and returned (PR #178 Dexter F3)', async () => {
   const log = [];
+  const said = [];
   const bad = createAskService({
+    log: (...a) => said.push(a.join(' ')),
     cwd: 'C:\\proj', index: { get: () => ({ files: [] }), isRunning: () => false }, ollama: { check: async () => ({ ok: true }) }, claude: {},
     models: createModels({ localModel: 'm', readRecord: () => '{}' }), repoFor: () => ({ ask: async () => ({ ok: true, text: 't', citations: [], sources: [] }), status: async () => ({}) }),
     counts: { addQuestion: () => { throw new Error('locked'); }, addPlace: () => ({ ok: false, reason: 'unreadable' }) },
     explainer: { begin: () => 1, stage() {}, end() {}, placeOpened: () => log.push(['opened']) },
   });
   assert.strictEqual((await bad.handle({ ...ASK, op: 'ask', question: 'q' })).ok, true);
-  assert.strictEqual((await bad.handle({ ...ASK, op: 'opened' })).ok, true);
-  assert.ok(log.some(e => e[0] === 'opened'));
+  const o = await bad.handle({ ...ASK, op: 'opened' });
+  assert.deepStrictEqual([o.ok, o.reason], [false, 'unreadable'], 'opened returns the failure');
+  assert.ok(log.some(e => e[0] === 'opened'), 'but the explainer was still happy');
+  assert.ok(said.some(s => /question/.test(s) && /locked/.test(s)), 'a thrown count is logged');
+  assert.ok(said.some(s => /place/.test(s) && /unreadable/.test(s)), 'a refused count is logged with its reason');
+});
+
+test('PR #178 Dexter F3: a refused question count (EBUSY, newer-version) is logged with its reason, once per refusal, and the answer is still given', async () => {
+  const said = [];
+  const mk = (reason) => createAskService({
+    cwd: 'C:proj', index: { get: () => ({ files: [] }), isRunning: () => false }, ollama: { check: async () => ({ ok: true }) }, claude: {},
+    models: createModels({ localModel: 'm', readRecord: () => '{}' }), repoFor: () => ({ ask: async () => ({ ok: true, text: 't', citations: [], sources: [] }), status: async () => ({}) }),
+    counts: { addQuestion: () => ({ ok: false, reason }), addPlace: () => ({ ok: true }) }, log: (...a) => said.push(a.join(' ')),
+  });
+  for (const reason of ['unreadable', 'newer-version', 'write-failed', 'busy']) {
+    const r = await mk(reason).handle({ ...ASK, op: 'ask', question: 'q' });
+    assert.strictEqual(r.ok, true);
+    assert.ok(said.some(s => s.includes(reason)), reason);
+  }
+  assert.strictEqual(said.length, 4);
+});
+
+test('PR #178 Miguel I1: an answer whose run the explainer has forgotten starts a fresh run, so writing and a failure still register', async () => {
+  const log = [];
+  let n = 0;
+  const known = new Set();
+  const explainer = {
+    begin: () => { const t = ++n; known.add(t); log.push(['begin', t]); return t; },
+    stage: (t, s) => { const ok = known.has(t); log.push(['stage', t, s, ok]); return ok; },
+    end: (t, r) => { log.push(['end', t, r.ok, r.reason]); known.delete(t); },
+    placeOpened() {},
+  };
+  const s2 = createAskService({
+    cwd: 'C:proj', index: { get: () => ({ files: [] }), isRunning: () => false }, ollama: { check: async () => ({ ok: true }) }, claude: {},
+    models: createModels({ localModel: 'm', readRecord: () => '{}' }),
+    repoFor: () => ({ excerptsFor: async () => ({ ok: true, sent: [], prepared: {}, lineCounts: new Map() }), ask: async () => ({ ok: false, reason: 'ollama-down' }), status: async () => ({}) }),
+    explainer,
+  });
+  const p = await s2.handle({ ...ASK, op: 'places', question: 'q' });
+  known.clear();                                   // the explainer dropped the queued run (its clock ran out)
+  await s2.handle({ ...ASK, op: 'ask', question: 'q', retrieval: p.retrieval });
+  assert.deepStrictEqual(log.slice(2), [['stage', 1, 'writing', false], ['begin', 2], ['stage', 2, 'writing', true], ['end', 2, false, 'ollama-down']]);
 });
 
 test('without a counts store or an explainer the service behaves as before (and "opened" is still answered)', async () => {

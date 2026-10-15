@@ -22,7 +22,8 @@ const RS = node ? require('./roster-search-display') : root.rosterSearchDisplay;
 const AGENT = 'ask-explainer';
 const ROLE = 'Ask the repo';
 const TAG = 'local helper';
-const BASE_STATES = Object.freeze(['sleeping', 'working', 'happy', 'stressed']);
+// the agents' four, and 'resting': awake and calm between its work and sleep (host/ask-explainer.js; an agent's card has no such state)
+const BASE_STATES = Object.freeze(['sleeping', 'working', 'happy', 'stressed', 'resting']);
 // What the card says under the name while the explainer works (the agents say "reading" / "writing").
 const WORDS = Object.freeze({ reading: 'searching', writing: 'writing the explanation' });
 
@@ -58,9 +59,6 @@ function look(state, detail) {
   const l = ASD.describeState(state, detail);
   return Object.hasOwn(WORDS, l.detail) ? { ...l, words: WORDS[l.detail] } : l;
 }
-
-/** The Ask panel's header shows the same ring and badge as the card. */
-const headerState = (frame) => (frame ? look(frame.state, frame.detail) : null);
 
 const plural = (n, one, many) => (n === 1 ? one : many);
 /** "142 questions · 318 places opened", or null when the counts are unknown. */
@@ -105,7 +103,7 @@ function logPageHtml({ name, counts } = {}) {
   return `${head}<div class="alog-body">${body}</div>`;
 }
 
-const API = { AGENT, ROLE, TAG, WORDS, frameOf, tabFor, row, look, headerState, countsText, countsHtml, tagHtml, entry, matches, portraitFor, logPageHtml };
+const API = { AGENT, ROLE, TAG, WORDS, frameOf, tabFor, row, look, countsText, countsHtml, tagHtml, entry, matches, portraitFor, logPageHtml };
 if (node) module.exports = API;
 else root.askExplainerDisplay = API;
 

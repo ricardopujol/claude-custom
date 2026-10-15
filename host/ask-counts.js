@@ -67,7 +67,7 @@ function createAskCounts({ store } = {}) {
     return { ...result, counts: read() };
   }
 
-  return { read, addQuestion: () => bump('questions'), addPlace: () => bump('places'), STORE_KEY };
+  return { read, addQuestion: () => bump('questions'), addPlace: () => bump('places') };
 }
 
-module.exports = { createAskCounts, countsOf, KEY: STORE_KEY, STORE_KEY, VERSION };
+module.exports = { createAskCounts, countsOf, STORE_KEY, VERSION };

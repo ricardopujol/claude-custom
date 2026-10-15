@@ -430,7 +430,7 @@ test('earlier questions are listed after the second; they are this session\'s on
 
 test('gamify: with a state, the header portrait sits in a ring (data-state / data-detail) with the agents\' corner badge, and a 🏅 button is offered', () => {
   const reading = D.headerHtml({ ...model(), images: true, gamify: { state: 'working', detail: 'reading' } });
-  assert.match(reading, /<span class="ask-avatar" data-state="working" data-detail="reading">/);
+  assert.match(reading, /<span class="ask-avatar"[^>]* data-state="working" data-detail="reading">/);
   assert.match(reading, /<span class="state-badge" data-badge="reading"[^>]*>(?:📖|\u{1F4D6})<\/span>/u);
   assert.match(reading, /<button type="button" class="ask-medal" data-act="medal" title="Give Professor Byte a medal"[^>]*>🏅<\/button>/);
   const writing = D.headerHtml({ ...model(), images: true, gamify: { state: 'working', detail: 'writing' } });
@@ -454,4 +454,35 @@ test('gamify: the naming card (not named yet) has no medal button and no ring', 
 test('gamify: the medal button\'s title uses the explainer\'s name, escaped', () => {
   const h = D.headerHtml({ ...model({ profile: { ...named, name: '<b>Ada</b>' } }), images: true, gamify: { state: 'sleeping', detail: 'sleeping' } });
   assert.match(h, /title="Give &lt;b&gt;Ada&lt;\/b&gt; a medal"/);
+});
+
+// --- a place counts only when the reader really opened it (PR #178 Miguel S1) ---------------------------------------------------
+
+test('countOpen: the place is reported only after the reader says it opened (false, a throw or a rejection are not an open)', async () => {
+  const seen = [];
+  const note = () => seen.push('n');
+  await D.countOpen(Promise.resolve(undefined), note);
+  await D.countOpen(Promise.resolve(true), note);
+  await D.countOpen(true, note);
+  await D.countOpen(undefined, note);
+  assert.strictEqual(seen.length, 4, 'an open that said nothing bad is an open');
+  seen.length = 0;
+  await D.countOpen(Promise.resolve(false), note);
+  await D.countOpen(false, note);
+  await D.countOpen(Promise.reject(new Error('no')), note);
+  assert.deepStrictEqual(seen, []);
+  assert.doesNotThrow(() => D.countOpen(Promise.resolve(true), () => { throw new Error('x'); }));
+  assert.doesNotThrow(() => D.countOpen(true, null));
+});
+
+// --- the header's state is not colour only (PR #178 Miguel I2) ---------------------------------------------------------------------
+
+test('gamify: the header avatar names the state in words (accessible name and tooltip), the explainer\'s own words for what it is doing', () => {
+  const h = (g) => D.headerHtml({ ...model(), images: true, gamify: g });
+  assert.match(h({ state: 'working', detail: 'reading' }), /<span class="ask-avatar" role="img" aria-label="Professor Byte: searching" title="Professor Byte: searching" data-state="working" data-detail="reading">/);
+  assert.match(h({ state: 'working', detail: 'writing' }), /aria-label="Professor Byte: writing the explanation"/);
+  assert.match(h({ state: 'sleeping', detail: 'sleeping' }), /aria-label="Professor Byte: sleeping"/);
+  assert.match(h({ state: 'stressed', detail: 'stressed' }), /aria-label="Professor Byte: stressed"/);
+  const esc = D.headerHtml({ ...model({ profile: { ...named, name: '"><b>' } }), images: true, gamify: { state: 'happy', detail: 'happy' } });
+  assert.match(esc, /aria-label="&quot;&gt;&lt;b&gt;: happy"/);
 });

@@ -33,7 +33,7 @@ test('the host builds the Claude answerer from the claude it resolved for the se
 // --- gamification (BACKLOG #33): the explainer's life in the host ---------------------------------------------------------------------
 
 test('the host gives the service the explainer and the counts, and tells every window when either changes', () => {
-  assert.match(HOST_SRC, /createAskService\(\{\s*explainer: askExplainer, counts: askCounts, onCounts:/);
+  assert.match(HOST_SRC, /createAskService\(\{\s*log: \(\.\.\.a\) => console\.log\(\.\.\.a\), explainer: askExplainer, counts: askCounts, onCounts:/, 'a refused count is logged, not dropped (PR #178 Dexter F3)');
   assert.match(HOST_SRC, /askExplainer\.on\('change', broadcastExplainer\)/);
   assert.match(HOST_SRC, /const broadcastExplainer = \(\) => broadcastControl\(explainerFrame\(\)\)/);
 });

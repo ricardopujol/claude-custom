@@ -10,7 +10,7 @@ const fc = require('fast-check');
 
 const { tmpDir } = require('./tmp-dir');
 const { createStore } = require('../host/store');
-const { createAskCounts, KEY } = require('../host/ask-counts');
+const { createAskCounts, STORE_KEY: KEY } = require('../host/ask-counts');
 
 function setup() {
   const dir = tmpDir('ask-counts');

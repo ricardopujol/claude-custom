@@ -100,6 +100,17 @@ function cardsHtml(places, title) {
 // wording, the "agent images off" switch and the placeholder behave exactly as they do there. The host sends the results (status.portraits).
 const PM = typeof module !== 'undefined' && module.exports ? require('./portrait-media-display') : root.portraitMedia;
 
+/**
+ * A place counts as opened only when the reader says it opened: `result` is what openAt returned (a promise or a value); false, a
+ * rejection or a throw is not an open. `notify` is called at most once and its own failure is swallowed.
+ */
+function countOpen(result, notify) {
+  const settleOpen = (v) => { if (v !== false && typeof notify === 'function') { try { notify(); } catch { /* not the reader's problem */ } } };
+  if (result && typeof result.then === 'function') return result.then(settleOpen, () => {});
+  settleOpen(result);
+  return undefined;
+}
+
 /** The portrait result the profile points at: a chosen agent's picture, else the explainer's own; null until the host has said. */
 function portraitResult(portrait, host) {
   const ps = isObj(host) && isObj(host.portraits) ? host.portraits : null;
@@ -139,7 +150,9 @@ function headerHtml(m) {
   // With a state from the host the portrait wears the roster card's ring and corner badge, and a 🏅 gives the explainer a medal.
   const g = isObj(m.gamify) && isStr(m.gamify.state) ? m.gamify : null;
   const face = portraitHtml(profile, host, m.images);
-  const avatar = g ? `<span class="ask-avatar" data-state="${esc(g.state)}" data-detail="${esc(AX.look(g.state, g.detail).detail)}">${face}${ASD.badgeHtml(g.state, g.detail)}</span>` : face;
+  const said = g ? AX.look(g.state, g.detail) : null;
+  // the state in words too, not colour only: the ring is for the eye, this is for a screen reader and the tooltip
+  const avatar = g ? `<span class="ask-avatar" role="img" aria-label="${esc(profile.name)}: ${esc(said.words)}" title="${esc(profile.name)}: ${esc(said.words)}" data-state="${esc(g.state)}" data-detail="${esc(said.detail)}">${face}${ASD.badgeHtml(g.state, g.detail)}</span>` : face;
   const medalBtn = g ? `<button type="button" class="ask-medal" data-act="medal" title="Give ${esc(profile.name)} a medal" aria-label="Give ${esc(profile.name)} a medal">🏅</button>` : '';
   return `<div class="ask-head">${avatar}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
     + (explains ? `<span class="ask-for">explaining for: ${esc(lvl.label)} · <button type="button" class="ask-link" data-act="settings" data-from="change">change</button></span>` : '')
@@ -394,8 +407,11 @@ function mount({
     const { el, act } = hit;
     switch (act) {
       case 'open':
-        if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line')), Number(dataOf(el, 'end')) || undefined);
-        if (typeof onOpenPlace === 'function') onOpenPlace();        // a place it found was opened: counted by the host (BACKLOG #33)
+        if (typeof openAt === 'function') {
+          let result;
+          try { result = openAt(dataOf(el, 'file'), Number(dataOf(el, 'line')), Number(dataOf(el, 'end')) || undefined); } catch { break; }
+          countOpen(result, onOpenPlace);        // a place it found was opened: counted by the host (BACKLOG #33), only if the reader opened it
+        }
         break;
       case 'medal': if (typeof onMedal === 'function') onMedal(el); break;
       case 'example': ctl.ask(dataOf(el, 'q')); break;
@@ -468,7 +484,7 @@ function mount({
   };
 }
 
-const API = { mount, createPainter, announceOf, keyOf, portraitHtml, portraitResult, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, settingsHtml, esc, LEVELS, PRIVACY_CLAUDE, PRIVACY_LOCAL };
+const API = { mount, countOpen, createPainter, announceOf, keyOf, portraitHtml, portraitResult, formatText, cardHtml, cardsHtml, bodyHtml, headerHtml, namingHtml, emptyHtml, waitingHtml, answerHtml, noteHtml, footHtml, settingsHtml, esc, LEVELS, PRIVACY_CLAUDE, PRIVACY_LOCAL };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.askDisplay = API;
 

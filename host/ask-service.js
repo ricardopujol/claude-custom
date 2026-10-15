@@ -37,7 +37,7 @@ const { createAskRepo } = require('./ask-repo');
 
 // The explainer's picture is an AGENT's picture: it is uploaded through the agents' own path (`portrait set`, host/portrait-upload.js) under
 // this name, and the suggestions are the forge's generated agents (host/portraits.js tier 'forge'). Ricardo, 2026-10-13: "the agents' picker".
-const EXPLAINER_AGENT = 'ask-explainer';
+const { AGENT: EXPLAINER_AGENT } = require('../app/ask-explainer-display');   // the one id, shared with the page
 const SUGGESTION_MAX = 8;
 const QUESTION_KEY_CHARS = 500;
 const RETRIEVAL_MAX = 8;
@@ -219,7 +219,7 @@ function createRepoFactory({ index, ollama, claude }) {
 function createAskService({
   cwd, index, ollama, claude, models, repoFor, readSelection = defaultReadSelection, spawnOllama = defaultSpawnOllama,
   portraitOf = () => null, forgeAgents = () => [], now = Date.now,
-  explainer = null, counts = null, onCounts = () => {},
+  explainer = null, counts = null, onCounts = () => {}, log = () => {},
 } = {}) {
   // the index as far as it goes: while the first build runs, the files indexed so far (cards and examples come from them)
   const dataNow = () => (index && typeof index.snapshot === 'function' ? index.snapshot(cwd) : (index && typeof index.get === 'function' ? index.get(cwd) : null));
@@ -407,14 +407,28 @@ function createAskService({
     return token;
   };
   const liveBegin = () => (explainer ? guard(() => explainer.begin()) : undefined);
-  const liveStage = (t, stage) => { if (explainer && t !== undefined) guard(() => explainer.stage(t, stage)); };
+  // false: the explainer no longer knows that run
+  const liveStage = (t, stage) => (explainer && t !== undefined ? guard(() => explainer.stage(t, stage)) : undefined);
   const liveEnd = (t, r) => { if (explainer && t !== undefined) guard(() => explainer.end(t, { ok: !!(r && r.ok === true), reason: r && r.reason })); };
-  const countQuestion = () => {
-    if (!counts) return;
-    guard(() => counts.addQuestion());
+  // A count the store refuses (held file, a newer version's file, a failed write) can't be recomputed, so it is said, not dropped.
+  // -> null when counted (or no store), else the reason.
+  function bump(what, add) {
+    if (!counts) return null;
+    let r;
+    try { r = add(); } catch (err) {
+      log(`[ask] ${what} count failed:`, (err && err.message) || String(err));
+      return 'counts-error';
+    }
     guard(() => onCounts());
-  };
-  // a drill-down step ("What's this?" on a word of an answer) is not a question of its own
+    if (r && r.ok === false) {
+      log(`[ask] ${what} count refused:`, r.reason);
+      return r.reason || 'counts-error';
+    }
+    return null;
+  }
+  const countQuestion = () => { bump('question', () => counts.addQuestion()); };
+  // a drill-down step ("What's this?" on a word of an answer) is not a question of its own. The page says so and the host believes it: a
+  // page can only under-count itself.
   const isStep = (msg) => msg.step === true || (isStr(msg.term) && msg.term.trim() !== '');
 
   async function places(msg) {
@@ -433,8 +447,11 @@ function createAskService({
   // The answer ops continue the search's run (or start one) and end it with how the answer went.
   const answering = (inner) => async (msg) => {
     let token = takeRun(msg && msg.retrieval);
-    if (token === undefined) token = liveBegin();
-    liveStage(token, 'writing');
+    // a run the explainer has forgotten (its queue clock ran out) is begun again, so the writing and a failure still register
+    if (token === undefined || liveStage(token, 'writing') === false) {
+      token = liveBegin();
+      liveStage(token, 'writing');
+    }
     let r;
     try { r = await inner(msg); } catch (err) { liveEnd(token, { ok: false, reason: 'host-error' }); throw err; }
     liveEnd(token, r);
@@ -447,8 +464,8 @@ function createAskService({
   // The person opened a place the explainer found (a "Where to look" card or a citation): a count, and a moment of joy.
   async function opened() {
     if (explainer) guard(() => explainer.placeOpened());
-    if (counts) { guard(() => counts.addPlace()); guard(() => onCounts()); }
-    return { ok: true };
+    const refused = bump('place', () => counts.addPlace());
+    return refused === null ? { ok: true } : { ok: false, reason: refused };
   }
 
   async function startOllama() {
@@ -474,4 +491,4 @@ function createAskService({
   return { handle };
 }
 
-module.exports = { EXPLAINER_AGENT, createSpawnOllama, serveEnv, createAskService, createRepoFactory, claudeAsOllama, whyFor, placesFromCitations, placesFromRanges, examplesFrom, linesOf };
+module.exports = { RETRIEVAL_TTL_MS, EXPLAINER_AGENT, createSpawnOllama, serveEnv, createAskService, createRepoFactory, claudeAsOllama, whyFor, placesFromCitations, placesFromRanges, examplesFrom, linesOf };

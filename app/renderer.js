@@ -1273,7 +1273,8 @@ const askRequester = window.askRequester.createRequester({
 });
 // The explainer's picture goes through the AGENTS' picker: the OS file dialog (avatar:pick), then the same `portrait set` the roster's pencil
 // sends, under the agent name the host keeps for it (host/ask-service.js EXPLAINER_AGENT). True when a file was chosen and sent.
-const ASK_AGENT = 'ask-explainer';
+// the ONE id the explainer's medals, counts and picture are kept under (app/ask-explainer-display.js; host/ask-service.js reads it from there too)
+const ASK_AGENT = window.askExplainerDisplay.AGENT;
 // The host's last `explainer` frame, cleaned (app/ask-explainer-display.js frameOf); null until the host has said (or from an older host).
 // Declared here, before the panel is mounted: mounting paints once, and the paint asks for it.
 let explainerFrame = null;
@@ -1293,7 +1294,8 @@ const askPanel = askRoot ? window.askDisplay.mount({
   root: askRoot,
   storage: (() => { try { return localStorage; } catch { return null; } })(),
   request: (op, body) => askRequester.request(op, body),
-  openAt: (file, line, endLine) => { repoBrowser.openAt(file, line, endLine).catch(() => { /* the reader says why in its own note */ }); },
+  // resolves to what the reader said (false: it did not open), so a place that wasn't opened isn't counted; the reader says why in its own note
+  openAt: (file, line, endLine) => repoBrowser.openAt(file, line, endLine).catch(() => false),
   getSelection: () => window.getSelection(),
   pickPortrait: askPickPortrait,
   // the roster's own switch (declared further down this file: before it is set, or if it is off, the face is a placeholder)
@@ -1302,13 +1304,14 @@ const askPanel = askRoot ? window.askDisplay.mount({
   // here, and opening a place it found is counted by the host.
   gamify: () => (explainerFrame ? { state: explainerFrame.state, detail: explainerFrame.detail } : null),
   onMedal: (btn) => { const r = btn.getBoundingClientRect(); openMedalMenu(ASK_AGENT, r.left, r.bottom + 2); },
-  onOpenPlace: () => sendJson({ type: 'ask', op: 'opened', seq: 0 }),
+  onOpenPlace: () => askRequester.notify('opened'),
   onChange: () => explainerProfileChanged(),
 }) : null;
 let askWasShown = false;
 // Which windows have an Ask panel on screen decides whether the explainer is on the roster's Active tab (host/ask-explainer.js); per
 // socket on the host, so a reattach (hello) says it again.
-function sendAskPanel(open) { sendJson({ type: 'ask', op: 'panel', open }); }
+// Through the requester's gate: a host whose hello doesn't list `ask` would have the frame typed into the session (PR #178 Miguel B1).
+function sendAskPanel(open) { return askRequester.notify('panel', { open }); }
 function askView() {
   const now = shownModules.has('ask');
   if (!askPanel || now === askWasShown) return;
@@ -3887,7 +3890,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             medalBtn: !!card.querySelector('[data-medal-open]'), badge: badgeOf(card), hasFace: !!card.querySelector('.face .face-media'), faceSrc: (card.querySelector('.face .face-media') || {}).src || null,
             ringShadow: getComputedStyle(card.querySelector('.face')).boxShadow,
           } : null,
-          header: avatar ? { state: avatar.dataset.state, detail: avatar.dataset.detail, badge: badgeOf(avatar), medalBtn: !!root.querySelector('[data-act="medal"]'),
+          header: avatar ? { state: avatar.dataset.state, detail: avatar.dataset.detail, label: avatar.getAttribute('aria-label'), badge: badgeOf(avatar), medalBtn: !!root.querySelector('[data-act="medal"]'),
             ringShadow: getComputedStyle(avatar).boxShadow } : null,
           medalCount: (medalList || []).filter(e => e.agent === ASK_AGENT).reduce((n, e) => n + e.medals.length, 0),
           log: { open: agentLog.open, agent: agentLog.agent, text: agentLogEl ? agentLogEl.textContent : null, shelf: medalShelfEl ? medalShelfEl.textContent : null },

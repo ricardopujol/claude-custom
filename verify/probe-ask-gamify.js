@@ -13,7 +13,7 @@
  *   A  not on the roster until it is named (the host already sends its frame); named: on Active, tagged "local helper", Persona shows its
  *      name and Role shows "Ask the repo"; sorted like an agent (a working agent above it); counts read "0 questions · 0 places opened"
  *   B  asking: the card and the panel header go working with the writing badge and "writing the explanation"; the answer lands and it
- *      sleeps again with "1 question"
+ *      rests again with "1 question"
  *   C  opening a place from the answer makes it happy (ring + words), "1 place opened", and 8 s later asleep again
  *   D  medals: from its card and from the panel's 🏅 (the same give menu, titled with its name), the chip counts them, the log page shows
  *      the counts and the shelf with reasons, a medal comes off in two clicks
@@ -24,7 +24,7 @@
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN) and NO step asks a Claude model, so nothing bills. ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; the project is a temp git repo; registry, portraits, uploads, user data,
  * the Ask index and the explainer record are temp. The install-wide files the host writes under THIS checkout's .harness/state (the layout,
- * medals.json, ask-counts.json) are snapshotted and put back. Only PIDs this probe started are killed (never by name).
+ * medals.json, ask-counts.json) are snapshotted and put back: a live dev window on the SAME checkout loses any medal it gives during the run. Only PIDs this probe started are killed (never by name).
  */
 
 const { execFileSync } = require('child_process');
@@ -257,10 +257,11 @@ async function main() {
   const b2 = await until(s => s.card && s.card.detail === 'writing', 15000);
   check('B: ... with the writing badge ✏️ and "writing the explanation" under the name', !!b2 && b2.card.badge && b2.card.badge.icon === '✏️' && /writing the explanation/.test(b2.card.words), JSON.stringify(b2 && [b2.card.badge, b2.card.words]));
   check('B: the panel header wears the same state and badge', !!b2 && b2.header && b2.header.state === 'working' && b2.header.detail === 'writing' && b2.header.badge && b2.header.badge.icon === '✏️', JSON.stringify(b2 && b2.header));
+  check('B: the header avatar names the state in words, not colour only', !!b2 && b2.header.label === 'Ada: writing the explanation', JSON.stringify(b2 && b2.header.label));
   check('B: the working ring is drawn on the card and on the header portrait (a real box-shadow)', !!b2 && /rgb|#/.test(b2.card.ringShadow) && b2.card.ringShadow !== 'none' && b2.header.ringShadow !== 'none', JSON.stringify(b2 && [b2.card.ringShadow, b2.header.ringShadow]));
   check('B: a working explainer sorts with the working agents (before the sleeping ones)', !!b2 && b2.order.indexOf('ask-explainer') < b2.order.indexOf('zed'), JSON.stringify(b2 && b2.order));
   await shot('gamify-B-writing.png');
-  const b3 = await until(s => s.card && s.card.state === 'sleeping' && /^1 question/.test(s.card.counts || ''), 20000);
+  const b3 = await until(s => s.card && s.card.state === 'resting' && /^1 question/.test(s.card.counts || ''), 20000);
   check('B: the answer lands: asleep again, "1 question · 0 places opened"', !!b3, JSON.stringify(b3 && [b3.card.state, b3.card.counts]));
   if (!b3) return;
   const a3s = await waitFor(async () => { const s = await st(); return s.view === 'answer' ? s : null; }, 8000, 200);
@@ -273,8 +274,8 @@ async function main() {
   check('C: opening a place it found makes it happy (card and header)', !!c1 && c1.header.state === 'happy', JSON.stringify(c1 && [c1.card.state, c1.header]));
   check('C: ... "1 place opened"', !!c1 && /1 place opened/.test(c1.card.counts || ''), c1 && c1.card.counts);
   await shot('gamify-C-happy.png');
-  const c2 = await until(s => s.card && s.card.state === 'sleeping', 14000);
-  check('C: 8 seconds later it sleeps again', !!c2);
+  const c2 = await until(s => s.card && s.card.state === 'resting', 14000);
+  check('C: 8 seconds later it is calm again (resting; it sleeps after 90 s idle)', !!c2);
 
   // D -----------------------------------------------------------------------------------------------------------------------
   await exDo({ op: 'cardMedal' });
@@ -313,7 +314,7 @@ async function main() {
 
   // F -----------------------------------------------------------------------------------------------------------------------
   await fake.close();
-  await doIt({ op: 'type', text: 'Where is the toolbar rendered?' });
+  await doIt({ op: 'type', text: 'Where is the lock acquired?' });
   await doIt({ op: 'submit' });
   const f1 = await until(s => s.card && s.card.state === 'stressed', 30000);
   check('F: with Ollama stopped it is stressed, with the ring', !!f1 && f1.card.ringShadow !== 'none', f1 && f1.card.ringShadow);

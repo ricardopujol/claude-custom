@@ -121,11 +121,6 @@ test('portraitFor: an agent\'s picture chosen on the naming card follows that ag
   assert.strictEqual(X.portraitFor(NAMED, null, lookup), null);
 });
 
-test('the Ask panel\'s header gets the same ring and badge as the card: the same look() of the same frame', () => {
-  const f = frame({ panels: 1, state: 'working', detail: 'writing' });
-  assert.deepStrictEqual(X.headerState(f), X.look('working', 'writing'));
-  assert.strictEqual(X.headerState(null), null);
-});
 
 test('PROPERTY: a rename never loses medals or counts: the card row, the medals key and the counts do not depend on the name', () => {
   const list = [{ agent: X.AGENT, medals: [{ id: 'a', kind: 'fast' }, { id: 'b', kind: 'spot-on' }] }, { agent: 'miguel', medals: [{ id: 'c', kind: 'fast' }] }];
@@ -152,4 +147,15 @@ test('PROPERTY: every frame the host can send is either refused or yields a look
     if (l.badge) assert.ok(f.state === 'working' || f.state === 'stressed');
     assert.strictEqual(X.tabFor(f, NAMED), panels > 0 ? 'active' : 'inactive');
   }));
+});
+
+// --- the resting state (PR #178 Miguel I4): awake and calm between its work and sleep ----------------------------------------------
+
+test('resting: the host\'s frame may say it, it is drawn awake with no ring or badge, and it sorts after happy and before sleeping', () => {
+  assert.deepStrictEqual(X.frameOf(frame({ state: 'resting', detail: 'resting' })).state, 'resting');
+  const l = X.look('resting', 'resting');
+  assert.deepStrictEqual([l.state, l.detail, l.words, l.badge], ['resting', 'resting', 'resting', null]);
+  const rows = ['sleeping', 'resting', 'happy', 'stressed', 'working'].map(s => ({ agent: s, state: s, detail: s }));
+  assert.deepStrictEqual(agentStateDisplay.sortRows(rows).map(r => r.agent), ['working', 'stressed', 'happy', 'resting', 'sleeping']);
+  assert.strictEqual(X.tabFor(X.frameOf(frame({ state: 'resting', detail: 'resting', panels: 1 })), NAMED), 'active');
 });

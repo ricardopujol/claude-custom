@@ -478,7 +478,7 @@ askExplainer.on('change', broadcastExplainer);
 // The counts are install-wide and another tab's host may raise them: tell OUR windows (polled from the 1 s clock, like the medals).
 const askCountsWatch = createChangeWatch({ read: () => askCounts.read(), onChange: broadcastExplainer });
 const askService = createAskService({
-  explainer: askExplainer, counts: askCounts, onCounts: () => { askCountsWatch.note(askCounts.read()); broadcastExplainer(); },
+  log: (...a) => console.log(...a), explainer: askExplainer, counts: askCounts, onCounts: () => { askCountsWatch.note(askCounts.read()); broadcastExplainer(); },
   cwd: CWD, index: askIndex, ollama: askOllama, claude: askClaude,
   models: createAskModels({ localModel: askOllama.answerModel, readRecord: seams.askRecord ? () => fs.readFileSync(seams.askRecord, 'utf8') : undefined }),
   repoFor: createRepoFactory({ index: askIndex, ollama: askOllama, claude: askClaude }),
