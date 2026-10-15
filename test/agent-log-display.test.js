@@ -571,3 +571,11 @@ test('shouldFollow: pinned to the bottom unless the reader scrolled up', () => {
   assert.strictEqual(d.shouldFollow(null), true);
   assert.strictEqual(d.shouldFollow({ scrollTop: NaN, clientHeight: 100, scrollHeight: 1000 }), true);
 });
+
+test('a log opened with a ready-made page (the Ask explainer has no transcript) shows that page and nothing of a transcript', () => {
+  const D = require('../app/agent-log-display');
+  const page = '<div class="alog-head">head</div><div class="alog-body">counts</div>';
+  const model = { ...D.emptyLog(), open: true, agent: 'ask-explainer', waiting: false, page };
+  assert.strictEqual(D.renderAgentLog(model), page);
+  assert.strictEqual(D.renderAgentLog({ ...model, page: undefined }).includes('counts'), false, 'without a page it is the transcript log again');
+});

@@ -425,3 +425,33 @@ test('earlier questions are listed after the second; they are this session\'s on
   assert.match(h, /Earlier this session \(2\)/);
   assert.match(h, /data-act="goto" data-id="1">first</);
 });
+
+// --- gamification: the header's portrait wears the same ring and badge as the roster card (BACKLOG #33) --------------------------
+
+test('gamify: with a state, the header portrait sits in a ring (data-state / data-detail) with the agents\' corner badge, and a 🏅 button is offered', () => {
+  const reading = D.headerHtml({ ...model(), images: true, gamify: { state: 'working', detail: 'reading' } });
+  assert.match(reading, /<span class="ask-avatar" data-state="working" data-detail="reading">/);
+  assert.match(reading, /<span class="state-badge" data-badge="reading"[^>]*>(?:📖|\u{1F4D6})<\/span>/u);
+  assert.match(reading, /<button type="button" class="ask-medal" data-act="medal" title="Give Professor Byte a medal"[^>]*>🏅<\/button>/);
+  const writing = D.headerHtml({ ...model(), images: true, gamify: { state: 'working', detail: 'writing' } });
+  assert.match(writing, /data-badge="writing"[^>]*>✏️/);
+  const asleep = D.headerHtml({ ...model(), images: true, gamify: { state: 'sleeping', detail: 'sleeping' } });
+  assert.match(asleep, /data-state="sleeping" data-detail="sleeping"/);
+  assert.doesNotMatch(asleep, /state-badge/, 'the four base states have a ring and no badge');
+});
+
+test('gamify: without a state (the host has not spoken) the header is exactly what it was, and the medal button is not offered', () => {
+  const plain = D.headerHtml({ ...model(), images: true });
+  assert.match(plain, /<span class="ask-portrait" aria-hidden="true">/);
+  assert.doesNotMatch(plain, /ask-avatar|ask-medal|state-badge/);
+});
+
+test('gamify: the naming card (not named yet) has no medal button and no ring', () => {
+  const h = D.headerHtml({ ...model({ profile: P.load(null) }), images: true, gamify: { state: 'sleeping', detail: 'sleeping' } });
+  assert.doesNotMatch(h, /ask-medal|ask-avatar/);
+});
+
+test('gamify: the medal button\'s title uses the explainer\'s name, escaped', () => {
+  const h = D.headerHtml({ ...model({ profile: { ...named, name: '<b>Ada</b>' } }), images: true, gamify: { state: 'sleeping', detail: 'sleeping' } });
+  assert.match(h, /title="Give &lt;b&gt;Ada&lt;\/b&gt; a medal"/);
+});

@@ -261,6 +261,8 @@ function renderNotes(model) {
 /** The log panel's HTML, or '' when no log is open. */
 function renderAgentLog(model) {
   if (!model || !model.open) return '';
+  // A page that was made for it (the Ask explainer has no transcript: app/ask-explainer-display.js logPageHtml) is shown as it is.
+  if (typeof model.page === 'string' && model.page) return model.page;
   const agent = String(model.agent);
 
   const head =

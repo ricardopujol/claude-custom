@@ -3,7 +3,8 @@
  * The "Ask the repo" panel (BACKLOG #33, DESIGN_ASK_REPO.md "The design, in full" + Round 8): a dock tab, 360 px, that explains and
  * finds code with a local model (or Haiku / Sonnet through the real claude CLI), named and pictured by its owner.
  *
- *   mount({ doc, root, request, openAt(file, line, endLine), storage, setTimer, clearTimer, getSelection, pickPortrait, imagesEnabled }) ->
+ *   mount({ doc, root, request, openAt(file, line, endLine), storage, setTimer, clearTimer, getSelection, pickPortrait, imagesEnabled,
+ *           gamify() -> { state, detail } | null, onMedal(button), onOpenPlace(), onChange() }) ->
  *     { show(), hide(), ask(question), explainSelection({ file, start, end }), state(), profile(), probe(action, args) }
  *
  *   request(op, body) -> Promise<reply>   app/ask-requester.js, over the tab's own host socket; the page never names a worktree
@@ -27,6 +28,9 @@
 
 const S = typeof module !== 'undefined' && module.exports ? require('./ask-panel-state') : root.askPanelState;
 const P = typeof module !== 'undefined' && module.exports ? require('./ask-profile') : root.askProfile;
+// the agents' own corner badge, and the explainer's look of a state (BACKLOG #33 gamification)
+const ASD = typeof module !== 'undefined' && module.exports ? require('./agent-state-display').agentStateDisplay : root.agentStateDisplay;
+const AX = typeof module !== 'undefined' && module.exports ? require('./ask-explainer-display') : root.askExplainerDisplay;
 
 const LEVELS = Object.freeze([
   { id: 'new', label: 'New to coding' },
@@ -132,10 +136,15 @@ function headerHtml(m) {
   if (!profile.named) return '<div class="ask-head"><span class="ask-title">Ask the repo</span></div>';
   const lvl = LEVELS.find(l => l.id === profile.level) || LEVELS[2];
   const explains = S.canExplain(host, profile.model);
-  return `<div class="ask-head">${portraitHtml(profile, host, m.images)}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
+  // With a state from the host the portrait wears the roster card's ring and corner badge, and a 🏅 gives the explainer a medal.
+  const g = isObj(m.gamify) && isStr(m.gamify.state) ? m.gamify : null;
+  const face = portraitHtml(profile, host, m.images);
+  const avatar = g ? `<span class="ask-avatar" data-state="${esc(g.state)}" data-detail="${esc(AX.look(g.state, g.detail).detail)}">${face}${ASD.badgeHtml(g.state, g.detail)}</span>` : face;
+  const medalBtn = g ? `<button type="button" class="ask-medal" data-act="medal" title="Give ${esc(profile.name)} a medal" aria-label="Give ${esc(profile.name)} a medal">🏅</button>` : '';
+  return `<div class="ask-head">${avatar}<div class="ask-head-text"><span class="ask-label">${esc(labelOf(profile, host))}</span>`
     + (explains ? `<span class="ask-for">explaining for: ${esc(lvl.label)} · <button type="button" class="ask-link" data-act="settings" data-from="change">change</button></span>` : '')
     + (profile.model !== 'local' ? `<span class="ask-privacy">${esc(PRIVACY_CLAUDE)}</span>` : '')
-    + '</div><button type="button" class="ask-gear" data-act="settings" data-from="gear" title="Name, level, About me and model" aria-label="Settings" aria-expanded="'
+    + '</div>' + medalBtn + '<button type="button" class="ask-gear" data-act="settings" data-from="gear" title="Name, level, About me and model" aria-label="Settings" aria-expanded="'
     + (m.ui.settings ? 'true' : 'false') + '">⚙</button></div>';
 }
 
@@ -314,6 +323,7 @@ function createPainter(doc) {
 
 function mount({
   doc, root: host, request, openAt, storage = null, setTimer, clearTimer, getSelection = null, pickPortrait = null, imagesEnabled = () => true,
+  gamify = () => null, onMedal = null, onOpenPlace = null, onChange = null,
 } = {}) {
   const Controller = typeof module !== 'undefined' && module.exports ? require('./ask-controller') : root.askController;
   const timers = setTimer ? { setTimer, clearTimer } : {};
@@ -334,10 +344,11 @@ function mount({
   let highlighted = '';
   let lastSaid = '';
 
-  const ctl = Controller.create({ request, storage, pickPortrait, onChange: () => paint(), ...timers });
+  // after a paint the page is told (the roster's card follows a new name or picture); a page that threw must not stop the panel
+  const ctl = Controller.create({ request, storage, pickPortrait, onChange: () => { paint(); if (typeof onChange === 'function') { try { onChange(); } catch { /* the page's own problem */ } } }, ...timers });
 
   function paint() {
-    const m = { ...ctl.state(), images: imagesEnabled() === true };
+    const m = { ...ctl.state(), images: imagesEnabled() === true, gamify: gamify() };
     painter('top', top, headerHtml(m));
     const bodyChanged = painter('body', body, bodyHtml(m));
     painter('foot', foot, footHtml(m));
@@ -382,7 +393,11 @@ function mount({
     if (!hit) return;
     const { el, act } = hit;
     switch (act) {
-      case 'open': if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line')), Number(dataOf(el, 'end')) || undefined); break;
+      case 'open':
+        if (typeof openAt === 'function') openAt(dataOf(el, 'file'), Number(dataOf(el, 'line')), Number(dataOf(el, 'end')) || undefined);
+        if (typeof onOpenPlace === 'function') onOpenPlace();        // a place it found was opened: counted by the host (BACKLOG #33)
+        break;
+      case 'medal': if (typeof onMedal === 'function') onMedal(el); break;
       case 'example': ctl.ask(dataOf(el, 'q')); break;
       case 'goto': ctl.select(Number(dataOf(el, 'id'))); break;
       case 'settings': ctl.toggleSettings(); break;

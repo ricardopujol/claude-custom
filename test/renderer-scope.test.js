@@ -97,7 +97,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/games-rules.js, app/games-round.js, app/games-display.js (BACKLOG #41): the wait games. ONE name leaves each IIFE.
   'gamesRules', 'gamesRound', 'gamesDisplay',
   // app/ask-panel-state.js, app/ask-profile.js, app/ask-requester.js, app/ask-display.js (BACKLOG #33): Ask the repo. ONE name leaves each IIFE.
-  'askPanelState', 'askProfile', 'askRequester', 'askController', 'askDisplay',
+  'askPanelState', 'askProfile', 'askExplainerDisplay', 'askRequester', 'askController', 'askDisplay',
   // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
   'resourcesDisplay',
   // app/canvas-display.js (BACKLOG #71): Claude's panel. ONE name leaves its IIFE.

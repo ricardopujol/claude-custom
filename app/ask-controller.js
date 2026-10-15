@@ -109,15 +109,17 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
     if (isObj(reply) && reply.ok === false && reply.reason === 'index-building') refreshStatus();
   }
 
-  function ask(question, { parent, modelId, direction } = {}) {
+  function ask(question, { parent, modelId, direction, step } = {}) {
     const q = isStr(question) ? question.trim() : '';
     if (!q) return undefined;
     if (!profile.named) { changed(); return undefined; }
     const mid = modelId || profile.model;
     ui.startMsg = '';
-    st = S.begin(st, { kind: 'question', label: q, request: { question: q, ...(direction ? { direction } : {}) }, parent, model: mid, name: profile.name });
+    // a drill-down step is marked, so the host doesn't count it as a question of its own (BACKLOG #33 gamification)
+    const mark = step === true ? { step: true } : {};
+    st = S.begin(st, { kind: 'question', label: q, request: { question: q, ...(direction ? { direction } : {}), ...mark }, parent, model: mid, name: profile.name });
     changed();
-    return run(S.current(st).id, 'ask', { question: q }, mid);
+    return run(S.current(st).id, 'ask', { question: q, ...mark }, mid);
   }
 
   function explain(sel, opts = {}) {
@@ -171,7 +173,7 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
       const { file, start, end } = cur.request;
       return explain({ file, start, end }, { parent: cur.id, modelId: cur.model, term: t, answer: cur.reply && cur.reply.text });
     }
-    return ask(`What is ${t}?`, { parent: cur.id, modelId: cur.model });
+    return ask(`What is ${t}?`, { parent: cur.id, modelId: cur.model, step: true });
   }
 
   // "Ask Claude instead": the same thing, once, of a Claude model. The quota is used only on this click.
@@ -184,7 +186,7 @@ function create({ request, storage = null, pickPortrait = null, onChange = () =>
       if (S.canExplain(host, claudeId)) return explain({ file, start, end }, { parent: cur.parent, modelId: claudeId, label: cur.label, term, answer });
       return ask(`What is the code in ${file} lines ${start}-${end} doing?`, { parent: cur.parent, modelId: claudeId });
     }
-    return ask((cur.request && cur.request.question) || cur.label, { parent: cur.parent, modelId: claudeId });
+    return ask((cur.request && cur.request.question) || cur.label, { parent: cur.parent, modelId: claudeId, step: !!(cur.request && cur.request.step === true) });
   }
 
   function select(id) { st = S.select(st, id); changed(); }

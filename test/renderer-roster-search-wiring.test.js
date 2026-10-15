@@ -44,7 +44,8 @@ test('an empty search result uses the shared message and escapes it', () => {
 
 test('both tabs filter by the same query', () => {
   assert.match(JS, /inactive\.filter\(rosterMatches\)/);
-  assert.match(JS, /visible\.filter\(\(r\) => rosterMatches\(r\.agent\)\)/);
+  // the Ask explainer's row (BACKLOG #33 gamification) is matched by its own name, role and tag (app/ask-explainer-display.js)
+  assert.match(JS, /visible\.filter\(\(r\) => \(r\.explainer \? exMatches\(\) : rosterMatches\(r\.agent\)\)\)/);
 });
 
 test('the toggle is saved through main, not localStorage', () => {

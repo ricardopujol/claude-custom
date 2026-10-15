@@ -95,3 +95,68 @@ test('the explainer\'s picture goes through the agents\' own picker and upload m
   assert.match(JS, /if \(msg\.agent === ASK_AGENT && askPanel\) askPanel\.refresh\(\);/);
   assert.doesNotMatch(JS, /askShrinkImage|toDataURL/, 'no picker of the panel\'s own');
 });
+
+// --- gamification (BACKLOG #33): the explainer joins the roster ----------------------------------------------------------------------
+
+test('the explainer\'s display module loads after the profile and before the panel that uses it (and after the agents\' state display it builds on)', () => {
+  const at = (n) => HTML.indexOf(`<script src="./${n}.js">`);
+  assert.ok(at('agent-state-display') !== -1 && at('roster-search-display') !== -1);
+  assert.ok(at('agent-state-display') < at('ask-explainer-display') && at('roster-search-display') < at('ask-explainer-display'));
+  assert.ok(at('ask-profile') < at('ask-explainer-display') && at('ask-explainer-display') < at('ask-display'));
+});
+
+test('the host\'s explainer frame, in the handshake and on its own, is what the roster draws from; a frame that isn\'t one is no frame', () => {
+  assert.match(JS, /explainerFrame = window\.askExplainerDisplay\.frameOf\(msg\.explainer\);/);
+  assert.match(JS, /if \(msg\.type === 'explainer'\) \{\n\s+applyExplainer\(msg\);\n\s+return;\n\s+\}/);
+  assert.match(JS, /function applyExplainer\(raw\) \{\n\s+explainerFrame = window\.askExplainerDisplay\.frameOf\(raw\);\n\s+renderRoster\(\);/);
+});
+
+test('the frame\'s variable exists before the panel is mounted: mounting paints once, and the paint asks for it', () => {
+  assert.ok(JS.indexOf('let explainerFrame = null;') !== -1 && JS.indexOf('let explainerFrame = null;') < JS.indexOf('const askPanel = '));
+  assert.strictEqual((JS.match(/let explainerFrame\b/g) || []).length, 1);
+});
+
+test('the host is told when this window\'s Ask panel is on screen, on every change and again on a reattach', () => {
+  assert.match(JS, /function sendAskPanel\(open\) \{ sendJson\(\{ type: 'ask', op: 'panel', open \}\); \}/);
+  const at = JS.indexOf('function askView() {');
+  assert.match(JS.slice(at, JS.indexOf('\n}', at)), /sendAskPanel\(now\);/);
+  assert.match(JS, /if \(askPanel && shownModules\.has\('ask'\)\) \{ askPanel\.show\(\); sendAskPanel\(true\); \}/);
+});
+
+test('opening a place from the panel tells the host (it counts the place and the explainer is happy), and its 🏅 opens the same give menu as the card, keyed by the fixed id', () => {
+  assert.match(JS, /onOpenPlace: \(\) => sendJson\(\{ type: 'ask', op: 'opened', seq: 0 \}\)/);
+  assert.match(JS, /onMedal: \(btn\) => \{ const r = btn\.getBoundingClientRect\(\); openMedalMenu\(ASK_AGENT, r\.left, r\.bottom \+ 2\); \}/);
+  assert.match(JS, /gamify: \(\) => \(explainerFrame \? \{ state: explainerFrame\.state, detail: explainerFrame\.detail \} : null\)/);
+});
+
+test('the roster: the explainer is placed by its own rules (Active while a panel is open, else Inactive), sorted with the agents, and is never listed twice', () => {
+  assert.match(JS, /window\.askExplainerDisplay\.tabFor\(explainerFrame, explainerProfile\(\)\)/);
+  assert.match(JS, /const inactive = inactiveAll\.filter\(a => a !== ASK_AGENT\);/);
+  assert.match(JS, /window\.agentStateDisplay\.sortRows\(\[\.\.\.roster\.values\(\), \.\.\.\(exRow \? \[exRow\] : \[\]\)\]\)/);
+  assert.match(JS, /if \(roster\.size === 0 && !exRow\) \{/, 'an empty roster with the explainer on it is not "no agents yet"');
+  assert.match(JS, /if \(r\.explainer\) return explainerCardHtml\(false\);/);
+});
+
+test('the explainer\'s card is keyed by the fixed id for medals, and wears its name only as a label (a rename keeps its medals)', () => {
+  const at = JS.indexOf('function explainerCardHtml(inactive) {');
+  const card = JS.slice(at, JS.indexOf('\nfunction explainerLogPage', at));
+  assert.match(card, /cardButtonHtml\(ASK_AGENT, explainerLabel\(\)\)/);
+  assert.match(card, /countOf\(medalList, ASK_AGENT\)/);
+  assert.match(card, /data-agent="\$\{ASK_AGENT\}"/);
+  assert.match(card, /badgeHtml\(f\.state, f\.detail\)/, 'the agents\' own corner badge');
+  assert.match(card, /X\.countsHtml\(f\.counts\)/);
+  assert.match(JS, /closest\('\.agent:not\(\[data-state="inactive"\]\), \.agent\[data-explainer\]'\)/, 'right-click gives a medal on its inactive card too');
+});
+
+test('its log page is its counts (no transcript is asked of the host), and closing it tells the host nothing', () => {
+  const at = JS.indexOf('function openAgentLog(agent) {');
+  const open = JS.slice(at, JS.indexOf('\n}\n', at));
+  assert.ok(open.indexOf('if (agent === ASK_AGENT)') < open.indexOf("sendAgentLog('open', agent)"));
+  assert.match(open, /page: explainerLogPage\(\)/);
+  assert.match(JS, /if \(agentLog\.open && agentLog\.agent !== ASK_AGENT\) sendAgentLog\('close', agentLog\.agent\);/);
+});
+
+test('a new name or picture on the naming card moves the roster card too', () => {
+  assert.match(JS, /onChange: \(\) => explainerProfileChanged\(\),/);
+  assert.match(JS, /JSON\.stringify\(\[p\.named, p\.name, p\.portrait\]\)/);
+});

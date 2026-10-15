@@ -14,6 +14,11 @@
  *   ask           -> { ok, text, places, model, ... }      a typed question: the 9/10 path (short answer + "Where to look")
  *   explain       -> the same, for a SELECTION and a level (the explainer; refused for a model with no passed record)
  *   start-ollama  -> { ok } | { ok, already }
+ *   opened        -> { ok }     the person opened a place it found (a card or a citation): counted, and the explainer is happy
+ *
+ * THE EXPLAINER'S LIFE (BACKLOG #33 gamification): with an `explainer` (host/ask-explainer.js) and a `counts` store (host/ask-counts.js) the
+ * ops above also tell them what happened: a search is a run that is "reading", the answer that names its `retrieval` continues it as
+ * "writing", a failed answer stresses it, a good typed question or What's this? (not a drill-down step) counts as a question answered.
  *
  * THE MODEL IS CHOSEN PER REQUEST, from a fixed list: Local (Ollama), Haiku, Sonnet (the real claude CLI, host/ask-claude.js). An unknown
  * name from the page is the local model, never a command. THE EXPLAINER IS REFUSED, in the host and not only in the page, for any model
@@ -214,6 +219,7 @@ function createRepoFactory({ index, ollama, claude }) {
 function createAskService({
   cwd, index, ollama, claude, models, repoFor, readSelection = defaultReadSelection, spawnOllama = defaultSpawnOllama,
   portraitOf = () => null, forgeAgents = () => [], now = Date.now,
+  explainer = null, counts = null, onCounts = () => {},
 } = {}) {
   // the index as far as it goes: while the first build runs, the files indexed so far (cards and examples come from them)
   const dataNow = () => (index && typeof index.snapshot === 'function' ? index.snapshot(cwd) : (index && typeof index.get === 'function' ? index.get(cwd) : null));
@@ -309,7 +315,7 @@ function createAskService({
     return { ok: true, sel, query, total: all.length };
   }
 
-  async function places(msg) {
+  async function placesInner(msg) {
     const modelId = modelOf(msg);
     const repo = repoFor(modelId);
     let query;
@@ -330,7 +336,7 @@ function createAskService({
     return { ok: true, places: placesFromRanges(ex.sent, (ex.prepared && ex.prepared.data) || dataNow()), keywordOnly: ex.keywordOnly, stale: ex.stale, retrieval, ...(ex.building ? { building: ex.building } : {}) };
   }
 
-  async function ask(msg) {
+  async function askInner(msg) {
     if (!isStr(msg.question) || !msg.question.trim()) return { ok: false, reason: 'empty-question' };
     const modelId = modelOf(msg);
     const reused = takeRetrieval(msg.retrieval, 'question', msg.question.trim().slice(0, QUESTION_KEY_CHARS), modelId);
@@ -344,7 +350,7 @@ function createAskService({
     );
   }
 
-  async function explain(msg) {
+  async function explainInner(msg) {
     const modelId = modelOf(msg);
     if (!models.explainerOn(modelId)) return { ok: false, reason: 'explainer-off', model: modelId };
     const s = await selectionOf(msg);
@@ -384,6 +390,67 @@ function createAskService({
     );
   }
 
+  // ---- the explainer's life (BACKLOG #33 gamification) -----------------------------------------------------------------------------
+  // A search ("reading") and the answer that follows it ("writing") are ONE run of the explainer: the search keeps its run under the
+  // retrieval id it hands out, and the answer that names the id continues it. Both are best-effort: a throwing explainer or counts
+  // store never costs the person their answer.
+  const guard = (fn) => { try { return fn(); } catch { return undefined; } };
+  const runs = new Map();
+  const RUNS_MAX = 16;
+  const keepRun = (id, token) => {
+    runs.set(id, token);
+    while (runs.size > RUNS_MAX) runs.delete(runs.keys().next().value);
+  };
+  const takeRun = (id) => {
+    const token = isStr(id) ? runs.get(id) : undefined;
+    if (token !== undefined) runs.delete(id);
+    return token;
+  };
+  const liveBegin = () => (explainer ? guard(() => explainer.begin()) : undefined);
+  const liveStage = (t, stage) => { if (explainer && t !== undefined) guard(() => explainer.stage(t, stage)); };
+  const liveEnd = (t, r) => { if (explainer && t !== undefined) guard(() => explainer.end(t, { ok: !!(r && r.ok === true), reason: r && r.reason })); };
+  const countQuestion = () => {
+    if (!counts) return;
+    guard(() => counts.addQuestion());
+    guard(() => onCounts());
+  };
+  // a drill-down step ("What's this?" on a word of an answer) is not a question of its own
+  const isStep = (msg) => msg.step === true || (isStr(msg.term) && msg.term.trim() !== '');
+
+  async function places(msg) {
+    const token = liveBegin();
+    let r;
+    try { r = await placesInner(msg); } catch (err) { liveEnd(token, { ok: false, reason: 'host-error' }); throw err; }
+    if (r && r.ok === true && isStr(r.retrieval)) {
+      keepRun(r.retrieval, token);
+      liveStage(token, 'queued');
+    } else {
+      liveEnd(token, r);
+    }
+    return r;
+  }
+
+  // The answer ops continue the search's run (or start one) and end it with how the answer went.
+  const answering = (inner) => async (msg) => {
+    let token = takeRun(msg && msg.retrieval);
+    if (token === undefined) token = liveBegin();
+    liveStage(token, 'writing');
+    let r;
+    try { r = await inner(msg); } catch (err) { liveEnd(token, { ok: false, reason: 'host-error' }); throw err; }
+    liveEnd(token, r);
+    if (r && r.ok === true && !isStep(msg)) countQuestion();
+    return r;
+  };
+  const ask = answering(askInner);
+  const explain = answering(explainInner);
+
+  // The person opened a place the explainer found (a "Where to look" card or a citation): a count, and a moment of joy.
+  async function opened() {
+    if (explainer) guard(() => explainer.placeOpened());
+    if (counts) { guard(() => counts.addPlace()); guard(() => onCounts()); }
+    return { ok: true };
+  }
+
   async function startOllama() {
     const s = await ollama.check();
     if (s.ok || s.reason === 'model-missing') return { ok: true, already: true };
@@ -391,7 +458,7 @@ function createAskService({
     return r && r.ok === true ? { ok: true } : { ok: false, reason: (r && r.reason) || 'spawn-failed' };
   }
 
-  const OPS = { status, places, ask, explain, 'start-ollama': startOllama };
+  const OPS = { status, places, ask, explain, opened, 'start-ollama': startOllama };
 
   async function handle(msg) {
     if (!isObj(msg)) return { type: 'ask', ok: false, reason: 'bad-message' };
