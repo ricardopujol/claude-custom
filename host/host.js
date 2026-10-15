@@ -1370,15 +1370,15 @@ const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(ms
 
 // Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
 // calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.
-let nightWasOn = false;       // usage counters: a night counts once, when it begins
+let nightWasOn = false;
+function noteNight(payload) {     // usage counters: a night counts once, when it begins
+  if (payload && !nightWasOn) usageCounters.bump('bedtime:start');
+  nightWasOn = Boolean(payload);
+}
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => {
-    if (payload && !nightWasOn) usageCounters.bump('bedtime:start');
-    nightWasOn = Boolean(payload);
-    broadcastControl({ type: 'bedtime', bedtime: payload });
-  },
+  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another

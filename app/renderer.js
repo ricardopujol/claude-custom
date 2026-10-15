@@ -7314,8 +7314,8 @@ async function sampleBackgroundFrame() {
 // `ask` names the section asking; the host echoes it on the reply, so a
 // refusal is shown where it belongs even with another request in flight.
 function sendStyle(section, payload) {
-  usage('style:changed');
   try { ws.send(JSON.stringify({ type: 'style', ask: section, ...payload })); } catch { /* not attached */ }
+  usage('style:changed');
 }
 
 // A refusal means every preview on screen is uncommitted: repaint what the

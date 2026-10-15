@@ -51,7 +51,7 @@ test('What\'s this? on the reader brings the panel on screen (un-hiding it) befo
 });
 
 test('a card or a citation opens the reader at the line through the browser, which keeps the Files tab\'s highlight in step', () => {
-  assert.match(JS, /openAt: \(file, line, endLine\) => \{ repoBrowser\.openAt\(file, line, endLine\)\.catch\(\(\) => \{[^}]*\}\); \},/, 'the whole range, and a failed open is not an unhandled rejection (PR #169 Miguel G1)');
+  assert.match(JS, /openAt: \(file, line, endLine\) => \{ usage\('ask:place-opened'\); repoBrowser\.openAt\(file, line, endLine\)\.catch\(\(\) => \{[^}]*\}\); \},/, 'the whole range, and a failed open is not an unhandled rejection (PR #169 Miguel G1)');
   const browser = fs.readFileSync(path.join(APP, 'repo-browser.js'), 'utf8');
   assert.match(browser, /openAt: async \(path, line, endLine\) => \{ const r = await reader\.openAt\(path, line, endLine\); panel\.setSelected\(reader\.path\(\)\); return r; \},/);
 });
