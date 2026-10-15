@@ -12,7 +12,9 @@ const fc = require('fast-check');
 
 const { tmpDir } = require('./tmp-dir');
 const { createStore } = require('../host/store');
-const { createUsageCounters, isValidKey, STATIC_KEYS, STORE_KEY } = require('../host/usage-counters');
+const { createUsageCounters, isValidKey, STATIC_KEYS, PANEL_IDS, GAME_IDS, STORE_KEY, KEYS_MAX, RATE_PER_SEC, LOCK_WAIT_MS } = require('../host/usage-counters');
+const sideTabs = require('../app/side-tabs');
+const gamesDisplay = require('../app/games-display');
 
 function setup() {
   const dir = tmpDir('usage-counters');
@@ -46,7 +48,7 @@ test('other keys are written back verbatim, unknown ones too', () => {
 
 test('junk keys are refused and nothing is written', () => {
   const { counters, file } = setup();
-  for (const k of ['', 'nope', 'ask:question ', '__proto__', 'panel:', 'panel:../x', 'panel:' + 'a'.repeat(40), 'game:x:stop', 7, null, undefined, {}, 'C:\\secret\\path']) {
+  for (const k of ['', 'nope', 'panel:zzz', 'panel:Git', 'game:nope:start', 'panel:__proto__', 'ask:question ', '__proto__', 'panel:', 'panel:../x', 'panel:' + 'a'.repeat(40), 'game:x:stop', 7, null, undefined, {}, 'C:\\secret\\path']) {
     assert.strictEqual(counters.bump(k).ok, false, String(k));
   }
   assert.strictEqual(fs.existsSync(file), false);
@@ -55,7 +57,7 @@ test('junk keys are refused and nothing is written', () => {
 test('isValidKey takes the fixed keys, panel:<id> and game:<name>:start', () => {
   for (const k of STATIC_KEYS) assert.ok(isValidKey(k), k);
   assert.ok(isValidKey('panel:git'));
-  assert.ok(isValidKey('game:snake:start'));
+  assert.ok(isValidKey('game:stack:start'));
   assert.ok(!isValidKey('panel:Git Hub'));
 });
 
@@ -151,4 +153,81 @@ test('PROPERTY: a file the store can\'t read is byte-for-byte unchanged after an
     for (const k of bumps) counters.bump(k);
     assert.strictEqual(fs.readFileSync(file, 'utf8'), content);
   }), { numRuns: 30 });
+});
+
+test('the real-id lists are the dock\'s panels and the games\' names (I1)', () => {
+  assert.deepStrictEqual([...PANEL_IDS].sort(), sideTabs.TABS.map((t) => t.id).sort());
+  assert.deepStrictEqual([...GAME_IDS], gamesDisplay.ORDER);
+  assert.ok(isValidKey('panel:fog'));
+  assert.ok(!isValidKey('panel:zzz'));
+});
+
+test('a flood is dropped: RATE_PER_SEC bumps in one instant, then a second later there is room again (I2)', () => {
+  const { counters, clock } = setup();
+  let ok = 0;
+  for (let i = 0; i < RATE_PER_SEC + 10; i++) if (counters.bump('wand:click').ok) ok++;
+  assert.strictEqual(ok, RATE_PER_SEC);
+  assert.deepStrictEqual(counters.bump('wand:click'), { ok: false, reason: 'rate' });
+  clock.advance(1000);
+  assert.strictEqual(counters.bump('wand:click').ok, true);
+  while (counters.bump('wand:click').ok);
+  clock.advance(500);
+  let half = 0;
+  for (let i = 0; i < 30; i++) if (counters.bump('wand:click').ok) half++;
+  assert.ok(half >= RATE_PER_SEC / 2 - 1 && half <= RATE_PER_SEC / 2 + 1, String(half));
+});
+
+test('the edit runs inside the store lock, with a short wait, and a lock that cannot be taken is busy (I4/I2)', () => {
+  const { store } = setup();
+  let inLock = false; let opts = null;
+  const spy = {
+    ...store,
+    withLock(name, fn, o) { opts = o; inLock = true; try { return store.withLock(name, fn, o); } finally { inLock = false; } },
+    readState(name) { assert.ok(inLock, 'read outside the lock'); return store.readState(name); },
+    write(name, v) { assert.ok(inLock, 'write outside the lock'); return store.write(name, v); },
+  };
+  assert.strictEqual(createUsageCounters({ store: spy }).bump('git:opened').ok, true);
+  assert.deepStrictEqual(opts, { deadlineMs: LOCK_WAIT_MS });
+  const busy = createUsageCounters({ store: { ...store, withLock() { throw new Error('lock timeout'); } } });
+  assert.deepStrictEqual(busy.bump('git:opened'), { ok: false, reason: 'busy' });
+});
+
+test('the unreadable file is set aside ONCE: a second, different bad file does not replace the first copy', () => {
+  const { counters, file } = setup();
+  fs.writeFileSync(file, 'AAA{');
+  counters.bump('git:opened');
+  fs.writeFileSync(file, 'BBB{');
+  counters.bump('git:opened');
+  assert.strictEqual(fs.readFileSync(`${file}.bad`, 'utf8'), 'AAA{');
+});
+
+test('a copy that fails is logged, and the bump is still refused', () => {
+  const { store } = setup();
+  const lines = [];
+  const bad = { ...store, readState: () => ({ status: 'corrupt', value: null }), pathOf: () => { throw new Error('no path'); } };
+  const c = createUsageCounters({ store: bad, log: (l) => lines.push(l) });
+  assert.strictEqual(c.bump('git:opened').reason, 'unreadable');
+  assert.match(lines.join('\n'), /could not set the unreadable counters file aside: no path/);
+});
+
+test('the file holds at most KEYS_MAX keys: a new key is refused (bytes unchanged), an existing one still counts', () => {
+  const { counters, file } = setup();
+  const seeded = {};
+  for (let i = 0; i < KEYS_MAX; i++) seeded['old:' + i] = { count: 1, last: 'x' };
+  seeded['git:opened'] = { count: 4, last: 'x' };
+  delete seeded['old:0'];
+  const text = JSON.stringify(seeded);
+  fs.writeFileSync(file, text);
+  assert.deepStrictEqual(counters.bump('wand:click'), { ok: false, reason: 'full' });
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), text);
+  assert.strictEqual(counters.bump('git:opened').count, 5);
+});
+
+test('extra fields on the bumped key survive (a newer build\'s data), and an overflowing count is refused', () => {
+  const { counters, file } = setup();
+  fs.writeFileSync(file, JSON.stringify({ 'git:opened': { count: 1, last: 'x', extra: 1 } }));
+  counters.bump('git:opened');
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8'))['git:opened'].extra, 1);
+  fs.writeFileSync(file, JSON.stringify({ 'git:opened': { count: Number.MAX_SAFE_INTEGER, last: 'x' } }));
+  assert.deepStrictEqual(counters.bump('git:opened'), { ok: false, reason: 'full' });
 });

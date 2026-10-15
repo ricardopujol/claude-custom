@@ -265,10 +265,10 @@ function createStore({ dir } = {}) {
    * So the vault opts in, and everything else keeps the old, documented,
    * accepted risk.
    */
-  function withLock(name, fn) {
+  function withLock(name, fn, opts) {
     const file = pathOf(name);          // validates the name before touching disk
     fs.mkdirSync(dir, { recursive: true });
-    return withFileLock(`${file}.lock`, fn);
+    return withFileLock(`${file}.lock`, fn, opts);
   }
 
   return { read, readState, write, update, withLock, pathOf, dir };

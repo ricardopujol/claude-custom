@@ -1198,6 +1198,11 @@ let layoutLoaded = false;        // the stored layout has been read: until then 
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
 let kbRefresh = () => {};        // redraws the keyboard move's zones after the dock was redrawn (set by initKeyboardMove)
 let shownModules = new Set();
+// Usage counters: a panel counts as shown only after the layout loaded and within a moment of a user gesture (a tab, the rail, the
+// Window menu), so a launch, a layout load or leaving lean mode doesn't rank the default panels as most used.
+let usageGestureAt = -Infinity;
+const usageGesture = () => { usageGestureAt = Date.now(); };
+const usageGestureLive = () => layoutLoaded && helloSeen && Date.now() - usageGestureAt < 1500;
 let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
 let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
 let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
@@ -1733,7 +1738,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
-  for (const id of fx.newlyShown) { usage('panel:' + id); onModuleShown(id); }
+  for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -1794,6 +1799,7 @@ function saveGlobalLayout(l) {
 // `userAction: false` is for a change that is not a click or a key (a float's move or resize): it leaves keyboard
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
 function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
+  usageGesture();
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
@@ -1852,7 +1858,7 @@ function railEvent(ev) {
   else if (railSt.pending !== was.pending) {
     clearTimeout(railOpenTimer);
     const m = railSt.pending;
-    railOpenTimer = setTimeout(() => { railOpenTimer = null; if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
+    railOpenTimer = setTimeout(() => { railOpenTimer = null; usageGesture(); if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
   }
   if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
   else if (!was.leaving) {
@@ -1879,6 +1885,7 @@ function togglePin(id, { justThisTab = false } = {}) {
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
 // panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
 function revealModule(id) {
+  usageGesture();
   const l = placementLayout();
   if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
   else if ((l.rail || []).includes(id)) {
@@ -1890,6 +1897,7 @@ function revealModule(id) {
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
+  usageGesture();
   railEvent({ type: 'click', module: id });
   renderLayout({ refit: false });
   const goes = window.dockTreeView.peekFocus(!!peek, byKeyboard);
@@ -1902,7 +1910,7 @@ function openPeek(id, byKeyboard) {
 }
 
 // A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
-function selectModule(id) { commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
+function selectModule(id) { usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
 // Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
@@ -5297,8 +5305,6 @@ if (agentLogEl) {
 // --- medals and the speech bubbles (BACKLOG #80) ---------------------------------------------------
 // Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
 // medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
-// Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
-function usage(key) { sendJson({ type: 'usage', key }); }
 // Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
 function usage(key) { sendJson({ type: 'usage', key }); }
 function sendJson(obj) {

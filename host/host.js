@@ -433,6 +433,7 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine();
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
+const usageCounters = createUsageCounters({ store, log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
@@ -1273,7 +1274,6 @@ driftFirst.unref();
 // writes on a state change (host/bubbles.js). The bubbles share the summaries' GPU slot file, so a bubble never runs beside a
 // summary; they are decoration only and never an error (Ollama down: nothing). The probe seams point both at a fake Ollama.
 const medals = createMedals({ store });
-const usageCounters = createUsageCounters({ store });      // invisible: which features get used (scripts/usage-report.js)
 const bubbleSettings = createBubbleSettings({ store });
 const bubbleActivity = createBubbleActivity();
 const bubbles = createBubbles({

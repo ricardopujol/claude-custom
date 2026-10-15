@@ -21,7 +21,7 @@ test('a usage frame is a KNOWN control type, or it would be typed into the pty a
 });
 
 test('the host counts a usage frame and answers nothing', () => {
-  assert.match(HOST, /const usageCounters = createUsageCounters\(\{ store \}\);/);
+  assert.match(HOST, /const usageCounters = createUsageCounters\(\{ store, log:/);
   assert.match(HOST, /msg\.type === 'usage'\) \{\s*usageCounters\.bump\(msg\.key\);[^\n]*\n\s*return;/);
 });
 
@@ -35,12 +35,25 @@ test('every key the code bumps is valid', () => {
 });
 
 test('the renderer counts a panel per show and the games report their name', () => {
-  assert.match(RENDERER, /for \(const id of fx\.newlyShown\) \{ usage\('panel:' \+ id\); onModuleShown\(id\); \}/);
+  assert.match(RENDERER, /for \(const id of fx\.newlyShown\) \{ if \(usageGestureLive\(\)\) usage\('panel:' \+ id\); onModuleShown\(id\); \}/);
   assert.match(RENDERER, /onStart: \(game\) => usage\('game:' \+ game \+ ':start'\)/);
 });
 
-test('every dock panel id makes a valid key', () => {
+test('every dock panel id makes a valid key (the list itself is pinned in usage-counters.test.js)', () => {
   const ids = [...read('app', 'side-tabs.js').matchAll(/\{ id: '([^']+)'/g)].map((m) => m[1]);
   assert.ok(ids.length > 5);
   for (const id of ids) assert.ok(isValidKey('panel:' + id), id);
+});
+
+test('a panel counts only after the layout loaded, and only within a moment of a user gesture (I3)', () => {
+  assert.match(RENDERER, /const usageGestureLive = \(\) => layoutLoaded && helloSeen && Date\.now\(\) - usageGestureAt < 1500;/);
+  assert.match(RENDERER, /if \(usageGestureLive\(\)\) usage\('panel:' \+ id\); onModuleShown\(id\);/);
+  for (const site of ['function selectModule(id) { usageGesture();', 'function revealModule(id) {\n  usageGesture();', 'function openPeek(id, byKeyboard) {\n  usageGesture();', 'railOpenTimer = null; usageGesture();', 'refit = true } = {}) {\n  usageGesture();']) {
+    assert.ok(RENDERER.replace(/\r\n/g, '\n').includes(site), site);
+  }
+  assert.strictEqual((RENDERER.match(/function usage\(key\)/g) || []).length, 1, 'defined once');
+});
+
+test('the host builds the counters above the canvas control that bumps them', () => {
+  assert.ok(HOST.indexOf('const usageCounters = createUsageCounters') < HOST.indexOf('const canvasControl = createCanvasControl'));
 });
