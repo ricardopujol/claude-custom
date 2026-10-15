@@ -196,3 +196,129 @@ test('the remaining time never lowers a longer keepAlive: 5m asked with neverSho
   await c.generate({ system: 'S', prompt: 'P', keepAlive: '5m', neverShorten: true });
   assert.strictEqual(sentKeep(calls), '5m');
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M6) --------------------------------------------------------
+
+const okGen = (response = 'an answer') => json(200, { response });
+const sentOptions = (calls) => calls.find(x => x.path === '/api/generate').body;
+
+test('M6: the base URL loses every trailing slash, and a GET carries no body or content type while a POST carries both', async () => {
+  const seen = [];
+  const c = createAskOllama({
+    baseUrl: 'http://127.0.0.1:11434///', answerModel: 'm', embedModel: 'e',
+    fetchImpl: async (url, init) => { seen.push([url, init]); return url.endsWith('/api/tags') ? tags('m:latest', 'e:latest') : json(200, { embeddings: [[1]] }); },
+  });
+  await c.check();
+  await c.embed(['t']);
+  assert.strictEqual(seen[0][0], 'http://127.0.0.1:11434/api/tags');
+  assert.strictEqual(seen[0][1].method, 'GET');
+  assert.strictEqual(seen[0][1].headers, undefined);
+  assert.strictEqual(seen[0][1].body, undefined);
+  assert.strictEqual(seen[1][0], 'http://127.0.0.1:11434/api/embed');
+  assert.strictEqual(seen[1][1].method, 'POST');
+  assert.deepStrictEqual(seen[1][1].headers, { 'content-type': 'application/json' });
+  assert.strictEqual(typeof seen[1][1].body, 'string');
+});
+
+test('M6: check: a status other than 200, or a body that is not a models list, is ollama-down (and a reply is not retried)', async () => {
+  for (const reply of [json(500, { models: [] }), json(404, { models: [] }), json(201, { models: [] }), json(200, { models: 'x' }), json(200, []), json(200, null), json(200, { nope: 1 })]) {
+    const { c, calls } = client(() => reply);
+    assert.deepStrictEqual(await c.check(), { ok: false, reason: 'ollama-down' }, String(reply.status));
+    assert.strictEqual(calls.length, 1, 'a reply that arrived is not asked for twice');
+  }
+});
+
+test('M6: check: the first call after a quiet spell may fail; the second one answers', async () => {
+  let n = 0;
+  const { c, calls } = client(() => { if (++n === 1) throw new Error('quiet'); return tags('qwen2.5-coder:latest', 'snowflake-arctic-embed2:latest'); });
+  assert.deepStrictEqual(await c.check(), { ok: true, answer: true, embed: true });
+  assert.strictEqual(calls.length, 2);
+  const down = client(() => { throw new Error('x'); });
+  await down.c.check();
+  assert.strictEqual(down.calls.length, 2, 'asked twice, then down');
+});
+
+test('M6: check reads model names from name or model, ignores junk entries, and matches a bare name as :latest', async () => {
+  const { c } = client(() => json(200, { models: [null, 'str', 5, { name: 5 }, { name: 'other:1' }, { model: 'qwen2.5-coder:latest' }, { name: 'snowflake-arctic-embed2', model: 'x' }] }));
+  assert.deepStrictEqual(await c.check(), { ok: true, answer: true, embed: false }, 'a bare name is not the :latest one');
+  const both = client(() => json(200, { models: [{ name: 'qwen2.5-coder:latest' }, { model: 'snowflake-arctic-embed2:latest' }] }));
+  assert.deepStrictEqual(await both.c.check(), { ok: true, answer: true, embed: true });
+  const bare = createAskOllama({ fetchImpl: async () => tags('qwen3.5:4b', 'snowflake-arctic-embed2:latest'), answerModel: 'qwen3.5:4b', embedModel: 'snowflake-arctic-embed2' });
+  assert.deepStrictEqual(await bare.check(), { ok: true, answer: true, embed: true }, 'the configured bare name gets :latest');
+});
+
+test('M6: a status outside 200-299 is http with that status; 200 and 299 are replies, 199 and 300 are not', async () => {
+  for (const [status, good] of [[199, false], [200, true], [299, true], [300, false], [500, false]]) {
+    const { c } = client(() => json(status, { embeddings: [[1]] }));
+    const r = await c.embed(['a']);
+    assert.strictEqual(r.ok, good, String(status));
+    if (!good) assert.deepStrictEqual(r, { ok: false, reason: 'http', status });
+  }
+});
+
+test('M6: an embedding list is good only when every row is a non-empty list of finite numbers', async () => {
+  const bad = [[[1], []], [[1], 'x'], [[1, NaN]], [[Infinity]], [['1']], [[1], [2, null]], [[]], [[1], null]];
+  for (const v of bad) {
+    const { c } = client(() => json(200, { embeddings: v }));
+    assert.deepStrictEqual(await c.embed(v.map(() => 't')), { ok: false, reason: 'bad-reply' }, JSON.stringify(v));
+  }
+  const { c } = client(() => json(200, { embeddings: [[0.5, -2], [3]] }));
+  assert.deepStrictEqual(await c.embed(['a', 'b']), { ok: true, vectors: [[0.5, -2], [3]] });
+  const none = client(() => json(200, null));
+  assert.deepStrictEqual(await none.c.embed(['a']), { ok: false, reason: 'bad-reply' });
+});
+
+test('M6: temperature is sent only when it is a finite number of zero or more, otherwise 0', async () => {
+  const sent = async (temperature) => { const { c, calls } = client(() => okGen()); await c.generate({ system: 's', prompt: 'p', temperature }); return sentOptions(calls).options.temperature; };
+  assert.strictEqual(await sent(0.7), 0.7);
+  assert.strictEqual(await sent(0), 0);
+  for (const junk of [-0.5, NaN, Infinity, '0.5', null, undefined, true]) assert.strictEqual(await sent(junk), 0, String(junk));
+});
+
+test('M6: a reply is text only when the body is an object with a string response; the text is trimmed', async () => {
+  for (const body of [null, [], 'x', { response: 5 }, { response: null }, { response: '   ' }, {}]) {
+    const { c } = client(() => json(200, body));
+    assert.deepStrictEqual(await c.generate({ system: 's', prompt: 'p' }), { ok: false, reason: 'bad-reply' }, JSON.stringify(body));
+  }
+  const { c } = client(() => okGen('  hello \n'));
+  assert.deepStrictEqual(await c.generate({ system: 's', prompt: 'p' }), { ok: true, text: 'hello' });
+});
+
+test('M6: neverShorten reads a keepAlive like "45s", "5m" or "2h" (trimmed), and anything else is sent as given without asking /api/ps', async () => {
+  const run = async (keepAlive) => {
+    const { c, calls } = client((path) => (path === '/api/ps' ? json(200, { models: [] }) : okGen()));
+    await c.generate({ system: 's', prompt: 'p', keepAlive, neverShorten: true });
+    return [calls.some(x => x.path === '/api/ps'), sentOptions(calls).keep_alive];
+  };
+  for (const ok of ['45s', '5m', '2h', ' 45s ', '0s']) assert.strictEqual((await run(ok))[0], true, ok);
+  for (const bad of ['45sx', 'x45s', '45', 's', '1.5m', '-5s', '5 m', '45S']) assert.deepStrictEqual(await run(bad), [false, bad], bad);
+});
+
+test('M6: neverShorten: the remaining time wins only when it is MORE than the floor; at exactly the floor the plain value goes', async () => {
+  const T = Date.parse('2026-10-14T12:00:00Z');
+  const run = async (keepAlive, secondsLeft, extra = {}) => {
+    const { c, calls } = client((path) => (path === '/api/ps' ? json(extra.status || 200, { models: [{ name: 'qwen2.5-coder:latest', expires_at: new Date(T + secondsLeft * 1000).toISOString() }] }) : okGen()), { now: () => T });
+    await c.generate({ system: 's', prompt: 'p', keepAlive, neverShorten: true });
+    return sentOptions(calls).keep_alive;
+  };
+  assert.strictEqual(await run('1m', 60), '1m');
+  assert.strictEqual(await run('1m', 61), '61s');
+  assert.strictEqual(await run('1m', 59), '1m');
+  assert.strictEqual(await run('45s', 600, { status: 500 }), '45s', 'a failing ps changes nothing');
+  assert.strictEqual(await run('45s', 600, { status: 404 }), '45s');
+});
+
+test('M6: a request that is given no usable time bound falls back to its own default and still goes through', async () => {
+  const slow = (extra) => createAskOllama({ answerModel: 'm', embedModel: 'e', ...extra, fetchImpl: async () => { await new Promise(r => setTimeout(r, 25)); return json(200, { embeddings: [[1]], response: 'ok' }); } });
+  for (const bad of [0, -5, NaN, Infinity, '5', null]) {
+    assert.strictEqual((await slow({ embedTimeoutMs: bad }).embed(['a'])).ok, true, `embed ${String(bad)}`);
+    assert.strictEqual((await slow({ generateTimeoutMs: bad }).generate({ system: 's', prompt: 'p' })).ok, true, `generate ${String(bad)}`);
+  }
+  assert.deepStrictEqual(await slow({ embedTimeoutMs: 5 }).embed(['a']), { ok: false, reason: 'timeout' }, 'a real bound still cuts');
+});
+
+test('M6: numPredict is used when it is a positive finite number, else the default', async () => {
+  const sent = async (numPredict) => { const { c, calls } = client(() => okGen()); await c.generate({ system: 's', prompt: 'p', numPredict }); return sentOptions(calls).options.num_predict; };
+  assert.strictEqual(await sent(100), 100);
+  for (const junk of [0, -1, NaN, Infinity, '100', null, undefined]) assert.strictEqual(await sent(junk), 350, String(junk));
+});

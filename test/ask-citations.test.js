@@ -121,3 +121,85 @@ test('r2 #5: an unsent docs/my notes.md is not cited as the sent root my notes.m
   assert.ok(!r.citations.some(c => c.file === 'my notes.md'), JSON.stringify(r));
   assert.strictEqual(extractCitations('see my notes.md:12', two, { ranges }).citations[0].file, 'my notes.md');
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M4) --------------------------------------------------------
+
+test('M4: repeated ./ prefixes are stripped from the front only', () => {
+  assert.deepStrictEqual(extractCitations('see ./././host/a.js:3', files).citations, [{ file: 'host/a.js', line: 3, endLine: 3 }]);
+  assert.deepStrictEqual(extractCitations('see /host/a.js:3', files).citations, [{ file: 'host/a.js', line: 3, endLine: 3 }]);
+  const mid = extractCitations('see host/./a.js:3', files);
+  assert.deepStrictEqual(mid.citations, [], 'a ./ inside a path names no indexed file');
+  assert.deepStrictEqual(mid.dropped, ['host/./a.js:3']);
+});
+
+test('M4: a path with a space is matched whole from the index\'s own names, and the citations come out in the order of the text', () => {
+  const withSpace = new Map([['host/a.js', 100], ['docs/my notes.md', 40], ['app/b.js', 10]]);
+  const r = extractCitations('first host/a.js:1, then docs/my notes.md:12-14, then app/b.js:3 and docs/my notes.md:2', withSpace);
+  assert.deepStrictEqual(r.citations, [
+    { file: 'host/a.js', line: 1, endLine: 1 },
+    { file: 'docs/my notes.md', line: 12, endLine: 14 },
+    { file: 'app/b.js', line: 3, endLine: 3 },
+    { file: 'docs/my notes.md', line: 2, endLine: 2 },
+  ]);
+  assert.deepStrictEqual(r.dropped, []);
+});
+
+test('M4: with no spaced names in the index, a bare :line is not a citation of anything', () => {
+  const r = extractCitations('at 10 :30 or (:45) and [:7]', files);
+  assert.deepStrictEqual(r, { citations: [], dropped: [] });
+});
+
+test('M4: a bare name after a cut path is the tail of that path only when the path ends right before it', () => {
+  const idx = new Map([['docs/notes.md', 30], ['src/x.js', 5]]);
+  const kept = extractCitations('see src/x then notes.md:3', idx);
+  assert.deepStrictEqual(kept.citations, [{ file: 'docs/notes.md', line: 3, endLine: 3 }], 'a slash-word further back is not a cut path');
+  const cut = extractCitations('see docs/other notes.md:3', idx);
+  assert.deepStrictEqual(cut.citations, []);
+  assert.deepStrictEqual(cut.dropped, ['notes.md:3']);
+});
+
+test('M4: a cut path is never cited, even when its tail is the name of a real root file', () => {
+  const idx = new Map([['notes.md', 5], ['docs/x.md', 3]]);
+  const r = extractCitations('see docs/other notes.md:2', idx);
+  assert.deepStrictEqual(r.citations, []);
+  assert.deepStrictEqual(r.dropped, ['notes.md:2']);
+  assert.deepStrictEqual(extractCitations('see notes.md:2', idx).citations, [{ file: 'notes.md', line: 2, endLine: 2 }], 'the same name, plainly, is a root file');
+});
+
+test('M4: a bare name resolves only when it carries no folder and exactly one indexed file has it', () => {
+  const idx = new Map([['lib/ghost.js', 10], ['a/same.js', 4], ['b/same.js', 4], ['top.js', 9]]);
+  assert.deepStrictEqual(extractCitations('ghost.js:3', idx).citations, [{ file: 'lib/ghost.js', line: 3, endLine: 3 }]);
+  assert.deepStrictEqual(extractCitations('docs/ghost.js:3', idx).citations, [], 'a named folder is a claim about that folder');
+  assert.deepStrictEqual(extractCitations('same.js:2', idx), { citations: [], dropped: ['same.js:2'] }, 'two files share the name');
+  assert.deepStrictEqual(extractCitations('top.js:2', idx).citations, [{ file: 'top.js', line: 2, endLine: 2 }]);
+});
+
+test('M4: a range written backwards is turned round, and a dropped range is reported with both ends once', () => {
+  assert.deepStrictEqual(extractCitations('host/a.js:50-40', files).citations, [{ file: 'host/a.js', line: 40, endLine: 50 }]);
+  assert.deepStrictEqual(extractCitations('host/a.js:7-7', files).citations, [{ file: 'host/a.js', line: 7, endLine: 7 }]);
+  const r = extractCitations('host/ghost.js:3-9 and again host/ghost.js:3-9, plus host/ghost.js:3 and app/b.js:99', files);
+  assert.deepStrictEqual(r.dropped, ['host/ghost.js:3-9', 'host/ghost.js:3', 'app/b.js:99']);
+});
+
+test('M4: with the ranges the model was shown, a citation must start inside one, end no later than it, and the edges count as inside', () => {
+  const ranges = new Map([['host/a.js', [[10, 20], [50, 60]]]]);
+  const cite = (t) => extractCitations(t, files, { ranges });
+  assert.deepStrictEqual(cite('host/a.js:10').citations, [{ file: 'host/a.js', line: 10, endLine: 10 }]);
+  assert.deepStrictEqual(cite('host/a.js:20').citations, [{ file: 'host/a.js', line: 20, endLine: 20 }]);
+  assert.deepStrictEqual(cite('host/a.js:9').citations, []);
+  assert.deepStrictEqual(cite('host/a.js:21').citations, []);
+  assert.deepStrictEqual(cite('host/a.js:15-90').citations, [{ file: 'host/a.js', line: 15, endLine: 20 }], 'clamped to the range it starts in');
+  assert.deepStrictEqual(cite('host/a.js:55-58').citations, [{ file: 'host/a.js', line: 55, endLine: 58 }]);
+  assert.deepStrictEqual(cite('app/b.js:2').citations, [], 'a file that was not sent at all');
+  assert.deepStrictEqual(cite('app/b.js:2').dropped, ['app/b.js:2']);
+});
+
+test('M4: a citation seen twice is kept once, by its file, line and end', () => {
+  const r = extractCitations('host/a.js:5-9 and host/a.js:5-9 and host/a.js:5 and host/a.js:5-10', files);
+  assert.deepStrictEqual(r.citations.map(c => [c.line, c.endLine]), [[5, 9], [5, 5], [5, 10]]);
+});
+
+test('M4: no text or no index is no citations', () => {
+  for (const t of [null, undefined, 5, {}]) assert.deepStrictEqual(extractCitations(t, files), { citations: [], dropped: [] });
+  for (const f of [null, undefined, {}, [], 'x']) assert.deepStrictEqual(extractCitations('host/a.js:1', f), { citations: [], dropped: [] });
+});

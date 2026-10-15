@@ -213,3 +213,62 @@ test('property: readers never change the writer count or the warning', () => {
     assert.strictEqual(occ ? occ.warn : false, base ? base.warn : false);
   }));
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+const CWD = 'C:/proj/wt';
+const ident = (port, parsed) => ({ port, parsed });
+const JUNK = [null, undefined, 'x', 7, true, [], {}, { port: 1 }, { port: 2, parsed: null }, { port: 3, parsed: 'str' }, { port: 4, parsed: 5 }];
+
+test('M11: siblingSessions skips junk entries and keeps the valid ones', () => {
+  const valid = ident(5000, { cwd: CWD, side: true, claudePid: 91, sessionId: 'sid-1' });
+  const got = side.siblingSessions([...JUNK, valid], { cwd: CWD, side: false, ownPort: 1 });
+  assert.deepStrictEqual(got, { pids: [91], sessionIds: ['sid-1'] });
+});
+
+test('M11: siblingSessions leaves out the host\'s own port, whether it is on the entry or on its identity file', () => {
+  const mk = (entryPort, parsedPort) => ident(entryPort, { cwd: CWD, side: true, claudePid: 91, sessionId: 'sid-1', port: parsedPort });
+  const ask = (e) => side.siblingSessions([e], { cwd: CWD, side: false, ownPort: 7000 });
+  assert.deepStrictEqual(ask(mk(7000, 7001)), { pids: [], sessionIds: [] }, 'the entry is this host');
+  assert.deepStrictEqual(ask(mk(7001, 7000)), { pids: [], sessionIds: [] }, 'the identity file names this host');
+  assert.deepStrictEqual(ask(mk(7001, 7002)), { pids: [91], sessionIds: ['sid-1'] }, 'another host');
+});
+
+test('M11: siblingSessions with an empty or missing cwd names nothing, even beside a cwd-less identity', () => {
+  const e = ident(5000, { cwd: '', side: true, claudePid: 91, sessionId: 's' });
+  for (const cwd of ['', undefined, null, 5]) assert.deepStrictEqual(side.siblingSessions([e], { cwd, side: false }), { pids: [], sessionIds: [] });
+  assert.deepStrictEqual(side.siblingSessions([e, ident(5001, { side: true, claudePid: 92 })], { cwd: CWD, side: false }), { pids: [], sessionIds: [] }, 'an identity with no cwd is nobody\'s sibling');
+  assert.deepStrictEqual(side.siblingSessions(undefined, { cwd: CWD }), { pids: [], sessionIds: [] });
+  assert.deepStrictEqual(side.siblingSessions('nope', { cwd: CWD }), { pids: [], sessionIds: [] });
+});
+
+test('M11: a branch host counts the side hosts of its folder, a side host counts the folder\'s own host, never its own kind', () => {
+  const ids = [
+    ident(5001, { cwd: CWD, side: true, claudePid: 11, sessionId: 'side-a' }),
+    ident(5002, { cwd: CWD, claudePid: 22, sessionId: 'own-a' }),
+    ident(5003, { cwd: 'C:/other', side: true, claudePid: 33, sessionId: 'elsewhere' }),
+    ident(5004, { cwd: CWD, side: true, claudePid: 11, sessionId: 'side-a' }),
+  ];
+  assert.deepStrictEqual(side.siblingSessions(ids, { cwd: CWD, side: false, ownPort: 1 }), { pids: [11], sessionIds: ['side-a'] }, 'deduplicated');
+  assert.deepStrictEqual(side.siblingSessions(ids, { cwd: CWD, side: true, ownPort: 1 }), { pids: [22], sessionIds: ['own-a'] });
+});
+
+test('M11: a pid or session id that is not usable is not listed', () => {
+  const ids = [ident(5001, { cwd: CWD, side: true, claudePid: 0, sessionId: '' }), ident(5002, { cwd: CWD, side: true, claudePid: 1.5, sessionId: 7 }),
+    ident(5003, { cwd: CWD, side: true, claudePid: -4, sessionId: null })];
+  assert.deepStrictEqual(side.siblingSessions(ids, { cwd: CWD, side: false, ownPort: 1 }), { pids: [], sessionIds: [] });
+});
+
+test('M11: sideHostsOf and readerSessionIds skip junk entries and read only the side hosts', () => {
+  const ids = [...JUNK,
+    ident(5001, { cwd: CWD, side: true, sessionId: 'sa' }),
+    ident(5002, { cwd: CWD, sessionId: 'own' }),
+    ident('5003', { cwd: CWD, side: true, sessionId: 'sb' }),
+    ident(5004, { cwd: '', side: true, sessionId: 'sc' }),
+    ident(5005, { cwd: CWD, side: true, sessionId: 'sa' })];
+  assert.deepStrictEqual(side.sideHostsOf(ids), [{ port: 5001, cwd: CWD }, { port: 5005, cwd: CWD }]);
+  assert.deepStrictEqual(side.readerSessionIds(ids), ['sa', 'sb', 'sc']);
+  assert.strictEqual(side.sideHostsOf(null), null);
+  assert.strictEqual(side.sideHostsOf([ident(5001, { cwd: CWD, side: true }), { unreadable: true }]), null, 'an unreadable identity may be a live side host\'s');
+  assert.deepStrictEqual(side.readerSessionIds(undefined), []);
+});

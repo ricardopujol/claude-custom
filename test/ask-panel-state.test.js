@@ -211,3 +211,147 @@ test('examples: three real example questions from the host, or the generic ones,
   assert.strictEqual(S.examplesOf({ examples: [] }).length, 3);
   assert.deepStrictEqual(S.examplesOf({ examples: ['ok', 5, null, '  '] }), ['ok']);
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M8) --------------------------------------------------------
+
+const NONE = [];
+const A = S.ACT;
+const note = (reply, ctx) => S.noticeOf(reply, ctx);
+
+test('M8: every reason has its exact words and its way out', () => {
+  const claudeWay = [A.askClaude];
+  const cases = [
+    [{ reason: 'ollama-down' }, {}, "Ollama isn't running, so The explainer can't answer this yet.", [A.startOllama, A.askClaude]],
+    [{ reason: 'ollama-down' }, { name: 'Prof', kind: 'explain', modelId: 'haiku', hasPlaces: true }, "Ollama isn't running, so Prof can't explain this yet. The places below come from the search alone.", [A.startOllama]],
+    [{ reason: 'model-missing', model: 'qwen:x' }, { modelName: 'ignored' }, "The explainer's model (qwen:x) isn't installed in Ollama, so it can't answer this yet.", claudeWay],
+    [{ reason: 'model-missing' }, { modelName: 'qwen3.5:4b' }, "The explainer's model (qwen3.5:4b) isn't installed in Ollama, so it can't answer this yet.", claudeWay],
+    [{ reason: 'model-missing' }, {}, "The explainer's model (the local model) isn't installed in Ollama, so it can't answer this yet.", claudeWay],
+    [{ reason: 'timeout' }, { modelId: 'local' }, 'The explainer took too long to answer this.', claudeWay],
+    [{ reason: 'timeout' }, { modelId: 'sonnet', kind: 'explain', hasPlaces: true }, 'The explainer took too long to explain this. The places below come from the search alone.', NONE],
+    [{ reason: 'empty-question' }, {}, 'Type a question first.', NONE],
+    [{ reason: 'no-matches' }, {}, 'Nothing in this repo matched that. Try other words.', NONE],
+    [{ reason: 'index-failed', error: 'disk full' }, {}, "Couldn't read this repo: disk full.", NONE],
+    [{ reason: 'index-failed' }, {}, "Couldn't read this repo: unknown reason.", NONE],
+    [{ reason: 'index-failed', error: '' }, {}, "Couldn't read this repo: unknown reason.", NONE],
+    [{ reason: 'index-failed', error: 5 }, {}, "Couldn't read this repo: unknown reason.", NONE],
+    [{ reason: 'explainer-off' }, { modelName: 'Haiku' }, "The explainer can't explain code yet on Haiku: it hasn't passed the quality check. Ask a question instead, or pick another model in ⚙.", NONE],
+    [{ reason: 'explainer-off' }, {}, "The explainer can't explain code yet on this model: it hasn't passed the quality check. Ask a question instead, or pick another model in ⚙.", NONE],
+    [{ reason: 'claude-missing' }, { modelName: 'Haiku' }, "Claude isn't installed on this machine, so Haiku can't answer.", NONE],
+    [{ reason: 'claude-missing' }, {}, "Claude isn't installed on this machine, so Claude can't answer.", NONE],
+    [{ reason: 'not-signed-in' }, {}, "Claude isn't signed in. Open a terminal, run claude, sign in, then ask again.", NONE],
+    [{ reason: 'claude-failed', detail: 'rate limited' }, {}, "Claude didn't answer: rate limited.", NONE],
+    [{ reason: 'claude-failed' }, {}, "Claude didn't answer: it stopped without a reason.", NONE],
+    [{ reason: 'claude-failed', detail: '' }, {}, "Claude didn't answer: it stopped without a reason.", NONE],
+    [{ reason: 'bad-selection', detail: 'binary' }, {}, "Couldn't read the selected code: binary.", NONE],
+    [{ reason: 'bad-selection' }, {}, "Couldn't read the selected code.", NONE],
+    [{ reason: 'bad-selection', detail: '' }, {}, "Couldn't read the selected code.", NONE],
+    [{ reason: 'bad-reply' }, {}, "The explainer gave an answer that couldn't be used. Ask again.", claudeWay],
+    [{ reason: 'http' }, { name: 'Prof', hasPlaces: true, modelId: 'local' }, "Prof gave an answer that couldn't be used. Ask again. The places below come from the search alone.", claudeWay],
+    [{ reason: 'http' }, { modelId: 'haiku' }, "The explainer gave an answer that couldn't be used. Ask again.", NONE],
+    [{ reason: 'who-knows', error: 'a sentence' }, {}, 'a sentence', NONE],
+    [{ reason: 'who-knows', error: '' }, {}, 'Something went wrong (who-knows).', NONE],
+    [{ reason: 'who-knows' }, { hasPlaces: true }, 'Something went wrong (who-knows). The places below come from the search alone.', NONE],
+    [{}, {}, 'Something went wrong (no reason given).', NONE],
+    [{ reason: '' }, {}, 'Something went wrong (no reason given).', NONE],
+    [null, undefined, 'Something went wrong (no reason given).', NONE],
+    ['x', {}, 'Something went wrong (no reason given).', NONE],
+  ];
+  for (const [reply, ctx, text, actions] of cases) assert.deepStrictEqual(note(reply, ctx), { text, actions }, JSON.stringify([reply, ctx]));
+});
+
+test('M8: the "Ask Claude instead" way out is offered for the local model (or none named) only, and "name" must be a non-empty string', () => {
+  assert.deepStrictEqual(note({ reason: 'timeout' }, { modelId: undefined }).actions, [A.askClaude]);
+  assert.deepStrictEqual(note({ reason: 'timeout' }, { modelId: 'local' }).actions, [A.askClaude]);
+  assert.deepStrictEqual(note({ reason: 'timeout' }, { modelId: 'haiku' }).actions, []);
+  assert.deepStrictEqual(note({ reason: 'timeout' }, { modelId: '' }).actions, [], 'an empty id is not local');
+  assert.strictEqual(note({ reason: 'timeout' }, { name: '' }).text, 'The explainer took too long to answer this.');
+  assert.strictEqual(note({ reason: 'timeout' }, { name: 5 }).text, 'The explainer took too long to answer this.');
+});
+
+test('M8: no matches while the first index is building speaks of the files read so far', () => {
+  const t = (building) => note({ reason: 'no-matches', building }, {}).text;
+  const tail = '; the rest are still being read. Ask again in a moment.';
+  assert.strictEqual(t({ files: 12, total: 40 }), `Nothing matched in the 12 files read so far (of 40)${tail}`);
+  assert.strictEqual(t({ files: 1, total: 40 }), `Nothing matched in the 1 file read so far (of 40)${tail}`);
+  assert.strictEqual(t({ done: 0, total: 0 }), `Nothing matched in the 0 files read so far${tail}`);
+  assert.strictEqual(t({ files: 3 }), `Nothing matched in the 3 files read so far${tail}`);
+  assert.strictEqual(t({ done: 7, total: 9 }), `Nothing matched in the 7 files read so far (of 9)${tail}`);
+  assert.strictEqual(t({ files: -1, done: 4 }), `Nothing matched in the 4 files read so far${tail}`);
+  assert.strictEqual(t({}), `Nothing matched in the files read so far${tail}`);
+  assert.strictEqual(t({ files: 5, total: 0 }), `Nothing matched in the 5 files read so far${tail}`);
+  assert.strictEqual(t({ files: 5, total: -3 }), `Nothing matched in the 5 files read so far${tail}`);
+  assert.strictEqual(t({ files: 5, total: 'x' }), `Nothing matched in the 5 files read so far${tail}`);
+  assert.strictEqual(t([]), 'Nothing in this repo matched that. Try other words.', 'a list is not a progress report');
+  assert.strictEqual(t(null), 'Nothing in this repo matched that. Try other words.');
+});
+
+test('M8: indexLine: every state in its own words', () => {
+  const L = S.indexLine;
+  assert.deepStrictEqual(L(null), { text: 'checking this repo…', busy: false });
+  assert.deepStrictEqual(L('x'), { text: 'checking this repo…', busy: false });
+  assert.deepStrictEqual(L([]), { text: 'checking this repo…', busy: false });
+  assert.deepStrictEqual(L({ state: 'partial', running: false, files: 12 }), { text: 'the saved index is incomplete (12 files read) and nothing is building it; opening the panel again resumes it', busy: false });
+  assert.deepStrictEqual(L({ state: 'partial', files: 0 }), { text: 'the saved index is incomplete (0 files read) and nothing is building it; opening the panel again resumes it', busy: false });
+  assert.deepStrictEqual(L({ state: 'partial' }), { text: 'the saved index is incomplete (some files read) and nothing is building it; opening the panel again resumes it', busy: false });
+  assert.deepStrictEqual(L({ state: 'partial', running: 'yes', progress: { done: 3, total: 9 } }), { text: 'the saved index is incomplete (some files read) and nothing is building it; opening the panel again resumes it', busy: false }, 'only a real true is running');
+  assert.deepStrictEqual(L({ state: 'partial', running: true, progress: { done: 3, total: 9 } }), { text: 'reading this repo for the first time: 3 of 9 files. Questions work meanwhile, from the files read so far.', busy: true });
+  assert.deepStrictEqual(L({ state: 'building', progress: { done: 3, total: 9 } }), { text: 'reading this repo for the first time: 3 of 9 files. Questions work meanwhile, from the files read so far.', busy: true });
+  assert.deepStrictEqual(L({ state: 'building', progress: { done: 3, total: 0 } }), { text: 'reading this repo for the first time: 3 files. Questions work meanwhile, from the files read so far.', busy: true });
+  assert.deepStrictEqual(L({ state: 'building', progress: { done: 3 } }), { text: 'reading this repo for the first time: 3 files. Questions work meanwhile, from the files read so far.', busy: true });
+  assert.deepStrictEqual(L({ state: 'building', progress: { done: 3, total: 'x' } }), { text: 'reading this repo for the first time: 3 files. Questions work meanwhile, from the files read so far.', busy: true });
+  for (const progress of [{ done: 0, total: 9 }, {}, null, 'x', { done: 'x' }, { done: -1 }, undefined]) {
+    assert.deepStrictEqual(L({ state: 'building', progress }), { text: 'starting to read this repo for the first time; ask again in a moment', busy: true }, JSON.stringify(progress));
+  }
+  assert.deepStrictEqual(L({ state: 'failed', error: 'boom' }), { text: "couldn't read this repo: boom", busy: false });
+  assert.deepStrictEqual(L({ state: 'failed' }), { text: "couldn't read this repo: unknown reason", busy: false });
+  assert.deepStrictEqual(L({ state: 'failed', error: '' }), { text: "couldn't read this repo: unknown reason", busy: false });
+  assert.deepStrictEqual(L({ state: 'none' }), { text: 'this repo is not read yet; opening the panel starts it', busy: false });
+  assert.deepStrictEqual(L({ state: 'ready', files: 40 }), { text: '40 files read', busy: false });
+  assert.deepStrictEqual(L({ state: 'ready', files: 0 }), { text: '0 files read', busy: false });
+  assert.deepStrictEqual(L({ state: 'ready' }), { text: 'files read', busy: false });
+  assert.deepStrictEqual(L({ state: 'ready', files: 40, keywordOnly: true }), { text: '40 files read, keywords only (no embedding model)', busy: false });
+  assert.deepStrictEqual(L({ state: 'ready', files: 40, keywordOnly: 'yes' }), { text: '40 files read', busy: false });
+});
+
+test('M8: statusLine names the model, the index and whether explaining is off', () => {
+  const models = [{ id: 'local', model: 'qwen3.5:4b', explainer: true }, { id: 'haiku', model: 'Haiku', explainer: false }, { id: 'sonnet', explainer: true }, null, 'x'];
+  const host = { index: { state: 'ready', files: 5 }, models };
+  assert.strictEqual(S.statusLine(host), 'qwen3.5:4b · 5 files read');
+  assert.strictEqual(S.statusLine(host, 'local'), 'qwen3.5:4b · 5 files read');
+  assert.strictEqual(S.statusLine(host, ''), 'qwen3.5:4b · 5 files read');
+  assert.strictEqual(S.statusLine(host, 'haiku'), 'Haiku · 5 files read · explaining code is off on this model');
+  assert.strictEqual(S.statusLine(host, 'sonnet'), 'the local model · 5 files read', 'a model with no name');
+  assert.strictEqual(S.statusLine(host, 'nope'), 'the local model · 5 files read');
+  assert.strictEqual(S.statusLine({ models: [{ id: 'local', model: 'm', explainer: 0 }] }), 'm · checking this repo…', 'only a real false is "off"');
+  assert.strictEqual(S.statusLine(null), 'the local model · checking this repo…');
+  assert.strictEqual(S.statusLine({ models: 'x' }, 'haiku'), 'the local model · checking this repo…');
+});
+
+test('M8: canExplain is true only for a listed model whose explainer is exactly true', () => {
+  const host = { models: [{ id: 'local', explainer: true }, { id: 'haiku', explainer: false }, { id: 'sonnet' }, { id: 'x', explainer: 1 }, null] };
+  assert.strictEqual(S.canExplain(host, 'local'), true);
+  for (const id of ['haiku', 'sonnet', 'x', 'nope', undefined]) assert.strictEqual(S.canExplain(host, id), false, String(id));
+  assert.strictEqual(S.canExplain(null, 'local'), false);
+  assert.strictEqual(S.canExplain({ models: 'x' }, 'local'), false);
+});
+
+test('M8: examplesOf: up to three real examples from the host, else the three generic ones', () => {
+  const generic = ['Where is the login handled?', 'What does the main entry point do?', 'Where are errors logged?'];
+  assert.deepStrictEqual(S.examplesOf({ examples: ['a?', 'b?', 'c?', 'd?'] }), ['a?', 'b?', 'c?']);
+  assert.deepStrictEqual(S.examplesOf({ examples: ['a?', '', '   ', 5, null, 'b?'] }), ['a?', 'b?']);
+  assert.deepStrictEqual(S.examplesOf({ examples: [] }), generic);
+  assert.deepStrictEqual(S.examplesOf({ examples: ['', ' '] }), generic);
+  for (const host of [null, {}, { examples: 'x' }, 'x', []]) assert.deepStrictEqual(S.examplesOf(host), generic);
+  const a = S.examplesOf(null); a.push('mutated');
+  assert.deepStrictEqual(S.examplesOf(null), generic, 'the generic list cannot be changed from outside');
+});
+
+test('M8: stagesOf: the three steps, with the Claude name when it asks Claude, and the right one active', () => {
+  const stages = (e, id) => S.stagesOf(e, id).map(x => `${x.id}:${x.state}:${x.text}`);
+  assert.deepStrictEqual(stages({ stage: 'searching' }, 'local'), ['found:active:searching the repo', 'loading:todo:loading the model (~4 s)', 'writing:todo:writing the answer']);
+  assert.deepStrictEqual(stages({ stage: 'loading', places: [1, 2] }, 'haiku'), ['found:done:found 2 places', 'loading:active:asking Haiku', 'writing:todo:writing the answer']);
+  assert.deepStrictEqual(stages({ stage: 'writing', kind: 'explain', places: [1] }, 'sonnet'), ['found:done:found 1 place', 'loading:done:asking Sonnet', 'writing:active:writing the explanation']);
+  assert.deepStrictEqual(stages({ stage: 'loading', places: [] }, 'local'), ['found:done:found no places', 'loading:active:loading the model (~4 s)', 'writing:todo:writing the answer']);
+  assert.deepStrictEqual(S.stagesOf({ stage: 'whatever' }, 'local').map(x => x.state), ['active', 'todo', 'todo'], 'an unknown stage reads as the first');
+  assert.deepStrictEqual(stages(null, 'local')[0], 'found:active:found no places', 'no entry at all: nothing was searched for, nothing found');
+});

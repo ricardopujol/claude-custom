@@ -887,3 +887,134 @@ test('a column default is unchanged for the panel (320 is a width): docked under
   assert.equal(sizeOfCell(l, 'canvas').dir, 'col');
   assert.equal(sizeOfCell(l, 'canvas').size, T.DEFAULT_SIZE.col);
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+const SIX = ['a', 'b', 'c', 'd', 'e', 'f'];
+const minsAt = (root, sel = NO_SEL) => {
+  const l = T.normalize(v2(root), SIX);
+  return T.fit(l, sel, { width: 2400, height: 1400 }).splits;
+};
+const splitAt = (splits, p) => splits.find(s => JSON.stringify(s.path) === JSON.stringify(p));
+
+test('a nested row of two open groups needs two panels and one gutter along the row', () => {
+  const s = minsAt(row([term, col([row([g('x', 'a'), g('y', 'b')], [1, 1]), g('z', 'c')], [1, 1])], [0, 400]));
+  assert.equal(splitAt(s, []).min[1], 2 * T.MIN.width + T.GUTTER);
+});
+
+test('a nested column of three open groups needs three panels and two gutters along the column', () => {
+  const s = minsAt(col([term, row([col([g('x', 'a'), g('y', 'b'), g('z', 'c')], [1, 1, 1]), g('w', 'd')], [1, 1])], [0, 400]));
+  assert.equal(splitAt(s, []).min[1], 3 * T.MIN.height + 2 * T.GUTTER);
+});
+
+test('a shut kid in the middle costs its rail and no gutter against it', () => {
+  const sel = { active: {}, foldAll: false, collapsed: { y: ['b'] } };
+  const s = minsAt(col([term, row([col([g('x', 'a'), g('y', 'b'), g('z', 'c')], [1, 1, 1]), g('w', 'd')], [1, 1])], [0, 400]), sel);
+  assert.equal(splitAt(s, []).min[1], 2 * T.MIN.height + T.RAIL.wide, 'two panels and one rail, with no gutter at all');
+  const sideBySide = { active: {}, foldAll: false, collapsed: { z: ['c'] } };
+  const t = minsAt(col([term, row([col([g('x', 'a'), g('y', 'b'), g('z', 'c')], [1, 1, 1]), g('w', 'd')], [1, 1])], [0, 400]), sideBySide);
+  assert.equal(splitAt(t, []).min[1], 2 * T.MIN.height + T.RAIL.wide + T.GUTTER, 'the two open ones keep their gutter');
+});
+
+test('beside the terminal every open fixed kid has one gutter on the spine side', () => {
+  const s = minsAt(row([g('w', 'd'), col([row([term, g('y', 'b')], [0, 200]), g('z', 'c')], [1, 1])], [200, 0]));
+  assert.equal(splitAt(s, []).min[1], T.TERM_MIN.width + T.MIN.width + T.GUTTER);
+  const two = minsAt(row([g('w', 'd'), col([row([term, g('y', 'b'), g('v', 'e')], [0, 100, 100]), g('z', 'c')], [1, 1])], [200, 0]));
+  assert.equal(splitAt(two, []).min[1], T.TERM_MIN.width + 2 * T.MIN.width + 2 * T.GUTTER);
+});
+
+test('eight floats fill the cascade; the ninth reuses the first spot and the tenth the second', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'];
+  let l = T.normalize(v2(row([term, g('r', ...ids)], [0, 200])), ids);
+  const spots = [];
+  for (const id of ids) {
+    l = T.dock(l, id, { float: {} });
+    const f = l.floats[l.floats.length - 1];
+    spots.push([f.x, f.y]);
+  }
+  const step = T.CASCADE;
+  assert.deepEqual(spots.slice(0, 8), [2, 3, 4, 5, 6, 7, 8, 9].map(n => [step * n, step * n]));
+  assert.deepEqual(spots[8], [step * 2, step * 2]);
+  assert.deepEqual(spots[9], [step * 3, step * 3]);
+});
+
+test('a float that shares only the x (or only the y) of a cascade spot does not hold it', () => {
+  const ids = ['a', 'b', 'c'];
+  const base = T.normalize(v2(row([term, g('r', ...ids)], [0, 200])), ids);
+  const first = T.dock(base, 'a', { float: {} }).floats[0];
+  for (const odd of [{ x: first.x, y: first.y + 300 }, { x: first.x + 300, y: first.y }]) {
+    const l = { ...base, floats: [{ id: 'f0', tabs: ['c'], ...odd, w: 300, h: 200 }] };
+    const f = T.dock({ ...l, root: row([term, g('r', 'a', 'b')], [0, 200]) }, 'a', { float: {} }).floats.find(x => x.tabs.includes('a'));
+    assert.deepEqual([f.x, f.y], [first.x, first.y]);
+  }
+});
+
+test('a tree nested exactly the depth limit survives, one level deeper is pruned', () => {
+  const chain = (n) => {
+    let node = g('leaf', 'z');
+    for (let i = n - 1; i >= 0; i--) node = { type: 'split', dir: i % 2 ? 'row' : 'col', kids: [g('g' + i, 'm' + i), node], sizes: [100, 100] };
+    return node;
+  };
+  const keeps = (n) => {
+    const ids = ['z', ...Array.from({ length: n }, (_, i) => 'm' + i)];
+    return T.groups(T.normalize(v2(row([term, chain(n)], [0, 100])), ids)).some(x => x.id === 'leaf');
+  };
+  assert.equal(keeps(11), true, 'the deepest group sits at the limit');
+  assert.equal(keeps(12), false, 'one deeper is cut');
+});
+
+test('unpinning a panel keeps the other hidden panels hidden', () => {
+  const ids = ['a', 'b', 'c', 'd', 'e'];
+  const l = T.normalize(v2(row([term, g('G', 'a', 'b', 'c')], [0, 200]), { hidden: ['d', 'e'] }), ids);
+  const u = T.unpin(l, 'a');
+  assert.deepEqual(u.hidden, ['d', 'e']);
+  assert.deepEqual(u.rail, ['a']);
+});
+
+test('a panel\'s mates are the other tabs of its group, never itself', () => {
+  const ids = ['a', 'b', 'c'];
+  const l = T.normalize(v2(row([term, g('G', 'a', 'b', 'c')], [0, 200])), ids);
+  assert.deepEqual(T.unpin(l, 'a').seat.a.mates, ['b', 'c']);
+  const two = T.unpin(T.unpin(l, 'a'), 'b');
+  assert.deepEqual(two.seat.b.mates, ['c', 'a']);
+});
+
+test('the last tab out takes the group with it: railed mates lose the group and inherit its place', () => {
+  const ids = ['a', 'b', 'c'];
+  const l = T.normalize(v2(row([term, g('X', 'c'), g('Y', 'a', 'b')], [0, 200, 200])), ids);
+  const afterA = T.unpin(l, 'a');
+  assert.equal(afterA.seat.a.group, 'Y', 'a still names its group while b is in it');
+  const u = T.unpin(afterA, 'b');
+  const last = T.unpin(T.unpin(T.unpin(l, 'a'), 'b'), 'c');
+  assert.deepEqual(u.rail, ['a', 'b']);
+  assert.equal(u.seat.a.group, null, 'b was the last tab out');
+  assert.ok(u.seat.b.beside, 'it had a neighbour');
+  assert.equal(u.seat.a.beside, u.seat.b.beside);
+  assert.equal(u.seat.a.side, u.seat.b.side);
+  assert.deepEqual(last.rail, ['a', 'b', 'c']);
+  assert.equal(last.seat.c.mates, undefined, 'c shared no group with the others');
+});
+
+test('beside the terminal a shut fixed kid has no gutter, and one past it still counts the open one', () => {
+  const sel = { active: {}, foldAll: false, collapsed: { y: ['b'] } };
+  const s = minsAt(row([g('w', 'd'), col([row([term, g('y', 'b'), g('v', 'e')], [0, 100, 100]), g('z', 'c')], [1, 1])], [200, 0]), sel);
+  assert.equal(splitAt(s, []).min[1], T.TERM_MIN.width + T.RAIL.side + T.MIN.width + T.GUTTER);
+});
+
+test('a tab that is not the last one out leaves its railed mates in the group', () => {
+  const ids = ['a', 'b', 'c'];
+  const l = T.normalize(v2(row([term, g('G', 'a', 'b', 'c')], [0, 200])), ids);
+  const u = T.unpin(T.unpin(l, 'a'), 'b');
+  assert.equal(u.seat.a.group, 'G', 'c is still in the group');
+});
+
+test('the last tab out of a FLOAT does not rewrite its railed mates (a float has no place beside anything)', () => {
+  const ids = ['a', 'b', 'c'];
+  const l = T.normalize(v2(row([term, g('R', 'c')], [0, 200]),
+    { floats: [{ id: 'F', tabs: ['a', 'b'], x: 100, y: 100, w: 300, h: 200 }] }), ids);
+  const afterA = T.unpin(l, 'a');
+  const afterB = T.unpin(afterA, 'b');
+  assert.equal(afterA.seat.a.beside, 'b');
+  assert.equal(afterB.seat.a.beside, 'b', 'still points at its old neighbour, not at the empty float seat');
+  assert.equal(afterB.seat.a.side, afterA.seat.a.side);
+});

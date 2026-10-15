@@ -385,3 +385,122 @@ test('property: an exact identity is shown iff the OS start equals it, whatever 
       if (r.rows.length) assert.strictEqual(r.rows[0].exact, true);
     }), { numRuns: 300 });
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+
+const idFile = (port, pid, extra = {}) => ({ port, cwd: 'C:\\proj', pid, startedAt: 5000, ...extra });
+const only = (files, procs = new Map([[101, ft(4800)], [102, ft(4800)], [103, ft(4800)]])) => world({ files, procs, windows: new Map() });
+
+test('M12: ports 1 and 65535 are ports; 0 and 65536 are not', async () => {
+  const { deps } = only({ [OWN]: {
+    0: idFile(0, 101), 1: idFile(1, 102), 65535: idFile(65535, 103), 65536: idFile(65536, 101),
+  } });
+  const r = await list(deps);
+  assert.deepStrictEqual(r.rows.map(x => x.port).sort((a, b) => a - b), [1, 65535]);
+});
+
+test('M12: a claim with a bad cwd, pid, port, start time or OS start time is not a row, and never throws', async () => {
+  const bad = [
+    idFile(7701, 101, { cwd: 5 }), idFile(7701, 101, { cwd: '   ' }), idFile(7701, 101, { cwd: null }),
+    idFile(7701, 0), idFile(7701, -3), idFile(7701, 1.5), idFile(7701, '101'),
+    idFile(7701, 101, { port: 7702 }), idFile(7701, 101, { port: '7701' }),
+    idFile(7701, 101, { startedAt: '5000' }), idFile(7701, 101, { startedAt: NaN }), idFile(7701, 101, { startedAt: Infinity }),
+    idFile(7701, 101, { startedAt: null }),
+    idFile(7701, 101, { processStartedAt: 123 }), idFile(7701, 101, { processStartedAt: 'abc' }),
+    [], 'x', 7, null,
+  ];
+  for (const parsed of bad) {
+    const { deps } = only({ [OWN]: { 7701: parsed } });
+    const r = await list(deps);
+    assert.deepStrictEqual(r.rows, [], JSON.stringify(parsed));
+  }
+});
+
+test('M12: only valid pids are asked about', async () => {
+  const { deps, calls } = only({ [OWN]: {
+    7701: idFile(7701, 'x'), 7702: idFile(7702, 0), 7703: idFile(7703, 101), 7704: idFile(7704, 102, { cwd: 3 }),
+  } });
+  await list(deps);
+  assert.deepStrictEqual(calls.startTimes, [[101, 102]]);
+});
+
+test('M12: a start time that is present but not a FILETIME makes the file unusable, which is a doubt while its pid runs', async () => {
+  const { deps } = only({ [OWN]: { 7701: idFile(7701, 101, { processStartedAt: 'garbage' }) } });
+  const r = await list(deps);
+  assert.deepStrictEqual(r.rows, []);
+  assert.strictEqual(r.verified, false);
+  assert.deepStrictEqual(r.doubts, [{ install: OWN, cwd: 'C:\\proj', file: path.join(OWN, '.harness', 'hosts', '7701.json') }]);
+});
+
+test('M12: an unusable file\'s doubt names its cwd when it has a real one, and null for a blank or non-string one', async () => {
+  const doubtFor = async (extra) => (await list(only({ [OWN]: { 7701: idFile(7701, 101, { port: 9, ...extra }) } }).deps)).doubts;
+  const file = path.join(OWN, '.harness', 'hosts', '7701.json');
+  assert.deepStrictEqual(await doubtFor({}), [{ install: OWN, cwd: 'C:\\proj', file }]);
+  assert.deepStrictEqual(await doubtFor({ cwd: '   ' }), [{ install: OWN, cwd: null, file }]);
+  assert.deepStrictEqual(await doubtFor({ cwd: 5 }), [{ install: OWN, cwd: null, file }]);
+  assert.deepStrictEqual(await doubtFor({ cwd: '  C:\\sp ' }), [{ install: OWN, cwd: '  C:\\sp ', file }], 'kept as written');
+});
+
+test('M12: nothing to ask the OS about: it is not asked, and an unreadable file alone still makes the list unverified', async () => {
+  const w = only({ [OWN]: {} });
+  const r1 = await list(w.deps);
+  assert.deepStrictEqual([r1.rows, r1.verified, r1.doubts], [[], true, []]);
+  assert.deepStrictEqual(w.calls.startTimes, []);
+  const deps2 = { ...w.deps, identities: () => [{ port: 7701, parsed: null, unreadable: true }] };
+  const r2 = await list(deps2);
+  assert.deepStrictEqual([r2.rows, r2.verified], [[], false]);
+  assert.strictEqual(r2.doubts.length, 1);
+  assert.deepStrictEqual(w.calls.startTimes, [], 'still not asked');
+});
+
+test('M12: only an unusable file whose pid runs: asked once, and it is a doubt (a dead one is not)', async () => {
+  const w = only({ [OWN]: { 7701: idFile(7701, 101, { port: 9 }), 7702: idFile(7702, 999, { port: 9 }) } });
+  const r = await list(w.deps);
+  assert.deepStrictEqual(w.calls.startTimes, [[101, 999]]);
+  assert.deepStrictEqual(r.doubts.map(d => d.file), [path.join(OWN, '.harness', 'hosts', '7701.json')]);
+  assert.strictEqual(r.verified, false);
+});
+
+test('M12: the OS could not be asked: every claim and every unusable file becomes a doubt, with its own fields', async () => {
+  const w = only({ [OWN]: { 7701: idFile(7701, 101), 7702: idFile(7702, 102, { port: 9, cwd: 'C:\\two' }) } });
+  w.w.procs = null;
+  const r = await list(w.deps);
+  assert.strictEqual(r.verified, false);
+  assert.deepStrictEqual(r.doubts, [
+    { install: OWN, cwd: 'C:\\proj' },
+    { install: OWN, cwd: 'C:\\two', file: path.join(OWN, '.harness', 'hosts', '7702.json') },
+  ]);
+});
+
+test('M12: one pid named by two builds: the NEWER file speaks for it, and on equal times the first one does', async () => {
+  const hosts = (ownAt, otherAt) => only({
+    [OWN]: { 7701: idFile(7701, 101, { cwd: 'C:\\own', startedAt: ownAt }) },
+    [OTHER]: { 7702: idFile(7702, 101, { cwd: 'C:\\other', startedAt: otherAt }) },
+  });
+  assert.deepStrictEqual((await list(hosts(5000, 6000).deps)).rows.map(x => [x.cwd, x.startedAt, x.own]), [['C:\\other', 6000, false]]);
+  assert.deepStrictEqual((await list(hosts(6000, 5000).deps)).rows.map(x => [x.cwd, x.startedAt, x.own]), [['C:\\own', 6000, false]]);
+  assert.deepStrictEqual((await list(hosts(5000, 5000).deps)).rows.map(x => [x.cwd, x.startedAt, x.own]), [['C:\\own', 5000, false]]);
+});
+
+test('M12: rows are this build\'s first, then newest first within each', async () => {
+  const procs = new Map([[101, ft(100)], [102, ft(100)], [103, ft(100)], [104, ft(100)]]);
+  const { deps } = only({
+    [OWN]: { 7701: idFile(7701, 101, { startedAt: 1000 }), 7702: idFile(7702, 102, { startedAt: 3000 }) },
+    [OTHER]: { 7703: idFile(7703, 103, { startedAt: 9000 }), 7704: idFile(7704, 104, { startedAt: 2000 }) },
+  }, procs);
+  const r = await list(deps);
+  assert.deepStrictEqual(r.rows.map(x => x.pid), [102, 101, 103, 104]);
+});
+
+test('M12: identitiesIn opens only <digits>.json, and reads the port from the name even when it is one digit', () => {
+  const install = tmpDir('cc-bh-ids-');
+  const dir = path.join(install, '.harness', 'hosts');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const n of ['5.json', '123.json', '7701.json', 'x1.json', '12.json.bak', '1.jsonx', 'a12.json', '7701.json.tmp', '.json', 'token', '77 01.json']) {
+    fs.writeFileSync(path.join(dir, n), JSON.stringify({ name: n }));
+  }
+  const got = identitiesIn(install);
+  assert.deepStrictEqual(got.map(x => x.port).sort((a, b) => a - b), [5, 123, 7701]);
+  assert.deepStrictEqual(got.find(x => x.port === 5).parsed, { name: '5.json' });
+});

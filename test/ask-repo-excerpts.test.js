@@ -188,3 +188,243 @@ test('prepared retrieval is used as given: ask() does not search again, and a pr
   assert.strictEqual(calls.refresh, 0);
   assert.strictEqual(calls.embed, 0);
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M5) --------------------------------------------------------
+
+const lineData = (rel, lines, start = 100) => ({
+  embedModel: 'e', builtAt: 1,
+  files: [{ rel, size: 1, mtimeMs: 1, lines: start + lines.length, chunks: [chunk(start, start + lines.length - 1, lines.join('\n'), [1, 0])] }],
+});
+const needle = (n) => 'needle ' + 'y'.repeat(Math.max(0, n - 'needle '.length));
+const rowsOf = (body) => body.split('\n').slice(1);
+
+test('M5: a chunk is shown line by line until the next row would pass 2000 characters, counting a newline after each', async () => {
+  // rows are "100: " + text, so a text of 94 characters is a 99-character row and costs 100
+  const lines99 = Array.from({ length: 22 }, (_, i) => needle(94).replace(/y$/, String(i % 10)));
+  const a = await build({ data: lineData('f.js', lines99) }).repo.excerptsFor(WT, 'needle');
+  assert.strictEqual(rowsOf(a.body).length, 20, 'twenty rows of 100 fill 2000 exactly, and a twenty-first does not fit');
+  assert.strictEqual(a.sent[0].end, 119);
+  // nineteen rows of 100, then a row of 100 characters: 1900 + 101 = 2001, one over
+  const mixed = [...Array.from({ length: 19 }, () => needle(94)), needle(95), needle(94)];
+  const b = await build({ data: lineData('f.js', mixed) }).repo.excerptsFor(WT, 'needle');
+  assert.strictEqual(rowsOf(b.body).length, 19);
+  assert.strictEqual(b.sent[0].end, 118);
+  // a 99-character row after 19 of them still fits: 1900 + 100 = 2000
+  const fits = [...Array.from({ length: 19 }, () => needle(94)), needle(94)];
+  const c = await build({ data: lineData('f.js', fits) }).repo.excerptsFor(WT, 'needle');
+  assert.strictEqual(rowsOf(c.body).length, 20);
+});
+
+test('M5: a line is cut after 300 characters and says so; 300 exactly is whole', async () => {
+  const rowFor = async (text) => rowsOf((await build({ data: lineData('f.js', [text]) }).repo.excerptsFor(WT, 'needle')).body)[0];
+  assert.strictEqual(await rowFor('x'.repeat(293) + ' needle'), '100: ' + 'x'.repeat(293) + ' needle', '300 characters stay whole');
+  assert.strictEqual(await rowFor('x'.repeat(294) + ' needle'), '100: ' + 'x'.repeat(294) + ' needl' + ' ...[line cut]', '301 is cut to 300 and marked');
+});
+
+test('M5: the excerpts of one prompt stop before they pass 12000 characters, counting two for the gap between them', async () => {
+  const mk = (n, bodyLen) => {
+    const files = [];
+    for (let i = 0; i < n; i++) {
+      const rel = `f${String(i).padStart(2, '0')}.js`;
+      // four lines: the body is the header "### rel:100-103", a newline, and four rows of "1xx: " + text joined by newlines
+      const total = bodyLen - `### ${rel}:100-103`.length - 1 - 3 - 4 * 5;
+      const lens = [0, 1, 2, 3].map(j => Math.floor(total / 4) + (j < total % 4 ? 1 : 0));
+      const lines = lens.map(len => needle(len));
+      files.push({ rel, size: 1, mtimeMs: 1, lines: 200, chunks: [chunk(100, 103, lines.join('\n'), [1, 0])] });
+    }
+    return { embedModel: 'e', builtAt: 1, files };
+  };
+  // 998 characters of body + 2 = 1000 each: twelve fit in 12000 exactly, a thirteenth does not
+  const twelve = await build({ data: mk(14, 998) }).repo.excerptsFor(WT, 'needle', { k: 14 });
+  assert.strictEqual(twelve.sent.length, 12);
+  assert.ok(twelve.body.split('\n\n').every(p => p.length === 998), twelve.body.split('\n\n').map(p => p.length).join(','));
+  // 999 + 2 = 1001: eleven fit (11011), a twelfth would be 12012
+  const eleven = await build({ data: mk(14, 999) }).repo.excerptsFor(WT, 'needle', { k: 14 });
+  assert.strictEqual(eleven.sent.length, 11);
+  // 997 + 2 = 999: twelve fit (11988) and so does a thirteenth would be 12987: no
+  const again = await build({ data: mk(14, 997) }).repo.excerptsFor(WT, 'needle', { k: 14 });
+  assert.strictEqual(again.sent.length, 12);
+  assert.strictEqual(again.body.split('\n\n').length, 12, 'joined by a blank line');
+});
+
+test('M5: excerptsFor: only a whole positive number asks for more or fewer chunks; the selection excluded is the one in ITS file', async () => {
+  const files = [];
+  for (let i = 0; i < 12; i++) files.push({ rel: `g${i}.js`, size: 1, mtimeMs: 1, lines: 50, chunks: [chunk(1, 3, 'needle ' + i, [1, 0])] });
+  const data = { embedModel: 'e', builtAt: 1, files };
+  const count = async (k) => (await build({ data }).repo.excerptsFor(WT, 'needle', { k })).sent.length;
+  assert.strictEqual(await count(3), 3);
+  assert.strictEqual(await count(undefined), 8, 'the default');
+  for (const bad of [0, -1, 2.5, '3', NaN, null]) assert.strictEqual(await count(bad), 8, String(bad));
+  const ex = await build({ data }).repo.excerptsFor(WT, 'needle', { exclude: { file: 'g0.js', start: 1, end: 3 } });
+  assert.ok(!ex.sent.some(s => s.file === 'g0.js'));
+  assert.ok(ex.sent.some(s => s.file === 'g1.js'), 'the same line numbers in another file are not the selection');
+});
+
+test('M5: a question is trimmed and cut to 500 characters before anything sees it; a non-string is no question', async () => {
+  const seen = [];
+  const { repo } = build({ embed: async (t) => { seen.push(t[0]); return { ok: true, vectors: [[1, 0]] }; } });
+  await repo.excerptsFor(WT, '  ' + 'lock '.repeat(200) + '  ');
+  assert.strictEqual(seen[0].length, 500);
+  assert.strictEqual(seen[0], ('lock '.repeat(200)).slice(0, 500));
+  for (const bad of [5, null, undefined, {}, ['lock'], '', '   ']) assert.deepStrictEqual(await repo.excerptsFor(WT, bad), { ok: false, reason: 'empty-question' }, String(bad));
+  assert.deepStrictEqual(await repo.ask(WT, 7), { ok: false, reason: 'empty-question' });
+  const seen2 = [];
+  const b2 = build({ embed: async (t) => { seen2.push(t[0]); return { ok: true, vectors: [[1, 0]] }; } });
+  await b2.repo.ask(WT, '  ' + 'lock '.repeat(200));
+  assert.strictEqual(seen2[0].length, 500);
+});
+
+test('M5: the embedder is used when it is up, or when only the ANSWER model is missing and the embedder is not', async () => {
+  const used = async (check) => { const { repo, calls } = build({ check }); const r = await repo.excerptsFor(WT, 'lock'); return [calls.embed.length, r.keywordOnly]; };
+  assert.deepStrictEqual(await used({ ok: true, answer: true, embed: true }), [1, false]);
+  assert.deepStrictEqual(await used({ ok: true, answer: true, embed: false }), [0, true]);
+  assert.deepStrictEqual(await used({ ok: false, reason: 'model-missing', model: 'm', embed: true }), [1, false]);
+  assert.deepStrictEqual(await used({ ok: false, reason: 'model-missing', model: 'm', embed: false }), [0, true]);
+  assert.deepStrictEqual(await used({ ok: false, reason: 'model-missing', model: 'm' }), [0, true]);
+  assert.deepStrictEqual(await used({ ok: false, reason: 'ollama-down', embed: true }), [0, true]);
+  assert.deepStrictEqual(await used({ ok: true, answer: true }), [1, false], 'an embed flag that is not exactly false means up');
+});
+
+test('M5: a chunk without a vector makes the whole answer keywords-only, and status says so too', async () => {
+  const mixed = { embedModel: 'e', builtAt: 1, files: [
+    { rel: 'a.js', size: 1, mtimeMs: 1, lines: 9, chunks: [chunk(1, 3, 'lock one', [1, 0])] },
+    { rel: 'b.js', size: 1, mtimeMs: 1, lines: 9, chunks: [chunk(1, 3, 'lock two', [1, 0]), chunk(4, 6, 'lock three', null)] },
+  ] };
+  const { repo } = build({ data: mixed });
+  assert.strictEqual((await repo.excerptsFor(WT, 'lock')).keywordOnly, true);
+  assert.strictEqual((await repo.status(WT)).keywordOnly, true);
+  const full = build({ data: { ...mixed, files: [mixed.files[0]] } });
+  assert.strictEqual((await full.repo.excerptsFor(WT, 'lock')).keywordOnly, false);
+  assert.strictEqual((await full.repo.status(WT)).keywordOnly, false);
+  const none = build({ data: { embedModel: 'e', builtAt: 1, files: [] } });
+  assert.strictEqual((await none.repo.status(WT)).keywordOnly, false);
+});
+
+test('M5: status: building with nothing indexed is building; building over a saved index is partial or ready; no index at all is none, or what it says', async () => {
+  const st = async (data, progressImpl) => (await build({ data, progressImpl }).repo.status(WT));
+  const saved = DATA;
+  assert.strictEqual((await st(null, () => ({ state: 'building', done: 1, total: 4 }))).state, 'building');
+  assert.strictEqual((await st(saved, () => ({ state: 'building', partial: true }))).state, 'partial');
+  assert.strictEqual((await st(saved, () => ({ state: 'building' }))).state, 'ready');
+  assert.strictEqual((await st(saved, () => ({ state: 'ready' }))).state, 'ready');
+  assert.strictEqual((await st(null, () => ({ state: 'ready' }))).state, 'none');
+  assert.strictEqual((await st(null, () => ({ state: 'failed', error: 'boom' }))).state, 'failed');
+  assert.strictEqual((await st(null, () => ({ state: 'failed', error: 'boom' }))).error, 'boom');
+  const empty = await st(null, () => ({ state: 'none' }));
+  assert.deepStrictEqual([empty.state, empty.files, empty.chunks, empty.builtAt, empty.keywordOnly, empty.model], ['none', 0, 0, null, false, 'm']);
+  const full = await st(saved, () => ({ state: 'ready' }));
+  assert.deepStrictEqual([full.files, full.chunks, full.builtAt, full.model], [2, 3, 1, 'm']);
+  assert.strictEqual('error' in full, false);
+});
+
+test('M5: a build that failed is named for exactly the backoff, then tried again', async () => {
+  let t = 10_000;
+  let refreshes = 0;
+  const failed = { state: 'failed', error: 'boom', failedAt: 10_000 };
+  const index = { load: async () => null, get: () => null, isRunning: () => false, progress: () => failed, refresh: async () => { refreshes += 1; throw new Error('still boom'); } };
+  const ollama = { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }), generate: async () => ({ ok: true, text: 'x' }) };
+  const repo = createAskRepo({ index, ollama, now: () => t, retryAfterMs: 1000, buildProbeMs: 50 });
+  t = 10_999;
+  assert.deepStrictEqual(await repo.ask(WT, 'lock'), { ok: false, reason: 'index-failed', error: 'boom', partial: false });
+  assert.strictEqual(refreshes, 0, 'inside the backoff nothing is restarted');
+  t = 11_000;
+  const again = await repo.ask(WT, 'lock');
+  assert.strictEqual(refreshes, 1, 'at exactly the backoff it tries again');
+  assert.deepStrictEqual([again.reason, again.error], ['index-failed', 'still boom']);
+  t = 10_500;
+  index.progress = () => ({ state: 'failed', error: 'boom', failedAt: 'x' });
+  await repo.ask(WT, 'lock');
+  assert.strictEqual(refreshes, 2, 'a failure with no time is not remembered');
+  index.progress = () => ({ state: 'failed', failedAt: 10_000 });
+  await repo.ask(WT, 'lock');
+  assert.strictEqual(refreshes, 3, 'nor one with no error');
+});
+
+test('M5: a refresh that finishes before the probe hands over the NEW index; one that fails or runs late leaves the saved one, marked stale', async () => {
+  const OLD = lineData('old.js', ['needle old']);
+  const NEW = lineData('new.js', ['needle new']);
+  let current = OLD;
+  const mk = (refresh, opts = {}) => {
+    const index = { load: async () => OLD, get: () => current, isRunning: () => false, progress: () => ({ state: 'ready' }), refresh };
+    const ollama = { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }), generate: async () => ({ ok: true, text: 'x' }) };
+    return createAskRepo({ index, ollama, staleWaitMs: 40, ...opts });
+  };
+  current = OLD;
+  const done = await mk(async () => { current = NEW; return {}; }).excerptsFor(WT, 'needle');
+  assert.deepStrictEqual([done.sent[0].file, done.stale], ['new.js', false]);
+  current = OLD;
+  const failed = await mk(async () => { throw new Error('refresh broke'); }).excerptsFor(WT, 'needle');
+  assert.deepStrictEqual([failed.sent[0].file, failed.stale, failed.refreshError], ['old.js', true, 'refresh broke']);
+  current = OLD;
+  const late = await mk(() => new Promise(() => {})).excerptsFor(WT, 'needle');
+  assert.deepStrictEqual([late.sent[0].file, late.stale], ['old.js', true]);
+  assert.strictEqual('refreshError' in late, false);
+  const running = await (() => {
+    const index = { load: async () => OLD, get: () => OLD, isRunning: () => true, progress: () => ({ state: 'ready' }), refresh: async () => { throw new Error('must not start'); } };
+    const ollama = { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }) };
+    return createAskRepo({ index, ollama }).excerptsFor(WT, 'needle');
+  })();
+  assert.strictEqual(running.stale, true, 'a build in progress means the figures may move');
+});
+
+test('M5: ask: how long it took is never negative, and a failed generate names its model, status and detail', async () => {
+  const marks = [5000, 5300];
+  const ok = build({});
+  const repo = createAskRepo({ index: { load: async () => DATA, get: () => DATA, isRunning: () => false, progress: () => ({ state: 'ready' }), refresh: async () => ({}) },
+    ollama: { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }), generate: async () => ({ ok: true, text: 'x' }) }, now: () => marks.shift() ?? 5300, staleWaitMs: 20 });
+  assert.strictEqual((await repo.ask(WT, 'lock')).ms, 300);
+  const back = [5000, 4000];
+  const repo2 = createAskRepo({ index: { load: async () => DATA, get: () => DATA, isRunning: () => false, progress: () => ({ state: 'ready' }), refresh: async () => ({}) },
+    ollama: { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }), generate: async () => ({ ok: true, text: 'x' }) }, now: () => back.shift() ?? 4000, staleWaitMs: 20 });
+  assert.strictEqual((await repo2.ask(WT, 'lock')).ms, 0);
+  const g = build({ generate: async () => ({ ok: false, reason: 'http', status: 503, model: 'mm', detail: 'busy' }) });
+  const r = await g.repo.ask(WT, 'lock');
+  assert.deepStrictEqual([r.ok, r.reason, r.status, r.model, r.detail], [false, 'http', 503, 'mm', 'busy']);
+  const g2 = build({ generate: async () => ({ ok: false, reason: 'timeout' }) });
+  const r2 = await g2.repo.ask(WT, 'lock');
+  assert.deepStrictEqual(['status' in r2, 'model' in r2, 'detail' in r2], [false, false, false]);
+  assert.ok(ok);
+});
+
+test('M5: the 12000-character budget counts the two characters between excerpts on the one that would not fit', async () => {
+  const body = (rel, n) => {
+    const total = n - `### ${rel}:100-103`.length - 1 - 3 - 4 * 5;
+    const lens = [0, 1, 2, 3].map(j => Math.floor(total / 4) + (j < total % 4 ? 1 : 0));
+    return chunk(100, 103, lens.map(len => needle(len)).join('\n'), [1, 0]);
+  };
+  const files = Array.from({ length: 13 }, (_, i) => {
+    const rel = `f${String(i).padStart(2, '0')}.js`;
+    return { rel, size: 1, mtimeMs: 1, lines: 200, chunks: [body(rel, i === 11 ? 999 : 998)] };
+  });
+  const r = await build({ data: { embedModel: 'e', builtAt: 1, files } }).repo.excerptsFor(WT, 'needle', { k: 13 });
+  assert.deepStrictEqual(r.body.split('\n\n').map(p => p.length), Array(11).fill(998));
+  assert.strictEqual(r.sent.length, 11, '11 x 1000 = 11000, and a 999-character body + 2 would make 12001');
+});
+
+test('M5: an index that was still empty is read again after the build finishes in the probe window, and answers from it', async () => {
+  let current = null;
+  const index = { load: async () => null, get: () => current, isRunning: () => false, progress: () => ({ state: current ? 'ready' : 'building', done: 0, total: 1 }),
+    refresh: async () => { current = DATA; return {}; } };
+  const ollama = { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }), generate: async () => ({ ok: true, text: 'host/file-lock.js:2' }) };
+  const r = await createAskRepo({ index, ollama, buildProbeMs: 200, staleWaitMs: 20 }).ask(WT, 'lock');
+  assert.strictEqual(r.ok, true, JSON.stringify(r));
+  assert.strictEqual('building' in r, false);
+  const never = { ...index, refresh: () => new Promise(() => {}), get: () => null };
+  const building = await createAskRepo({ index: never, ollama, buildProbeMs: 20 }).ask(WT, 'lock');
+  assert.deepStrictEqual([building.ok, building.reason], [false, 'index-building']);
+});
+
+test('M5: a build that is already running is not restarted when the saved index is read', async () => {
+  const index = { load: async () => DATA, get: () => DATA, isRunning: () => true, progress: () => ({ state: 'ready' }), refresh: async () => { throw new Error('must not start'); } };
+  const ollama = { answerModel: 'm', embedModel: 'e', check: async () => ({ ok: true, embed: true }), embed: async () => ({ ok: true, vectors: [[1, 0]] }) };
+  const r = await createAskRepo({ index, ollama }).excerptsFor(WT, 'lock');
+  assert.strictEqual(r.stale, true);
+  assert.strictEqual('refreshError' in r, false, 'no refresh was started, so none failed');
+});
+
+test('M5: every range of a file that was sent counts for citations, not only the last one', async () => {
+  const { repo } = build({ generate: async () => ({ ok: true, text: 'The first part is host/file-lock.js:2 and the second is host/file-lock.js:42.' }) });
+  const r = await repo.ask(WT, 'lock');
+  assert.deepStrictEqual(r.citations.map(c => c.line).sort((a, b) => a - b), [2, 42]);
+  assert.deepStrictEqual(r.dropped, []);
+});

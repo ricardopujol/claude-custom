@@ -226,3 +226,183 @@ test('a poller whose read throws still reports the shared file, and a 429 keeps 
   t += 2 * DATA_STALE_MS; // never recovered: now unknown
   assert.strictEqual((await h.refresh()).state, 'absent');
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+const { MAX_FAILURES, defaultDir } = require('../host/quota-share');
+const { spawnSync } = require('child_process');
+
+const CFG = path.join(path.parse(process.cwd()).root, 'acct-kills');
+// FUTURE_SKEW_MS is not exported; the module documents it as one minute.
+const FUTURE_SKEW = 60_000;
+
+function putLease(d, lease) {
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(leasePath(d, CFG), JSON.stringify(lease));
+}
+const readLease = (d) => JSON.parse(fs.readFileSync(leasePath(d, CFG), 'utf8'));
+
+test('renewPoller refuses a non-owner and leaves the holder\'s lease exactly as it was', () => {
+  const d = dir();
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'A', pid: 1, now: () => T0, isAlive: alive }), true);
+  const before = fs.readFileSync(leasePath(d, CFG), 'utf8');
+  assert.strictEqual(renewPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0 + 50_000 }), false);
+  assert.strictEqual(fs.readFileSync(leasePath(d, CFG), 'utf8'), before);
+  assert.deepStrictEqual(readLease(d), { owner: 'A', pid: 1, at: T0 });
+  // the owner itself does renew, and the new stamp is the one it passed
+  assert.strictEqual(renewPoller({ dir: d, configDir: CFG, owner: 'A', pid: 1, now: () => T0 + 50_000 }), true);
+  assert.deepStrictEqual(readLease(d), { owner: 'A', pid: 1, at: T0 + 50_000 });
+});
+
+test('renewPoller with no lease at all returns false and creates no lease file', () => {
+  const d = dir();
+  assert.strictEqual(renewPoller({ dir: d, configDir: CFG, owner: 'A', now: () => T0 }), false);
+  assert.strictEqual(fs.existsSync(leasePath(d, CFG)), false);
+});
+
+test('releasePoller by a non-owner leaves the lease, by the owner removes it', () => {
+  const d = dir();
+  claimPoller({ dir: d, configDir: CFG, owner: 'A', pid: 1, now: () => T0, isAlive: alive });
+  releasePoller({ dir: d, configDir: CFG, owner: 'B' });
+  assert.strictEqual(fs.existsSync(leasePath(d, CFG)), true);
+  releasePoller({ dir: d, configDir: CFG, owner: 'A' });
+  assert.strictEqual(fs.existsSync(leasePath(d, CFG)), false);
+});
+
+function deadPid() {
+  const r = spawnSync(process.execPath, ['-e', '']);
+  assert.strictEqual(r.status, 0);
+  return r.pid; // the child has exited and been reaped
+}
+
+test('with the default pid check, a lease held by a really dead pid is reclaimed at once', () => {
+  const d = dir();
+  putLease(d, { owner: 'A', pid: deadPid(), at: T0 });
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0 }), true);
+  assert.strictEqual(readLease(d).owner, 'B');
+});
+
+test('with the default pid check, a lease held by a live pid is respected', () => {
+  const d = dir();
+  putLease(d, { owner: 'A', pid: process.pid, at: T0 });
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0 }), false);
+  assert.strictEqual(readLease(d).owner, 'A');
+});
+
+test('with the default pid check, a pid we cannot judge counts as alive (a second poller is the 429)', () => {
+  for (const pid of [undefined, null, 'abc', -5, 0]) {
+    const d = dir();
+    putLease(d, { owner: 'A', pid, at: T0 });
+    assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0 }), false,
+      `pid ${String(pid)} can't be told dead`);
+  }
+});
+
+test('the failure breaker holds the lease through MAX_FAILURES - 1 failures and gives it up on the next', async () => {
+  const d = dir();
+  let t = T0;
+  let calls = 0;
+  const h = createSharedQuota({
+    dir: d, configDir: CFG, owner: 'h', now: () => t, isAlive: alive,
+    readQuota: async () => { calls += 1; return BAD(); },
+  });
+  for (let i = 1; i < MAX_FAILURES; i++) {
+    await h.refresh();
+    t += POLL_INTERVAL_MS;
+    assert.strictEqual(readLease(d).owner, 'h', `still held after ${i} failure(s)`);
+  }
+  await h.refresh();
+  assert.strictEqual(calls, MAX_FAILURES);
+  assert.strictEqual(fs.existsSync(leasePath(d, CFG)), false, 'released at exactly MAX_FAILURES');
+  // sits out one lease period: no poll inside it, a poll at exactly its end
+  const at = t;
+  t = at + LEASE_STALE_MS - 1;
+  await h.refresh();
+  assert.strictEqual(calls, MAX_FAILURES, 'sitting out');
+  t = at + LEASE_STALE_MS;
+  await h.refresh();
+  assert.strictEqual(calls, MAX_FAILURES + 1, 'polls again when the sit-out ends');
+});
+
+test('after sitting out, the failure count starts again from zero', async () => {
+  const d = dir();
+  let t = T0;
+  const h = createSharedQuota({
+    dir: d, configDir: CFG, owner: 'h', now: () => t, isAlive: alive, readQuota: failing429(),
+  });
+  for (let i = 0; i < MAX_FAILURES; i++) await h.refresh();
+  assert.strictEqual(fs.existsSync(leasePath(d, CFG)), false);
+  t += LEASE_STALE_MS;
+  for (let i = 1; i < MAX_FAILURES; i++) await h.refresh();
+  assert.strictEqual(readLease(d).owner, 'h', 'one failure after the sit-out does not release again');
+});
+function failing429() { return async () => BAD(); }
+
+test('a good poll resets the failure count', async () => {
+  const d = dir();
+  let t = T0;
+  let mode = 'bad';
+  const h = createSharedQuota({
+    dir: d, configDir: CFG, owner: 'h', now: () => t, isAlive: alive,
+    readQuota: async () => (mode === 'bad' ? BAD() : GOOD()),
+  });
+  for (let i = 1; i < MAX_FAILURES; i++) await h.refresh();
+  mode = 'good'; t += POLL_INTERVAL_MS;
+  await h.refresh();
+  mode = 'bad'; t += POLL_INTERVAL_MS;
+  for (let i = 1; i < MAX_FAILURES; i++) await h.refresh();
+  assert.strictEqual(readLease(d).owner, 'h', 'the earlier failures were forgotten');
+});
+
+test('a lease stamped exactly one skew in the future is still held, one ms more is reclaimable', () => {
+  const d = dir();
+  putLease(d, { owner: 'A', pid: 1, at: T0 + FUTURE_SKEW });
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0, isAlive: alive }), false);
+  putLease(d, { owner: 'A', pid: 1, at: T0 + FUTURE_SKEW + 1 });
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0, isAlive: alive }), true);
+});
+
+test('a lease exactly LEASE_STALE_MS old is held, one ms older is taken', () => {
+  const d = dir();
+  putLease(d, { owner: 'A', pid: 1, at: T0 });
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0 + LEASE_STALE_MS, isAlive: alive }), false);
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0 + LEASE_STALE_MS + 1, isAlive: alive }), true);
+});
+
+test('a lease that is not the right shape is free to take', () => {
+  for (const lease of [{ owner: 'A', pid: 1 }, { at: T0, pid: 1 }, { owner: 7, at: T0, pid: 1 },
+    { owner: 'A', at: 'x', pid: 1 }, [], 'x', null]) {
+    const d = dir();
+    putLease(d, lease);
+    assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0, isAlive: alive }), true,
+      JSON.stringify(lease));
+  }
+});
+
+test('a lease without a numeric stamp is rewritten even for the same owner', () => {
+  const d = dir();
+  putLease(d, { owner: 'A', pid: 1 });
+  assert.strictEqual(claimPoller({ dir: d, configDir: CFG, owner: 'A', pid: 3, now: () => T0, isAlive: alive }), true);
+  assert.deepStrictEqual(readLease(d), { owner: 'A', pid: 3, at: T0 });
+});
+
+test('a figure dated exactly one skew ahead reads fresh at age 0; one ms more is dated in the future', () => {
+  const d = dir();
+  const write = (readAt) => {
+    fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(quotaPath(d, CFG), JSON.stringify({ version: 1, readAt, windows: WINDOWS, lastError: null }));
+  };
+  write(T0 + FUTURE_SKEW);
+  const ok = readShared({ dir: d, configDir: CFG, now: () => T0 });
+  assert.strictEqual(ok.state, 'fresh');
+  assert.strictEqual(ok.ageMs, 0);
+  write(T0 + FUTURE_SKEW + 1);
+  const bad = readShared({ dir: d, configDir: CFG, now: () => T0 });
+  assert.strictEqual(bad.state, 'absent');
+  assert.strictEqual(bad.error, 'quota file is dated in the future');
+});
+
+test('defaultDir is the .claude-custom folder under home', () => {
+  assert.strictEqual(path.basename(defaultDir()), '.claude-custom');
+  assert.strictEqual(path.dirname(defaultDir()), require('os').homedir());
+});

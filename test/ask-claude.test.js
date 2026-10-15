@@ -196,3 +196,91 @@ test('generate: stdout is capped so a runaway child cannot fill memory, and it i
   assert.deepStrictEqual(r, { ok: false, reason: 'bad-reply' });
   assert.deepStrictEqual(killed, [f.calls[0].child.pid]);
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+test('S9: a 401 status alone means signed out, whatever the words say', async () => {
+  const body = JSON.stringify({ type: 'result', is_error: true, result: 'something unrelated', api_error_status: 401 });
+  const { a } = make((c) => finish(c, 1, body));
+  const r = await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual(r, { ok: false, reason: 'not-signed-in', detail: 'something unrelated' });
+});
+
+test('S9: the sign-out words alone mean signed out, whatever the status says', async () => {
+  const body = JSON.stringify({ type: 'result', is_error: true, result: 'Not logged in · Please run /login', api_error_status: 500 });
+  const { a } = make((c) => finish(c, 1, body));
+  const r = await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual([r.ok, r.reason], [false, 'not-signed-in']);
+  assert.match(r.detail, /Not logged in/);
+});
+
+test('S9: an error that is neither a 401 nor the sign-out words is claude-failed with the CLI\'s words', async () => {
+  const body = JSON.stringify({ type: 'result', is_error: true, result: 'Overloaded', api_error_status: 529 });
+  const { a } = make((c) => finish(c, 1, body));
+  assert.deepStrictEqual(await a.generate({ model: 'haiku', system: 's', prompt: 'p' }), { ok: false, reason: 'claude-failed', detail: 'Overloaded' });
+});
+
+test('S9: stdout of exactly maxOutputBytes is accepted, one byte more is bad-reply and ends the child', async () => {
+  const cap = 200;
+  const base = Buffer.byteLength(okJson(''));
+  const exact = okJson('x'.repeat(cap - base));
+  assert.strictEqual(Buffer.byteLength(exact), cap);
+  const accepted = make((c) => finish(c, 0, exact), { maxOutputBytes: cap });
+  assert.deepStrictEqual(await accepted.a.generate({ model: 'haiku', system: 's', prompt: 'p' }), { ok: true, text: 'x'.repeat(cap - base) });
+  const killed = [];
+  const over = make((c) => finish(c, 0, okJson('x'.repeat(cap - base + 1))), { maxOutputBytes: cap, killFn: (child) => { killed.push(child.pid); return true; } });
+  assert.deepStrictEqual(await over.a.generate({ model: 'haiku', system: 's', prompt: 'p' }), { ok: false, reason: 'bad-reply' });
+  assert.strictEqual(killed.length, 1);
+});
+
+test('S9: a runaway child is ended once, however many more chunks it sends', async () => {
+  const killed = [];
+  const { a } = make((c) => { c.stdout.emit('data', Buffer.alloc(500, 97)); c.stdout.emit('data', Buffer.alloc(500, 97)); c.stdout.emit('data', Buffer.alloc(500, 97)); },
+    { maxOutputBytes: 400, killFn: (child) => { killed.push(child.pid); return true; } });
+  assert.deepStrictEqual(await a.generate({ model: 'haiku', system: 's', prompt: 'p' }), { ok: false, reason: 'bad-reply' });
+  assert.strictEqual(killed.length, 1);
+});
+
+test('S9: a killFn that throws does not stop the reply being named bad-reply', async () => {
+  const { a } = make((c) => { c.stdout.emit('data', Buffer.alloc(500, 97)); }, { maxOutputBytes: 400, killFn: () => { throw new Error('gone'); } });
+  assert.deepStrictEqual(await a.generate({ model: 'haiku', system: 's', prompt: 'p' }), { ok: false, reason: 'bad-reply' });
+});
+
+test('S9: stderr is read until it holds 4000 characters: a chunk that finds it full is dropped, one that finds it short is kept', async () => {
+  const full = make((c) => { c.stderr.emit('data', Buffer.from('a'.repeat(4000))); c.stderr.emit('data', Buffer.from(' Not logged in')); c.exitCode = 1; c.emit('close', 1); });
+  const r1 = await full.a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual([r1.ok, r1.reason], [false, 'claude-failed'], 'the words after 4000 characters were never read');
+  const short = make((c) => { c.stderr.emit('data', Buffer.from('a'.repeat(3999))); c.stderr.emit('data', Buffer.from(' Not logged in')); c.exitCode = 1; c.emit('close', 1); });
+  const r2 = await short.a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual([r2.ok, r2.reason], [false, 'not-signed-in'], 'a chunk that found room was kept');
+});
+
+test('S9: the allow-list is exactly the names the CLI needs, each one reaches the child, and a name beside it does not', async () => {
+  const EXPECTED = [
+    'PATH', 'PATHEXT', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'OS', 'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+    'HOME', 'HOMEDRIVE', 'HOMEPATH', 'USERPROFILE', 'USERNAME', 'USERDOMAIN', 'LOGNAME', 'USER', 'SHELL',
+    'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+    'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LANGUAGE', 'TZ', 'TERM', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+    'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN',
+  ];
+  assert.deepStrictEqual([...ENV_ALLOW], EXPECTED);
+  const env = {};
+  for (const name of EXPECTED) env[name] = name === 'CLAUDE_CONFIG_DIR' ? require('path').resolve('abs-cfg') : `v-${name}`;
+  const f = fakeSpawn((c) => finish(c, 0, okJson('x')));
+  const a = createClaudeAnswerer({ spawn: f.spawn, claudeBin: 'c', env: { ...env, PATHX: 'no', XPATH: 'no', 'HOME ': 'no', ANTHROPIC_API_KEY: 'no' }, killFn: () => true });
+  await a.generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.deepStrictEqual(f.calls[0].opts.env, env);
+});
+
+test('S9: names starting LC_ pass in any case, a name merely containing LC_ does not', () => {
+  assert.deepStrictEqual(childEnv({ LC_ALL: 'C', lc_messages: 'en', XLC_ALL: 'no', LC: 'no' }), { LC_ALL: 'C', lc_messages: 'en' });
+});
+
+test('S9: the child runs in a folder of its own unless one is given', async () => {
+  const f = fakeSpawn((c) => finish(c, 0, okJson('x')));
+  await createClaudeAnswerer({ spawn: f.spawn, claudeBin: 'c', env: {}, killFn: () => true }).generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.strictEqual(require('path').basename(f.calls[0].opts.cwd), 'claude-custom-ask-claude');
+  const g = fakeSpawn((c) => finish(c, 0, okJson('x')));
+  await createClaudeAnswerer({ spawn: g.spawn, claudeBin: 'c', env: {}, cwd: 'C:\\mine', killFn: () => true }).generate({ model: 'haiku', system: 's', prompt: 'p' });
+  assert.strictEqual(g.calls[0].opts.cwd, 'C:\\mine');
+});

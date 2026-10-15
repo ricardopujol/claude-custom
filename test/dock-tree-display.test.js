@@ -502,3 +502,270 @@ test('N1: dividerKey is dividerKeySizes applied; both are null together', () => 
     if (s) assert.deepEqual(k, T.setSplitSizes(l, [], s.sizes));
   }
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M13) -------------------------------------------------------
+
+const kg = (id, ...tabs) => ({ type: 'group', id, tabs });
+const kterm = { type: 'term' };
+const krow = (kids, sizes) => ({ type: 'split', dir: 'row', kids, sizes });
+const kcol = (kids, sizes) => ({ type: 'split', dir: 'col', kids, sizes });
+const K_IDS = ['a', 'b', 'c', 'd'];
+const kv2 = (root, extra = {}) => T.normalize({ version: 2, root, floats: [], hidden: [], seat: {}, rail: [], ...extra }, K_IDS);
+const KVP = { width: 1200, height: 600 };
+
+test('M13: railAfter: a junk or empty-named state reads as idle, whatever the event', () => {
+  const ev = { type: 'enter', module: 'a' };
+  const idle = V.railAfter(null, ev);
+  assert.deepStrictEqual(idle, { module: null, held: false, pending: 'a', leaving: false });
+  for (const junk of [{ module: '' }, { module: 5 }, { module: null }, [], 'x', undefined, { module: '', held: true, leaving: true }]) {
+    assert.deepStrictEqual(V.railAfter(junk, ev), idle, JSON.stringify(junk));
+  }
+  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'b' }, { type: 'enter-panel' }), { module: null, held: false, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter({ module: null, pending: '' }, { type: 'leave' }), { module: null, held: false, pending: null, leaving: false }, 'a blank wait is no wait');
+  assert.deepStrictEqual(V.railAfter({ module: null, pending: 7 }, { type: 'open-timer', module: 'x' }), { module: null, held: false, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'x' }, { type: 'open-timer', module: 'x' }), { module: 'x', held: false, pending: null, leaving: false });
+});
+
+test('M13: railAfter: a held panel is never marked leaving, and only an exact true holds', () => {
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: true, leaving: true }, { type: 'leave' }), { module: 'a', held: true, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: 'yes', leaving: true }, { type: 'leave' }), { module: 'a', held: false, pending: null, leaving: true });
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: 'yes' }, { type: 'leave' }), { module: 'a', held: false, pending: null, leaving: true });
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: 1 }, { type: 'hold' }), { module: 'a', held: true, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: true }, { type: 'close-timer' }), V.RAIL_IDLE);
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: true, leaving: true }, { type: 'close-timer' }), { module: 'a', held: true, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: false }, { type: 'close-timer' }), { module: 'a', held: false, pending: null, leaving: false });
+});
+
+test('M13: railAfter: the events in turn', () => {
+  const open = { module: 'a', held: false, pending: null, leaving: false };
+  const held = { ...open, held: true };
+  assert.deepStrictEqual(V.railAfter(open, { type: 'enter', module: 'b' }), { module: 'b', held: false, pending: null, leaving: false }, 'a swap by hover');
+  assert.deepStrictEqual(V.railAfter(held, { type: 'enter', module: 'b' }), { module: 'b', held: false, pending: null, leaving: false }, 'the hold stays with the click that made it');
+  assert.deepStrictEqual(V.railAfter(held, { type: 'enter', module: 'a' }), held, 'the same tab changes nothing but the grace');
+  assert.deepStrictEqual(V.railAfter({ ...open, leaving: true }, { type: 'enter', module: 'a' }), open);
+  assert.deepStrictEqual(V.railAfter(open, { type: 'enter' }), open);
+  assert.deepStrictEqual(V.railAfter(open, { type: 'enter', module: '' }), open);
+  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'leave' }), V.RAIL_IDLE);
+  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'hold' }), V.RAIL_IDLE);
+  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'tab', module: 'a' }), V.RAIL_IDLE);
+  assert.deepStrictEqual(V.railAfter(open, { type: 'tab', module: 'b' }), { module: 'b', held: false, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter(open, { type: 'tab' }), open);
+  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'click', module: 'a' }), { module: 'a', held: true, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter(open, { type: 'click', module: 'a' }), { module: 'a', held: true, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter(held, { type: 'click', module: 'a' }), V.RAIL_IDLE, 'a click on the held one closes it');
+  assert.deepStrictEqual(V.railAfter(held, { type: 'click', module: 'b' }), { module: 'b', held: true, pending: null, leaving: false });
+  assert.deepStrictEqual(V.railAfter(open, { type: 'click' }), open);
+  for (const type of ['escape', 'outside', 'drop', 'gone']) assert.deepStrictEqual(V.railAfter(held, { type }), V.RAIL_IDLE, type);
+  assert.deepStrictEqual(V.railAfter(open, { type: 'nonsense' }), open);
+  assert.deepStrictEqual(V.railAfter(open, null), open);
+  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'a' }, { type: 'open-timer', module: 'b' }), { module: null, held: false, pending: 'a', leaving: false }, 'another tab is not the one waiting');
+  assert.deepStrictEqual(V.railAfter(open, { type: 'open-timer', module: 'a' }), open);
+});
+
+test('M13: dragSizes: neighbours trade pixels inside their minimums; a squeezed neighbour, junk, or no move gives null; a kid exactly at its minimum can still grow', () => {
+  assert.deepStrictEqual(V.dragSizes([100, 200], [100, 100], 1, 50), [150, 150], 'the kid at its minimum may still take');
+  assert.deepStrictEqual(V.dragSizes([100, 200], [100, 100], 1, -50), [100, 200], 'but it cannot give');
+  assert.deepStrictEqual(V.dragSizes([200, 100], [100, 100], 1, 80), [200, 100]);
+  assert.deepStrictEqual(V.dragSizes([300, 200, 100], [100, 100, 100], 1, -150), [150, 350, 100]);
+  assert.deepStrictEqual(V.dragSizes([300, 200, 100], [100, 100, 100], 1, 10.6), [311, 189, 100], 'whole pixels');
+  assert.deepStrictEqual(V.dragSizes([300, 200], [100, 100], 1, 1000), [400, 100], 'never under the minimum');
+  for (const bad of [
+    [[99, 200], [100, 100], 1, 5], [[200, 99], [100, 100], 1, 5], [[200], [100], 1, 5], [[200, 200], [100], 1, 5], [[200, 200], [100, 100], 0, 5],
+    [[200, 200], [100, 100], 2, 5], [[200, 200], [100, 100], 1.5, 5], [[200, 200], [100, 100], 1, NaN], [[200, 200], [100, 100], 1, '5'],
+    [[200, 'x'], [100, 100], 1, 5], [[200, 200], [100, 'x'], 1, 5], [[200, 200], [100, NaN], 1, 5], ['no', [100, 100], 1, 5], [[200, 200], 'no', 1, 5],
+  ]) assert.strictEqual(V.dragSizes(...bad), null, JSON.stringify(bad));
+});
+
+test('M13: sizesAfterDrag: a plain split stores the whole drawn row, a rail neighbour trades with the terminal\'s room, anything odd stores nothing', () => {
+  const plain = krow([kg('x', 'a'), kg('y', 'b'), kg('z', 'c')], [1, 1, 1]);
+  const open3 = { px: [300, 300, 300], min: [100, 100, 100], state: ['open', 'open', 'open'] };
+  assert.deepStrictEqual(V.sizesAfterDrag(plain, open3, 1, 20), [320, 280, 300]);
+  assert.deepStrictEqual(V.sizesAfterDrag(plain, { px: [300, 300, 300], min: [100, 100, 100] }, 1, 20), [320, 280, 300], 'no state at all: all open');
+  assert.deepStrictEqual(V.sizesAfterDrag(plain, { px: [300, 300, 300], min: [100, 100, 100], state: ['open'] }, 1, 20), [320, 280, 300], 'a state list of the wrong length is ignored');
+  assert.strictEqual(V.sizesAfterDrag(plain, open3, 1, 0), null, 'no delta moves nothing');
+  assert.strictEqual(V.sizesAfterDrag(plain, { px: [100, 300, 300], min: [100, 100, 100], state: ['open', 'open', 'open'] }, 1, -20), null, 'a neighbour at its minimum');
+  for (const i of [0, 3, 1.5, -1, '1', undefined]) assert.strictEqual(V.sizesAfterDrag(plain, open3, i, 20), null, String(i));
+  for (const node of [null, 'x', [], { type: 'group' }, { type: 'term' }]) assert.strictEqual(V.sizesAfterDrag(node, open3, 1, 20), null);
+  for (const split of [null, 'x', undefined]) assert.strictEqual(V.sizesAfterDrag(plain, split, 1, 20), null);
+  assert.deepStrictEqual(V.sizesAfterDrag(plain, { px: [300, 28, 272], min: [100, 28, 100], state: ['open', 'rail', 'open'] }, 2, 20), null, 'a plain split has no room to trade with across a rail');
+});
+
+test('M13: sizesAfterDrag: with a rail in a plain row the rail keeps its stored share, written in the drawn pixels\' units', () => {
+  const four = krow([kg('x', 'a'), kg('y', 'b'), kg('z', 'c'), kg('w', 'd')], [2, 1, 2, 2]);
+  const s4 = { px: [400, 28, 400, 400], min: [100, 28, 100, 100], state: ['open', 'rail', 'open', 'open'] };
+  const got = V.sizesAfterDrag(four, s4, 3, 20);
+  const tOpen = 2 + 2 + 2; const sOpen = 400 + 400 + 400;
+  assert.deepStrictEqual(got, [400, 1 * sOpen / tOpen, 420, 380]);
+});
+
+test('M13: sizesAfterDrag: beside the terminal only the divider\'s two neighbours change; the other fixed kids keep what is stored', () => {
+  const node = krow([kg('x', 'a'), kterm, kg('y', 'b'), kg('z', 'c')], [150, 0, 160, 170]);
+  const split = { px: [150, 700, 150, 100], min: [120, 320, 120, 100], state: ['open', 'open', 'open', 'open'] };
+  assert.deepStrictEqual(V.sizesAfterDrag(node, split, 2, -16), [150, 684, 166, 170]);
+  assert.strictEqual(V.sizesAfterDrag(node, split, 3, 16), null, 'the last kid is at its minimum: it cannot give');
+});
+
+test('M13: sizesAfterDrag: across a rail the open kid trades with the terminal\'s room, against its own minimum', () => {
+  const node = krow([kterm, kg('x', 'a'), kg('y', 'b')], [0, 180, 180]);
+  const base ={ px: [600, 28, 200], min: [320, 28, 120], state: ['open', 'rail', 'open'] };
+  assert.deepStrictEqual(V.sizesAfterDrag(node, base, 2, 16), [600, 180, 184], 'the divider moves right: the kid after it shrinks');
+  assert.deepStrictEqual(V.sizesAfterDrag(node, base, 2, -16), [600, 180, 216]);
+  assert.strictEqual(V.sizesAfterDrag(node, { ...base, px: [320, 28, 200] }, 2, -16), null, 'the terminal has no room to give');
+  assert.strictEqual(V.sizesAfterDrag(node, { ...base, px: [600, 28, 100] }, 2, 16), null, 'the open kid is already under its minimum');
+  assert.strictEqual(V.sizesAfterDrag(node, { ...base, state: ['open', 'rail', 'rail'] }, 2, 16), null, 'both neighbours are rails');
+  assert.strictEqual(V.sizesAfterDrag(node, base, 2, NaN), null);
+  assert.strictEqual(V.sizesAfterDrag(node, base, 2, '16'), null);
+  assert.strictEqual(V.sizesAfterDrag(node, { ...base, px: [600, 28, 200] }, 2, 0), null, 'no delta moves nothing');
+  const before = krow([kterm, kg('x', 'a'), kg('y', 'b')], [0, 180, 180]);
+  const rail2 = { px: [600, 200, 28], min: [320, 120, 28], state: ['open', 'open', 'rail'] };
+  assert.deepStrictEqual(V.sizesAfterDrag(before, rail2, 2, 16), [600, 216, 180], 'the open kid BEFORE the divider grows when it moves right');
+});
+
+test('M13: dividerStep: the arrow along the split moves it one step, anything else is null', () => {
+  assert.strictEqual(V.dividerStep('ArrowLeft', 'row'), -16);
+  assert.strictEqual(V.dividerStep('ArrowRight', 'row'), 16);
+  assert.strictEqual(V.dividerStep('ArrowUp', 'row'), null);
+  assert.strictEqual(V.dividerStep('ArrowDown', 'row'), null);
+  assert.strictEqual(V.dividerStep('ArrowUp', 'col'), -16);
+  assert.strictEqual(V.dividerStep('ArrowDown', 'col'), 16);
+  assert.strictEqual(V.dividerStep('ArrowLeft', 'col'), null);
+  assert.strictEqual(V.dividerStep('ArrowRight', 'col'), null);
+  assert.strictEqual(V.dividerStep('Enter', 'row'), null);
+  assert.strictEqual(V.dividerStep('ArrowLeft', 'diagonal'), null);
+});
+
+test('M13: dividerKey / dividerKeySizes: a press moves the divider before kid i; every junk request changes nothing', () => {
+  const l = kv2(krow([kg('l', 'a'), kterm, kg('r', 'b')], [150, 0, 150]));
+  const { splits } = T.fit(l, { active: {}, foldAll: false }, KVP);
+  const moved = V.dividerKeySizes(l, splits, [], 2, 'ArrowLeft');
+  assert.deepStrictEqual(moved.sizes, [150, 874, 166]);
+  assert.strictEqual(moved.node, l.root);
+  assert.deepStrictEqual(V.dividerKey(l, splits, [], 2, 'ArrowLeft').root.sizes, [150, 0, 166]);
+  assert.deepStrictEqual(V.dividerKey(l, splits, [], 1, 'ArrowRight').root.sizes, [166, 0, 150]);
+  const nope = (...a) => assert.strictEqual(V.dividerKeySizes(...a), null, JSON.stringify(a.slice(2)));
+  nope(l, splits, [], 2, 'ArrowUp');
+  nope(l, splits, [], 0, 'ArrowLeft');
+  nope(l, splits, [], 3, 'ArrowLeft');
+  nope(l, splits, [0], 1, 'ArrowLeft');
+  nope(l, splits, [-1], 1, 'ArrowLeft');
+  nope(l, splits, [3], 1, 'ArrowLeft');
+  nope(l, splits, [1.5], 1, 'ArrowLeft');
+  nope(l, splits, 'x', 1, 'ArrowLeft');
+  nope(l, 'x', [], 1, 'ArrowLeft');
+  nope(l, [], [], 2, 'ArrowLeft');
+  nope(null, splits, [], 2, 'ArrowLeft');
+  nope({ root: null }, splits, [], 2, 'ArrowLeft');
+  nope(l, [null, { path: 'x' }, { path: [0] }, { path: [] , px: [1], min: [1] }], [], 2, 'ArrowLeft');
+  assert.strictEqual(V.dividerKey(l, splits, [], 2, 'ArrowUp'), null);
+});
+
+test('M13: dividerKeySizes walks the path through nested splits, and stops at a leaf', () => {
+  const l = kv2(krow([kterm, kcol([kg('x', 'a'), kg('y', 'b'), kg('z', 'c')], [1, 1, 1])], [0, 200]));
+  const { splits } = T.fit(l, { active: {}, foldAll: false }, { width: 1200, height: 900 });
+  assert.deepStrictEqual(V.dividerKeySizes(l, splits, [1], 1, 'ArrowDown').sizes, [313, 281, 296]);
+  assert.strictEqual(V.dividerKeySizes(l, splits, [1, 0], 1, 'ArrowDown'), null, 'a group is not a split');
+  assert.strictEqual(V.dividerKeySizes(l, splits, [1], 1, 'ArrowRight'), null, 'a column does not take left/right');
+});
+
+test('M13: rebaseDrag: only the divider\'s two neighbours are the drag\'s; every other fixed kid keeps what is stored now', () => {
+  const l = kv2(krow([kg('l', 'a'), kterm, kg('r', 'b')], [150, 0, 150]));
+  assert.deepStrictEqual(V.rebaseDrag(l, { path: [], i: 2, node: l.root, sizes: [150, 200, 160] }), [150, 200, 160]);
+  assert.deepStrictEqual(V.rebaseDrag(l, { path: [], i: 2, node: l.root, sizes: [140, 200, 160] }), [150, 200, 160], 'kid 0 is not a neighbour: stored wins');
+  assert.deepStrictEqual(V.rebaseDrag(l, { path: [], i: 1, node: l.root, sizes: [140, 200, 160] }), [140, 200, 150], 'now kid 0 is a neighbour');
+  const plain = kv2(krow([kterm, kcol([kg('x', 'a'), kg('y', 'b')], [1, 1])], [0, 200]));
+  const colNode = plain.root.kids[1];
+  const copy = V.rebaseDrag(plain, { path: [1], i: 1, node: colNode, sizes: [3, 5] });
+  assert.deepStrictEqual(copy, [3, 5]);
+  const drag = { path: [1], i: 1, node: colNode, sizes: [3, 5] };
+  assert.notStrictEqual(V.rebaseDrag(plain, drag), drag.sizes, 'a copy');
+  const base = { path: [], i: 2, node: l.root, sizes: [150, 200, 160] };
+  const bad = [
+    null, 'x', [], { ...base, path: 'x' }, { ...base, node: null }, { ...base, node: 'x' }, { ...base, sizes: 'x' }, { ...base, sizes: [150, 0, 160] },
+    { ...base, sizes: [150, NaN, 160] }, { ...base, sizes: [150, '200', 160] }, { ...base, i: 1.5 }, { ...base, i: '2' }, { ...base, path: [-1] },
+    { ...base, path: [3] }, { ...base, path: [0] }, { ...base, node: { ...l.root, dir: 'col' } }, { ...base, node: { ...l.root, kids: l.root.kids.slice(1) } },
+    { ...base, sizes: [150, 200] }, { ...base, node: krow([kg('p', 'a'), kg('q', 'b'), kg('r', 'c')], [1, 1, 1]) },
+  ];
+  for (const d of bad) assert.strictEqual(V.rebaseDrag(l, d), null, JSON.stringify(d));
+  for (const layout of [null, 'x', {}, { root: null }, { root: 'x' }]) assert.strictEqual(V.rebaseDrag(layout, base), null);
+  const noTerm = { root: krow([kg('l', 'a'), kg('m', 'b'), kg('r', 'c')], [150, 150, 150]) };
+  assert.strictEqual(V.rebaseDrag(noTerm, { path: [], i: 2, node: l.root, sizes: [150, 200, 160] }), null, 'the terminal is gone from this split');
+});
+
+test('M13: floatDragResult: a drag is applied to the float as it is NOW; a changed float, junk, or a move nobody can see stores nothing', () => {
+  const base = kv2(krow([kterm, kg('r', 'a', 'b', 'c', 'd')], [0, 200]));
+  const fl = T.dock(base, 'a', { float: { x: 100, y: 100, w: 300, h: 200 } });
+  const id = fl.floats[0].id;
+  const vp = { width: 1000, height: 600 };
+  const drag = { kind: 'move', id, tabs: ['a'], last: { x: 200, y: 150 }, viewport: vp };
+  const moved = V.floatDragResult(fl, drag);
+  assert.notStrictEqual(moved, fl);
+  assert.deepStrictEqual([moved.floats[0].x, moved.floats[0].y], [200, 150]);
+  assert.strictEqual(V.floatDragResult(fl, { ...drag, last: { x: 100, y: 100 } }), fl, 'a press that moves nothing stores nothing');
+  const resized = V.floatDragResult(fl, { kind: 'resize', id, tabs: ['a'], last: { w: 400, h: 300 }, viewport: vp });
+  assert.deepStrictEqual([resized.floats[0].w, resized.floats[0].h], [400, 300]);
+  for (const bad of [null, 'x', { ...drag, kind: 'other' }, { ...drag, kind: undefined }, { ...drag, id: 'nope' }, { ...drag, tabs: ['b'] }, { ...drag, tabs: ['a', 'b'] },
+    { ...drag, tabs: [] }, { ...drag, tabs: 'a' }, { ...drag, tabs: undefined }]) assert.strictEqual(V.floatDragResult(fl, bad), null, JSON.stringify(bad));
+  for (const layout of [null, 'x', {}, { floats: 'x' }]) assert.strictEqual(V.floatDragResult(layout, drag), null);
+  const two = { ...fl, floats: [{ ...fl.floats[0], tabs: ['a', 'b'] }] };
+  assert.strictEqual(V.floatDragResult(two, { ...drag, tabs: ['a', 'c'] }), null, 'same count, different tabs: another float now holds the name');
+  assert.strictEqual(V.floatDragResult(two, { ...drag, tabs: ['b', 'a'] }), null, 'the order matters too');
+  const edge = { ...fl, floats: [{ ...fl.floats[0], x: 700, y: 100 }] };
+  assert.strictEqual(V.floatDragResult(edge, { ...drag, last: { x: 900, y: 100 } }), edge, 'drawn clamped to the same place: nothing was chosen');
+});
+
+test('M13: the small helpers: settleMs, peekFocus and layoutSaved', () => {
+  assert.strictEqual(V.settleMs(false), V.SETTLE_MS);
+  for (const v of [true, undefined, null, 0, 'false']) assert.strictEqual(V.settleMs(v), 0, String(v));
+  assert.strictEqual(V.peekFocus(true, true), 'popover');
+  assert.strictEqual(V.peekFocus(true, false), 'popover');
+  assert.strictEqual(V.peekFocus(false, true), 'rail');
+  assert.strictEqual(V.peekFocus(false, false), 'terminal');
+  assert.strictEqual(V.peekFocus('yes', 'yes'), 'terminal');
+  assert.strictEqual(V.layoutSaved({}), true);
+  assert.strictEqual(V.layoutSaved({ root: 1 }), true);
+  for (const v of [null, undefined, [], 'x', 0, true]) assert.strictEqual(V.layoutSaved(v), false, String(v));
+});
+
+test('M13: railAfter: a blank pending wait is dropped by any event that keeps the state', () => {
+  const idleNoWait = { module: null, held: false, pending: null, leaving: false };
+  for (const type of ['hold', 'tab', 'enter', 'nonsense', 'close-timer']) assert.deepStrictEqual(V.railAfter({ module: null, pending: '' }, { type }), idleNoWait, type);
+  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'b' }, { type: 'hold' }), { module: null, held: false, pending: 'b', leaving: false }, 'a real wait is kept');
+});
+
+test('M13: dividerStep: a split of no known direction takes no key at all', () => {
+  for (const key of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) assert.strictEqual(V.dividerStep(key, 'diagonal'), null, key);
+  assert.strictEqual(V.dividerStep('ArrowUp', undefined), null);
+});
+
+test('M13: dividerKeySizes finds the split by its whole path, not by how long it is', () => {
+  const l = kv2(krow([kcol([kg('a1', 'a'), kg('a2', 'b')], [1, 1]), kterm, kcol([kg('b1', 'c'), kg('b2', 'd')], [1, 3])], [150, 0, 150]));
+  const { splits } = T.fit(l, { active: {}, foldAll: false }, { width: 1200, height: 800 });
+  const left = V.dividerKeySizes(l, splits, [0], 1, 'ArrowDown');
+  const right = V.dividerKeySizes(l, splits, [2], 1, 'ArrowDown');
+  assert.deepStrictEqual(splits.map(s => s.path), [[], [0], [2]]);
+  assert.deepStrictEqual(left.sizes, [splits[1].px[0] + 16, splits[1].px[1] - 16]);
+  assert.deepStrictEqual(right.sizes, [splits[2].px[0] + 16, splits[2].px[1] - 16]);
+  assert.notDeepStrictEqual(left.sizes, right.sizes);
+  assert.strictEqual(right.node, l.root.kids[2]);
+  assert.strictEqual(V.dividerKeySizes(l, splits, [0, 0, 0], 1, 'ArrowDown'), null, 'a path that runs on through a group');
+  assert.strictEqual(V.dividerKeySizes(l, splits, [0, 5], 1, 'ArrowDown'), null);
+});
+
+test('M13: sizesAfterDrag: across a rail with the open kid first, last or the terminal itself', () => {
+  const node = krow([kg('x', 'a'), kg('y', 'b'), kterm], [180, 180, 0]);
+  assert.deepStrictEqual(V.sizesAfterDrag(node, { px: [200, 28, 600], min: [120, 28, 320], state: ['open', 'rail', 'open'] }, 1, 16), [216, 180, 600], 'the first kid is the open one');
+  assert.strictEqual(V.sizesAfterDrag(node, { px: [200, 28, 600], min: [120, 28, 320], state: ['open', 'rail', 'open'] }, 2, 16), null, 'the open neighbour IS the terminal: nothing to trade with');
+  const t = krow([kterm, kg('x', 'a'), kg('y', 'b')], [0, 180, 180]);
+  const atMin = { px: [600, 28, 120], min: [320, 28, 120], state: ['open', 'rail', 'open'] };
+  assert.deepStrictEqual(V.sizesAfterDrag(t, atMin, 2, -16), [600, 180, 136], 'a kid exactly at its minimum may still grow');
+  assert.strictEqual(V.sizesAfterDrag(t, atMin, 2, 16), null, 'and cannot shrink');
+});
+
+test('M13: rebaseDrag: a split below the root is found by its path, and a plain split gives the whole drawn row back', () => {
+  const l = kv2(krow([kcol([kg('a1', 'a'), kg('a2', 'b')], [1, 1]), kterm, kg('r', 'c')], [150, 0, 150]));
+  const colNode = l.root.kids[0];
+  assert.deepStrictEqual(V.rebaseDrag(l, { path: [0], i: 1, node: colNode, sizes: [3, 5] }), [3, 5]);
+  const plain = kv2(krow([kterm, kcol([kg('x', 'a'), kg('y', 'b'), kg('z', 'c')], [1, 1, 1])], [0, 200]));
+  const three = plain.root.kids[1];
+  assert.deepStrictEqual(V.rebaseDrag(plain, { path: [1], i: 1, node: three, sizes: [4, 6, 8] }), [4, 6, 8], 'every drawn size, not the stored proportions');
+});

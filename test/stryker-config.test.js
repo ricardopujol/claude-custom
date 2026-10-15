@@ -309,7 +309,7 @@ test('the modules that decide what the Resources panel kills are mutated (#63)',
 
 // What "this runs a real process" looks like: child_process spawn/exec of node, powershell or a shell, or the repo's own
 // PowerShell helper (createExec). git is deliberately not here: a git call is milliseconds, PowerShell is seconds.
-const SPAWN = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\(\s*(?:process\.execPath|['"`](?:powershell|pwsh|node|bash|sh)\b)|\bcreateExec\(/;
+const SPAWN = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\(\s*(?:process\.execPath|['"`](?:powershell|pwsh|node|bash|sh|git)\b)|\bcreateExec\(/;
 
 // Every test/it/describe title in a source, at any indentation.
 const titlesOf = (src) => [...src.matchAll(/^\s*(?:test|it|describe)\((['"`])((?:\\.|(?!\1).)*)\1(?:,\s*\{([^}\n]*)\})?/gm)]
@@ -365,6 +365,22 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
     'summary-slot-kills.test.js',  // one node -e child whose pid is then free
     'proc-start.test.js',          // one real powershell holder (pre-#63)
     'window-count.test.js',        // the real proc-start exec (pre-#63)
+    // BACKLOG #94: quota-share and quota-cli joined `mutate`. Each of these starts a plain node child (tens of ms): the CLI itself, or
+    // `node -e ""` to get a pid that is really dead for the default pid check.
+    'quota-share.test.js',
+    'quota-cli.test.js',
+    'quota-cli-review.test.js',
+    // The SPAWN scan now sees `git` (BACKLOG #94, Miguel Y1). These were already spawning git on temp repos before it did, accepted by earlier gates (tens of ms each).
+    'git-branch.test.js',
+    'project-layout.test.js',
+    'branch-health.test.js',
+    'repo-index.test.js',
+    'repo-diff.test.js',
+    'repo-service.test.js',
+    'repo-diff-rule.test.js',
+    'indexing-writer.test.js',
+    'indexing-service.test.js',
+    'ask-index-hardening.test.js', // BACKLOG #94: `git init` / `git ls-files` on a temp repo (config isolated), a `--version` probe
   ]);
 
   const cmd = conf.commandRunner.command;

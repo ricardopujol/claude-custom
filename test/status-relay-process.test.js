@@ -14,7 +14,7 @@
  * through -- the user's status line keeps rendering exactly as before.
  *
  * THIS FILE holds the tests that run the relay, a user command or a hung process tree for real (split out of test/status-relay.test.js,
- * release-gate lane 2026-10-09): they take ~30 s and a Stryker timeout counts as a kill, so they stay out of the mutation command.
+ * release-gate lane 2026-10-09): takes ~4 min alone by design; gates need a 600 s cap (numbers: BACKLOG #94).
  */
 const test = require('node:test');
 const assert = require('node:assert');
