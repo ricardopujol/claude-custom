@@ -576,7 +576,11 @@ async function main() {
     menu.ok && menu.rows.filter(r => r.id).length === IDS.length && menu.rows.filter(r => r.id).every(r => !r.checked), JSON.stringify(menu.rows && menu.rows.map(r => [r.id, r.checked])));
   await view(app, 'menuTick', { id: 'git' });
   const ticked = (await settled(app)).s;
-  check('8: ticking one brings it back, showing', !!groupWith(ticked, 'git') && groupWith(ticked, 'git').panels[0] === 'git' && tiles(ticked).length === 0);
+  // PR #168 (BACKLOG #85): a panel ticked back in comes back as an unpinned rail tab, not as a docked group
+  // (verify/probe-dock-autohide.js check 8 pins the same thing from the rail's side).
+  check('8: ticking one brings it back as a rail tab (unpinned, the default), not hidden, no group made for it',
+    !groupWith(ticked, 'git') && ticked.rails.some(r => r.modules.includes('git')) && !ticked.layout.hidden.includes('git') && tiles(ticked).length === 0,
+    JSON.stringify([ticked.rails.map(r => r.modules), ticked.layout.hidden]));
   await view(app, 'closeMenu');
   await view(app, 'layout', { layout: example });
   cur = (await settled(app)).s;
@@ -962,7 +966,7 @@ async function main() {
         && saved.rows[0].labels.includes('Rename preset \'Reviewing\'') && saved.rows[0].labels.includes('Delete preset \'Reviewing\'') && saved.rows[0].focusable,
       JSON.stringify(saved && saved.rows));
     check('12: after a save, focus is on that preset\'s row (never dropped to the page)',
-      saved.active.preset === 'Reviewing' && saved.active.act === 'apply', JSON.stringify(saved.active));
+      !!saved && saved.active.preset === 'Reviewing' && saved.active.act === 'apply', JSON.stringify(saved && saved.active));
     const f1 = fileList();
     check('12: ...the file holds that one preset: its name and exactly the placement that was on screen',
       Array.isArray(f1) && f1.length === 1 && f1[0].name === 'Reviewing' && JSON.stringify(f1[0].layout) === JSON.stringify(example), JSON.stringify(f1).slice(0, 300));
@@ -987,7 +991,7 @@ async function main() {
     await openMenu();
     await mclick(rowSel('Reviewing', 'apply'));
     await sleep(1200);
-    check('12: applying a preset identical to the current layout changes nothing and writes nothing', (await layoutPushes12()) === lp1 && (await ask()).pushes === saved.pushes);
+    check('12: applying a preset identical to the current layout changes nothing and writes nothing', (await layoutPushes12()) === lp1 && !!saved && (await ask()).pushes === saved.pushes);
 
     // save under the same name: asks, then replaces in place
     await view(app, 'hide', { id: 'fog' });
@@ -1032,7 +1036,7 @@ async function main() {
     const layoutOfFirst = JSON.stringify(fileList()[0].layout);
     await type('input[data-preset-field="rename"]', 'Writing', 'Enter');
     const renamedTo = await waitFor12(p => p.names.includes('Writing'));
-    check('12: after a rename, focus is on the renamed row', renamedTo.active.preset === 'Writing' && renamedTo.active.act === 'apply', JSON.stringify(renamedTo.active));
+    check('12: after a rename, focus is on the renamed row', !!renamedTo && renamedTo.active.preset === 'Writing' && renamedTo.active.act === 'apply', JSON.stringify(renamedTo && renamedTo.active));
     check('12: renaming changes the name in place, keeps the order and the layout, and writes the file once',
       fileNames() === 'Writing,Other' && JSON.stringify(fileList()[0].layout) === layoutOfFirst, fileNames());
     await wroteOnce(pr1.pushes, 'rename');
@@ -1064,7 +1068,7 @@ async function main() {
     await mclick('[data-preset-act="delete-confirm"]');
     const afterDelete = await waitFor12(p => !p.names.includes('Writing'));
     check('12: confirming deletes it and only it', fileNames() === 'Other', fileNames());
-    check('12: ...and focus moves to the next row (here the only one left), not to the page', afterDelete.active.preset === 'Other' && afterDelete.active.act === 'apply', JSON.stringify(afterDelete.active));
+    check('12: ...and focus moves to the next row (here the only one left), not to the page', !!afterDelete && afterDelete.active.preset === 'Other' && afterDelete.active.act === 'apply', JSON.stringify(afterDelete && afterDelete.active));
     await wroteOnce(pr2.pushes, 'delete');
     await view(app, 'closeMenu');
 
@@ -1223,11 +1227,13 @@ async function main() {
     const tag0 = s.vaultNode;
     await view(app, 'railClick', { id: 'vault' });
     let p = await stFor(v => v.popover);
+    await sleep(400);                                                // it slides in (dpeek-from-right): read its box once it has landed
+    p = await st();
     check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with the rail\'s tabs and the Vault panel inside it',
       !!p && p.popover.module === 'vault' && p.popover.on[0] === 'vault' && p.popover.panels[0] === 'vault' && p.popover.tabs.length === visible.length
         && p.popover.hit && Math.abs(p.popover.rect.width - 280) <= 1 && p.popover.rect.right <= p.rails[0].rect.left + 1 && p.popover.rect.left >= p.dock.left - 1
         && p.popover.panelRects[0].left >= p.popover.rect.left - 1 && p.popover.panelRects[0].right <= p.popover.rect.right + 1 && p.popover.panelRects[0].height > 100,
-      p && JSON.stringify(p.popover));
+      p && JSON.stringify([p.popover.tabs.length, visible.length, p.popover.rect, p.rails.map(r => r.rect), p.dock]));
     check('13: ...which resizes nothing and saves nothing: the terminal and the last size sent are as they were, the file and the push count too, the Vault\'s field is the same node',
       !!p && p.term.cols === term0.cols && p.term.rows === term0.rows && JSON.stringify(p.sent) === sent0 && same(treeNow(), treeBefore) && p.pushes === pushes0 && p.vaultNode === tag0,
       p && JSON.stringify([p.term, p.sent, sent0, p.pushes, p.vaultNode === tag0]));
@@ -1278,9 +1284,20 @@ async function main() {
     await sleep(300);
     p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
     check('13: double-clicking a TAB does not fold its group', !!p && !p.selection.collapsed.right);
+    // PR #168 (BACKLOG #85): double-clicking the empty part of a tab bar no longer folds the group (this window only); it UNPINS
+    // the group, so every tab goes to the rail and the shared layout is saved. The fold of a group is now Ctrl+B / `collapse`.
     await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs' });
     p = await stFor(v => v.groups.length === 0 && v.rails.length === 1);
-    check('13: double-clicking a group\'s tab bar folds it', !!p && !!p.selection.collapsed.right);
+    check('13: double-clicking a group\'s tab bar unpins it: every tab goes to the rail, and it is not a fold of this window',
+      !!p && !p.selection.collapsed.right && p.rails[0].modules.length === visible.length, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.map(r => r.modules.length)]));
+    // that save moved the shared layout: put the default back (and the group with it) for the checks that follow
+    await view(app, 'openMenu', { which: 'layout' });
+    await view(app, 'menuButton', { text: 'Reset layout' });
+    await view(app, 'closeMenu');
+    await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    await sleep(1200);
+    await view(app, 'collapse', { id: 'right' });
+    await stFor(v => v.groups.length === 0 && v.rails.length === 1);
     await view(app, 'railClick', { id: 'vault' });
     await stFor(v => v.popover);
     await view(app, 'collapse', { id: 'right' });
@@ -1300,6 +1317,16 @@ async function main() {
 
     // dividers by keyboard
     s = (await settled(app)).s;
+    if (!s.groups.length) {
+      // a failed step above left the dock without its group: say so, put the default back, and let the later checks report
+      check('13: the dock has its right group again before the divider checks', false, JSON.stringify([s.groups.length, s.rails.length]));
+      await view(app, 'squeeze', {});
+      await view(app, 'openMenu', { which: 'layout' });
+      await view(app, 'menuButton', { text: 'Reset layout' });
+      await view(app, 'closeMenu');
+      await stFor(v => v.groups.length >= 1 && v.rails.length === 0, 4000);
+      s = (await settled(app)).s;
+    }
     const w0 = s.groups[0].rect.width;
     await view(app, 'focus', { selector: '.dgutter' });
     let k = await st();
@@ -1335,8 +1362,9 @@ async function main() {
     await sleep(1200);
     const treeMid = treeNow();
     const menu = await view(app, 'tabMenu', { id: 'git' });
-    check('13: the tab\'s menu (Shift+F10 / right-click) offers Move, Collapse group, Float and Hide, with the keyboard in it on Move',
-      menu.ok && JSON.stringify(menu.items.slice(0, 4)) === JSON.stringify(['Move', 'Collapse group', 'Float', 'Hide']) && menu.held === 'Move', JSON.stringify(menu));
+    // PR #168 (BACKLOG #85) replaced "Collapse group" with Unpin / Unpin group (a group's fold is Ctrl+B now)
+    check('13: the tab\'s menu (Shift+F10 / right-click) offers Move, Unpin, Unpin group, Float and Hide, with the keyboard in it on Move',
+      menu.ok && JSON.stringify(menu.items.slice(0, 5)) === JSON.stringify(['Move', 'Unpin', 'Unpin group', 'Float', 'Hide']) && menu.held === 'Move', JSON.stringify(menu));
     await view(app, 'menuButton', { text: 'Move' });
     k = await st();
     check('13: Move lights the zones of the group and the rim with one hot, and says in words where Git would land',
@@ -1372,6 +1400,7 @@ async function main() {
     }
     check('13: Tab walks the zones one by one until it reaches the terminal\'s float zone', reached);
     await view(app, 'key', { key: 'Enter', selector: 'body' });
+    await stFor(v => v.floats.length > 0, 3000);
     k = await settled(app);
     check('13: Enter on the float zone floats the panel: one float holding Vault, inside the window', k.s.floats.length === 1 && k.s.floats[0].tabs[0] === 'vault'
       && k.s.floats[0].rect.left >= k.s.dock.left - 1 && k.s.floats[0].rect.right <= k.s.dock.right + 1, JSON.stringify(k.s.floats.map(f => [f.tabs, f.rect])));
