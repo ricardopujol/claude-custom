@@ -346,6 +346,9 @@ async function main() {
   check('1: a layout with no rail opens with every panel a rail tab: no group, one rail holding every module',
     s1m.groups.length === 0 && s1m.rails.length === 1 && s1m.rails[0].modules.length === IDS.length - 1, JSON.stringify([s1m.groups.length, s1m.rails.map(r => r.modules.length)]));
   // 1b: hovering one of those tabs opens only that tab, not the rail's whole list.
+  // (Built from unpin alone, so the same probe also draws the before picture on a build without startLayout.)
+  await view(app, 'layout', { layout: IDS.filter(id => id !== 'canvas').reduce((l, id) => T.unpin(l, id), T.defaultLayout(IDS)) });
+  await settled(app);
   await hoverTab(app, 'vault');
   const peek1 = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   check('1b: hovering a rail tab opens its panel with that one tab at the top, not the whole rail', !!peek1 && peek1.popover.module === 'vault' && peek1.popover.tabs.join() === 'vault' && peek1.popover.on.join() === 'vault',
