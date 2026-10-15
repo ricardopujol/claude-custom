@@ -116,7 +116,7 @@ test('Y3: the night chip carries its own colour pair, not one mixed from the loo
 });
 
 test('G1: the 30 s repaint only runs where there is something on the bar', () => {
-  assert.match(RENDERER, /setInterval\(\(\) => \{ if \(bar\.prompt \|\| bar\.bedtime !== null \|\| occupancy\.here\.length > 0 \|\| sum\.pinned\) paintBar\(\); \}, 30000\)/);
+  assert.match(RENDERER, /setInterval\(\(\) => \{ if \(!leanOn && \(bar\.prompt \|\| bar\.bedtime !== null \|\| occupancy\.here\.length > 0 \|\| sum\.pinned\)\) paintBar\(\); \}, 30000\)/);
 });
 
 test('a resize, an erased scrollback (CSI 3 J) and a shrinking buffer each start a new epoch, so the prompt fails visible', () => {
@@ -136,7 +136,7 @@ test('hello and the two control messages feed the bar; a dropped socket forgets 
   assert.match(hello, /applyBarPrompt\(msg\.prompt, false\)/);
   assert.match(hello, /applyBedtime\(msg\.bedtime\)/);
   const close = RENDERER.slice(RENDERER.indexOf('ws.onclose = () => {'), RENDERER.indexOf('ws.onerror'));
-  assert.match(close, /applyBedtime\(null\)/);
+  assert.match(close, /applyBedtime\(null, \{ fromHost: false \}\)/);   // lean mode (#62): a drop forgets the night here but never ends it in main
 });
 
 test('the night is reported to the shell (the night tab) and feeds the confirm as a run of its own', () => {
@@ -160,5 +160,5 @@ test('F4: the night is a persistent run for the confirm, and a new night forgets
   assert.match(RENDERER, /agentId: 'bedtime:' \+ bar\.bedtime\.startedAt, persist: true/);
   assert.match(RENDERER, /bar\.nightKey !== key && occupancy\.confirm\) occupancy\.confirm\.forget\(bar\.nightKey\)/);
   const close = RENDERER.slice(RENDERER.indexOf('ws.onclose = () => {'), RENDERER.indexOf('ws.onerror'));
-  assert.match(close, /applyBedtime\(null\)/, 'a drop still clears the night; the confirm remembers it');
+  assert.match(close, /applyBedtime\(null, \{ fromHost: false \}\)/, 'a drop still clears the night; the confirm remembers it');
 });

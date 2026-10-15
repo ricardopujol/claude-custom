@@ -30,19 +30,84 @@ const GET_CHANNEL = 'avatar:getImagesEnabled';
 const SET_CHANNEL = 'avatar:setImagesEnabled';
 const PICK_CHANNEL = 'avatar:pick';
 const PUSH_CHANNEL = 'avatar-images';
+const NAMES_GET_CHANNEL = 'avatar:getRosterNames';
+const NAMES_SET_CHANNEL = 'avatar:setRosterNames';
+const NAMES_PUSH_CHANNEL = 'avatar-roster-names';
 
 /**
  * Whether agent images are shown. ON unless the store holds a real boolean
  * `false`: a missing, corrupt or unreadable record must never silently strip
  * every face (and only an explicit user choice may turn them off).
  */
+function imagesFromRecord(rec) {
+  return !(rec && typeof rec === 'object' && rec.imagesEnabled === false);
+}
+
 function readImagesEnabled(store) {
   try {
-    const rec = store.read(AVATAR_KEY, {});
-    return !(rec && typeof rec === 'object' && rec.imagesEnabled === false);
+    return imagesFromRecord(store.read(AVATAR_KEY, {}));
   } catch {
     return true;
   }
+}
+
+/**
+ * BACKLOG #76: which name the roster card shows big, 'role' or 'name' (the
+ * persona). Install-wide and kept in this same record, beside `imagesEnabled`.
+ * 'name' unless the store holds exactly 'role' (Ricardo, 2026-10-09): an install that
+ * never chose starts on Name, and a saved choice of Role still wins.
+ */
+function namesFromRecord(rec) {
+  return rec && typeof rec === 'object' && rec.rosterNames === 'role' ? 'role' : 'name';
+}
+
+function readRosterNames(store) {
+  try {
+    return namesFromRecord(store.read(AVATAR_KEY, {}));
+  } catch {
+    return 'name';
+  }
+}
+
+/**
+ * One attempt to set ONE field of the shared avatar record, keeping the others.
+ * The two toggles (images, roster names) live in one record, so a write that
+ * rebuilt it from `{}` after a failed read would silently reset the other one
+ * (PR #141, Dexter F3). `read()` folds "unreadable" and "corrupt" into the
+ * fallback, so the decision is made on ONE `readState` and the new record is
+ * built from THAT read's value (a second read, inside `update`, could fail
+ * between the two):
+ *   ok / missing  merge the field into the record and write it
+ *   corrupt       the readers already treat it as the defaults, so nothing in
+ *                 effect is lost: write the defaults plus this field (the click
+ *                 repairs the file instead of leaving both toggles dead)
+ *   unreadable    EBUSY / EPERM, a transient lock: write nothing, answer false
+ * Returns true when saved, false when refused. A real write failure throws.
+ */
+function attemptSave(store, field, value) {
+  const st = typeof store.readState === 'function' ? store.readState(AVATAR_KEY) : null;
+  if (st && st.status === 'unreadable') return false;
+  if (st && typeof store.write === 'function') {
+    const base = st.status === 'ok' && st.value && typeof st.value === 'object' && !Array.isArray(st.value) ? st.value : {};
+    store.write(AVATAR_KEY, { ...base, [field]: value });
+    return true;
+  }
+  store.update(AVATAR_KEY, {}, (prev) => ({
+    ...(prev && typeof prev === 'object' ? prev : {}), [field]: value,
+  }));
+  return true;
+}
+
+const SAVE_RETRY_MS = 100;
+
+/** true when saved straight away; otherwise a Promise<boolean> for the one retry after an unreadable record. */
+function saveField(store, field, value, delayMs = SAVE_RETRY_MS) {
+  if (attemptSave(store, field, value)) return true;
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      try { resolve(attemptSave(store, field, value)); } catch { resolve(false); }
+    }, delayMs);
+  });
 }
 
 function pickerOptions() {
@@ -67,19 +132,51 @@ function registerAvatarHandlers({ ipcMain, store, win, dialog, sync = {}, isSend
   ipcMain.handle(SET_CHANNEL, (e, enabled) => {
     if (!fromWindow(e)) return null;
     if (typeof enabled !== 'boolean') return null;
+    const done = () => {
+      // The watcher must know what this window was just told, or a later change
+      // back would compare equal to its stale memory and never be pushed (Dexter N2).
+      sync.last = enabled;
+      try { push(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
+      return enabled;
+    };
+    let saved;
     try {
-      store.update(AVATAR_KEY, {}, (prev) => ({
-        ...(prev && typeof prev === 'object' ? prev : {}), imagesEnabled: enabled,
-      }));
+      saved = saveField(store, 'imagesEnabled', enabled);
     } catch (err) {
       console.error('[main] could not save the agent-images toggle:', err && err.message);
       return null;
     }
-    // The watcher must know what this window was just told, or a later change
-    // back would compare equal to its stale memory and never be pushed (Dexter N2).
-    sync.last = enabled;
-    try { push(PUSH_CHANNEL, enabled); } catch { /* window is going away */ }
-    return enabled;
+    if (saved === true) return done();
+    return saved.then((ok) => {
+      if (ok) return done();
+      console.error('[main] the avatar record stayed unreadable; the agent-images toggle was not saved');
+      return null;
+    });
+  });
+
+  ipcMain.handle(NAMES_GET_CHANNEL, (e) => (fromWindow(e) ? readRosterNames(store) : 'name'));
+
+  ipcMain.handle(NAMES_SET_CHANNEL, (e, mode) => {
+    if (!fromWindow(e)) return null;
+    if (mode !== 'role' && mode !== 'name') return null;
+    const done = () => {
+      sync.lastNames = mode;
+      try { push(NAMES_PUSH_CHANNEL, mode); } catch { /* window is going away */ }
+      return mode;
+    };
+    let saved;
+    try {
+      saved = saveField(store, 'rosterNames', mode);
+    } catch (err) {
+      console.error('[main] could not save the roster names toggle:', err && err.message);
+      return null;
+    }
+    if (saved === true) return done();
+    return saved.then((ok) => {
+      if (ok) return done();
+      console.error('[main] the avatar record stayed unreadable; the roster names toggle was not saved');
+      return null;
+    });
   });
 
   ipcMain.handle(PICK_CHANNEL, async (e) => {
@@ -108,25 +205,41 @@ function watchImagesEnabled({
 }) {
   const push = typeof send === 'function' ? send : (ch, v) => win.webContents.send(ch, v);
   sync.last = readImagesEnabled(store);
+  sync.lastNames = readRosterNames(store);
   const listener = () => {
     // A read that FAILED (EBUSY under an antivirus scan) or found a corrupt file
     // says nothing about the user's choice: skip it and let the next poll try,
     // instead of pushing the fresh-install default of "on" (Dexter N2).
-    let now;
+    // ONE read feeds both values (PR #141, Dexter F4): two separate reads could
+    // disagree about whether the file was readable, and a failed second read
+    // would revert the roster names to their default.
+    let rec;
     if (typeof store.readState === 'function') {
       const st = store.readState(AVATAR_KEY);
-      if (st.status !== 'ok' && st.status !== 'missing') return;
+      if (st.status === 'missing') rec = {};
+      else if (st.status === 'ok') rec = st.value;
+      else return;
+    } else {
+      try { rec = store.read(AVATAR_KEY, {}); } catch { rec = {}; }
     }
-    now = readImagesEnabled(store);
-    if (now === sync.last) return;
-    sync.last = now;
-    try { push(PUSH_CHANNEL, now); } catch { /* window is going away */ }
+    const now = imagesFromRecord(rec);
+    if (now !== sync.last) {
+      sync.last = now;
+      try { push(PUSH_CHANNEL, now); } catch { /* window is going away */ }
+    }
+    // The roster names mode (#76) lives in the same record, so the same poll follows it.
+    const names = namesFromRecord(rec);
+    if (names !== sync.lastNames) {
+      sync.lastNames = names;
+      try { push(NAMES_PUSH_CHANNEL, names); } catch { /* window is going away */ }
+    }
   };
   watchFile(file, { interval: intervalMs, persistent: false }, listener);
   return () => unwatchFile(file, listener);
 }
 
 module.exports = {
-  readImagesEnabled, registerAvatarHandlers, pickerOptions, watchImagesEnabled,
+  readImagesEnabled, readRosterNames, registerAvatarHandlers, pickerOptions, watchImagesEnabled,
   AVATAR_KEY, GET_CHANNEL, SET_CHANNEL, PICK_CHANNEL, PUSH_CHANNEL,
+  NAMES_GET_CHANNEL, NAMES_SET_CHANNEL, NAMES_PUSH_CHANNEL,
 };

@@ -324,7 +324,7 @@ test('hide and show never change their input with floats around', () => {
 
 // --- selection: which tab a float shows, and which float is on top (per window) ---------
 
-const NO_SEL = { active: {}, foldAll: false, floatOrder: [] };
+const NO_SEL = { active: {}, foldAll: false, floatOrder: [], collapsed: {} };
 
 test('cleanSelection keeps a floatOrder of unique strings and nothing else', () => {
   assert.deepEqual(T.cleanSelection(null), NO_SEL);
@@ -346,7 +346,7 @@ test('raiseFloat puts a float last (on top); raising the top one changes nothing
 test('selectTab on a float\'s module shows it in its float and raises that float, in this window only', () => {
   const two = T.dock(base(), 'vault', { cell: 'f', side: 'center' });
   const s = T.selectTab({ active: { a: 'agents' }, foldAll: true, floatOrder: ['f', 'other'] }, two, 'vault');
-  assert.deepEqual(s, { active: { a: 'agents', f: 'vault' }, foldAll: false, floatOrder: ['other', 'f'] });
+  assert.deepEqual(s, { active: { a: 'agents', f: 'vault' }, foldAll: false, floatOrder: ['other', 'f'], collapsed: {} });
 });
 
 test('activeOf reads a float: its choice if it still holds it, else its first tab', () => {

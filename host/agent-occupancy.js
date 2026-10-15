@@ -2,7 +2,7 @@
 /**
  * Which worktree is an agent working in? (backlog #44 + #47, documentation/DESIGN_WORKTREE_OCCUPANCY.md)
  *
- *   claimFrom(event, roots, ownRoot) -> { agentId, agent, worktree } | null
+ *   claimFrom(event, roots, ownRoot) -> { agentId, agent, worktree, sessionId } | null
  *   touchOf(tool, input, roots, ownRoot) -> worktree | null    the same test for one tool call, without an
  *                                       event: what a transcript's tool_use block proves
  *                                       (host/occupancy-transcripts.js, host/branch-ledger.js)
@@ -43,10 +43,16 @@ const SEARCH_TOOLS = new Set(['Grep', 'Glob']);
 const TOUCH_TOOLS = new Set([...FILE_TOOLS, ...SEARCH_TOOLS]);
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const ALSO_MAX = 8;
+const READER = 'reader';
 const WIN = process.platform === 'win32';
 
 const isStr = s => typeof s === 'string' && s !== '';
-const safeAgentId = id => (typeof id === 'string' && SAFE_ID.test(id) ? id : null);
+// An id that is safe to put in a file name: an agent's, or the session an agent runs in (a UUID: the hook
+// payload's session_id, the transcript's session folder). Somebody else's string, held to this shape;
+// anything else is "not known".
+const safeId = id => (typeof id === 'string' && SAFE_ID.test(id) ? id : null);
+const safeAgentId = safeId;
+const safeSessionId = safeId;
 const isFiletime = s => typeof s === 'string' && filetimeToMs(s) !== null;
 
 function claimFileName(agentId) {
@@ -153,7 +159,7 @@ function claimFrom(event, roots, ownRoot) {
   if (agentId === null) return null;
   const worktree = touchOf(p.tool_name, p.tool_input, roots, ownRoot);
   if (worktree === null) return null;
-  return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree };
+  return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree, sessionId: safeSessionId(p.session_id) };
 }
 
 const validTouch = t => !!t && typeof t === 'object' && isStr(t.worktree) && normPath(t.worktree) !== null
@@ -189,30 +195,34 @@ const finite = n => typeof n === 'number' && Number.isFinite(n);
 const absStr = s => isStr(s) && path.isAbsolute(s);
 
 /** The claim record for one agent, from its touches and the launching host's facts; null with no touches. */
-function buildClaim({ agentId, agent, fromBranch, fromRoot, hostPid, hostStartedAt, touches } = {}) {
+function buildClaim({ agentId, agent, fromBranch, fromRoot, sessionId, hostPid, hostStartedAt, touches, role } = {}) {
   const l = latest(touches);
   if (l === null) return null;
   const t = l.touch;
-  return {
+  const claim = {
     agentId,
     agent: isStr(agent) ? agent : null,
     worktree: l.worktree,
     also: l.also.slice(0, ALSO_MAX),
     fromBranch: isStr(fromBranch) ? fromBranch : null,
     fromRoot,
+    sessionId: safeSessionId(sessionId),
     hostPid,
     hostStartedAt: isFiletime(hostStartedAt) ? hostStartedAt : null,
     firstAt: finite(t.firstAt) ? t.firstAt : t.lastAt,
     lastAt: t.lastAt,
     count: positiveInt(t.count) ? t.count : 1,
   };
+  // #81: a read-only side session's agents are readers. Only a reader is marked; a writer's claim is what it always was.
+  if (role === READER) claim.role = READER;
+  return claim;
 }
 
 function serializeClaim(c) {
   return JSON.stringify({
     agentId: c.agentId, agent: c.agent, worktree: c.worktree, also: c.also, fromBranch: c.fromBranch,
-    fromRoot: c.fromRoot, hostPid: c.hostPid, hostStartedAt: c.hostStartedAt,
-    firstAt: c.firstAt, lastAt: c.lastAt, count: c.count,
+    fromRoot: c.fromRoot, sessionId: c.sessionId, hostPid: c.hostPid, hostStartedAt: c.hostStartedAt,
+    firstAt: c.firstAt, lastAt: c.lastAt, count: c.count, role: c.role === READER ? READER : undefined,
   }, null, 2) + '\n';
 }
 
@@ -227,22 +237,22 @@ function parseClaim(text) {
   if (!positiveInt(d.hostPid)) return { ok: false, reason: 'hostPid is not a pid' };
   if (!finite(d.firstAt) || !finite(d.lastAt)) return { ok: false, reason: 'firstAt / lastAt are not times' };
   if (!positiveInt(d.count)) return { ok: false, reason: 'count is not a positive integer' };
-  return {
-    ok: true,
-    claim: {
-      agentId: d.agentId,
-      agent: isStr(d.agent) ? d.agent : null,
-      worktree: d.worktree,
-      also: (Array.isArray(d.also) ? d.also : []).filter(absStr).slice(0, ALSO_MAX),
-      fromBranch: isStr(d.fromBranch) ? d.fromBranch : null,
-      fromRoot: d.fromRoot,
-      hostPid: d.hostPid,
-      hostStartedAt: isFiletime(d.hostStartedAt) ? d.hostStartedAt : null,
-      firstAt: d.firstAt,
-      lastAt: d.lastAt,
-      count: d.count,
-    },
+  const parsed = {
+    agentId: d.agentId,
+    agent: isStr(d.agent) ? d.agent : null,
+    worktree: d.worktree,
+    also: (Array.isArray(d.also) ? d.also : []).filter(absStr).slice(0, ALSO_MAX),
+    fromBranch: isStr(d.fromBranch) ? d.fromBranch : null,
+    fromRoot: d.fromRoot,
+    sessionId: safeSessionId(d.sessionId),
+    hostPid: d.hostPid,
+    hostStartedAt: isFiletime(d.hostStartedAt) ? d.hostStartedAt : null,
+    firstAt: d.firstAt,
+    lastAt: d.lastAt,
+    count: d.count,
   };
+  if (d.role === READER) parsed.role = READER;
+  return { ok: true, claim: parsed };
 }
 
 module.exports = {

@@ -14,7 +14,7 @@ const key = p => String(p).toLowerCase().replace(/\\/g, '/').replace(/\/+$/, '')
 const NOW = 10_000_000;
 const claim = (over = {}) => ({
   agentId: 'a1', agent: 'electron-pro', worktree: 'C:/p/feat-x', also: [], fromBranch: 'develop', fromRoot: 'C:/p/dev',
-  firstAt: NOW - 4 * MIN, lastAt: NOW - 1000, ...over,
+  sessionId: 'S1', firstAt: NOW - 4 * MIN, lastAt: NOW - 1000, ...over,
 });
 const occ = (claims, k = 'c:/p/feat-x', opts = {}) => D.tabOccupancy(claims, k, { keyOf: key, now: NOW, ...opts });
 
@@ -140,39 +140,58 @@ test('banner: the Jump label names the launching branch, or just the session whe
 // --- the hub's card -----------------------------------------------------------------------------
 
 test('card line: the worktree the agent is in, by folder name, and where a click goes', () => {
-  const c = D.cardLine([claim({ worktree: 'C:/p/feat-git-tree-living' })], 'electron-pro');
+  const c = D.cardLine([claim({ worktree: 'C:/p/feat-git-tree-living' })], 'electron-pro', 'S1');
   assert.deepStrictEqual(c, { text: '\u2192 feat-git-tree-living', plus: 0, root: 'C:/p/feat-git-tree-living', title: 'electron-pro is working in C:/p/feat-git-tree-living' });
 });
 
 test('card line: a second worktree is `+1`, and the click still goes to the latest', () => {
-  const c = D.cardLine([claim({ worktree: 'C:/p/feat-y', also: ['C:/p/feat-x'] })], 'electron-pro');
+  const c = D.cardLine([claim({ worktree: 'C:/p/feat-y', also: ['C:/p/feat-x'] })], 'electron-pro', 'S1');
   assert.strictEqual(c.plus, 1);
   assert.strictEqual(c.text, '\u2192 feat-y');
   assert.strictEqual(c.root, 'C:/p/feat-y');
 });
 
 test('card line: two runs of one agent type in two worktrees: the latest, plus one', () => {
-  const c = D.cardLine([claim({ agentId: 'a', worktree: 'C:/p/feat-x', lastAt: 1 }), claim({ agentId: 'b', worktree: 'C:/p/feat-y', lastAt: 9 })], 'electron-pro');
+  const c = D.cardLine([claim({ agentId: 'a', worktree: 'C:/p/feat-x', lastAt: 1 }), claim({ agentId: 'b', worktree: 'C:/p/feat-y', lastAt: 9 })], 'electron-pro', 'S1');
   assert.strictEqual(c.root, 'C:/p/feat-y');
   assert.strictEqual(c.plus, 1);
 });
 
 test('card line: the same worktree twice is not a +1', () => {
-  const c = D.cardLine([claim({ agentId: 'a', lastAt: 1 }), claim({ agentId: 'b', lastAt: 9 })], 'electron-pro');
+  const c = D.cardLine([claim({ agentId: 'a', lastAt: 1 }), claim({ agentId: 'b', lastAt: 9 })], 'electron-pro', 'S1');
   assert.strictEqual(c.plus, 0);
 });
 
 test('card line: an agent with no claim shows nothing (an agent that hasn\'t touched another worktree is silent)', () => {
-  assert.strictEqual(D.cardLine([claim()], 'logic-reviewer'), null);
-  assert.strictEqual(D.cardLine([], 'electron-pro'), null);
-  assert.strictEqual(D.cardLine(null, 'electron-pro'), null);
-  assert.strictEqual(D.cardLine([claim()], ''), null);
-  assert.strictEqual(D.cardLine([claim({ agent: null })], null), null, 'a nameless claim matches no card');
+  assert.strictEqual(D.cardLine([claim()], 'logic-reviewer', 'S1'), null);
+  assert.strictEqual(D.cardLine([], 'electron-pro', 'S1'), null);
+  assert.strictEqual(D.cardLine(null, 'electron-pro', 'S1'), null);
+  assert.strictEqual(D.cardLine([claim()], '', 'S1'), null);
+  assert.strictEqual(D.cardLine([claim({ agent: null })], null, 'S1'), null, 'a nameless claim matches no card');
 });
 
 test('card line: matches the name exactly, as an own-property lookup (a card called __proto__ is just a name)', () => {
-  assert.strictEqual(D.cardLine([claim({ agent: '__proto__' })], '__proto__').root, 'C:/p/feat-x');
-  assert.strictEqual(D.cardLine([claim()], 'toString'), null);
+  assert.strictEqual(D.cardLine([claim({ agent: '__proto__' })], '__proto__', 'S1').root, 'C:/p/feat-x');
+  assert.strictEqual(D.cardLine([claim()], 'toString', 'S1'), null);
+});
+
+test('card line: two sessions in one folder, each running an Explore: each card shows its OWN session\'s worktree (backlog #57, PR #96 Dexter F5)', () => {
+  const claims = [
+    claim({ agentId: 'mine', agent: 'Explore', worktree: 'C:/p/feat-mine', sessionId: 'S1', lastAt: 1 }),
+    claim({ agentId: 'theirs', agent: 'Explore', worktree: 'C:/p/feat-theirs', sessionId: 'S2', lastAt: 9 }),
+  ];
+  const mine = D.cardLine(claims, 'Explore', 'S1');
+  assert.strictEqual(mine.root, 'C:/p/feat-mine', 'the other session\'s later claim is not this card\'s');
+  assert.strictEqual(mine.plus, 0, 'and it is not a +1 either');
+  assert.strictEqual(D.cardLine(claims, 'Explore', 'S2').root, 'C:/p/feat-theirs');
+});
+
+test('card line: a claim that names no session, or a card whose session isn\'t known yet, shows nothing (unproven is not mine)', () => {
+  assert.strictEqual(D.cardLine([claim({ sessionId: null })], 'electron-pro', 'S1'), null);
+  assert.strictEqual(D.cardLine([claim({ sessionId: undefined })], 'electron-pro', 'S1'), null);
+  assert.strictEqual(D.cardLine([claim()], 'electron-pro', null), null);
+  assert.strictEqual(D.cardLine([claim()], 'electron-pro', ''), null);
+  assert.strictEqual(D.cardLine([claim()], 'electron-pro'), null);
 });
 
 // --- what main pushes to a page -----------------------------------------------------------------
@@ -191,7 +210,7 @@ test('viewPayload: the claims that occupy this tab, and the ones this tab\'s ses
 test('viewPayload: only the fields a page draws from cross the bridge', () => {
   const v = D.viewPayload([claim({ hostPid: 4242, hostStartedAt: '1', count: 9 })], 'c:/p/feat-x', { keyOf: key });
   assert.deepStrictEqual(Object.keys(v.here[0]).sort(),
-    ['agent', 'agentId', 'also', 'firstAt', 'fromBranch', 'fromRoot', 'lastAt', 'worktree']);
+    ['agent', 'agentId', 'also', 'firstAt', 'fromBranch', 'fromRoot', 'lastAt', 'sessionId', 'worktree']);
 });
 
 test('viewPayload: nothing to say is two empty lists, never undefined', () => {
@@ -262,4 +281,14 @@ test('chipModel agrees with the banner on who is here, so the two never tell dif
     if (banner === null) return chip === null;
     return chip !== null && chip.warn === banner.warn && JSON.stringify(chip.jump) === JSON.stringify(banner.jump) && chip.lines.length >= 1;
   }));
+});
+
+// Dexter F4 (PR #139): the close check counts a folder the agent touched earlier (`also`); the strip still draws only where it works.
+test('tabOccupancy: `also` counts only when asked to (the close check), and the strip is unchanged', () => {
+  const c = claim({ worktree: 'c:/p/feat-b', also: ['c:/p/feat-x'] });
+  assert.strictEqual(occ([c], 'c:/p/feat-x'), null, 'the strip');
+  assert.strictEqual(occ([c], 'c:/p/feat-x', { withAlso: true }).count, 1);
+  assert.strictEqual(occ([c], 'c:/p/feat-b', { withAlso: true }).count, 1);
+  assert.strictEqual(occ([c], 'c:/p/feat-z', { withAlso: true }), null);
+  assert.strictEqual(occ([claim({ worktree: 'c:/p/feat-b', also: 'junk' })], 'c:/p/feat-x', { withAlso: true }), null, 'a malformed `also` counts nothing');
 });

@@ -15,6 +15,9 @@
  *    runs the user's own command and passes its output through, and it keeps
  *    every other field of theirs. Anything else the harness needs travels
  *    through the pty environment, never through settings.
+ *    The one other exception is the CLI's colour THEME (backlog #25, measured on CLI v2.1.283, see BACKLOG
+ *    "25. Per-project light mode": `--settings` applies it per window and writes nothing). It is read once at the CLI's start, so a
+ *    project's dark/light switch takes effect on the next launch.
  *
  * 2. `hooks`, unlike single-valued keys, ACCUMULATES across layers. The harness
  *    therefore contributes only its OWN matchers and never copies the user's in.
@@ -23,6 +26,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { SIDE_ALLOWED_TOOLS, SIDE_DENIED_TOOLS } = require('./side-session');
 
 // Hooks run synchronously in the critical path of tool execution, so the
 // matchers stay deliberately narrow. A '*' matcher would tax every Read, Grep
@@ -42,8 +46,12 @@ const path = require('path');
 // is denied or blocked never runs, so its intent opens nothing. And with no
 // PreToolUse, a message never shows as a running process. SendMessage calls
 // are rare, so the tax is negligible.
+//
+// Artifact (BACKLOG #71), on its RESULT only, for the same reason: a publish that fails has no address to keep. host/host.js
+// hands every Artifact event to the panel's shelf (host/canvas-shelf.js) and never to the mood engine or the Running panel.
+// One more ~23 ms hook per publish, which is rare.
 const PRE_TOOL_MATCHER = 'Agent|Task|Bash';
-const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage';    // completion and error signals
+const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage|Artifact';    // completion and error signals
 // Backlog #44 + #47 (worktree occupancy): which worktree a SUBAGENT is working in is proven by its own file
 // and search tool calls, which the matchers above never saw. Opt-in (`occupancy: true`) and a SEPARATE entry,
 // so the mood engine's entry is untouched. It costs one ~23 ms hook per Read/Edit/Write/NotebookEdit/Grep/Glob
@@ -59,6 +67,16 @@ const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 // Running panel, which would show a ScheduleWakeup as a process. One call per wake (~every 25 min), so no tax.
 const BEDTIME_MATCHER = 'ScheduleWakeup';
 const HOOK_TIMEOUT_SECONDS = 5;
+// Backlog #55 ("waiting on you"): the CLI's PermissionRequest hook runs BEFORE a permission prompt is shown and is the one event of the
+// prompt that carries the asking agent's agent_id (a Notification never does: CLI 2.1.296 builds it with no tool context). OBSERVE-ONLY:
+// the native helper prints nothing and always exits 0, and the CLI decides a PermissionRequest only from a hook's JSON output
+// (permissionRequestResult allow|deny), so the prompt is shown exactly as before. It is awaited, so the timeout is short: a helper
+// that cannot connect gives up in milliseconds, and a stuck one costs the prompt at most these seconds, never a decision.
+// Opt-in (`permissionRequest: true`), so a host that doesn't ask writes the same settings as before.
+const PERMISSION_HOOK_TIMEOUT_SECONDS = 2;
+
+// The CLI's own themes a project's mode maps to (its daltonized and ANSI families survive a flip).
+const CLI_THEMES = Object.freeze(['dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi']);
 
 const quote = s => `"${s}"`;
 
@@ -123,7 +141,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest, theme } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -164,6 +182,11 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
       UserPromptSubmit: [entry('', 'UserPromptSubmit')],
     },
   };
+  if (permissionRequest === true) {
+    settings.hooks.PermissionRequest = [{ matcher: '', hooks: [{ type: 'command', command: command('PermissionRequest'), timeout: PERMISSION_HOOK_TIMEOUT_SECONDS }] }];
+  }
+  // Only the themes a project's mode can mean (host/look.js cliThemeFor); anything else leaves the CLI's own choice alone.
+  if (CLI_THEMES.includes(theme)) settings.theme = theme;
   if (statusRelay) settings.statusLine = buildStatusLine(statusRelay, pipeName);
   const loadoutEntry = buildLoadoutEntry(loadoutHook);
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
@@ -182,13 +205,14 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
  * project, then user). Null when none is a runnable command. An unreadable
  * layer is skipped -- the CLI reports its own settings errors.
  */
-function findUserStatusLine({ home, cwd } = {}) {
+function findUserStatusLine({ configDir, cwd } = {}) {
   const candidates = [];
   if (cwd) {
     candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
     candidates.push(path.join(cwd, '.claude', 'settings.json'));
   }
-  if (home) candidates.push(path.join(home, '.claude', 'settings.json'));
+  // The CLI reads user settings from its config dir (CLAUDE_CONFIG_DIR when set), so that's where its statusLine is.
+  if (configDir) candidates.push(path.join(configDir, 'settings.json'));
   for (const file of candidates) {
     let parsed;
     try { parsed = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { continue; }
@@ -197,6 +221,47 @@ function findUserStatusLine({ home, cwd } = {}) {
     const runnable = sl && typeof sl === 'object' && sl.type === 'command'
       && typeof sl.command === 'string' && sl.command;
     return runnable ? sl : null;
+  }
+  return null;
+}
+
+const THEME_RE = /^(?:auto|(?:dark|light)(?:-(?:daltonized|ansi))?)$/;
+
+/**
+ * The CLI theme the person already uses, or null: the first layer that names one, in the CLI's own precedence
+ * (project-local, project, user settings, then the global config `.claude.json`). A value that isn't one of the CLI's
+ * themes is skipped, and so is an unreadable layer.
+ */
+// Another tab's CLI may be rewriting its config as this host starts, so a file that fails to PARSE is read once more
+// shortly after before it counts as having no theme (an absent file is not retried).
+const RETRY_WAIT_MS = 60;
+const sleepSync = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no wait available */ } };
+
+function readJsonRetry(file, fsImpl, sleep) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return JSON.parse(fsImpl.readFileSync(file, 'utf8'));
+    } catch (err) {
+      if (attempt === 1 || !(err instanceof SyntaxError)) return undefined;
+      sleep(RETRY_WAIT_MS);
+    }
+  }
+}
+
+function findUserTheme({ configDir, cwd, fsImpl = fs, sleep = sleepSync } = {}) {
+  const candidates = [];
+  if (cwd) {
+    candidates.push(path.join(cwd, '.claude', 'settings.local.json'));
+    candidates.push(path.join(cwd, '.claude', 'settings.json'));
+  }
+  if (configDir) {
+    candidates.push(path.join(configDir, 'settings.json'));
+    candidates.push(path.join(configDir, '.claude.json'));
+    if (path.basename(configDir) === '.claude') candidates.push(path.join(path.dirname(configDir), '.claude.json'));
+  }
+  for (const file of candidates) {
+    const parsed = readJsonRetry(file, fsImpl, sleep);
+    if (parsed && typeof parsed === 'object' && typeof parsed.theme === 'string' && THEME_RE.test(parsed.theme)) return parsed.theme;
   }
   return null;
 }
@@ -238,16 +303,42 @@ function writeHarnessSettings(dir, opts, port) {
 }
 
 /**
+ * Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) as the JSON string `--mcp-config` takes. A CLI flag, so nothing is
+ * written to the user's config, and it is ADDED to the user's own servers (--strict-mcp-config, which would switch them off, is
+ * never passed). Forward slashes everywhere: no shell treats them as an escape (the backslash trap above). An incomplete
+ * description is no injection at all, never a broken one.
+ */
+function canvasMcpConfig(c) {
+  if (!c || typeof c !== 'object') return null;
+  const ok = (v) => typeof v === 'string' && v !== '';
+  if (!ok(c.nodePath) || !ok(c.scriptPath) || !ok(c.root) || !ok(c.pointerFile)) return null;
+  return JSON.stringify({ mcpServers: { canvas: { command: c.nodePath, args: [slashes(c.scriptPath)],
+    env: { CLAUDE_CUSTOM_CANVAS_ROOT: slashes(c.root), CLAUDE_CUSTOM_CANVAS_POINTER: slashes(c.pointerFile) } } } });
+}
+
+/**
  * Builds claude's argv. The generated settings file is attached only when the
  * native helper actually exists on disk: hooks pointing at a missing binary
  * would fire on every matched Task and Bash call and invoke nothing, degrading
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists } = {}) {
-  const args = ['--dangerously-skip-permissions'];
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false } = {}) {
+  // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
+  // override it, so the two never go together; and it is offered no panel of Claude's own.
+  // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
+  // a deny rule holds in every mode (host/side-session.js).
+  // --tools is the fence: only the named built-in tools exist in the session (an allow-list, so a new CLI tool is off until it is
+  // classified); --disallowedTools is a second wall by name; --strict-mcp-config (with no --mcp-config) loads no MCP server.
+  const args = side === true
+    ? ['--permission-mode', 'plan', '--tools', SIDE_ALLOWED_TOOLS.join(','), '--disallowedTools', SIDE_DENIED_TOOLS.join(','), '--strict-mcp-config']
+    : ['--dangerously-skip-permissions'];
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
+  // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
+  // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
+  const mcp = helperExists && side !== true ? canvasMcpConfig(canvasMcp) : null;
+  if (mcp) args.push('--mcp-config', mcp);
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };

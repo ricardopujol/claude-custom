@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* BACKLOG #20 -- what does the app actually cost in memory?
 
    This is the BASELINE every later memory change is judged against (#1, #2,
@@ -42,6 +43,7 @@
    That kills every Electron on the machine. Only the PIDs of our own tree are
    killed, matched by PID *and* command line because Windows reuses PIDs. */
 const { spawn, spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const crypto = require('crypto');
 const fs = require('fs');
 const net = require('net');
@@ -177,11 +179,11 @@ async function main() {
     // our tree between this snapshot and the kill escapes -- the same window
     // status-relay.js's killTree accepts. The survivor check below reports it.
     try { sample(); } catch {}
-    spawnSync('taskkill', ['/PID', String(app.pid), '/T', '/F'], { windowsHide: true });
+    killChildTree(app);
     await sleep(1000);
     const ours = (p) => seen.get(p.ProcessId) === (p.CommandLine || p.Name);
     for (const p of allProcesses().filter(ours)) {
-      spawnSync('taskkill', ['/PID', String(p.ProcessId), '/F'], { windowsHide: true });
+      spawnSync('taskkill', ['/PID', String(p.ProcessId), '/F'], { windowsHide: true });   // kill-ok(table-row): a table row matched by pid AND the command line seen this run (table-row class)
     }
     await sleep(2000);
     const survivors = allProcesses().filter(ours);
@@ -228,7 +230,7 @@ async function main() {
     // Claude Code is itself Electron: an inherited ELECTRON_RUN_AS_NODE would
     // start this child as plain Node (see CLAUDE.md, "Traps").
     delete env.ELECTRON_RUN_AS_NODE;
-    app = spawn(require('electron'), [REPO], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    app = spawnElectron(require('electron'), [REPO], { env, stdio: ['ignore', 'pipe', 'pipe'] }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_TOKEN'] });
     let out = '';
     app.stdout.on('data', (d) => { out += d.toString(); });
     app.stderr.on('data', (d) => { out += d.toString(); });

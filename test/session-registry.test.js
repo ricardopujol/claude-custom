@@ -191,8 +191,9 @@ test('a folder outside any repo has no worktree, so nothing is in it', async () 
 test('the registry lives under CLAUDE_CONFIG_DIR when it is set', () => {
   const was = process.env.CLAUDE_CONFIG_DIR;
   try {
-    process.env.CLAUDE_CONFIG_DIR = path.join('X:', 'cfg');
-    assert.strictEqual(defaultRegistryDir(), path.join('X:', 'cfg', 'sessions'));
+    const cfg = path.join(path.parse(process.cwd()).root, 'cfg');
+    process.env.CLAUDE_CONFIG_DIR = cfg;
+    assert.strictEqual(defaultRegistryDir(), path.join(cfg, 'sessions'));
     delete process.env.CLAUDE_CONFIG_DIR;
     assert.strictEqual(defaultRegistryDir(), path.join(require('os').homedir(), '.claude', 'sessions'));
   } finally {

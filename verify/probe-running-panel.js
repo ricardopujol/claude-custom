@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Does a FAILED Bash call leave the Running panel?
 
    THE BUG (2026-09-25): three Bash calls that had exited non-zero stayed
@@ -83,7 +84,7 @@ host.stderr.on('data', d => { log += d.toString(); });
   // On Windows host.kill() is a hard TerminateProcess that skips the host's
   // shutdown, orphaning the pty's `claude` (Miguel). Kill the whole tree.
   try { ws.close(); } catch {}
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(host.pid), '/T', '/F'], { stdio: 'ignore' });
+  if (process.platform === 'win32') killChildTree(host);
   else host.kill();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILED`);
   if (failures) console.log('\n--- host log tail ---\n' + log.slice(-2000));

@@ -6,7 +6,7 @@
  * (`.harness/state/layout-global.json`) and not in a host.
  *
  * Main stores and relays; it never judges the shape. The page normalizes every
- * layout it reads (app/dock-layout.js) because only the page knows which
+ * layout it reads (app/dock-tree.js, app/dock-migrate.js for L1's shape) because only the page knows which
  * modules this build has. So a missing record reads as `null` -- "migrate from
  * the old per-window settings" -- rather than a default invented here.
  *
@@ -15,7 +15,7 @@
  * project windows (other mains sharing the store file) make.
  */
 const fs = require('fs');
-const { applyOp } = require('./dock-presets');
+const { applyOp, needsIds, withIds } = require('./dock-presets');
 
 const LAYOUT_KEY = 'layout-global';
 const GET_CHANNEL = 'layout:get';
@@ -72,13 +72,42 @@ function readLayoutState(store, key = LAYOUT_KEY, valid = isPlainObject) {
   return valid(st.value) ? { status: 'ok', layout: st.value } : { status: 'corrupt', layout: null };
 }
 
-function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, names = DEFAULT_NAMES }) {
+function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, names = DEFAULT_NAMES, newId }) {
   const fromView = e => !!e && typeof isSender === 'function' && isSender(e.sender) === true;
+  const ids = newId === undefined ? {} : { newId };
 
   const valid = validFor(names);
-  ipcMain.handle(names.get, e => (fromView(e) ? readLayoutState(store, names.key, valid) : null));
+  ipcMain.handle(names.get, (e) => {
+    if (!fromView(e)) return null;
+    const answer = readLayoutState(store, names.key, valid);
+    return names.op ? giveIds(answer) : answer;
+  });
 
   if (names.op) ipcMain.handle(names.op, (e, req) => (fromView(e) ? runOp(req) : null));
+
+  // Presets stored before they had ids (BACKLOG #59) get theirs the first time a window reads the list, so every
+  // question the page asks can name the preset it is about. Written back as one locked read-modify-write; if that
+  // fails the list is answered as it was read (an id-less preset is still asked about by name, as null).
+  let saidIdsFailed = false;
+  function giveIds(answer) {
+    if (answer.status !== 'ok' || !needsIds(answer.layout)) return answer;
+    try {
+      const list = store.withLock(names.key, () => {
+        const st = store.readState(names.key);
+        if (st.status !== 'ok' || !Array.isArray(st.value)) return null;
+        const next = withIds(st.value, ids.newId);
+        if (next !== st.value) store.write(names.key, next);
+        return next;
+      });
+      if (list === null) return answer;
+      sync.last = JSON.stringify(list);
+      try { send(names.push, list); } catch { /* window is going away */ }
+      return { status: 'ok', layout: list };
+    } catch (err) {
+      if (!saidIdsFailed) { saidIdsFailed = true; console.error('[main] could not give the presets their ids (said once; each read tries again):', err && err.message); }
+      return answer;
+    }
+  }
 
   // ONE read-modify-write on the store: under its lock, on a read made now, never on a list the page remembers.
   // Anything but ok or missing (unreadable, corrupt, not a list) is refused and the file is left as it is.
@@ -93,7 +122,7 @@ function registerLayoutHandlers({ ipcMain, store, sync = {}, isSender, send, nam
           else if (st.status === 'ok' && Array.isArray(st.value)) raw = st.value;
           else return { ok: false, reason: 'unreadable' };
         } catch { return { ok: false, reason: 'unreadable' }; }
-        const r = applyOp(raw, req);
+        const r = applyOp(raw, req, ids);
         if (r.ok) store.write(names.key, r.list);
         return r;
       });

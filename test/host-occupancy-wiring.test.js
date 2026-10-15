@@ -36,16 +36,34 @@ test('the producer is built from the project\'s state folder, this host\'s own f
   assert.match(block, /nameOf: /);
 });
 
-test('the hook handler gives every event to the producer, and keeps the file-tool events away from everything else', () => {
+test('the hook handler gives every event to the producer, and keeps the file-tool events away from everything but the mood engine (tool tracking)', () => {
   const body = handlerBody();
   const give = body.indexOf('occupancy.handle(ev);');
-  const only = body.indexOf('if (isOccupancyOnly(ev)) return;');
+  const only = body.indexOf('if (isOccupancyOnly(ev)) { mood.handle(ev); return; }');   // BACKLOG #55: reading and writing come from these
   assert.ok(give !== -1 && only !== -1 && give < only, 'handled first, then the early return');
-  for (const consumer of ['attention.handle(ev)', 'turnState.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
+  for (const consumer of ['attention.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
     assert.ok(body.indexOf(consumer) > only, `${consumer} must come after the early return`);
   }
+  // the mood engine sees them through that one branch, and again for every other event after the early returns
+  assert.strictEqual(body.split('mood.handle(ev)').length - 1, 2, 'mood.handle(ev): once for the file tools, once for the rest');
+  assert.ok(body.lastIndexOf('mood.handle(ev)') > only);
+  // ...except the turn state: a main-session Read or Edit proves a turn is live (BACKLOG #77 R1), so it sees them first
+  const turnAt = body.indexOf('turnState.handle(ev)');
+  assert.ok(turnAt !== -1 && turnAt < only, 'turnState.handle(ev) must come before the early return');
+  assert.strictEqual(body.split('turnState.handle(ev)').length - 1, 1, 'and is fed exactly once');
   // the Status document returns before it, so it never reaches the producer
   assert.ok(body.indexOf("if (ev.event === 'Status')") < give);
+});
+
+test('the page learns this session\'s id: in `hello`, and as a `session` message when SessionStart names one (backlog #57)', () => {
+  const hello = HOST.slice(HOST.indexOf("type: 'hello',"), HOST.indexOf('});', HOST.indexOf("type: 'hello',")));
+  assert.match(hello, /\n\s+sessionId,/);
+  const body = handlerBody();
+  const start = body.indexOf("if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {");
+  assert.ok(start !== -1, 'the SessionStart branch');
+  const branch = body.slice(start, body.indexOf('\n    }', start));
+  assert.match(branch, /sessionId = ev\.payload\.session_id;/);
+  assert.match(branch, /broadcastControl\(\{ type: 'session', sessionId \}\);/);
 });
 
 test('hook debug prints the occupancy-only events too, before the early return hides them from the debug lines below', () => {
@@ -55,7 +73,7 @@ test('hook debug prints the occupancy-only events too, before the early return h
   // writes, and the log is a file)
   const debug = body.indexOf("if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));");
   assert.ok(debug !== -1, 'the debug line');
-  assert.ok(debug < body.indexOf('if (isOccupancyOnly(ev)) return;'), 'before the early return');
+  assert.ok(debug < body.indexOf('if (isOccupancyOnly(ev)) { mood.handle(ev); return; }'), 'before the early return');
 });
 
 test('a teammate is recognised by its .meta.json, and its idle claim is expired on the host\'s own tick', () => {

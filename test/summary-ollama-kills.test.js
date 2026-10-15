@@ -129,3 +129,83 @@ test('HTTP status: 199 and 300 are errors, 200 and 299 are answers, 404 is a mis
   assert.deepStrictEqual(await run(199), { ok: false, reason: 'http', status: 199 });
   assert.deepStrictEqual(await run(404), { ok: false, reason: 'model-missing' });
 });
+
+// --- kill tests for the release-176 survivors (BACKLOG #94, M7) --------------------------------------------------------
+
+const bytes = (text) => new Uint8Array(Buffer.from(text, 'utf8'));
+const textFetch = (status, text, { declared = null } = {}) => {
+  const seen = [];
+  const { fetchImpl } = script({ status, declared, chunks: text === '' ? [] : [bytes(text)] });
+  return { seen, fetchImpl: async (url, init) => { seen.push([url, init]); return fetchImpl(url, init); } };
+};
+const tagBody = (...models) => JSON.stringify({ models });
+
+test('M7: the base URL loses every trailing slash; a GET carries no body and no content type, a POST carries both', async () => {
+  const f = textFetch(200, tagBody({ name: 'llama3.2:3b' }));
+  const c = createOllamaClient({ baseUrl: 'http://127.0.0.1:11434///', fetchImpl: f.fetchImpl });
+  await c.hasModel();
+  assert.strictEqual(f.seen[0][0], 'http://127.0.0.1:11434/api/tags');
+  assert.strictEqual(f.seen[0][1].method, 'GET');
+  assert.strictEqual(f.seen[0][1].headers, undefined);
+  assert.strictEqual(f.seen[0][1].body, undefined);
+  const g = textFetch(200, JSON.stringify({ response: 'A summary of the work.' }));
+  await createOllamaClient({ baseUrl: 'http://x:1//', fetchImpl: g.fetchImpl }).summarize('prompt');
+  assert.strictEqual(g.seen[0][0], 'http://x:1/api/generate');
+  assert.strictEqual(g.seen[0][1].method, 'POST');
+  assert.deepStrictEqual(g.seen[0][1].headers, { 'content-type': 'application/json' });
+  assert.strictEqual(JSON.parse(g.seen[0][1].body).prompt, 'prompt');
+});
+
+test('M7: hasModel: only a 200 counts, whatever the body says', async () => {
+  for (const status of [201, 204, 301, 404, 500]) {
+    const f = textFetch(status, tagBody({ name: 'llama3.2:3b' }));
+    assert.deepStrictEqual(await createOllamaClient({ fetchImpl: f.fetchImpl }).hasModel(), { ok: false, reason: 'unreachable' }, String(status));
+  }
+});
+
+test('M7: hasModel reads names from name or model, ignores junk entries, and a bare configured name means :latest', async () => {
+  const junk = textFetch(200, tagBody(null, 'str', 5, [], { name: 7 }, { name: 'other:1' }, { model: 'llama3.2:3b' }));
+  assert.deepStrictEqual(await createOllamaClient({ fetchImpl: junk.fetchImpl }).hasModel(), { ok: true });
+  const none = textFetch(200, tagBody(null, { name: 'other:1' }));
+  assert.deepStrictEqual(await createOllamaClient({ fetchImpl: none.fetchImpl }).hasModel(), { ok: false, reason: 'model-missing' });
+  const bare = textFetch(200, tagBody({ name: 'mymodel:latest' }));
+  assert.deepStrictEqual(await createOllamaClient({ model: 'mymodel', fetchImpl: bare.fetchImpl }).hasModel(), { ok: true });
+});
+
+test('M7: a content-length that is not a number does not stop the body being read; one at the cap reads, one over does not', async () => {
+  const ok = textFetch(200, tagBody({ name: 'llama3.2:3b' }), { declared: 'not-a-number' });
+  assert.deepStrictEqual(await createOllamaClient({ fetchImpl: ok.fetchImpl }).hasModel(), { ok: true });
+  const exact = textFetch(200, tagBody({ name: 'llama3.2:3b' }), { declared: MAX_BODY_BYTES });
+  assert.deepStrictEqual(await createOllamaClient({ fetchImpl: exact.fetchImpl }).hasModel(), { ok: true });
+  const over = textFetch(200, tagBody({ name: 'llama3.2:3b' }), { declared: MAX_BODY_BYTES + 1 });
+  assert.deepStrictEqual(await createOllamaClient({ fetchImpl: over.fetchImpl }).hasModel(), { ok: false, reason: 'bad-reply' });
+});
+
+test('M7: summarize: the reply must be an object with a string response; anything else is a bad reply', async () => {
+  for (const text of ['', '{', 'null', '[]', '"x"', JSON.stringify({ response: 5 }), JSON.stringify({ response: null }), JSON.stringify({}), JSON.stringify({ response: ['a'] })]) {
+    const f = textFetch(200, text);
+    assert.deepStrictEqual(await createOllamaClient({ fetchImpl: f.fetchImpl }).summarize('p'), { ok: false, reason: 'bad-reply' }, JSON.stringify(text));
+  }
+});
+
+test('M7: summarize reports how long it took, and a clock that steps back reads 0', async () => {
+  const f = textFetch(200, JSON.stringify({ response: 'A summary of the work.' }));
+  let t = 1000;
+  const marks = [1000, 1250];
+  const c = createOllamaClient({ fetchImpl: f.fetchImpl, now: () => marks.shift() });
+  const r = await c.summarize('p');
+  assert.deepStrictEqual([r.ok, r.ms], [true, 250]);
+  const back = [5000, 4000];
+  const c2 = createOllamaClient({ fetchImpl: textFetch(200, JSON.stringify({ response: 'A summary of the work.' })).fetchImpl, now: () => back.shift() });
+  assert.strictEqual((await c2.summarize('p')).ms, 0);
+  assert.ok(t);
+});
+
+test('M7: the status of a failed generate is named: 404 is model-missing, 199 and 300 are http with the status, 200 and 299 are replies', async () => {
+  const run = async (status) => createOllamaClient({ fetchImpl: textFetch(status, JSON.stringify({ response: 'A summary of the work.' })).fetchImpl }).summarize('p');
+  assert.deepStrictEqual(await run(404), { ok: false, reason: 'model-missing' });
+  assert.deepStrictEqual(await run(199), { ok: false, reason: 'http', status: 199 });
+  assert.deepStrictEqual(await run(300), { ok: false, reason: 'http', status: 300 });
+  assert.strictEqual((await run(200)).ok, true);
+  assert.strictEqual((await run(299)).ok, true);
+});

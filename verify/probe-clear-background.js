@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /* Does a background agent survive /clear, and what does SessionEnd say?
 
    Dexter F3 (2026-09-25): processes.js ended EVERY open call on SessionEnd. If
@@ -49,7 +50,7 @@ const payloads = () => (log.match(/\[hook:full\] .*/g) || [])
 // A hard kill of the host does not run its shutdown, which is what kills the
 // pty's `claude` -- so kill the whole tree (Miguel, review of this branch).
 function killHost() {
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(host.pid), '/T', '/F'], { stdio: 'ignore' });
+  if (process.platform === 'win32') killChildTree(host);
   else host.kill();
 }
 

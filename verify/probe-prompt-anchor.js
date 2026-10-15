@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree, trackExit } = require('../host/kill-tree');
 /* Where does the REAL CLI echo a submitted prompt, relative to where its cursor is when UserPromptSubmit fires?
    (re-runnable, bills the plan: two haiku turns, about a minute)
 
@@ -52,7 +53,6 @@ function findClaude() {
 async function main() {
   const pty = require('node-pty');
   const { Terminal } = require('@xterm/headless');
-  const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-anchor-'));
   const work = path.join(base, 'work');
   fs.mkdirSync(work);
@@ -74,7 +74,8 @@ async function main() {
   if (!claudeBin) throw new Error('claude not found under npm root -g');
   const p = pty.spawn(claudeBin, ['--model', 'haiku', '--settings', settingsFile], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: work, env });
   p.onData(d => term.write(d));
-  const killed = () => { try { killPidTree(p.pid); } catch { /* gone */ } };
+  trackExit(p);  // node-pty reports no exitCode: record its exit now, so killChildTree can tell
+  const killed = () => { try { killChildTree(p); } catch { /* gone */ } };
   process.on('exit', killed);
 
   const flush = () => new Promise(r => term.write('', r));

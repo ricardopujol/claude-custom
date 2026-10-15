@@ -23,6 +23,7 @@
    an Electron app, and an inherited value starts the child as plain Node with
    errors that name anything but the cause (CLAUDE.md). */
 const { spawn } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -97,13 +98,12 @@ host.stderr.on('data', d => { hostLog += d.toString(); });
   await sleep(3500);
   if (!/listening/i.test(hostLog)) { console.error('host did not start:\n' + hostLog); process.exit(1); }
 
-  const electron = spawn(path.join(REPO, 'node_modules', '.bin', 'electron.cmd'), ['.'], {
+  const electron = spawnElectron(require('electron'), ['.'], {
     cwd: REPO,
     env: { ...env, CLAUDE_CUSTOM_SCREENSHOT: OUT, CLAUDE_CUSTOM_SCREENSHOT_DELAY: '12000',
       CLAUDE_CUSTOM_SIDE_TAB: 'style' },
     stdio: 'inherit',
-    shell: true,
-  });
+  }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY', 'CLAUDE_CUSTOM_SIDE_TAB'] });
 
   electron.on('exit', () => {
     try { host.kill(); } catch { /* already gone */ }

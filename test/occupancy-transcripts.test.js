@@ -100,8 +100,27 @@ test('a fresh subagent transcript whose calls point at another worktree becomes 
   assert.deepStrictEqual(out.claimed, ['alane-x-1']);
   assert.deepStrictEqual(r.claim('alane-x-1'), {
     agentId: 'alane-x-1', agent: 'lane-x', worktree: FEAT, also: [], fromBranch: 'develop', fromRoot: DEV,
-    hostPid: OWN_PID, hostStartedAt: START, firstAt: T0, lastAt: T0 + 5000, count: 2,
+    sessionId: 's1', hostPid: OWN_PID, hostStartedAt: START, firstAt: T0, lastAt: T0 + 5000, count: 2,
   });
+});
+
+test('the claim names the session the transcript is FILED UNDER: two sessions in dev, each with an Explore, are told apart (backlog #57, Dexter F5)', async () => {
+  const r = rig();
+  const SA = '2f72d188-bd6d-49bd-8fe4-1f1cde460011';
+  const SB = '9a0b1c2d-3e4f-4a5b-8c6d-7e8f9a0b1c2d';
+  r.put('aexp-a', line('aexp-a', [read(path.join(FEAT, 'a.js'))]), { meta: { agentType: 'Explore' }, session: SA });
+  r.put('aexp-b', line('aexp-b', [read(path.join(FEAT2, 'b.js'))]), { meta: { agentType: 'Explore' }, session: SB });
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('aexp-a').sessionId, SA);
+  assert.strictEqual(r.claim('aexp-b').sessionId, SB);
+});
+
+test('a session folder whose name is not a safe id names no session (null); the claim still stands', async () => {
+  const r = rig();
+  r.put('aodd-1', line('aodd-1', [read(path.join(FEAT, 'a.js'))]), { meta: PLAIN, session: 'not a.session' });
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('aodd-1').worktree, FEAT);
+  assert.strictEqual(r.claim('aodd-1').sessionId, null);
 });
 
 test('the agent is named by its meta: `name`, else `agentType`, else nobody (null)', async () => {
@@ -1256,4 +1275,25 @@ test('the default tick copes with a handle that has no unref, or no handle at al
     global.setTimeout = realSet;
   }
   await Promise.all(inflight);
+});
+
+// --- #81 (PR #149 Dexter 6): a side session's agents are readers, whichever producer writes their claim ---------------
+
+test('a claim the scanner writes for a side session\'s agent carries role "reader"; any other session\'s does not', async () => {
+  const SIDE_SESSION = '2f72d188-bd6d-49bd-8fe4-1f1cde460011';
+  const r = rig({ readerSessions: () => [SIDE_SESSION] });
+  r.put('aside-1', line('aside-1', [read(path.join(FEAT, 'a.js'))]), { meta: { agentType: 'Explore' }, session: SIDE_SESSION });
+  r.put('amain-1', line('amain-1', [read(path.join(FEAT, 'b.js'))]), { meta: { agentType: 'Explore' }, session: 's1' });
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('aside-1').role, 'reader');
+  assert.ok(!('role' in r.claim('amain-1')), 'an ordinary session\'s claim is what it always was');
+});
+
+test('a seam that throws or answers with something else is "no side sessions": the claim is written, as a writer', async () => {
+  for (const readerSessions of [() => { throw new Error('boom'); }, () => null, () => 'x']) {
+    const r = rig({ readerSessions });
+    r.put('aoops-1', line('aoops-1', [read(path.join(FEAT, 'a.js'))]), { meta: PLAIN });
+    await r.scanner.pass();
+    assert.ok(r.claim('aoops-1') && !('role' in r.claim('aoops-1')));
+  }
 });

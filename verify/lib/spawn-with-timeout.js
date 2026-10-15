@@ -32,9 +32,9 @@
  * confirmed alive.
  */
 const { spawn } = require('child_process');
-const { killPidTree } = require('../../host/kill-tree');
+const { killPidTree, killChildTree } = require('../../host/kill-tree');
 
-function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, killFn = killPidTree }) {
+function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, killFn = killPidTree }) {   // kill-ok(held-handle): the default killFn, reached only through killChildTree(child) on the held child
   return new Promise((resolve) => {
     let stdout = '', stderr = '', timedOut = false, settled = false;
     let exited = false, exitCode = null;
@@ -61,7 +61,7 @@ function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, 
       // still holding its stdio pipes open. If the child has already exited,
       // taskkill /PID <pid> /T /F would be operating on a pid the OS may
       // have since reused for an unrelated process.
-      if (!exited) killFn(child.pid);
+      if (!exited) killChildTree(child, { killFn });
       settle();
     }, timeoutMs);
 

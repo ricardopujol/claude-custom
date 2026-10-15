@@ -353,3 +353,255 @@ test('S5: the empty spacer that keeps the Stop column aligned is hidden from ass
   const h = D.html(D.view(D.toggle(s, 's:k-main')));
   assert.match(h, /<span class="res-stop-gap" aria-hidden="true"><\/span>/);
 });
+
+// ---- Leftovers (BACKLOG #74 item 6, option A) -----------------------------------------------------------------------
+
+const MINUTE = 60_000;
+const lrow = (over = {}) => ({ kind: 'probe-window', pid: 100, start: '5', name: 'electron.exe', what: 'probe-x', label: 'probe-x', bytes: 230 * MB, ageMs: 12 * MINUTE, provable: true, reapable: true, reapInMs: 3 * MINUTE, nested: false, ...over });
+const unproven = (over = {}) => lrow({ provable: false, reapable: false, reapInMs: null, ...over });
+const leftovers = (over = {}) => ({ stuck: [], probes: [], shells: [], mcp: [], stopped: [], reapAfterMs: 15 * MINUTE, ...over });
+const leftoverView = (l, state = {}) => D.view({ ...stateWith(payload({ leftovers: l })), ...state }).leftovers;
+const leftoverHtml = (l, state = {}) => D.html(D.view({ ...stateWith(payload({ leftovers: l })), ...state }));
+
+test('Leftovers: no section when there is nothing to show (null), and nothing is drawn for it', () => {
+  assert.strictEqual(D.view(stateWith(payload())).leftovers, null);
+  assert.strictEqual(leftoverView(null), null);
+  assert.strictEqual(leftoverView('nope'), null);
+  assert.strictEqual(leftoverView(leftovers()), null, 'every list empty is the same as none');
+  const html = D.html(D.view(stateWith(payload())));
+  assert.ok(!html.includes('Leftovers') && !html.includes('left over'));
+});
+
+test('Leftovers (S6): a payload with only "stopped" still makes a section, with no groups and no chip', () => {
+  const v = leftoverView(leftovers({ stopped: [{ kind: 'probe-window', pid: 7, what: 'probe-y', bytes: 120 * MB, at: 1 }] }));
+  assert.deepStrictEqual(v.stopped.map(s => s.text), ['Stopped probe-y (PID 7), 120 MB freed']);
+  assert.strictEqual(v.groups.length, 0);
+  assert.strictEqual(v.chip, null);
+  assert.ok(D.html(D.view(stateWith(payload({ leftovers: leftovers({ stopped: [{ pid: 7, what: 'p', bytes: MB }] }) })))).includes('Stopped'));
+});
+
+test('Leftovers: the four kinds are grouped under their own titles, in order, empty groups left out, each with its left-edge colour', () => {
+  const v = leftoverView(leftovers({
+    mcp: [unproven({ kind: 'mcp', what: 'chrome-devtools-mcp', session: 'main' })],
+    stuck: [unproven({ kind: 'stuck', what: 'Electron' })],
+    probes: [lrow()],
+    shells: [unproven({ kind: 'shell', what: 'bash.exe' })],
+  }));
+  assert.deepStrictEqual(v.groups.map(g => [g.title, g.edge]), [
+    ['Stuck closing', 'res-edge-red'], ['Probe windows nobody is running', 'res-edge-yellow'], ['Agent shells still running', 'res-edge-yellow'], ['MCP servers', 'res-edge-grey'],
+  ]);
+});
+
+test('Leftovers: the title carries an "N left over" chip, counting listed rows', () => {
+  const v = leftoverView(leftovers({ probes: [lrow(), lrow({ pid: 101 })], mcp: [unproven({ kind: 'mcp' })] }));
+  assert.strictEqual(v.chip, '3 left over');
+  const html = leftoverHtml(leftovers({ probes: [lrow()] }));
+  assert.match(html, /<div class="res-title">Resources <span class="res-chip">1 left over<\/span><\/div>/);
+  assert.ok(html.indexOf('res-title') < html.indexOf('<h3>Leftovers'));
+});
+
+test('Leftovers: a row reads name, then memory, then age (MB before age), and the figures are dashes when not measured', () => {
+  const html = leftoverHtml(leftovers({ probes: [lrow({ ageMs: 5 * 3600_000 + 10 * MINUTE })] }));
+  assert.ok(html.indexOf('230 MB') < html.indexOf('5 h'), 'memory before age');
+  const v = leftoverView(leftovers({ probes: [lrow({ ageMs: 5 * 3600_000 + 10 * MINUTE }), lrow({ pid: 7, bytes: null, ageMs: null }), lrow({ pid: 8, ageMs: 20_000 })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => [r.memFig, r.ageFig]), [['230 MB', '5 h'], ['—', '—'], ['230 MB', '<1 min']]);
+});
+
+test('Leftovers: a row says what happens to it: when it stops, that Windows is closing it, or that it is kept', () => {
+  const v = leftoverView(leftovers({
+    stuck: [unproven({ kind: 'stuck', what: 'Electron' })],
+    probes: [lrow({ reapInMs: 3 * MINUTE }), lrow({ pid: 101, reapInMs: 0 }), lrow({ pid: 102, reapInMs: 90_000 })],
+    shells: [unproven({ kind: 'shell', what: 'bash.exe' }), lrow({ pid: 40, kind: 'agent-shell', reapable: false, reapInMs: null })],
+  }));
+  const notes = Object.fromEntries(v.groups.map(g => [g.title, g.rows.map(r => r.note)]));
+  assert.deepStrictEqual(notes['Stuck closing'], [''], 'the stuck explanation is stated once under the group, not per row');
+  assert.deepStrictEqual(notes['Probe windows nobody is running'], ['stops in 3 min', 'stopping…', 'stops in 2 min']);
+  assert.deepStrictEqual(notes['Agent shells still running'], ["kept: can't tell whether an agent still needs it", "kept: can't tell whether an agent still needs it"], 'a provable shell is kept too: never stopped on its own');
+});
+
+test('Leftovers (B): a Stop button only on a provable row, "Stop N" only on a group that has some; MCP and stuck rows never get one', () => {
+  const v = leftoverView(leftovers({
+    stuck: [unproven({ kind: 'stuck' })], mcp: [unproven({ kind: 'mcp' })],
+    probes: [lrow(), lrow({ pid: 101 })], shells: [unproven({ kind: 'shell' }), lrow({ pid: 40, kind: 'agent-shell', reapable: false, reapInMs: null })],
+  }));
+  const g = Object.fromEntries(v.groups.map(x => [x.id, x]));
+  assert.deepStrictEqual(g.probes.rows.map(r => r.canStop), [true, true]);
+  assert.deepStrictEqual(g.shells.rows.map(r => r.canStop), [false, true]);
+  assert.deepStrictEqual(g.stuck.rows.map(r => r.canStop), [false]);
+  assert.deepStrictEqual(g.mcp.rows.map(r => r.canStop), [false]);
+  assert.deepStrictEqual([g.probes.stopCount, g.shells.stopCount, g.stuck.stopCount, g.mcp.stopCount], [2, 1, 0, 0]);
+  const html = leftoverHtml(leftovers({ probes: [lrow(), lrow({ pid: 101 })], mcp: [unproven({ kind: 'mcp' })] }));
+  assert.match(html, /data-res-act="left-stop-group" data-res-group="probes"[^>]*>Stop 2</);
+  assert.strictEqual((html.match(/data-res-act="left-stop"/g) || []).length, 2);
+  assert.ok(!/left-stop-group" data-res-group="mcp"/.test(html));
+});
+
+test('Leftovers (B): a row without a usable start gets no Stop button (nothing to prove it by)', () => {
+  const v = leftoverView(leftovers({ probes: [lrow({ start: null }), lrow({ pid: 5, start: 'abc' })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.canStop), [false, false]);
+});
+
+test('Leftovers (B): actionOf reads the two Stop clicks strictly', () => {
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-stop', resPid: '100', resStart: '777' }), { act: 'left-stop', pid: 100, start: '777' });
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-stop-group', resGroup: 'probes' }), { act: 'left-stop-group', group: 'probes' });
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-stop-group', resGroup: 'shells' }), { act: 'left-stop-group', group: 'shells' });
+  for (const bad of [
+    { resAct: 'left-stop', resPid: '0', resStart: '1' }, { resAct: 'left-stop', resPid: '-3', resStart: '1' }, { resAct: 'left-stop', resPid: '4', resStart: 'x' },
+    { resAct: 'left-stop', resPid: '4' }, { resAct: 'left-stop-group', resGroup: 'mcp' }, { resAct: 'left-stop-group', resGroup: 'stuck' }, { resAct: 'left-stop-group' },
+  ]) assert.strictEqual(D.actionOf(bad), null, JSON.stringify(bad));
+});
+
+test('Leftovers (B): while a Stop is in flight every Leftovers button is disabled and the group button reads Stopping…; one Stop at a time', () => {
+  const l = leftovers({ probes: [lrow()] });
+  let state = stateWith(payload({ leftovers: l }));
+  assert.ok(!/<button[^>]*disabled/.test(leftoverHtml(l)));
+  state = D.beginLeftStop(state);
+  assert.strictEqual(state.leftBusy, true);
+  const html = D.html(D.view(state));
+  assert.strictEqual((html.match(/<button[^>]*left-stop[^>]*disabled/g) || []).length, 2);
+  assert.match(html, /Stopping…/);
+  assert.strictEqual(D.beginLeftStop(state), state, 'a second press does nothing');
+});
+
+test('Leftovers (B): the answer re-enables the buttons; a failure is a plain sentence, and it lasts one sample', () => {
+  const base = D.beginLeftStop(stateWith(payload({ leftovers: leftovers({ probes: [lrow()] }) })));
+  assert.strictEqual(D.leftStopResult(base, { ok: true, stopped: 1, failed: 0 }).leftBusy, false);
+  assert.strictEqual(D.leftStopResult(base, { ok: true, stopped: 1, failed: 0 }).leftNote, null);
+  assert.strictEqual(D.leftStopResult(base, { ok: true, stopped: 0, failed: 2 }).leftNote, "Couldn't stop 2 of them; they are still listed.");
+  assert.strictEqual(D.leftStopResult(base, { ok: false, text: 'stopping is not available' }).leftNote, "Couldn't stop: stopping is not available.");
+  assert.strictEqual(D.leftStopResult(base, null).leftNote, "Couldn't stop: the request did not get through.");
+  const failed = D.leftStopResult(base, { ok: false, text: 'x' });
+  assert.match(D.html(D.view(failed)), /Couldn&#39;t stop: x\./);
+  assert.strictEqual(D.withPayload(failed, payload()).leftNote, null);
+});
+
+test('Leftovers: the heading sums memory once per process: a nested row is not added again, and a missing figure makes it "at least"', () => {
+  const nested = leftoverView(leftovers({ probes: [lrow({ bytes: 200 * MB }), lrow({ pid: 9, bytes: 50 * MB, nested: true })] }));
+  assert.strictEqual(nested.sum.memFig, '200 MB');
+  assert.strictEqual(nested.sum.count, 2);
+  assert.strictEqual(leftoverView(leftovers({ probes: [lrow({ bytes: 20 * MB }), lrow({ pid: 9, bytes: null })] })).sum.memFig, '≥ 20 MB');
+  assert.strictEqual(leftoverView(leftovers({ stuck: [unproven({ kind: 'stuck', bytes: null })] })).sum.memFig, '—');
+});
+
+test('Leftovers: rows from the machine are escaped in the HTML, the section sits above Machine, and the group buttons carry only a group name', () => {
+  const html = leftoverHtml(leftovers({ mcp: [unproven({ kind: 'mcp', what: '<img src=x onerror=alert(1)>', session: '"><b>' })], probes: [lrow({ what: '<script>x</script>' })] }));
+  assert.ok(!html.includes('<img') && !html.includes('<script>x') && !html.includes('"><b>'));
+  assert.ok(html.indexOf('Leftovers') < html.indexOf('<h3>Machine'));
+});
+
+test('Leftovers (mock A wording): stuck closing says finish on their own on its title line and the tearing-down sentence once under its rows', () => {
+  const html = leftoverHtml(leftovers({ stuck: [unproven({ kind: 'stuck', what: 'Electron' }), unproven({ kind: 'stuck', pid: 12, what: 'Electron' })] }));
+  assert.ok(html.includes('finish on their own, slowly'));
+  assert.strictEqual(html.split('Windows is still tearing these down. Nothing can stop them faster.').length - 1, 1);
+  assert.ok(!html.includes("can't be stopped from here"));
+  assert.ok(html.indexOf('finish on their own, slowly') < html.indexOf('Electron'), 'the note is on the title line');
+  assert.ok(html.indexOf('Electron') < html.indexOf('Nothing can stop them faster'), 'the sentence is under the rows');
+});
+
+test('Leftovers (mock A wording): probe rows carry a dim "launcher gone" after the name, and keep their status line', () => {
+  const html = leftoverHtml(leftovers({ probes: [lrow()], shells: [unproven({ kind: 'shell', what: 'bash.exe' })] }));
+  assert.match(html, /probe-x <span class="res-lsub">launcher gone<\/span>/);
+  assert.strictEqual(html.split('launcher gone').length - 1, 1, 'only on probe rows');
+  assert.ok(html.includes('stops in 3 min'));
+});
+
+test('Leftovers (mock A wording): MCP servers say "N sessions × MB MB" when every row names a session and has a figure, otherwise nothing, and never "never called"', () => {
+  const mcp = (session, bytes) => unproven({ kind: 'mcp', session, bytes });
+  const side = l => leftoverView(leftovers({ mcp: l })).groups[0].side;
+  assert.strictEqual(side([mcp('main', 120 * MB), mcp('feat', 100 * MB), mcp('feat', 80 * MB)]), '2 sessions × 150 MB');
+  assert.strictEqual(side([mcp('main', 117 * MB)]), '1 session × 117 MB');
+  assert.strictEqual(side([mcp('main', 117 * MB), mcp(undefined, 100 * MB)]), null);
+  assert.strictEqual(side([mcp('main', null)]), null);
+  const html = leftoverHtml(leftovers({ mcp: [mcp('main', 117 * MB)] }));
+  assert.ok(html.includes('1 session × 117 MB') && !html.includes('never called'));
+  assert.ok(!leftoverHtml(leftovers({ mcp: [mcp(undefined, 100 * MB)] })).includes('res-side'));
+});
+
+test('Leftovers (mock A wording): the titles are the mock\'s', () => {
+  const v = leftoverView(leftovers({ probes: [lrow()], shells: [unproven({ kind: 'shell' })], mcp: [unproven({ kind: 'mcp' })], stuck: [unproven({ kind: 'stuck' })] }));
+  assert.deepStrictEqual(v.groups.map(g => g.title), ['Stuck closing', 'Probe windows nobody is running', 'Agent shells still running', 'MCP servers']);
+});
+
+// ---- Leftovers: big task-output files (BACKLOG #74 F(3)) ------------------------------------------------------
+
+const trow = (over = {}) => ({ key: '1:10', name: 'a1.output', project: 'p', sessions: ['e3ca0a04-d506-4379-8249-2062c4f76c5c'], bytes: 5.1 * 1024 * MB, ageMs: 40 * MINUTE, deletable: true, why: 'delete', ...over });
+
+test('task logs: the group is "Task logs over 100 MB", with the clock rule on its title line, and each row reads session, file, size, age', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow()] }));
+  assert.deepStrictEqual([v.groups[0].title, v.groups[0].side], ['Task logs over 100 MB', 'deleted after 15 idle minutes once their session has ended']);
+  assert.deepStrictEqual(v.groups[0].rows.map(r => [r.name, r.memFig, r.ageFig]), [['e3ca0a04 · a1.output', '5.1 GB', '40 min']]);
+  assert.strictEqual(v.chip, '1 left over');
+});
+
+test('task logs: a row says what happens to it by its why', () => {
+  const notes = why => leftoverView(leftovers({ taskLogs: [trow({ why, deletable: why === 'delete' })] })).groups[0].rows[0].note;
+  assert.strictEqual(notes('delete'), 'deleting within a minute');
+  assert.strictEqual(notes('alive'), 'kept: its session is still running');
+  assert.strictEqual(notes('young'), 'kept: written to in the last 15 min');
+  assert.strictEqual(notes('unknown'), "kept: can't tell whether its session ended");
+});
+
+test('task logs: a linked file names its first session and how many more', () => {
+  const r = leftoverView(leftovers({ taskLogs: [trow({ sessions: ['aaaaaaaa-1', 'bbbbbbbb-2', 'cccccccc-3'] })] })).groups[0].rows[0];
+  assert.strictEqual(r.name, 'aaaaaaaa · a1.output +2');
+});
+
+test('task logs: Delete only on a deletable row, with the key; no Stop N on the group; escaped', () => {
+  const html = leftoverHtml(leftovers({ taskLogs: [trow(), trow({ key: '1:11', deletable: false, why: 'alive', name: '<b>x</b>.output' })] }));
+  assert.strictEqual((html.match(/data-res-act="left-delete"/g) || []).length, 1);
+  assert.match(html, /data-res-act="left-delete" data-res-key="1:10"/);
+  assert.ok(!/left-stop-group" data-res-group="taskLogs"/.test(html));
+  assert.ok(!html.includes('<b>x'));
+});
+
+test('task logs: an unknown file that is idle gets a manual Delete and says the choice is the persons choice; one that is not idle gets neither', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'unknown', deletable: false, manualDelete: true }), trow({ key: '1:11', why: 'unknown', deletable: false, manualDelete: false })] }));
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.canDelete), [true, false]);
+  assert.deepStrictEqual(v.groups[0].rows.map(r => r.note), ["can't tell whether its session ended: Delete is yours to choose", "kept: can't tell whether its session ended"]);
+});
+
+test('task logs: actionOf reads the Delete click strictly', () => {
+  assert.deepStrictEqual(D.actionOf({ resAct: 'left-delete', resKey: '1:10' }), { act: 'left-delete', key: '1:10' });
+  for (const bad of [{ resAct: 'left-delete' }, { resAct: 'left-delete', resKey: '' }, { resAct: 'left-delete', resKey: '..\\x' }, { resAct: 'left-delete', resKey: '1:x' }]) {
+    assert.strictEqual(D.actionOf(bad), null, JSON.stringify(bad));
+  }
+});
+
+test('task logs: Delete buttons are disabled while a request is in flight', () => {
+  const l = leftovers({ taskLogs: [trow()] });
+  const html = D.html(D.view(D.beginLeftStop(stateWith(payload({ leftovers: l })))));
+  assert.match(html, /<button[^>]*left-delete[^>]*disabled/);
+});
+
+test('task logs: deleted files read "Deleted <file>, <MB> MB freed" under Stopped; with no process rows the heading shows the disk total', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ bytes: 300 * MB })], deleted: [{ name: 'b.output', bytes: 600 * MB, at: 1 }] }));
+  assert.deepStrictEqual(v.stopped.map(s => s.text), ['Deleted b.output, 600 MB freed']);
+  assert.strictEqual(v.sum.memFig, '300 MB on disk');
+  const only = leftoverView(leftovers({ deleted: [{ name: 'b.output', bytes: 600 * MB, at: 1 }] }));
+  assert.strictEqual(only.groups.length, 0);
+  assert.strictEqual(only.chip, null);
+  const mixed = leftoverView(leftovers({ probes: [lrow({ bytes: 200 * MB })], taskLogs: [trow()] }));
+  assert.strictEqual(mixed.sum.memFig, '200 MB', 'RAM only: a file on disk is not memory');
+});
+
+test('task logs: the "N left over" chip counts only files that are left over, not ones whose session is alive or that were just written; the group is still listed', () => {
+  const only = leftoverView(leftovers({ taskLogs: [trow({ why: 'alive', deletable: false }), trow({ key: '1:11', why: 'young', deletable: false })] }));
+  assert.strictEqual(only.chip, null);
+  assert.strictEqual(only.sum.count, 0);
+  assert.strictEqual(only.groups[0].rows.length, 2);
+  const mixed = leftoverView(leftovers({ taskLogs: [trow(), trow({ key: '1:11', why: 'alive', deletable: false }), trow({ key: '1:12', why: 'unknown', deletable: false })] }));
+  assert.strictEqual(mixed.chip, '2 left over');
+  assert.ok(!/left over/.test(D.html(D.view(stateWith(payload({ leftovers: leftovers({ taskLogs: [trow({ why: 'alive', deletable: false })] }) }))))), 'no chip is drawn');
+});
+
+test('task logs (Dexter #3, Miguel I5): a locked file says a process holds it open and keeps its manual Delete; a deleted file still held open is not called freed', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'locked', deletable: false, manualDelete: true })], deleted: [{ name: 'b.output', bytes: 600 * MB, held: true, at: 1 }, { name: 'c.output', bytes: 600 * MB, at: 1 }] }));
+  assert.deepStrictEqual([v.groups[0].rows[0].note, v.groups[0].rows[0].canDelete], ['kept: a process holds it open. Delete tries again', true]);
+  assert.deepStrictEqual(v.stopped.map(s => s.text), ['Deleted b.output, but a process still holds it open: the space is not freed yet', 'Deleted c.output, 600 MB freed']);
+  assert.strictEqual(v.chip, '1 left over', 'a locked file is a leftover');
+});
+
+test('task logs (Dexter #4): a file still being confirmed idle says so, and is a leftover', () => {
+  const v = leftoverView(leftovers({ taskLogs: [trow({ why: 'settling', deletable: false, manualDelete: true })] }));
+  assert.deepStrictEqual([v.groups[0].rows[0].note, v.groups[0].rows[0].canDelete, v.chip], ['kept: confirming it has stayed idle', true, '1 left over']);
+});

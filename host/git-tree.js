@@ -48,6 +48,8 @@ const PEOPLE = [
   [/^(logic-reviewer|dexter)/i, 'Dexter'],
   [/^(code-reviewer|miguel)/i, 'Miguel'],
   [/^(mutation-tester|mortimer)/i, 'Mortimer'],
+  [/^(el-gordo|gordo)/i, 'El Gordo'],
+  [/^vladimir/i, 'Vladimir'],
   [/^(agent-organizer|paris)/i, 'Paris'],
   [/^(display-integrity-auditor|vera)/i, 'Vera'],
   [/^(ui-ux-tester|naomi)/i, 'Naomi'],

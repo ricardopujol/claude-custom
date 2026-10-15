@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: #10131c; overflow: hidden; }
+  #bg { position: fixed; inset: 0; background-size: cover; background-position: center; }
+  #bg video { width: 100%; height: 100%; object-fit: cover; }
+  #veil { position: fixed; inset: 0; background: rgba(8, 10, 16, .55); }
+  #term { position: fixed; inset: 0; padding: 6px; }
+  #faces { position: fixed; right: 12px; top: 12px; display: flex; gap: 6px; }
+  #faces img { width: 96px; height: 96px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<div id="veil"></div>
+<div id="term"></div>
+<div id="faces"></div>
+<script>
+(function () {
+  const q = new URLSearchParams(location.search);
+  const variant = q.get('variant');
+  const url = (p) => 'file:///' + encodeURI(p.replace(/\\/g, '/'));
+  const bg = document.getElementById('bg');
+  const file = q.get('file');
+  if (variant === 'mp4' || variant === 'webm') {
+    const v = document.createElement('video');
+    v.muted = true; v.loop = true; v.autoplay = true; v.setAttribute('playsinline', '');
+    v.src = url(file);
+    bg.appendChild(v);
+    v.play().catch(() => {});
+  } else if (file) {
+    bg.style.backgroundImage = 'url("' + url(file) + '")';
+  }
+  const portrait = q.get('portrait');
+  if (variant === 'portrait-gif' && portrait) {
+    for (let i = 0; i < 6; i++) {
+      const img = document.createElement('img');
+      img.src = url(portrait) + '?n=' + i;
+      document.getElementById('faces').appendChild(img);
+    }
+  }
+  const css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = url(q.get('xterm') + '/css/xterm.css');
+  document.head.appendChild(css);
+  const s = document.createElement('script');
+  s.src = url(q.get('xterm') + '/lib/xterm.js');
+  s.onload = () => {
+    const term = new Terminal({
+      allowTransparency: true, fontSize: 14, cols: 150, rows: 38, scrollback: 2000,
+      theme: { background: 'rgba(0,0,0,0)', foreground: '#d7dae0' },
+    });
+    term.open(document.getElementById('term'));
+    // A busy session: a few hundred bytes of coloured output every 50 ms, about what a streaming turn paints.
+    let n = 0;
+    setInterval(() => {
+      for (let i = 0; i < 3; i++) {
+        n += 1;
+        term.writeln('\x1b[3' + (n % 7 + 1) + 'm' + String(n).padStart(6) + '\x1b[0m  streaming output line ' + 'x'.repeat(n % 60) + ' done');
+      }
+    }, 50);
+  };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>

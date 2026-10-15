@@ -8,8 +8,13 @@
  *   CLAUDE_CUSTOM_REVIEWS_DIR        the review reports come from here, not ~/.claude/reviews
  *   CLAUDE_CUSTOM_CLAUDE_HOME        the wand finds skills under here, not ~/.claude (verify/probe-wand.js)
  *   CLAUDE_CUSTOM_OLLAMA_URL         the where-are-we summary talks to this Ollama, not 127.0.0.1:11434 (verify/probe-where-summary.js)
- *   CLAUDE_CUSTOM_SUMMARY_DIR        its summaries and GPU slot live here, not in .harness/state
+ *   CLAUDE_CUSTOM_SUMMARY_DIR        its summaries, GPU slot and docs-drift notes live here, not in .harness/state
  *   CLAUDE_CUSTOM_SUMMARY_POWER      'mains' | 'battery': the power state it sees, so a probe doesn't depend on the charger
+ *   CLAUDE_CUSTOM_INDEXING_JOURNAL   the indexing field's journal, not .harness/state (verify/probe-indexing-strip.js)
+ *   CLAUDE_CUSTOM_ASK_RECORD         the "passed the bar" record of the Ask panel's explainer (host/ask-models.js), not host/ask-explainer-record.json
+ *   CLAUDE_CUSTOM_ASK_INDEX_DIR      the Ask panel's per-worktree index lives here, not in .harness/state/ask-index (verify/probe-ask-panel.js)
+ *   CLAUDE_CUSTOM_UI_STATE_DIR       main's install-wide UI records (fonts, layouts, toggles) live here, not in .harness/state, so a probe never
+ *                                    touches the real ones or the person's open windows (verify/probe-fonts-colour.js)
  *
  * They're read by the production host and main, so a seam that leaks in (a shell that exported one) must be
  * visible: announce() logs one line naming every active seam, and a fixture that can't be read or isn't gh's
@@ -19,7 +24,8 @@
 const nodeFs = require('fs');
 
 const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME',
-  'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER'];
+  'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_INDEXING_JOURNAL',
+  'CLAUDE_CUSTOM_ASK_RECORD', 'CLAUDE_CUSTOM_ASK_INDEX_DIR', 'CLAUDE_CUSTOM_UI_STATE_DIR'];
 
 const val = (env, k) => (env && typeof env[k] === 'string' && env[k] !== '' ? env[k] : null);
 
@@ -32,6 +38,10 @@ function readSeams(env) {
     ollamaUrl: val(env, SEAMS[4]),
     summaryDir: val(env, SEAMS[5]),
     summaryPower: ['mains', 'battery'].includes(val(env, SEAMS[6])) ? val(env, SEAMS[6]) : null,
+    indexingJournal: val(env, SEAMS[7]),
+    askRecord: val(env, SEAMS[8]),
+    askIndexDir: val(env, SEAMS[9]),
+    uiStateDir: val(env, SEAMS[10]),
     active: SEAMS.filter(k => (k === SEAMS[6] ? ['mains', 'battery'].includes(val(env, k)) : val(env, k) !== null)),
   };
 }

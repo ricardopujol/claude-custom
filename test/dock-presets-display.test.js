@@ -282,7 +282,8 @@ test('every preset control names the preset it acts on', () => {
 
 test('a save main refuses as taken becomes the replace question, naming the preset as it is stored', () => {
   const s = answer({ mode: 'save', text: 'review' }, { op: 'save', name: 'review' }, { ok: false, reason: 'taken' }, list('Review'), list('Review'));
-  assert.deepStrictEqual(s, { mode: 'replace', name: 'Review', text: 'review', error: null, focus: { kind: 'confirm' }, select: false });
+  // `id` null: the preset it saw had no id, so main replaces it only if it still has none (BACKLOG #59)
+  assert.deepStrictEqual(s, { mode: 'replace', name: 'Review', text: 'review', error: null, focus: { kind: 'confirm' }, select: false, id: null });
   // a rename refused as taken stays a refusal on the rename field
   assert.strictEqual(answer({ mode: 'rename', name: 'A', text: 'b' }, { op: 'rename', name: 'A', to: 'b' }, { ok: false, reason: 'taken' }, list('A', 'B'), list('A', 'B')).mode, 'rename');
 });

@@ -1,4 +1,5 @@
 'use strict';
+const { killChildTree } = require('../host/kill-tree');
 /**
  * Does the session lock hold in REAL hosts? (Extension X1, PR 1b.)
  *
@@ -142,7 +143,7 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   bConn.ws.close();
 
   // 4. A killed outright; C takes over.
-  execFileSync('taskkill', ['/PID', String(a.child.pid), '/T', '/F'], { stdio: 'ignore' });
+  killChildTree(a.child);
   await sleep(500);
   check(readLockFile().pid === a.child.pid, 'A\'s lock survived A (killed, no exit handler)');
   const c = startHost('C', await freePort());
@@ -177,7 +178,7 @@ const check = (ok, what) => { if (!ok) throw new Error(`FAILED: ${what}`); conso
   await waitFor(e, /listening on ws:/);
   const eConn = await attach(e);
   await waitMsg(eConn, m => m.type === 'hello');
-  execFileSync('taskkill', ['/PID', String(c.child.pid), '/T', '/F'], { stdio: 'ignore' });
+  killChildTree(c.child);
   await sleep(500);
   eConn.ws.send(JSON.stringify({ type: 'lock-override' }));
   const taken = await waitMsg(eConn, m => m.type === 'lock' && m.lock.state !== 'blocked');
@@ -209,7 +210,7 @@ process.on('SIGINT', () => { console.log('\ninterrupted: stopping the probe\'s h
 
 function finish(code) {
   for (const h of hosts) {
-    try { execFileSync('taskkill', ['/PID', String(h.child.pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }
+    try { killChildTree(h.child); } catch { /* gone */ }
   }
   setTimeout(() => {
     try { fs.rmSync(repo, { recursive: true, force: true }); } catch { /* best effort */ }

@@ -5,6 +5,7 @@
    hook events through the real helper and bridge so the sidebar is exercised in
    every mood state, rather than only in its empty state. */
 const { spawn, spawnSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..');
@@ -63,8 +64,7 @@ const fire = (pipe, event, payload) =>
     fire(pipe, 'SubagentStop', {});
   }, SCREENSHOT_DELAY - 2500);
 
-  const electron = spawn(
-    path.join(REPO, 'node_modules', '.bin', 'electron.cmd'),
+  const electron = spawnElectron(require('electron'),
     ['.'],
     {
       cwd: REPO,
@@ -75,8 +75,7 @@ const fire = (pipe, event, payload) =>
         CLAUDE_CUSTOM_SCREENSHOT_DELAY: String(SCREENSHOT_DELAY),
       },
       stdio: 'inherit',
-      shell: true,
-    }
+    }, { keepEnv: ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_SCREENSHOT', 'CLAUDE_CUSTOM_SCREENSHOT_DELAY'] }
   );
 
   electron.on('exit', () => {

@@ -40,7 +40,8 @@
  * through the probe hook and checks the page -> shell -> strip path.
  */
 
-const { spawn, spawnSync, execFileSync } = require('child_process');
+const { spawnSync, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const path = require('path');
@@ -51,7 +52,6 @@ const HELPER = path.join(HARNESS_DIR, 'hook-helper.exe');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { startTimes } = require(path.join(ROOT, 'host', 'proc-start'));
-const { killPidTree } = require(path.join(ROOT, 'host', 'kill-tree'));
 const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
 const { serializeClaim } = require(path.join(ROOT, 'host', 'agent-occupancy'));
 
@@ -112,9 +112,9 @@ async function launchApp(cwd) {
   }
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
+    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -138,7 +138,7 @@ function command(app, cmd, timeoutMs = 30000) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsOfThisRun() {
   const out = [];
   let files = [];
@@ -151,8 +151,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { killPidTree(pid); } catch { /* gone */ } }
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 
@@ -171,7 +171,7 @@ const readClaim = (id) => { try { return JSON.parse(fs.readFileSync(path.join(OC
 
 const stateOf = async (app) => {
   const st = await command(app, { cmd: 'state' });
-  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+  for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
   return st;
 };
 const stripTab = async (app, label) => {
@@ -210,6 +210,10 @@ async function main() {
   if (!devHost) return;
   await sleep(1500);   // its hook bridge binds a moment after its identity is written
   const devPid = devHost.pid;
+
+  // The session's id, as a real CLI's SessionStart names it: the card matches a claim on it (backlog #57). The
+  // stand-in `claude` (cmd.exe) never fires one.
+  hook(devPid, 'SessionStart', { session_id: 'probe', source: 'startup' });
 
   // 1 -----------------------------------------------------------------------------
   hook(devPid, 'PreToolUse', { session_id: 'probe', tool_name: 'Edit', tool_input: { file_path: path.join(featA, 'a.js') } });   // the MAIN session's own call
@@ -390,7 +394,8 @@ async function main() {
   }, 20000);
   check('10: a new claim from the live launcher shows again', !!back);
   const killing = devPid;
-  killPidTree(killing);            // the dev host's own PID, a host this probe's window started inside the temp project
+  seenPids.add(killing, ownStart);   // its OS start as read at check 2, while the pid was known to be this host's (never re-read here)
+  seenPids.kill(killing);            // the dev host's own PID, a host this probe's window started inside the temp project; start-proven
   const dark = await waitFor(async () => {
     const t = await stripTab(app, 'feat/a');
     const o = await occState(app);

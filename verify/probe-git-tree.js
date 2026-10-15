@@ -44,7 +44,8 @@
  * repo. The install's global layout file is moved aside for the run and put back.
  */
 
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -137,9 +138,9 @@ async function launchApp(cwd, extraArgs = []) {
   delete env.CLAUDE_CUSTOM_PORT;
   delete env.CLAUDE_CUSTOM_TOKEN;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${userData}`, ...extraArgs], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
+    [ROOT, `--user-data-dir=${userData}`, ...extraArgs], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -173,7 +174,7 @@ function fireHook(pid, event, payload) {
   });
 }
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 // Every host of this run: any whose folder is inside the probe's temp folder. Not just dev and
 // feat-b by name -- the jump STARTS the feat-b tab's host, and a host outlives its window by design
 // (windowless sessions), so one that registers late was left running by an earlier version.
@@ -189,8 +190,8 @@ function hostsOfThisRun() {
   return out;
 }
 function killEverything() {
-  for (const id of hostsOfThisRun()) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
+  for (const id of hostsOfThisRun()) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayout);
@@ -198,7 +199,7 @@ hygiene.addCleanup(restoreLayout);
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await view(app, 'state');
@@ -562,7 +563,7 @@ async function main() {
   await waitFor(async () => {
     const s = await command(app, { cmd: 'state' });
     const h = s && s.hosts && s.hosts.find(x => x.key === s.selectedKey);
-    if (h && Number.isInteger(h.pid)) { seenPids.add(h.pid); return true; }
+    if (h && Number.isInteger(h.pid)) { seenPids.see(h.pid); return true; }
     return null;
   }, 15000);
 

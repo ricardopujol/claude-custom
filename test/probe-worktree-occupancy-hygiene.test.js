@@ -31,13 +31,13 @@ test('it never touches the real state: registry, portraits, uploads and user dat
 
 test('every process it starts is cleaned up on every exit path, including Ctrl+C', () => {
   assert.match(PROBE, /hygiene\.install\(\)/);
-  assert.match(PROBE, /hygiene\.registerSpawnedTree\(child\.pid\)/);
+  assert.match(PROBE, /hygiene\.registerChild\(child\)/);
   assert.match(PROBE, /hygiene\.addCleanup\(killEverything\)/);
   assert.match(PROBE, /hygiene\._emergencyCleanup\('done'\)/);
 });
 
 test('it kills by PID only, and only hosts whose folder is inside its own temp folder: never by name', () => {
-  assert.match(PROBE, /killPidTree\(pid\)/);
+  assert.match(PROBE, /seenPids.endAll\(\)/);
   assert.match(PROBE, /startsWith\(inside\)/);
   assert.doesNotMatch(PROBE, /taskkill|Stop-Process|pkill|killall|\/IM\b/i);
 });

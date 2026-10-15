@@ -26,7 +26,8 @@
  * registry, portraits, uploads and user data are temp folders; every host this
  * started is killed. WINDOWS ONLY.
  */
-const { spawn, execFileSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -119,9 +120,9 @@ async function launchApp(cwd) {
     if (k.startsWith('CLAUDE_CUSTOM_') && !SET_HERE.has(k)) delete env[k];
   }
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
+    [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -148,7 +149,7 @@ function command(app, cmd, timeoutMs = 30000) {
 const view = (app, action, args = {}) => command(app, { cmd: 'view', action, args });
 const viewState = (app) => view(app, 'state');
 
-const seenPids = new Set();
+const seenPids = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
 function hostsUnder(dir) {
   const out = [];
   let files = [];
@@ -160,8 +161,8 @@ function hostsUnder(dir) {
   return out;
 }
 function killEverything() {
-  for (const id of hostsUnder(dev)) seenPids.add(id.pid);
-  for (const pid of seenPids) { try { require(path.join(ROOT, 'host', 'kill-tree')).killPidTree(pid); } catch { /* gone */ } }
+  for (const id of hostsUnder(dev)) seenPids.add(id.pid, id.processStartedAt);
+  seenPids.endAll();
 }
 hygiene.addCleanup(killEverything);
 hygiene.addCleanup(restoreLayout);
@@ -219,7 +220,7 @@ async function main() {
 async function viewReady(app) {
   return waitFor(async () => {
     const st = await command(app, { cmd: 'state' });
-    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.add(h.pid);
+    for (const h of (st && st.hosts) || []) if (Number.isInteger(h.pid)) seenPids.see(h.pid);
     const sel = st && st.hosts && st.hosts.find(x => x.key === st.selectedKey);
     if (!sel || !sel.started) return null;
     const v = await viewState(app);

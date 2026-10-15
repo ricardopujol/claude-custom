@@ -8,7 +8,7 @@
  *   bannerModel(here, { turn, now })                 the banner over a worktree's terminal, or null
  *   chipModel(here, { turn, now })                   the same facts as the terminal bar's chip (the banner
  *                                                    retired into it, backlog #49 + #52), or null
- *   cardLine(claims, agentName)                      the hub card's `-> worktree` line, or null
+ *   cardLine(claims, agentName, sessionId)           the hub card's `-> worktree` line, or null
  *   viewPayload(claims, key, { keyOf })              what main pushes to one tab's page
  *   initials(name) / minutesLabel(firstAt, now)
  *
@@ -68,21 +68,31 @@ function distinctAgents(claims) {
 }
 
 const nameOf = c => (isStr(c.agent) ? c.agent : 'an agent');
+// #81: an agent of a read-only side session is a reader. It is shown, and it is never an agent WORKING in the folder.
+const isReader = c => c.role === 'reader';
+const READING = 'reading only';
 
 function lineFor(c, now) {
   const parts = [nameOf(c)];
   if (isStr(c.fromBranch)) parts.push(`from ${c.fromBranch}`);
   const since = minutesLabel(c.firstAt, now);
   if (since !== null) parts.push(since);
+  if (isReader(c)) parts.push(READING);
   return parts.join(SEP);
 }
 
 const OWN_WRITING = "this tab's own session is writing too";
 
-function tabOccupancy(claims, key, { keyOf = identity, turn, now } = {}) {
-  const mine = distinctAgents((Array.isArray(claims) ? claims : []).filter(c => isClaim(c) && keyOf(c.worktree) === key));
+// `withAlso`: the close check also counts a folder the agent touched earlier, the same set known() doubts for an unprovable
+// claim (PR #139 Dexter F4). The strip draws only where an agent works now.
+function tabOccupancy(claims, key, { keyOf = identity, turn, now, withAlso = false } = {}) {
+  const here = c => keyOf(c.worktree) === key ||
+    (withAlso === true && Array.isArray(c.also) && c.also.some(a => isStr(a) && keyOf(a) === key));
+  const mine = distinctAgents((Array.isArray(claims) ? claims : []).filter(c => isClaim(c) && here(c)));
   if (mine.length === 0) return null;
-  const warn = turn === 'turn';
+  // Only a writer can be the second one writing, and only a writer counts as "an agent working here".
+  const writers = mine.filter(c => !isReader(c)).length;
+  const warn = turn === 'turn' && writers > 0;
   const lines = mine.map(c => lineFor(c, now));
   if (warn) lines.push(OWN_WRITING);
   return {
@@ -90,12 +100,13 @@ function tabOccupancy(claims, key, { keyOf = identity, turn, now } = {}) {
     more: Math.max(0, mine.length - TAGS_MAX),
     warn,
     lines,
-    count: mine.length,
+    count: writers,
+    readersOnly: writers === 0,
   };
 }
 
 function bannerModel(here, { turn, now } = {}) {
-  const mine = distinctAgents(here);
+  const mine = distinctAgents(here).filter(c => !isReader(c));
   if (mine.length === 0) return null;
   const lead = mine[0];
   const others = mine.slice(1);
@@ -119,7 +130,7 @@ function bannerModel(here, { turn, now } = {}) {
  * strip's mark and the banner (distinctAgents, lineFor, bannerModel's jump), so the three never disagree.
  */
 function chipModel(here, { turn, now } = {}) {
-  const mine = distinctAgents(here);
+  const mine = distinctAgents(here).filter(c => !isReader(c));
   if (mine.length === 0) return null;
   const warn = turn === 'turn';
   const lines = mine.map(c => lineFor(c, now));
@@ -141,11 +152,14 @@ const baseName = p => {
   return parts.length ? parts[parts.length - 1] : String(p);
 };
 
-function cardLine(claims, agentName) {
-  if (!isStr(agentName) || !Array.isArray(claims)) return null;
+// A card is one session's agent: an agent NAME launched from this FOLDER can be another session's run (two sessions
+// in `dev` each running an Explore), so the claim's session has to be the card's (backlog #57, PR #96 Dexter F5).
+// A claim that names no session, or a card that doesn't know its own yet, can't be proven to be this card's: nothing.
+function cardLine(claims, agentName, sessionId) {
+  if (!isStr(agentName) || !isStr(sessionId) || !Array.isArray(claims)) return null;
   const mine = claims
     .map((c, i) => ({ c, i }))
-    .filter(({ c }) => isClaim(c) && c.agent === agentName)
+    .filter(({ c }) => isClaim(c) && c.agent === agentName && c.sessionId === sessionId)
     .sort((a, b) => ((Number.isFinite(b.c.lastAt) ? b.c.lastAt : 0) - (Number.isFinite(a.c.lastAt) ? a.c.lastAt : 0)) || (b.i - a.i))
     .map(({ c }) => c);
   if (mine.length === 0) return null;
@@ -165,10 +179,11 @@ function cardLine(claims, agentName) {
   };
 }
 
-const PAGE_FIELDS = ['agentId', 'agent', 'worktree', 'also', 'fromBranch', 'fromRoot', 'firstAt', 'lastAt'];
+const PAGE_FIELDS = ['agentId', 'agent', 'worktree', 'also', 'fromBranch', 'fromRoot', 'sessionId', 'firstAt', 'lastAt'];
 const forPage = (c) => {
   const out = {};
   for (const f of PAGE_FIELDS) out[f] = f === 'also' ? (Array.isArray(c.also) ? c.also.filter(isStr) : []) : (c[f] === undefined ? null : c[f]);
+  if (isReader(c)) out.role = 'reader';     // only a reader carries it: a writer's page payload is what it always was
   return out;
 };
 

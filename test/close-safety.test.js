@@ -1,0 +1,243 @@
+'use strict';
+/**
+ * Backlog #77: Ctrl+click closes a merged, safe tab with no confirm (host/close-safety.js).
+ * Safe means ALL of: merged, nothing uncommitted, nothing unpushed, and no agent working there. The tab's own
+ * session may be mid-turn (Ricardo, 2026-10-09). Anything unknown is NOT safe.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fc = require('fast-check');
+
+const {
+  isSafeToClose, closeReasons, closeReason, readCloseFacts, makeRun, GIT_TIMEOUT_MS, STATUS_ARGS,
+} = require('../host/close-safety');
+
+const SAFE = { merged: true, dirtyCount: 0, unpushedCount: 0, agentsHere: 0 };
+
+test('isSafeToClose: merged, clean, pushed and unoccupied is safe', () => {
+  assert.strictEqual(isSafeToClose(SAFE), true);
+});
+
+test("isSafeToClose: the tab's own session is not a fact -- mid-turn, waiting or unknown still closes", () => {
+  for (const session of ['idle', 'busy', 'waiting', null, undefined, 'x']) {
+    assert.strictEqual(isSafeToClose({ ...SAFE, session }), true, String(session));
+    assert.deepStrictEqual(closeReasons({ ...SAFE, session }), [], String(session));
+  }
+});
+
+test('isSafeToClose: every combination -- only the all-clear one is safe', () => {
+  for (const merged of [true, false]) {
+    for (const dirtyCount of [0, 2]) {
+      for (const unpushedCount of [0, 3]) {
+        for (const agentsHere of [0, 1]) {
+          const expected = merged && dirtyCount === 0 && unpushedCount === 0 && agentsHere === 0;
+          const facts = { merged, dirtyCount, unpushedCount, agentsHere };
+          assert.strictEqual(isSafeToClose(facts), expected, JSON.stringify(facts));
+          assert.strictEqual(closeReasons(facts).length === 0, expected, JSON.stringify(facts));
+        }
+      }
+    }
+  }
+});
+
+test('isSafeToClose: unknown is never safe (null, undefined, strings, NaN, negatives)', () => {
+  for (const bad of [null, undefined, '0', NaN, -1, 1.5, {}, false]) {
+    for (const k of ['dirtyCount', 'unpushedCount', 'agentsHere']) {
+      assert.strictEqual(isSafeToClose({ ...SAFE, [k]: bad }), false, `${k}=${String(bad)}`);
+    }
+  }
+  for (const bad of [null, undefined, 'true', 1, 0, false]) {
+    assert.strictEqual(isSafeToClose({ ...SAFE, merged: bad }), false, `merged=${String(bad)}`);
+  }
+  assert.strictEqual(isSafeToClose(null), false);
+  assert.strictEqual(isSafeToClose(undefined), false);
+  assert.strictEqual(isSafeToClose('x'), false);
+});
+
+test('closeReasons: names each thing that is wrong, one sentence each, in a fixed order', () => {
+  assert.deepStrictEqual(closeReasons({ merged: false, dirtyCount: 2, unpushedCount: 3, agentsHere: 1 }),
+    ["This one isn't merged.", 'This one has 2 uncommitted files.', 'This one has 3 unpushed commits.', 'An agent is working here.']);
+});
+
+test('closeReasons: singular and plural', () => {
+  assert.deepStrictEqual(closeReasons({ ...SAFE, dirtyCount: 1 }), ['This one has 1 uncommitted file.']);
+  assert.deepStrictEqual(closeReasons({ ...SAFE, unpushedCount: 1 }), ['This one has 1 unpushed commit.']);
+  assert.deepStrictEqual(closeReasons({ ...SAFE, agentsHere: 2 }), ['2 agents are working here.']);
+});
+
+test('closeReasons: an unknown fact says it could not be checked, never "0"', () => {
+  assert.deepStrictEqual(closeReasons({ ...SAFE, dirtyCount: null }), ["Couldn't check for uncommitted files."]);
+  assert.deepStrictEqual(closeReasons({ ...SAFE, unpushedCount: undefined }), ["Couldn't check for unpushed commits."]);
+  assert.deepStrictEqual(closeReasons({ ...SAFE, agentsHere: null }), ["Couldn't check for agents."]);
+  assert.deepStrictEqual(closeReasons({ ...SAFE, merged: null }), ["Couldn't check whether this one is merged."]);
+  assert.deepStrictEqual(closeReasons(null).length > 0, true);
+});
+
+test("closeReason: the rule first, then each reason as a sentence (Ricardo's wording), or empty when safe", () => {
+  assert.strictEqual(closeReason(SAFE), '');
+  assert.strictEqual(closeReason({ ...SAFE, dirtyCount: 1 }),
+    "Ctrl+click only closes a tab that's merged, saved and pushed. This one has 1 uncommitted file.");
+  assert.strictEqual(closeReason({ ...SAFE, dirtyCount: 2, merged: false }),
+    "Ctrl+click only closes a tab that's merged, saved and pushed. This one isn't merged. This one has 2 uncommitted files.");
+});
+
+test('property: safe exactly when closeReasons is empty', () => {
+  const n = fc.oneof(fc.nat(5), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant('0'));
+  fc.assert(fc.property(fc.oneof(fc.boolean(), fc.constant(null)), n, n, n, (merged, dirtyCount, unpushedCount, agentsHere) => {
+    const f = { merged, dirtyCount, unpushedCount, agentsHere };
+    assert.strictEqual(isSafeToClose(f), closeReasons(f).length === 0);
+  }));
+});
+
+// --- readCloseFacts: git facts through an injected runner --------------------------------------------
+
+const STATUS = STATUS_ARGS.join(' ');
+const UP = 'rev-list --count feat/a@{upstream}..refs/heads/feat/a';
+const FALLBACK = 'rev-list --count origin/develop..refs/heads/feat/a';
+const BRANCH = 'symbolic-ref --short -q HEAD';
+const ANCESTOR = 'merge-base --is-ancestor HEAD origin/develop';
+const exit1 = Object.assign(new Error('not an ancestor'), { code: 1 });
+
+const runner = (table, seen = []) => async (args) => {
+  const key = args.join(' ');
+  seen.push(key);
+  if (Object.prototype.hasOwnProperty.call(table, key)) {
+    const v = table[key];
+    if (v instanceof Error) throw v;
+    return v;
+  }
+  throw new Error(`unexpected git ${key}`);
+};
+const ALL_OK = { [STATUS]: '', [BRANCH]: 'feat/a\n', [UP]: '0\n', [ANCESTOR]: '' };
+
+test('readCloseFacts: counts porcelain lines and the branch\'s commits not on its upstream', async () => {
+  const run = runner({ ...ALL_OK, [STATUS]: ' M a.js\n?? b.js\n', [UP]: '3\n' });
+  assert.deepStrictEqual(await readCloseFacts('/x', { run }),
+    { branch: 'feat/a', dirtyCount: 2, unpushedCount: 3, headInDevelop: true });
+});
+
+test('readCloseFacts: a clean tree is 0, not unknown', async () => {
+  assert.deepStrictEqual(await readCloseFacts('/x', { run: runner(ALL_OK) }),
+    { branch: 'feat/a', dirtyCount: 0, unpushedCount: 0, headInDevelop: true });
+});
+
+test('D4: status asks for every untracked file and every submodule change, whatever the config says', async () => {
+  assert.ok(STATUS_ARGS.includes('--untracked-files=all'));
+  assert.ok(STATUS_ARGS.includes('--ignore-submodules=none'));
+  const seen = [];
+  await readCloseFacts('/x', { run: runner(ALL_OK, seen) });
+  assert.ok(seen.includes('status --porcelain --untracked-files=all --ignore-submodules=none'), JSON.stringify(seen));
+});
+
+test('readCloseFacts: no upstream falls back to origin/develop, for the BRANCH', async () => {
+  const run = runner({ ...ALL_OK, [UP]: new Error('no upstream'), [FALLBACK]: '4\n' });
+  assert.strictEqual((await readCloseFacts('/x', { run })).unpushedCount, 4);
+});
+
+test('D3: a detached HEAD is unknown, never 0 -- nothing is counted for a branch that isn\'t checked out', async () => {
+  const seen = [];
+  const run = runner({ ...ALL_OK, [BRANCH]: new Error('detached') }, seen);
+  const r = await readCloseFacts('/x', { run });
+  assert.strictEqual(r.branch, null);
+  assert.strictEqual(r.unpushedCount, null);
+  assert.ok(!seen.some(k => k.startsWith('rev-list')), 'no commit count against HEAD');
+  assert.strictEqual((await readCloseFacts('/x', { run: runner({ ...ALL_OK, [BRANCH]: '\n' }) })).unpushedCount, null);
+});
+
+test('D5: HEAD on origin/develop is true, exit 1 is false (a commit after the merge), any other failure is unknown', async () => {
+  assert.strictEqual((await readCloseFacts('/x', { run: runner(ALL_OK) })).headInDevelop, true);
+  assert.strictEqual((await readCloseFacts('/x', { run: runner({ ...ALL_OK, [ANCESTOR]: exit1 }) })).headInDevelop, false);
+  assert.strictEqual((await readCloseFacts('/x', { run: runner({ ...ALL_OK, [ANCESTOR]: new Error('bad ref') }) })).headInDevelop, null);
+  const killed = Object.assign(new Error('timed out'), { code: null, killed: true });
+  assert.strictEqual((await readCloseFacts('/x', { run: runner({ ...ALL_OK, [ANCESTOR]: killed }) })).headInDevelop, null);
+  const code128 = Object.assign(new Error('fatal'), { code: 128 });
+  assert.strictEqual((await readCloseFacts('/x', { run: runner({ ...ALL_OK, [ANCESTOR]: code128 }) })).headInDevelop, null);
+});
+
+test('readCloseFacts: git failing is unknown (null), never zero', async () => {
+  const none = runner({
+    [STATUS]: new Error('boom'), [BRANCH]: new Error('no'), [ANCESTOR]: new Error('no'),
+  });
+  assert.deepStrictEqual(await readCloseFacts('/x', { run: none }),
+    { branch: null, dirtyCount: null, unpushedCount: null, headInDevelop: null });
+  const junk = runner({ ...ALL_OK, [UP]: 'banana', [FALLBACK]: 'banana' });
+  assert.strictEqual((await readCloseFacts('/x', { run: junk })).unpushedCount, null, 'a non-number answer is unknown');
+});
+
+test('readCloseFacts: a bad folder is unknown without running git', async () => {
+  let ran = 0;
+  const run = async () => { ran++; return ''; };
+  const unknown = { branch: null, dirtyCount: null, unpushedCount: null, headInDevelop: null };
+  assert.deepStrictEqual(await readCloseFacts('', { run }), unknown);
+  assert.deepStrictEqual(await readCloseFacts(null, { run }), unknown);
+  assert.strictEqual(ran, 0);
+});
+
+test('M2: the reads run side by side, not one after another', async () => {
+  let inFlight = 0;
+  let peak = 0;
+  const run = async (args) => {
+    inFlight++; peak = Math.max(peak, inFlight);
+    await new Promise(r => setTimeout(r, 15));
+    inFlight--;
+    const key = args.join(' ');
+    if (key === BRANCH) return 'feat/a\n';
+    if (key === STATUS) return '';
+    if (key === UP) return '0\n';
+    return '';
+  };
+  await readCloseFacts('/x', { run });
+  assert.ok(peak >= 3, `status, branch and ancestor start together (peak ${peak})`);
+});
+
+test('M2 + D8: every git read has a short timeout and takes no optional lock', async () => {
+  assert.ok(GIT_TIMEOUT_MS <= 3000);
+  const seen = [];
+  const exec = (file, args, opts, cb) => { seen.push({ file, args, opts }); cb(null, ''); };
+  await makeRun({ exec })(['status'], '/x');
+  assert.strictEqual(seen[0].file, 'git');
+  assert.strictEqual(seen[0].opts.timeout, GIT_TIMEOUT_MS);
+  assert.strictEqual(seen[0].opts.env.GIT_OPTIONAL_LOCKS, '0');
+  assert.strictEqual(seen[0].opts.cwd, '/x');
+  // an error from git (exit code kept) rejects; a timeout is an error too
+  const bad = (f, a, o, cb) => cb(Object.assign(new Error('x'), { code: 1 }));
+  await assert.rejects(makeRun({ exec: bad })(['x'], '/x'), (e) => e.code === 1);
+});
+
+// --- a real repo: the argv above really does what the fakes say ----------------------------------------
+
+test('real git: showUntrackedFiles=no can\'t hide a file; a detached HEAD is unknown; a commit after develop is "not in develop"', async () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { execFileSync } = require('child_process');
+  const { tmpDir } = require('./tmp-dir');
+  const dir = tmpDir('cc-close-safety-');
+  const git = (...a) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...a], { cwd: dir, stdio: 'pipe', encoding: 'utf8' });
+  git('init', '-q', '-b', 'develop');
+  git('commit', '-q', '--allow-empty', '-m', 'init');
+  git('update-ref', 'refs/remotes/origin/develop', 'HEAD');
+  git('switch', '-q', '-c', 'feat/a');
+  git('config', 'status.showUntrackedFiles', 'no');
+  fs.writeFileSync(path.join(dir, 'new.txt'), 'x\n');
+  assert.strictEqual(git('status', '--porcelain'), '', 'precondition: the config does hide it from a plain status');
+  let r = await readCloseFacts(dir);
+  assert.deepStrictEqual(r, { branch: 'feat/a', dirtyCount: 1, unpushedCount: 0, headInDevelop: true });
+  git('add', 'new.txt');
+  git('commit', '-q', '-m', 'after');
+  r = await readCloseFacts(dir);
+  assert.strictEqual(r.headInDevelop, false, 'a commit after the merge');
+  assert.strictEqual(r.unpushedCount, 1, 'counted for the branch, against origin/develop when there is no upstream');
+  git('checkout', '-q', '--detach', 'origin/develop');
+  r = await readCloseFacts(dir);
+  assert.strictEqual(r.branch, null);
+  assert.strictEqual(r.unpushedCount, null, 'the branch\'s unpushed commit is NOT hidden by a detached HEAD');
+});
+
+// #50: unsaved edits in the file reader are a reason to ask.
+test('closeReasons: a file with unsaved edits in the reader is a reason, and an empty or missing one is not', () => {
+  assert.deepStrictEqual(closeReasons({ ...SAFE, readerUnsaved: 'src/app.js' }), ['You have unsaved edits to src/app.js in the file reader.']);
+  assert.strictEqual(isSafeToClose({ ...SAFE, readerUnsaved: 'src/app.js' }), false);
+  for (const none of [undefined, null, '', 0, false, {}]) {
+    assert.strictEqual(isSafeToClose({ ...SAFE, readerUnsaved: none }), true, String(none));
+  }
+});

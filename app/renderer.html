@@ -2,6 +2,15 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <!-- BACKLOG #56. Scripts: none inline and nothing evals; every <script> below has a src. What 'self' admits on a file:
+       page is ANY file:/// URL (the page's origin is opaque), so this stops inline and web injection, not a file: script
+       (narrowing that needs an app:// protocol or hashes: BACKLOG). Frames, workers and manifests: none exist, so none.
+       Styles keep 'unsafe-inline': this block, the style="" attributes the panels' markup carries, and the style
+       elements xterm.js and CodeMirror inject all need it, and a style cannot run code. Images and media (a project's
+       background, portraits: file:///) need no widening: on a file: page 'self' matches file:/// URLs, UNC paths
+       included (measured). The one connection is the WebSocket to the local host. No data:, blob: or web source.
+       test/renderer-csp.test.js pins this; verify/probe-csp-violations.js measures it in a real window. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ws://127.0.0.1:*; object-src 'none'; frame-src 'none'; worker-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'" />
   <!-- Replaced at runtime by the project folder (FF3). This is only what
        shows before the window exists; main.js preventDefaults
        page-title-updated so the page can never take it back. -->
@@ -10,6 +19,11 @@
   <link rel="stylesheet" href="agent-colour.css" />
   <style>
     :root {
+      /* Backlog #88: the interface font and the monospace UI (code reader, Files tree, ...) follow the Style tab's Fonts
+         section; renderer.js sets both. These are the stacks an install that never picked a font has always had, and
+         every pick keeps them behind it, so a missing font falls back instead of leaving blank text. */
+      --font-ui: "Segoe UI", system-ui, sans-serif;
+      --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
       --bg: #11131a;
       --chrome: #171a23;
       --border: #262b38;
@@ -64,7 +78,7 @@
     html, body {
       margin: 0; height: 100%;
       background: var(--bg); color: var(--text);
-      font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
+      font: 13px/1.5 var(--font-ui);
       overflow: hidden;
     }
     #app { display: flex; flex-direction: column; height: 100%; position: relative; }
@@ -80,7 +94,7 @@
     /* A video background (backlog #34): the same layer, filled edge to edge. The darkness veil is
        #bg::after, which comes later in paint order, so it sits OVER the video exactly as it does
        over an image. */
-    #bg .bg-video {
+    #bg .bg-video, #bg .bg-still {
       position: absolute; inset: 0; width: 100%; height: 100%;
       object-fit: cover; pointer-events: none;
     }
@@ -95,6 +109,20 @@
       content: ''; position: absolute; inset: 0;
       background: color-mix(in srgb, var(--bg) 25%, #000); opacity: var(--bg-darkness);
     }
+
+    /* Backlog #92, Plain colour: no picture, so #bg itself is the project's app colour; the veil above (has-custom-bg is set
+       with it) darkens it, 0 = the colour as it is. --plain-colour is that colour kept readable against the CLI's own text
+       (renderer.js paintPlainColour), the same guard the terminal's background has without a picture. */
+    body.has-plain-colour #bg { background-color: var(--plain-colour, var(--bg)); }
+
+    /* Backlog #25: in a light look the veil is LIGHT (mostly white with a quarter of the app colour). Over the
+       person's own picture its strength is the "Brightness" slider; over the generated art, which is already
+       dark, it is fixed and strong enough to keep dark text readable, and the art's own colours show through. */
+    html[data-look-mode="light"] body.has-bg #bg::after {
+      content: ''; position: absolute; inset: 0;
+      background: color-mix(in srgb, var(--bg) 25%, #fff); opacity: var(--bg-light-art-veil, 0.7);
+    }
+    html[data-look-mode="light"] body.has-custom-bg #bg::after { opacity: var(--bg-darkness); }
 
     /* The unfocused-window dim: the window you are NOT typing into goes dark,
        so the one you are is unmistakable. Below the attention cue's z-index on
@@ -135,12 +163,25 @@
     #git-body { padding: 6px 8px; gap: 4px; }
     #git-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
     #git-status:empty { display: none; }
+    /* Docs drift (BACKLOG #39 job 2): notes from the local model, above the dial. app/docs-drift-display.js */
+    #drift-list { flex: 0 0 auto; max-height: 38%; overflow-x: hidden; overflow-y: auto; font-size: 11px; line-height: 1.4; }
+    #drift-list[hidden] { display: none; }
+    #drift-list h3 { font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 2px 0 4px; font-weight: 600; }
+    #drift-list .drift-label { text-transform: none; letter-spacing: 0; font-weight: 400; }
+    #drift-list .drift-note { color: var(--dim); margin-bottom: 4px; }
+    #drift-list .drift-error { margin-bottom: 4px; font-weight: 600; }
+    #drift-list .drift-row { border-left: 2px solid var(--accent); padding: 2px 0 2px 6px; margin-bottom: 5px; }
+    #drift-list .drift-doc { display: flex; gap: 6px; align-items: baseline; justify-content: space-between; min-width: 0; }
+    #drift-list .drift-meta { color: var(--dim); overflow-wrap: anywhere; }
+    #drift-list .drift-sentence { font-style: italic; overflow-wrap: anywhere; }
+    #drift-list .drift-why { color: var(--dim); overflow-wrap: anywhere; }
+    #drift-list .drift-dismiss { cursor: pointer; font-size: 10px; padding: 0 6px; }
     #git-dial { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
     /* fits BOTH ways (viewBox, meet): a short bottom zone shrinks it by height, not clips it */
     .git-svg { display: block; width: 100%; height: 100%; flex: 1; min-height: 0; }
     /* too small for its own text to read (app/git-rings-display.js fitText): the card and footer talk */
     #git-dial.narrow .git-label, #git-dial.narrow .git-tick, #git-dial.narrow .git-hub text { display: none; }
-    .git-svg text { font-family: ui-monospace, Consolas, monospace; font-size: 10px; fill: currentColor;
+    .git-svg text { font-family: var(--font-mono); font-size: 10px; fill: currentColor;
       paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
     .git-week { fill: none; stroke: var(--border); stroke-width: 3; stroke-linecap: round; }
     .git-week.alt { stroke: var(--dim); opacity: .6; }
@@ -178,7 +219,7 @@
       color: var(--text); pointer-events: none; }
     .git-card[hidden] { display: none; }
     .git-card-top { display: flex; gap: 8px; align-items: baseline; }
-    .git-card-name { font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; flex: 1; }
+    .git-card-name { font-family: var(--font-mono); overflow-wrap: anywhere; flex: 1; }
     .git-card-kind, .git-card-sum { color: var(--dim); font-size: 10.5px; }
     .git-card-why.none { color: var(--dim); font-style: italic; }
     .git-card-who { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; font-variant-numeric: tabular-nums; }
@@ -221,6 +262,45 @@
       font-variant-numeric: tabular-nums; }
     .git-foot b { color: var(--text); font-weight: 600; }
     .git-foot-row { display: flex; justify-content: space-between; gap: 8px; }
+    /* --- the Graph view (BACKLOG #2 follow-up; app/git-graph-display.js): lanes, dots, merges as curves, the message beside
+       each commit. Still: no animation. Lane colours are the theme's, through currentColor. --- */
+    #git-view { display: flex; gap: 4px; flex: 0 0 auto; }
+    #git-view button { background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px;
+      padding: 2px 9px; font: inherit; font-size: 11px; cursor: pointer; }
+    #git-view button[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+    #git-view button:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+    #git-graph-status { font-size: 11px; color: var(--dim); flex: 0 0 auto; }
+    #git-graph-status:empty, #git-status[hidden], #git-graph-status[hidden] { display: none; }
+    #git-dial[hidden], #git-graph[hidden] { display: none; }
+    #git-graph { position: relative; flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+    .gg-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; }
+    .gg-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .gg-wrap { display: flex; align-items: flex-start; }
+    .gg-svg { flex: 0 0 auto; display: block; }
+    .gg-rows { flex: 1; min-width: 0; }
+    .gg-row { box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 0 6px; font-size: 11.5px;
+      white-space: nowrap; overflow: hidden; cursor: pointer; border-radius: 4px; outline: none; }
+    .gg-row:hover { background: var(--panel); }
+    .gg-row:focus-visible { outline: 1px solid var(--accent); }
+    .gg-row.sel { background: var(--panel); box-shadow: inset 2px 0 0 var(--accent); }
+    .gg-msg { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .gg-ref { flex: 0 0 auto; font-family: var(--font-mono); font-size: 10px; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; }
+    .gg-ref.remote { color: var(--dim); border-color: var(--border); }
+    .gg-edge { fill: none; stroke: currentColor; stroke-width: 1.6; }
+    .gg-edge.merge { stroke-dasharray: none; opacity: .85; }
+    .gg-dot { fill: currentColor; stroke: var(--bg); stroke-width: 1; }
+    .gg-dot.merge { fill: var(--panel); stroke: currentColor; stroke-width: 1.6; }
+    .gg-l0 { color: var(--accent); } .gg-l1 { color: var(--ok); } .gg-l2 { color: var(--warn); }
+    .gg-l3 { color: color-mix(in srgb, var(--accent) 50%, var(--text)); } .gg-l4 { color: var(--text); } .gg-l5 { color: var(--dim); }
+    .gg-empty { color: var(--dim); font-size: 11px; }
+    .gg-detail { flex: 0 0 auto; box-sizing: border-box; overflow: auto; max-height: 45%; padding: 8px 10px; display: grid; gap: 4px;
+      align-content: start; background: var(--chrome); border: 1px solid var(--accent); border-radius: 6px; font-size: 11.5px; color: var(--text); }
+    .gg-detail[hidden] { display: none; }
+    .gg-detail-title { overflow-wrap: anywhere; }
+    .gg-detail-meta, .gg-detail-refs { color: var(--dim); font-size: 10.5px; overflow-wrap: anywhere; }
+    .gg-said:empty { display: none; }
+    .gg-said { flex: 0 0 auto; color: var(--text); font-size: 10.5px; }
     /* --- the Files tab (#45) -------------------------------------------------
        This worktree's files, with what Claude touched marked on them: edited rows
        bright with a count, read rows fainter, folders rolling their files up.
@@ -234,7 +314,7 @@
     #files-bar { flex: 0 0 auto; }
     #files-said { flex: 0 0 auto; font-size: 10.5px; color: var(--accent); line-height: 1.4; }
     #files-said:empty { display: none; }
-    #files-tree { flex: 1; min-height: 0; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+    #files-tree { flex: 1; min-height: 0; overflow: auto; font-family: var(--font-mono); font-size: 11px; }
     .fr { display: flex; align-items: baseline; gap: 4px; padding: 1px 6px; white-space: nowrap; cursor: default; border-radius: 3px; }
     .fr[data-path] { cursor: pointer; }
     .fr:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -261,10 +341,10 @@
     #reader-split[hidden], #reader[hidden] { display: none; }
     body.reader-resizing { user-select: none; cursor: col-resize; }
     #reader { position: absolute; z-index: 30; box-sizing: border-box; display: flex; flex-direction: column; min-width: 240px; min-height: 0; background: var(--bg); }
-    body.focus-mode #reader, body.focus-mode #reader-split { display: none; }
+    body.focus-mode #reader, body.focus-mode #reader-split, body.lean #reader, body.lean #reader-split { display: none; }
     #reader-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 8px; font-size: 11px;
       background: var(--chrome); border-bottom: 1px solid var(--border); }
-    #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: ui-monospace, Consolas, monospace; }
+    #reader-path { flex: 1 1 80px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-family: var(--font-mono); }
     #reader-meta { order: 9; flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10.5px; }
     #reader-meta:empty { display: none; }
     #reader-head button, #reader-bar button, #reader-note button { background: transparent; color: var(--text); border: 1px solid var(--border);
@@ -276,9 +356,34 @@
     #reader-bar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px;
       background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border-bottom: 1px solid var(--accent); }
     #reader-bar-text { flex: 1; }
+    /* edit mode (#50): the unsaved dot, the conflict banner and the Compare view */
+    #reader-dirty { color: var(--accent); font-size: 10px; line-height: 1; }
+    #reader-dirty[hidden], #reader-conflict[hidden], #reader-compare[hidden] { display: none; }
+    #reader-head button:disabled { opacity: .45; cursor: default; }
+    #reader-head button:disabled:hover { border-color: var(--border); color: var(--text); }
+    #reader-conflict { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 5px 8px; font-size: 11px;
+      background: color-mix(in srgb, var(--bad) 18%, var(--chrome)); border-bottom: 1px solid var(--bad); }
+    #reader-conflict-text { flex: 1 1 200px; }
+    #reader-conflict button, #reader-compare button { background: transparent; color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 8px; font: inherit; font-size: 10.5px; cursor: pointer; white-space: nowrap; }
+    #reader-conflict button:hover, #reader-compare button:hover { border-color: var(--accent); color: var(--accent); }
+    #reader-conflict button[hidden] { display: none; }
+    #reader-compare { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    #reader-compare-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px;
+      font-size: 10.5px; color: var(--dim); background: var(--chrome); border-bottom: 1px solid var(--border); }
+    #reader-compare-rows { flex: 1; min-height: 0; overflow: auto; font: 12px/1.5 var(--font-mono); color: var(--text); }
+    .cmp-row { display: block; white-space: pre; padding: 0 8px 0 5.5em; position: relative; min-width: max-content; }
+    .cmp-row::before { content: attr(data-d) " " attr(data-m); position: absolute; left: 0; width: 5em; text-align: right; color: var(--dim); font-size: 10.5px; }
+    .cmp-row.del { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+    .cmp-row.del::after { content: "on disk"; position: absolute; right: 6px; color: var(--dim); font-size: 10px; }
+    .cmp-row.add { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+    .cmp-row.add::after { content: "yours"; position: absolute; right: 6px; color: var(--dim); font-size: 10px; }
+    .cmp-row.gap { color: var(--dim); font-style: italic; background: var(--chrome); }
+    .cmp-row.gap::before { content: ""; }
     #reader-body { flex: 1; min-height: 0; overflow: hidden; }
     #reader-body .cm-editor { height: 100%; }
-    .reader-plain { margin: 0; padding: 8px 10px; height: 100%; overflow: auto; box-sizing: border-box; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--text); white-space: pre; }
+    #reader-body .cm-editor .cm-scroller { font-family: var(--font-mono); }
+    .reader-plain { margin: 0; padding: 8px 10px; height: 100%; overflow: auto; box-sizing: border-box; font: 12px/1.5 var(--font-mono); color: var(--text); white-space: pre; }
     #reader-note { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 16px; font-size: 12px; line-height: 1.5; color: var(--dim); }
     #vault-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
     #vault-list .none, #vault-list .err { color: var(--dim); font-size: 11px; line-height: 1.5; }
@@ -292,7 +397,7 @@
                   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sec button { padding: 3px 7px; font-size: 11px; }
     .sec .shown {
-      margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+      margin-top: 6px; font-family: var(--font-mono); font-size: 11px;
       word-break: break-all; color: var(--accent);
       background: color-mix(in srgb, var(--bg) 80%, black); border-radius: 4px; padding: 5px 6px;
     }
@@ -302,7 +407,7 @@
     .secret-field { display: flex; gap: 6px; }
     .secret-field input { flex: 1; min-width: 0; }
     .secret-field button { flex: 0 0 auto; font-size: 11px; padding: 6px 8px; }
-    #vault-secret[type="text"] { font-family: ui-monospace, Consolas, monospace; color: var(--accent); }
+    #vault-secret[type="text"] { font-family: var(--font-mono); color: var(--accent); }
     #vault-lock { display: flex; flex-direction: column; gap: 6px; }
     /* `lock-note`, not `locked-note`: the same element carries the "unlocked"
        text in open-with-key, so the old name lied on the one screen where the
@@ -422,14 +527,13 @@
     .cool .bar i { display: block; height: 100%; background: var(--accent); opacity: .7; }
     /* --- token spend ------------------------------------------------------- */
     #usage {
-      display: flex; align-items: center; gap: 14px; flex: 0 0 auto; white-space: nowrap;
+      display: flex; align-items: center; gap: 10px; flex: 0 .001 auto; min-width: 0; overflow: hidden; white-space: nowrap;
       font-size: 11px; color: var(--dim);
       -webkit-app-region: no-drag;
     }
     #usage .grp { display: flex; align-items: baseline; gap: 5px; }
     #usage .lbl { text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75; }
     #usage .val { color: var(--text); font-weight: 600; font-size: 12px; font-variant-numeric: tabular-nums; }
-    #usage .sub { opacity: .8; font-variant-numeric: tabular-nums; }
 
     /* --- drag and drop ----------------------------------------------------
        A border, not an overlay. An overlay covering the terminal while you
@@ -453,7 +557,7 @@
        Percent only: the account reports no dollars and no token allowance on
        this plan, so there is nothing else honest to draw. */
     #quota {
-      display: flex; align-items: center; gap: 10px; flex: 0 0 auto; white-space: nowrap;
+      display: flex; align-items: center; gap: 6px; flex: 0 .001 auto; min-width: 0; overflow: hidden; white-space: nowrap;
       font-size: 11px; color: var(--dim);
       -webkit-app-region: no-drag;
     }
@@ -462,7 +566,7 @@
       text-transform: uppercase; letter-spacing: .07em; font-size: 9.5px; opacity: .75;
     }
     #quota .meter .track {
-      width: 34px; height: 5px; border-radius: 3px;
+      width: 24px; height: 5px; border-radius: 3px;
       background: var(--border); overflow: hidden; border: 1px solid var(--border);
     }
     #quota .meter .fill { display: block; height: 100%; transition: width .6s ease, background .4s ease; }
@@ -482,6 +586,24 @@
     /* Absence draws NO bars at all, only why. Three bars at zero would be a
        confident claim that the plan is untouched. */
     #quota .none { opacity: .7; font-size: 10.5px; }
+    /* #90: a used-up window reads "Claude back in 2h 14m"; at the reset "Claude is back" shows once, in the strip. */
+    #quota.has-back { flex-shrink: 0; max-width: 100%; }   /* the wait is the news: it keeps its width and the neighbours give way */
+    #quota .meter.back { min-width: 0; }
+    #quota .meter.back .pct { color: var(--text); opacity: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    /* Narrow: only the waits are shown, as text alone ("Claude back in 2h 14m" needs no label or track), sharing a capped width; a
+       text that doesn't fit ends in an ellipsis and the meter's tooltip has it whole. Never clipped, never pushing the buttons off. */
+    @media (max-width: 900px) {
+      #quota.has-back .meter:not(.back) { display: none; }
+      #quota.has-back { max-width: calc(43vw - 167px); }
+      #quota.has-back .meter.back { flex: 1 1 0; }
+      #quota.has-back .meter.back .lbl, #quota.has-back .meter.back .track { display: none; }
+    }
+    /* Below 860 px two waits don't both stay readable: the one that decides when Claude is fully back stays (the .bind meter). */
+    @media (max-width: 859px) { #quota.has-back .meter.back:not(.bind) { display: none; } }
+    #quota .back-toast {
+      font-size: 11px; font-weight: 600; color: var(--text); padding: 1px 9px; border-radius: 9px;
+      border: 1px solid var(--ok); background: color-mix(in srgb, var(--ok) 18%, transparent);
+    }
 
     /* An UNKNOWN career: an em dash, dimmed, with the reason in the tooltip.
        Not blank -- blank is what "this agent never ran here" looks like, and
@@ -525,12 +647,12 @@
     }
 
     header {
-      display: flex; align-items: center; gap: 12px;
+      display: flex; align-items: center; gap: 8px;
       /* No wrapping. The header is a single row of status; letting it wrap
          turns one line into three and pushes the terminal down. Items shrink
          or ellipsize instead. */
       flex-wrap: nowrap; overflow: hidden;
-      padding: 8px 14px;
+      padding: 8px 12px;
       background: var(--chrome);
       border-bottom: 1px solid var(--border);
       -webkit-app-region: drag;
@@ -548,19 +670,33 @@
     header .cwd { color: var(--dim); font-size: 12px;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     header .spacer { flex: 1; }
-    /* The keyboard hints are the least of the header: in a crowded row they
-       clip first (a shrink weight far above anything else's), before the
-       status fields or a control is pushed off the edge (Miguel L2 Y1). */
-    header .hint {
-      color: var(--dim); font-size: 11px; white-space: nowrap; flex: 0 1000 auto;
-      min-width: 0; overflow: hidden;
-      -webkit-app-region: no-drag;
-    }
     header kbd {
       background: var(--panel); border: 1px solid var(--border);
       border-radius: 3px; padding: 1px 5px; font-size: 11px;
-      font-family: ui-monospace, monospace;
+      font-family: var(--font-mono);
     }
+
+    /* BACKLOG #43: the shortcuts sheet. Fixed, starting under the header (app/renderer.js sets --sc-top) so "?" stays clickable. */
+    #shortcuts-sheet { position: fixed; left: 0; right: 0; bottom: 0; top: var(--sc-top, 0px); z-index: 70;
+      display: flex; align-items: flex-start; justify-content: center; -webkit-app-region: no-drag; }
+    #shortcuts-sheet[hidden] { display: none; }
+    #shortcuts-sheet .sc-scrim { position: absolute; inset: 0; background: color-mix(in srgb, var(--bg) 62%, transparent); }
+    #shortcuts-sheet .sc-card { position: relative; margin-top: 28px; width: min(640px, calc(100% - 32px)); max-height: calc(100% - 56px);
+      display: flex; flex-direction: column; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; box-shadow: 0 12px 40px rgba(0,0,0,.45); }
+    #shortcuts-sheet .sc-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    #shortcuts-sheet h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; }
+    #shortcuts-sheet #shortcuts-search { flex: 1; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--border);
+      border-radius: 4px; padding: 5px 8px; font: inherit; font-size: 12px; }
+    #shortcuts-sheet #shortcuts-search:focus { outline: none; border-color: var(--accent); }
+    #shortcuts-sheet .sc-body { overflow-y: auto; scrollbar-color: var(--border) transparent; padding: 4px 14px 12px; min-height: 0; }
+    #shortcuts-sheet .sc-group h3 { margin: 12px 0 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    #shortcuts-sheet .sc-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 12px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); }
+    #shortcuts-sheet .sc-name { flex: 1; min-width: 0; }
+    #shortcuts-sheet .sc-cli { flex: 0 0 auto; font-size: 10px; color: var(--dim); border: 1px solid var(--border); border-radius: 8px; padding: 0 7px; }
+    #shortcuts-sheet .sc-keys { flex: 0 0 auto; white-space: nowrap; color: var(--dim); }
+    #shortcuts-sheet kbd { background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 1px 5px; font-size: 11px; font-family: var(--font-mono); }
+    #shortcuts-sheet .sc-none { color: var(--dim); font-size: 12px; margin: 16px 0; }
     /* Layout pass L1: the layout menu (▦) and focus mode (⛶). */
     .hdr-btn {
       flex: 0 0 auto; position: relative; cursor: pointer; -webkit-app-region: no-drag;
@@ -650,7 +786,7 @@
       border: 1px solid var(--border);
     }
     #terminal-bar[hidden], #occupancy-confirm[hidden], #bar-prompt[hidden], #bar-prompt-full[hidden] { display: none; }
-    body.focus-mode #terminal-bar { display: none; }
+    body.focus-mode #terminal-bar, body.lean #terminal-bar { display: none; }
     #bar-prompt {
       flex: 1 1 auto; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
       background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
@@ -749,7 +885,7 @@
     #checks .mark { display: inline-block; width: 16px; }
     #log {
       flex: 1; overflow-y: auto; padding: 8px 12px;
-      font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      font-family: var(--font-mono);
       font-size: 11px; line-height: 1.6;
     }
     #log .row { padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, var(--chrome)); }
@@ -807,10 +943,33 @@
     .dgutter[data-dir="row"] { cursor: col-resize; background: linear-gradient(var(--border), var(--border)) center / 1px 100% no-repeat; }
     .dgutter[data-dir="col"] { cursor: row-resize; background: linear-gradient(var(--border), var(--border)) center / 100% 1px no-repeat; }
     .dgutter:hover, .dgutter.dragging { background-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    /* Reached with the keyboard (D4): the divider is a focusable separator, the arrow keys move it 16 px. */
+    .dgutter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; background-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+    /* A rail's panel opened over the terminal (D4): a .zone in the floats' layer, above the floats (ranked 0, 1, 2...), beside
+       its rail. It takes the pointer, unlike the layer. Focus mode hides it like any zone. */
+    .dpeek {
+      position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: auto; z-index: 1000; background: var(--chrome);
+      border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+    }
+    /* It lies over other panels and the terminal, so it is opaque, with a background image too (#85). */
+    body.has-bg .dpeek { background: var(--chrome); }
+    .drail button[aria-expanded="true"] { color: var(--model-accent); }
+    /* The settle motion (D4): after a drop or a collapse the boxes glide to their new places for about
+       120 ms. Only while the dock has .settling (never during a drag), and never the terminal (xterm refits to the
+       rectangle it ends in). prefers-reduced-motion: they snap. */
+    #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter {
+      transition: left 120ms ease-out, top 120ms ease-out, width 120ms ease-out, height 120ms ease-out;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter { transition: none; }
+    }
+    #dock-announce, #quota-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     /* A folded cell: a rail of its modules' names, vertical beside the terminal and horizontal above or below it. */
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    /* The dock's own rail (#85) holds every unpinned panel, so it scrolls instead of clipping the tabs it cannot fit (PR #168 Miguel Y4). */
+    .drail[data-rail="dock"] { overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
     .drail button {
       flex: 0 0 auto; font: inherit; font-size: 11px; line-height: 12px; text-transform: uppercase; letter-spacing: .08em;
       cursor: pointer; background: transparent; color: var(--dim); border: 0; white-space: nowrap;
@@ -831,6 +990,7 @@
       box-shadow: 0 6px 18px rgba(0, 0, 0, .6); transform: rotate(-3deg);
     }
     body.dock-dragging { user-select: none; cursor: grabbing; }
+    body.dock-moving { user-select: none; }   /* a keyboard move (D4) is under way: the keys are taken whole */
     .zone-panels { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
     #panel-store { display: none; }
 
@@ -856,6 +1016,33 @@
        --model-accent is byte-equal to --accent, so this is a no-op look
        until a model is known. */
     .zone-tabs button.on { color: var(--model-accent); border-bottom-color: var(--model-accent); }
+    /* Pin / Pinned (BACKLOG #85): the last item of a tab bar, never squeezed by the tabs. Pressed (pinned) wears the model colour. */
+    .zone-tabs button.dpin {
+      flex: 0 0 auto; padding: 8px 8px; text-transform: none; letter-spacing: 0; font-size: 10px;
+      border-left: 1px solid var(--border); border-bottom-color: transparent;
+    }
+    .zone-tabs button.dpin[aria-pressed="true"] { color: var(--model-accent); }
+    /* The dock rail's panel slides in from its rail's side (about 160 ms, ease-out); switching tabs keeps the element, so it only
+       plays when a panel opens. prefers-reduced-motion: it just appears. */
+    .dpeek { animation: dpeek-from-right 160ms ease-out; }
+    .dpeek[data-from="left"] { animation-name: dpeek-from-left; }
+    .dpeek[data-from="top"] { animation-name: dpeek-from-top; }
+    .dpeek[data-from="bottom"] { animation-name: dpeek-from-bottom; }
+    @keyframes dpeek-from-right { from { transform: translateX(40px); opacity: 0; } }
+    @keyframes dpeek-from-left { from { transform: translateX(-40px); opacity: 0; } }
+    @keyframes dpeek-from-top { from { transform: translateY(-40px); opacity: 0; } }
+    @keyframes dpeek-from-bottom { from { transform: translateY(40px); opacity: 0; } }
+    /* Out again: the page marks the popover data-closing and removes it when the slide has run (renderer: dock-tree-display.js). */
+    .dpeek[data-closing] { pointer-events: none; animation-duration: 160ms; animation-timing-function: ease-in; animation-fill-mode: forwards; }
+    .dpeek[data-closing][data-from="right"] { animation-name: dpeek-to-right; }
+    .dpeek[data-closing][data-from="left"] { animation-name: dpeek-to-left; }
+    .dpeek[data-closing][data-from="top"] { animation-name: dpeek-to-top; }
+    .dpeek[data-closing][data-from="bottom"] { animation-name: dpeek-to-bottom; }
+    @keyframes dpeek-to-right { to { transform: translateX(40px); opacity: 0; } }
+    @keyframes dpeek-to-left { to { transform: translateX(-40px); opacity: 0; } }
+    @keyframes dpeek-to-top { to { transform: translateY(-40px); opacity: 0; } }
+    @keyframes dpeek-to-bottom { to { transform: translateY(40px); opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .dpeek, .dpeek[data-from], .dpeek[data-closing], .dpeek[data-closing][data-from] { animation: none; } }
 
     /* Only the showing panel is in the layout at all -- a hidden panel that
        still occupies space is the usual way a tab strip goes wrong. */
@@ -895,11 +1082,13 @@
     .zone[data-shape="wide"] .panel.on > #projects-list,
     /* the Git dial takes the whole wide zone, so its drawer can sit beside it (#46) */
     .zone[data-shape="wide"] .panel.on > #git-dial,
+    .zone[data-shape="wide"] .panel.on > #git-graph,
     .zone[data-shape="wide"] .panel.on > #style-sections { flex: 1 1 auto; min-width: 280px; max-width: none; }
     /* ...and the zone's full HEIGHT: a wide panel lays its children out flex-start, so without a definite
        height the svg's height:100% fell back to its aspect ratio -- a dial 3x the zone, clipped, with its
        text hidden as "narrow" (window probe 3b, PR #93) */
-    .zone[data-shape="wide"] .panel.on > #git-dial { align-self: stretch; height: 100%; overflow: hidden; }
+    .zone[data-shape="wide"] .panel.on > #git-dial,
+    .zone[data-shape="wide"] .panel.on > #git-graph { align-self: stretch; height: 100%; overflow: hidden; }
     /* Agents in a row: the roster flows as a grid of cards, not one tall list. */
     .zone[data-shape="wide"] #agents {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -917,7 +1106,7 @@
        not removed, so the roster re-appears exactly as it was left. */
     #agents .agent { cursor: pointer; }
     #agent-log { display: none; }
-    .panel.logging > :not(#agent-log) { display: none; }
+    .panel.logging > :not(#agent-log):not(#agent-medals) { display: none; }
     .panel.logging > #agent-log { display: flex; flex-direction: column; flex: 1; min-height: 0; }
     .alog-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
       border-bottom: 1px solid var(--border); }
@@ -930,7 +1119,7 @@
     .alog-src { font-size: 10px; color: var(--dim); padding: 2px 8px; white-space: nowrap;
       overflow: hidden; text-overflow: ellipsis; }
     .alog-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 8px;
-      font-family: ui-monospace, Consolas, monospace; font-size: 10.5px; line-height: 1.45; }
+      font-family: var(--font-mono); font-size: 10.5px; line-height: 1.45; }
     .alog-none, .alog-note { color: var(--dim); font-size: 11px; padding: 8px 0; line-height: 1.5;
       font-family: inherit; }
     .alog-note { padding: 2px 0; font-size: 10px; }
@@ -974,9 +1163,44 @@
     }
     .agent .face:hover .face-pencil, .agent .face .face-pencil:focus-visible { opacity: 1; }
     /* BACKLOG C #18: the roster header's "agent images" switch. */
-    #roster-subtabs { display: flex; align-items: center; }
-    #images-toggle { margin-left: auto; cursor: pointer; }
+    #roster-subtabs { display: flex; align-items: center; flex-wrap: wrap; row-gap: 3px; }
+    #images-toggle { cursor: pointer; }
     #images-toggle.off { opacity: .45; }
+    /* BACKLOG #76: the Role/Name segmented toggle and the search button sit right of the tabs. */
+    #roster-names-toggle { margin-left: auto; display: inline-flex; margin-right: 4px; }
+    #roster-names-toggle button {
+      font-size: 10px; padding: 1px 6px; cursor: pointer; color: var(--dim);
+      background: transparent; border: 1px solid var(--border);
+    }
+    #roster-names-toggle button:first-child { border-radius: 4px 0 0 4px; }
+    #roster-names-toggle button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
+    #roster-names-toggle button.on { color: var(--accent); border-color: var(--accent); background: rgba(255,255,255,.05); }
+    #roster-search-btn { cursor: pointer; }
+    #roster-search-btn[aria-pressed="true"] { color: var(--accent); }
+    #roster-search-row { margin: 4px 0; }
+    #roster-search-row[hidden] { display: none; }
+    #roster-search {
+      width: 100%; box-sizing: border-box; font-size: 11px; padding: 3px 6px;
+      color: inherit; background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+    }
+    #roster-search:focus { outline: none; border-color: var(--accent); }
+    .zone[data-shape="wide"] #roster-names-toggle { margin-left: 0; margin-right: 0; }
+    /* BACKLOG #76: the other name, small and mono beside the big one; the function line, two lines at most. */
+    /* The small name stays readable: when both don't fit on one line it wraps under the big one (PR #141, Miguel 1). */
+    .agent .name { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; white-space: normal; }
+    .agent .name .name-big { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* A role in the small slot (the default is Name now) is long and has no spaces: it may break inside the word rather than be cut. */
+    .agent .name .name-alt {
+      max-width: 100%; white-space: normal; overflow-wrap: anywhere; font-size: 10px; font-weight: 400; color: var(--dim);
+      font-family: var(--font-mono);
+    }
+    .roster-hidden-note { text-align: left; }
+    .roster-hidden-note .agent-reveal { font-size: 10px; margin-left: 4px; padding: 1px 6px; cursor: pointer;
+      color: var(--accent); background: transparent; border: 1px solid var(--accent); border-radius: 4px; }
+    .agent .agent-fn {
+      font-size: 10px; color: var(--dim); opacity: .8; margin-top: 1px; line-height: 1.3;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
     /* flex-basis 0 so the meta column is BOUNDED by the card: the tool belt's
        picker is wider than a name, and unbounded it pushed past the panel. */
     .agent .meta { min-width: 0; flex: 1 1 0; }
@@ -1014,6 +1238,58 @@
     .agent:hover .agent-hide, .agent .agent-hide:focus-visible { opacity: 1; }
     .agent .agent-hide:hover { color: var(--accent); border-color: var(--accent); }
     .agent[data-hidden="true"] { outline: 1px dashed var(--border); outline-offset: -1px; }
+    /* BACKLOG #80: medals. The card shows a count chip only; the shelf (under an agent's log) shows each medal. */
+    .agent .agent-medal-btn {
+      position: absolute; top: 3px; right: 56px;
+      font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+      border: 1px solid var(--border); background: var(--panel); color: var(--dim);
+      cursor: pointer; opacity: 0; transition: opacity .15s;
+    }
+    .agent:hover .agent-medal-btn, .agent .agent-medal-btn:focus-visible { opacity: 1; }
+    .agent .agent-medal-btn:hover { border-color: var(--accent); }
+    .medal-chip { margin-left: 6px; font-size: 10px; color: var(--accent); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0 5px; text-transform: none; cursor: default; }
+    #agent-medals { display: none; }
+    .panel.logging > #agent-medals { display: block; flex: 0 0 auto; max-height: 34%; overflow-y: auto;
+      border-top: 1px solid var(--border); padding: 4px 8px; font-size: 11px; }
+    #agent-medals:empty { display: none !important; }
+    .medal-shelf-title { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 2px; }
+    .medal-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; padding: 2px 0; }
+    .medal-label { font-weight: 600; flex: 0 0 auto; }
+    .medal-reason { order: 5; flex: 1 0 100%; padding-left: 22px; color: var(--dim); overflow-wrap: anywhere; }
+    .medal-date { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+    .medal-remove { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0 3px; }
+    .medal-remove:hover { color: #e06c75; }
+    .medal-remove.confirm { color: #e06c75; border: 1px solid #e06c75; border-radius: 4px; font-size: 10px; }
+    .medal-none { color: var(--dim); }
+    #medal-menu { position: fixed; z-index: 60; width: 250px; padding: 8px; border-radius: 8px;
+      background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: 0 6px 20px rgba(0,0,0,.45); }
+    #medal-menu[hidden] { display: none; }
+    .medal-menu-title { font-weight: 600; margin-bottom: 6px; }
+    .medal-kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
+    .medal-kind, .medal-menu-actions button { font: inherit; font-size: 11px; color: var(--text); background: transparent;
+      border: 1px solid var(--border); border-radius: 5px; padding: 3px 5px; cursor: pointer; text-align: left; }
+    .medal-kind:hover, .medal-menu-actions button:hover:not(:disabled) { border-color: var(--accent); }
+    .medal-kind.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+    .medal-reason-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; padding: 3px 5px;
+      color: var(--text); background: var(--bg, transparent); border: 1px solid var(--border); border-radius: 5px; }
+    .medal-menu-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+    .medal-menu-actions button:disabled { opacity: .4; cursor: default; }
+    /* BACKLOG #80 / #55: speech bubbles. A joke over the card, never a status: italic, in quotes, clicks pass through. */
+    #bubbles-toggle { cursor: pointer; }
+    #bubbles-toggle.off { opacity: .45; }
+    .agent-bubble {
+      position: absolute; bottom: 4px; right: 8px; z-index: 5; max-width: 72%; pointer-events: none;
+      padding: 2px 9px; border-radius: 11px; font-size: 11px; font-style: italic; line-height: 1.35;
+      color: var(--text); background: var(--panel); border: 1px solid var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,.4);
+      animation: bubble-in .18s ease-out, bubble-out .6s ease-in var(--bubble-fade-delay, 7400ms) forwards;
+    }
+    .agent-bubble::before { content: '\201C'; }
+    .agent-bubble::after { content: '\201D'; }
+    .agent-bubble[data-settled] { animation: bubble-out .6s ease-in var(--bubble-fade-delay, 0ms) forwards; }
+    @keyframes bubble-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes bubble-out { from { opacity: 1; } to { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) { .agent-bubble, .agent-bubble[data-settled] { animation: none; } }
     #roster-show-hidden {
       display: block; width: 100%; margin: 0 0 4px; padding: 3px 6px; text-align: left;
       font-size: 10px; color: var(--dim); background: transparent;
@@ -1095,6 +1371,144 @@
 
     /* The wand (BACKLOG #51): favourite skills as emoji buttons. Markup comes from app/wand-display.js. A dimmed
        button is a skill that no longer exists; the flash is "typed", never "ran". */
+    /* Claude's panel (BACKLOG #71). Markup from app/canvas-display.js. The page Claude wrote is NOT in this document: it is a
+       sealed native view main lays over #canvas-slot (app/canvas-views.js), so the slot takes all the room it can get and
+       nothing in it is styled here. A question or the host list REPLACES the slot (a native view paints above the page). */
+    #canvas-body { padding: 0; }
+    #canvas-root { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+    .zone[data-shape="wide"] .panel.on > #canvas-root { flex: 1 1 auto; min-width: 280px; max-width: none; }
+    .cv-head { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; }
+    .cv-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .cv-badge { font: inherit; font-size: 11px; padding: 2px 8px; cursor: pointer; background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 10px; }
+    .cv-badge:hover, .cv-badge[aria-expanded="true"] { color: var(--text); border-color: var(--accent); }
+    .cv-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .cv-slot { flex: 1; min-height: 0; }
+    .cv-empty, .cv-note, .cv-ask, .cv-list { padding: 8px 12px; font-size: 12px; line-height: 1.5; color: var(--dim); overflow-y: auto; }
+    .cv-empty ul { margin: 6px 0 10px; padding-left: 18px; color: var(--text); }
+    .cv-sandbox { font-size: 11px; opacity: .8; }
+    .cv-error { flex: 0 0 auto; margin: 0 8px; font-size: 11px; color: var(--bad); }
+    .cv-status { flex: 0 0 auto; margin: 0 8px 4px; font-size: 11px; line-height: 1.4; color: var(--ok); }
+    .cv-status.cv-status-bad { color: var(--bad); }
+    .cv-ask p, .cv-ask code { color: var(--text); }
+    .cv-ask code { padding: 1px 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; word-break: break-all; }
+    .cv-ask-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .cv-ask-btns button { flex: 1 1 auto; }
+    .cv-ask-btns button, .cv-close, .cv-remove { font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer; background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .cv-allow { border-color: var(--accent); }
+    .cv-ask-btns button:hover, .cv-close:hover, .cv-remove:hover { border-color: var(--accent); }
+    .cv-more { margin-top: 8px; font-size: 11px; }
+    .cv-list h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: normal; }
+    .cv-hosts { list-style: none; margin: 0 0 10px; padding: 0; }
+    .cv-host { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .cv-host-name { flex: 1; min-width: 0; color: var(--text); word-break: break-all; }
+    .cv-host-state { font-size: 11px; }
+    /* The Ask panel (BACKLOG #33). Markup from app/ask-display.js; colours are the project's tokens. A card is a button: it opens the reader at
+       its line. The question box sits at the bottom, outside the part that is rebuilt, so typing in it is never interrupted. */
+    #ask-body { padding: 6px; }
+    #ask-root { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+    .zone[data-shape="wide"] .panel.on > #ask-root { flex: 1 1 auto; min-width: 300px; max-width: none; }
+    .ask-root { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+    .ask-top { flex: 0 0 auto; }
+    .ask-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; font-size: 12px; line-height: 1.5; }
+    .ask-foot { flex: 0 0 auto; }
+    .ask-head { display: flex; align-items: center; gap: 8px; }
+    .ask-head-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .ask-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .ask-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ask-for { font-size: 11px; color: var(--dim); }
+    /* The explainer's face is an agent's picture, drawn by app/portrait-media-display.js (the roster's code): fill the round frame. */
+    .ask-portrait { width: 30px; height: 30px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; flex: 0 0 auto; background: var(--panel); border: 1px solid var(--border); }
+    .ask-portrait .face-media, .ask-face .face-media { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; font-size: 11px; }
+    .ask-gear, .ask-chip, .ask-primary, .ask-go, .ask-face { font: inherit; font-size: 11px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 3px 8px; }
+    .ask-gear { font-size: 13px; line-height: 1; padding: 3px 6px; background: transparent; color: var(--dim); }
+    .ask-gear:hover, .ask-chip:hover, .ask-go:hover, .ask-face:hover, .ask-example:hover { border-color: var(--accent); color: var(--text); }
+    .ask-chip:disabled { opacity: .4; cursor: default; }
+    .ask-chip.on, .ask-face.on { border-color: var(--accent); color: var(--accent); }
+    .ask-primary { border-color: var(--accent); }
+    .ask-link { font: inherit; font-size: 11px; padding: 0; cursor: pointer; background: none; border: 0; color: var(--accent); text-decoration: underline; }
+    .ask-gear:focus-visible, .ask-chip:focus-visible, .ask-primary:focus-visible, .ask-go:focus-visible, .ask-face:focus-visible, .ask-link:focus-visible,
+      .ask-card:focus-visible, .ask-example:focus-visible, .ask-cite:focus-visible, .ask-input:focus-visible, .ask-q:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .ask-h { margin: 4px 0; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
+    .ask-h3 { margin: 4px 0 2px; font-size: 14px; }
+    .ask-note { margin: 4px 0; font-size: 11px; color: var(--dim); }
+    .ask-bad { margin: 4px 0; font-size: 11px; color: var(--bad); }
+    .ask-notice { margin: 6px 0; padding: 6px 8px; border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 4px; background: var(--panel); }
+    .ask-naming, .ask-settings { display: flex; flex-direction: column; gap: 6px; padding: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+    .ask-input { font: inherit; font-size: 12px; min-width: 0; padding: 4px 6px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .ask-field { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--dim); }
+    .ask-chips, .ask-faces, .ask-actions, .ask-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 4px 0; }
+    .ask-face { font-size: 15px; line-height: 1; padding: 0; width: 36px; height: 36px; overflow: hidden; border-radius: 50%; }
+    .ask-steps { margin: 4px 0 4px 18px; padding: 0; }
+    .ask-examples { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .ask-example { font: inherit; font-size: 12px; text-align: left; width: 100%; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+    .ask-stages { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--dim); }
+    .ask-stage::before { content: "○ "; }
+    .ask-stage.done { color: var(--ok); }
+    .ask-stage.done::before { content: "✓ "; }
+    .ask-stage.active { color: var(--text); }
+    .ask-stage.active::before { content: "● "; color: var(--accent); }
+    .ask-placeholder { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+    .ask-placeholder i { display: block; height: 9px; border-radius: 4px; background: var(--panel); animation: ask-pulse 1.4s ease-in-out infinite; }
+    .ask-placeholder i:nth-child(2) { width: 85%; }
+    .ask-placeholder i:nth-child(3) { width: 60%; }
+    @keyframes ask-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .ask-placeholder i { animation: none; } }
+    .ask-answer p { margin: 4px 0; }
+    .ask-answer ul { margin: 4px 0 4px 16px; padding: 0; }
+    .ask-answer code { font-family: var(--font-mono); font-size: 11px; background: var(--panel); padding: 0 3px; border-radius: 3px; }
+    .ask-cite { font: inherit; font-family: var(--font-mono); font-size: 11px; padding: 0; cursor: pointer; background: none; border: 0; color: var(--accent); text-decoration: underline; }
+    .ask-live { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .ask-privacy { font-size: 10.5px; color: var(--dim); }
+    .ask-drill { display: flex; gap: 4px; margin: 4px 0; }
+    .ask-drill .ask-input { flex: 1; }
+    .ask-from { margin: 4px 0; font-size: 10.5px; color: var(--dim); }
+    .ask-highlight { margin: 4px 0; }
+    .ask-places { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
+    .ask-card { display: flex; flex-direction: column; gap: 2px; text-align: left; width: 100%; font: inherit; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; }
+    .ask-card:hover { border-color: var(--accent); }
+    .ask-card-where { font-family: var(--font-mono); font-size: 11px; color: var(--accent); word-break: break-all; }
+    .ask-card-why { font-size: 11px; color: var(--text); }
+    .ask-card-code { margin: 2px 0 0; font: 10.5px/1.4 var(--font-mono); color: var(--dim); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+    .ask-ln { display: inline-block; min-width: 3ch; margin-right: 6px; text-align: right; opacity: .6; }
+    .ask-trail { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin: 2px 0 4px; font-size: 11px; }
+    .ask-trail-now { color: var(--text); font-weight: 600; }
+    .ask-sep { color: var(--dim); }
+    .ask-status { font-size: 10.5px; color: var(--dim); padding: 2px 0; }
+    .ask-history { margin-top: 10px; font-size: 11px; color: var(--dim); }
+    .ask-history ul { margin: 4px 0 0 14px; padding: 0; }
+    .ask-form { flex: 0 0 auto; display: flex; gap: 4px; }
+    .ask-form[hidden] { display: none; }
+    .ask-q { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 5px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
+    .ask-go { border-color: var(--accent); }
+    #reader-ask { font: inherit; }
+    /* The Games panel (BACKLOG #41). Markup from app/games-display.js; colours are the project's tokens, so the accent follows
+       the project. The cover sits over the board, so a click that resumes a paused round never lands on it. */
+    #games-body { padding: 8px 6px; }
+    #games-root { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; outline: none; display: flex; flex-direction: column; gap: 6px; }
+    .zone[data-shape="wide"] .panel.on > #games-root { flex: 1 1 auto; min-width: 260px; max-width: none; }
+    .games-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .games-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+    .games-best { font: 11px var(--font-mono); color: var(--ok); }
+    .games-picks { display: flex; gap: 4px; flex-wrap: wrap; }
+    .games-pick { font: inherit; font-size: 11px; padding: 3px 8px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; }
+    .games-pick:hover { border-color: var(--accent); }
+    .games-pick.on { border-color: var(--accent); color: var(--accent); }
+    .games-pick:focus-visible, .games-cover-btn:focus-visible, .games-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .games-bar { display: flex; align-items: baseline; gap: 4px; font-size: 11px; color: var(--dim); }
+    .games-bar b { color: var(--text); font-family: var(--font-mono); }
+    .games-score, .games-time { min-width: 2ch; text-align: right; }
+    .games-sp { flex: 1; }
+    .games-stage { position: relative; background: var(--chrome); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .games-canvas { display: block; width: 100%; height: auto; max-width: 100%; aspect-ratio: 4 / 3; touch-action: none; outline: none; }
+    .games-cover { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 12px;
+      background: color-mix(in srgb, var(--bg) 82%, transparent); }
+    .games-cover[hidden] { display: none; }
+    .games-cover-text { margin: 0 0 6px; max-width: 36ch; font-weight: 600; }
+    .games-cover-note { margin: 0 0 8px; max-width: 36ch; font-size: 12px; color: var(--dim); }
+    .games-cover-note:empty { display: none; }
+    .games-cover-btn { font: inherit; font-size: 12px; padding: 3px 12px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--accent); border-radius: 4px; }
     /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
        two segments, claude-custom in the accent colour and everything else neutral. */
     #resources-body { padding: 8px 4px; }
@@ -1148,6 +1562,27 @@
     .res-confirm { font-size: 11px; margin: 2px 0 4px; padding: 5px 6px; border: 1px solid var(--bad); border-radius: 4px; }
     .res-note { font-size: 10.5px; color: var(--dim); padding: 2px 0; }
     .res-refused { color: var(--bad); }
+    /* Leftovers (BACKLOG #74): a group title under the section heading, and a row's fate as a dim line under it */
+    .res-title { font-size: 13px; margin: 0 0 6px; display: flex; align-items: center; gap: 6px; }
+    .res-chip { font-size: 10.5px; padding: 0 7px; border-radius: 9px; border: 1px solid #e6c34a; color: #e6c34a; font-variant-numeric: tabular-nums; }
+    /* a coloured left edge per group: red = stuck, yellow = nobody runs it, grey = only big */
+    .res-edge-red { --res-edge: var(--bad); }
+    .res-edge-yellow { --res-edge: #e6c34a; }
+    .res-edge-grey { --res-edge: var(--dim); }
+    .res-sub, .res-lrow, .res-lnote { border-left: 3px solid var(--res-edge, var(--border)); padding-left: 6px; }
+    .res-sub { display: flex; align-items: center; justify-content: space-between; gap: 6px; font-size: 10.5px; color: var(--dim); margin: 6px 0 1px; }
+    .res-lrow { display: flex; align-items: center; gap: 4px; padding-top: 2px; padding-bottom: 2px; font-size: 11px; }
+    .res-side { flex: 1; text-align: right; font-style: italic; }
+    .res-lsub { color: var(--dim); font-size: 10px; }
+    .res-lrow .res-lmem { min-width: 6.4ch; }
+    .res-lrow .res-lage { min-width: 6ch; }
+    .res-lnote { margin: 0; padding-top: 0; padding-bottom: 2px; }
+    .res-lstop { flex: none; font: inherit; font-size: 10.5px; line-height: 1.3; padding: 0 7px; cursor: pointer; background: transparent; color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; }
+    .res-lstop:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
+    .res-lstop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .res-lstop:disabled { opacity: .5; cursor: default; }
+    .res-lstop-gap { flex: none; width: 36px; }
     .res-footer { font-size: 10px; color: var(--dim); margin-top: 6px; }
     #tb-resources { font-variant-numeric: tabular-nums; border-color: var(--border); }
     #tb-resources.res-amber { border-color: #e6c34a; color: #e6c34a; }
@@ -1176,6 +1611,9 @@
     .hg-readout { min-height: 14px; margin-top: 3px; font-variant-numeric: tabular-nums; }
     .hg-empty { color: var(--dim); padding: 14px 0; }
     .hg-key { color: var(--dim); font-size: 10.5px; }
+    /* the GPU section of the Resources tab (BACKLOG #82) holds the same two graphs: they follow the panel's width */
+    .res-gpu .hg-plot { width: 100% !important; max-width: 300px; }
+    .res-gpu .hg-plot svg { width: 100%; height: auto; }
     .hg-link { display: block; margin-top: 8px; padding: 0; font: inherit; font-size: 10.5px; color: var(--accent); background: none; border: 0; cursor: pointer; }
     .hg-link:hover { text-decoration: underline; }
     .hg-link:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
@@ -1267,7 +1705,7 @@
     .style-hex {
       /* Never shrinks: a narrowed sidebar (or its scrollbar) cut "#3a1418" to
          "#3a141". The Reset button gives up width instead. */
-      width: calc(7ch + 14px); flex: none; font: 11px Consolas, monospace; padding: 3px 5px;
+      width: calc(7ch + 14px); flex: none; font: 11px var(--font-mono); padding: 3px 5px;
       background: var(--panel); color: var(--text);
       border: 1px solid var(--border); border-radius: 4px;
     }
@@ -1283,6 +1721,14 @@
       border: 1px solid var(--border); border-radius: 4px;
     }
     .style-section button:disabled { opacity: .45; cursor: default; }
+    .style-section button.seated { border-color: var(--accent); color: var(--accent); }
+    /* Backlog #88, the font pickers: a search box over a short scrolling list; every row is drawn in its own font. */
+    .style-section .font-search { width: auto; flex: 1; min-width: 0; font-family: inherit; }
+    .font-list { max-height: 150px; overflow: auto; margin: -4px 0 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); }
+    .style-section .font-list button.font-row { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none; font-size: 12px; padding: 3px 8px; }
+    .style-section .font-list button.font-row:hover { background: var(--border); }
+    .style-section .font-list button.font-row.seated { color: var(--accent); }
+    .font-empty { padding: 6px 8px; font-size: 10.5px; color: var(--dim); }
 
     .model:hover { background: var(--panel); border-color: var(--border); }
     .model.seated { border-color: var(--accent); background: var(--panel); }
@@ -1337,6 +1783,25 @@
     .agent[data-state="working"] .state { color: var(--agent); }
     .agent[data-state="happy"] .state { color: var(--ok); }
     .agent[data-state="stressed"] .state { color: var(--bad); }
+
+    /* BACKLOG #55, look A: the finer states. `data-state` keeps the ring above; `data-detail` adds a corner badge on
+       the portrait (app/agent-state-display.js) and colours the words under the name. The badge is a sibling of
+       .face, not inside it, because .face clips its content. */
+    .agent .state { text-transform: none; }
+    .agent .state::first-letter { text-transform: uppercase; }
+    .agent .state-badge {
+      position: absolute; left: calc(6px + var(--face, 34px) - 11px); top: calc(50% + var(--face, 34px) / 2 - 13px);
+      width: 15px; height: 15px; line-height: 15px; text-align: center; font-size: 10px;
+      border-radius: 50%; background: var(--panel); border: 1px solid var(--border); pointer-events: none;
+    }
+    .agent[data-detail="reading"] .state, .agent[data-detail="writing"] .state, .agent[data-detail="running"] .state { color: var(--agent); }
+    .agent[data-detail="waiting"] .state { color: var(--warn); }
+    .agent[data-detail="waiting"] .state-badge { border-color: var(--warn); animation: badge-pulse 1.8s ease-in-out infinite; }
+    .agent[data-detail="stuck"] .state { color: var(--bad); }
+    .agent[data-detail="stuck"] .state-badge { border-color: var(--bad); }
+    .agent[data-detail="helper"] .state { color: var(--accent); }
+    @keyframes badge-pulse { 50% { box-shadow: 0 0 0 3px rgba(230,195,74,.35); } }
+    @media (prefers-reduced-motion: reduce) { .agent[data-detail="waiting"] .state-badge { animation: none; } }
 
     /* --- top bar: model / effort ---------------------------------------------
        FF12. Model and effort are CONTROLS, not labels -- clicking either opens
@@ -1426,6 +1891,11 @@
     body.focus-mode .dgutter, body.focus-mode .drail, body.focus-mode #dock-overlay { display: none; }
     /* ...and the terminal takes the whole area, wherever the layout last put it (inline rect). */
     body.focus-mode #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
+    /* Lean mode (#62): only the terminal, like focus mode but with the strip kept (it carries the tab marks and the
+       way back). Nothing else changes: the colours, the terminal theme and the background are the project's own. */
+    body.lean header, body.lean .zone, body.lean #diag,
+    body.lean .dgutter, body.lean .drail, body.lean #dock-overlay { display: none; }
+    body.lean #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
@@ -1478,7 +1948,7 @@
                  flex: 0 0 5px; animation: pulse 1.4s ease-in-out infinite; }
     @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
     .proc .lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
-                 text-overflow: ellipsis; font-family: ui-monospace, monospace; font-size: 10.5px; }
+                 text-overflow: ellipsis; font-family: var(--font-mono); font-size: 10.5px; }
     .proc .el { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 10px; }
     /* Anything past a minute is worth noticing rather than assuming hung. */
     .proc.slow .el { color: var(--accent); }
@@ -1582,8 +2052,8 @@
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
       <button type="button" id="layout-btn" class="hdr-btn" title="Layout: where each panel sits">▦</button>
       <button type="button" id="focus-btn" class="hdr-btn" title="Focus: only the terminal (Ctrl+Shift+F)">⛶</button>
-      <span class="hint" id="side-hint" title="Show or hide every panel">panels <kbd>Ctrl</kbd>+<kbd>B</kbd></span>
-      <span class="hint">diagnostics <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd></span>
+      <!-- #42: the two keyboard hints became this one button; it opens the shortcuts sheet (#43), as F1 does. -->
+      <button type="button" id="shortcuts-btn" class="hdr-btn" title="Keyboard shortcuts (F1)" aria-label="Keyboard shortcuts" aria-controls="shortcuts-sheet" aria-expanded="false">?</button>
     </header>
     <div id="body">
       <!-- Dockable panels (D1): the area the layout tree fills. app/dock-tree-display.js
@@ -1642,19 +2112,28 @@
       <section id="reader" aria-label="File reader" hidden>
         <header id="reader-head">
           <span id="reader-path"></span>
+          <span id="reader-dirty" title="Unsaved changes" aria-label="Unsaved changes" role="img" hidden>&#9679;</span>
+          <button type="button" id="reader-edit" title="Edit this file (Ctrl+S saves)" aria-pressed="false" hidden>Edit</button>
+          <button type="button" id="reader-save" title="Save (Ctrl+S)" hidden disabled>Save</button>
           <button type="button" id="reader-diff" title="What Claude changed in this file" aria-pressed="false" hidden>Diff</button>
+          <button type="button" id="reader-ask" title="Explain the selected code in the Ask panel" hidden>What&#39;s this?</button>
           <button type="button" id="reader-mention" title="Type @this-file (or the selected lines) into the prompt; you press Enter">@ in prompt</button>
           <button type="button" id="reader-reveal" title="Show this file in Explorer">Show in Explorer</button>
           <button type="button" id="reader-close" title="Close (Esc)" aria-label="Close the reader">&times;</button>
           <span id="reader-meta" role="status"></span>
         </header>
         <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
+        <div id="reader-conflict" role="alert" hidden><span id="reader-conflict-text"></span><button type="button" id="reader-conflict-reload" title="Drop your changes and show the file as it is on disk">Reload</button><button type="button" id="reader-conflict-keep" title="Keep your text; the next save replaces the disk version">Keep mine</button><button type="button" id="reader-conflict-compare" title="Show the two versions line by line">Compare</button></div>
+        <div id="reader-compare" hidden><div id="reader-compare-head"><span>On disk now, against yours</span><button type="button" id="reader-compare-back">Back to editing</button></div><div id="reader-compare-rows" tabindex="0" aria-label="Line by line differences"></div></div>
         <div id="reader-body"></div>
         <div id="reader-note" role="status" hidden><span id="reader-note-text"></span><button type="button" id="reader-note-reveal" hidden>Show in Explorer</button></div>
       </section>
       <!-- Floating panels (D2): their own layer, above the groups, rails, gutters and the reader, below the drag overlay. -->
       <div id="dock-floats"></div>
       <div id="dock-overlay"></div>
+      <!-- What a keyboard move says in words (D4): where the panel would land. Read aloud, never seen. -->
+      <div id="dock-announce" role="status" aria-live="polite"></div>
+      <div id="quota-announce" role="status" aria-live="polite"></div>
       </div>
       <aside id="diag">
         <h2>Key diagnostics</h2>
@@ -1675,8 +2154,19 @@
           <nav id="roster-subtabs">
             <button type="button" data-roster-tab="active" class="on" title="Working in this host's lifetime">Active</button>
             <button type="button" data-roster-tab="inactive" title="Every other agent this project or account has ever used">Inactive</button>
-            <button type="button" id="images-toggle" title="Agent images: reading the setting">🖼</button>
+            <!-- BACKLOG #76: which name the cards show big (install-wide), and the search. -->
+            <span id="roster-names-toggle" role="group" aria-label="Show agent names as">
+              <button type="button" data-roster-names="role" title="Show the role (code-reviewer) big">Role</button>
+              <button type="button" data-roster-names="name" title="Show the name (Miguel) big">Name</button>
+            </span>
+            <button type="button" id="roster-search-btn" aria-pressed="false" aria-label="Search the agents in this tab" title="Search the agents in this tab">🔍</button>
+            <button type="button" id="images-toggle" aria-label="Show agent images" title="Agent images: reading the setting">🖼</button>
+            <button type="button" id="bubbles-toggle" aria-label="Speech bubbles" title="Speech bubbles: reading the setting">💬</button>
           </nav>
+          <div id="roster-search-row" hidden>
+            <input type="search" id="roster-search" autocomplete="off" spellcheck="false"
+                   placeholder="Search role, name or function" aria-label="Search the agents in this tab">
+          </div>
           <!-- BACKLOG #14: shown only on the Active tab and only while at least
                one sleeping agent is hidden (or the reveal is on). Decisions in
                app/hidden-agents-display.js; renderer.js draws the label. -->
@@ -1685,6 +2175,8 @@
           <!-- BACKLOG #10: filled by app/agent-log-display.js while a log is
                open; the panel gets `.logging` and the rest of it steps aside. -->
           <div id="agent-log"></div>
+          <!-- BACKLOG #80: the medals of the agent whose log is open (app/medals-display.js), under the log. -->
+          <div id="agent-medals"></div>
           <div id="party"><div class="chain"><span class="none">no delegation</span></div></div>
           <div id="cooldowns"></div>
         <div id="procs">
@@ -1774,8 +2266,16 @@
           <div id="files-tree" role="tree" aria-label="Files in this worktree"></div>
         </div>
         <div class="panel" data-panel="git" id="git-body">
+          <!-- Rings | Graph (BACKLOG #2 follow-up): the choice is kept per project (renderer.js setGitView) -->
+          <div id="git-view" role="group" aria-label="Git view">
+            <button type="button" data-view="rings" aria-pressed="true">Rings</button>
+            <button type="button" data-view="graph" aria-pressed="false">Graph</button>
+          </div>
           <div id="git-status">reading the history…</div>
+          <div id="drift-list" hidden></div>
           <div id="git-dial"></div>
+          <div id="git-graph-status" hidden></div>
+          <div id="git-graph" hidden></div>
         </div>
         <div class="panel" data-panel="projects" id="projects-body">
           <div id="projects-note" class="dim">reading your projects…</div>
@@ -1791,9 +2291,22 @@
                that is replaced is not read out). Visually hidden; the visible copy is in the panel. -->
           <div id="wand-live" class="wand-live" role="status" aria-live="polite" aria-atomic="true"></div>
         </div>
+        <!-- BACKLOG #71: Claude's panel. app/canvas-display.js draws its frame from the host's `canvas` frames; the page Claude
+             wrote is a sealed native view main lays over #canvas-slot (app/canvas-views.js), never part of this document. -->
+        <div class="panel" data-panel="canvas" id="canvas-body">
+          <div id="canvas-root" tabindex="-1"></div>
+        </div>
         <!-- BACKLOG #63: the Resources panel. app/resources-display.js draws it from main's payload. -->
         <div class="panel" data-panel="resources" id="resources-body">
           <div id="resources-root" tabindex="-1"><div class="res-note">measuring…</div></div>
+        </div>
+        <!-- BACKLOG #33: Ask the repo. app/ask-display.js builds everything inside #ask-root. -->
+        <div class="panel" data-panel="ask" id="ask-body">
+          <div id="ask-root" tabindex="-1"></div>
+        </div>
+        <!-- BACKLOG #41: the wait games. app/games-display.js builds everything inside #games-root. -->
+        <div class="panel" data-panel="games" id="games-body">
+          <div id="games-root" tabindex="-1"></div>
         </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
@@ -1807,8 +2320,8 @@
   <script src="../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="./side-tabs.js"></script>
-  <script src="./dock-layout.js"></script>
-  <script src="./dock-zones-display.js"></script>
+  <script src="./dock-migrate.js"></script>
+  <script src="./dock-effects.js"></script>
   <script src="./dock-tree.js"></script>
   <script src="./dock-presets.js"></script>
   <script src="./dock-drag.js"></script>
@@ -1816,25 +2329,58 @@
   <script src="./secret-mask.js"></script>
   <script src="./attention-surface.js"></script>
   <script src="./usage-display.js"></script>
+  <script src="./shortcut-table.js"></script>
+  <script src="./shortcuts-display.js"></script>
   <script src="./roster-width.js"></script>
   <script src="./vault-lock-display.js"></script>
   <script src="./career-display.js"></script>
   <script src="./roster-tabs-display.js"></script>
+  <script src="./roster-search-display.js"></script>
   <script src="./hidden-agents-display.js"></script>
   <script src="./quota-display.js"></script>
+  <script src="./quota-countdown.js"></script>
   <script src="./bugvault-display.js"></script>
   <script src="./projects-display.js"></script>
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
+  <script src="./agent-state-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
+  <script src="./fonts-display.js"></script>
+  <script src="./lean-display.js"></script>
   <script src="./colour-seeds.js"></script>
+  <!-- BACKLOG #80: the give-a-medal menu (a right-click on a card, or its medal button). Before the scripts: renderer.js looks it up when it runs. -->
+  <div id="medal-menu" hidden></div>
   <script src="./agent-log-display.js"></script>
+  <script src="./medals-display.js"></script>
+  <script src="./bubble-display.js"></script>
   <script src="./loadout-display.js"></script>
   <script src="./submit-gate.js"></script>
   <script src="./wand-display.js"></script>
+  <script src="./ask-panel-state.js"></script>
+  <script src="./ask-profile.js"></script>
+  <script src="./ask-requester.js"></script>
+  <script src="./ask-controller.js"></script>
+  <script src="./ask-display.js"></script>
+  <script src="./games-rules.js"></script>
+  <script src="./games-round.js"></script>
+  <script src="./games-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
-  <div id="res-popover" hidden role="region" aria-label="CPU and memory over the last hour"></div>
+  <div id="res-popover" hidden role="region" aria-label="CPU, memory and GPU over the last hour"></div>
+  <!-- BACKLOG #43: the shortcuts sheet, a centred card over the window below the header (so the header's "?" stays clickable). Rows come
+       from app/shortcut-table.js, drawn by app/shortcuts-display.js; app/renderer.js opens and closes it. -->
+  <div id="shortcuts-sheet" hidden>
+    <div class="sc-scrim"></div>
+    <div class="sc-card" role="dialog" aria-modal="true" aria-labelledby="sc-title">
+      <div class="sc-head">
+        <h2 id="sc-title">Keyboard shortcuts</h2>
+        <input type="search" id="shortcuts-search" placeholder="Search by name or key" aria-label="Search shortcuts by name or key" autocomplete="off" spellcheck="false" />
+        <button type="button" id="shortcuts-close" class="hdr-btn" aria-label="Close the shortcuts" title="Close (Esc)">&times;</button>
+      </div>
+      <div id="shortcuts-body" class="sc-body"></div>
+    </div>
+  </div>
+  <script src="./canvas-display.js"></script>
   <script src="./resources-display.js"></script>
   <script src="./resources-history-display.js"></script>
   <script src="./top-bar-display.js"></script>
@@ -1851,6 +2397,7 @@
   <script src="./occupancy-confirm.js"></script>
   <script src="./terminal-bar.js"></script>
   <script src="./summary-display.js"></script>
+  <script src="./docs-drift-display.js"></script>
   <script src="./link-click.js"></script>
   <script src="./terminal-rows.js"></script>
   <script src="./file-path-parse.js"></script>
@@ -1858,12 +2405,14 @@
   <script src="./git-swing.js"></script>
   <script src="./git-actions.js"></script>
   <script src="./git-rings-display.js"></script>
+  <script src="./git-graph-display.js"></script>
   <script src="./repo-language.js"></script>
   <script src="./repo-mention.js"></script>
   <script src="./repo-tree-display.js"></script>
   <script src="./repo-requester.js"></script>
   <script src="./repo-refresh.js"></script>
   <script src="./repo-files-panel.js"></script>
+  <script src="./repo-linediff.js"></script>
   <script src="./repo-reader.js"></script>
   <script src="./repo-browser.js"></script>
   <script src="./renderer.js"></script>

@@ -21,15 +21,19 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
 const { registerFavouriteHandlers } = require('./favourites-bridge');
 const { registerAvatarHandlers, watchImagesEnabled, AVATAR_KEY } = require('./avatar-bridge');
 const { registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES } = require('./layout-bridge');
-const { readChromeSettings, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
+const { registerFontHandlers, FONT_NAMES, uiFontScript, readFontSettings } = require('./fonts-bridge');
+const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchChromeSettings, viewTop, CHROME_KEY } = require('./window-chrome-bridge');
 const { registerPlaybackHandlers } = require('./playback-bridge');
+const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
+const { createLean, unionDismissed } = require('./lean-state');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
@@ -44,6 +48,7 @@ const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
 const { createOccupancyService } = require('../host/occupancy-service');
+const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
 const { startTimes, createSelfStartTime } = require('../host/proc-start');
 // ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
@@ -58,14 +63,18 @@ const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store'
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { hostEnv } = require('../host/tab-env');
+const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
+const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
+const { createUnsaved, closeDetail, guardWindowClose } = require('./reader-unsaved');
 // What app/file-link.js may ask the disk (#37): reads, nothing else. lstat and
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
@@ -76,6 +85,8 @@ const { projectOf, stateRoot, samePath } = require('../host/project-layout');
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
 // would cost an async lookup that must finish before the pointer moves on.
 let repoDragIcon = null;
+// The code reader's unsaved edits per tab (#50), reported by the page, so ending a tab can say they'd be lost.
+const readerUnsaved = createUnsaved();
 const repoActions = createRepoActions({
   shell,
   icon: () => {
@@ -92,20 +103,38 @@ const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/b
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
 const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
 const { killVerified } = require('../host/resource-kill');
+const pidLedger = require('../host/pid-ledger');
+const { killProvenAsync } = require('../host/kill-tree');
+const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
+const taskLogsFs = require('../host/task-logs-fs');
+const { claudeConfigDir } = require('../host/claude-config-dir');
+const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
+const { createScoreStore } = require('../host/game-scores');
 const { stopHost } = require('../host/stop-holder');
 const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
+// The indexing assistant (#66): a field in the strip; Enter appends the note verbatim to the selected project's backlog
+// `## Inbox` (no model). The service is host/indexing-service.js; main's half (channels, the toast and list views over
+// the tabs) is app/indexing-bridge.js.
+const { createIndexingService } = require('../host/indexing-service');
+const { createJournal } = require('../host/indexing-journal');
+const indexWriter = require('../host/indexing-writer');
+const { projectChoices, readRecentsOffThread } = require('../host/indexing-projects');
+const { createIndexingBridge } = require('./indexing-bridge');
 
 // Install-wide UI state that belongs to no one project: today only how dark an
 // unfocused window gets. The same .harness/state the host's store uses, under
 // its own key, so neither side can clobber the other's file.
-const uiStore = createStore({ dir: path.join(__dirname, '..', '.harness', 'state') });
+// A probe seam (host/probe-seams.js, uiStateDir) moves these records into the probe's own folder; unset in real use.
+const UI_STATE_DIR = readSeams(process.env).uiStateDir || path.join(__dirname, '..', '.harness', 'state');
+const uiStore = createStore({ dir: UI_STATE_DIR });
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
+const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
 const readDim = () => sanitizeDim((uiStore.read(UI_KEY, {}) || {}).unfocusedDim);
 
 // An explicit CLAUDE_CUSTOM_PORT is honoured exactly and never stepped: someone
@@ -157,6 +186,18 @@ const PROBE_LINE_MAX = 64 * 1024;
 if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
   app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 }
+
+// BACKLOG #71 (Claude's panel): Chromium in this app resolves NO name but loopback. The page the running Claude builds is
+// untrusted, and `<link rel=dns-prefetch>` is a DNS query that carries a name of the page's choosing; a CSP and a dead proxy
+// both leave it open (verify/probe-canvas-sandbox.js measured it). This rule is the only thing that shuts it. It costs
+// nothing today: the app makes no external request of its own through Chromium (the host and this process use Node's
+// networking, which this does not touch), and the panel reaches approved hosts through main (app/canvas-fetch.js).
+app.commandLine.appendSwitch('host-resolver-rules', HOST_RESOLVER_RULES);
+
+// A new window must not wait for the E-cores: Chromium starts renderers as background (Idle + EcoQoS), Windows runs those
+// on the E-cores only, and with them saturated a new window stayed blank for 60+ s (measured 2026-10-13, the story is in
+// test/renderer-backgrounding-wiring.test.js). Priority only: hidden pages are still throttled by Chromium's timers.
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
 
 // `hosts/<port>.token`, and nothing else: written only by the host that won
 // that port's bind (PR #75 F2), so it names whoever is listening. Null when it
@@ -223,8 +264,11 @@ function attachOnlyText(d) {
 // Returns { port, action } or null when the user named a port we must not take.
 // Per TAB: each tab's folder hashes to its own port.
 async function chooseHostPort(tab) {
-  if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
-  if (EXPLICIT_PORT) {
+  // #81: a branch tab's side session is looked for as a side host, on a port of its own: never the window's explicit one
+  // (that is the branch tab's), and the walk never attaches it to the folder's own host.
+  const side = tab.side === true;
+  if (!side && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (!side && EXPLICIT_PORT) {
     // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
     const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
@@ -239,7 +283,13 @@ async function chooseHostPort(tab) {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: tab.cwd, occupantAt });
+  return resolvePort({ cwd: tab.cwd, occupantAt, side });
+}
+
+// This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
+// one under every tab (host/side-session.js sideHostsOf).
+function ownIdentities() {
+  try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
 
 function spawnHost(tab, port, token) {
@@ -261,7 +311,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -367,9 +417,13 @@ let resources = null;              // the Resources panel's service (#63), built
 let resourceSampler = null;
 let occupancyService = null;       // worktree occupancy (#44 + #47): the live claims, read from the claim folder
 let transcriptOccupancy = null;    // ...and the fallback producer: claims read off the subagent transcripts
+const indexingPages = new Set();       // the indexing overlay's pages (toast, list): they get the interface font like the strip does
 const liveViews = new Set();          // every WebContentsView that currently shows a tab
 
 const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sender === win.webContents;
+// Lean mode's bridge (app/lean-bridge.js), set once the handlers are registered. Module scope because a view that
+// finishes loading, or goes away, is handled far from where the handlers are.
+let leanBridge = null;
 const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
 const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
 
@@ -377,6 +431,10 @@ const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.is
 // saved. The tab view covers the strip, and every view hides its own header
 // and zones when told.
 let focusMode = false;
+// The indexing assistant (#66): main's half (startIndexing), and whether its field has the keyboard (a publish must not
+// take it, as for the branch form).
+let indexing = null;
+let indexFieldFocused = false;
 // Layout pass L2 (#28): this window's frame, fixed at creation. A frameless
 // window keeps its strip in focus mode: it's the only title bar (Dexter L2 #3).
 let windowFrameless = false;
@@ -386,11 +444,13 @@ function layoutView(view) {
   const [width, height] = win.getContentSize();
   const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
+  canvasViews.relayout(view.webContents);     // its panel's offset moved with it (focus mode, a frameless toggle)
 }
 
 function setFocusMode(on) {
   focusMode = !!on;
   forEachView(layoutView);
+  if (indexing) indexing.relayout();
   forEachView((v) => v.webContents.send('focus-mode', focusMode));
 }
 
@@ -404,6 +464,7 @@ let focused = false;
 function createWindow() {
   // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
   // an open window, so a later toggle applies to the next one.
+  ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
   win = new BrowserWindow({
@@ -413,7 +474,7 @@ function createWindow() {
     // minimise and close (app/tab-strip.js windowChrome). The title still
     // feeds alt-tab and the taskbar.
     frame: !chrome.framelessWindow,
-    // Room for the terminal's minimum and two side zones (app/dock-layout.js S7).
+    // Room for the terminal's minimum and two side panels (app/dock-tree.js).
     minWidth: 640,
     minHeight: 480,
     // The project's own app colour when it has one, so a window does not
@@ -450,6 +511,7 @@ function createWindow() {
     forEachView((v) => v.webContents.send('window-focus', payload));
   };
   const focusSelected = () => {
+    if (indexFieldFocused) return;          // #66: coming back to the window keeps a half-typed note's keyboard
     const sel = selectedView();
     if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
   };
@@ -465,7 +527,7 @@ function createWindow() {
   win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
   win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
-    win.on(ev, () => forEachView(layoutView));
+    win.on(ev, () => { forEachView(layoutView); if (indexing) indexing.relayout(); });
   }
   // FF3: the page sets its own <title>, and a page title WINS over the one
   // given to BrowserWindow. Without this the window silently reverts to
@@ -478,10 +540,34 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     if (lastStripPayload) win.webContents.send('strip-model', lastStripPayload);
     win.webContents.send('strip-accent', lastStripAccent);
+    if (indexing) indexing.push(true);
+    if (leanBridge && leanBridge.view().on) win.webContents.send(LEAN_PUSH, leanBridge.view());
+    if (leanBridge && leanBridge.faces().length) win.webContents.send(LEAN_FACES_PUSH, leanBridge.faces());
   });
   // A click on the strip takes the keyboard from the view (Dexter, PR #75 R2-4),
   // so the next selection -- even of the same tab -- focuses its view again.
   win.webContents.on('focus', () => { lastFocusedView = null; });
+  // Closing the window (X, Alt+F4, app quit) ends every page, so unsaved text in a code reader (#50) is asked about
+  // first: Save / Discard / Cancel (app/reader-unsaved.js guardWindowClose). Once answered, the close goes through.
+  let closeGuarded = false;
+  win.on('close', (e) => {
+    if (closeGuarded || readerUnsaved.all().length === 0) return;
+    e.preventDefault();
+    if (closeAsking) return;
+    closeAsking = true;
+    guardWindowClose({
+      list: () => readerUnsaved.all(),
+      ask: askWindowClose,
+      notify: (detail) => { if (!PROBE_PORT && win && !win.isDestroyed()) dialog.showMessageBox(win, { type: 'info', message: 'The window was not closed', detail }); },
+      saveAll: () => { if (win && !win.isDestroyed()) win.webContents.send('reader-save'); forEachView((v) => v.webContents.send('reader-save')); },
+      waitCleared: async () => {
+        for (let i = 0; i < 80; i++) { if (readerUnsaved.all().length === 0) return true; await new Promise(r => setTimeout(r, 100)); }
+        return false;
+      },
+    }).then((ok) => {
+      if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
+    }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
+  });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
   return win;
 }
@@ -542,19 +628,29 @@ function createTabView(tab) {
     },
   });
   win.contentView.addChildView(view);
+  if (indexing) indexing.raise();    // #66: the toast and the list stay over every tab view
   layoutView(view);
   view.setVisible(false);       // shown by applySelection once it is the selected tab
   liveViews.add(view);
 
   const wc = view.webContents;
   registerShortcuts(wc);
+  const leanOwnerId = wc.id;
+  view.leanOwnerId = leanOwnerId;
+  wc.once('destroyed', () => { if (leanBridge) leanBridge.dropOwner(leanOwnerId); });
   wc.on('did-finish-load', () => {
     if (wc.isDestroyed()) return;
     wc.send('window-focus', { focused, dim: readDim() });
     if (cueOn) wc.send('attention-cue', true);
     if (focusMode) wc.send('focus-mode', true);
+    if (leanBridge && leanBridge.view().on) wc.send(LEAN_PUSH, leanBridge.view());
   });
-  wc.on('render-process-gone', (_e, d) => console.error(`[main] ${tab.key}: renderer gone:`, d.reason));
+  // A crashed renderer keeps its view but its page is gone: its night and its faces must not outlive it (the next morning's backgrounds would
+  // stay frozen by a night nobody reports ending; PR #140 Dexter r3 #1). A reloaded page reports again from its hello.
+  // Its unsaved reader text goes with it too (PR #155).
+  wc.on('render-process-gone', (_e, d) => { readerUnsaved.clear(tab.key); if (leanBridge) leanBridge.dropOwner(leanOwnerId); console.error(`[main] ${tab.key}: renderer gone:`, d.reason); });
+  // a fresh page (a reload, a crash recovery) starts with no unsaved text and never says so: forget the old entry
+  wc.on('did-start-navigation', (_e, _url, isInPlace, isMainFrame) => { if (isMainFrame && !isInPlace) readerUnsaved.clear(tab.key); });
   wc.on('did-fail-load', (_e, code, desc) => console.error(`[main] ${tab.key}: load failed:`, code, desc));
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
     wc.on('console-message', (_e, level, message, line, sourceId) => {
@@ -587,10 +683,52 @@ function createTabView(tab) {
   return view;
 }
 
+// --- Claude's panel (BACKLOG #71) -------------------------------------------------------------
+// One sealed WebContentsView per tab, laid over the dock panel's body (app/canvas-views.js). The tab's page is the trusted
+// controller: it says when to show, where, and with which page, and relays the person's answer about a host.
+const canvasAsks = new Map();      // id -> { owner, resolve }: a host question waiting on the tab's page
+let canvasAskSeq = 0;
+const CANVAS_ASK_TIMEOUT_MS = 5 * 60 * 1000;
+// PROBE SEAM, only when the probe driver's port AND token are set (the same gate as the other seams): names the probe maps to an address, vouched
+// for, so verify/probe-canvas-panel.js can serve a stub on loopback and still reach it BY A NAME through the real broker (which refuses every
+// loopback address, and every literal one). Any other name goes to real DNS. A normal run has no map and the broker's own resolver.
+const CANVAS_PROBE_HOSTS = (() => {
+  if (!PROBE_PORT || !PROBE_TOKEN) return null;
+  try { const m = JSON.parse(process.env.CLAUDE_CUSTOM_CANVAS_PROBE_HOSTS || 'null'); return m !== null && typeof m === 'object' ? m : null; } catch { return null; }
+})();
+const canvasProbeResolve = CANVAS_PROBE_HOSTS === null ? undefined
+  : async (name) => (typeof CANVAS_PROBE_HOSTS[name] === 'string' ? [{ address: CANVAS_PROBE_HOSTS[name], family: 4, trusted: true }] : require('dns').promises.lookup(name, { all: true }));
+const canvasViews = createCanvasViews({
+  WebContentsView, session,
+  resolveHost: canvasProbeResolve,
+  addChild: (v) => win.contentView.addChildView(v),
+  removeChild: (v) => win.contentView.removeChildView(v),
+  ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
+  preloadPath: path.join(__dirname, 'canvas-panel-preload.js'),
+  // a panel made for a tab that is not the selected one must start hidden (a setOwnerVisible that came before it can't be replayed)
+  isOwnerVisible: (owner) => { const sel = selectedView(); return !!sel && sel.webContents === owner; },
+  ask: (owner, origin) => new Promise((resolve) => {
+    if (owner.isDestroyed()) { resolve('deny'); return; }
+    const id = ++canvasAskSeq;
+    const timer = setTimeout(() => { canvasAsks.delete(id); resolve('deny'); }, CANVAS_ASK_TIMEOUT_MS);
+    canvasAsks.set(id, { owner, resolve: (answer) => { clearTimeout(timer); resolve(answer); } });
+    owner.send('canvas:need-host', { id, origin });
+  }),
+  onMessage: (owner, msg) => { if (!owner.isDestroyed()) owner.send('canvas:message', msg); },
+  // A shelf address the panel's page asked to open, after main checked it is exactly on the shelf and a real click came with it.
+  openUrl: (url) => openInBrowser(url, "Claude's panel"),
+  log: (line) => console.log(line),
+});
+
 function destroyTabView(tab) {
   const view = tab.view;
   if (!view) return;
+  canvasViews.destroyFor(view.webContents);
   liveViews.delete(view);
+  // a closed tab's /bedtime night cannot keep the window lean for ever
+  // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
+  if (leanBridge && view.leanOwnerId !== undefined) leanBridge.dropOwner(view.leanOwnerId);
+  readerUnsaved.clear(tab.key);      // its page is going: whatever it held unsaved goes with it, so no phantom question later
   try { win.contentView.removeChildView(view); } catch { /* the window is going away */ }
   try { if (!view.webContents.isDestroyed()) view.webContents.close(); } catch { /* already gone */ }
 }
@@ -612,11 +750,16 @@ function pushStripAccent() {
   const sel = selectedView();
   lastStripAccent = sel && !sel.webContents.isDestroyed() ? stripAccent.show(sel.webContents) : null;
   win.webContents.send('strip-accent', lastStripAccent);
+  if (indexing) indexing.setAccent(lastStripAccent);
 }
 
 function applySelection(snapshot) {
   for (const tab of snapshot.tabs) {
-    if (tab.view && !tab.view.webContents.isDestroyed()) tab.view.setVisible(tab.key === snapshot.selectedKey);
+    if (tab.view && !tab.view.webContents.isDestroyed()) {
+      tab.view.setVisible(tab.key === snapshot.selectedKey);
+      // A tab's panel is its own native view: it must leave with its tab, or it floats over whichever tab is selected.
+      canvasViews.setOwnerVisible(tab.view.webContents, tab.key === snapshot.selectedKey);
+    }
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
   // already-selected tab has never had the keyboard (Dexter F4 / Miguel M1),
@@ -627,7 +770,8 @@ function applySelection(snapshot) {
   // opens (and again when a creation fails), and keeps it while it takes
   // typing -- not while Contract A runs, so Ctrl+Tab meanwhile reaches a view
   // (PR #80 Dexter F7).
-  const stripBusy = !!snapshot.create && snapshot.create.phase !== 'running';
+  // #66: the same holds for the indexing field while it has the keyboard.
+  const stripBusy = (!!snapshot.create && snapshot.create.phase !== 'running') || indexFieldFocused;
   if (stripBusy && !stripWasBusy && win && !win.isDestroyed()) win.webContents.focus();
   stripWasBusy = stripBusy;
   const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });
@@ -670,6 +814,15 @@ function registerShortcuts(wc) {
     else if (action === 'reopen-tab') tabShell.reopen().catch(logShellError('reopen'));
     else if (action === 'new-branch') openBranchForm();
     else if (action === 'focus-mode') setFocusMode(!focusMode);
+    else if (action === 'index-note') { if (indexing) indexing.focusField(); }
+    else if (action === 'shortcuts') {
+      // The page lives in the tab view (it opens over that window); with none selected the key's own contents take it.
+      const v = selectedView();
+      const target = v ? v.webContents : wc;
+      if (target && !target.isDestroyed()) {
+        target.executeJavaScript('window.toggleShortcutsPage && window.toggleShortcutsPage()').catch(() => {});
+      }
+    }
     else if (action === 'devtools') {
       const v = selectedView();
       if (v && !v.webContents.isDestroyed()) v.webContents.toggleDevTools();
@@ -689,14 +842,38 @@ function onShellChanged(snapshot) {
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
 // close. Nothing on disk is touched.
-async function closeTabFlow(key) {
+async function closeTabFlow(key, { ifSafe = false } = {}) {
   if (!key || !tabShell) return null;
-  return tabShell.closeTab(key);
+  return tabShell.closeTab(key, { ifSafe });
 }
 
-async function confirmClose(tab) {
-  // The probe driver has nobody to click.
-  if (PROBE_PORT) return true;
+let closeAsking = false;     // the window-close question is up: a second close gesture doesn't stack another
+// The window's own close with unsaved reader text (#50): 'save' | 'discard' | 'cancel'. The probe driver has nobody
+// to click: it discards, like a plain tab close is answered yes.
+async function askWindowClose(files) {
+  if (PROBE_PORT) { probeConfirms.push({ label: 'window', reason: '', unsaved: files.join(', ') }); return 'discard'; }
+  const list = files.length === 1 ? files[0] : `${files.length} files (${files.slice(0, 3).join(', ')}${files.length > 3 ? ', ...' : ''})`;
+  const r = await dialog.showMessageBox(win, {
+    type: 'question',
+    buttons: ['Save and close', 'Discard and close', 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    message: 'Close with unsaved changes?',
+    detail: `The file reader has unsaved edits to ${list}.`,
+  });
+  return ['save', 'discard', 'cancel'][r.response] || 'cancel';
+}
+
+const probeConfirms = [];   // the probe driver's record of every confirm it was asked
+// `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
+async function confirmClose(tab, { reason = '' } = {}) {
+  // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
+  // to ask (#77), keeping what it was asked so the probe can read the reason back.
+  const unsaved = readerUnsaved.pathFor(tab.key);
+  if (PROBE_PORT) {
+    probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason, unsaved });
+    return reason === '';
+  }
   const label = tab.branch || projectLabel(tab.cwd);
   const r = await dialog.showMessageBox(win, {
     type: 'question',
@@ -704,8 +881,9 @@ async function confirmClose(tab) {
     defaultId: 1,
     cancelId: 1,
     message: `End the session in ${label}?`,
-    detail: 'The folder stays.',
+    detail: closeDetail({ reason, unsaved }),
   });
+  if (r.response === 0) readerUnsaved.clear(tab.key);
   return r.response === 0;
 }
 
@@ -795,32 +973,69 @@ async function showBackgroundMenu() {
 // --- IPC ---------------------------------------------------------------------------
 
 function registerIpc() {
+  // Claude's panel (#71). The panel's own page talks on canvas:fetch / canvas:send only (registerCanvasIpc: main answers a
+  // contents it made, nothing else). The channels below are the TAB's page, the trusted controller, and are gated on it.
+  registerCanvasIpc(ipcMain, canvasViews);
+  ipcMain.handle('canvas:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
+    ? canvasViews.show(e.sender, req) : { ok: false, error: 'refused' }));
+  ipcMain.on('canvas:bounds', (e, rect) => { if (isTabView(e.sender)) canvasViews.setBounds(e.sender, rect); });
+  ipcMain.on('canvas:cover', (e, on) => { if (isTabView(e.sender)) canvasViews.setCovered(e.sender, on === true); });
+  ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
+  ipcMain.on('canvas:set-shelf', (e, items) => { if (isTabView(e.sender)) canvasViews.setShelf(e.sender, items); });
+  ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
+  // The Style tab's switch for the panel's MCP server (#71 question 8): the file the host reads when it builds `claude`'s arguments, so a
+  // change takes effect on the next session. null means unknown (a read or write that failed): the page keeps asking, never guesses.
+  ipcMain.handle('canvas:settings-get', (e) => (isTabView(e.sender) ? readMcpSetting(uiStore.dir) : null));
+  ipcMain.handle('canvas:settings-set', (e, on) => (isTabView(e.sender) && typeof on === 'boolean' ? writeMcpSetting(uiStore.dir, on) : null));
+  ipcMain.on('canvas:host-answer', (e, a) => {
+    if (!isTabView(e.sender)) return;
+    const pending = a && canvasAsks.get(a.id);
+    if (!pending || pending.owner !== e.sender) return;      // only the tab that was asked can answer
+    canvasAsks.delete(a.id);
+    pending.resolve(a.answer === 'allow' ? 'allow' : 'deny');
+  });
   // The Resources panel (#63). `get` hands a page the last payload; `stop` is the Stop button, which main re-checks in
   // full (host/resource-stop.js) however the page asks.
   ipcMain.handle('resources:get', (e) => (isTabView(e.sender) && resources
     ? resources.get(!!selectedView() && selectedView().webContents === e.sender)
     : null));
+  // The Games panel (#41): the bests for the panel's title, and a raise at the end of a round. The store refuses anything that is
+  // not one of our games or not a whole count, so the page can't write anything else.
+  ipcMain.handle('games:scores', (e) => (isTabView(e.sender) ? gameScores.read() : null));
+  ipcMain.handle('games:submit', (e, game, score) => (isTabView(e.sender) ? gameScores.submit(game, score) : null));
   ipcMain.on('resources:chipOn', (e) => { e.returnValue = isTabView(e.sender) ? resourceChip.read() !== false : true; });
   ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
+  ipcMain.handle('resources:stopLeftovers', (e, req) => (isTabView(e.sender) && resources
+    ? resources.stopLeftovers(req)
+    : { ok: false, text: 'refused' }));
   // The strip page's own channels: gated on the window's OWN webContents, so a
   // tab's page (which has the other preload) cannot use them.
   ipcMain.on('strip:select', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     tabShell.select(key);
   });
-  ipcMain.on('strip:close', (e, key) => {
+  ipcMain.on('strip:close', (e, key, ifSafe) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
-    closeTabFlow(key);
+    closeTabFlow(key, { ifSafe: ifSafe === true });
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     const st = tabShell.menuState(key);
+    // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
+    const side = tabShell.sideMenu(key);
+    const sideItem = {
+      label: side.enabled ? side.label : `${side.label} (${side.why})`,
+      enabled: side.enabled,
+      click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
+    };
+    if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
     Menu.buildFromTemplate([
       markSubmenu(tabShell.branchOf(key)),
       { type: 'separator' },
+      sideItem,
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
@@ -945,6 +1160,12 @@ function registerIpc() {
     // Quoted: a path with a newline in it can't forge a log line (PR #92 Miguel S3).
     console.log(`[main] ${tab.key}: file link ${JSON.stringify(String(p).slice(0, 200))}`);
     return fileLink.open(p, tab.cwd, fileFs, shell);
+  });
+  // The code reader's unsaved file, or null (#50): kept per tab for the close questions (app/reader-unsaved.js).
+  // Only a tab view reports (a single-session window has none, so its reader isn't tracked).
+  ipcMain.on('tab:readerDirty', (e, p) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    if (tab) readerUnsaved.report(tab.key, p);
   });
   // The Files tab (#45): Show in Explorer and drag-out. Main resolves the path against THAT tab's own
   // worktree and re-runs the realpath guard; the page only names a path relative to it.
@@ -1090,7 +1311,7 @@ function registerIpc() {
   // Other project windows are other mains sharing this store: follow their toggle.
   watchImagesEnabled({
     store: uiStore, win, sync: avatarSync, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${AVATAR_KEY}.json`),
+    file: path.join(UI_STATE_DIR, `${AVATAR_KEY}.json`),
   });
 
   // Layout pass L2: "status line in the header" (#27; host/status-relay.js
@@ -1100,12 +1321,30 @@ function registerIpc() {
   registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
   watchChromeSettings({
     store: uiStore, sync: chromeSync, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${CHROME_KEY}.json`),
+    file: path.join(UI_STATE_DIR, `${CHROME_KEY}.json`),
   });
 
   // Backlog #34: the background video plays only while the window is on screen and on mains.
   // Main reports the facts only it knows (minimised, hidden, on battery); the page decides.
   registerPlaybackHandlers({ ipcMain, win, powerMonitor, isSender: isTabView, send: pushToViews });
+
+  // Lean mode (BACKLOG #62): one window-level state, told to every tab page and to the strip. The ☾ button and a
+  // /bedtime night (reported by the tab pages from their host's word) drive it; see app/lean-state.js for the rules.
+  // The nights the person sent Back to normal are kept across a restart (PR #140 Dexter F2), in the same install-wide record as the dim.
+  const leanKept = (uiStore.read(UI_KEY, {}) || {}).leanDismissed;
+  leanBridge = registerLeanHandlers({
+    lean: createLean({
+      dismissed: Array.isArray(leanKept) ? leanKept : [],
+      onDismissed: (list) => {
+        try { uiStore.update(UI_KEY, {}, (prev) => ({ ...(prev && typeof prev === 'object' ? prev : {}), leanDismissed: unionDismissed(prev && prev.leanDismissed, list) })); }
+        catch (err) { console.error('[main] could not save the dismissed nights:', err && err.message); }
+      },
+    }),
+    ipcMain, isView: isTabView, isStrip: (sender) => fromStrip({ sender }),
+    push: (state) => { pushToViews(LEAN_PUSH, state); if (win && !win.isDestroyed()) win.webContents.send(LEAN_PUSH, state); },
+    // the working agents' portraits go to the strip only (it draws them next to the lean chip)
+    pushFaces: (list) => { if (win && !win.isDestroyed()) win.webContents.send(LEAN_FACES_PUSH, list); },
+  });
 
   // The global dock layout (layout pass L1): install-wide like the toggle above,
   // and followed across project windows the same way -- see layout-bridge.js.
@@ -1114,7 +1353,7 @@ function registerIpc() {
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
   watchLayout({
     store: uiStore, sync: layoutSync, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${LAYOUT_KEY}.json`),
+    file: path.join(UI_STATE_DIR, `${LAYOUT_KEY}.json`),
   });
   // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
   // window still writes it, and it is read once to migrate into the tree, never written by this build.
@@ -1122,14 +1361,35 @@ function registerIpc() {
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
   watchLayout({
     store: uiStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${TREE_NAMES.key}.json`),
+    file: path.join(UI_STATE_DIR, `${TREE_NAMES.key}.json`),
   });
   // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
   const presetSync = {};
   registerLayoutHandlers({ ipcMain, store: uiStore, sync: presetSync, names: PRESET_NAMES, isSender: isTabView, send: pushToViews });
   watchLayout({
     store: uiStore, sync: presetSync, names: PRESET_NAMES, send: pushToViews,
-    file: path.join(__dirname, '..', '.harness', 'state', `${PRESET_NAMES.key}.json`),
+    file: path.join(UI_STATE_DIR, `${PRESET_NAMES.key}.json`),
+  });
+
+  // Fonts (BACKLOG #88): the install-wide terminal and interface fonts, the list of installed families, and the same
+  // follow-the-other-windows poll the layouts use (watchLayout reads the key and push channel from FONT_NAMES).
+  // The tab strip and the indexing overlay are their own pages: they get the interface font as a --font-ui they read (uiFontScript).
+  const fontsSync = {};
+  const pushFonts = (channel, settings) => {
+    pushToViews(channel, settings);
+    const script = uiFontScript(settings);
+    for (const wc of [win && win.webContents, ...indexingPages]) {
+      try { if (wc && !wc.isDestroyed()) wc.executeJavaScript(script).catch(() => {}); } catch { /* the page is going away */ }
+    }
+  };
+  const giveUiFont = (wc) => wc.on('did-finish-load', () => {
+    try { wc.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* the page is going away */ }
+  });
+  giveUiFont(win.webContents);
+  registerFontHandlers({ ipcMain, store: uiStore, sync: fontsSync, isSender: isTabView, send: pushFonts });
+  watchLayout({
+    store: uiStore, sync: fontsSync, names: FONT_NAMES, send: pushFonts,
+    file: path.join(UI_STATE_DIR, `${FONT_NAMES.key}.json`),
   });
 
   // The install-wide unfocused-window dim: the one Style-tab setting that is
@@ -1281,7 +1541,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1295,7 +1555,10 @@ function startProbeDriver(port) {
       let stripChrome = null;
       try {
         stripChrome = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent })"));
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
+          // #62: the lean button and chip as painted
+          + "lean: { bodyLean: document.body.classList.contains('lean'), btnHidden: document.getElementById('lean-btn').hidden, chipHidden: document.getElementById('lean-chip').hidden, label: document.getElementById('lean-chip-label').textContent, night: document.getElementById('lean-chip-night').hidden ? null : document.getElementById('lean-chip-night').textContent, back: document.getElementById('lean-back').textContent, dotAnim: (() => { const d = document.querySelector('.dot.working'); return d ? getComputedStyle(d).animationName : null; })(), "
+          + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, drawn: b.querySelectorAll('canvas[data-still-drawn]').length, failed: b.querySelectorAll('canvas[data-still-failed]').length, imgs: b.querySelectorAll('img').length, imgsLoaded: [...b.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth > 0).length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
       } catch (err) { stripChrome = { error: err.message }; }
       let viewDom = null;
       const sel = selectedView();
@@ -1320,7 +1583,8 @@ function startProbeDriver(port) {
       const snap = tabShell.snapshot();
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
-        create: snap.create, reopenable: tabShell.plusMenu().reopen,
+        create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
@@ -1342,8 +1606,15 @@ function startProbeDriver(port) {
       };
     },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
+    // #81: what the tab menu's Open side session does, by the branch tab's label.
+    async sideOpen(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.openSide(key);
+    },
     // The window's own `focus` handler, run as the OS would.
     async windowFocus() { win.emit('focus'); return { ok: true, osFocused: win.isFocused() }; },
+    async windowBlur() { win.emit('blur'); return { ok: true, osFocused: win.isFocused() }; },
     async select(label) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
@@ -1356,6 +1627,25 @@ function startProbeDriver(port) {
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
       return tabShell.closeTab(key);
     },
+    // #77: a real Ctrl+click on a tab in the strip page: its position is read from the DOM, the click is an input
+    // event with the control modifier, so the page's own handler decides what to ask main.
+    async ctrlClick(label) {
+      const rect = JSON.parse(await win.webContents.executeJavaScript(
+        `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
+      if (!rect) return { ok: false, error: `no tab labelled ${label}` };
+      const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: ['control'] };
+      win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+      win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+      return { ok: true };
+    },
+    // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
+    // pointer events decide what is hovered, as for a mouse.
+    async mouseMove(x, y) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      return { ok: true };
+    },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
     // request is passed as JSON data, never spliced in as code.
@@ -1366,6 +1656,13 @@ function startProbeDriver(port) {
       const out = await sel.webContents.executeJavaScript(
         `window.__dockProbe ? window.__dockProbe(JSON.parse(${req})) : JSON.stringify({ ok: false, error: 'no probe hook' })`);
       return JSON.parse(out);
+    },
+    // #71: the selected tab's Claude's panel, from the outside: where it is, whether it shows, and the title its page set.
+    async canvas(action, args) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (action === 'inspect') return { ok: true, ...canvasViews.inspect(sel.webContents) };
+      return { ok: canvasViews.click(sel.webContents, args.x, args.y) };
     },
     async screenshot(file) {
       const sel = selectedView();
@@ -1403,6 +1700,12 @@ function startProbeDriver(port) {
         try { await dbg.sendCommand('Emulation.setEmulatedMedia', { features: [] }); } finally { dbg.detach(); }
       }
       return { ok: true, on, attached: dbg.isAttached() };
+    },
+    // #62: press the strip's own Lean button / Back to normal (the click handler, not a shortcut around it).
+    async stripLean(button) {
+      const clicked = await win.webContents.executeJavaScript(
+        `(() => { const b = document.getElementById(${JSON.stringify(button)}); if (!b || b.hidden || (b.offsetParent === null && !b.getClientRects().length)) return false; b.click(); return true; })()`);
+      return { ok: clicked === true, clicked: clicked === true };
     },
     async quit() {
       setTimeout(() => app.exit(0), 200);
@@ -1451,6 +1754,68 @@ function startProbeDriver(port) {
   server.listen(port, '127.0.0.1', () => console.log(`[main] probe driver listening on ${port}`));
 }
 
+// --- the indexing assistant (#66) ----------------------------------------------------------
+// One per window, sharing one install-wide journal with the others. The probe seam points it at a throwaway journal.
+function startIndexing(seams) {
+  const journalFile = seams.indexingJournal || path.join(HARNESS_DIR, 'state', 'indexing-notes.jsonl');
+  const docsFor = (root) => { const p = projectOf(root); return indexWriter.docsOf(p || { root, dev: root }); };
+  const service = createIndexingService({
+    journal: createJournal({ file: journalFile }),
+    docsFor,
+    log: (...a) => console.log(...a),
+  });
+  // The chip's projects: host/recent.js scans transcripts (2.7 s cold here), so it runs in a worker, kept 5 minutes.
+  let recents = null;
+  let recentsAt = 0;
+  const projects = async (current) => {
+    if (recents === null || Date.now() - recentsAt > 5 * 60_000) {
+      const r = await readRecentsOffThread({ projectsDir: seams.projectsDir || undefined });
+      if (r) { recents = r; recentsAt = Date.now(); }
+    }
+    return projectChoices({
+      current, recents, projectOf, labelOf: projectLabel,
+      hasBacklog: (p) => { const d = indexWriter.docsOf(p); return d.ok === true && fs.existsSync(d.backlog); },
+    });
+  };
+  indexing = createIndexingBridge({
+    ipcMain, Menu, shell,
+    copyText: (text) => clipboard.writeText(text),
+    makeView: () => {
+      const v = new WebContentsView({
+        webPreferences: { contextIsolation: true, nodeIntegration: false, preload: path.join(__dirname, 'preload-indexing.js') },
+      });
+      v.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      indexingPages.add(v.webContents);
+      v.webContents.once('destroyed', () => indexingPages.delete(v.webContents));
+      v.webContents.on('did-finish-load', () => {
+        try { v.webContents.executeJavaScript(uiFontScript(readFontSettings(uiStore))).catch(() => {}); } catch { /* going away */ }
+      });
+      if (process.env.CLAUDE_CUSTOM_SCREENSHOT || PROBE_PORT) {
+        v.webContents.on('console-message', (_e, level, message) => console.log(`[indexing-overlay] ${message}`));
+      }
+      return v;
+    },
+    overlayFile: path.join(__dirname, 'indexing-overlay.html'),
+    getWin: () => win,
+    isStrip: (sender) => fromStrip({ sender }),
+    service,
+    project: { root: PROJECT_ROOT, label: WINDOW_LABEL },
+    docsFor,
+    projects,
+    viewTop: () => viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT }),
+    focusSelected: () => {
+      const sel = selectedView();
+      if (sel && !sel.webContents.isDestroyed()) { sel.webContents.focus(); lastFocusedView = sel; }
+    },
+    setFieldFocused: (on) => { indexFieldFocused = on; },
+    journalStamp: () => { try { const s = fs.statSync(journalFile); return `${s.size}:${s.mtimeMs}`; } catch { return 'none'; } },
+  });
+  indexing.start(3000);
+  indexing.push(true);
+  // Warm the chip's list off-thread, so the first click doesn't wait for it.
+  setTimeout(() => { projects(PROJECT_ROOT).catch(() => {}); }, 15_000).unref();
+}
+
 app.whenReady().then(async () => {
   console.log('[main] project       :', PROJECT_ROOT, `(${MODE})`);
   console.log('[main] launched on   :', LAUNCH_CWD);
@@ -1478,6 +1843,8 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   transcriptOccupancy = createTranscriptScanner({
+    // #81: a side host's session: its agents' claims are readers', whoever writes them
+    readerSessions: () => readerSessionIds(ownIdentities() || []),
     projectsDir: seams.projectsDir || defaultProjectsDir(),
     roots: createRootsProvider({ cwd: STATE_ROOT, log: (...a) => console.log(...a) }),
     // The SAME store the hosts write to. The proof a reader checks is this window's own process: its claims
@@ -1501,7 +1868,10 @@ app.whenReady().then(async () => {
     // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
     resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
     // #44 + #47: the live claims (the strip's hatched edge, each page's banner and card lines).
-    occupancy: { claims: () => occupancyService.current() },
+    // `known`: whether "no claims" can be believed (#77: a Ctrl+click close treats an unreadable service as unknown).
+    occupancy: { claims: () => occupancyService.current(), known: (folder) => occupancyService.known(folder) },
+    // #77: a Ctrl+click close reads the folder's git facts (uncommitted, unpushed) before deciding to skip the confirm.
+    safety: { facts: (folder) => readCloseFacts(folder), readerUnsaved: (tab) => readerUnsaved.pathFor(tab.key) },
     // Type /merged's own open-PR check (PR #93 Miguel I3): gh in that worktree, or the probe's fixture.
     prs: { openFor: (folder, branch) => openPrFor(folder, branch, { read: openPrsReader }) },
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
@@ -1519,6 +1889,8 @@ app.whenReady().then(async () => {
       newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
         || require('crypto').randomBytes(24).toString('hex'),
       control: (c) => sendControl(c),
+      // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
+      sideHosts: () => sideHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
       readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),
@@ -1572,6 +1944,22 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
+    // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
+    // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
+    ledger: () => pidLedger.readLedger(),
+    reap: createLeftoverSeams({
+      startTimes, kill: (pid, start) => killProvenAsync(pid, start),
+      removeEntries: (entries) => pidLedger.removeEntries(pidLedger.defaultLedgerFile(), entries),
+    }),
+    // Big task-output files (#74 F(3)): stat-only scan of %TEMP%\claude every 60 s; the delete is host/task-logs-fs.js deleteTaskLog,
+    // the only thing that removes a file. Live sessions are read from the CLI's session registry in main's config dir AND every open tab's (a relative CLAUDE_CONFIG_DIR is anchored on the tab folder).
+    taskLogs: {
+      everyMs: 60_000,
+      scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
+      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir)),
+      remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
+    },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
     warnAt: warnAtSeam,
     refreshStrip: () => { if (tabShell) tabShell.refresh(); },
@@ -1580,7 +1968,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   // Other project windows are other mains sharing the saved file: follow their change of the chip, live, as the panels do.
-  watchChip({ file: path.join(__dirname, '..', '.harness', 'state', `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
+  watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
 
@@ -1590,6 +1978,7 @@ app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
   createWindow();
   registerIpc();
+  startIndexing(seams);
 
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();
@@ -1623,3 +2012,5 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+// A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
+armQuitWatchdog(app);

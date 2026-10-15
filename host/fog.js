@@ -32,7 +32,7 @@
 
 const fsp = require('fs/promises');
 const path = require('path');
-const os = require('os');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const { projectDirName } = require('./project-dir');
 // ONE enumeration, shared with usage.js -- see host/transcripts.js. It used
 // to live here, and usage.js had its own top-level-only version, so the map
@@ -220,7 +220,7 @@ function mergeInto(target, entries) {
 
 async function readFog({ cwd, projectsDir, now = Date.now, tracked, onParse } = {}) {
   const root = normalize(cwd);
-  const dir = path.join(projectsDir || path.join(os.homedir(), '.claude', 'projects'),
+  const dir = path.join(projectsDir || claudeProjectsDir(),
     projectDirName(root));
 
   const { files: records, errors: enumErrors } = await transcriptFiles(dir);

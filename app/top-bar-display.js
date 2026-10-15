@@ -338,17 +338,73 @@ function inputState(lines, opts) {
 }
 
 /**
- * The read-back just before the CR (Miguel r2): is the live box EXACTLY
- * `❯ <command>`? The screen was judged once, before four spaced writes; a
- * dialog opening meanwhile, or a draft the clear did not reach, would
- * otherwise take the CR. Whitespace runs (xterm may render a non-breaking
- * space) compare as one space.
+ * The read-back just before the CR (Miguel r2): is the live box EXACTLY `❯ <command>`? The screen was judged once, before the spaced
+ * writes; a dialog opening meanwhile, or a draft the clear did not reach, would otherwise take the CR.
+ *
+ * Whitespace is judged the same on both sides (PR #125 Dexter #3): a run of it, or a non-breaking space, is one space in the box and in the
+ * command. A line longer than the box is wide WRAPS over several rows (Dexter #2; measured, verify/probe-panel-line-input.js); a wrap swallows
+ * the ONE space it breaks at and nothing else, so rows are joined back through that rule alone: `Total:42` is not `Total: 42` however it wraps
+ * (Dexter r2 #1).
+ *
+ * The CLI's box has a height cap and keeps the END of a longer text, the `❯` staying on the first row. MEASURED (the probe, at 20, 24, 30, 36
+ * and 40 terminal rows): the cap is floor(terminal rows / 2) - 5 rows. Only a box AT that cap can be hiding a head, so only then is a box that
+ * holds the TAIL of the command accepted (`opts.termRows` names the terminal's height; without it no tail is accepted). Below the cap the whole
+ * command is on screen and must match: a head that is gone, because a key cleared it mid-typing, is refused. What a read-back can never see
+ * is a stray key typed into the hidden head.
  */
+const SCROLL_CAP_BASE = 5;
+const COMMAND_CHUNK = 200;       // characters per write: one big write is taken for a paste and collapsed to "[Pasted text #1]" (measured)
+function scrollCapRows(termRows) {
+  if (!Number.isInteger(termRows) || termRows < 1) return 0;
+  return Math.floor(termRows / 2) - SCROLL_CAP_BASE;
+}
+const collapseWs = (t) => t.replace(/\s+/g, ' ').trim();
+
+// Do `rows` (already one-line each) read, from `pos` in `want`, as the rest of it? A wrap between two rows swallowed at most one space.
+function rowsFollow(rows, want, pos) {
+  let at = pos;
+  for (let i = 0; i < rows.length; i++) {
+    if (i > 0 && want.charAt(at) === ' ') at += 1;
+    if (!want.startsWith(rows[i], at)) return -1;
+    at += rows[i].length;
+  }
+  return at;
+}
+
 function commandTyped(lines, command, opts) {
   if (typeof command !== 'string' || !command) return false;
-  if (inputState(lines, opts) !== 'ready') return false;
-  const line = liveBox(lines).box[0].replace(/\s+/g, ' ').trim();
-  return line === `❯ ${command}`;
+  const live = liveBox(lines);
+  const rows = live && live.box;
+  if (!rows || !rows.length || rows[0].charAt(0) !== '❯') return false;          // a dialog, or no box
+  if (opts && opts.vim && !vimInsertShown(lines)) return false;                // vim NORMAL: keys are motions
+  const want = collapseWs('❯ ' + command);
+  const texts = rows.map(collapseWs);
+  if (rowsFollow(texts, want, 0) === want.length) return true;                 // the whole command, on one row or wrapped
+  if (texts.length < 2 || texts.length !== scrollCapRows(opts && opts.termRows)) return false;
+  // At the cap: the first row is the prompt mark and the END of the text. Find where that text sits in the command.
+  const first = texts[0].slice(1).trim();
+  if (!first) return false;
+  for (let p = want.indexOf(first, 2); p >= 0; p = want.indexOf(first, p + 1)) {
+    if (rowsFollow([first, ...texts.slice(1)], want, p) === want.length) return true;
+  }
+  return false;
+}
+
+/**
+ * After the Enter: does the box still hold the line that was typed? True when the box's text still contains the command's first or last
+ * stretch (the CLI swallowed the Enter: its backslash newline, a suggestion list taking the key), even if that swallow changed the box a little
+ * (PR #125 Dexter r2 #2). False for an emptied box, a reset one, a placeholder, a dialog, or no box: the line left it, which is what a
+ * submission looks like.
+ */
+function boxHoldsLine(lines, command) {
+  if (typeof command !== 'string' || !command) return false;
+  const live = liveBox(lines);
+  const rows = live && live.box;
+  if (!rows || !rows.length) return false;
+  const text = collapseWs(rows.join(' '));
+  const want = collapseWs(command);
+  const n = Math.min(20, want.length);
+  return text.includes(want.slice(0, n)) || text.includes(want.slice(-n));
 }
 
 const SCREEN_REFUSALS = {
@@ -394,7 +450,10 @@ function planSwitch({ kind, raw, current, screen, connected } = {}) {
  * caller spaces them PTY_STEP_MS apart: typed as one chunk, a line is taken for a paste.
  */
 function typingKeys(command, enterInsert) {
-  return [...(enterInsert ? ['i'] : []), '\x05', '\x15', command];
+  const chunks = [];
+  const chars = Array.from(command);
+  for (let i = 0; i < chars.length; i += COMMAND_CHUNK) chunks.push(chars.slice(i, i + COMMAND_CHUNK).join(''));
+  return [...(enterInsert ? ['i'] : []), '\x05', '\x15', ...(chunks.length ? chunks : [command])];
 }
 
 // One `@path`, optionally `#L40` or `#L40-60` (the reader's "@ in prompt", #32): no space, so the CLI reads
@@ -403,6 +462,13 @@ const AT_MENTION = /^@[^\x00-\x20\x7f#]+(?:#L[1-9]\d{0,8}(?:-[1-9]\d{0,8})?)?$/;
 
 // One line of a slash command: a CR or any control key in it would submit or edit something else.
 const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
+
+// A button's message in Claude's panel (BACKLOG #71): free text, so it is allowed ONLY behind this fixed prefix (the CLI can't read it as
+// a slash command or a `!` shell line), on one line, with no control or C1 character, no leading or trailing space and at most
+// 2000 characters (what app/canvas-display.js sessionLine builds, held to it by test/plan-panel.test.js), and NEVER ending in a backslash:
+// MEASURED on the real CLI (verify/probe-panel-line-input.js, PR #125 Dexter #1) `\` + Enter is the CLI's newline, so the gate's Enter would
+// leave a two-row draft and submit nothing.
+const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?(?<!\\)$/;
 
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
@@ -414,9 +480,10 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
  */
 function planTyping({ command, screen, connected, kind } = {}) {
   const mention = kind === 'mention';
-  const shape = mention ? AT_MENTION : SLASH_COMMAND;
+  const panel = kind === 'panel';
+  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : SLASH_COMMAND;
   if (typeof command !== 'string' || !shape.test(command)) {
-    return { ok: false, reason: mention ? 'not a single-line @ mention' : 'not a single-line slash command' };
+    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : 'not a single-line slash command' };
   }
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
@@ -488,7 +555,7 @@ if (typeof module !== 'undefined' && module.exports) {
     modelFamily, cueColour, chosenAccent, withChosenAccent, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
-    vimInsertShown, commandTyped, menuPlacement, planTyping, typingKeys, boxText,
+    vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, typingKeys, boxText,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -510,6 +577,8 @@ if (typeof module !== 'undefined' && module.exports) {
   root.switchNotice = switchNotice;
   root.vimInsertShown = vimInsertShown;
   root.commandTyped = commandTyped;
+  root.boxHoldsLine = boxHoldsLine;
+  root.scrollCapRows = scrollCapRows;
   root.menuPlacement = menuPlacement;
   root.planTyping = planTyping;
   root.typingKeys = typingKeys;

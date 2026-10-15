@@ -7,6 +7,11 @@
  * feeds the strip's marks, each tab's banner and the hub's card line from one list.
  *
  *   current()  the live claims          state()  'ok' | 'missing' | 'unreadable'
+ *   known(f)   true only when "no claim in folder f" can be believed: a pass has finished, the claim folder was
+ *              readable and no claim naming f (its worktree or an `also`) was left unproven (the OS couldn't be
+ *              asked). With no folder: no claim anywhere was left unproven. A Ctrl+click close (#77) needs it: an
+ *              empty list from a service that couldn't look is not "no agents", and one unprovable claim doubts
+ *              only the folders it names (Dexter R2).
  *   refresh()  re-read and re-judge     start() / close()
  *
  * TRUTH RULES
@@ -25,7 +30,8 @@
 const fs = require('fs');
 const { watchGlobalDir } = require('./global-watch');
 const { readAll } = require('./occupancy-store');
-const { judge, LIVE, UNKNOWN } = require('./occupancy-live');
+const { judge, LIVE, UNKNOWN, UNPROVEN } = require('./occupancy-live');
+const { normPath } = require('./project-layout');
 
 const TICK_MS = 10_000;
 const LABEL_MS = 30_000;
@@ -33,7 +39,7 @@ const LABEL_MS = 30_000;
 const proofKey = c => `${c.agentId}|${c.hostPid}|${c.hostStartedAt}`;
 const signatureOf = claims => JSON.stringify([...claims]
   .sort((a, b) => (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0))
-  .map(c => [c.agentId, c.agent, c.worktree, c.also, c.fromBranch, c.fromRoot, c.hostPid, c.hostStartedAt, c.firstAt]));
+  .map(c => [c.agentId, c.agent, c.worktree, c.also, c.fromBranch, c.fromRoot, c.sessionId, c.hostPid, c.hostStartedAt, c.firstAt]));
 
 function createOccupancyService({
   dir, ensureDir = () => {}, startTimes, onChange = () => {}, fsImpl = fs, watch = watchGlobalDir,
@@ -46,6 +52,9 @@ function createOccupancyService({
   let lastNotifiedAt = 0;
   let running = null;
   let again = false;
+  let trusted = false;
+  let doubted = new Set();   // the folders an unproven claim names
+  let doubtAll = false;      // an unproven claim that names no usable folder doubts every one
   let closed = false;
   let watcher = null;
   let timer = null;
@@ -63,15 +72,25 @@ function createOccupancyService({
     const judged = read.claims.length ? await judge(read.claims, startTimes) : [];
     const next = [];
     const present = new Set();
+    const unprovenIn = new Set();
+    let unnamed = false;
     for (const { claim, verdict } of judged) {
       const key = proofKey(claim);
       present.add(key);
+      if ((verdict === UNKNOWN || verdict === UNPROVEN) && !proven.has(key)) {   // hidden, but it might be an agent at work
+        const named = [claim.worktree, ...(Array.isArray(claim.also) ? claim.also : [])].map(normPath).filter(n => n !== null);
+        for (const n of named) unprovenIn.add(n);
+        if (named.length === 0) unnamed = true;
+      }
       if (verdict === LIVE) { proven.add(key); next.push(claim); } else if (verdict === UNKNOWN && proven.has(key)) next.push(claim);
       else proven.delete(key);
     }
     for (const key of [...proven]) if (!present.has(key)) proven.delete(key);
 
     live = next;
+    trusted = read.state !== 'unreadable';
+    doubted = unprovenIn;
+    doubtAll = unnamed;
     const sig = signatureOf(next);
     const t = now();
     const changed = sig !== signature;
@@ -91,7 +110,7 @@ function createOccupancyService({
       try {
         do {
           again = false;
-          try { await pass(); } catch (err) { log('[occupancy] refresh failed:', err && err.message); }
+          try { await pass(); } catch (err) { trusted = false; log('[occupancy] refresh failed:', err && err.message); }
         } while (again);
       } finally { running = null; }
     })();
@@ -126,7 +145,12 @@ function createOccupancyService({
   }
 
   return {
-    current: () => live.slice(), state: () => state, refresh, start, close,
+    current: () => live.slice(), state: () => state, known: (folder) => {
+      if (!trusted || doubtAll) return false;
+      if (folder === undefined) return doubted.size === 0;
+      const n = normPath(folder);
+      return n !== null && !doubted.has(n);
+    }, refresh, start, close,
     _ensureDir: ensureDir, _tickMs: tickMs,
   };
 }

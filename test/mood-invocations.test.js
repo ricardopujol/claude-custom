@@ -350,7 +350,8 @@ test('replay: the real background agent survives the first Stop and ends with it
     .split('\n').filter(Boolean).map(l => JSON.parse(l));
   const h = harness();
   const seen = [];
-  h.m.on('change', c => seen.push(c.agent + ':' + c.state));
+  // STATE changes only: a change of the finer `detail` (a Bash in flight) repeats the state (BACKLOG #55).
+  h.m.on('change', c => { if (!seen.length || seen[seen.length - 1] !== c.agent + ':' + c.state) seen.push(c.agent + ':' + c.state); });
   let afterFirstStop = null;
   for (const e of stream) {
     h.m.handle(e);

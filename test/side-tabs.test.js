@@ -81,7 +81,7 @@ test('a null event is not a toggle', () => {
 
 test('every module in TABS has a panel in the real markup, and vice versa', () => {
   // Layout pass L1: the tab buttons are built FROM TABS now (one per module in
-  // each zone, app/dock-zones-display.js), so the old drift -- a button with no
+  // each group, app/dock-tree-display.js), so the old drift -- a button with no
   // tab, a tab with no button -- can no longer happen in the markup. The drift
   // that still can: a module in TABS with no `.panel` (its tab opens a blank
   // zone), or a panel no module names (unreachable, like 'projects' once was:

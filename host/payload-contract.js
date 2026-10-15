@@ -71,6 +71,9 @@ const CONTRACT = {
       // `a<name>-<hex>` and its NAME as agent_type. Grep and Glob carry the searched folder as an absolute
       // `tool_input.path` WHEN ONE IS GIVEN (measured with forward slashes: `C:/Users/...`); it is optional, so
       // it is not a contracted field here.
+      // Also read, but not required here: `session_id`. agent-occupancy.js names it in a subagent's claim so a hub
+      // card matches its OWN session's run (#57); every real capture carries it, a subagent's calls with the main
+      // session's own id (test/agent-occupancy.test.js MEASURED). Absent, the claim names no session (no card).
       'tool_input.file_path': {
         used: 'agent-occupancy.js, the worktree a subagent Read, Edit or Write is in (#44 + #47)',
         onlyWhen: p => ['Read', 'Edit', 'Write'].includes(p && p.tool_name),
@@ -189,6 +192,15 @@ const CONTRACT = {
     // measured, it carries no permission_mode.
     fields: {},
   },
+  // The permission prompt's own hook (BACKLOG #55). Bundle 2.1.296: base fields + tool_name, tool_input, permission_suggestions?, mcp_server?;
+  // built with the tool-use context, so agent_id / agent_type are present inside a subagent and absent for the main session's own prompt.
+  // Observe-only: the helper prints nothing, so mood-machine.js only ever marks the named agent "waiting on you".
+  PermissionRequest: {
+    fields: {
+      tool_name: { used: 'mood-machine.js, which only needs to know a prompt is opening for the agent that named itself' },
+      ...COMMON_FIELDS,
+    },
+  },
   Notification: {
     fields: {
       message: { used: 'attention-summary.js, to say what is being asked for' },
@@ -199,6 +211,8 @@ const CONTRACT = {
     // agent_needs_input (idle_prompt only as a held "finished"'s backstop); an
     // older CLI that sends none raises as before. Measured in CLI 2.1.286's own
     // input schema; verify/probe-notification-type.js is the tripwire.
+    // NOT read for a card (BACKLOG #55): a Notification never carries agent_id (CLI 2.1.296 builds it with no tool context,
+    // verify/probe-agent-states.js), so it can't say which agent is waiting; the PermissionRequest hook above does.
   },
 };
 

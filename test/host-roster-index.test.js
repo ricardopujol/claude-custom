@@ -115,3 +115,9 @@ test('a connecting client only re-triggers the scan while it has not completed',
 test('the hello handshake carries the current rosterIndex', () => {
   assert.match(HOST, /rosterIndex:\s*lastRosterIndex/);
 });
+
+test('a roster row carries the persona and function from the agent file, null when it has none (#76)', () => {
+  assert.match(HOST, /persona:\s*info && info\.persona \? info\.persona : null/);
+  assert.match(HOST, /fn:\s*info && info\.fn \? info\.fn : null/);
+  assert.match(refreshRosterIndexBody(), /rosterAgentRow\(agent, lifetime, roster\.unresolvedNames, roster\.infos\)/);
+});

@@ -25,7 +25,36 @@ const claim = (ev, own = DEV, roots = ROOTS) => O.claimFrom(ev, roots, own);
 
 test('an Edit inside a sibling worktree claims it, naming the agent', () => {
   const c = claim(pre('Edit', { file_path: path.join(FEAT, 'app', 'x.js') }));
-  assert.deepStrictEqual(c, { agentId: 'ac7618c6a7668687d', agent: 'electron-pro', worktree: FEAT });
+  assert.deepStrictEqual(c, { agentId: 'ac7618c6a7668687d', agent: 'electron-pro', worktree: FEAT, sessionId: null });
+});
+
+test('the claim names the session the call came from: the hook payload\'s session_id (backlog #57, PR #96 Dexter F5)', () => {
+  const ev = pre('Read', { file_path: path.join(FEAT, 'a.txt') }, { session_id: '2f72d188-bd6d-49bd-8fe4-1f1cde460011' });
+  assert.strictEqual(claim(ev).sessionId, '2f72d188-bd6d-49bd-8fe4-1f1cde460011');
+});
+
+test('MEASURED: a subagent\'s own calls carry its SESSION\'s session_id, the one the main session\'s events carry', () => {
+  // The premise of matching a card on the claim's session: real captures, where every event names one session.
+  const fs = require('fs');
+  for (const name of ['hooks-real-subagent-failure.fixture.jsonl', 'hooks-real-named-agent.fixture.jsonl']) {
+    // one capture is `{ event, payload }` lines (the bridge's shape), the other bare payloads
+    const payloads = fs.readFileSync(path.join(__dirname, name), 'utf8').split(/\r?\n/).filter(Boolean)
+      .map(l => JSON.parse(l)).map(o => (o.payload && typeof o.payload === 'object' ? o.payload : o));
+    const agentCalls = payloads.filter(p => p.hook_event_name === 'PreToolUse' && p.agent_id);
+    const mainEvents = payloads.filter(p => !p.agent_id);
+    assert.ok(agentCalls.length > 0 && mainEvents.length > 0, name);
+    const sessions = new Set(mainEvents.map(p => p.session_id));
+    assert.strictEqual(sessions.size, 1, name);
+    for (const p of agentCalls) assert.ok(sessions.has(p.session_id), `${name}: ${p.session_id}`);
+  }
+});
+
+test('a session_id that is missing or not a safe id is "not known" (null), and the claim still stands', () => {
+  for (const v of [undefined, null, '', 5, '../x', 'a b', 'x'.repeat(65)]) {
+    const c = claim(pre('Read', { file_path: path.join(FEAT, 'a.txt') }, { session_id: v }));
+    assert.strictEqual(c.worktree, FEAT, String(v));
+    assert.strictEqual(c.sessionId, null, String(v));
+  }
 });
 
 for (const tool of ['Read', 'Write', 'Edit']) {
@@ -222,7 +251,8 @@ test('latest: entries that are not touches are ignored, not thrown on', () => {
 
 const GOOD = {
   agentId: 'ac7618c6a7668687d', agent: 'electron-pro', worktree: FEAT, also: [FEAT2], fromBranch: 'develop',
-  fromRoot: DEV, hostPid: 4242, hostStartedAt: '133800000000000000', firstAt: 1000, lastAt: 2000, count: 3,
+  fromRoot: DEV, sessionId: '2f72d188-bd6d-49bd-8fe4-1f1cde460011', hostPid: 4242, hostStartedAt: '133800000000000000',
+  firstAt: 1000, lastAt: 2000, count: 3,
 };
 
 test('a claim written is a claim read back, field for field', () => {
@@ -266,13 +296,22 @@ test('hostStartedAt that is missing or not a FILETIME parses, as "can\'t be prov
   }
 });
 
-test('optional fields default instead of failing: no agent name, no branch, no also', () => {
-  const { agent, fromBranch, also, ...rest } = GOOD;
+test('optional fields default instead of failing: no agent name, no branch, no also, no session', () => {
+  const { agent, fromBranch, also, sessionId, ...rest } = GOOD;
   const r = O.parseClaim(JSON.stringify(rest));
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.claim.agent, null);
   assert.strictEqual(r.claim.fromBranch, null);
   assert.deepStrictEqual(r.claim.also, []);
+  assert.strictEqual(r.claim.sessionId, null, 'a claim from an older build names no session');
+});
+
+test('a sessionId that is not a safe id reads as "not known" (null), never as a value', () => {
+  for (const v of [null, '', 5, '../x', 'a b', 'x'.repeat(65), {}]) {
+    const r = O.parseClaim(JSON.stringify({ ...GOOD, sessionId: v }));
+    assert.strictEqual(r.ok, true, String(v));
+    assert.strictEqual(r.claim.sessionId, null, String(v));
+  }
 });
 
 test('also keeps only absolute strings and at most ALSO_MAX of them', () => {
@@ -295,5 +334,12 @@ test('buildClaim: the touches become worktree + also; a fresh claim counts its o
   assert.strictEqual(b.firstAt, 1800, 'the time on THIS worktree');
   assert.strictEqual(b.lastAt, 2000);
   assert.strictEqual(b.count, 1);
+  assert.strictEqual(b.sessionId, null, 'no session given: not known');
   assert.strictEqual(O.buildClaim({ ...GOOD, touches: [] }), null);
+});
+
+test('buildClaim: the session goes into the record when it is a safe id, and only then', () => {
+  const touches = [{ worktree: FEAT, firstAt: 1000, lastAt: 1500, count: 2 }];
+  assert.strictEqual(O.buildClaim({ ...GOOD, touches }).sessionId, GOOD.sessionId);
+  assert.strictEqual(O.buildClaim({ ...GOOD, sessionId: '../x', touches }).sessionId, null);
 });

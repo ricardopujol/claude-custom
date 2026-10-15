@@ -197,7 +197,7 @@ test('vim mode is latched from the screen and passed to every screen judgement',
 test('the CR is sent only after the box reads back exactly the command', () => {
   // typeAndCheck reads back and answers ok only on an exact match; typePlanned presses Enter only on that ok
   const check = fnBody('typeAndCheck');
-  assert.match(check, /if \(commandTyped\(screenLines\(\), command, \{ vim: vimSeen \}\)\) \{ done\(\{ ok: true \}\); return; \}/,
+  assert.match(check, /if \(commandTyped\(screenLines\(\), command, \{ vim: vimSeen, termRows: term\.rows \}\)\) \{ done\(\{ ok: true \}\); return; \}/,
     'a read-back before Enter');
   assert.doesNotMatch(check, /input\('\\r'\)/, 'the read-back itself never presses Enter');
   const enter = fnBody('typePlanned');

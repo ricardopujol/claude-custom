@@ -208,7 +208,7 @@ function initialSelection(tabs, launchedFrom, { keyOf = identity, isInside = () 
   return keyOf(containing[0].path);
 }
 
-const api = { stripModel, select, neighbour, afterClose, initialSelection, phaseText, badgeFor };
+const api = { stripModel, select, neighbour, afterClose, initialSelection, phaseText, badgeFor, pulseFor };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

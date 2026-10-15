@@ -17,7 +17,7 @@ const sleeperSrc = 'setTimeout(() => {}, 90000)';
 const mine = new Set();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-const endMine = () => { for (const pid of mine) { try { process.kill(pid); } catch { /* gone */ } } };
+const endMine = () => { for (const pid of mine) { try { process.kill(pid); } catch { /* gone */ } } };   // kill-ok(own-spawn): this probe's own sleepers; the experiment is about pid reuse itself
 process.on('exit', endMine);
 
 function sleeper() {
@@ -34,7 +34,7 @@ async function main() {
   const oPid = await new Promise((resolve) => { P.stdout.once('data', d => resolve(Number(String(d).trim()))); });
   mine.add(oPid);
   console.log(`P=${P.pid} started O=${oPid}`);
-  process.kill(P.pid);
+  P.kill();   // through the handle (PR #130, Dexter #1): the same TerminateProcess, but never a reused pid
   await sleep(300);
   console.log(`P killed by its pid; O still alive: ${alive(oPid)}`);
 
@@ -42,14 +42,18 @@ async function main() {
   for (let i = 0; i < 4000 && !q; i++) {
     const c = sleeper();
     if (c.pid === P.pid) q = c;
-    else { try { process.kill(c.pid); } catch { /* gone */ } mine.delete(c.pid); await sleep(2); }
+    else { try { c.kill(); } catch { /* gone */ } mine.delete(c.pid); await sleep(2); }
   }
   if (!q) { console.log('INCONCLUSIVE: no new process got the freed pid in 4000 tries (nothing was killed by /T)'); return 2; }
   console.log(`Q=${q.pid} got P's old pid; O (${oPid}) started before Q and names it as parent`);
-  const r = spawnSync('taskkill', ['/PID', String(q.pid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });
+  // The experiment itself is a raw `taskkill /T` (its status is the measurement), so it runs only while q, which this
+  // probe spawned and still holds, is provably running.
+  if (q.exitCode !== null || q.signalCode !== null) { console.log('INCONCLUSIVE: Q exited before the taskkill'); return 2; }
+  const qPid = q.pid;
+  const r = spawnSync('taskkill', ['/PID', String(qPid), '/T', '/F'], { windowsHide: true, encoding: 'utf8' });   // kill-ok(own-spawn): the experiment's taskkill /T, gated two lines up on q (held) still running
   await sleep(500);
   const oDied = !alive(oPid);
-  console.log(`taskkill /PID ${q.pid} /T /F -> status ${r.status}; O alive after: ${!oDied}`);
+  console.log(`Q: taskkill /PID ${q.pid} /T /F -> status ${r.status}; O alive after: ${!oDied}`);
   console.log(oDied
     ? 'FINDING: /T FOLLOWS A STALE PARENT LINK (no start-time check): it killed an older orphan that only names the reused pid.'
     : 'FINDING: /T did not kill the older orphan here.');

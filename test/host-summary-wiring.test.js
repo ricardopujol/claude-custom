@@ -46,7 +46,8 @@ test('it pushes through the control channel and ticks on an unref\'d timer that 
   const b = summaryBlock();
   assert.match(b, /broadcast: \(m\) => broadcastControl\(m\),/);
   assert.match(b, /onBattery: seams\.summaryPower \? async \(\) => seams\.summaryPower === 'battery' : createPowerProbe\(\)\.onBattery,/);
-  assert.match(b, /const summaryTimer = setInterval\(\(\) => \{ summary\.tick\(\)\.catch\(\(\) => \{ \/\* logged inside \*\/ \}\); \}, TICK_MS\);/);
+  // lean mode (#62) holds the tick while every window is lean: host/lean-gate.js, test/lean-gate.test.js
+  assert.match(b, /const summaryTimer = setInterval\(\(\) => \{\s*if \(leanGate\.paused\(clients\.size\)\) return;\s*summary\.tick\(\)\.catch\(\(\) => \{ \/\* logged inside \*\/ \}\);\s*\}, TICK_MS\);/);
 });
 
 test('hello carries the summary and why there is none, so a window that attached late shows it', () => {

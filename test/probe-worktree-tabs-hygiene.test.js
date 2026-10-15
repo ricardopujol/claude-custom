@@ -33,10 +33,10 @@ test('it never touches the real state: registry, portraits, uploads and user dat
 test('every process it starts is cleaned up on every exit path, including Ctrl+C', () => {
   assert.match(PROBE, /require\('\.\/lib\/process-hygiene'\)/);
   assert.match(PROBE, /hygiene\.install\(\)/);
-  assert.match(PROBE, /hygiene\.registerSpawnedTree\(child\.pid\)/);
+  assert.match(PROBE, /hygiene\.registerChild\(child\)/);
   assert.match(PROBE, /hygiene\.addCleanup\(killEverything\)/);
   assert.match(PROBE, /hygiene\._emergencyCleanup\('done'\)/);
-  assert.match(PROBE, /killPidTree\(pid\)/);
+  assert.match(PROBE, /seenPids.endAll\(\)/);
 });
 
 test('the temp repo is removed, junctions unlinked first', () => {

@@ -53,6 +53,28 @@ const REPO_SCANNING = new Set([
   // renderer.js / renderer.html / main.js / preload.js source text (#63); it requires tab-shell only for the probe-action
   // whitelist, which tab-shell.test.js pins itself.
   'renderer-resources-wiring.test.js',
+  // #41 the wait games: renderer.js / renderer.html / main.js / preload.js source text. games-display.js (the wiring and drawing)
+  // is deliberately NOT mutated: the rules, the round and the score store are, and their own tests are in the command.
+  'renderer-games-wiring.test.js',
+  // #71 Claude's panel: source assertions on host.js / main.js / renderer.js; they say "deliberately NOT in Stryker's command" themselves.
+  'canvas-wiring.test.js',
+  'canvas-main-wiring.test.js',
+  // #81 side session: source assertions on host.js / main.js (they need Electron and a pty); the pieces are tested in the files that ARE in the command.
+  'side-session-wiring.test.js',
+  'renderer-canvas-wiring.test.js',
+  // Release-gate lane 2026-10-09 (Miguel I1/I2): the tests that run real processes, split from the files in the command. A Stryker timeout counts as a
+  // KILL and a hung child is left behind, so they stay out; their pure tests stay in. Run them by hand: node --test test/<name>-process.test.js
+  'status-relay-process.test.js',
+  'probe-hygiene-process.test.js',
+  'settings-writer-process.test.js',
+  // #43 shortcuts page: source text of tab-shell.js / main.js / renderer.js against the key table. It requires shortcut-table only for the rows,
+  // which shortcut-table.test.js pins itself.
+  'shortcut-table-wiring.test.js',
+  'shortcuts-display-script.test.js',   // runs the two files as plain <script>s in a vm (reads their text)
+  'drift-git-process.test.js',    // docs drift (PR #153 Miguel I1): the real git on a throwaway repo and a real child that outlives a timeout; its pure tests (drift-git.test.js) are in the command
+  // #55 wiring: renderer.html / renderer.js / host.js source text. It requires nothing from a mutated module.
+  'renderer-agent-state-wiring.test.js',
+  'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -101,6 +123,18 @@ test('the command and mutate list name only files that exist', () => {
   for (const rel of conf.mutate) {
     assert.ok(fs.existsSync(path.join(ROOT, rel)), `mutate names a missing file: ${rel}`);
   }
+});
+
+test('every test path in the command is ONE whitespace-separated token naming one existing file (PR #154: a missing space fused two)', () => {
+  // The regex scans above find both names inside a fused token `test/a.test.jstest/b.test.js`, so they stay green while node is handed a path that
+  // does not exist and neither suite runs under any mutant. Split on whitespace instead.
+  const tokens = conf.commandRunner.command.split(/\s+/).filter(t => t.includes('test/'));
+  assert.ok(tokens.length > 100, `the scan must find the command's test paths (${tokens.length})`);
+  const bad = tokens.filter(t => !/^test\/[a-z0-9-]+\.test\.js$/.test(t) || !fs.existsSync(path.join(ROOT, t)));
+  assert.deepStrictEqual(bad, [], `these command tokens are not exactly one existing test file: ${bad.join(', ')}`);
+  // positive control: the detector must flag a fused token
+  const fused = 'node --test test/a.test.jstest/b.test.js'.split(/\s+/).filter(t => t.includes('test/'));
+  assert.ok(fused.some(t => !/^test\/[a-z0-9-]+\.test\.js$/.test(t)));
 });
 
 test('the modules that decide whether a session is stopped are mutated (Miguel, PR #76 I3)', () => {
@@ -183,6 +217,11 @@ test('no test in the command reads a MUTATED module as text', () => {
     // cannot be reached any other way). Instrumented text still runs there, and `process` is injected for it. It
     // asserts no code shape. A named exception, on purpose.
     'tab-strip-accent-wiring.test.js',
+    // Neither READS a mutated module (release-gate lane, 2026-10-09): both only NAME one as a string (status-relay.test.js in the settings it builds,
+    // settings-writer.test.js as 'host/loadout-hook.js'). The detector flags a quoted path beside any readFileSync in the file, so the name is what
+    // trips it. (The source-text assertions on host/status-relay.js are in source-contracts.test.js.)
+    'status-relay.test.js',
+    'settings-writer.test.js',
   ]);
 
   // THE BASENAME ANYWHERE INSIDE THE QUOTES. Mortimer, PR #42 run 3, and this is
@@ -270,7 +309,7 @@ test('the modules that decide what the Resources panel kills are mutated (#63)',
 
 // What "this runs a real process" looks like: child_process spawn/exec of node, powershell or a shell, or the repo's own
 // PowerShell helper (createExec). git is deliberately not here: a git call is milliseconds, PowerShell is seconds.
-const SPAWN = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\(\s*(?:process\.execPath|['"`](?:powershell|pwsh|node|bash|sh)\b)|\bcreateExec\(/;
+const SPAWN = /\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync|fork)\(\s*(?:process\.execPath|['"`](?:powershell|pwsh|node|bash|sh|git)\b)|\bcreateExec\(/;
 
 // Every test/it/describe title in a source, at any indentation.
 const titlesOf = (src) => [...src.matchAll(/^\s*(?:test|it|describe)\((['"`])((?:\\.|(?!\1).)*)\1(?:,\s*\{([^}\n]*)\})?/gm)]
@@ -315,6 +354,7 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
     'resource-stop-position.test.js', // one real-PowerShell kill test (D4/D5)
     'resource-stop-respawn.test.js',  // N1/N2 real supervisor trees
     'resource-sampler.test.js',       // one real CIM sample
+    'kill-proven.test.js',            // one real sleeper killed through killProven's PowerShell (PR #130, Dexter #2)
   ];
   // Command files that spawn real processes and are NOT skipped. Every one predates #63 and was accepted by earlier gate
   // runs (node -e children are tens of ms; the two PowerShell ones are one call each). Adding here is a decision, and
@@ -325,6 +365,22 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
     'summary-slot-kills.test.js',  // one node -e child whose pid is then free
     'proc-start.test.js',          // one real powershell holder (pre-#63)
     'window-count.test.js',        // the real proc-start exec (pre-#63)
+    // BACKLOG #94: quota-share and quota-cli joined `mutate`. Each of these starts a plain node child (tens of ms): the CLI itself, or
+    // `node -e ""` to get a pid that is really dead for the default pid check.
+    'quota-share.test.js',
+    'quota-cli.test.js',
+    'quota-cli-review.test.js',
+    // The SPAWN scan now sees `git` (BACKLOG #94, Miguel Y1). These were already spawning git on temp repos before it did, accepted by earlier gates (tens of ms each).
+    'git-branch.test.js',
+    'project-layout.test.js',
+    'branch-health.test.js',
+    'repo-index.test.js',
+    'repo-diff.test.js',
+    'repo-service.test.js',
+    'repo-diff-rule.test.js',
+    'indexing-writer.test.js',
+    'indexing-service.test.js',
+    'ask-index-hardening.test.js', // BACKLOG #94: `git init` / `git ls-files` on a temp repo (config isolated), a `--version` probe
   ]);
 
   const cmd = conf.commandRunner.command;
@@ -388,4 +444,46 @@ test('the real-process tests are skipped by NAME, classified by CONTENT, and the
   // C. The pattern must not silently narrow any test outside the named real files.
   const hit = all.filter(t => !REAL_PROCESS_TEST_FILES.includes(t.file) && skip.test(t.title)).map(t => `${t.file}: ${t.title}`);
   assert.deepStrictEqual(hit, [], `--test-skip-pattern would skip tests outside the named files: ${hit.join('; ')}`);
+});
+
+test("every logic module of Claude's panel is mutated (Miguel, PR #122 Y5: six of them were never listed, and the consistency test above can't see a module that isn't)", () => {
+  // Derived from the tree, not restated: any app/canvas-*.js or host/canvas-*.js is logic-bearing and security-bearing unless it is named below.
+  const NOT_LOGIC = new Set([
+    'app/canvas-panel-preload.js',   // the two-function bridge: needs Electron's contextBridge, and test/canvas-panel-preload.test.js pins its surface
+  ]);
+  const found = [];
+  for (const dir of ['app', 'host']) {
+    for (const f of fs.readdirSync(path.join(ROOT, dir))) if (/^canvas-.*.js$/.test(f) && !NOT_LOGIC.has(`${dir}/${f}`)) found.push(`${dir}/${f}`);
+  }
+  assert.ok(found.length >= 7, `the scan must find the panel's modules (${found.join(', ')})`);
+  const mutated = new Set(conf.mutate);
+  const unlisted = found.filter(m => !mutated.has(m));
+  assert.deepStrictEqual(unlisted, [], `these panel modules are not in stryker.conf.json's mutate list, so no mutation score covers them: ${unlisted.join(', ')}`);
+  const cmd = conf.commandRunner.command;
+  for (const m of found) {
+    const own = `test/${path.basename(m, '.js')}.test.js`;
+    if (fs.existsSync(path.join(ROOT, own))) assert.ok(cmd.includes(own), `${own} must be in the command`);
+  }
+});
+
+test('the eight modules that decide what is killed, deleted or kept running are mutated (Mortimer, release gate 2026-10-09)', () => {
+  // The consistency test above only checks the tests of modules ALREADY in `mutate`; these eight shipped (PRs #121-#133) without being
+  // listed, so no gate measured the code that kills a process tree, edits the pid ledger, deletes task logs and ends the quit.
+  for (const rel of ['host/kill-tree.js', 'host/pid-ledger.js', 'host/task-logs.js', 'host/task-logs-fs.js', 'host/status-relay.js',
+    'app/quit-watchdog.js', 'host/settings-writer.js', 'host/canvas-mcp.js']) {
+    assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
+  }
+});
+
+test('the real-process halves of status-relay, probe-hygiene and settings-writer stay split out of the command (Miguel, PR #142 I1/I2)', () => {
+  // A Stryker timeout counts as a KILL, and a hung child is left behind: the tests that run real processes live in <name>-process.test.js,
+  // exempt from the command, while the pure tests stay in. Each must exist, still spawn, and stay out; the pure file must not spawn.
+  const cmd = conf.commandRunner.command;
+  for (const name of ['status-relay', 'probe-hygiene', 'settings-writer']) {
+    const proc = fs.readFileSync(path.join(ROOT, 'test', name + '-process.test.js'), 'utf8');
+    assert.ok(SPAWN.test(proc), name + '-process.test.js no longer spawns a real process: merge it back or drop it');
+    assert.ok(!cmd.includes('test/' + name + '-process.test.js'), name + '-process.test.js must NOT be in the command');
+    assert.ok(cmd.includes('test/' + name + '.test.js'), name + '.test.js (the pure tests) must be in the command');
+    assert.ok(!SPAWN.test(fs.readFileSync(path.join(ROOT, 'test', name + '.test.js'), 'utf8')), name + '.test.js must not spawn real processes');
+  }
 });

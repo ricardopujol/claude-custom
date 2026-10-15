@@ -275,7 +275,7 @@ async function detectSuspendPrimitive() {
     `let n=0;setInterval(()=>{n++;require('fs').appendFileSync(${JSON.stringify(heartbeat)},n+' '+Date.now()+'\\n')},300)`],
     { detached: true, stdio: 'ignore' });
   const lines = () => { try { return fs.readFileSync(heartbeat, 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
 
   let sRes, rRes, before, during;
   try {
@@ -315,7 +315,7 @@ async function detectSuspendPrimitive() {
   await sleep(1200);
   const after = lines();
   console.log(`heartbeat lines: right-after-suspend-call=${before} still-during-suspend(+2s)=${during} after-resume=${after}`);
-  try { process.kill(child.pid); } catch {}
+  try { child.kill(); } catch {}
   hygiene.unregisterSpawnedTree(child.pid);
   try { fs.unlinkSync(heartbeat); } catch {}
 
@@ -483,7 +483,7 @@ async function realSessionTest(suspendPrimitive) {
     name: 'xterm-256color', cols: 120, rows: 45, cwd: REPO, env: { ...cleanEnv(), TERM: 'xterm-256color' },
   });
   console.log(`pty pid (claude.exe): ${term.pid}`);
-  hygiene.registerSpawnedTree(term.pid);
+  hygiene.registerChild(term);
 
   const xterm = new Terminal({ cols: 120, rows: 45, allowProposedApi: true });
   term.onData(d => xterm.write(d));
@@ -653,7 +653,7 @@ async function realSessionTest(suspendPrimitive) {
     const root = candidates.find(c => !candidates.some(other => other.ProcessId === c.ParentProcessId));
     const rootPid = (root || candidates[0]).ProcessId;
     console.log(`[${at()}] cleaning up: tree-killing pid=${rootPid} (root of the matched chain) and the session`);
-    try { execFileSync('taskkill', ['/PID', String(rootPid), '/F', '/T']); } catch (err) { console.log(`   taskkill root pid: ${err.message}`); }
+    try { execFileSync('taskkill', ['/PID', String(rootPid), '/F', '/T']); } catch (err) { console.log(`   taskkill root pid: ${err.message}`); }   // kill-ok(table-row): the root of a chain read from the process table a moment ago (table-row class)
     results.realSession = record;
   } finally {
     try { term.kill(); } catch {}
@@ -749,7 +749,7 @@ async function inventory() {
     term = pty.spawn(CLAUDE_BIN, ['--permission-mode', 'bypassPermissions'], {
       name: 'xterm-256color', cols: 120, rows: 45, cwd: REPO, env: { ...cleanEnv(), TERM: 'xterm-256color' },
     });
-    hygiene.registerSpawnedTree(term.pid);
+    hygiene.registerChild(term);
     const xterm = new Terminal({ cols: 120, rows: 45, allowProposedApi: true });
     term.onData(d => xterm.write(d));
     const screen = () => {

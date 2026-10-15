@@ -14,13 +14,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const { claudeProjectsDir } = require('./claude-config-dir');
 const os = require('os');
 const { projectDirName } = require('./project-dir');
 
 const num = v => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 function defaultProjectsDir() {
-  return path.join(os.homedir(), '.claude', 'projects');
+  return claudeProjectsDir();
 }
 
 // Reads only as far as it needs to: the cwd appears on early entries, and the
@@ -174,16 +175,15 @@ function hasClaudeHistory(cwd, { projectsDir, env = process.env, homeDir = os.ho
 /**
  * Every folder Claude Code may keep transcripts in (Dexter F3). Claude honours
  * CLAUDE_CONFIG_DIR, and a missing ~/.claude/projects proves nothing when it's
- * set, so both are checked. History in EITHER counts. This is the only
- * reader here that honours it: the launcher's lists still read the default,
- * and a missed row there is cosmetic, where a missed history here writes a look.
+ * set, so both are checked. History in EITHER counts. The other
+ * readers follow CLAUDE_CONFIG_DIR alone (BACKLOG #23, host/claude-config-dir.js); this one keeps the default
+ * folder too, because a missed history here writes a look.
  */
 function historyRoots({ projectsDir, env, homeDir }) {
   if (projectsDir) return [projectsDir];
-  const roots = [];
-  const configDir = env && typeof env.CLAUDE_CONFIG_DIR === 'string' ? env.CLAUDE_CONFIG_DIR.trim() : '';
-  if (configDir) roots.push(path.join(configDir, 'projects'));
-  roots.push(path.join(homeDir, '.claude', 'projects'));
+  const roots = [claudeProjectsDir({ env, home: homeDir })];
+  const fallback = claudeProjectsDir({ env: {}, home: homeDir });
+  if (fallback !== roots[0]) roots.push(fallback);
   return roots;
 }
 

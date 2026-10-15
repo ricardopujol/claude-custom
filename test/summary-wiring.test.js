@@ -25,7 +25,8 @@ test('the page loads summary-display.js after terminal-bar.js (it uses its age l
   const r = scripts(HTML);
   assert.ok(r.indexOf('summary-display.js') > r.indexOf('terminal-bar.js'));
   assert.ok(r.indexOf('summary-display.js') < r.indexOf('renderer.js'));
-  assert.deepStrictEqual(scripts(STRIP_HTML), ['tab-strip.js'], 'the shell works the hover lines out; the strip only draws them');
+  assert.ok(!scripts(STRIP_HTML).includes('summary-display.js'), 'the shell works the hover lines out; the strip only draws them');
+  assert.ok(scripts(STRIP_HTML).includes('tab-strip.js'));
 });
 
 test('the summary sits at the left of the bar, before the prompt part and the chips, with its card under the bar', () => {

@@ -33,8 +33,8 @@ test('it kills only PIDs it started: never a process by name', () => {
   assert.doesNotMatch(PROBE, /taskkill/i);
   assert.doesNotMatch(PROBE, /Stop-Process/i);
   assert.doesNotMatch(PROBE, /\/IM\b/);
-  assert.match(PROBE, /hygiene\.registerSpawnedTree\(child\.pid\)/);
-  assert.match(PROBE, /killPidTree\(pid\)/);
+  assert.match(PROBE, /hygiene\.registerChild\(child\)/);
+  assert.match(PROBE, /seenPids.endAll\(\)/);
 });
 
 test('every process it starts is cleaned up on every exit path, including Ctrl+C', () => {

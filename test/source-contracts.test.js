@@ -204,10 +204,19 @@ test('host.js logs every Notification hook with its notification_type', () => {
 
 // Dexter, notify round 2 F1 (High): a settle timer fired "finished" into a
 // working session, because the host never sees UserPromptSubmit and hooks only
-// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no timers here.
-test('attention.js arms no timer: only Claude Code knows when the session is quiet', () => {
+// Agent/Task/Bash. Ricardo chose idle_prompt only (2026-10-01): no settle timers here.
+// The one exception (BACKLOG #78, Ricardo 2026-10-09: "finished" waits for a shell younger than 10 minutes): a
+// shell ages out with no hook to say so, so ONE timer exists, armed by a Stop that listed a young shell (or, after a
+// prompt cancelled it, by an idle prompt or StopFailure) and cancelled by every main-session hook the host sees
+// (test/attention.test.js "every main-session activity event cancels the wait"; test/host-bar-wiring.test.js: file
+// tools reach it too). What no hook shows is a turn that opens with no prompt and uses no tool, so the timer can
+// still fire into that one: one early "finished", bounded by the turn's own Stop.
+test('attention.js arms no timer but the shell wait: one injectable setTimer, no intervals, no bare setTimeout', () => {
   const src = read('host/attention.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-  assert.doesNotMatch(src, /setTimeout|setInterval/);
+  assert.doesNotMatch(src, /setInterval/);
+  assert.strictEqual((src.match(/setTimeout\(/g) || []).length, 1, 'only unrefTimer calls setTimeout');
+  assert.match(src, /const unrefTimer = \(fn, ms\) => \{ const t = setTimeout\(fn, ms\);/);
+  assert.strictEqual((src.match(/setTimer\(/g) || []).length, 1, 'armed from exactly one place');
 });
 
 // --- the tab strip (moved here in PR 3 so app/tab-strip.js can be mutated) --------
@@ -217,9 +226,17 @@ test('the tab strip never uses innerHTML: a branch name is text, not markup', ()
   assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
-test('tab-strip.html loads only its own script', () => {
+test('tab-strip.html loads only its own scripts: the indexing field\'s (#66), lean mode\'s helper (#62) and the strip\'s', () => {
   const html = read('app/tab-strip.html');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./tab-strip.js']);
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './portrait-media-display.js', './lean-display.js', './tab-strip.js']);
+});
+
+test('the indexing overlay loads only its display script, and neither page uses innerHTML: a note is text (#66)', () => {
+  const html = read('app/indexing-overlay.html');
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js']);
+  assert.match(html, /script-src 'self'/);
+  const src = read('app/indexing-display.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  assert.doesNotMatch(src, /innerHTML|outerHTML|insertAdjacentHTML|document\.write/);
 });
 
 // PR #93 Miguel I5 (here, not in probe-seams.test.js: that file is in the mutation command, and reading a
@@ -254,8 +271,8 @@ test("the shell's Run /merged path sends no Enter and no raw input anywhere", ()
 
 // The repo browser and code reader (#45 / #32). Here, not beside the unit tests: those are in the mutation
 // command and these modules are mutated, so reading their source there aborts the gate's dry run.
-const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-diff', 'repo-service', 'tool-calls'];
-const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-browser'];
+const REPO_HOST = ['repo-guard', 'repo-overlay', 'repo-index', 'repo-watch', 'repo-read', 'repo-write', 'repo-diff', 'repo-service', 'tool-calls'];
+const REPO_APP = ['repo-actions', 'repo-tree-display', 'repo-mention', 'repo-language', 'repo-requester', 'repo-refresh', 'repo-files-panel', 'repo-reader', 'repo-linediff', 'repo-browser'];
 const repoSources = () => [
   ...REPO_HOST.map(n => [`host/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'host', `${n}.js`), 'utf8')]),
   ...REPO_APP.map(n => [`app/${n}.js`, fs.readFileSync(path.join(__dirname, '..', 'app', `${n}.js`), 'utf8')]),
@@ -306,6 +323,85 @@ test('main re-runs the guard against the asking tab\'s own folder for reveal and
     const body = main.slice(at, main.indexOf('\n  });', at));
     assert.match(body, /isTabView\(e\.sender\)/, `${ch} answers only a tab view`);
     assert.match(body, /tab\.cwd/, `${ch} resolves against the asking tab's folder`);
+  }
+});
+
+test('#50: the reader\'s unsaved file reaches main only from a tab view, and the page wires its question and its report', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf("ipcMain.on('tab:readerDirty'");
+  assert.ok(at !== -1, 'main takes the report');
+  const body = main.slice(at, main.indexOf('\n  });', at));
+  assert.match(body, /isTabView\(e\.sender\)/, 'only a tab view may report');
+  assert.match(body, /readerUnsaved\.report\(tab\.key, p\)/, 'keyed by the asking tab, never by a name the page sends');
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(preload, /readerDirty: \(rel\) => ipcRenderer\.send\('tab:readerDirty'/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(renderer, /onDirty: \(rel\) => \{[^}]*window\.harness\.readerDirty\(rel\)/);
+  assert.match(renderer, /confirmDiscard: async \(message\) => window\.confirm\(message\)/);
+  // a vetoed beforeunload pins a tab view with no way to close it: the reader never installs one
+  for (const f of ['app/repo-reader.js', 'app/repo-browser.js']) {
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', f), 'utf8'), /beforeunload/, f);
+  }
+});
+
+test('#50 (PR #155 Dexter 2): closing the window asks about unsaved reader text, with Save wired through the pages', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf("win.on('close', (e) => {");
+  assert.ok(at !== -1, 'the window has a close handler');
+  const body = main.slice(at, main.indexOf("win.on('closed'", at));
+  assert.match(body, /readerUnsaved\.all\(\)\.length === 0\) return;/, 'with nothing unsaved the close goes through untouched');
+  assert.match(body, /e\.preventDefault\(\)/);
+  assert.match(body, /guardWindowClose\(/);
+  assert.match(body, /webContents\.send\('reader-save'\)/, 'Save asks the pages to save');
+  assert.match(body, /closeGuarded = true; win\.close\(\)/, 'once answered the close goes through, not looping');
+  assert.match(main, /buttons: \['Save and close', 'Discard and close', 'Cancel'\]/);
+  const preload = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8');
+  assert.match(preload, /onReaderSave: \(fn\) =>/);
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(renderer, /window\.harness\.onReaderSave\(\(\) => \{ repoBrowser\.reader\.save\(\); \}\)/);
+});
+
+test('#50 (PR #155 Miguel I1): a reloaded or crashed page can no longer leave main believing it has unsaved text', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.match(main, /wc\.on\('render-process-gone', \(_e, d\) => \{ readerUnsaved\.clear\(tab\.key\);/);
+  assert.match(main, /wc\.on\('did-start-navigation', \(_e, _url, isInPlace, isMainFrame\) => \{ if \(isMainFrame && !isInPlace\) readerUnsaved\.clear\(tab\.key\); \}\);/);
+});
+
+test('#50 (PR #155 Miguel I3): the reader\'s probe hooks (type, confirmAnswer...) are reachable only through the probe driver', () => {
+  const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  for (const f of ['app/preload.js', 'app/repo-browser.js', 'app/repo-files-panel.js']) {
+    assert.doesNotMatch(read(f), /confirmAnswer|repoProbe/, f);
+  }
+  const renderer = read('app', 'renderer.js');
+  assert.strictEqual((renderer.match(/repoBrowser\.probe\(/g) || []).length, 1, 'one call site');
+  assert.match(renderer, /case 'repoProbe': \{\s*const r = repoBrowser\.probe\(a\.what, a\);/);
+  // that case is inside the view-action switch, which only the probe driver's `view` command reaches, behind a whitelist
+  assert.match(read('app', 'tab-shell.js'), /VIEW_PROBE_ACTIONS = new Set\(\[[^\]]*'repoProbe'/);
+  assert.match(read('app', 'main.js').replace(/\r\n/g, '\n'), /if \(PROBE_PORT\) startProbeDriver\(PROBE_PORT\)/);
+  // the answer hook is read in exactly one place besides probe(): confirmLeave
+  const reader = read('app', 'repo-reader.js');
+  const uses = (reader.match(/probeAnswer/g) || []).length;
+  assert.ok(uses <= 9, `probeAnswer is used ${uses} times: keep it to confirmLeave and the two probe actions`);
+});
+
+test('#50 (PR #155 r2 N1): destroying a tab view clears its unsaved entry (a removed worktree leaves no phantom question)', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const at = main.indexOf('function destroyTabView(tab) {');
+  assert.ok(at !== -1);
+  assert.match(main.slice(at, main.indexOf('\n}\n', at)), /readerUnsaved\.clear\(tab\.key\)/);
+});
+
+test('#50 (PR #155 Miguel I2): the Files panel highlight goes back when the person declines to leave unsaved text', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'repo-browser.js'), 'utf8');
+  assert.match(src, /onOpen: async \(path\) => \{ if \(\(await reader\.open\(path\)\) === false\) panel\.setSelected\(reader\.path\(\)\); \}/);
+});
+
+test('#50: the host\'s write is the repo service\'s alone and goes through the guard; nothing else in the repo browser writes a file', () => {
+  const svc = fs.readFileSync(path.join(__dirname, '..', 'host', 'repo-service.js'), 'utf8');
+  assert.match(svc, /case 'write': \{[\s\S]*?await guardSave\(root, msg\.path\)[\s\S]*?write\(g\.real \|\| g\.abs,/);
+  for (const [file, src] of repoSources()) {
+    if (file === 'host/repo-write.js') continue;
+    assert.doesNotMatch(src, /writeFile|appendFile|createWriteStream|\.rename\(|unlink|rmSync|\.open\([^)]*'w/, `${file} must not write or delete files`);
   }
 });
 
@@ -411,4 +507,170 @@ test('Miguel I4: a redraw puts the hover card back where it was, reading no layo
   assert.ok(at !== -1);
   assert.doesNotMatch(GIT_RINGS_SRC.slice(at, GIT_RINGS_SRC.indexOf('dial.textContent', at)), /getBoundingClientRect/);
   assert.match(GIT_RINGS_SRC, /fillCard\(dial, card, cardWas\.key\)/);
+});
+
+// (here, not in indexing-bridge.test.js: that file is in the mutation command, and reading a mutated module as text
+// aborts Stryker's dry run)
+test('#66 indexing: every channel the bridge listens on is used by a preload, and every push has a listener', () => {
+  const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const bridge = read('indexing-bridge.js');
+  const preloads = read('preload-strip.js') + read('preload-indexing.js');
+  const listened = [...bridge.matchAll(/ipcMain\.(?:on|handle)\('([^']+)'/g)].map(m => m[1]);
+  const pushed = [...bridge.matchAll(/\.send\('([^']+)'/g)].map(m => m[1]);
+  assert.ok(listened.length >= 12 && pushed.length >= 3);
+  assert.deepStrictEqual(listened.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a channel no page sends on');
+  assert.deepStrictEqual(pushed.filter(ch => !preloads.includes(`'${ch}'`)), [], 'a push no page listens for');
+  const used = [...preloads.matchAll(/ipcRenderer\.(?:send|invoke)\('((?:strip:index|indexing:)[^']*)'/g)].map(m => m[1]);
+  assert.deepStrictEqual(used.filter(ch => !listened.includes(ch)), [], 'a page sends on a channel main never answers');
+});
+
+// ---- BACKLOG #23: the CLI's config dir has ONE resolver (host/claude-config-dir.js) ---------------------------------
+// (here, not in claude-config-dir.test.js: that file is in the mutation command, and reading a mutated module as text
+// aborts Stryker's dry run)
+
+const REPO = path.join(__dirname, '..');
+
+// Comments out, line numbers kept, so a mention in prose never counts and the reported line is real.
+function stripComments(src) {
+  const blank = m => m.replace(/[^\n]/g, '');
+  return src.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
+}
+
+/**
+ * Every line that names a `.claude` FOLDER, in any spelling: single, double or template quotes, `'.claude/projects'`
+ * joins, `${home}/.claude`, a homedir alias under any name, a join split over several lines. It keys on the folder
+ * name rather than on what it's joined to, because the aliases are unbounded and the name isn't.
+ */
+function claudeFolderLines(src) {
+  const hits = [];
+  stripComments(src).split(/\r?\n/).forEach((l, i) => {
+    if (/(?<![\w$)\]])\.claude(?![-\w])/.test(l)) hits.push({ line: i + 1, text: l.trim() });
+  });
+  return hits;
+}
+
+// The ONLY places a `.claude` folder is named by hand. Per LINE, with the reason; anything else must go through
+// claudeConfigDir()/claudeProjectsDir(). A stale entry fails too, so this list can't rot.
+const CLAUDE_FOLDER_ALLOWED = [
+  ['host/claude-config-dir.js', "path.join(opts.home || os.homedir(), '.claude')", 'the resolver itself: the default when unset'],
+  ['host/review-reports.js', "'.claude', 'reviews'", "Ricardo's own reviews folder, not the CLI's state"],
+  ['host/worktree-ops.js', "'.claude', 'skills', 'worktree'", "Ricardo's own worktree skill scripts, not the CLI's state"],
+  ['host/drop.js', "'.config', '.claude', '.azure'", 'a deny-list NAME for the drop guard'],
+  ['host/host.js', "path.join(CWD, '.claude', 'skills')", 'project-level (under the tab cwd)'],
+  ['host/roster-index.js', "path.join(cwd, '.claude', 'agents')", 'project-level'],
+  ['host/bubble-voice.js', "path.join(cwd, '.claude', 'agents')", 'project-level (under the tab cwd); the install-level folder comes from claudeConfigDir()'],
+  ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.local.json')", 'project-level'],
+  ['host/settings-writer.js', "path.join(cwd, '.claude', 'settings.json')", 'project-level'],
+  ['host/wand-skills.js', "path.join(projectDir, '.claude', 'skills')", 'project-level'],
+  ['host/settings-writer.js', "path.join(configDir, '.claude.json')", 'a file inside the config dir, which is the CLI global config when it is relocated (findUserTheme)'],
+  ['host/settings-writer.js', "path.basename(configDir) === '.claude'", 'the default config dir, whose global config .claude.json sits beside it (findUserTheme)'],
+  ['host/probe-seams.js', 'not gh / ~/.claude', 'a log message, no path built'],
+];
+
+function scanDirs() {
+  const out = [];
+  for (const d of ['host', 'app', 'bin']) {
+    const dir = path.join(REPO, d);
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir)) if (f.endsWith('.js')) out.push(`${d}/${f}`);
+  }
+  return out;
+}
+
+test('the config-dir guard sees every way of hard-coding the default (it is tested on its own counterexamples)', () => {
+  const bad = [
+    "path.join(os.homedir(), '.claude/projects')",
+    'path.join(os.homedir(), ".claude")',
+    '`${os.homedir()}/.claude`',
+    "const HOME = os.homedir(); path.join(HOME, '.claude')",
+    "path.join(\n  os.homedir(),\n  '.claude')",
+    "os.homedir() + '/.claude/projects'",
+  ];
+  for (const b of bad) assert.ok(claudeFolderLines(b).length > 0, `not flagged: ${b}`);
+  for (const ok of ['// ~/.claude is the default', '/* the .claude folder */ x()', "path.join(home, '.claude-custom')", "const p = '.claudette'"]) {
+    assert.deepStrictEqual(claudeFolderLines(ok), [], `flagged by mistake: ${ok}`);
+  }
+});
+
+test('guard: no host/app/bin module names a .claude folder outside the per-line allow-list', () => {
+  const used = new Set();
+  const bad = [];
+  for (const rel of scanDirs()) {
+    for (const h of claudeFolderLines(fs.readFileSync(path.join(REPO, rel), 'utf8'))) {
+      const i = CLAUDE_FOLDER_ALLOWED.findIndex(([f, snippet]) => f === rel && h.text.includes(snippet));
+      if (i >= 0) used.add(i); else bad.push(`${rel}:${h.line}: ${h.text}`);
+    }
+  }
+  assert.deepStrictEqual(bad, [], 'route CLI state through host/claude-config-dir.js (or allow-list the line, with a reason)');
+  const stale = CLAUDE_FOLDER_ALLOWED.filter((_, i) => !used.has(i)).map(e => `${e[0]}: ${e[1]}`);
+  assert.deepStrictEqual(stale, [], 'allow-list entries that no longer match anything: delete them');
+});
+
+// host.js can't be required, so its wiring is pinned in the source (the pattern of test/host-top-bar.test.js).
+test('host.js wires the config dir: the tab cwd anchors it, and the statusLine and the drop guard read it', () => {
+  const host = stripComments(fs.readFileSync(path.join(REPO, 'host', 'host.js'), 'utf8'));
+  assert.match(host, /setConfigAnchor\(CWD\)/, "a relative CLAUDE_CONFIG_DIR isn't anchored to the tab's cwd");
+  const sl = host.slice(host.indexOf('findUserStatusLine({'), host.indexOf('findUserStatusLine({') + 120);
+  assert.match(sl, /findUserStatusLine\(\{ configDir: claudeConfigDir\(\), cwd: CWD \}\)/);
+  assert.doesNotMatch(sl, /home:/);
+  const drop = host.slice(host.indexOf('planDrop({'), host.indexOf('planDrop({') + 300);
+  assert.match(drop, /configDir: claudeConfigDir\(\)/, 'the drop guard is not told where the config dir is');
+  assert.match(host, /claudeHomeOf\(\{ seam: seams\.claudeHome, env: process\.env, home: os\.homedir\(\) \}\)/);
+});
+
+// PR #125 Miguel M4: main's copy of the shelf validator IS the host's function (test/shelf-validators.test.js holds the page's copy to it).
+test('app/canvas-views.js uses the host shelf validator itself, not a copy', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'canvas-views.js'), 'utf8');
+  assert.match(src, /const \{ cleanShelfList \} = require\('\.\.\/host\/canvas-shelf'\);/);
+  assert.match(src, /const cleanShelf = cleanShelfList;/);
+  assert.doesNotMatch(src, /function cleanShelf\(/);
+});
+
+// Moved from test/status-relay.test.js (release-gate lane, 2026-10-09): host/status-relay.js is a mutated module and that file is in the command.
+test('the relay exits explicitly, so a kill that failed cannot keep it alive (Miguel #51 2)', () => {
+  assert.match(read('host/status-relay.js'), /process\.exit\(code\)/);
+});
+
+test('the user command stays in the relay\'s process group (Dexter #51 F7)', () => {
+  // detached:true moved it into its own group on POSIX, so a CLI that kills
+  // the relay's group no longer reached it: worse than before the timeout.
+  assert.doesNotMatch(read('host/status-relay.js'), /detached:/);
+});
+
+// The Graph view is still (BACKLOG #2 follow-up, Ricardo's pick A: "no animation"). Moved here from test/git-graph-display.test.js:
+// app/git-graph-display.js is a mutated module and that file is in the command. Comments are stripped first, so the words may be said there.
+test('the Graph view never asks for a frame, sets a timer, or observes a resize', () => {
+  const code = read('app/git-graph-display.js').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  for (const word of ['requestAnimationFrame', 'setInterval', 'setTimeout', 'ResizeObserver', 'animation', 'transition']) {
+    assert.ok(!code.includes(word), `${word} in git-graph-display.js`);
+  }
+});
+
+// PR #157 Dexter F1 / Miguel Y3: the page's only way to ask for the graph is the asker (app/git-graph-display.js createAsker),
+// fed by the hello's `controls`; and the hidden Graph view is not drawn while Rings shows.
+test('renderer.js asks for the graph only through the gated asker, and draws it only while it shows', () => {
+  const src = read('app/renderer.js');
+  assert.doesNotMatch(src, /type:\s*'git-graph'/, 'a bare git-graph frame in the renderer');
+  assert.match(src, /if \(gitView !== 'graph' \|\| lastGitGraph === null\) return;/);
+});
+
+// PR #157 Dexter r2 N2 / N3: what the asker knows is the CURRENT socket's host's word, and a hello with no `controls` is an old host's.
+test('renderer.js: a dropped socket clears the graph asker, the hello sets it (no field = none) and re-asks', () => {
+  const src = read('app/renderer.js');
+  const close = src.slice(src.indexOf('ws.onclose = () => {'));
+  assert.match(close.slice(0, close.indexOf('};')), /gitGraphAsker\.forget\(\);/);
+  assert.match(src, /gitGraphAsker\.setControls\(Array\.isArray\(msg\.controls\) \? msg\.controls : \[\]\);/);
+  assert.match(src, /if \(shownModules\.has\('git'\) && gitView === 'graph'\) requestGitGraph\(\);\s*\n\s*if \(typeof msg\.project/);
+});
+
+// PR #154 round 2, N1: the PermissionRequest hook must be OBSERVE-ONLY. The CLI (2.1.296) decides a permission request only from a hook's
+// JSON output (permissionRequestResult allow|deny; runHooks returns null otherwise and the dialog is shown), and a blocking error is exit
+// code 2. The native helper therefore must print nothing and never exit with anything but 0.
+test('the hook helper prints nothing and only ever exits 0, so a PermissionRequest hook can never decide a prompt', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'helper', 'hook-helper.cs'), 'utf8');
+  assert.doesNotMatch(src, /Console\.(Out|Write|WriteLine)\b/, 'nothing on stdout: output is how a hook decides');
+  assert.doesNotMatch(src, /Console\.Error/, 'nor on stderr');
+  const exits = [...src.matchAll(/return\s+(-?\d+)\s*;/g)].map(m => m[1]);
+  assert.ok(exits.length > 0 && exits.every(c => c === '0'), `every return of Main is 0: ${exits.join(',')}`);
+  assert.doesNotMatch(src, /Environment\.Exit\(\s*[1-9]/);
 });

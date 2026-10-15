@@ -31,6 +31,7 @@
  * stopped. ELECTRON_RUN_AS_NODE is deleted for every Electron launch. WINDOWS ONLY.
  */
 const { spawn, execFileSync } = require('child_process');
+const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -39,7 +40,7 @@ const WebSocket = require('ws');
 
 const ROOT = path.join(__dirname, '..');
 const BUILD = path.basename(ROOT);
-const { createHygieneRegistry } = require('./lib/process-hygiene');
+const { createHygieneRegistry, killChildTree } = require('./lib/process-hygiene');
 
 if (process.platform !== 'win32') {
   console.log('SKIP: this probe drives cmd.exe and taskkill; Windows only');
@@ -91,12 +92,10 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-const killed = new Set();
-function killTree(pid) {
-  if (!alive(pid) || killed.has(pid)) return;
-  killed.add(pid);
-  try { execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' }); } catch { /* gone */ }
-}
+// Pids this probe only READ (identity files, a claude pid a host reported) are ended start-proven (BACKLOG #74 H):
+// seen.add records the start when first seen, killTree ends it through killProven on a held handle.
+const seen = require(path.join(ROOT, 'verify', 'lib', 'seen-pids')).createSeenPids();
+function killTree(pid) { seen.kill(pid); }
 
 // --- a host, as app/main.js would spawn one, on a non-repo folder ---------------------
 const hosts = [];
@@ -108,7 +107,7 @@ function startHost(name, cwd, port) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry') };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  hygiene.registerChild(child);
   const h = { name, port, token, child, out: '' };
   child.stdout.on('data', d => { h.out += d; });
   child.stderr.on('data', d => { h.out += d; });
@@ -145,9 +144,9 @@ async function launchApp(cwd, extraEnv = {}) {
   delete env.CLAUDE_CUSTOM_TOKEN;
   Object.assign(env, extraEnv);
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawn(require(path.join(ROOT, 'node_modules', 'electron')),
-    [ROOT, `--user-data-dir=${path.join(tmp, 'user-data')}`], { cwd: ROOT, env });
-  hygiene.registerSpawnedTree(child.pid);
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
+    [ROOT, `--user-data-dir=${path.join(tmp, 'user-data')}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_ATTACH_ONLY', 'CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
   child.stderr.on('data', d => { app.out += d; });
@@ -182,6 +181,7 @@ function probeHostPids() {
     try {
       const id = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
       if (id && typeof id.cwd === 'string' && path.resolve(id.cwd).toLowerCase().startsWith(path.resolve(tmp).toLowerCase())) {
+        seen.add(id.pid, id.processStartedAt);
         out.push({ pid: id.pid, port: id.port, cwd: id.cwd });
       }
     } catch { /* half-written */ }
@@ -190,9 +190,9 @@ function probeHostPids() {
 }
 
 function cleanup() {
-  for (const a of apps) killTree(a.child.pid);
+  for (const a of apps) killChildTree(a.child);   // held children: only while running (PR #130 review r2)
   for (const x of extraPids) killTree(x);
-  for (const h of hosts) if (!exited(h)) killTree(h.child.pid);
+  for (const h of hosts) killChildTree(h.child);
   for (const id of probeHostPids()) killTree(id.pid);
 }
 const extraPids = [];
@@ -274,7 +274,7 @@ async function main() {
   const hostsBefore = probeHostPids().length;
   const o = await command(w, { cmd: 'background-open', port: h2.port });
   check('Open launched a window', o.ok && Number.isInteger(o.pid), JSON.stringify(o));
-  if (o.ok && Number.isInteger(o.pid)) extraPids.push(o.pid);
+  if (o.ok && Number.isInteger(o.pid)) { seen.see(o.pid); extraPids.push(o.pid); }
   const attached = await waitFor(async () => {
     const r = await command(w, { cmd: 'background' });
     const it = itemOn(r, h2.port);

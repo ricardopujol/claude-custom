@@ -28,10 +28,10 @@ const deadUrl = () => new Promise((resolve) => {
   s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(`http://127.0.0.1:${port}`)); });
 });
 
-test('the measured settings: llama3.2:3b, num_ctx 8192, keep_alive 5m', () => {
+test('the measured settings: llama3.2:3b, num_ctx 8192, keep_alive 3m (just over the scheduler\'s 2-minute gap, BACKLOG #91)', () => {
   assert.strictEqual(DEFAULT_MODEL, 'llama3.2:3b');
   assert.strictEqual(NUM_CTX, 8192);
-  assert.strictEqual(KEEP_ALIVE, '5m');
+  assert.strictEqual(KEEP_ALIVE, '3m');
 });
 
 test('two tries of a job must finish inside the slot\'s own staleness window, or another host could take the GPU mid-job', () => {
@@ -135,7 +135,7 @@ test('summarize: sends the measured request and returns the cleaned reply', asyn
     const req = fake.requests.find(q => q.path === '/api/generate');
     assert.strictEqual(req.method, 'POST');
     assert.deepStrictEqual(req.body, {
-      model: 'llama3.2:3b', prompt: 'User: hi\n\n---\nsummarise', stream: false, keep_alive: '5m',
+      model: 'llama3.2:3b', prompt: 'User: hi\n\n---\nsummarise', stream: false, keep_alive: '3m',
       options: { num_ctx: 8192, temperature: 0.2, num_predict: 200 },
     });
   });

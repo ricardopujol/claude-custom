@@ -11,16 +11,21 @@
  *   { procs: [{ pid, ppid, name, cmd, start }],            start = FILETIME string
  *     perf:  [{ pid, cpu, ts, wsp }],                     wsp = WorkingSetPrivate: the private working set in bytes (RAM)                          cpu = processor time, ts = Timestamp_Sys100NS (100 ns)
  *     cpu:   { idle, ts },                                PerfOS_Processor _Total: the IDLE counter, core-averaged
- *     os:    { totalKb, freeKb } }
+ *     os:    { totalKb, freeKb },
+ *     gpu:   { eng, pm, am, total } }                      parsed by host/resource-gpu.js (BACKLOG #82); null when unreadable
  * `Timestamp_Sys100NS` is about 1.3e17, past 2^53, so the counters travel as strings and are BigInt here: a plain
  * JSON number would round the delta.
  */
+
+const { parseGpu } = require('./resource-gpu');
 
 const BOM_AT_START = new RegExp('^' + String.fromCharCode(0xfeff));
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const digits = v => (typeof v === 'string' && /^\d+$/.test(v)) || (Number.isSafeInteger(v) && v >= 0);
 const big = v => BigInt(v);
 const posInt = v => Number.isInteger(v) && v > 0;
+
+const count = v => (Number.isInteger(v) && v >= 0 ? v : null);
 
 function parseProc(r) {
   if (!isObject(r) || !posInt(r.pid)) return null;
@@ -31,6 +36,9 @@ function parseProc(r) {
     cmd: typeof r.cmd === 'string' && r.cmd !== '' ? r.cmd : null,
     // An unknown start (a process of another user, an elevated one) stays null: nothing can be proved about it.
     start: digits(r.start) ? String(r.start) : null,
+    // Thread and handle counts: 1 thread and 0 handles is a process that is exiting and cannot finish (BACKLOG #74 A).
+    threads: count(r.threads),
+    handles: count(r.handles),
     priv: typeof r.priv === 'number' && Number.isFinite(r.priv) && r.priv >= 0 ? r.priv : null,
   };
 }
@@ -57,7 +65,7 @@ function parseSample(text, at) {
   const o = doc.os;
   const os = isObject(o) && Number.isFinite(o.totalKb) && Number.isFinite(o.freeKb) && o.totalKb > 0 && o.freeKb >= 0
     ? { totalBytes: o.totalKb * 1024, freeBytes: o.freeKb * 1024 } : null;
-  return { at, procs, perf, cpuTotal, os };
+  return { at, procs, perf, cpuTotal, os, gpu: parseGpu(doc.gpu) };
 }
 
 const startOf = (sample, pid) => {
