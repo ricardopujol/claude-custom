@@ -39,6 +39,7 @@ const conf = JSON.parse(fs.readFileSync(path.join(ROOT, 'stryker.conf.json'), 'u
 // shared-scope allow-list correctly refuses. Excluding them is deliberate; the
 // config says so too, and this list is the machine-readable half of that.
 const REPO_SCANNING = new Set([
+  'usage-counters-wiring.test.js', // host.js / renderer.js / tab-shell.js source text; requires usage-counters only for isValidKey
   'renderer-scope.test.js',   // shared-scope allow-list + git-ls-files + control chars
   'sources-parse.test.js',    // node --check over the tree
   'project-dir.test.js',      // asserts about real directories

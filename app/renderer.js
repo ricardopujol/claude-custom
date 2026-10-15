@@ -706,6 +706,7 @@ function openFileLink(event, p) {
   const r = linkClick.shouldOpen(event, `file:${p}`, lastLinkOpened, Date.now());
   lastLinkOpened = r.last;
   if (!r.open || !window.harness || typeof window.harness.openPath !== 'function') return;
+  usage('terminal:file-link');
   Promise.resolve(window.harness.openPath(p)).then((res) => {
     if (!res || res.ok !== true) flashLinkTarget(linkClick.fileRefusedText(p, res && res.why));
   }, () => flashLinkTarget(linkClick.fileRefusedText(p, null)));
@@ -1029,6 +1030,7 @@ function renderProjects(msg) {
 document.getElementById('projects-list').addEventListener('click', (e) => {
   const row = e.target.closest('[data-open]');
   if (!row || !ws || ws.readyState !== WebSocket.OPEN) return;
+  usage('projects:switch');
   try { ws.send(JSON.stringify({ type: 'open', path: row.dataset.open })); } catch {}
   // Said out loud: the new window is a separate process that takes a moment to
   // appear, and a click with no feedback reads as a dead button.
@@ -1240,6 +1242,7 @@ const gamesPanel = gamesRoot ? window.gamesDisplay.mount({
   bridge: window.harness && window.harness.games ? window.harness.games : null,
   focusTerminal: () => term.focus(),
   terminalHasFocus: () => !!(term.element && term.element.contains(document.activeElement)),
+  onStart: (game) => usage('game:' + game + ':start'),
   raf: (fn) => requestAnimationFrame(fn),
   caf: (id) => cancelAnimationFrame(id),
   now: () => performance.now(),
@@ -1290,7 +1293,7 @@ const askPanel = askRoot ? window.askDisplay.mount({
   root: askRoot,
   storage: (() => { try { return localStorage; } catch { return null; } })(),
   request: (op, body) => askRequester.request(op, body),
-  openAt: (file, line, endLine) => { repoBrowser.openAt(file, line, endLine).catch(() => { /* the reader says why in its own note */ }); },
+  openAt: (file, line, endLine) => { usage('ask:place-opened'); repoBrowser.openAt(file, line, endLine).catch(() => { /* the reader says why in its own note */ }); },
   getSelection: () => window.getSelection(),
   pickPortrait: askPickPortrait,
   // the roster's own switch (declared further down this file: before it is set, or if it is off, the face is a placeholder)
@@ -1313,7 +1316,7 @@ function askExplain(sel) {
 
 function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
-  if (id === 'git') { requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
+  if (id === 'git') { usage('git:opened'); requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
@@ -1321,7 +1324,7 @@ function onModuleShown(id) {
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
-  if (id === 'vault') renderVault();
+  if (id === 'vault') { usage('vault:opened'); renderVault(); }
 }
 
 // --- the Resources panel and the top-bar chip (BACKLOG #63) ----------------------------------------------------
@@ -1730,7 +1733,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
-  for (const id of fx.newlyShown) onModuleShown(id);
+  for (const id of fx.newlyShown) { usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -2647,6 +2650,7 @@ let focusOn = false;
 function applyFocusMode(on) {
   if (on === focusOn) return;
   focusOn = on;
+  if (on) usage('focus:on');
   document.body.classList.toggle('focus-mode', on);
   closeLayoutMenu();
   // Focus mode hides the vault too, so it is "left": revealed secrets go.
@@ -5293,6 +5297,10 @@ if (agentLogEl) {
 // --- medals and the speech bubbles (BACKLOG #80) ---------------------------------------------------
 // Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
 // medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
+// Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
+function usage(key) { sendJson({ type: 'usage', key }); }
+// Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
+function usage(key) { sendJson({ type: 'usage', key }); }
 function sendJson(obj) {
   try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
 }
@@ -5957,12 +5965,15 @@ function armQuotaTick() {
   quotaTickTimer = setTimeout(quotaTick, quotaTickDelayMs(lastQuotaPayload, Date.now()));
 }
 
+let quotaCountdownCounted = false;
 function renderQuota(quota) {
   if (quota !== undefined) lastQuotaPayload = quota;
   armQuotaTick();            // from the payload just taken, so a reset that came nearer is not waited out at the old pace
   const nowMs = Date.now();
   const cs = quotaResetWatcher.see(lastQuotaPayload, nowMs);
   const showToast = quotaToastGate.step({ toast: cs.toast, usedUp: cs.state === 'usedUp', visible: quotaHeaderVisible() });
+  if (cs.state === 'usedUp' && !quotaCountdownCounted) usage('quota:countdown-shown');       // the "Claude back in ..." countdown, once per used-up window
+  quotaCountdownCounted = cs.state === 'usedUp';
   if (showToast) {
     backToastUntil = nowMs + BACK_TOAST_MS;
     clearTimeout(backToastTimer);
@@ -6379,6 +6390,7 @@ function applyLean(payload) {
   leanNight = s.night;
   if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
   leanOn = on;
+  if (on) usage('lean:on');
   document.body.classList.toggle('lean', on);
   closeLayoutMenu();
   const { failed } = leanSuspender.set(on);
@@ -7023,7 +7035,7 @@ function wandAct(action) {
   if (action.kind === 'press') {
     const plan = wandDisplay.clickPlan(wandState, action.id, { cols: term.cols });
     if (!plan) return;
-    if (plan.kind === 'type') { wandType(plan); return; }
+    if (plan.kind === 'type') { usage('wand:click'); wandType(plan); return; }
     if (plan.kind === 'edit') wandFocusEditor = true;
     wandState = plan.kind === 'missing' || plan.kind === 'toolong' ? wandDisplay.setNotice(wandState, plan.note) : wandDisplay.openEditor(wandState, plan.id);
   } else if (action.kind === 'toggle-edit') {
@@ -7302,6 +7314,7 @@ async function sampleBackgroundFrame() {
 // `ask` names the section asking; the host echoes it on the reply, so a
 // refusal is shown where it belongs even with another request in flight.
 function sendStyle(section, payload) {
+  usage('style:changed');
   try { ws.send(JSON.stringify({ type: 'style', ask: section, ...payload })); } catch { /* not attached */ }
 }
 
@@ -8736,6 +8749,7 @@ dropZone.addEventListener('drop', (e) => {
     .filter(x => x.path);
 
   if (!entries.length) return;
+  usage('terminal:drop');
   // Through the confirm, like typing and pasting: a dropped file types its path into the prompt, and that is
   // the person's own act in a worktree an agent may be writing in (PR #96 Miguel S5).
   userInput(JSON.stringify({ type: 'drop', entries }));

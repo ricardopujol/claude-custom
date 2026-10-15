@@ -21,6 +21,9 @@
  *   .harness/state/medals.json     host/medals.js, STORE_KEY 'medals' (BACKLOG #80: the medals
  *                                  Ricardo gives agents). Install-wide, keyed by agent name. Given
  *                                  by hand, so like the wand it opts in to withLock and readState.
+ *   .harness/state/usage-counters.json  host/usage-counters.js, STORE_KEY 'usage-counters' (audit move 2: how often
+ *                                  each feature is used; keys and timestamps only). Install-wide, never shown in the UI;
+ *                                  it opts in to withLock and readState, and an unreadable file is never written over.
  *   .harness/state/bubbles.json    host/bubbles.js, STORE_KEY 'bubbles' (BACKLOG #80: the speech
  *                                  bubbles' on/off switch). Install-wide, regenerable.
  *

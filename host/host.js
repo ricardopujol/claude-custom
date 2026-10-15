@@ -33,6 +33,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { createMedals } = require('./medals');
+const { createUsageCounters } = require('./usage-counters');
 const { validGive, validRemove } = require('../app/medals-display');
 const { createBubbles, createBubbleSettings } = require('./bubbles');
 const { createBubbleGate } = require('./bubble-gate');
@@ -488,7 +489,7 @@ watchLoadout({
 const canvasControl = createCanvasControl({
   stateDir: path.join(HARNESS_DIR, 'state'),
   getSessionId: () => sessionId,
-  emit: (frame) => broadcastControl(frame),
+  emit: (frame) => { if (frame && frame.type === 'canvas' && frame.changed === true) usageCounters.bump('canvas:render'); broadcastControl(frame); },
   watch: watchDir,
   log: (line) => console.log(line),
   pointerFile: canvasMcp ? CANVAS_POINTER_FILE : null,        // no tools offered, no pointer to keep (PR #125 Miguel S5)
@@ -1272,6 +1273,7 @@ driftFirst.unref();
 // writes on a state change (host/bubbles.js). The bubbles share the summaries' GPU slot file, so a bubble never runs beside a
 // summary; they are decoration only and never an error (Ollama down: nothing). The probe seams point both at a fake Ollama.
 const medals = createMedals({ store });
+const usageCounters = createUsageCounters({ store });      // invisible: which features get used (scripts/usage-report.js)
 const bubbleSettings = createBubbleSettings({ store });
 const bubbleActivity = createBubbleActivity();
 const bubbles = createBubbles({
@@ -1295,6 +1297,7 @@ function handleMedalMessage(msg) {
   } else {
     out = { ok: false, reason: 'invalid', medals: medals.all() };
   }
+  if (out.ok === true && msg.action === 'give') usageCounters.bump('medal:given');
   if (out.ok === false) console.log('[host] medal refused:', msg.action, '-', out.reason);
   broadcastControl({ type: 'medals', medals: out.medals, ok: out.ok !== false, reason: out.reason || null });
   medalsWatch.note(out.medals);
@@ -1367,10 +1370,15 @@ const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(ms
 
 // Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
 // calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.
+let nightWasOn = false;       // usage counters: a night counts once, when it begins
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => broadcastControl({ type: 'bedtime', bedtime: payload }),
+  onChange: (payload) => {
+    if (payload && !nightWasOn) usageCounters.bump('bedtime:start');
+    nightWasOn = Boolean(payload);
+    broadcastControl({ type: 'bedtime', bedtime: payload });
+  },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
@@ -2690,6 +2698,10 @@ wss.on('connection', (ws, req) => {
       handleMedalMessage(msg);
       return;
     }
+    if (msg.type === 'usage') {
+      usageCounters.bump(msg.key);       // junk keys and a file it can't read are refused inside; never an answer, never an error
+      return;
+    }
     if (msg.type === 'bubbles') {
       handleBubblesMessage(msg, ws);
       return;
@@ -2739,6 +2751,8 @@ wss.on('connection', (ws, req) => {
       return;
     }
     if (msg.type === 'ask') {
+      if (msg.op === 'ask') usageCounters.bump('ask:question');
+      else if (msg.op === 'explain') usageCounters.bump('ask:explain');
       // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a failure is { ok: false, reason, ... }.
       askService.handle(msg).then(reply => {
         try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }

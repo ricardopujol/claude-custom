@@ -212,6 +212,8 @@ function createShell(deps) {
     // Worktree occupancy (#44 + #47): `claims()` -> the live claims. Optional; a reader that fails draws none.
     occupancy = null,
     now = Date.now,
+    // Usage counters (audit move 2): `usage(key)`, fire and forget. Optional.
+    usage = null,
     // How long Type /merged waits for the target page's answer; injected so a test doesn't wait.
     sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
     // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
@@ -637,6 +639,7 @@ function createShell(deps) {
         const what = r && r.ok === true ? (r.already ? 'already removed' : 'removed')
           : (r && r.kept === true ? `kept: ${r.reason}` : `failed: ${r && r.error}`);
         log(`[shell] remove ${keyOf(p)}: ${what}`);
+        if (usage && r && r.ok === true && !r.already) usage('tab:merged-close');
         const before = model();
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
@@ -904,6 +907,7 @@ function createShell(deps) {
       return { ok: false, error };
     }
 
+    if (usage) usage('tab:new-worktree');
     const key = keyOf(made.path);
     const withSetup = scriptsAvailable().setup;
     // Held from here, so the poll that lists it can't start its session early.
