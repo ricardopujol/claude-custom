@@ -1234,8 +1234,8 @@ async function main() {
     let p = await stFor(v => v.popover);
     await sleep(400);                                                // it slides in (dpeek-from-right): read its box once it has landed
     p = await st();
-    check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with the rail\'s tabs and the Vault panel inside it',
-      !!p && p.popover.module === 'vault' && p.popover.on[0] === 'vault' && p.popover.panels[0] === 'vault' && p.popover.tabs.length === visible.length
+    check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with only the hovered tab at the top (BACKLOG #103) and the Vault panel inside it',
+      !!p && p.popover.module === 'vault' && p.popover.on[0] === 'vault' && p.popover.panels[0] === 'vault' && p.popover.tabs.length === 1 && p.popover.tabs[0] === 'vault'
         && p.popover.hit && Math.abs(p.popover.rect.width - 280) <= 1 && p.popover.rect.right <= p.rails[0].rect.left + 1 && p.popover.rect.left >= p.dock.left - 1
         && p.popover.panelRects[0].left >= p.popover.rect.left - 1 && p.popover.panelRects[0].right <= p.popover.rect.right + 1 && p.popover.panelRects[0].height > 100,
       p && JSON.stringify([p.popover.tabs.length, visible.length, p.popover.rect, p.rails.map(r => r.rect), p.dock]));
@@ -1243,9 +1243,9 @@ async function main() {
       !!p && p.term.cols === term0.cols && p.term.rows === term0.rows && JSON.stringify(p.sent) === sent0 && same(treeNow(), treeBefore) && p.pushes === pushes0 && p.vaultNode === tag0,
       p && JSON.stringify([p.term, p.sent, sent0, p.pushes, p.vaultNode === tag0]));
     await command(app, { cmd: 'screenshot', file: path.join(shots, '13-rail-popover.png') });
-    await view(app, 'peekTabClick', { id: 'git' });
+    await view(app, 'railClick', { id: 'git' });                       // the popover has one tab now (#103): another panel is the rail's other button
     p = await stFor(v => v.popover && v.popover.module === 'git');
-    check('13: another tab of the popover switches it (Git shows, the Vault panel waits in the store), and it still saves nothing',
+    check('13: another rail button switches the popover to it (Git shows, the Vault panel waits in the store), and it still saves nothing',
       !!p && p.popover.panels[0] === 'git' && !p.shown.includes('vault') && p.shown.includes('git') && p.vaultNode === tag0 && same(treeNow(), treeBefore),
       p && JSON.stringify([p.popover.panels, p.shown]));
     // A popover opened by a mouse press takes the focus (PR #159 Miguel I1: the press left it on the rail button)
