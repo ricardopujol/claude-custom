@@ -1799,8 +1799,8 @@ function saveGlobalLayout(l) {
 // `userAction: false` is for a change that is not a click or a key (a float's move or resize): it leaves keyboard
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
 function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
-  usageGesture();
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
+  usageGesture();
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   railEvent({ type: 'gone' });              // any change of the placement closes a rail's popover

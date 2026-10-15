@@ -48,7 +48,7 @@ test('every dock panel id makes a valid key (the list itself is pinned in usage-
 test('a panel counts only after the layout loaded, and only within a moment of a user gesture (I3)', () => {
   assert.match(RENDERER, /const usageGestureLive = \(\) => layoutLoaded && helloSeen && Date\.now\(\) - usageGestureAt < 1500;/);
   assert.match(RENDERER, /if \(usageGestureLive\(\)\) usage\('panel:' \+ id\); onModuleShown\(id\);/);
-  for (const site of ['function selectModule(id) { usageGesture();', 'function revealModule(id) {\n  usageGesture();', 'function openPeek(id, byKeyboard) {\n  usageGesture();', 'railOpenTimer = null; usageGesture();', 'refit = true } = {}) {\n  usageGesture();']) {
+  for (const site of ['function selectModule(id) { usageGesture();', 'function revealModule(id) {\n  usageGesture();', 'function openPeek(id, byKeyboard) {\n  usageGesture();', 'railOpenTimer = null; usageGesture();', 'a burst\'s drawn sizes would hide this change until its own flush\n  usageGesture();']) {
     assert.ok(RENDERER.replace(/\r\n/g, '\n').includes(site), site);
   }
   assert.strictEqual((RENDERER.match(/function usage\(key\)/g) || []).length, 1, 'defined once');
