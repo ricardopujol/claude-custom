@@ -4109,6 +4109,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       });
       // Backlog #62 (verify/probe-lean.js): lean mode as this page has it -- the class, what the dock still shows,
       // the terminal's renderer and scrollback, the background layer and the working-agents strip.
+      // BACKLOG #100 (verify/probe-idle-redraw.js): the attention cue's class and every animation this page is running right now.
+      case 'animState': {
+        const running = document.getAnimations().filter((a) => a.playState === 'running');
+        return JSON.stringify({ ok: true, cue: document.body.classList.contains('attention-cue'), visibility: document.visibilityState,
+          running: running.length, names: [...new Set(running.map((a) => a.animationName || a.constructor.name))] });
+      }
       case 'leanState': {
         const buf = term.buffer.active;
         const visible = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getClientRects().length > 0;
