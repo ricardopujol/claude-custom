@@ -5546,16 +5546,18 @@ function applyMedals(list) {
 
 // The give-a-medal menu: opened by a right-click on a card or its 🏅 button.
 const medalMenuEl = document.getElementById('medal-menu');
-let medalMenu = null;     // { agent } while open
+let medalMenu = null;     // { agent, opener } while open: opener is the element that had focus, given it back on close
 function paintMedalMenu() {
   if (!medalMenuEl) return;
   if (!medalMenu) { medalMenuEl.hidden = true; medalMenuEl.innerHTML = ''; return; }
   medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.agent === ASK_AGENT ? explainerLabel() : medalMenu.agent);
   medalMenuEl.hidden = false;
+  const first = medalMenuEl.querySelector('[data-medal-kind]');
+  if (first) first.focus();      // keyboard users land on the kinds, not at the end of the page
 }
 function openMedalMenu(agent, x, y) {
   if (!medalMenuEl) return;
-  medalMenu = { agent };
+  medalMenu = { agent, opener: document.activeElement };
   paintMedalMenu();
   const w = medalMenuEl.offsetWidth || 260;
   const h = medalMenuEl.offsetHeight || 200;
@@ -5564,8 +5566,10 @@ function openMedalMenu(agent, x, y) {
 }
 function closeMedalMenu() {
   if (!medalMenu) return false;
+  const opener = medalMenu.opener;
   medalMenu = null;
   paintMedalMenu();
+  if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();   // the menu's button is gone: focus must not fall to <body>
   return true;
 }
 // One click on a kind gives the medal and closes the menu (BACKLOG #102): no reason, no Give button.

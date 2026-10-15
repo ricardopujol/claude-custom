@@ -167,6 +167,15 @@ app.whenReady().then(async () => {
     const at = await js('(() => { const m = document.getElementById("medal-menu").getBoundingClientRect(); const c = document.querySelector("#agents .agent[data-agent=code-reviewer]").getBoundingClientRect(); return { menuTop: m.top, cardTop: c.top, kinds: document.querySelectorAll("#medal-menu [data-medal-kind]").length }; })()');
     check('it lists the six kinds, near the card', at.kinds === 6 && Math.abs(at.menuTop - at.cardTop) < 80, at);
     check('the menu has no reason field and no Give / Cancel', await js('!document.querySelector("#medal-menu input") && !document.querySelector("#medal-menu [data-medal-give], #medal-menu [data-medal-cancel]")'));
+    check('focus lands on the first kind when the menu opens', await js('document.activeElement === document.querySelector("#medal-menu [data-medal-kind]")'));
+    await js('window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }))');
+    check('Esc closes the menu and gives nothing', await until('document.getElementById("medal-menu").hidden') && await js('!document.querySelector("#agents .agent[data-agent=code-reviewer] .medal-chip")'));
+    await js('(() => { const c = document.querySelector("#agents .agent[data-agent=code-reviewer]"); const r = c.getBoundingClientRect(); c.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 10 })); })()');
+    check('the menu opens again', await until('!document.getElementById("medal-menu").hidden'));
+    await js('document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))');
+    check('a click outside closes the menu and gives nothing', await until('document.getElementById("medal-menu").hidden') && await js('!document.querySelector("#agents .agent[data-agent=code-reviewer] .medal-chip")'));
+    await js('(() => { const c = document.querySelector("#agents .agent[data-agent=code-reviewer]"); const r = c.getBoundingClientRect(); c.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: r.left + 40, clientY: r.top + 10 })); })()');
+    await until('!document.getElementById("medal-menu").hidden');
     await shot('2-medal-menu');
     await js('document.querySelector("#medal-menu [data-medal-kind=bug-hunter]").click()');
     check('one click on a kind gives it and closes the menu', await until('document.getElementById("medal-menu").hidden'));
