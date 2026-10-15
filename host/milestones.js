@@ -35,11 +35,6 @@ const MILESTONES = Object.freeze([
   { at: 10e9, name: 'Legendary', icon: '🐉' },
 ].map(Object.freeze));
 
-// The demo milestone, named once. Two hardcoded copies (a positional index in
-// the host, a literal in the renderer) silently disagree the moment a rung is
-// inserted below them.
-const DEMO_MILESTONE = MILESTONES.find(m => m.name === 'Billionaire');
-
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
 // An unusably large total is ABOVE the ladder, not below it. `num` floors every
