@@ -3008,6 +3008,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // Kept for the other probes (git, vault reconnect), which move a module to an edge or hide it by name.
       case 'move': commitPlacement(a.target === 'hide' ? DTm.hide(settledLayout(), a.id) : DTm.dock(settledLayout(), a.id, { edge: a.target }), { justThisTab: a.justThisTab === true, select: String(a.id) }); break;
       case 'select': selectModule(a.id); break;
+      case 'uiFont': takeFontSettings({ ...(fontSettings || {}), uiFont: a.name }); break;      // probe: a different Interface font, not saved
       case 'foldAll': case 'toggleAll': toggleAllZones(); break;
       case 'dropOwn': dropOwnLayout({ makeGlobal: a.makeGlobal === true }); break;
       // A tab dragged to `to` ({ x, y } relative to #dock) by synthetic pointer events: down on the tab, two moves,
@@ -7922,7 +7923,9 @@ function applyFonts() {
 }
 
 // A web font that finishes loading changes the names' widths too: fit the rails once the page's fonts are ready.
+// (The saved font arrives asynchronously through takeFontSettings -> applyFonts, which refits too; a web font that loads later fires loadingdone.)
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => window.dockTreeView.refitRails(document), () => {});
+if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', () => window.dockTreeView.refitRails(document));
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);

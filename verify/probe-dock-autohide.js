@@ -531,6 +531,16 @@ async function main() {
     JSON.stringify([open12 && [open12.iconStroke, open12.buttonColor], rest12 && [rest12.iconStroke, rest12.buttonColor]]));
   await hoverTerm(app);
   await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 20);
+  // A wider Interface font (Dexter F1): the names are measured again, so every one still fits the rail's width.
+  const nameWidths = (v) => v.rails.find(r => r.id === 'dock').faces.map(f => [f.module, f.nameScrollWidth, Math.round(f.fontPx * 100) / 100]);
+  await view(app, 'uiFont', { name: 'Verdana' });
+  await sleep(600);
+  const v12 = await viewState(app);
+  const widths12 = nameWidths(v12);
+  check('12: after switching the Interface font to Verdana every name on the vertical rail still fits (scrollWidth <= 46)', widths12.every(([, w]) => w <= 46), JSON.stringify(widths12));
+  check('12: ...and the font did change the page (a name measured differently from before)', JSON.stringify(widths12) !== JSON.stringify(nameWidths(a9.s)), JSON.stringify(widths12.slice(0, 3)));
+  await view(app, 'uiFont', { name: '' });
+  await sleep(300);
 
   // 10: every tab stays reachable on a short window (PR #168 Y4)
   await view(app, 'squeeze', { height: 320 });
@@ -581,6 +591,33 @@ async function main() {
     check('12: the vertical rail is 52 wide, the horizontal one is 34 tall', !!vr && !!hr && Math.abs(vr.rect.width - 52) <= 1 && Math.abs(hr.rect.height - 34) <= 1, JSON.stringify([vr && vr.rect.width, hr && hr.rect.height]));
     await command(second.app, { cmd: 'screenshot', file: path.join(shots, '12-folded-group-rails.png') });
     await quitApp(second.app);
+  }
+
+  // 12: a collapsed group in a narrow column is a short horizontal rail: its names shrink together until every tab fits (Dexter F2)
+  const narrow = T.normalize({
+    version: 2, floats: [], rail: [], hidden: T.HIDDEN_UNTIL_USED.slice(), seat: {},
+    root: { type: 'split', dir: 'row', sizes: [0, 180], kids: [{ type: 'term' }, { type: 'split', dir: 'col', sizes: [100, 100], kids: [
+      { type: 'group', id: 'top', tabs: ['models', 'projects', 'style'] },
+      { type: 'group', id: 'low', tabs: ['agents', 'vault', 'fog', 'bugvault'] },
+    ] }] },
+  }, IDS);
+  fs.writeFileSync(TREE_FILE, JSON.stringify(narrow));
+  const third = await launchReady(container);
+  check('12: the window came up with a narrow column', !!third.ready);
+  if (third.ready) {
+    if ((await viewState(third.app)).groups.length === 0) { await view(third.app, 'foldAll'); await settled(third.app); }      // the window may remember the last run's fold-all
+    await view(third.app, 'collapse', { id: 'low' });
+    const a12n = await settled(third.app);
+    const rowRail = a12n.s.rails.find(r => r.dir === 'h');
+    check('12: collapsing the lower group of the narrow column gives a horizontal rail', !!rowRail, JSON.stringify(a12n.s.rails.map(r => [r.dir, r.modules])));
+    if (rowRail) {
+      const fs12 = rowRail.faces.map(f => Math.round(f.fontPx * 100) / 100);
+      const lastRight = Math.max(...rowRail.tabRects.map(r => r.right));
+      check('12: every tab fits the length of the rail (none cut off) and the names shrank together below 11 px', lastRight <= rowRail.rect.right + 0.5 && new Set(fs12).size === 1 && fs12[0] < 11, JSON.stringify([lastRight, rowRail.rect.right, fs12]));
+      checkFaces('12: narrow row rail', rowRail);
+    }
+    await command(third.app, { cmd: 'screenshot', file: path.join(shots, '12b-narrow-row-rail.png') });
+    await quitApp(third.app);
   }
 }
 

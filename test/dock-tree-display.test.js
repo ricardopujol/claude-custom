@@ -825,6 +825,27 @@ test('fitNameSize: 11 px when the name fits, smaller in proportion when it does 
   assert.strictEqual(V.fitNameSize(Infinity, 46), 11);
 });
 
+test('fitRowNameSize: names in a row share one size; 11 px when the row fits, else just small enough that it does', () => {
+  assert.strictEqual(V.fitRowNameSize([40, 40], 82, 200), 11, 'fits');
+  assert.strictEqual(V.fitRowNameSize([40, 40], 82, 162), 11, 'fits exactly');
+  assert.strictEqual(V.fitRowNameSize([100, 100], 100, 200), 5.5, 'half the room left for names: half the size');
+  assert.strictEqual(V.fitRowNameSize([100, 100], 100, 100), 0.01, 'no room for names at all: the smallest positive size');
+  assert.strictEqual(V.fitRowNameSize([100], 100, 50), 0.01, 'less than the chrome: still positive');
+  assert.strictEqual(V.fitRowNameSize([], 0, 100), 11);
+  assert.strictEqual(V.fitRowNameSize([50, NaN], 10, 20), 11, 'something unmeasured: left alone');
+  assert.strictEqual(V.fitRowNameSize([50], 10, 0), 11, 'no length known');
+});
+
+test('fitRowNameSize: the fitted row is never longer than its room', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.array(fc.integer({ min: 1, max: 200 }), { minLength: 1, maxLength: 8 }), fc.integer({ min: 0, max: 300 }), fc.integer({ min: 50, max: 1500 }), (names, chrome, room) => {
+    const s = V.fitRowNameSize(names, chrome, room);
+    assert.ok(s > 0 && s <= 11);
+    const sum = names.reduce((a, b) => a + b, 0);
+    if (room > chrome) assert.ok(sum * (s / 11) + chrome <= room + 1e-9, `${names} + ${chrome} at ${s}px in ${room}`);
+  }));
+});
+
 test('fitNameSize: the fitted name is never wider than the room', () => {
   const fc = require('fast-check');
   fc.assert(fc.property(fc.integer({ min: 1, max: 2000 }), fc.integer({ min: 10, max: 400 }), (natural, room) => {

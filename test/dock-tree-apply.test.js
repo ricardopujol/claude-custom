@@ -781,7 +781,13 @@ function measuring(w, { widthOf = name => (name.textContent.length > 6 ? 92 : 20
   const log = { reads: 0 };
   w.doc.createElement = (tag) => {
     const e = real(tag);
-    Object.defineProperty(e, 'scrollWidth', { get() { if (!this.classes.has('rail-name')) return 0; log.reads += 1; return widthOf(this); } });
+    // A button is its name plus 41 px of its own (10 + 10 padding, a 16 px icon, a 5 px gap).
+    Object.defineProperty(e, 'scrollWidth', { get() {
+      if (this.tagName === 'BUTTON') return widthOf(this.children[1]) + 41;
+      if (!this.classes.has('rail-name')) return 0;
+      log.reads += 1;
+      return widthOf(this);
+    } });
     return e;
   };
   return log;
@@ -825,14 +831,43 @@ test('a rail of another width is fitted again', () => {
   assert.strictEqual(sizeOf(rail, 'bugvault'), '', 'and now it fits at 11 px');
 });
 
-test('a rail above or below the terminal never shrinks a name', () => {
+const footLayout = tabs => T.normalize({ version: 2, floats: [], rail: [], hidden: IDS.filter(i => !tabs.includes(i)), seat: {}, root: { type: 'split', dir: 'col', sizes: [0, 160], kids: [{ type: 'term' }, { type: 'group', id: 'foot', tabs }] } }, IDS);
+
+test('a rail above or below the terminal whose tabs fit keeps every name at 11 px', () => {
   const w = makeDoc();
-  measuring(w, { widthOf: () => 5000 });
-  const foot = T.normalize({ version: 2, floats: [], rail: [], hidden: [], seat: {}, root: { type: 'split', dir: 'col', sizes: [0, 160], kids: [{ type: 'term' }, { type: 'group', id: 'foot', tabs: ['agents', 'vault'] }] } }, IDS);
-  V.applyBoxes(planD4(foot, { collapsed: { foot: ['agents', 'vault'] } }), w.doc);
+  measuring(w, { widthOf: () => 40 });
+  V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 400, height: 600 }), w.doc);
   const rail = railOf(w);
   assert.strictEqual(rail.dataset.dir, 'h');
   assert.ok(rail.children.every(b => b.querySelector('.rail-name').style.fontSize === ''));
+});
+
+test('a rail above or below the terminal whose tabs do not fit shrinks all its names by the same factor, until they do', () => {
+  const w = makeDoc();
+  measuring(w, { widthOf: () => 80 });                 // 3 tabs of 80 + 41 = 363 in 300
+  V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 300, height: 600 }), w.doc);
+  const rail = railOf(w);
+  const want = `${V.fitRowNameSize([80, 80, 80], 123, 300)}px`;
+  assert.ok(parseFloat(want) < 11 && parseFloat(want) > 0);
+  assert.deepStrictEqual(rail.children.map(b => b.querySelector('.rail-name').style.fontSize), [want, want, want]);
+  assert.ok(240 * (parseFloat(want) / 11) + 123 <= 300 + 1e-9, 'and the row fits');
+});
+
+test('a vertical rail is not affected by the row rule, and a row refits when its length changes', () => {
+  const w = makeDoc();
+  const log = measuring(w, { widthOf: () => 80 });
+  const l = footLayout(['agents', 'vault', 'fog']);
+  const sel = { collapsed: { foot: ['agents', 'vault', 'fog'] } };
+  V.applyBoxes(planD4(l, sel, null, { width: 300, height: 600 }), w.doc);
+  const rail = railOf(w);
+  const small = rail.children[0].querySelector('.rail-name').style.fontSize;
+  const reads = log.reads;
+  V.applyBoxes(planD4(l, sel, null, { width: 300, height: 600 }), w.doc);
+  assert.strictEqual(log.reads, reads, 'same length: no new read');
+  V.applyBoxes(planD4(l, sel, null, { width: 600, height: 600 }), w.doc);
+  assert.ok(log.reads > reads);
+  assert.notStrictEqual(rail.children[0].querySelector('.rail-name').style.fontSize, small);
+  assert.strictEqual(rail.children[0].querySelector('.rail-name').style.fontSize, '', 'room enough again: 11 px');
 });
 
 test('a change of the UI font is fitted again: the font is part of the key, and refitRails re-measures the page\'s rails', () => {

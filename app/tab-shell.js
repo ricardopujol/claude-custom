@@ -1464,6 +1464,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
   // BACKLOG #85: the dock rail's hover and the Pin button
   'hover', 'pinClick', 'menuCheck', 'railScroll',
+  // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
+  'uiFont',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen

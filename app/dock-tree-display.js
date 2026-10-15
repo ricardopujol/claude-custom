@@ -33,24 +33,30 @@ const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const isSize = v => isNumber(v) && v > 0;
 
 /**
- * Beside the terminal a tab is as wide as its rail, and a name that doesn't fit shrinks to. Measured (a layout read) only when the
- * buttons, the room or the UI font changed since the last time; a rail above or below the terminal has no room to speak of
- * (data-room 0) and never shrinks. Where the page has no layout (the test document) a name measures nothing and stays at 11 px.
+ * A name that doesn't fit its rail shrinks, never grows (11 px at most). Beside the terminal (data-dir v) each name must fit the
+ * rail's width; above or below it (h) the tabs sit in a row, so every name shrinks by the same factor until the row fits the rail's
+ * length (data-room is that width or length). Measured (a layout read) only when the buttons, the room, the direction or the UI
+ * font changed since the last time. Where the page has no layout (the test document) nothing measures and names stay at 11 px.
  */
 function fitRailNames(el, doc) {
   const style = doc.documentElement && doc.documentElement.style;
   const font = style && typeof style.getPropertyValue === 'function' ? style.getPropertyValue('--font-ui') : '';
   const room = Number(el.dataset.room) || 0;
-  const key = `${el.dataset.sig}|${room}|${font}`;
+  const key = `${el.dataset.sig}|${el.dataset.dir}|${room}|${font}`;
   if (el.dataset.fit === key) return;
   el.dataset.fit = key;
-  for (const btn of el.children) {
-    const name = btn.querySelector('.rail-name');
-    if (!name) continue;
-    name.style.fontSize = '';                                // measure at the stylesheet's 11 px
-    const size = fitNameSize(name.scrollWidth, room);
-    if (size < NAME_MAX) name.style.fontSize = `${size}px`;
+  const tabs = [...el.children].map(btn => ({ btn, name: btn.querySelector('.rail-name') })).filter(t => t.name);
+  for (const t of tabs) t.name.style.fontSize = '';           // measure at the stylesheet's 11 px
+  let sizes;
+  if (el.dataset.dir === 'h') {
+    const widths = tabs.map(t => t.name.scrollWidth);
+    const chrome = tabs.reduce((sum, t) => sum + (t.btn.scrollWidth - t.name.scrollWidth), 0);
+    const one = fitRowNameSize(widths, chrome, room);
+    sizes = tabs.map(() => one);
+  } else {
+    sizes = tabs.map(t => fitNameSize(t.name.scrollWidth, room));
   }
+  tabs.forEach((t, i) => { if (sizes[i] < NAME_MAX) t.name.style.fontSize = `${sizes[i]}px`; });
 }
 
 /** The UI font changed, or fonts finished loading: every rail's names are measured again (the page calls this; applyBoxes does the rest). */
@@ -75,6 +81,17 @@ const NAME_SLACK = 1;
 /** The room a name has inside a rail this wide, from the rail's rectangle: no layout read. 0 when there is none to speak of. */
 function nameRoom(railWidth) {
   return isNumber(railWidth) ? Math.max(0, railWidth - RAIL_BORDER - NAME_PAD - NAME_SLACK) : 0;
+}
+/**
+ * One size for every name of a row of tabs: `names` are their widths at 11 px, `chrome` the rest of the row (padding, icons, gaps),
+ * `room` the row's length. 11 px when the row fits or something can't be measured; else the size that makes it fit exactly, never
+ * below 0.01 (no floor, but never zero or negative).
+ */
+function fitRowNameSize(names, chrome, room) {
+  const sum = names.reduce((a, b) => a + b, 0);
+  if (!(room > 0) || !names.every(n => n > 0 && Number.isFinite(n)) || !Number.isFinite(chrome) || sum + chrome <= room) return NAME_MAX;
+  if (room <= chrome) return 0.01;
+  return Math.max(0.01, Math.floor((NAME_MAX * (room - chrome) / sum) * 100) / 100);
 }
 function fitNameSize(natural, room) {
   if (!(natural > room && room > 0 && Number.isFinite(natural))) return NAME_MAX;      // fits, or nothing measured (NaN, 0, hidden)
@@ -613,7 +630,7 @@ function applyBoxes(plan, doc) {
         el.appendChild(btn);
       }
     }
-    el.dataset.room = String(b.dir === 'v' ? nameRoom(b.rect.width) : 0);      // from the rectangle the plan gave, not from the page
+    el.dataset.room = String(b.dir === 'v' ? nameRoom(b.rect.width) : b.rect.width);      // from the rectangle the plan gave, not from the page
     fitRailNames(el, doc);
     // Which button has its panel open over the terminal moves without rebuilding the buttons (focus stays on the one pressed).
     for (const btn of el.children) btn.setAttribute('aria-expanded', plan.peek && plan.peek.module === btn.dataset.module ? 'true' : 'false');
@@ -687,7 +704,7 @@ function applyBoxes(plan, doc) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
