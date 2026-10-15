@@ -12,16 +12,18 @@
  * An Electron whose start time cannot be read is killed at once and the launch fails: an unproven process is one
  * nothing could safely reap.
  *
- * WHERE A PROBE'S WINDOW GOES (host/probe-window.js, measured 2026-10-15 on this machine). Probe windows used to open on
- * the desktop and take focus while a person worked. Tried in the brief's order, and the first held:
- *   a. x/y = -20000, skipTaskbar, focusable:false, backgroundThrottling:false, show left as the probe wrote it: HELD.
- *      getBounds() reads back -20000/-20000 (not clamped, the second monitor sits at -1932,-1440), isFocused() is false,
- *      capturePage returns a real image (quota-header's 5 PNGs are non-blank; dock-autohide 34 PASS, the same 34 and the
- *      same one FAIL (7b, focus inside a hover panel) as with the window visible). Nothing broke, so b and c were not tried.
- *   (offscreen:true stays out: it hangs capturePage here, see CLAUDE.md.)
- * A probe whose own main.js is a template written to a temp dir must require host/probe-window by absolute path. The
- * real app's window takes the same options only when CLAUDE_CUSTOM_TABS_PROBE is set (app/main.js forProbe).
- * CLAUDE_CUSTOM_PROBE_VISIBLE=1 shows the windows as before; this launcher passes that one CLAUDE_CUSTOM_* through.
+ * WHERE A PROBE'S WINDOW GOES (host/probe-window.js). Probe windows used to open on the desktop and take focus while a
+ * person worked. Measured 2026-10-15 on the Katana (Windows 11, Electron 33, a second monitor at -1932,-1440):
+ *   - x/y = -20000, skipTaskbar, focusable:false, backgroundThrottling:false, `show` as the probe wrote it, held:
+ *     getBounds() reads back -20000/-20000 (not clamped), isFocused() is false, capturePage returns a real image, and the
+ *     probes that ran (quota-header, dock-autohide and a dozen more) pass as they do with the window visible. That is
+ *     what probeWindowOptions does by default.
+ *   - Not tried, because the above held: `show: false` (capturePage on a hidden window may come back empty on Windows) and
+ *     a minimized window. `offscreen: true` stays out: it hangs capturePage here (see CLAUDE.md).
+ * A probe that needs real keyboard focus passes `focusable: true` and stays off screen. A probe whose own main.js is a
+ * template written to a temp dir requires host/probe-window by absolute path. The real app's window takes the same
+ * options only when CLAUDE_CUSTOM_TABS_PROBE is set (app/main.js forProbe). CLAUDE_CUSTOM_PROBE_VISIBLE=1 shows the
+ * windows as before; this launcher passes that one CLAUDE_CUSTOM_* through its env stripping.
  */
 const { spawn } = require('child_process');
 const { killPidTree } = require('../../host/kill-tree');

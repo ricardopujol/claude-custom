@@ -45,7 +45,7 @@ wss.on('listening', () => {
 
   fs.writeFileSync(path.join(tmp, 'main.js'), `
 const { app, BrowserWindow } = require('electron');
-const { probeWindowOptions } = require('../host/probe-window');
+const { probeWindowOptions } = require(${JSON.stringify(path.join(__dirname, '..', 'host', 'probe-window'))});
 app.on('ready', () => {
   const win = new BrowserWindow(probeWindowOptions({
     show: false,

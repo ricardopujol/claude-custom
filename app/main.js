@@ -488,7 +488,7 @@ function createWindow() {
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload-strip.js'),
     },
- }));
+  }));
   win.loadFile(path.join(__dirname, 'tab-strip.html'), { query: chrome.framelessWindow ? { frameless: '1' } : {} });
   registerShortcuts(win.webContents);
 
