@@ -30,6 +30,7 @@ const { killPidTree } = require('../../host/kill-tree');
 const { startTimes: realStartTimes, createSelfStartTime } = require('../../host/proc-start');
 const ledger = require('../../host/pid-ledger');
 const { VISIBLE_VAR } = require('../../host/probe-window');
+const { createProcessLock } = require('../../host/heavy-lock');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -63,6 +64,10 @@ function probeEnv(childEnv, parentEnv = process.env, keep = []) {
 }
 
 const defaultSelfStart = createSelfStartTime();
+// The machine-wide heavy-work lock (BACKLOG #100 d): taken on this process's first launch, released when it ends. Skipped
+// when HEAVY_LOCK_HELD is set (an outer `npm test` or a hand-taken lock; see host/heavy-lock.js). `heavyLock` is injectable.
+const defaultHeavyLock = createProcessLock({ label: 'probe' });
+const lockFor = (heavyLock, install) => (heavyLock !== undefined ? heavyLock : (install ? defaultHeavyLock : null));
 const live = new Set();            // handles not yet stopped, for the exit / signal sweep
 let sweepInstalled = false;
 
@@ -129,9 +134,11 @@ async function prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, 
 async function launchElectron({
   electronPath, args = [], env = process.env, extraEnv = {}, cwd, label = '', kind = 'probe-window',
   ledgerFile = ledger.defaultLedgerFile(), spawnFn = spawn, startTimes = realStartTimes,
-  selfStart = defaultSelfStart, killFn = killPidTree, install = true, stdio,   // kill-ok(held-handle): the default killFn, called only while the child's handle is held
+  selfStart = defaultSelfStart, killFn = killPidTree, install = true, stdio, heavyLock,   // kill-ok(held-handle): the default killFn, called only while the child's handle is held
 } = {}) {
   const exe = electronPath || require('electron');
+  const lock = lockFor(heavyLock, install);
+  if (lock) lock.ensure();   // busy throws here: a probe never runs without its turn
   if (install) installSweep();
   const opts = { env: cleanElectronEnv(env, extraEnv) };
   if (cwd) opts.cwd = cwd;
@@ -154,8 +161,10 @@ async function launchElectron({
 function spawnElectron(exe, args = [], opts = {}, {
   spawnFn = spawn, startTimes = realStartTimes, selfStart = defaultSelfStart, killFn = killPidTree,   // kill-ok(held-handle): the default killFn, called only while the child's handle is held
   ledgerFile = ledger.defaultLedgerFile(), install = true, label = '', kind = 'probe-window', parentEnv = process.env,
-  keepEnv = [],
+  keepEnv = [], heavyLock,
 } = {}) {
+  const lock = lockFor(heavyLock, install);
+  if (lock) lock.ensure();   // busy throws here: a probe never runs without its turn
   if (install) installSweep();
   const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv, keepEnv) });
   const handle = track(child, { killFn, ledgerFile, label });

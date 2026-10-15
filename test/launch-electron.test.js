@@ -314,3 +314,33 @@ test('installSweep: a signal with no other listener sweeps and exits 130 / 143; 
   b.emit('SIGTERM');
   assert.strictEqual(b.listenerCount('SIGTERM'), 1, 'ours ran once and is gone; the probe\'s stays');
 });
+
+// BACKLOG #100 d: the machine-wide heavy-work lock is taken before the first launch (injected here; the real one is never touched).
+test('heavy lock: ensure() runs before the Electron is spawned, for launchElectron and spawnElectron', async () => {
+  const f = fakes();
+  const order = [];
+  const heavyLock = { ensure: () => order.push('lock') };
+  const spawnFn = (...a) => { order.push('spawn'); return f.spawnFn(...a); };
+  await launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: null, spawnFn, startTimes: f.startTimes,
+    selfStart: async () => '555', install: false, heavyLock });
+  const f2 = fakes();
+  spawnElectron('E.exe', [], {}, { spawnFn: (...a) => { order.push('spawn'); return f2.spawnFn(...a); }, startTimes: f2.startTimes,
+    selfStart: async () => '555', ledgerFile: null, install: false, parentEnv: {}, heavyLock });
+  assert.deepStrictEqual(order, ['lock', 'spawn', 'lock', 'spawn']);
+});
+
+test('heavy lock: busy means nothing is spawned and the error reaches the probe', async () => {
+  const f = fakes();
+  const heavyLock = { ensure: () => { throw new Error('busy: hub'); } };
+  await assert.rejects(launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: null, spawnFn: f.spawnFn,
+    startTimes: f.startTimes, selfStart: async () => '555', install: false, heavyLock }), /busy: hub/);
+  assert.throws(() => spawnElectron('E.exe', [], {}, { spawnFn: f.spawnFn, startTimes: f.startTimes, ledgerFile: null,
+    install: false, parentEnv: {}, heavyLock }), /busy: hub/);
+  assert.strictEqual(f.calls.filter(c => c[0] === 'spawn').length, 0);
+});
+
+test('heavy lock: HEAVY_LOCK_HELD survives the env stripping, so a spawned node child is re-entrant too', () => {
+  assert.strictEqual(cleanElectronEnv({ HEAVY_LOCK_HELD: '1', CLAUDE_CUSTOM_X: 'y' }).HEAVY_LOCK_HELD, '1');
+  const { probeEnv } = require('../verify/lib/launch-electron');
+  assert.strictEqual(probeEnv({ HEAVY_LOCK_HELD: '1' }, { HEAVY_LOCK_HELD: '1' }).HEAVY_LOCK_HELD, '1');
+});
