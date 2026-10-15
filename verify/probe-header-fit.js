@@ -35,6 +35,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const fs = require('fs');
 
 // HEADER_FIT_APP_DIR=<dir holding app/ and node_modules/>: measure another checkout's renderer (the before-run on develop).
@@ -108,8 +109,8 @@ app.on('ready', async () => {
     for (const width of WIDTHS) {
       // A load that hangs or fails (ERR_FAILED -2) on a busy machine is retried in a fresh window, not read as a clip.
       const win = await loadWithRetry({
-        open: () => new BrowserWindow({ width, height: 640, show: true, frame: false, useContentSize: true,
-          webPreferences: { contextIsolation: true, nodeIntegration: false } }),
+        open: () => new BrowserWindow(probeWindowOptions({ width, height: 640, show: true, frame: false, useContentSize: true,
+          webPreferences: { contextIsolation: true, nodeIntegration: false } })),
         load: (w) => w.loadFile(path.join(APP_ROOT, 'app', 'renderer.html')), attempts: 3, timeoutMs: 40000,
       });
       // The page is ready when its renderer script has defined what the fixture calls (a fixed sleep raced on a cold start).

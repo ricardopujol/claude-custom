@@ -36,6 +36,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const fs = require('fs');
 
 const OUT_DIR = process.argv[2] || path.join(__dirname, '..', '.harness', 'quota-shots');
@@ -70,10 +71,10 @@ app.on('ready', async () => {
       CASES[0][1].windows.map(w => `${w.label} ${w.percent}%`).join(', '));
 
     fs.mkdirSync(OUT_DIR, { recursive: true });
-    const win = new BrowserWindow({
+    const win = new BrowserWindow(probeWindowOptions({
       width: 1400, height: 120, show: true, frame: false,
       webPreferences: { contextIsolation: true, nodeIntegration: false },
-    });
+    }));
     await win.loadFile(path.join(__dirname, '..', 'app', 'renderer.html'));
     await new Promise(r => setTimeout(r, 1200));
 

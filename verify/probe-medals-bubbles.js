@@ -64,6 +64,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path'); const fs = require('fs');
 const { spawnSync } = require('child_process');
 const ROOT = ${JSON.stringify(ROOT)};
+const { probeWindowOptions } = require(path.join(ROOT, 'host', 'probe-window'));
 const { registerAvatarHandlers } = require(path.join(ROOT, 'app', 'avatar-bridge'));
 const { createStore } = require(path.join(ROOT, 'host', 'store'));
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
@@ -80,8 +81,8 @@ const stopAgent = (agent) => hook('SubagentStop', { hook_event_name: 'SubagentSt
 
 app.whenReady().then(async () => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  const win = new BrowserWindow({ width: 560, height: 760, show: true, webPreferences: {
-    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } });
+  const win = new BrowserWindow(probeWindowOptions({ width: 560, height: 760, show: true, webPreferences: {
+    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } }));
   registerAvatarHandlers({ ipcMain, store: createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} }), win, dialog });
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: { port: ${JSON.stringify(port)}, cwd: ${JSON.stringify(tmp)}, project: 'probe', token: 'probe-token' } });
   const pageErrors = [];

@@ -83,6 +83,7 @@ const mainSource = (port) => `
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path'); const fs = require('fs');
 const ROOT = ${JSON.stringify(ROOT)};
+const { probeWindowOptions } = require(path.join(ROOT, 'host', 'probe-window'));
 const { registerAvatarHandlers } = require(path.join(ROOT, 'app', 'avatar-bridge'));
 const { createStore } = require(path.join(ROOT, 'host', 'store'));
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
@@ -96,8 +97,8 @@ const panels = [];
 app.whenReady().then(async () => {
   setTimeout(() => { console.log('@@' + JSON.stringify({ step: 'crash', error: 'the probe window ran past 240s' })); app.exit(2); }, 240000);
   // The SAME webPreferences app/main.js gives a tab's view.
-  const win = new BrowserWindow({ width: 1200, height: 800, show: true, webPreferences: {
-    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } });
+  const win = new BrowserWindow(probeWindowOptions({ width: 1200, height: 800, show: true, webPreferences: {
+    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } }));
   registerAvatarHandlers({ ipcMain, store: createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} }), win, dialog });
   win.webContents.on('console-message', (_e, level, message, line, src) => {
     const text = message + ' (' + String(src).split('/').pop() + ':' + line + ')';
