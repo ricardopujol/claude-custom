@@ -50,8 +50,6 @@ const isCountN = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
 
 // ---- the words of an answer ---------------------------------------------------------------------------------------------------
 
-const CITE = /([A-Za-z0-9_@./\\-]+\.[A-Za-z0-9]+):(\d{1,7})(?:[-–](\d{1,7}))?/g;
-
 /** An answer's text as safe HTML: paragraphs and bullets, `code`, **bold**, and file:line made clickable ONLY for a place we know. */
 function formatText(text, files) {
   const known = files instanceof Set ? files : new Set();
