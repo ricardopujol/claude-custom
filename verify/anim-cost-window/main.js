@@ -59,6 +59,7 @@ function save(done) {
 }
 
 app.whenReady().then(() => {
+  // Not wrapped in probeWindowOptions on purpose: this is a perf window that is meant to be on screen and painting.
   win = new BrowserWindow({
     width: 1280, height: 720, show: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false },

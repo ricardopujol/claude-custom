@@ -131,6 +131,7 @@ app.on('ready', async () => {
     host.stdout.on('data', d => { hostLog += d; });
     host.stderr.on('data', d => { hostLog += d; });
 
+    // Not wrapped in probeWindowOptions on purpose: paste needs a real, focused window.
     const win = new BrowserWindow({
       width: 1200, height: 760, show: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,

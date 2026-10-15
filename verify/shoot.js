@@ -5,6 +5,7 @@
    Exists because SVG cannot be inspected by reading it -- the only honest check
    on generated art is to look at it. */
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const path = require('path');
 const fs = require('fs');
 
@@ -15,10 +16,10 @@ const height = Number(h) || 900;
 app.disableHardwareAcceleration();
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({
+  const win = new BrowserWindow(probeWindowOptions({
     width, height, show: false,
     webPreferences: { offscreen: true },
-  });
+  }));
   await win.loadFile(path.resolve(input));
   await new Promise(r => setTimeout(r, 1200));   // let gradients and filters settle
 
