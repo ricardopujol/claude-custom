@@ -19,38 +19,37 @@
  */
 (function (root) {
 
-// `emoji` is the tab's face on a rail (BACKLOG #85 follow-up), above its name.
 const TABS = [
-  { id: 'agents', emoji: '👥', label: 'Agents', title: 'Who is working, and on what' },
-  { id: 'vault', emoji: '🔐', label: 'Vault', title: 'Local encrypted secrets' },
+  { id: 'agents', label: 'Agents', title: 'Who is working, and on what' },
+  { id: 'vault', label: 'Vault', title: 'Local encrypted secrets' },
   // 'bugvault', not 'vault' or 'bugs': 'vault' is already the secret-clipboard
   // tab above, and 'bugs' would collide with nothing today but reads as too
   // generic once a project also tracks, say, GitHub issues.
-  { id: 'bugvault', emoji: '🐛', label: 'Bug vault', title: 'Recurring defect classes, grouped by category and by how they were found' },
+  { id: 'bugvault', label: 'Bug vault', title: 'Recurring defect classes, grouped by category and by how they were found' },
   // The Files tab (#45) took the Map's slot. The id stays `fog`: saved layouts and the dock tests name it, and a
   // renamed id would drop it from every stored layout.
-  { id: 'fog', emoji: '📁', label: 'Files', title: 'Browse this worktree and read its files; what Claude touched is marked' },
+  { id: 'fog', label: 'Files', title: 'Browse this worktree and read its files; what Claude touched is marked' },
   // Layout pass L3 (documentation/PLAN_GIT_TREE.md): every branch on one dial.
-  { id: 'git', emoji: '🌿', label: 'Git', title: 'Every branch this project has grown' },
-  { id: 'models', emoji: '🧠', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
-  { id: 'projects', emoji: '🗃️', label: 'Projects', title: 'Switch to another project, each in its own window' },
-  { id: 'style', emoji: '🎨', label: 'Style', title: 'How the harness looks' },
+  { id: 'git', label: 'Git', title: 'Every branch this project has grown' },
+  { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
+  { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
+  { id: 'style', label: 'Style', title: 'How the harness looks' },
   // BACKLOG #51: favourite skills as emoji buttons. An ordinary module like the rest: it docks, moves and
   // hides through the same layout (app/dock-tree.js), which this entry does not touch.
-  { id: 'wand', emoji: '🪄', label: 'Wand', title: 'Favourite skills: one click types the command, you press Enter' },
+  { id: 'wand', label: 'Wand', title: 'Favourite skills: one click types the command, you press Enter' },
   // BACKLOG #63: CPU and memory per session, per project and in total. An ordinary module like the rest: it docks, moves
   // and hides through the same layout, and it samples only while it is showing (app/resources-service.js).
-  { id: 'resources', emoji: '📊', label: 'Resources', title: 'CPU and memory: which session is using the machine' },
+  { id: 'resources', label: 'Resources', title: 'CPU and memory: which session is using the machine' },
   // BACKLOG #71: a panel the running Claude builds itself, a sandboxed page per tab. An ordinary module like the rest, with
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.
-  { id: 'canvas', emoji: '🖼️', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
+  { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
   // BACKLOG #33: ask about this repo, or have the code you selected explained, by a local model (or Haiku / Sonnet on your plan).
   // An ordinary module like the rest: it docks, moves and hides through the same layout.
-  { id: 'ask', emoji: '💬', label: 'Ask', title: 'Ask where something is in this repo, or have selected code explained: a local model answers, and every place is a link' },
+  { id: 'ask', label: 'Ask', title: 'Ask where something is in this repo, or have selected code explained: a local model answers, and every place is a link' },
   // BACKLOG #41: three wait games (app/games-display.js). An ordinary module like the rest. It pauses itself and hands the keyboard
   // back to the terminal whenever Claude needs Ricardo or finishes, and it draws only while it is on screen.
-  { id: 'games', emoji: '🎮', label: 'Games', title: 'Stack the PRs, Merge 2048 and Pipeline: something to do while Claude works. It stops when Claude needs you' },
+  { id: 'games', label: 'Games', title: 'Stack the PRs, Merge 2048 and Pipeline: something to do while Claude works. It stops when Claude needs you' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

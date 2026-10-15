@@ -41,6 +41,8 @@ const ALLOWED_GLOBALS = new Set([
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
   'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
+  // app/rail-icons.js (#85 follow-up): the rail tabs' vendored line icons, one namespace.
+  'railIcons',
   // app/dock-migrate.js, app/dock-effects.js (L1's survivors, dockable panels D4): one
   // namespace each, reached through `window.`.
   'dockMigrate', 'dockEffects',

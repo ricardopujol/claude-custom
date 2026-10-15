@@ -1210,7 +1210,7 @@ async function main() {
     s = folded.s;
     check('13: collapsing the right group folds it to one 52 px rail on the right edge, the terminal takes the room, nothing overlaps',
       s.groups.length === 0 && s.rails.length === 1 && Math.abs(s.rails[0].rect.width - 52) <= 1 && s.rails[0].dir === 'v'
-        && Math.abs(s.termwrap.width - (s.dock.width - 28)) <= 2 && tiles(s).length === 0 && s.rails[0].modules.length === visible.length,
+        && Math.abs(s.termwrap.width - (s.dock.width - 52)) <= 2 && tiles(s).length === 0 && s.rails[0].modules.length === visible.length,
       JSON.stringify([s.groups.length, s.rails.map(r => [r.dir, r.rect.width, r.modules.length]), s.termwrap.width, s.dock.width, tiles(s)]));
     check('13: ...terminal, fit and pty agree', folded.ok, sizeText(s));
     check('13: ...the choice is this window\'s: the selection says so, the layout file is byte-identical and no push reached the page',

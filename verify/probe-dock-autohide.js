@@ -19,7 +19,7 @@
  *   7  a click holds the panel open (leaving does not close it), a press outside closes it
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
- *   12 rail tabs are an emoji over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
+ *   12 rail tabs are a one-colour line icon over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
  *
  * Hover is REAL pointer movement (the host's `mouseMove` command: webContents.sendInputEvent), not a dispatched event, and a
  * float sits where the panel opens, so a stacking fault (PR #168 B1: a missing `;` dropped `z-index: 1000`) fails check 3. Also:
@@ -520,6 +520,17 @@ async function main() {
     a9.s.groups.length === 0 && onRail === IDS.length - 2 && a9.ok && tiles(a9.s).length === 0, JSON.stringify([a9.s.groups.length, onRail, tiles(a9.s)]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-all-unpinned.png') });
   checkFaces('12: the dock rail', a9.s.rails.find(r => r.id === 'dock'));
+  // The icon follows the tab's colour: dim at rest, the text colour under the pointer, the accent while its panel is open.
+  const first12 = railMods(a9.s)[0];
+  await hoverTab(app, first12);
+  const hov = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
+  const faceOf = (v, id) => v.rails.find(r => r.id === 'dock').faces.find(f => f.module === id);
+  const open12 = hov && faceOf(hov, first12);
+  const rest12 = hov && hov.rails.find(r => r.id === 'dock').faces.find(f => f.module !== first12);
+  check('12: the open tab\'s icon is a different colour from a resting tab\'s, and each icon is its tab\'s colour', !!open12 && !!rest12 && open12.iconStroke === open12.buttonColor && rest12.iconStroke === rest12.buttonColor && open12.buttonColor !== rest12.buttonColor,
+    JSON.stringify([open12 && [open12.iconStroke, open12.buttonColor], rest12 && [rest12.iconStroke, rest12.buttonColor]]));
+  await hoverTerm(app);
+  await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 20);
 
   // 10: every tab stays reachable on a short window (PR #168 Y4)
   await view(app, 'squeeze', { height: 320 });
@@ -573,21 +584,23 @@ async function main() {
   }
 }
 
-// Rail tabs as faces (the design: emoji over a horizontal name, 11 px at most, one line, inside the tab).
+// Rail tabs as faces (the design: line icon over a horizontal name, 11 px at most, one line, inside the tab).
 function checkFaces(what, rail) {
   const faces = (rail && rail.faces) || [];
   check(what + ': has tabs', faces.length > 0, String(faces.length));
   const tab = (f) => TABS.find(t => t.id === f.module);
   const vertical = rail && rail.dir === 'v';
-  check(what + ': each tab shows its emoji and its name, named for a screen reader by the label', faces.every(f => f.emoji === tab(f).emoji && f.name === tab(f).label && f.label === tab(f).label), JSON.stringify(faces.filter(f => f.emoji !== tab(f).emoji || f.name !== tab(f).label).map(f => f.module)));
+  check(what + ': each tab shows its icon and its name, named for a screen reader by the label alone', faces.every(f => !!f.iconRect && f.iconHidden === 'true' && f.name === tab(f).label && f.label === tab(f).label), JSON.stringify(faces.filter(f => !f.iconRect || f.name !== tab(f).label).map(f => f.module)));
+  const px = vertical ? 24 : 16;
+  check(what + ': icons are ' + px + ' px, one colour (the tab\'s text colour), a line (weight ' + (vertical ? '1' : '1.5, which reads as 1 px at 16') + ')', faces.every(f => Math.abs(f.iconRect.width - px) <= 0.5 && Math.abs(f.iconRect.height - px) <= 0.5 && f.iconStroke === f.buttonColor && Math.abs(f.iconStrokeWidth - (vertical ? 1 : 1.5)) < 0.01), JSON.stringify(faces.slice(0, 2).map(f => [f.iconRect.width, f.iconStroke, f.buttonColor, f.iconStrokeWidth])));
   check(what + ': no vertical text', faces.every(f => f.writingMode === 'horizontal-tb'), JSON.stringify([...new Set(faces.map(f => f.writingMode))]));
   check(what + ': names are 11 px at most', faces.every(f => f.fontPx > 0 && f.fontPx <= 11), JSON.stringify(faces.map(f => [f.module, f.fontPx])));
   check(what + ': every name is on one line', faces.every(f => f.nameRect.height <= 16), JSON.stringify(faces.map(f => [f.module, Math.round(f.nameRect.height)])));
   if (vertical) {
     check(what + ': every name sits inside the rail, none cut off', faces.every(f => f.nameRect.left >= rail.rect.left - 0.5 && f.nameRect.right <= rail.rect.right + 0.5), JSON.stringify(faces.map(f => [f.module, Math.round(f.nameRect.width), Math.round(f.fontPx * 10) / 10])));
-    check(what + ': the emoji is above its name', faces.every(f => f.emojiRect.bottom <= f.nameRect.top + 1), '');
+    check(what + ': the icon is above its name', faces.every(f => f.iconRect.bottom <= f.nameRect.top + 1), '');
   } else {
-    check(what + ': the emoji is in front of its name', faces.every(f => f.emojiRect.right <= f.nameRect.left + 1), '');
+    check(what + ': the icon is in front of its name', faces.every(f => f.iconRect.right <= f.nameRect.left + 1), '');
   }
 }
 

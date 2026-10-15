@@ -26,7 +26,7 @@ test('the default in 1000 x 600: one group, every tab, Agents on, tall, its port
   assert.strictEqual(g.panel, 'agents');
   assert.deepStrictEqual(g.tabs.map(t => t.id), SHOWN);
   assert.deepStrictEqual(g.tabs.filter(t => t.on).map(t => t.id), ['agents']);
-  assert.deepStrictEqual(g.tabs[1], { id: 'vault', emoji: '\u{1F510}', label: 'Vault', title: 'Local encrypted secrets', on: false });
+  assert.deepStrictEqual(g.tabs[1], { id: 'vault', label: 'Vault', title: 'Local encrypted secrets', on: false });
   assert.deepStrictEqual(g.rect, { x: 820, y: 0, width: 180, height: 600 });
   assert.deepStrictEqual(p.shown, ['agents']);
   assert.strictEqual(p.face, faceSize(180));
@@ -770,26 +770,46 @@ test('M13: rebaseDrag: a split below the root is found by its path, and a plain 
   assert.deepStrictEqual(V.rebaseDrag(plain, { path: [1], i: 1, node: three, sizes: [4, 6, 8] }), [4, 6, 8], 'every drawn size, not the stored proportions');
 });
 
-// --- rail tabs: emoji + name (BACKLOG #85 follow-up) ----------------------------------------------------------
+// --- rail tabs: icon + name (BACKLOG #85 follow-up) ----------------------------------------------------------
 
-test('every panel has its emoji, the ones Ricardo picked', () => {
-  const picked = {
-    agents: '\u{1F465}', vault: '\u{1F510}', bugvault: '\u{1F41B}', fog: '\u{1F4C1}', git: '\u{1F33F}', models: '\u{1F9E0}',
-    projects: '\u{1F5C3}\uFE0F', style: '\u{1F3A8}', wand: '\u{1FA84}', resources: '\u{1F4CA}', canvas: '\u{1F5BC}\uFE0F',
-    ask: '\u{1F4AC}', games: '\u{1F3AE}',
-  };
-  assert.deepStrictEqual(Object.fromEntries(TABS.map(t => [t.id, t.emoji])), picked);
+test('every panel has a Lucide icon, in TABS order, the ones Ricardo picked', () => {
+  const R = require('../app/rail-icons');
+  const picked = ['users', 'lock', 'bug', 'folder', 'git-branch', 'brain', 'layout-grid', 'palette', 'wand-2', 'bar-chart-3', 'app-window', 'message-circle', 'gamepad-2'];
+  assert.deepStrictEqual(TABS.map(t => R.ICONS[t.id] && R.ICONS[t.id][0]), picked);
+  assert.deepStrictEqual(Object.keys(R.ICONS).sort(), IDS.slice().sort(), 'no icon for a panel that does not exist');
 });
 
-test('a rail tab in the plan carries its emoji next to the label', () => {
-  const p = plan(T.defaultLayout(IDS), { width: 440, height: 600 });
-  const rail = p.boxes.find(b => b.kind === 'rail');
-  assert.ok(rail && rail.tabs.length > 0);
-  for (const t of rail.tabs) assert.strictEqual(t.emoji, TABS.find(x => x.id === t.id).emoji);
+test('an icon is one-colour line art: inline, currentColor, no fill, round, weight 1, hidden from a screen reader, nothing fetched', () => {
+  const R = require('../app/rail-icons');
+  for (const id of IDS) {
+    const svg = R.svgFor(id);
+    assert.match(svg, /^<svg class="rail-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">/, id);
+    assert.ok(svg.endsWith('</svg>'), id);
+    assert.ok(/<(path|rect|circle|line)\b/.test(svg), `${id}: has shapes`);
+    assert.ok(!/https?:|href|<image|<script|\son\w+=|style=/i.test(svg), `${id}: nothing that loads or runs`);
+    assert.strictEqual((svg.match(/<svg/g) || []).length, 1, `${id}: one svg`);
+  }
+  assert.strictEqual(R.svgFor('nope'), '');
+  assert.strictEqual(R.svgFor('__proto__'), '');
+});
+
+test('the icon file keeps both licence notices', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'rail-icons.js'), 'utf8');
+  assert.match(src, /ISC License/);
+  assert.match(src, /Permission to use, copy, modify, and\/or distribute/);
+  assert.match(src, /The MIT License \(MIT\)/);
+  assert.match(src, /Cole Bemis/);
 });
 
 test('the rails are 52 wide beside the terminal and 34 tall above or below it', () => {
   assert.deepStrictEqual(T.RAIL, { side: 52, wide: 34 });
+});
+
+test('nameRoom: what a name has inside a rail of this width: the borders, the tab padding and 1 px of slack come off', () => {
+  assert.strictEqual(V.nameRoom(52), 52 - 2 - V.NAME_PAD - 1);
+  assert.strictEqual(V.nameRoom(0), 0, 'no width: no room, so no fitting');
+  assert.strictEqual(V.nameRoom(NaN), 0);
+  assert.strictEqual(V.nameRoom(5), 0, 'never negative');
 });
 
 test('fitNameSize: 11 px when the name fits, smaller in proportion when it does not, never above 11, no floor', () => {
@@ -801,6 +821,8 @@ test('fitNameSize: 11 px when the name fits, smaller in proportion when it does 
   assert.strictEqual(V.fitNameSize(0, 46), 11, 'nothing measured: the largest');
   assert.strictEqual(V.fitNameSize(60, 0), 11, 'no room measured (hidden): the largest');
   assert.strictEqual(V.fitNameSize(NaN, 46), 11);
+  assert.strictEqual(V.fitNameSize(undefined, 46), 11);
+  assert.strictEqual(V.fitNameSize(Infinity, 46), 11);
 });
 
 test('fitNameSize: the fitted name is never wider than the room', () => {

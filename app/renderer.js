@@ -2922,12 +2922,15 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           scroll: { scrollHeight: el.scrollHeight, clientHeight: el.clientHeight, overflowY: getComputedStyle(el).overflowY },
           // rail tabs as emoji + name: what each says, the name's computed size and whether it sits on one line inside its tab
           faces: [...el.querySelectorAll('button')].map((b) => {
-            const emoji = b.querySelector('.rail-emoji'); const name = b.querySelector('.rail-name');
+            const icon = b.querySelector('.rail-icon'); const name = b.querySelector('.rail-name');
             const cs = name ? getComputedStyle(name) : null;
+            const ics = icon ? getComputedStyle(icon) : null;
             return {
-              module: b.dataset.module, label: b.getAttribute('aria-label'), emoji: emoji ? emoji.textContent : null, name: name ? name.textContent : null,
+              module: b.dataset.module, label: b.getAttribute('aria-label'), name: name ? name.textContent : null,
               fontPx: cs ? parseFloat(cs.fontSize) : null, writingMode: cs ? cs.writingMode : null, nameRect: name ? rectOf(name) : null,
-              nameScrollWidth: name ? name.scrollWidth : null, nameClientWidth: name ? name.clientWidth : null, emojiRect: emoji ? rectOf(emoji) : null,
+              nameScrollWidth: name ? name.scrollWidth : null, nameClientWidth: name ? name.clientWidth : null,
+              iconRect: icon ? rectOf(icon) : null, iconStroke: ics ? ics.stroke : null, iconStrokeWidth: ics ? parseFloat(ics.strokeWidth) : null,
+              iconHidden: icon ? icon.getAttribute('aria-hidden') : null, buttonColor: getComputedStyle(b).color,
             };
           }),
         }));
@@ -7909,6 +7912,7 @@ function applyFonts() {
   const ui = fontSettings && fontsDisplay.sanitizeFamily(fontSettings.uiFont);
   if (ui) root.setProperty('--font-ui', fontsDisplay.stackFor(ui, 'ui'));
   else root.removeProperty('--font-ui');
+  window.dockTreeView.refitRails(document);        // the rail names are measured in the UI font, which may just have changed
   if (term.options.fontFamily === eff.fontFamily && term.options.fontSize === eff.fontSize) return;
   term.options.fontFamily = eff.fontFamily;
   term.options.fontSize = eff.fontSize;
@@ -7916,6 +7920,9 @@ function applyFonts() {
   clearTimeout(fontFitTimer);
   fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
 }
+
+// A web font that finishes loading changes the names' widths too: fit the rails once the page's fonts are ready.
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => window.dockTreeView.refitRails(document), () => {});
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);
