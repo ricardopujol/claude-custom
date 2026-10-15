@@ -575,11 +575,20 @@ test('M9: sweep reads only .json and .tmp names, and an index of a folder that s
 });
 
 const hasGit = require('child_process').spawnSync('git', ['--version']).status === 0;
+// The real git, but not the user's: an empty global config and no system config, so a hook, alias or excludesFile of theirs can't reach the temp repo.
+const emptyGitConfig = path.join(tmpDir('cc-gitcfg-'), 'empty');
+fs.writeFileSync(emptyGitConfig, '');
+const GIT_ENV = { GIT_CONFIG_GLOBAL: emptyGitConfig, GIT_CONFIG_NOSYSTEM: '1' };
+async function withIsolatedGit(fn) {
+  const saved = {};
+  for (const k of Object.keys(GIT_ENV)) { saved[k] = process.env[k]; process.env[k] = GIT_ENV[k]; }
+  try { return await fn(); } finally { for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } }
+}
 
-test('M9: the real listing is git\'s: tracked and untracked files, not the ignored ones, as plain relative names', { skip: !hasGit }, async () => {
+test('M9: the real listing is git\'s: tracked and untracked files, not the ignored ones, as plain relative names', { skip: !hasGit }, () => withIsolatedGit(async () => {
   const { spawnSync } = require('child_process');
   const repo = tmpDir('cc-ls-');
-  const git = (...a) => assert.strictEqual(spawnSync('git', a, { cwd: repo }).status, 0, a.join(' '));
+  const git = (...a) => assert.strictEqual(spawnSync('git', a, { cwd: repo, env: { ...process.env, ...GIT_ENV } }).status, 0, a.join(' '));
   git('init', '-q');
   fs.writeFileSync(path.join(repo, '.gitignore'), 'ignored.js\n');
   fs.mkdirSync(path.join(repo, 'sub'));
@@ -591,13 +600,13 @@ test('M9: the real listing is git\'s: tracked and untracked files, not the ignor
   const idx = createIndex({ dir: tmpDir(), ...w.deps, listFiles: realDeps.listFiles, statFile: realDeps.statFile, readFile: realDeps.readFile });
   await idx.refresh(repo);
   assert.deepStrictEqual(idx.get(repo).files.map(f => f.rel), ['b.js', 'sub/c.js'], 'the lockfile and the minified file are not indexed');
-});
+}));
 
-test('M9: the real listing of a folder that is not a repository is a rejection, not an empty list', { skip: !hasGit }, async () => {
+test('M9: the real listing of a folder that is not a repository is a rejection, not an empty list', { skip: !hasGit }, () => withIsolatedGit(async () => {
   const notRepo = tmpDir('cc-notrepo-');
   await assert.rejects(realDeps.listFiles(notRepo));
   await assert.rejects(realDeps.listFiles(path.join(notRepo, 'missing')));
-});
+}));
 
 test('M9: the real stat reports a regular file and nothing else: a folder, or a missing name, is null', async () => {
   const root = tmpDir('cc-stat-');

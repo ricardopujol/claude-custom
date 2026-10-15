@@ -254,7 +254,7 @@ test('a credentials file with no claudeAiOauth block is ABSENCE, with the parse 
   assert.strictEqual(r.ok, false);
   assert.strictEqual(r.state, 'absent');
   assert.deepStrictEqual(r.windows, []);
-  assert.ok(r.error && r.error !== 'no credentials', 'carries the thrown message');
+  assert.strictEqual(r.error, "Cannot read properties of undefined (reading 'accessToken')");
 });
 
 test('a throw with no message falls back to the stated reason', async () => {
