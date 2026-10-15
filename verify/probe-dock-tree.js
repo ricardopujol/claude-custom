@@ -78,6 +78,10 @@ hygiene.setResumeFn(() => true);
 hygiene.install();
 
 const IDS = TABS.map(t => t.id);
+// BACKLOG #103: the Reset layout button now gives the start layout (every panel a rail tab). Most checks want the old all-docked
+// baseline, so they set it through the layout hook; check 3b presses the real button.
+const dockTreeApi = require(path.join(ROOT, 'app', 'dock-tree'));
+const baseline = (app) => view(app, 'layout', { layout: dockTreeApi.defaultLayout(IDS) });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-dock-tree-'));
 const container = path.join(tmp, 'proj');
@@ -350,14 +354,10 @@ async function main() {
   // 2 -----------------------------------------------------------------------------
   const first = await settled(app);
   const s2 = first.s;
-  const right = s2.groups.find(g => g.id === 'right');
-  const bottom = s2.groups.find(g => g.id === 'bottom');
-  check('2: the L1 picture again: the right group is 240 wide and shows Vault, the bottom group is 160 high and shows Agents',
-    !!right && !!bottom && Math.abs(right.rect.width - 240) <= 1 && right.panels[0] === 'vault'
-      && Math.abs(bottom.rect.height - 160) <= 1 && bottom.panels[0] === 'agents' && Math.abs(bottom.rect.width - s2.dock.width) <= 1,
-    JSON.stringify(s2.groups.map(g => [g.id, Math.round(g.rect.width), Math.round(g.rect.height), g.panels])));
-  check('2: ...with the right group above the bottom one and the terminal taking the rest',
-    !!right && !!bottom && right.rect.bottom <= bottom.rect.top + 1 && tiles(s2).length === 0, tiles(s2).join('; '));
+  // BACKLOG #103: a layout saved before the rail pinned nothing on purpose, so its panels open as rail tabs.
+  check('2: an L1 layout opens with every panel a rail tab: no group, one rail holding every module, the terminal taking the rest',
+    s2.groups.length === 0 && s2.rails.length === 1 && s2.rails[0].modules.length === IDS.length - 1 /* canvas starts hidden */ && tiles(s2).length === 0,
+    JSON.stringify([s2.groups.length, s2.rails.map(r => r.modules.length), tiles(s2)]));
   const wrote = await waitFor(() => fs.existsSync(TREE_FILE), 5000);
   check('2: layout-tree.json now exists', !!wrote, TREE_FILE);
   check('2: layout-global.json is byte-identical to before', Buffer.compare(readBytes(V1_FILE) || Buffer.alloc(0), v1Before) === 0);
@@ -372,9 +372,9 @@ async function main() {
   if (!ready) check('3: the window came up on an unreadable layout-tree.json', false, app.out.slice(-600));
   const s3 = ready && (await settled(app)).s;
   const g3 = s3 && s3.groups;
-  check('3: an unreadable layout-tree.json draws the default: one right group of 180, every module, Agents showing',
-    !!g3 && g3.length === 1 && g3[0].id === 'right' && Math.abs(g3[0].rect.width - 180) <= 1 && g3[0].tabs.length === IDS.length - 1 && /* canvas starts hidden */ g3[0].panels[0] === 'agents',
-    JSON.stringify(g3 && g3.map(g => [g.id, g.rect.width, g.tabs.length, g.panels])));
+  check('3: an unreadable layout-tree.json draws the start layout: no group, every module a rail tab',
+    !!s3 && s3.groups.length === 0 && s3.rails.length === 1 && s3.rails[0].modules.length === IDS.length - 1 /* canvas starts hidden */,
+    JSON.stringify(s3 && [s3.groups.length, s3.rails.map(r => r.modules.length)]));
   await sleep(1500);
   check('3: ...and the file is left exactly as it was', readBytes(TREE_FILE).toString() === junk);
   check('3: ...and the page says it could not read it', !!s3 && /Couldn't read the saved layout/.test(s3.title), s3 && s3.title);
@@ -385,11 +385,18 @@ async function main() {
   ({ app, ready } = await launchReady(container));
   if (!ready) { check('the window came up again', false, app.out.slice(-600)); return; }
 
+  // 3b (BACKLOG #103): the real Reset layout button gives the start layout too, with a docked layout to reset from.
+  await baseline(app);
+  await view(app, 'openMenu', { which: 'layout' });
+  await view(app, 'menuButton', { text: 'Reset layout' });
+  const s3b = (await settled(app)).s;
+  check('3b: Reset layout puts every panel on the rail, as a fresh start does', s3b.groups.length === 0 && s3b.rails.length === 1 && s3b.rails[0].modules.length === IDS.length - 1,
+    JSON.stringify([s3b.groups.length, s3b.rails.map(r => r.modules.length)]));
+
   // 4 -----------------------------------------------------------------------------
   // "Agents and Vault side by side under the terminal; Git over Map over Bug vault in a right column;
   //  the rest hidden." Reset first, through the Window menu, so that path is exercised too.
-  await view(app, 'openMenu', { which: 'layout' });
-  await view(app, 'menuButton', { text: 'Reset layout' });
+  await baseline(app);
   const steps = [
     ['hide style', 'hide', { id: 'style' }],
     ['hide projects', 'hide', { id: 'projects' }],
@@ -641,8 +648,7 @@ async function main() {
   // the grip; join a float as a tab; dock back by a tab; the terminal and the pty never notice; a float is kept
   // inside a squeezed window and comes back; Ctrl+B and focus mode hide floats; raising is this window's alone.
   {
-    await view(app, 'openMenu', { which: 'layout' });
-    await view(app, 'menuButton', { text: 'Reset layout' });
+    await baseline(app);
     const f0 = (await settled(app)).s;
     const termKey = v => JSON.stringify([Math.round(v.termwrap.left - v.dock.left), Math.round(v.termwrap.top - v.dock.top), Math.round(v.termwrap.width), Math.round(v.termwrap.height)]);
     const term0 = termKey(f0);
@@ -1199,8 +1205,7 @@ async function main() {
     const treeNow = () => readBytes(TREE_FILE);
     const same = (a, b) => !!a && !!b && Buffer.compare(a, b) === 0;
     await view(app, 'reducedMotion', { on: false });                 // this machine's own setting must not decide the checks below
-    await view(app, 'openMenu', { which: 'layout' });
-    await view(app, 'menuButton', { text: 'Reset layout' });
+    await baseline(app);
     await view(app, 'closeMenu');
     let s = (await settled(app)).s;
     await sleep(1200);                                              // the reset's write has landed
@@ -1291,8 +1296,7 @@ async function main() {
     check('13: double-clicking a group\'s tab bar unpins it: every tab goes to the rail, and it is not a fold of this window',
       !!p && !p.selection.collapsed.right && p.rails[0].modules.length === visible.length, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.map(r => r.modules.length)]));
     // that save moved the shared layout: put the default back (and the group with it) for the checks that follow
-    await view(app, 'openMenu', { which: 'layout' });
-    await view(app, 'menuButton', { text: 'Reset layout' });
+    await baseline(app);
     await view(app, 'closeMenu');
     await stFor(v => v.groups.length === 1 && v.rails.length === 0);
     await sleep(1200);
@@ -1321,8 +1325,7 @@ async function main() {
       // a failed step above left the dock without its group: say so, put the default back, and let the later checks report
       check('13: the dock has its right group again before the divider checks', false, JSON.stringify([s.groups.length, s.rails.length]));
       await view(app, 'squeeze', {});
-      await view(app, 'openMenu', { which: 'layout' });
-      await view(app, 'menuButton', { text: 'Reset layout' });
+      await baseline(app);
       await view(app, 'closeMenu');
       await stFor(v => v.groups.length >= 1 && v.rails.length === 0, 4000);
       s = (await settled(app)).s;
@@ -1355,8 +1358,7 @@ async function main() {
     await command(app, { cmd: 'screenshot', file: path.join(shots, '13-divider-focus.png') });
 
     // keyboard move
-    await view(app, 'openMenu', { which: 'layout' });
-    await view(app, 'menuButton', { text: 'Reset layout' });
+    await baseline(app);
     await view(app, 'closeMenu');
     s = (await settled(app)).s;
     await sleep(1200);
@@ -1406,8 +1408,7 @@ async function main() {
       && k.s.floats[0].rect.left >= k.s.dock.left - 1 && k.s.floats[0].rect.right <= k.s.dock.right + 1, JSON.stringify(k.s.floats.map(f => [f.tabs, f.rect])));
 
     // the settle motion
-    await view(app, 'openMenu', { which: 'layout' });
-    await view(app, 'menuButton', { text: 'Reset layout' });
+    await baseline(app);
     await view(app, 'closeMenu');
     await settled(app);
     const glide = await view(app, 'settleProbe', { id: 'vault', target: { edge: 'bottom' }, reduced: false });
