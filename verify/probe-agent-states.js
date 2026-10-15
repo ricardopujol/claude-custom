@@ -118,6 +118,7 @@ const mainSource = (port) => `
 const { app, BrowserWindow } = require('electron');
 const path = require('path'); const fs = require('fs');
 const ROOT = ${JSON.stringify(ROOT)};
+const { probeWindowOptions } = require(path.join(ROOT, 'host', 'probe-window'));
 app.setPath('userData', ${JSON.stringify(path.join(os.tmpdir(), 'cc-agent-states-userdata-' + process.pid))});
 const results = [];
 const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); console.log('[check]', ok ? 'PASS' : 'FAIL', name, detail === undefined ? '' : JSON.stringify(detail)); };
@@ -126,8 +127,8 @@ const STATES = ${JSON.stringify(STATES)};
 const SHOTS = ${JSON.stringify(SHOTS)};
 
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 1000, height: 800, show: true, webPreferences: {
-    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } });
+  const win = new BrowserWindow(probeWindowOptions({ width: 1000, height: 800, show: true, webPreferences: {
+    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } }));
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: {
     port: ${JSON.stringify(port)}, cwd: ${JSON.stringify(ROOT)}, project: 'probe', token: 'probe-token' } });
   win.webContents.on('console-message', (_e, level, message, line, src) => { if (level >= 2) console.log('[page]', message, src + ':' + line); });

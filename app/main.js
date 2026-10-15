@@ -178,6 +178,8 @@ const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
 // handleProbeCommand refuses everything when it's missing or short.
 const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
 const PROBE_LINE_MAX = 64 * 1024;
+// A probe's window stays off the desktop and unfocused (host/probe-window.js); a person's window is untouched.
+const forProbe = (opts) => (PROBE_PORT ? require('../host/probe-window').probeWindowOptions(opts) : opts);
 
 // A window another window covers is "occluded", and Chromium then stops
 // painting it: capturePage answers an EMPTY image. That is the intermittent
@@ -469,7 +471,7 @@ function createWindow() {
   ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
-  win = new BrowserWindow({
+  win = new BrowserWindow(forProbe({
     width: 1200,
     height: 800,
     // Frameless: no OS title bar; the strip drags the window and draws its own
@@ -488,7 +490,7 @@ function createWindow() {
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload-strip.js'),
     },
-  });
+  }));
   win.loadFile(path.join(__dirname, 'tab-strip.html'), { query: chrome.framelessWindow ? { frameless: '1' } : {} });
   registerShortcuts(win.webContents);
 

@@ -40,9 +40,10 @@ if (process.versions.electron && process.type === 'browser') {
 // ---- the trivial Electron ---------------------------------------------------------------------------------------
 function trivialMain() {
   const { app, BrowserWindow, WebContentsView } = require('electron');
+  const { probeWindowOptions } = require('../host/probe-window');
   const VIEWS = Number(process.env.CC_ZOMBIE_VIEWS) || 3;
   app.whenReady().then(async () => {
-    const win = new BrowserWindow({ width: 640, height: 480, show: true });
+    const win = new BrowserWindow(probeWindowOptions({ width: 640, height: 480, show: true }));
     await win.loadURL('data:text/html,<h1>window</h1>');
     const views = [];
     for (let i = 0; i < VIEWS; i++) {

@@ -111,6 +111,11 @@ function isFailure(response) {
 // a crashed subagent does not read as working for the rest of the session.
 const STALL_MS = 30 * 60_000;
 
+// The idle clock and the happy/stressed flash. Exported so the Ask explainer (host/ask-explainer.js, BACKLOG #33) keeps the
+// same timings as an agent's card rather than restating them.
+const IDLE_MS = 90_000;
+const FLASH_MS = 8_000;
+
 // The longest ONE INVOCATION may live before it is presumed stranded.
 //
 // Dexter, PR #33, Finding 7. `lastActivity` is refreshable -- it has to be, or
@@ -174,8 +179,8 @@ function remember(set, value) {
   if (set.size > REMEMBER_MAX) set.delete(set.values().next().value);
 }
 
-function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS,
-                            maxInvocationMs = MAX_INVOCATION_MS, flashMs = 8_000,
+function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_MS,
+                            maxInvocationMs = MAX_INVOCATION_MS, flashMs = FLASH_MS,
                             toolLingerMs = TOOL_LINGER_MS, stuckMs = STUCK_MS } = {}) {
   const machine = new EventEmitter();
 
@@ -931,6 +936,6 @@ function createMoodMachine({ now = Date.now, idleMs = 90_000, stallMs = STALL_MS
 }
 
 module.exports = {
-  createMoodMachine, STALL_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED,
+  createMoodMachine, STALL_MS, IDLE_MS, FLASH_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED,
   READING, WRITING, RUNNING, WAITING, STUCK, HELPER, TOOL_LINGER_MS, STUCK_MS,
 };

@@ -1469,6 +1469,8 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   'collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
   // BACKLOG #85: the dock rail's hover and the Pin button
   'hover', 'pinClick', 'menuCheck', 'railScroll',
+  // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
+  'uiFont', 'leanClass', 'focusMode',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
@@ -1488,7 +1490,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // backlog #41: verify/probe-games.js reads the Games panel and operates it
   'gamesState', 'gamesDo',
   // backlog #33: verify/probe-ask-panel.js reads the Ask panel and operates it
-  'askState', 'askDo',
+  'askState', 'askDo', 'explainerState', 'explainerDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
   'canvasState', 'canvasClick', 'canvasOverlay', 'canvasMcpBox',
   // backlog #34: verify/probe-video-background.js; #88 + #92: the font and plain-colour actions of verify/probe-fonts-colour.js

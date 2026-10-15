@@ -53,10 +53,11 @@ const payload = {
 
 const MAIN = `
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require(${JSON.stringify(path.join(ROOT, 'host', 'probe-window'))});
 const fs = require('fs');
 const path = require('path');
 app.whenReady().then(async () => {
-  const win = new BrowserWindow({ width: 340, height: 760, show: true, webPreferences: { contextIsolation: true } });
+  const win = new BrowserWindow(probeWindowOptions({ width: 340, height: 760, show: true, webPreferences: { contextIsolation: true } }));
   await win.loadFile(${JSON.stringify(path.join(tmp, 'page.html'))});
   win.show(); await new Promise(r => setTimeout(r, 1500));
   const result = await win.webContents.executeJavaScript(\`(() => {

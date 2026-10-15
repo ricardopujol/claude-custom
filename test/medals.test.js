@@ -364,3 +364,22 @@ test('an armed medal shows an in-place "Remove?" button (no browser dialog); the
   assert.match(html, /class="medal-remove" data-medal-remove="m2"[^>]*>&times;</);
   assert.ok(!md.shelfHtml('miguel', [medalRow]).includes('Remove?'));
 });
+
+// --- a label that isn't the key (BACKLOG #33 gamification: the Ask explainer is keyed `ask-explainer`, shown by its name) ---------
+
+test('the card button, the menu and the shelf say the LABEL when one is given, and the key (data-agent) stays the key', () => {
+  assert.match(md.cardButtonHtml('ask-explainer', 'Professor Byte'), /title="Give Professor Byte a medal"/);
+  assert.match(md.cardButtonHtml('miguel'), /title="Give miguel a medal"/, 'no label: the key, as before');
+  assert.match(md.menuHtml('ask-explainer', null, 'Professor Byte'), /Give Professor Byte a medal<\/div>/);
+  assert.match(md.menuHtml('miguel', null), /Give miguel a medal<\/div>/);
+  const shelf = md.shelfHtml('ask-explainer', [{ id: 'a', kind: 'fast', reason: '', at: 1 }], 'a', 'Professor Byte');
+  assert.match(shelf, /data-agent="ask-explainer"/);
+  assert.match(shelf, /Click again to take this medal off Professor Byte/);
+  assert.doesNotMatch(shelf, /take this medal off ask-explainer/);
+  assert.match(md.shelfHtml('ask-explainer', [{ id: 'a', kind: 'fast', reason: '', at: 1 }], null, 'Ada'), /Take this medal off Ada/);
+});
+
+test('a label is escaped', () => {
+  assert.match(md.menuHtml('ask-explainer', null, '<b>x</b>'), /&lt;b&gt;x&lt;\/b&gt;/);
+  assert.match(md.cardButtonHtml('ask-explainer', '"><i>'), /&quot;&gt;&lt;i&gt;/);
+});

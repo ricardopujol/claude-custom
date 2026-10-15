@@ -24,6 +24,10 @@
  *   .harness/state/usage-counters.json  host/usage-counters.js, STORE_KEY 'usage-counters' (audit move 2: how often
  *                                  each feature is used; keys and timestamps only). Install-wide, never shown in the UI;
  *                                  it opts in to withLock and readState, and an unreadable file is never written over.
+ *   .harness/state/ask-counts.json host/ask-counts.js, STORE_KEY 'ask-counts' (BACKLOG #33 gamification: the Ask
+ *                                  explainer's questions answered and places opened). Install-wide, one explainer per
+ *                                  person. A count can't be recomputed, so like the medals it opts in to withLock and
+ *                                  readState: a file it could not read is never written over.
  *   .harness/state/bubbles.json    host/bubbles.js, STORE_KEY 'bubbles' (BACKLOG #80: the speech
  *                                  bubbles' on/off switch). Install-wide, regenerable.
  *

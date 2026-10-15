@@ -575,3 +575,33 @@ test('the controller tells the display on every change', async () => {
   await r.answerStatus();
   assert.ok(r.changes() > before);
 });
+
+test('gamification: a drill-down into a typed answer is marked as a step (the host does not count it as a question); a plain question is not', async () => {
+  const r = rig();
+  r.c.show(); await r.answerStatus();
+  const d1 = r.c.ask('how does it log?');
+  await tick();
+  assert.strictEqual(r.last('ask').body.step, undefined);
+  r.last('ask').resolve({ ok: true, text: 'It uses a ring buffer.', places: [], model: 'local' });
+  await d1;
+  r.c.drill('ring buffer');
+  await tick();
+  assert.strictEqual(r.last('ask').body.step, true);
+});
+
+test('gamification: "Ask Claude instead" on a step stays a step, so the same step is not counted as a question by asking it twice', async () => {
+  const r = rig();
+  r.c.show(); await r.answerStatus();
+  const d1 = r.c.ask('how does it log?');
+  await tick();
+  r.last('ask').resolve({ ok: true, text: 'It uses a ring buffer.', places: [], model: 'local' });
+  await d1;
+  r.c.drill('ring buffer');
+  await tick();
+  r.last('ask').resolve({ ok: false, reason: 'ollama-down', places: [] });
+  await tick();
+  r.c.askClaude();
+  await tick();
+  assert.strictEqual(r.last('ask').body.model, 'haiku');
+  assert.strictEqual(r.last('ask').body.step, true);
+});

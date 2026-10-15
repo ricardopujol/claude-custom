@@ -46,7 +46,8 @@ function describeState(state, detail) {
 
 // The roster order: a card waiting on you first (Ricardo, #55), then by base state (working, stressed, happy, sleeping), then by name.
 // Among several waiting cards the same order holds. Returns a new array.
-const STATE_RANK = { working: 0, stressed: 1, happy: 2, sleeping: 3 };
+// 'resting' is the Ask explainer's awake-and-calm state (app/ask-explainer-display.js): after happy, before sleeping. No agent card has it.
+const STATE_RANK = { working: 0, stressed: 1, happy: 2, resting: 2.5, sleeping: 3 };
 function sortRows(rows) {
   const waiting = (r) => describeState(r.state, r.detail).detail === 'waiting';
   const rank = (r) => (Object.hasOwn(STATE_RANK, r.state) ? STATE_RANK[r.state] : 9);

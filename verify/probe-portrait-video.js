@@ -60,14 +60,15 @@ fs.writeFileSync(path.join(tmp, 'page.html'), `<!doctype html><meta charset="utf
 
 fs.writeFileSync(path.join(tmp, 'main.js'), `
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require(${JSON.stringify(path.join(__dirname, '..', 'host', 'probe-window'))});
 app.on('ready', () => {
-  const win = new BrowserWindow({
+  const win = new BrowserWindow(probeWindowOptions({
     width: 200, height: 200, show: false,
     // Copied verbatim from app/main.js -- the whole point is to measure
     // THIS app's real configuration, contextIsolation on / nodeIntegration
     // off, not a looser probe-only setup.
     webPreferences: { contextIsolation: true, nodeIntegration: false },
-  });
+  }));
   win.loadFile(${JSON.stringify(path.join(tmp, 'page.html'))});
   win.webContents.on('did-finish-load', async () => {
     const results = [];

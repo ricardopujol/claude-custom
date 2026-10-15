@@ -26,6 +26,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const fs = require('fs');
 
 const OUT_DIR = process.argv[2] || path.join(__dirname, '..', '.harness', 'quota-countdown-shots');
@@ -57,8 +58,8 @@ app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 app.on('ready', async () => {
   try {
     fs.mkdirSync(OUT_DIR, { recursive: true });
-    const win = new BrowserWindow({ width: WIDTH, height: 120, show: true, frame: false,
-      webPreferences: { contextIsolation: true, nodeIntegration: false } });
+    const win = new BrowserWindow(probeWindowOptions({ width: WIDTH, height: 120, show: true, frame: false,
+      webPreferences: { contextIsolation: true, nodeIntegration: false } }));
     await win.loadFile(path.join(__dirname, '..', 'app', 'renderer.html'));
     await sleep(1200);
     const js = (code) => win.webContents.executeJavaScript(code);
