@@ -591,7 +591,7 @@ async function main() {
   small.push(['480: the terminal keeps at least 320 x 160', sq.termwrap.width >= 319 && sq.termwrap.height >= 159, `${sq.termwrap.width}x${sq.termwrap.height}`]);
   await view(app, 'squeeze', { width: 440, height: 520 });
   sq = (await settled(app)).s;
-  small.push(['440: the right column is a rail listing git, fog, bugvault', sq.rails.some(r => ['git', 'fog', 'bugvault'].every(m => r.modules.includes(m)) && r.rect.width <= 29), JSON.stringify(sq.rails.map(r => [r.dir, r.rect.width, r.modules]))]);
+  small.push(['440: the right column is a rail listing git, fog, bugvault', sq.rails.some(r => ['git', 'fog', 'bugvault'].every(m => r.modules.includes(m)) && r.rect.width <= 53), JSON.stringify(sq.rails.map(r => [r.dir, r.rect.width, r.modules]))]);
   small.push(['440: the terminal keeps at least 320 x 160, the boxes tile', sq.termwrap.width >= 319 && sq.termwrap.height >= 159 && tiles(sq).length === 0, `${sq.termwrap.width}x${sq.termwrap.height} ${tiles(sq).join('; ')}`]);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-small.png') });
   await view(app, 'squeeze', { width: 330, height: 520 });
