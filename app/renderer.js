@@ -1180,7 +1180,7 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 const MODULE_IDS = TABS.map(t => t.id);
 const DM = window.dockMigrate;
 const DTm = window.dockTree;
-let globalLayout = DTm.defaultLayout(MODULE_IDS);
+let globalLayout = DTm.startLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
 let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
 let dragLayout = null;           // a divider being dragged: drawn, not yet saved
@@ -2084,7 +2084,7 @@ function openLayoutMenu() {
   }));
   layoutMenu.appendChild(node('button', {
     type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
-    on: { click: () => { openEveryGroup(); commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+    on: { click: () => { openEveryGroup(); commitPlacement(DTm.startLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
     layoutMenu.appendChild(node('button', {
@@ -2856,11 +2856,11 @@ new ResizeObserver(() => { if (shortcutsOpen) placeShortcuts(); }).observe(docum
 function legacyLayout() {
   let legacy = {};
   try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
-  return DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
+  return DTm.unpinAll(DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS));
 }
 
 async function loadLayout() {
-  globalLayout = DTm.defaultLayout(MODULE_IDS);
+  globalLayout = DTm.startLayout(MODULE_IDS);
   const seeded = localStorage.getItem('dockSelection2') !== null;
   selection = readSelection();
   if (!seeded) saveSelection();            // seeded ONCE from L1's, so a later push never brings another window's choices (Dexter F4)
@@ -2888,9 +2888,9 @@ async function loadLayout() {
     // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
     // next real change saves as usual.
     const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
-    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
+    if (what === 'use') { globalLayout = DTm.readStored(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
     else if (what === 'migrate-v1') {
-      globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
+      globalLayout = DTm.readStored(v1Answer.layout, MODULE_IDS);
       layoutLoaded = true;
       saveGlobalLayout(globalLayout);
       renderLayout();

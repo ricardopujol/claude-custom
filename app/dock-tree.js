@@ -242,6 +242,20 @@ function readAny(raw, ids) {
   return defaultLayout(ids);
 }
 
+/**
+ * A stored layout as the dock opens it (BACKLOG #103): `readAny`, except a layout saved before the rail existed (an L1 shape, or
+ * a version 2 with no `rail` key) pinned nothing on purpose, so its docked panels start as rail tabs once; and anything
+ * unreadable is the start layout. A layout that has a `rail` array records the person's pins and is left alone.
+ */
+function readStored(raw, ids) {
+  if (isObject(raw) && raw.version === VERSION) {
+    const l = normalize(raw, ids);
+    return Array.isArray(raw.rail) ? l : unpinAll(l);
+  }
+  if (isObject(raw) && isObject(raw.zones)) return unpinAll(fromV1(raw, ids));
+  return startLayout(ids);
+}
+
 /** A window's L1 selection as a tree selection: group ids are the zone names, so it maps straight across. */
 function selectionFromV1(raw) {
   return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false, floatOrder: [], collapsed: {} };
@@ -559,6 +573,19 @@ function unpinGroup(layout, groupId) {
   const gr = groups(layout).find(x => x.id === groupId);
   if (!gr) return layout;
   return [...gr.tabs].reduce((l, id) => unpin(l, id), layout);
+}
+
+/** Unpin every panel docked in the tree (floats stay where they were put), in tree order. */
+function unpinAll(layout) {
+  return groups(layout).map(gr => gr.id).reduce((l, id) => unpinGroup(l, id), layout);
+}
+
+/**
+ * What a person meets first (BACKLOG #103): every panel a tab on the rail, the terminal filling the dock, until they pin one.
+ * `defaultLayout` stays the all-pinned layout; this is it unpinned, so a later pin returns each panel to the same group.
+ */
+function startLayout(ids) {
+  return unpinAll(defaultLayout(ids));
 }
 
 // --- sizes ---------------------------------------------------------------------
@@ -961,7 +988,7 @@ function fit(layout, selection, viewport) {
 }
 
 const API = {
-  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
+  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, startLayout, unpinAll, readStored, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, unpin, pin, showOnRail, unpinGroup, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, isCollapsed, activeOf, fit, peekFor, PEEK,
 };

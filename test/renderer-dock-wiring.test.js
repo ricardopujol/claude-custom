@@ -280,7 +280,7 @@ test('D4: collapsing is the window\'s selection: it goes through commitSelection
 });
 
 test('D4: Reset layout and applying a preset open every group in this window first (group names are handed out again by the next layout)', () => {
-  assert.match(JS, /on: \{ click: \(\) => \{ openEveryGroup\(\); commitPlacement\(DTm\.defaultLayout\(MODULE_IDS\), \{ justThisTab: check\.box\.checked \}\); closeLayoutMenu\(\); \} \},/);
+  assert.match(JS, /on: \{ click: \(\) => \{ openEveryGroup\(\); commitPlacement\(DTm\.startLayout\(MODULE_IDS\), \{ justThisTab: check\.box\.checked \}\); closeLayoutMenu\(\); \} \},/);
   assert.match(fnBody('applyPreset'), /openEveryGroup\(\);\s+commitPlacement\(r\.layout, \{ justThisTab \}\);/);
   assert.match(fnBody('openEveryGroup'), /collapsed: \{\}/);
 });

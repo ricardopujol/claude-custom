@@ -158,7 +158,7 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
     const rb = boxes.find(x => x.kind === 'rail' && x.modules.includes(at.module));
     const from = at.dir === 'v' ? (at.rect.x < rb.rect.x ? 'right' : 'left') : (at.rect.y < rb.rect.y ? 'bottom' : 'top');
     const pin = rb.id === 'dock' && Array.isArray(layout.rail) && layout.rail.includes(at.module);
-    popover = { ...at, shape, from, pin, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
+    popover = { ...at, shape, from, pin, tabs: named([at.module]).map(t => ({ ...t, on: true })) };   // only the hovered tab (#103)
     if (popover.tabs.some(t => t.id === at.module)) {
       shown.push(at.module);
       if (at.module === 'agents') face = shape === 'tall' ? (typeof faceSize === 'function' ? faceSize(at.rect.width) : null) : faceForWide(at.rect.height);
