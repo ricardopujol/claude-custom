@@ -223,18 +223,25 @@ test('the store file sits beside the others, as medals.json', () => {
 
 // --- the menu ------------------------------------------------------------------------------------
 
-test('the menu lists the six kinds, a reason field limited to REASON_MAX, and Give is off until a kind is picked', () => {
-  const html = md.menuHtml('miguel', null);
+test('the menu is six one-click kinds: no reason field, no Give or Cancel, nothing pre-selected', () => {
+  const html = md.menuHtml('miguel');
   for (const k of md.KINDS) assert.ok(html.includes(`data-medal-kind="${k.kind}"`), k.kind);
-  assert.match(html, new RegExp(`maxlength="${md.REASON_MAX}"`));
-  assert.match(html, /data-medal-give disabled/);
-  const picked = md.menuHtml('miguel', 'fast');
-  assert.ok(!/data-medal-give disabled/.test(picked));
-  assert.match(picked, /class="medal-kind on" data-medal-kind="fast"/);
+  assert.strictEqual((html.match(/data-medal-kind=/g) || []).length, 6);
+  assert.ok(!/<input/.test(html), 'no reason field');
+  assert.ok(!/data-medal-give|data-medal-cancel|medal-menu-actions|medal-reason-input/.test(html), 'no Give / Cancel');
+  assert.ok(!/aria-pressed|class="medal-kind on"/.test(html), 'no selected state');
+});
+
+test('the shelf shows kind and date and never a reason, even for a stored medal that has one', () => {
+  const html = md.shelfHtml('miguel', [{ id: 'm1', kind: 'fast', reason: 'beat the clock', at: Date.UTC(2026, 9, 9) }]);
+  assert.ok(!html.includes('beat the clock'));
+  assert.ok(!html.includes('medal-reason'));
+  assert.match(html, /Fast/);
+  assert.match(html, /2026-10-09/);
 });
 
 test('the menu and the card button escape the agent name', () => {
-  assert.ok(!md.menuHtml('<i>x</i>', null).includes('<i>x</i>'));
+  assert.ok(!md.menuHtml('<i>x</i>').includes('<i>x</i>'));
   assert.ok(!md.cardButtonHtml('"><script>').includes('<script>'));
   assert.match(md.cardButtonHtml('miguel'), /data-medal-open/);
 });
@@ -370,8 +377,8 @@ test('an armed medal shows an in-place "Remove?" button (no browser dialog); the
 test('the card button, the menu and the shelf say the LABEL when one is given, and the key (data-agent) stays the key', () => {
   assert.match(md.cardButtonHtml('ask-explainer', 'Professor Byte'), /title="Give Professor Byte a medal"/);
   assert.match(md.cardButtonHtml('miguel'), /title="Give miguel a medal"/, 'no label: the key, as before');
-  assert.match(md.menuHtml('ask-explainer', null, 'Professor Byte'), /Give Professor Byte a medal<\/div>/);
-  assert.match(md.menuHtml('miguel', null), /Give miguel a medal<\/div>/);
+  assert.match(md.menuHtml('ask-explainer', 'Professor Byte'), /Give Professor Byte a medal<\/div>/);
+  assert.match(md.menuHtml('miguel'), /Give miguel a medal<\/div>/);
   const shelf = md.shelfHtml('ask-explainer', [{ id: 'a', kind: 'fast', reason: '', at: 1 }], 'a', 'Professor Byte');
   assert.match(shelf, /data-agent="ask-explainer"/);
   assert.match(shelf, /Click again to take this medal off Professor Byte/);
@@ -380,6 +387,6 @@ test('the card button, the menu and the shelf say the LABEL when one is given, a
 });
 
 test('a label is escaped', () => {
-  assert.match(md.menuHtml('ask-explainer', null, '<b>x</b>'), /&lt;b&gt;x&lt;\/b&gt;/);
+  assert.match(md.menuHtml('ask-explainer', '<b>x</b>'), /&lt;b&gt;x&lt;\/b&gt;/);
   assert.match(md.cardButtonHtml('ask-explainer', '"><i>'), /&quot;&gt;&lt;i&gt;/);
 });

@@ -3,7 +3,7 @@
  * BACKLOG #80: the medals Ricardo gives an agent. Pure rules, shared by the renderer (a plain <script>) and the host
  * (require): the six kinds, the validation of a request, the count chip on the card and the shelf on the agent's log page.
  *
- * The CARD shows only a count chip; the medals with their reasons and dates live on the SHELF (design round 2026-10-09B).
+ * The CARD shows only a count chip; the medals with their dates live on the SHELF (design round 2026-10-09B).
  * A medal is a thing Ricardo gives: nothing here computes one from an agent's work, so no medal ever claims something the
  * transcript did not show.
  *
@@ -77,7 +77,6 @@ function dateText(at) {
   return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
 }
 
-/** The shelf on an agent's log page: every medal with its reason and date, newest first, each removable. */
 /**
  * Taking a hand-given medal off takes TWO clicks, in place (no browser confirm()): the first arms the medal's button (it reads
  * "Remove?"), a second click on the same one confirms. `pending` is the armed id or null.
@@ -87,6 +86,7 @@ function reduceRemove(pending, id) {
 }
 const disarm = () => null;
 
+/** The shelf on an agent's log page: every medal with its date (never a reason), newest first, each removable. */
 function shelfHtml(agent, medals, pendingId = null, label = agent) {
   // null is UNKNOWN (the host couldn't read the file), which is not the same as none.
   if (medals === null) return `<div class="medal-shelf" data-agent="${escapeHtml(agent)}"><div class="medal-shelf-title">Medals</div><div class="medal-none">Couldn't read the medals just now. Trying again.</div></div>`;
@@ -95,9 +95,8 @@ function shelfHtml(agent, medals, pendingId = null, label = agent) {
     .slice().sort((a, b) => (b.at || 0) - (a.at || 0))
     .map((m) => {
       const k = kindOf(m.kind);
-      const reason = typeof m.reason === 'string' && m.reason ? ` <span class="medal-reason">${escapeHtml(m.reason)}</span>` : '';
       return `<div class="medal-row"><span class="medal-icon" title="${escapeHtml(k.label)}">${k.icon}</span>` +
-        `<span class="medal-label">${escapeHtml(k.label)}</span>${reason}` +
+        `<span class="medal-label">${escapeHtml(k.label)}</span>` +
         `<span class="medal-date">${escapeHtml(dateText(m.at))}</span>` +
         (m.id === pendingId
           ? `<button type="button" class="medal-remove confirm" data-medal-remove="${escapeHtml(m.id)}" title="Click again to take this medal off ${escapeHtml(label)}">Remove?</button>`
@@ -113,15 +112,11 @@ function cardButtonHtml(agent, label = agent) {
   return `<button type="button" class="agent-medal-btn" data-medal-open title="Give ${escapeHtml(label)} a medal">🏅</button>`;
 }
 
-/** The give-a-medal menu: six kinds, an optional one-line reason, Give / Cancel. `selected` is a kind or null. `label` is the name shown when it isn't the key. */
-function menuHtml(agent, selected, label = agent) {
+/** The give-a-medal menu: six kinds, one click gives the medal (no reason field, no Give / Cancel). `label` is the name shown when it isn't the key. */
+function menuHtml(agent, label = agent) {
   const kinds = KINDS.map((k) =>
-    `<button type="button" class="medal-kind${k.kind === selected ? ' on' : ''}" data-medal-kind="${k.kind}" ` +
-    `aria-pressed="${k.kind === selected}">${k.icon} ${escapeHtml(k.label)}</button>`).join('');
-  return `<div class="medal-menu-title">Give ${escapeHtml(label)} a medal</div><div class="medal-kinds">${kinds}</div>` +
-    `<input type="text" class="medal-reason-input" maxlength="${REASON_MAX}" placeholder="Why? (optional, one line)" autocomplete="off" spellcheck="false">` +
-    `<div class="medal-menu-actions"><button type="button" data-medal-give${selected ? '' : ' disabled'}>Give</button>` +
-    `<button type="button" data-medal-cancel>Cancel</button></div>`;
+    `<button type="button" class="medal-kind" data-medal-kind="${k.kind}">${k.icon} ${escapeHtml(k.label)}</button>`).join('');
+  return `<div class="medal-menu-title">Give ${escapeHtml(label)} a medal</div><div class="medal-kinds">${kinds}</div>`;
 }
 
 const api = { reduceRemove, disarm, cardButtonHtml, menuHtml, KINDS, REASON_MAX, AGENT_MAX, PER_AGENT_MAX, kindOf, cleanReason, validGive, validRemove, countOf, chipHtml, shelfHtml };

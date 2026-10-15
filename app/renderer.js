@@ -3950,8 +3950,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         else if (a.op === 'giveMedal') {
           const k = medalMenuEl.querySelector('[data-medal-kind="' + String(a.kind) + '"]'); if (!k) return JSON.stringify({ ok: false, error: 'no menu' });
           k.click();
-          const input = medalMenuEl.querySelector('.medal-reason-input'); input.value = String(a.reason || ''); input.dispatchEvent(new Event('input', { bubbles: true }));
-          medalMenuEl.querySelector('[data-medal-give]').click();
         }
         else if (a.op === 'removeMedal') { const b = medalShelfEl.querySelector('[data-medal-remove]'); if (!b) return JSON.stringify({ ok: false, error: 'no medal on the shelf' }); b.click(); }
         else if (a.op === 'closeLog') { const b = agentLogEl.querySelector('[data-agent-log-close]'); if (b) b.click(); }
@@ -5548,18 +5546,16 @@ function applyMedals(list) {
 
 // The give-a-medal menu: opened by a right-click on a card or its 🏅 button.
 const medalMenuEl = document.getElementById('medal-menu');
-let medalMenu = null;     // { agent, kind, reason } while open
+let medalMenu = null;     // { agent } while open
 function paintMedalMenu() {
   if (!medalMenuEl) return;
   if (!medalMenu) { medalMenuEl.hidden = true; medalMenuEl.innerHTML = ''; return; }
-  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.kind, medalMenu.agent === ASK_AGENT ? explainerLabel() : medalMenu.agent);
+  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.agent === ASK_AGENT ? explainerLabel() : medalMenu.agent);
   medalMenuEl.hidden = false;
-  const input = medalMenuEl.querySelector('.medal-reason-input');
-  if (input) { input.value = medalMenu.reason; input.focus(); }
 }
 function openMedalMenu(agent, x, y) {
   if (!medalMenuEl) return;
-  medalMenu = { agent, kind: null, reason: '' };
+  medalMenu = { agent };
   paintMedalMenu();
   const w = medalMenuEl.offsetWidth || 260;
   const h = medalMenuEl.offsetHeight || 200;
@@ -5572,23 +5568,16 @@ function closeMedalMenu() {
   paintMedalMenu();
   return true;
 }
-function giveMedal() {
-  if (!medalMenu || !medalMenu.kind) return;
-  sendJson({ type: 'medal', action: 'give', agent: medalMenu.agent, kind: medalMenu.kind, reason: medalMenu.reason });
+// One click on a kind gives the medal and closes the menu (BACKLOG #102): no reason, no Give button.
+function giveMedal(kind) {
+  if (!medalMenu || !window.medalsDisplay.kindOf(kind)) return;
+  sendJson({ type: 'medal', action: 'give', agent: medalMenu.agent, kind });
   closeMedalMenu();
 }
 if (medalMenuEl) {
   medalMenuEl.addEventListener('click', (e) => {
     const kind = e.target.closest && e.target.closest('[data-medal-kind]');
-    if (kind) { medalMenu.kind = kind.dataset.medalKind; paintMedalMenu(); return; }
-    if (e.target.closest('[data-medal-give]')) giveMedal();
-    else if (e.target.closest('[data-medal-cancel]')) closeMedalMenu();
-  });
-  medalMenuEl.addEventListener('input', (e) => {
-    if (medalMenu && e.target.classList && e.target.classList.contains('medal-reason-input')) medalMenu.reason = e.target.value;
-  });
-  medalMenuEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('medal-reason-input')) { e.preventDefault(); giveMedal(); }
+    if (kind) giveMedal(kind.dataset.medalKind);
   });
 }
 window.addEventListener('mousedown', (e) => {

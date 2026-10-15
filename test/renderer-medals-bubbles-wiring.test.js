@@ -100,3 +100,11 @@ test('the shelf removes a medal in two clicks through reduceRemove, with no conf
   assert.ok(!/\bconfirm\(/.test(renderer.slice(renderer.indexOf('medalRemovePending'), renderer.indexOf('medalRemovePending') + 1500)));
   assert.match(html, /\.medal-remove\.confirm/);
 });
+
+test('a click on a medal kind gives it at once and closes the menu; there is no reason or Give wiring left', () => {
+  const start = renderer.indexOf('const medalMenuEl');
+  const block = renderer.slice(start, start + 3500);
+  assert.match(block, /sendJson\(\{ type: 'medal', action: 'give', agent: medalMenu\.agent, kind \}/);
+  assert.ok(!/medal-reason-input|data-medal-give|data-medal-cancel|medalMenu\.reason/.test(block));
+  assert.ok(!/medal-reason-input|data-medal-give/.test(renderer), 'the probe hook no longer types a reason or presses Give');
+});

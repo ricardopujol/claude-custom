@@ -19,8 +19,8 @@
  *   C  the same agent again inside 3 minutes: no model request; another agent: allowed
  *   D  Ollama failing (HTTP 500): no bubble, no error on the page, the card is untouched
  *   E  prefers-reduced-motion: no animation on the bubble
- *   F  medals: right-click opens the menu at the pointer, give one with a reason, the card shows only a count chip, the log
- *      page's shelf shows kind, reason and date, remove empties the chip
+ *   F  medals: right-click opens the menu at the pointer, one click on a kind gives it, the card shows only a count chip, the log
+ *      page's shelf shows kind and date, no reason, remove empties the chip
  *   G  the switch: off -> no model request; agent images off -> no model request
  *
  * SAFE. `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; every CLAUDE_CUSTOM_* not passed on purpose is deleted;
@@ -166,17 +166,14 @@ app.whenReady().then(async () => {
     check('a right-click on a card opens the medal menu', await until('!document.getElementById("medal-menu").hidden'));
     const at = await js('(() => { const m = document.getElementById("medal-menu").getBoundingClientRect(); const c = document.querySelector("#agents .agent[data-agent=code-reviewer]").getBoundingClientRect(); return { menuTop: m.top, cardTop: c.top, kinds: document.querySelectorAll("#medal-menu [data-medal-kind]").length }; })()');
     check('it lists the six kinds, near the card', at.kinds === 6 && Math.abs(at.menuTop - at.cardTop) < 80, at);
-    check('Give is disabled until a kind is picked', await js('document.querySelector("#medal-menu [data-medal-give]").disabled'));
-    await js('document.querySelector("#medal-menu [data-medal-kind=bug-hunter]").click()');
-    await js('(() => { const i = document.querySelector("#medal-menu .medal-reason-input"); i.value = "found the race in the slot"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
+    check('the menu has no reason field and no Give / Cancel', await js('!document.querySelector("#medal-menu input") && !document.querySelector("#medal-menu [data-medal-give], #medal-menu [data-medal-cancel]")'));
     await shot('2-medal-menu');
-    await js('document.querySelector("#medal-menu [data-medal-give]").click()');
-    check('the menu closes on Give', await until('document.getElementById("medal-menu").hidden'));
+    await js('document.querySelector("#medal-menu [data-medal-kind=bug-hunter]").click()');
+    check('one click on a kind gives it and closes the menu', await until('document.getElementById("medal-menu").hidden'));
     check('the card shows a count chip and only that', await until('(() => { const c = document.querySelector("#agents .agent[data-agent=code-reviewer] .medal-chip"); return !!c && /1/.test(c.textContent); })()'));
-    check('the reason is NOT on the card', !(await js('document.querySelector("#agents .agent[data-agent=code-reviewer]").textContent.includes("found the race")')));
     await shot('3-medal-chip-on-card');
     await js('document.querySelector("#agents .agent[data-agent=code-reviewer] .meta").click()');
-    check('opening the log shows the shelf with kind, reason and date', await until('(() => { const s = document.getElementById("agent-medals"); return s && /Bug hunter/.test(s.textContent) && /found the race in the slot/.test(s.textContent) && /\\\\d{4}-\\\\d{2}-\\\\d{2}/.test(s.textContent); })()'));
+    check('opening the log shows the shelf with kind and date, no reason', await until('(() => { const s = document.getElementById("agent-medals"); return s && /Bug hunter/.test(s.textContent) && !s.querySelector(".medal-reason") && /\\\\d{4}-\\\\d{2}-\\\\d{2}/.test(s.textContent); })()'));
     check('the shelf is visible under the log', await js('getComputedStyle(document.getElementById("agent-medals")).display !== "none"'));
     await shot('4-medal-shelf');
     await js('document.querySelector("#agent-medals [data-medal-remove]").click()');
