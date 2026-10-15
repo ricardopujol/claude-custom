@@ -180,4 +180,4 @@ function createPersistentExec({
   return exec;
 }
 
-module.exports = { createPersistentExec, POWERSHELL, TIMEOUT_MS, MAX_USES, IDLE_MS };
+module.exports = { createPersistentExec };

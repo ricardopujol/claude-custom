@@ -467,3 +467,27 @@ test('a sample that ends after stop() is dropped, solo or shared: nothing is pub
   await w.advance(100);
   assert.strictEqual(a.latest(), null);
 }));
+
+test('property: a record written to the file reads back the same, whatever the sample text holds', () => {
+  fc.assert(fc.property(
+    fc.integer({ min: 1, max: 1e9 }), fc.integer({ min: 1, max: 4e12 }), fc.integer({ min: 1, max: 99999 }),
+    fc.string({ minLength: 1, maxLength: 200 }).filter(t => t.trim() !== ''), fc.boolean(), fc.string({ maxLength: 40 }),
+    (seq, at, ownerPid, text, ok, error) => {
+      const rec = SP.decodeRecord(SP.encodeRecord({ seq, at, mode: 'full', ownerPid, ok, error }, text));
+      assert.ok(rec);
+      assert.strictEqual(rec.seq, seq);
+      assert.strictEqual(rec.at, at);
+      assert.strictEqual(rec.ok, ok);
+      assert.strictEqual(rec.text, ok ? text : null, 'newlines and END inside the text survive');
+      assert.strictEqual(rec.key, `${ownerPid}:${seq}:${at}`);
+    }));
+});
+
+test('decodeRecord refuses what is not ours: no header line, another version, junk fields, an ok record with no text', () => {
+  assert.strictEqual(SP.decodeRecord(null), null);
+  assert.strictEqual(SP.decodeRecord('no newline'), null);
+  assert.strictEqual(SP.decodeRecord('{not json}\ntext'), null);
+  assert.strictEqual(SP.decodeRecord(JSON.stringify({ v: 2, seq: 1, at: 1, mode: 'full', ok: true }) + '\ntext'), null);
+  assert.strictEqual(SP.decodeRecord(JSON.stringify({ v: 1, seq: 1.5, at: 1, mode: 'full', ok: true }) + '\ntext'), null);
+  assert.strictEqual(SP.decodeRecord(JSON.stringify({ v: 1, seq: 1, at: 1, mode: 'full', ok: true }) + '\n'), null);
+});

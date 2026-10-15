@@ -431,6 +431,5 @@ function createSharedPoller({
 }
 
 module.exports = {
-  createSharedPoller, defaultDir, encodeRecord, decodeRecord,
-  CONTROL_MS, POLL_MS, BEAT_MS, WANT_REFRESH_MS, WANT_STALE_MS, DIR_NAME, VERSION,
+  createSharedPoller, defaultDir, encodeRecord, decodeRecord, CONTROL_MS, BEAT_MS, WANT_STALE_MS,
 };
