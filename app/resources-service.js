@@ -80,7 +80,16 @@ function createResourcesService({
   // Q1 (Ricardo, PR #113): the process tree is sampled ALWAYS, panel open or not, so the tab warning works with it closed.
   // The one exception is a minimised window.
   const panelWanted = () => !minimised;
-  function refresh() { sampler.setWanted({ panel: panelWanted(), chip: !minimised }); }
+  // Which pages are SHOWING the Resources panel (BACKLOG #100 c): the shared poller samples every 10 s while any window shows it and
+  // every 30 s while only the chip is in view (host/poller-policy.js). Keyed by the page's id; only a real `true` counts, and a
+  // page that goes away is forgotten, or its last word would keep the faster cadence alive.
+  const viewers = new Map();
+  function refresh() {
+    const wanted = { panel: panelWanted(), chip: !minimised };
+    // Told only when true, so a sampler that does not care (the per-window one) hears exactly what it always did.
+    if (!minimised && viewers.size > 0) wanted.viewing = true;
+    sampler.setWanted(wanted);
+  }
 
   const tabList = () => (typeof tabs === 'function' ? tabs() : []).map(t => ({
     key: t.key, port: t.port, label: t.branch ? t.branch : basename(t.cwd),
@@ -412,6 +421,12 @@ function createResourcesService({
       refresh();
     },
     refresh,
+    /** A page says whether it is showing the Resources panel (docked, peeked or popped). */
+    setViewing(id, on) {
+      if (on === true) viewers.set(id, true); else viewers.delete(id);
+      refresh();
+    },
+    forgetViewer(id) { if (viewers.delete(id)) refresh(); },
     onUpdate,
     /** The page that shows the chip changed (a tab was selected): it gets the last payload again, history included, at once. */
     resend: push,
