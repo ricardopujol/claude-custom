@@ -115,7 +115,7 @@ test('the medal menu moves focus to its first kind on open and gives it back to 
   const start = renderer.indexOf('function paintMedalMenu');
   const end = renderer.indexOf('function giveMedal', start);
   const block = renderer.slice(start, end);
-  assert.match(block, /querySelector\('\[data-medal-kind\]'\)[\s\S]*?\.focus\(\)/);
+  assert.match(block, /const first = medalMenuEl\.querySelector\('\[data-medal-kind\]'\);\s*if \(first\) first\.focus\(\);/);
   assert.match(block, /opener: document\.activeElement/);
   assert.match(block, /opener\.isConnected[\s\S]*?opener\.focus\(\)/);
 });
