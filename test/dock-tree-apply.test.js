@@ -944,3 +944,28 @@ test('refitRails on a page with no rail does nothing', () => {
   const w = makeDoc();
   assert.doesNotThrow(() => V.refitRails(w.doc));
 });
+
+test('PR #189 Dexter 3: hovering another rail tab while the popover tab has focus moves focus to the new one-tab bar', () => {
+  const w = makeDoc();
+  const l = T.startLayout(IDS);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const bar = () => peekEl(w).querySelector('.zone-tabs');
+  const first = bar().children.find(b => b.dataset.module === 'git');
+  first.focus();
+  assert.strictEqual(w.doc.activeElement, first);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
+  const next = bar().children.find(b => b.dataset.module === 'vault');
+  assert.notStrictEqual(next, first, 'the bar was rebuilt around the other module');
+  assert.strictEqual(w.doc.activeElement, next, 'the keyboard stays in the popover');
+});
+
+test('PR #189 Dexter 3: focus held outside the popover is left alone when the popover swaps', () => {
+  const w = makeDoc();
+  const l = T.startLayout(IDS);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const field = new El('input');
+  w.root.children[0].appendChild(field);
+  field.focus();
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
+  assert.strictEqual(w.doc.activeElement, field);
+});

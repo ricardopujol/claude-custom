@@ -245,7 +245,7 @@ function readAny(raw, ids) {
 }
 
 // Every module id a stored version 2 layout names anywhere: the tree, the floats, the rail, the hidden.
-function listedIn(raw) {
+function modulesNamedBy(raw) {
   const out = new Set();
   const take = (v) => { if (typeof v === 'string') out.add(v); };
   const visit = (n, depth) => {
@@ -273,8 +273,8 @@ function readStored(raw, ids) {
     const l = normalize(raw, ids);
     if (!Array.isArray(raw.rail)) return unpinAll(l);
     // A module the stored layout never listed (a new build's panel) starts on the rail too, not docked where `normalize` puts it.
-    const listed = listedIn(raw);
-    return ids.filter(id => !listed.has(id) && groupOf(l, id)).reduce((acc, id) => unpin(acc, id), l);
+    const named = modulesNamedBy(raw);
+    return ids.filter(id => !named.has(id) && groupOf(l, id)).reduce((acc, id) => unpin(acc, id), l);
   }
   if (isObject(raw) && isObject(raw.zones)) return unpinAll(fromV1(raw, ids));
   return startLayout(ids);

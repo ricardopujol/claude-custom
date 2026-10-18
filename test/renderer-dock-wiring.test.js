@@ -459,3 +459,25 @@ test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the
   assert.match(body, /DTm\.show\(settledLayout\(\), id\)/);
   assert.doesNotMatch(JS.replace(body, ''), /if \(placementLayout\(\)\.hidden\.includes\(/, 'no path decides hidden-or-not by itself');
 });
+
+test('PR #189 Miguel 1: the Reset layout tooltip says the panels go back on the rail', () => {
+  assert.match(JS, /text: 'Reset layout', title: 'Every panel back on the rail, default sizes'/);
+});
+
+test('PR #189 Miguel 3: every load path reads a stored layout through the start-layout rules (#103)', () => {
+  assert.match(JS, /let globalLayout = DTm\.startLayout\(MODULE_IDS\);/);
+  const load = fnBody('loadLayout');
+  assert.match(load, /globalLayout = DTm\.startLayout\(MODULE_IDS\);/);
+  assert.match(load, /if \(what === 'use'\) \{ globalLayout = DTm\.readStored\(answer\.layout, MODULE_IDS\);/);
+  assert.match(load, /globalLayout = DTm\.readStored\(v1Answer\.layout, MODULE_IDS\);/);
+  assert.match(fnBody('legacyLayout'), /DTm\.unpinAll\(DTm\.fromV1\(/);
+});
+
+test('PR #189 Miguel 2: pushed layouts and this tab\'s own override are read the same way', () => {
+  assert.match(fnBody('loadLayout'), /const incoming = DTm\.readStored\(l, MODULE_IDS\);/);
+  assert.match(fnBody('applyLayoutOverride'), /DTm\.readStored\(r\.apply, MODULE_IDS\)/);
+});
+
+test('PR #189 Miguel 5: no probe action drives a popover tab any more (the popover shows one tab)', () => {
+  assert.doesNotMatch(JS, /case 'peekTabClick'/);
+});

@@ -2083,7 +2083,7 @@ function openLayoutMenu() {
     on: { click: () => { toggleAllZones(); closeLayoutMenu(); } },
   }));
   layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
+    type: 'button', text: 'Reset layout', title: 'Every panel back on the rail, default sizes',
     on: { click: () => { openEveryGroup(); commitPlacement(DTm.startLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
@@ -2869,7 +2869,7 @@ async function loadLayout() {
   if (bridge) {
     bridge.onChange((l) => {
       layoutPushes += 1;
-      const incoming = DTm.normalize(l, MODULE_IDS);
+      const incoming = DTm.readStored(l, MODULE_IDS);
       // This window's own save comes back as a push: it is already drawn, and redrawing it would queue a terminal
       // refit for a float's move that never touched the terminal (PR #102 Miguel Y2).
       const same = placementOf(incoming) === placementOf(globalLayout);
@@ -2910,7 +2910,7 @@ async function loadLayout() {
 function applyLayoutOverride(incoming) {
   const r = window.dockEffects.overrideOnHello(pendingOverride, incoming);
   if (r.settled) pendingOverride = null;
-  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readAny(r.apply, MODULE_IDS) : null;
+  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readStored(r.apply, MODULE_IDS) : null;
   if (r.resend && pendingOverride) {
     try { ws.send(JSON.stringify({ type: 'layout-override', layout: pendingOverride.layout })); } catch { /* next hello */ }
   }
@@ -3243,12 +3243,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const el = document.querySelector('#dock > .drail[data-rail="dock"]');
         if (!el) return JSON.stringify({ ok: false, error: 'no dock rail' });
         el.scrollTop = a.to === 'end' ? el.scrollHeight : 0;
-        return JSON.stringify({ ok: true });
-      }
-      case 'peekTabClick': {
-        const b = document.querySelector(`.dpeek .zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
-        if (!b) return JSON.stringify({ ok: false, error: 'no such popover tab' });
-        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
         return JSON.stringify({ ok: true });
       }
       case 'collapse': toggleGroupCollapse(String(a.id)); break;

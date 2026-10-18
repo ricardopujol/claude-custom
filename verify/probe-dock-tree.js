@@ -81,6 +81,7 @@ const IDS = TABS.map(t => t.id);
 // BACKLOG #103: the Reset layout button now gives the start layout (every panel a rail tab). Most checks want the old all-docked
 // baseline, so they set it through the layout hook; check 3b presses the real button.
 const dockTreeApi = require(path.join(ROOT, 'app', 'dock-tree'));
+// The other checks call this instead of pressing Reset layout on purpose: the real button now gives the start layout, and 3b presses it.
 const baseline = (app) => view(app, 'layout', { layout: dockTreeApi.defaultLayout(IDS) });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-dock-tree-'));

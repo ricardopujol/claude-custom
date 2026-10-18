@@ -2324,7 +2324,7 @@ test('the probe may drive the floating panels\' actions, by name only (dockable 
 
 test('the probe may drive the collapse, popover, keyboard and settle actions, by name only (dockable panels D4)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  for (const a of ['collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
 test('the probe may hover the dock rail and press the Pin button, by name only (#85)', () => {
