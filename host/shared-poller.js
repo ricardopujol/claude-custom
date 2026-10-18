@@ -150,7 +150,7 @@ function createSharedPoller({
         const m = /^want-(\d+)\.json$/.exec(name);
         if (!m) continue;
         const pid = Number(m[1]);
-        if (pid === self.pid) continue;
+        if (!validPid(pid) || !Number.isSafeInteger(pid) || pid === self.pid) continue;
         if (pidAlive(pid) === false) { try { fs.unlinkSync(path.join(dir, name)); } catch { /* already gone */ } continue; }
         const w = readJson(path.join(dir, name));
         if (w && isLevel(w.level) && Number.isFinite(w.at) && now() - w.at <= WANT_STALE_MS) levels.push(w.level);

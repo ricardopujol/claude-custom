@@ -24,7 +24,7 @@ function makeWorld() {
   const alive = new Set();
   const starts = new Map();
   const world = {
-    dir, alive, starts, calls: [], oneShots: [], pollers: new Map(),
+    dir, alive, starts, calls: [], oneShots: [], pollers: new Map(), crashed: new Set(), execDelay: 0,
     now: () => clock,
     setTimer: (fn, ms) => { const t = { id: ++id, at: clock + ms, fn, live: true }; timers.push(t); return t; },
     clearTimer: (t) => { if (t) t.live = false; },
@@ -47,13 +47,15 @@ function makeWorld() {
       starts.set(pid, 'S' + pid);
       let n = 0;
       const p = SP.createSharedPoller({
-        dir, self: { pid }, now: world.now, setTimer: world.setTimer, clearTimer: world.clearTimer,
+        // A crashed process does not tick and does not finish a sample it had in flight.
+        dir, self: { pid }, now: world.now, clearTimer: world.clearTimer,
+        setTimer: (fn, ms) => world.setTimer(() => { if (!world.crashed.has(pid)) fn(); }, ms),
         selfStart: async () => starts.get(pid) || null,
         pidAlive: (q) => alive.has(q),
         proveOwner: async (o) => (alive.has(o.pid) ? starts.get(o.pid) === o.start : false),
         script: (mode) => 'script:' + mode,
         makeExec: () => {
-          const e = (script) => { world.calls.push({ pid, script, at: clock }); n++; return opts.failWith ? Promise.reject(new Error(opts.failWith)) : Promise.resolve(`doc-${pid}-${n}\nEND`); };
+          const e = (script) => { world.calls.push({ pid, script, at: clock }); n++; if (opts.failWith) return Promise.reject(new Error(opts.failWith)); return world.execDelay > 0 ? new Promise((r) => { world.setTimer(() => { if (!world.crashed.has(pid)) r(`doc-${pid}-${n}\nEND`); }, world.execDelay); }) : Promise.resolve(`doc-${pid}-${n}\nEND`); };
           e.close = () => { e.closed = true; };
           return e;
         },
@@ -63,7 +65,7 @@ function makeWorld() {
       world.pollers.set(pid, p);
       return p;
     },
-    crash(pid) { alive.delete(pid); },
+    crash(pid) { alive.delete(pid); world.crashed.add(pid); },
     cleanup() { fs.rmSync(dir, { recursive: true, force: true }); },
   };
   return world;
@@ -461,6 +463,17 @@ test('a want that could not be written is tried again on the next tick, not afte
   assert.ok(fs.statSync(path.join(w.dir, 'want-100.json')).isFile(), 'written within two ticks');
 }));
 
+test('a want file named for pid 0 or a pid beyond the integer range is not a want', () => withWorld(async (w) => {
+  for (const name of ['want-0.json', 'want-99999999999999999999.json']) {
+    fs.writeFileSync(path.join(w.dir, name), JSON.stringify({ pid: 0, level: 'panel', at: w.now() }));
+  }
+  const a = w.make(100, { poller: { pidAlive: () => true } });
+  a.setLevel('chip');
+  await a.start();
+  await w.advance(35000);
+  assert.ok(callsOf(w, 100).length <= 2, `chip cadence only (got ${callsOf(w, 100).length})`);
+}));
+
 test('property: any sequence of starts, stops, crashes and time leaves at most one owner, and exactly one once settled', async () => {
   const ops = fc.array(fc.oneof(
     fc.record({ op: fc.constant('start'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),
@@ -468,6 +481,9 @@ test('property: any sequence of starts, stops, crashes and time leaves at most o
     fc.record({ op: fc.constant('crash'), who: fc.integer({ min: 0, max: 3 }) }),
     fc.record({ op: fc.constant('level'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),
     fc.record({ op: fc.constant('wait'), ms: fc.integer({ min: 100, max: 40000 }) }),
+    fc.record({ op: fc.constant('slow'), ms: fc.constantFrom(0, 1500, 7000, 15000) }),   // a sample that spans control ticks
+    fc.record({ op: fc.constant('depose') }),                                            // a foreign process takes the folder
+    fc.record({ op: fc.constant('undepose') }),                                          // and it dies
   ), { minLength: 1, maxLength: 14 });
 
   await fc.assert(fc.asyncProperty(ops, async (script) => {
@@ -478,6 +494,20 @@ test('property: any sequence of starts, stops, crashes and time leaves at most o
       const slot = new Map();     // who -> pid of its CURRENT incarnation
       const owners = () => [...running].filter(pid => w.alive.has(pid) && w.pollers.get(pid).role() === 'owner');
       const lastSeq = { v: 0 };
+      let lastKey = null;
+      let crashedAtLastCheck = new Set();
+      let foreign = 5000;
+      let foreignPid = null;               // a live process that is not one of ours and holds owner.json: it is respected
+      const checkWriter = () => {
+        let head;
+        try { head = JSON.parse(fs.readFileSync(path.join(w.dir, 'sample.json'), 'utf8').split(String.fromCharCode(10))[0]); } catch { return; }
+        const key = `${head.ownerPid}:${head.seq}:${head.at}`;
+        if (key === lastKey) return;
+        lastKey = key;
+        // Whoever wrote the new record ran the script (so it owned the sampling) and was not already dead at the last check.
+        assert.ok(w.calls.some(c => c.pid === head.ownerPid), `a record by ${head.ownerPid}, which never sampled`);
+        assert.ok(!crashedAtLastCheck.has(head.ownerPid), `a dead process ${head.ownerPid} published`);
+      };
       const checkSeq = () => {
         try {
           const head = JSON.parse(fs.readFileSync(path.join(w.dir, 'sample.json'), 'utf8').split('\n')[0]);
@@ -503,22 +533,35 @@ test('property: any sequence of starts, stops, crashes and time leaves at most o
         } else if (s.op === 'level') {
           const pid = slot.get(s.who);
           if (pid && running.has(pid) && w.alive.has(pid)) w.pollers.get(pid).setLevel(s.level);
+        } else if (s.op === 'slow') {
+          w.execDelay = s.ms;
+        } else if (s.op === 'depose') {
+          const pid = ++foreign;
+          foreignPid = pid;
+          w.alive.add(pid); w.starts.set(pid, 'F' + pid);
+          fs.writeFileSync(path.join(w.dir, 'owner.json'), JSON.stringify({ pid, start: 'F' + pid, since: w.now(), beat: w.now() }));
+        } else if (s.op === 'undepose') {
+          if (foreignPid !== null) w.alive.delete(foreignPid);
         } else {
           await w.advance(s.ms);
         }
         assert.ok(owners().length <= 1, `two owners at once: ${owners()}`);
         checkSeq();
+        checkWriter();
+        crashedAtLastCheck = new Set(w.crashed);
       }
       // Settle: everything that is still alive has had two control ticks.
       await w.advance(SP.CONTROL_MS * 3);
       const live = [...running].filter(pid => w.alive.has(pid));
-      if (live.length > 0) assert.strictEqual(owners().length, 1, `live ${live} owners ${owners()}`);
+      const foreignHolds = foreignPid !== null && w.alive.has(foreignPid);
+      if (foreignHolds) assert.strictEqual(owners().length, 0, `a live foreign owner is kept, got ${owners()}`);
+      else if (live.length > 0) assert.strictEqual(owners().length, 1, `live ${live} owners ${owners()}`);
       checkSeq();
     } finally {
       for (const p of w.pollers.values()) { try { p.stop(); } catch { /* ignore */ } }
       w.cleanup();
     }
-  }), { numRuns: 40 });
+  }), { numRuns: 100 });
 });
 
 test('defaultDir: a probe\'s UI-state folder wins; otherwise a versioned folder under the user\'s local app data', () => {
