@@ -8,6 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
 const EventEmitter = require('node:events');
+const { tmpDir } = require('./tmp-dir');
 const {
   acquire, release, createProcessLock, HeavyLockError, ENV_VAR, WAIT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES,
   ownerFor, parseOwner, defaultRun, queryStarts, createWorkStore,
@@ -444,7 +445,7 @@ test('Dexter r2 1: a process lock records a probe\'s Electron root through addWo
 
 test('the side file: add, read by owner prefix, clear only your own; a missing file is no work, a corrupt one throws', () => {
   const fs = require('fs');
-  const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'hl-work-'));
+  const dir = tmpDir('hl-work-');
   const file = path.join(dir, 'w.json');
   try {
     const st = createWorkStore(file);
@@ -463,7 +464,7 @@ test('the side file: add, read by owner prefix, clear only your own; a missing f
     assert.throws(() => st.read('o (pid 1 start 2)'));
     st.add('o (pid 1 start 2)', 10, '5');
     assert.strictEqual(st.read('o (pid 1 start 2)').length, 1, 'add heals a corrupt file');
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { /* tmpDir() cleans itself up */ }
 });
 
 // ---- Dexter r2 #2: the retry is bounded by the one wait budget ----
