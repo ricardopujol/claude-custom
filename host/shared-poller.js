@@ -93,6 +93,7 @@ function createSharedPoller({
   proveOwner = async () => null,       // (owner) -> true (same start) | false (another process has the pid) | null (could not tell)
   script = () => '',                   // (mode) -> the script text
   makeExec = null,                     // () -> exec(script) -> Promise<string>, with .close(): the owner's persistent shell
+  readText = null,                     // (file) -> text | null: a test seam for the sample read
   oneShot = null,                      // () -> exec(script) -> Promise<string>: a follower's own off-cadence call
   controlMs = CONTROL_MS, pollMs = POLL_MS, beatMs = BEAT_MS,
 } = {}) {
@@ -111,6 +112,7 @@ function createSharedPoller({
   let exec = null;
   let epoch = 0;                       // bumped whenever ownership starts or ends: a sample from an older one is dropped
   let seq = 0;
+  let seqSynced = true;                // false: the old sample could not be read when ownership began, so the first publish reads it again
   let lastEndAt = null;
   let lastBeatAt = -Infinity;
   let lastWantAt = -Infinity;
@@ -132,9 +134,10 @@ function createSharedPoller({
   const readOwner = () => (solo ? null : parseOwner(readJson(files.owner())));
   function writeOwner(o) { writeFileAtomic(files.owner(), JSON.stringify(o)); }
   function writeWant() {
-    lastWantAt = now();
-    if (solo) return;
-    try { writeFileAtomic(files.want(self.pid), JSON.stringify({ pid: self.pid, level: ownLevel, at: lastWantAt })); } catch (err) { warn('could not record what this window wants', err); }
+    if (solo) { lastWantAt = now(); return; }
+    const at = now();
+    // Stamped only once it is written: a failed write is tried again on the next tick, not after WANT_REFRESH_MS.
+    try { writeFileAtomic(files.want(self.pid), JSON.stringify({ pid: self.pid, level: ownLevel, at })); lastWantAt = at; } catch (err) { warn('could not record what this window wants', err); }
   }
 
   // The strongest level anyone wants. Another instance's want counts only while its pid is alive and it is being renewed.
@@ -175,7 +178,8 @@ function createSharedPoller({
     role = 'owner';
     epoch++;
     lastBeatAt = now();
-    const rec = solo ? null : decodeRecord(safeRead(files.sample()));
+    const rec = solo ? null : decodeRecord(read(files.sample()));
+    seqSynced = solo || rec !== null;
     if (rec) {
       seq = Math.max(seq, rec.seq);
       // Resume one interval after the last sample ended, never later (and never from the future).
@@ -184,6 +188,7 @@ function createSharedPoller({
   }
 
   const safeRead = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return null; } };
+  const read = (file) => (readText ? readText(file) : safeRead(file));
 
   function judge(owner, startsMatch) {
     return policy.ownerVerdict({
@@ -289,6 +294,11 @@ function createSharedPoller({
   }
 
   function publish(result, mode) {
+    if (!seqSynced) {
+      seqSynced = true;
+      const old = decodeRecord(read(files.sample()));
+      if (old) seq = Math.max(seq, old.seq);
+    }
     seq++;
     const at = now();
     const header = { seq, at, mode, ownerPid: self.pid, ok: result.ok, error: result.error };

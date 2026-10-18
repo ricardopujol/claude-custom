@@ -427,6 +427,40 @@ test('a folder that cannot be made again after it went falls back to solo: this 
   fs.rmSync(w.dir, { force: true });
 }));
 
+test('seq keeps counting up across owners even when the old sample cannot be read at the moment of the claim', () => withWorld(async (w) => {
+  const a = w.make(100);
+  a.setLevel('panel');
+  await a.start();
+  await w.advance(35000);
+  const seqOf = () => JSON.parse(fs.readFileSync(path.join(w.dir, 'sample.json'), 'utf8').split(String.fromCharCode(10))[0]).seq;
+  const last = seqOf();
+  assert.ok(last >= 3);
+  w.crash(100); a.stop();
+  let failures = 0;
+  const readText = (file) => {
+    if (/sample\.json$/.test(file) && failures < 1) { failures++; return null; }   // a scanner held it
+    try { return fs.readFileSync(file, 'utf8'); } catch { return null; }
+  };
+  const b = w.make(200, { poller: { readText } });
+  b.setLevel('panel');
+  await b.start();
+  await w.advance(1000);
+  assert.strictEqual(b.role(), 'owner');
+  assert.strictEqual(failures, 1, 'the claim-time read was the one that failed');
+  assert.ok(seqOf() > last, `seq ${seqOf()} must pass ${last}`);
+}));
+
+test('a want that could not be written is tried again on the next tick, not after a full refresh period', () => withWorld(async (w) => {
+  fs.mkdirSync(path.join(w.dir, 'want-100.json'));      // a folder in the file's place: the write fails
+  const a = w.make(100);
+  a.setLevel('chip');
+  await a.start();
+  assert.notStrictEqual(fs.existsSync(path.join(w.dir, 'want-100.json')) && fs.statSync(path.join(w.dir, 'want-100.json')).isFile(), true);
+  fs.rmdirSync(path.join(w.dir, 'want-100.json'));
+  await w.advance(SP.CONTROL_MS * 2);
+  assert.ok(fs.statSync(path.join(w.dir, 'want-100.json')).isFile(), 'written within two ticks');
+}));
+
 test('property: any sequence of starts, stops, crashes and time leaves at most one owner, and exactly one once settled', async () => {
   const ops = fc.array(fc.oneof(
     fc.record({ op: fc.constant('start'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),
