@@ -74,9 +74,15 @@ const VERIFY_DIR = path.resolve(__dirname, '..');
 function probeName(argv1 = process.argv[1]) {
   if (!argv1) return null;
   const abs = path.resolve(argv1);
-  return path.dirname(abs).toLowerCase().startsWith(VERIFY_DIR.toLowerCase()) ? path.basename(abs) : null;
+  // With the separator: a sibling such as verify2\ is not under verify\ (Miguel r2 N2).
+  return (path.dirname(abs) + path.sep).toLowerCase().startsWith((VERIFY_DIR + path.sep).toLowerCase()) ? path.basename(abs) : null;
 }
 const defaultHeavyLock = createProcessLock({ label: probeName() || 'probe', beforeRelease: () => sweepLive() });
+// A probe's Electron root is work the lock's holder started: recorded, so a dead probe with a live Electron isn't a dead holder.
+const noteWork = (heavyLock, handle) => {
+  const lock = lockFor(heavyLock);
+  if (lock && typeof lock.addWork === 'function' && typeof handle.start === 'string') { try { lock.addWork(handle.pid, handle.start); } catch { /* a safety net */ } }
+};
 const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 
 // Busy / too loaded is one clear line and exit 1, not a stack trace; anything else is thrown as it was.
@@ -167,6 +173,7 @@ async function launchElectron({
   const proof = await prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label });
   if (proof === 'exited-early') throw new Error(`launchElectron: pid ${child.pid} exited before its start time could be read`);
   if (proof === 'unproven') throw new Error(`launchElectron: could not read the start time of pid ${child.pid}; killed it rather than leave an unproven process`);
+  noteWork(heavyLock, handle);
   handle.stop = (o) => stopElectron(handle, o);
   return handle;
 }
@@ -187,7 +194,7 @@ function spawnElectron(exe, args = [], opts = {}, {
   const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv, keepEnv) });
   const handle = track(child, { killFn, ledgerFile, label });
   child.ledgered = prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label })
-    .then(p => p === 'recorded' || (p === 'unrecorded' && !ledgerFile));
+    .then(p => { noteWork(heavyLock, handle); return p === 'recorded' || (p === 'unrecorded' && !ledgerFile); });
   return child;
 }
 

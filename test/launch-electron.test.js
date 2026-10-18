@@ -352,6 +352,8 @@ test('heavy lock: a unit test process is not a probe, so launching with no heavy
   assert.strictEqual(probeName(path.join(__dirname, '..', 'test', 'x.test.js')), null);
   assert.strictEqual(probeName(path.join(__dirname, '..', 'verify', 'probe-dock-tree.js')), 'probe-dock-tree.js', 'the owner label names the probe');
   assert.strictEqual(probeName(undefined), null);
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'verify2', 'probe-x.js')), null, 'a sibling dir that starts with "verify" is not verify/');
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'verify-old', 'probe-x.js')), null);
 });
 
 test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other errors are thrown as they were', () => {
@@ -367,4 +369,20 @@ test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other e
   assert.throws(() => takeLock(other, (c) => exits.push(c), (m) => said.push(m)), TypeError);
   assert.deepStrictEqual(exits, [1], 'no exit for an unexpected error');
   assert.doesNotThrow(() => takeLock(null));
+});
+
+test('Dexter r2 1: the Electron root and its start time are recorded as the lock\'s work, for launchElectron and spawnElectron', async () => {
+  const f = fakes();
+  const seen = [];
+  const heavyLock = { ensure: () => {}, addWork: (pid, start) => { seen.push([pid, start]); return true; } };
+  const h = await launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: null, spawnFn: f.spawnFn,
+    startTimes: f.startTimes, selfStart: async () => '555', install: false, heavyLock });
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0][0], h.pid);
+  assert.strictEqual(typeof seen[0][1], 'string');
+  const f2 = fakes();
+  const c = spawnElectron('E.exe', [], {}, { spawnFn: f2.spawnFn, startTimes: f2.startTimes, ledgerFile: null, install: false, parentEnv: {}, heavyLock });
+  await c.ledgered;
+  assert.strictEqual(seen.length, 2);
+  assert.strictEqual(seen[1][0], c.pid);
 });
