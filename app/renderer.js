@@ -1458,6 +1458,19 @@ function renderResources() {
   if (again) again.focus();
 }
 
+// Whether this page is SHOWING the Resources panel (on screen, docked, peeked or popped, and the page visible), told to main only
+// when it changes: the shared poller samples every 10 s while any page does and every 30 s while only the chip is in view
+// (BACKLOG #100 c). Reads window.harness itself, so a placement that runs before this block's constants exist is safe.
+var resViewingSent = null;   // var: placement can report before this line has run
+function reportResourcesViewing() {
+  const on = shownModules.has('resources') && document.visibilityState === 'visible';
+  if (on === resViewingSent) return;
+  resViewingSent = on;
+  const bridge = window.harness && window.harness.resources;
+  if (bridge && typeof bridge.viewing === 'function') bridge.viewing(on);
+}
+document.addEventListener('visibilitychange', reportResourcesViewing);
+
 function onResourcesState(payload) {
   resPayload = payload;
   resChipOn = window.resourcesDisplay.nextChipOn(resChipOn, payload);
@@ -1762,6 +1775,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
+  reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
