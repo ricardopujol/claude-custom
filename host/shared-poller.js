@@ -193,8 +193,10 @@ function createSharedPoller({
 
   function claim(proved) {
     let won = false;
+    let locked = false;
     try {
       withFileLock(files.lock(), () => {
+        locked = true;
         const cur = readOwner();
         const sameProof = cur && proved && proved.pid === cur.pid && proved.start === cur.start;
         const v = judge(cur, sameProof ? proved.match : undefined);
@@ -202,11 +204,20 @@ function createSharedPoller({
         else if (v === 'mine') won = true;
       }, { deadlineMs: CLAIM_DEADLINE_MS });
     } catch (err) { warn('could not take the sampling', err); }
-    if (won) becomeOwner(); else if (role === 'owner') demote('another instance claimed it');
+    if (won) becomeOwner();
+    else if (!locked) { if (role !== 'owner') role = 'follower'; }   // the lock failed: nobody else was seen to claim, so nothing is lost by waiting a tick
+    else if (role === 'owner') demote('another instance claimed it');
     else role = 'follower';
   }
 
+  /** The folder can vanish after start (someone wipes the app data): make it again, else this window samples for itself. */
+  function ensureDir() {
+    if (solo) return;
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (err) { solo = true; warn('the shared folder is gone and cannot be made again, sampling for this window only', err); }
+  }
+
   async function judgeOwnership() {
+    ensureDir();
     if (solo) { becomeOwner(); return; }
     // No claim without a start time of our own: a record that carries none cannot be told from a reused pid later.
     if (typeof me().start !== 'string') { if (role !== 'owner') role = 'follower'; return; }

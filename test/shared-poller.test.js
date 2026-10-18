@@ -394,6 +394,39 @@ test('an owner recorded with a null start, whose pid was reused, is taken over o
   assert.strictEqual(b.role(), 'owner');
 }));
 
+test('the pool folder removed while running is made again and exactly one instance owns; every window gets samples', () => withWorld(async (w) => {
+  const a = w.make(100);
+  const b = w.make(200);
+  a.setLevel('panel'); b.setLevel('panel');
+  await a.start(); await b.start();
+  await w.advance(0);
+  assert.strictEqual(a.role(), 'owner');
+  fs.rmSync(w.dir, { recursive: true, force: true });
+  await w.advance(SP.CONTROL_MS * 3);
+  const roles = [a.role(), b.role()].sort();
+  assert.deepStrictEqual(roles, ['follower', 'owner']);
+  assert.ok(fs.existsSync(path.join(w.dir, 'owner.json')), 'the folder and the owner record are back');
+  await w.advance(10000 + SP.CONTROL_MS);
+  const ra = await a.next({ after: null, maxAgeMs: 20000, timeoutMs: 1000 });
+  const rb = await b.next({ after: null, maxAgeMs: 20000, timeoutMs: 1000 });
+  assert.ok(ra.ok && rb.ok);
+}));
+
+test('a folder that cannot be made again after it went falls back to solo: this window samples for itself', () => withWorld(async (w) => {
+  const a = w.make(100);
+  a.setLevel('panel');
+  await a.start();
+  await w.advance(0);
+  fs.rmSync(w.dir, { recursive: true, force: true });
+  fs.writeFileSync(w.dir, 'a file where the folder was');
+  await w.advance(SP.CONTROL_MS * 3);
+  assert.strictEqual(a.role(), 'owner');
+  const n = callsOf(w, 100).length;
+  await w.advance(10000 + SP.CONTROL_MS);
+  assert.ok(callsOf(w, 100).length > n, 'still sampling');
+  fs.rmSync(w.dir, { force: true });
+}));
+
 test('property: any sequence of starts, stops, crashes and time leaves at most one owner, and exactly one once settled', async () => {
   const ops = fc.array(fc.oneof(
     fc.record({ op: fc.constant('start'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),
