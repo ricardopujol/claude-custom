@@ -363,6 +363,37 @@ test('a want from a pid that is gone is ignored and removed; a want that nobody 
   assert.ok(after <= 4, `after it went stale the cadence is the chip's 30 s (got ${after} in 95 s)`);
 }));
 
+test('a start time that could not be read is asked for again, and nothing claims the pool without one', () => withWorld(async (w) => {
+  let asked = 0;
+  let answer = null;
+  const a = w.make(100, { poller: { selfStart: async () => { asked++; return answer; } } });
+  a.setLevel('chip');
+  await a.start();
+  await w.advance(SP.CONTROL_MS * 2);
+  assert.ok(asked >= 3, `asked again on later ticks (asked ${asked})`);
+  assert.notStrictEqual(a.role(), 'owner', 'a claim with a null start could never be told from a reused pid');
+  assert.strictEqual(fs.existsSync(path.join(w.dir, 'owner.json')), false);
+  answer = 'S100';
+  await w.advance(SP.CONTROL_MS * 2);
+  assert.strictEqual(a.role(), 'owner');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(w.dir, 'owner.json'), 'utf8')).start, 'S100');
+  const before = asked;
+  await w.advance(SP.CONTROL_MS * 3);
+  assert.strictEqual(asked, before, 'once known it is kept, not asked again');
+}));
+
+test('an owner recorded with a null start, whose pid was reused, is taken over once its beat is stale', () => withWorld(async (w) => {
+  fs.writeFileSync(path.join(w.dir, 'owner.json'), JSON.stringify({ pid: 100, start: null, since: w.now(), beat: w.now() }));
+  w.alive.add(100); w.starts.set(100, 'SOMEONE-ELSE');
+  const b = w.make(200);
+  b.setLevel('chip');
+  await b.start();
+  await w.advance(policy.STALE_BEAT_MS - 5000);
+  assert.notStrictEqual(b.role(), 'owner', 'a fresh beat is kept');
+  await w.advance(policy.STALE_BEAT_MS + SP.CONTROL_MS * 3);
+  assert.strictEqual(b.role(), 'owner');
+}));
+
 test('property: any sequence of starts, stops, crashes and time leaves at most one owner, and exactly one once settled', async () => {
   const ops = fc.array(fc.oneof(
     fc.record({ op: fc.constant('start'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),

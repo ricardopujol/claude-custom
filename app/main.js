@@ -107,6 +107,7 @@ const { createExec: createPowerShellExec, scriptFor: resourceScriptFor } = requi
 // while someone looks (the cadence table is host/poller-policy.js).
 const { createSharedSampler } = require('../host/shared-sampler');
 const { createSharedPoller, defaultDir: defaultPollerDir } = require('../host/shared-poller');
+const pollerPolicy = require('../host/poller-policy');
 const { createPersistentExec } = require('../host/persistent-powershell');
 const { killVerified } = require('../host/resource-kill');
 const pidLedger = require('../host/pid-ledger');
@@ -1946,7 +1947,7 @@ app.whenReady().then(async () => {
     dir: defaultPollerDir({ uiStateDir: seams.uiStateDir }),
     self: { pid: process.pid }, selfStart: ownStartTime, pidAlive: isPidAlive,
     // A listed pid whose start is not the recorded one is a reused pid, not the owner (host/pid-ledger.js's rule); a failed query keeps it.
-    proveOwner: async (owner) => { const m = await startTimes([owner.pid]); return m === null ? null : (m.has(owner.pid) ? m.get(owner.pid) === owner.start : false); },
+    proveOwner: async (owner) => pollerPolicy.startProof(await startTimes([owner.pid]), owner),
     script: resourceScriptFor, makeExec: () => createPersistentExec(), oneShot: () => createPowerShellExec(),
     log: (...a) => console.log(...a),
   });

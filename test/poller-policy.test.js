@@ -104,8 +104,22 @@ test('ownerVerdict: the proof decides a stale one: another start means the pid w
   assert.strictEqual(verdict({ beatAgeMs: stale, startsMatch: null }), 'keep');
 });
 
-test('ownerVerdict: an owner recorded without a start cannot be proved reused, so a live pid keeps it', () => {
-  assert.strictEqual(verdict({ owner: { pid: 100, start: null }, beatAgeMs: P.STALE_BEAT_MS + 1, startsMatch: false }), 'keep');
+test('ownerVerdict: an owner recorded without a start is asked too once its beat is stale (a reused pid must not keep it forever)', () => {
+  const stale = P.STALE_BEAT_MS + 1;
+  const owner = { pid: 100, start: null };
+  assert.strictEqual(verdict({ owner, beatAgeMs: stale }), 'verify');
+  assert.strictEqual(verdict({ owner, beatAgeMs: stale, startsMatch: false }), 'claim');
+  assert.strictEqual(verdict({ owner, beatAgeMs: stale, startsMatch: null }), 'keep');
+  assert.strictEqual(verdict({ owner, beatAgeMs: 1000 }), 'keep', 'a fresh beat is still kept');
+});
+
+test('startProof: the three answers of proc-start stay three (same, other, could not tell)', () => {
+  const owner = { pid: 100, start: 'S1' };
+  assert.strictEqual(P.startProof(null, owner), null, 'the query failed');
+  assert.strictEqual(P.startProof(new Map(), owner), false, 'not listed: the process is gone');
+  assert.strictEqual(P.startProof(new Map([[100, null]]), owner), null, 'listed but its start is unreadable (proc-start "?"): not another process');
+  assert.strictEqual(P.startProof(new Map([[100, 'S1']]), owner), true);
+  assert.strictEqual(P.startProof(new Map([[100, 'S2']]), owner), false);
 });
 
 test('property: a live owner is never taken from while its beat is fresh or its start is proved the same', () => {
@@ -114,7 +128,7 @@ test('property: a live owner is never taken from while its beat is fresh or its 
     (beatAgeMs, startsMatch, start) => {
       const v = P.ownerVerdict({ owner: { pid: 100, start }, self: SELF, pidAlive: true, beatAgeMs, startsMatch });
       if (v === 'claim') {
-        assert.ok(beatAgeMs > P.STALE_BEAT_MS && startsMatch === false && start !== null, 'only a stale beat plus a proved different start takes a live owner');
+        assert.ok(beatAgeMs > P.STALE_BEAT_MS && startsMatch === false, 'only a stale beat plus a proved different start takes a live owner');
       }
     }));
 });

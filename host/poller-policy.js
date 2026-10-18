@@ -67,9 +67,21 @@ function ownerVerdict({ owner, self, pidAlive, beatAgeMs, startsMatch } = {}) {
   if (pidAlive === false) return 'claim';
   if (pidAlive !== true) return 'keep';
   if (!(Number.isFinite(beatAgeMs) && beatAgeMs > STALE_BEAT_MS)) return 'keep';
-  if (typeof owner.start !== 'string') return 'keep';
   if (startsMatch === undefined) return 'verify';
   return startsMatch === false ? 'claim' : 'keep';
 }
 
-module.exports = { CADENCE, LEVELS, STALE_BEAT_MS, cadenceOf, levelOf, fromWanted, strongest, ownerVerdict };
+/**
+ * The start-time proof about a recorded owner, from proc-start's `startTimes([pid])` answer (a Map pid -> start string, a
+ * pid whose start it could not read -> null, a pid not listed -> absent; or null when the whole query failed).
+ * true (same start) | false (another process has the pid, or none does) | null (could not tell: doubt keeps).
+ */
+function startProof(starts, owner) {
+  if (!starts || typeof starts.has !== 'function' || !owner) return null;
+  if (!starts.has(owner.pid)) return false;
+  const s = starts.get(owner.pid);
+  if (typeof s !== 'string') return null;
+  return s === owner.start;
+}
+
+module.exports = { CADENCE, LEVELS, STALE_BEAT_MS, cadenceOf, levelOf, fromWanted, strongest, ownerVerdict, startProof };

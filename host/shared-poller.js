@@ -102,7 +102,7 @@ function createSharedPoller({
   let ownLevel = 'hidden';
   let effective = 'hidden';
   let lastEffective = null;
-  let selfStartVal;                    // undefined: not asked yet; null: asked, unreadable
+  let selfStartVal;                    // undefined: not asked yet; null: the last ask failed; a string: this process's start
   let controlTimer = null;
   let sampleTimer = null;
   let sampleDue = null;
@@ -208,6 +208,8 @@ function createSharedPoller({
 
   async function judgeOwnership() {
     if (solo) { becomeOwner(); return; }
+    // No claim without a start time of our own: a record that carries none cannot be told from a reused pid later.
+    if (typeof me().start !== 'string') { if (role !== 'owner') role = 'follower'; return; }
     const owner = readOwner();
     let v = judge(owner, undefined);
     let proved = null;
@@ -366,7 +368,8 @@ function createSharedPoller({
   // ---- the control loop -------------------------------------------------------------------------------------------
   async function runTick() {
     try {
-      if (selfStartVal === undefined) selfStartVal = await selfStart().catch(() => null);
+      // A failed query is asked again on the next tick (the callee does not cache a failure either), never kept as an answer.
+      if (typeof selfStartVal !== 'string') selfStartVal = await selfStart().catch(() => null);
       if (!started) return;
       await judgeOwnership();
       if (!started) return;
