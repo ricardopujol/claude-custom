@@ -8,13 +8,14 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
 const EventEmitter = require('node:events');
+const { tmpDir } = require('./tmp-dir');
 const {
   acquire, release, createProcessLock, HeavyLockError, ENV_VAR, WAIT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES,
-  ownerFor, parseOwner, defaultRun, queryStarts,
+  ownerFor, parseOwner, defaultRun, queryStarts, createWorkStore,
 } = require('../host/heavy-lock');
 
 // A stateful stand-in for heavy-lock.ps1. `holder` is what owner.txt would say; `alive` maps pid -> start time.
-function rig({ holder = null, alive = {}, acquireOverride = null, releaseStatus = 0, exists = true, startsFail = false } = {}) {
+function rig({ holder = null, alive = {}, acquireOverride = null, releaseStatus = 0, exists = true, startsFail = false, work = null, workFails = false } = {}) {
   const r = { calls: [], env: {}, log: [], holder, alive: { 7: '100', 1: '100', 99: '100', ...alive }, exists: () => exists };
   r.run = (args) => {
     r.calls.push(args);
@@ -34,7 +35,15 @@ function rig({ holder = null, alive = {}, acquireOverride = null, releaseStatus 
     return { status: 0, stdout: r.holder ? `held: ${r.holder}` : 'free' };
   };
   r.startsOf = (pids) => (startsFail ? null : new Map(pids.filter(p => r.alive[p] !== undefined).map(p => [p, r.alive[p]])));
-  r.deps = () => ({ run: r.run, exists: r.exists, env: r.env, log: (m) => r.log.push(m), startsOf: r.startsOf });
+  // The side file of recorded children, in memory: { owner, work: [{ pid, start }] } or null.
+  r.work = work;
+  r.workStore = {
+    read: (h) => { if (workFails) throw new Error('unreadable'); return r.work && h.startsWith(r.work.owner) ? r.work.work : []; },
+    add: (owner, pid, start) => { if (!r.work || r.work.owner !== owner) r.work = { owner, work: [] }; r.work.work.push({ pid, start }); },
+    clear: (h) => { if (r.work && h.startsWith(r.work.owner)) r.work = null; },
+  };
+  r.clock = { t: 0 };
+  r.deps = () => ({ run: r.run, exists: r.exists, env: r.env, log: (m) => r.log.push(m), startsOf: r.startsOf, work: r.workStore, now: () => r.clock.t });
   return r;
 }
 const flagValue = (args, flag) => args[args.indexOf(flag) + 1];
@@ -133,16 +142,16 @@ test('any other exit (or no exit status) throws too: it never runs anyway', () =
   }
 });
 
-test('Dexter 1: wait defaults to 8 minutes, under the Bash tool\'s 10-minute cap, and HEAVY_LOCK_WAIT_MINUTES changes it', () => {
-  assert.strictEqual(DEFAULT_WAIT_MINUTES, 8);
+test('Dexter 1: wait defaults to 7 minutes, under the Bash tool\'s 10-minute cap, and HEAVY_LOCK_WAIT_MINUTES changes it', () => {
+  assert.strictEqual(DEFAULT_WAIT_MINUTES, 7);
   assert.ok(DEFAULT_WAIT_MINUTES < 10);
   const a = rig(); acquire({ label: 'x', pid: 7, ...a.deps() });
-  assert.strictEqual(flagValue(of(a, '-Acquire')[0], '-WaitMinutes'), '8');
+  assert.strictEqual(flagValue(of(a, '-Acquire')[0], '-WaitMinutes'), '7');
   const b = rig(); b.env[WAIT_VAR] = '3'; acquire({ label: 'x', pid: 7, ...b.deps() });
   assert.strictEqual(flagValue(of(b, '-Acquire')[0], '-WaitMinutes'), '3');
   for (const bad of ['0', '-2', 'abc', '1.5', '']) {
     const c = rig(); c.env[WAIT_VAR] = bad; acquire({ label: 'x', pid: 7, ...c.deps() });
-    assert.strictEqual(flagValue(of(c, '-Acquire')[0], '-WaitMinutes'), '8', bad);
+    assert.strictEqual(flagValue(of(c, '-Acquire')[0], '-WaitMinutes'), '7', bad);
   }
   const d = rig(); acquire({ label: 'x', pid: 7, waitMinutes: 5, ...d.deps() });
   assert.strictEqual(flagValue(of(d, '-Acquire')[0], '-WaitMinutes'), '5');
@@ -266,12 +275,12 @@ test('acquire with the real runner and an injected spawn: the failure to start r
     (e) => e.code === 'error' && /ENOENT/.test(e.message));
 });
 
-test('acquire\'s spawn timeout is the wait plus two minutes', () => {
+test('Miguel r2 N3: acquire\'s spawn timeout is the wait plus one minute (its own deadline, then a margin)', () => {
   const opts = [];
   const spawnFn = (cmd, args, o) => { opts.push(o.timeout); return { status: 0, stdout: 'free' }; };
   acquire({ label: 'x', pid: 7, waitMinutes: 3, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map() });
   assert.ok(opts.length >= 1);
-  assert.ok(opts.every(t => t === 5 * 60000), JSON.stringify(opts));
+  assert.ok(opts.every(t => t === 4 * 60000), JSON.stringify(opts));
 });
 
 test('queryStarts: absolute powershell, parses pid and start, a pid that is not listed is absent', () => {
@@ -362,4 +371,158 @@ test('process lock: re-entrant and missing install no hooks', () => {
   const b = procRig({ exists: false }); b.lock.ensure(); b.lock.ensure();
   assert.strictEqual(b.proc.listenerCount('exit'), 0);
   assert.strictEqual(b.r.log.length, 1, 'the missing-script warning is said once');
+});
+
+
+// ---- Dexter r2 #1: the work counts, not only the asker ----
+const WORK = { owner: 'npm test (pid 5000 start 777)', work: [{ pid: 6000, start: '900' }] };
+
+test('Dexter r2 1: a dead wrapper whose recorded child is still running is NOT a dead holder: no release, said', () => {
+  const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '900' }, work: WORK });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'busy');
+  assert.strictEqual(of(r, '-Release').length, 0, 'the orphaned suite keeps the slot');
+  assert.ok(r.log.some(m => /work \(pid 6000\) is still running/.test(m)));
+});
+
+test('Dexter r2 1: the same holder IS freed once the child is gone, or its pid was reused (another start)', () => {
+  for (const alive of [{}, { 6000: '901' }]) {
+    const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive, work: WORK });
+    assert.strictEqual(acquire({ label: 'x', pid: 7, ...r.deps() }).state, 'held', JSON.stringify(alive));
+    assert.strictEqual(of(r, '-Release').length, 1);
+    assert.strictEqual(r.work, null, 'the dead holder\'s record goes with it');
+  }
+});
+
+test('Dexter r2 1: a child whose start is unreadable counts as running; a child recorded without a start counts while its pid runs', () => {
+  const a = rig({ holder: `${DEAD} (since 09:00:00)`, work: WORK });
+  a.startsOf = (pids) => new Map(pids.filter(p => p !== 5000).map(p => [p, p === 6000 ? null : '100']));
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...a.deps(), startsOf: a.startsOf }), (e) => e.code === 'busy');
+  const b = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '123' }, work: { owner: WORK.owner, work: [{ pid: 6000, start: null }] } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...b.deps() }), (e) => e.code === 'busy');
+  assert.strictEqual(of(a, '-Release').length + of(b, '-Release').length, 0);
+});
+
+test('Dexter r2 1: a record that cannot be read is "cannot tell", never "dead"', () => {
+  const r = rig({ holder: `${DEAD} (since 09:00:00)`, workFails: true });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'busy');
+  assert.strictEqual(of(r, '-Release').length, 0);
+});
+
+test('Dexter r2 1: another holder\'s record does not keep this dead holder alive', () => {
+  const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '900' }, work: { owner: 'npm test (pid 4999 start 1)', work: [{ pid: 6000, start: '900' }] } });
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...r.deps() }).state, 'held');
+});
+
+test('Dexter r2 1: a held lock records its children with their start times; release clears the record; nothing after release', () => {
+  const r = rig();
+  const lock = acquire({ label: 'npm test', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.addWork(500, '123'), true);
+  assert.strictEqual(lock.addWork(0), false);
+  r.alive[501] = '456';
+  assert.strictEqual(lock.addWork(501), true, 'a start not given is read');
+  assert.deepStrictEqual(r.work, { owner: 'npm test (pid 7 start 100)', work: [{ pid: 500, start: '123' }, { pid: 501, start: '456' }] });
+  lock.release();
+  assert.strictEqual(r.work, null);
+  assert.strictEqual(lock.addWork(502, '1'), false);
+});
+
+test('Dexter r2 1: reentrant and missing locks record nothing', () => {
+  const a = rig(); a.env[ENV_VAR] = '1';
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...a.deps() }).addWork(5, '1'), false);
+  const b = rig({ exists: false });
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...b.deps() }).addWork(5, '1'), false);
+  assert.strictEqual(a.work, null);
+  assert.strictEqual(b.work, null);
+});
+
+test('Dexter r2 1: a process lock records a probe\'s Electron root through addWork, and nothing before it holds the lock', () => {
+  const { r, lock } = procRig();
+  assert.strictEqual(lock.addWork(500, '123'), false);
+  lock.ensure();
+  assert.strictEqual(lock.addWork(500, '123'), true);
+  assert.deepStrictEqual(r.work.work, [{ pid: 500, start: '123' }]);
+});
+
+test('the side file: add, read by owner prefix, clear only your own; a missing file is no work, a corrupt one throws', () => {
+  const fs = require('fs');
+  const dir = tmpDir('hl-work-');
+  const file = path.join(dir, 'w.json');
+  try {
+    const st = createWorkStore(file);
+    assert.deepStrictEqual(st.read('anything'), []);
+    st.add('o (pid 1 start 2)', 10, '5');
+    st.add('o (pid 1 start 2)', 11, null);
+    assert.deepStrictEqual(st.read('o (pid 1 start 2) (since 10:00:00)'), [{ pid: 10, start: '5' }, { pid: 11, start: null }]);
+    assert.deepStrictEqual(st.read('p (pid 3 start 4)'), []);
+    st.clear('p (pid 3 start 4)');
+    assert.strictEqual(st.read('o (pid 1 start 2)').length, 2, 'not someone else\'s to clear');
+    st.add('q (pid 9 start 9)', 12, '1');
+    assert.deepStrictEqual(st.read('o (pid 1 start 2)'), [], 'a new holder starts a new record');
+    st.clear('q (pid 9 start 9)');
+    assert.strictEqual(fs.existsSync(file), false);
+    fs.writeFileSync(file, '{not json');
+    assert.throws(() => st.read('o (pid 1 start 2)'));
+    st.add('o (pid 1 start 2)', 10, '5');
+    assert.strictEqual(st.read('o (pid 1 start 2)').length, 1, 'add heals a corrupt file');
+  } finally { /* tmpDir() cleans itself up */ }
+});
+
+// ---- Dexter r2 #2: the retry is bounded by the one wait budget ----
+test('Dexter r2 2: the retry after a reclaim waits only what is left of the budget (at least 1 minute), never more than the whole', () => {
+  for (const [spent, expected] of [[0, '7'], [3 * 60000, '4'], [6.5 * 60000, '1'], [7 * 60000, '1'], [20 * 60000, '1']]) {
+    const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 5000: '777' } });
+    const timeouts = [];
+    const deps = r.deps();
+    let first = true;
+    deps.run = (args, o) => {
+      if (args.includes('-Acquire')) {
+        timeouts.push(o && o.timeoutMs);
+        if (first) { first = false; const out = r.run(args); delete r.alive[5000]; r.clock.t += spent; return out; }
+      }
+      return r.run(args);
+    };
+    assert.strictEqual(acquire({ label: 'x', pid: 7, ...deps }).state, 'held');
+    const acq = of(r, '-Acquire');
+    assert.strictEqual(flagValue(acq[0], '-WaitMinutes'), '7');
+    assert.strictEqual(flagValue(acq[1], '-WaitMinutes'), expected, `spent ${spent}`);
+    assert.strictEqual(timeouts[0], 8 * 60000);
+    assert.strictEqual(timeouts[1], (Number(expected) + 1) * 60000, 'each call is killed one minute after its own deadline');
+  }
+});
+
+test('Dexter r2 2: the reclaim happens before the first ticket is taken, so the common case loses no queue position', () => {
+  const r = rig({ holder: `${DEAD} (since 09:00:00)` });
+  acquire({ label: 'x', pid: 7, ...r.deps() });
+  const kinds = r.calls.map(c => c.includes('-Acquire') ? 'acquire' : c.includes('-Release') ? 'release' : 'status');
+  assert.deepStrictEqual(kinds.slice(0, 3), ['status', 'release', 'acquire']);
+  assert.strictEqual(kinds.filter(k => k === 'acquire').length, 1);
+});
+
+// ---- Dexter r2 #4: release is the last 'exit' listener ----
+test('Dexter r2 4: an exit cleanup registered AFTER the lock was taken runs before the work is stopped and the slot freed', async () => {
+  const { proc, order, lock } = procRig();
+  lock.ensure();
+  proc.on('exit', () => order.push('kill:host'));   // the probe's own cleanup, registered after its require of the launcher
+  await new Promise(r => process.nextTick(r));
+  proc.emit('exit', 1);
+  assert.deepStrictEqual(order, ['kill:host', 'stop', 'release']);
+});
+
+test('Dexter r2 4: several late exit listeners all run first, and the slot is freed once', async () => {
+  const { proc, order, lock } = procRig();
+  lock.ensure();
+  proc.on('exit', () => order.push('a'));
+  proc.on('exit', () => order.push('b'));
+  await new Promise(r => process.nextTick(r));
+  proc.emit('exit', 0);
+  assert.deepStrictEqual(order, ['a', 'b', 'stop', 'release']);
+});
+
+// ---- Dexter r2 #5: an exempted run says so ----
+test('Dexter r2 5: HEAVY_LOCK_HELD=1 prints one line saying the lock is not being taken', () => {
+  const r = rig();
+  r.env[ENV_VAR] = '1';
+  acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(r.log.length, 1);
+  assert.match(r.log[0], /HEAVY_LOCK_HELD=1 is set: not taking the lock/);
 });

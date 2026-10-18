@@ -20,7 +20,7 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
       events.push('acquire:' + o.label);
       if (acquireThrows) throw acquireThrows;
       let done = false;
-      return { state, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
+      return { state, addWork: (pid) => { events.push('work:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
     },
     spawn: (cmd, args, opts) => { events.push('spawn'); spawned = { cmd, args, opts }; return child; },
     killFn: (pid) => events.push('kill:' + pid),
@@ -28,7 +28,7 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
   };
   return { events, child, proc, deps, spawned: () => spawned };
 }
-const plain = (r) => r.events.filter(e => !e.startsWith('log:'));
+const plain = (r) => r.events.filter(e => !e.startsWith('log:') && !e.startsWith('work:'));
 
 test('runs the command under the lock, passes the re-entrancy flag, returns its exit code, releases after', async () => {
   const r = rig();
@@ -155,4 +155,21 @@ test('a busy lock says what to do next and the command never runs', async () => 
   const r = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub. Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1') });
   assert.strictEqual(await main(['node'], r.deps), 1);
   assert.ok(r.events.some(e => e.startsWith('log:') && /HEAVY_LOCK_HELD=1/.test(e)));
+});
+
+test('Dexter r2 1: the suite\'s child pid is recorded as work right after it starts, before it can end', async () => {
+  const r = rig();
+  const p = main(['node', '--test'], r.deps);
+  r.child.emit('exit', 0, null);
+  await p;
+  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:npm test', 'spawn', 'work:4242', 'release']);
+});
+
+test('Dexter r2 1: a lock without addWork (or one that throws) does not stop the command', async () => {
+  const r = rig();
+  const real = r.deps.acquire;
+  r.deps.acquire = (o) => { const l = real(o); l.addWork = () => { throw new Error('disk'); }; return l; };
+  const p = main(['node'], r.deps);
+  r.child.emit('exit', 0, null);
+  assert.strictEqual(await p, 0);
 });
