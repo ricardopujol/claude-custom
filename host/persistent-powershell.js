@@ -18,6 +18,9 @@
  * the next call's (its handlers are tied to that child). The shell is also replaced after `maxUses` answers (a long-lived
  * PowerShell holding 300 KB of CIM objects a call is bounded, not left to grow) and ended after `idleMs` with no call.
  * It is only ever ended by its own handle (`child.kill()`), never by name.
+ * The shell KEEPS STATE between calls (variables, the `$ErrorActionPreference` a script sets): a script must not leave any behind.
+ * A hard-killed parent (app.exit, TerminateProcess) leaves no orphan: MEASURED 2026-10-18, the shell was gone 107 ms after its
+ * parent was killed, because the closed stdin pipe is EOF to `-Command -` (PR #188 review, Dexter 5).
  *
  * `exec(script)` -> Promise<string> with `.kill()` (ends the shell, rejecting that call); `exec.close()` ends the shell for
  * good and refuses later calls; `exec.pid()` is the live shell's pid or null.
