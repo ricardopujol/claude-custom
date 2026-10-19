@@ -163,6 +163,9 @@ function descendantPids(procs, rootPid) {
   return new Set(out);
 }
 
+// Set by main() once it can stop what it started; the entry point calls it however main() ends.
+let cleanup = () => {};
+
 async function main() {
   const { tmpDir } = require(path.join(ROOT, 'test', 'tmp-dir'));
   const { createHygieneRegistry } = require('./lib/process-hygiene');
@@ -210,6 +213,7 @@ async function main() {
     seenPids.endAll();
   };
   hygiene.addCleanup(killEverything);
+  cleanup = killEverything;   // the entry point calls it on every exit path (PR #192 M1)
 
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
@@ -339,7 +343,9 @@ async function main() {
 }
 
 if (require.main === module) {
-  main().then(code => { process.exit(code); }, (e) => { console.error(e); process.exit(1); });
+  main()
+    .catch((e) => { console.error(e); return 1; })
+    .then((code) => { try { cleanup(); } finally { process.exit(code); } });
 }
 
 module.exports = { median, spread, electronType, cpuByType, gpuPercent, summarise, table };

@@ -50,3 +50,13 @@ test('summarise groups by scenario and mode and keeps min..max; table prints one
   assert.equal(rs[0].cpu.total.median, 23);
   assert.match(table(rs), /\| idle \| normal \| 2 \| 20\.0 \(10\.0\.\.30\.0\) \|/);
 });
+
+// PR #192 Miguel M1: the hosts the probe starts must die on EVERY exit path, not only on a signal.
+test('every exit path of the probe reaches killEverything before process.exit', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'probe-idle-redraw.js'), 'utf8');
+  const entry = src.slice(src.indexOf('if (require.main === module)'));
+  assert.match(entry, /\.catch\(/, 'a thrown error must be turned into an exit code');
+  assert.match(entry, /\.finally\(|cleanup\(\)/, 'the cleanup must run after both outcomes');
+  assert.ok(entry.indexOf('cleanup()') >= 0 && entry.indexOf('cleanup()') < entry.indexOf('process.exit'), 'cleanup runs before process.exit');
+  assert.match(src, /cleanup = killEverything/, 'main hands its killEverything to the entry point');
+});
