@@ -66,6 +66,8 @@
       border: 3px solid #e0674f;
       pointer-events: none;       /* a cue must never eat a click */
       z-index: 9999;
+      will-change: opacity;       /* own compositor layer: the breathe is an opacity change only, no repaint */
+      contain: strict;
       animation: cue-breathe 2.4s ease-in-out infinite;
     }
     @keyframes cue-breathe {

@@ -1458,7 +1458,7 @@ function shortcutWillAct(action, shell) {
 const PROBE_TOKEN_MIN = 16;
 // The selected view's probe actions (layout pass L1): named, so the driver can
 // never hand the page a string of code to run.
-const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
+const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
   // dockable panels D1: verify/probe-dock-tree.js
   'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'gutterRace', 'abortedDrag', 'menuTick', 'menuButton', 'squeeze',
   // dockable panels D3: verify/probe-dock-tree.js
