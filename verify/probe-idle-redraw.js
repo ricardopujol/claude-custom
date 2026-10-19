@@ -56,10 +56,12 @@ function spread(xs) {
 }
 
 /** The Electron process type of a Win32_Process row: 'main', 'renderer', 'gpu-process', 'utility', ... or null when it is not Electron. */
-function electronType(p) {
+function electronType(p, rootPid) {
   if (!p || String(p.Name || '').toLowerCase() !== 'electron.exe') return null;
   const t = (String(p.CommandLine || '').match(/--type=([a-z-]+)/) || [])[1];
-  return t || 'main';
+  if (t) return t;
+  // No --type: the app's main process, or a host (electron.exe with ELECTRON_RUN_AS_NODE) under it. Only the root is 'main'. (PR #192 Dexter 2)
+  return rootPid == null || p.ProcessId === rootPid ? 'main' : 'host';
 }
 
 const cpuTime = (p) => (Number(p.UserModeTime) || 0) + (Number(p.KernelModeTime) || 0);
@@ -68,11 +70,11 @@ const cpuTime = (p) => (Number(p.UserModeTime) || 0) + (Number(p.KernelModeTime)
  * CPU % of one core per Electron type between two process tables `wallS` seconds apart. Only a process present at both
  * ends with the same command line counts (a reused pid is not the same process).
  */
-function cpuByType(before, after, wallS) {
+function cpuByType(before, after, wallS, rootPid) {
   const was = new Map(before.map(p => [p.ProcessId, p]));
   const out = {};
   for (const p of after) {
-    const t = electronType(p);
+    const t = electronType(p, rootPid);
     if (!t) continue;
     const e = out[t] = out[t] || { cpu: 0 };
     const prev = was.get(p.ProcessId);
@@ -118,9 +120,9 @@ function summarise(readings) {
 const cell = (s) => (s ? `${s.median.toFixed(1)} (${s.min.toFixed(1)}..${s.max.toFixed(1)})` : 'n/a');
 
 function table(rows) {
-  const lines = ['| scenario | mode | rounds | GPU process CPU % | renderers CPU % | main CPU % | all Electron CPU % | GPU engine % |', '|---|---|---|---|---|---|---|---|'];
+  const lines = ['| scenario | mode | rounds | GPU process CPU % | renderers CPU % | main CPU % | hosts CPU % | all Electron CPU % | GPU engine % |', '|---|---|---|---|---|---|---|---|---|'];
   for (const r of rows) {
-    lines.push(`| ${r.scenario} | ${r.mode} | ${r.rounds}${r.excluded ? ` (+${r.excluded} excluded: state not reached)` : ''} | ${cell(r.cpu['gpu-process'])} | ${cell(r.cpu.renderer)} | ${cell(r.cpu.main)} | ${cell(r.cpu.total)} | ${cell(r.gpu)} |`);
+    lines.push(`| ${r.scenario} | ${r.mode} | ${r.rounds}${r.excluded ? ` (+${r.excluded} excluded: state not reached)` : ''} | ${cell(r.cpu['gpu-process'])} | ${cell(r.cpu.renderer)} | ${cell(r.cpu.main)} | ${cell(r.cpu.host)} | ${cell(r.cpu.total)} | ${cell(r.gpu)} |`);
   }
   return lines.join('\n');
 }
@@ -299,6 +301,7 @@ async function main() {
     'pulse-and-cue': async () => { await command({ cmd: 'windowBlur' }); await stop(aPid); await stop(dPid); return pulse('pulse-done'); },
     'minimised-pulse-and-cue': async () => { await command({ cmd: 'windowBlur' }); await stop(aPid); await stop(dPid); await pulse('pulse-done'); const r = await command({ cmd: 'window-state', state: 'minimize' }); return r.ok; },
   };
+  const CUE_EXPECTED = new Set(['cue', 'pulse-and-cue', 'minimised-pulse-and-cue']);   // every other scenario must have NO cue
   const names = Object.keys(SCENARIOS).filter(n => !only || only.split(',').includes(n));
 
   const ready = await bothStarted();
@@ -312,8 +315,10 @@ async function main() {
     for (const name of names) {
       for (const mode of modes) {
         await reset();
-        const ok = await SCENARIOS[name]();
-        if (mode === 'lean') await setLean(true);
+        let ok = await SCENARIOS[name]();
+        if (mode === 'lean' && !await setLean(true)) { ok = false; notes.push(`round ${round} ${name}/${mode}: lean mode did not switch on`); }
+        const anim = await command({ cmd: 'view', action: 'animState', args: {} });
+        if (!(anim && anim.ok && anim.cue === CUE_EXPECTED.has(name))) { ok = false; notes.push(`round ${round} ${name}/${mode}: the attention cue was ${anim && anim.cue ? 'on' : 'off'}, expected ${CUE_EXPECTED.has(name) ? 'on' : 'off'}`); }
         if (!ok) notes.push(`round ${round} ${name}/${mode}: the scenario state was not reached`);
         await sleep(settleMs);
         const a = processTable();
@@ -325,7 +330,7 @@ async function main() {
         const wallS = (Date.now() - t0) / 1000;
         const mine = (rows) => rows.filter(p => pids.has(p.ProcessId));
         const cpu = {};
-        for (const [t, e] of Object.entries(cpuByType(mine(a), mine(b), wallS))) cpu[t] = e.cpu;
+        for (const [t, e] of Object.entries(cpuByType(mine(a), mine(b), wallS, child.pid))) cpu[t] = e.cpu;
         const gpu = gpuPercent(await gpuJob, [...pids]);
         readings.push({ round, scenario: name, mode, cpu, gpu, scenarioReached: ok });
         console.log(`round ${round} ${name.padEnd(24)} ${mode.padEnd(6)} gpu-proc ${(cpu['gpu-process'] || 0).toFixed(1)}%  renderers ${(cpu.renderer || 0).toFixed(1)}%  main ${(cpu.main || 0).toFixed(1)}%  gpu-engine ${gpu.toFixed(1)}%${ok ? '' : '  (STATE NOT REACHED)'}`);

@@ -82,3 +82,18 @@ test('the probe names the machine it measured on (PR #192 M4)', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'probe-idle-redraw.js'), 'utf8');
   assert.match(src, /machine: os\.hostname\(\)/);
 });
+
+test('electronType: a type-less electron.exe is main only when it is the root, otherwise a host (PR #192 Dexter 2)', () => {
+  const row = (id) => ({ ProcessId: id, Name: 'electron.exe', CommandLine: 'electron.exe host.js' });
+  assert.equal(electronType(row(1), 1), 'main');
+  assert.equal(electronType(row(2), 1), 'host');
+  const out = cpuByType([row(1), row(2)], [{ ...row(1), UserModeTime: 1e7 }, { ...row(2), UserModeTime: 5e7 }], 1, 1);
+  assert.equal(out.main.cpu, 100);
+  assert.equal(out.host.cpu, 500);
+});
+
+test('the probe checks the lean switch and the cue state of every scenario before it measures (PR #192 Dexter 3)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'probe-idle-redraw.js'), 'utf8');
+  assert.match(src, /!await setLean\(true\)\) \{ ok = false/, 'a failed lean switch must mark the round unreached');
+  assert.match(src, /anim\.cue === CUE_EXPECTED\.has\(name\)/, 'cue presence AND absence are asserted per scenario');
+});

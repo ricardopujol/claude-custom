@@ -1716,7 +1716,7 @@ if (canvasBridge && canvasRoot) {
   // (once its own handlers have run), while a button is held (a drag), and on a slow tick as the safety net for anything that moves by itself.
   for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) window.addEventListener(ev, () => setTimeout(canvasSchedule, 0), true);
   window.addEventListener('pointermove', (e) => { if (e.buttons) canvasSchedule(); }, true);
-  setInterval(() => { if (canvasLive && !document.hidden) canvasSchedule(); }, 250);
+  setInterval(() => { if (canvasLive) canvasSchedule(); }, 250);
 }
 // CANVAS-END
 
