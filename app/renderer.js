@@ -3687,6 +3687,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
           stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
           figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
+          inBox: (() => { const r = (document.getElementById("resources-root") || document.body).getBoundingClientRect(); return { rootW: Math.round(r.width), rows: q(".res-child").map(c => [...c.children].every(k => { const b = k.getBoundingClientRect(); return b.left >= r.left - 0.5 && b.right <= r.right + 0.5; })) }; })(),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
           notes: q('.res-note').map(n => n.textContent),
           hist: (() => {

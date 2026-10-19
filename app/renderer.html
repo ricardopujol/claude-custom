@@ -1569,7 +1569,7 @@
     /* ONE line per child: the name gives way first (ellipsis), then CPU, memory and a small square Stop at the end. The
        command line is the row's tooltip. */
     .res-child { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
-    .res-cname { flex: 1 1 0; min-width: 13ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-cname { flex: 1 1 0; min-width: min(13ch, 45%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-stop, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
     .res-stop { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 3px; }
