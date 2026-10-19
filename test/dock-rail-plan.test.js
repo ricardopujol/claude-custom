@@ -22,11 +22,11 @@ test('the rail box carries its tabs by name and an id of its own', () => {
   assert.ok(rail.tabs.every(t => typeof t.label === 'string' && t.label));
 });
 
-test('the panel opened from the dock rail can be pinned; its tabs are the rail\'s; it slides in from the right', () => {
+test('the panel opened from the dock rail can be pinned; it shows only the hovered tab; it slides in from the right', () => {
   const plan = V.treePlan(T.unpin(T.unpin(base(), 'git'), 'vault'), null, TABS, VP, { peek: { module: 'git' } });
   assert.equal(plan.peek.pin, true);
   assert.equal(plan.peek.from, 'right');
-  assert.deepEqual(plan.peek.tabs.map(t => t.id), ['git', 'vault']);
+  assert.deepEqual(plan.peek.tabs.map(t => t.id), ['git']);   // #103: not the rail's whole list
   assert.deepEqual(plan.shown.includes('git'), true);
 });
 

@@ -1180,7 +1180,7 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 const MODULE_IDS = TABS.map(t => t.id);
 const DM = window.dockMigrate;
 const DTm = window.dockTree;
-let globalLayout = DTm.defaultLayout(MODULE_IDS);
+let globalLayout = DTm.startLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
 let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
 let dragLayout = null;           // a divider being dragged: drawn, not yet saved
@@ -2097,8 +2097,8 @@ function openLayoutMenu() {
     on: { click: () => { toggleAllZones(); closeLayoutMenu(); } },
   }));
   layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
-    on: { click: () => { openEveryGroup(); commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+    type: 'button', text: 'Reset layout', title: 'Every panel back on the rail, default sizes',
+    on: { click: () => { openEveryGroup(); commitPlacement(DTm.startLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
     layoutMenu.appendChild(node('button', {
@@ -2870,11 +2870,11 @@ new ResizeObserver(() => { if (shortcutsOpen) placeShortcuts(); }).observe(docum
 function legacyLayout() {
   let legacy = {};
   try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
-  return DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
+  return DTm.unpinAll(DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS));
 }
 
 async function loadLayout() {
-  globalLayout = DTm.defaultLayout(MODULE_IDS);
+  globalLayout = DTm.startLayout(MODULE_IDS);
   const seeded = localStorage.getItem('dockSelection2') !== null;
   selection = readSelection();
   if (!seeded) saveSelection();            // seeded ONCE from L1's, so a later push never brings another window's choices (Dexter F4)
@@ -2883,7 +2883,7 @@ async function loadLayout() {
   if (bridge) {
     bridge.onChange((l) => {
       layoutPushes += 1;
-      const incoming = DTm.normalize(l, MODULE_IDS);
+      const incoming = DTm.readStored(l, MODULE_IDS);
       // This window's own save comes back as a push: it is already drawn, and redrawing it would queue a terminal
       // refit for a float's move that never touched the terminal (PR #102 Miguel Y2).
       const same = placementOf(incoming) === placementOf(globalLayout);
@@ -2902,9 +2902,9 @@ async function loadLayout() {
     // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
     // next real change saves as usual.
     const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
-    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
+    if (what === 'use') { globalLayout = DTm.readStored(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
     else if (what === 'migrate-v1') {
-      globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
+      globalLayout = DTm.readStored(v1Answer.layout, MODULE_IDS);
       layoutLoaded = true;
       saveGlobalLayout(globalLayout);
       renderLayout();
@@ -2924,7 +2924,7 @@ async function loadLayout() {
 function applyLayoutOverride(incoming) {
   const r = window.dockEffects.overrideOnHello(pendingOverride, incoming);
   if (r.settled) pendingOverride = null;
-  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readAny(r.apply, MODULE_IDS) : null;
+  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readStored(r.apply, MODULE_IDS) : null;
   if (r.resend && pendingOverride) {
     try { ws.send(JSON.stringify({ type: 'layout-override', layout: pendingOverride.layout })); } catch { /* next hello */ }
   }
@@ -3257,12 +3257,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const el = document.querySelector('#dock > .drail[data-rail="dock"]');
         if (!el) return JSON.stringify({ ok: false, error: 'no dock rail' });
         el.scrollTop = a.to === 'end' ? el.scrollHeight : 0;
-        return JSON.stringify({ ok: true });
-      }
-      case 'peekTabClick': {
-        const b = document.querySelector(`.dpeek .zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
-        if (!b) return JSON.stringify({ ok: false, error: 'no such popover tab' });
-        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
         return JSON.stringify({ ok: true });
       }
       case 'collapse': toggleGroupCollapse(String(a.id)); break;

@@ -1466,7 +1466,7 @@ const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dro
   // dockable panels D2: floating panels
   'floatDrag', 'floatPress', 'secretField', 'floatSecret',
   // dockable panels D4: collapse, a rail's popover, the keyboard, the settle motion
-  'collapse', 'railClick', 'peekTabClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
+  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
   // BACKLOG #85: the dock rail's hover and the Pin button
   'hover', 'pinClick', 'menuCheck', 'railScroll',
   // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
