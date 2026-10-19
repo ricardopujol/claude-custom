@@ -238,7 +238,7 @@ async function main() {
   check('1: the process tree is sampled with the panel never opened (the full model arrives)', !!closedFull && closedFull.shown === false, JSON.stringify(closedFull && closedFull.shown));
 
   // The chip no longer opens the panel (it opens the one-hour popover, step 8): the panel is opened from its own tab.
-  const clicked = await view(app, 'select', { id: 'resources' });
+  const clicked = await view(app, 'dock', { id: 'resources', target: { edge: 'right' } });
   const opened = await waitFor(async () => { const s = await rs(); return s && s.shown ? s : null; }, 10000, 200);
   check('1: the Resources panel opens from its tab', !!opened, JSON.stringify(clicked));
   check('1: resources-display.js loaded in the shared plain-script scope', !!opened && opened.scope === true);

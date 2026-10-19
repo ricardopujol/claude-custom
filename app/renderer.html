@@ -1559,7 +1559,7 @@
     /* CPU and memory sit in fixed columns (tabular figures) so they line up from row to row; the name still takes every leftover pixel */
     .res-child > .res-fig:nth-child(2), .res-row > .res-fig:nth-child(3) { min-width: 4ch; }
     .res-child > .res-fig:nth-child(3), .res-row > .res-fig:nth-child(4) { width: 6.4ch; }
-    .res-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-name { flex: 1 1 0; min-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-row.open .res-name::before { content: '\25BE '; }
     .res-row:not(.open):not(.res-plain) .res-name::before { content: '\25B8 '; }
     .res-meter { order: 9; flex: 1 0 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
@@ -1569,7 +1569,7 @@
     /* ONE line per child: the name gives way first (ellipsis), then CPU, memory and a small square Stop at the end. The
        command line is the row's tooltip. */
     .res-child { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
-    .res-cname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-cname { flex: 1 1 0; min-width: 13ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-stop, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
     .res-stop { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 3px; }
