@@ -101,9 +101,14 @@ function policy(wanted) {
  * onUpdate gets the snapshot after every sample, good or failed:
  *   { mode, sample, prev, machine: { last, prev }, failures, lastGoodAt, stale, expired, adhoc? }
  * `adhoc` marks the sample Stop asked for off the cadence: it is shown, but it is not one of the 10 s steps the warning counts.
+ *
+ * `fetch(mode, adhoc) -> Promise<{ text, at, mode }>` (BACKLOG #100 c) replaces `exec` when the samples come from elsewhere
+ * (host/shared-sampler.js: one poller for every window). The text is parsed with the time it was TAKEN, `at`, and `mode` says
+ * what it holds. The cadence is then the source's, not this timer's, so a cadence take is a long WAIT for the next sample, and an
+ * off-cadence one (`adhoc`) must not queue behind it: it runs beside it.
  */
 function createSampler({
-  exec = createExec(), cores, onUpdate = () => {}, intervalMs = INTERVAL_MS,
+  exec = createExec(), fetch = null, cores, onUpdate = () => {}, intervalMs = INTERVAL_MS,
   now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout, log = () => {},
 } = {}) {
   let wanted = { panel: false, chip: false };
@@ -119,6 +124,8 @@ function createSampler({
   let prevAny = null;
   let lastMode = null;
   let inFlight = null;  // the exec promise running now (it can be killed by its own pid on stop)
+  let adhocRunning = null;   // with a fetch: the off-cadence take, which does not wait for the cadence one
+  let adhocFlight = null;
 
   const snapshot = () => ({
     mode: lastMode, sample: last, prev, machine: { last: lastAny, prev: prevAny },
@@ -128,13 +135,18 @@ function createSampler({
   const emit = (adhoc = false) => { try { onUpdate(adhoc ? { ...snapshot(), adhoc: true } : snapshot()); } catch (err) { log('[resources] update listener threw:', (err && err.stack) || err); } };
 
   function take(mode, adhoc = false) {
-    if (running) return running;
-    running = (async () => {
+    const side = adhoc && fetch !== null;
+    if (side ? adhocRunning : running) return side ? adhocRunning : running;
+    const p = (async () => {
       let dropped = false;
       try {
-        inFlight = exec(scriptFor(mode));
-        const s = parseSample(await inFlight, now());
+        const flight = fetch ? fetch(mode, adhoc) : exec(scriptFor(mode));
+        if (side) adhocFlight = flight; else inFlight = flight;
+        const got = await flight;
+        const s = fetch ? parseSample(got.text, got.at) : parseSample(got, now());
         if (!s) throw new Error('the sample did not parse');
+        // What the sample HOLDS, when the source says (a shared one may hold the fuller kind than was asked for).
+        const held = fetch && (got.mode === 'full' || got.mode === 'machine') ? got.mode : mode;
         // A sample that finishes after what it was for stopped being wanted is DROPPED (Dexter, PR #113 finding 6):
         // written back it would resurrect `last` while hidden, and the next show would draw the whole hidden period's
         // average as the current figure instead of starting at "measuring...".
@@ -142,20 +154,20 @@ function createSampler({
         if (!started || now_ === null) { dropped = true; } else {
           failures = 0;
           lastGoodAt = s.at;
-          lastMode = mode;
-          if (mode === 'full' && now_ === 'full') { prev = last; last = s; }
+          lastMode = held;
+          if (held === 'full' && now_ === 'full') { prev = last; last = s; }
           prevAny = lastAny;
           lastAny = s;
         }
       } catch {
         if (started && policy(wanted) !== null) failures++; else dropped = true;
       } finally {
-        running = null;
-        inFlight = null;
+        if (side) { adhocRunning = null; adhocFlight = null; } else { running = null; inFlight = null; }
       }
       if (!dropped) emit(adhoc);
     })();
-    return running;
+    if (side) adhocRunning = p; else running = p;
+    return p;
   }
 
   function schedule(delay) {
@@ -191,6 +203,7 @@ function createSampler({
       if (timer) clearTimer(timer);
       timer = null;
       if (inFlight && typeof inFlight.kill === 'function') inFlight.kill();
+      if (adhocFlight && typeof adhocFlight.kill === 'function') adhocFlight.kill();
     },
     setWanted(next) {
       const before = policy(wanted);
@@ -205,7 +218,7 @@ function createSampler({
     },
     // Stop's re-read: a sample taken after the click, never one already in flight.
     async sampleNow() {
-      if (running) await running;
+      if (running && fetch === null) await running;
       const before = last;
       await take('full', true);
       return failures === 0 && last && last !== before ? last.procs : null;

@@ -314,3 +314,75 @@ test('installSweep: a signal with no other listener sweeps and exits 130 / 143; 
   b.emit('SIGTERM');
   assert.strictEqual(b.listenerCount('SIGTERM'), 1, 'ours ran once and is gone; the probe\'s stays');
 });
+
+// BACKLOG #100 d: the machine-wide heavy-work lock is taken before the first launch (injected here; the real one is never touched).
+test('heavy lock: ensure() runs before the Electron is spawned, for launchElectron and spawnElectron', async () => {
+  const f = fakes();
+  const order = [];
+  const heavyLock = { ensure: () => order.push('lock') };
+  const spawnFn = (...a) => { order.push('spawn'); return f.spawnFn(...a); };
+  await launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: null, spawnFn, startTimes: f.startTimes,
+    selfStart: async () => '555', install: false, heavyLock });
+  const f2 = fakes();
+  spawnElectron('E.exe', [], {}, { spawnFn: (...a) => { order.push('spawn'); return f2.spawnFn(...a); }, startTimes: f2.startTimes,
+    selfStart: async () => '555', ledgerFile: null, install: false, parentEnv: {}, heavyLock });
+  assert.deepStrictEqual(order, ['lock', 'spawn', 'lock', 'spawn']);
+});
+
+test('heavy lock: busy means nothing is spawned and the error reaches the probe', async () => {
+  const f = fakes();
+  const heavyLock = { ensure: () => { throw new Error('busy: hub'); } };
+  await assert.rejects(launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: null, spawnFn: f.spawnFn,
+    startTimes: f.startTimes, selfStart: async () => '555', install: false, heavyLock }), /busy: hub/);
+  assert.throws(() => spawnElectron('E.exe', [], {}, { spawnFn: f.spawnFn, startTimes: f.startTimes, ledgerFile: null,
+    install: false, parentEnv: {}, heavyLock }), /busy: hub/);
+  assert.strictEqual(f.calls.filter(c => c[0] === 'spawn').length, 0);
+});
+
+test('heavy lock: HEAVY_LOCK_HELD survives the env stripping, so a spawned node child is re-entrant too', () => {
+  assert.strictEqual(cleanElectronEnv({ HEAVY_LOCK_HELD: '1', CLAUDE_CUSTOM_X: 'y' }).HEAVY_LOCK_HELD, '1');
+  const { probeEnv } = require('../verify/lib/launch-electron');
+  assert.strictEqual(probeEnv({ HEAVY_LOCK_HELD: '1' }, { HEAVY_LOCK_HELD: '1' }).HEAVY_LOCK_HELD, '1');
+});
+
+// Miguel I3 / I4 / I5, Dexter 3: which processes take the lock, and what a refusal looks like.
+test('heavy lock: a unit test process is not a probe, so launching with no heavyLock option takes no lock', () => {
+  const { probeName } = require('../verify/lib/launch-electron');
+  assert.strictEqual(probeName(process.argv[1]), null);
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'test', 'x.test.js')), null);
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'verify', 'probe-dock-tree.js')), 'probe-dock-tree.js', 'the owner label names the probe');
+  assert.strictEqual(probeName(undefined), null);
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'verify2', 'probe-x.js')), null, 'a sibling dir that starts with "verify" is not verify/');
+  assert.strictEqual(probeName(path.join(__dirname, '..', 'verify-old', 'probe-x.js')), null);
+});
+
+test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other errors are thrown as they were', () => {
+  const { takeLock } = require('../verify/lib/launch-electron');
+  const { HeavyLockError } = require('../host/heavy-lock');
+  const said = []; const exits = [];
+  const busy = { ensure: () => { throw new HeavyLockError('busy', 'busy: hub. Wait and retry'); } };
+  assert.throws(() => takeLock(busy, (c) => exits.push(c), (m) => said.push(m)), HeavyLockError);   // the fake exit returns, so it rethrows
+  assert.deepStrictEqual(exits, [1]);
+  assert.strictEqual(said.length, 1);
+  assert.match(said[0], /did not run: busy: hub/);
+  const other = { ensure: () => { throw new TypeError('x'); } };
+  assert.throws(() => takeLock(other, (c) => exits.push(c), (m) => said.push(m)), TypeError);
+  assert.deepStrictEqual(exits, [1], 'no exit for an unexpected error');
+  assert.doesNotThrow(() => takeLock(null));
+});
+
+test('Dexter r2 1: the Electron root and its start time are recorded as the lock\'s work, for launchElectron and spawnElectron', async () => {
+  const f = fakes();
+  const seen = [];
+  const heavyLock = { ensure: () => {}, addWork: (pid, start) => { seen.push([pid, start]); return true; } };
+  const h = await launchElectron({ electronPath: 'E.exe', env: {}, ledgerFile: null, spawnFn: f.spawnFn,
+    startTimes: f.startTimes, selfStart: async () => '555', install: false, heavyLock });
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0][0], h.pid);
+  assert.strictEqual(typeof seen[0][1], 'string');
+  const f2 = fakes();
+  const c = spawnElectron('E.exe', [], {}, { spawnFn: f2.spawnFn, startTimes: f2.startTimes, ledgerFile: null, install: false, parentEnv: {}, heavyLock });
+  await c.ledgered;
+  assert.strictEqual(seen.length, 2);
+  assert.strictEqual(seen[1][0], c.pid);
+});

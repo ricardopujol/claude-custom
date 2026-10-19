@@ -10,7 +10,7 @@
   "scripts": {
     "start": "electron .",
     "host": "node host/host.js",
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node scripts/with-heavy-lock.js node --test --test-concurrency=2 \"test/**/*.test.js\"",
     "build:helper": "powershell -NoProfile -ExecutionPolicy Bypass -File helper/build.ps1",
     "bench:hooks": "node verify/measure-hook-latency.js",
     "mutate": "stryker run",

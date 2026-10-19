@@ -16,7 +16,7 @@
  *      rests again with "1 question"
  *   C  opening a place from the answer makes it happy (ring + words), "1 place opened", and 8 s later asleep again
  *   D  medals: from its card and from the panel's 🏅 (the same give menu, titled with its name), the chip counts them, the log page shows
- *      the counts and the shelf with reasons, a medal comes off in two clicks
+ *      the counts and the shelf with dates, a medal comes off in two clicks
  *   E  a rename keeps the medals and the counts (they are keyed by the fixed id)
  *   F  Ollama stopped: stressed with the warning; the next good answer is not needed to see it, the panel's header wears the same
  *   G0 the Ask panel docked behind another tab (not on screen): still on Active (Ricardo: Active = docked anywhere)
@@ -282,13 +282,13 @@ async function main() {
   await exDo({ op: 'cardMedal' });
   const d1 = await until(s => s.menu && s.menu.hidden === false, 4000);
   check('D: the card\'s 🏅 opens the give menu, titled with its name', !!d1 && /Give Ada a medal/.test(d1.menu.text), d1 && d1.menu.text.slice(0, 80));
-  await exDo({ op: 'giveMedal', kind: 'fast', reason: 'Found the lock quickly' });
+  await exDo({ op: 'giveMedal', kind: 'fast' });
   const d2 = await until(s => /🏅 1/.test(s.card ? s.card.chip || '' : ''), 5000);
   check('D: a medal from the card: the chip counts it', !!d2 && d2.medalCount === 1, d2 && String(d2.card.chip));
   await exDo({ op: 'headerMedal' });
   const d3 = await until(s => s.menu && s.menu.hidden === false, 4000);
   check('D: the panel header\'s 🏅 opens the same menu, titled with its name', !!d3 && /Give Ada a medal/.test(d3.menu.text));
-  await exDo({ op: 'giveMedal', kind: 'spot-on', reason: '' });
+  await exDo({ op: 'giveMedal', kind: 'spot-on' });
   const d4 = await until(s => /🏅 2/.test(s.card ? s.card.chip || '' : ''), 5000);
   check('D: a medal from the panel: two medals on the card', !!d4);
   await exDo({ op: 'rightClick' });
@@ -298,7 +298,7 @@ async function main() {
   await exDo({ op: 'clickCard' });
   const d6 = await until(s => s.log.open && s.log.agent === 'ask-explainer', 5000);
   check('D: a click on the card opens its page: the counts', !!d6 && /1\s*question/.test(d6.log.text) && /1\s*place/.test(d6.log.text), d6 && d6.log.text.slice(0, 160));
-  check('D: ... and the medal shelf with the reason, under Ada\'s name', !!d6 && /Found the lock quickly/.test(d6.log.shelf || '') && /Great work|Fast/.test(d6.log.shelf || ''), d6 && String(d6.log.shelf).slice(0, 200));
+  check('D: ... and the medal shelf with its date and no reason, under Ada\'s name', !!d6 && /[0-9]{4}-[0-9]{2}-[0-9]{2}/.test(d6.log.shelf || '') && /Great work|Fast/.test(d6.log.shelf || ''), d6 && String(d6.log.shelf).slice(0, 200));
   await shot('gamify-D-log.png');
   await exDo({ op: 'removeMedal' });
   await exDo({ op: 'removeMedal' });

@@ -67,7 +67,8 @@ test('main runs the transcript scanner over the project\'s worktrees, into the S
   assert.match(block, /writer: createClaimWriter\(\{ stateRoot: STATE_ROOT/);
   assert.match(block, /dir: occupancyDir\(STATE_ROOT\)/);
   assert.match(block, /ownPid: process\.pid/);
-  assert.match(block, /ownStartedAt: createSelfStartTime\(\)/);
+  assert.match(block, /ownStartedAt: ownStartTime/);
+  assert.match(MAIN, /const ownStartTime = createSelfStartTime\(\);/);
 });
 
 test('the scanner leaves an agent to the producer the readers already show (the live claims of the service)', () => {
