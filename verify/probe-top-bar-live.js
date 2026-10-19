@@ -36,7 +36,7 @@
    ELECTRON_RUN_AS_NODE is deleted for this process and set ONLY for the host
    child, exactly as app/main.js does. */
 const { spawn } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const path = require('path');
 
 if (!process.versions.electron) {
@@ -110,6 +110,7 @@ app.on('ready', async () => {
       CLAUDE_CUSTOM_CWD: REPO, CLAUDE_CUSTOM_TOKEN: TOKEN, CLAUDE_CUSTOM_HELPER: HELPER };
     delete env.ANTHROPIC_API_KEY;
     host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     host.stdout.on('data', d => { hostLog += d; });
     host.stderr.on('data', d => { hostLog += d; });
 

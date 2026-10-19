@@ -17,7 +17,7 @@ const { killChildTree } = require('../host/kill-tree');
    environment (Claude Code is an Electron app and exports them). Only the two processes
    started here are killed, by pid. */
 const { spawn, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -112,6 +112,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   let electron;
   try {
     host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     children.push(host);
     let hostLog = '';
     host.stdout.on('data', (d) => { hostLog += d; });

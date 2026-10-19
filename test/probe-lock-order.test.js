@@ -39,3 +39,22 @@ test('every verify script requires the launcher before it starts anything heavy'
   }
   assert.deepStrictEqual(late, [], 'move the require of ./lib/launch-electron above the first spawn (it takes the heavy-work lock)');
 });
+
+// BACKLOG #112: a probe that starts a host.js (or the claude CLI) by hand with a plain spawn must tell the lock, or a
+// dead probe with a live host reads as a dead holder. Every such spawn needs a noteChild call.
+const HAND_SPAWN = /\bspawn\(\s*(?:process\.execPath,\s*\[[^\]]*host\.js|exe,\s*\['-p')/g;
+test('the checker finds a hand-started host.js', () => {
+  assert.strictEqual(("h = spawn(process.execPath, [path.join(R, 'host', 'host.js')], {});".match(HAND_SPAWN) || []).length, 1);
+});
+test('every probe that takes the lock and hand-starts a host.js or claude records it with noteChild', () => {
+  const missing = [];
+  for (const f of fs.readdirSync(VERIFY)) {
+    if (!f.endsWith('.js')) continue;
+    const s = strip(fs.readFileSync(path.join(VERIFY, f), 'utf8'));
+    if (!LAUNCHER_REQUIRE.test(s)) continue;
+    const spawns = (s.match(HAND_SPAWN) || []).length;
+    const notes = (s.match(/\bnoteChild\(/g) || []).length;
+    if (spawns > notes) missing.push(`verify/${f}: ${spawns} spawn(s), ${notes} noteChild call(s)`);
+  }
+  assert.deepStrictEqual(missing, [], 'call noteChild(child) from ./lib/launch-electron right after the spawn');
+});

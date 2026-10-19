@@ -386,3 +386,16 @@ test('Dexter r2 1: the Electron root and its start time are recorded as the lock
   assert.strictEqual(seen.length, 2);
   assert.strictEqual(seen[1][0], c.pid);
 });
+
+test('BACKLOG #112: noteChild records a hand-started child twice (unknown start first, then its start time), and returns it', () => {
+  const { noteChild } = require('../verify/lib/launch-electron');
+  const seen = [];
+  const heavyLock = { addWork: (pid, start) => { seen.push([pid, start]); return true; } };
+  const child = { pid: 77 };
+  assert.strictEqual(noteChild(child, heavyLock), child);
+  assert.deepStrictEqual(seen, [[77, null], [77, undefined]]);
+  assert.strictEqual(noteChild({ pid: undefined }, heavyLock) !== null, true);
+  assert.strictEqual(seen.length, 2, 'a child with no pid is not recorded');
+  assert.doesNotThrow(() => noteChild(child, null), 'no lock, nothing to record');
+  assert.doesNotThrow(() => noteChild(child, { addWork: () => { throw new Error('disk'); } }), 'a failing record never stops the probe');
+});

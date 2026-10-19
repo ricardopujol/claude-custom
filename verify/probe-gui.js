@@ -5,7 +5,7 @@
    hook events through the real helper and bridge so the sidebar is exercised in
    every mood state, rather than only in its empty state. */
 const { spawn, spawnSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..');
@@ -18,6 +18,7 @@ const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], {
   env: { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), CLAUDE_CUSTOM_CWD: REPO },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
+noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
 let hostLog = '';
 host.stdout.on('data', d => { hostLog += d.toString(); });
 host.stderr.on('data', d => { hostLog += d.toString(); });

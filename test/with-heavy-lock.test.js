@@ -20,7 +20,7 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
       events.push('acquire:' + o.label);
       if (acquireThrows) throw acquireThrows;
       let done = false;
-      return { state, addWork: (pid) => { events.push('work:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
+      return { state, addWork: (pid, start) => { events.push('work:' + pid); if (start === null) events.push('provisional:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
     },
     spawn: (cmd, args, opts) => { events.push('spawn'); spawned = { cmd, args, opts }; return child; },
     killFn: (pid) => events.push('kill:' + pid),
@@ -28,7 +28,7 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
   };
   return { events, child, proc, deps, spawned: () => spawned };
 }
-const plain = (r) => r.events.filter(e => !e.startsWith('log:') && !e.startsWith('work:'));
+const plain = (r) => r.events.filter(e => !e.startsWith('log:') && !e.startsWith('work:') && !e.startsWith('provisional:'));
 
 test('runs the command under the lock, passes the re-entrancy flag, returns its exit code, releases after', async () => {
   const r = rig();
@@ -162,7 +162,7 @@ test('Dexter r2 1: the suite\'s child pid is recorded as work right after it sta
   const p = main(['node', '--test'], r.deps);
   r.child.emit('exit', 0, null);
   await p;
-  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:npm test', 'spawn', 'work:4242', 'release']);
+  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:npm test', 'spawn', 'work:4242', 'provisional:4242', 'work:4242', 'release']);
 });
 
 test('Dexter r2 1: a lock without addWork (or one that throws) does not stop the command', async () => {
@@ -172,4 +172,26 @@ test('Dexter r2 1: a lock without addWork (or one that throws) does not stop the
   const p = main(['node'], r.deps);
   r.child.emit('exit', 0, null);
   assert.strictEqual(await p, 0);
+});
+
+test('BACKLOG #112: a hard kill during the start-time query still leaves the suite listed (provisional record first)', async () => {
+  const { acquire, createWorkStore } = require('../host/heavy-lock');
+  const { tmpDir } = require('./tmp-dir');
+  const path = require('path');
+  const r = rig();
+  const store = createWorkStore(path.join(tmpDir('hl-gap-'), 'w.json'));
+  let seen = null, owner = null;
+  r.deps.acquire = (o) => acquire({
+    ...o, scriptPath: 'x', exists: () => true, work: store,
+    run: (args) => (args.includes('-Acquire') ? (owner = args[args.indexOf('-Owner') + 1], { status: 0, stdout: 'acquired' }) : { status: 0, stdout: 'ok' }),
+    // The slow start query: this is the moment a hard kill of the wrapper would land. The record then is what a later asker sees.
+    startsOf: (pids) => {
+      if (pids.includes(4242)) seen = store.read(owner);
+      return new Map(pids.map(p => [p, '100']));
+    },
+  });
+  const p = main(['node', '--test'], r.deps);
+  r.child.emit('exit', 0, null);
+  await p;
+  assert.deepStrictEqual(seen, [{ pid: 4242, start: null }], 'listed with an unknown start before the query returned');
 });

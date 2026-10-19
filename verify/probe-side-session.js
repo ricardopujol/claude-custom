@@ -29,7 +29,7 @@
  * WINDOWS ONLY (cmd.exe).
  */
 const { execFileSync, spawn } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -312,6 +312,7 @@ async function main() {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-side-cli-'));
     const child = spawn(exe, ['-p', 'hi', '--output-format', 'stream-json', '--verbose', '--max-turns', '1', '--no-session-persistence', ...extra],
       { cwd, windowsHide: true, env: { ...process.env, ANTHROPIC_BASE_URL: 'http://127.0.0.1:9' }, stdio: ['ignore', 'pipe', 'ignore'] });
+    noteChild(child);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     let buf = '';
     let done = false;
     const finish = (v) => {
