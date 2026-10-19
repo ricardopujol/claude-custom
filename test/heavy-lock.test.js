@@ -526,3 +526,24 @@ test('Dexter r2 5: HEAVY_LOCK_HELD=1 prints one line saying the lock is not bein
   assert.strictEqual(r.log.length, 1);
   assert.match(r.log[0], /HEAVY_LOCK_HELD=1 is set: not taking the lock/);
 });
+
+// ---- BACKLOG #112: the record covers every heavy child, and a provisional entry is replaced, not duplicated ----
+test('BACKLOG #112: a recorded Electron that is gone does not free a holder whose recorded host.js is still alive', () => {
+  const two = { owner: WORK.owner, work: [{ pid: 6000, start: '900' }, { pid: 6001, start: '910' }] };
+  const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6001: '910' }, work: two });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'busy');
+  assert.ok(r.log.some(m => /work \(pid 6001\) is still running/.test(m)));
+  assert.ok(!of(r, '-Release').some(c => flagValue(c, '-Owner') === DEAD), 'the dead holder was not released');
+});
+
+test('BACKLOG #112: a provisional record (start unknown) keeps the holder while its pid runs, and is replaced by the start time', () => {
+  const dir = tmpDir('hl-prov-');
+  const file = path.join(dir, 'w.json');
+  const st = createWorkStore(file);
+  st.add('o (pid 1 start 2)', 10, null);
+  st.add('o (pid 1 start 2)', 11, '7');
+  st.add('o (pid 1 start 2)', 10, '5');
+  assert.deepStrictEqual(st.read('o (pid 1 start 2)'), [{ pid: 11, start: '7' }, { pid: 10, start: '5' }], 'one entry per pid');
+  const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '123' }, work: { owner: WORK.owner, work: [{ pid: 6000, start: null }] } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'busy', 'a live provisional child holds the slot');
+});

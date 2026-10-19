@@ -40,6 +40,14 @@
  * its `node --test` or Electron running. So the holder also records its heavy children (lock.addWork(pid): the suite's
  * node, a probe's Electron root) with their start times in a side file next to the lock, and a holder is dead only when
  * the asker AND every recorded child are gone. A side file that can't be read is "can't tell", never "dead".
+ * WHAT IS RECORDED, AND WHAT IS NOT (BACKLOG #112). Recorded: the asker (in the owner string), and every heavy child the holder
+ * starts and tells the lock about, each with its start time and under the owner that started it. Those are the suite's
+ * `node --test` (scripts/with-heavy-lock.js), a probe's Electron root (launch-electron's noteWork) and a host.js or claude
+ * a probe starts by hand (launch-electron's noteChild). A child is written first with an unknown start (alive while its pid
+ * runs), then again with its start time once that is read, so a hard kill in the 0.5-1.5 s gap still leaves it listed.
+ * NOT recorded: grandchildren (what a host.js or the suite's node starts in turn), a probe that starts something without
+ * calling noteChild, and a probe that never requires the launcher (it takes no lock at all). Stopping the listed pids can
+ * still leave those running.
  * KNOWN LIMIT (Miguel r2 N1): a live process this user can't inspect (elevated) may be missing from the start-time
  * query and so read as gone. Holders are same-user node processes, so it is theoretical today.
  *
@@ -139,6 +147,8 @@ function createWorkStore(file = WORK_FILE, fsx = fs) {
     add(owner, pid, start) {
       let d; try { d = readAll(); } catch { d = {}; }
       if (!d || d.owner !== owner || !Array.isArray(d.work)) d = { owner, work: [] };
+      // One entry per pid: a provisional record (start unknown) is replaced when the start time is read.
+      d.work = d.work.filter(w => w.pid !== pid);
       d.work.push({ pid, start: typeof start === 'string' ? start : null });
       const tmp = `${file}.${process.pid}.tmp`;
       fsx.writeFileSync(tmp, JSON.stringify(d));

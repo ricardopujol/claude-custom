@@ -83,6 +83,17 @@ const noteWork = (heavyLock, handle) => {
   const lock = lockFor(heavyLock);
   if (lock && typeof lock.addWork === 'function' && typeof handle.start === 'string') { try { lock.addWork(handle.pid, handle.start); } catch { /* a safety net */ } }
 };
+// A host.js / claude a probe starts by hand with a plain spawn: the same work record. Written at once with an unknown start
+// (a hard kill during the 0.5-1.5 s start query still leaves it listed), then again with the start time. Nothing if the
+// lock isn't held, or the child never got a pid. Returns the child.
+const noteChild = (child, heavyLock) => {
+  const lock = lockFor(heavyLock);
+  const pid = child && child.pid;
+  if (lock && typeof lock.addWork === 'function' && Number.isInteger(pid)) {
+    try { lock.addWork(pid, null); lock.addWork(pid); } catch { /* a safety net */ }
+  }
+  return child;
+};
 const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 
 // Busy / too loaded is one clear line and exit 1, not a stack trace; anything else is thrown as it was.
@@ -250,4 +261,4 @@ async function stopElectron(handle, { polite, killFn = handle.killFn || killPidT
   return { how };
 }
 
-module.exports = { takeLock, probeName, cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, installSweep, waitForExit, sleep };
+module.exports = { noteChild, takeLock, probeName, cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, installSweep, waitForExit, sleep };

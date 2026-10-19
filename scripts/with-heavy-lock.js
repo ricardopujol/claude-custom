@@ -49,7 +49,11 @@ async function main(argv, {
       try {
         child = spawnFn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...env, [heavy.ENV_VAR]: '1' } });
       } catch (err) { log(`[heavy-lock] could not start ${argv[0]}: ${err && err.message}`); return resolve(1); }
-      if (child && child.pid && typeof lock.addWork === 'function') { try { lock.addWork(child.pid); } catch { /* recorded work is a safety net */ } }   // the suite's node: a dead wrapper with this alive is not a dead holder
+      if (child && child.pid && typeof lock.addWork === 'function') {   // the suite's node: a dead wrapper with this alive is not a dead holder
+        // Provisional first (start unknown = alive while the pid runs), then with its start time once that query returns:
+        // a hard kill during the 0.5-1.5 s query must not leave the suite unlisted (BACKLOG #112).
+        try { lock.addWork(child.pid, null); lock.addWork(child.pid); } catch { /* recorded work is a safety net */ }
+      }
       child.on('error', (err) => { log(`[heavy-lock] could not start ${argv[0]}: ${err && err.message}`); resolve(1); });
       child.on('exit', (code) => resolve(code === null || code === undefined ? 1 : code));
     });

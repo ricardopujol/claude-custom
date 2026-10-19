@@ -26,7 +26,7 @@
  */
 
 const { spawn, spawnSync, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -372,6 +372,7 @@ async function runRealApp() {
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
 
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
+  noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
   hygiene.registerChild(host);
   let hostOut = '';
   host.stdout.on('data', d => { hostOut += d; });
