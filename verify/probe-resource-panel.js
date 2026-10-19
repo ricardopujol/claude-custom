@@ -328,13 +328,16 @@ async function main() {
     check('3: every session, self and window row shows at least its whole first word (e.g. "claude-custom")', cut.length === 0, JSON.stringify(cut.map(r => [r.name, r.fit])));
     check('3: the Stop square is small but its hit area is at least 24 x 24', !!fitNow.stopHit && fitNow.stopHit.box <= 18 && fitNow.stopHit.w >= 24 && fitNow.stopHit.h >= 24, JSON.stringify(fitNow.stopHit));
     check('3: CPU and memory line up from row to row (the same right edge in every child row)', fitNow.figX.length >= 2 && fitNow.figX.every(x => x[0] === fitNow.figX[0][0] && x[1] === fitNow.figX[0][1]), JSON.stringify(fitNow.figX));
-    // Narrow docks (the default side dock is 180 px, the minimum 120): the name floor must yield, so Stop and the last figure stay inside the panel.
-    for (const w of [180, 120]) {
-      await view(app, 'squeeze', { width: w });
-      const nar = await waitFor(async () => { const s = await rs(); return s.inBox && s.inBox.rows.length >= 2 ? s : null; }, 8000, 200);
-      check(`3: at a ${w} px dock every child row keeps its Stop button and figures inside the panel`, !!nar && nar.inBox.rows.every(Boolean), JSON.stringify(nar && nar.inBox));
+    // Narrow columns: the Resources panel as a float of exactly 180 px and 160 px (a float's minimum; the 120 px side-dock minimum is
+    // narrower still and follows from the floor's arithmetic). The name floor must yield so Stop and the figures stay inside the
+    // panel's client box (where content clips). `squeeze` would only narrow #dock, not this column.
+    for (const w of [180, 160]) {
+      await view(app, 'dock', { id: 'resources', target: { float: { x: 40, y: 60, w, h: 500 } } });
+      const nar = await waitFor(async () => { const s = await rs(); return s.inBox && s.inBox.rows.length >= 2 && s.inBox.rootW > 0 ? s : null; }, 8000, 200);
+      check(`3: in a ${w} px column the panel is that wide (a real narrow column, not a vanished one)`, !!nar && nar.inBox.rootW >= w - 30 && nar.inBox.rootW <= w, JSON.stringify(nar && nar.inBox));
+      check(`3: in a ${w} px column every child row keeps its name, Stop button and figures inside the panel`, !!nar && nar.inBox.rows.every(Boolean), JSON.stringify(nar && nar.inBox));
     }
-    await view(app, 'squeeze', {});
+    await view(app, 'dock', { id: 'resources', target: { edge: 'right' } });
     console.log(`     name widths: ${JSON.stringify(fitNow.rows.map(r => [r.name, r.fit && r.fit.width, r.fit && r.fit.clipped]))}`);
 
     // The label parser against REAL command lines the OS reports. (1) A bash started the way Claude Code's Bash tool starts
