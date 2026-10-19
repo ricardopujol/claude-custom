@@ -1,8 +1,8 @@
 'use strict';
 /**
  * PROBE: what an IDLE claude-custom window costs in CPU and GPU, per Electron process type, and what each always-on
- * animation adds (BACKLOG #100 b), normal mode against lean mode (BACKLOG #99). (re-runnable; HEAVY: take
- * ~/.claude/scripts/heavy-lock.ps1 first)
+ * animation adds (BACKLOG #100 b), normal mode against lean mode (BACKLOG #99). (re-runnable; HEAVY: the launcher takes
+ * the machine-wide heavy-work lock itself)
  *
  *   node verify/probe-idle-redraw.js [--reps=3] [--measure-ms=20000] [--only=idle,pulse-done] [--out=<file.json>]
  *
@@ -31,6 +31,7 @@
 const { spawn, spawnSync, execFileSync } = require('child_process');
 const { spawnElectron } = require('./lib/launch-electron');
 const fs = require('fs');
+const os = require('os');
 const net = require('net');
 const path = require('path');
 
@@ -73,8 +74,7 @@ function cpuByType(before, after, wallS) {
   for (const p of after) {
     const t = electronType(p);
     if (!t) continue;
-    const e = out[t] = out[t] || { count: 0, cpu: 0 };
-    e.count++;
+    const e = out[t] = out[t] || { cpu: 0 };
     const prev = was.get(p.ProcessId);
     if (prev && prev.CommandLine === p.CommandLine && wallS > 0) e.cpu += ((cpuTime(p) - cpuTime(prev)) / 1e7 / wallS) * 100;
   }
@@ -96,9 +96,11 @@ function gpuPercent(rows, pids) {
 /** Rounds of readings -> per scenario and mode, the spread of each metric. readings: [{ scenario, mode, cpu: {type: pct}, gpu }] */
 function summarise(readings) {
   const cells = new Map();
+  const excluded = new Map();
   for (const r of readings) {
     const k = `${r.scenario}|${r.mode}`;
     if (!cells.has(k)) cells.set(k, []);
+    if (r.scenarioReached === false) { excluded.set(k, (excluded.get(k) || 0) + 1); continue; }   // PR #192 M3: a round whose state was not reached measured something else
     cells.get(k).push(r);
   }
   const out = [];
@@ -108,7 +110,7 @@ function summarise(readings) {
     const cpu = {};
     for (const t of types) cpu[t] = spread(rs.map(r => r.cpu[t]));
     cpu.total = spread(rs.map(r => Object.values(r.cpu).reduce((a, x) => a + (x || 0), 0)));
-    out.push({ scenario, mode, rounds: rs.length, cpu, gpu: spread(rs.map(r => r.gpu)) });
+    out.push({ scenario, mode, rounds: rs.length, excluded: excluded.get(k) || 0, cpu, gpu: spread(rs.map(r => r.gpu)) });
   }
   return out;
 }
@@ -118,7 +120,7 @@ const cell = (s) => (s ? `${s.median.toFixed(1)} (${s.min.toFixed(1)}..${s.max.t
 function table(rows) {
   const lines = ['| scenario | mode | rounds | GPU process CPU % | renderers CPU % | main CPU % | all Electron CPU % | GPU engine % |', '|---|---|---|---|---|---|---|---|'];
   for (const r of rows) {
-    lines.push(`| ${r.scenario} | ${r.mode} | ${r.rounds} | ${cell(r.cpu['gpu-process'])} | ${cell(r.cpu.renderer)} | ${cell(r.cpu.main)} | ${cell(r.cpu.total)} | ${cell(r.gpu)} |`);
+    lines.push(`| ${r.scenario} | ${r.mode} | ${r.rounds}${r.excluded ? ` (+${r.excluded} excluded: state not reached)` : ''} | ${cell(r.cpu['gpu-process'])} | ${cell(r.cpu.renderer)} | ${cell(r.cpu.main)} | ${cell(r.cpu.total)} | ${cell(r.gpu)} |`);
   }
   return lines.join('\n');
 }
@@ -134,13 +136,13 @@ function processTable() {
   const ps = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
     'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,UserModeTime,KernelModeTime | ConvertTo-Json -Compress'],
   { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1048576 });
-  return JSON.parse(ps.stdout);
+  try { return JSON.parse(ps.stdout); } catch { throw new Error(`the process table was not JSON: ${String(ps.stderr || ps.stdout || '').slice(0, 200)}`); }
 }
 
 // Get-Counter over the measuring window; resolves the rows, or null.
 function sampleGpu(seconds) {
   const script = `$s = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval 5 -MaxSamples ${Math.max(1, Math.floor(seconds / 5))} -ErrorAction SilentlyContinue; ` +
-    `$s | ForEach-Object { $t = $_.Timestamp.Ticks; $_.CounterSamples | Where-Object { $_.CookedValue -gt 0 } | ForEach-Object { [pscustomobject]@{ at = $t; name = $_.InstanceName; value = $_.CookedValue } } } | ConvertTo-Json -Compress`;
+    `$s | ForEach-Object { $t = $_.Timestamp.Ticks; $_.CounterSamples | ForEach-Object { [pscustomobject]@{ at = $t; name = $_.InstanceName; value = $_.CookedValue } } } | ConvertTo-Json -Compress`;
   return new Promise((resolve) => {
     const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
     let text = '';
@@ -302,7 +304,7 @@ async function main() {
   const ready = await bothStarted();
   if (!ready) { console.log(`FAIL  the window did not come up with both tabs started\n${app.out.slice(-600)}`); return 1; }
   aPid = hostPid(ready, 'feat/a'); dPid = hostPid(ready, 'develop');
-  console.log(`window up: electron root ${child.pid}, hosts develop ${dPid} feat/a ${aPid}; ${names.length} scenarios x ${modes.join('+')} x ${reps} rounds, ${measureMs / 1000}s each`);
+  console.log(`machine ${os.hostname()}; window up: electron root ${child.pid}, hosts develop ${dPid} feat/a ${aPid}; ${names.length} scenarios x ${modes.join('+')} x ${reps} rounds, ${measureMs / 1000}s each`);
 
   const readings = [];
   const notes = [];
@@ -335,7 +337,7 @@ async function main() {
   console.log('\n' + table(rows));
   if (notes.length) console.log('\nnotes:\n' + notes.join('\n'));
   fs.mkdirSync(path.dirname(outFile), { recursive: true });
-  fs.writeFileSync(outFile, JSON.stringify({ measuredAt: new Date().toISOString(), reps, measureMs, settleMs, readings, rows, notes }, null, 2));
+  fs.writeFileSync(outFile, JSON.stringify({ measuredAt: new Date().toISOString(), machine: os.hostname(), reps, measureMs, settleMs, readings, rows, notes }, null, 2));
   console.log('\nfull numbers ->', outFile);
   await command({ cmd: 'quit' });
   await waitFor(() => app.exited, 10000);

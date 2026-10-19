@@ -60,3 +60,25 @@ test('every exit path of the probe reaches killEverything before process.exit', 
   assert.ok(entry.indexOf('cleanup()') >= 0 && entry.indexOf('cleanup()') < entry.indexOf('process.exit'), 'cleanup runs before process.exit');
   assert.match(src, /cleanup = killEverything/, 'main hands its killEverything to the entry point');
 });
+
+test('summarise leaves out rounds whose scenario state was not reached, and says how many (PR #192 M3)', () => {
+  const rs = summarise([
+    { scenario: 'cue', mode: 'normal', cpu: { 'gpu-process': 20 }, gpu: 1, scenarioReached: true },
+    { scenario: 'cue', mode: 'normal', cpu: { 'gpu-process': 0 }, gpu: 0, scenarioReached: false },
+  ]);
+  assert.equal(rs[0].rounds, 1);
+  assert.equal(rs[0].excluded, 1);
+  assert.equal(rs[0].cpu['gpu-process'].median, 20);
+  assert.match(table(rs), /\| cue \| normal \| 1 \(\+1 excluded: state not reached\) \|/);
+});
+
+test('the GPU engine query keeps zero samples, so an idle median is not inflated (PR #192 M2)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'probe-idle-redraw.js'), 'utf8');
+  assert.ok(!/CookedValue\s+-gt\s+0/.test(src));
+  assert.equal(gpuPercent([{ at: 1, name: 'pid_10_x', value: 0 }, { at: 2, name: 'pid_10_x', value: 0 }, { at: 3, name: 'pid_10_x', value: 6 }], [10]), 0);
+});
+
+test('the probe names the machine it measured on (PR #192 M4)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'probe-idle-redraw.js'), 'utf8');
+  assert.match(src, /machine: os\.hostname\(\)/);
+});
