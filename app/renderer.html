@@ -1266,7 +1266,6 @@
     .medal-shelf-title { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); margin-bottom: 2px; }
     .medal-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; padding: 2px 0; }
     .medal-label { font-weight: 600; flex: 0 0 auto; }
-    .medal-reason { order: 5; flex: 1 0 100%; padding-left: 22px; color: var(--dim); overflow-wrap: anywhere; }
     .medal-date { margin-left: auto; color: var(--dim); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
     .medal-remove { background: none; border: none; color: var(--dim); cursor: pointer; padding: 0 3px; }
     .medal-remove:hover { color: #e06c75; }
@@ -1276,15 +1275,10 @@
       background: var(--panel); color: var(--text); border: 1px solid var(--border); box-shadow: 0 6px 20px rgba(0,0,0,.45); }
     #medal-menu[hidden] { display: none; }
     .medal-menu-title { font-weight: 600; margin-bottom: 6px; }
-    .medal-kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; }
-    .medal-kind, .medal-menu-actions button { font: inherit; font-size: 11px; color: var(--text); background: transparent;
+    .medal-kinds { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+    .medal-kind { font: inherit; font-size: 11px; color: var(--text); background: transparent;
       border: 1px solid var(--border); border-radius: 5px; padding: 3px 5px; cursor: pointer; text-align: left; }
-    .medal-kind:hover, .medal-menu-actions button:hover:not(:disabled) { border-color: var(--accent); }
-    .medal-kind.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
-    .medal-reason-input { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; padding: 3px 5px;
-      color: var(--text); background: var(--bg, transparent); border: 1px solid var(--border); border-radius: 5px; }
-    .medal-menu-actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
-    .medal-menu-actions button:disabled { opacity: .4; cursor: default; }
+    .medal-kind:hover { border-color: var(--accent); }
     /* BACKLOG #80 / #55: speech bubbles. A joke over the card, never a status: italic, in quotes, clicks pass through. */
     #bubbles-toggle { cursor: pointer; }
     #bubbles-toggle.off { opacity: .45; }
