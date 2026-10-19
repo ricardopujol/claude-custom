@@ -108,7 +108,7 @@ test('anything else drawn over the slot hides the native view, and the page look
   assert.match(BLOCK, /function canvasIsSlotAt\(x, y\) \{[^}]*document\.elementFromPoint\(x, y\)/);
   for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) assert.ok(BLOCK.includes(`'${ev}'`), ev);
   assert.match(BLOCK, /window\.addEventListener\('pointermove', \(e\) => \{ if \(e\.buttons\) canvasSchedule\(\); \}, true\);/);
-  assert.match(BLOCK, /setInterval\(\(\) => \{ if \(canvasLive\) canvasSchedule\(\); \}, 250\);/);
+  assert.match(BLOCK, /setInterval\(\(\) => \{ if \(canvasLive && !document\.hidden\) canvasSchedule\(\); \}, 250\);/);
 });
 
 test('a show main refuses is said in the module and not retried; a stale answer is ignored; the questions go when the view goes (PR #122 Dexter F9, Miguel G4)', () => {
