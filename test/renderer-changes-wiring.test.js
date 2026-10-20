@@ -68,6 +68,10 @@ test('a review comment is typed through the page\'s ONE typing path, as kind `co
   assert.doesNotMatch(RENDERER.slice(at - 260, at + 12), /submit\s*:/);
 });
 
+test('the page routes the host\'s `changes` frames (answers and the changed push) to the browser, next to `repo`', () => {
+  assert.match(RENDERER, /if \(msg\.type === 'repo' \|\| msg\.type === 'changes'\) \{\s*repoBrowser\.onMessage\(msg\);\s*return;\s*\}/);
+});
+
 test('both control conversations of the browser are gated on the host\'s hello and cleared when the socket drops', () => {
   assert.match(BROWSER, /requester\.setControls\(list\); changes\.setControls\(list\)/);
   assert.match(BROWSER, /requester\.onMessage\(msg\) \|\| changes\.onMessage\(msg\)/);

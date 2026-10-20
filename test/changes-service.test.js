@@ -46,7 +46,7 @@ test('a clean lane: auto picks the BRANCH scope, against develop, with the commi
   assert.strictEqual(r.ok, true, r.error);
   assert.strictEqual(r.seq, 7);
   assert.strictEqual(r.scope, 'branch');
-  assert.strictEqual(r.base, 'develop');
+  assert.deepStrictEqual([r.base, r.against], ['develop', 'develop']);
   assert.strictEqual(r.dirty, false);
   assert.deepStrictEqual(r.files.map(f => [f.path, f.status, f.add, f.del]), [['a.txt', 'M', 2, 1], ['b.txt', 'D', 0, 1], ['c.txt', 'A', 1, 0]]);
   assert.deepStrictEqual(r.summary, { files: 3, add: 3, del: 2, unknown: 0 });
@@ -61,6 +61,7 @@ test('a dirty tree: auto picks the WORKING TREE, staged and unstaged together, u
   const r = await svc(root).handle({ type: 'changes', action: 'list', scope: 'auto' });
   assert.strictEqual(r.scope, 'working');
   assert.strictEqual(r.dirty, true);
+  assert.deepStrictEqual([r.base, r.against], ['develop', 'HEAD'], 'the working-tree list still names the branch the other button compares with');
   assert.deepStrictEqual(r.files.map(f => [f.path, f.status, f.add, f.del, !!f.untracked]), [
     ['a.txt', 'M', 1, 0, false], ['new file.txt', 'A', 2, 0, true], ['staged.txt', 'A', 1, 0, false],
   ]);
@@ -219,7 +220,7 @@ test('failures are answers: no repository, no commits, no base branch, an unknow
   assert.deepStrictEqual([c.ok, c.error], [false, 'no develop, main or master branch to compare with']);
   // ...and auto still answers with the (empty) working tree rather than an error
   const d = await svc(odd).handle({ type: 'changes', action: 'list', scope: 'auto' });
-  assert.deepStrictEqual([d.ok, d.scope, d.files.length], [true, 'working', 0]);
+  assert.deepStrictEqual([d.ok, d.scope, d.files.length, d.base], [true, 'working', 0, null]);
 
   const e = await svc(odd).handle({ type: 'changes', action: 'nope' });
   assert.deepStrictEqual([e.ok, e.why], [false, 'unknown action']);

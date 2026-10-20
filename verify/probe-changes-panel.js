@@ -227,7 +227,7 @@ async function main() {
   // 1 + 2 ----------------------------------------------------------------------------
   const first = await waitFor(async () => { const s = await cp(app, 'state'); return s && s.ok && s.rows.length >= 4 ? s : null; }, 25000);
   check('1: the panel lists the changed files', !!first, JSON.stringify(await cp(app, 'state')).slice(0, 500));
-  if (!first) return;
+  if (!first) { console.log(`      window log tail: ${app.out.slice(-1200)}`); return; }
   const o = oracle();
   const tracked = Object.keys(o).filter(p => p !== 'logo.bin');
   check('1: every tracked file git reports is listed with git\'s own +/- counts',

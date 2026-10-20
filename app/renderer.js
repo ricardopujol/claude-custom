@@ -8644,7 +8644,8 @@ function handleControl(msg) {
     renderCooldowns(msg.cooldowns);
     return;
   }
-  if (msg.type === 'repo') {
+  // `changes` (the Changes panel, #119 A3) shares the browser's requester: left out here, every answer and every `changed` push is dropped
+  if (msg.type === 'repo' || msg.type === 'changes') {
     repoBrowser.onMessage(msg);
     return;
   }

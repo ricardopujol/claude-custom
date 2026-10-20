@@ -5,7 +5,8 @@
  *
  *   createChangesService({ root, execFile, readFile, stat, cap }).handle(msg) -> Promise<reply>   (host/host.js)
  *     list { scope }                  scope: 'auto' | 'working' | 'branch'
- *         -> { ok, scope, base, files, total, more, summary, dirty }
+ *         -> { ok, scope, base, against, files, total, more, summary, dirty }
+ *            base: the integration branch (develop, else main, else master) or null; against: what this list was compared with (HEAD or that branch)
  *     base { scope, path, oldPath? }  the file as it was at the scope's base: HEAD (working) or the merge-base with the integration branch (branch)
  *         -> { ok, text } | { ok: false, why: 'new' | 'too-large' | 'binary' | ... }
  *
@@ -150,7 +151,10 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
       const w = await listScope('working');
       dirty = w.ok ? w.files.length > 0 : null;
     }
-    return { ok: true, scope, base: r.base.label, files: capped.files, total: capped.total, more: capped.more, summary, dirty };
+    // `base` is the integration branch the `vs <base>` scope compares with (the panel names its button after it), whichever scope is shown;
+    // `against` is what THIS list was compared with (HEAD, or that branch's merge-base)
+    const integration = r.base.label !== 'HEAD' ? r.base.label : ((await baseBranch()) || {}).name || null;
+    return { ok: true, scope, base: integration, against: r.base.label, files: capped.files, total: capped.total, more: capped.more, summary, dirty };
   }
 
   // The file as it was at the scope's base. A new file has no base (`why: 'new'`), a big or binary one is not compared.
