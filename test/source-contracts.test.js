@@ -228,7 +228,7 @@ test('the tab strip never uses innerHTML: a branch name is text, not markup', ()
 
 test('tab-strip.html loads only its own scripts: the indexing field\'s (#66), lean mode\'s helper (#62) and the strip\'s', () => {
   const html = read('app/tab-strip.html');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './portrait-media-display.js', './lean-display.js', './tab-strip.js']);
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './portrait-media-display.js', './lean-display.js', './program-status-display.js', './tab-strip.js']);
 });
 
 test('the indexing overlay loads only its display script, and neither page uses innerHTML: a note is text (#66)', () => {
@@ -674,4 +674,14 @@ test('the hook helper prints nothing and only ever exits 0, so a PermissionReque
   const exits = [...src.matchAll(/return\s+(-?\d+)\s*;/g)].map(m => m[1]);
   assert.ok(exits.length > 0 && exits.every(c => c === '0'), `every return of Main is 0: ${exits.join(',')}`);
   assert.doesNotMatch(src, /Environment\.Exit\(\s*[1-9]/);
+});
+
+// OSC 7501 (BACKLOG #116). Read as text here, not in tab-strip.test.js: tab-strip.js is a mutated module and so is its page's list.
+test('OSC 7501: the strip page has the dot colours from its existing tokens and loads the display script before the painter', () => {
+  const html = read('app/tab-strip.html');
+  assert.match(html, /\.dot\.done\s*\{[^}]*var\(--ok\)/);
+  assert.match(html, /\.dot\.error\s*\{[^}]*var\(--bad\)/);
+  const a = html.indexOf('<script src="./program-status-display.js"></script>');
+  const b = html.indexOf('<script src="./tab-strip.js"></script>');
+  assert.ok(a !== -1 && b !== -1 && a < b, 'program-status-display.js must load before tab-strip.js');
 });

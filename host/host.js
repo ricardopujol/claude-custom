@@ -24,6 +24,8 @@ const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
+const { parseReport, createProgramStatus, QUERY_REPLY } = require('./program-status');
+const { createParseGate } = require('./parse-gate');
 const { killTree, killPidTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
@@ -1837,9 +1839,45 @@ const wss = new WebSocketServer({
 });
 const clients = new Set();
 
+// The CLI's own state (OSC 7501, BACKLOG #116; the protocol, limits and the DA1 ordering rule are in host/program-status.js).
+// Answered HERE and not in the window so a detached host answers too, and from inside the headless parse so the answer is
+// written to the pty before anything that follows the query in the byte stream.
+const programStatus = createProgramStatus();
+const parseGate = createParseGate();
+let lastProgramJson = null;
+function publishProgramStatus() {
+  const snapshot = programStatus.snapshot();
+  const json = JSON.stringify(snapshot);
+  if (json === lastProgramJson) return;
+  lastProgramJson = json;
+  broadcastControl({ type: 'program-status', ...snapshot });
+  attention.programStatus(snapshot);
+}
+function onProgramStatusOsc(data) {
+  const parsed = parseReport(data);
+  if (parsed.query) {
+    // Synchronously, inside the parse: this is what puts the answer ahead of the DA1 sentinel's.
+    if (term) term.write(QUERY_REPLY);
+    return;
+  }
+  if (parsed.report) { programStatus.apply(parsed.report); publishProgramStatus(); }   // the first valid report flips `live` even if it changes no record; unchanged snapshots are not re-sent
+}
+
 // Authoritative screen, so a GUI attaching later gets the CURRENT state rather
 // than nothing until the TUI happens to repaint.
-const termState = createTerminalState({ cols: 120, rows: 30 });
+const termState = createTerminalState({
+  cols: 120, rows: 30,
+  onProgramStatus: onProgramStatusOsc,
+  // A new prompt: what was in flight is not any more (done and error stay). RIS clears everything.
+  onPromptStart: () => { if (programStatus.dropActive()) publishProgramStatus(); },
+  onReset: () => { if (programStatus.reset()) publishProgramStatus(); },
+});
+
+// Every byte of input to the pty goes through here, so a window's DA1 answer can never overtake the 7501 answer
+// (host/parse-gate.js). Typing is not delayed: only a DA1-shaped input ever waits, and only for the parse.
+function writeInput(data) {
+  parseGate.submit(data, (d) => { if (term) term.write(d); });
+}
 
 // The TUI is the only authority on the current permission mode: the user can
 // change it with shift+tab at any moment. Read it back out of the screen we
@@ -1944,7 +1982,7 @@ seedRosterIndex()
 // The pty's two event handlers, attached when startSession() spawns it.
 function wireTerm(t) {
   t.onData((data) => {
-    termState.write(data);
+    termState.write(data, parseGate.track());
     const frame = Buffer.from(data, 'utf8');
     for (const ws of clients) {
       if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
@@ -2324,6 +2362,8 @@ wss.on('connection', (ws, req) => {
     background: styleResolved.background,
     style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look, cliTheme: RUNNING_CLI_THEME },
     usage: currentUsage(),
+    // OSC 7501 (BACKLOG #116): what the CLI reports about itself; { live: false, root: null, children: [] } until it does.
+    programStatus: programStatus.snapshot(),
     roster: mood.roster().map(r => describe(r.agent, r.state, r.detail)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
@@ -2567,7 +2607,7 @@ wss.on('connection', (ws, req) => {
       // node-pty's deferred write queue and can throw OUTSIDE this function's
       // caller's try/catch if the pty is not yet ready -- an uncaught
       // exception that kills the host and the session with it.
-      if (typeof msg.data === 'string' && term) term.write(msg.data);
+      if (typeof msg.data === 'string' && term) writeInput(msg.data);
       return;
     }
     if (msg.type === 'layout-override') {
@@ -2908,7 +2948,7 @@ wss.on('connection', (ws, req) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) term.write(t); });
+      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) writeInput(t); });
       if (error) {
         // A handler that threw is not "not control JSON" -- `handleFrame`
         // guarantees this text was never passed to `term.write`. Log and
@@ -2917,7 +2957,7 @@ wss.on('connection', (ws, req) => {
       }
       return;
     }
-    if (term) term.write(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
+    if (term) writeInput(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
   });
 
   ws.on('close', () => {

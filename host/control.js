@@ -110,6 +110,9 @@ const CONTROL_TYPES = new Set([
   // "Ask the repo" (BACKLOG #33): status / places / ask / explain / start-ollama, by `op` (host/ask-service.js). Off this list a question
   // would be TYPED into the pty as JSON.
   'ask',
+  // OSC 7501 (BACKLOG #116): the CLI's own state, host -> window. Listed so the hello tells a window the host sends it (an older host
+  // never does) and so a stray frame of this type is never TYPED into the pty as JSON.
+  'program-status',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed

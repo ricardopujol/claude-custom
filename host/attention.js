@@ -116,7 +116,16 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   let held = null;
   const ended = new Set();
 
-  function raise(kind, { title, body, urgent }) {
+  // OSC 7501 (host/program-status.js) is a second source for the MAIN session's cue. Once the CLI has spoken it, it wins:
+  // the hook-derived raises below stop, and the 7501 source (programStatus) decides. Sticky for the host's life: a CLI that
+  // speaks the protocol keeps speaking it, and a gap between two reports must not hand the cue back to the hooks.
+  // The hooks keep running underneath (the held-back bookkeeping, agent cards, occupancy and the mood machine are not
+  // touched); only what they RAISE is held back.
+  let statusLive = false;
+  let statusState = null;
+
+  function raise(kind, { title, body, urgent }, fromStatus = false) {
+    if (statusLive && !fromStatus) return;
     const t = now();
     const previous = lastSent.get(kind);
     if (previous !== undefined && t - previous < debounceMs) return;
@@ -130,6 +139,39 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
       body: summarize('Stop', p, { agents: agents() }),
       urgent: false,
     });
+  }
+
+  const STATUS_WORDS = {
+    permission: 'Waiting for your permission',
+    question: 'Has a question for you',
+    auth: 'Needs you to sign in',
+  };
+
+  // The snapshot host/program-status.js keeps, handed over on every change. Only a CHANGE of the root record's state
+  // raises, so a new message on the same state (or a re-report) cannot toast twice. working / idle / a cleared root
+  // raise nothing here: the window clears its cue when it sees them (app/tab-status.js pendingAfter 'answered').
+  // `error` raises like blocked: something is waiting on you (BACKLOG #116, default).
+  function programStatus(snapshot) {
+    const live = !!snapshot && snapshot.live === true;
+    if (live) statusLive = true;
+    const root = live && snapshot.root && typeof snapshot.root === 'object' ? snapshot.root : null;
+    const state = root && typeof root.state === 'string' ? root.state : null;
+    if (state === statusState) return;
+    statusState = state;
+    const said = root && typeof root.msg === 'string' && root.msg !== '' ? root.msg : null;
+    if (state === 'blocked' || state === 'error') {
+      raise('input-needed', {
+        title: project ? `${project} needs you` : 'Claude needs you',
+        body: said || (state === 'error' ? 'Hit an error' : STATUS_WORDS[root.kind] || 'Waiting for you'),
+        urgent: true,
+      }, true);
+    } else if (state === 'done') {
+      raise('finished', {
+        title: project ? `${project} finished` : 'Claude finished',
+        body: said || summarize('Stop', {}, { agents: agents() }),
+        urgent: false,
+      }, true);
+    }
   }
 
   // Young shells a held-back Stop waits on: when each turns 10 minutes old (ms). `starts` is the best start known
@@ -233,6 +275,7 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
 
   emitter.handle = handle;
   emitter.activity = activity;
+  emitter.programStatus = programStatus;
   return emitter;
 }
 

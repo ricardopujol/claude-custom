@@ -170,6 +170,9 @@ const LOCATE_SCAN = 400;
 const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
+// OSC 7501 (BACKLOG #116): the CLI's own root state as the host last said it (cleaned), or null. The host parses the stream
+// and answers the CLI; this only shows it and moves the cue (host/attention.js raises the toast and the urgent/finished frame).
+let programRoot = null;
 function pend(event) {
   if (window.tabStatus) tabPending = window.tabStatus.pendingAfter(tabPending, event);
 }
@@ -187,13 +190,28 @@ function reportTabStatus() {
     health: tabHealth,
     turn: sessionTurn,
     night: bar.bedtime !== null,
+    program: programRoot,
     summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
     // with no summary yet, why (Ollama off) rides on the hover card alone: the bar does not pop up for it
     summaryNote: sum.summary ? null : summaryDisplay.offNote(sum.off),
-  }, { healthMarker: worktreeStatus.healthMarker });
+  }, { healthMarker: worktreeStatus.healthMarker, cleanProgram: programStatusDisplay.clean });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
   window.harness.tabStatus(status);
+}
+// A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
+// of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
+function applyProgramStatus(rootRecord) {
+  const next = programStatusDisplay.clean(rootRecord);
+  for (const event of programStatusDisplay.cueEvents(programRoot, next)) pend(event);
+  programRoot = next;
+  const headerDot = document.getElementById('dot');
+  if (headerDot) {
+    headerDot.classList.remove('ps-working', 'ps-blocked', 'ps-done', 'ps-error');
+    const view = programStatusDisplay.headerView(next);
+    if (view) { headerDot.classList.add(view.cls); headerDot.title = view.title; } else headerDot.removeAttribute('title');
+  }
+  reportTabStatus();
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
@@ -8288,6 +8306,8 @@ function handleControl(msg) {
     askWasDocked = null;       // a (re)attached host knows nothing of this window: say it again
     if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
+    // OSC 7501: the CLI's state as the host holds it; an older host has none, which is no program state (never a guessed idle).
+    applyProgramStatus(programStatusDisplay.hostListsProgramStatus(hostControls) && msg.programStatus ? msg.programStatus.root : null);
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
@@ -8515,6 +8535,11 @@ function handleControl(msg) {
   if (msg.type === 'statusFields') {
     // BACKLOG #27: the CLI status row's cost / lines / time, or null.
     renderStatusFields(msg.fields);
+    return;
+  }
+  if (msg.type === 'program-status') {
+    // Sent by a host that lists it in its hello; one that doesn't never sends it, and a frame from anywhere else is ignored.
+    if (programStatusDisplay.hostListsProgramStatus(hostControls)) applyProgramStatus(msg.root);
     return;
   }
   if (msg.type === 'attention') {

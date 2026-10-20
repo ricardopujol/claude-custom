@@ -2,7 +2,7 @@
 /**
  * What one tab's renderer tells the shell about itself (PR 2, worktree tabs).
  *
- *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn, night, summary }, { healthMarker })
+ *   tabStatus({ mainMood, pendingUrgent, pendingFinished, lock, health, turn, night, summary, program }, { healthMarker, cleanProgram })
  *       -> { working, needsInput, finished, lock, health, turn, night, summary }
  *   cleanSummary(s)         the tab's "where are we" summary (backlog #39) as { text, model, at, stale, note }, or null
  *   afterSelected(status)   the shell's `tab-selected` event clears needsInput
@@ -50,8 +50,10 @@ const sameSummary = (a, b) => (a === null || b === null
   ? a === b
   : a.text === b.text && a.model === b.model && a.at === b.at && a.stale === b.stale && a.note === b.note);
 
-function tabStatus(inputs, { healthMarker } = {}) {
+function tabStatus(inputs, { healthMarker, cleanProgram } = {}) {
   const i = inputs || {};
+  // OSC 7501 (BACKLOG #116): the CLI's own state. INJECTED like healthMarker; with no cleaner a raw record is never trusted.
+  const program = typeof cleanProgram === 'function' ? cleanProgram(i.program) : null;
   const lockState = i.lock && typeof i.lock.state === 'string' ? i.lock.state : null;
   let health = null;
   if (typeof healthMarker === 'function') {
@@ -59,7 +61,9 @@ function tabStatus(inputs, { healthMarker } = {}) {
     if (marker && typeof marker.text === 'string' && marker.text !== '') health = marker.text;
   }
   return {
-    working: i.mainMood === 'working',
+    // The CLI saying it is working counts, but never makes a working roster look idle: a union, not a replacement
+    // (the Git drawer reads this to decide whether the session is at rest).
+    working: i.mainMood === 'working' || (program !== null && program.state === 'working'),
     needsInput: i.pendingUrgent === true,
     // #31: the session finished (a non-urgent attention message) and nobody has looked yet.
     finished: i.pendingFinished === true,
@@ -70,6 +74,7 @@ function tabStatus(inputs, { healthMarker } = {}) {
     summary: cleanSummary(i.summary),
     // why there is no summary (Ollama off), for the hover card; the page sends it only while there is none
     summaryNote: str(i.summaryNote, SUMMARY_NOTE_MAX),
+    program,
   };
 }
 
@@ -94,9 +99,15 @@ function pendingAfter(pending, event) {
     case 'finished': return { urgent: false, finished: true };
     case 'working': return { ...cur, finished: false };
     case 'looked': return { urgent: false, finished: false };
+    // OSC 7501: the CLI went back to work or rest, so what it was blocked on was answered (a finished turn is kept).
+    case 'answered': return { ...cur, urgent: false };
     default: return cur;
   }
 }
+
+const sameProgram = (a, b) => (a === null || b === null
+  ? a === b
+  : a.state === b.state && a.kind === b.kind && a.msg === b.msg && a.progress === b.progress);
 
 function sameStatus(a, b) {
   if (a === null || a === undefined || b === null || b === undefined) return a === b;
@@ -107,6 +118,7 @@ function sameStatus(a, b) {
     a.health === b.health &&
     a.turn === b.turn &&
     a.night === b.night &&
+    sameProgram(a.program === undefined ? null : a.program, b.program === undefined ? null : b.program) &&
     sameSummary(a.summary === undefined ? null : a.summary, b.summary === undefined ? null : b.summary) &&
     (a.summaryNote === undefined ? null : a.summaryNote) === (b.summaryNote === undefined ? null : b.summaryNote);
 }
