@@ -24,7 +24,7 @@ const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
-const { createProgramStatusHost } = require('./program-status-host');
+const { createProgramStatusHost, windowAttachedAmong } = require('./program-status-host');
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
 const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree');
@@ -1864,7 +1864,7 @@ const PTY_BACKEND = choosePtyBackend();
 console.log('[host] pty backend   :', PTY_BACKEND.backend === 'bundled' ? "node-pty's bundled ConPTY" : 'OS ConPTY' + (PTY_BACKEND.reason ? ' (' + PTY_BACKEND.reason + ')' : ''));
 
 // A window is a connection that is not a one-shot control client (those answer no terminal query).
-const windowAttached = () => [...clients].some((c) => c.isWindow === true);
+const windowAttached = () => windowAttachedAmong(clients);
 
 // The CLI's own state (OSC 7501, BACKLOG #116; the protocol and its limits are in host/program-status.js, the behaviour in
 // host/program-status-host.js). Answered HERE and not in the window so a detached host answers too, from inside the headless parse so the

@@ -185,3 +185,29 @@ test('discarded reports (unknown state, an unclean sequence) change and send not
   assert.deepStrictEqual(r.seen, []);
   r.term.dispose();
 });
+
+// --- PR #201 round 2, N6: a closing window gets no bytes, so it does not count as attached ---------------------------
+
+const { windowAttachedAmong } = require('../host/program-status-host');
+
+test('N6: only an OPEN window socket counts as attached; a control client or a closing socket does not', () => {
+  const sock = (isWindow, readyState) => ({ isWindow, readyState });
+  assert.strictEqual(windowAttachedAmong(new Set()), false);
+  assert.strictEqual(windowAttachedAmong(new Set([sock(true, 1)])), true);
+  assert.strictEqual(windowAttachedAmong(new Set([sock(true, 2)])), false, 'CLOSING');
+  assert.strictEqual(windowAttachedAmong(new Set([sock(true, 3)])), false, 'CLOSED');
+  assert.strictEqual(windowAttachedAmong(new Set([sock(true, 0)])), false, 'CONNECTING');
+  assert.strictEqual(windowAttachedAmong(new Set([sock(false, 1)])), false, 'a one-shot control client');
+  assert.strictEqual(windowAttachedAmong(new Set([sock(true, 2), sock(true, 1)])), true);
+});
+
+test('N6: with the only window closing, the host answers the query itself', async () => {
+  const clients = new Set([{ isWindow: true, readyState: 2 }]);
+  const pty = [];
+  const host = createProgramStatusHost({ writePty: (d) => pty.push(d), broadcast: () => {}, attention: { programStatus() {} }, windowAttached: () => windowAttachedAmong(clients), hostAnswersQueries: true });
+  const term = createTerminalState({ cols: 40, rows: 10, onProgramStatus: host.onOsc, onResponse: host.onResponse });
+  term.write('\x1b[c', host.deliver());
+  await new Promise(r => term.write('', r));
+  assert.deepStrictEqual(pty, [DA1]);
+  term.dispose();
+});

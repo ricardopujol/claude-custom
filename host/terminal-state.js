@@ -42,7 +42,7 @@ function createTerminalState({ cols = 120, rows = 30, scrollback = 1000, onProgr
   // xterm hands the handler a payload it has already cleaned (C0 dropped, a bare ESC taken as the end); the guard saw the raw text
   // and says whether that report was clean. Not clean: discarded whole, as the spec says (host/osc-guard.js).
   const oscGuard = createOscGuard();
-  if (onProgramStatus) term.parser.registerOscHandler(7501, (data) => { if (oscGuard.take(data)) guard(() => onProgramStatus(data)); return true; });
+  if (onProgramStatus) term.parser.registerOscHandler(7501, (data) => { oscGuard.take(data, () => guard(() => onProgramStatus(data))); return true; });
   if (onPromptStart) {
     // OSC 133 ; A is "a new prompt starts" (FinalTerm / shell integration); B, C and D are other moments.
     term.parser.registerOscHandler(133, (data) => { if (data === 'A' || data.startsWith('A;')) guard(onPromptStart); return false; });

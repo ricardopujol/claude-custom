@@ -92,7 +92,7 @@ const ENDED_MEMORY = 200;
 const unrefTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t.unref) t.unref(); return t; };
 
 // `shellStartedAt(task, stopPayload)` -> ms since epoch, or null when it can't be told.
-function createAttention({ now = Date.now, project = '', agents = () => [],
+function createAttention({ now = Date.now, project = '', agents = () => [], settleMs = 1500,
                           debounceMs = DEFAULT_DEBOUNCE_MS,
                           shellStartedAt = makeShellStartedAt(),
                           setTimer = unrefTimer, clearTimer = clearTimeout } = {}) {
@@ -134,7 +134,15 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   let statusLive = false;
   let statusState = null;
   const childStates = new Map();        // child id -> last state seen, to raise on a change only
-  let statusDonePending = false;        // a 7501 `done` arrived while a Stop was still holding "finished" back
+  // A 7501 `done` is NOT raised at once, and is never released by one event alone (PR #201 Dexter r2 N1, N3). In the measured flow the
+  // root says done while a background task still works, the task's SubagentStop fires just BEFORE its result starts the next main
+  // turn, and the root then goes working and done again. So a `done` waits for a settle window (SETTLE_MS) in which no `working`
+  // arrives, and is raised only if then nothing is running: no child record in state working, and no subagent or young shell a Stop
+  // listed. The check reads the hook state when the window ends, so it does not matter whether the Stop hook or the report came first.
+  // SubagentStop, a child changing and the shell timer only start a new window; they never raise.
+  let statusDonePending = false;
+  let settleTimer = null;
+  const SETTLE_MS = settleMs;
 
   function raise(kind, { title, body, urgent }, { fromStatus = false, agentNamed = false } = {}) {
     if (statusLive && !fromStatus && !agentNamed) return;
@@ -145,12 +153,30 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     emitter.emit('attention', { kind, project, title, body, urgent, at: t });
   }
 
-  // A held-back "finished" is let go (the agents stopped, the shell aged out, the CLI went idle). With 7501 live it is raised only if
-  // 7501 had already said `done`; otherwise 7501 owns the main session's cue and the hook's release says nothing.
+  // A hook-held "finished" is let go (the agents stopped, the shell aged out, the CLI went idle). With 7501 live the main cue is 7501's:
+  // the release only starts a new settle window for a pending `done`, and says nothing itself.
   function releaseFinished(p) {
     if (!statusLive) { finished(p); return; }
-    if (statusDonePending) { statusDonePending = false; raise('finished', FINISHED_STATUS(), { fromStatus: true }); }
+    if (statusDonePending) scheduleSettle();
   }
+  const nothingRunning = () => held === null || settled();
+  const childWorking = () => [...childStates.values()].includes('working');
+  function scheduleSettle() {
+    if (settleTimer !== null) clearTimer(settleTimer);
+    settleTimer = setTimer(settleCheck, SETTLE_MS);
+  }
+  function cancelSettle() {
+    statusDonePending = false;
+    if (settleTimer !== null) { clearTimer(settleTimer); settleTimer = null; }
+  }
+  function settleCheck() {
+    settleTimer = null;
+    if (!statusDonePending || (statusState !== 'done' && statusState !== 'idle')) return;
+    if (childWorking() || !nothingRunning()) return;          // still pending: the next event starts a new window
+    statusDonePending = false;
+    raise('finished', FINISHED_STATUS(lastDoneMsg), { fromStatus: true });
+  }
+  let lastDoneMsg = null;
   const FINISHED_STATUS = (said) => ({
     title: project ? `${project} finished` : 'Claude finished',
     body: said || summarize('Stop', {}, { agents: agents() }),
@@ -205,14 +231,15 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     }
     for (const id of [...childStates.keys()]) if (!seen.has(id)) childStates.delete(id);
 
-    if (state === statusState) return;
-    statusState = state;
-    if (state === 'blocked' || state === 'error') needsYou(root);
-    else if (state === 'done') {
-      if (held !== null && !settled()) { statusDonePending = true; return; }
-      statusDonePending = false;
-      raise('finished', FINISHED_STATUS(typeof root.msg === 'string' && root.msg !== '' ? root.msg.slice(0, TOAST_MSG_MAX) : null), { fromStatus: true });
-    } else statusDonePending = false;
+    if (state !== statusState) {
+      statusState = state;
+      if (state === 'blocked' || state === 'error') { cancelSettle(); needsYou(root); }
+      else if (state === 'done') {
+        statusDonePending = true;
+        lastDoneMsg = typeof root.msg === 'string' && root.msg !== '' ? root.msg.slice(0, TOAST_MSG_MAX) : null;
+      } else if (state !== 'idle') cancelSettle();            // working, or nothing: the turn is not over (idle keeps a pending done)
+    }
+    if (statusDonePending) scheduleSettle();                  // a child changing is a new reason to look again
   }
 
   // Young shells a held-back Stop waits on: when each turns 10 minutes old (ms). `starts` is the best start known
@@ -282,7 +309,22 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
         title: project ? `${project} needs you` : 'Claude needs you',
         body: summarize('Notification', p, {}),
         urgent: true,
-      }, { agentNamed: (typeof p.agent_id === 'string' && p.agent_id !== '') || p.notification_type === 'agent_needs_input' });
+      }, { agentNamed: (typeof p.agent_id === 'string' && p.agent_id !== '') || p.notification_type === 'agent_needs_input' ||
+        p.notification_type === 'elicitation_dialog' || p.notification_type === 'elicitation_url_dialog' });   // an MCP form may be a background agent's
+      return;
+    }
+
+    // A background agent's prompt: its identity travels on PermissionRequest only (a Notification never carries agent_id, host/payload-contract.js),
+    // and the CLI's root record does not show it. So with 7501 live it still raises. A PermissionRequest with no agent_id is the main
+    // session's own prompt: 7501's root `blocked`, or the Notification above, owns that one.
+    if (event === 'PermissionRequest') {
+      if (typeof p.agent_id === 'string' && p.agent_id !== '') {
+        raise('input-needed', {
+          title: project ? `${project} needs you` : 'Claude needs you',
+          body: summarize('Notification', { message: typeof p.agent_type === 'string' && p.agent_type ? `${p.agent_type} needs your permission` : 'An agent needs your permission' }, {}),
+          urgent: true,
+        }, { agentNamed: true });
+      }
       return;
     }
 
@@ -307,12 +349,12 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
         ended.add(p.agent_id);
         if (ended.size > ENDED_MEMORY) ended.delete(ended.values().next().value);
         if (held !== null) held.ids.delete(p.agent_id);
-        if (statusDonePending && settled()) { held = null; releaseFinished({}); }
+        if (statusDonePending) scheduleSettle();           // a new window, not a release: its result may be about to start the next turn
       }
       return;
     }
 
-    if (event === 'SessionEnd') { held = null; ended.clear(); starts.clear(); stopTimer(); }
+    if (event === 'SessionEnd') { held = null; ended.clear(); starts.clear(); stopTimer(); cancelSettle(); }
   }
 
   // BACKLOG #119 A2: a permission ask the claude-custom mod saw (`tool.check` resolved to `ask`). It is the CLI's own

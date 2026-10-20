@@ -747,14 +747,6 @@ test('7501: blocked is a need for input, whatever its kind', () => {
   }
 });
 
-test('7501: done is a finished turn, not urgent', () => {
-  const h = harness();
-  h.a.programStatus(snap('done'));
-  assert.strictEqual(h.sent.length, 1);
-  assert.strictEqual(h.sent[0].kind, 'finished');
-  assert.strictEqual(h.sent[0].urgent, false);
-});
-
 test('7501: error needs you (a default, see the brief)', () => {
   const h = harness();
   h.a.programStatus(snap('error'));
@@ -879,49 +871,6 @@ test('7501 live: the mod\'s ask is the main session\'s prompt, so 7501 owns it; 
   none.a.ask({ tool: 'Bash' });
   assert.strictEqual(none.sent.length, 1);
   assert.match(none.sent[0].body, /Bash/);
-});
-
-test('7501 done goes through the held-back check: a running subagent holds "finished" until it stops', () => {
-  const h = harness();
-  h.a.programStatus(snap('working'));
-  h.fire('Stop', { background_tasks: [{ id: 'x', type: 'subagent', status: 'running' }] });
-  h.a.programStatus(snap('done'));
-  assert.deepStrictEqual(h.sent, []);
-  h.fire('SubagentStop', { agent_id: 'x' });
-  assert.strictEqual(h.sent.length, 1);
-  assert.strictEqual(h.sent[0].kind, 'finished');
-});
-
-test('7501 done with nothing held raises at once; a done that never saw a hold is not raised twice', () => {
-  const h = harness();
-  h.a.programStatus(snap('done'));
-  assert.strictEqual(h.sent.length, 1);
-  h.advance(10_000);
-  h.fire('SubagentStop', { agent_id: 'x' });
-  h.fire('Notification', { notification_type: 'idle_prompt' });
-  assert.strictEqual(h.sent.length, 1);
-});
-
-test('7501 live, no done ever said: a released hook hold raises nothing (7501 owns the main cue)', () => {
-  const h = harness();
-  h.a.programStatus(snap('working'));
-  h.fire('Stop', { background_tasks: [{ id: 'x', type: 'subagent', status: 'running' }] });
-  h.fire('SubagentStop', { agent_id: 'x' });
-  h.fire('Notification', { notification_type: 'idle_prompt' });
-  assert.deepStrictEqual(h.sent, []);
-});
-
-test('7501 done held by a young shell is raised when the shell times out', () => {
-  const timers = [];
-  const h = harness({ setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimer: () => {}, shellStartedAt: () => null });
-  h.a.programStatus(snap('working'));
-  h.fire('Stop', { background_tasks: [{ id: 's1', type: 'shell', status: 'running' }] });
-  h.a.programStatus(snap('done'));
-  assert.deepStrictEqual(h.sent, []);
-  h.advance(11 * 60 * 1000);
-  timers[timers.length - 1].fn();
-  assert.strictEqual(h.sent.length, 1);
-  assert.strictEqual(h.sent[0].kind, 'finished');
 });
 
 test('toast bodies cap the program\'s message at 200 characters', () => {

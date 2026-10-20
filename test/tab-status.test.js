@@ -225,3 +225,16 @@ test('PR #201 Dexter 1: once the program state is cleared (exit, closed socket) 
   assert.strictEqual(cleared.program, null);
   assert.strictEqual(sameStatus(working, cleared), false);
 });
+
+test('N2: close while blocked then a hello with blocked: the page ends with needsInput up; the exit path ends with it down', () => {
+  const { cueEvents } = require('../app/program-status-display');
+  const blocked = { state: 'blocked', kind: 'permission' };
+  // the page held the need (as the host attention frame set it) when the socket dropped
+  let pending = { urgent: true, finished: false };
+  for (const e of cueEvents(blocked, null, 'lost')) pending = pendingAfter(pending, e);
+  for (const e of cueEvents(null, blocked, 'hello')) pending = pendingAfter(pending, e);
+  assert.strictEqual(tsp({ pendingUrgent: pending.urgent, program: blocked }).needsInput, true);
+  let gone = { urgent: true, finished: false };
+  for (const e of cueEvents(blocked, null)) gone = pendingAfter(gone, e);
+  assert.strictEqual(tsp({ pendingUrgent: gone.urgent, program: null }).needsInput, false);
+});

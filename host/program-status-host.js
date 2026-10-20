@@ -20,6 +20,12 @@
 const { parseReport, createProgramStatus, frameOf, QUERY_REPLY } = require('./program-status');
 const { createParseGate } = require('./parse-gate');
 
+// Is a window attached, for the decision who answers the terminal's queries: a connection that is not a one-shot control client AND is
+// OPEN. The send loop skips a socket that is not open, so a closing window gets no bytes and cannot answer (PR #201 Dexter r2 N6).
+function windowAttachedAmong(clients) {
+  return [...clients].some((c) => c && c.isWindow === true && c.readyState === 1);
+}
+
 function createProgramStatusHost({ writePty, broadcast, attention, windowAttached, hostAnswersQueries = true } = {}) {
   const store = createProgramStatus();
   const gate = createParseGate();
@@ -62,4 +68,4 @@ function createProgramStatusHost({ writePty, broadcast, attention, windowAttache
   };
 }
 
-module.exports = { createProgramStatusHost };
+module.exports = { createProgramStatusHost, windowAttachedAmong };

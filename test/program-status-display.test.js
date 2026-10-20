@@ -96,3 +96,13 @@ test('property: clean never throws and only ever returns a known state or null',
     assert.ok(c === null || ['idle', 'working', 'done', 'blocked', 'error'].includes(c.state));
   }), { numRuns: 300 });
 });
+
+test('N2: a dropped socket is not an answer; a hello with blocked or error puts the need back; exit is an answer', () => {
+  const st = (s) => (s === null ? null : { state: s });
+  assert.deepStrictEqual(d.cueEvents(st('blocked'), null, 'lost'), [], 'unknown is not answered');
+  assert.deepStrictEqual(d.cueEvents(null, st('blocked'), 'hello'), ['urgent']);
+  assert.deepStrictEqual(d.cueEvents(null, st('error'), 'hello'), ['urgent']);
+  assert.deepStrictEqual(d.cueEvents(null, st('working'), 'hello'), ['working']);
+  assert.deepStrictEqual(d.cueEvents(null, st('done'), 'hello'), []);
+  assert.deepStrictEqual(d.cueEvents(st('blocked'), null), ['answered'], 'the exit frame: the session is over');
+});

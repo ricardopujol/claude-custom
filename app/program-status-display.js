@@ -36,10 +36,19 @@ function clean(r) {
 
 const stateOf = (p) => (p && typeof p.state === 'string' ? p.state : null);
 
-function cueEvents(prev, next) {
+// `how`: undefined for a report the host sent; 'lost' when the socket dropped (the state is UNKNOWN, not answered: the need, if there
+// was one, is still pending); 'hello' when a (re)attached host tells the state it holds (a blocked or error session needs you, whatever
+// this page saw before it dropped) (PR #201 Dexter r2 N2).
+function cueEvents(prev, next, how) {
   const a = stateOf(prev);
   const b = stateOf(next);
   const out = [];
+  if (how === 'lost') return out;
+  if (how === 'hello') {
+    if (b === 'blocked' || b === 'error') out.push('urgent');
+    else if (b === 'working') out.push('working');
+    return out;
+  }
   if (b === 'working' && a !== 'working') out.push('working');
   // The need was answered: the CLI went back to work or rest. A `done` carries its own finished frame from the host.
   if ((a === 'blocked' || a === 'error') && (b === null || b === 'working' || b === 'idle')) out.push('answered');

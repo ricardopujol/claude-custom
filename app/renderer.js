@@ -201,9 +201,9 @@ function reportTabStatus() {
 }
 // A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
 // of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
-function applyProgramStatus(rootRecord) {
+function applyProgramStatus(rootRecord, how) {
   const next = programStatusDisplay.clean(rootRecord);
-  for (const event of programStatusDisplay.cueEvents(programRoot, next)) pend(event);
+  for (const event of programStatusDisplay.cueEvents(programRoot, next, how)) pend(event);
   programRoot = next;
   const headerDot = document.getElementById('dot');
   if (headerDot) {
@@ -8400,7 +8400,7 @@ function handleControl(msg) {
     if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
     // OSC 7501: the CLI's state as the host holds it; an older host has none, which is no program state (never a guessed idle).
-    applyProgramStatus(programStatusDisplay.hostListsProgramStatus(hostControls) && msg.programStatus ? msg.programStatus.root : null);
+    applyProgramStatus(programStatusDisplay.hostListsProgramStatus(hostControls) && msg.programStatus ? msg.programStatus.root : null, 'hello');
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
@@ -8952,7 +8952,7 @@ function connect() {
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
     // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
-    applyProgramStatus(null);
+    applyProgramStatus(null, 'lost');
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
     if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just

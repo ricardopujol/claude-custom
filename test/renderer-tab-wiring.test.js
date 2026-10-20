@@ -292,7 +292,8 @@ test('OSC 7501: the exit frame and a dropped socket both clear the program state
   const start = JS.indexOf('ws.onclose = () => {');
   assert.ok(start !== -1);
   const body = JS.slice(start, JS.indexOf('\n  };', start));
-  assert.match(body, /applyProgramStatus\(null\)/);
+  assert.match(body, /applyProgramStatus\(null, 'lost'\)/);
+  assert.match(JS, /msg\.programStatus\.root : null, 'hello'\)/);
 });
 
 test('the diagnostics pane hears which ConPTY the session runs on when it is not the bundled one', () => {
