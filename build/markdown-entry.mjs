@@ -73,6 +73,7 @@ function configureMermaid() {
     securityLevel: 'strict',
     suppressErrorRendering: true,
     logLevel: 'fatal',
+    layout: 'dagre',                               // this Mermaid's default is elk; elkjs is not in the bundle (build/markdown-elk-stub.mjs)
     theme: 'base',
     fontFamily: getComputedStyle(document.body).fontFamily,
     flowchart: { htmlLabels: false },

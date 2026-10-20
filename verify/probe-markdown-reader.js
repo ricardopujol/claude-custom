@@ -261,7 +261,7 @@ async function main() {
   check('2: headings are real, each with an accent rule on the left and an anchor', h.length >= 2 && h[0].text === 'Guide Title' && h[0].tag === 'H1' && h.every(x => x.ruleLeft === '2px' && x.anchor) && h[1].anchor === 'second-section', JSON.stringify(h));
   check('2: the table is wrapped in its own horizontally scrolling container', d2.tables === 1 && d2.tableWrapped[0] === true);
   check('2: task-list checkboxes render, read-only, the first checked', d2.checkboxes.length === 2 && d2.checkboxes.every(c => c.type === 'checkbox' && c.disabled) && d2.checkboxes[0].checked && !d2.checkboxes[1].checked, JSON.stringify(d2.checkboxes));
-  check('2: the good Mermaid fence became an SVG with its labels', d2.svgs >= 1 && ['Start', 'Choice', 'Done'].every(w => d2.mermaidTexts.some(t => t.includes(w))), JSON.stringify(d2.mermaidTexts));
+  check('2: both drawable Mermaid fences (the plain one and the one asking for securityLevel loose) became SVGs, with their labels', d2.svgs >= 2 && ['Start', 'Choice', 'Done'].every(w => d2.mermaidTexts.some(t => t.includes(w))), JSON.stringify(d2.mermaidTexts));
   check('2: the bad Mermaid fence stays as its source block with "diagram didn\'t render: <reason>" under it, no throw', d2.diagramErrors.length >= 1 && d2.diagramErrors.every(e => /^diagram didn.t render: .{3,}/.test(e)) && d2.fenceBlocks >= 2, JSON.stringify(d2.diagramErrors));
   const kinds = Object.fromEntries(d2.links.map(l => [l.text, `${l.kind}:${l.target}`]));
   check('2: link kinds: files resolve against docs/, http stays http, the rest is inert, the anchor is an anchor',
