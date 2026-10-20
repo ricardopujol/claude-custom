@@ -444,6 +444,72 @@ function planSwitch({ kind, raw, current, screen, connected } = {}) {
 }
 
 /**
+ * Does the live box hold EXACTLY `command`, whatever the editor's mode? (PR #199 Dexter r2 N2.) commandTyped answers "can Enter be pressed now",
+ * so in vim NORMAL it says no for text that is plainly there; this answers "is that text in the box", which is what owning a line means.
+ */
+function boxIsCommand(lines, command, opts) {
+  if (typeof command !== 'string' || !command) return false;
+  const live = liveBox(lines);
+  const rows = live && live.box;
+  if (!rows || !rows.length || rows[0].charAt(0) !== '\u276f') return false;
+  const want = collapseWs('\u276f ' + command);
+  const texts = rows.map(collapseWs);
+  if (rowsFollow(texts, want, 0) === want.length) return true;
+  if (texts.length < 2 || texts.length !== scrollCapRows(opts && opts.termRows)) return false;
+  const first = texts[0].slice(1).trim();
+  if (!first) return false;
+  for (let p = want.indexOf(first, 2); p >= 0; p = want.indexOf(first, p + 1)) {
+    if (rowsFollow([first, ...texts.slice(1)], want, p) === want.length) return true;
+  }
+  return false;
+}
+
+/**
+ * The keys that ADD text to the end of what is in the box and clear NOTHING (PR #199 Dexter r2 N1, N3). MEASURED on the real CLI
+ * (verify/probe-ctrl-u-wrapped.js): Ctrl-U on a line wrapped over rows kills only the LAST row, so a clear-and-retype of a wrapped line is not a
+ * clear; and Ctrl-E then more text appends correctly at 80 and 120 columns. In vim NORMAL, `A` appends at the end of the line.
+ */
+function appendKeys(suffix, vimNormal) {
+  const chars = Array.from(suffix);
+  const chunks = [];
+  for (let i = 0; i < chars.length; i += COMMAND_CHUNK) chunks.push(chars.slice(i, i + COMMAND_CHUNK).join(''));
+  return [...(vimNormal ? ['A'] : []), '\x05', ...chunks];
+}
+
+const COMMENT_MAX = 1990;       // app/changes-compare.js MAX_STACK_CHARS: the most a comment line is typed with
+const APPEND_SEP = '; ';
+
+/**
+ * What to do to type `text` (one or more review comments, one line) into the prompt, NEVER destroying a comment of ours (Dexter r2). `last` is the
+ * line this feature typed before. `lines` is the screen.
+ *   { ok: true, mode: 'append', keys, expected }   the box holds `last` exactly (any editor mode): ADD `; text` at its end, clear nothing, then the
+ *                                                  box must read exactly `expected`; if it does not, STOP and leave it as it is
+ *   { ok: true, mode: 'fresh', command }           the box holds nothing of ours: type `text` the ordinary way (a draft is replaced, as for any typed command)
+ *   { ok: false, reason }                          nothing is typed
+ * A box that LOOKS like one of our comments (it starts "In ") but is not exactly `last` is refused, never cleared: it may be ours with the screen
+ * mid-redraw, or the person's edit of it.
+ */
+function planCommentTyping({ lines, last, text, vim, termRows, connected } = {}) {
+  if (typeof text !== 'string' || text === '') return { ok: false, reason: 'no comment to type' };
+  if (!connected) return { ok: false, reason: 'not connected to the session' };
+  const state = inputState(lines, { vim });
+  if (typeof last === 'string' && last !== '' && boxIsCommand(lines, last, { termRows })) {
+    const expected = `${last}${APPEND_SEP}${text}`;
+    if (expected.length > COMMENT_MAX) return { ok: false, reason: 'the prompt line is full: send what is typed (Enter in the terminal), then type the rest' };
+    if (!COMMENT_LINE.test(expected)) return { ok: false, reason: 'not a single-line review comment' };
+    // NORMAL is judged on its own, not through inputState: a wrapped box reads 'multiline' there before vim is looked at
+    return { ok: true, mode: 'append', keys: appendKeys(`${APPEND_SEP}${text}`, !!vim && !vimInsertShown(lines)), expected };
+  }
+  const there = boxText(lines);
+  if (there && there.startsWith('In ')) {
+    return { ok: false, reason: "the prompt holds a comment line that isn't exactly what was typed (edited, or still redrawing): send or clear it first. Nothing was changed" };
+  }
+  const plan = planTyping({ command: text, screen: state, connected, kind: 'comment' });
+  if (!plan.ok) return plan;
+  return { ok: true, mode: 'fresh', command: text, enterInsert: plan.enterInsert, keys: plan.keys };
+}
+
+/**
  * The keys typed before a command, in order: Ctrl-E (to the end: Ctrl-U deletes only back to the cursor,
  * Dexter r2 N1), Ctrl-U (clears a single-line draft without submitting it; the CLI's Ctrl+Y gets it back),
  * then the command. vim NORMAL gets `i` first, or every key after it is a motion (Dexter r2 N2). The
@@ -563,6 +629,7 @@ if (typeof module !== 'undefined' && module.exports) {
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
     vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, typingKeys, boxText,
+    boxIsCommand, appendKeys, planCommentTyping,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -590,6 +657,9 @@ if (typeof module !== 'undefined' && module.exports) {
   root.planTyping = planTyping;
   root.typingKeys = typingKeys;
   root.boxText = boxText;
+  root.boxIsCommand = boxIsCommand;
+  root.appendKeys = appendKeys;
+  root.planCommentTyping = planCommentTyping;
 }
 
 })(typeof window !== 'undefined' ? window : globalThis);

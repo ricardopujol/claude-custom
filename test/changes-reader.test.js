@@ -326,19 +326,20 @@ test('j and k typed in the comment field are text, not navigation', async () => 
 // The page's typing path as the renderer runs it (typeReviewComment): the box holds one line; a comment is typed AFTER what this feature
 // typed before while the box still holds exactly that, and replaces anything else.
 function boxModel(initial = '') {
-  const { appendComment } = require('../app/changes-compare');
-  const { planTyping } = require('../app/top-bar-display');
-  const m = { box: initial, last: '', calls: [] };
+  const { planCommentTyping, boxIsCommand } = require('../app/top-bar-display');
+  const { createBox } = require('./cli-box-sim');
+  const sim = createBox({ cols: 120, box: initial });
+  const m = { sim, last: '', calls: [], get box() { return sim.box; }, set box(v) { sim.box = v; } };
   m.type = (text, done) => {
-    const ours = m.last !== '' && m.box === m.last;
-    const plan = appendComment({ owned: ours ? m.last : '', text });
     m.calls.push(text);
+    const plan = planCommentTyping({ lines: sim.screen(), last: m.last, text, vim: false, termRows: 40, connected: true });
     if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
-    if (!planTyping({ command: plan.command, screen: 'ready', connected: true, kind: 'comment' }).ok) { done({ ok: false, reason: 'gate' }); return; }
-    const was = m.box;
-    m.box = plan.command;
-    m.last = plan.command;
-    done({ ok: true, appended: plan.appended, ...(plan.appended || !was ? {} : { cleared: was }) });
+    const was = sim.box;
+    sim.pressAll(plan.keys);
+    const want = plan.mode === 'append' ? plan.expected : plan.command;
+    if (!boxIsCommand(sim.screen(), want, { termRows: 40 })) { done({ ok: false, reason: 'read-back' }); return; }
+    m.last = want;
+    done({ ok: true, appended: plan.mode === 'append', ...(plan.mode === 'append' || !was ? {} : { cleared: was }) });
   };
   return m;
 }
@@ -466,4 +467,31 @@ test('MIGUEL S3: Enter that ends an IME composition is the IME\'s, not a comment
   assert.deepStrictEqual(s.typed, []);
   assert.strictEqual(e.defaultPrevented, false);
   assert.strictEqual(s.rd.probe('state').pending.length, 0);
+});
+
+test('DEXTER r2 N5: Enter on B while A is still typing is not forgotten: B stays queued and the message about it comes AFTER A\'s own result', async () => {
+  let release = null;
+  const s = setup({ typeImpl: (text, done) => { release = () => done({ ok: true }); } });
+  await openAndComment(s, 2, 'A');
+  const rowsEl = s.el('reader-compare-rows');
+  const row = rowsEl.children.find(r => r.dataset && r.dataset.line === '4');
+  const btn = row.children[4].children[0];
+  rowsEl.fire('click', { target: { closest: () => btn, dataset: btn.dataset } });
+  const input = row.children[row.children.length - 1].children.find(c => c.className === 'sbs-input');
+  input.value = 'B';
+  input.fire('keydown', { key: 'Enter', shiftKey: false });          // Enter, not Shift+Enter
+  release();
+  await settle();
+  const meta = s.rd.probe('state').meta;
+  assert.match(meta, /typed 1 comment/);
+  assert.match(meta, /queued: the last one was still being typed/);
+  assert.ok(meta.indexOf('typed 1 comment') < meta.indexOf('queued:'), 'the refusal is not overwritten by the success');
+  assert.deepStrictEqual(s.rd.probe('state').pending, [`In src/a.js:4 ${DASH} B`]);
+});
+
+test('DEXTER r2 N3: a failed typing leaves the comments queued and says what stays; nothing is removed on a failure', async () => {
+  const s = setup({ typeImpl: (text, done) => done({ ok: false, reason: "the prompt didn't read back as expected. What is typed stays as it is; Ctrl+Y in that tab restores an older draft. The comments not typed are still queued" }) });
+  await openAndComment(s, 2, 'keep me');
+  assert.deepStrictEqual(s.rd.probe('state').pending, [`In src/a.js:2 ${DASH} keep me`]);
+  assert.match(s.rd.probe('state').meta, /What is typed stays as it is; Ctrl\+Y/);
 });

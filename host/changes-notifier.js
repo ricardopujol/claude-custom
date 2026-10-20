@@ -30,7 +30,9 @@ const isChangingTool = (name) => typeof name === 'string' && CHANGING_TOOLS.has(
 
 function isChangesOnly(event) {
   const p = event && typeof event === 'object' ? event.payload : null;
-  return !!p && typeof p === 'object' && event.event === 'PostToolUse' && typeof p.tool_name === 'string' && POST_ONLY_TOOLS.has(p.tool_name);
+  if (!p || typeof p !== 'object' || typeof p.tool_name !== 'string') return false;
+  // PowerShell's FAILED call too: Bash's failures are the mood engine's (its Post is hooked for it), PowerShell's are hooked only for this
+  return (event.event === 'PostToolUse' && POST_ONLY_TOOLS.has(p.tool_name)) || (event.event === 'PostToolUseFailure' && p.tool_name === 'PowerShell');
 }
 
 function createChangesNotifier({

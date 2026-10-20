@@ -111,7 +111,9 @@ test('isChangesOnly: the PostToolUse of the tools only the Changes panel hooks n
   for (const t of POST_ONLY_TOOLS) assert.strictEqual(isChangesOnly(ev('PostToolUse', t)), true, t);
   assert.deepStrictEqual([...POST_ONLY_TOOLS].sort(), ['Edit', 'MultiEdit', 'NotebookEdit', 'PowerShell', 'Write']);
   // Bash's Post is hooked for the mood engine already: it is theirs, not ours
-  for (const e of [ev('PostToolUse', 'Bash'), ev('PreToolUse', 'Edit'), ev('PostToolUse', 'Read'), ev('Stop'), null, {}]) assert.strictEqual(isChangesOnly(e), false);
+  // PowerShell's failed call is ours too (its Failure is hooked only for this); Bash's failure is the mood engine's
+  assert.strictEqual(isChangesOnly(ev('PostToolUseFailure', 'PowerShell')), true);
+  for (const e of [ev('PostToolUseFailure', 'Bash'), ev('PostToolUseFailure', 'Edit'), ev('PostToolUse', 'Bash'), ev('PreToolUse', 'Edit'), ev('PostToolUse', 'Read'), ev('Stop'), null, {}]) assert.strictEqual(isChangesOnly(e), false);
 });
 
 test('a later burst announces again; close() drops a pending announcement', () => {

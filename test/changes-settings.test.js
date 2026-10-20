@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
 
-const { buildHarnessSettings, CHANGES_POST_MATCHER } = require('../host/settings-writer');
+const { buildHarnessSettings, CHANGES_POST_MATCHER, CHANGES_FAILURE_MATCHER } = require('../host/settings-writer');
 const { CHANGING_TOOLS, POST_ONLY_TOOLS } = require('../host/changes-notifier');
 
 const opts = { helperPath: 'C:/tools/claude-custom-hook.exe', pipeName: '\\\\.\\pipe\\claude-custom-abc123' };
@@ -28,7 +28,7 @@ test('`changes: true` adds ONE separate PostToolUse entry after the mood engine\
   assert.notStrictEqual(s.hooks.PostToolUse[0].matcher, CHANGES_POST_MATCHER, 'PostToolUse[0] is still the mood engine\'s');
   assert.strictEqual(s.hooks.PostToolUse[1].matcher, CHANGES_POST_MATCHER);
   assert.match(s.hooks.PostToolUse[1].hooks[0].command, /--event PostToolUse/);
-  for (const k of Object.keys(s.hooks)) if (k !== 'PostToolUse') assert.deepStrictEqual(s.hooks[k], buildHarnessSettings(opts).hooks[k], `${k} is untouched`);
+  for (const k of Object.keys(s.hooks)) if (k !== 'PostToolUse' && k !== 'PostToolUseFailure') assert.deepStrictEqual(s.hooks[k], buildHarnessSettings(opts).hooks[k], `${k} is untouched`);
 });
 
 test('EVERY tool the notifier treats as changing is in some registered matcher (a handled name with no hook is dead)', () => {
@@ -39,6 +39,14 @@ test('EVERY tool the notifier treats as changing is in some registered matcher (
   assert.deepStrictEqual([...POST_ONLY_TOOLS].sort(), names(CHANGES_POST_MATCHER).sort());
   // Stop and SubagentStop arm it too: both are hooked
   assert.ok(s.hooks.Stop && s.hooks.SubagentStop);
+});
+
+test('DEXTER r2 N4: a PowerShell command that fails after writing fires PostToolUseFailure: that is registered too, as a separate entry, and only for PowerShell', () => {
+  const s = buildHarnessSettings({ ...opts, changes: true });
+  assert.deepStrictEqual(matchersOf(s, 'PostToolUseFailure').filter(t => t === 'PowerShell'), ['PowerShell']);
+  assert.strictEqual(s.hooks.PostToolUseFailure.length, 2);
+  assert.strictEqual(s.hooks.PostToolUseFailure[1].matcher, CHANGES_FAILURE_MATCHER);
+  assert.strictEqual(buildHarnessSettings(opts).hooks.PostToolUseFailure.length, 1, 'only when asked');
 });
 
 test('the edit tools\' Post is for an edit that LANDED: it is registered for Post, not only for Pre', () => {

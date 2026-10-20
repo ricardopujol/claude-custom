@@ -60,18 +60,21 @@ test('the panel is told whether it is on screen after every layout, and asks aga
   assert.match(RENDERER, /repoBrowser\.setControls\(msg\.controls\);\s*if \(changesPanel && shownModules\.has\('changes'\)\) changesPanel\.refresh\(\);/);
 });
 
-test('a review comment is typed through the page\'s ONE typing path, as kind `comment`, appended to what it typed before, and never submitted', () => {
+test('a review comment is typed through the page\'s plan: appended with NO clear, never submitted, and with no cleanup path in the append branch', () => {
   assert.match(RENDERER, /typeComment: \(text, done\) => typeReviewComment\(text, done\)/);
   const at = RENDERER.indexOf('function typeReviewComment');
   assert.ok(at !== -1);
   const body = strip(RENDERER.slice(at, RENDERER.indexOf('\nfunction typeCommand', at)));
-  assert.match(body, /commandTyped\(lines, lastCommentLine,/, 'the SCREEN says whether the box still holds our line');
-  assert.match(body, /window\.changesCompare\.appendComment\(\{ owned: ours \? lastCommentLine : '', text \}\)/);
-  assert.match(body, /'comment', ours \? \{ ownBox: true \} : undefined\)/, 'never `submit`: nothing here can press Enter');
-  assert.doesNotMatch(body, /submit\s*:/);
+  assert.match(body, /planCommentTyping\(\{ lines, last: lastCommentLine, text, vim: vimSeen/);
+  assert.match(body, /typeCommand\(plan\.command, [\s\S]*?'comment'\)/, 'a box with none of our text goes through the ordinary typing path');
+  const append = body.slice(body.indexOf('if (typingBusy)'));
+  assert.doesNotMatch(append, /x15|x03|clearTypedLine|typeAndCheck|typePlanned/, 'nothing in the append branch can clear, interrupt or clean up');
+  assert.match(append, /boxIsCommand\(screenLines\(\), plan\.expected/);
+  assert.match(append, /APPEND_UNCONFIRMED/);
+  assert.doesNotMatch(body, /submit\s*:|\\r/, 'never an Enter');
   assert.match(body, /usage\('changes:comment-typed'\)/);
-  // our own wrapped line is one logical line, not a multi-line draft
-  assert.match(RENDERER, /opts && opts\.ownBox === true && screenNow === 'multiline' \? 'ready' : screenNow/);
+  // the measured Ctrl-U answer is on record in the header
+  assert.match(strip(RAW) + RAW, /verify\/probe-ctrl-u-wrapped\.js/);
 });
 
 test('the page routes a frame to the browser by repoBrowser.handles, which says yes to `repo` and `changes` and to nothing else', () => {

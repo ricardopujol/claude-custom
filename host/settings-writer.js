@@ -65,6 +65,7 @@ const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 // consumed by host/changes-notifier.js and never forwarded (isChangesOnly): the mood engine and the Running panel would show an Edit as a
 // process. Bash is not here: POST_TOOL_MATCHER above hooks its Post already. The names are host/changes-notifier.js POST_ONLY_TOOLS.
 const CHANGES_POST_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit|PowerShell';
+const CHANGES_FAILURE_MATCHER = 'PowerShell';
 // Backlog #52 (bedtime): a /bedtime night is the loop's own ScheduleWakeup calls (host/bedtime-state.js, measured by
 // verify/probe-bedtime-signal.js): the call itself (PreToolUse: delaySeconds, prompt, stop) and its result
 // (PostToolUse: tool_response.scheduledFor). Opt-in (`bedtime: true`) and SEPARATE entries, so the mood engine's are
@@ -198,7 +199,11 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
   // LAST, so PreToolUse[0] stays the mood engine's and [1] the tool belt's.
   if (occupancy === true) settings.hooks.PreToolUse.push(entry(OCCUPANCY_MATCHER, 'PreToolUse'));
   // after the mood engine's own entry, so PostToolUse[0] stays theirs
-  if (changes === true) settings.hooks.PostToolUse.push(entry(CHANGES_POST_MATCHER, 'PostToolUse'));
+  if (changes === true) {
+    settings.hooks.PostToolUse.push(entry(CHANGES_POST_MATCHER, 'PostToolUse'));
+    // a PowerShell command that writes and then fails fires THIS instead of PostToolUse (PR #199 Dexter r2 N4); a failed Edit changed nothing
+    settings.hooks.PostToolUseFailure.push(entry(CHANGES_FAILURE_MATCHER, 'PostToolUseFailure'));
+  }
   if (bedtime === true) {
     settings.hooks.PreToolUse.push(entry(BEDTIME_MATCHER, 'PreToolUse'));
     settings.hooks.PostToolUse.push(entry(BEDTIME_MATCHER, 'PostToolUse'));
@@ -348,4 +353,4 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false }
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, CHANGES_POST_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, CHANGES_POST_MATCHER, CHANGES_FAILURE_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };

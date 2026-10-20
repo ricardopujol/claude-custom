@@ -46,7 +46,8 @@
  *     until the next refresh of that file; the list drops the file at once (Dexter 9);
  *   - queued comments name path:line as they were when queued; if the file changes under them they can point at shifted lines. The queue is
  *     visible, and the person presses Enter (Miguel S4: a design question, in the PR's open questions);
- *   - a typed stack past one screen row is one wrapped logical line; clearing it before a retype relies on the CLI's Ctrl-U reaching the start of it.
+ *   - a typed stack past one screen row is one wrapped logical line. Nothing here clears it: MEASURED (verify/probe-ctrl-u-wrapped.js) Ctrl-U kills only the
+ *     last wrapped row, so a comment is ADDED at the end (app/top-bar-display.js planCommentTyping) and a failed read-back leaves the box as it is.
  *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `repoReader`.
  */
@@ -120,7 +121,7 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
     // names); `conflict` is the banner's state; `reported` is the last unsaved path told to `onDirty`
     editing: false, base: null, conflict: null, comparing: false, saving: false, reported: null,
     // the Changes Compare: what is being compared, and the comments queued to be typed into the prompt
-    change: null, pending: [], sending: false,
+    change: null, pending: [], sending: false, deferredNote: '',
   };
   let cmPromise = null;
 
@@ -772,7 +773,8 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
 
   // `ids`: only these queued comments (the per-item Type); none: all of them
   function sendPending(ids) {
-    if (state.sending) { state.status = 'not typed: the last comments are still being typed'; paintHead(); return; }
+    // a refusal made while the last send is typing is kept and shown AFTER that send's own result, so it is never overwritten (PR #199 Dexter r2 N5)
+    if (state.sending) { state.deferredNote = 'The comment added meanwhile is queued: the last one was still being typed. Press Type when it is done.'; paintHead(); return; }
     const chosen = Array.isArray(ids) ? state.pending.filter(p => ids.includes(p.id)) : state.pending.slice();
     const s = changesCompare.stackText(chosen.map(p => p.text));
     if (!s.ok) { state.status = `not typed: ${s.reason}`; paintHead(); return; }
@@ -792,6 +794,7 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
       } else {
         state.status = `not typed: ${(r && r.reason) || 'refused'}`;
       }
+      if (state.deferredNote) { state.status = `${state.status} ${state.deferredNote}`; state.deferredNote = ''; }
       renderQueue();
       paintHead();
     });

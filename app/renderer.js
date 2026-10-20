@@ -7078,23 +7078,45 @@ const SUBMIT_RECHECK_MS = 400;
 const QUEUED_POLL_MS = 150;
 const QUEUED_POLLS = 6;
 
-// The review comments the Changes Compare typed (PR #199 Dexter 1). The typing path REPLACES the line it types into, so a second
-// comment is the first one typed again with the new one after it, never a clear that loses it: `lastCommentLine` is what was typed last,
-// and the SCREEN says whether the box still holds exactly that (the person may have sent it, or cleared it). A box that does not hold it
-// is replaced as for any typed command, and `cleared` says what was there so the reader can name Ctrl+Y.
+// The review comments the Changes Compare typed (PR #199 Dexter 1, r2 N1-N3): THE COMPOSER IS NEVER DESTRUCTIVE. A second comment is ADDED at the end of
+// the line this feature typed (`lastCommentLine`), with no clear at all, when the SCREEN says the box still holds exactly that line (any editor mode,
+// app/top-bar-display.js boxIsCommand). MEASURED on the real CLI (verify/probe-ctrl-u-wrapped.js, claude 2.1.x, 150 characters): Ctrl-U on a line wrapped
+// over rows kills only its LAST row (80 columns: 3 rows -> 2 left; 120 columns: 2 -> 1), so a clear-and-retype of a wrapped line is no clear, and
+// Ctrl-E followed by more text appends correctly at both widths. So nothing here ever sends Ctrl-U to a box that may hold a comment of ours: if the
+// read-back after an append is not exactly what was expected, it STOPS and leaves the box as it is. A box that holds none of our line is typed into the
+// ordinary way (a draft is replaced, with the Ctrl+Y note); one that looks like our comment but is not exactly it is refused, never cleared.
 let lastCommentLine = '';
+const APPEND_UNCONFIRMED = "the prompt didn't read back as expected. What is typed stays as it is; Ctrl+Y in that tab restores an older draft. The comments not typed are still queued";
 function typeReviewComment(text, done) {
   const lines = screenLines();
   if (vimInsertShown(lines)) vimSeen = true;
-  const ours = lastCommentLine !== '' && commandTyped(lines, lastCommentLine, { vim: vimSeen, termRows: term.rows });
-  const plan = window.changesCompare.appendComment({ owned: ours ? lastCommentLine : '', text });
+  const plan = planCommentTyping({ lines, last: lastCommentLine, text, vim: vimSeen, termRows: term.rows, connected: !!ws && ws.readyState === WebSocket.OPEN });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
-  typeCommand(plan.command, (r) => {
-    if (!r.ok) { done({ ok: false, reason: r.reason }); return; }
-    lastCommentLine = plan.command;
-    usage('changes:comment-typed');
-    done({ ok: true, appended: plan.appended, ...(plan.appended || !r.box ? {} : { cleared: r.box }) });
-  }, 'comment', ours ? { ownBox: true } : undefined);
+  if (plan.mode === 'fresh') {
+    typeCommand(plan.command, (r) => {
+      if (!r.ok) { done({ ok: false, reason: r.reason }); return; }
+      lastCommentLine = plan.command;
+      usage('changes:comment-typed');
+      done({ ok: true, appended: false, ...(r.box ? { cleared: r.box } : {}) });
+    }, 'comment');
+    return;
+  }
+  // append: one typing sequence at a time (the lock), spaced like every other typing, and NO cleanup path of any kind
+  if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
+  typingBusy = true;
+  term.focus();
+  const keys = plan.keys;
+  keys.forEach((k, i) => setTimeout(() => send(JSON.stringify({ type: 'input', data: k })), PTY_STEP_MS * i));
+  setTimeout(() => {
+    typingBusy = false;
+    if (boxIsCommand(screenLines(), plan.expected, { termRows: term.rows })) {
+      lastCommentLine = plan.expected;
+      usage('changes:comment-typed');
+      done({ ok: true, appended: true });
+    } else {
+      done({ ok: false, reason: APPEND_UNCONFIRMED });
+    }
+  }, PTY_STEP_MS * (keys.length + 2));
 }
 
 function typeCommand(command, done, kind, opts) {
@@ -7104,11 +7126,9 @@ function typeCommand(command, done, kind, opts) {
   const submit = !!(opts && opts.submit);
   // No refusal from the hook state here (F3): when the host says 'prompt' but the SCREEN is a normal ready box,
   // the command is typed with no Enter. planTyping's screen check is what refuses a dialog it can see.
-  // the box holds OUR comment line, wrapped over several rows: it is one logical line, not a multi-line draft (opts.ownBox, typeReviewComment)
-  const screenNow = inputState(lines, { vim: vimSeen });
   const plan = planTyping({
     command,
-    screen: opts && opts.ownBox === true && screenNow === 'multiline' ? 'ready' : screenNow,
+    screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
     kind,                       // 'mention' types the reader's `@path#Lx-y` (never Enter, like /merged)
   });
