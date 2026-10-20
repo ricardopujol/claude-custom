@@ -120,7 +120,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
   // app/style-display.js, Window section (layout pass L2, #27/#28)
-  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'panelSectionView', 'reduceCanvasMcp', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
+  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'panelSectionView', 'reduceCanvasMcp', 'reduceCcMod', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
   // app/status-fields-display.js (BACKLOG #27)
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.

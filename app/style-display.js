@@ -213,7 +213,13 @@ function windowSectionView(state) {
  */
 function panelSectionView(state) {
   const mcp = state && typeof state.mcp === 'boolean' ? state.mcp : null;
+  // BACKLOG #119 A2: the claude-custom mod's switch, in the same section: also a spawn flag, also read when the next session starts.
+  const mod = state && typeof state.mod === 'boolean' ? state.mod : null;
   return {
+    mod,
+    modDescription: mod === null ? 'reading…'
+      : mod ? "claude-custom's mod reads the CLI's own quota, context and agent states and shows them here (it never changes what Claude does). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
+        : "claude-custom's mod is not loaded: quota, context and agent states come from the older sources. A change applies when claude-custom next starts this tab's session; one already running keeps what it has.",
     mcp,
     mcpDescription: mcp === null ? 'reading…'
       : mcp ? "Claude can build things in its panel (it's offered to the CLI as a tool). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
@@ -256,7 +262,7 @@ function emptyStyleState() {
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
-    panel: { mcp: null },
+    panel: { mcp: null, mod: null },
   };
 }
 
@@ -383,6 +389,13 @@ function reduceCanvasMcp(prev, value) {
   return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mcp: value } };
 }
 
+/** Records the mod's switch as main reports it; only a real boolean lands (null = main couldn't tell: stay unknown). */
+function reduceCcMod(prev, value) {
+  const state = prev || emptyStyleState();
+  if (typeof value !== 'boolean') return state;
+  return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mod: value } };
+}
+
 // How long to wait before asking main again for the panel switch after a read that gave no answer (PR #125 Miguel M3): 1 s, doubling, at most
 // 30 s, and it gives up (null) after CANVAS_MCP_MAX_TRIES asks. Until then the box stays "reading..."; a later change or a reload asks afresh.
 const CANVAS_MCP_MAX_TRIES = 8;
@@ -394,7 +407,7 @@ function canvasMcpRetryDelay(attempt) {
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
-  coloursSectionView, panelSectionView, reduceCanvasMcp, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
+  coloursSectionView, panelSectionView, reduceCanvasMcp, reduceCcMod, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

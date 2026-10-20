@@ -7640,6 +7640,9 @@ function renderStyleSection(section) {
       `<label class="style-row"><input type="checkbox" id="style-canvas-mcp"${v.mcp === true ? ' checked' : ''}${v.mcp === null ? ' disabled' : ''}>` +
       ` Let Claude build in its panel (next session)</label>` +
       `<div class="style-note">${escapeHtml(v.mcpDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-cc-mod"${v.mod === true ? ' checked' : ''}${v.mod === null ? ' disabled' : ''}>` +
+      ` Feed quota, context and agent states from the CLI (next session)</label>` +
+      `<div class="style-note">${escapeHtml(v.modDescription)}</div>` +
       `</section>`
     );
   }
@@ -7875,6 +7878,13 @@ function bindAvatarSection() {
       window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
     });
   }
+  // BACKLOG #119 A2: the claude-custom mod's switch, the same shape: send the desired state, settle on main's answer, re-read on null.
+  const ccModBox = document.getElementById('style-cc-mod');
+  if (ccModBox && window.harness && window.harness.ccMod) {
+    ccModBox.addEventListener('change', () => {
+      window.harness.ccMod.settingsSet(ccModBox.checked).then(settledCcMod).catch(() => refreshCcMod());
+    });
+  }
   const framelessBox = document.getElementById('style-frameless');
   if (framelessBox && chrome) {
     framelessBox.addEventListener('change', () => {
@@ -7913,6 +7923,23 @@ function refreshCanvasMcp(attempt = 0) {
   };
   window.harness.canvas.settingsGet().then((v) => {
     if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
+  }).catch(again);
+}
+// BACKLOG #119 A2: the mod's switch, read the same way as the panel's (one loop, backing off with the same delays, then stopping).
+function settledCcMod(value) {
+  if (typeof value === 'boolean') { styleState = reduceCcMod(styleState, value); renderStylePanel(); } else refreshCcMod();
+}
+let ccModLoop = false;
+function refreshCcMod(attempt = 0) {
+  if (!(window.harness && window.harness.ccMod && window.harness.ccMod.settingsGet)) return;
+  if (attempt === 0) { if (ccModLoop) return; ccModLoop = true; }
+  const again = () => {
+    const wait = canvasMcpRetryDelay(attempt);
+    if (wait === null) { ccModLoop = false; return; }
+    setTimeout(() => refreshCcMod(attempt + 1), wait);
+  };
+  window.harness.ccMod.settingsGet().then((v) => {
+    if (typeof v === 'boolean') { ccModLoop = false; settledCcMod(v); } else again();
   }).catch(again);
 }
 function settledChrome(saved) {
@@ -8003,6 +8030,7 @@ if (window.harness && window.harness.chrome) {
   refreshChromeSettings();
 }
 refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
+refreshCcMod();                    // #119 A2: the claude-custom mod's switch, next to it
 
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
