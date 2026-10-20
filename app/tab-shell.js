@@ -189,6 +189,10 @@ const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFil
 // The same, for the worktree contract scripts (PR 3).
 const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 
+// A profile switch waits this long (50 x 100 ms) for the old host to stop answering before it gives up.
+const PROFILE_STOP_TRIES = 50;
+const PROFILE_STOP_STEP_MS = 100;
+
 // How many tabs closed by hand the `+` menu offers to reopen.
 const REOPEN_MAX = 10;
 
@@ -223,6 +227,10 @@ function createShell(deps) {
     // #77: `facts(cwd)` -> { dirtyCount, unpushedCount } (null for a fact git couldn't give). Optional: without it
     // a Ctrl+click close always asks.
     safety = null,
+    // BACKLOG #119 A1, account profiles: `choose(tab)` -> the profile id a tab starts under (its own remembered one, else the project's
+    // last used, else 'default'); `resolve(id)` -> { id, name, colour } | null; `remember(tab, id)` stores a hand pick. Optional: without
+    // it no tab has a profile and the shell behaves as before. The shell holds ids only; main turns one into CLAUDE_CONFIG_DIR at spawn.
+    profiles = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -255,6 +263,12 @@ function createShell(deps) {
 
   const keyOf = normPath;
 
+  /** The tab's profile as { id, name, colour } for the strip's dot, or null (none yet, or the store can't say). */
+  function profileInfoOf(t) {
+    if (!profiles || typeof t.profileId !== 'string') return null;
+    try { return profiles.resolve(t.profileId) || null; } catch { return null; }
+  }
+
   function runtime() {
     const rt = new Map();
     for (const t of tabs.values()) {
@@ -262,6 +276,7 @@ function createShell(deps) {
         started: t.started, port: t.port, token: t.token, status: t.status,
         setup: setups.has(t.key) ? { ...setups.get(t.key) } : null,
         createdWarning: createdWarnings.get(t.key) || null,
+        profile: profileInfoOf(t),
       });
     }
     return rt;
@@ -351,7 +366,7 @@ function createShell(deps) {
       closable: false,
       working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
       summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
-      lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null,
+      lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null, profileDot: null,
       side: true, parentKey: parent.key, role: 'reader',
     };
   }
@@ -429,6 +444,8 @@ function createShell(deps) {
       isDev: entry.isDev === true, port: null, token: null, view: null,
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
       attachPromise: null, unconfirmed: null, ended: false, occupancySent: EMPTY_OCCUPANCY,
+      // BACKLOG #119 A1: the account profile id this tab's host runs under; null until it is chosen at spawn or its host reports it.
+      profileId: null,
     };
   }
 
@@ -442,6 +459,7 @@ function createShell(deps) {
     rec.side = true;
     rec.parentKey = parent.key;
     rec.folderKey = parent.key;
+    rec.profileId = parent.profileId;          // the same folder, the same account
     rec.branch = sideLabel(parent.branch || path.basename(parent.cwd));
     return rec;
   }
@@ -519,6 +537,7 @@ function createShell(deps) {
           if (!token) throw new Error(`a host is on port ${port} but its token can't be read`);
         } else {
           token = hosts.newToken();
+          if (tab.profileId === null) tab.profileId = chooseProfile(tab);
           hosts.spawn({ tab, port, token });
           spawned = true;
           if (!(await hosts.wait(port))) {
@@ -550,6 +569,18 @@ function createShell(deps) {
       }
     });
     return tab.startPromise;
+  }
+
+  /** The profile a tab starts under: the store's choice, 'default' when the store can't say, null when there is no store. */
+  function chooseProfile(tab) {
+    if (!profiles) return null;
+    try {
+      const id = profiles.choose(tab);
+      return typeof id === 'string' && id !== '' ? id : 'default';
+    } catch (err) {
+      log('[shell] profiles.choose threw:', err && err.message);
+      return 'default';
+    }
   }
 
   function sendSelected(tab) {
@@ -1354,12 +1385,105 @@ function createShell(deps) {
     publish();
   }
 
+  // --- BACKLOG #119 A1: account profiles ---------------------------------------------------------------------------------------
+
+  const switching = new Set();         // tabs mid-switch: a second pick waits for the answer
+
+  /** The ids of the profiles any tab is under (a profile in use can't be removed). */
+  function profilesInUse() {
+    const out = new Set();
+    for (const t of tabs.values()) if (!t.closed && typeof t.profileId === 'string' && t.profileId !== '') out.add(t.profileId);
+    return out;
+  }
+
+  /**
+   * A host says which profile it was started under: believed over what was asked for (an attached host may predate the choice). Only
+   * the tab's own page counts, and nothing is remembered: this is a fact, not a pick.
+   */
+  function reportProfile(sender, id) {
+    if (typeof id !== 'string' || id === '') return;
+    const tab = tabForSender(sender);
+    if (!tab || tab.profileId === id) return;
+    tab.profileId = id;
+    publish();
+  }
+
+  /**
+   * Run `key`'s tab under another account (the person has confirmed; a session is never ended on its own). No session yet: the choice is
+   * just set. A live one: the old host is told to stop and must really be gone before the new one is spawned, so two sessions never share
+   * the worktree's lock; if it won't stop, nothing changes. The tab's side session ran under the old account, so it goes too.
+   * -> { ok: true, restarted } | { ok: false, error }
+   */
+  async function changeProfile(key, id) {
+    const tab = tabByKey(key);
+    if (!tab || tab.closed || tab.side === true) return { ok: false, error: 'no such tab' };
+    if (!profiles) return { ok: false, error: 'profiles are not available' };
+    let known = null;
+    try { known = typeof id === 'string' && id !== '' && (id === 'default' || profiles.resolve(id)); } catch { known = null; }
+    if (!known) return { ok: false, error: 'no such profile' };
+    if (tab.profileId === id) return { ok: true, restarted: false };
+    if (switching.has(key)) return { ok: false, error: 'already switching' };
+    switching.add(key);
+    try {
+      if (tab.starting && tab.startPromise) { try { await tab.startPromise; } catch { /* start() reports its own errors */ } }
+      if (!tabs.has(key) || tab.closed) return { ok: false, error: 'no such tab' };
+      const remember = () => { try { if (typeof profiles.remember === 'function') profiles.remember(tab, id); } catch (err) { log('[shell] profiles.remember threw:', err && err.message); } };
+      if (!tab.started) {
+        tab.profileId = id;
+        remember();
+        publish();
+        return { ok: true, restarted: false };
+      }
+      // A session that already ended has nothing to stop; the page is still there and is replaced all the same.
+      if (tab.ended !== true) {
+        const target = { port: tab.port, token: tab.token };
+        let reply = null;
+        try { reply = await hosts.control({ ...target, msg: { type: 'stop' } }); } catch (err) { reply = { ok: false, error: (err && err.message) || String(err) }; }
+        // The reply is not the truth: host-client gives up after 3 s, and a host still tearing down can outlast that. The port is.
+        const stopNote = reply && reply.ok === true ? '' : ` (${(reply && reply.error) || 'no answer'})`;
+        let gone = false;
+        for (let i = 0; i < PROFILE_STOP_TRIES; i++) {
+          let seen = 'unknown';
+          try { seen = await hosts.probe(target.port); } catch { seen = 'unknown'; }
+          if (seen === 'refused') { gone = true; break; }
+          await sleep(PROFILE_STOP_STEP_MS);
+        }
+        if (!gone) return { ok: false, error: `the current session didn't end${stopNote}` };
+      }
+      if (!tabs.has(key) || tab.closed) return { ok: false, error: 'no such tab' };
+      const sk = sideKeyOf(key);
+      if (sk !== null && tabs.has(sk)) {
+        const sideShowing = selectedKey === sk;
+        dropSide(sk, { stop: true });
+        if (sideShowing) selectedKey = key;
+      }
+      if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+      tab.view = null;
+      tab.started = false;
+      tab.port = null;
+      tab.token = null;
+      tab.status = null;
+      tab.error = null;
+      tab.pending = null;
+      tab.unconfirmed = null;
+      tab.ended = false;
+      tab.profileId = id;
+      remember();
+      publish();
+      if (selectedKey === key) await start(tab);
+      return { ok: true, restarted: true };
+    } finally {
+      switching.delete(key);
+    }
+  }
+
   function destroy() { destroyed = true; }
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
     createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked, openSide, sideMenu,
     next: () => step(1), previous: () => step(-1),
+    changeProfile, reportProfile, profilesInUse,
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
     refresh: publish,
@@ -1569,6 +1693,10 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
         return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
+      // BACKLOG #119 A1: the Profile chip menu's pick on a tab, without a mouse.
+      case 'profile':
+        if (typeof cmd.label !== 'string' || cmd.label === '' || typeof cmd.id !== 'string' || cmd.id === '') return { ok: false, error: 'profile needs a label and an id' };
+        return await api.profile(cmd.label, cmd.id);
       // #81: the tab menu's Open side session, without a native popup nobody can click.
       case 'side-open':
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'side-open needs a label' };

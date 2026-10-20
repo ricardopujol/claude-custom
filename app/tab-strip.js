@@ -149,6 +149,14 @@ function paintTab(doc, entry, bridge) {
   if (mark && typeof mark === 'object' && nonEmpty(mark.emoji)) {
     tab.appendChild(el(doc, 'span', 'mark', mark.emoji)).title = nonEmpty(mark.meaning) ? mark.meaning : '';
   }
+  // BACKLOG #119 A1: the account profile this tab runs under, as a small dot in its colour (the default shows none). The colour goes into a
+  // style, so only a #rrggbb is ever used; the model already sends nothing else, and this does not trust it.
+  const pd = entry.profileDot;
+  if (pd && typeof pd === 'object' && typeof pd.colour === 'string' && /^#[0-9a-f]{6}$/i.test(pd.colour) && nonEmpty(pd.name)) {
+    const dot = tab.appendChild(el(doc, 'span', 'profile-dot'));
+    dot.style.background = pd.colour;
+    dot.title = `Account profile: ${pd.name}`;
+  }
   tab.appendChild(el(doc, 'span', 'label', entry.label));
   if (occ) {
     const tags = tab.appendChild(el(doc, 'span', 'agent-tags'));

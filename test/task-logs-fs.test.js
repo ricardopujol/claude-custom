@@ -301,3 +301,13 @@ test('fake fs: the scanned size must match too, and a row without a size is neve
   assert.strictEqual((await FS.deleteTaskLog(FROOT, frow([p]), { ...F0, fsp })).kept, 1);
   assert.strictEqual((await FS.deleteTaskLog(FROOT, frow([p], { bytes: undefined }), { ...F0, fsp: fakeFsp() })).kept, 1);
 });
+
+// --- account profiles (BACKLOG #119 A1): a session under a profile registers in THAT profile's folder ---------------------------
+test('registryDirs: every profile folder is read too, so a live session under another account keeps its task logs', () => {
+  const fixed = () => path.join('home', '.claude');
+  const prof = [path.join('p', 'work'), path.join('p', 'play'), path.join('p', 'work'), null, '', 5];
+  assert.deepStrictEqual(FS.registryDirs(['a'], fixed, prof),
+    [path.join('home', '.claude', 'sessions'), path.join('p', 'work', 'sessions'), path.join('p', 'play', 'sessions')]);
+  assert.deepStrictEqual(FS.registryDirs(['a'], fixed, undefined), [path.join('home', '.claude', 'sessions')]);
+  assert.deepStrictEqual(FS.registryDirs(['a'], fixed, 'nope'), [path.join('home', '.claude', 'sessions')]);
+});

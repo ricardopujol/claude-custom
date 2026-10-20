@@ -166,3 +166,17 @@ test('an unknown duration is not described as approximate', () => {
   const d = careerDisplay(row({ ms: null }), ok);
   assert.strictEqual(d.minutesPrefix, '', 'no ~ on an em dash');
 });
+
+// --- account profiles (BACKLOG #119 A1): a fresh profile has an empty roster, and says so in one dim line ----------------------
+test('rosterEmptyState: under a non-default profile with no history, it says the profile has no agents yet', () => {
+  const s = rosterEmptyState(0, new Map(), { ok: true, agents: [] }, { isDefault: false });
+  assert.match(s, /no agents in this profile yet/i);
+});
+
+test('rosterEmptyState: the default profile, or a profile with history, or a failed read, keep their own sentences', () => {
+  assert.match(rosterEmptyState(0, new Map(), { ok: true, agents: [] }, { isDefault: true }), /^No agents yet/);
+  assert.match(rosterEmptyState(0, new Map(), { ok: true, agents: [] }), /^No agents yet/);
+  const known = new Map([['a', { agent: 'a' }]]);
+  assert.match(rosterEmptyState(0, known, { ok: true, agents: [] }, { isDefault: false }), /1 agent has run/);
+  assert.match(rosterEmptyState(0, new Map(), { ok: false, agents: [] }, { isDefault: false }), /unknown, not zero/);
+});

@@ -10,7 +10,7 @@ const {
 
 test('the registry lists colours, background and inactive windows, in that order', () => {
   // The container-that-grows design: a new section is one entry here.
-  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'fonts', 'background', 'inactive', 'avatars', 'window', 'panel']);
+  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'fonts', 'background', 'inactive', 'avatars', 'window', 'accounts', 'panel']);
   for (const s of STYLE_SECTIONS) assert.ok(s.title, s.id);
 });
 

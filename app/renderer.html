@@ -1854,6 +1854,23 @@
     /* A switch that did not take, or was not sent. The label still reports
        the truth; the dashed border says "look at the tooltip". */
     .tb-chip.notice { border-style: dashed; }
+    /* BACKLOG #119 A1: the account chip is tinted with the PROFILE's colour (--profile-colour, set by renderer.js), not the model cue;
+       the default profile has none, so it keeps the model accent like its neighbours. */
+    .tb-profile { display: inline-flex; align-items: center; gap: 4px; border-color: var(--profile-colour, var(--model-accent)); }
+    .tb-profile .tb-icon { width: 12px; height: 12px; flex: none; color: var(--profile-colour, currentColor); }
+    .tb-profile.unknown { border-style: dashed; }
+    #tb-profile-menu button { display: flex; align-items: center; gap: 6px; }
+    #tb-profile-menu .pm-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dim); }
+    #tb-profile-menu .pm-check { margin-left: auto; padding-left: 8px; opacity: .8; }
+    #tb-profile-menu .pm-sep { border-top: 1px solid var(--border); margin: 2px 0; }
+    .acct-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; min-width: 0; }
+    .acct-row .acct-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--dim); }
+    .acct-row input.acct-name { flex: 1; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                                border-radius: 4px; padding: 2px 5px; font-size: 11px; }
+    .acct-folder { font-size: 10.5px; color: var(--dim); margin: 0 0 8px 16px; overflow-wrap: anywhere; }
+    .acct-add { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+    .acct-add input[type=text] { flex: 1 1 90px; min-width: 0; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                                 border-radius: 4px; padding: 2px 5px; font-size: 11px; }
     /* BACKLOG #6 context-fill circle. The palette is app/context-fill-display.js's
        PALETTE (test/renderer-context-fill.test.js fails if these drift). Unknown
        is hollow and dashed -- a shape of its own, never one of the five. */
@@ -2006,6 +2023,8 @@
        clipped by its overflow:hidden and painted over by the panels below
        (every #app child is its own z-index:1 layer). renderer.js places
        them against their chip with menuPlacement(). -->
+  <!-- BACKLOG #119 A1: the profile chip's menu, rows built by renderer.js from app/profile-display.js menuView. -->
+  <div id="tb-profile-menu" class="tb-menu" role="menu" hidden></div>
   <div id="tb-model-menu" class="tb-menu" hidden>
     <!-- BACKLOG E #5, #3: rewritten by app/renderer.js's renderClaudeChoices()
          on load and whenever a favourite changes, so favourited choices sort
@@ -2062,6 +2081,8 @@
         <!-- BACKLOG #63: the machine total (app/resources-display.js chipView) with a one-hour sparkline after each figure
              (app/resources-history-display.js). A click opens the popover with the larger graphs. -->
         <button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour. Click for the graphs.">CPU —  — / —</button>
+        <!-- BACKLOG #119 A1: which Claude account this tab runs under (app/profile-display.js). Click: switch, or Manage profiles… -->
+        <button type="button" id="tb-profile" class="tb-chip tb-profile" aria-haspopup="menu" aria-controls="tb-profile-menu" title="Account profile: Default. Click to switch this tab."></button>
         <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
         <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
         <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
@@ -2408,6 +2429,7 @@
   <script src="./resources-display.js"></script>
   <script src="./resources-history-display.js"></script>
   <script src="./top-bar-display.js"></script>
+  <script src="./profile-display.js"></script>
   <script src="./accent-preview.js"></script>
   <script src="./context-fill-display.js"></script>
   <script src="./status-fields-display.js"></script>

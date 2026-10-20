@@ -65,9 +65,11 @@ async function readRegistry(dir, fsp = fs.promises) {
  * tab's `claude` runs in its folder, and a RELATIVE CLAUDE_CONFIG_DIR resolves against that folder, not main's cwd).
  * `configDir({ cwd })` is host/claude-config-dir.js. Unique, in order.
  */
-function registryDirs(tabCwds, configDir) {
+function registryDirs(tabCwds, configDir, profileDirs) {
   const dirs = [configDir()];
   for (const cwd of Array.isArray(tabCwds) ? tabCwds : []) if (typeof cwd === 'string' && cwd !== '') dirs.push(configDir({ cwd }));
+  // BACKLOG #119 A1: a tab under an account profile registers its sessions in that profile's folder, which main's own env never names.
+  for (const d of Array.isArray(profileDirs) ? profileDirs : []) if (typeof d === 'string' && d !== '') dirs.push(d);
   return [...new Set(dirs.map(d => path.join(d, 'sessions')))];
 }
 

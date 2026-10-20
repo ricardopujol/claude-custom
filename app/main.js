@@ -80,7 +80,8 @@ const { createUnsaved, closeDetail, guardWindowClose } = require('./reader-unsav
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
   stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
-const { projectOf, stateRoot, samePath } = require('../host/project-layout');
+const { projectOf, stateRoot, samePath, normPath } = require('../host/project-layout');
+const { createProfileService } = require('./profile-service');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -321,7 +322,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, ...profiles.spawnEnvFor(tab) }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -875,6 +876,25 @@ async function askWindowClose(files) {
 }
 
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
+
+// --- account profiles (BACKLOG #119 A1) -----------------------------------------------------------------------------
+// The store is machine-wide (~/.claude-custom/profiles.json); a probe points it at a throwaway dir with CLAUDE_CUSTOM_PROFILES_DIR.
+// A tab's profile becomes CLAUDE_CONFIG_DIR for its host (spawnHost), so every reader of the CLI's own state in that host follows it.
+const probeProfileAsks = [];   // the probe driver's record of every "Restart this session as ..." it was asked
+const profiles = createProfileService({
+  dir: process.env.CLAUDE_CUSTOM_PROFILES_DIR || undefined,
+  shell: () => tabShell,
+  projectKeyOf: () => normPath(HOST_PROJECT.root),
+  confirm: async (text) => {
+    // The probe driver has nobody to click: it says yes, and keeps what it was asked.
+    if (PROBE_PORT) { probeProfileAsks.push(text); return true; }
+    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Restart', 'Cancel'], defaultId: 1, cancelId: 1, message: text });
+    return r.response === 0;
+  },
+  openPath: (p) => shell.openPath(p),
+  broadcast: () => forEachView((v) => v.webContents.send('profiles:changed')),
+  log: (...a) => console.log(...a),
+});
 // `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
@@ -1121,6 +1141,19 @@ function registerIpc() {
     if (!isTabView(e.sender) || typeof on !== 'boolean') return;
     setFocusMode(on);
   });
+  // BACKLOG #119 A1: account profiles. Any tab page may read the list and switch ITS OWN tab; the Accounts section edits the shared store.
+  // Shapes are checked here: a page sends plain data, and only these fields of it are used.
+  const str = (v) => (typeof v === 'string' ? v : '');
+  ipcMain.handle('profiles:state', (e) => (isTabView(e.sender) ? profiles.stateFor(e.sender) : null));
+  ipcMain.handle('profiles:switch', (e, id) => (isTabView(e.sender) ? profiles.switchTo(e.sender, str(id)) : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:add', (e, spec) => (isTabView(e.sender)
+    ? profiles.add({ name: str(spec && spec.name), colour: str(spec && spec.colour), configDir: str(spec && spec.configDir) })
+    : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:rename', (e, arg) => (isTabView(e.sender) ? profiles.rename({ id: str(arg && arg.id), name: str(arg && arg.name) }) : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:remove', (e, arg) => (isTabView(e.sender) ? profiles.remove({ id: str(arg && arg.id) }) : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:openFolder', (e, arg) => (isTabView(e.sender) ? profiles.openFolder({ id: str(arg && arg.id) }) : { ok: false, error: 'not a tab' }));
+  // The page's host says which profile it runs under (hello.profile): that is the truth for the strip's dot.
+  ipcMain.on('tab:profile', (e, id) => { if (isTabView(e.sender)) tabShell.reportProfile(e.sender, id); });
   ipcMain.on('tab:status', (e, status) => {
     if (!isTabView(e.sender)) return;
     tabShell.report(e.sender, status);
@@ -1562,7 +1595,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, profileDot: t.querySelector('.profile-dot') ? { bg: t.querySelector('.profile-dot').style.background, title: t.querySelector('.profile-dot').title } : null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1588,7 +1621,10 @@ function startProbeDriver(port) {
           viewDom = JSON.parse(await sel.webContents.executeJavaScript(
             "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined', "
             // Layout pass L2 (#27): the header's copy of the CLI status row.
-            + "statusFields: (() => { const el = document.getElementById('status-fields'); if (!el) return null; const r = el.getBoundingClientRect(); return { hidden: el.hidden, text: el.textContent, rect: { left: Math.round(r.left), width: Math.round(r.width), right: Math.round(r.right) }, viewport: window.innerWidth, display: getComputedStyle(el).display, scrollWidth: el.scrollWidth, focusRight: Math.round(((document.getElementById('focus-btn') || el).getBoundingClientRect()).right) }; })() })"));
+            + "statusFields: (() => { const el = document.getElementById('status-fields'); if (!el) return null; const r = el.getBoundingClientRect(); return { hidden: el.hidden, text: el.textContent, rect: { left: Math.round(r.left), width: Math.round(r.width), right: Math.round(r.right) }, viewport: window.innerWidth, display: getComputedStyle(el).display, scrollWidth: el.scrollWidth, focusRight: Math.round(((document.getElementById('focus-btn') || el).getBoundingClientRect()).right) }; })(), "
+            // BACKLOG #119 A1: the Profile chip as painted, and how many Accounts rows the Style panel drew.
+            + "profileChip: (() => { const c = document.getElementById('tb-profile'); if (!c) return null; const n = c.querySelector('.tb-profile-name'); return { text: n ? n.textContent : null, title: c.title, colour: c.style.getPropertyValue('--profile-colour') || null }; })(), "
+            + "accountsRows: document.querySelectorAll('#style-sections [data-section=accounts] .acct-row').length })"));
         } catch (err) { viewDom = { error: err.message }; }
       }
       // No menu bar: no application menu AND none on the window.
@@ -1604,9 +1640,17 @@ function startProbeDriver(port) {
       const snap = tabShell.snapshot();
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
-        create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(), profileAsks: probeProfileAsks.slice(),
+        profileOf: Object.fromEntries(snap.tabs.map((t) => [t.branch || projectLabel(t.cwd), t.profileId])),
         readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
+    },
+    // BACKLOG #119 A1: the page's own profile pick (the chip menu's click), through the same service call the IPC makes.
+    async profile(label, id) {
+      const k = labelKey(label);
+      const tab = k ? tabShell.tabByKey(k) : null;
+      if (!tab || !tab.view) return { ok: false, error: 'no such tab view' };
+      return profiles.switchTo(tab.view.webContents, id);      // an IPC sender is the page's webContents
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
     // Started, not awaited: the probe watches the setup's progress through `state`.
@@ -1888,6 +1932,7 @@ app.whenReady().then(async () => {
     launchedFrom: LAUNCH_CWD,
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
+    profiles: { choose: (t) => profiles.choose(t), resolve: (id) => profiles.resolve(id), remember: (t, id) => profiles.remember(t, id) },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
     // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
     resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
@@ -1990,7 +2035,7 @@ app.whenReady().then(async () => {
     taskLogs: {
       everyMs: 60_000,
       scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
-      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir)),
+      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir, profiles.stateFor(null).profiles.map(p => p.configDir))),
       remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
     },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
