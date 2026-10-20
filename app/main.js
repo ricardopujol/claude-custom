@@ -43,7 +43,7 @@ const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
-const { readIdentity, readTokenFile } = require('../host/host-identity');
+const { readIdentity, readTokenFile, fileFor } = require('../host/host-identity');
 const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
@@ -301,6 +301,15 @@ async function chooseHostPort(tab) {
 // one under every tab (host/side-session.js sideHostsOf).
 function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
+}
+
+/** A function that ends the host on `port` if it is still the process its identity file names, or null when there is nothing to prove it by. */
+function hostKiller(port) {
+  let raw = null;
+  try { raw = JSON.parse(fs.readFileSync(fileFor(HARNESS_DIR, port), 'utf8')); } catch { return null; }
+  if (!raw || !Number.isInteger(raw.pid) || raw.pid <= 0 || Number(raw.port) !== port || typeof raw.processStartedAt !== 'string' || !/^\d+$/.test(raw.processStartedAt)) return null;
+  const { pid, processStartedAt } = raw;
+  return () => killProvenAsync(pid, processStartedAt);
 }
 
 function spawnHost(tab, port, token) {
@@ -891,7 +900,8 @@ const profiles = createProfileService({
     const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Restart', 'Cancel'], defaultId: 1, cancelId: 1, message: text });
     return r.response === 0;
   },
-  openPath: (p) => shell.openPath(p),
+  // A profile's folder opens in Explorer through the one guarded path (app/file-link.js: no UNC, no device paths; a folder opens).
+  openPath: async (p) => { const r = await fileLink.open(p, HOST_PROJECT.root, fileFs, shell); return r && r.ok ? '' : `couldn't open it (${(r && r.why) || 'refused'})`; },
   broadcast: () => forEachView((v) => v.webContents.send('profiles:changed')),
   log: (...a) => console.log(...a),
 });
@@ -1951,6 +1961,9 @@ app.whenReady().then(async () => {
       probe: (port) => probePort(port),
       spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
       wait: (port) => waitForHost(port),
+      // BACKLOG #119 A1: the proof of WHICH process serves a port (its pid and OS start time, from its identity file), taken before a stop
+      // removes the file. Used only by a profile switch whose host won't leave (app/tab-shell.js changeProfile): a proven kill, never by name.
+      killer: (port) => hostKiller(port),
       tokenFor: tokenForRunningHost,
       tokenFile: tokenFileFor,
       // One secret, handed to the host AND the tab's page. In a single-tab window

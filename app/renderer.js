@@ -7791,21 +7791,6 @@ function paintAccentPreview(hex) {
   renderTopBar();
 }
 
-function renderStylePanel() {
-  const container = document.getElementById('style-sections');
-  if (!container) return;
-  // A redraw replaces every element: a font search box the person is typing in must keep its focus and caret.
-  const active = document.activeElement;
-  const id = active && container.contains(active) && active.classList.contains('font-search') ? active.id : null;
-  const caret = id ? active.selectionStart : null;
-  container.innerHTML = styleDisplay(styleState).map(renderStyleSection).join('');
-  bindStyleSections();
-  if (id) {
-    const again = document.getElementById(id);
-    if (again) { again.focus(); try { again.setSelectionRange(caret, caret); } catch { /* not a text field */ } }
-  }
-}
-
 // BACKLOG #119 A1: the Accounts section's controls. Every edit goes to main (it owns the store); the list that comes back replaces ours.
 function takeAccountsReply(r) {
   if (r && r.ok === true) { styleState = reduceAccounts(styleState, { profiles: r.profiles, inUse: r.inUse }); profileList = r.profiles; renderProfileChip(); }
@@ -7833,6 +7818,21 @@ function bindAccountsSection() {
   }
   for (const b of document.querySelectorAll('[data-acct-open]')) {
     b.addEventListener('click', () => h.profilesOpenFolder(b.dataset.acctOpen).then((r) => { if (r && r.ok === false) takeAccountsReply(r); }, () => takeAccountsReply(null)));
+  }
+}
+
+function renderStylePanel() {
+  const container = document.getElementById('style-sections');
+  if (!container) return;
+  // A redraw replaces every element: a font search box the person is typing in must keep its focus and caret.
+  const active = document.activeElement;
+  const id = active && container.contains(active) && active.classList.contains('font-search') ? active.id : null;
+  const caret = id ? active.selectionStart : null;
+  container.innerHTML = styleDisplay(styleState).map(renderStyleSection).join('');
+  bindStyleSections();
+  if (id) {
+    const again = document.getElementById(id);
+    if (again) { again.focus(); try { again.setSelectionRange(caret, caret); } catch { /* not a text field */ } }
   }
 }
 

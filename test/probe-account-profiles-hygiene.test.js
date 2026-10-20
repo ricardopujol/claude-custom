@@ -13,9 +13,10 @@ const path = require('path');
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const PROBE = strip(fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-account-profiles.js'), 'utf8'));
 
-test('nothing can bill: every host\'s claude is a stub .cmd, and the window launch has no ELECTRON_RUN_AS_NODE or inherited config dir', () => {
-  assert.match(PROBE, /CLAUDE_CUSTOM_BIN: stub/);
-  assert.match(PROBE, /claude-stub\.cmd/);
+test('nothing can bill: every host\'s claude is cmd.exe, and the window launch has no ELECTRON_RUN_AS_NODE or inherited config dir', () => {
+  assert.ok(PROBE.includes(String.raw`CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd.exe'`));
+  // a .cmd stub as claude hangs the host's stop under Electron (measured), so the probe never uses one
+  assert.doesNotMatch(PROBE, /claude-stub|\.cmd['"`]/);
   assert.match(PROBE, /delete env\.ELECTRON_RUN_AS_NODE/);
   assert.match(PROBE, /delete env\.CLAUDE_CUSTOM_PORT/);
   assert.match(PROBE, /delete env\.CLAUDE_CUSTOM_TOKEN/);

@@ -10,7 +10,7 @@
  *
  * Against a throwaway container repo  <tmp>\proj\dev  (+ feat-a), a throwaway profiles dir with two profiles (work, play) and a saved
  * choice for each tab (dev -> work, feat-a -> play):
- *   env        each tab's `claude` is started with CLAUDE_CONFIG_DIR = its profile's folder (the stub `claude` writes what it saw)
+ *   env        each tab's `claude` is started with CLAUDE_CONFIG_DIR = its profile's folder (the probe asks each cmd.exe what its environment holds)
  *   chip       the header chip of each tab's page reads that tab's profile name, tinted with its colour
  *   dot        the strip paints a coloured dot on both tabs (neither is the default)
  *   accounts   the Style panel's Accounts section drew a row for the default and for each profile
@@ -18,7 +18,7 @@
  *              the old host is gone, a new host starts WITHOUT CLAUDE_CONFIG_DIR, the chip reads Default, the dot goes
  *   remember   the pick is saved: the choices file names feat-a -> default
  *
- * SAFE. Every host's `claude` is a stub .cmd (CLAUDE_CUSTOM_BIN), so nothing runs that bills and no login is needed. The app is driven
+ * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing runs that bills and no login is needed. The app is driven
  * through CLAUDE_CUSTOM_TABS_PROBE (app/main.js), which does nothing when unset. The profiles dir, registry, portraits and uploads are
  * temp folders. Every process it started is ended through host/kill-tree.js by pid AND start time (verify/lib/seen-pids.js), never by name.
  * WINDOWS ONLY (cmd.exe).
@@ -52,7 +52,7 @@ const dev = path.join(container, 'dev');
 const featA = path.join(container, 'feat-a');
 const userData = path.join(tmp, 'user-data');
 const profilesDir = path.join(tmp, 'profiles');
-const seenDir = path.join(tmp, 'seen');                  // what each stub `claude` saw
+const seenDir = path.join(tmp, 'seen');                  // what each tab's cmd.exe reported
 const cfgWork = path.join(tmp, 'cfg-work');
 const cfgPlay = path.join(tmp, 'cfg-play');
 const git = (cwd, ...args) => execFileSync('git', [
@@ -96,23 +96,29 @@ function makeContainer() {
 }
 
 /**
- * The stub `claude`: writes the folder it runs in and the CLAUDE_CONFIG_DIR it was given (cmd leaves an unset variable as the literal
- * %CLAUDE_CONFIG_DIR%), then waits. One file per start, so a restart shows as a second file for the same folder.
+ * What a host's `claude` was given. Its `claude` is an interactive cmd.exe (a .cmd stub HANGS the host on stop under Electron: measured, node-pty
+ * AttachConsole fails), so the probe types one line into that cmd, as a person would, and cmd answers with what ITS environment holds: the
+ * folder it runs in and CLAUDE_CONFIG_DIR (an unset variable stays the literal %CLAUDE_CONFIG_DIR% in an interactive cmd). One file per call.
  */
-function makeStub() {
+let recordNo = 0;
+async function recordEnv(host) {
   fs.mkdirSync(seenDir, { recursive: true });
-  const stub = path.join(tmp, 'claude-stub.cmd');
-  const lines = [
-    '@echo off',
-    'setlocal',
-    '>"%CC_PROBE_SEEN%\\seen-%RANDOM%%RANDOM%.txt" echo CWD=%CD%^|CFG=%CLAUDE_CONFIG_DIR%',
-    'ping -n 600 127.0.0.1 >nul',
-  ];
-  fs.writeFileSync(stub, lines.join('\r\n') + '\r\n');
-  return stub;
+  const WebSocket = require(path.join(ROOT, 'node_modules', 'ws'));
+  const token = fs.readFileSync(path.join(HARNESS_DIR, 'hosts', `${host.port}.token`), 'utf8').trim();
+  const file = path.join(seenDir, `seen-${++recordNo}.txt`);
+  const ws = new WebSocket(`ws://127.0.0.1:${host.port}/?token=${encodeURIComponent(token)}`);
+  ws.on('error', () => {});
+  ws.on('message', () => {});
+  try {
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    await sleep(1500);                      // let cmd draw its prompt
+    ws.send(JSON.stringify({ type: 'input', data: `echo CWD=%CD%^|CFG=%CLAUDE_CONFIG_DIR%>"${file}"\r` }));
+    return await waitFor(() => (fs.existsSync(file) && fs.readFileSync(file, 'utf8').trim() !== '' ? true : null), 15000, 250);
+  } finally {
+    try { ws.terminate(); } catch { /* our own socket */ }
+  }
 }
-
-/** Every start the stub recorded: [{ cwd, cfg }] in the order the files were written. */
+/** Every recording made:  [{ cwd, cfg }] in the order the files were written. */
 function seenStarts() {
   let files = [];
   try { files = fs.readdirSync(seenDir).map(f => path.join(seenDir, f)); } catch { return []; }
@@ -128,13 +134,13 @@ const sameDir = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLo
 const startsIn = (dir) => seenStarts().filter(s => sameDir(s.cwd, dir));
 
 let windowNo = 0;
-async function launchApp(cwd, stub) {
+async function launchApp(cwd) {
   windowNo++;
   const port = await freePort();
   const token = require('crypto').randomBytes(16).toString('hex');
   const env = {
     ...process.env,
-    CLAUDE_CUSTOM_BIN: stub,
+    CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd.exe',
     CLAUDE_CUSTOM_CWD: cwd,
     CLAUDE_CUSTOM_TABS_PROBE: String(port),
     CLAUDE_CUSTOM_TABS_PROBE_TOKEN: token,
@@ -142,7 +148,6 @@ async function launchApp(cwd, stub) {
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
     CLAUDE_CUSTOM_PROFILES_DIR: profilesDir,
-    CC_PROBE_SEEN: seenDir,
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLAUDE_CUSTOM_PORT;
@@ -227,7 +232,6 @@ hygiene.addCleanup(killEverything);
 async function main() {
   console.log('temp repo:', tmp);
   makeContainer();
-  const stub = makeStub();
 
   // Two profiles and a saved choice per tab, written through the real store so the file is what the app writes.
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -241,7 +245,7 @@ async function main() {
   choices = profilesLib.remember(choices, { worktree: keyOf(featA), project: keyOf(container) }, 'play');
   profilesLib.writeChoices(profilesLib.choicesFile(profilesDir), choices);
 
-  const app = await launchApp(container, stub);
+  const app = await launchApp(container);
   let s = await driverUp(app);
   if (!s) {
     check('the window came up and its driver answers', false, `\n${app.out.split('\n').slice(-25).join('\n')}`);
@@ -259,8 +263,12 @@ async function main() {
   s = await state(app);
   remember(s);
   check('feat/a started', !!sel.ok && sel.started === true, JSON.stringify(sel));
-  const devStart = await waitFor(() => startsIn(dev)[0] || null, 30000, 300);
-  const aStart = await waitFor(() => startsIn(featA)[0] || null, 30000, 300);
+  const devHost = hostOf(s, 'develop');
+  const aHost0 = hostOf(s, 'feat/a');
+  const recorded = !!devHost && !!aHost0 && !!(await recordEnv(devHost)) && !!(await recordEnv(aHost0));
+  check("each tab's claude (cmd.exe) answered when asked for its environment", recorded);
+  const devStart = startsIn(dev)[0] || null;
+  const aStart = startsIn(featA)[0] || null;
   check("develop's claude was started with CLAUDE_CONFIG_DIR = the work profile's folder", !!devStart && sameDir(devStart.cfg, cfgWork), JSON.stringify(devStart));
   check("feat/a's claude was started with CLAUDE_CONFIG_DIR = the play profile's folder", !!aStart && sameDir(aStart.cfg, cfgPlay), JSON.stringify(aStart));
   check('the two tabs got different folders', !!devStart && !!aStart && !sameDir(devStart.cfg, aStart.cfg));
@@ -287,23 +295,43 @@ async function main() {
   // ===== switch =====
   const aHost = hostOf(sDev || s, 'feat/a');
   const asksBefore = ((sDev || s).profileAsks || []).length;
+  // The chip belongs to the SELECTED tab, so that is where the pick comes from (an unselected tab restarts lazily, on its next selection).
+  await command(app, { cmd: 'select', label: 'feat/a' }, 60000);
   const picked = await command(app, { cmd: 'profile', label: 'feat/a', id: 'default' }, 90000);
   check('picking the default on feat/a restarted it', picked.ok === true && picked.restarted === true, JSON.stringify(picked));
+  if (picked.ok !== true && aHost) {
+    const t0 = Date.now();
+    const died = await waitFor(() => !alive(aHost.pid), 40000, 250);
+    const port = await require(path.join(ROOT, 'host', 'port-probe')).probePort(aHost.port);
+    if (!died) {
+      try {
+        const ps = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `$p=Get-Process -Id ${aHost.pid}; 'cpu=' + $p.CPU + ' threads=' + $p.Threads.Count + ' children=' + ((Get-CimInstance Win32_Process -Filter 'ParentProcessId=${aHost.pid}' | ForEach-Object { $_.Name + ':' + $_.ProcessId }) -join ',')`], { encoding: 'utf8', windowsHide: true, timeout: 20000 }).trim();
+        console.log(`DIAG  ${ps}`);
+      } catch (e) { console.log(`DIAG  ps failed: ${e.message}`); }
+    }
+    console.log(`DIAG  old host ${aHost.pid} on ${aHost.port}: ${died ? `exited ${Date.now() - t0} ms after the failed switch` : 'still alive 40 s later'}; port probe says ${port}; identity file ${fs.existsSync(path.join(HARNESS_DIR, 'hosts', `${aHost.port}.json`)) ? 'still there' : 'gone'}`);
+  }
   const afterSwitch = await waitFor(async () => {
     const x = await state(app);
     const h = hostOf(x, 'feat/a');
     return h && aHost && h.pid !== aHost.pid && alive(h.pid) && tabOf(x, 'feat/a').started ? x : null;
   }, 60000, 400);
   remember(afterSwitch);
+  if (!afterSwitch) {
+    const x = await state(app);
+    console.log(`DIAG  after the switch: host ${JSON.stringify(hostOf(x, 'feat/a'))}, old pid ${aHost && aHost.pid} alive=${aHost ? alive(aHost.pid) : null}, tab ${JSON.stringify(tabOf(x, 'feat/a'))}`);
+    console.log(`DIAG  identity files under feat-a: ${JSON.stringify(identitiesUnder(featA).map(i => ({ pid: i.pid, port: i.port })))}`);
+  }
   check('main asked "Restart this session as Default?" before ending the live session',
     !!afterSwitch && afterSwitch.profileAsks.length === asksBefore + 1 && /^Restart this session as Default\?/.test(afterSwitch.profileAsks[asksBefore]),
     afterSwitch ? JSON.stringify(afterSwitch.profileAsks) : 'no state');
   check('the old host is gone and a new one serves feat/a', !!aHost && !alive(aHost.pid) && !!afterSwitch, aHost ? `old ${aHost.pid}` : 'no old host');
-  const second = await waitFor(() => (startsIn(featA).length >= 2 ? startsIn(featA)[1] : null), 30000, 300);
-  check('the new claude was started WITHOUT CLAUDE_CONFIG_DIR (the default account)', !!second && second.cfg === "", JSON.stringify(second));
+  const newHost = afterSwitch && hostOf(afterSwitch, 'feat/a');
+  const asked = !!newHost && !!(await recordEnv(newHost));
+  const second = asked && startsIn(featA).length >= 2 ? startsIn(featA)[1] : null;
+  check('the new claude was started WITHOUT CLAUDE_CONFIG_DIR (the default account: the variable is unset)', !!second && second.cfg === '%CLAUDE_CONFIG_DIR%', JSON.stringify(second));
   const devStarts = startsIn(dev).length;
   check("develop's session was left alone by feat/a's switch", devStarts === 1, `${devStarts} start(s)`);
-  await command(app, { cmd: 'select', label: 'feat/a' }, 60000);
   const sAfter = await waitFor(async () => { const x = await state(app); return x.viewDom && x.viewDom.profileChip && x.viewDom.profileChip.text === 'Default' ? x : null; }, 30000, 400);
   check("feat/a's chip now reads Default, with no profile colour", !!sAfter && sAfter.viewDom.profileChip.colour === null, sAfter ? JSON.stringify(sAfter.viewDom.profileChip) : 'no chip');
   check("feat/a's strip dot is gone (the default has none)", !!sAfter && !!domOf(sAfter, 'feat/a') && domOf(sAfter, 'feat/a').profileDot === null);

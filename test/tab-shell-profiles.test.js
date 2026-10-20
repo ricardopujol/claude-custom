@@ -41,10 +41,10 @@ const PROFILES = {
 const settle = () => new Promise(r => setImmediate(r));
 const flush = async () => { for (let i = 0; i < 8; i++) await settle(); };
 
-function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = false, stopSlow = false } = {}) {
+function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = false, stopSlow = false, killer = null } = {}) {
   const h = {
     running: {}, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], order: [],
-    remembered: [], chooses: [], tokens: 0, slept: 0, stopFails, stubborn,
+    remembered: [], chooses: [], tokens: 0, slept: 0, stopFails, stubborn, kills: [], killerAsks: [],
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -101,6 +101,14 @@ function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = f
     now: () => 1_000_000_000,
     sleep: async () => { h.slept++; },
   };
+  // killer: 'ok' | 'no-proof' (null: nothing provable) | an outcome string. A proven kill ends the host the way taskkill would.
+  if (killer !== null) {
+    deps.hosts.killer = (port) => {
+      h.killerAsks.push(port);
+      if (killer === 'no-proof') return null;
+      return async () => { h.order.push(`kill:${port}`); h.kills.push(port); if (killer === 'ok') delete h.running[port]; return killer === 'ok' ? 'killed' : killer; };
+    };
+  }
   if (profiles) {
     deps.profiles = {
       choose: (tab) => { h.chooses.push(tab.key); return chosen[tab.key] || 'default'; },
@@ -191,6 +199,45 @@ test('a stop whose reply timed out still counts when the host is really gone: th
   await flush();
   assert.deepStrictEqual(r, { ok: true, restarted: true });
   assert.deepStrictEqual(h.spawns.map(s => s.profileId), ['default', 'work']);
+});
+
+test('a host that will not leave after the stop is ended by a PROVEN kill, then the restart goes on', async () => {
+  const h = await opened({ stubborn: true, killer: 'ok' });
+  const port = h.shell.tabByKey(key('dev')).port;
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  await flush();
+  assert.deepStrictEqual(r, { ok: true, restarted: true });
+  assert.deepStrictEqual(h.killerAsks, [port], 'the proof is taken BEFORE the stop (a stopping host removes its identity)');
+  assert.deepStrictEqual(h.kills, [port]);
+  assert.deepStrictEqual(h.order.filter(o => /^(stop|kill|destroy|spawn)/.test(o)).map(o => o.replace(/:.*/, '')), ['spawn', 'stop', 'kill', 'destroy', 'spawn']);
+  assert.deepStrictEqual(h.spawns.map(s => s.profileId), ['default', 'work']);
+});
+
+test('a polite exit needs no kill: the killer is asked for its proof but never used', async () => {
+  const h = await opened({ killer: 'ok' });
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  await flush();
+  assert.deepStrictEqual(r, { ok: true, restarted: true });
+  assert.deepStrictEqual(h.kills, []);
+});
+
+test('a stubborn host with no provable identity is left alone: no kill, no restart, the old profile stays', async () => {
+  const h = await opened({ stubborn: true, killer: 'no-proof' });
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.kills, []);
+  assert.strictEqual(h.spawns.length, 1);
+  assert.strictEqual(h.viewsGone.length, 0);
+});
+
+test('a kill that did not take (mismatch, failed) restarts nothing', async () => {
+  for (const outcome of ['mismatch', 'failed', 'unknown']) {
+    const h = await opened({ stubborn: true, killer: outcome });
+    const r = await h.shell.changeProfile(key('dev'), 'work');
+    assert.strictEqual(r.ok, false, outcome);
+    assert.match(r.error, /didn't end/, outcome);
+    assert.strictEqual(h.spawns.length, 1, outcome);
+  }
 });
 
 test('changeProfile when the old host will not take the stop changes nothing', async () => {

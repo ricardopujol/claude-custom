@@ -70,3 +70,15 @@ test('the renderer reports the hello\'s profile to main, repaints the chip on a 
 test('the roster\'s empty line is told whether the profile is the default', () => {
   assert.match(RENDERER, /rosterEmptyState\(roster\.size, agentStats, lastAgentStatsPayload, \{ isDefault: /);
 });
+
+test('main\'s kill proof for a stuck host is the identity file\'s pid AND OS start time, ended by a proven kill, never by name', () => {
+  assert.match(MAIN, /killer: \(port\) => hostKiller\(port\)/);
+  const at = MAIN.indexOf('function hostKiller(port)');
+  assert.ok(at !== -1);
+  const body = MAIN.slice(at, MAIN.indexOf('\nfunction spawnHost', at));
+  assert.match(body, /fileFor\(HARNESS_DIR, port\)/);
+  assert.match(body, /Number\(raw\.port\) !== port/);
+  assert.ok(body.includes(String.raw`/^\d+$/.test(raw.processStartedAt)`), 'only a decimal FILETIME is a proof');
+  assert.match(body, /killProvenAsync\(pid, processStartedAt\)/);
+  assert.doesNotMatch(body, /taskkill|\/IM\b|Stop-Process/i);
+});

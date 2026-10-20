@@ -189,8 +189,10 @@ const HOST_DEPS = ['choosePort', 'probe', 'spawn', 'wait', 'tokenFor', 'tokenFil
 // The same, for the worktree contract scripts (PR 3).
 const OPS_DEPS = ['available', 'create', 'setup', 'remove'];
 
-// A profile switch waits this long (50 x 100 ms) for the old host to stop answering before it gives up.
-const PROFILE_STOP_TRIES = 50;
+// A profile switch waits 8 s (80 x 100 ms) for the old host to stop answering after its stop, then (if it can be proven which process the host is)
+// ends it by a proven kill and waits up to 3 s (30 x 100 ms) more; if the port still answers, nothing changes.
+const PROFILE_STOP_TRIES = 80;
+const PROFILE_KILL_TRIES = 30;
 const PROFILE_STOP_STEP_MS = 100;
 
 // How many tabs closed by hand the `+` menu offers to reopen.
@@ -1437,16 +1439,30 @@ function createShell(deps) {
       // A session that already ended has nothing to stop; the page is still there and is replaced all the same.
       if (tab.ended !== true) {
         const target = { port: tab.port, token: tab.token };
+        // The proof of WHICH process the host is (pid and OS start time) is taken now: a host that is stopping removes its identity file.
+        let kill = null;
+        try { kill = typeof hosts.killer === 'function' ? hosts.killer(target.port) : null; } catch { kill = null; }
         let reply = null;
         try { reply = await hosts.control({ ...target, msg: { type: 'stop' } }); } catch (err) { reply = { ok: false, error: (err && err.message) || String(err) }; }
         // The reply is not the truth: host-client gives up after 3 s, and a host still tearing down can outlast that. The port is.
         const stopNote = reply && reply.ok === true ? '' : ` (${(reply && reply.error) || 'no answer'})`;
-        let gone = false;
-        for (let i = 0; i < PROFILE_STOP_TRIES; i++) {
-          let seen = 'unknown';
-          try { seen = await hosts.probe(target.port); } catch { seen = 'unknown'; }
-          if (seen === 'refused') { gone = true; break; }
-          await sleep(PROFILE_STOP_STEP_MS);
+        const portGone = async (tries) => {
+          for (let i = 0; i < tries; i++) {
+            let seen = 'unknown';
+            try { seen = await hosts.probe(target.port); } catch { seen = 'unknown'; }
+            if (seen === 'refused') return true;
+            await sleep(PROFILE_STOP_STEP_MS);
+          }
+          return false;
+        };
+        let gone = await portGone(PROFILE_STOP_TRIES);
+        // MEASURED (verify/probe-side-session.js fails the same way, with no profile involved): on some machines a host that was told to stop
+        // sits in node-pty's teardown and never leaves. The person already said yes to ending this session, so a host that won't go is ended by a
+        // PROVEN kill (pid and start time re-checked on a held handle: host/kill-tree.js), never by name, and only if the proof exists.
+        if (!gone && typeof kill === 'function') {
+          let outcome = 'unknown';
+          try { outcome = await kill(); } catch { outcome = 'unknown'; }
+          if (outcome === 'killed' || outcome === 'gone') gone = await portGone(PROFILE_KILL_TRIES);
         }
         if (!gone) return { ok: false, error: `the current session didn't end${stopNote}` };
       }
