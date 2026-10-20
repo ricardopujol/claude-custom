@@ -14,6 +14,10 @@
  * A record for another session is dropped (PR #197 Dexter 7): the port and token are inherited by every `claude` under the pty, and a
  * second one that loaded the mod would otherwise drive this session's circle. Until the host has heard its own session id (the
  * SessionStart hook) there is nothing to compare with and a record is taken.
+ *
+ * KNOWN RESIDUAL (PR #197 Dexter r2 N3): a dropped record is still answered 204, so the mod's roster dedupe counts it as delivered. After a
+ * /clear race (the mod posts under the new session id before the host's SessionStart hook arrives) the new session's roster is not re-sent
+ * until it changes. The next usage or ask record is unaffected.
  */
 const { windowsFromRateLimits, contextFromUsage } = require('./mod-feed');
 

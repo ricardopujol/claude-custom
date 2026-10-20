@@ -96,7 +96,8 @@ async function partA(bin) {
   console.log('\n=== PART A: the real CLI + the mod + an in-process receiver ===');
   const token = newToken();
   const records = [];
-  const server = createModServer({ token, onRecord: (r) => records.push(r) });
+  const received = new Map();                                        // record -> when this probe received it (the host's Date.now())
+  const server = createModServer({ token, onRecord: (r) => { records.push(r); received.set(r, Date.now()); } });
   const port = await server.listen();
   const term = new Terminal({ cols: 110, rows: 40, allowProposedApi: true });
   const env = { ...cleanEnv(), CLAUDE_CUSTOM_MOD_PORT: String(port), CLAUDE_CUSTOM_MOD_TOKEN: token };
@@ -122,6 +123,9 @@ async function partA(bin) {
       check('...a context window as a number', typeof turnUsage.usage.context.window === 'number' && turnUsage.usage.context.window > 0);
       check('...a rate-limits list (empty only off a subscription)', Array.isArray(turnUsage.usage.rateLimits), JSON.stringify(turnUsage.usage.rateLimits));
     }
+    // The mood machine compares the record's `at` ($.clock.now()) with the host's Date.now() (PR #197 Dexter r2 N4): they must share an epoch.
+    const skews = records.map((r) => Math.abs(received.get(r) - r.at));
+    check('the at of a mod record is epoch milliseconds, within 5 s of the host clock on arrival', skews.length > 0 && Math.max(...skews) < 5000, `worst skew ${Math.max(...skews)} ms over ${skews.length} records`);
     check('an agents record was posted', records.some((r) => r.kind === 'agents'), JSON.stringify(records.find((r) => r.kind === 'agents')));
     await sleep(2500);
 

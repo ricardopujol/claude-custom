@@ -250,7 +250,11 @@ function provenance(p, priorWindows) {
     if (isNum(p.carriedReadAt)) carriedReadAt = p.carriedReadAt;
   } else if (p && isNum(p.readAt)) {
     if (priorWindows.length) pollKeys = priorWindows.map(keyOf);
-    carriedReadAt = p.readAt;
+    // A file with no `source` is a poll's... or a mod file that a host on an OLD build rewrote after a failed poll, dropping the provenance
+    // fields (develop's recordPoll). Its carried rows still say their own poll age (`carriedAt`), which that writer does not touch, so the
+    // oldest of those is the authority; only a file with no carried row falls back to readAt (a poll's time, or nothing left to carry).
+    const stamps = priorWindows.map(w => w.carriedAt).filter(isNum);
+    carriedReadAt = stamps.length ? Math.min(...stamps) : p.readAt;
   }
   return { pollKeys, carriedReadAt };
 }
@@ -266,7 +270,8 @@ function orderWindows(mine, priorWindows, carriedReadAt, t) {
     if (modKeys.has(k)) {
       if (!placed.has(k)) { out.push(mine.find(m => keyOf(m) === k)); placed.add(k); }
     } else if (carryOk) {
-      // A carried row shows its real age (`carriedAt`, the poll that produced it), and is never the one the file calls binding.
+      // A carried row shows its real age (`carriedAt`, the poll that produced it). It keeps no binding flag of its own (markBinding decides),
+      // though it can be the binding one when it is the fullest.
       out.push({ ...cleanWindow(w), carriedAt: carriedReadAt });
     }
   }
@@ -293,6 +298,10 @@ function markBinding(windows) {
  * on one account, or a host and the lease-holding poller, can interleave a read and a write and lose one side's update. The write is
  * atomic (no torn file) and the ratchet limits a lost update to a one-step stale number that the next write of either side corrects.
  * A later lane can take the lease lock around it; it is not worth a lock on a 2-second cadence today.
+ *
+ * KNOWN RESIDUAL (PR #197 Dexter r2 N2): when the incoming mod row has an older reset than a file row that is itself a fresh MOD row, that
+ * row is treated as carried and ages by the last poll's time, so it can be dropped early or mislabelled. It needs a reset that moved backwards
+ * between two mod records of one account; the figure is then re-written by the next mod record or poll.
  */
 function recordModWindows({ dir = defaultDir(), configDir, windows, now = Date.now } = {}) {
   if (!Array.isArray(windows) || windows.length === 0) return false;

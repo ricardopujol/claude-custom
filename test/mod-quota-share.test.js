@@ -246,6 +246,11 @@ test('property: a mod write never lowers a window\'s percent inside one reset, w
 
 const { createQuotaAnnouncer } = require('../host/quota');
 const failPoll = (d, t) => recordPoll({ dir: d, result: { ok: false, error: '429' }, now: () => t });
+// Exactly what develop's recordPoll writes on a failed poll: readAt and windows kept, lastError set, and NO provenance fields (a host on an old build).
+const failOld = (d, t) => {
+  const f = fileOf(d);
+  fs.writeFileSync(quotaPath(d, undefined), JSON.stringify({ version: 1, readAt: f.readAt, windows: f.windows, lastError: { message: '429', at: t } }, null, 2));
+};
 
 test('Dexter 1: two mod writes with no good poll never mark the file complete, and the poller keeps asking', async () => {
   const d = dir();
@@ -323,7 +328,7 @@ test('Dexter 2: a failed poll on a plain poll file still keeps readAt and window
 
 test('property: across any interleaving of good polls, failed polls and mod writes, a carried window poll is never older than the stale bound', () => {
   const fc = require('fast-check');
-  fc.assert(fc.property(fc.array(fc.record({ who: fc.constantFrom('poll', 'fail', 'mod'), dt: fc.integer({ min: 1, max: 120 }) }), { minLength: 1, maxLength: 25 }), (ops) => {
+  fc.assert(fc.property(fc.array(fc.record({ who: fc.constantFrom('poll', 'fail', 'failOld', 'mod'), dt: fc.integer({ min: 1, max: 120 }) }), { minLength: 1, maxLength: 25 }), (ops) => {
     const d = dir();
     let t = T0;
     let lastGoodPoll = null;
@@ -331,6 +336,7 @@ test('property: across any interleaving of good polls, failed polls and mod writ
       t += dt * 1000;
       if (who === 'poll') { poll(d, POLLED, t); lastGoodPoll = t; }
       else if (who === 'fail') failPoll(d, t);
+      else if (who === 'failOld') { try { failOld(d, t); } catch { /* no file yet */ } }
       else {
         recordModWindows({ dir: d, windows: FROM_MOD, now: () => t });
         const fable = fileOf(d).windows.find(w => w.key === 'weekly_scoped:Fable');
@@ -436,4 +442,28 @@ test('CLAUDE_CUSTOM_QUOTA_DIR moves the quota folder, for probes that must not t
     process.env.CLAUDE_CUSTOM_QUOTA_DIR = '';
     assert.match(defaultDir(), /\.claude-custom$/);
   } finally { if (was === undefined) delete process.env.CLAUDE_CUSTOM_QUOTA_DIR; else process.env.CLAUDE_CUSTOM_QUOTA_DIR = was; }
+});
+
+test('PR 197 Dexter r2 N1: a failed poll written by an OLD build between two mod writes cannot launder the age: Fable is gone at T0+250 s', () => {
+  const d = dir();
+  poll(d, POLLED, T0);
+  recordModWindows({ dir: d, windows: FROM_MOD, now: () => T0 + 5_000 });
+  failOld(d, T0 + 60_000);
+  assert.strictEqual(fileOf(d).source, undefined, 'the old writer dropped the provenance');
+  recordModWindows({ dir: d, windows: FROM_MOD, now: () => T0 + 65_000 });
+  assert.strictEqual(fileOf(d).carriedReadAt, T0, 'the carried row own carriedAt is the age, not the mod stamp');
+  failOld(d, T0 + 120_000);
+  recordModWindows({ dir: d, windows: FROM_MOD, now: () => T0 + 125_000 });
+  assert.ok(fileOf(d).windows.some(w => w.key === 'weekly_scoped:Fable'), 'inside the bound');
+  failOld(d, T0 + 200_000);
+  recordModWindows({ dir: d, windows: FROM_MOD, now: () => T0 + 250_000 });
+  assert.ok(!fileOf(d).windows.some(w => w.key === 'weekly_scoped:Fable'));
+});
+
+test('PR 197 Dexter r2 N1: after an old-build failure the file with no carried row still uses its readAt as the poll time', () => {
+  const d = dir();
+  poll(d, POLLED, T0);
+  failOld(d, T0 + 60_000);                               // a plain poll file the old writer touched: readAt is the poll's
+  recordModWindows({ dir: d, windows: FROM_MOD, now: () => T0 + 250_000 });
+  assert.ok(!fileOf(d).windows.some(w => w.key === 'weekly_scoped:Fable'), 'a poll 250 s old is past the bound');
 });
