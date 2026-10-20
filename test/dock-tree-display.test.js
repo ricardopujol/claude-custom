@@ -774,7 +774,7 @@ test('M13: rebaseDrag: a split below the root is found by its path, and a plain 
 
 test('every panel has a Lucide icon, in TABS order, the ones Ricardo picked', () => {
   const R = require('../app/rail-icons');
-  const picked = ['users', 'lock', 'bug', 'folder', 'git-branch', 'brain', 'layout-grid', 'palette', 'wand-2', 'bar-chart-3', 'app-window', 'message-circle', 'gamepad-2'];
+  const picked = ['users', 'lock', 'bug', 'folder', 'git-branch', 'brain', 'layout-grid', 'palette', 'wand-2', 'bar-chart-3', 'app-window', 'monitor-play', 'message-circle', 'gamepad-2'];
   assert.deepStrictEqual(TABS.map(t => R.ICONS[t.id] && R.ICONS[t.id][0]), picked);
   assert.deepStrictEqual(Object.keys(R.ICONS).sort(), IDS.slice().sort(), 'no icon for a panel that does not exist');
 });

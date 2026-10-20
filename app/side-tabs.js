@@ -44,6 +44,9 @@ const TABS = [
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.
   { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
+  // BACKLOG #119 A4: the page of a dev server this worktree runs, in a sandboxed view that only reaches this computer. An ordinary module
+  // like the rest; it docks at its own width (app/dock-tree.js OWN_ROW_SIZE).
+  { id: 'preview', label: 'Preview', title: 'The page of a dev server running in this worktree: only localhost opens here' },
   // BACKLOG #33: ask about this repo, or have the code you selected explained, by a local model (or Haiku / Sonnet on your plan).
   // An ordinary module like the rest: it docks, moves and hides through the same layout.
   { id: 'ask', label: 'Ask', title: 'Ask where something is in this repo, or have selected code explained: a local model answers, and every place is a link' },
