@@ -216,3 +216,12 @@ test('afterSelected keeps the program state: a look clears the cue, not what the
   const s = tsp({ pendingUrgent: true, program: { state: 'blocked', kind: 'auth' } });
   assert.deepStrictEqual(afterSelected(s).program, s.program);
 });
+
+test('PR #201 Dexter 1: once the program state is cleared (exit, closed socket) the status is not working and carries program null', () => {
+  const working = tsp({ program: { state: 'working' } });
+  assert.strictEqual(working.working, true);
+  const cleared = tsp({ program: null });
+  assert.strictEqual(cleared.working, false);
+  assert.strictEqual(cleared.program, null);
+  assert.strictEqual(sameStatus(working, cleared), false);
+});

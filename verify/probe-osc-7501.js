@@ -375,7 +375,7 @@ async function partD(tmp) {
 }
 
 // ---- E. shutdown --------------------------------------------------------------------------------------------------------
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };   // kill-ok(own-spawn): signal 0 only asks whether the node this probe typed into its own pty still runs
 
 async function partE(tmp) {
   console.log('-- E. shutdown: a child of the pty process is gone after the host stops (both ConPTY backends)');
@@ -402,7 +402,7 @@ async function partE(tmp) {
       check(backend + ': the child is gone within 5 s of the stop', Boolean(childGone), 'pid ' + pid + (childGone ? '' : ' still running'));
     } finally {
       win.close();
-      if (pid && alive(pid)) { try { require('../host/kill-tree').killPidTree(pid); } catch { /* best effort */ } }   // our own child pid, by pid
+      if (pid && alive(pid)) { try { require('../host/kill-tree').killPidTree(pid); } catch { /* best effort */ } }   // kill-ok(own-spawn): the node this probe typed into its own pty, pid read from its own output, and only if it survived the host's stop
     }
   }
 }

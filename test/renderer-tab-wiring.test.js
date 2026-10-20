@@ -295,16 +295,6 @@ test('OSC 7501: the exit frame and a dropped socket both clear the program state
   assert.match(body, /applyProgramStatus\(null\)/);
 });
 
-test('OSC 7501: with no program state the status is not working and carries program null (what the strip then draws)', () => {
-  const { tabStatus } = require('../app/tab-status');
-  const { clean } = require('../app/program-status-display');
-  const working = tabStatus({ program: { state: 'working' } }, { cleanProgram: clean });
-  assert.strictEqual(working.working, true);
-  const cleared = tabStatus({ program: clean(null) }, { cleanProgram: clean });
-  assert.strictEqual(cleared.working, false);
-  assert.strictEqual(cleared.program, null);
-});
-
 test('the diagnostics pane hears which ConPTY the session runs on when it is not the bundled one', () => {
   assert.match(JS, /notePtyBackend\(msg\.ptyBackend\)/);
   assert.match(fnBody('notePtyBackend'), /info\.backend === 'bundled'/);
