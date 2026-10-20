@@ -16,7 +16,8 @@
 const { BLOCK, RANGE_START, RANGE_LAST_BASE } = require('./port-blocks');
 const { descendants } = require('./resource-tree');
 
-const INTERVAL_MS = 10000;                 // like the Resources panel's panel level (host/poller-policy.js CADENCE.panel)
+const INTERVAL_MS = 10000;
+const PROCS_TTL_MS = 30000;               // the process table is read again at most this often, unless a listener of an unknown owner turns up                 // like the Resources panel's panel level (host/poller-policy.js CADENCE.panel)
 const NAME_MAX = 40;
 const REACHABLE = new Set(['127.0.0.1', '::1', '0.0.0.0', '::']);
 
@@ -28,15 +29,43 @@ const REACHABLE = new Set(['127.0.0.1', '::1', '0.0.0.0', '::']);
 // 477 processes): Get-NetTCPConnection -State Listen took 961 ms a call, netstat -ano 8 ms (the process table, 376 ms, is then the rest of it).
 // A listener is a line whose FOREIGN address ends in :0 (an established or closing connection has a real foreign port), which does not depend on
 // the word the OS prints for the state ("LISTENING" is translated).
-const SCRIPT = String.raw`& {
-  $ErrorActionPreference = 'SilentlyContinue'
+const BODY = String.raw`  $ErrorActionPreference = 'Stop'
+  $good = $true
   $ns = Join-Path $env:SystemRoot 'System32\NETSTAT.EXE'
-  $l = @(foreach ($v in 'TCP', 'TCPv6') { & $ns -ano -p $v | ForEach-Object { if ($_ -match '^\s*TCP\s+(\S+):(\d+)\s+\S+:0\s+\S+\s+(\d+)\s*$') { [pscustomobject]@{ port=[int]$matches[2]; addr=([string]$matches[1]).Trim('[', ']'); pid=[int]$matches[3] } } } })
-  $p =@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate | ForEach-Object { [pscustomobject]@{ pid=[int]$_.ProcessId; ppid=[int]$_.ParentProcessId; name=[string]$_.Name; start=$(if ($_.CreationDate) { [string]$_.CreationDate.ToFileTimeUtc() } else { $null }) } })
-  [pscustomobject]@{ listeners=$l; procs=$p } | ConvertTo-Json -Compress -Depth 4
+  $l = @()
+  try {
+    foreach ($v in 'TCP', 'TCPv6') {
+      $out = @(& $ns -ano -p $v)
+      if ($LASTEXITCODE -ne 0) { $good = $false }
+      foreach ($line in $out) {
+        if ($line -match '^\s*TCP\s+(\S+):(\d+)\s+\S+:0\s+\S+\s+(\d+)\s*$') { $l += [pscustomobject]@{ port=[int]$matches[2]; addr=([string]$matches[1]).Trim('[', ']'); pid=[int]$matches[3] } }
+      }
+    }
+  } catch { $good = $false }
+  if ($l.Count -eq 0) { $good = $false }
+  $unknown = @($l | Where-Object { $known -notcontains $_.pid })
+  $fresh = ($force -or $unknown.Count -gt 0)
+  $p = @()
+  if ($fresh) {
+    try {
+      $p = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CreationDate | ForEach-Object { [pscustomobject]@{ pid=[int]$_.ProcessId; ppid=[int]$_.ParentProcessId; name=[string]$_.Name; start=$(if ($_.CreationDate) { [string]$_.CreationDate.ToFileTimeUtc() } else { $null }) } })
+      if ($p.Count -eq 0) { $good = $false }
+    } catch { $good = $false }
+  }
+  [pscustomobject]@{ ok=$good; fresh=[bool]$fresh; listeners=@($l); procs=@($p) } | ConvertTo-Json -Compress -Depth 4
   'END'
-}
 `;
+
+/**
+ * The script for one sample. `known` are the pids the caller's cached process table already holds; `force` asks for the table regardless
+ * (its first read, and its refresh every PROCS_TTL_MS). The table is only read when a listener's owner is not in `known`, or when forced,
+ * so the steady state is the netstat call alone (PR #198 Miguel Y2). Only integers are written into the script.
+ */
+function scriptFor({ known = [], force = true } = {}) {
+  const pids = (Array.isArray(known) ? known : []).filter(n => Number.isInteger(n) && n >= 0).join(',');
+  return `& {\n  $known = @(${pids})\n  $force = ${force === true ? '$true' : '$false'}\n${BODY}}\n`;
+}
+const SCRIPT = scriptFor();
 
 const isPort = (n) => Number.isInteger(n) && n >= 1 && n <= 65535;
 const isPid = (n) => Number.isInteger(n) && n >= 0;
@@ -51,6 +80,8 @@ function parseTable(text) {
   let doc;
   try { doc = JSON.parse(lines.slice(0, -1).join('\n')); } catch { return { ok: false }; }
   if (doc === null || typeof doc !== 'object' || Array.isArray(doc) || !('listeners' in doc) || !('procs' in doc)) return { ok: false };
+  // The script says whether both halves RAN (PR #198 Dexter 4): a query that failed must never read as "nothing is listening".
+  if (doc.ok !== true) return { ok: false };
 
   const seen = new Set();
   const listeners = [];
@@ -60,12 +91,14 @@ function parseTable(text) {
     seen.add(l.port);
     listeners.push({ port: l.port, pid: l.pid, addr: l.addr });
   }
+  // A sample that did not read the table (every listener owner was already known) carries none: the caller keeps the one it has.
+  const fresh = doc.fresh !== false;
   const procs = [];
-  for (const p of asList(doc.procs)) {
+  for (const p of fresh ? asList(doc.procs) : []) {
     if (p === null || typeof p !== 'object' || !isPid(p.pid) || !isPid(p.ppid) || typeof p.name !== 'string') continue;
     procs.push({ pid: p.pid, ppid: p.ppid, name: p.name, start: typeof p.start === 'string' ? p.start : null });
   }
-  return { ok: true, listeners, procs };
+  return { ok: true, fresh, listeners, procs: fresh ? procs : null };
 }
 
 const validBase = (b) => Number.isInteger(b) && b >= RANGE_START && b <= RANGE_LAST_BASE && (b - RANGE_START) % BLOCK === 0;
@@ -112,4 +145,9 @@ function wanted({ minimised, tabs } = {}) {
   return minimised === false && Number.isInteger(tabs) && tabs > 0;
 }
 
-module.exports = { SCRIPT, INTERVAL_MS, parseTable, inBlock, buildState, wanted };
+/** Is this window out of sight for sampling? Only a real visible=true and minimized=false counts as in view (hidden to the tray, minimised, or no window yet: unseen). */
+function unseen(state) {
+  return !(state !== null && typeof state === 'object' && state.visible === true && state.minimized === false);
+}
+
+module.exports = { unseen, SCRIPT, scriptFor, PROCS_TTL_MS, INTERVAL_MS, parseTable, inBlock, buildState, wanted };

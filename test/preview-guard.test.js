@@ -135,15 +135,15 @@ test('property: a random non-loopback host is never accepted, whatever port and 
   }), { numRuns: 500 });
 });
 
-test('property: a loopback host with any port in 1-65535 is accepted, and any other port refused', () => {
+test('property: a loopback host with any port in 1-65535 is accepted, and any other port (or one of the app own ports 7700-7799) refused', () => {
   fc.assert(fc.property(fc.constantFrom(...LOOPBACK), fc.integer({ min: -10, max: 70000 }), (host, port) => {
     const r = guard.previewUrl(`http://${host}:${port}/`);
-    return r.ok === (port >= 1 && port <= 65535);
+    return r.ok === (port >= 1 && port <= 65535 && !(port >= 7700 && port < 7800));
   }), { numRuns: 500 });
 });
 
 test('property: the accepted URL is a fixed point (checking it again gives it back)', () => {
-  fc.assert(fc.property(fc.constantFrom(...LOOPBACK), fc.integer({ min: 1, max: 65535 }), fc.stringMatching(/^[a-zA-Z0-9/._~-]{0,16}$/), (host, port, path) => {
+  fc.assert(fc.property(fc.constantFrom(...LOOPBACK), fc.integer({ min: 7800, max: 65535 }), fc.stringMatching(/^[a-zA-Z0-9/._~-]{0,16}$/), (host, port, path) => {
     const first = guard.previewUrl(`http://${host}:${port}/${path}`);
     assert.strictEqual(first.ok, true);
     const second = guard.previewUrl(first.url);
@@ -180,11 +180,51 @@ test('requestAllowed: everything that leaves this computer is refused, including
 
 test('property: requestAllowed accepts a http/ws URL iff its host is one of the three loopback names', () => {
   const host = fc.oneof(fc.constantFrom(...LOOPBACK), fc.stringMatching(/^[a-z][a-z0-9-]{0,8}(\.[a-z]{2,5}){1,2}$/));
-  fc.assert(fc.property(fc.constantFrom('http', 'ws'), host, fc.integer({ min: 1, max: 65535 }), (scheme, h, port) => {
+  fc.assert(fc.property(fc.constantFrom('http', 'ws'), host, fc.integer({ min: 7800, max: 65535 }), (scheme, h, port) => {
     return guard.requestAllowed(`${scheme}://${h}:${port}/x`) === LOOPBACK.includes(h);
   }), { numRuns: 500 });
 });
 
 test('property: requestAllowed never throws', () => {
   fc.assert(fc.property(fc.string({ maxLength: 200 }), (s) => { guard.requestAllowed(s); return true; }), { numRuns: 300 });
+});
+
+// ---- PR #198 fix pass ------------------------------------------------------------------------------------------------------------
+
+test('the app\'s own ports are refused by navigation, request and label, and extra ports can be named (Miguel Y3)', () => {
+  for (const p of [7700, 7750, 7799]) {
+    assert.strictEqual(guard.previewUrl(`http://localhost:${p}/`).ok, false, String(p));
+    assert.strictEqual(guard.requestAllowed(`http://127.0.0.1:${p}/x`), false, String(p));
+    assert.strictEqual(guard.requestAllowed(`ws://localhost:${p}/`), false, String(p));
+    assert.strictEqual(guard.blockedLabel(`http://localhost:${p}/`), 'blocked: a port this app uses');
+  }
+  for (const p of [7699, 7800]) assert.strictEqual(guard.requestAllowed(`http://localhost:${p}/`), true, String(p));
+  assert.strictEqual(guard.requestAllowed('http://localhost:4321/', { denyPorts: [4321] }), false);
+  assert.strictEqual(guard.previewUrl('http://localhost:4321/', { denyPorts: [4321] }).ok, false);
+  assert.strictEqual(guard.requestAllowed('blob:http://localhost:7701/abc'), false);
+});
+
+test('long loopback addresses are allowed up to 32768 and cut with a reason beyond it (Dexter 5)', () => {
+  assert.strictEqual(guard.MAX_LENGTH, 32768);
+  assert.strictEqual(guard.previewUrl('http://localhost:3000/?q=' + 'x'.repeat(9000)).ok, true);
+  assert.strictEqual(guard.requestAllowed('http://localhost:3000/api?q=' + 'x'.repeat(9000)), true);
+  const long = 'http://localhost:3000/api?q=' + 'x'.repeat(33000);
+  assert.deepStrictEqual(guard.requestVerdict(long), { ok: false, tooLong: true });
+  assert.deepStrictEqual(guard.requestVerdict('https://example.com/'), { ok: false });
+  assert.match(guard.blockedLabel(long), /longer than 32768 characters/);
+});
+
+test('one frame rule: loopback pages, blob: of the loopback origin, data: and srcdoc/blank pass; other sites, files and foreign blobs do not (Dexter 2 / Miguel Y4)', () => {
+  for (const u of ['http://localhost:3000/frame', 'blob:http://localhost:3000/abc-123', 'blob:http://127.0.0.1:3000/x', 'data:text/html,<p>hi</p>', 'about:srcdoc', 'about:blank']) {
+    assert.strictEqual(guard.frameAllowed(u), true, u);
+  }
+  for (const u of ['https://example.com/', 'http://example.com/', 'file:///C:/x', 'blob:https://example.com/abc', 'blob:http://localhost.evil.example/x', 'javascript:alert(1)', 'about:config', 'http://localhost:7701/', '', null, 5]) {
+    assert.strictEqual(guard.frameAllowed(u), false, String(u));
+  }
+});
+
+test('property: the frame rule never allows more than the request filter plus srcdoc/blank and loopback pages', () => {
+  fc.assert(fc.property(fc.oneof(fc.webUrl(), fc.string({ maxLength: 60 })), (u) => {
+    return !guard.frameAllowed(u) || guard.requestAllowed(u) || guard.previewUrl(u).ok || u === 'about:srcdoc' || u === 'about:blank';
+  }), { numRuns: 500 });
 });

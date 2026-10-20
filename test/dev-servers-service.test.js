@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const { createDevServersService } = require('../app/dev-servers-service');
 const { INTERVAL_MS } = require('../host/dev-servers');
 
-const table = (listeners, procs = []) => `${JSON.stringify({ listeners, procs })}\nEND\n`;
+const table = (listeners, procs = []) => `${JSON.stringify({ ok: true, listeners, procs })}\nEND\n`;
 const L = (port, pid) => ({ port, pid, addr: '127.0.0.1' });
 
 function rig({ tabs = [{ key: 'a', cwd: 'C:\\p\\a' }], bases = { 'C:\\p\\a': 20000 }, hosts = {}, replies = [] } = {}) {
@@ -182,4 +182,51 @@ test('a refresh while a sample is in flight does not start a second one', async 
   r.svc.refresh(); r.svc.refresh();
   await r.settle();
   assert.strictEqual(r.calls.length, 1);
+});
+
+// ---- PR #198 fix pass: the process table is not read every sample (Miguel Y2) -------------------------------------------------------
+
+const stale = (listeners) => `${JSON.stringify({ ok: true, fresh: false, listeners, procs: [] })}\nEND\n`;
+
+test('the first sample forces the process table; the next ones name the pids they already know and force nothing', async () => {
+  const procs = [{ pid: 40, ppid: 1, name: 'node.exe', start: '1' }];
+  const r = rig({ replies: [table([L(20003, 40)], procs), stale([L(20003, 40)])] });
+  r.svc.start(); r.svc.setMinimised(false);
+  await r.settle();
+  assert.match(r.calls[0], /\$force = \$true/);
+  r.tick(); await r.settle();
+  assert.match(r.calls[1], /\$force = \$false/);
+  assert.match(r.calls[1], /\$known = @\(40\)/);
+});
+
+test('a sample that did not read the table keeps the cached one, so the names stay', async () => {
+  const procs = [{ pid: 40, ppid: 1, name: 'node.exe', start: '1' }];
+  const r = rig({ replies: [table([L(20003, 40)], procs), stale([L(20003, 40), L(20004, 40)])] });
+  r.svc.start(); r.svc.setMinimised(false);
+  await r.settle();
+  r.tick(); await r.settle();
+  assert.deepStrictEqual(r.sent.at(-1)[1].inBlock, [{ port: 20003, pid: 40, name: 'node' }, { port: 20004, pid: 40, name: 'node' }]);
+});
+
+test('the table is forced again once it is older than PROCS_TTL_MS', async () => {
+  const r = rig({ replies: [table([L(20003, 40)], [{ pid: 40, ppid: 1, name: 'node.exe', start: '1' }]), stale([L(20003, 40)]), stale([L(20003, 40)])] });
+  r.svc.start(); r.svc.setMinimised(false);
+  await r.settle();
+  r.advance(10000); r.tick(); await r.settle();
+  assert.match(r.calls[1], /\$force = \$false/);
+  r.advance(25000); r.tick(); await r.settle();
+  assert.match(r.calls[2], /\$force = \$true/);
+});
+
+test('a table the script marked ok:false (netstat or the process query failed) is a failed sample: unknown after three, never 0 listeners (Dexter 4)', async () => {
+  const bad = `${JSON.stringify({ ok: false, listeners: [], procs: [] })}\nEND\n`;
+  const r = rig({ replies: [table([L(20003, 40)], [{ pid: 40, ppid: 1, name: 'node.exe', start: '1' }]), bad, bad, bad] });
+  r.svc.start(); r.svc.setMinimised(false);
+  await r.settle();
+  r.tick(); await r.settle();
+  assert.strictEqual(r.sent.at(-1)[1].stale, true, 'first failure: the old answer, said to be old');
+  assert.strictEqual(r.sent.at(-1)[1].inBlock.length, 1);
+  r.tick(); await r.settle(); r.tick(); await r.settle();
+  assert.strictEqual(r.sent.at(-1)[1].ok, false);
+  assert.ok(!('inBlock' in r.sent.at(-1)[1]), 'no empty list that could read as zero');
 });

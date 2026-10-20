@@ -94,11 +94,12 @@ test('the view is sandboxed, isolated, has NO preload and no Node, and sits on a
   assert.ok(r.children.has(r.views[0]));
 });
 
-test('the session is locked before anything loads: direct connection, no permissions, loopback-only requests', async () => {
+test('the session is locked before anything loads: a dead proxy (loopback stays direct by Chromium implicit bypass), no permissions, loopback-only requests', async () => {
   const r = rig();
   await show(r, { port: 20003 });
   const ses = Object.values(r.sessions)[0];
-  assert.deepStrictEqual(ses.proxy, { mode: 'direct' }, 'no system proxy or PAC decides where loopback goes');
+  assert.deepStrictEqual(ses.proxy, { mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1' }, 'every non-URL connection (WebRTC TURN over TCP) dies at a dead proxy');
+  assert.ok(!('proxyBypassRules' in ses.proxy), 'no bypass rules: <-loopback> would send loopback to the dead proxy, anything else would open a hole');
   let granted; ses.permissionRequest({}, 'media', (g) => { granted = g; });
   assert.strictEqual(granted, false);
   assert.strictEqual(ses.permissionCheck({}, 'clipboard-read'), false);
@@ -443,4 +444,83 @@ test('property: whatever a page navigates to, it is let through only if the guar
   fc.assert(fc.property(fc.oneof(fc.webUrl(), fc.string({ maxLength: 60 }), fc.constantFrom('http://localhost:1/', 'http://[::1]:9/x', 'http://127.0.0.1:80/')), fc.constantFrom('will-navigate', 'will-redirect', 'will-frame-navigate'), (url, ev) => {
     return emitNav(wc, ev, url) === !guard.previewUrl(url).ok;
   }), { numRuns: 400 });
+});
+
+// ---- PR #198 fix pass ------------------------------------------------------------------------------------------------------------
+
+test('the proxy is never direct (Dexter 1): a direct session lets a WebRTC TURN allocation reach any host', async () => {
+  const r = rig();
+  await show(r, { port: 20003 });
+  const ses = Object.values(r.sessions)[0];
+  assert.notStrictEqual(ses.proxy.mode, 'direct');
+  assert.strictEqual(ses.proxy.mode, 'fixed_servers');
+  assert.match(ses.proxy.proxyRules, /127\.0\.0\.1:1$/);
+});
+
+test('one frame rule (Dexter 2 / Miguel Y4): sub-frames may be blob: of the loopback origin, data:, srcdoc or loopback pages; the main frame may not be blob/data', async () => {
+  const r = rig();
+  await show(r, { port: 20003 });
+  const wc = r.views[0].webContents;
+  for (const u of ['blob:http://localhost:20003/abc', 'data:text/html,<p>x</p>', 'about:srcdoc', 'http://localhost:20003/frame']) {
+    assert.strictEqual(emitNav(wc, 'will-frame-navigate', u, { isMainFrame: false }), false, `sub-frame ${u}`);
+    assert.strictEqual(emitNav(wc, 'will-frame-navigate', u, { isMainFrame: true }), !/^http:/.test(u), `main frame ${u}`);
+  }
+  for (const u of ['https://example.com/', 'file:///C:/x', 'blob:https://example.com/x', 'http://localhost:7701/']) {
+    assert.strictEqual(emitNav(wc, 'will-frame-navigate', u, { isMainFrame: false }), true, `sub-frame ${u}`);
+  }
+});
+
+test('the app own ports are refused for the page: navigation, frame and request, with a header line (Miguel Y3)', async () => {
+  const r = rig();
+  await show(r, { port: 20003 });
+  const wc = r.views[0].webContents;
+  assert.strictEqual(emitNav(wc, 'will-navigate', 'http://127.0.0.1:7701/'), true);
+  assert.strictEqual(lastEvent(r, 'blocked').text, 'blocked: a port this app uses');
+  const ses = Object.values(r.sessions)[0];
+  let out; ses.requestFilter({ url: 'http://127.0.0.1:7750/x' }, (x) => { out = x; });
+  assert.strictEqual(out.cancel, true);
+});
+
+test('extra ports named by the caller are refused too (the probe driver)', async () => {
+  const events = [];
+  const owner = new EventEmitter(); owner.id = 7; owner.isDestroyed = () => false;
+  const sessions = {}; const views = [];
+  const m = createPreviewViews({
+    WebContentsView: class extends FakeView { constructor(o) { super(o); views.push(this); } },
+    session: { fromPartition: (p) => (sessions[p] = sessions[p] || new FakeSession(p)) },
+    addChild() {}, removeChild() {}, ownerBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }), onEvent: (o, ev) => events.push(ev), denyPorts: [4321],
+  });
+  await m.show(owner, { target: { port: 20003 }, rect: RECT });
+  assert.strictEqual(emitNav(views[0].webContents, 'will-navigate', 'http://localhost:4321/'), true);
+  let out; Object.values(sessions)[0].requestFilter({ url: 'http://localhost:4321/' }, (x) => { out = x; });
+  assert.strictEqual(out.cancel, true);
+});
+
+test('a loopback request cut for its length says so on the header (Dexter 5)', async () => {
+  const r = rig();
+  await show(r, { port: 20003 });
+  const ses = Object.values(r.sessions)[0];
+  let out; ses.requestFilter({ url: 'http://localhost:20003/api?q=' + 'x'.repeat(40000) }, (x) => { out = x; });
+  assert.strictEqual(out.cancel, true);
+  assert.match(lastEvent(r, 'blocked').text, /a request longer than 32768 characters/);
+  ses.requestFilter({ url: 'http://localhost:20003/api?q=' + 'x'.repeat(9000) }, (x) => { out = x; });
+  assert.strictEqual(out.cancel, false);
+});
+
+test('a new view of the session waits for the last one\'s storage to be emptied before it loads anything (Dexter 7)', async () => {
+  const r = rig();
+  await show(r, { port: 20003 });
+  const ses = Object.values(r.sessions)[0];
+  let release;
+  const pending = new Promise((res) => { release = res; });
+  ses.clearStorageData = () => pending;
+  r.m.hide(r.owner);
+  const again = show(r, { port: 20004 });
+  await new Promise((res) => setImmediate(res));
+  assert.strictEqual(r.views.length, 2);
+  assert.ok(!r.views[1].webContents.calls.some(c => c[0] === 'load'), 'not loaded while the clear is pending');
+  assert.strictEqual(r.children.has(r.views[1]), false, 'not even in the window yet');
+  release();
+  await again;
+  assert.ok(r.views[1].webContents.calls.some(c => c[0] === 'load'));
 });

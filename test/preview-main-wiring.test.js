@@ -66,9 +66,12 @@ test('open in the browser goes through the one rule links follow (openInBrowser 
 
 test('the listener sampler is started minimised-aware, stopped and its shell closed at quit', () => {
   assert.match(CODE, /devServers = createDevServersService\(\{\s*exec: devServersExec,/);
-  assert.match(CODE, /devServers\.setMinimised\(!!\(win && !win\.isDestroyed\(\) && win\.isMinimized\(\)\)\);/);
-  assert.match(CODE, /win\.on\('minimize', \(\) => \{ if \(devServers\) devServers\.setMinimised\(true\); \}\);/);
-  assert.match(CODE, /win\.on\('restore', \(\) => \{ if \(devServers\) devServers\.setMinimised\(false\); \}\);/);
+  // What the window shows decides it: minimise, restore AND hide/show (the tray), through the pure rule in host/dev-servers.js.
+  assert.match(CODE, /for \(const ev of \['minimize', 'restore', 'hide', 'show'\]\) win\.on\(ev, syncDevServersSampling\);/);
+  assert.match(CODE, /devServers\.setMinimised\(devServersHost\.unseen\(\{ visible: gone \? false : win\.isVisible\(\), minimized: gone \? true : win\.isMinimized\(\) \}\)\);/);
+  assert.match(CODE, /createWindow\(\);\s*syncDevServersSampling\(\);/, 'the first read is AFTER the window exists');
+  assert.doesNotMatch(CODE, /devServers\.setMinimised\(!!\(win/, 'no read before the window exists');
+  // What the window shows decides it: minimise, restore AND hide/show (the tray), through the pure rule in host/dev-servers.js.
   assert.match(CODE, /app\.on\('will-quit', \(\) => \{ if \(devServers\) devServers\.stop\(\); if \(devServersExec\) devServersExec\.close\(\); \}\);/);
 });
 

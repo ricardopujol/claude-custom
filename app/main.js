@@ -21,7 +21,8 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
@@ -129,6 +130,11 @@ const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
+// The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
+const { createTrayController } = require('./tray-controller');
+const { renderTrayIcon } = require('./tray-icon');
+const { hidesOnClose, startsHidden } = require('./tray-model');
+const { readTraySettings, writeTraySetting, registerTrayHandlers } = require('./tray-settings');
 // The indexing assistant (#66): a field in the strip; Enter appends the note verbatim to the selected project's backlog
 // `## Inbox` (no model). The service is host/indexing-service.js; main's half (channels, the toast and list views over
 // the tabs) is app/indexing-bridge.js.
@@ -185,6 +191,9 @@ const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
 const STRIP_HEIGHT = 34;
 const POLL_MS = 3000;
 const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
+// A probe window is killed by pid, which leaves a ghost icon in the notification area until the mouse passes over it. So only the
+// tray's own probe (verify/probe-tray.js) gets a tray; in every other probe the tray (and starting hidden) is off.
+const TRAY_ON = !PROBE_PORT || process.env.CLAUDE_CUSTOM_TRAY_PROBE === '1';
 // The probe's secret; every driver command must carry it (Miguel, PR #75 M4).
 // handleProbeCommand refuses everything when it's missing or short.
 const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
@@ -476,6 +485,10 @@ function setFocusMode(on) {
 // reload while the cue is up would clear it for good.
 let cueOn = false;
 let focused = false;
+// The tray icon's one controller (created in whenReady), and whether the app is really quitting: a close then goes through
+// even with "Minimise to tray on close" on.
+let trayController = null;
+let quitting = false;
 
 function createWindow() {
   // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
@@ -483,9 +496,12 @@ function createWindow() {
   ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
+  // "Start minimised to tray": the window is made but not shown; the tray icon brings it up. Never without the icon.
+  const startHidden = TRAY_ON && startsHidden(readTraySettings(uiStore));
   win = new BrowserWindow(forProbe({
     width: 1200,
     height: 800,
+    show: !startHidden,
     // Frameless: no OS title bar; the strip drags the window and draws its own
     // minimise and close (app/tab-strip.js windowChrome). The title still
     // feeds alt-tab and the taskbar.
@@ -542,9 +558,13 @@ function createWindow() {
   win.on('blur', () => { focused = false; sendFocus(); });
   win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
   win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
-  // The Dev servers sampler follows the window the same way (#119 A4).
-  win.on('minimize', () => { if (devServers) devServers.setMinimised(true); });
-  win.on('restore', () => { if (devServers) devServers.setMinimised(false); });
+  // Hidden to the tray is minimised as far as the polling and the cue go: nobody is looking.
+  win.on('hide', () => { focused = false; if (resources) resources.setMinimised(true); });
+  win.on('show', () => { if (resources) resources.setMinimised(false); });
+  // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
+  for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, syncDevServersSampling);
+  // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
+  win.on('session-end', () => { quitting = true; });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
     win.on(ev, () => { forEachView(layoutView); if (indexing) indexing.relayout(); });
   }
@@ -570,6 +590,13 @@ function createWindow() {
   // first: Save / Discard / Cancel (app/reader-unsaved.js guardWindowClose). Once answered, the close goes through.
   let closeGuarded = false;
   win.on('close', (e) => {
+    // "Minimise to tray on close" (off by default): the window hides, the pages and their unsaved text stay alive, and the
+    // tray reaches it again. Only with a tray icon up to reach it from, and never while the app is quitting.
+    if (hidesOnClose({ settings: readTraySettings(uiStore), trayExists: !!trayController && trayController.state().exists, quitting })) {
+      e.preventDefault();
+      win.hide();
+      return;
+    }
     if (closeGuarded || readerUnsaved.all().length === 0) return;
     e.preventDefault();
     if (closeAsking) return;
@@ -585,6 +612,9 @@ function createWindow() {
       },
     }).then((ok) => {
       if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
+      // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
+      // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
+      else quitting = false;
     }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
   });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
@@ -609,7 +639,9 @@ function createWindow() {
 // silently stops meaning anything is worse than no cue, because the next
 // real one says nothing either.
 function setCue(on) {
+  const flash = cueFlash(cueOn, !!on, focused);
   cueOn = !!on;
+  if (flash !== null && win && !win.isDestroyed()) win.flashFrame(flash);   // #117: the border is static, the taskbar button moves
   forEachView((v) => v.webContents.send('attention-cue', cueOn));
 }
 
@@ -756,6 +788,7 @@ const previewViews = createPreviewViews({
   keyOf: previewKeyOf,
   onEvent: (owner, ev) => { if (!owner.isDestroyed()) owner.send('preview:event', ev); },
   openUrl: (url) => openInBrowser(url, 'Preview'),
+  denyPorts: PROBE_PORT ? [Number(PROBE_PORT)] : [],        // the probe driver's own port, besides the session hosts' range (app/preview-guard.js)
   log: (line) => console.log(line),
 });
 // The listening ports of every tab's worktree, from ONE PowerShell call per sample (host/dev-servers.js SCRIPT) through a persistent shell of its
@@ -763,6 +796,12 @@ const previewViews = createPreviewViews({
 // allocation); the session host each tab's join starts from is the one the Resources sampler proved.
 let devServers = null;
 let devServersExec = null;
+// Sampling follows what the window shows (host/dev-servers.js unseen): a window hidden to the tray, minimised, or not made yet samples nothing.
+function syncDevServersSampling() {
+  if (!devServers) return;
+  const gone = !win || win.isDestroyed();
+  devServers.setMinimised(devServersHost.unseen({ visible: gone ? false : win.isVisible(), minimized: gone ? true : win.isMinimized() }));
+}
 
 function destroyTabView(tab) {
   const view = tab.view;
@@ -885,6 +924,7 @@ function onShellChanged(snapshot) {
     mode: snapshot.mode, create: snapshot.create,
   };
   win.webContents.send('strip-model', lastStripPayload);
+  if (trayController) trayController.sync();     // the count and the tooltip follow the cues
 }
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
@@ -1007,6 +1047,38 @@ const backgroundActions = createBackgroundActions({
   stopHost: row => stopHost({ row }, hostStopDeps()),
   log: msg => console.log(msg),
 });
+
+// --- the tray icon (BACKLOG #119 A8) ----------------------------------------------------------------------------------
+// One per window process (each project window is its own Electron main). The rules are app/tray-model.js, the pixels
+// app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron and the shell.
+function startTray() {
+  if (!TRAY_ON) return;
+  trayController = createTrayController({
+    Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
+    getSettings: () => readTraySettings(uiStore),
+    tabs: () => (tabShell ? tabShell.snapshot().tabs : []),
+    windowLabel: () => WINDOW_LABEL,
+    isHidden: () => !win || win.isDestroyed() || !win.isVisible(),
+    background: backgroundModel,
+    now: () => Date.now(),
+    log: (...a) => console.log(...a),
+    actions: {
+      focusWindow,
+      selectTab: key => tabShell.select(key),
+      openBackground: o => backgroundActions.open(o),
+      // The same Stop as the ▾ menu: it asks first, every time. Its question needs a visible window to sit on.
+      stopBackground: (row) => { focusWindow(); backgroundActions.stop(row).catch(() => {}); },
+      hideAll: () => { if (win && !win.isDestroyed()) win.hide(); },
+      showAll: focusWindow,
+      setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
+      // Unsaved reader text asks Save / Discard / Cancel on the window, so the window has to be visible to be answered.
+      quit: () => { if (readerUnsaved.all().length > 0) focusWindow(); app.quit(); },
+    },
+  });
+  trayController.sync();
+  // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
+  if (!trayController.state().exists && win && !win.isDestroyed() && !win.isVisible()) focusWindow();
+}
 
 async function showBackgroundMenu() {
   const template = menuTemplate(await backgroundModel(), {
@@ -1391,6 +1463,8 @@ function registerIpc() {
   // Layout pass L2: "status line in the header" (#27; host/status-relay.js
   // reads the same file on every status fire) and "hide the title bar" (#28;
   // read by createWindow for the next window). See window-chrome-bridge.js.
+  // The tray icon's switches (BACKLOG #119 A8), in the same record. Changing one applies at once: the icon appears or goes.
+  registerTrayHandlers({ ipcMain, store: uiStore, isSender: isTabView, onChange: () => { if (trayController) trayController.sync(); } });
   const chromeSync = {};
   registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
   watchChromeSettings({
@@ -1796,6 +1870,45 @@ function startProbeDriver(port) {
       setTimeout(() => app.exit(0), 200);
       return { ok: true };
     },
+    // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
+    // Tray events call. Only a window started with CLAUDE_CUSTOM_TRAY_PROBE=1 has a tray.
+    async tray() {
+      if (!trayController) return { ok: false, error: 'no tray in this window' };
+      const snap = tabShell.snapshot();
+      return { ok: true, tray: trayController.state(), visible: win.isVisible(), minimized: win.isMinimized(), selectedKey: snap.selectedKey,
+        tabs: snap.tabs.map(t => ({ key: t.key, branch: t.branch || null, needsInput: !!(t.status && t.status.needsInput), finished: !!(t.status && t.status.finished) })),
+        settings: readTraySettings(uiStore) };
+    },
+    // The Tray's current image as a PNG, so a person can look at what a probe measured (a Tray can't be screenshotted).
+    async trayImage(file) {
+      const img = trayController && trayController.image();
+      if (!img) return { ok: false, error: 'no tray image' };
+      fs.writeFileSync(file, img.toPNG());
+      return { ok: true, bytes: fs.statSync(file).size };
+    },
+    async trayClick() {
+      if (!trayController) return { ok: false, error: 'no tray in this window' };
+      trayController.click();
+      return { ok: true };
+    },
+    async trayMenu(clickLabel) {
+      if (!trayController) return { ok: false, error: 'no tray in this window' };
+      const t = await trayController.template();
+      const rows = t.filter(x => x.type !== 'separator');
+      if (clickLabel) {
+        const row = rows.find(x => x.label === clickLabel);
+        if (!row || !row.click) return { ok: false, error: 'no row ' + clickLabel };
+        row.click({ checked: row.type === 'checkbox' ? !row.checked : undefined });
+      }
+      return { ok: true, rows: rows.map(x => ({ label: x.label, checked: x.checked, sub: x.submenu ? x.submenu.map(y => y.label) : null })) };
+    },
+    async traySetting(key, value) {
+      const saved = writeTraySetting(uiStore, key, value);
+      if (trayController) trayController.sync();
+      return { ok: saved !== null, settings: saved };
+    },
+    // Close the window as the X does (the 'close' handler decides: hide to the tray, or really close).
+    async winClose() { win.close(); return { ok: true, destroyed: win.isDestroyed(), visible: win.isDestroyed() ? false : win.isVisible() }; },
     async background() {
       const m = await backgroundModel();
       const strip = await win.webContents.executeJavaScript(
@@ -2083,15 +2196,16 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   devServers.start();
-  devServers.setMinimised(!!(win && !win.isDestroyed() && win.isMinimized()));
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
   createWindow();
+  syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
+  startTray();
 
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();
@@ -2125,6 +2239,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', () => { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); });
-app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+app.on('before-quit', () => { quitting = true; });
+app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app);

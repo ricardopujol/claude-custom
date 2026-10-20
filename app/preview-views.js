@@ -15,12 +15,23 @@
  *   - nothing is kept: the session is in memory and emptied whenever the view goes. The last ADDRESS per worktree is remembered in this
  *     process only, so the panel comes back to where it was.
  *
+ * ACCEPTED, ON PURPOSE (PR #198 review):
+ *   - The header's "open in browser" opens the page's CURRENT loopback address, which may be one the page moved itself to (Dexter 6): only
+ *     loopback can be chosen, never the app's own ports, and the address field shows it first. It is kept.
+ *   - The page may request `devtools:` addresses because the DevTools window needs them in this session; Chromium blocks that scheme for
+ *     web content (Miguel S5).
+ *   - The block of ports for each tab is read from the ports file once per tab per sample, on the main thread (a small read, Miguel S2).
+ *   - app/main.js keeps its own `win.on` and `will-quit` lines for the sampler beside the Resources ones, so the lines the Resources
+ *     tests pin stay as they are (Miguel S1); the tray's hide/show feeds both (host/dev-servers.js unseen).
+ *
  * The Electron classes arrive as arguments so test/preview-views.test.js can drive this with fakes.
  */
 const guard = require('./preview-guard');
 
 const REMEMBERED_MAX = 64;               // worktrees whose last address is kept (in memory)
 const FAIL_TEXT_MAX = 140;
+// A proxy nothing listens on (the same as Claude's panel, app/canvas-views.js), with NO bypass rules: Chromium's implicit bypass keeps loopback direct.
+const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1' });
 const ABORTED = -3;                      // ERR_ABORTED: a navigation replaced by another, not a failure
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
@@ -29,8 +40,9 @@ const plain = (s, n) => String(s).replace(CONTROL, ' ').replace(/\s+/g, ' ').tri
 
 function createPreviewViews({
   WebContentsView, session, addChild, removeChild, ownerBounds, keyOf = () => null, onEvent = () => {},
-  isOwnerVisible = () => true, openUrl = () => false, log = () => {},
+  isOwnerVisible = () => true, openUrl = () => false, log = () => {}, denyPorts = [],
 } = {}) {
+  const deny = { denyPorts };
   const byOwner = new Map();          // owner contents id -> record
   const sessions = new Map();         // partition -> { ses, ready }
   const watched = new Set();          // owner ids whose 'destroyed' we already listen for
@@ -73,7 +85,12 @@ function createPreviewViews({
     ses.setPermissionCheckHandler(() => false);
     if (typeof ses.setDevicePermissionHandler === 'function') ses.setDevicePermissionHandler(() => false);
     if (typeof ses.setSpellCheckerEnabled === 'function') ses.setSpellCheckerEnabled(false);
-    ses.webRequest.onBeforeRequest((d, cb) => cb({ cancel: !guard.requestAllowed(d && d.url) }));
+    ses.webRequest.onBeforeRequest((d, cb) => {
+      const v = guard.requestVerdict(d && d.url, deny);
+      // A loopback request cut for its length is said on the header: nothing else would tell the page's author why it failed.
+      if (v.tooLong && st.rec) blocked(st.rec, `blocked: a request longer than ${guard.MAX_LENGTH} characters`);
+      cb({ cancel: !v.ok });
+    });
     if (typeof ses.on === 'function') {
       ses.on('will-download', (e) => {
         e.preventDefault();
@@ -88,12 +105,16 @@ function createPreviewViews({
     const wc = rec.wc;
     wc.setWindowOpenHandler(() => { blocked(rec, 'blocked: a new window'); return { action: 'deny' }; });
     // Both places Electron puts the address are checked; either one refused refuses the move. An event with no address at all is refused.
+    // The MAIN frame goes by the strict rule (previewUrl); a sub-frame by the one frame rule the request filter shares (guard.frameAllowed).
+    // An event that does not say it is a sub-frame is the main frame.
     const check = (e, arg) => {
       const urls = urlOf(e, arg);
-      const bad = urls.length === 0 ? '' : urls.find(u => !guard.previewUrl(u).ok);
+      const sub = e && e.isMainFrame === false;
+      const ok = (u) => (sub ? guard.frameAllowed(u, deny) : guard.previewUrl(u, deny).ok);
+      const bad = urls.length === 0 ? '' : urls.find(u => !ok(u));
       if (urls.length === 0 || bad !== undefined) {
         e.preventDefault();
-        blocked(rec, guard.blockedLabel(bad === undefined ? '' : bad));
+        blocked(rec, guard.blockedLabel(bad === undefined ? '' : bad, deny));
       }
     };
     for (const ev of ['will-navigate', 'will-redirect', 'will-frame-navigate']) wc.on(ev, check);
@@ -113,7 +134,7 @@ function createPreviewViews({
   }
 
   function accepted(rec, url) {
-    const r = guard.previewUrl(url);
+    const r = guard.previewUrl(url, deny);
     if (!r.ok) return;                         // the guard stopped anything else before it got here; never remember it
     rec.url = r.url;
     remember(rec.owner, r.url);
@@ -128,8 +149,11 @@ function createPreviewViews({
       lockSession(st);
       sessions.set(partition, st);
     }
-    // Direct, so no system proxy or PAC file decides where a loopback request goes. Everything that is not loopback is cancelled by the filter.
-    if (!st.ready) st.ready = Promise.resolve(st.ses.setProxy({ mode: 'direct' })).catch((err) => { st.ready = null; throw err; });
+    // SEALED LIKE CLAUDE'S PANEL (PR #198 Dexter 1): a proxy nothing listens on, so every connection that is not a URL load (WebRTC TURN over
+    // TCP, preconnect) dies at the proxy and never reaches another host. Loopback is NOT listed in the bypass rules: Chromium's own implicit
+    // bypass keeps it direct, which is why the dev server still loads. (`direct` here let a TURN allocate reach any host:port; measured by
+    // verify/probe-preview-panel.js.)
+    if (!st.ready) st.ready = Promise.resolve(st.ses.setProxy(DEAD_PROXY)).catch((err) => { st.ready = null; throw err; });
     const view = new WebContentsView({ webPreferences: {
       sandbox: true, contextIsolation: true, nodeIntegration: false, partition,
       // The header's DevTools button needs them; they open detached, and only on that click.
@@ -137,7 +161,7 @@ function createPreviewViews({
       disableDialogs: true, safeDialogs: true,
     } });
     const wc = view.webContents;
-    const rec = { owner, view, wc, ses: st.ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), url: null, attached: false, dead: false, ready: null };
+    const rec = { owner, view, wc, ses: st.ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), url: null, attached: false, dead: false, ready: null, st };
     st.rec = rec;
     lockContents(rec);
     byOwner.set(owner.id, rec);
@@ -150,7 +174,8 @@ function createPreviewViews({
         sessions.delete(partition);
       });
     }
-    const proxied = st.ready;
+    // Nothing loads before the proxy is in AND the last view's storage has been emptied (PR #198 Dexter 7): the session is reused.
+    const proxied = Promise.all([st.ready, st.clearing]);
     rec.ready = (async () => {
       await proxied;                                         // nothing loads before the session is locked
       if (rec.dead) return false;
@@ -168,7 +193,9 @@ function createPreviewViews({
     try { removeChild(rec.view); } catch { /* the window is going away */ }
     try { if (!rec.wc.isDestroyed()) rec.wc.forcefullyCrashRenderer(); } catch { /* nothing left to kill */ }
     try { if (!rec.wc.isDestroyed()) rec.wc.close(); } catch { /* already gone */ }
-    for (const clear of ['clearStorageData', 'clearCache']) { try { Promise.resolve(rec.ses[clear] && rec.ses[clear]()).catch(() => {}); } catch { /* nothing to clear */ } }
+    // Awaited by the NEXT view of this session before it loads anything (PR #198 Dexter 7).
+    const clears = ['clearStorageData', 'clearCache'].map((clear) => { try { return Promise.resolve(rec.ses[clear] && rec.ses[clear]()).catch(() => {}); } catch { return Promise.resolve(); } });
+    if (rec.st) rec.st.clearing = Promise.all([rec.st.clearing, ...clears]);
   }
 
   // What the person (or the chip) asked to see, as a verdict: { ok, url } | { ok: false, reason } | { ok: true, url: null } (nothing asked).
@@ -177,7 +204,7 @@ function createPreviewViews({
       const key = keyOf(owner);
       const back = typeof key === 'string' ? remembered.get(key) : undefined;
       if (back === undefined) return { ok: true, url: null };
-      const r = guard.previewUrl(back);
+      const r = guard.previewUrl(back, deny);
       return r.ok ? { ok: true, url: r.url } : { ok: true, url: null };
     }
     if (target === null || typeof target !== 'object' || Array.isArray(target)) return { ok: false, reason: 'not an address' };
@@ -241,7 +268,7 @@ function createPreviewViews({
     return withRec(owner, (rec) => {
       let current = '';
       try { current = rec.wc.getURL(); } catch { return false; }
-      const ok = guard.previewUrl(current);
+      const ok = guard.previewUrl(current, deny);
       const target = ok.ok ? guard.openExternalTarget(ok.url) : null;
       if (!target) return false;
       try { return openUrl(target) !== false; } catch { return false; }

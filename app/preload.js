@@ -220,6 +220,12 @@ contextBridge.exposeInMainWorld('harness', {
         } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('chrome-settings')),
   },
+  // The tray icon's switches (BACKLOG #119 A8) -- see app/tray-settings.js. `get` answers { trayIcon, minimiseOnClose, startMinimised }
+  // or null; `set` takes one of the first two keys and the DESIRED boolean, and answers what main saved (null when it couldn't).
+  tray: {
+    get: () => ipcRenderer.invoke('tray:getSettings'),
+    set: (key, on) => ipcRenderer.invoke('tray:setSetting', key, on),
+  },
   // The background video's play inputs (backlog #34) -- see app/playback-bridge.js. `get` answers
   // { minimised, hidden, onBattery }, each a boolean or null (unknown); `onChange` replaces its
   // one listener and is handed the same shape.

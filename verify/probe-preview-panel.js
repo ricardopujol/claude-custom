@@ -189,6 +189,9 @@ async function liveForeignHost() {
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
 const hits = { ok: 0, leak: 0 };
 let leakPort = 0;
+let turnPort = 0;
+const turnConnections = { n: 0 };
+const END_SCRIPT = '</' + 'script>';
 function pageFor(url, port) {
   const html = (title, body) => `<!doctype html><title>${title}</title>${body}`;
   switch (url.split('?')[0]) {
@@ -202,6 +205,18 @@ function pageFor(url, port) {
       + 'fetch("http://127.0.0.2:' + leakPort + '/leak", { mode: "no-cors" }).then(fin, fin);'
       + 'var i = new Image(); i.onload = fin; i.onerror = fin; i.src = "http://127.0.0.2:' + leakPort + '/leak.png";</script>');
     case '/download': return html('download', '<a id="a" href="/file.bin" download="x.bin">x</a><script>document.getElementById("a").click(); document.title = "download:tried";</script>');
+    case '/turn': return html('turn', '<script>try { var pc = new RTCPeerConnection({ iceServers: [{ urls: ' + JSON.stringify('turn:127.0.0.2:' + turnPort + '?transport=tcp') + ', username: "u", credential: "p" }, { urls: "turn:203.0.113.7:443?transport=tcp", username: "u", credential: "p" }] }); pc.createDataChannel("x"); pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { document.title = "turn:started"; }, function (e) { document.title = "turn:error"; }); } catch (e) { document.title = "turn:threw"; }' + END_SCRIPT);
+    case '/frame-ok': return html('frame', '<script>parent.postMessage("http", "*");' + END_SCRIPT);
+    case '/frames': return html('frames', '<script>'
+      + 'var got = []; addEventListener("message", function (e) { got.push(e.data); document.title = "frames:" + got.sort().join(","); });'
+      + 'function add(set) { var i = document.createElement("iframe"); set(i); document.documentElement.appendChild(i); }'
+      + 'var inner = "<script>parent.postMessage(\\"X\\", \\"*\\");" + "</" + "script>";'
+      + 'add(function (i) { i.src = URL.createObjectURL(new Blob([inner.replace("X", "blob")], { type: "text/html" })); });'
+      + 'add(function (i) { i.src = "data:text/html," + encodeURIComponent(inner.replace("X", "data")); });'
+      + 'add(function (i) { i.srcdoc = inner.replace("X", "srcdoc"); });'
+      + 'add(function (i) { i.src = "/frame-ok"; });'
+      + 'add(function (i) { i.src = "http://example.com/"; });'
+      + END_SCRIPT);
     case '/storage': return html('storage', '<script>document.title = localStorage.getItem("k") ? "storage:kept" : (localStorage.setItem("k", "1"), "storage:fresh");</script>');
     default: return html('404', '');
   }
@@ -272,6 +287,13 @@ async function main() {
   } catch (err) {
     console.log(`NOTE  could not listen on 127.0.0.2 (${err.code || err.message}): the sub-resource check below cannot see a leak`);
   }
+  // A TCP listener on 127.0.0.2: a WebRTC TURN allocation over TCP that the session lets out would connect here (PR #198 Dexter 1).
+  turnPort = await freePort();
+  const turnServer = await new Promise((resolve, reject) => {
+    const srv = net.createServer((sock) => { turnConnections.n += 1; sock.destroy(); });
+    srv.once('error', reject);
+    srv.listen(turnPort, '127.0.0.2', () => { hygiene.addCleanup(() => { try { srv.close(); } catch { /* closed */ } }); resolve(srv); });
+  }).catch((err) => { console.log('NOTE  could not listen on 127.0.0.2 for the TURN check: ' + (err.code || err.message)); return null; });
   const counted = await waitFor(async () => { const s = await st(); return s.chip && s.chip.text === '1' ? s : null; }, 60000, 500);
   check(`2: a server on port ${portA}, inside the block, is counted: the chip reads 1 (and is no longer idle)`, !!counted && !/dv-idle/.test(counted.chip.cls), JSON.stringify((await st()).chip));
   check('2: its title says "1 dev server listening in this worktree\'s ports"', !!counted && /1 dev server listening in this worktree's ports/.test(counted.chip.title), counted && counted.chip.title);
@@ -341,7 +363,7 @@ async function main() {
   await waitFor(async () => ((await note()) === null && (await inspect()).title === 'index' ? true : null), 10000, 150);
   await go(`localhost:${portA}/open`);
   const opened2 = await waitFor(async () => { const i = await inspect(); return /^open:/.test(i.title) ? i : null; }, 10000, 150);
-  check('6: window.open makes no window (it returns null, for the web AND for loopback) and the header says so', !!opened2 && opened2.title === 'open:null,null' && (await note()) === 'blocked: a new window', JSON.stringify({ title: opened2 && opened2.title, note: await note() }));
+  check('6: window.open makes no window (it returns null, for the web AND for loopback) and the header says so', !!opened2 && opened2.title === 'open:null,null' && (await note()) === 'blocked: a new window', JSON.stringify({ title: opened2 && opened2.title, note: await note(), view: await inspect() }));
   await go(`localhost:${portA}/`);
   await waitFor(async () => ((await note()) === null && (await inspect()).title === 'index' ? true : null), 10000, 150);
   await go(`localhost:${portA}/download`);
@@ -362,6 +384,24 @@ async function main() {
   const sub = await waitFor(async () => { const i = await inspect(); return /^subres:done/.test(i.title) ? i : null; }, 15000, 200);
   check('6: the page\'s own assets load (the image on its own server was requested and drawn)', !!sub && sub.title === 'subres:done ok=1' && hits.ok >= 1, JSON.stringify({ title: sub && sub.title, hits: hits.ok }));
   if (leakServer) check('6: a request to ANOTHER loopback address (127.0.0.2) never leaves the session: the server there saw nothing', hits.leak === 0, `leak hits ${hits.leak}`);
+
+  // 6b: frames, one rule (PR #198 Dexter 2 / Miguel Y4) ---------------------------------------------------------------
+  await go('localhost:' + portA + '/');
+  await waitFor(async () => ((await note()) === null && (await inspect()).title === 'index' ? true : null), 10000, 150);
+  await go('localhost:' + portA + '/frames');
+  const framed = await waitFor(async () => { const i = await inspect(); return i.title === 'frames:blob,data,http,srcdoc' ? i : null; }, 15000, 200);
+  check('6b: iframes of a blob: (loopback origin), a data: document, srcdoc and a loopback page all load; the one to example.com does not', !!framed, JSON.stringify({ title: (await inspect()).title, note: await note() }));
+  check('6b: ...and the header says the frame to example.com was blocked', (await note()) === 'blocked: example.com', JSON.stringify(await note()));
+
+  // 6c: WebRTC TURN over TCP (Dexter 1) ----------------------------------------------------------------------------------
+  await go('localhost:' + portA + '/');
+  await waitFor(async () => ((await note()) === null && (await inspect()).title === 'index' ? true : null), 10000, 150);
+  turnConnections.n = 0;
+  await go('localhost:' + portA + '/turn');
+  const turned = await waitFor(async () => { const i = await inspect(); return /^turn:/.test(i.title) ? i : null; }, 15000, 200);
+  await sleep(5000);
+  check('6c: a page that asks WebRTC for a TURN server over TCP gets as far as gathering', !!turned && turned.title === 'turn:started', JSON.stringify(turned && turned.title));
+  if (turnServer) check('6c: ...and ZERO connections reach the listener on 127.0.0.2 (the session sits behind a dead proxy), while the page itself loaded from 127.0.0.1', turnConnections.n === 0 && (await inspect()).url === 'http://localhost:' + portA + '/turn', 'connections ' + turnConnections.n);
 
   // 7 -----------------------------------------------------------------------------
   await go(`localhost:${portA}/`);
@@ -391,6 +431,7 @@ async function main() {
   check('9: stopping the server brings the chip back to 0 (idle)', !!zero && /dv-idle/.test(zero.chip.cls), JSON.stringify((await st()).chip));
   await closeServer(serverB);
   if (leakServer) await closeServer(leakServer);
+  if (turnServer) { try { turnServer.close(); } catch { /* closed */ } }
 
   if (failures) console.log('--- app output (tail) ---\n' + app.out.slice(-2500));
   console.log(`screenshots: ${shots}`);

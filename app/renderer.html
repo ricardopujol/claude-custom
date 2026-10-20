@@ -58,7 +58,9 @@
        than a badge in a panel: it cannot be scrolled past, it does not compete
        with anything for space, and it is part of the alt-tab thumbnail, which
        is where you actually decide which window to return to. Cleared by main
-       the moment the window is focused. */
+       the moment the window is focused. STATIC on purpose (BACKLOG #117): a
+       breathing border cost 12-20% of a core in the GPU process for as long as it
+       showed; main flashes the taskbar button instead. */
     body.attention-cue::after {
       content: '';
       position: fixed;
@@ -66,16 +68,7 @@
       border: 3px solid #e0674f;
       pointer-events: none;       /* a cue must never eat a click */
       z-index: 9999;
-      will-change: opacity;       /* own compositor layer: the breathe is an opacity change only, no repaint */
       contain: strict;
-      animation: cue-breathe 2.4s ease-in-out infinite;
-    }
-    @keyframes cue-breathe {
-      0%, 100% { opacity: 1; }
-      50%      { opacity: .45; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      body.attention-cue::after { animation: none; }
     }
     html, body {
       margin: 0; height: 100%;
@@ -1596,17 +1589,18 @@
     /* CPU and memory sit in fixed columns (tabular figures) so they line up from row to row; the name still takes every leftover pixel */
     .res-child > .res-fig:nth-child(2), .res-row > .res-fig:nth-child(3) { min-width: 4ch; }
     .res-child > .res-fig:nth-child(3), .res-row > .res-fig:nth-child(4) { width: 6.4ch; }
-    .res-name { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-name { flex: 1 1 0; min-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .res-row.open .res-name::before { content: '\25BE '; }
     .res-row:not(.open):not(.res-plain) .res-name::before { content: '\25B8 '; }
     .res-meter { order: 9; flex: 1 0 100%; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
     .res-meter-empty { background: repeating-linear-gradient(135deg, var(--border) 0 4px, transparent 4px 8px); }
     .res-meter > i { display: block; height: 100%; background: var(--accent); }
     .res-kids { margin: 0 0 4px 8px; border-left: 1px solid var(--border); padding-left: 4px; }
-    /* ONE line per child: the name gives way first (ellipsis), then CPU, memory and a small square Stop at the end. The
-       command line is the row's tooltip. */
-    .res-child { display: flex; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
-    .res-cname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* TWO lines per child: the name takes the whole row width (ellipsis), then CPU, memory and a small square Stop under it,
+       right-aligned. The command line is the row's tooltip. */
+    .res-child { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 2px 0; font-size: 11px; }
+    .res-cname { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .res-child > .res-cname + .res-fig { margin-left: auto; }
     .res-stop, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
     .res-stop { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
       border: 1px solid var(--border); border-radius: 3px; }

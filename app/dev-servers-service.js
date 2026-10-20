@@ -27,6 +27,7 @@ function createDevServersService({
   let timer = null;
   let failures = 0;
   let table = null;                    // { listeners, procs, at } of the last good sample
+  let procsAt = -Infinity;             // when the process table in `table` was last READ (it is re-read every PROCS_TTL_MS, or when an unknown owner listens)
   const last = new Map();              // tab key -> { sig, state }
 
   const tabList = () => { try { const t = tabs(); return Array.isArray(t) ? t : []; } catch { return []; } };
@@ -61,9 +62,12 @@ function createDevServersService({
   async function sample() {
     inflight = true;
     try {
-      const parsed = ds.parseTable(await exec(ds.SCRIPT));
+      const known = table ? table.procs.map(p => p.pid) : [];
+      const force = !table || now() - procsAt >= ds.PROCS_TTL_MS;
+      const parsed = ds.parseTable(await exec(ds.scriptFor({ known, force })));
       if (!parsed.ok) throw new Error('the listener table could not be read');
-      table = { listeners: parsed.listeners, procs: parsed.procs, at: now() };
+      if (parsed.fresh) procsAt = now();
+      table = { listeners: parsed.listeners, procs: parsed.fresh ? parsed.procs : (table ? table.procs : []), at: now() };
       failures = 0;
       publish(false, false);
     } catch (err) {

@@ -8,7 +8,7 @@ const fc = require('fast-check');
 const ds = require('../host/dev-servers');
 const { BLOCK, RANGE_START, RANGE_LAST_BASE } = require('../host/port-blocks');
 
-const doc = (o) => `${JSON.stringify(o)}\nEND\n`;
+const doc = (o) => `${JSON.stringify({ ok: true, ...o })}\nEND\n`;
 const listener = (port, pid, addr = '127.0.0.1') => ({ port, pid, addr });
 const proc = (pid, ppid, name, start = '100') => ({ pid, ppid, name, start });
 
@@ -175,4 +175,32 @@ test('the script prints the sentinel last and leaves no variable behind (the she
   assert.match(ds.SCRIPT.trim(), /'END'\s*\}$/);
   assert.match(ds.SCRIPT, /NETSTAT.EXE/);
   assert.doesNotMatch(ds.SCRIPT, /Get-NetTCPConnection/, "961 ms a call, against netstat 8 ms (measured)");
+});
+
+test('unseen: a window nobody can see (minimised, hidden to the tray, or not there yet) takes no samples', () => {
+  assert.strictEqual(ds.unseen({ visible: true, minimized: false }), false);
+  assert.strictEqual(ds.unseen({ visible: true, minimized: true }), true);
+  assert.strictEqual(ds.unseen({ visible: false, minimized: false }), true, 'hidden to the tray');
+  assert.strictEqual(ds.unseen({ visible: false, minimized: true }), true);
+  for (const bad of [undefined, {}, null, { visible: 1, minimized: false }, { visible: true }]) assert.strictEqual(ds.unseen(bad), true, 'only real booleans count as in view');
+});
+
+// ---- PR #198 fix pass: a failed query is unknown, never "0 listeners" (Dexter 4) -------------------------------------------------
+
+test('parseTable: a document the script marked ok:false, or did not mark at all, is not a table', () => {
+  const body = { listeners: [], procs: [] };
+  assert.strictEqual(ds.parseTable(`${JSON.stringify({ ok: false, ...body })}\nEND\n`).ok, false);
+  assert.strictEqual(ds.parseTable(`${JSON.stringify(body)}\nEND\n`).ok, false, 'no ok field: an older or damaged script');
+  assert.strictEqual(ds.parseTable(`${JSON.stringify({ ok: 'true', ...body })}\nEND\n`).ok, false, 'only a real true');
+  assert.strictEqual(ds.parseTable(`${JSON.stringify({ ok: true, ...body })}\nEND\n`).ok, true);
+});
+
+test('the script reports failure of either half and reads the process table only when forced or an owner is unknown (Miguel Y2)', () => {
+  assert.ok(ds.SCRIPT.includes('$good = $false'));
+  assert.ok(ds.SCRIPT.includes('ok=$good'));
+  assert.ok(ds.SCRIPT.includes('$fresh = ($force -or $unknown.Count -gt 0)'));
+  assert.ok(ds.scriptFor({ known: [1, 2], force: false }).includes('$known = @(1,2)\n  $force = $false'));
+  assert.ok(ds.scriptFor({ force: true }).includes('$known = @()\n  $force = $true'));
+  // only integers are written into the script
+  assert.ok(ds.scriptFor({ known: [3, '4); calc', -1, 1.5, NaN, 7] }).includes('$known = @(3,7)'));
 });

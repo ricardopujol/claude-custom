@@ -47,5 +47,5 @@ test('main builds the SHARED sampler, with a persistent PowerShell for the owner
 });
 
 test('the sampler is still stopped on quit (this ends the persistent shell by its own handle)', () => {
-  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(resourceSampler\) resourceSampler\.stop\(\);/);
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{[^\n]*if \(resourceSampler\) resourceSampler\.stop\(\);/);
 });
