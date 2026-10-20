@@ -30,6 +30,7 @@ const FRAME_MIN_MS = 30;           // ~30 fps while animating
 const PACE_EARLY_MS = 6;           // the timer wakes this much before the slot, so the animation frame that follows lands on its vsync
 const STEPS_PER_FRAME = 2;         // layout ticks a frame while it is still settling
 const SAVE_AFTER_MS = 700;
+const TOKENS_TTL_MS = 400;
 const IMAGES_MAX = 120;
 const LABEL_MIN_ZOOM = 0.55;
 const WORDS = { working: 'working', needs: 'needs you', done: 'done', error: 'error', idle: 'idle', unknown: 'not reported' };
@@ -163,6 +164,7 @@ function mount(opts) {
   let projectKey = null;
   let saveTimer = null;
   let tokens = null;
+  let tokensAt = -Infinity;          // the page's colours are read a few times a second, not every frame (each read is a style lookup)
   let rngState = 12345;
   const rng = () => { rngState = (Math.imul(rngState, 1664525) + 1013904223) >>> 0; return rngState / 4294967296; };
   const images = new Map();
@@ -188,11 +190,18 @@ function mount(opts) {
   const nodeById = (id) => graph.nodes.find(n => n.id === id) || null;
 
   // --- size
+  // The stage's size is asked of the layout once, then kept until the size observer says it changed: a rect read every frame is a forced
+  // layout whenever anything else on the page is dirty. (Without an observer it is read every time.)
+  let measured = null;
+  let observing = false;
   function measure() {
+    const dpr = Math.max(1, dprOf() || 1);
+    if (observing && measured) return { w: measured.w, h: measured.h, dpr };
     const r = stage.getBoundingClientRect();
     const w = r && isNum(r.width) ? r.width : 0;
     const h = r && isNum(r.height) ? r.height : 0;
-    return { w, h, dpr: Math.max(1, dprOf() || 1) };
+    measured = { w, h };
+    return { w, h, dpr };
   }
 
   function fit() {
@@ -236,24 +245,42 @@ function mount(opts) {
       const img = opts.makeImage();
       e = { img, ok: false };
       images.set(url, e);
-      img.onload = () => { e.ok = true; redraw(); };
+      img.onload = () => { e.ok = true; gver += 1; redraw(); };
       img.onerror = () => { e.bad = true; };
       img.src = url;
     }
     return e.ok ? e.img : null;
   }
-  function spriteFor(colour, dpr) {
-    const key = `${colour}|${dpr}`;
+  /** [r, g, b] of a #rgb, #rrggbb or rgb()/rgba() colour; null for anything else (a hsl(), a color-mix(), a name). */
+  function rgbOf(css) {
+    const s = String(css || '').trim();
+    let m = /^#([0-9a-f]{3})$/i.exec(s);
+    if (m) return m[1].split('').map(c => parseInt(c + c, 16));
+    m = /^#([0-9a-f]{6})/i.exec(s);
+    if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+    m = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(s);
+    return m ? [+m[1], +m[2], +m[3]] : null;
+  }
+  /** The colour with this opacity. A canvas gradient interpolates WITHOUT premultiplying, so fading to 'transparent' (black, alpha 0) leaves a dark fringe: fade to the same colour at alpha 0. */
+  const alphaOf = (css, a) => { const c = rgbOf(css); return c ? `rgba(${c[0]},${c[1]},${c[2]},${a})` : mix(css, Math.round(a * 100), 'transparent'); };
+
+  /** A soft round particle. On a dark panel: a white-hot core in the state's colour, drawn additively. On a light one: solid colour, drawn normally. */
+  function spriteFor(colour, dpr, dark) {
+    const key = `${colour}|${dpr}|${dark ? 1 : 0}`;
     if (sprites.has(key)) return sprites.get(key);
     let out = null;
     const c = doc.createElement('canvas');
     if (typeof c.getContext === 'function') {
-      const px = Math.round(24 * dpr);
+      const px = Math.round(32 * dpr);
       c.width = px; c.height = px;
       const g = c.getContext('2d');
       if (g) {
         const grad = g.createRadialGradient(px / 2, px / 2, 0, px / 2, px / 2, px / 2);
-        grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.25, colour); grad.addColorStop(1, 'rgba(0,0,0,0)');
+        if (dark) {
+          grad.addColorStop(0, '#ffffff'); grad.addColorStop(0.2, alphaOf(colour, 1)); grad.addColorStop(0.55, alphaOf(colour, 0.35)); grad.addColorStop(1, alphaOf(colour, 0));
+        } else {
+          grad.addColorStop(0, alphaOf(colour, 1)); grad.addColorStop(0.45, alphaOf(colour, 0.85)); grad.addColorStop(1, alphaOf(colour, 0));
+        }
         g.fillStyle = grad; g.fillRect(0, 0, px, px);
         out = c;
       }
@@ -263,13 +290,187 @@ function mount(opts) {
   }
 
   // --- drawing
+  // THREE PASSES, because most of what is on screen does not change from one frame to the next. The BACK pass (background, grid, edges)
+  // and the FRONT pass (nodes and their labels) are each drawn onto their own offscreen canvas and re-drawn only when something they show
+  // changed (the view, the layout, the data, the hover, the colours, the size). Every frame is then: blit the back, draw the DYNAMIC pass
+  // (particles and the working agents' pulse rings, the only things that move), blit the front. Nodes stay on top of the streams, and a
+  // frame's cost is the number of particles, not the number of labels. Without offscreen canvases (a test's fake document) the same three
+  // passes are drawn straight onto the visible canvas every frame.
   const bendOf = (e) => (e.kind === 'conflict' ? 34 : ((hashOf(e.id) % 7) - 3) * 5);
+  const TOKEN_NAMES = ['--bg', '--chrome', '--accent', '--ok', '--bad', '--dim', '--text', '--warn', '--cue', '--font-ui'];
+  let back = null; let front = null;     // { canvas, g } | null: the two offscreen layers
+  let layersAt = '';                     // size + ratio the layers were made for
+  let backKey = ''; let frontKey = '';   // what each layer was last drawn from
+  let gver = 0;                          // bumped whenever what the nodes or edges look like may have changed (data, layout, a portrait loaded)
+
+  /** The perceived lightness of a CSS colour (0 dark .. 1 light); unknown forms count as dark. */
+  function lightnessOf(css) {
+    const c = rgbOf(css);
+    return c ? (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255 : 0;
+  }
+
+  function makeLayer(w, h) {
+    const c = doc.createElement('canvas');
+    if (typeof c.getContext !== 'function') return null;
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    return g ? { canvas: c, g } : null;
+  }
+
+  /** Back: the background, a faint dot grid that moves with the view, and every edge. */
+  function paintBack(g, dpr, fontUi) {
+    const k = view.k;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = 1;
+    g.fillStyle = tok('--bg') || '#11131a';
+    g.fillRect(0, 0, size.w, size.h);
+    const glow = typeof g.createRadialGradient === 'function' ? g.createRadialGradient(size.w / 2, size.h / 2, 0, size.w / 2, size.h / 2, Math.max(size.w, size.h) * 0.7) : null;
+    if (glow) {
+      glow.addColorStop(0, mix(colourOf('working'), 9, tok('--chrome') || '#171a23'));
+      glow.addColorStop(1, tok('--bg') || '#11131a');
+      g.fillStyle = glow;
+      g.fillRect(0, 0, size.w, size.h);
+    }
+    const step = 40 * k;
+    if (step >= 14) {
+      g.fillStyle = mix(tok('--dim') || '#6d7689', 30, 'transparent');
+      const ox = ((view.x % step) + step) % step; const oy = ((view.y % step) + step) % step;
+      g.beginPath();
+      for (let gx = ox; gx < size.w; gx += step) for (let gy = oy; gy < size.h; gy += step) g.rect(Math.round(gx), Math.round(gy), 1.5, 1.5);
+      g.fill();
+    }
+    g.setTransform(dpr * k, 0, 0, dpr * k, dpr * view.x, dpr * view.y);
+    g.lineCap = 'round';
+    const pos = new Map(graph.nodes.map(n => [n.id, n]));
+    const curve = (a, b, bend) => {
+      const c = model.curvePoint(a, b, 0.5, bend);
+      g.beginPath(); g.moveTo(a.x, a.y);
+      g.quadraticCurveTo(2 * c.x - (a.x + b.x) / 2, 2 * c.y - (a.y + b.y) / 2, b.x, b.y);
+      return c;
+    };
+    for (const e of graph.edges) {
+      const a = pos.get(e.from); const b = pos.get(e.to);
+      if (!a || !b || !isNum(a.x) || !isNum(b.x)) continue;
+      const hot = hover && hover.id === e.id;
+      if (e.kind === 'conflict') {
+        g.strokeStyle = colourOf('error'); g.lineWidth = (hot ? 2.6 : 1.8) / k; g.setLineDash([6 / k, 5 / k]);
+        const c = curve(a, b, bendOf(e));
+        g.stroke(); g.setLineDash([]);
+        if (k >= LABEL_MIN_ZOOM) {
+          g.font = `600 10px ${fontUi}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+          g.fillStyle = colourOf('error');
+          g.fillText(model.shorten(e.label, 22), c.x, c.y - 7);
+        }
+        continue;
+      }
+      curve(a, b, bendOf(e));
+      if (e.flow > 0) { g.strokeStyle = mix(colourOf(e.state), 14, 'transparent'); g.lineWidth = 6 / k; g.stroke(); curve(a, b, bendOf(e)); }   // a soft glow under a stream
+      g.strokeStyle = mix(colourOf(e.state), e.flow > 0 ? 72 : 38, 'transparent'); g.lineWidth = (e.flow > 0 ? 1.8 : 1.2) / k; g.setLineDash([]);
+      g.stroke();
+    }
+  }
+
+  /** Front: every node and its label, over the streams. */
+  function paintFront(g, dpr, fontUi) {
+    const k = view.k;
+    g.setTransform(dpr * k, 0, 0, dpr * k, dpr * view.x, dpr * view.y);
+    g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = 1;
+    const chrome = tok('--chrome') || '#171a23';
+    const text = tok('--text') || '#c7cede';
+    const dim = tok('--dim') || '#6d7689';
+    const showLabels = k >= LABEL_MIN_ZOOM;
+    for (const n of graph.nodes) {
+      if (!isNum(n.x) || !isNum(n.y)) continue;
+      const colour = colourOf(n.state);
+      const hot = hover && hover.id === n.id;
+      g.textAlign = 'center'; g.textBaseline = 'alphabetic';
+      if (n.kind === 'project') {
+        const halo = typeof g.createRadialGradient === 'function' ? g.createRadialGradient(n.x, n.y, n.r * 0.6, n.x, n.y, n.r * 2.8) : null;
+        if (halo) { halo.addColorStop(0, mix(colourOf('working'), 26, 'transparent')); halo.addColorStop(1, mix(colourOf('working'), 0, 'transparent')); g.fillStyle = halo; g.beginPath(); g.arc(n.x, n.y, n.r * 2.8, 0, Math.PI * 2); g.fill(); }
+        g.beginPath(); g.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        g.fillStyle = mix(colourOf('working'), 16, chrome); g.fill();
+        g.lineWidth = 2.2 / k; g.strokeStyle = colourOf('working'); g.stroke();
+        g.beginPath(); g.arc(n.x, n.y, n.r * 0.38, 0, Math.PI * 2); g.fillStyle = colourOf('working'); g.fill();
+        g.fillStyle = text; g.font = `600 13px ${fontUi}`; g.fillText(model.shorten(n.label, 26), n.x, n.y + n.r + 17);
+        g.fillStyle = dim; g.font = `11px ${fontUi}`; g.fillText(n.sub, n.x, n.y + n.r + 31);
+      } else if (n.kind === 'session') {
+        g.beginPath(); g.arc(n.x, n.y, n.r, 0, Math.PI * 2);
+        g.fillStyle = mix(colour, 18, chrome); g.fill();
+        g.lineWidth = (hot ? 3 : 2) / k; g.strokeStyle = colour; g.stroke();
+        g.beginPath(); g.arc(n.x, n.y, 4.5, 0, Math.PI * 2); g.fillStyle = colour; g.fill();
+        if (n.self) { g.beginPath(); g.arc(n.x, n.y, n.r + 4, 0, Math.PI * 2); g.lineWidth = 1 / k; g.strokeStyle = mix(text, 55, 'transparent'); g.stroke(); }
+        if (showLabels) { g.fillStyle = text; g.font = `12px ${fontUi}`; g.fillText(model.shorten(n.label, 22), n.x, n.y + n.r + 16); }
+      } else if (n.kind === 'agent') {
+        const d = n.data || {};
+        const spec = d.portrait && typeof d.portrait === 'object' ? d.portrait : { initials: '?', hue: 0, url: null };
+        const img = imageFor(spec.url);
+        g.save();
+        g.beginPath(); g.arc(n.x, n.y, n.r, 0, Math.PI * 2); g.clip();
+        if (img) {
+          g.drawImage(img, n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
+        } else {
+          g.fillStyle = `hsl(${isNum(spec.hue) ? spec.hue : 0} 42% 52%)`; g.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
+          g.fillStyle = '#fff'; g.font = `700 ${n.r * 0.85}px ${fontUi}`; g.textBaseline = 'middle';
+          g.fillText(String(spec.initials || '?').slice(0, 2), n.x, n.y + 0.5);
+          g.textBaseline = 'alphabetic';
+        }
+        g.restore();
+        g.beginPath(); g.arc(n.x, n.y, n.r, 0, Math.PI * 2); g.lineWidth = (hot ? 3 : 2) / k; g.strokeStyle = colour; g.stroke();
+        if (showLabels) { g.fillStyle = n.state === 'idle' ? dim : text; g.font = `10.5px ${fontUi}`; g.fillText(model.shorten(n.label, 16), n.x, n.y + n.r + 13); }
+      } else {
+        g.beginPath(); g.arc(n.x, n.y, n.r, 0, Math.PI * 2); g.setLineDash([3 / k, 3 / k]); g.lineWidth = 1.5 / k; g.strokeStyle = dim; g.stroke(); g.setLineDash([]);
+        g.fillStyle = dim; g.font = `600 11px ${fontUi}`; g.textBaseline = 'middle'; g.fillText(n.label, n.x, n.y + 0.5); g.textBaseline = 'alphabetic';
+      }
+    }
+  }
+
+  /** Dynamic: what moves. Pulse rings round working agents, and the particles (additive glow on a dark panel, solid on a light one). */
+  function paintDynamic(g, dpr, t, moving) {
+    const k = view.k;
+    g.setTransform(dpr * k, 0, 0, dpr * k, dpr * view.x, dpr * view.y);
+    g.globalAlpha = 1;
+    g.lineCap = 'round';
+    for (const n of graph.nodes) {
+      if (n.kind !== 'agent' || n.state !== 'working' || !isNum(n.x) || !isNum(n.y)) continue;
+      const pulse = moving ? 0.5 + 0.5 * Math.sin(t / 340 + (hashOf(n.id) % 6)) : 0.4;
+      g.beginPath(); g.arc(n.x, n.y, n.r + 3 + pulse * 3, 0, Math.PI * 2);
+      g.lineWidth = 1.5 / k; g.strokeStyle = mix(colourOf('working'), 28 + pulse * 40, 'transparent'); g.stroke();
+    }
+    if (!(moving && particlesOn() && particles.list.length)) return;
+    const dark = lightnessOf(tok('--bg')) < 0.45;
+    const pos = new Map(graph.nodes.map(n => [n.id, n]));
+    const byId = new Map(graph.edges.map(e => [e.id, e]));
+    g.globalCompositeOperation = dark ? 'lighter' : 'source-over';
+    for (const p of particles.list) {
+      const e = byId.get(p.e);
+      if (!e) continue;
+      const a = pos.get(e.from); const b = pos.get(e.to);
+      if (!a || !b) continue;
+      const colour = colourOf(e.state);
+      const sprite = spriteFor(colour, dpr, dark);
+      const bend = bendOf(e);
+      for (let i = 0; i < 3; i += 1) {
+        const tt = p.t - i * 0.03;
+        if (tt < 0) break;
+        const q = model.curvePoint(a, b, tt, bend);
+        const sz = (15 - i * 3.5) / k;
+        g.globalAlpha = i === 0 ? 1 : i === 1 ? 0.55 : 0.28;
+        if (sprite) g.drawImage(sprite, q.x - sz / 2, q.y - sz / 2, sz, sz);
+        else { g.fillStyle = colour; g.beginPath(); g.arc(q.x, q.y, sz / 3, 0, Math.PI * 2); g.fill(); }
+      }
+    }
+    g.globalAlpha = 1;
+    g.globalCompositeOperation = 'source-over';
+  }
 
   function drawFrame(t) {
     if (!ctx) return;
-    tokens = null;
+    if (tokens === null || t - tokensAt > TOKENS_TTL_MS) { tokens = {}; tokensAt = t; }
     const m = measure();
     if (m.w <= 0 || m.h <= 0) return;
+    const sizeKey = `${m.w}x${m.h}@${m.dpr}`;
     if (m.w !== size.w || m.h !== size.h || m.dpr !== size.dpr) {
       size = m;
       canvas.width = Math.round(m.w * m.dpr);
@@ -279,128 +480,31 @@ function mount(opts) {
     }
     const dpr = size.dpr;
     const moving = animating();
-    const k = view.k;
     const fontUi = tok('--font-ui') || 'system-ui, sans-serif';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (layersAt !== sizeKey) {
+      layersAt = sizeKey;
+      back = makeLayer(canvas.width, canvas.height);
+      front = back ? makeLayer(canvas.width, canvas.height) : null;
+      if (!front) back = null;
+      backKey = ''; frontKey = '';
+    }
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
-    ctx.fillStyle = tok('--bg') || '#11131a';
-    ctx.fillRect(0, 0, size.w, size.h);
-    const glow = ctx.createRadialGradient ? ctx.createRadialGradient(size.w / 2, size.h / 2, 0, size.w / 2, size.h / 2, Math.max(size.w, size.h) * 0.7) : null;
-    if (glow) {
-      glow.addColorStop(0, mix(colourOf('working'), 9, tok('--chrome') || '#171a23'));
-      glow.addColorStop(1, tok('--bg') || '#11131a');
-      ctx.fillStyle = glow;
-      ctx.fillRect(0, 0, size.w, size.h);
-    }
-    // a faint dot grid that moves with the view
-    const step = 40 * k;
-    if (step >= 14) {
-      ctx.fillStyle = mix(tok('--dim') || '#6d7689', 28, 'transparent');
-      const ox = ((view.x % step) + step) % step; const oy = ((view.y % step) + step) % step;
-      for (let gx = ox; gx < size.w; gx += step) for (let gy = oy; gy < size.h; gy += step) ctx.fillRect(Math.round(gx), Math.round(gy), 1.5, 1.5);
-    }
-
-    ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * view.x, dpr * view.y);
-    const pos = new Map(graph.nodes.map(n => [n.id, n]));
-
-    // edges
-    ctx.lineCap = 'round';
-    for (const e of graph.edges) {
-      const a = pos.get(e.from); const b = pos.get(e.to);
-      if (!a || !b || !isNum(a.x) || !isNum(b.x)) continue;
-      const hot = hover && hover.id === e.id;
-      if (e.kind === 'conflict') {
-        ctx.strokeStyle = colourOf('error'); ctx.lineWidth = (hot ? 2.6 : 1.8) / k; ctx.setLineDash([6 / k, 5 / k]);
-      } else {
-        ctx.strokeStyle = mix(colourOf(e.state), e.flow > 0 ? 70 : 38, 'transparent'); ctx.lineWidth = (e.flow > 0 ? 1.8 : 1.2) / k; ctx.setLineDash([]);
-      }
-      const bend = bendOf(e);
-      const c = model.curvePoint(a, b, 0.5, bend);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y);
-      ctx.quadraticCurveTo(2 * c.x - (a.x + b.x) / 2, 2 * c.y - (a.y + b.y) / 2, b.x, b.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (e.kind === 'conflict' && k >= LABEL_MIN_ZOOM) {
-        ctx.font = `600 ${10}px ${fontUi}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillStyle = colourOf('error');
-        ctx.fillText(model.shorten(e.label, 22), c.x, c.y - 7);
-      }
-    }
-
-    // particles: additive glow sprites, three to a particle for a short tail
-    if (moving && particlesOn() && particles.list.length) {
-      const byId = new Map(graph.edges.map(e => [e.id, e]));
-      ctx.globalCompositeOperation = 'lighter';
-      for (const p of particles.list) {
-        const e = byId.get(p.e);
-        if (!e) continue;
-        const a = pos.get(e.from); const b = pos.get(e.to);
-        if (!a || !b) continue;
-        const colour = colourOf(e.state);
-        const sprite = spriteFor(colour, dpr);
-        const bend = bendOf(e);
-        for (let i = 0; i < 3; i += 1) {
-          const tt = p.t - i * 0.03;
-          if (tt < 0) break;
-          const q = model.curvePoint(a, b, tt, bend);
-          const sz = (11 - i * 2.5) / k;
-          ctx.globalAlpha = i === 0 ? 0.95 : i === 1 ? 0.5 : 0.25;
-          if (sprite) ctx.drawImage(sprite, q.x - sz / 2, q.y - sz / 2, sz, sz);
-          else { ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(q.x, q.y, sz / 3, 0, Math.PI * 2); ctx.fill(); }
-        }
-      }
-      ctx.globalAlpha = 1;
-      ctx.globalCompositeOperation = 'source-over';
-    }
-
-    // nodes
-    const chrome = tok('--chrome') || '#171a23';
-    const text = tok('--text') || '#c7cede';
-    const dim = tok('--dim') || '#6d7689';
-    const showLabels = k >= LABEL_MIN_ZOOM;
-    for (const n of graph.nodes) {
-      if (!isNum(n.x) || !isNum(n.y)) continue;
-      const colour = colourOf(n.state);
-      const hot = hover && hover.id === n.id;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-      if (n.kind === 'project') {
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-        ctx.fillStyle = mix(colourOf('working'), 16, chrome); ctx.fill();
-        ctx.lineWidth = 2.2 / k; ctx.strokeStyle = colourOf('working'); ctx.stroke();
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r * 0.38, 0, Math.PI * 2); ctx.fillStyle = colourOf('working'); ctx.fill();
-        ctx.fillStyle = text; ctx.font = `600 13px ${fontUi}`; ctx.fillText(model.shorten(n.label, 26), n.x, n.y + n.r + 17);
-        ctx.fillStyle = dim; ctx.font = `11px ${fontUi}`; ctx.fillText(n.sub, n.x, n.y + n.r + 31);
-      } else if (n.kind === 'session') {
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-        ctx.fillStyle = mix(colour, 18, chrome); ctx.fill();
-        ctx.lineWidth = (hot ? 3 : 2) / k; ctx.strokeStyle = colour; ctx.stroke();
-        ctx.beginPath(); ctx.arc(n.x, n.y, 4.5, 0, Math.PI * 2); ctx.fillStyle = colour; ctx.fill();
-        if (n.self) { ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 4, 0, Math.PI * 2); ctx.lineWidth = 1 / k; ctx.strokeStyle = mix(text, 55, 'transparent'); ctx.stroke(); }
-        if (showLabels) { ctx.fillStyle = text; ctx.font = `12px ${fontUi}`; ctx.fillText(model.shorten(n.label, 22), n.x, n.y + n.r + 16); }
-      } else if (n.kind === 'agent') {
-        const d = n.data || {};
-        const pulse = n.state === 'working' ? (moving ? 0.5 + 0.5 * Math.sin(t / 340 + (hashOf(n.id) % 6)) : 0.4) : 0;
-        if (pulse > 0) { ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 3 + pulse * 3, 0, Math.PI * 2); ctx.lineWidth = 1.5 / k; ctx.strokeStyle = mix(colour, 28 + pulse * 40, 'transparent'); ctx.stroke(); }
-        const spec = d.portrait && typeof d.portrait === 'object' ? d.portrait : { initials: '?', hue: 0, url: null };
-        const img = imageFor(spec.url);
-        ctx.save();
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.clip();
-        if (img) {
-          ctx.drawImage(img, n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
-        } else {
-          ctx.fillStyle = `hsl(${isNum(spec.hue) ? spec.hue : 0} 42% 52%)`; ctx.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
-          ctx.fillStyle = '#fff'; ctx.font = `700 ${n.r * 0.85}px ${fontUi}`; ctx.textBaseline = 'middle';
-          ctx.fillText(String(spec.initials || '?').slice(0, 2), n.x, n.y + 0.5);
-          ctx.textBaseline = 'alphabetic';
-        }
-        ctx.restore();
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.lineWidth = (hot ? 3 : 2) / k; ctx.strokeStyle = colour; ctx.stroke();
-        if (showLabels) { ctx.fillStyle = n.state === 'idle' ? dim : text; ctx.font = `10.5px ${fontUi}`; ctx.fillText(model.shorten(n.label, 16), n.x, n.y + n.r + 13); }
-      } else {
-        ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.setLineDash([3 / k, 3 / k]); ctx.lineWidth = 1.5 / k; ctx.strokeStyle = dim; ctx.stroke(); ctx.setLineDash([]);
-        ctx.fillStyle = dim; ctx.font = `600 11px ${fontUi}`; ctx.textBaseline = 'middle'; ctx.fillText(n.label, n.x, n.y + 0.5); ctx.textBaseline = 'alphabetic';
-      }
+    if (back && front) {
+      const tokenKey = TOKEN_NAMES.map(tok).join('|');
+      const viewKey = `${view.x},${view.y},${view.k}`;
+      const bKey = `${gver}|${viewKey}|${hover ? hover.id : ''}|${tokenKey}`;
+      if (bKey !== backKey) { backKey = bKey; paintBack(back.g, dpr, fontUi); }
+      if (bKey !== frontKey) { frontKey = bKey; front.g.setTransform(1, 0, 0, 1, 0, 0); front.g.clearRect(0, 0, canvas.width, canvas.height); paintFront(front.g, dpr, fontUi); }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(back.canvas, 0, 0);
+      paintDynamic(ctx, dpr, t, moving);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(front.canvas, 0, 0);
+    } else {
+      paintBack(ctx, dpr, fontUi);
+      paintDynamic(ctx, dpr, t, moving);
+      paintFront(ctx, dpr, fontUi);
     }
     frames += 1;
   }
@@ -426,10 +530,12 @@ function mount(opts) {
     if (moving) {
       for (let i = 0; i < STEPS_PER_FRAME; i += 1) layoutLib.step(layout, graph);
       layoutLib.apply(layout, graph);
+      if (!wasSettled) gver += 1;
       if (particlesOn()) particles = model.stepParticles(particles, flowsOf(), dt, budget, rng);
       else if (particles.list.length) particles = model.newParticles();
     } else {
       settleNow();
+      if (!wasSettled) gver += 1;
       if (particles.list.length) particles = model.newParticles();
     }
     if (!wasSettled && layoutLib.settled(layout)) {
@@ -576,7 +682,7 @@ function mount(opts) {
     else return;
     userView = true; paintZoom(); saveSoon(); redraw(); e.preventDefault();
   });
-  if (typeof opts.observe === 'function') opts.observe(stage, () => { size = { w: 0, h: 0, dpr: 0 }; redraw(); });
+  if (typeof opts.observe === 'function') observing = typeof opts.observe(stage, () => { measured = null; size = { w: 0, h: 0, dpr: 0 }; redraw(); }) === 'function';
 
   // --- the controller
   paintStrip();
@@ -597,6 +703,7 @@ function mount(opts) {
       }
       if (sig === signature && !changedShape) return;
       signature = sig;
+      gver += 1;
       if (!userView && size.w > 0) { view = model.fitView(graph.nodes, size.w, size.h, 34); paintZoom(); }
       redraw();
     },

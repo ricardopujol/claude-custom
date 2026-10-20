@@ -16,8 +16,27 @@ const M = require('../app/map-model');
 
 const TOKENS = { '--bg': '#101218', '--chrome': '#171a23', '--accent': '#d08c4a', '--ok': '#5fb07a', '--bad': '#cc5f5f', '--dim': '#6d7689', '--text': '#c7cede', '--warn': '#e6c34a', '--font-ui': 'Segoe UI' };
 
-function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, height: 420 }, makeImage = null } = {}) {
+function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, height: 420 }, makeImage = null, layered = false, tokens = {} } = {}) {
   const doc = new FakeDocument();
+  // LAYERED: offscreen canvases that can draw (a real browser's), each with its own recording context; the visible canvas keeps `ctx`
+  const layers = [];
+  let mainMade = false;               // the first canvas mount() makes is the visible one: it is drawn through `ctx`, not recorded here
+  if (layered) {
+    const make = doc.createElement.bind(doc);
+    doc.createElement = (tag) => {
+      const e = make(tag);
+      if (String(tag).toLowerCase() === 'canvas') {
+        const rec = [];
+        const g = new Proxy({}, {
+          get(_t, name) { return (...args) => { rec.push([name, ...args]); if (name === 'createRadialGradient') return { addColorStop: (...stop) => rec.push(['stop', ...stop]) }; return undefined; }; },
+          set(_t, name, v) { rec.push(['set:' + String(name), v]); return true; },
+        });
+        e.getContext = () => g;
+        if (mainMade) layers.push({ canvas: e, calls: rec }); else mainMade = true;
+      }
+      return e;
+    };
+  }
   const panel = doc.createElement('div');
   doc.root.appendChild(panel);
   const calls = [];
@@ -28,7 +47,7 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
   });
   const pending = new Map();
   const paced = new Map();         // the waits between two frames of the loop (timers)
-  const counts = { raf: 0, caf: 0, pace: 0, unpace: 0 };
+  const counts = { raf: 0, caf: 0, pace: 0, unpace: 0, css: 0 };
   let id = 0; let t = 1000;
   const later = [];
   const clicks = { session: [], agent: [] };
@@ -41,7 +60,7 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     pace: (fn, ms) => { counts.pace += 1; id += 1; paced.set(id, { fn, ms }); return id; },
     unpace: (i) => { counts.unpace += 1; paced.delete(i); },
     now: () => t, wall: () => 1_700_000_000_000 + t, later: (fn) => { later.push(fn); return later.length; },
-    css: (name) => TOKENS[name] || '', dpr: () => dpr, reducedMotion: () => flags.reduced,
+    css: (name) => { counts.css += 1; return ({ ...TOKENS, ...tokens })[name] || ''; }, dpr: () => dpr, reducedMotion: () => flags.reduced,
     observe: (el, fn) => { observers.push(fn); return () => {}; },
     onSession: (s) => clicks.session.push(s), onAgent: (a) => clicks.agent.push(a),
   });
@@ -63,7 +82,7 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     return ran;
   };
   const advance = (ms) => { t += ms; };
-  return { m, doc, panel, stage, canvas, ctx, calls, work, pending, paced, counts, pump, advance, later, clicks, flags, observers, now: () => t, size };
+  return { m, doc, panel, stage, canvas, ctx, calls, work, pending, paced, layers, counts, pump, advance, later, clicks, flags, observers, now: () => t, size };
 }
 
 const VIEW_ON = { shown: true, focused: true, lean: false };
@@ -306,6 +325,148 @@ test('the budget really thins the stream: fewer particles at the floor than at f
   assert.strictEqual(slow.m.state().budget, M.BUDGET_MIN, 'four slow frames reach the floor');
   slow.pump(21);
   assert.ok(slow.m.state().particles < full.m.state().particles, `${slow.m.state().particles} < ${full.m.state().particles}`);
+});
+
+// --- the layers ----------------------------------------------------------------------------------------------------------------
+
+test('LAYERS: once the picture rests, a frame blits two layers and draws only what moves (it does not repaint the labels)', () => {
+  const r = rig({ layered: true });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  for (let i = 0; i < 400 && !r.m.state().settled; i += 1) r.pump(1);
+  r.pump(3);
+  const [back, front] = r.layers;                       // the two big layers are made first
+  const fills = (l) => l.calls.filter(c => c[0] === 'fillText').length;
+  const backPaints = back.calls.filter(c => c[0] === 'fillRect').length;
+  const frontText = fills(front);
+  assert.ok(frontText > 0, 'the front layer carries the labels');
+  const blits = (l) => r.calls.filter(c => c[0] === 'drawImage' && c[1] === l.canvas).length;
+  const b0 = blits(back); const f0 = blits(front);
+  r.pump(20);
+  assert.strictEqual(back.calls.filter(c => c[0] === 'fillRect').length, backPaints, 'the back layer was not repainted');
+  assert.strictEqual(fills(front), frontText, 'nor the front layer');
+  assert.ok(blits(back) > b0 && blits(front) > f0, 'but both were blitted, every frame');
+  assert.strictEqual(blits(back) - b0, blits(front) - f0, 'once each per frame');
+});
+
+test('LAYERS: the streams are drawn between the two blits, so nodes stay on top of them', () => {
+  const r = rig({ layered: true });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(40);
+  const [back, front] = r.layers;
+  const order = r.calls.filter(c => c[0] === 'drawImage').map(c => (c[1] === back.canvas ? 'B' : c[1] === front.canvas ? 'F' : 'p')).join('');
+  assert.match(order, /B(p+)F/, order.slice(-60));
+  assert.ok(!/F(p+)B/.test(order.replace(/Bp+F/g, 'x')), 'never a particle after the front blit and before the next back one');
+});
+
+test('LAYERS: a change they show repaints them: the hover, the data, the view', () => {
+  const r = rig({ layered: true });
+  r.m.setView({ shown: true, focused: false, lean: false });
+  r.m.setData(data());
+  r.pump(5);
+  const [back, front] = r.layers;
+  const paints = () => [back.calls.filter(c => c[0] === 'fillRect').length, front.calls.filter(c => c[0] === 'fillText').length];
+  const p0 = paints();
+  const a = r.m.screenPos('agent:dexter');
+  r.canvas.dispatch('pointermove', { clientX: a.x, clientY: a.y });
+  r.pump(3);
+  const p1 = paints();
+  assert.ok(p1[0] > p0[0] && p1[1] > p0[1], 'the hover redrew both');
+  r.canvas.dispatch('wheel', { clientX: 10, clientY: 10, deltaY: -300, preventDefault() {} });
+  r.pump(3);
+  const p2 = paints();
+  assert.ok(p2[0] > p1[0] && p2[1] > p1[1], 'the zoom did');
+  r.m.setData(data({ agents: [ag('dexter'), ag('newcomer')] }));
+  r.pump(3);
+  const p3 = paints();
+  assert.ok(p3[0] > p2[0] && p3[1] > p2[1], 'a new agent did');
+});
+
+test('LAYERS: a new size (or ratio) makes new layers, and the old picture is never stretched', () => {
+  const r = rig({ layered: true, dpr: 1 });
+  r.m.setView({ shown: true, focused: false, lean: false });
+  r.m.setData(data());
+  r.pump(3);
+  const before = r.layers.length;
+  r.stage.layout = { width: 300, height: 260 };
+  r.observers[0]();
+  r.pump(3);
+  assert.ok(r.layers.length >= before + 2, 'two fresh layers');
+  assert.deepStrictEqual([r.layers[before].canvas.width, r.layers[before].canvas.height], [300, 260]);
+});
+
+test('PARTICLES: additive on a dark panel, normal on a light one (additive light on light is invisible)', () => {
+  const composite = (tokens) => {
+    const r = rig({ layered: true, tokens });
+    r.m.setView(VIEW_ON);
+    r.m.setData(data());
+    r.pump(30);
+    return new Set(r.calls.filter(c => c[0] === 'set:globalCompositeOperation').map(c => c[1]));
+  };
+  assert.ok(composite({ '--bg': '#11131a' }).has('lighter'), 'dark');
+  assert.ok(!composite({ '--bg': '#f6eef3' }).has('lighter'), 'light');
+  assert.ok(!composite({ '--bg': 'rgb(240, 236, 232)' }).has('lighter'), 'light, written as rgb()');
+});
+
+test('PARTICLES: a sprite fades to its own colour at alpha 0, not to black (a canvas gradient does not premultiply: no dark fringe)', () => {
+  const r = rig({ layered: true });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(30);
+  const sprites = r.layers.filter(l => l.canvas.width <= 64 && l.calls.some(c => c[0] === 'fillRect'));
+  assert.ok(sprites.length >= 1, 'a sprite was made');
+  const ends = sprites.map(l => l.calls.filter(c => c[0] === 'stop').pop()[2]);
+  assert.ok(ends.includes('rgba(208,140,74,0)'), `the working colour #d08c4a fades to itself at 0: ${ends}`);
+  assert.ok(ends.every(e => /^rgba\(\d+,\d+,\d+,0\)$/.test(e)), 'every one ends fully transparent');
+});
+
+// --- what a frame asks of the page ------------------------------------------------------------------------------------------
+
+test('the stage is measured once and kept until the size observer says it changed (a rect read every frame is a forced layout)', () => {
+  const r = rig();
+  let reads = 0;
+  const real = r.stage.getBoundingClientRect.bind(r.stage);
+  r.stage.getBoundingClientRect = () => { reads += 1; return real(); };
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(30);
+  assert.ok(r.m.state().frames >= 20);
+  assert.ok(reads <= 3, `read ${reads} times in ${r.m.state().frames} frames`);
+  const before = reads;
+  r.stage.layout = { width: 300, height: 300 };
+  r.observers[0]();
+  r.pump(3);
+  assert.ok(reads > before, 'and read again after the observer fired');
+  assert.strictEqual(r.canvas.width, 600);
+});
+
+test('without a size observer the stage is read every frame (it cannot know otherwise)', () => {
+  const doc = new FakeDocument();
+  const panel = doc.createElement('div'); doc.root.appendChild(panel);
+  const pending = new Map(); let id = 0; let t = 1000;
+  const m = D.mount({ doc, root: panel, context: new Proxy({}, { get: () => () => {}, set: () => true }), raf: (fn) => { id += 1; pending.set(id, fn); return id; }, caf: () => {}, now: () => t, css: () => '#888', dpr: () => 1, observe: () => null });
+  const stage = panel.querySelector('.map-stage');
+  stage.layout = { width: 400, height: 300 };
+  let reads = 0;
+  const real = stage.getBoundingClientRect.bind(stage);
+  stage.getBoundingClientRect = () => { reads += 1; return real(); };
+  m.setView({ shown: true, focused: false, lean: false });
+  m.setData(data());
+  for (let i = 0; i < 3; i += 1) { t += 40; const fns = [...pending.values()]; pending.clear(); fns.forEach(fn => fn()); m.redraw(); }
+  assert.ok(reads >= 2);
+});
+
+test('the colours of the page are read a few times a second, not every frame', () => {
+  const r = rig();
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(3);
+  const afterStart = r.counts.css;
+  r.pump(8, 34);                                     // inside the 400 ms the colours are kept for (the first read was at the first frame)
+  assert.strictEqual(r.counts.css, afterStart, 'no new reads inside the window');
+  r.pump(20, 34);                                    // well past it
+  assert.ok(r.counts.css > afterStart, 'and fresh ones after');
 });
 
 // --- crisp at devicePixelRatio ----------------------------------------------------------------------------------------------

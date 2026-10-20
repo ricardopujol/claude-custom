@@ -222,6 +222,15 @@ async function main() {
   await sleep(1500);
   await command({ cmd: 'windowFocus' });
 
+  // The project's look is random (a new project rolls dark or light): pin it, so the picture and the particles' compositing are the same every run.
+  const lookArg = arg('look', 'dark');
+  if (lookArg === 'dark' || lookArg === 'light') {
+    const accentBefore = (await mapState() || {}).accent;
+    await command({ cmd: 'view', action: 'bgStyle', args: { action: 'set-mode', mode: lookArg } });
+    await sleep(2500);
+    console.log(`look pinned to ${lookArg} (accent ${accentBefore} -> ${(await mapState() || {}).accent})`);
+  }
+
   // ---- A. what it draws --------------------------------------------------------------------------------------------------
   console.log(`machine ${os.hostname()}; dpr and window are the real ones`);
   const first = await mapState();
@@ -281,7 +290,8 @@ async function main() {
   check('ANIMATING: the loop runs at about 30 fps while shown, focused and not lean', live.frames >= 45 && live.frames <= 130, live);
 
   await command({ cmd: 'windowBlur' });
-  await waitFor(async () => { const s = await mapState(); return s && s.state.animating === false ? s : null; }, 8000);
+  // the static frame is asked for as the focus goes, and runs a moment later: wait for the loop to have ended, not just for animating to turn false
+  await waitFor(async () => { const s = await mapState(); return s && s.state.animating === false && s.state.looping === false ? s : null; }, 8000);
   const blurred = await mapState();
   check('UNFOCUSED: one static frame, no loop, no particles', blurred.state.animating === false && blurred.state.looping === false && blurred.state.particles === 0, { focused: blurred.focused, looping: blurred.state.looping, particles: blurred.state.particles });
   const stillBlur = await rafsOver(5000);
