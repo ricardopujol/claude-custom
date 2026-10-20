@@ -110,6 +110,9 @@ const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { createRepoService } = require('./repo-service');
+// The Changes panel (BACKLOG #119 A3): the worktree's changeset, read-only from git (host/changes.js), and when to look again (host/changes-notifier.js).
+const { createChangesService } = require('./changes');
+const { createChangesNotifier } = require('./changes-notifier');
 // "Ask the repo" (BACKLOG #33): the panel's questions and explanations, answered from this worktree's index (host/ask-service.js).
 const { createAskService, createRepoFactory, EXPLAINER_AGENT } = require('./ask-service');
 const { createExplainer: createAskExplainer } = require('./ask-explainer');
@@ -461,6 +464,9 @@ const gitGraph = createGitGraphService({ cwd: CWD, read: readGraph });
 const repoService = createRepoService({
   root: CWD, projectsDir: seams.projectsDir || undefined, announce: (msg) => broadcastControl(msg),
 });
+// The Changes panel: list / base by `action` (host/changes.js), and a `changed` push after a hook event for a tool that can change a file.
+const changesService = createChangesService({ root: CWD });
+const changesNotifier = createChangesNotifier({ announce: (msg) => broadcastControl(msg) });
 // The `ask` conversation (BACKLOG #33). Local answers come from Ollama; a Claude model answers through the real claude CLI on the
 // person's plan (host/ask-claude.js: no tools, no API key in its environment). The index is per worktree, kept under the harness state.
 const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
@@ -1448,6 +1454,7 @@ if (helperExists) {
     // the probe that reads it only wants who touched which path.)
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
     occupancy.handle(ev);
+    changesNotifier.handle(ev);
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
     night.handle(ev);
@@ -2769,6 +2776,13 @@ wss.on('connection', (ws, req) => {
       });
       return;
     }
+    if (msg.type === 'changes') {
+      // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a failure is { ok: false, error | why }.
+      changesService.handle(msg).then(reply => {
+        try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
+      });
+      return;
+    }
     if (msg.type === 'ask') {
       // Which windows have an Ask panel open (per socket, so one window can't cancel another): the explainer is Active while any does.
       // Not answered: it asks for nothing.
@@ -3024,6 +3038,7 @@ wss.on('error', (err) => {
 function shutdown({ removeIdentity = true } = {}) {
   if (term) { try { term.kill(); } catch {} }
   try { repoService.close(); } catch {}
+  try { changesNotifier.close(); } catch {}
   try { canvasControl.close(); } catch {}
   releaseSessionLock(SESSION_LOCK, lockOwner);
   killTree(healthChild);

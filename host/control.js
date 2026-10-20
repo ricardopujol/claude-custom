@@ -110,6 +110,9 @@ const CONTROL_TYPES = new Set([
   // "Ask the repo" (BACKLOG #33): status / places / ask / explain / start-ollama, by `op` (host/ask-service.js). Off this list a question
   // would be TYPED into the pty as JSON.
   'ask',
+  // The Changes panel (BACKLOG #119 A3): list / base by `action` (host/changes.js), and the host's `changed` push. Off this list a list
+  // request would be TYPED into the pty as JSON.
+  'changes',
 ]);
 
 // `null` means "treat this frame as literal input"; otherwise the parsed
