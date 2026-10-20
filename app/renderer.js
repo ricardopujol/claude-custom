@@ -7634,6 +7634,20 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'tray' && v) {
+    // Ids written out in full: test/renderer-scope.test.js finds them by text.
+    const state = (on) => `${on === true ? ' checked' : ''}${on === null ? ' disabled' : ''}`;
+    return (
+      `<section class="style-section" data-section="tray">${header}` +
+      `<label class="style-row"><input type="checkbox" id="style-tray-icon"${state(v.trayIcon)}>` +
+      ` Tray icon</label>` +
+      `<div class="style-note">${escapeHtml(v.trayDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-tray-close"${state(v.minimiseOnClose)}>` +
+      ` Minimise to tray on close</label>` +
+      `<div class="style-note">${escapeHtml(v.closeDescription)}</div>` +
+      `</section>`
+    );
+  }
   if (section.id === 'panel' && v) {
     // Id written out in full: test/renderer-scope.test.js finds it by text.
     return (
@@ -7876,6 +7890,17 @@ function bindAvatarSection() {
       window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
     });
   }
+  // BACKLOG #119 A8: the tray icon and minimise-on-close. Send the DESIRED state; main answers what it saved, and null (a failed
+  // save) re-reads the truth instead of trusting the click.
+  const tray = window.harness && window.harness.tray;
+  const trayIconBox = document.getElementById('style-tray-icon');
+  if (trayIconBox && tray) {
+    trayIconBox.addEventListener('change', () => { tray.set('trayIcon', trayIconBox.checked).then(settledTray).catch(refreshTraySettings); });
+  }
+  const trayCloseBox = document.getElementById('style-tray-close');
+  if (trayCloseBox && tray) {
+    trayCloseBox.addEventListener('change', () => { tray.set('minimiseOnClose', trayCloseBox.checked).then(settledTray).catch(refreshTraySettings); });
+  }
   const framelessBox = document.getElementById('style-frameless');
   if (framelessBox && chrome) {
     framelessBox.addEventListener('change', () => {
@@ -7915,6 +7940,23 @@ function refreshCanvasMcp(attempt = 0) {
   window.harness.canvas.settingsGet().then((v) => {
     if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
   }).catch(again);
+}
+// BACKLOG #119 A8: main's tray switches. Null (main couldn't read the file) stays unknown and asks again, never a guessed answer.
+function applyTraySettings(settings) {
+  if (!settings || typeof settings !== 'object') return;
+  styleState = reduceTraySettings(styleState, settings);
+  renderStylePanel();
+}
+function settledTray(saved) {
+  if (saved && typeof saved === 'object') applyTraySettings(saved);
+  else refreshTraySettings();
+}
+function refreshTraySettings() {
+  if (!(window.harness && window.harness.tray)) return;
+  window.harness.tray.get().then((s) => {
+    if (s && typeof s === 'object') applyTraySettings(s);
+    else setTimeout(refreshTraySettings, 1000);
+  }).catch(() => setTimeout(refreshTraySettings, 1000));
 }
 function settledChrome(saved) {
   if (saved && typeof saved === 'object') applyChromeSettings(saved);
@@ -8003,6 +8045,7 @@ if (window.harness && window.harness.chrome) {
   window.harness.chrome.onChange(applyChromeSettings);
   refreshChromeSettings();
 }
+refreshTraySettings();             // BACKLOG #119 A8: the tray switches in the Style tab
 refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
 
 // The hover pencil on a roster face: pick a file, send it as the same
