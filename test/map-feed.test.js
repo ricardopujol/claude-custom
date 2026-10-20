@@ -58,6 +58,18 @@ test('the host\'s start and uptime ride along', () => {
   assert.strictEqual(s.uptimeMs, 500_000);
 });
 
+test('DEXTER 8: a wall clock that steps back drains the window instead of freezing it', () => {
+  const { feed, t } = rig();
+  for (let i = 0; i < 30; i += 1) { t.now += 1000; feed.note(ev('PreToolUse', { tool_name: 'Edit', agent_type: 'x', agent_id: 'i' })); }
+  assert.strictEqual(feed.snapshot().perMinute.x, 30);
+  t.now -= 3_600_000;
+  feed.note(ev('PreToolUse', { agent_type: 'x', agent_id: 'i' }));
+  assert.strictEqual(feed.snapshot().perMinute.x, 1, 'only what came since the step');
+  assert.ok(!('x' in feed.snapshot().tools), 'and no tool is left looking fresh');
+  t.now += 61_000;
+  assert.ok(!('x' in feed.snapshot().perMinute), 'a quiet minute drains it');
+});
+
 test('junk events are ignored, not counted, and never throw', () => {
   const { feed } = rig();
   for (const bad of [null, undefined, 3, {}, { event: 5 }, { event: '' }, { event: 'PreToolUse', payload: 'x' }]) assert.doesNotThrow(() => feed.note(bad));

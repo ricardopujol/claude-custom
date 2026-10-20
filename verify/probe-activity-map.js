@@ -59,7 +59,7 @@ function smallGraph(folderA, folderB, worktree) {
       { id: 'b', label: 'feat/a', state: 'idle', self: false, folder: folderB },
     ],
     agents: [
-      agent('dexter', 'a', 'working', 'reading', { eventsPerMin: 90, tool: 'Read' }),
+      agent('dexter', 'a', 'working', 'writing', { eventsPerMin: 90, tool: 'Edit' }),
       agent('miguel', 'a', 'working', 'waiting'),
       agent('paris', 'a', 'happy', 'happy'),
       agent('mortimer', 'b', 'working', 'running', { eventsPerMin: 20 }),
@@ -259,14 +259,14 @@ async function main() {
   const particleEdges = st.particleEdges.map(id => st.edges.find(e => e.id === id)).filter(Boolean);
   check('every particle in flight is on a working agent\'s edge', st.particleEdges.length > 0 && particleEdges.length === st.particleEdges.length && particleEdges.every(e => e.state === 'working' && e.kind === 'tree' && /^agent:/.test(e.from)), st.particleEdges);
   check('the layout settled and is moving only for the streams', st.animating === true && st.looping === true);
-  check('the strip says what the fake feed says', s1.strip.tasks === 'tasks 3 · 1 PR' && s1.strip.events === 'events 1.8k' && s1.strip.active === 'active 6 / 9' && /^up 2h 03m$/.test(s1.strip.uptime), s1.strip);
+  check('the strip says what the fake feed says', s1.strip.tasks === 'tasks 3 · 1 PR' && s1.strip.events === 'events 1.8k' && s1.strip.active === 'active 6 / 9' && /^this host up 2h 03m$/.test(s1.strip.uptime), s1.strip);
   check('the legend has the four states', JSON.stringify(s1.legend) === JSON.stringify(['running', 'needs you', 'done', 'idle']));
   check('the bitmap is sized in DEVICE pixels', s1.bitmap.w === Math.round(s1.canvas.width * s1.dpr) && s1.bitmap.h === Math.round(s1.canvas.height * s1.dpr), { dpr: s1.dpr, css: [s1.canvas.width, s1.canvas.height], bitmap: [s1.bitmap.w, s1.bitmap.h] });
   check('the canvas is not blank (sampled pixels that differ clearly from the background)', s1.colours >= 20, s1.colours);
 
   await mapDo({ op: 'hover', id: 'agent:dexter' });
   const hov = await mapState();
-  check('hovering an agent shows its card (model, tokens, tool)', hov.card.hidden === false && hov.card.title === 'dexter' && hov.card.lines.includes('model: opus') && hov.card.lines.includes('tool: Read'), hov.card);
+  check('hovering an agent shows its card (model, tokens, tool)', hov.card.hidden === false && hov.card.title === 'dexter' && hov.card.lines.includes('model: opus') && hov.card.lines.includes('tool: Edit'), hov.card);
   await mapDo({ op: 'edge', id: conflict.id });
   const hov2 = await mapState();
   check('hovering the conflict edge names both claims', hov2.card.hidden === false && hov2.card.title === 'Conflict · feat-x' && hov2.card.lines.length === 2, hov2.card);
@@ -336,7 +336,7 @@ async function main() {
     // A presented frame has a fixed price on this machine, so the gap between frames is what decides the cost: the same six agents at 30, 40 and
     // 50 ms, ONE agent (close to the price of presenting a frame at all), the 48-agent cap, and a low-latency (desynchronized) canvas. Every scenario
     // rebuilds the panel first, so none inherits another's canvas.
-    const animate = (gapMs, graph, desync = false) => async () => { await show(); await mapDo({ op: 'remount', desynchronized: desync, ms: gapMs }); await mapDo(graph()); return true; };
+    const animate = (gapMs, graph, desync = false) => async () => { await mapDo({ op: 'churn', n: 0 }); await show(); await mapDo({ op: 'remount', desynchronized: desync, ms: gapMs }); await mapDo(graph()); return true; };
     const small = () => smallGraph(folderA, folderB, worktree);
     const one = () => ({ ...smallGraph(folderA, folderB, worktree), agents: [smallGraph(folderA, folderB, worktree).agents[0]], claims: [], totalAgents: 1 });
     const busy = () => busyGraph([dev, featA, path.join(container, 'feat-b'), path.join(container, 'feat-c')]);
@@ -346,9 +346,10 @@ async function main() {
       'animating: 6 agents, 33 ms (30 fps)': animate(33, small),
       'animating: 6 agents, 50 ms (20 fps, the default)': animate(50, small),
       'animating: 48 agents (cap), 50 ms': animate(50, busy),
+      'animating: 6 agents, 50 ms, 500 roster messages a second': async () => { await animate(50, small)(); await mapDo({ op: 'churn', n: 50 }); return true; },
       ...(flag('sweep') ? { 'animating: 6 agents, 40 ms': animate(40, small), 'animating: 6 agents, 67 ms (15 fps)': animate(67, small) } : {}),
       ...(flag('desync') ? { 'desynchronized canvas: 6 agents, 33 ms': animate(33, small, true), 'desynchronized canvas: 6 agents, 50 ms': animate(50, small, true) } : {}),
-      'static: shown but unfocused': async () => { await show(); await mapDo({ op: 'remount', desynchronized: false, ms: 50 }); await mapDo(small()); await command({ cmd: 'windowBlur' }); return true; },
+      'static: shown but unfocused': async () => { await mapDo({ op: 'churn', n: 0 }); await show(); await mapDo({ op: 'remount', desynchronized: false, ms: 50 }); await mapDo(small()); await command({ cmd: 'windowBlur' }); return true; },
     };
     const names = Object.keys(SCENARIOS);
     console.log(`\ncost: ${names.length} scenarios x ${reps} rounds, ${measureMs / 1000}s each`);

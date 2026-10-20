@@ -1277,6 +1277,7 @@ window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow()
 const mapRoot = document.getElementById('map-root');
 let mapRates = null;                // the host's last answer to `map`: { events, perMinute, tools, uptimeMs }; null until it comes (an older host never sends it)
 let mapRafs = 0;                    // probe: how many animation frames this panel has ASKED for since the page loaded
+let mapChurn = null;                // probe: a timer that calls mapRefresh() a burst at a time, like a busy session's roster messages
 let mapFake = null;                 // probe only: a made-up { sessions, agents, claims } in place of the real ones
 let mapLive = false;               // set by the first hello: every top-level `const` this reads (roster, occupancy...) exists by then
 const mapSince = new Map();         // agent -> epoch ms this page saw it START working; absent means it was already working when this page attached
@@ -1287,6 +1288,7 @@ const mapOwn = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnP
 const MAP_FRAME_MS = 50;
 const mapMountOptions = {
   doc: document,
+  source: () => mapInput(),
   frameMs: MAP_FRAME_MS,
   root: mapRoot,
   raf: (fn) => { mapRafs += 1; return requestAnimationFrame(fn); },
@@ -1325,10 +1327,15 @@ function mapInput() {
   const mm = window.mapModel;
   const cwd = document.getElementById('cwd').textContent;
   const sessions = mm.sessionsFrom({ tree: lastGitTree, tabs: lastGitTabs, self: cwd ? { folder: cwd, branch: currentBranchName, state: mm.turnState(sessionTurn) } : null });
+  // A claim is this session's own (it belongs to a roster card) only if THIS session launched it; one launched elsewhere, or by another session, is its own node.
+  const mine = new Set();
+  for (const c of occupancy.launched) {
+    if (c && typeof c.agentId === 'string' && !(typeof c.sessionId === 'string' && typeof occupancy.session === 'string' && c.sessionId !== occupancy.session)) mine.add(c.agentId);
+  }
   const claims = [];
   const seen = new Set();
   for (const c of [...occupancy.here, ...occupancy.launched]) {
-    if (c && typeof c.agentId === 'string' && !seen.has(c.agentId)) { seen.add(c.agentId); claims.push(c); }
+    if (c && typeof c.agentId === 'string' && !seen.has(c.agentId)) { seen.add(c.agentId); claims.push({ ...c, own: mine.has(c.agentId) }); }
   }
   const agents = [];
   for (const r of roster.values()) {
@@ -1350,14 +1357,16 @@ function mapInput() {
     });
   }
   return {
-    project: { name: currentProjectName },
+    project: { name: currentProjectName, path: lastGitTree && typeof lastGitTree.project === 'string' ? lastGitTree.project : null },
+    now: Date.now(),
     sessions, agents, claims,
     totalAgents: Math.max(wholeRosterEntries().length, roster.size),
     lanes: mm.lanesOf(lastGitTree),
     feed: mapRates ? { events: mapRates.events, uptimeMs: mapRates.uptimeMs } : null,
   };
 }
-function mapRefresh() { if (mapLive && mapPanel && shownModules.has('map') && !leanOn) mapPanel.setData(mapInput()); }
+// Every roster, mood, turn and tab message lands here: the panel rebuilds from mapInput() at most once per frame slot (app/map-display.js invalidate).
+function mapRefresh() { if (mapLive && mapPanel && shownModules.has('map') && !leanOn) mapPanel.invalidate(); }
 // shown x focused x lean: all three are this page's to say. `focused` is main's word, and a page the OS says is hidden is not focused.
 function mapView() {
   if (!mapPanel) return;
@@ -1384,6 +1393,16 @@ function mapPoll() {
 }
 function mapPollNow() { mapTicks = 0; mapPoll(); }
 setInterval(mapPoll, MAP_POLL_MS);
+// Two things the panel can't see by itself when it has stopped: reduced motion turning OFF (the streams may start), and the screen's pixel ratio changing
+// (the window moved to another monitor: the bitmap must be made again). Each asks it to measure and draw once.
+if (window.matchMedia) {
+  window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => { if (mapPanel) mapPanel.refresh(); });
+  const mapWatchRatio = () => {
+    const q = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    q.addEventListener('change', () => { if (mapPanel) mapPanel.refresh(); mapWatchRatio(); }, { once: true });
+  };
+  mapWatchRatio();
+}
 // The mood message is where an agent starts or stops working: the only place "since when" can be known.
 function mapNoteMood(m) {
   const was = roster.get(m.agent);
@@ -4020,6 +4039,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (a.op === 'fake') { mapFake = { project: { name: String(a.project || currentProjectName || 'probe') }, sessions: a.sessions || [], agents: a.agents || [], claims: a.claims || [], totalAgents: a.totalAgents, lanes: a.lanes || null, feed: a.feed || null }; mapRefresh(); }
         else if (a.op === 'unfake') { mapFake = null; mapRefresh(); }
         else if (a.op === 'fit') mapPanel.fit();
+        else if (a.op === 'churn') { clearInterval(mapChurn); mapChurn = null; if (Number(a.n) > 0) mapChurn = setInterval(() => { for (let i = 0; i < Number(a.n); i += 1) mapRefresh(); }, 100); }
         else if (a.op === 'frameMs') mapPanel.setFrameMs(Number(a.ms));
         else if (a.op === 'remount') { mapPanel.destroy(); mapPanel = mapMountPanel({ desynchronized: a.desynchronized === true, ...(Number.isFinite(Number(a.ms)) && a.ms ? { frameMs: Number(a.ms) } : {}) }); mapView(); mapRefresh(); }
         else if (a.op === 'hover') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointermove', { ...p, bubbles: true })); }

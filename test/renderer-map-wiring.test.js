@@ -144,3 +144,14 @@ test('the colours are the project\'s tokens, and every token the canvas reads is
   assert.ok(read.has('--accent') && read.has('--ok') && read.has('--bad') && read.has('--dim') && read.has('--chrome'));
   assert.ok(/--warn\s*:/.test(HTML), 'the fallback for --cue exists');
 });
+
+test('REVIEW FIXES: every message asks for a rebuild (invalidate), the page marks which claims are its own, and the panel hears motion and ratio changes', () => {
+  assert.match(BLOCK, /mapPanel\.invalidate\(\)/);
+  assert.match(BLOCK, /source: \(\) => mapInput\(\),/);
+  assert.doesNotMatch(BLOCK, /mapPanel\.setData\(/, 'nothing rebuilds the graph outside the coalescing');
+  assert.match(BLOCK, /claims\.push\(\{ \.\.\.c, own: mine\.has\(c\.agentId\) \}\)/);
+  assert.match(BLOCK, /now: Date\.now\(\),/);
+  assert.match(BLOCK, /path: lastGitTree && typeof lastGitTree\.project === 'string'/);
+  assert.match(BLOCK, /\(prefers-reduced-motion: reduce\)'\)\.addEventListener\('change', \(\) => \{ if \(mapPanel\) mapPanel\.refresh\(\); \}\)/);
+  assert.match(BLOCK, /\(resolution: \$\{window\.devicePixelRatio\}dppx\)/);
+});

@@ -34,6 +34,7 @@ const PACE_EARLY_MS = 6;           // the timer wakes this long BEFORE the next 
 const FRAME_SLOP_MS = 5;           // a frame is drawn if the gap since the last one is at least the target minus this (vsync and timer jitter)
 const STEPS_PER_FRAME = 2;         // layout ticks a frame while it is still settling
 const SAVE_AFTER_MS = 700;
+const FLUSH_MS = 100;               // how long a change waits for company when no loop is running
 const TOKENS_TTL_MS = 400;
 const IMAGES_MAX = 120;
 const LABEL_MIN_ZOOM = 0.55;
@@ -57,7 +58,7 @@ function cardFor(item, wall) {
   if (item.kind === 'conflict') {
     return {
       title: `Conflict · ${item.label}`,
-      lines: item.claims.map(c => `${isStr(c.agent) ? c.agent : 'an agent'} wrote here ${ago(c.lastAt, wall)} ago`),
+      lines: item.claims.map(c => `${isStr(c.agent) ? c.agent : 'an agent'} was last active here ${ago(c.lastAt, wall)} ago`),
     };
   }
   const d = item.data || {};
@@ -131,7 +132,8 @@ function mount(opts) {
   const statTasks = stat('tasks', 'tasks —');
   const statEvents = stat('events', 'events —');
   const statActive = stat('active', 'active —');
-  const statUp = stat('uptime', 'up —');
+  const statUp = stat('uptime', 'this host up —');
+  statUp.setAttribute('title', "How long this session's host has run. The project's oldest host isn't reachable from the page yet.");
   const zoomEl = el('span', { class: 'map-zoom', text: '100%', title: 'Wheel to zoom, drag to pan' });
   const fitBtn = el('button', { type: 'button', class: 'map-fit', title: 'Fit everything in view (double-click the map too)', text: 'Fit' });
   const strip = el('div', { class: 'map-strip' }, [statTasks, statEvents, statActive, statUp, el('span', { class: 'map-sp' }), zoomEl, fitBtn]);
@@ -169,6 +171,10 @@ function mount(opts) {
   let drag = null;                   // { x, y, moved }
   let projectKey = null;
   let saveTimer = null;
+  let dirty = false;                 // the page said the data may have changed: it is rebuilt at most once a frame slot (invalidate)
+  let flushTimer = null;
+  let destroyed = false;
+  let tokenKey = '';
   let tokens = null;
   let tokensAt = -Infinity;          // the page's colours are read a few times a second, not every frame (each read is a style lookup)
   let rngState = 12345;
@@ -189,7 +195,8 @@ function mount(opts) {
   };
   const mix = (a, pct, b) => `color-mix(in srgb, ${a} ${pct}%, ${b})`;
 
-  const animating = () => model.shouldAnimate(viewState);
+  // prefers-reduced-motion means a STATIC graph: no loop at all, so no easing of new nodes, no pulsing rings, no particles; one frame per change
+  const animating = () => model.shouldAnimate(viewState) && reduced() !== true;
   const drawing = () => model.shouldDraw(viewState);
   const particlesOn = () => model.particlesOn(viewState, reduced() === true);
   const flowsOf = () => graph.edges.filter(e => e.flow > 0).map(e => ({ id: e.id, rate: e.flow }));
@@ -215,6 +222,7 @@ function mount(opts) {
     view = model.fitView(graph.nodes, m.w, m.h, 34);
     userView = false;
     paintZoom();
+    saveSoon();             // what is kept is what the person last chose: the fitted view is no saved zoom
     redraw();
   }
   function paintZoom() { put(zoomEl, `${Math.round(view.k * 100)}%`); }
@@ -229,7 +237,7 @@ function mount(opts) {
   }
   function saveSoon() {
     if (!opts.storage || saveTimer !== null) return;
-    saveTimer = later(save, SAVE_AFTER_MS);
+    saveTimer = later(() => { if (saveTimer !== null) save(); }, SAVE_AFTER_MS);
   }
   function loadKept() {
     const key = keyFor();
@@ -473,7 +481,7 @@ function mount(opts) {
 
   function drawFrame(t) {
     if (!ctx) return;
-    if (tokens === null || t - tokensAt > TOKENS_TTL_MS) { tokens = {}; tokensAt = t; }
+    if (tokens === null || t - tokensAt > TOKENS_TTL_MS) { tokens = {}; tokensAt = t; tokenKey = TOKEN_NAMES.map(tok).join('|'); }
     const m = measure();
     if (m.w <= 0 || m.h <= 0) return;
     const sizeKey = `${m.w}x${m.h}@${m.dpr}`;
@@ -497,7 +505,6 @@ function mount(opts) {
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
     if (back && front) {
-      const tokenKey = TOKEN_NAMES.map(tok).join('|');
       const viewKey = `${view.x},${view.y},${view.k}`;
       const bKey = `${gver}|${viewKey}|${hover ? hover.id : ''}|${tokenKey}`;
       if (bKey !== backKey) { backKey = bKey; paintBack(back.g, dpr, fontUi); }
@@ -530,6 +537,7 @@ function mount(opts) {
     const t = nowMs();
     const moving = animating();
     if (moving && lastFrameAt !== null && t - lastFrameAt < frameMs - FRAME_SLOP_MS) { loop = raf(frame); return; }
+    if (dirty) flush();                  // the page's changes since the last frame: ONE rebuild, however many messages came
     const dt = lastFrameAt === null ? 1 / 30 : Math.min(0.1, (t - lastFrameAt) / 1000);
     lastFrameAt = t;
     const wasSettled = layoutLib.settled(layout);
@@ -583,7 +591,7 @@ function mount(opts) {
     const feed = input && input.feed;
     put(statEvents, `events ${feed && isNum(feed.events) ? model.compact(feed.events) : '—'}`);
     put(statActive, `active ${graph.counts.activeAgents} / ${graph.counts.totalAgents}`);
-    put(statUp, `up ${feed && isNum(feed.uptimeMs) ? model.duration(feed.uptimeMs) : '—'}`);
+    put(statUp, `this host up ${feed && isNum(feed.uptimeMs) ? model.duration(feed.uptimeMs) : '—'}`);
     const label = `Map of this project: ${graph.counts.sessions} session${graph.counts.sessions === 1 ? '' : 's'}, ${graph.counts.activeAgents} agent${graph.counts.activeAgents === 1 ? '' : 's'} active`;
     if (canvas.getAttribute('aria-label') !== label) canvas.setAttribute('aria-label', label);
   }
@@ -635,6 +643,7 @@ function mount(opts) {
   }
 
   canvas.addEventListener('pointerdown', (e) => {
+    if (isNum(e.button) && e.button !== 0) return;          // only the primary button pans or selects
     const p = pointer(e);
     drag = { x: p.x, y: p.y, moved: false };
     if (typeof canvas.setPointerCapture === 'function' && e.pointerId !== undefined) { try { canvas.setPointerCapture(e.pointerId); } catch { /* not capturable */ } }
@@ -658,12 +667,13 @@ function mount(opts) {
     drag = null;
     if (!was) return;
     if (was.moved) { saveSoon(); return; }
+    if (isNum(e.detail) && e.detail > 1) return;             // the second click of a double-click is Fit's, not a second selection
     const p = pointer(e);
     const hit = pick(p.x, p.y);
     if (!hit) return;
     const n = hit.item;
     if (n.kind === 'session' && typeof opts.onSession === 'function') opts.onSession(n.data);
-    else if (n.kind === 'agent' && typeof opts.onAgent === 'function') opts.onAgent(n.data.name);
+    else if (n.kind === 'agent' && !n.data.fromClaim && typeof opts.onAgent === 'function') opts.onAgent(n.data.name);   // a claim-only agent has no card to open
   };
   canvas.addEventListener('pointerup', release);
   canvas.addEventListener('pointercancel', () => { drag = null; });
@@ -694,13 +704,27 @@ function mount(opts) {
     observing = typeof disposeObserver === 'function';
   }
 
+  // --- coalescing: every roster, mood, turn and tab message of the page calls invalidate(); the rebuild happens once per slot
+  function flush() {
+    flushTimer = null;
+    if (!dirty || destroyed || !drawing() || typeof opts.source !== 'function') return;
+    dirty = false;
+    ctrl.setData(opts.source());
+  }
+  function invalidate() {
+    if (destroyed || typeof opts.source !== 'function') return;
+    dirty = true;
+    if (loop !== null || pacer !== null || flushTimer !== null) return;      // a running loop flushes at its next frame
+    flushTimer = later(flush, FLUSH_MS);
+  }
+
   // --- the controller
   paintStrip();
-  return {
+  const ctrl = {
     /** The graph's inputs (see map-model buildGraph) plus `lanes` { open, withPr } and `feed` { events, uptimeMs }. */
     setData(next) {
       input = next && typeof next === 'object' ? next : null;
-      const key = input && input.project && isStr(input.project.name) ? input.project.name : null;
+      const key = input && input.project && (isStr(input.project.path) || isStr(input.project.name)) ? (isStr(input.project.path) ? input.project.path : input.project.name) : null;   // the PATH names a project: two with one folder name are two
       if (key !== projectKey) { projectKey = key; if (key) loadKept(); }
       graph = model.buildGraph(input);
       paintStrip();
@@ -724,16 +748,23 @@ function mount(opts) {
       if (!drawing()) { cancel(); if (!card.hidden) card.hidden = true; hover = null; return; }
       if (!before.draw || before.anim !== animating()) {
         cancel();
+        if (dirty) flush();
         redraw();           // one frame: static when not animating, the first of the loop when it is
       }
     },
     fit,
     redraw,
+    /** The data MAY have changed (opts.source() will say): rebuilt at most once per frame slot, however many times this is called in between. */
+    invalidate,
+    /** Something outside the panel changed (reduced motion turned off, the screen's pixel ratio changed): measure again and draw a frame. */
+    refresh() { cancel(); size = { w: 0, h: 0, dpr: 0 }; measured = null; redraw(); },
     /** The panel is being replaced: stop its loop, its timers and its size observer. It draws nothing after this. */
     destroy() {
       viewState = { shown: false, focused: false, lean: true };
       cancel();
-      if (saveTimer !== null) { save(); saveTimer = null; }
+      destroyed = true;
+      flushTimer = null;
+      if (saveTimer !== null) save();          // save() clears the timer's claim, so the debounced call finds nothing to do
       if (typeof disposeObserver === 'function') { disposeObserver(); disposeObserver = null; }
       hover = null;
     },
@@ -763,6 +794,7 @@ function mount(opts) {
       };
     },
   };
+  return ctrl;
 }
 
 const API = { mount, cardFor, portraitSpec, WORDS, LEGEND, FRAME_MIN_MS };

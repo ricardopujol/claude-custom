@@ -16,7 +16,7 @@ const M = require('../app/map-model');
 
 const TOKENS = { '--bg': '#101218', '--chrome': '#171a23', '--accent': '#d08c4a', '--ok': '#5fb07a', '--bad': '#cc5f5f', '--dim': '#6d7689', '--text': '#c7cede', '--warn': '#e6c34a', '--font-ui': 'Segoe UI' };
 
-function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, height: 420 }, makeImage = null, layered = false, tokens = {} } = {}) {
+function rig({ dpr: dprIn = 2, reduced = false, storage = null, size = { width: 520, height: 420 }, makeImage = null, layered = false, tokens = {}, source = null } = {}) {
   const doc = new FakeDocument();
   // LAYERED: offscreen canvases that can draw (a real browser's), each with its own recording context; the visible canvas keeps `ctx`
   const layers = [];
@@ -52,15 +52,16 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
   const later = [];
   const clicks = { session: [], agent: [] };
   const flags = { reduced };
+  const dpr = { value: dprIn };
   const observers = [];
   const m = D.mount({
-    doc, root: panel, context: ctx, storage, makeImage,
+    doc, root: panel, context: ctx, storage, makeImage, source,
     raf: (fn) => { counts.raf += 1; id += 1; pending.set(id, fn); return id; },
     caf: (i) => { counts.caf += 1; pending.delete(i); },
     pace: (fn, ms) => { counts.pace += 1; id += 1; paced.set(id, { fn, ms }); return id; },
     unpace: (i) => { counts.unpace += 1; paced.delete(i); },
     now: () => t, wall: () => 1_700_000_000_000 + t, later: (fn) => { later.push(fn); return later.length; },
-    css: (name) => { counts.css += 1; return ({ ...TOKENS, ...tokens })[name] || ''; }, dpr: () => dpr, reducedMotion: () => flags.reduced,
+    css: (name) => { counts.css += 1; return ({ ...TOKENS, ...tokens })[name] || ''; }, dpr: () => dpr.value, reducedMotion: () => flags.reduced,
     observe: (el, fn) => { observers.push(fn); return () => { counts.disposed += 1; }; },
     onSession: (s) => clicks.session.push(s), onAgent: (a) => clicks.agent.push(a),
   });
@@ -82,7 +83,7 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     return ran;
   };
   const advance = (ms) => { t += ms; };
-  return { m, doc, panel, stage, canvas, ctx, calls, work, pending, paced, layers, counts, pump, advance, later, clicks, flags, observers, now: () => t, size };
+  return { m, doc, panel, stage, canvas, ctx, calls, work, pending, paced, layers, dpr, counts, pump, advance, later, clicks, flags, observers, now: () => t, size };
 }
 
 const VIEW_ON = { shown: true, focused: true, lean: false };
@@ -117,11 +118,11 @@ test('the strip: lanes with a PR, events, active of total agents, and uptime', (
   assert.strictEqual(s('tasks'), 'tasks 2 · 1 PR');
   assert.strictEqual(s('events'), 'events 1.2k');
   assert.strictEqual(s('active'), 'active 1 / 2');
-  assert.strictEqual(s('uptime'), 'up 2m 05s');
+  assert.strictEqual(s('uptime'), 'this host up 2m 05s');
   r.m.setData(data({ lanes: { open: 3, withPr: 0 }, feed: null }));
   assert.strictEqual(s('tasks'), 'tasks 3');
   assert.strictEqual(s('events'), 'events —');
-  assert.strictEqual(s('uptime'), 'up —');
+  assert.strictEqual(s('uptime'), 'this host up —');
   assert.match(r.canvas.getAttribute('aria-label'), /2 sessions, 1 agent active/);
 });
 
@@ -268,7 +269,7 @@ test('PREFERS-REDUCED-MOTION: no particles, and the loop stops once the layout r
   assert.strictEqual(s.settled, true);
 });
 
-test('the loop runs at about 30 fps: a callback that comes too soon draws nothing', () => {
+test('the loop keeps its gap: a callback that comes too soon draws nothing', () => {
   const r = rig();
   r.m.setView(VIEW_ON);
   r.m.setData(data());
@@ -520,6 +521,167 @@ test('the colours of the page are read a few times a second, not every frame', (
   assert.ok(r.counts.css > afterStart, 'and fresh ones after');
 });
 
+// --- the review fixes (PR #205) -------------------------------------------------------------------------------------------------
+
+test('DEXTER 1: a conflict card says when each agent was last active, never that it "wrote"', () => {
+  const c = D.cardFor({ kind: 'conflict', label: 'feat-x', claims: [{ agent: 'a', lastAt: 1_700_000_000_000 }, { agent: 'b', lastAt: 1_700_000_000_000 }] }, 1_700_000_005_000);
+  assert.deepStrictEqual(c.lines, ['a was last active here 5s ago', 'b was last active here 5s ago']);
+  assert.ok(!c.lines.some(l => /wrote/.test(l)));
+});
+
+test('DEXTER 5: reduced motion is a STATIC graph: one frame, a settled layout at once, no loop, no pulse, no particles', () => {
+  const r = rig({ reduced: true });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(1);
+  const s = r.m.state();
+  assert.strictEqual(s.settled, true, 'no easing of new nodes');
+  assert.strictEqual(s.looping, false);
+  assert.strictEqual(s.particles, 0);
+  assert.strictEqual(s.frames, 1, 'one frame');
+  r.m.setData(data({ agents: [ag('dexter'), ag('newcomer')] }));
+  r.pump(5);
+  assert.strictEqual(r.m.state().frames, 2, 'one more frame for the one change');
+  assert.strictEqual(r.m.state().settled, true);
+});
+
+test('DEXTER 6: turning reduced motion off wakes the loop (refresh), and a pixel-ratio change re-measures (DEXTER 7)', () => {
+  const r = rig({ reduced: true });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(3);
+  assert.strictEqual(r.m.state().looping, false);
+  r.flags.reduced = false;
+  r.m.refresh();
+  r.pump(3);
+  assert.strictEqual(r.m.state().looping, true);
+  assert.ok(r.m.state().particles > 0);
+  const r2 = rig({ dpr: 1 });
+  r2.m.setView({ shown: true, focused: false, lean: false });
+  r2.m.setData(data());
+  r2.pump(2);
+  assert.strictEqual(r2.canvas.width, 520);
+  r2.dpr.value = 2;
+  r2.m.refresh();
+  r2.pump(2);
+  assert.strictEqual(r2.canvas.width, 1040);
+  assert.strictEqual(r2.m.state().size.dpr, 2);
+});
+
+test('DEXTER 9: Fit is saved: after zoom, flush, Fit, flush, a reload starts from the fitted view', () => {
+  const storage = memoryStorage();
+  const a = rig({ storage });
+  a.m.setView(VIEW_ON);
+  a.m.setData(data());
+  for (let i = 0; i < 400 && !a.m.state().settled; i += 1) a.pump(1);
+  a.canvas.dispatch('wheel', { clientX: 100, clientY: 100, deltaY: -400, preventDefault() {} });
+  a.later.splice(0).forEach(fn => fn());
+  assert.strictEqual(JSON.parse(storage.map.get(storage.writes[0])).view !== null, true);
+  a.canvas.dispatch('dblclick');
+  a.later.splice(0).forEach(fn => fn());
+  assert.strictEqual(JSON.parse(storage.map.get(storage.writes[storage.writes.length - 1])).view, null);
+  const b = rig({ storage });
+  b.m.setView({ shown: true, focused: false, lean: false });
+  b.m.setData(data());
+  b.pump(3);
+  assert.strictEqual(b.m.state().userView, false);
+});
+
+test('MIGUEL Y2: fifty messages in one tick cause ONE rebuild, at the next frame', () => {
+  let reads = 0;
+  const r = rig({ source: () => { reads += 1; return data(); } });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(3);
+  const before = reads;
+  for (let i = 0; i < 50; i += 1) r.m.invalidate();
+  assert.strictEqual(reads, before, 'nothing is rebuilt inside the tick');
+  r.pump(1);
+  assert.strictEqual(reads, before + 1, 'one rebuild at the next frame');
+  r.pump(5);
+  assert.strictEqual(reads, before + 1, 'and none after it');
+});
+
+test('MIGUEL Y2: with no loop running (a static frame) the changes wait ~100 ms for company, then one rebuild', () => {
+  let reads = 0;
+  const r = rig({ source: () => { reads += 1; return data(); } });
+  r.m.setView({ shown: true, focused: false, lean: false });
+  r.m.setData(data());
+  r.pump(3);
+  for (let i = 0; i < 50; i += 1) r.m.invalidate();
+  assert.strictEqual(reads, 0);
+  assert.strictEqual(r.later.length, 1, 'one timer for fifty calls');
+  r.later.splice(0).forEach(fn => fn());
+  assert.strictEqual(reads, 1);
+});
+
+test('MIGUEL Y2: a hidden panel is not rebuilt for the page\'s messages, and catches up when shown', () => {
+  let reads = 0;
+  const r = rig({ source: () => { reads += 1; return data(); } });
+  r.m.setView({ shown: false, focused: true, lean: false });
+  r.m.invalidate();
+  r.later.splice(0).forEach(fn => fn());
+  assert.strictEqual(reads, 0);
+  r.m.setView({ shown: true });
+  assert.strictEqual(reads, 1, 'the missed changes are applied when it is shown');
+});
+
+test('MIGUEL S5/S6: only the primary button acts, and the second click of a double-click selects nothing', () => {
+  const r = shown();
+  const s = r.m.screenPos('session:b');
+  r.canvas.dispatch('pointerdown', { clientX: s.x, clientY: s.y, button: 2 });
+  r.canvas.dispatch('pointerup', { clientX: s.x, clientY: s.y, button: 2 });
+  assert.strictEqual(r.clicks.session.length, 0, 'a right click');
+  r.canvas.dispatch('pointerdown', { clientX: s.x, clientY: s.y, button: 0, detail: 1 });
+  r.canvas.dispatch('pointerup', { clientX: s.x, clientY: s.y, button: 0, detail: 1 });
+  r.canvas.dispatch('pointerdown', { clientX: s.x, clientY: s.y, button: 0, detail: 2 });
+  r.canvas.dispatch('pointerup', { clientX: s.x, clientY: s.y, button: 0, detail: 2 });
+  assert.strictEqual(r.clicks.session.length, 1, 'one selection for a double-click');
+});
+
+test('a claim-only agent has no card to open: clicking it does nothing', () => {
+  const r = rig();
+  r.m.setView({ shown: true, focused: false, lean: false });
+  r.m.setData(data({ agents: [], claims: [{ agentId: 'zz', agent: 'builder', worktree: 'C:/p/x', also: [], lastAt: 1, own: false }] }));
+  r.pump(3);
+  const a = r.m.screenPos('agent:zz');
+  r.canvas.dispatch('pointerdown', { clientX: a.x, clientY: a.y });
+  r.canvas.dispatch('pointerup', { clientX: a.x, clientY: a.y });
+  assert.deepStrictEqual(r.clicks.agent, []);
+});
+
+test('MIGUEL S11: destroy() leaves no debounced save behind', () => {
+  const storage = memoryStorage();
+  const r = rig({ storage });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  for (let i = 0; i < 400 && !r.m.state().settled; i += 1) r.pump(1);
+  r.m.destroy();
+  const n = storage.writes.length;
+  r.later.splice(0).forEach(fn => fn());
+  assert.strictEqual(storage.writes.length, n, 'the timer that was pending finds nothing to do');
+});
+
+test('MIGUEL S12: a project is kept under its PATH: two projects with one folder name are two pictures', () => {
+  const storage = memoryStorage();
+  const a = rig({ storage });
+  a.m.setView(VIEW_ON);
+  a.m.setData(data({ project: { name: 'app', path: 'C:/one/app' } }));
+  for (let i = 0; i < 400 && !a.m.state().settled; i += 1) a.pump(1);
+  a.canvas.dispatch('wheel', { clientX: 1, clientY: 1, deltaY: -400, preventDefault() {} });
+  a.later.splice(0).forEach(fn => fn());
+  const b = rig({ storage });
+  b.m.setView({ shown: true, focused: false, lean: false });
+  b.m.setData(data({ project: { name: 'app', path: 'C:/two/app' } }));
+  b.pump(3);
+  assert.strictEqual(b.m.state().userView, false, 'another path, another picture');
+  const c = rig({ storage });
+  c.m.setView({ shown: true, focused: false, lean: false });
+  c.m.setData(data({ project: { name: 'app', path: 'C:/one/app' } }));
+  c.pump(3);
+  assert.strictEqual(c.m.state().userView, true);
+});
+
 // --- crisp at devicePixelRatio ----------------------------------------------------------------------------------------------
 
 test('the canvas is sized in DEVICE pixels and every frame is drawn through the ratio', () => {
@@ -698,7 +860,7 @@ test('a conflict edge is hoverable and names both claims', () => {
   assert.strictEqual(r.panel.querySelector('.map-card-title').textContent, 'Conflict · feat-x');
   const lines = r.panel.querySelectorAll('.map-card-line').map(l => l.textContent);
   assert.strictEqual(lines.length, 2);
-  assert.ok(lines.some(l => /^dexter wrote here/.test(l)) && lines.some(l => /^miguel wrote here/.test(l)));
+  assert.ok(lines.some(l => /^dexter was last active here/.test(l)) && lines.some(l => /^miguel was last active here/.test(l)));
 });
 
 test('hiding the panel drops the hover card', () => {

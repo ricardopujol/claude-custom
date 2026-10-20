@@ -24,6 +24,7 @@ const isStr = s => typeof s === 'string' && s !== '';
 
 function createMapFeed({ now = Date.now, startedAt = now(), windowMs = WINDOW_MS } = {}) {
   let total = 0;
+  let lastT = -Infinity;
   const agents = new Map();      // name -> { stamps: [ms], tool: string|null, toolAt: ms }
 
   function entry(name) {
@@ -36,11 +37,19 @@ function createMapFeed({ now = Date.now, startedAt = now(), windowMs = WINDOW_MS
     return e;
   }
 
+  // The wall clock can step BACK (a time sync, a manual fix). Stamps from the future would then never leave the window and an agent would stream at the
+  // ceiling for the whole step; so a step back forgets every stamp and tool: the rates start again from the new clock.
+  function steady(t) {
+    if (t < lastT) for (const e of agents.values()) { e.stamps.length = 0; e.tool = null; }
+    lastT = t;
+    return t;
+  }
+
   function note(ev) {
     if (!ev || typeof ev !== 'object' || !isStr(ev.event)) return;
     const p = ev.payload && typeof ev.payload === 'object' ? ev.payload : {};
     const name = isStr(p.agent_type) && isStr(p.agent_id) ? p.agent_type.slice(0, NAME_MAX) : 'main';
-    const t = now();
+    const t = steady(now());
     total += 1;
     const e = entry(name);
     e.stamps.push(t);
@@ -52,7 +61,7 @@ function createMapFeed({ now = Date.now, startedAt = now(), windowMs = WINDOW_MS
   }
 
   function snapshot() {
-    const t = now();
+    const t = steady(now());
     const perMinute = Object.create(null);
     const tools = Object.create(null);
     for (const [name, e] of agents) {

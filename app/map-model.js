@@ -38,6 +38,7 @@ const EDGE_PARTICLES_MAX = 8;    // on one edge: a short edge with eight in flig
 const TRAVEL_S = 1.6;           // seconds a particle takes from one end of an edge to the other
 const MAX_STEP_S = 0.25;        // a longer gap (the page was asleep) is taken as this long: no flood on waking
 const PAIRS_PER_PLACE = 6;
+const LIVE_CLAIM_MS = 10 * 60 * 1000;   // how long after its last touch a claim still counts as someone being there (host/agent-occupancy's idle bound)
 
 const R = { project: 26, session: 15, agent: 14, more: 14 };
 
@@ -155,10 +156,12 @@ function buildGraph(input) {
   const selfSession = sessions.find(s => s.self === true) || null;
   const sessionById = new Map(sessions.map(s => [s.id, s]));
 
-  // the agents: the roster's active ones, then those only a claim knows (another session's)
+  // the agents: the roster's active ones (keyed by their type, which is how the roster keys them), then those only a CLAIM knows -- another session's
+  // runs -- keyed by their own agentId, so two builders of one type are two nodes. A claim-only agent is IDLE: a claim proves where an agent touched,
+  // not that it works now, and a stream is drawn only for an agent the mood machine says is working (a claim never is such a word).
   const agents = [];
-  const names = new Set();
-  const rosterNames = new Set();
+  const names = new Set();           // the active roster names
+  const rosterNames = new Set();     // every roster name, sleeping ones included
   for (const a of list(inp.agents)) {
     if (!a || typeof a !== 'object' || !isStr(a.name)) continue;
     rosterNames.add(a.name);
@@ -166,21 +169,27 @@ function buildGraph(input) {
     const look = agentLook(a);
     if (!look.active) continue;
     names.add(a.name);
-    agents.push({ name: a.name, state: look.state, session: a.session, data: a });
+    agents.push({ name: a.name, key: a.name, state: look.state, session: a.session, data: a });
   }
   const placeOf = (worktree) => {
     const key = keyOfPath(worktree);
     return sessions.find(s => keyOfPath(s.folder) === key) || null;
   };
+  const nowMs = isNum(inp.now) ? inp.now : null;
+  const liveClaim = c => nowMs === null || !isNum(c.lastAt) || nowMs - c.lastAt <= LIVE_CLAIM_MS;
   const claims = list(inp.claims).filter(c => c && typeof c === 'object' && isStr(c.agentId) && isStr(c.worktree));
+  // a claim of THIS session's own agent (the page says so with own !== false) belongs to its roster card; anything else is its own node
+  const ownRoster = c => c.own !== false && isStr(c.agent) && rosterNames.has(c.agent);
+  const nodeKeyOf = c => (ownRoster(c) ? (names.has(c.agent) ? c.agent : null) : c.agentId);
+  const claimKeys = new Set();
   for (const c of claims) {
-    const name = isStr(c.agent) ? c.agent : c.agentId;
-    if (names.has(name) || rosterNames.has(name)) continue;
-    names.add(name);
+    if (ownRoster(c) || !liveClaim(c) || claimKeys.has(c.agentId)) continue;
+    claimKeys.add(c.agentId);
     const home = placeOf(c.worktree);
-    agents.push({ name, state: 'working', session: home ? home.id : undefined, data: { name, state: 'working', detail: 'working', worktree: c.worktree, fromClaim: true } });
+    const name = isStr(c.agent) ? c.agent : c.agentId;
+    agents.push({ name, key: c.agentId, state: 'idle', session: home ? home.id : undefined, data: { name, state: 'idle', detail: 'idle', worktree: c.worktree, fromClaim: true } });
   }
-  agents.sort((a, b) => (RANK[a.state] - RANK[b.state]) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  agents.sort((a, b) => (RANK[a.state] - RANK[b.state]) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const shown = agents.slice(0, MAX_AGENTS);
   const leftOut = agents.length - shown.length;
 
@@ -198,7 +207,7 @@ function buildGraph(input) {
   }
   for (const a of shown) {
     const p = parentOf(a);
-    const id = 'agent:' + a.name;
+    const id = 'agent:' + a.key;
     if (!push({ id, kind: 'agent', label: isStr(a.data.label) ? a.data.label : a.name, state: a.state, r: R.agent, data: a.data })) continue;
     const to = p ? 'session:' + p.id : 'project';
     const rate = a.state === 'working' ? particleRate(a.data.eventsPerMin) : 0;
@@ -210,30 +219,45 @@ function buildGraph(input) {
     edges.push({ id: `more>${to}`, from: 'more', to, kind: 'tree', state: 'idle', flow: 0 });
   }
 
-  // two agents claiming one worktree (its own or an `also`) are about to collide
+  // CONFLICTS. Two agents that WRITE in one worktree are about to collide, and so is an agent launched from elsewhere with the person working in
+  // that worktree's own session. A claim records a touch, and a reader's (role 'reader') or an agent the mood machine shows reading is no writer;
+  // a claim that has gone quiet is no longer a place anyone is in. Only the claim's current worktree counts (an `also` is where it WAS).
   const conflicts = [];
   const byPlace = new Map();
+  const isWriter = c => c.role !== 'reader' && liveClaim(c);
+  const nodeFor = c => {
+    const key = nodeKeyOf(c);
+    const id = key === null ? null : 'agent:' + key;
+    if (id === null || !ids.has(id)) return null;
+    const node = nodes.find(n => n.id === id);
+    return node && node.data && node.data.detail === 'reading' ? null : id;
+  };
   for (const c of claims) {
-    const name = isStr(c.agent) ? c.agent : c.agentId;
-    const nodeId = 'agent:' + name;
-    if (!ids.has(nodeId)) continue;
-    for (const w of [c.worktree, ...list(c.also).filter(isStr)]) {
-      const key = keyOfPath(w);
-      if (!byPlace.has(key)) byPlace.set(key, { label: baseOfPath(w) || w, who: new Map() });
-      const place = byPlace.get(key);
-      if (!place.who.has(nodeId)) place.who.set(nodeId, c);
-    }
+    if (!isWriter(c)) continue;
+    const nodeId = nodeFor(c);
+    if (nodeId === null) continue;
+    const key = keyOfPath(c.worktree);
+    if (!byPlace.has(key)) byPlace.set(key, { label: baseOfPath(c.worktree) || c.worktree, who: new Map() });
+    const place = byPlace.get(key);
+    if (!place.who.has(nodeId)) place.who.set(nodeId, c);
   }
+  const addConflict = (a, b, key, label, cl) => {
+    const e = { id: `conflict:${a}|${b}|${key}`, from: a, to: b, kind: 'conflict', state: 'error', flow: 0, label, claims: cl };
+    conflicts.push(e);
+    edges.push(e);
+  };
   for (const [key, place] of byPlace) {
     const who = [...place.who];
     let pairs = 0;
     for (let i = 0; i < who.length; i += 1) {
-      for (let j = i + 1; j < who.length && pairs < PAIRS_PER_PLACE; j += 1, pairs += 1) {
-        const [a, ca] = who[i];
-        const [b, cb] = who[j];
-        const e = { id: `conflict:${a}|${b}|${key}`, from: a, to: b, kind: 'conflict', state: 'error', flow: 0, label: place.label, claims: [ca, cb] };
-        conflicts.push(e);
-        edges.push(e);
+      for (let j = i + 1; j < who.length && pairs < PAIRS_PER_PLACE; j += 1, pairs += 1) addConflict(who[i][0], who[j][0], key, place.label, [who[i][1], who[j][1]]);
+    }
+    // an agent launched from elsewhere, writing where the person's own session is in a turn: the person is the other party
+    const home = placeOf(key);
+    if (home && home.state === 'working') {
+      for (const [nodeId, c] of who) {
+        const elsewhere = isStr(c.fromRoot) ? keyOfPath(c.fromRoot) !== keyOfPath(home.folder) : c.own === false;
+        if (elsewhere) addConflict(nodeId, 'session:' + home.id, key, place.label, [c]);
       }
     }
   }
