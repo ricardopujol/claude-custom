@@ -262,6 +262,17 @@ test('the raise flashes the frame as well as focusing (Windows may refuse to han
   assert.match(body, /flashFrame\(true\)/);
 });
 
+test('setCue drives the taskbar flash from cueFlash, and focus stops it (BACKLOG #117)', () => {
+  const at = MAIN.indexOf('function setCue(on)');
+  const body = MAIN.slice(at, at + 400);
+  assert.match(body, /cueFlash\(cueOn, !!on, focused\)/);
+  assert.match(body, /win\.flashFrame\(flash\)/);
+  assert.ok(body.indexOf('cueFlash(') < body.indexOf('cueOn = !!on'), 'the previous state must be read before it is overwritten');
+  assert.match(MAIN, /require\('\.\/cue-flash'\)/);
+  const f = MAIN.indexOf("win.on('focus'");
+  assert.match(MAIN.slice(f, f + 300), /flashFrame\(false\)/);
+});
+
 test('the screenshot path captures the SELECTED view and the strip beside it', () => {
   assert.match(MAIN, /capture\(sel\.webContents, outFile\)/);
   assert.match(MAIN, /capture\(win\.webContents, stripFileFor\(outFile\)\)/);

@@ -22,6 +22,7 @@
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
@@ -600,7 +601,9 @@ function createWindow() {
 // silently stops meaning anything is worse than no cue, because the next
 // real one says nothing either.
 function setCue(on) {
+  const flash = cueFlash(cueOn, !!on, focused);
   cueOn = !!on;
+  if (flash !== null && win && !win.isDestroyed()) win.flashFrame(flash);   // #117: the border is static, the taskbar button moves
   forEachView((v) => v.webContents.send('attention-cue', cueOn));
 }
 
