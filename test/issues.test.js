@@ -535,3 +535,15 @@ test('matchesFilter: a lone "#" (the start of "#12") narrows nothing yet', () =>
   assert.ok(matchesFilter(i, '# '));
   assert.ok(!matchesFilter(i, '# nothing'));
 });
+
+test('N2: the slug needs a boundary after it: feat/1-add is not feat/1-address-book', () => {
+  const add = [{ number: 1, title: 'Add', labels: [], assignees: [], updatedAt: null, url: null }];
+  assert.strictEqual(issueForBranch('feat/1-address-book', add), null);
+  assert.strictEqual(issueForBranch('fix/1-addendum', add), null);
+  assert.strictEqual(issueForBranch('feat/1-add', add), add[0]);
+  assert.strictEqual(issueForBranch('feat/1-add-more', add), add[0], 'a dash continues the slug');
+  assert.strictEqual(issueForBranch('feat/1-add/sub', add), null, 'a path part is another branch');
+  const long = [{ number: 2, title: 'x'.repeat(60), labels: [], assignees: [], updatedAt: null, url: null }];
+  assert.strictEqual(issueForBranch(branchFor(long[0]), long), long[0], 'a slug cut at 40 characters finds its issue');
+  assert.strictEqual(issueForBranch(`${branchFor(long[0])}y`, long), long[0], 'and may be extended mid-word, because it was cut mid-word');
+});

@@ -122,7 +122,12 @@ function issueForBranch(branch, issues) {
   const i = issues.find(x => x && x.number === n);
   if (!i) return null;
   const stem = `${n}-${slugify(i.title)}`;
-  return branch.startsWith(`feat/${stem}`) || branch.startsWith(`fix/${stem}`) ? i : null;
+  // A boundary after the slug (end, or a dash): feat/1-add is not feat/1-address-book. A slug cut at SLUG_MAX was cut
+  // mid-word, so a branch may go on from it with any character.
+  const cut = slugify(i.title).length >= SLUG_MAX;
+  const goesOn = (prefix) => branch.startsWith(prefix)
+    && (cut || branch.length === prefix.length || branch[prefix.length] === '-');
+  return goesOn(`feat/${stem}`) || goesOn(`fix/${stem}`) ? i : null;
 }
 
 /** The picker's search: every word must hit the number (a prefix), the title or a label. `#12` hits only the number. */

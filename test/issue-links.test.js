@@ -114,3 +114,38 @@ test('issueLinksFileFor: beside the other project state, or null when the look f
   const f = issueLinksFileFor('C:\\p\\dev', fsFake);
   assert.ok(f === null || path.basename(f) === 'issue-lanes.json', String(f));
 });
+
+// --- PR #202 Dexter round 2, N1 -------------------------------------------------------------------
+
+test('N1: a read that fails for any reason but "no file" makes set refuse and leaves the file alone', () => {
+  for (const code of ['EBUSY', 'EPERM', 'EACCES', 'EIO']) {
+    const writes = [];
+    const links = createIssueLinks({
+      file: 'F', readText: () => { const e = new Error(`${code}: busy`); e.code = code; throw e; },
+      writeText: (f, t) => writes.push(t), mkdir: () => {},
+    });
+    const r = links.set({ branch: 'b', path: 'C:\p', issue: ISSUE });
+    assert.strictEqual(r.ok, false, code);
+    assert.match(r.error, new RegExp(code));
+    assert.deepStrictEqual(writes, [], `${code}: the store is not rewritten from an empty base`);
+    assert.deepStrictEqual(links.get('b', 'C:\p'), ISSUE, 'but this run still serves the link from memory');
+  }
+});
+
+test('N1: a file that is not JSON (or not an object) is not an empty base either', () => {
+  for (const text of ['not json', '[]', '"x"', 'null']) {
+    const writes = [];
+    const links = createIssueLinks({ file: 'F', readText: () => text, writeText: (f, t) => writes.push(t), mkdir: () => {} });
+    assert.strictEqual(links.set({ branch: 'b', path: 'C:\p', issue: ISSUE }).ok, false, text);
+    assert.deepStrictEqual(writes, [], text);
+  }
+});
+
+test('N1: only a missing file (ENOENT) is an empty base, and the other lanes survive a set', () => {
+  const m = memory();
+  assert.strictEqual(m.links.set({ branch: 'a', path: 'C:\a', issue: ISSUE }).ok, true);
+  assert.strictEqual(m.links.set({ branch: 'b', path: 'C:\b', issue: { number: 7, title: null, url: null } }).ok, true);
+  const again = createIssueLinks({ file: 'F', readText: (f) => m.files.get(f), writeText: (f, t) => m.files.set(f, t), mkdir: () => {} });
+  again.set({ branch: 'c', path: 'C:\c', issue: { number: 8, title: null, url: null } });
+  assert.deepStrictEqual(Object.keys(JSON.parse(m.files.get('F')).lanes).sort(), ['a', 'b', 'c']);
+});

@@ -29,12 +29,24 @@ const message = (err) => (err && err.message) || String(err);
  * Write `text` to `file` only if nothing is there, never replacing: the text goes to a temp file beside it and is HARD-LINKED
  * into place (the link fails with EEXIST when the file exists, atomically), then the temp is removed. Never opens the
  * target for writing, so a failed write can't leave half a brief. Throws (EEXIST when it was already there).
+ *
+ * NEEDS A FILESYSTEM THAT HARD-LINKS (NTFS does; the project's documentation folder is on the same volume as the repo).
+ * Where the link is refused (EPERM, ENOTSUP, EXDEV, a FAT or network share) it falls back to an exclusive create (`wx`):
+ * still no clobber, but not atomic -- a crash mid-write can leave a partial brief, which the next Create then treats as
+ * "already there".
  */
+const LINK_REFUSED = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'ENOSYS']);
+
 function writeNoClobber(file, text, { fsImpl = fs } = {}) {
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
   try {
     fsImpl.writeFileSync(temp, text);
-    fsImpl.linkSync(temp, file);
+    try {
+      fsImpl.linkSync(temp, file);
+    } catch (err) {
+      if (!err || !LINK_REFUSED.has(err.code)) throw err;
+      fsImpl.writeFileSync(file, text, { flag: 'wx' });    // EEXIST propagates: an existing brief is never replaced
+    }
   } finally {
     try { fsImpl.unlinkSync(temp); } catch { /* nothing left to remove */ }
   }

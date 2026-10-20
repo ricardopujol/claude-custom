@@ -58,22 +58,29 @@ function createIssueLinks({
   const memory = new Map();      // branch -> { path, issue, at }: what this run knows, written or not
   let disk = null;               // { stamp, lanes } the last file read
 
+  // `{ lanes, error }`. Only a MISSING file (ENOENT) is an empty store. A read that failed any other way (EBUSY under an
+  // antivirus scan, EPERM) or a file that isn't a JSON object is an UNKNOWN store: `get` serves nothing from it, and `set`
+  // refuses to write, because writing over it would replace every other lane's link with just the newest one (PR #202 N1).
   function load() {
-    if (!file) return {};
+    if (!file) return { lanes: {}, error: null };
     let text;
-    try { text = readText(file); } catch { return {}; }
-    if (disk && disk.text === text) return disk.lanes;
+    try { text = readText(file); } catch (err) {
+      if (err && err.code === 'ENOENT') return { lanes: {}, error: null };
+      return { lanes: {}, error: `can't read ${file}: ${(err && err.message) || String(err)}` };
+    }
+    if (disk && disk.text === text) return { lanes: disk.lanes, error: null };
     let raw;
     try { raw = JSON.parse(text); } catch { raw = null; }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { lanes: {}, error: `${file} isn't a lanes file; left alone` };
     const out = {};
-    const lanes = raw && typeof raw === 'object' && raw.lanes && typeof raw.lanes === 'object' && !Array.isArray(raw.lanes) ? raw.lanes : {};
+    const lanes = raw.lanes && typeof raw.lanes === 'object' && !Array.isArray(raw.lanes) ? raw.lanes : {};
     for (const [branch, e] of Object.entries(lanes)) {
       const issue = e && typeof e === 'object' ? cleanIssue(e.issue) : null;
       if (!issue) continue;
       out[branch] = { path: typeof e.path === 'string' ? e.path : null, issue, at: Number.isFinite(e.at) ? e.at : 0 };
     }
     disk = { text, lanes: out };
-    return out;
+    return { lanes: out, error: null };
   }
 
   /** The issue of the lane on `branch` (in `folder`, when given), or null. */
@@ -81,7 +88,7 @@ function createIssueLinks({
     if (typeof branch !== 'string' || branch === '') return null;
     let e = memory.get(branch) || null;
     if (!e) {
-      const lanes = load();
+      const { lanes } = load();
       e = Object.prototype.hasOwnProperty.call(lanes, branch) ? lanes[branch] : null;
     }
     if (!e) return null;
@@ -101,7 +108,9 @@ function createIssueLinks({
     }
     if (!file) return { ok: true };
     try {
-      const lanes = { ...load(), [branch]: entry };
+      const base = load();
+      if (base.error) return { ok: false, error: base.error };
+      const lanes = { ...base.lanes, [branch]: entry };
       const keep = Object.entries(lanes).sort((a, b) => b[1].at - a[1].at).slice(0, max);
       const body = JSON.stringify({ version: 1, lanes: Object.fromEntries(keep) }, null, 2) + '\n';
       mkdir(path.dirname(file));

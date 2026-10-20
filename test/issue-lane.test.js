@@ -128,3 +128,26 @@ test('a lane with no usable issue number or worktree is refused before anything 
   assert.strictEqual(calls.view.length, 0);
   assert.strictEqual(calls.briefPath.length, 0);
 });
+
+test('N3: where hard links are refused (EPERM / ENOTSUP / EXDEV) the write falls back to an exclusive create, still never clobbering', () => {
+  const { writeNoClobber } = require('../host/issue-lane');
+  for (const code of ['EPERM', 'ENOTSUP', 'EXDEV']) {
+    const files = new Map();
+    const fsFake = {
+      writeFileSync: (f, t, o) => { if (o && o.flag === 'wx' && files.has(f)) { const e = new Error('EEXIST'); e.code = 'EEXIST'; throw e; } files.set(f, t); },
+      linkSync: () => { const e = new Error(code); e.code = code; throw e; },
+      unlinkSync: (f) => { files.delete(f); },
+    };
+    writeNoClobber('F.md', 'first', { fsImpl: fsFake });
+    assert.strictEqual(files.get('F.md'), 'first', code);
+    assert.throws(() => writeNoClobber('F.md', 'second', { fsImpl: fsFake }), (e) => e.code === 'EEXIST');
+    assert.strictEqual(files.get('F.md'), 'first', `${code}: the existing brief is untouched`);
+    assert.deepStrictEqual([...files.keys()], ['F.md'], `${code}: no temp file left`);
+  }
+});
+
+test('N3: any other link failure is thrown, not papered over', () => {
+  const { writeNoClobber } = require('../host/issue-lane');
+  const fsFake = { writeFileSync() {}, linkSync: () => { const e = new Error('disk'); e.code = 'EIO'; throw e; }, unlinkSync() {} };
+  assert.throws(() => writeNoClobber('F.md', 't', { fsImpl: fsFake }), (e) => e.code === 'EIO');
+});
