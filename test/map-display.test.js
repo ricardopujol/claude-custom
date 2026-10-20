@@ -421,6 +421,25 @@ test('PARTICLES: a sprite fades to its own colour at alpha 0, not to black (a ca
   assert.ok(ends.every(e => /^rgba\(\d+,\d+,\d+,0\)$/.test(e)), 'every one ends fully transparent');
 });
 
+test('the gap between frames can be changed (a slower animation is a cheaper one), and junk is ignored', () => {
+  const r = rig();
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  assert.strictEqual(r.m.state().frameMs, 30);
+  r.m.setFrameMs(60);
+  assert.strictEqual(r.m.state().frameMs, 60);
+  r.pump(1, 34);
+  const frames = r.m.state().frames;
+  r.pump(1, 34);
+  assert.strictEqual(r.m.state().frames, frames, '34 ms is now too soon');
+  r.pump(1, 40);
+  assert.strictEqual(r.m.state().frames, frames + 1);
+  for (const bad of [NaN, null, 'x', undefined]) r.m.setFrameMs(bad);
+  assert.strictEqual(r.m.state().frameMs, 60);
+  r.m.setFrameMs(1); assert.strictEqual(r.m.state().frameMs, 8);
+  r.m.setFrameMs(1e9); assert.strictEqual(r.m.state().frameMs, 250);
+});
+
 // --- what a frame asks of the page ------------------------------------------------------------------------------------------
 
 test('the stage is measured once and kept until the size observer says it changed (a rect read every frame is a forced layout)', () => {

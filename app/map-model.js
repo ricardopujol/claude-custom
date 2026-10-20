@@ -33,7 +33,8 @@ const EVENTS_PER_PARTICLE_MIN = 5;   // events a minute that make one particle a
 const BUDGET_MIN = 0.125;
 const SLOW_FRAME_MS = 40;
 const GOOD_FRAME_MS = 24;
-const MAX_PARTICLES = 360;
+const MAX_PARTICLES = 160;       // on the whole map: the cost of a frame grows with these, and more than this is not a clearer picture
+const EDGE_PARTICLES_MAX = 8;    // on one edge: a short edge with eight in flight already reads as a stream
 const TRAVEL_S = 1.6;           // seconds a particle takes from one end of an edge to the other
 const MAX_STEP_S = 0.25;        // a longer gap (the page was asleep) is taken as this long: no flood on waking
 const PAIRS_PER_PLACE = 6;
@@ -292,7 +293,7 @@ function stepParticles(state, flows, dt, scale, rng) {
     if (!f || !isStr(f.id) || !isNum(f.rate) || f.rate <= 0) continue;
     const eff = f.rate * sc;
     let a = ((state && state.acc && state.acc[f.id]) || 0) + eff * step;
-    const edgeCap = Math.ceil(eff * TRAVEL_S) + 1;
+    const edgeCap = Math.min(EDGE_PARTICLES_MAX, Math.ceil(eff * TRAVEL_S) + 1);
     while (a >= 1) {
       a -= 1;
       if (next.length >= cap || (perEdge.get(f.id) || 0) >= edgeCap) { a = Math.min(a, 1); continue; }
@@ -390,7 +391,7 @@ const API = {
   shouldAnimate, shouldDraw, particlesOn,
   toScreen, toWorld, zoomAt, fitView, hitTest, curvePoint,
   shorten, compact, duration, keyOfPath, baseOfPath,
-  ZOOM_MIN, ZOOM_MAX, FIT_MAX, MAX_AGENTS, MAX_SESSIONS, BUDGET_MIN, MAX_PARTICLES, TRAVEL_S, RATE_MIN, RATE_MAX, R,
+  ZOOM_MIN, ZOOM_MAX, FIT_MAX, MAX_AGENTS, MAX_SESSIONS, BUDGET_MIN, MAX_PARTICLES, EDGE_PARTICLES_MAX, TRAVEL_S, RATE_MIN, RATE_MAX, R,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

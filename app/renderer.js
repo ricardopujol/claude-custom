@@ -4011,6 +4011,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (a.op === 'fake') { mapFake = { project: { name: String(a.project || currentProjectName || 'probe') }, sessions: a.sessions || [], agents: a.agents || [], claims: a.claims || [], totalAgents: a.totalAgents, lanes: a.lanes || null, feed: a.feed || null }; mapRefresh(); }
         else if (a.op === 'unfake') { mapFake = null; mapRefresh(); }
         else if (a.op === 'fit') mapPanel.fit();
+        else if (a.op === 'frameMs') mapPanel.setFrameMs(Number(a.ms));
         else if (a.op === 'hover') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointermove', { ...p, bubbles: true })); }
         else if (a.op === 'click') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointerdown', { ...p, bubbles: true })); cv.dispatchEvent(new PointerEvent('pointerup', { ...p, bubbles: true })); }
         else if (a.op === 'wheel') { const r = cv.getBoundingClientRect(); cv.dispatchEvent(new WheelEvent('wheel', { clientX: r.left + (a.x || 100), clientY: r.top + (a.y || 100), deltaY: Number(a.deltaY) || 0, bubbles: true, cancelable: true })); }

@@ -26,7 +26,8 @@
 const model = typeof module !== 'undefined' && module.exports ? require('./map-model') : root.mapModel;
 const layoutLib = typeof module !== 'undefined' && module.exports ? require('./map-layout') : root.mapLayout;
 
-const FRAME_MIN_MS = 30;           // ~30 fps while animating
+const FRAME_MIN_MS = 30;           // ~30 fps while animating (the default; see setFrameMs)
+const FRAME_MAX_MS = 250;
 const PACE_SLACK_MS = 1;           // the timer waits the rest of the slot PLUS this, so the animation frame it asks for is never too early to draw (one wake-up a frame)
 const STEPS_PER_FRAME = 2;         // layout ticks a frame while it is still settling
 const SAVE_AFTER_MS = 700;
@@ -157,6 +158,7 @@ function mount(opts) {
   let loop = null;                   // a pending animation frame
   let pacer = null;                  // a pending wait for the next ~30 fps slot (a timer: the page is not woken on every vsync to do nothing)
   let lastFrameAt = null;
+  let frameMs = isNum(opts.frameMs) ? Math.min(FRAME_MAX_MS, Math.max(8, opts.frameMs)) : FRAME_MIN_MS;     // the shortest gap between two frames of the loop
   let frames = 0;
   let lastCost = 0;
   let hover = null;                  // { kind: 'node', id } | { kind: 'conflict', id }
@@ -451,12 +453,12 @@ function mount(opts) {
       const colour = colourOf(e.state);
       const sprite = spriteFor(colour, dpr, dark);
       const bend = bendOf(e);
-      for (let i = 0; i < 3; i += 1) {
-        const tt = p.t - i * 0.03;
+      for (let i = 0; i < 2; i += 1) {                // the head and one tail glow
+        const tt = p.t - i * 0.035;
         if (tt < 0) break;
         const q = model.curvePoint(a, b, tt, bend);
-        const sz = (15 - i * 3.5) / k;
-        g.globalAlpha = i === 0 ? 1 : i === 1 ? 0.55 : 0.28;
+        const sz = (15 - i * 4) / k;
+        g.globalAlpha = i === 0 ? 1 : 0.45;
         if (sprite) g.drawImage(sprite, q.x - sz / 2, q.y - sz / 2, sz, sz);
         else { g.fillStyle = colour; g.beginPath(); g.arc(q.x, q.y, sz / 3, 0, Math.PI * 2); g.fill(); }
       }
@@ -523,7 +525,7 @@ function mount(opts) {
     if (!drawing()) return;
     const t = nowMs();
     const moving = animating();
-    if (moving && lastFrameAt !== null && t - lastFrameAt < FRAME_MIN_MS) { loop = raf(frame); return; }
+    if (moving && lastFrameAt !== null && t - lastFrameAt < frameMs) { loop = raf(frame); return; }
     const dt = lastFrameAt === null ? 1 / 30 : Math.min(0.1, (t - lastFrameAt) / 1000);
     lastFrameAt = t;
     const wasSettled = layoutLib.settled(layout);
@@ -553,7 +555,7 @@ function mount(opts) {
 
   // Ask for the NEXT frame of the loop: a timer for most of the wait, then one animation frame, so ~30 fps costs ~30 wake-ups a second.
   function arm(t) {
-    const wait = FRAME_MIN_MS - (nowMs() - t) + PACE_SLACK_MS;
+    const wait = frameMs - (nowMs() - t) + PACE_SLACK_MS;
     if (typeof opts.pace === 'function' && wait >= 2) pacer = opts.pace(() => { pacer = null; if (drawing()) loop = raf(frame); }, wait);
     else loop = raf(frame);
   }
@@ -719,6 +721,8 @@ function mount(opts) {
     },
     fit,
     redraw,
+    /** The shortest gap between two frames of the animation, in ms (30 = about 33 fps). For the probe's trade-off runs and a future setting. */
+    setFrameMs(ms) { if (isNum(ms)) frameMs = Math.min(FRAME_MAX_MS, Math.max(8, ms)); },
     /** Where a node is on the panel, in CSS pixels, for tests and the probe. */
     screenPos(id) { const n = nodeById(id); return n && isNum(n.x) ? model.toScreen(view, n.x, n.y) : null; },
     /** The point `t` (0..1) along an edge, on screen, for tests and the probe. */
@@ -732,7 +736,7 @@ function mount(opts) {
     /** For tests and the probe: a copy, never the live objects. */
     state() {
       return {
-        drawing: drawing(), animating: animating(), looping: loop !== null || pacer !== null, frames, lastCost, budget,
+        drawing: drawing(), animating: animating(), looping: loop !== null || pacer !== null, frameMs, frames, lastCost, budget,
         settled: layoutLib.settled(layout), particles: particles.list.length, flows: flowsOf().length,
         particleEdges: [...new Set(particles.list.map(p => p.e))],
         zoom: view.k, view: { ...view }, size: { ...size },

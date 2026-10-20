@@ -291,6 +291,13 @@ test('a smaller budget makes fewer particles, and the total is capped', () => {
   assert.ok(run(0.125, 12, 200) <= Math.ceil(M.MAX_PARTICLES * 0.125));
 });
 
+test('one edge never holds more than eight particles, however fast its rate', () => {
+  let st = M.newParticles();
+  for (let i = 0; i < 60; i += 1) st = M.stepParticles(st, [{ id: 'e', rate: 12 }], 0.05, 1, lcg(i + 1));
+  assert.strictEqual(M.EDGE_PARTICLES_MAX, 8);
+  assert.ok(st.list.length > 0 && st.list.length <= 8, `held ${st.list.length}`);
+});
+
 test('a huge dt (the tab was asleep) does not flood the screen', () => {
   const st = M.stepParticles(M.newParticles(), [{ id: 'e', rate: 12 }], 3600, 1, lcg(4));
   assert.ok(st.list.length <= 12 * 3, `got ${st.list.length}`);
