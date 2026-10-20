@@ -1,0 +1,6 @@
+{
+  "name": "harness-feed",
+  "version": "0.1.0",
+  "description": "claude-custom's feed: reads the session's usage, subagent states and permission asks, and posts them to the harness on 127.0.0.1. Never changes a decision, never draws, never rewrites a prompt.",
+  "author": { "name": "claude-custom" }
+}

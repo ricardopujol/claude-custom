@@ -231,7 +231,16 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     if (event === 'SessionEnd') { held = null; ended.clear(); starts.clear(); stopTimer(); }
   }
 
+  // BACKLOG #119 A2: a permission ask the claude-custom mod saw (`tool.check` resolved to `ask`). It is the CLI's own
+  // permission_prompt, seen from inside: the same message the CLI words, through `handle`, so the same debounce makes the
+  // CLI's own Notification for the same prompt one toast and not two. Only the tool NAME crosses; the mod never sends its input.
+  function ask(a) {
+    if (!a || typeof a !== 'object' || typeof a.tool !== 'string' || a.tool === '') return;
+    handle({ event: 'Notification', payload: { notification_type: 'permission_prompt', message: `Claude needs your permission to use ${a.tool}` } });
+  }
+
   emitter.handle = handle;
+  emitter.ask = ask;
   emitter.activity = activity;
   return emitter;
 }
