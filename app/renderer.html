@@ -387,8 +387,8 @@
     #changes-root { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; outline: none; overflow: hidden; }
     .zone[data-shape="wide"] .panel.on > #changes-root { flex: 1 1 auto; min-width: 260px; max-width: none; }
     .chg-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-    .chg-scope { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
-    .chg-scope-btn { background: transparent; color: var(--dim); border: 0; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+    .chg-scope { display: inline-flex; flex: 1 1 auto; min-width: 0; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+    .chg-scope-btn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; background: transparent; color: var(--dim); border: 0; padding: 3px 6px; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
     .chg-scope-btn + .chg-scope-btn { border-left: 1px solid var(--border); }
     .chg-scope-btn.on { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
     .chg-scope-btn:hover { color: var(--accent); }
