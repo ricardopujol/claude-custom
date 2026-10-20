@@ -218,14 +218,21 @@ async function partB() {
     check('the host logged no mod record failure', !/mod record:/.test(log), (log.match(/mod record:[^\n]*/) || [''])[0]);
 
     if (modFile) {
+      // Every GOOD poll renews the lease's stamp (host/quota-share.js renewPoller) and a yielding poller does not: that stamp is how the
+      // probe sees a poll without touching the host. It only means something while THIS host holds the lease.
+      const leaseNow = () => { try { return JSON.parse(fs.readFileSync(lease, 'utf8')); } catch { return null; } };
+      const before = leaseNow();
       console.log('\nwaiting past the 60 s poll tick to see whether the poller yields (complete=' + modFile.complete + ')...');
       await sleep(70000);
-      const after = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (modFile.complete === true) {
-        check('the mod covers every window, so the poller yielded: the file is still the mod\'s', after.source === 'mod', `source=${after.source}`);
+      const after = leaseNow();
+      const ours = !!(after && typeof after.owner === 'string' && after.owner.startsWith(host.pid + '-'));
+      if (!ours) {
+        console.log('  SKIPPED the poll check: another host holds the quota lease (' + (after && after.owner) + '), so this host would not poll either way');
+      } else if (modFile.complete === true) {
+        check('the mod covers every window, so the poller yielded: the lease was not renewed, no poll was made', !!before && after.at === before.at, `lease stamp ${before && before.at} -> ${after.at}`);
       } else {
-        check('the mod leaves a window out (carried from the poll), so the poller kept polling: the file is the poll\'s again',
-          after.source !== 'mod' || after.readAt !== modFile.readAt, `source=${after.source || 'poll'} windows=${after.windows.map((w) => w.key).join(',')}`);
+        check('the mod leaves a window out (carried from the poll), so the poller kept polling: a good poll renewed the lease',
+          !!before && after.at > before.at, `lease stamp ${before && before.at} -> ${after.at}`);
         console.log('  (expected on an account with a model-scoped window such as Fable: the CLI reports only five_hour and seven_day)');
       }
     }

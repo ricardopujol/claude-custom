@@ -190,6 +190,16 @@ function recordFailureAsPoller({ dir = defaultDir(), configDir, owner, result, n
 
 const keyOf = (w) => (w && typeof w === 'object' && typeof w.key === 'string' ? w.key : null);
 
+// Two reset stamps name the same window instance when they are under a minute apart (the API says `+00:00` with microseconds, the CLI `Z`
+// with milliseconds). Anything that does not parse is not the same instance.
+const SAME_RESET_MS = 60_000;
+function sameReset(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) < SAME_RESET_MS;
+}
+
 /**
  * Write the mod's windows through the SAME file the poller writes, so every host and `quota-cli` benefit. The mod only knows the
  * windows the CLI reports (five_hour, seven_day: no model-scoped one), so a window the last poll found and the mod does not report
@@ -200,8 +210,8 @@ const keyOf = (w) => (w && typeof w === 'object' && typeof w.key === 'string' ? 
  */
 function recordModWindows({ dir = defaultDir(), configDir, windows, now = Date.now } = {}) {
   if (!Array.isArray(windows) || windows.length === 0) return false;
-  const mine = windows.filter(w => keyOf(w) !== null).map(cleanWindow);
-  if (mine.length === 0) return false;
+  const given = windows.filter(w => keyOf(w) !== null).map(cleanWindow);
+  if (given.length === 0) return false;
   const file = quotaPath(dir, configDir);
   const t = now();
   fs.mkdirSync(dir, { recursive: true });
@@ -210,6 +220,14 @@ function recordModWindows({ dir = defaultDir(), configDir, windows, now = Date.n
   if (prior.kind === 'unknown') return false;
   const p = prior.kind === 'value' && prior.value && typeof prior.value === 'object' && !Array.isArray(prior.value) ? prior.value : null;
   const priorWindows = p && Array.isArray(p.windows) ? p.windows.filter(w => keyOf(w) !== null) : [];
+  // The mod's figure is the CLI's LAST RESPONSE; the poll's is the account now, which other sessions move. Inside one reset a window's
+  // percent only goes up, so a lower mod figure for the same window and reset is older news and the file's stays; and an unknown mod
+  // figure never erases a known one. Without a reset time on both sides nothing proves it is the same window, so the mod's is taken.
+  const mine = given.map((m) => {
+    const old = priorWindows.find(w => keyOf(w) === keyOf(m));
+    if (!old || !sameReset(old.resetsAt, m.resetsAt) || !isNum(old.percent)) return m;
+    return m.percent === null || old.percent > m.percent ? { ...m, percent: old.percent } : m;
+  });
   const fromMod = !!p && p.source === 'mod';
   const pollKeys = fromMod && Array.isArray(p.pollKeys) ? p.pollKeys.filter(k => typeof k === 'string')
     : (p && isNum(p.readAt) ? priorWindows.map(keyOf) : null);

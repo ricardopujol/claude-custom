@@ -175,3 +175,67 @@ test('readNow with no file is absent, never a set of zeros', () => {
   assert.strictEqual(q.state, 'absent');
   assert.deepStrictEqual(q.windows, []);
 });
+
+// --- a window never moves backwards inside one reset: the mod's figure is the CLI's last response, the poll's is the account's now ---
+
+test('a mod figure below the file\'s for the same window and the same reset is not written: the percent only goes up inside one window', () => {
+  const d = dir();
+  poll(d, [win('session', '5h', 18, { resetsAt: '2026-10-20T05:10:00.123456+00:00' }), win('weekly_all', 'week', 7, { resetsAt: '2026-10-26T18:00:00+00:00' })]);
+  recordModWindows({ dir: d, windows: [win('session', '5h', 17, { resetsAt: '2026-10-20T05:10:00.000Z' }), win('weekly_all', 'week', 8, { resetsAt: '2026-10-26T18:00:00.000Z' })], now: () => T0 + 1000 });
+  const w = readShared({ dir: d, now: () => T0 + 1000 }).windows;
+  assert.deepStrictEqual(w.map(x => [x.key, x.percent]), [['session', 18], ['weekly_all', 8]]);
+});
+
+test('a lower figure for a NEW reset instance is written: the window rolled over', () => {
+  const d = dir();
+  poll(d, [win('session', '5h', 90, { resetsAt: '2026-10-20T05:10:00+00:00' })]);
+  recordModWindows({ dir: d, windows: [win('session', '5h', 2, { resetsAt: '2026-10-20T10:10:00.000Z' })], now: () => T0 });
+  assert.strictEqual(readShared({ dir: d, now: () => T0 }).windows[0].percent, 2);
+});
+
+test('with no reset time on either side the lower figure is written: nothing proves it is the same window', () => {
+  const d = dir();
+  poll(d, [win('session', '5h', 50, { resetsAt: null })]);
+  recordModWindows({ dir: d, windows: [win('session', '5h', 40, { resetsAt: null })], now: () => T0 });
+  assert.strictEqual(readShared({ dir: d, now: () => T0 }).windows[0].percent, 40);
+});
+
+test('an unknown (null) percent on either side never wins by comparison', () => {
+  const d = dir();
+  poll(d, [win('session', '5h', null, { resetsAt: '2026-10-20T05:10:00Z' })]);
+  recordModWindows({ dir: d, windows: [win('session', '5h', 3, { resetsAt: '2026-10-20T05:10:00Z' })], now: () => T0 });
+  assert.strictEqual(readShared({ dir: d, now: () => T0 }).windows[0].percent, 3);
+  recordModWindows({ dir: d, windows: [win('session', '5h', null, { resetsAt: '2026-10-20T05:10:00Z' })], now: () => T0 + 1 });
+  assert.strictEqual(readShared({ dir: d, now: () => T0 + 1 }).windows[0].percent, 3, 'an unknown mod figure does not erase a known one for the same window');
+});
+
+test('resets within a minute of each other are the same instance; a minute or more apart are not', () => {
+  const d = dir();
+  poll(d, [win('session', '5h', 50, { resetsAt: '2026-10-20T05:10:00Z' })]);
+  recordModWindows({ dir: d, windows: [win('session', '5h', 40, { resetsAt: '2026-10-20T05:10:59Z' })], now: () => T0 });
+  assert.strictEqual(readShared({ dir: d, now: () => T0 }).windows[0].percent, 50);
+  const e = dir();
+  poll(e, [win('session', '5h', 50, { resetsAt: '2026-10-20T05:10:00Z' })]);
+  recordModWindows({ dir: e, windows: [win('session', '5h', 40, { resetsAt: '2026-10-20T05:11:00Z' })], now: () => T0 + 1 });
+  assert.strictEqual(readShared({ dir: e, now: () => T0 + 1 }).windows[0].percent, 40);
+});
+
+test('property: a mod write never lowers a window\'s percent inside one reset, whatever the poll and the mod said before', () => {
+  const fc = require('fast-check');
+  const op = fc.record({ who: fc.constantFrom('poll', 'mod'), pct: fc.oneof(fc.integer({ min: 0, max: 100 }), fc.constant(null)) });
+  fc.assert(fc.property(fc.array(op, { minLength: 1, maxLength: 12 }), (ops) => {
+    const d = dir();
+    let t = T0;
+    for (const { who, pct } of ops) {
+      t += 1000;
+      const before = (() => { try { return fileOf(d).windows.find(w => w.key === 'session'); } catch { return null; } })();
+      const w = win('session', '5h', pct, { resetsAt: '2026-10-20T05:10:00.000Z' });
+      if (who === 'poll') recordPoll({ dir: d, result: { ok: true, windows: [w] }, now: () => t });
+      else {
+        recordModWindows({ dir: d, windows: [w], now: () => t });
+        const after = fileOf(d).windows.find(x => x.key === 'session');
+        if (before && typeof before.percent === 'number') assert.ok(typeof after.percent === 'number' && after.percent >= before.percent, `${before.percent} -> ${after.percent}`);
+      }
+    }
+  }), { numRuns: 100 });
+});
