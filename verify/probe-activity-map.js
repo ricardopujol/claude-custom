@@ -274,10 +274,10 @@ async function main() {
   const readers = smallGraph(folderA, folderB, worktree);
   readers.claims = readers.claims.map(({ wroteAt, ...c }) => c);
   await mapDo(readers);
-  const rs = await mapState();
+  const rs = await waitFor(async () => { const x = await mapState(); return x && x.state.conflicts === 0 ? x : null; }, 5000) || await mapState();   // the page's rebuild is coalesced to the next frame
   check('R1: two readers on one worktree make no conflict edge', rs.state.conflicts === 0 && !rs.state.edges.some(e => e.kind === 'conflict'), rs.state.conflicts);
   await mapDo(smallGraph(folderA, folderB, worktree));
-  const ws = await mapState();
+  const ws = await waitFor(async () => { const x = await mapState(); return x && x.state.conflicts === 1 ? x : null; }, 5000) || await mapState();
   check('R1: two writers on one worktree make one', ws.state.conflicts === 1, ws.state.conflicts);
   const z0 = (await mapState()).state.zoom;
   await mapDo({ op: 'wheel', x: 200, y: 150, deltaY: -400 });
