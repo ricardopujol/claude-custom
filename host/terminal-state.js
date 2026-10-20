@@ -16,7 +16,7 @@ const { Terminal } = require('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 
-function createTerminalState({ cols = 120, rows = 30, scrollback = 1000 } = {}) {
+function createTerminalState({ cols = 120, rows = 30, scrollback = 1000, onProgramStatus, onPromptStart, onReset } = {}) {
   const term = new Terminal({
     cols,
     rows,
@@ -32,6 +32,19 @@ function createTerminalState({ cols = 120, rows = 30, scrollback = 1000 } = {}) 
 
   const serializer = new SerializeAddon();
   term.loadAddon(serializer);
+
+  // The Program Status Protocol (host/program-status.js). These run INSIDE xterm's parse, in stream order, which is
+  // what lets the host answer a 7501 query before anything that follows it in the byte stream. A throwing listener
+  // is the listener's bug and must never stop the stream. Handlers that only listen return false so xterm's own
+  // handling (RIS resetting the screen) still runs.
+  const guard = (fn) => { try { fn(); } catch { /* the listener's to report */ } };
+  if (onProgramStatus) term.parser.registerOscHandler(7501, (data) => { guard(() => onProgramStatus(data)); return true; });
+  if (onPromptStart) {
+    // OSC 133 ; A is "a new prompt starts" (FinalTerm / shell integration); B, C and D are other moments.
+    term.parser.registerOscHandler(133, (data) => { if (data === 'A' || data.startsWith('A;')) guard(onPromptStart); return false; });
+  }
+  // RIS (ESC c), not DECSTR (CSI ! p): the protocol clears everything on a full reset only.
+  if (onReset) term.parser.registerEscHandler({ final: 'c' }, () => { guard(onReset); return false; });
 
   return {
     // The optional callback fires once xterm has PARSED this data (writes are

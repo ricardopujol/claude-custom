@@ -103,3 +103,73 @@ test('plain rows come from the VIEWPORT, not the top of scrollback', async () =>
   assert.ok(!rows.some(r => r.includes('old line 0')), 'scrollback leaked into the viewport');
   s.dispose();
 });
+
+// --- OSC 7501 (Program Status Protocol): the host hears it here -----------------------------------------------
+
+test('an OSC 7501 payload reaches the handler, with either terminator, in stream order', async () => {
+  const seen = [];
+  const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: (d) => seen.push(d) });
+  s.write('\x1b]7501;?\x07\x1b]7501;state=working:id=a/b\x1b\\');
+  await flush(s);
+  assert.deepStrictEqual(seen, ['?', 'state=working:id=a/b']);
+  s.dispose();
+});
+
+test('a 7501 sequence prints nothing on the screen', async () => {
+  const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: () => {} });
+  s.write('ab\x1b]7501;state=done\x07cd');
+  await flush(s);
+  assert.strictEqual(s.lines()[0], 'abcd');
+  s.dispose();
+});
+
+test('the handler runs DURING the parse, before the write callback of the same chunk', async () => {
+  // This is what lets the host answer the query before anything that follows it in the stream.
+  const order = [];
+  const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: () => order.push('handler') });
+  await new Promise(r => s.write('\x1b]7501;?\x07\x1b[c', () => { order.push('parsed'); r(); }));
+  assert.deepStrictEqual(order, ['handler', 'parsed']);
+  s.dispose();
+});
+
+test('OSC 133 A (a new prompt) calls onPromptStart, B/C/D do not', async () => {
+  let n = 0;
+  const s = createTerminalState({ cols: 40, rows: 10, onPromptStart: () => { n++; } });
+  s.write('\x1b]133;B\x07\x1b]133;C\x07\x1b]133;D;0\x07');
+  await flush(s);
+  assert.strictEqual(n, 0);
+  s.write('\x1b]133;A\x07\x1b]133;A;k=i\x07');
+  await flush(s);
+  assert.strictEqual(n, 2);
+  s.dispose();
+});
+
+test('RIS (ESC c) calls onReset and still resets the screen; DECSTR (CSI ! p) does not call it', async () => {
+  let n = 0;
+  const s = createTerminalState({ cols: 40, rows: 10, onReset: () => { n++; } });
+  s.write('hello');
+  s.write('\x1b[!p');
+  await flush(s);
+  assert.strictEqual(n, 0);
+  s.write('\x1bc');
+  await flush(s);
+  assert.strictEqual(n, 1);
+  assert.strictEqual(s.lines()[0], '');
+  s.dispose();
+});
+
+test('a handler that throws does not stop the stream', async () => {
+  const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: () => { throw new Error('boom'); } });
+  s.write('\x1b]7501;?\x07after');
+  await flush(s);
+  assert.strictEqual(s.lines()[0], 'after');
+  s.dispose();
+});
+
+test('without the options the terminal behaves as before', async () => {
+  const s = createTerminalState({ cols: 40, rows: 10 });
+  s.write('\x1b]7501;?\x07\x1b]133;A\x07\x1bcok');
+  await flush(s);
+  assert.strictEqual(s.lines()[0], 'ok');
+  s.dispose();
+});
