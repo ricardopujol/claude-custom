@@ -1281,9 +1281,10 @@ let mapFake = null;                 // probe only: a made-up { sessions, agents,
 let mapLive = false;               // set by the first hello: every top-level `const` this reads (roster, occupancy...) exists by then
 const mapSince = new Map();         // agent -> epoch ms this page saw it START working; absent means it was already working when this page attached
 const mapOwn = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
-// 25 frames a second, not 30: a presented frame has a fixed price on this machine (about 4 ms of CPU across the renderer and the GPU process, whatever
-// is drawn in it), so the cost of the animation is its frame rate. Measured by verify/probe-activity-map.js; BACKLOG #120.
-const MAP_FRAME_MS = 40;
+// 20 frames a second, not 30: a presented frame has a fixed price on this machine (about 4 ms of CPU across the renderer and the GPU process, whatever
+// is drawn in it), so the cost of the animation is its frame rate. Frames land on vsyncs, so the useful gaps are 33, 50 and 67 ms (30, 20 and 15 fps).
+// Measured by verify/probe-activity-map.js; BACKLOG #120.
+const MAP_FRAME_MS = 50;
 const mapMountOptions = {
   doc: document,
   frameMs: MAP_FRAME_MS,
@@ -1293,7 +1294,7 @@ const mapMountOptions = {
   now: () => performance.now(),
   wall: () => Date.now(),
   later: (fn, ms) => setTimeout(fn, ms),
-  pace: (fn, ms) => setTimeout(fn, ms),         // the wait between two frames at ~30 fps: a timer, so the page isn't woken on every vsync
+  pace: (fn, ms) => setTimeout(fn, ms),         // the wait between two frames: a timer, so the page isn't woken on every vsync
   unpace: (id) => clearTimeout(id),
   css: (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
   dpr: () => window.devicePixelRatio || 1,

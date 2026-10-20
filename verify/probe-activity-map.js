@@ -3,7 +3,7 @@
  * PROBE: the Map panel (BACKLOG #120) in a REAL window, and what it costs. (re-runnable; HEAVY: the launcher takes the machine-wide
  * heavy-work lock itself)
  *
- *   node verify/probe-activity-map.js [--reps=2] [--measure-ms=15000] [--png=<file.png>] [--out=<file.json>] [--no-cost]
+ *   node verify/probe-activity-map.js [--reps=2] [--measure-ms=15000] [--png=<file.png>] [--out=<file.json>] [--no-cost] [--sweep] [--desync] [--look=dark|light|asis]
  *
  * ONE real window with two real hosts (the host's `claude` is cmd.exe, nothing bills), a TEMP git project. The panel is fed a FAKE
  * graph through the page's own probe hook (two sessions, six agents, one conflict claim), then:
@@ -14,9 +14,12 @@
  *   B. THE FRAME-BUDGET RULE, in the page that matters: animating while shown x focused x not lean; one static frame (no loop, no
  *      particles) once the window loses focus; ZERO animation frames asked for in 5 s when the panel is hidden, and when lean mode is
  *      on; no particles under prefers-reduced-motion.
- *   C. THE COST (skipped with --no-cost): CPU % of one core per Electron process type, and the GPU engine, in four states -- the
- *      panel hidden (the baseline), animating with six agents, animating at the cap (48 agents working: the worst case), and shown
- *      but unfocused (the static frame) -- as a median with min..max over --reps rounds, plus the frames the page asked for a second.
+ *   C. THE COST (skipped with --no-cost): CPU % of one core per Electron process type, and the GPU engine, as a median with min..max over --reps
+ *      rounds, next to the panel hidden (the baseline): ONE agent working (close to the price of presenting a frame at all), six agents at 33 ms and
+ *      at the app's 50 ms gap, the 48-agent cap at 50 ms (the worst case), and shown but unfocused (the static frame). Every scenario rebuilds the
+ *      panel first. --sweep adds 40 and 67 ms; --desync adds a low-latency (desynchronized) canvas. Also the frames the page asked for a second.
+ *      WHAT IT FOUND (2026-10-20, Katana): a presented frame costs about 4 ms of CPU across the renderer and the GPU process whatever is drawn in
+ *      it, so the cost is the frame rate, not the particle count: that is why the app's gap is 50 ms.
  *
  * HONEST LIMIT (as in probe-idle-redraw): a probe window is off screen with backgroundThrottling off and native occlusion tracking
  * off, so it paints like a window that is visible and uncovered. A covered window is cheaper in the real app.
@@ -287,7 +290,7 @@ async function main() {
   const rafsOver = async (ms) => { const a = await mapState(); await sleep(ms); const b = await mapState(); return { rafs: b.rafs - a.rafs, frames: b.state.frames - a.state.frames }; };
   await mapDo({ op: 'leave' });
   const live = await rafsOver(3000);
-  check('ANIMATING: the loop runs at about 25 fps (the default) while shown, focused and not lean', live.frames >= 55 && live.frames <= 95, live);
+  check('ANIMATING: the loop runs at about 20 fps (the default) while shown, focused and not lean', live.frames >= 45 && live.frames <= 75, live);
   check('ANIMATING: about one animation frame is asked for per frame drawn (a timer covers the wait)', live.rafs <= live.frames * 1.3, live);
 
   await command({ cmd: 'windowBlur' });
@@ -339,14 +342,13 @@ async function main() {
     const busy = () => busyGraph([dev, featA, path.join(container, 'feat-b'), path.join(container, 'feat-c')]);
     const SCENARIOS = {
       'baseline: map hidden': async () => { await command({ cmd: 'view', action: 'move', args: { id: 'map', target: 'hide' } }); await mapDo({ op: 'unfake' }); return true; },
-      'floor: 1 agent working, 40 ms': animate(40, one),
-      'animating: 6 agents, 30 ms (33 fps)': animate(30, small),
-      'animating: 6 agents, 40 ms (25 fps, the default)': animate(40, small),
-      'animating: 6 agents, 50 ms (20 fps)': animate(50, small),
-      'animating: 48 agents (cap), 40 ms': animate(40, busy),
-      'desynchronized canvas: 6 agents, 30 ms': animate(30, small, true),
-      'desynchronized canvas: 6 agents, 40 ms': animate(40, small, true),
-      'static: shown but unfocused': async () => { await show(); await mapDo({ op: 'remount', desynchronized: false, ms: 40 }); await mapDo(small()); await command({ cmd: 'windowBlur' }); return true; },
+      'floor: 1 agent working, 50 ms': animate(50, one),
+      'animating: 6 agents, 33 ms (30 fps)': animate(33, small),
+      'animating: 6 agents, 50 ms (20 fps, the default)': animate(50, small),
+      'animating: 48 agents (cap), 50 ms': animate(50, busy),
+      ...(flag('sweep') ? { 'animating: 6 agents, 40 ms': animate(40, small), 'animating: 6 agents, 67 ms (15 fps)': animate(67, small) } : {}),
+      ...(flag('desync') ? { 'desynchronized canvas: 6 agents, 33 ms': animate(33, small, true), 'desynchronized canvas: 6 agents, 50 ms': animate(50, small, true) } : {}),
+      'static: shown but unfocused': async () => { await show(); await mapDo({ op: 'remount', desynchronized: false, ms: 50 }); await mapDo(small()); await command({ cmd: 'windowBlur' }); return true; },
     };
     const names = Object.keys(SCENARIOS);
     console.log(`\ncost: ${names.length} scenarios x ${reps} rounds, ${measureMs / 1000}s each`);
@@ -381,7 +383,7 @@ async function main() {
     console.log('\n' + idle.table(rows));
     const total = (name) => (rows.find(r => r.scenario === name) || {}).cpu;
     const base = total('baseline: map hidden');
-    await mapDo({ op: 'remount', desynchronized: false, ms: 40 });
+    await mapDo({ op: 'remount', desynchronized: false, ms: 50 });
     for (const r of rows) {
       if (r.scenario === 'baseline: map hidden') continue;
       const extra = r.cpu.total && base && base.total ? r.cpu.total.median - base.total.median : null;

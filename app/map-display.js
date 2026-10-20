@@ -11,7 +11,9 @@
  *   - otherwise it draws ONE static frame (settled layout, no particles) and its rAF loop is not running;
  *   - hidden or lean: it draws nothing at all, and asks for no frame;
  *   - even animating, the loop STOPS by itself when the layout has settled and nothing is flowing, and wakes on the next change;
- *   - it runs at ~30 fps, and halves its particle budget when a frame takes over 40 ms (map-model adaptBudget).
+ *   - a presented frame has a fixed price (probe: about 4 ms of CPU across the renderer and the GPU process, whatever is drawn in it), so the
+ *     frame GAP is what sets the cost: 50 ms (20 fps) in the app, a knob here (setFrameMs). It also halves its particle budget when a frame's
+ *     own work takes over 40 ms (map-model adaptBudget).
  *
  * TEXT IS CRISP because the canvas is sized in device pixels (css size x devicePixelRatio) and drawn through a transform that includes
  * both the ratio and the zoom, so text and lines are rasterised at their final size, never scaled up from a smaller bitmap.
@@ -26,9 +28,10 @@
 const model = typeof module !== 'undefined' && module.exports ? require('./map-model') : root.mapModel;
 const layoutLib = typeof module !== 'undefined' && module.exports ? require('./map-layout') : root.mapLayout;
 
-const FRAME_MIN_MS = 30;           // ~30 fps while animating (the default; see setFrameMs)
+const FRAME_MIN_MS = 30;           // the default gap between frames, ms (the app asks for 50: renderer.js MAP_FRAME_MS); see setFrameMs
 const FRAME_MAX_MS = 250;
-const PACE_SLACK_MS = 1;           // the timer waits the rest of the slot PLUS this, so the animation frame it asks for is never too early to draw (one wake-up a frame)
+const PACE_EARLY_MS = 6;           // the timer wakes this long BEFORE the next slot, so the animation frame it asks for lands on the slot's own vsync, not the one after it
+const FRAME_SLOP_MS = 5;           // a frame is drawn if the gap since the last one is at least the target minus this (vsync and timer jitter)
 const STEPS_PER_FRAME = 2;         // layout ticks a frame while it is still settling
 const SAVE_AFTER_MS = 700;
 const TOKENS_TTL_MS = 400;
@@ -157,7 +160,7 @@ function mount(opts) {
   let userView = false;              // the person panned or zoomed: stop re-fitting under them
   let size = { w: 0, h: 0, dpr: 0 };
   let loop = null;                   // a pending animation frame
-  let pacer = null;                  // a pending wait for the next ~30 fps slot (a timer: the page is not woken on every vsync to do nothing)
+  let pacer = null;                  // a pending wait for the next frame slot (a timer: the page is not woken on every vsync to do nothing)
   let lastFrameAt = null;
   let frameMs = isNum(opts.frameMs) ? Math.min(FRAME_MAX_MS, Math.max(8, opts.frameMs)) : FRAME_MIN_MS;     // the shortest gap between two frames of the loop
   let frames = 0;
@@ -526,7 +529,7 @@ function mount(opts) {
     if (!drawing()) return;
     const t = nowMs();
     const moving = animating();
-    if (moving && lastFrameAt !== null && t - lastFrameAt < frameMs) { loop = raf(frame); return; }
+    if (moving && lastFrameAt !== null && t - lastFrameAt < frameMs - FRAME_SLOP_MS) { loop = raf(frame); return; }
     const dt = lastFrameAt === null ? 1 / 30 : Math.min(0.1, (t - lastFrameAt) / 1000);
     lastFrameAt = t;
     const wasSettled = layoutLib.settled(layout);
@@ -554,9 +557,9 @@ function mount(opts) {
     else lastFrameAt = null;
   }
 
-  // Ask for the NEXT frame of the loop: a timer for most of the wait, then one animation frame, so ~30 fps costs ~30 wake-ups a second.
+  // Ask for the NEXT frame of the loop: a timer for most of the wait, then one animation frame, so the loop costs one wake-up a frame.
   function arm(t) {
-    const wait = frameMs - (nowMs() - t) + PACE_SLACK_MS;
+    const wait = frameMs - (nowMs() - t) - PACE_EARLY_MS;
     if (typeof opts.pace === 'function' && wait >= 2) pacer = opts.pace(() => { pacer = null; if (drawing()) loop = raf(frame); }, wait);
     else loop = raf(frame);
   }

@@ -289,7 +289,7 @@ test('the wait between two frames is a TIMER, then one animation frame: the page
   assert.strictEqual(r.pending.size, 0, 'no animation frame is waiting during the wait');
   assert.strictEqual(r.paced.size, 1, 'a timer is');
   const [{ ms }] = [...r.paced.values()];
-  assert.ok(ms >= 25 && ms <= 31, `it waits the rest of the 30 ms slot, and no less: ${ms} ms`);
+  assert.ok(ms >= 20 && ms < 30, `it wakes a little before the end of the 30 ms slot: ${ms} ms`);
   const rafsBefore = r.counts.raf;
   r.pump(10, 34);
   assert.ok(r.counts.raf - rafsBefore <= 10, 'at most one animation frame per drawn frame');
@@ -433,7 +433,7 @@ test('the gap between frames can be changed (a slower animation is a cheaper one
   r.pump(1, 34);
   assert.strictEqual(r.m.state().frames, frames, '34 ms is now too soon');
   r.pump(1, 40);
-  assert.strictEqual(r.m.state().frames, frames + 1);
+  assert.strictEqual(r.m.state().frames, frames + 1, '74 ms is enough');
   for (const bad of [NaN, null, 'x', undefined]) r.m.setFrameMs(bad);
   assert.strictEqual(r.m.state().frameMs, 60);
   r.m.setFrameMs(1); assert.strictEqual(r.m.state().frameMs, 8);
