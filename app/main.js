@@ -2146,6 +2146,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (trayController) trayController.destroy(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app);

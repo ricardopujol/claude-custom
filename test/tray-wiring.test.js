@@ -59,7 +59,7 @@ test('start minimised: the window is created without being shown, only when star
 
 test('the tray follows the shell and goes with the app', () => {
   assert.match(bodyOf(/function onShellChanged\(/), /if \(trayController\) trayController\.sync\(\);/);
-  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(trayController\) trayController\.destroy\(\);/);
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(resourceSampler\) resourceSampler\.stop\(\); if \(trayController\) trayController\.destroy\(\);/);
   assert.match(MAIN, /registerTrayHandlers\(\{ ipcMain, store: uiStore, isSender: isTabView,/, 'the switches answer this window\'s views only');
 });
 
