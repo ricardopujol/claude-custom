@@ -111,7 +111,7 @@ const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { createRepoService } = require('./repo-service');
 // The Changes panel (BACKLOG #119 A3): the worktree's changeset, read-only from git (host/changes.js), and when to look again (host/changes-notifier.js).
-const { createChangesService } = require('./changes');
+const { createChangesService } = require('./changes-service');
 const { createChangesNotifier } = require('./changes-notifier');
 // "Ask the repo" (BACKLOG #33): the panel's questions and explanations, answered from this worktree's index (host/ask-service.js).
 const { createAskService, createRepoFactory, EXPLAINER_AGENT } = require('./ask-service');

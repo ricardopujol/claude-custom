@@ -11,7 +11,7 @@ const path = require('path');
 const childProcess = require('child_process');
 const { tmpDir } = require('./tmp-dir');
 
-const { createChangesService } = require('../host/changes');
+const { createChangesService } = require('../host/changes-service');
 
 function git(root, ...args) {
   const r = childProcess.spawnSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', ...args], { encoding: 'utf8' });
