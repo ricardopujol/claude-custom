@@ -173,3 +173,27 @@ test('without the options the terminal behaves as before', async () => {
   assert.strictEqual(s.lines()[0], 'ok');
   s.dispose();
 });
+
+// --- the terminal's own answers (DA1, cursor position...): the host sends them on when no window is there to ---
+
+test('onResponse gets what the terminal itself answers, and after the 7501 handler of the same chunk', async () => {
+  const order = [];
+  const s = createTerminalState({
+    cols: 40, rows: 10,
+    onProgramStatus: () => order.push('7501'),
+    onResponse: (d) => order.push(d),
+  });
+  await new Promise(r => s.write('\x1b]7501;?\x07\x1b[c', r));
+  assert.deepStrictEqual(order, ['7501', '\x1b[?1;2c']);
+  s.dispose();
+});
+
+test('onResponse: a cursor position report is answered too, and a throwing listener does not stop the stream', async () => {
+  const got = [];
+  const s = createTerminalState({ cols: 40, rows: 10, onResponse: (d) => { got.push(d); throw new Error('boom'); } });
+  s.write('ab\x1b[6ncd');
+  await flush(s);
+  assert.deepStrictEqual(got, ['\x1b[1;3R']);
+  assert.strictEqual(s.lines()[0], 'abcd');
+  s.dispose();
+});

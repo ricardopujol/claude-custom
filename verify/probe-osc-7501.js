@@ -115,8 +115,8 @@ async function startHost({ bin, cwd, tmp }) {
 }
 
 // A client of the host. `answerDa1` makes it what the renderer is: an xterm whose answers (DA1 and friends) go straight back as input.
-async function connect(port, { answerDa1 }) {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${TOKEN}`);
+async function connect(port, { answerDa1, control = false }) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${TOKEN}${control ? '&role=control' : ''}`);
   await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
   const c = { ws, frames: [], bytes: 0, term: null };
   c.term = new Terminal({ cols: 100, rows: 30, allowProposedApi: true });
@@ -205,16 +205,15 @@ async function partA(tmp) {
   // No window: a typist that does not answer DA1 (what a detached host sees).
   win.close();
   await sleep(500);
-  const typist = await connect(h.port, { answerDa1: false });
-  await until(() => typist.of('hello')[0], 10000);
+  // role=control: a one-shot control client is not a window, so the host sees no window attached (host/control.js isControlClient).
+  const typist = await connect(h.port, { answerDa1: false, control: true });
   const prog2 = await runProgram(typist, tmp, 'bare');
-  const got = await until(() => (REPLY_RE.test(read(prog2.log)) ? true : (REPLY_RE.lastIndex = 0, null)), 15000);
-  REPLY_RE.lastIndex = 0;
-  check('with nothing answering DA1 the 7501 query is still answered (the host is the answerer)', Boolean(got));
+  const got = await until(() => (orderOf(read(prog2.log)).includes('7501') ? true : null), 15000);
+  check('with no window attached the 7501 query is still answered (the host is the answerer)', Boolean(got));
   await sleep(2000);
   const bare = orderOf(read(prog2.log));
-  console.log('   with no window answering: the program saw ' + (bare.length ? bare.join(',') : '(only the 7501 answer)'));
-  check('and no DA1 answer ever arrives: today only a window\'s xterm answers DA1', bare.filter(x => x === 'DA1').length === 0, JSON.stringify(bare));
+  console.log('   with no window attached the program saw: ' + (bare.length ? bare.join(' then ') : '(nothing)'));
+  check('and the host answers DA1 itself, once, AFTER the 7501 answer', bare.join(',') === '7501,DA1', JSON.stringify(bare));
   typist.close();
   return h;
 }
@@ -246,7 +245,8 @@ app.whenReady().then(async () => {
   const view = () => js('(() => { const d = document.getElementById("dot"); const s = lastReportedTabStatus; return { cls: [...d.classList].filter(c => c.startsWith("ps-")), title: d.title || null,' +
     ' working: s && s.working, needsInput: s && s.needsInput, finished: s && s.finished, program: s && s.program, pending: JSON.parse(JSON.stringify(tabPending)) }; })()');
   try {
-    check('the renderer and the host are up', await until('typeof applyProgramStatus === "function" && ws && ws.readyState === 1 && hostControls && hostControls.includes("program-status")', 30000));
+    const up = await until('typeof applyProgramStatus === "function" && ws && ws.readyState === 1 && hostControls && hostControls.includes("program-status")', 30000);
+    check('the renderer and the host are up', up, up ? undefined : await js('({ fn: typeof applyProgramStatus, ws: typeof ws !== "undefined" && ws ? ws.readyState : null, controls: typeof hostControls !== "undefined" ? hostControls : "undeclared", href: location.href })').catch(e => String(e)));
     // the program is already running in the pty (part A started it)
     await say(osc('state=working:progress=40'));
     check('working: the header dot is ps-working with the progress in its tooltip, and the tab reports working', await until('document.getElementById("dot").classList.contains("ps-working")'));

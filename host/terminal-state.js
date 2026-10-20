@@ -16,7 +16,7 @@ const { Terminal } = require('@xterm/headless');
 const { SerializeAddon } = require('@xterm/addon-serialize');
 const { Unicode11Addon } = require('@xterm/addon-unicode11');
 
-function createTerminalState({ cols = 120, rows = 30, scrollback = 1000, onProgramStatus, onPromptStart, onReset } = {}) {
+function createTerminalState({ cols = 120, rows = 30, scrollback = 1000, onProgramStatus, onPromptStart, onReset, onResponse } = {}) {
   const term = new Terminal({
     cols,
     rows,
@@ -43,6 +43,9 @@ function createTerminalState({ cols = 120, rows = 30, scrollback = 1000, onProgr
     // OSC 133 ; A is "a new prompt starts" (FinalTerm / shell integration); B, C and D are other moments.
     term.parser.registerOscHandler(133, (data) => { if (data === 'A' || data.startsWith('A;')) guard(onPromptStart); return false; });
   }
+  // What the terminal itself answers (DA1, cursor position...): for a host with no window attached to answer them. Fires from
+  // inside the parse, so an answer comes after the OSC handler of the same chunk, in stream order.
+  if (onResponse) term.onData((answer) => guard(() => onResponse(answer)));
   // RIS (ESC c), not DECSTR (CSI ! p): the protocol clears everything on a full reset only.
   if (onReset) term.parser.registerEscHandler({ final: 'c' }, () => { guard(onReset); return false; });
 

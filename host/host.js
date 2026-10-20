@@ -26,6 +26,7 @@ const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
 const { parseReport, createProgramStatus, QUERY_REPLY } = require('./program-status');
 const { createParseGate } = require('./parse-gate');
+const { ptyWindowsOptions } = require('./conpty-choice');
 const { killTree, killPidTree } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
@@ -1767,6 +1768,8 @@ function startSession() {
     cols,
     rows,
     cwd: CWD,
+    // The bundled ConPTY, so the CLI's OSC 7501 query reaches us and our answer reaches it (host/conpty-choice.js).
+    ...ptyWindowsOptions(process.env),
     env: {
       ...cleanEnv(),
       TERM: 'xterm-256color',
@@ -1871,7 +1874,11 @@ const termState = createTerminalState({
   // A new prompt: what was in flight is not any more (done and error stay). RIS clears everything.
   onPromptStart: () => { if (programStatus.dropActive()) publishProgramStatus(); },
   onReset: () => { if (programStatus.reset()) publishProgramStatus(); },
+  // The bundled ConPTY forwards the CLI's queries (DA1, cursor position) to the host instead of answering them as the OS's does.
+  // A window's xterm answers them; with no window attached nobody would, so the host's own terminal does, from inside the parse.
+  onResponse: (answer) => { if (!windowAttached() && term) term.write(answer); },
 });
+const windowAttached = () => [...clients].some((c) => c.isWindow === true);
 
 // Every byte of input to the pty goes through here, so a window's DA1 answer can never overtake the 7501 answer
 // (host/parse-gate.js). Typing is not delayed: only a DA1-shaped input ever waits, and only for the parse.
@@ -2310,6 +2317,7 @@ currentCatalogue().catch(() => {});
 wss.on('connection', (ws, req) => {
   clients.add(ws);
   ws.openedAt = Date.now();
+  ws.isWindow = !isControlClient(req && req.url);     // a one-shot control client is not a window: it answers no terminal query
   // A one-shot control client (raise, stop) never gets what is held for the next WINDOW (PR #93 Dexter F8)
   const oneShot = isControlClient(req && req.url);
   console.log(`[host] client attached (${clients.size} total)`);
