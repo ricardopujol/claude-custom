@@ -113,7 +113,14 @@ console.log(`claude-custom: ${target}  (port ~${portForCwd(target)})`);
 // "anywhere" rarely has the right electron on it. An installed build ships no node_modules/electron (it's a devDependency), so there
 // the Electron to start is this very exe (the picker runs this script under it): started without ELECTRON_RUN_AS_NODE (launchEnv drops
 // it) and with no folder argument, since CLAUDE_CUSTOM_CWD below is the hand-off.
-const { exe: electron, args: electronArgs } = electronLaunch({ installDir: INSTALL_DIR, execPath: process.execPath });
+let electronStart;
+try {
+  electronStart = electronLaunch({ installDir: INSTALL_DIR, execPath: process.execPath });
+} catch (err) {
+  console.error(err.message);   // a checkout with no working electron: say so, never start a bare Node in its place
+  process.exit(1);
+}
+const { exe: electron, args: electronArgs } = electronStart;
 
 const child = spawn(electron, electronArgs, {
   stdio: 'inherit',

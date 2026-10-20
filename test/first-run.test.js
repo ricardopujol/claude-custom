@@ -271,3 +271,19 @@ test('checkHelper: in an installed build the fix is a reinstall, not a build com
   const viaRun = await runChecks({ run: async () => ({ ok: true, stdout: '2.1.304' }), helperPath: 'h', exists: () => false, packaged: true });
   assert.match(viaRun.find(r => r.id === 'helper').fix, /reinstall/);
 });
+
+test('checkSignedIn: a login object with no token is not signed in; one with an access or a refresh token is', () => {
+  assert.equal(signedIn({ readJson: () => ({ claudeAiOauth: {} }) }).status, 'fail');
+  assert.equal(signedIn({ readJson: () => ({ claudeAiOauth: { accessToken: '' } }) }).status, 'fail');
+  assert.equal(signedIn({ readJson: () => ({ claudeAiOauth: { accessToken: 'a' } }) }).status, 'ok');
+  assert.equal(signedIn({ readJson: () => ({ claudeAiOauth: { refreshToken: 'r' } }) }).status, 'ok');
+});
+
+test('checkSignedIn: "on" switches Bedrock and Vertex, and environment names are read without regard to case', () => {
+  assert.equal(signedIn({ exists: () => false, env: { CLAUDE_CODE_USE_BEDROCK: 'on' } }).status, 'ok');
+  assert.equal(signedIn({ exists: () => false, env: { CLAUDE_CODE_USE_VERTEX: 'ON' } }).status, 'ok');
+  assert.equal(signedIn({ exists: () => false, env: { anthropic_api_key: 'x' } }).status, 'ok');
+  assert.equal(signedIn({ exists: () => false, env: { Claude_Code_Oauth_Token: 'x' } }).status, 'ok');
+  assert.equal(signedIn({ exists: () => false, env: { anthropic_api_key: ' ' } }).status, 'fail');
+  assert.equal(signedIn({ exists: () => false, env: { CLAUDE_CODE_USE_BEDROCK: 'off' } }).status, 'fail');
+});

@@ -28,12 +28,14 @@
 //  - `--version` / `--help` / a refused command line (installed build): say it, with the exit code the write earned, and leave.
 {
   const entry = require('../host/exe-entry');
-  if (entry.startedAsNode(process.env)) {
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
-    const r = require('child_process').spawnSync(process.execPath, process.argv.slice(2), { env, stdio: 'inherit' });
+  const plan = entry.nodeModePlan(process.env);
+  if (plan.action === 'giveup') { try { require('fs').writeSync(2, plan.text + String.fromCharCode(10)); } catch { /* nowhere to say it */ } process.exit(1); }
+  if (plan.action === 'rerun') {
+    // argv[1] stays: for `electron <checkout>` it IS the app, and for an installed exe it's the app folder, which decideEntry ignores.
+    const r = require('child_process').spawnSync(process.execPath, process.argv.slice(1), { env: plan.env, stdio: 'inherit' });
     process.exit(r.status == null ? 1 : r.status);
   }
+  delete process.env[entry.REEXEC];   // we are the app: the one-hop marker has done its job and must not travel on
 }
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
 const { cueFlash } = require('./cue-flash');
@@ -192,6 +194,8 @@ const EXPLICIT_PORT = explicitPort();
 const ENTRY = require('../host/exe-entry').decideEntry({
   args: process.argv.slice(1), env: process.env, cwd: process.cwd(), installDir: path.dirname(process.execPath),
   home: require('os').homedir(), packaged: app.isPackaged, pkg: require('../package.json'),
+  // the app's own folder is never a project: `electron <appDir>` in a checkout, and what an older spawner passed an installed exe
+  appDirs: [path.join(__dirname, '..')],
 });
 const writeFd = (fd, text) => { try { fs.writeSync(fd, text); return true; } catch { return false; } };
 if (require('../host/exe-entry').carryOut(ENTRY, { write: writeFd, exit: (c) => process.exit(c) })) { /* exited above */ }
@@ -988,7 +992,9 @@ const backgroundActions = createBackgroundActions({
   focusWindow,
   // Attach-only: it attaches to that host or refuses (host/launch-target.js).
   spawnWindow: ({ cwd, port }) => {
-    const child = spawn(process.execPath, [INSTALL_DIR], {
+    // The project travels in the environment (attachEnv), never as an argument: an installed exe finds its own app, and the app folder as
+    // its one argument would read as the folder to open.
+    const child = spawn(process.execPath, require('../host/exe-entry').appLaunchArgs({ packaged: app.isPackaged, installDir: INSTALL_DIR }), {
       detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd, port }),
     });
     child.on('error', err => console.log('[main] Open (background) failed:', err.message));

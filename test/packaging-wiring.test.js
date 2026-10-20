@@ -14,17 +14,18 @@ const HOST = read('host', 'host.js');
 const MAIN = read('app', 'main.js');
 const BIN = read('bin', 'claude-custom.js');
 
-test('withoutNodeMode drops ELECTRON_RUN_AS_NODE and touches nothing else, and leaves its input alone', () => {
+test('withoutNodeMode drops ELECTRON_RUN_AS_NODE in any spelling and touches nothing else, and leaves its input alone', () => {
   const { withoutNodeMode } = require('../host/pty-env');
   const env = { ELECTRON_RUN_AS_NODE: '1', PATH: 'p', CLAUDE_CODE_X: 'y' };
   assert.deepEqual(withoutNodeMode(env), { PATH: 'p', CLAUDE_CODE_X: 'y' });
   assert.equal(env.ELECTRON_RUN_AS_NODE, '1');
   assert.deepEqual(withoutNodeMode({}), {});
+  assert.deepEqual(withoutNodeMode({ electron_run_as_node: '1', A: 'b' }), { A: 'b' });
 });
 
 test('the host starts as Node (tab-env sets the variable) and its pty gets the environment WITHOUT it', () => {
   assert.match(read('host', 'tab-env.js'), /out\.ELECTRON_RUN_AS_NODE = '1';/);
-  assert.match(HOST, /function cleanEnv\(\) \{\s*[^}]*withoutNodeMode\(process\.env\)/);
+  assert.match(HOST, /function cleanEnv\(\) \{\s*[^}]*forPty\(process\.env\)/);
   const { withoutNodeMode } = require('../host/pty-env');
   assert.equal('ELECTRON_RUN_AS_NODE' in withoutNodeMode({ ELECTRON_RUN_AS_NODE: '1' }), false);
   assert.ok(HOST.includes("env: {\n      ...cleanEnv(),"), 'the pty is spawned with cleanEnv()');
@@ -33,6 +34,7 @@ test('the host starts as Node (tab-env sets the variable) and its pty gets the e
 test('the first-run checks read the session environment (cleanEnv plus the provider), not the host process env', () => {
   assert.match(HOST, /const checkEnv = \{ \.\.\.cleanEnv\(\), \.\.\.providerEnv \};/);
   assert.match(HOST, /env: checkEnv,/);
+  assert.match(HOST, /configDir: claudeConfigDir\(\{ env: checkEnv \}\)/, 'the config folder comes from the pty env (the #206 merge seam)');
   assert.match(HOST, /packaged: !fs\.existsSync\(path\.join\(__dirname, '\.\.', 'helper'\)\)/);
 });
 
@@ -41,11 +43,12 @@ test('a side session reports its checks as skipped, done, so Diagnostics never s
 });
 
 test('main.js decides its entry before electron loads, and the run-as-Node re-run does not pass the script on', () => {
-  const entryAt = MAIN.indexOf("startedAsNode(process.env)");
+  const entryAt = MAIN.indexOf("nodeModePlan(process.env)");
   const electronAt = MAIN.indexOf("require('electron')");
   assert.ok(entryAt !== -1 && electronAt !== -1 && entryAt < electronAt, 'the Node-mode guard comes first');
-  assert.match(MAIN, /spawnSync\(process\.execPath, process\.argv\.slice\(2\)/);
-  assert.match(MAIN, /delete env\.ELECTRON_RUN_AS_NODE/);
+  assert.match(MAIN, /nodeModePlan\(process\.env\)/);
+  assert.match(MAIN, /spawnSync\(process\.execPath, process\.argv\.slice\(1\), \{ env: plan\.env/);
+  assert.match(MAIN, /appDirs: \[path\.join\(__dirname, '\.\.'\)\]/);
   assert.match(MAIN, /carryOut\(ENTRY, \{ write: writeFd, exit: \(c\) => process\.exit\(c\) \}\)/);
   assert.match(MAIN, /const LAUNCH_CWD = ENTRY\.cwd;/);
   assert.match(MAIN, /packaged: app\.isPackaged/);
@@ -57,6 +60,15 @@ test('the launcher starts the checkout electron, or this exe when none is shippe
   assert.ok(!/require\(path\.join\(INSTALL_DIR, 'node_modules', 'electron'\)\)/.test(BIN), 'no bare require of a devDependency');
   assert.match(BIN, /versionText\(require\('\.\.\/package\.json'\)\)/);
   assert.match(BIN, /process\.exit\(wrote \? 0 : 1\)/);
+});
+
+test('the strip\'s Open starts the exe through appLaunchArgs, never with the app folder as a bare argument', () => {
+  assert.match(MAIN, /spawn\(process\.execPath, require\('\.\.\/host\/exe-entry'\)\.appLaunchArgs\(\{ packaged: app\.isPackaged, installDir: INSTALL_DIR \}\)/);
+  assert.ok(!/spawn\(process\.execPath, \[INSTALL_DIR\]/.test(MAIN));
+});
+
+test('the launcher turns a missing electron into an error line and exit 1', () => {
+  assert.match(BIN, /catch \(err\) \{\s*console\.error\(err\.message\);[^\n]*\n\s*process\.exit\(1\);/);
 });
 
 test('the picker still runs the launcher under the host exe (which is what electronLaunch then re-points at the installed exe)', () => {

@@ -6,7 +6,7 @@ The founding bet is that it wraps the CLI and never reimplements it. The window 
 
 ![The terminal with the Agents roster docked beside it](docs/screenshots/terminal-roster.png)
 
-![The Resources chip open over the terminal, with the last hour of CPU and memory](docs/screenshots/resources-history.png)
+![The Resources chip open over the terminal, showing CPU, memory and GPU readings](docs/screenshots/resources-history.png)
 
 ## Platforms
 

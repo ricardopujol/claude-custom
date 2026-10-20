@@ -151,7 +151,7 @@ const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
 const firstRun = require('./first-run');
-const { withoutNodeMode } = require('./pty-env');
+const { forPty } = require('./pty-env');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -210,7 +210,7 @@ function startFirstRun() {
   if (SIDE) { firstRunState = { checks: [], banner: null, done: true, skipped: true }; return; }
   // The checks read the environment the SESSION gets (the pty's: provider tokens included), not this host's own.
   const checkEnv = { ...cleanEnv(), ...providerEnv };
-  firstRun.runChecks(firstRun.realDeps({ claudeBin: CLAUDE_BIN, helperPath: HELPER_PATH, configDir: claudeConfigDir(), env: checkEnv,
+  firstRun.runChecks(firstRun.realDeps({ claudeBin: CLAUDE_BIN, helperPath: HELPER_PATH, configDir: claudeConfigDir({ env: checkEnv }), env: checkEnv,
     // the installed build ships no helper/ source folder: there the fix for a missing helper is a reinstall, not a build
     packaged: !fs.existsSync(path.join(__dirname, '..', 'helper')) }))
     .then((results) => {
@@ -1748,8 +1748,8 @@ const INHERITED_SESSION_VARS = [
 ];
 
 function cleanEnv() {
-  // withoutNodeMode: the host runs as Node (host/tab-env.js), its session must not (host/pty-env.js)
-  const env = withoutNodeMode(process.env);
+  // forPty: the host runs as Node and carries its tab's identity (host/tab-env.js); its session must have neither (host/pty-env.js)
+  const env = forPty(process.env);
   for (const k of INHERITED_SESSION_VARS) delete env[k];
   return env;
 }

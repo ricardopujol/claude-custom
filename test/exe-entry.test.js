@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
-const { USAGE, versionText, decideEntry, carryOut, startedAsNode, electronLaunch } = require('../host/exe-entry');
+const { USAGE, REEXEC, versionText, decideEntry, carryOut, startedAsNode, nodeModePlan, appLaunchArgs, electronLaunch } = require('../host/exe-entry');
 
 const R = (p) => path.resolve(p);
 const INSTALL = R('C:/Users/x/AppData/Local/Programs/claude-custom');
@@ -102,11 +102,62 @@ test('startedAsNode: any non-empty ELECTRON_RUN_AS_NODE; empty, unset or no env 
 });
 
 test('electronLaunch: a checkout starts its own electron on the install folder; an installed build starts this exe with no arguments', () => {
-  const dev = electronLaunch({ installDir: 'C:/i', execPath: 'C:/i/claude-custom.exe', load: () => 'C:/i/node_modules/electron/dist/electron.exe' });
+  const dev = electronLaunch({ installDir: 'C:/i', execPath: 'C:/i/claude-custom.exe', load: () => 'C:/i/node_modules/electron/dist/electron.exe', isElectron: false });
   assert.deepEqual(dev, { exe: 'C:/i/node_modules/electron/dist/electron.exe', args: ['C:/i'], installed: false });
   const asked = [];
-  const packaged = electronLaunch({ installDir: 'C:/i', execPath: 'C:/i/claude-custom.exe', load: (p) => { asked.push(p); throw new Error('MODULE_NOT_FOUND'); } });
+  const packaged = electronLaunch({ installDir: 'C:/i', execPath: 'C:/i/claude-custom.exe', load: (p) => { asked.push(p); throw new Error('MODULE_NOT_FOUND'); }, isElectron: true });
   assert.deepEqual(packaged, { exe: 'C:/i/claude-custom.exe', args: [], installed: true });
   assert.equal(asked[0], path.join('C:/i', 'node_modules', 'electron'));
-  assert.equal(electronLaunch({ installDir: 'C:/i', execPath: 'e', load: () => ({}) }).installed, true, 'a module that is not a path is not an electron');
+  assert.equal(electronLaunch({ installDir: 'C:/i', execPath: 'e', load: () => ({}), isElectron: true }).installed, true, 'a module that is not a path is not an electron');
+});
+
+test('electronLaunch: plain Node with no working electron is an error that names the cause, never a bare node REPL', () => {
+  assert.throws(() => electronLaunch({ installDir: 'C:/i', execPath: 'C:/node/node.exe', isElectron: false, load: () => { throw new Error('Electron failed to install correctly'); } }),
+    /Electron failed to install correctly[\s\S]*npm ci/);
+  assert.throws(() => electronLaunch({ installDir: 'C:/i', execPath: 'C:/node/node.exe', isElectron: false, load: () => ({}) }), /isn't available/);
+});
+
+// The strip's Open (app/main.js spawnWindow) in the installed build and in a checkout: its exact argv, fed to the entry decision.
+const APP = R('C:/Users/x/AppData/Local/Programs/claude-custom/resources/app');
+const PROJ = R('C:/work/proj');
+
+test('the strip\'s Open in an INSTALLED build passes no folder argument, so the row\'s folder (from attachEnv) is the one opened', () => {
+  const argv = appLaunchArgs({ packaged: true, installDir: APP });
+  assert.deepEqual(argv, []);
+  const d = decide(argv, { env: { CLAUDE_CUSTOM_CWD: PROJ, CLAUDE_CUSTOM_PORT: '7001' }, appDirs: [APP], stat: dirs('C:/work/proj') });
+  assert.deepEqual(d, { action: 'open', cwd: PROJ });
+});
+
+test('even the app folder as the one argument (what an older spawner passed) is not a project: the row\'s folder still wins', () => {
+  const d = decide([APP], { env: { CLAUDE_CUSTOM_CWD: PROJ }, appDirs: [APP], stat: dirs(APP, 'C:/work/proj') });
+  assert.deepEqual(d, { action: 'open', cwd: PROJ });
+  assert.deepEqual(decide([APP.toUpperCase()], { env: { CLAUDE_CUSTOM_CWD: PROJ }, appDirs: [APP], stat: dirs(APP) }), { action: 'open', cwd: PROJ }, 'Windows paths compare without case');
+  assert.equal(decide([APP, PROJ], { appDirs: [APP], stat: dirs(APP, 'C:/work/proj') }).cwd, PROJ, 'a real folder beside it still counts');
+});
+
+test('the strip\'s Open in a CHECKOUT passes the app folder, which is not a project either', () => {
+  const argv = appLaunchArgs({ packaged: false, installDir: APP });
+  assert.deepEqual(argv, [APP]);
+  const d = decide(argv, { packaged: false, env: { CLAUDE_CUSTOM_CWD: PROJ }, appDirs: [APP] });
+  assert.deepEqual(d, { action: 'open', cwd: PROJ });
+});
+
+test('nodeModePlan: not node mode runs; node mode in any spelling re-runs once without it; the re-run still in node mode gives up', () => {
+  assert.deepEqual(nodeModePlan({ PATH: 'p' }), { action: 'run' });
+  for (const name of ['ELECTRON_RUN_AS_NODE', 'electron_run_as_node', 'Electron_Run_As_Node']) {
+    const plan = nodeModePlan({ [name]: '1', PATH: 'p' });
+    assert.equal(plan.action, 'rerun', name);
+    assert.deepEqual(Object.keys(plan.env).filter(k => k.toUpperCase() === 'ELECTRON_RUN_AS_NODE'), [], name);
+    assert.equal(plan.env.PATH, 'p');
+    assert.equal(plan.env[REEXEC], '1');
+    assert.equal(nodeModePlan(plan.env).action, 'run', 'the re-run env is no longer node mode');
+  }
+  const again = nodeModePlan({ ELECTRON_RUN_AS_NODE: '1', [REEXEC]: '1' });
+  assert.equal(again.action, 'giveup');
+  assert.match(again.text, /still running as plain Node/);
+});
+
+test('startedAsNode reads any spelling, and ignores an empty value', () => {
+  assert.equal(startedAsNode({ electron_run_as_node: '1' }), true);
+  assert.equal(startedAsNode({ electron_run_as_node: '' }), false);
 });

@@ -24,6 +24,7 @@ files:
   - "host/**"
   - "bin/**"
   - "registry/**"
+  - "mods/**"
   - "package.json"
   - ".harness/hook-helper.exe"
   - "!**/*.map"
@@ -40,6 +41,9 @@ files:
   - "!reports/**"
   - "!backgrounds/**"
   - "!portraits/**"
+  - "!mods/**/tests/**"
+  - "!mods/**/types/**"
+  - "!mods/**/tsconfig.json"
 
 win:
   target:

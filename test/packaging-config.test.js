@@ -24,7 +24,7 @@ const inclusions = filesList.filter(f => !f.startsWith('!'));
 
 test('files is an ALLOW-LIST: it names the app folders and nothing like "everything"', () => {
   assert.ok(!inclusions.includes('**/*') && !inclusions.includes('**') && !inclusions.includes('*'), 'electron-builder reads the disk, not git');
-  assert.deepEqual(inclusions.sort(), ['.harness/hook-helper.exe', 'app/**', 'bin/**', 'host/**', 'package.json', 'registry/**']);
+  assert.deepEqual(inclusions.sort(), ['.harness/hook-helper.exe', 'app/**', 'bin/**', 'host/**', 'mods/**', 'package.json', 'registry/**']);
 });
 
 test('test, verify, forge, documentation, reports, backgrounds and portraits are excluded as well', () => {
@@ -40,14 +40,14 @@ test('what can sit inside a shipped folder and must not ship is excluded: env fi
 });
 
 // A pattern -> regexp, enough for the globs used in the yml: `**/` (any folders), `**` (anything), `*` (within a name).
-const globToRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '(?:.*/)?').replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*') + '$');
+const globToRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '\u0001').replace(/\*\*/g, '\u0002').replace(/\*/g, '[^/]*').replace(/\u0001/g, '(?:.*/)?').replace(/\u0002/g, '.*') + '$');
 const shipped = (rel) => inclusions.some(g => globToRe(g).test(rel)) && !exclusions.some(g => globToRe(g).test(rel));
 
 test('no gitignored file on disk under a shipped folder would be packed (a local .env, backgrounds, a log, a pre-migration copy)', () => {
   const { execFileSync } = require('child_process');
   let out = '';
   try {
-    out = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--', 'app', 'host', 'bin', 'registry'],
+    out = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--', 'app', 'host', 'bin', 'registry', 'mods'],
       { cwd: ROOT, encoding: 'utf8', windowsHide: true });
   } catch { return; }   // not a git checkout (a source tarball): nothing to compare
   const escaped = out.split('\n').map(l => l.trim()).filter(Boolean).filter(shipped);
@@ -62,7 +62,33 @@ test('and the matcher itself: a made-up ignored file under each shipped folder i
     assert.equal(shipped(f), true, f);
   }
   assert.equal(shipped('backgrounds/a.svg'), false);
+  assert.equal(shipped('app/deep/er/file.js'), true, 'a nested file under app/** ships');
+  assert.equal(shipped('mods/claude-custom/hooks/hooks.json'), true);
   assert.equal(shipped('.harness/session-token'), false);
+});
+
+// Folders the app reads beside its code at runtime must ship, unless they are deliberately local. Found by reading the source, so a
+// new `path.join(__dirname, '..', '<dir>')` that the allow-list forgets (as `mods/` was, at a merge) fails here.
+const DELIBERATELY_LOCAL = new Set(['backgrounds', '.harness', 'helper']);   // per-user art, runtime state (only the helper exe ships), the build source (its absence marks an installed build)
+
+test('every folder host/ and app/ read beside the code at runtime is shipped or deliberately local', () => {
+  const dirs = new Set();
+  for (const sub of ['host', 'app']) {
+    for (const f of fs.readdirSync(path.join(ROOT, sub)).filter(x => x.endsWith('.js'))) {
+      const src = fs.readFileSync(path.join(ROOT, sub, f), 'utf8');
+      for (const m of src.matchAll(/path\.join\(__dirname, '\.\.', '([A-Za-z.][A-Za-z0-9._-]*)'/g)) dirs.add(m[1]);
+    }
+  }
+  assert.ok(dirs.has('mods') && dirs.has('registry'), 'the scan finds the folders it should');
+  for (const d of dirs) {
+    if (DELIBERATELY_LOCAL.has(d)) continue;
+    assert.ok(inclusions.some(g => g === `${d}/**` || g.startsWith(`${d}/`)), `"${d}/" is read at runtime but not shipped by build/electron-builder.yml`);
+  }
+});
+
+test('the mod ships its runtime files (hooks, plugin manifest) and not its tests or type stubs', () => {
+  for (const f of ['mods/claude-custom/hooks/hooks.json', 'mods/claude-custom/hooks/register.js', 'mods/claude-custom/.claude-plugin/plugin.json']) assert.equal(shipped(f), true, f);
+  for (const f of ['mods/claude-custom/tests/feed.test.ts', 'mods/claude-custom/.claude-plugin/types/claude-code/index.d.ts', 'mods/claude-custom/tsconfig.json']) assert.equal(shipped(f), false, f);
 });
 
 test('the host looks for the helper exactly where the package puts it', () => {

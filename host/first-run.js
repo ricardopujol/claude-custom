@@ -14,6 +14,9 @@
  * ABSENCE IS NEVER OK: a missing runner, a throw, an unreadable answer and an empty value all come out as `fail`
  * for a required check and `info` for the optional one. Nothing here ever shows as ok without having seen it work.
  *
+ * MERGE SEAM (#206, account profiles): `configDir` must come from the PTY's composed environment (host.js passes
+ * claudeConfigDir({ env: checkEnv })), never the host's own process.env, or a per-profile CLAUDE_CONFIG_DIR would be checked against the wrong file.
+ *
  * Result shape: { id, label, required, status: 'ok' | 'fail' | 'info', detail, fix }.
  * `summarize` turns the list into what the window shows: every row for Diagnostics, and at most ONE banner line (the
  * first failing required check's fix). Never a modal.
@@ -124,17 +127,22 @@ const AUTH_ENV = [
   ['CLAUDE_CODE_OAUTH_TOKEN', 'an OAuth token'],
 ];
 const CLOUD_ENV = [['CLAUDE_CODE_USE_BEDROCK', 'Amazon Bedrock'], ['CLAUDE_CODE_USE_VERTEX', 'Google Vertex AI']];
-const switchedOn = (v) => isStr(v) && /^(1|true|yes)$/i.test(v.trim());
+const switchedOn = (v) => isStr(v) && /^(1|true|yes|on)$/i.test(v.trim());
+// Windows environment names are case-insensitive and the CLI's lookup is too: `anthropic_api_key` is the same variable.
+const envGet = (env, name) => {
+  const k = Object.keys(env).find(x => x.toUpperCase() === name);
+  return k === undefined ? undefined : env[k];
+};
 
 function checkSignedIn({ configDir, env, exists, readJson } = {}) {
   const label = 'Claude Code signed in';
   const fix = 'Claude Code isn\'t signed in: run `claude` once in a terminal and log in';
   const e = env && typeof env === 'object' ? env : {};
   for (const [name, what] of AUTH_ENV) {
-    if (nonEmpty(e[name])) return result('signin', label, true, 'ok', `signed in via ${what} in the session's environment`);
+    if (nonEmpty(envGet(e, name))) return result('signin', label, true, 'ok', `signed in via ${what} in the session's environment`);
   }
   for (const [name, what] of CLOUD_ENV) {
-    if (switchedOn(e[name])) return result('signin', label, true, 'ok', `signed in via ${what} (set in the session's environment)`);
+    if (switchedOn(envGet(e, name))) return result('signin', label, true, 'ok', `signed in via ${what} (set in the session's environment)`);
   }
   if (!nonEmpty(configDir)) return result('signin', label, true, 'fail', "the CLI's config folder isn't known", fix);
   const file = path.join(configDir, '.credentials.json');
@@ -146,7 +154,9 @@ function checkSignedIn({ configDir, env, exists, readJson } = {}) {
   let doc = null;
   try { doc = typeof readJson === 'function' ? readJson(file) : null; } catch { doc = null; }
   const login = doc && typeof doc === 'object' ? doc.claudeAiOauth : null;
-  return login && typeof login === 'object'
+  // an object with no token in it is no login (host/quota.js reads claudeAiOauth.accessToken from the same file)
+  const hasToken = !!login && typeof login === 'object' && (nonEmpty(login.accessToken) || nonEmpty(login.refreshToken));
+  return hasToken
     ? result('signin', label, true, 'ok', `signed in via a Claude login (${configDir})`)
     : result('signin', label, true, 'fail', `${file} has no Claude login in it`, fix);
 }

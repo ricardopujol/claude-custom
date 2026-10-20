@@ -38,8 +38,12 @@ const inside = (dir, root) => {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 };
 
-function decideEntry({ args = [], env = {}, cwd, installDir, home, packaged = false, pkg, stat = fs.statSync } = {}) {
-  const list = Array.isArray(args) ? args.filter(a => typeof a === 'string') : [];
+function decideEntry({ args = [], env = {}, cwd, installDir, home, packaged = false, pkg, stat = fs.statSync, appDirs = [] } = {}) {
+  // The app's own folder on the command line is how `electron <appDir>` is started in a checkout, and what an older spawner passed: it is
+  // never a project folder.
+  const own = (Array.isArray(appDirs) ? appDirs : []).map(d => path.resolve(d).toLowerCase());
+  const list = (Array.isArray(args) ? args.filter(a => typeof a === 'string') : [])
+    .filter(a => a.startsWith('-') || !own.includes(path.resolve(cwd || '.', a).toLowerCase()));
   if (list.includes('-h') || list.includes('--help')) return { action: 'help', text: USAGE };
   if (list.includes('-v') || list.includes('--version')) return { action: 'version', text: versionText(pkg) };
   const fromEnv = typeof env.CLAUDE_CUSTOM_CWD === 'string' && env.CLAUDE_CUSTOM_CWD !== '' ? env.CLAUDE_CUSTOM_CWD : null;
@@ -77,18 +81,43 @@ function carryOut(decision, { write, exit }) {
   return false;
 }
 
-/** Started as plain Node (ELECTRON_RUN_AS_NODE set) when it should be the app: re-run without the variable. */
+/** Started as plain Node (ELECTRON_RUN_AS_NODE set, in any spelling: Windows names are case-insensitive) when it should be the app. */
 function startedAsNode(env) {
-  return !!env && typeof env.ELECTRON_RUN_AS_NODE === 'string' && env.ELECTRON_RUN_AS_NODE !== '';
+  if (!env || typeof env !== 'object') return false;
+  return Object.entries(env).some(([k, v]) => k.toUpperCase() === 'ELECTRON_RUN_AS_NODE' && typeof v === 'string' && v !== '');
+}
+
+const REEXEC = 'CLAUDE_CUSTOM_REEXEC';
+
+/**
+ * What to do about a Node-mode start. 'run': not node mode. 'rerun': run again as the app with `env` (no variable in any spelling, the
+ * one-hop marker set). 'giveup': the marker says this already was the re-run and it is still node mode, so say so and stop: never a chain.
+ */
+function nodeModePlan(env) {
+  if (!startedAsNode(env)) return { action: 'run' };
+  if (env[REEXEC] === '1') return { action: 'giveup', text: 'claude-custom: still running as plain Node after one re-run (ELECTRON_RUN_AS_NODE could not be cleared)' };
+  const out = {};
+  for (const [k, v] of Object.entries(env)) if (k.toUpperCase() !== 'ELECTRON_RUN_AS_NODE') out[k] = v;
+  out[REEXEC] = '1';
+  return { action: 'rerun', env: out };
+}
+
+/** The arguments the app's own spawner (the strip's Open) gives the exe: none when installed (the exe finds its app), the app folder in a checkout. */
+function appLaunchArgs({ packaged, installDir }) {
+  return packaged ? [] : [installDir];
 }
 
 /** Which Electron the launcher starts: the checkout's own (a devDependency), else this very exe (the installed build ships none). */
-function electronLaunch({ installDir, execPath, load = require }) {
+function electronLaunch({ installDir, execPath, load = require, isElectron = !!process.versions.electron }) {
+  let failure = null;
   try {
     const exe = load(path.join(installDir, 'node_modules', 'electron'));
     if (typeof exe === 'string' && exe !== '') return { exe, args: [installDir], installed: false };
-  } catch { /* not a checkout: fall through */ }
-  return { exe: execPath, args: [], installed: true };
+  } catch (err) { failure = err; }
+  // The installed build ships no electron module and runs under its own exe, which IS Electron. A plain Node (a checkout whose electron is
+  // missing or failed to install) must not be started in its place: that is a bare REPL waiting on stdin.
+  if (isElectron) return { exe: execPath, args: [], installed: true };
+  throw new Error(`electron isn't available here (${failure ? failure.message : 'node_modules/electron is not a path'}): run npm ci in ${installDir}`);
 }
 
-module.exports = { USAGE, versionText, decideEntry, carryOut, startedAsNode, electronLaunch };
+module.exports = { USAGE, REEXEC, versionText, decideEntry, carryOut, startedAsNode, nodeModePlan, appLaunchArgs, electronLaunch };
