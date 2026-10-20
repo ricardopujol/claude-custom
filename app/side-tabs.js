@@ -29,6 +29,9 @@ const TABS = [
   // The Files tab (#45) took the Map's slot. The id stays `fog`: saved layouts and the dock tests name it, and a
   // renamed id would drop it from every stored layout.
   { id: 'fog', label: 'Files', title: 'Browse this worktree and read its files; what Claude touched is marked' },
+  // BACKLOG #119 A3: the worktree's changeset (working tree, or the whole lane against develop), side by side in the reader, with a comment on a line
+  // typed into the prompt. An ordinary module like the rest; it asks the host only while it is showing.
+  { id: 'changes', label: 'Changes', title: "This worktree's changed files, side by side with what they were, and a comment on a line goes into your prompt" },
   // Layout pass L3 (documentation/PLAN_GIT_TREE.md): every branch on one dial.
   { id: 'git', label: 'Git', title: 'Every branch this project has grown' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },

@@ -1489,6 +1489,8 @@ const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'tog
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #41: verify/probe-games.js reads the Games panel and operates it
   'gamesState', 'gamesDo',
+  // backlog #119 A3: verify/probe-changes-panel.js reads the Changes panel and operates it
+  'changesProbe',
   // backlog #33: verify/probe-ask-panel.js reads the Ask panel and operates it
   'askState', 'askDo', 'explainerState', 'explainerDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls

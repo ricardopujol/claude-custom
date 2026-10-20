@@ -818,6 +818,8 @@ const repoBrowser = window.repoBrowser.create({
   // the reader's width is kept per tab: every tab's page shares one localStorage, so the key names this one
   storageKey: () => `repoReaderWidth:${document.getElementById('cwd').textContent || ''}`,
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
+  // a review comment from the Changes Compare (#119 A3): typed like the @ mention and NEVER submitted, the person presses Enter
+  typeComment: (text, done) => typeCommand(text, r => { if (r.ok) usage('changes:comment-typed'); done(r.ok ? { ok: true } : { ok: false, reason: r.reason }); }, 'comment'),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
   // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
@@ -1266,6 +1268,40 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // The page is going away mid-round: bank the score it has (best effort; the raise is the same safe write as at a round's end).
 window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
+
+// --- the Changes panel (BACKLOG #119 A3) -----------------------------------------------------------------------------------
+// CHANGES-BEGIN
+// app/changes-display.js builds the list and decides what a click or a key means; the changeset comes from THIS tab's host over the socket
+// (the `changes` control, host/changes-service.js, read-only git), and a file opens in the reader's side-by-side Compare
+// (app/repo-reader.js openChange). What is here is what only this page knows: the socket, the reader, which files Claude edited (the Files
+// tab's overlay, asked for with each list so the dots are never a refresh behind) and whether the panel is on screen.
+const changesRoot = document.getElementById('changes-root');
+const changesPanel = changesRoot ? window.changesDisplay.mount({
+  doc: document,
+  root: changesRoot,
+  request: async (action, body) => {
+    const [reply] = await Promise.all([
+      repoBrowser.changes.request(action, body),
+      action === 'list' ? repoBrowser.refreshTouched().catch(() => false) : null,
+    ]);
+    return reply;
+  },
+  isTouched: (p) => repoBrowser.isTouched(p),
+  openChange: (info) => { repoBrowser.openChange(info).catch(() => {}); },
+  usage,
+}) : null;
+// the host's `changed` push: two seconds after a tool that can change a file (host/changes-notifier.js). Acted on only while the panel shows.
+repoBrowser.changes.onChanged(() => { if (changesPanel) changesPanel.onChanged(); });
+let changesWasShown = false;
+function changesView() {
+  if (!changesPanel) return;
+  const now = shownModules.has('changes') && document.visibilityState === 'visible';
+  if (now === changesWasShown) return;
+  changesWasShown = now;
+  if (now) changesPanel.show(); else changesPanel.hide();
+}
+document.addEventListener('visibilitychange', changesView);
+// CHANGES-END
 
 // --- the Ask panel (BACKLOG #33) ------------------------------------------------------------------------------------------
 // ASK-BEGIN
@@ -1774,6 +1810,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
+  changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
@@ -3607,6 +3644,29 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
       // the repo browser (verify/probe-repo-browser.js): named sub-actions of the Files tab and the reader
+      // the Changes panel (verify/probe-changes-panel.js): read it, and operate it as a pointer or a key would
+      case 'changesProbe': {
+        if (!changesPanel) return JSON.stringify({ ok: false, error: 'no Changes panel' });
+        if (a.what === 'state') return JSON.stringify(changesPanel.probe());
+        if (a.what === 'refresh') { changesPanel.refresh(); return JSON.stringify({ ok: true }); }
+        if (a.what === 'clickRow') {
+          const row = Array.from(changesRoot.querySelectorAll('.chg-row')).find(r => r.dataset.path === a.path);
+          if (!row) return JSON.stringify({ ok: false, error: `no row for ${a.path}` });
+          row.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.what === 'clickScope') {
+          const b = changesRoot.querySelector(`.chg-scope-btn[data-scope="${a.scope === 'branch' ? 'branch' : 'working'}"]`);
+          if (!b) return JSON.stringify({ ok: false, error: 'no scope button' });
+          b.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.what === 'key') {
+          changesRoot.dispatchEvent(new KeyboardEvent('keydown', { key: String(a.key), bubbles: true, cancelable: true }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: `unknown changes action ${a.what}` });
+      }
       case 'repoProbe': {
         const r = repoBrowser.probe(a.what, a);
         return r && typeof r.then === 'function' ? r.then(x => JSON.stringify(x)) : JSON.stringify(r);
@@ -8282,6 +8342,7 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    if (changesPanel && shownModules.has('changes')) changesPanel.refresh();      // the socket opens before the hello: a panel showing since load asks now
     // the Ask panel asks nothing of a host that doesn't list `ask` (an older host would type the frame into the session)
     askRequester.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (askPanel && shownModules.has('ask')) askPanel.show();

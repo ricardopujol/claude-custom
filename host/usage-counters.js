@@ -38,9 +38,11 @@ const STATIC_KEYS = Object.freeze([
   'ask:question', 'ask:place-opened', 'medal:given', 'wand:click', 'style:changed', 'vault:opened', 'git:opened',
   'projects:switch', 'canvas:render', 'focus:on', 'lean:on', 'terminal:file-link', 'terminal:drop', 'tab:new-worktree',
   'tab:merged-close', 'bedtime:start', 'quota:countdown-shown', 'ask:explain',
+  // the Changes panel (BACKLOG #119 A3): a file opened from the list, a scope picked, a comment typed into the prompt
+  'changes:file-opened', 'changes:scope', 'changes:comment-typed',
 ]);
 const STATIC_SET = new Set(STATIC_KEYS);
-const PANEL_IDS = Object.freeze(['agents', 'vault', 'bugvault', 'fog', 'git', 'models', 'projects', 'style', 'wand', 'resources', 'canvas', 'ask', 'games']);
+const PANEL_IDS = Object.freeze(['agents', 'vault', 'bugvault', 'fog', 'changes', 'git', 'models', 'projects', 'style', 'wand', 'resources', 'canvas', 'ask', 'games']);
 const GAME_IDS = Object.freeze(['stack', 'merge', 'pipeline']);
 const PANEL_SET = new Set(PANEL_IDS.map((id) => `panel:${id}`));
 const GAME_SET = new Set(GAME_IDS.map((id) => `game:${id}:start`));

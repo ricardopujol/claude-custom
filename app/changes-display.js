@@ -160,7 +160,7 @@ function mount({ doc, root: host, request, isTouched, openChange, usage } = {}) 
     }
   }
 
-  function refresh() {
+  function askForList() {
     if (inFlight) { again = true; return; }
     inFlight = true;
     let p;
@@ -169,7 +169,7 @@ function mount({ doc, root: host, request, isTouched, openChange, usage } = {}) 
       state = withReply(state, r);
       inFlight = false;
       render();
-      if (again) { again = false; if (shown) refresh(); }
+      if (again) { again = false; if (shown) askForList(); }
     });
   }
 
@@ -189,8 +189,8 @@ function mount({ doc, root: host, request, isTouched, openChange, usage } = {}) 
     const el = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-act]') : null;
     const a = actionOf(el && el.dataset);
     if (!a) return;
-    if (a.type === 'scope') { state = setAsked(state, a.scope); if (typeof usage === 'function') usage('changes:scope'); refresh(); }
-    else if (a.type === 'refresh') refresh();
+    if (a.type === 'scope') { state = setAsked(state, a.scope); if (typeof usage === 'function') usage('changes:scope'); askForList(); }
+    else if (a.type === 'refresh') askForList();
     else if (a.type === 'open') openRow(a.path);
   });
 
@@ -212,11 +212,11 @@ function mount({ doc, root: host, request, isTouched, openChange, usage } = {}) 
   render();
 
   return {
-    show() { shown = true; refresh(); },
+    show() { shown = true; askForList(); },
     hide() { shown = false; },
     // the host's `changed` push (two seconds after a tool that can change a file): act on it only while the panel is on screen
-    onChanged() { if (shown) refresh(); },
-    refresh,
+    onChanged() { if (shown) askForList(); },
+    refresh: askForList,
     state: () => state,
     probe: () => ({ ok: true, shown, asked: state.asked, scope: state.scope, base: state.base, selected: state.selected, error: state.error, rows: view(state, { touched: isTouched }).rows.map(r => ({ path: r.path, status: r.status, add: r.add, del: r.del, touched: r.touched })), summary: view(state, {}).summary }),
   };

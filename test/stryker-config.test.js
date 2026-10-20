@@ -75,6 +75,9 @@ const REPO_SCANNING = new Set([
   'drift-git-process.test.js',    // docs drift (PR #153 Miguel I1): the real git on a throwaway repo and a real child that outlives a timeout; its pure tests (drift-git.test.js) are in the command
   // #55 wiring: renderer.html / renderer.js / host.js source text. It requires nothing from a mutated module.
   'renderer-agent-state-wiring.test.js',
+  // #119 A3 Changes panel wiring: renderer.js / renderer.html / repo-browser.js source text. It requires usage-counters only for isValidKey, which
+  // usage-counters.test.js pins itself. (changes-service.test.js runs the real git on throwaway repos and requires only host/changes-service.js, which is not mutated.)
+  'renderer-changes-wiring.test.js',
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 
