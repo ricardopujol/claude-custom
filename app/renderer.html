@@ -58,7 +58,9 @@
        than a badge in a panel: it cannot be scrolled past, it does not compete
        with anything for space, and it is part of the alt-tab thumbnail, which
        is where you actually decide which window to return to. Cleared by main
-       the moment the window is focused. */
+       the moment the window is focused. STATIC on purpose (BACKLOG #117): a
+       breathing border cost 12-20% of a core in the GPU process for as long as it
+       showed; main flashes the taskbar button instead. */
     body.attention-cue::after {
       content: '';
       position: fixed;
@@ -66,16 +68,7 @@
       border: 3px solid #e0674f;
       pointer-events: none;       /* a cue must never eat a click */
       z-index: 9999;
-      will-change: opacity;       /* own compositor layer: the breathe is an opacity change only, no repaint */
       contain: strict;
-      animation: cue-breathe 2.4s ease-in-out infinite;
-    }
-    @keyframes cue-breathe {
-      0%, 100% { opacity: 1; }
-      50%      { opacity: .45; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      body.attention-cue::after { animation: none; }
     }
     html, body {
       margin: 0; height: 100%;
