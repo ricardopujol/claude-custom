@@ -862,7 +862,7 @@ test('a conflict edge is hoverable and names both claims', () => {
   r.m.setView({ shown: true, focused: false, lean: false });
   r.m.setData(data({
     agents: [ag('dexter'), ag('miguel')],
-    claims: [{ agentId: 'i1', agent: 'dexter', worktree: 'C:\\p\\feat-x', also: [], lastAt: 1_700_000_000_000 + 1000 - 60_000 }, { agentId: 'i2', agent: 'miguel', worktree: 'c:/p/feat-x', also: [], lastAt: 1_700_000_000_000 + 1000 - 5000 }],
+    claims: [{ agentId: 'i1', agent: 'dexter', worktree: 'C:\\p\\feat-x', also: [], wroteAt: 1_700_000_000_000, lastAt: 1_700_000_000_000 + 1000 - 60_000 }, { agentId: 'i2', agent: 'miguel', worktree: 'c:/p/feat-x', also: [], wroteAt: 1_700_000_000_000, lastAt: 1_700_000_000_000 + 1000 - 5000 }],
   }));
   r.pump(5);
   assert.strictEqual(r.m.state().conflicts, 1);
