@@ -17,7 +17,7 @@ const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const { inputsHash, MARKDOWN_ROOTS } = createRequire(import.meta.url)('./inputs-hash.js');
 const read = (...p) => fs.readFileSync(path.join(root, ...p), 'utf8');
 const hash = inputsHash({
-  entry: `${read('build', 'markdown-entry.mjs')}\n--\n${read('app', 'markdown-links.js')}\n--\n${read('app', 'external-link.js')}`,
+  entry: `${read('build', 'markdown-entry.mjs')}\n--\n${read('app', 'markdown-links.js')}\n--\n${read('app', 'external-link.js')}\n--\n${read('build', 'markdown-elk-stub.mjs')}`,
   builder: read('build', 'build-markdown.mjs'),
   lock: JSON.parse(read('package-lock.json')),
   roots: MARKDOWN_ROOTS,
@@ -33,6 +33,7 @@ const result = await build({
   legalComments: 'none',
   charset: 'ascii',            // no raw non-ASCII bytes: a stray control character can't hide in the blob
   define: { 'process.env.NODE_ENV': '"production"' },
+  alias: { 'elkjs/lib/elk.bundled.js': path.join(root, 'build', 'markdown-elk-stub.mjs') },   // 1.6 MB and EPL-2.0: see the stub
   banner: { js: `/* claude-custom Markdown reader: marked + DOMPurify + Mermaid, bundled from npm by build/build-markdown.mjs. Do not edit. inputs sha256:${hash} */` },
   metafile: true,
   logLevel: 'info',

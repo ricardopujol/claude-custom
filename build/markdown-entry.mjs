@@ -43,13 +43,22 @@ function slug(text) {
 }
 
 // A colour token of the page (the project's look: dark or light) as the rgb() Mermaid's colour maths can read.
+// A token can be a color-mix() (--panel is), which the browser computes to `color(srgb ...)`, a form Mermaid's colour
+// library does not read; one pixel on a canvas turns any colour the browser knows into plain rgba().
 function token(name, fallback) {
   const probe = document.createElement('span');
   probe.style.color = `var(${name}, ${fallback})`;
   document.body.append(probe);
   const colour = getComputedStyle(probe).color;
   probe.remove();
-  return colour;
+  const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  ctx.canvas.width = 1;
+  ctx.canvas.height = 1;
+  ctx.clearRect(0, 0, 1, 1);
+  ctx.fillStyle = colour;
+  ctx.fillRect(0, 0, 1, 1);
+  const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+  return a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
 }
 
 function configureMermaid() {
@@ -153,11 +162,13 @@ async function diagrams(node) {
   const found = [...node.querySelectorAll('pre > code.language-mermaid')];
   const out = { ok: 0, failed: 0 };
   if (found.length === 0) return out;
-  configureMermaid();
+  let configError = null;
+  try { configureMermaid(); } catch (err) { configError = err; }     // a failure here costs the diagrams, never the page
   for (const code of found.slice(0, MAX_DIAGRAMS)) {
     const pre = code.parentElement;
     const id = `mmd-${++sequence}`;
     try {
+      if (configError) throw configError;
       const { svg } = await mermaid.render(id, code.textContent);
       const clean = DOMPurify.sanitize(svg, SANITIZE_SVG);
       if (!clean.querySelector('svg')) throw new Error('the diagram came out empty');

@@ -72,7 +72,7 @@ test('the Markdown bundle\'s header hash is the hash of its current inputs (else
   const m = header.match(/inputs sha256:([0-9a-f]{64})/);
   assert.ok(m, `no inputs hash in the bundle header: ${header.slice(0, 160)}`);
   const now = inputsHash({
-    entry: read('build', 'markdown-entry.mjs') + '\n--\n' + read('app', 'markdown-links.js') + '\n--\n' + read('app', 'external-link.js'),
+    entry: read('build', 'markdown-entry.mjs') + '\n--\n' + read('app', 'markdown-links.js') + '\n--\n' + read('app', 'external-link.js') + '\n--\n' + read('build', 'markdown-elk-stub.mjs'),
     builder: read('build', 'build-markdown.mjs'), lock: JSON.parse(read('package-lock.json')), roots: MARKDOWN_ROOTS,
   });
   assert.strictEqual(m[1], now, 'app/markdown-reader.js is stale: its entry, the link rule, the build script or a bundled package changed. Run `npm run build:markdown` and commit the result.');
