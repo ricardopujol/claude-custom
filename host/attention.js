@@ -125,7 +125,12 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   // Child records are read too (programStatus): a child going blocked raises like the root does.
   // The hooks keep running underneath either way (the held-back bookkeeping, agent cards, occupancy and the mood machine are not
   // touched); only what they RAISE for the main session is held back.
-  // MEASURED (verify/probe-osc-7501.js part D, 2026-10-20): see MEASURED_CHILDREN below.
+  // MEASURED (verify/probe-osc-7501.js part D, claude 2.1.304, 2026-10-20; one run, a background subagent asked to write a file): the CLI DOES
+  // report a background task as a CHILD record, with an opaque task id (not a path like agent/a1) and state working. The root went
+  // working -> done while that child was still working, then working again when its result came back, then done: so a root `done` does
+  // not mean the background work is over, and the held-back check on `done` is needed. No permission prompt came up in that run
+  // (the subagent's write was allowed), so a child going `blocked` was NOT observed, and neither was the root lifting a child's wait.
+  // Until it is measured, the hooks keep raising for anything that names an agent, and a child's blocked/error raises here.
   let statusLive = false;
   let statusState = null;
   const childStates = new Map();        // child id -> last state seen, to raise on a change only
