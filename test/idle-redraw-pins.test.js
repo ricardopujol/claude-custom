@@ -11,10 +11,12 @@ const path = require('path');
 const read = (f) => fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8');
 const html = read('renderer.html');
 
-test('the attention cue is its own compositor layer, so breathing it repaints nothing', () => {
+test('the attention cue border is static: no animation, no opacity layer hint (BACKLOG #117)', () => {
   const at = html.indexOf('body.attention-cue::after {');
   assert.ok(at >= 0, 'cue rule missing');
   const rule = html.slice(at, html.indexOf('}', at));
-  assert.match(rule, /will-change:\s*opacity/, 'without it each frame repaints the full-window border');
+  assert.doesNotMatch(rule, /animation/, 'a breathing border keeps the GPU process busy for as long as it shows');
+  assert.doesNotMatch(rule, /will-change/, 'the layer hint only served the breathe');
   assert.match(rule, /contain:\s*strict/, 'a full-window fixed layer must not invalidate its neighbours');
+  assert.ok(!html.includes('cue-breathe'), 'the keyframes must be gone');
 });

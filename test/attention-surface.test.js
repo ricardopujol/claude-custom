@@ -82,3 +82,13 @@ test('a missing options object is treated as unfocused', () => {
   const s = surfacesFor(needsYou);
   assert.strictEqual(s.flashTaskbar, true);
 });
+
+test('cueFlash: the taskbar flashes when the cue rises on an unfocused window, stops when it clears (BACKLOG #117)', () => {
+  const { cueFlash } = require('../app/cue-flash');
+  assert.strictEqual(cueFlash(false, true, false), true, 'rise, unfocused: start');
+  assert.strictEqual(cueFlash(false, true, true), null, 'never flash the focused window');
+  assert.strictEqual(cueFlash(true, true, false), null, 'already up: do not restart the flash');
+  assert.strictEqual(cueFlash(true, false, true), false, 'cleared: stop');
+  assert.strictEqual(cueFlash(true, false, false), false, 'cleared while unfocused: stop');
+  assert.strictEqual(cueFlash(false, false, true), null, 'nothing to stop');
+});
