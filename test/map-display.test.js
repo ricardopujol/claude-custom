@@ -682,6 +682,18 @@ test('MIGUEL S12: a project is kept under its PATH: two projects with one folder
   assert.strictEqual(c.m.state().userView, true);
 });
 
+test('a rebuild that CHANGES the graph, asked for from inside a frame, does not start a second loop', () => {
+  let n = 0;
+  const r = rig({ source: () => { n += 1; return data({ agents: [ag('dexter'), ag('a' + (n % 4))] }); } });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  for (let i = 0; i < 80; i += 1) { r.m.invalidate(); r.pump(1, 34); }
+  const frames = r.m.state().frames;
+  assert.ok(frames > 20);
+  assert.ok(r.pending.size + r.paced.size <= 1, `one chain, not ${r.pending.size + r.paced.size}`);
+  assert.ok(r.counts.raf <= frames * 1.5 + 2, `${r.counts.raf} animation frames asked for ${frames} drawn`);
+});
+
 // --- crisp at devicePixelRatio ----------------------------------------------------------------------------------------------
 
 test('the canvas is sized in DEVICE pixels and every frame is drawn through the ratio', () => {

@@ -174,6 +174,7 @@ function mount(opts) {
   let dirty = false;                 // the page said the data may have changed: it is rebuilt at most once a frame slot (invalidate)
   let flushTimer = null;
   let destroyed = false;
+  let inFrame = false;
   let tokenKey = '';
   let tokens = null;
   let tokensAt = -Infinity;          // the page's colours are read a few times a second, not every frame (each read is a style lookup)
@@ -537,7 +538,8 @@ function mount(opts) {
     const t = nowMs();
     const moving = animating();
     if (moving && lastFrameAt !== null && t - lastFrameAt < frameMs - FRAME_SLOP_MS) { loop = raf(frame); return; }
-    if (dirty) flush();                  // the page's changes since the last frame: ONE rebuild, however many messages came
+    inFrame = true;                      // a redraw() the rebuild asks for is this very frame: asking for another would start a SECOND loop
+    try { if (dirty) flush(); } finally { inFrame = false; }   // the page's changes since the last frame: ONE rebuild, however many messages came
     const dt = lastFrameAt === null ? 1 / 30 : Math.min(0.1, (t - lastFrameAt) / 1000);
     lastFrameAt = t;
     const wasSettled = layoutLib.settled(layout);
@@ -568,6 +570,7 @@ function mount(opts) {
   // Ask for the NEXT frame of the loop: a timer for most of the wait, then one animation frame, so the loop costs one wake-up a frame.
   function arm(t) {
     const wait = frameMs - (nowMs() - t) - PACE_EARLY_MS;
+    if (loop !== null || pacer !== null) return;            // never two loops
     if (typeof opts.pace === 'function' && wait >= 2) pacer = opts.pace(() => { pacer = null; if (drawing()) loop = raf(frame); }, wait);
     else loop = raf(frame);
   }
@@ -579,7 +582,7 @@ function mount(opts) {
   }
   /** Ask for a frame. One is enough: while the loop runs it draws the next change itself. */
   function redraw() {
-    if (loop !== null || pacer !== null || !drawing()) return;
+    if (inFrame || loop !== null || pacer !== null || !drawing()) return;
     lastFrameAt = null;
     loop = raf(frame);
   }
