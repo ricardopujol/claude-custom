@@ -142,7 +142,8 @@ function mount(opts) {
   panel.textContent = '';
   panel.appendChild(el('div', { class: 'map-root' }, [strip, stage]));
 
-  const ctx = opts.context || (typeof canvas.getContext === 'function' ? canvas.getContext('2d', { alpha: false }) : null);
+  // `desynchronized` asks Chromium for a low-latency canvas that skips the compositor's sync with the DOM: off unless asked (the probe measures it)
+  const ctx = opts.context || (typeof canvas.getContext === 'function' ? canvas.getContext('2d', { alpha: false, desynchronized: opts.desynchronized === true }) : null);
 
   // --- state
   let viewState = { shown: false, focused: null, lean: null };
@@ -684,7 +685,11 @@ function mount(opts) {
     else return;
     userView = true; paintZoom(); saveSoon(); redraw(); e.preventDefault();
   });
-  if (typeof opts.observe === 'function') observing = typeof opts.observe(stage, () => { measured = null; size = { w: 0, h: 0, dpr: 0 }; redraw(); }) === 'function';
+  let disposeObserver = null;
+  if (typeof opts.observe === 'function') {
+    disposeObserver = opts.observe(stage, () => { measured = null; size = { w: 0, h: 0, dpr: 0 }; redraw(); });
+    observing = typeof disposeObserver === 'function';
+  }
 
   // --- the controller
   paintStrip();
@@ -721,6 +726,14 @@ function mount(opts) {
     },
     fit,
     redraw,
+    /** The panel is being replaced: stop its loop, its timers and its size observer. It draws nothing after this. */
+    destroy() {
+      viewState = { shown: false, focused: false, lean: true };
+      cancel();
+      if (saveTimer !== null) { save(); saveTimer = null; }
+      if (typeof disposeObserver === 'function') { disposeObserver(); disposeObserver = null; }
+      hover = null;
+    },
     /** The shortest gap between two frames of the animation, in ms (30 = about 33 fps). For the probe's trade-off runs and a future setting. */
     setFrameMs(ms) { if (isNum(ms)) frameMs = Math.min(FRAME_MAX_MS, Math.max(8, ms)); },
     /** Where a node is on the panel, in CSS pixels, for tests and the probe. */

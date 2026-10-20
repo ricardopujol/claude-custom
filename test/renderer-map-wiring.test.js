@@ -68,6 +68,14 @@ test('FRAME BUDGET: nothing is asked of the host, the tabs or the tree unless th
   assert.match(BLOCK, /function mapRefresh\(\) \{ if \(mapLive && mapPanel && shownModules\.has\('map'\) && !leanOn\)/);
 });
 
+test('the animation runs at 25 frames a second by default (the probe measured the price of a presented frame), and the panel can be swapped for the probe', () => {
+  assert.match(BLOCK, /const MAP_FRAME_MS = 40;/);
+  assert.match(BLOCK, /frameMs: MAP_FRAME_MS,/);
+  assert.match(BLOCK, /const mapMountPanel = \(extra\) => window\.mapDisplay\.mount\(\{ \.\.\.mapMountOptions, \.\.\.extra \}\);/);
+  assert.match(BLOCK, /let mapPanel = mapRoot \? mapMountPanel\(\{\}\) : null;/);
+  assert.match(RENDERER, /a\.op === 'remount'\) \{ mapPanel\.destroy\(\);/, 'the old panel is stopped before the new one is built');
+});
+
 test('the host is asked only if it lists the control (an older host would type the frame into the session)', () => {
   assert.match(BLOCK, /if \(!hostControls \|\| !hostControls\.includes\('map'\) \|\| !ws \|\| ws\.readyState !== WebSocket\.OPEN\) return;/);
 });

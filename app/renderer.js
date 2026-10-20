@@ -1281,8 +1281,12 @@ let mapFake = null;                 // probe only: a made-up { sessions, agents,
 let mapLive = false;               // set by the first hello: every top-level `const` this reads (roster, occupancy...) exists by then
 const mapSince = new Map();         // agent -> epoch ms this page saw it START working; absent means it was already working when this page attached
 const mapOwn = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
-const mapPanel = mapRoot ? window.mapDisplay.mount({
+// 25 frames a second, not 30: a presented frame has a fixed price on this machine (about 4 ms of CPU across the renderer and the GPU process, whatever
+// is drawn in it), so the cost of the animation is its frame rate. Measured by verify/probe-activity-map.js; BACKLOG #120.
+const MAP_FRAME_MS = 40;
+const mapMountOptions = {
   doc: document,
+  frameMs: MAP_FRAME_MS,
   root: mapRoot,
   raf: (fn) => { mapRafs += 1; return requestAnimationFrame(fn); },
   caf: (id) => cancelAnimationFrame(id),
@@ -1309,7 +1313,10 @@ const mapPanel = mapRoot ? window.mapDisplay.mount({
   },
   // an agent: its card in the Agents panel, with its activity log open (the card's own click path)
   onAgent: (name) => { selectModule('agents'); openAgentLog(name); },
-}) : null;
+};
+// A function, so the probe can swap the panel for one drawn another way (verify/probe-activity-map.js, op 'remount').
+const mapMountPanel = (extra) => window.mapDisplay.mount({ ...mapMountOptions, ...extra });
+let mapPanel = mapRoot ? mapMountPanel({}) : null;
 
 // What the graph is drawn from, assembled from state this page already holds. Absence stays absence (null), never a zero.
 function mapInput() {
@@ -4012,6 +4019,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         else if (a.op === 'unfake') { mapFake = null; mapRefresh(); }
         else if (a.op === 'fit') mapPanel.fit();
         else if (a.op === 'frameMs') mapPanel.setFrameMs(Number(a.ms));
+        else if (a.op === 'remount') { mapPanel.destroy(); mapPanel = mapMountPanel({ desynchronized: a.desynchronized === true, ...(Number.isFinite(Number(a.ms)) && a.ms ? { frameMs: Number(a.ms) } : {}) }); mapView(); mapRefresh(); }
         else if (a.op === 'hover') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointermove', { ...p, bubbles: true })); }
         else if (a.op === 'click') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointerdown', { ...p, bubbles: true })); cv.dispatchEvent(new PointerEvent('pointerup', { ...p, bubbles: true })); }
         else if (a.op === 'wheel') { const r = cv.getBoundingClientRect(); cv.dispatchEvent(new WheelEvent('wheel', { clientX: r.left + (a.x || 100), clientY: r.top + (a.y || 100), deltaY: Number(a.deltaY) || 0, bubbles: true, cancelable: true })); }

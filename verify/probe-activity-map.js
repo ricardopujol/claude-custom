@@ -287,7 +287,7 @@ async function main() {
   const rafsOver = async (ms) => { const a = await mapState(); await sleep(ms); const b = await mapState(); return { rafs: b.rafs - a.rafs, frames: b.state.frames - a.state.frames }; };
   await mapDo({ op: 'leave' });
   const live = await rafsOver(3000);
-  check('ANIMATING: the loop runs at about 30 fps while shown, focused and not lean', live.frames >= 60 && live.frames <= 110, live);
+  check('ANIMATING: the loop runs at about 25 fps (the default) while shown, focused and not lean', live.frames >= 55 && live.frames <= 95, live);
   check('ANIMATING: about one animation frame is asked for per frame drawn (a timer covers the wait)', live.rafs <= live.frames * 1.3, live);
 
   await command({ cmd: 'windowBlur' });
@@ -330,21 +330,23 @@ async function main() {
   const frameRates = {};
   if (withCost) {
     const show = async () => { await command({ cmd: 'view', action: 'move', args: { id: 'map', target: 'right' } }); await waitFor(async () => { const s = await mapState(); return s && s.shownModule ? s : null; }, 10000); };
-    // The gap between two frames is the knob that decides the cost (a presented frame has a fixed price on this machine), so it is swept:
-    // the same six agents at 30, 40 and 50 ms, and ONE agent, which is close to the price of presenting a frame at all.
-    const animate = (gapMs, graph) => async () => { await show(); await mapDo({ op: 'frameMs', ms: gapMs }); await mapDo(graph()); return true; };
+    // A presented frame has a fixed price on this machine, so the gap between frames is what decides the cost: the same six agents at 30, 40 and
+    // 50 ms, ONE agent (close to the price of presenting a frame at all), the 48-agent cap, and a low-latency (desynchronized) canvas. Every scenario
+    // rebuilds the panel first, so none inherits another's canvas.
+    const animate = (gapMs, graph, desync = false) => async () => { await show(); await mapDo({ op: 'remount', desynchronized: desync, ms: gapMs }); await mapDo(graph()); return true; };
     const small = () => smallGraph(folderA, folderB, worktree);
     const one = () => ({ ...smallGraph(folderA, folderB, worktree), agents: [smallGraph(folderA, folderB, worktree).agents[0]], claims: [], totalAgents: 1 });
     const busy = () => busyGraph([dev, featA, path.join(container, 'feat-b'), path.join(container, 'feat-c')]);
     const SCENARIOS = {
       'baseline: map hidden': async () => { await command({ cmd: 'view', action: 'move', args: { id: 'map', target: 'hide' } }); await mapDo({ op: 'unfake' }); return true; },
-      'floor: 1 agent working, 30 ms': animate(30, one),
+      'floor: 1 agent working, 40 ms': animate(40, one),
       'animating: 6 agents, 30 ms (33 fps)': animate(30, small),
-      'animating: 6 agents, 40 ms (25 fps)': animate(40, small),
+      'animating: 6 agents, 40 ms (25 fps, the default)': animate(40, small),
       'animating: 6 agents, 50 ms (20 fps)': animate(50, small),
-      'animating: 48 agents (cap), 30 ms': animate(30, busy),
-      'animating: 48 agents (cap), 50 ms': animate(50, busy),
-      'static: shown but unfocused': async () => { await show(); await mapDo({ op: 'frameMs', ms: 30 }); await mapDo(small()); await command({ cmd: 'windowBlur' }); return true; },
+      'animating: 48 agents (cap), 40 ms': animate(40, busy),
+      'desynchronized canvas: 6 agents, 30 ms': animate(30, small, true),
+      'desynchronized canvas: 6 agents, 40 ms': animate(40, small, true),
+      'static: shown but unfocused': async () => { await show(); await mapDo({ op: 'remount', desynchronized: false, ms: 40 }); await mapDo(small()); await command({ cmd: 'windowBlur' }); return true; },
     };
     const names = Object.keys(SCENARIOS);
     console.log(`\ncost: ${names.length} scenarios x ${reps} rounds, ${measureMs / 1000}s each`);
@@ -379,7 +381,7 @@ async function main() {
     console.log('\n' + idle.table(rows));
     const total = (name) => (rows.find(r => r.scenario === name) || {}).cpu;
     const base = total('baseline: map hidden');
-    await mapDo({ op: 'frameMs', ms: 30 });
+    await mapDo({ op: 'remount', desynchronized: false, ms: 40 });
     for (const r of rows) {
       if (r.scenario === 'baseline: map hidden') continue;
       const extra = r.cpu.total && base && base.total ? r.cpu.total.median - base.total.median : null;

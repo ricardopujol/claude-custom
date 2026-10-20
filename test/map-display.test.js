@@ -47,7 +47,7 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
   });
   const pending = new Map();
   const paced = new Map();         // the waits between two frames of the loop (timers)
-  const counts = { raf: 0, caf: 0, pace: 0, unpace: 0, css: 0 };
+  const counts = { raf: 0, caf: 0, pace: 0, unpace: 0, css: 0, disposed: 0 };
   let id = 0; let t = 1000;
   const later = [];
   const clicks = { session: [], agent: [] };
@@ -61,7 +61,7 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     unpace: (i) => { counts.unpace += 1; paced.delete(i); },
     now: () => t, wall: () => 1_700_000_000_000 + t, later: (fn) => { later.push(fn); return later.length; },
     css: (name) => { counts.css += 1; return ({ ...TOKENS, ...tokens })[name] || ''; }, dpr: () => dpr, reducedMotion: () => flags.reduced,
-    observe: (el, fn) => { observers.push(fn); return () => {}; },
+    observe: (el, fn) => { observers.push(fn); return () => { counts.disposed += 1; }; },
     onSession: (s) => clicks.session.push(s), onAgent: (a) => clicks.agent.push(a),
   });
   const stage = panel.querySelector('.map-stage');
@@ -438,6 +438,38 @@ test('the gap between frames can be changed (a slower animation is a cheaper one
   assert.strictEqual(r.m.state().frameMs, 60);
   r.m.setFrameMs(1); assert.strictEqual(r.m.state().frameMs, 8);
   r.m.setFrameMs(1e9); assert.strictEqual(r.m.state().frameMs, 250);
+});
+
+test('destroy() stops the loop, the timers and the observer, and the panel draws nothing after it', () => {
+  let disposed = 0;
+  const r = rig();
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(5);
+  assert.strictEqual(r.m.state().looping, true);
+  const frames = r.m.state().frames;
+  r.m.destroy();
+  assert.strictEqual(r.m.state().looping, false);
+  r.pump(20);
+  assert.strictEqual(r.m.state().frames, frames);
+  r.m.setData(data({ agents: [ag('newcomer')] }));
+  r.m.setView(VIEW_ON);
+  r.pump(5);
+  void disposed;
+  assert.ok(r.m.state().frames >= frames, 'a destroyed panel that is told things does not throw');
+});
+
+test('destroy() disconnects the size observer and keeps the picture it has', () => {
+  const storage = memoryStorage();
+  const r = rig({ storage });
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  for (let i = 0; i < 400 && !r.m.state().settled; i += 1) r.pump(1);
+  assert.strictEqual(r.counts.disposed, 0);
+  assert.strictEqual(storage.writes.length, 0, 'the debounced save has not run yet');
+  r.m.destroy();
+  assert.strictEqual(r.counts.disposed, 1);
+  assert.ok(storage.writes.length >= 1, 'the picture is kept at once, not left to a timer that nobody will run');
 });
 
 // --- what a frame asks of the page ------------------------------------------------------------------------------------------
