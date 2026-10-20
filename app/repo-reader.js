@@ -902,6 +902,9 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
           svgDanger: { script: page.querySelectorAll('svg script').length, on: Array.from(page.querySelectorAll('svg *')).filter((n) => Array.from(n.attributes).some((at) => /^on/i.test(at.name))).length,
             hrefs: Array.from(page.querySelectorAll('svg [href], svg [xlink\\:href]'), (n) => n.getAttribute('href') || n.getAttribute('xlink:href')) },
           globals: { pwned: root.__mdPwned === undefined ? null : root.__mdPwned, readerStillThere: !!doc.getElementById('reader') && doc.getElementById('reader') === el.pane },
+          // a diagram's own init must not restyle the app (PR #204 S1), and its links are classified like the page's (B1)
+          chrome: { body: root.getComputedStyle(doc.body).display, pane: root.getComputedStyle(el.pane).display, paneWidth: el.pane.getBoundingClientRect().width, href: root.location.href },
+          diagramLinks: Array.from(page.querySelectorAll('.md-diagram a'), (x) => ({ text: x.textContent.trim(), kind: x.getAttribute('data-md-kind'), target: x.getAttribute('data-md-target'), attrs: Array.from(x.attributes, (at) => at.name) })),
           mermaidTexts: Array.from(page.querySelectorAll('.md-diagram text'), (t) => t.textContent).slice(0, 20),
         };
       }
@@ -917,6 +920,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
         box.scrollIntoView({ block: 'center' });
         return { ok: true };
       }
+      // a navigation the page itself starts, as a stray link would: main must refuse it (app/nav-guard.js)
+      case 'navTry': { try { root.location.assign(String(a.url)); } catch { /* refused is fine */ } return { ok: true, href: root.location.href }; }
       case 'mdScroll': { const top = el.md.scrollTop; return { ok: true, top, height: el.md.clientHeight }; }
       case 'externalProbe': externalProbe = a.on === false ? null : []; return { ok: true };
       case 'externalOpened': return { ok: true, urls: externalProbe ? externalProbe.slice() : null };

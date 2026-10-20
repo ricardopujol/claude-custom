@@ -199,6 +199,29 @@ const GUIDE_LINES = [
   '  click A "javascript:window.__mdPwned=\'mermaid\'" "tip"',
   '```',
   '',
+  // PR #204 Miguel B1: a Mermaid click/link directive is an SVG <a xlink:href> that used to navigate the tab
+  '```mermaid',
+  'graph TD',
+  '  P[Pages] --> Q[More]',
+  '  click P "https://example.com/diagram" "go"',
+  '  click Q href "javascript:window.__mdPwned=\'q\'"',
+  '```',
+  '',
+  '```mermaid',
+  'sequenceDiagram',
+  '  participant A',
+  '  participant B',
+  '  link A: Dashboard @ https://example.com/seq',
+  '  A->>B: hi',
+  '```',
+  '',
+  // PR #204 Miguel S1: the init keys a fence may still set (theme, themeCSS, fontFamily) must not reach the app chrome
+  '```mermaid',
+  '%%{init: {"themeCSS": "} body{display:none} #reader{display:none} .x{", "theme": "dark", "fontFamily": "x} body{display:none"}}%%',
+  'graph LR',
+  '  A --> B',
+  '```',
+  '',
   'Last paragraph.',
   '',
 ];
@@ -261,7 +284,7 @@ async function main() {
   check('2: headings are real, each with an accent rule on the left and an anchor', h.length >= 2 && h[0].text === 'Guide Title' && h[0].tag === 'H1' && h.every(x => x.ruleLeft === '2px' && x.anchor) && h[1].anchor === 'second-section', JSON.stringify(h));
   check('2: the table is wrapped in its own horizontally scrolling container', d2.tables === 1 && d2.tableWrapped[0] === true);
   check('2: task-list checkboxes render, read-only, the first checked', d2.checkboxes.length === 2 && d2.checkboxes.every(c => c.type === 'checkbox' && c.disabled) && d2.checkboxes[0].checked && !d2.checkboxes[1].checked, JSON.stringify(d2.checkboxes));
-  check('2: both drawable Mermaid fences (the plain one and the one asking for securityLevel loose) became SVGs, with their labels', d2.svgs >= 2 && ['Start', 'Choice', 'Done'].every(w => d2.mermaidTexts.some(t => t.includes(w))), JSON.stringify(d2.mermaidTexts));
+  check('2: the five drawable Mermaid fences (plain, securityLevel loose, click, link, themeCSS) became SVGs, with their labels', d2.svgs >= 5 && ['Start', 'Choice', 'Done'].every(w => d2.mermaidTexts.some(t => t.includes(w))), JSON.stringify(d2.mermaidTexts));
   check('2: the bad Mermaid fence stays as its source block with "diagram didn\'t render: <reason>" under it, no throw', d2.diagramErrors.length >= 1 && d2.diagramErrors.every(e => /^diagram didn.t render: .{3,}/.test(e)) && d2.fenceBlocks >= 2, JSON.stringify(d2.diagramErrors));
   const kinds = Object.fromEntries(d2.links.map(l => [l.text, `${l.kind}:${l.target}`]));
   check('2: link kinds: files resolve against docs/, http stays http, the rest is inert, the anchor is an anchor',
@@ -272,6 +295,11 @@ async function main() {
   check('2: SECURITY: script, iframe, img, style, on* attributes, style attributes, ids and javascript: URLs from the raw HTML are all gone', dz.script === 0 && dz.iframe === 0 && dz.img === 0 && dz.style === 0 && dz.onAttr === 0 && dz.styleAttr === 0 && dz.ids === 0 && dz.jsUrls === 0 && dz.foreign === 0, JSON.stringify(dz));
   check('2: SECURITY: the SVG carries no script, no on* attribute and no link; a diagram cannot lower its own security level', d2.svgDanger.script === 0 && d2.svgDanger.on === 0 && d2.svgDanger.hrefs.length === 0, JSON.stringify(d2.svgDanger));
   check('2: SECURITY: nothing ran (window.__mdPwned unset) and the app\'s own #reader is still the reader, not the page\'s id=reader div', d2.globals.pwned === null && d2.globals.readerStillThere, JSON.stringify(d2.globals));
+  const dl = Object.fromEntries(d2.diagramLinks.map(l => [l.text, `${l.kind}:${l.target}`]));
+  check('2: B1: every link inside a diagram is classified (http, or inert for javascript:) and carries no href, xlink:href or target',
+    dl.Pages === 'http:https://example.com/diagram' && dl.More === 'inert:null' && dl.Dashboard === 'http:https://example.com/seq'
+    && d2.diagramLinks.every(l => l.kind && !l.attrs.some(a => /href$/i.test(a) || a === 'target')), JSON.stringify(d2.diagramLinks));
+  check('2: S1: a fence\'s themeCSS / theme / fontFamily cannot restyle the app (body and the reader pane still display, the pane has width)', d2.chrome.body !== 'none' && d2.chrome.pane !== 'none' && d2.chrome.paneWidth > 100, JSON.stringify(d2.chrome));
   check('2: the image became its alt text (nothing fetched)', d2.textLength > 200);
   await shoot(app, '1-rendered');
   await rd(app, 'mdReveal', { index: 0 });
@@ -287,6 +315,21 @@ async function main() {
   check('3: clicking the http link hands exactly that URL to the browser path; mailto, javascript:, a path out of the worktree and the rest do nothing', JSON.stringify(opened) === JSON.stringify(['https://example.com/page']), JSON.stringify(opened));
   const stillThere = await st(app);
   check('3: ...and they did not move the reader off the guide', stillThere.path === 'docs/guide.md' && stillThere.mdShown);
+  // B1: the links INSIDE diagrams (Mermaid click / link directives). They are classified like page links: http goes to the
+  // browser path, javascript: does nothing, and the window does not navigate
+  const hrefBefore = (await dom(app)).chrome.href;
+  await rd(app, 'mdLink', { text: 'Pages' });
+  await rd(app, 'mdLink', { text: 'More' });
+  await rd(app, 'mdLink', { text: 'Dashboard' });
+  await sleep(500);
+  const afterDiagram = (await rd(app, 'externalOpened')).urls;
+  check('3: B1: a diagram\'s click/link goes through the browser path (http only); its javascript: link does nothing', JSON.stringify(afterDiagram) === JSON.stringify(['https://example.com/page', 'https://example.com/diagram', 'https://example.com/seq']), JSON.stringify(afterDiagram));
+  const dAfter = await dom(app);
+  check('3: B1: ...and the tab page did not navigate (same URL, still the reader)', dAfter.chrome.href === hrefBefore && dAfter.page && dAfter.globals.pwned === null, JSON.stringify({ before: hrefBefore, after: dAfter.chrome.href }));
+  const nav = await rd(app, 'navTry', { url: 'https://example.invalid/nav-test' });
+  await sleep(1200);
+  const dNav = await dom(app);
+  check('3: B1 layer 2: main refuses a navigation the page starts itself (the URL is unchanged, the page is alive)', dNav.page && dNav.chrome.href === hrefBefore && /^file:/.test(nav.href), JSON.stringify({ href: nav.href, now: dNav.chrome.href }));
   await rd(app, 'mdLink', { text: 'anchor' });
   await sleep(500);
   const sc = await rd(app, 'mdScroll');

@@ -48,6 +48,7 @@
     "electron": "^33.0.0",
     "esbuild": "^0.28.2",
     "fast-check": "^4.10.2",
+    "jsdom": "29.1.1",
     "marked": "18.1.1",
     "mermaid": "12.2.0"
   }

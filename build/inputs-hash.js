@@ -53,4 +53,25 @@ function inputsHash({ entry, builder, lock, roots } = {}) {
   return h.digest('hex');
 }
 
-module.exports = { inputsHash, bundledVersions, MARKDOWN_ROOTS };
+// Every source file the Markdown bundle is made of besides the libraries (the hash covers them all).
+const MARKDOWN_ENTRY_FILES = Object.freeze([
+  ['build', 'markdown-entry.mjs'], ['build', 'markdown-render.mjs'], ['app', 'markdown-links.js'], ['app', 'external-link.js'], ['build', 'markdown-elk-stub.mjs'],
+]);
+const markdownEntryText = (read) => MARKDOWN_ENTRY_FILES.map((f) => read(...f)).join('\n--\n');
+
+// What the Markdown bundle's notices must list (PR #204 Miguel Y3): the roots' dependency closure, less what is not
+// shipped: elkjs is aliased out of the bundle (EPL-2.0, see build/markdown-elk-stub.mjs) and @types/* are type-only.
+// Returns [{ name, version, key }] sorted, `key` the lockfile path (where the package's files are).
+const NOT_SHIPPED = (name) => name === 'elkjs' || name.startsWith('@types/');
+function noticePackages(lock) {
+  const wanted = new Set(bundledVersions(lock, MARKDOWN_ROOTS).map((x) => x.replace(/@[^@]*$/, '')));
+  const out = [];
+  const pk = lock && lock.packages ? lock.packages : {};
+  for (const [key, val] of Object.entries(pk)) {
+    const m = key.match(/(?:^|\/)node_modules\/((?:@[^/]+\/)?[^/]+)$/);
+    if (m && wanted.has(m[1]) && !NOT_SHIPPED(m[1]) && val && typeof val.version === 'string') out.push({ name: m[1], version: val.version, key });
+  }
+  return out.sort((a, b) => (a.name + a.version + a.key).localeCompare(b.name + b.version + b.key));
+}
+
+module.exports = { inputsHash, bundledVersions, MARKDOWN_ROOTS, MARKDOWN_ENTRY_FILES, markdownEntryText, noticePackages };

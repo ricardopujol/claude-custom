@@ -2,47 +2,31 @@
 // app/markdown-reader.js and loaded by app/repo-reader.js the FIRST time a Markdown file is shown rendered, never at
 // startup. The page reaches it as `window.repoMarkdown`; it leaks no other global.
 //
-//   render(text, { fromFile, onLink }) -> Promise<{ node, diagrams: { ok, failed } }>
-//     node     a <div class="md-page"> to mount; its links are wired to onLink({ kind, target, fragment }) by one
-//              delegated click/Enter handler (kind and target from app/markdown-links.js)
+//   render(text, { fromFile, onLink }) -> Promise<{ node, diagrams: { ok, failed }, scrollToAnchor }>
+//     node     a <div class="md-page"> to mount; its links (the page's and a diagram's) are wired to
+//              onLink({ kind, target, fragment }) by one delegated click/Enter handler (kind and target from
+//              app/markdown-links.js)
 //     fromFile the worktree-relative path of the file being read, which relative links resolve against
 //
-// SECURITY IS THE POINT. A Markdown file is data: it must never run, load or navigate anything.
-//   - marked turns the text into HTML, and EVERY byte of that HTML goes through DOMPurify before it touches the DOM
-//     (RETURN_DOM_FRAGMENT: the sanitized tree is mounted as it is, never re-parsed from a string). The HTML profile
-//     only: no svg, no MathML; no style, form, frame or object tags; no style, id, name or event attributes. `id` and
-//     `name` go because an id like `reader` would shadow the app's own elements; headings get a data attribute instead.
-//   - then our own pass over the SANITIZED tree: every <a> loses its href (nothing can navigate natively; a click is
-//     classified by app/markdown-links.js and handed to onLink), every <img> becomes its alt text (nothing is fetched),
-//     inputs are read-only checkboxes or gone, and classes are dropped except `language-*` on <code>.
-//   - Mermaid runs with securityLevel 'strict' (a diagram's own %%{init}%% cannot raise it: that key is secure),
-//     startOnLoad false, labels as SVG text (no foreignObject), and its SVG goes through DOMPurify again.
+// SECURITY IS THE POINT, and it lives in build/markdown-render.mjs (the sanitizing pipeline, tested under jsdom by
+// test/markdown-render.test.js): every byte of HTML goes through DOMPurify (its own instance), every <a> loses its
+// href, an image is its alt text. What this file adds is Mermaid:
+//   - securityLevel 'strict' (a diagram's own %%{init}%% cannot raise it: that key is secure), startOnLoad false, SVG
+//     text labels (no foreignObject), layout dagre (elkjs is not in the bundle). `themeCSS`, `theme` and `fontFamily`
+//     in a fence's init stay fence-controllable; the CSP blocks remote url() and the probe checks the app chrome is
+//     unchanged (PR #204 Miguel S1).
+//   - the diagram's SVG goes through the same sanitizer again (`diagramFragment`), which also takes the href off a
+//     Mermaid `click A "https://..."` link (Miguel B1) and routes it like a page link.
 //   - a diagram that fails to parse stays as its source block with "diagram didn't render: <reason>" under it.
-import { Marked } from 'marked';
-import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
-import { classifyHref } from '../app/markdown-links.js';
+import { createRenderer, slug } from './markdown-render.mjs';
 
 const MAX_REASON = 160;
 const MAX_DIAGRAMS = 30;
 
-const marked = new Marked({ gfm: true, breaks: false });
+let renderer = null;
+const sanitizer = () => (renderer = renderer || createRenderer(window));
 
-const SANITIZE = {
-  USE_PROFILES: { html: true },
-  FORBID_TAGS: ['style', 'form', 'button', 'textarea', 'select', 'option', 'iframe', 'frame', 'frameset', 'object', 'embed', 'link', 'meta', 'base', 'template', 'audio', 'video', 'source', 'track', 'picture', 'dialog'],
-  FORBID_ATTR: ['style', 'id', 'name', 'srcset', 'formaction', 'action', 'ping', 'autofocus', 'contenteditable'],
-  ALLOW_DATA_ATTR: false,
-  ALLOW_ARIA_ATTR: false,
-  RETURN_DOM_FRAGMENT: true,
-};
-const SANITIZE_SVG = { USE_PROFILES: { svg: true, svgFilters: true }, RETURN_DOM_FRAGMENT: true };
-
-function slug(text) {
-  return String(text).toLowerCase().trim().replace(/[^\p{L}\p{N}\s_-]/gu, '').replace(/\s+/g, '-');
-}
-
-// A colour token of the page (the project's look: dark or light) as the rgb() Mermaid's colour maths can read.
 // A token can be a color-mix() (--panel is), which the browser computes to `color(srgb ...)`, a form Mermaid's colour
 // library does not read; one pixel on a canvas turns any colour the browser knows into plain rgba().
 function token(name, fallback) {
@@ -61,13 +45,17 @@ function token(name, fallback) {
   return a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(3)})`;
 }
 
+const TOKENS = [['--text', '#c7cede'], ['--dim', '#6d7689'], ['--accent', '#d08c4a'], ['--border', '#262b38'], ['--bg', '#11131a'], ['--panel', '#1f2330']];
+let configuredFor = null;
+
+// Mermaid is configured once per look: the key is the tokens' raw values plus the font, so a theme change reconfigures
+// and an ordinary render does not (PR #204 Miguel S2: this used to build six canvases on every render).
 function configureMermaid() {
-  const text = token('--text', '#c7cede');
-  const dim = token('--dim', '#6d7689');
-  const accent = token('--accent', '#d08c4a');
-  const border = token('--border', '#262b38');
-  const bg = token('--bg', '#11131a');
-  const panel = token('--panel', '#1f2330');
+  const css = getComputedStyle(document.documentElement);
+  const font = getComputedStyle(document.body).fontFamily;
+  const key = `${TOKENS.map(([n]) => css.getPropertyValue(n)).join('|')}|${font}`;
+  if (key === configuredFor) return;
+  const [text, dim, accent, border, bg, panel] = TOKENS.map(([n, f]) => token(n, f));
   mermaid.initialize({
     startOnLoad: false,
     securityLevel: 'strict',
@@ -75,7 +63,7 @@ function configureMermaid() {
     logLevel: 'fatal',
     layout: 'dagre',                               // this Mermaid's default is elk; elkjs is not in the bundle (build/markdown-elk-stub.mjs)
     theme: 'base',
-    fontFamily: getComputedStyle(document.body).fontFamily,
+    fontFamily: font,
     flowchart: { htmlLabels: false },
     htmlLabels: false,
     themeVariables: {
@@ -86,70 +74,7 @@ function configureMermaid() {
       signalColor: text, signalTextColor: text, labelBoxBkgColor: panel, labelTextColor: text, loopTextColor: text,
     },
   });
-}
-
-// marked: a fence keeps its language as a class on <code>; everything else is marked's own output
-function toHtml(text) {
-  return marked.parse(String(text), { async: false });
-}
-
-function tidy(fragment, fromFile) {
-  const doc = fragment.ownerDocument;
-  const all = [...fragment.querySelectorAll('*')];
-  const slugs = new Map();
-  for (const el of all) {
-    const tag = el.tagName;
-    // classes: only the language of a fenced block survives
-    const cls = el.getAttribute('class');
-    if (cls !== null) {
-      if (tag === 'CODE' && /^language-[\w+#.-]{1,40}$/.test(cls)) el.setAttribute('class', cls); else el.removeAttribute('class');
-    }
-    for (const a of [...el.attributes]) if (/^on/i.test(a.name)) el.removeAttribute(a.name);
-    if (tag === 'A') {
-      const link = classifyHref(el.getAttribute('href'), { fromFile });
-      for (const a of ['href', 'target', 'rel', 'download', 'ping', 'referrerpolicy']) el.removeAttribute(a);
-      el.dataset.mdKind = link.kind;
-      if (link.kind === 'inert') {
-        el.classList.add('md-inert');
-        el.title = 'This link isn’t opened from here';
-      } else {
-        el.dataset.mdTarget = link.target;
-        if (link.kind === 'file') el.dataset.mdFragment = link.fragment || '';
-        el.title = link.kind === 'file' ? `${link.target} (opens in the reader)` : link.kind === 'anchor' ? `#${link.target}` : link.target;
-        el.tabIndex = 0;
-        el.setAttribute('role', 'link');
-      }
-    } else if (tag === 'IMG') {
-      // nothing is fetched or shown from a path or a URL: the alt text stands in, dim
-      const stand = doc.createElement('span');
-      stand.className = 'md-img';
-      stand.textContent = `[image${el.getAttribute('alt') ? `: ${el.getAttribute('alt')}` : ''}]`;
-      el.replaceWith(stand);
-    } else if (tag === 'INPUT') {
-      if (String(el.getAttribute('type')).toLowerCase() === 'checkbox') {
-        const on = el.hasAttribute('checked');
-        for (const a of [...el.attributes]) el.removeAttribute(a.name);
-        el.setAttribute('type', 'checkbox');
-        el.setAttribute('disabled', '');
-        if (on) el.setAttribute('checked', '');
-      } else {
-        el.remove();
-      }
-    } else if (/^H[1-6]$/.test(tag)) {
-      let s = slug(el.textContent) || 'section';
-      const n = slugs.get(s) || 0;
-      slugs.set(s, n + 1);
-      if (n > 0) s = `${s}-${n}`;
-      el.dataset.mdAnchor = s;
-    }
-  }
-  // a table scrolls horizontally inside its own container
-  for (const table of [...fragment.querySelectorAll('table')]) {
-    const wrap = doc.createElement('div');
-    wrap.className = 'md-table';
-    table.replaceWith(wrap);
-    wrap.append(table);
-  }
+  configuredFor = key;
 }
 
 const reason = (err) => {
@@ -158,7 +83,7 @@ const reason = (err) => {
 };
 
 let sequence = 0;
-async function diagrams(node) {
+async function diagrams(node, fromFile) {
   const doc = node.ownerDocument;
   const found = [...node.querySelectorAll('pre > code.language-mermaid')];
   const out = { ok: 0, failed: 0 };
@@ -171,7 +96,7 @@ async function diagrams(node) {
     try {
       if (configError) throw configError;
       const { svg } = await mermaid.render(id, code.textContent);
-      const clean = DOMPurify.sanitize(svg, SANITIZE_SVG);
+      const clean = sanitizer().diagramFragment(svg, { fromFile });
       if (!clean.querySelector('svg')) throw new Error('the diagram came out empty');
       const box = doc.createElement('div');
       box.className = 'md-diagram';
@@ -199,41 +124,43 @@ async function diagrams(node) {
 
 function scrollToAnchor(node, target) {
   const want = slug(target);
-  const hit = [...node.querySelectorAll('[data-md-anchor]')].find((h) => h.dataset.mdAnchor === want || h.dataset.mdAnchor === target);
+  const hit = [...node.querySelectorAll('[data-md-anchor]')].find((h) => h.getAttribute('data-md-anchor') === want || h.getAttribute('data-md-anchor') === target);
   if (hit) hit.scrollIntoView({ block: 'start' });
   return !!hit;
 }
 
 async function render(text, { fromFile = '', onLink } = {}) {
-  const doc = document;
-  const fragment = DOMPurify.sanitize(toHtml(text), SANITIZE);
-  tidy(fragment, fromFile);
-  const node = doc.createElement('div');
+  const node = document.createElement('div');
   node.className = 'md-page';
-  node.append(fragment);
+  node.append(sanitizer().pageFragment(text, { fromFile }));
 
   const follow = (a) => {
-    const kind = a.dataset.mdKind;
-    if (kind === 'anchor') { scrollToAnchor(node, a.dataset.mdTarget); return; }
+    const kind = a.getAttribute('data-md-kind');
+    if (kind === 'anchor') { scrollToAnchor(node, a.getAttribute('data-md-target')); return; }
     if ((kind === 'file' || kind === 'http') && typeof onLink === 'function') {
-      onLink({ kind, target: a.dataset.mdTarget, fragment: a.dataset.mdFragment || '' });
+      onLink({ kind, target: a.getAttribute('data-md-target'), fragment: a.getAttribute('data-md-fragment') || '' });
     }
   };
-  node.addEventListener('click', (e) => {
+  const linkOf = (e) => {
     const a = e.target && e.target.closest ? e.target.closest('a[data-md-kind]') : null;
-    if (!a || !node.contains(a)) return;
-    e.preventDefault();
-    follow(a);
+    return a && node.contains(a) ? a : null;
+  };
+  // ANY click on a link is ours: preventDefault first, so even an anchor that somehow kept an href cannot navigate
+  node.addEventListener('click', (e) => {
+    const a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (a && node.contains(a)) e.preventDefault();
+    const link = linkOf(e);
+    if (link) follow(link);
   });
   node.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    const a = e.target && e.target.closest ? e.target.closest('a[data-md-kind]') : null;
-    if (!a || !node.contains(a)) return;
+    const link = linkOf(e);
+    if (!link) return;
     e.preventDefault();
-    follow(a);
+    follow(link);
   });
 
-  const counts = await diagrams(node);
+  const counts = await diagrams(node, fromFile);
   return { node, diagrams: counts, scrollToAnchor: (t) => scrollToAnchor(node, t) };
 }
 

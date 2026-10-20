@@ -390,11 +390,18 @@ test('the bundle exposes one global, repoMarkdown, and the entry never builds DO
   const bundle = read('app', 'markdown-reader.js');
   assert.match(bundle, /window\.repoMarkdown=/);
   const entry = read('build', 'markdown-entry.mjs');
-  assert.doesNotMatch(entry, /\binnerHTML\b|\binsertAdjacentHTML\b|\bouterHTML\b|document\.write|\beval\(|new Function/, 'every byte of HTML reaches the DOM through DOMPurify\'s fragment');
+  const render = read('build', 'markdown-render.mjs');
+  for (const [name, src] of [['entry', entry], ['render', render]]) {
+    assert.doesNotMatch(src, /\binnerHTML\b|\binsertAdjacentHTML\b|\bouterHTML\b|document\.write|\beval\(|new Function/, `${name}: every byte of HTML reaches the DOM through DOMPurify's fragment`);
+  }
   assert.match(entry, /securityLevel: 'strict'/);
   assert.match(entry, /startOnLoad: false/);
-  assert.match(entry, /RETURN_DOM_FRAGMENT: true/);
-  assert.strictEqual((entry.match(/DOMPurify\.sanitize\(/g) || []).length, 2, 'the page and each diagram are both sanitized');
+  assert.match(entry, /layout: 'dagre'/);
+  assert.match(entry, /diagramFragment\(svg/, 'a diagram goes through the sanitizer again');
+  assert.doesNotMatch(entry, /from 'dompurify'|DOMPurify\./, 'the entry never touches the shared DOMPurify: Mermaid hooks it (PR #204 Y2)');
+  assert.match(render, /createDOMPurify\(win\)/,'the page has its own DOMPurify instance');
+  assert.strictEqual((render.match(/RETURN_DOM_FRAGMENT: true/g) || []).length, 2, 'the page and a diagram both mount the sanitized tree, never a re-parsed string');
+  assert.strictEqual((render.match(/purify\.sanitize\(/g) || []).length, 2);
 });
 
 test('an http link reaches the browser through the page: renderer.js hands repoBrowser an onOpenUrl, which passes it to the reader', () => {
