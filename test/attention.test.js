@@ -832,3 +832,100 @@ test('7501 live: the hooks still drive the held-back bookkeeping, they only stop
   h.fire('Notification', { notification_type: 'idle_prompt' });
   assert.deepStrictEqual(h.sent, []);
 });
+
+// --- PR #201 review: what 7501 mutes, and what it does not ------------------------------------------------------
+
+const kid = (id, state, extra = {}) => ({ id, state, kind: null, progress: null, app: null, title: null, msg: null, ...extra });
+const withKids = (state, children) => ({ ...snap(state), children });
+
+test('7501 live: a Notification naming an agent (agent_id, or agent_needs_input) still raises, the root idle', () => {
+  const h = harness();
+  h.a.programStatus(snap('idle'));
+  h.fire('Notification', { notification_type: 'agent_needs_input', message: 'agent a1 needs permission' });
+  assert.strictEqual(h.sent.length, 1);
+  assert.strictEqual(h.sent[0].kind, 'input-needed');
+  const g = harness();
+  g.a.programStatus(snap('idle'));
+  g.fire('Notification', { notification_type: 'permission_prompt', agent_id: 'a1' });
+  assert.strictEqual(g.sent.length, 1);
+});
+
+test('7501 live: a CHILD record going blocked raises one cue, in its own words; the root staying idle', () => {
+  const h = harness();
+  h.a.programStatus(withKids('idle', []));
+  h.a.programStatus(withKids('idle', [kid('agent/a1', 'blocked', { kind: 'permission', msg: 'Allow Bash?' })]));
+  assert.strictEqual(h.sent.length, 1);
+  assert.strictEqual(h.sent[0].urgent, true);
+  assert.match(h.sent[0].body, /Allow Bash\?/);
+  h.a.programStatus(withKids('idle', [kid('agent/a1', 'blocked', { kind: 'permission', msg: 'Allow Bash? (again)' })]));
+  assert.strictEqual(h.sent.length, 1, 'the same state again is not a new cue');
+});
+
+test('7501 live: root idle + child blocked + a Notification agent_needs_input for it: one cue, not two (the shared debounce)', () => {
+  const h = harness();
+  h.a.programStatus(withKids('idle', [kid('agent/a1', 'blocked', { kind: 'permission' })]));
+  h.fire('Notification', { notification_type: 'agent_needs_input' });
+  assert.strictEqual(h.sent.length, 1);
+});
+
+test('7501 live: the mod\'s ask is the main session\'s prompt, so 7501 owns it; with no 7501 it raises as before', () => {
+  const live = harness();
+  live.a.programStatus(snap('working'));
+  live.a.ask({ tool: 'Bash' });
+  assert.deepStrictEqual(live.sent, []);
+  live.a.programStatus(snap('blocked', { kind: 'permission' }));
+  assert.strictEqual(live.sent.length, 1);
+  const none = harness();
+  none.a.ask({ tool: 'Bash' });
+  assert.strictEqual(none.sent.length, 1);
+  assert.match(none.sent[0].body, /Bash/);
+});
+
+test('7501 done goes through the held-back check: a running subagent holds "finished" until it stops', () => {
+  const h = harness();
+  h.a.programStatus(snap('working'));
+  h.fire('Stop', { background_tasks: [{ id: 'x', type: 'subagent', status: 'running' }] });
+  h.a.programStatus(snap('done'));
+  assert.deepStrictEqual(h.sent, []);
+  h.fire('SubagentStop', { agent_id: 'x' });
+  assert.strictEqual(h.sent.length, 1);
+  assert.strictEqual(h.sent[0].kind, 'finished');
+});
+
+test('7501 done with nothing held raises at once; a done that never saw a hold is not raised twice', () => {
+  const h = harness();
+  h.a.programStatus(snap('done'));
+  assert.strictEqual(h.sent.length, 1);
+  h.advance(10_000);
+  h.fire('SubagentStop', { agent_id: 'x' });
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.strictEqual(h.sent.length, 1);
+});
+
+test('7501 live, no done ever said: a released hook hold raises nothing (7501 owns the main cue)', () => {
+  const h = harness();
+  h.a.programStatus(snap('working'));
+  h.fire('Stop', { background_tasks: [{ id: 'x', type: 'subagent', status: 'running' }] });
+  h.fire('SubagentStop', { agent_id: 'x' });
+  h.fire('Notification', { notification_type: 'idle_prompt' });
+  assert.deepStrictEqual(h.sent, []);
+});
+
+test('7501 done held by a young shell is raised when the shell times out', () => {
+  const timers = [];
+  const h = harness({ setTimer: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimer: () => {}, shellStartedAt: () => null });
+  h.a.programStatus(snap('working'));
+  h.fire('Stop', { background_tasks: [{ id: 's1', type: 'shell', status: 'running' }] });
+  h.a.programStatus(snap('done'));
+  assert.deepStrictEqual(h.sent, []);
+  h.advance(11 * 60 * 1000);
+  timers[timers.length - 1].fn();
+  assert.strictEqual(h.sent.length, 1);
+  assert.strictEqual(h.sent[0].kind, 'finished');
+});
+
+test('toast bodies cap the program\'s message at 200 characters', () => {
+  const h = harness();
+  h.a.programStatus(snap('blocked', { kind: 'question', msg: 'x'.repeat(2000) }));
+  assert.ok(h.sent[0].body.length <= 200);
+});
