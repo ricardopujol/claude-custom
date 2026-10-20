@@ -111,7 +111,7 @@ function setup({ storage = memoryStorage(), withMarkdown = true, openExternal } 
   const external = [];
   const { create } = require('../app/repo-reader');
   const rd = create({
-    doc, requester, harness: { openExternal: openExternal || ((u) => { external.push(u); return Promise.resolve(true); }) },
+    doc, requester, harness: {}, onOpenUrl: openExternal || ((u) => { external.push(u); return Promise.resolve(true); }),
     storage, typeMention: () => {}, onClose: () => {}, confirmDiscard: async () => true,
   });
   return { rd, requester, el, cm, md, storage, external };
@@ -395,4 +395,11 @@ test('the bundle exposes one global, repoMarkdown, and the entry never builds DO
   assert.match(entry, /startOnLoad: false/);
   assert.match(entry, /RETURN_DOM_FRAGMENT: true/);
   assert.strictEqual((entry.match(/DOMPurify\.sanitize\(/g) || []).length, 2, 'the page and each diagram are both sanitized');
+});
+
+test('an http link reaches the browser through the page: renderer.js hands repoBrowser an onOpenUrl, which passes it to the reader', () => {
+  const page = read('app', 'renderer.js');
+  const block = page.slice(page.indexOf('window.repoBrowser.create({'), page.indexOf('window.repoBrowser.create({') + 3000);
+  assert.match(block, /onOpenUrl: \(url\) => .*harness\.openExternal\(url\)/);
+  assert.match(read('app', 'repo-browser.js'), /Reader\.create\(\{[^}]*onOpenUrl/);
 });

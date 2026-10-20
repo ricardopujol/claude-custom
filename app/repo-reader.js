@@ -36,6 +36,14 @@
  *   Leaving with unsaved text asks first: another file (or the same one again), closing the panel or Esc, and
  *   Done. The page also reports the unsaved file to main (`onDirty`) so closing the TAB asks too.
  *
+ * MARKDOWN (BACKLOG #119 A9). A .md / .markdown file opens as a rendered PAGE (marked + DOMPurify + Mermaid, one lazily
+ * loaded bundle: app/markdown-reader.js, built by build/build-markdown.mjs) with a Rendered | Source segment in the
+ * header; the choice is kept per install (`readerMarkdownView`). The code view stays mounted under the page, so Edit
+ * (always Source), Diff, selections and Compare keep working on it; anything that fails to render shows the source and
+ * says why. A link in the page is classified by app/markdown-links.js: a file link opens in this reader, an http(s)
+ * link goes to the browser through `onOpenUrl` (the page's own bridge: this module never names the shell), the rest
+ * does nothing.
+ *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `repoReader`.
  */
 (function (root) {
@@ -75,7 +83,7 @@ const saveFailure = (r) => (r && SAVE_WHY[r.why] ? SAVE_WHY[r.why](r) : (r && (r
 
 const OLD_HOST = "this session's host is older than this window and can't save; restart the session to edit";
 
-function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose, termRect, confirmDiscard, onDirty, onAsk } = {}) {
+function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose, termRect, confirmDiscard, onDirty, onAsk, onOpenUrl } = {}) {
   const keyNow = () => (typeof storageKey === 'function' ? storageKey() : storageKey);
   const lang = root.repoLanguage || (typeof require === 'function' ? require('./repo-language') : null);
   const mention = root.repoMention || (typeof require === 'function' ? require('./repo-mention') : null);
@@ -202,8 +210,9 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     const failed = () => { state.status = 'could not open the link in your browser'; paintHead(); };
     try {
       if (externalProbe) { externalProbe.push(url); return; }
-      if (!harness || typeof harness.openExternal !== 'function') throw new Error('no way to open it');
-      Promise.resolve(harness.openExternal(url)).then((ok) => { if (ok === false) failed(); }, failed);
+      if (typeof onOpenUrl !== 'function') throw new Error('no way to open it');
+      // (the page's own bridge, wired in renderer.js: this module never names the shell, test/source-contracts.test.js)
+      Promise.resolve(onOpenUrl(url)).then((ok) => { if (ok === false) failed(); }, failed);
     } catch {
       failed();
     }
