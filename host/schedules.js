@@ -52,7 +52,6 @@ const MAX_ROWS = 50;
 const MAX_PROMPT = 500;                    // what a row keeps and every window gets: the hover text. Never the whole prompt (it can hold anything).
 const KEY_PROMPT = 2000;                   // how much of a prompt is the wake's IDENTITY (see promptKey)
 const LINE_MAX = 200;
-const MAX_OFFSET_MS = 15 * 60_000;         // the CLI's per-job offset on a recurring job is at most 15 minutes
 
 const FOOTER = Object.freeze({
   text: 'Routines on claude.ai/code run in the cloud and are not listed here.',
@@ -73,7 +72,7 @@ const clampDelay = (s) => Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, s));
  * characters of text (for the hover), so identity can't be the stored text; and BOTH sides are cut the same way, so a prompt longer than
  * the cut still matches its own wake (PR #200 Dexter 6 / Miguel 4).
  */
-const promptKey = (text) => crypto.createHash('sha1').update(collapse(String(text).slice(0, KEY_PROMPT))).digest('hex');
+const promptKey = (text) => crypto.createHash('sha1').update(collapse(String(text)).slice(0, KEY_PROMPT)).digest('hex');   // collapse FIRST, then cut
 
 function kindOfPrompt(prompt) {
   if (isBedtimeLoopPrompt(prompt)) return 'bedtime';
@@ -116,19 +115,17 @@ function createSessionSchedule({ now = Date.now } = {}) {
     const recurring = typeof out.recurring === 'boolean' ? out.recurring : input.recurring !== false;
     const durable = typeof out.durable === 'boolean' ? out.durable : input.durable === true;
     const id = isStr(out.id) && out.id !== '' ? out.id : `cron:${input.cron}|${prompt}`;
-    // The CLI's own answer wins (PR #200 Dexter 3): nextFireAt is "the job's next run, the scheduler's per-job offset included".
-    // Without it, a one-shot's run is computed from the expression; a recurring job's is computed at VIEW time, shifted by the offset
-    // this call revealed (nextFireAt minus the bare match), which is how the CLI spreads jobs by up to 15 minutes.
+    // The CLI's own answer wins (PR #200 Dexter 3, r2 N1): nextFireAt is "the job's next run". Measured on three real jobs (*/7, */11, hourly;
+    // test/cron-capture*.fixture.jsonl) it is NOT an expression match (the CLI spreads first runs), so a recurring job shows it while it
+    // is still ahead and is recomputed from the expression only after it has passed (viewRow); a one-shot takes it for its one run.
     const said = isNum(out.nextFireAt) && out.nextFireAt >= at ? out.nextFireAt : null;
     const computed = nextRun(input.cron, at);
     let whenAt = null;
-    let offsetMs = 0;
     if (!recurring) whenAt = said !== null ? said : computed;
     else if (computed === null) whenAt = said;                                       // an expression we cannot read: the CLI's time
-    else if (said !== null && said - computed >= 0 && said - computed <= MAX_OFFSET_MS) offsetMs = said - computed;
     const row = {
       id, kind: 'cron', at: whenAt, cron: input.cron.trim(), recurring, durable, human: isStr(out.humanSchedule) && out.humanSchedule !== '' ? out.humanSchedule : null,
-      prompt, pk: promptKey(fullPrompt), reason: null, createdAt: at, offsetMs, nextFireAt: said,
+      prompt, pk: promptKey(fullPrompt), reason: null, createdAt: at, nextFireAt: said,
     };
     rows = [...rows.filter(r => r.id !== id), row].slice(-MAX_ROWS);
     return true;
@@ -195,7 +192,7 @@ function createSessionSchedule({ now = Date.now } = {}) {
         human: isStr(r.human) ? r.human : null, prompt: isStr(r.prompt) ? r.prompt.slice(0, MAX_PROMPT) : '',
         pk: isStr(r.pk) ? r.pk : promptKey(isStr(r.prompt) ? r.prompt : ''), reason: null,
         createdAt: isNum(r.createdAt) ? r.createdAt : now(),
-        offsetMs: isNum(r.offsetMs) && r.offsetMs >= 0 && r.offsetMs <= MAX_OFFSET_MS ? r.offsetMs : 0, nextFireAt: isNum(r.nextFireAt) ? r.nextFireAt : null,
+        nextFireAt: isNum(r.nextFireAt) ? r.nextFireAt : null,
       });
     }
     rows = back.slice(-MAX_ROWS);
@@ -257,6 +254,18 @@ function nightDetail(night) {
   return parts.join(' · ');
 }
 
+/**
+ * Is this cron row over? A RECURRING job auto-expires 7 days after it was made (the CLI's schema); a one-shot is kept until its run has
+ * come and gone (a quarter hour past it), or, with no time to wait for, for a week. Shared by the view and by the file's prune (r2 N3).
+ */
+function cronExpired(row, now) {
+  if (!isObj(row) || row.kind !== 'cron') return false;
+  const createdAt = isNum(row.createdAt) ? row.createdAt : now;
+  if (row.recurring !== false) return now - createdAt > CRON_LIFE_MS;
+  const at = isNum(row.at) ? row.at : null;
+  return at !== null ? now > at + OVERDUE_MS : now - createdAt > CRON_LIFE_MS;
+}
+
 /** One stored row -> its view, or null when it should not be listed any more. */
 function viewRow(entry, row, ended, now) {
   if (!isObj(row) || !isStr(row.id)) return null;
@@ -267,16 +276,14 @@ function viewRow(entry, row, ended, now) {
   const durable = kind === 'cron' && row.durable === true;
   let at = isNum(row.at) ? row.at : null;
   if (kind === 'cron') {
+    if (cronExpired({ kind, recurring, createdAt, at }, now)) return null;
     if (recurring) {
-      if (now - createdAt > CRON_LIFE_MS) return null;                                 // a recurring job auto-expires after 7 days (the CLI's schema)
-      // The next match whose OFFSET run (the CLI spreads jobs by up to 15 minutes) is still ahead: while 10:00's run waits for its 10:06
-      // offset, the pending run is still the next one (PR #200 Dexter 3). A job the matcher cannot read keeps the CLI's own first time.
-      const off = isNum(row.offsetMs) && row.offsetMs > 0 && row.offsetMs <= MAX_OFFSET_MS ? row.offsetMs : 0;
-      if (cronText !== null && nextRun(cronText, now) !== null) at = nextRun(cronText, now - off) + off;
+      // The CLI's own first time while it is still ahead; after it has passed, the next match of the expression. A job the matcher
+      // cannot read has only the CLI's time (null once it has passed).
+      if (isNum(row.nextFireAt) && row.nextFireAt > now) at = row.nextFireAt;
+      else if (cronText !== null && nextRun(cronText, now) !== null) at = nextRun(cronText, now);
       else at = at !== null && at >= now ? at : null;
-    } else if (at !== null) {
-      if (now > at + OVERDUE_MS) return null;                                          // its one run has come and gone
-    } else if (now - createdAt > CRON_LIFE_MS) return null;                            // a one-shot is kept until it fires; with no time to wait for, a week
+    }
   } else {
     if (at === null || now > at + OVERDUE_MS) return null;                             // it should have fired
   }
@@ -359,4 +366,4 @@ function buildView(entries, now) {
   return { groups, nextHour, footer: { ...FOOTER } };
 }
 
-module.exports = { createSessionSchedule, buildView, kindOfPrompt, FOOTER, OVERDUE_MS, CRON_LIFE_MS, ENDED_STALE_MS, ENDED_DROP_MS, clockText };
+module.exports = { createSessionSchedule, buildView, cronExpired, kindOfPrompt, FOOTER, OVERDUE_MS, CRON_LIFE_MS, ENDED_STALE_MS, ENDED_DROP_MS, clockText };

@@ -32,7 +32,8 @@
  * window of this host; a window may ask `{ type: 'schedules' }` (when the panel opens) and gets the same frame back.
  */
 
-const { createSessionSchedule, buildView, ENDED_DROP_MS, ENDED_STALE_MS } = require('./schedules');
+const path = require('path');
+const { createSessionSchedule, buildView, cronExpired, ENDED_DROP_MS, ENDED_STALE_MS } = require('./schedules');
 
 const STORE_KEY = 'schedules';
 const VERSION = 1;
@@ -63,12 +64,21 @@ function pruned(entry, now) {
   else if (isNum(entry.updatedAt)) endedAt = entry.updatedAt + ENDED_STALE_MS;
   else return null;
   if (now - endedAt <= ENDED_DROP_MS) return entry;
-  const durable = (Array.isArray(entry.rows) ? entry.rows : []).filter(isDurableCron);
+  const durable = (Array.isArray(entry.rows) ? entry.rows : []).filter(r => isDurableCron(r) && !cronExpired(r, now));
   return durable.length > 0 ? { ...entry, rows: durable } : null;
 }
 
-/** The same folder, whatever the slashes, the case or a trailing separator. */
-const folderKey = (p) => (typeof p === 'string' ? p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : null);
+/**
+ * The same folder, however it is spelled: resolved, forward slashes, no trailing separator, lower-cased on Windows (where the file system
+ * ignores case). The host builds its entry's KEY from this, so a successor host whose folder is spelled differently owns the same entry
+ * (PR #200 Dexter r2 N2). Null for anything that is not a path.
+ */
+function normalizeFolder(p) {
+  if (typeof p !== 'string' || p === '') return null;
+  const s = path.resolve(p).replace(/\\/g, '/').replace(/\/+$/, '');
+  return process.platform === 'win32' ? s.toLowerCase() : s;
+}
+const folderKey = normalizeFolder;
 
 function createSchedulesControl({ store, key, cwd = null, label = () => '', now = Date.now, emit = () => {}, nightView = () => null, log = () => {},
   retryMs = 250, maxRetries = 20 } = {}) {
@@ -251,4 +261,4 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
   return { start, event, touch, beat, changed, end, payload, handles, reply };
 }
 
-module.exports = { createSchedulesControl, isSchedulesOnly, STORE_KEY, CONTROL_TYPE };
+module.exports = { createSchedulesControl, isSchedulesOnly, normalizeFolder, STORE_KEY, CONTROL_TYPE };

@@ -96,7 +96,7 @@ const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
 const { createNightStatus } = require('./night-status');
-const { createSchedulesControl, isSchedulesOnly } = require('./schedules-control');
+const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
 const { countNightPrs } = require('./night-prs');
 const { createSummaryService, TICK_MS } = require('./summary-service');
 const { createScheduler } = require('./summary-scheduler');
@@ -1406,7 +1406,7 @@ function noteNight(payload) {     // usage counters: a night counts once, when i
 // refreshes the bedtime row's detail.
 const schedulesControl = createSchedulesControl({
   store,
-  key: `${PORT}:${CWD}`,          // a port outlives its host: the folder is part of who owns an entry
+  key: `${PORT}:${normalizeFolder(CWD)}`,   // a port outlives its host: the folder (however spelled) is part of who owns an entry
   cwd: CWD,
   label: () => { const b = currentBranch(CWD); return `${projectLabel(PROJECT_ROOT)}${b ? ` / ${b}` : ''}`; },
   nightView: () => night.payload(),

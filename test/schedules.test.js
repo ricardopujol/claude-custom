@@ -388,26 +388,52 @@ test('FIXTURE (a real claude -p capture, 2.1.304): CronCreate and CronDelete pay
   assert.deepStrictEqual(s.rows(), []);
 });
 
-test('DEXTER 3: a recurring job\'s next run carries the CLI\'s per-job offset (nextFireAt), not the bare expression match', () => {
-  const c = clock(local(2026, 10, 19, 9, 50));
+test('N1 (PR #200 Dexter r2): a recurring job shows the CLI\'s nextFireAt while it is still ahead, whatever the expression says; after it, the expression', () => {
+  const c = clock(local(2026, 10, 20, 1, 28, 30));
   const s = S.createSessionSchedule({ now: c.now });
-  const fire = local(2026, 10, 19, 10, 6);                       // the hour match is 10:00; the CLI will fire at 10:06
-  s.handle(post('CronCreate', { cron: '0 * * * *', prompt: 'p' }, { id: 'j', recurring: true, nextFireAt: fire }));
+  const fire = 1792474260084.5698;                              // the real capture's number: 01:31:00.085 for */7 (a bare match would be 01:35)
+  assert.strictEqual(new Date(fire).getMinutes(), 31);
+  s.handle(post('CronCreate', { cron: '*/7 * * * *', prompt: 'p' }, { id: 'j', recurring: true, nextFireAt: fire }));
   const row = s.rows()[0];
-  const at = (now) => S.buildView({ '1': entry([row]) }, now).groups.flatMap(g => g.rows)[0].at;
-  assert.strictEqual(at(local(2026, 10, 19, 9, 55)), fire);
-  assert.strictEqual(at(local(2026, 10, 19, 10, 3)), fire, 'between the match and the offset run, the pending run is still the next one');
-  assert.strictEqual(at(local(2026, 10, 19, 10, 7)), local(2026, 10, 19, 11, 6), 'after it, the next match plus the same offset');
+  const at = (now) => S.buildView({ '1': entry([row], { updatedAt: now }) }, now).groups.flatMap(g => g.rows)[0].at;
+  assert.strictEqual(at(local(2026, 10, 20, 1, 29, 30)), fire, 'before the CLI\'s time: the CLI\'s time');
+  assert.strictEqual(at(fire - 1), fire);
+  assert.strictEqual(at(fire + 1000), local(2026, 10, 20, 1, 35), 'after it has passed: recomputed from the expression');
 });
 
-test('DEXTER 3: a job with no nextFireAt in its result is computed from the expression alone; an unreadable one uses nextFireAt', () => {
-  const c = clock(local(2026, 10, 19, 9, 50));
+test('N1: two REAL captures (an */N and an hourly job): each row shows exactly the nextFireAt the CLI answered at the moment it was created', () => {
+  const real = fs.readFileSync(path.join(__dirname, 'cron-capture2.fixture.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    .filter(r => r.event === 'PostToolUse' && r.payload.tool_name === 'CronCreate');
+  assert.strictEqual(real.length, 2);
+  const [first] = fixture.filter(r => r.event === 'PostToolUse' && r.payload.tool_name === 'CronCreate');
+  const jobs = [...real.map(r => ({ cron: r.payload.tool_input.cron, said: r.payload.tool_response.nextFireAt, created: r.at, payload: r.payload })),
+    { cron: first.payload.tool_input.cron, said: first.payload.tool_response.nextFireAt, created: first.payload.tool_response.nextFireAt - 3 * MIN, payload: first.payload }];
+  for (const j of jobs) {
+    const c = clock(j.created);
+    const s = S.createSessionSchedule({ now: c.now });
+    s.handle({ event: 'PostToolUse', payload: j.payload });
+    const v = S.buildView({ '1': entry(s.rows(), { updatedAt: j.created + 30_000 }) }, j.created + 30_000).groups.flatMap(g => g.rows)[0];
+    assert.strictEqual(v.at, j.said, j.cron);
+    assert.notStrictEqual(v.at % 60_000, 0, j.cron + ': the CLI\'s time is not a minute boundary, so it was not recomputed');
+  }
+  assert.deepStrictEqual(jobs.map(j => j.cron), ['*/11 * * * *', '0 * * * *', '*/7 * * * *']);
+});
+
+test('N4: the wake key collapses whitespace BEFORE it cuts, so a replay that differs only in whitespace still matches a long prompt', () => {
+  const c = clock();
   const s = S.createSessionSchedule({ now: c.now });
-  s.handle(post('CronCreate', { cron: '0 * * * *', prompt: 'p' }, { id: 'plain', recurring: true }));
-  s.handle(post('CronCreate', { cron: '0 9 * * MON', prompt: 'p' }, { id: 'odd', recurring: true, nextFireAt: local(2026, 10, 26, 9, 2) }));
-  const v = S.buildView({ '1': entry(s.rows()) }, c.now()).groups.flatMap(g => g.rows);
-  assert.strictEqual(v.find(r => r.id === 'plain').at, local(2026, 10, 19, 10, 0));
-  assert.strictEqual(v.find(r => r.id === 'odd').at, local(2026, 10, 26, 9, 2));
+  s.handle(wakeup(c, { delaySeconds: 600, prompt: '\n' + 'x'.repeat(2500) }, NOW + 600_000));
+  assert.strictEqual(s.handle(ev('UserPromptSubmit', { prompt: 'x'.repeat(2500) })), true);
+  assert.deepStrictEqual(s.rows(), []);
+});
+
+test('N3 helper: cronExpired says when a cron row is over (a recurring one after 7 days, a one-shot after its run)', () => {
+  const day = 86_400_000;
+  assert.strictEqual(S.cronExpired({ kind: 'cron', recurring: true, createdAt: NOW - 8 * day }, NOW), true);
+  assert.strictEqual(S.cronExpired({ kind: 'cron', recurring: true, createdAt: NOW - 6 * day }, NOW), false);
+  assert.strictEqual(S.cronExpired({ kind: 'cron', recurring: false, at: NOW + 30 * day, createdAt: NOW - 20 * day }, NOW), false);
+  assert.strictEqual(S.cronExpired({ kind: 'cron', recurring: false, at: NOW - 20 * MIN, createdAt: NOW - day }, NOW), true);
+  assert.strictEqual(S.cronExpired({ kind: 'cron', recurring: false, at: null, createdAt: NOW - 8 * day }, NOW), true);
 });
 
 test('DEXTER 3: a one-shot prefers the CLI\'s nextFireAt over its own computation', () => {
@@ -470,4 +496,14 @@ test('MIGUEL 3: a durable cron job stays listed after its host is gone, marked a
   assert.deepStrictEqual(later.map(r => r.id), ['d'], 'only the durable job outlives the ten minutes');
   assert.strictEqual(later[0].ended, true);
   assert.strictEqual(S.buildView({ '1': ended }, NOW + 8 * 86_400_000).groups.length, 0, 'its own 7-day life still ends it');
+});
+
+test('DEXTER 3 (kept): a job with no nextFireAt is computed from the expression alone; an unreadable expression uses nextFireAt', () => {
+  const c = clock(local(2026, 10, 19, 9, 50));
+  const s = S.createSessionSchedule({ now: c.now });
+  s.handle(post('CronCreate', { cron: '0 * * * *', prompt: 'p' }, { id: 'plain', recurring: true }));
+  s.handle(post('CronCreate', { cron: '0 9 * * MON', prompt: 'p' }, { id: 'odd', recurring: true, nextFireAt: local(2026, 10, 26, 9, 2) }));
+  const v = S.buildView({ '1': entry(s.rows()) }, c.now()).groups.flatMap(g => g.rows);
+  assert.strictEqual(v.find(r => r.id === 'plain').at, local(2026, 10, 19, 10, 0));
+  assert.strictEqual(v.find(r => r.id === 'odd').at, local(2026, 10, 26, 9, 2));
 });

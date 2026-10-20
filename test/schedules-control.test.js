@@ -266,22 +266,29 @@ test('DEXTER 2: a removal whose save met a busy file is retried on the next hear
   a.end();
 });
 
-test('DEXTER 5: another project\'s entry under the same key is not restored (a port outlives its host)', (t) => {
+test('DEXTER 5: another project\'s entry is not restored (a port outlives its host); keys are built the way host.js builds them, one per folder', (t) => {
   const s = setup(); t.after(s.cleanup);
-  const seed = () => s.store.write(STORE_KEY, { version: 1, sessions: { 7402: { key: '7402', cwd: 'C:/proj-y', label: 'y', updatedAt: NOW, endedAt: NOW, rows: [
+  const { normalizeFolder } = require('../host/schedules-control');
+  const keyOf = (cwd) => '7402:' + normalizeFolder(cwd);
+  const seed = () => s.store.write(STORE_KEY, { version: 1, sessions: { [keyOf('C:/proj-y')]: { key: keyOf('C:/proj-y'), cwd: 'C:/proj-y', label: 'y', updatedAt: NOW, endedAt: NOW, rows: [
     { id: 'weekly', kind: 'cron', cron: '0 9 * * 1', recurring: true, durable: true, prompt: 'p', createdAt: NOW - 1000, at: null, human: null, reason: null }] } } });
+  const mk = (cwd, key = keyOf(cwd)) => createSchedulesControl({ store: s.store, key, cwd, label: () => 'host', now: s.clock.now, emit: () => {}, nightView: () => null });
   seed();
-  const z = createSchedulesControl({ store: s.store, key: '7402', cwd: 'C:/proj-z', label: () => 'z', now: s.clock.now, emit: () => {}, nightView: () => null });
+  const z = mk('C:/proj-z');
   z.start();
-  assert.deepStrictEqual(rowsOf(z.payload()).filter(r => r.session === 'z'), [], 'proj-y\'s job is not proj-z\'s');
-  seed();                                              // z's start replaced the entry it does not own; seed it again for the owner
-  const y = createSchedulesControl({ store: s.store, key: '7402', cwd: 'C:/proj-y', label: () => 'y', now: s.clock.now, emit: () => {}, nightView: () => null });
-  y.start();
-  assert.deepStrictEqual(rowsOf(y.payload()).map(r => r.id), ['weekly'], 'its own host gets it back (the same folder, whatever the slash or case)');
+  assert.deepStrictEqual(rowsOf(z.payload()).filter(r => r.session === 'host'), [], 'proj-y\'s job is not proj-z\'s');
   seed();
-  const y2 = createSchedulesControl({ store: s.store, key: '7402', cwd: 'C:\\Proj-Y\\', label: () => 'y', now: s.clock.now, emit: () => {}, nightView: () => null });
+  const zSameKey = mk('C:/proj-z', keyOf('C:/proj-y'));          // defence in depth: even under y's own key, z's folder is not y's
+  zSameKey.start();
+  assert.deepStrictEqual(rowsOf(zSameKey.payload()).filter(r => r.session === 'host'), []);
+  seed();
+  const y = mk('C:/proj-y');
+  y.start();
+  assert.deepStrictEqual(rowsOf(y.payload()).map(r => r.id), ['weekly'], 'its own host gets it back');
+  seed();
+  const y2 = mk('C:\\Proj-Y\\');
   y2.start();
-  assert.deepStrictEqual(rowsOf(y2.payload()).map(r => r.id), ['weekly']);
+  assert.deepStrictEqual(rowsOf(y2.payload()).map(r => r.id), ['weekly'], 'whatever the slash, the case or a trailing separator');
 });
 
 test('DEXTER 5: a host that has not started (its bind failed) never writes the shared file, and its end() writes nothing', (t) => {
@@ -321,4 +328,39 @@ test('a hook event that arrives before start() is kept in memory and saved by st
   assert.strictEqual(fs.existsSync(s.store.pathOf(STORE_KEY)), false, 'nothing is written before start');
   a.start();
   assert.deepStrictEqual(filed(s)['1'].rows.map(r => r.prompt), ['early']);
+});
+
+
+// ---- PR #200 Dexter round 2 -------------------------------------------------------------------------------------------------
+
+test('N2: the key is built from the NORMALISED folder, so a successor host spelled differently restores the entry and its CronDelete clears it', (t) => {
+  const s = setup(); t.after(s.cleanup);
+  const { normalizeFolder } = require('../host/schedules-control');
+  const spelled = ['C:\\Users\\ricar\\proj\\x', 'c:/users/ricar/proj/x/', 'C:/Users/ricar/proj/x'];
+  const keys = spelled.map(p => '7401:' + normalizeFolder(p));
+  assert.strictEqual(new Set(keys).size, 1, 'one folder, one key, however it is spelled');
+  assert.notStrictEqual(normalizeFolder('C:/Users/ricar/proj/y'), normalizeFolder(spelled[0]), 'another folder is another key');
+  const mk = (cwd) => createSchedulesControl({ store: s.store, key: '7401:' + normalizeFolder(cwd), cwd, label: () => 'x', now: s.clock.now, emit: () => {}, nightView: () => null });
+  const a = mk(spelled[0]);
+  a.start();
+  a.event(cronPost('weekly', true));
+  a.end();
+  const b = mk(spelled[1]);
+  b.start();
+  assert.deepStrictEqual(rowsOf(b.payload()).map(r => r.id), ['weekly'], 'restored under the successor');
+  b.event({ event: 'PostToolUse', payload: { tool_name: 'CronDelete', tool_input: { id: 'weekly' }, tool_response: { id: 'weekly' } } });
+  assert.deepStrictEqual(rowsOf(b.payload()), [], 'deleted from every panel, with no ghost from the first host');
+  assert.deepStrictEqual(Object.keys(filed(s)), [], 'and from the file');
+});
+
+test('N3: an ended entry whose durable rows have all expired is removed from the file, not kept forever', (t) => {
+  const s = setup(2); t.after(s.cleanup);
+  const [a, b] = s.controls;
+  a.start(); b.start();
+  a.event(cronPost('old', true));
+  a.end();
+  assert.ok(filed(s)['1']);
+  s.clock.t += 8 * 86_400_000;
+  b.event(wake('b', 600, s.clock.t + 600_000));
+  assert.strictEqual(filed(s)['1'], undefined, 'the recurring job is 8 days old: nothing of that host is kept');
 });
