@@ -53,7 +53,7 @@ test('the guard fails closed: a payload it never saw is not applied', () => {
   const g = createOscGuard();
   const took = (payload) => { let n = 0; g.take(payload, () => n++); return n; };
   assert.strictEqual(took('state=done'), 0);
-  g.scan(']7501;state=done');
+  g.scan('\x1b]7501;state=done\x07');
   assert.strictEqual(took('state=other'), 0);
   assert.strictEqual(took('state=done'), 1);
   assert.strictEqual(took('state=done'), 0, 'one record, one use');
@@ -61,7 +61,7 @@ test('the guard fails closed: a payload it never saw is not applied', () => {
 
 test('a very long dirty report cannot grow memory without bound and is not applied', () => {
   const g = createOscGuard();
-  g.scan(']7501;' + 'a'.repeat(50000) + '');
+  g.scan('\x1b]7501;' + 'a'.repeat(50000) + '\x07');
   let n = 0;
   g.take('a'.repeat(8192), () => n++);
   assert.strictEqual(n, 0);
@@ -71,7 +71,7 @@ test('a very long dirty report cannot grow memory without bound and is not appli
 test('N5: a report split at its ESC, parsed in between, is applied once the backslash arrives', async () => {
   const seen = [];
   const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: (d) => seen.push(d) });
-  s.write(']7501;state=blocked');
+  s.write('\x1b]7501;state=blocked\x1b');
   await flush(s);
   assert.deepStrictEqual(seen, [], 'not before the verdict is known');
   s.write('\\');
@@ -83,12 +83,12 @@ test('N5: a report split at its ESC, parsed in between, is applied once the back
 test('N5: a report split at its ESC whose next byte is not a backslash is discarded, and does not poison the next identical one', async () => {
   const seen = [];
   const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: (d) => seen.push(d) });
-  s.write(']7501;state=blocked');
+  s.write('\x1b]7501;state=blocked\x1b');
   await flush(s);
   s.write('[0m');
   await flush(s);
   assert.deepStrictEqual(seen, []);
-  s.write(']7501;state=blocked');
+  s.write('\x1b]7501;state=blocked\x07');
   await flush(s);
   assert.deepStrictEqual(seen, ['state=blocked']);
   s.dispose();
@@ -97,11 +97,11 @@ test('N5: a report split at its ESC whose next byte is not a backslash is discar
 test('N5: a clean split report followed by a dirty identical one applies only the first', async () => {
   const seen = [];
   const s = createTerminalState({ cols: 40, rows: 10, onProgramStatus: (d) => seen.push(d) });
-  s.write(']7501;state=blocked');
+  s.write('\x1b]7501;state=blocked\x1b');
   await flush(s);
   s.write('\\');
   await flush(s);
-  s.write(']7501;state=blocked[0m');
+  s.write('\x1b]7501;state=blocked\x1b[0m');
   await flush(s);
   assert.deepStrictEqual(seen, ['state=blocked']);
   s.dispose();

@@ -216,7 +216,9 @@ test('attention.js arms no timer but the shell wait: one injectable setTimer, no
   assert.doesNotMatch(src, /setInterval/);
   assert.strictEqual((src.match(/setTimeout\(/g) || []).length, 1, 'only unrefTimer calls setTimeout');
   assert.match(src, /const unrefTimer = \(fn, ms\) => \{ const t = setTimeout\(fn, ms\);/);
-  assert.strictEqual((src.match(/setTimer\(/g) || []).length, 1, 'armed from exactly one place');
+  // two places: the shell wait above, and the settle window of a 7501 `done` (BACKLOG #116, PR #201 Dexter r2 N1: a done is raised only after a window with no
+  // `working` and nothing running; it never fires into a turn the CLI itself reports as working)
+  assert.strictEqual((src.match(/setTimer\(/g) || []).length, 2, 'armed from exactly two places: the shell wait and the 7501 settle window');
 });
 
 // --- the tab strip (moved here in PR 3 so app/tab-strip.js can be mutated) --------
