@@ -1,0 +1,51 @@
+# Windows installer and portable zip for claude-custom. `npm run dist` reads this file; nothing is signed.
+#
+# The app is NOT packed into an asar. Three things need real files on disk: node-pty's native binaries, the hook helper (an
+# .exe the host spawns), and the `.harness` folder next to the code, where the host writes its token, identity and log files.
+# The installer's default is per-user (%LOCALAPPDATA%\Programs\claude-custom), which is writable, so that folder works.
+appId: com.ricardopujol.claude-custom
+productName: claude-custom
+copyright: Ricardo Pujol
+
+directories:
+  output: dist
+
+asar: false
+# node-pty ships N-API prebuilds, so there is nothing to rebuild for Electron.
+npmRebuild: false
+
+# Everything is included, then the folders a second user doesn't need are taken out. The patterns run in order, so the hook
+# helper is put back after `.harness` is excluded: it's the one build artefact the app can't work without (no helper, no hooks).
+files:
+  - "**/*"
+  - "!test/**"
+  - "!verify/**"
+  - "!forge/**"
+  - "!documentation/**"
+  - "!reports/**"
+  - "!scripts/**"
+  - "!build/**"
+  - "!helper/**"
+  - "!dist/**"
+  - "!.stryker-tmp/**"
+  - "!.claude/**"
+  - "!.github/**"
+  - "!stryker.conf.json"
+  - "!CLAUDE.md"
+  - "!.harness/**"
+  - ".harness/hook-helper.exe"
+
+win:
+  target:
+    - target: nsis
+      arch: x64
+    - target: zip
+      arch: x64
+  # shortcut: no code signing in v1. Windows SmartScreen will warn on the installer; upgrade when there are users who need it gone.
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  artifactName: claude-custom-setup-${version}.${ext}

@@ -14,7 +14,8 @@
     "build:helper": "powershell -NoProfile -ExecutionPolicy Bypass -File helper/build.ps1",
     "bench:hooks": "node verify/measure-hook-latency.js",
     "mutate": "stryker run",
-    "build:reader": "node build/build-reader.mjs"
+    "build:reader": "node build/build-reader.mjs",
+    "dist": "electron-builder --config build/electron-builder.yml --win"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -44,6 +45,7 @@
     "@lezer/highlight": "^1.2.5",
     "@stryker-mutator/core": "^10.0.0",
     "electron": "^33.0.0",
+    "electron-builder": "26.15.3",
     "esbuild": "^0.28.2",
     "fast-check": "^4.10.2"
   }

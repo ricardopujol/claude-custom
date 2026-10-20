@@ -41,6 +41,34 @@ function renderTitle() {
 }
 renderTitle();
 
+// --- first-run checks (host/first-run.js) ---------------------------------------------------------------------
+// The host decides; this paints. `fr` is { checks, banner, done } or absent on an older host (nothing drawn, nothing claimed).
+// A failing required check is one line at the foot of the terminal and a row in Diagnostics (Ctrl+Shift+D). Never a modal.
+let dismissedFirstRun = null;
+function renderFirstRun(fr) {
+  const banner = document.getElementById('first-run-banner');
+  const list = document.getElementById('first-run');
+  const text = fr && typeof fr.banner === 'string' && fr.banner !== '' ? fr.banner : null;
+  banner.hidden = !text || text === dismissedFirstRun;
+  document.getElementById('first-run-banner-text').textContent = text || '';
+  const checks = fr && Array.isArray(fr.checks) ? fr.checks : [];
+  if (!checks.length) {
+    list.innerHTML = '<h3>Setup checks</h3><div><span class="mark">·</span>' +
+      (fr && fr.done === false ? 'running…' : 'not available from this host') + '</div>';
+    return;
+  }
+  list.innerHTML = '<h3>Setup checks</h3>' + checks.map((c) => {
+    const mark = c.status === 'ok' ? '✓' : c.status === 'fail' ? '✗' : '·';
+    return `<div class="${escapeHtml(String(c.status))}"><span class="mark">${mark}</span>${escapeHtml(String(c.label))}` +
+      `<span class="detail">${escapeHtml(String(c.detail))}</span></div>`;
+  }).join('');
+}
+document.getElementById('first-run-banner-dismiss').addEventListener('click', () => {
+  dismissedFirstRun = document.getElementById('first-run-banner-text').textContent || null;
+  document.getElementById('first-run-banner').hidden = true;
+});
+renderFirstRun(null);
+
 // --- worktree status (Extension X1/X4, PR 1b) --------------------------------
 // The session lock's overlay and header badge, other live claude sessions in
 // this worktree, and branch health. Every decision is in
@@ -8316,6 +8344,7 @@ function handleControl(msg) {
     // and the host sends a `quota` message as soon as the read lands.
     renderQuota(msg.quota || null);
     renderHealth(msg.health);
+    renderFirstRun(msg.firstRun);
     renderCooldowns(msg.cooldowns);
     renderBugVault(msg.vault);
     renderProcesses(msg.running);
@@ -8556,6 +8585,10 @@ function handleControl(msg) {
   }
   if (msg.type === 'health') {
     renderHealth(msg.health);
+    return;
+  }
+  if (msg.type === 'first-run') {
+    renderFirstRun(msg.firstRun);
     return;
   }
   if (msg.type === 'turn') {

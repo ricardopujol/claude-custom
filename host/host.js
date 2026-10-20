@@ -146,6 +146,7 @@ const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
+const firstRun = require('./first-run');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -194,6 +195,22 @@ const PIPE_NAME = `\\\\.\\pipe\\claude-custom-${SESSION_ID}`;
 const HARNESS_DIR = path.join(__dirname, '..', '.harness');
 const HELPER_PATH =
   process.env.CLAUDE_CUSTOM_HELPER || path.join(HARNESS_DIR, 'hook-helper.exe');
+
+// First-run checks (host/first-run.js): is `claude` there, do the hooks run, is the CLI signed in, is Ollama up. Run once at boot,
+// off the event loop's critical path (they spawn short child processes), then handed to every window: the handshake carries the
+// latest state and a finished run is broadcast. A failing required check is ONE line in the window and a row in Diagnostics.
+// A side session is a read-only helper of a window that already has this, so it skips them.
+let firstRunState = { checks: [], banner: null, done: false };
+function startFirstRun() {
+  if (SIDE) return;
+  firstRun.runChecks(firstRun.realDeps({ claudeBin: CLAUDE_BIN, helperPath: HELPER_PATH, configDir: claudeConfigDir() }))
+    .then((results) => {
+      firstRunState = { ...firstRun.summarize(results), done: true };
+      for (const c of firstRunState.checks) console.log(`[host] first-run ${c.id}: ${c.status} (${c.detail})`);
+      try { broadcastControl({ type: 'first-run', firstRun: firstRunState }); } catch {}
+    })
+    .catch((err) => console.log('[host] first-run checks failed:', err && err.message));
+}
 
 // Project HP. The suite runs in a CHILD PROCESS, never in this one: a test run
 // is seconds of work, and the host's event loop is what accepts the hook
@@ -2368,6 +2385,7 @@ wss.on('connection', (ws, req) => {
     layoutOverride,
     vault: vaultPayload(),
     health: healthState,
+    firstRun: firstRunState,
     agentStats: lastAgentStats,
     // The WHOLE roster (BACKLOG D #16) -- still `complete: false` on a fast
     // attach, before the first background scan across every project has
@@ -2963,6 +2981,7 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
+  startFirstRun();
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {

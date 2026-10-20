@@ -3,6 +3,7 @@
 /**
  * claude-custom <folder>
  * claude-custom <folder> --stop
+ * claude-custom --version
  *
  * Opens the harness on any project. The folder is passed through as given:
  * app/main.js folds it with projectOf (host/project-layout.js), so a folder
@@ -16,7 +17,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-const { resolveLaunchTarget, parseCli, launchEnv } = require('../host/launch-target');
+const { resolveLaunchTarget, parseCli, launchEnv, versionLine } = require('../host/launch-target');
 const { portForCwd } = require('../host/port-for-project');
 
 const INSTALL_DIR = path.join(__dirname, '..');
@@ -30,9 +31,15 @@ try {
   process.exit(1);
 }
 
+if (cli.cmd === 'version') {
+  console.log(versionLine(require('../package.json')));
+  process.exit(0);
+}
+
 if (cli.cmd === 'help') {
   console.log(`claude-custom [folder]
 claude-custom [folder] --stop
+claude-custom --version
 
   Opens the claude-custom harness on a project folder.
   With no folder, opens the one you are standing in.

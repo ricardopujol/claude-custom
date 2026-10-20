@@ -22,6 +22,14 @@
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+// `claude-custom.exe --version` (the installed build's smoke test): print one line and leave, before anything else loads or opens.
+// The launcher (bin/claude-custom.js) answers the same flag without Electron; this is the packaged exe's own answer.
+if (process.argv.slice(1).some(a => a === '--version' || a === '-v')) {
+  const { versionLine } = require('../host/launch-target');
+  // writeSync, then exit at once: nothing below may run, and a pipe or file gets the line before the process ends.
+  try { require('fs').writeSync(1, versionLine(require('../package.json'), process.versions.electron) + String.fromCharCode(10)); } catch { /* no stdout to write to */ }
+  process.exit(0);
+}
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
@@ -167,7 +175,10 @@ function explicitPort() {
 const EXPLICIT_PORT = explicitPort();
 
 // --- what this window is ----------------------------------------------------------
-const LAUNCH_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+// The launcher script sets CLAUDE_CUSTOM_CWD. The installed exe has none, so it works the folder out itself (host/launch-target.js).
+const LAUNCH_CWD = process.env.CLAUDE_CUSTOM_CWD || (app.isPackaged
+  ? require('../host/launch-target').packagedLaunchCwd({ args: process.argv.slice(1), cwd: process.cwd(), installDir: path.dirname(process.execPath), home: require('os').homedir() })
+  : process.cwd());
 const PROJECT = projectOf(LAUNCH_CWD);
 const MODE = (PROJECT && PROJECT.kind === 'container' && EXPLICIT_PORT === null) ? 'tabs' : 'single';
 // What hostEnv hands each host as its project. A folder in no project is its
