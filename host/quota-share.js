@@ -66,7 +66,11 @@ const FUTURE_SKEW_MS = 60_000;
 // hands back to the poller long before the figure would read as unknown.
 const MOD_FRESH_MS = 120_000;
 
-function defaultDir() { return path.join(os.homedir(), '.claude-custom'); }
+// CLAUDE_CUSTOM_QUOTA_DIR moves the whole folder (probes use a private one, so they never touch the person's real quota file or lease).
+function defaultDir() {
+  const o = process.env.CLAUDE_CUSTOM_QUOTA_DIR;
+  return typeof o === 'string' && o !== '' ? o : path.join(os.homedir(), '.claude-custom');
+}
 
 /** A short stable key for one account: its resolved config dir (case-folded where the OS is). */
 function accountKey(configDir) {
@@ -171,11 +175,17 @@ function recordPoll({ dir = defaultDir(), configDir, result, now = Date.now } = 
   const p = prior.kind === 'value' ? prior.value : null;
   const good = p && isNum(p.readAt) && Array.isArray(p.windows);
   const message = result && result.ok === true ? 'poll returned no windows' : (result && result.error) || 'unknown error';
+  // A MOD-written file keeps its provenance through a failed poll: its `readAt` is the mod's stamp, and the poll's own age (carriedReadAt)
+  // is what decides how long a carried window may still be shown. Dropping these fields made the mod's stamp pass for the poll's.
+  const kept = good && p.source === 'mod'
+    ? { source: 'mod', complete: p.complete === true, pollKeys: Array.isArray(p.pollKeys) ? p.pollKeys : null, carriedReadAt: isNum(p.carriedReadAt) ? p.carriedReadAt : null }
+    : {};
   writeFileAtomic(file, JSON.stringify({
     version: 1,
     readAt: good ? p.readAt : null,
     windows: good ? p.windows : [],
     lastError: { message: String(message), at: t },
+    ...kept,
   }, null, 2));
 }
 
@@ -191,22 +201,98 @@ function recordFailureAsPoller({ dir = defaultDir(), configDir, owner, result, n
 const keyOf = (w) => (w && typeof w === 'object' && typeof w.key === 'string' ? w.key : null);
 
 // Two reset stamps name the same window instance when they are under a minute apart (the API says `+00:00` with microseconds, the CLI `Z`
-// with milliseconds). Anything that does not parse is not the same instance.
+// with milliseconds). Anything that does not parse is not the same instance, and has no direction either.
 const SAME_RESET_MS = 60_000;
+const instantOf = (s) => (typeof s === 'string' ? Date.parse(s) : NaN);
 function sameReset(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const x = Date.parse(a);
-  const y = Date.parse(b);
+  const x = instantOf(a);
+  const y = instantOf(b);
   return Number.isFinite(x) && Number.isFinite(y) && Math.abs(x - y) < SAME_RESET_MS;
+}
+/** `candidate` names an EARLIER window instance than `stored`: older news, never to overwrite it (a roll-forward is the other direction). */
+function resetIsOlder(candidate, stored) {
+  const x = instantOf(candidate);
+  const y = instantOf(stored);
+  return Number.isFinite(x) && Number.isFinite(y) && x <= y - SAME_RESET_MS;
+}
+
+/**
+ * The mod's figure is the CLI's LAST RESPONSE; the poll's is the account now, which other sessions move. So, per window:
+ *   - a reset EARLIER than the file's is older news (a /clear after a roll-over returns the process's last limits): the mod's window is
+ *     dropped, and the file's one is carried instead;
+ *   - inside one reset a percent only goes up: a lower mod figure keeps the file's, and an unknown mod figure never erases a known one;
+ *   - a LATER reset is a roll-forward and the mod's figure is taken; without a parseable reset on both sides nothing proves it is the
+ *     same window, so the mod's is taken.
+ */
+function mergePercents(given, priorWindows) {
+  const out = [];
+  for (const m of given) {
+    const old = priorWindows.find(w => keyOf(w) === keyOf(m));
+    if (!old) { out.push(m); continue; }
+    if (resetIsOlder(m.resetsAt, old.resetsAt)) continue;
+    const keepOld = sameReset(old.resetsAt, m.resetsAt) && isNum(old.percent) && (m.percent === null || old.percent > m.percent);
+    out.push(keepOld ? { ...m, percent: old.percent } : m);
+  }
+  return out;
+}
+
+/**
+ * Where the file's figures came from. A POLL file's `readAt` is the poll's time. A MOD file's `readAt` is the mod's stamp, and the
+ * poll's own age lives in `carriedReadAt` (a failed poll keeps it, see recordPoll). `pollKeys` is the windows the last GOOD poll found,
+ * or null when no good poll has been seen (a poll that found no windows names none either: nothing is covered by saying so).
+ */
+function provenance(p, priorWindows) {
+  const fromMod = !!p && p.source === 'mod';
+  let pollKeys = null;
+  let carriedReadAt = null;
+  if (fromMod) {
+    if (Array.isArray(p.pollKeys) && p.pollKeys.length) pollKeys = p.pollKeys.filter(k => typeof k === 'string');
+    if (isNum(p.carriedReadAt)) carriedReadAt = p.carriedReadAt;
+  } else if (p && isNum(p.readAt)) {
+    if (priorWindows.length) pollKeys = priorWindows.map(keyOf);
+    carriedReadAt = p.readAt;
+  }
+  return { pollKeys, carriedReadAt };
+}
+
+/** The API's order is kept: a window the mod reports takes its old place, a new one goes last; the file's others are carried while fresh. */
+function orderWindows(mine, priorWindows, carriedReadAt, t) {
+  const modKeys = new Set(mine.map(keyOf));
+  const carryOk = carriedReadAt !== null && t - carriedReadAt <= DATA_STALE_MS;
+  const out = [];
+  const placed = new Set();
+  for (const w of priorWindows) {
+    const k = keyOf(w);
+    if (modKeys.has(k)) {
+      if (!placed.has(k)) { out.push(mine.find(m => keyOf(m) === k)); placed.add(k); }
+    } else if (carryOk) {
+      // A carried row shows its real age (`carriedAt`, the poll that produced it), and is never the one the file calls binding.
+      out.push({ ...cleanWindow(w), carriedAt: carriedReadAt });
+    }
+  }
+  for (const w of mine) if (!placed.has(keyOf(w))) out.push(w);
+  return out;
+}
+
+/** Exactly one window is "currently the binding limit": the fullest one after the merge (the first of equals); none when no percent is known. */
+function markBinding(windows) {
+  let top = -1;
+  windows.forEach((w, i) => { if (isNum(w.percent) && (top === -1 || w.percent > windows[top].percent)) top = i; });
+  return windows.map((w, i) => ({ ...w, isActive: i === top }));
 }
 
 /**
  * Write the mod's windows through the SAME file the poller writes, so every host and `quota-cli` benefit. The mod only knows the
  * windows the CLI reports (five_hour, seven_day: no model-scoped one), so a window the last poll found and the mod does not report
- * is CARRIED over in its place, with the age of the poll it came from (`carriedReadAt`); one older than DATA_STALE_MS is dropped,
- * never shown as fresh. `complete` says whether the mod covers every window the last poll found, which is what lets the poller
- * yield (`modCovers`); with no poll ever seen it is false, so the poller keeps learning what windows exist.
+ * is CARRIED over in its place, with the age of the poll it came from; one older than DATA_STALE_MS is dropped, never shown as fresh.
+ * `complete` says whether the mod covers every window the last good poll found, which is what lets the poller yield (`modCovers`); it
+ * is false until a good poll has named at least one window, so the poller keeps learning what windows exist.
  * An empty list writes nothing: absence is not a figure. Returns whether it wrote.
+ *
+ * CONCURRENCY, stated: this is a read-modify-write with no lock (the lease lock guards the poller election, not the figures). Two hosts
+ * on one account, or a host and the lease-holding poller, can interleave a read and a write and lose one side's update. The write is
+ * atomic (no torn file) and the ratchet limits a lost update to a one-step stale number that the next write of either side corrects.
+ * A later lane can take the lease lock around it; it is not worth a lock on a 2-second cadence today.
  */
 function recordModWindows({ dir = defaultDir(), configDir, windows, now = Date.now } = {}) {
   if (!Array.isArray(windows) || windows.length === 0) return false;
@@ -220,32 +306,14 @@ function recordModWindows({ dir = defaultDir(), configDir, windows, now = Date.n
   if (prior.kind === 'unknown') return false;
   const p = prior.kind === 'value' && prior.value && typeof prior.value === 'object' && !Array.isArray(prior.value) ? prior.value : null;
   const priorWindows = p && Array.isArray(p.windows) ? p.windows.filter(w => keyOf(w) !== null) : [];
-  // The mod's figure is the CLI's LAST RESPONSE; the poll's is the account now, which other sessions move. Inside one reset a window's
-  // percent only goes up, so a lower mod figure for the same window and reset is older news and the file's stays; and an unknown mod
-  // figure never erases a known one. Without a reset time on both sides nothing proves it is the same window, so the mod's is taken.
-  const mine = given.map((m) => {
-    const old = priorWindows.find(w => keyOf(w) === keyOf(m));
-    if (!old || !sameReset(old.resetsAt, m.resetsAt) || !isNum(old.percent)) return m;
-    return m.percent === null || old.percent > m.percent ? { ...m, percent: old.percent } : m;
-  });
-  const fromMod = !!p && p.source === 'mod';
-  const pollKeys = fromMod && Array.isArray(p.pollKeys) ? p.pollKeys.filter(k => typeof k === 'string')
-    : (p && isNum(p.readAt) ? priorWindows.map(keyOf) : null);
-  const carriedReadAt = fromMod ? (isNum(p.carriedReadAt) ? p.carriedReadAt : null) : (p && isNum(p.readAt) ? p.readAt : null);
+  const mine = mergePercents(given, priorWindows);
+  if (mine.length === 0) return false;
+  const { pollKeys, carriedReadAt } = provenance(p, priorWindows);
+  const out = markBinding(orderWindows(mine, priorWindows, carriedReadAt, t));
   const modKeys = new Set(mine.map(keyOf));
-  const carryOk = carriedReadAt !== null && t - carriedReadAt <= DATA_STALE_MS;
-  // The API's order is kept: a window the mod reports takes its old place, a new one goes last.
-  const out = [];
-  const placed = new Set();
-  for (const w of priorWindows) {
-    const k = keyOf(w);
-    if (modKeys.has(k)) { if (!placed.has(k)) { out.push(mine.find(m => keyOf(m) === k)); placed.add(k); } }
-    else if (carryOk) out.push(cleanWindow(w));
-  }
-  for (const w of mine) if (!placed.has(keyOf(w))) out.push(w);
   const complete = pollKeys !== null && pollKeys.every(k => modKeys.has(k));
   writeFileAtomic(file, JSON.stringify({
-    version: 1, readAt: t, windows: out, lastError: null, source: 'mod', complete, pollKeys: pollKeys || [], carriedReadAt,
+    version: 1, readAt: t, windows: out, lastError: null, source: 'mod', complete, pollKeys, carriedReadAt,
   }, null, 2));
   return true;
 }
@@ -255,7 +323,8 @@ function modCovers({ dir = defaultDir(), configDir, now = Date.now } = {}) {
   const r = readJsonFile(quotaPath(dir, configDir));
   if (r.kind !== 'value') return false;
   const b = r.value;
-  if (!b || typeof b !== 'object' || Array.isArray(b) || b.source !== 'mod' || b.complete !== true || !isNum(b.readAt)) return false;
+  if (!b || typeof b !== 'object' || Array.isArray(b) || b.source !== 'mod' || b.complete !== true || !isNum(b.readAt)
+    || !Array.isArray(b.pollKeys) || b.pollKeys.length === 0) return false;
   const age = now() - b.readAt;
   return age >= 0 && age < MOD_FRESH_MS;
 }
