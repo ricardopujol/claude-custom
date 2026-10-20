@@ -8301,8 +8301,19 @@ function requestStyleBackground(files) {
   sendStyle('background', { action: 'set-background', path });
 }
 
+// PR #197 Miguel Y9: why the claude-custom mod is not loaded, in the diagnostics pane's log (Ctrl+Shift+D). Said only for a mod that is
+// off or could not load, and once per reason, so a hello after every reattach does not stack the same line.
+let lastModStatusLogged = null;
+function noteModStatus(status) {
+  if (!status || typeof status !== 'object' || status.state === 'on' || typeof status.reason !== 'string' || status.reason === lastModStatusLogged) return;
+  lastModStatusLogged = status.reason;
+  logLine('claude-custom mod', status.reason);
+}
+
 function handleControl(msg) {
+  if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
   if (msg.type === 'hello') {
+    noteModStatus(msg.modStatus);
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.

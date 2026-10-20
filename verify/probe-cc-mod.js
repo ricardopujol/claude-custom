@@ -17,7 +17,8 @@
  * `context` frame arrived. Then it waits past the host's 60 s poll tick and reports whether the poller yielded: the file stays
  * source "mod" when the mod covers every window the last poll found, and the poller keeps polling when it does not (a model-scoped
  * window such as Fable, which the CLI does not report): both are the designed behaviour, and the probe says which one it saw.
- * The real shared quota file and lease (~/.claude-custom) are snapshotted first and put back at the end.
+ * The quota folder is a PRIVATE temp one (CLAUDE_CUSTOM_QUOTA_DIR), so the person's real shared quota file and lease are never touched and
+ * the host here always holds its own lease (the poll check below is therefore always meaningful).
  *
  * Traps (CLAUDE.md): ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are stripped from what the children inherit. No Electron is
  * started, so the heavy lock is not needed. Nothing is killed by name: only the pids this probe started, through host/kill-tree.js.
@@ -36,7 +37,6 @@ const { quotaPath, leasePath, readShared } = require('../host/quota-share');
 const { claudeConfigDir } = require('../host/claude-config-dir');
 const { killChildTree } = require('../host/kill-tree');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
-const { snapshotFile } = require('./lib/file-snapshot');
 
 const REPO = path.join(__dirname, '..');
 const MOD_DIR = path.join(REPO, 'mods', 'claude-custom');
@@ -173,12 +173,12 @@ async function partA(bin) {
 
 async function partB() {
   console.log('\n=== PART B: the real host + a real CLI + the shared quota file ===');
+  const quotaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-mod-probe-quota-'));
+  process.env.CLAUDE_CUSTOM_QUOTA_DIR = quotaDir;                    // this process reads the same folder the host writes
   const file = quotaPath(undefined, claudeConfigDir());
   const lease = leasePath(undefined, claudeConfigDir());
-  const snaps = [snapshotFile(file), snapshotFile(lease)];
-  hygiene.addCleanup(() => snaps.forEach((s) => s.restore()));
   const token = newToken();
-  const env = { ...cleanEnv(), CLAUDE_CUSTOM_PORT: String(HOST_PORT), CLAUDE_CUSTOM_CWD: REPO, CLAUDE_CUSTOM_TOKEN: token };
+  const env = { ...cleanEnv(), CLAUDE_CUSTOM_PORT: String(HOST_PORT), CLAUDE_CUSTOM_CWD: REPO, CLAUDE_CUSTOM_TOKEN: token, CLAUDE_CUSTOM_QUOTA_DIR: quotaDir };
   const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   hygiene.registerChild(host);
   let log = '';
@@ -241,8 +241,9 @@ async function partB() {
     hygiene.unregisterSpawnedTree(host.pid);
     try { killChildTree(host); } catch { /* gone */ }
     await sleep(2000);
-    snaps.forEach((s) => s.restore());
-    console.log('\nthe real shared quota file and lease were put back');
+    fs.rmSync(quotaDir, { recursive: true, force: true });
+    delete process.env.CLAUDE_CUSTOM_QUOTA_DIR;
+    console.log('\nthe private quota folder was removed; the real one was never touched');
   }
 }
 

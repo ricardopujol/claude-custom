@@ -86,9 +86,10 @@ const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleSt
 const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
 const { createHostQuota, recordModWindows } = require('./quota-share');
-const { createModServer, windowsFromRateLimits, contextFromUsage } = require('./mod-feed');
+const { createModServer } = require('./mod-feed');
 const { createContextSource } = require('./context-source');
-const { modEnabled, modPluginDirFor, readCliVersion } = require('./cc-mod-settings');
+const { modEnabled, modPluginDirFor, modOffReason, readCliVersion } = require('./cc-mod-settings');
+const { createModRecordHandler } = require('./mod-records');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
@@ -2317,6 +2318,8 @@ wss.on('connection', (ws, req) => {
     // the session as input (PR #75).
     controls: [...CONTROL_TYPES],
     cwd: CWD,
+    // Whether the claude-custom mod is on, off or could not load, and why (PR #197 Miguel Y9): the diagnostics pane says it.
+    modStatus,
     // This session's id, null before SessionStart: the roster cards match a worktree claim on it (backlog #57).
     sessionId,
     // FF21. `project` is the same source of truth as the OS window title
@@ -3071,47 +3074,53 @@ process.on('exit', () => { hostQuota.release(); });
 const MOD_DIR = path.join(__dirname, '..', 'mods', 'claude-custom');
 const MOD_TOKEN = newToken();
 const contextSource = createContextSource();
-const modServer = createModServer({ token: MOD_TOKEN, onRecord: handleModRecord, log: (m) => console.log('[host]', m) });
+const modServer = createModServer({ token: MOD_TOKEN, onRecord: (rec) => handleModRecord(rec), log: (m) => console.log('[host]', m) });
 let modPort = null;
+
+// Why the mod is not loaded, if it is not: said once in the log and kept for the diagnostics pane (hello + `modStatus`), so a quiet feed
+// is never a mystery (PR #197 Miguel Y9). null while it is on or before it has been decided.
+let modStatus = null;
+function setModStatus(status) {
+  modStatus = status;
+  broadcastControl({ type: 'modStatus', modStatus });
+}
 
 async function prepareMod() {
   try {
     const enabled = modEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') });
-    if (!enabled) { console.log('[host] claude-custom mod: off (the switch)'); return; }
     // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
     const forced = !!process.env.CLAUDE_CUSTOM_BIN;
-    const version = forced ? null : await readCliVersion(CLAUDE_BIN);
-    const modDir = modPluginDirFor({ enabled, version, dir: MOD_DIR, forced });
-    if (modDir === null) { console.log('[host] claude-custom mod: not loaded (CLI', version ? version.join('.') : 'version unknown', 'or no mod directory)'); return; }
+    const version = enabled && !forced ? await readCliVersion(CLAUDE_BIN) : null;
+    const why = modOffReason({ enabled, version, dir: MOD_DIR, forced });
+    if (why !== null) {
+      console.log('[host] claude-custom mod: not loaded --', why);
+      setModStatus({ state: enabled ? 'not-loaded' : 'off', reason: why });
+      return;
+    }
     modPort = await modServer.listen();
-    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir });
+    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir: modPluginDirFor({ enabled, version, dir: MOD_DIR, forced }) });
     console.log('[host] claude-custom mod: on, posts to 127.0.0.1:' + modPort + ' (CLI', version ? version.join('.') : 'stand-in', ')');
+    setModStatus({ state: 'on', reason: null });
   } catch (err) {
     modPort = null;
     console.log('[host] claude-custom mod: not loaded:', err && err.message);
-    return;
+    setModStatus({ state: 'not-loaded', reason: 'the claude-custom mod failed to start: ' + (err && err.message) });
   }
 }
 
-// One record from the mod. Each kind feeds a source that already exists, and only ever overrules an older figure: the quota file
-// (read back with NO poll: a record arrives every couple of seconds), the context circle, the mood machine's finer states, and the
-// "needs you" cue. Nothing here decides anything for the session.
-function handleModRecord(rec) {
-  try {
-    if (rec.kind === 'usage') {
-      const before = JSON.stringify(lastQuota && lastQuota.windows);
-      if (recordModWindows({ windows: windowsFromRateLimits(rec.usage.rateLimits) })) {
-        const quota = hostQuota.readNow();
-        if (quota && quota.ok === true && JSON.stringify(quota.windows) !== before) broadcastControl({ type: 'quota', quota });
-      }
-      setContext(contextSource.fromMod(contextFromUsage(rec.usage)));
-    } else if (rec.kind === 'agents') {
-      mood.observeAgents(rec.agents);
-    } else if (rec.kind === 'ask') {
-      attention.ask(rec.ask);
-    }
-  } catch (err) { console.log('[host] mod record:', err && err.message); }
-}
+// One record from the mod: host/mod-records.js says what each kind feeds, with these collaborators.
+const handleModRecord = createModRecordHandler({
+  getSessionId: () => sessionId,
+  writeWindows: (windows) => recordModWindows({ windows }),
+  readQuota: () => hostQuota.readNow(),
+  lastWindowsKey: () => JSON.stringify(lastQuota && lastQuota.windows),
+  broadcastQuota: (quota) => broadcastControl({ type: 'quota', quota }),
+  contextSource,
+  setContext,
+  mood,
+  attention,
+  log: (m) => console.log('[host]', m),
+});
 
 // --- boot: the session lock, then the session (Extension X1/X3) -------------
 // Our own OS start time (for the lock's pid-reuse check: one powershell.exe,

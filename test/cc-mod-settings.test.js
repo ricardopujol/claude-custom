@@ -162,6 +162,30 @@ test('Dexter 10: modPluginDirFor refuses the prerelease of the floor', () => {
 // --- PR #197 Miguel Y9: the version read is bounded short ----------------------------------------------------------------------------
 
 test('Miguel Y9: the version read gives up after three seconds by default', () => {
-  const src = require('fs').readFileSync(path.join(__dirname, '..', 'host', 'cc-mod-settings.js'), 'utf8');
-  assert.match(src, /timeoutMs = 3000/);
+  assert.strictEqual(require('../host/cc-mod-settings').VERSION_TIMEOUT_MS, 3000);
+});
+
+// --- PR #197 Miguel Y9: say why the mod is not loaded --------------------------------------------------------------------------------
+
+const { modOffReason } = require('../host/cc-mod-settings');
+
+test('Miguel Y9: modOffReason names the cause, and is null when the mod loads', () => {
+  const ok = { enabled: true, version: [2, 1, 304], dir: 'C:/m', exists: () => true };
+  assert.strictEqual(modOffReason(ok), null);
+  assert.match(modOffReason({ ...ok, enabled: false }), /switched off/);
+  assert.match(modOffReason({ ...ok, version: null }), /version could not be read/);
+  assert.match(modOffReason({ ...ok, version: [2, 1, 289] }), /2\.1\.289.*2\.1\.290/);
+  assert.match(modOffReason({ ...ok, version: parseCliVersion('2.1.290-beta.1') }), /2\.1\.290-beta.*2\.1\.290|prerelease/);
+  assert.match(modOffReason({ ...ok, exists: () => false }), /directory/);
+});
+
+test('Miguel Y9: a forced stand-in binary is not blamed for an unreadable version', () => {
+  assert.strictEqual(modOffReason({ enabled: true, version: null, dir: 'C:/m', exists: () => true, forced: true }), null);
+});
+
+test('Miguel Y9: modOffReason agrees with modPluginDirFor: a reason exactly when there is no directory', () => {
+  for (const enabled of [true, false]) for (const version of [null, [2, 1, 289], [2, 1, 290], [2, 2, 0]]) for (const present of [true, false]) for (const forced of [true, false]) {
+    const f = { enabled, version, dir: 'C:/m', exists: () => present, forced };
+    assert.strictEqual(modOffReason(f) === null, modPluginDirFor(f) !== null, JSON.stringify(f));
+  }
 });

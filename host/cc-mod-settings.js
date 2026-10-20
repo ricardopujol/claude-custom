@@ -23,6 +23,8 @@ const OFF_WORDS = new Set(['0', 'off', 'false', 'no']);
 const ON_WORDS = new Set(['1', 'on', 'true', 'yes']);
 const MIN_CLI_VERSION = Object.freeze([2, 1, 290]);
 const FILE = 'cc-mod-settings.json';
+// A hung `claude --version` delays the session's start by at most this (the version read is part of boot).
+const VERSION_TIMEOUT_MS = 3000;
 
 const wordOf = (env) => {
   const v = env && env.CLAUDE_CUSTOM_MOD;
@@ -97,8 +99,22 @@ function modPluginDirFor({ enabled, version, dir, exists = fs.existsSync, forced
   try { return exists(dir) ? dir : null; } catch { return null; }
 }
 
+/**
+ * Why the mod is NOT loaded, in a sentence for the log and the diagnostics pane, or null when it is (exactly when modPluginDirFor gives a
+ * directory). A silent "off" left a quiet feed with nothing to explain it (PR #197 Miguel Y9): on Windows a bare `claude` that resolves to a
+ * `.cmd` shim can make the version read fail, and that must be said, not guessed.
+ */
+function modOffReason({ enabled, version, dir, exists = fs.existsSync, forced = false } = {}) {
+  if (enabled !== true) return 'the claude-custom mod is switched off';
+  if (forced !== true && !Array.isArray(version)) return 'the CLI version could not be read (claude --version gave nothing usable), so the claude-custom mod is not loaded';
+  if (forced !== true && !versionAtLeast(version, MIN_CLI_VERSION)) {
+    return `the CLI is ${version.join('.')}${version.pre ? '-prerelease' : ''}, older than ${MIN_CLI_VERSION.join('.')}, so the claude-custom mod is not loaded`;
+  }
+  return modPluginDirFor({ enabled, version, dir, exists, forced }) === null ? 'the claude-custom mod directory is missing, so the mod is not loaded' : null;
+}
+
 /** Ask a binary for its version: `[major, minor, patch]` or null (missing, slow, or not a version). Never throws. */
-function readCliVersion(bin, { timeoutMs = 3000 } = {}) {
+function readCliVersion(bin, { timeoutMs = VERSION_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     try {
       execFile(bin, ['--version'], { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {
@@ -109,6 +125,6 @@ function readCliVersion(bin, { timeoutMs = 3000 } = {}) {
 }
 
 module.exports = {
-  modEnabled, readModSetting, writeModSetting, parseCliVersion, versionAtLeast, modPluginDirFor, readCliVersion,
-  MIN_CLI_VERSION,
+  modEnabled, readModSetting, writeModSetting, parseCliVersion, versionAtLeast, modPluginDirFor, modOffReason, readCliVersion,
+  MIN_CLI_VERSION, VERSION_TIMEOUT_MS,
 };
