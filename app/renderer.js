@@ -8372,10 +8372,20 @@ function noteModStatus(status) {
   logLine('claude-custom mod', status.reason);
 }
 
+// PR #201 Miguel S1: which ConPTY the session runs on, in the diagnostics pane's log (Ctrl+Shift+D), once per reason. Said only when it is
+// not the bundled one, since that is what turns the CLI's status protocol off.
+let lastPtyBackendLogged = null;
+function notePtyBackend(info) {
+  if (!info || typeof info !== 'object' || info.backend === 'bundled' || typeof info.reason !== 'string' || info.reason === lastPtyBackendLogged) return;
+  lastPtyBackendLogged = info.reason;
+  logLine('pty backend', 'OS ConPTY: ' + info.reason);
+}
+
 function handleControl(msg) {
   if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
   if (msg.type === 'hello') {
     noteModStatus(msg.modStatus);
+    notePtyBackend(msg.ptyBackend);
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.
@@ -8849,6 +8859,8 @@ function handleControl(msg) {
   }
   if (msg.type === 'exit') {
     term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    // The session is over: nothing it said last (working, blocked) is still true (PR #201 Dexter 1).
+    applyProgramStatus(null);
     return;
   }
 }
@@ -8939,6 +8951,8 @@ function connect() {
     }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
+    applyProgramStatus(null);
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
     if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just

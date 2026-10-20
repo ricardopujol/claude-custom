@@ -177,7 +177,17 @@ function createProgramStatus() {
   };
 }
 
+// What goes to a window (PR #201 Miguel R4): the root, the newest FRAME_CHILDREN children, each message cut to FRAME_MSG, and the true count of
+// children. The store itself holds up to 256 records of up to 2 KB; nothing reads more than this on the other side of the socket.
+const FRAME_CHILDREN = 32;
+const FRAME_MSG = 500;
+function frameOf(snapshot) {
+  const cut = (r) => (r === null ? null : { ...r, msg: typeof r.msg === 'string' ? r.msg.slice(0, FRAME_MSG) : r.msg });
+  const kids = snapshot.children;
+  return { live: snapshot.live, root: cut(snapshot.root), children: kids.slice(-FRAME_CHILDREN).map(cut), childCount: kids.length };
+}
+
 module.exports = {
-  parseReport, createProgramStatus, QUERY_REPLY, STATES, KINDS,
-  MAX_REPORT_BYTES, MAX_RECORDS, MIN_RECORDS,
+  parseReport, createProgramStatus, frameOf, QUERY_REPLY, STATES, KINDS,
+  MAX_REPORT_BYTES, MAX_RECORDS, MIN_RECORDS, FRAME_CHILDREN, FRAME_MSG,
 };

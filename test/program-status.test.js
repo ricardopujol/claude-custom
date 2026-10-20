@@ -287,3 +287,42 @@ test('the snapshot is plain data a socket can carry, without a timestamp that wo
   const snap = JSON.parse(JSON.stringify(s.snapshot()));
   assert.deepStrictEqual(snap, { live: true, root: rep('blocked', { kind: 'auth', msg: 'Log in' }), children: [] });
 });
+
+// --- PR #201 Miguel R4: what goes over the socket is bounded ------------------------------------------------------
+
+const { frameOf, FRAME_CHILDREN, FRAME_MSG } = require('../host/program-status');
+
+test('frameOf carries the root and at most 32 children, each msg cut to 500 characters, plus the true child count', () => {
+  assert.strictEqual(FRAME_CHILDREN, 32);
+  assert.strictEqual(FRAME_MSG, 500);
+  const s = createProgramStatus();
+  s.apply(rep('blocked', { msg: 'm'.repeat(2048) }));
+  for (let i = 0; i < 255; i++) s.apply(rep('working', { id: `t${i}`, msg: 'c'.repeat(2048) }));
+  const f = frameOf(s.snapshot());
+  assert.strictEqual(f.live, true);
+  assert.strictEqual(f.root.msg.length, 500);
+  assert.strictEqual(f.children.length, 32);
+  assert.ok(f.children.every(c => c.msg.length === 500));
+  assert.strictEqual(f.childCount, 255);
+  assert.ok(JSON.stringify(f).length < 25000, 'a frame stays small whatever the store holds');
+});
+
+test('frameOf keeps absence as null and the newest children are the ones sent', () => {
+  const f = frameOf(createProgramStatus().snapshot());
+  assert.deepStrictEqual(f, { live: false, root: null, children: [], childCount: 0 });
+  const s = createProgramStatus();
+  for (let i = 0; i < 40; i++) s.apply(rep('done', { id: `t${i}` }));
+  const g = frameOf(s.snapshot());
+  assert.strictEqual(g.children[g.children.length - 1].id, 't39');
+  assert.strictEqual(g.childCount, 40);
+});
+
+test('property: a frame never holds more than 33 records or a msg over 500 whatever was reported', () => {
+  fc.assert(fc.property(fc.array(fc.tuple(fc.stringMatching(/^[a-d]{0,3}$/), fc.string({ maxLength: 900 })), { maxLength: 300 }), (ops) => {
+    const s = createProgramStatus();
+    for (const [id, msg] of ops) s.apply(rep('working', { id, msg }));
+    const f = frameOf(s.snapshot());
+    assert.ok(f.children.length <= 32);
+    for (const r of [f.root, ...f.children]) if (r) assert.ok(r.msg === null || r.msg.length <= 500);
+  }), { numRuns: 100 });
+});

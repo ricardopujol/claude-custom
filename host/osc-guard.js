@@ -20,7 +20,7 @@
 const ESC = 0x1b;
 const BEL = 0x07;
 const MAX_PAYLOAD = 8192;       // the spec's limit is 4096; past this the text is no longer kept, only the verdict (not clean)
-const MAX_RECORDS = 64;
+const MAX_RECORDS = 1024;       // sequences scanned but not yet parsed; past this the oldest is forgotten and its report is discarded (fail closed)
 
 function createOscGuard() {
   let state = 'ground';         // ground | esc | num | other | otherEsc | body | bodyEsc

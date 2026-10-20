@@ -3,8 +3,8 @@
  * OSC 7501 (the Program Status Protocol, BACKLOG #116): does the host answer the CLI's query BEFORE the DA1 sentinel's
  * answer, and does the state reach the window?
  *
- *   node verify/probe-osc-7501.js              parts A, B and C
- *   node verify/probe-osc-7501.js --no-claude  parts A and B only (C starts a real, billed `claude` for one tiny prompt)
+ *   node verify/probe-osc-7501.js     parts A, B and E (nothing billed)
+ *   CLAUDE_CUSTOM_PROBE_REAL_CLAUDE=1 node verify/probe-osc-7501.js     ... and C and D, which start a REAL, BILLED `claude`
  *
  * A. THE HOST (real host.js, a real pty running cmd.exe, a tiny Node program inside it standing in for the CLI).
  *    The program sends "OSC 7501 ; ? ST" + "CSI c" and logs every byte that comes back on its stdin.
@@ -16,8 +16,13 @@
  *        does. That is the measured answer to "who answers DA1 today": only a window's xterm.
  * B. THE WINDOW (a real Electron window on renderer.html attached to that same host): per state, the header dot's
  *    class and tooltip, the status the page reports to the shell (working / needsInput / finished / program), and the cue.
- * C. THE REAL CLI (skipped with a named reason when `claude` is not logged in or --no-claude): start a real session, send
- *    one tiny prompt, and confirm a `working` report arrives.
+ * C. THE REAL CLI (opt-in: CLAUDE_CUSTOM_PROBE_REAL_CLAUDE=1, and `claude` logged in; otherwise skipped with a named reason): start a
+ *    real session, send one tiny prompt (about one short reply), and confirm a `working` report arrives.
+ * D. THE REAL CLI, A BACKGROUND SUBAGENT (same opt-in): a subagent that stops on a permission prompt and outlives the turn. Records
+ *    whether the CLI reports it as a child record with an `id`, as the root, or not at all (PR #201 Dexter 2 and 3). A measurement:
+ *    it prints MEASURED lines and fails nothing but "the session did not start".
+ * E. SHUTDOWN (both backends): a child of the pty's process must be gone after the host is stopped (PR #201 Miguel R1). Under the
+ *    bundled ConPTY node-pty's kill() no longer walks the console's process list; host/pty-stop.js kills the tree by pid.
  *
  * Takes the machine-wide heavy lock through verify/lib/launch-electron (required first, as every probe does). Stops only
  * the processes it started, by PID, through host/kill-tree.js (the hygiene registry). Nothing here edits the repo.
@@ -33,7 +38,7 @@ const WebSocket = require('ws');
 const { Terminal } = require('@xterm/headless');
 
 const ROOT = path.join(__dirname, '..');
-const NO_CLAUDE = process.argv.includes('--no-claude');
+const REAL_CLAUDE = process.env.CLAUDE_CUSTOM_PROBE_REAL_CLAUDE === '1';
 const TOKEN = 'probe-token';
 const ROUNDS = 40;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -90,7 +95,7 @@ const orderOf = (stream) => {
   return marks.sort((a, b) => a[0] - b[0]).map(m => m[1]);
 };
 
-async function startHost({ bin, cwd, tmp }) {
+async function startHost({ bin, cwd, tmp, env: extraEnv = {} }) {
   const helper = process.env.CLAUDE_CUSTOM_HELPER || path.join(ROOT, '.harness', 'hook-helper.exe');
   const mainHelper = fs.existsSync(helper) ? helper : path.join(ROOT, '..', 'dev', '.harness', 'hook-helper.exe');
   const port = await freePort();
@@ -102,6 +107,8 @@ async function startHost({ bin, cwd, tmp }) {
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'forge'), CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
   };
   if (bin) env.CLAUDE_CUSTOM_BIN = bin;
+  delete env.CLAUDE_CUSTOM_CONPTY;
+  Object.assign(env, extraEnv);
   delete env.ELECTRON_RUN_AS_NODE;
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
   noteChild(host);
@@ -301,13 +308,18 @@ async function partB(tmp, h) {
 }
 
 // ---- C. the real CLI ----------------------------------------------------------------------------------------------------
-async function partC(tmp) {
-  console.log('-- C. the real claude');
-  if (NO_CLAUDE) { console.log('SKIP  part C: --no-claude was given'); return; }
+function realClaudeReady(part) {
+  if (!REAL_CLAUDE) { console.log(`SKIP  part ${part}: it starts a real, billed claude; set CLAUDE_CUSTOM_PROBE_REAL_CLAUDE=1 to run it`); return false; }
   const status = spawnSync('claude', ['auth', 'status'], { encoding: 'utf8', shell: true, timeout: 30000 });
   let loggedIn = false;
   try { loggedIn = JSON.parse(status.stdout).loggedIn === true; } catch { /* not JSON */ }
-  if (!loggedIn) { console.log('SKIP  part C: claude is not logged in on this machine (claude auth status: ' + String(status.stdout || status.stderr).trim().slice(0, 80) + ')'); return; }
+  if (!loggedIn) { console.log(`SKIP  part ${part}: claude is not logged in on this machine (claude auth status: ` + String(status.stdout || status.stderr).trim().slice(0, 80) + ')'); return false; }
+  return true;
+}
+
+async function partC(tmp) {
+  console.log('-- C. the real claude');
+  if (!realClaudeReady('C')) return;
   const h = await startHost({ bin: null, cwd: ROOT, tmp });
   const win = await connect(h.port, { answerDa1: true });
   try {
@@ -329,6 +341,72 @@ async function partC(tmp) {
   }
 }
 
+async function partD(tmp) {
+  console.log('-- D. the real claude, a background subagent that stops on a permission prompt');
+  if (!realClaudeReady('D')) return;
+  const scratch = path.join(tmp, 'subagent-wrote-this.txt');
+  const h = await startHost({ bin: null, cwd: ROOT, tmp });
+  const win = await connect(h.port, { answerDa1: true });
+  try {
+    const ready = await until(() => win.term.buffer.active && [...Array(30).keys()].some(y => { const l = win.term.buffer.active.getLine(y); return l && /❯|> /.test(l.translateToString(true)); }), 60000, 500);
+    if (!ready) { check('the real claude drew its prompt', false, 'no prompt within 60 s'); return; }
+    await sleep(1500);
+    win.type('Start ONE background subagent with the Agent tool (run_in_background true). Its only task: create the file ' + scratch.split(path.sep).join('/') + ' containing the word hello, using the Write tool. Do NOT wait for it and do not do anything else: as soon as it has started, end your turn with the single word started.');
+    await sleep(500);
+    win.type('\r');
+    const t0 = Date.now();
+    await sleep(100000);        // long enough for the turn to end and the subagent to reach its prompt
+    const all = win.of('program-status');
+    const roots = all.map(f => f.root && f.root.state);
+    const kids = new Map();
+    for (const f of all) for (const c of f.children) kids.set(c.id, (kids.get(c.id) || []).concat(c.state));
+    console.log('   MEASURED root states over ' + Math.round((Date.now() - t0) / 1000) + ' s: ' + JSON.stringify(roots));
+    console.log('   MEASURED child records: ' + (kids.size ? JSON.stringify([...kids.entries()]) : 'none ever'));
+    console.log('   MEASURED attention frames: ' + JSON.stringify(win.of('attention').map(a => [a.kind, a.urgent, String(a.body).slice(0, 60)])));
+    console.log('   MEASURED hook lines: ' + JSON.stringify(h.out.split('\n').filter(l => /\[hook\] (Notification|Stop|SubagentStop|PermissionRequest)/.test(l)).slice(0, 12)));
+    const screen = [...Array(30).keys()].map(y => { const l = win.term.buffer.active.getLine(y); return l ? l.translateToString(true).trimEnd() : ''; }).filter(Boolean).slice(-8);
+    console.log('   MEASURED the screen at the end: ' + JSON.stringify(screen));
+    check('the session ran (the numbers above are the answer)', roots.length > 0);
+  } finally {
+    win.type('\x1b'); await sleep(300); win.type('\x03'); await sleep(300); win.type('\x03');
+    win.close();
+    try { fs.rmSync(scratch, { force: true }); } catch { /* not written, as hoped */ }
+  }
+}
+
+// ---- E. shutdown --------------------------------------------------------------------------------------------------------
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+async function partE(tmp) {
+  console.log('-- E. shutdown: a child of the pty process is gone after the host stops (both ConPTY backends)');
+  for (const backend of ['bundled', 'builtin']) {
+    const h = await startHost({ bin: 'C:\\Windows\\System32\\cmd.exe', cwd: tmp, tmp, env: backend === 'builtin' ? { CLAUDE_CUSTOM_CONPTY: 'builtin' } : {} });
+    const win = await connect(h.port, { answerDa1: true });
+    let pid = null;
+    try {
+      check(backend + ': the host says which ConPTY it runs on', new RegExp('pty backend\\s*: ' + (backend === 'bundled' ? 'node-pty' : 'OS ConPTY')).test(h.out), (h.out.match(/pty backend.*/) || [''])[0]);
+      await until(() => win.bytes > 0, 15000);
+      await sleep(1200);
+      win.type('node -e "console.log(String.fromCharCode(67,72,73,76,68)+process.pid);setInterval(()=>{},1000)"\r');
+      const found = await until(() => {
+        for (let y = 0; y < 30; y++) { const l = win.term.buffer.active.getLine(y); const m = l && /CHILD(\d+)/.exec(l.translateToString(true)); if (m) return m[1]; }
+        return null;
+      }, 20000);
+      pid = found ? Number(found) : null;
+      check(backend + ': a child process is running under the pty', Boolean(pid) && alive(pid), 'pid ' + pid);
+      if (!pid) continue;
+      win.ws.send(JSON.stringify({ type: 'stop' }));
+      const hostGone = await until(() => (h.host.exitCode !== null || h.host.signalCode ? true : null), 15000);
+      check(backend + ': the host exits on stop', Boolean(hostGone));
+      const childGone = await until(() => (alive(pid) ? null : true), 5000, 100);
+      check(backend + ': the child is gone within 5 s of the stop', Boolean(childGone), 'pid ' + pid + (childGone ? '' : ' still running'));
+    } finally {
+      win.close();
+      if (pid && alive(pid)) { try { require('../host/kill-tree').killPidTree(pid); } catch { /* best effort */ } }   // our own child pid, by pid
+    }
+  }
+}
+
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-osc7501-'));
   let h = null;
@@ -336,7 +414,11 @@ async function partC(tmp) {
     h = await partA(tmp);
     await partB(tmp, h);
     hygiene._emergencyCleanup('between');
+    await partE(tmp);
+    hygiene._emergencyCleanup('after E');
     await partC(tmp);
+    hygiene._emergencyCleanup('after C');
+    await partD(tmp);
   } catch (err) {
     check('probe ran to completion', false, String(err && err.stack || err));
     if (h) console.log('---- host log (tail) ----\n' + h.out.split('\n').slice(-25).join('\n'));
