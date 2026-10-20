@@ -73,6 +73,7 @@ const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
+const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
@@ -1063,6 +1064,10 @@ function registerIpc() {
   // change takes effect on the next session. null means unknown (a read or write that failed): the page keeps asking, never guesses.
   ipcMain.handle('canvas:settings-get', (e) => (isTabView(e.sender) ? readMcpSetting(uiStore.dir) : null));
   ipcMain.handle('canvas:settings-set', (e, on) => (isTabView(e.sender) && typeof on === 'boolean' ? writeMcpSetting(uiStore.dir, on) : null));
+  // BACKLOG #119 A2: the Style tab's switch for the claude-custom mod, the same shape as the panel's: the file the host reads when it builds `claude`'s
+  // arguments (host/cc-mod-settings.js), so a change takes effect on the next session. null means unknown: the page keeps asking, never guesses.
+  ipcMain.handle('ccmod:settings-get', (e) => (isTabView(e.sender) ? readModSetting(uiStore.dir) : null));
+  ipcMain.handle('ccmod:settings-set', (e, on) => (isTabView(e.sender) && typeof on === 'boolean' ? writeModSetting(uiStore.dir, on) : null));
   ipcMain.on('canvas:host-answer', (e, a) => {
     if (!isTabView(e.sender)) return;
     const pending = a && canvasAsks.get(a.id);

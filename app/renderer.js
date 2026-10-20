@@ -7655,6 +7655,9 @@ function renderStyleSection(section) {
       `<label class="style-row"><input type="checkbox" id="style-canvas-mcp"${v.mcp === true ? ' checked' : ''}${v.mcp === null ? ' disabled' : ''}>` +
       ` Let Claude build in its panel (next session)</label>` +
       `<div class="style-note">${escapeHtml(v.mcpDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-cc-mod"${v.mod === true ? ' checked' : ''}${v.mod === null ? ' disabled' : ''}>` +
+      ` Feed quota, context and agent states from the CLI (next session)</label>` +
+      `<div class="style-note">${escapeHtml(v.modDescription)}</div>` +
       `</section>`
     );
   }
@@ -7890,6 +7893,13 @@ function bindAvatarSection() {
       window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
     });
   }
+  // BACKLOG #119 A2: the claude-custom mod's switch, the same shape: send the desired state, settle on main's answer, re-read on null.
+  const ccModBox = document.getElementById('style-cc-mod');
+  if (ccModBox && window.harness && window.harness.ccMod) {
+    ccModBox.addEventListener('change', () => {
+      window.harness.ccMod.settingsSet(ccModBox.checked).then(settledCcMod).catch(() => refreshCcMod());
+    });
+  }
   // BACKLOG #119 A8: the tray icon and minimise-on-close. Send the DESIRED state; main answers what it saved, and null (a failed
   // save) re-reads the truth instead of trusting the click.
   const tray = window.harness && window.harness.tray;
@@ -7939,6 +7949,23 @@ function refreshCanvasMcp(attempt = 0) {
   };
   window.harness.canvas.settingsGet().then((v) => {
     if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
+  }).catch(again);
+}
+// BACKLOG #119 A2: the mod's switch, read the same way as the panel's (one loop, backing off with the same delays, then stopping).
+function settledCcMod(value) {
+  if (typeof value === 'boolean') { styleState = reduceCcMod(styleState, value); renderStylePanel(); } else refreshCcMod();
+}
+let ccModLoop = false;
+function refreshCcMod(attempt = 0) {
+  if (!(window.harness && window.harness.ccMod && window.harness.ccMod.settingsGet)) return;
+  if (attempt === 0) { if (ccModLoop) return; ccModLoop = true; }
+  const again = () => {
+    const wait = canvasMcpRetryDelay(attempt);
+    if (wait === null) { ccModLoop = false; return; }
+    setTimeout(() => refreshCcMod(attempt + 1), wait);
+  };
+  window.harness.ccMod.settingsGet().then((v) => {
+    if (typeof v === 'boolean') { ccModLoop = false; settledCcMod(v); } else again();
   }).catch(again);
 }
 // BACKLOG #119 A8: main's tray switches. Null (main couldn't read the file) stays unknown and asks again, never a guessed answer.
@@ -8047,6 +8074,7 @@ if (window.harness && window.harness.chrome) {
 }
 refreshTraySettings();             // BACKLOG #119 A8: the tray switches in the Style tab
 refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
+refreshCcMod();                    // #119 A2: the claude-custom mod's switch, next to it
 
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
@@ -8317,8 +8345,19 @@ function requestStyleBackground(files) {
   sendStyle('background', { action: 'set-background', path });
 }
 
+// PR #197 Miguel Y9: why the claude-custom mod is not loaded, in the diagnostics pane's log (Ctrl+Shift+D). Said only for a mod that is
+// off or could not load, and once per reason, so a hello after every reattach does not stack the same line.
+let lastModStatusLogged = null;
+function noteModStatus(status) {
+  if (!status || typeof status !== 'object' || status.state === 'on' || typeof status.reason !== 'string' || status.reason === lastModStatusLogged) return;
+  lastModStatusLogged = status.reason;
+  logLine('claude-custom mod', status.reason);
+}
+
 function handleControl(msg) {
+  if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
   if (msg.type === 'hello') {
+    noteModStatus(msg.modStatus);
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.
