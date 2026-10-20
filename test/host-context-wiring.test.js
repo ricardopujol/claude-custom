@@ -15,7 +15,7 @@ test('host.js: a Status document sets the context on EVERY document, even one wi
   const start = HOST.indexOf("if (ev.event === 'Status')");
   assert.ok(start !== -1);
   const body = HOST.slice(start, HOST.indexOf('return;', start));
-  assert.match(body, /setContext\(readContext\(ev\.payload\)\)/);
+  assert.match(body, /setContext\(contextSource\.fromRelay\(readContext\(ev\.payload\)\)\)/);
   assert.ok(body.indexOf('setContext') < body.indexOf('status.model'),
     'the context is set before the model check, so a doc without a model cannot leave a stale fill');
 });

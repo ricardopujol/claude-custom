@@ -2932,3 +2932,37 @@ test('sanitizeStatus keeps a usable program state and drops an unusable one', ()
     { state: 'blocked', kind: 'question', msg: 'Which?', progress: null });
   for (const bad of [null, undefined, 'blocked', { state: 'busy' }, [], 5]) assert.strictEqual(sanitizeStatus({ program: bad }).program, null, JSON.stringify(bad));
 });
+
+test('handleProbeCommand: the tray ops (BACKLOG #119 A8), with a known setting key and a real boolean only', async () => {
+  const seen = [];
+  const api = {
+    tray: async () => ({ ok: true, what: 'state' }),
+    trayClick: async () => { seen.push('click'); return { ok: true }; },
+    trayMenu: async (label) => { seen.push(['menu', label]); return { ok: true }; },
+    traySetting: async (k, v) => { seen.push(['set', k, v]); return { ok: true }; },
+    winClose: async () => { seen.push('close'); return { ok: true }; },
+  };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'tray' }), api), { ok: true, what: 'state' });
+  await probeCmd(line({ cmd: 'tray-click' }), api);
+  await probeCmd(line({ cmd: 'tray-menu' }), api);
+  await probeCmd(line({ cmd: 'tray-menu', label: 'Hide all windows' }), api);
+  await probeCmd(line({ cmd: 'tray-setting', key: 'minimiseOnClose', value: true }), api);
+  await probeCmd(line({ cmd: 'win-close' }), api);
+  assert.deepStrictEqual(seen, ['click', ['menu', undefined], ['menu', 'Hide all windows'], ['set', 'minimiseOnClose', true], 'close']);
+  for (const bad of [{ key: 'statusInHeader', value: true }, { key: 'trayIcon', value: 'false' }, { key: 'trayIcon' }, {}]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'tray-setting', ...bad }), api),
+      { ok: false, error: 'tray-setting needs a tray key and true or false' }, JSON.stringify(bad));
+  }
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'tray-menu', label: 4 }), api), { ok: false, error: 'tray-menu label must be text' });
+  assert.strictEqual(seen.length, 5);
+});
+
+test('handleProbeCommand: tray-image saves a PNG only', async () => {
+  const seen = [];
+  const api = { trayImage: async (f) => { seen.push(f); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'tray-image', file: 'a.png' }), api), { ok: true });
+  for (const file of [undefined, 'a.txt', 3, 'a.exe']) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'tray-image', file }), api), { ok: false, error: 'tray-image needs a .png file' }, String(file));
+  }
+  assert.deepStrictEqual(seen, ['a.png']);
+});

@@ -1,0 +1,4 @@
+{
+  "description": "claude-custom's feed: the hooks module reads usage, agents and asks and posts them to the harness on loopback",
+  "modules": ["./register.js"]
+}

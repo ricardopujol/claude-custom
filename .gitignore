@@ -41,3 +41,7 @@ reports/
 
 # Stryker sandbox -- a full copy of the repo, recreated on every run.
 .stryker-tmp/
+
+# Written beside a mod by `claude plugin test` / an interactive session (BACKLOG #119 A2); regenerated for the installed CLI.
+mods/*/tsconfig.json
+mods/*/.claude-plugin/types/

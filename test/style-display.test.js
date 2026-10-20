@@ -10,7 +10,7 @@ const {
 
 test('the registry lists colours, background and inactive windows, in that order', () => {
   // The container-that-grows design: a new section is one entry here.
-  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'fonts', 'background', 'inactive', 'avatars', 'window', 'panel']);
+  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'fonts', 'background', 'inactive', 'avatars', 'window', 'tray', 'panel']);
   for (const s of STYLE_SECTIONS) assert.ok(s.title, s.id);
 });
 
@@ -239,7 +239,7 @@ test('F2: an untagged refusal falls back to the background section, never vanish
 test('F2: an unknown ask tag is not used as a state key', () => {
   const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x', ask: '__proto__' });
   assert.strictEqual(s.background.error, 'x');
-  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'panel', 'window']);
+  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'panel', 'tray', 'window']);
 });
 
 test('F3: a refusal keeps the STORED darkness, so the preview can be put back', () => {
@@ -317,7 +317,7 @@ test('reduceStyle keeps the panel switch, which the host never reports (a style 
 test("the Style tab has a Claude's panel section after Window, with its switch unknown until main answers", () => {
   const section = styleDisplay(emptyStyleState()).find(s => s.id === 'panel');
   assert.strictEqual(section.title, "Claude's panel");
-  assert.deepStrictEqual(section.view, { mcp: null, mcpDescription: 'reading…' });
+  assert.deepStrictEqual(section.view, { mcp: null, mcpDescription: 'reading…', mod: null, modDescription: 'reading…' });
   assert.strictEqual(STYLE_SECTIONS[STYLE_SECTIONS.length - 1].id, 'panel');
 });
 
@@ -325,8 +325,44 @@ test('the switch view says what the next session gets, strictly: only a real boo
   assert.match(panelSectionView({ mcp: true }).mcpDescription, /Claude can build things in its panel.*next starts this tab's session; one already running keeps what it has/);
   assert.match(panelSectionView({ mcp: false }).mcpDescription, /not offered to the CLI.*next starts this tab's session; one already running keeps what it has/);
   for (const bad of [undefined, null, {}, { mcp: null }, { mcp: 'false' }, { mcp: 0 }, { mcp: 1 }]) {
-    assert.deepStrictEqual(panelSectionView(bad), { mcp: null, mcpDescription: 'reading…' }, JSON.stringify(bad));
+    assert.deepStrictEqual(panelSectionView(bad), { mcp: null, mcpDescription: 'reading…', mod: null, modDescription: 'reading…' }, JSON.stringify(bad));
   }
+});
+
+// ---- the claude-custom mod's switch (BACKLOG #119 A2): a second checkbox in the same section -----------------------------------------------------
+
+const { reduceCcMod } = require('../app/style-display');
+
+test('the mod switch view says what the next session gets, strictly: only a real boolean is known', () => {
+  assert.match(panelSectionView({ mod: true }).modDescription, /reads the CLI's own quota, context and agent states.*next starts this tab's session; one already running keeps what it has/);
+  assert.match(panelSectionView({ mod: false }).modDescription, /not loaded.*quota.*next starts this tab's session; one already running keeps what it has/);
+  for (const bad of [undefined, null, {}, { mod: null }, { mod: 'false' }, { mod: 0 }, { mod: 1 }]) {
+    const v = panelSectionView(bad);
+    assert.strictEqual(v.mod, null, JSON.stringify(bad));
+    assert.strictEqual(v.modDescription, 'reading…', JSON.stringify(bad));
+  }
+});
+
+test('the two switches are independent: each view field reads only its own state field', () => {
+  assert.deepStrictEqual([panelSectionView({ mcp: true, mod: false }).mcp, panelSectionView({ mcp: true, mod: false }).mod], [true, false]);
+  assert.deepStrictEqual([panelSectionView({ mcp: false, mod: true }).mcp, panelSectionView({ mcp: false, mod: true }).mod], [false, true]);
+});
+
+test('reduceCcMod: a real boolean lands, anything else changes nothing, and neither the other switch nor the rest of the state moves', () => {
+  const start = reduceCanvasMcp(emptyStyleState(), true);
+  const on = reduceCcMod(start, true);
+  assert.strictEqual(on.panel.mod, true);
+  assert.strictEqual(on.panel.mcp, true, 'the panel switch is untouched');
+  assert.strictEqual(reduceCcMod(on, false).panel.mod, false);
+  for (const bad of [null, undefined, 'true', 1, {}]) assert.strictEqual(reduceCcMod(on, bad), on, String(bad));
+  assert.deepStrictEqual({ ...on, panel: null }, { ...start, panel: null });
+  assert.strictEqual(reduceCcMod(undefined, true).panel.mod, true);
+  assert.strictEqual(reduceCanvasMcp(on, false).panel.mod, true, 'and the panel reducer leaves the mod switch alone');
+});
+
+test('reduceStyle keeps the mod switch, which the host never reports', () => {
+  const known = reduceCcMod(emptyStyleState(), false);
+  assert.strictEqual(reduceStyleForPanel(known, hello).panel.mod, false);
 });
 
 test('reduceCanvasMcp: a real boolean lands, anything else changes nothing, and nothing else in the state moves', () => {
@@ -344,4 +380,40 @@ test('canvasMcpRetryDelay (PR #125 Miguel M3): doubles from 1 s, caps at 30 s, s
   assert.strictEqual(CANVAS_MCP_MAX_TRIES, 8);
   assert.deepStrictEqual([0, 1, 2, 3, 4, 5, 6].map(canvasMcpRetryDelay), [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
   for (const bad of [7, 8, 100, -1, 1.5, NaN, Infinity, '1', null, undefined]) assert.strictEqual(canvasMcpRetryDelay(bad), null, String(bad));
+});
+
+// ---- the System tray section (BACKLOG #119 A8): the tray icon and minimise-on-close switches -----------------------------------------------------
+
+const { traySectionView, reduceTraySettings } = require('../app/style-display');
+
+test('the Style tab has a System tray section between Window and Claude\'s panel, unknown until main answers', () => {
+  const section = styleDisplay(emptyStyleState()).find(s => s.id === 'tray');
+  assert.strictEqual(section.title, 'System tray');
+  assert.strictEqual(section.view.trayIcon, null);
+  assert.strictEqual(section.view.minimiseOnClose, null);
+  assert.strictEqual(section.view.trayDescription, 'reading…');
+  assert.strictEqual(section.view.closeDescription, 'reading…');
+});
+
+test('reduceTraySettings records only real booleans, per key', () => {
+  let s = reduceTraySettings(undefined, { trayIcon: true, minimiseOnClose: false, startMinimised: true });
+  assert.deepStrictEqual(s.tray, { trayIcon: true, minimiseOnClose: false });
+  s = reduceTraySettings(s, { trayIcon: 'false', minimiseOnClose: 1 });
+  assert.deepStrictEqual(s.tray, { trayIcon: true, minimiseOnClose: false }, 'junk changes nothing');
+  assert.strictEqual(reduceTraySettings(s, null), s);
+});
+
+test('the tray view says what each switch does, and that minimise-on-close needs the icon', () => {
+  const on = traySectionView({ trayIcon: true, minimiseOnClose: true });
+  const off = traySectionView({ trayIcon: false, minimiseOnClose: false });
+  assert.match(on.trayDescription, /need you/i);
+  assert.match(off.trayDescription, /no tray icon/i);
+  assert.match(on.closeDescription, /hides/i);
+  assert.match(off.closeDescription, /closes/i);
+  assert.match(traySectionView({ trayIcon: false, minimiseOnClose: true }).closeDescription, /needs the tray icon/i);
+});
+
+test('reduceStyle keeps the tray settings, which the host never reports', () => {
+  const prev = reduceTraySettings(reduceStyle(undefined, hello), { trayIcon: false, minimiseOnClose: true });
+  assert.deepStrictEqual(reduceStyle(prev, hello).tray, { trayIcon: false, minimiseOnClose: true });
 });
