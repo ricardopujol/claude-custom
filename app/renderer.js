@@ -1303,9 +1303,12 @@ function renderSchedules() {
 }
 
 // The panel opened: ask for the list as it is now (the hello and every change also carry it).
+// ONLY to a host whose hello lists the type: an older host (they outlive app updates) would type the frame into the session as JSON
+// (the PR #140 rule; PR #200 Dexter 1). The panel says "predates Schedules" for such a host instead.
 function requestSchedules() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  try { ws.send(JSON.stringify({ type: 'schedules' })); } catch { /* not attached */ }
+  const msg = window.schedulesDisplay.requestMsg(hostControls);
+  if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify(msg)); } catch { /* not attached */ }
 }
 
 if (schedRoot) {

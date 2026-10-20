@@ -23,16 +23,38 @@ const isObj = (o) => !!o && typeof o === 'object' && !Array.isArray(o);
 const isStr = (v) => typeof v === 'string';
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-/** `{ view }`: the host's last list, or null until a host has sent one (an older host never does: "not heard", not "nothing"). */
-const emptyState = () => ({ view: null });
+/**
+ * `{ view, oldHost }`: the host's last list, or null until a host has sent one (an older host never does: "not heard", not "nothing").
+ * `oldHost`: the hello of a host that does not list the `schedules` control type (hosts outlive app updates).
+ */
+const emptyState = () => ({ view: null, oldHost: false });
 
 const validView = (v) => isObj(v) && Array.isArray(v.groups);
 
-/** hello carries `schedules`; every change is `{ type: 'schedules', schedules }`. Anything else leaves the state as it is. */
+/**
+ * Does this host's hello list the control type? A page sends a control frame ONLY to a host that does: an older one would type it into the
+ * session's prompt as JSON (the PR #140 rule every panel follows; PR #200 Dexter 1).
+ */
+const hostLists = (controls) => Array.isArray(controls) && controls.includes('schedules');
+
+/** The frame that asks a host for the current list, or null when it must not be sent. */
+const requestMsg = (controls) => (hostLists(controls) ? { type: 'schedules' } : null);
+
+/** hello carries `schedules` and `controls`; every change is `{ type: 'schedules', schedules }`. Anything else leaves the state as it is. */
 function reduce(state, msg) {
   if (!isObj(msg) || (msg.type !== 'hello' && msg.type !== 'schedules')) return state;
+  if (msg.type === 'hello') {
+    const view = validView(msg.schedules) ? msg.schedules : null;
+    return { view, oldHost: !hostLists(msg.controls) && view === null };
+  }
   if (!validView(msg.schedules)) return state;
-  return { view: msg.schedules };
+  return { view: msg.schedules, oldHost: false };
+}
+
+/** The hover: the capped prompt, the reason, and where the schedule is owned. Built here so the prompt crosses the wire once. */
+function hoverOf(r) {
+  return [isStr(r.promptFull) ? r.promptFull : '', isStr(r.reason) && r.reason !== '' ? `Why: ${r.reason}` : '',
+    'The session owns its schedule: cancel or change it there.'].filter(Boolean).join('\n\n');
 }
 
 function rowHtml(r) {
@@ -48,11 +70,11 @@ function rowHtml(r) {
     isStr(r.detail) && r.detail !== '' ? `<span class="sched-detail">${esc(r.detail)}</span>` : '',
     isStr(r.reason) && r.reason !== '' ? `<span class="sched-reason">${esc(r.reason)}</span>` : '',
     `<span class="sched-session">${esc(isStr(r.session) ? r.session : '')}</span>`,
-    isGone ? '<span class="sched-gone">session ended</span>' : '',
+    isGone ? `<span class="sched-gone">${esc(isStr(r.endedText) && r.endedText !== '' ? r.endedText : 'session ended')}</span>` : '',
   ].join('');
   const attrs = [
     'type="button"', 'class="sched-btn"', `data-sched-key="${esc(isStr(r.key) ? r.key : '')}"`, `data-sched-id="${esc(isStr(r.id) ? r.id : '')}"`,
-    cwd ? `data-sched-cwd="${esc(cwd)}"` : '', `title="${esc(isStr(r.title) ? r.title : '')}"`, cwd ? '' : 'disabled',
+    cwd ? `data-sched-cwd="${esc(cwd)}"` : '', `title="${esc(hoverOf(r))}"`, cwd ? '' : 'disabled',
   ].filter(Boolean).join(' ');
   return `<li class="sched-row${isGone ? ' sched-ended' : ''}"><button ${attrs}>${parts}</button></li>`;
 }
@@ -64,7 +86,10 @@ function footerHtml() {
 /** The panel's inner markup. */
 function html(state) {
   const view = state && validView(state.view) ? state.view : null;
-  if (view === null) return `<p class="sched-wait">waiting for the host…</p>${footerHtml()}`;
+  if (view === null) {
+    if (state && state.oldHost === true) return `<p class="sched-old">This session's host predates Schedules: restart it to see its schedule.</p>${footerHtml()}`;
+    return `<p class="sched-wait">waiting for the host…</p>${footerHtml()}`;
+  }
   const groups = view.groups.filter(g => isObj(g) && Array.isArray(g.rows) && g.rows.length > 0);
   if (groups.length === 0) return `<p class="sched-empty">Nothing scheduled. Wakeups, loops, bedtime nights and cron jobs from every session show here.</p>${footerHtml()}`;
   const body = groups.map(g => `<section class="sched-group" data-sched-group="${esc(isStr(g.id) ? g.id : '')}"><h3 class="sched-head">${esc(isStr(g.label) ? g.label : '')}</h3><ul class="sched-list">${g.rows.map(rowHtml).join('')}</ul></section>`).join('');
@@ -89,7 +114,7 @@ function clickTarget(target) {
   return isStr(where) && where !== '' ? { kind: 'select', folder: where } : null;
 }
 
-const API = { emptyState, reduce, html, badge, badgeText, clickTarget, ROUTINES_URL };
+const API = { emptyState, reduce, hostLists, requestMsg, html, badge, badgeText, clickTarget, ROUTINES_URL };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.schedulesDisplay = API;

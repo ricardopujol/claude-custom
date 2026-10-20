@@ -10,7 +10,8 @@
  * The day rule is Vixie cron's: when BOTH day-of-month and day-of-week are restricted (neither starts with `*`) a day matches if
  * EITHER does; if one is a star, the other alone decides.
  *
- * `nextRun(expr, fromMs)` is the first whole local minute strictly AFTER `fromMs`, or null when the expression can never fire
+ * `nextRun(expr, fromMs)` is the first whole local minute strictly AFTER `fromMs`, or null when the expression can never fire, or does not
+ * within 8 years (a Feb 29 that must also be a given weekday can be 28 years away: it reads as "schedule: <raw>", never a wrong date)
  * (31 Feb) or `fromMs` is not a finite number (absence is not the epoch: `Number(null)` is 0). A wall-clock time that does not exist
  * (the hour a spring-forward skips) is skipped; one that exists twice (the hour a fall-back repeats) counts at both instants.
  *

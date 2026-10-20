@@ -19,7 +19,14 @@
  * A host with NOTHING scheduled keeps no entry at all: an idle session costs no file traffic.
  *
  * AFTER A RESTART (start()): only this host's DURABLE cron jobs come back, because only those survive in the CLI itself
- * (.claude/scheduled_tasks.json). A wakeup or a session-only cron job died with the session it was scheduled in.
+ * (.claude/scheduled_tasks.json). A wakeup or a session-only cron job died with the session it was scheduled in. They come back only for
+ * THE SAME FOLDER: an entry is keyed by port AND folder, because a port outlives its host and the next project to get it is not the one that
+ * scheduled them. A durable job whose host is gone is NOT pruned with the rest of its host's rows: the CLI still fires it, so it stays
+ * listed as "host ended, still scheduled by the CLI" until its own 7 days (recurring) or its run (one-shot) is over.
+ * start() is called only once the host's socket is LISTENING: a host that loses the bind (EADDRINUSE) never writes this file.
+ *
+ * KNOWN LIMITS (reviewed, kept): the 30 s heartbeat reads the file on an idle host too (cheap, and it is what moves "in 23 min" along);
+ * the heartbeat interval is not cleared at exit; a failed save is retried on the next heartbeat, not sooner.
  *
  * The frames: hello carries `schedules: payload()`; every change is `{ type: 'schedules', schedules: payload }`, broadcast to every
  * window of this host; a window may ask `{ type: 'schedules' }` (when the panel opens) and gets the same frame back.
@@ -43,15 +50,25 @@ function isSchedulesOnly(ev) {
     && isObj(ev.payload) && (ev.payload.tool_name === 'CronCreate' || ev.payload.tool_name === 'CronDelete');
 }
 
-/** An entry other hosts left that is already past the point buildView would drop it. */
-function pastDropping(entry, now) {
-  if (!isObj(entry)) return true;
+const isDurableCron = (r) => isObj(r) && r.kind === 'cron' && r.durable === true;
+
+/**
+ * What to keep of an entry another host left. One already past the point buildView would drop it keeps only its durable cron jobs (the
+ * CLI still fires those, PR #200 Miguel 3) and is removed when it has none; a junk entry goes. Anything else is kept as it is.
+ */
+function pruned(entry, now) {
+  if (!isObj(entry)) return null;
   let endedAt = null;
   if (isNum(entry.endedAt)) endedAt = entry.endedAt;
   else if (isNum(entry.updatedAt)) endedAt = entry.updatedAt + ENDED_STALE_MS;
-  else return true;
-  return now - endedAt > ENDED_DROP_MS;
+  else return null;
+  if (now - endedAt <= ENDED_DROP_MS) return entry;
+  const durable = (Array.isArray(entry.rows) ? entry.rows : []).filter(isDurableCron);
+  return durable.length > 0 ? { ...entry, rows: durable } : null;
 }
+
+/** The same folder, whatever the slashes, the case or a trailing separator. */
+const folderKey = (p) => (typeof p === 'string' ? p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : null);
 
 function createSchedulesControl({ store, key, cwd = null, label = () => '', now = Date.now, emit = () => {}, nightView = () => null, log = () => {},
   retryMs = 250, maxRetries = 20 } = {}) {
@@ -62,6 +79,8 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
   let told = null;                 // JSON of the list the windows of THIS host were last told
   let loggedFailure = false;
   let ended = false;
+  let started = false;             // a host whose bind failed never starts, and so never writes the shared file (PR #200 Dexter 5)
+  let dirty = false;               // the last save did not land: the next heartbeat tries again, whether or not any rows are left
   let lastGood = {};               // the other hosts' entries from the last READABLE file: shown while the file is busy
   let retryTimer = null;
   let retries = 0;
@@ -97,14 +116,20 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
 
   /** Write (or remove) this host's entry. Returns whether the file now says what memory says. */
   function persist({ markEnded = false } = {}) {
+    if (!started) return false;
     const at = now();
     const rows = ownRows();
+    dirty = true;                                       // until the file says what memory says
     try {
-      return store.withLock(STORE_KEY, () => {
+      const ok = store.withLock(STORE_KEY, () => {
         const cur = readFile();
         if (!cur.ok) return false;
         const sessions = {};
-        for (const [k, e] of Object.entries(cur.sessions)) if (k !== key && !pastDropping(e, at)) sessions[k] = e;
+        for (const [k, e] of Object.entries(cur.sessions)) {
+          if (k === key) continue;
+          const kept = pruned(e, at);
+          if (kept !== null) sessions[k] = kept;
+        }
         if (rows.length > 0) {
           const mine = ownEntry(at);
           sessions[key] = markEnded ? { ...mine, endedAt: at } : mine;
@@ -113,6 +138,8 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
         if (!same) store.write(STORE_KEY, { version: VERSION, sessions });
         return true;
       }) === true;
+      dirty = !ok;
+      return ok;
     } catch (err) {
       if (!loggedFailure) { loggedFailure = true; say(`[schedules] could not save: ${err && err.message ? err.message : err}`); }
       return false;
@@ -170,8 +197,10 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
     try {
       const cur = readFile();
       const mine = cur.sessions[key];
-      if (isObj(mine)) model.restore(mine.rows);
+      // Only THIS folder's own entry: a port outlives its host, and the next project to get it is not the one that scheduled these.
+      if (model.rows().length === 0 && isObj(mine) && folderKey(mine.cwd) !== null && folderKey(mine.cwd) === folderKey(cwd)) model.restore(mine.rows);
     } catch { /* restoring is best effort */ }
+    started = true;
     persist();
     told = JSON.stringify(payload());
   }
@@ -193,7 +222,7 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
 
   /** The heartbeat: keeps a host with rows "alive" for its neighbours, follows a branch rename, and moves "in 23 min" along. */
   function beat() {
-    if (!ended && model.rows().length > 0) persist();
+    if (!ended && (dirty || model.rows().length > 0)) persist();
     announce();
   }
 
@@ -209,7 +238,7 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
 
   /** A clean exit: neighbours see "session ended" at once instead of after three silent minutes. */
   function end() {
-    if (ended) return;
+    if (ended || !started) return;
     persist({ markEnded: true });
     ended = true;
     clearTimeout(retryTimer);

@@ -1406,14 +1406,14 @@ function noteNight(payload) {     // usage counters: a night counts once, when i
 // refreshes the bedtime row's detail.
 const schedulesControl = createSchedulesControl({
   store,
-  key: String(PORT),
+  key: `${PORT}:${CWD}`,          // a port outlives its host: the folder is part of who owns an entry
   cwd: CWD,
   label: () => { const b = currentBranch(CWD); return `${projectLabel(PROJECT_ROOT)}${b ? ` / ${b}` : ''}`; },
   nightView: () => night.payload(),
   emit: (frame) => broadcastControl(frame),
   log: (line) => console.log(line),
 });
-schedulesControl.start();
+// start() is called once the socket is listening (below): a host that loses the bind (EADDRINUSE) must never write the shared file.
 // The Schedules panel lists every host's rows: another host's write must reach THIS host's windows (host/schedules-control.js).
 watchDir({
   dir: path.join(HARNESS_DIR, 'state'),
@@ -3017,6 +3017,7 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
+  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {

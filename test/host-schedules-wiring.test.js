@@ -24,17 +24,20 @@ test('the harness settings ask for the cron matcher', () => {
   assert.match(call, /\n\s+schedules: true,/);
 });
 
-test('the control is built once from the shared store, keyed by this host\'s port, and started', () => {
+test('the control is built once from the shared store, keyed by this host\'s port AND folder, and started only once the port is bound', () => {
   assert.match(HOST, /const \{ createSchedulesControl, isSchedulesOnly \} = require\('\.\/schedules-control'\);/);
   const at = HOST.indexOf('const schedulesControl = createSchedulesControl({');
   assert.ok(at !== -1);
   const block = HOST.slice(at, HOST.indexOf('});', at));
   assert.match(block, /store,/);
-  assert.match(block, /key: String\(PORT\)/);
+  assert.match(block, /key: `\$\{PORT\}:\$\{CWD\}`/, 'a port outlives its host: the folder is part of who owns an entry (PR #200 Dexter 5)');
+  assert.doesNotMatch(block, /key: String\(PORT\)/);
   assert.match(block, /cwd: CWD/);
   assert.match(block, /nightView: \(\) => night\.payload\(\)/);
   assert.match(block, /emit: \(frame\) => broadcastControl\(frame\)/);
-  assert.match(HOST, /schedulesControl\.start\(\);/);
+  assert.doesNotMatch(HOST.slice(at, HOST.indexOf('\nconst night = createNightStatus({', at)), /schedulesControl\.start\(\)/, 'not at module load: a host that loses the bind must never write the file');
+  const listening = HOST.slice(HOST.indexOf("wss.on('listening', () => {"), HOST.indexOf("wss.on('error'"));
+  assert.match(listening, /schedulesControl\.start\(\);/, 'started once the socket is listening');
 });
 
 test('every hook event reaches the schedule, and a cron call goes no further than it', () => {

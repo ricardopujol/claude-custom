@@ -7,6 +7,8 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
+const fs = require('fs');
+const path = require('path');
 const S = require('../host/schedules');
 
 const local = (y, mo, d, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s, 0).getTime();
@@ -300,12 +302,12 @@ test('a row carries what the panel needs: session label and folder, the first pr
   assert.strictEqual(r.promptFull, '\n  first line here  \nsecond line'.trim());
   assert.strictEqual(r.reason, 'CI takes a while');
   assert.deepStrictEqual([r.sessionKey, r.cwd, r.session, r.kind], ['1', 'C:/p/a', 'proj / feat-a', 'wakeup']);
-  assert.ok(r.title.includes('first line here') && /session owns/i.test(r.title), 'the hover says the session owns its schedule');
+  assert.strictEqual(r.title, undefined, 'the hover is built by the page from promptFull: the prompt is never sent twice');
 });
 
 test('a very long prompt line is cut with an ellipsis', () => {
   const r = S.buildView({ '1': entry([wrow('a', NOW + 5 * MIN, { prompt: 'x'.repeat(500) })]) }, NOW).groups[0].rows[0];
-  assert.ok(r.promptLine.length <= 140 && r.promptLine.endsWith('…'));
+  assert.ok(r.promptLine.length <= 200 && r.promptLine.endsWith('…'));
 });
 
 test('a bedtime row carries the night\'s start, wakes and PR count into its detail', () => {
@@ -367,4 +369,105 @@ test('PROPERTY: every row with a time and a live session is in the group its tim
     assert.notStrictEqual(g.id, 'recurring');
     return true;
   }), { numRuns: 300 });
+});
+
+// ---- PR #200 review pass ----------------------------------------------------------------------------------------------------
+
+const fixture = fs.readFileSync(path.join(__dirname, 'cron-capture.fixture.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+
+test('FIXTURE (a real claude -p capture, 2.1.304): CronCreate and CronDelete payloads make and remove a row', () => {
+  const [, createPost, , deletePost] = fixture;
+  assert.strictEqual(createPost.payload.tool_name, 'CronCreate');
+  const c = clock();
+  const s = S.createSessionSchedule({ now: c.now });
+  assert.strictEqual(s.handle({ event: createPost.event, payload: createPost.payload }), true);
+  const r = s.rows()[0];
+  assert.deepStrictEqual([r.id, r.kind, r.cron, r.recurring, r.durable, r.human], ['db881b43', 'cron', '*/7 * * * *', true, false, 'Every 7 minutes']);
+  assert.strictEqual(r.nextFireAt, createPost.payload.tool_response.nextFireAt, 'the CLI\'s own next run is kept');
+  assert.strictEqual(s.handle({ event: deletePost.event, payload: deletePost.payload }), true);
+  assert.deepStrictEqual(s.rows(), []);
+});
+
+test('DEXTER 3: a recurring job\'s next run carries the CLI\'s per-job offset (nextFireAt), not the bare expression match', () => {
+  const c = clock(local(2026, 10, 19, 9, 50));
+  const s = S.createSessionSchedule({ now: c.now });
+  const fire = local(2026, 10, 19, 10, 6);                       // the hour match is 10:00; the CLI will fire at 10:06
+  s.handle(post('CronCreate', { cron: '0 * * * *', prompt: 'p' }, { id: 'j', recurring: true, nextFireAt: fire }));
+  const row = s.rows()[0];
+  const at = (now) => S.buildView({ '1': entry([row]) }, now).groups.flatMap(g => g.rows)[0].at;
+  assert.strictEqual(at(local(2026, 10, 19, 9, 55)), fire);
+  assert.strictEqual(at(local(2026, 10, 19, 10, 3)), fire, 'between the match and the offset run, the pending run is still the next one');
+  assert.strictEqual(at(local(2026, 10, 19, 10, 7)), local(2026, 10, 19, 11, 6), 'after it, the next match plus the same offset');
+});
+
+test('DEXTER 3: a job with no nextFireAt in its result is computed from the expression alone; an unreadable one uses nextFireAt', () => {
+  const c = clock(local(2026, 10, 19, 9, 50));
+  const s = S.createSessionSchedule({ now: c.now });
+  s.handle(post('CronCreate', { cron: '0 * * * *', prompt: 'p' }, { id: 'plain', recurring: true }));
+  s.handle(post('CronCreate', { cron: '0 9 * * MON', prompt: 'p' }, { id: 'odd', recurring: true, nextFireAt: local(2026, 10, 26, 9, 2) }));
+  const v = S.buildView({ '1': entry(s.rows()) }, c.now()).groups.flatMap(g => g.rows);
+  assert.strictEqual(v.find(r => r.id === 'plain').at, local(2026, 10, 19, 10, 0));
+  assert.strictEqual(v.find(r => r.id === 'odd').at, local(2026, 10, 26, 9, 2));
+});
+
+test('DEXTER 3: a one-shot prefers the CLI\'s nextFireAt over its own computation', () => {
+  const c = clock();
+  const s = S.createSessionSchedule({ now: c.now });
+  s.handle(post('CronCreate', { cron: '30 23 19 10 *', prompt: 'p', recurring: false }, { id: 'o', recurring: false, nextFireAt: local(2026, 10, 19, 23, 29, 30) }));
+  assert.strictEqual(s.rows()[0].at, local(2026, 10, 19, 23, 29, 30));
+});
+
+test('DEXTER 4: the 7-day expiry is for RECURRING jobs; a pending one-shot stays until it fires', () => {
+  const eightDays = NOW - 8 * 86_400_000;
+  const oneShot = { ...wrow('once', NOW + 30 * 86_400_000), kind: 'cron', cron: '0 9 25 12 *', recurring: false, createdAt: eightDays };
+  const recurring = { ...wrow('rec', null), kind: 'cron', cron: '0 6 * * *', recurring: true, createdAt: eightDays };
+  const v = S.buildView({ '1': entry([oneShot, recurring]) }, NOW);
+  assert.deepStrictEqual(ids(v), [['later', ['once']]]);
+});
+
+test('DEXTER 6 / MIGUEL 4: a wake prompt longer than the stored cap is still consumed by its own replay', () => {
+  const long = 'x'.repeat(2500);
+  const c = clock();
+  const s = S.createSessionSchedule({ now: c.now });
+  s.handle(wakeup(c, { delaySeconds: 600, prompt: long }, NOW + 600_000));
+  s.handle(post('CronCreate', { cron: '30 23 19 10 *', prompt: 'y' + long, recurring: false }, { id: 'once', recurring: false }));
+  assert.strictEqual(s.handle(ev('UserPromptSubmit', { prompt: long })), true);
+  assert.deepStrictEqual(s.rows().map(r => r.id), ['once'], 'the wakeup is gone');
+  assert.strictEqual(s.handle(ev('UserPromptSubmit', { prompt: 'y' + long })), true);
+  assert.deepStrictEqual(s.rows(), []);
+  assert.strictEqual(s.handle(ev('UserPromptSubmit', { prompt: 'x'.repeat(2400) })), false, 'a different prompt is not a wake');
+});
+
+test('MIGUEL 5: a row stores and sends the prompt capped (first line 200, hover 500), never the 2000-char text', () => {
+  const huge = 'first line ' + 'y'.repeat(300) + '\n' + 'z'.repeat(2400);
+  const c = clock();
+  const s = S.createSessionSchedule({ now: c.now });
+  s.handle(wakeup(c, { delaySeconds: 600, prompt: huge }, NOW + 600_000));
+  const stored = s.rows()[0];
+  assert.ok(stored.prompt.length <= 500, 'the shared file holds the capped text only');
+  assert.ok(!JSON.stringify(stored).includes('z'.repeat(501)), 'nothing past the cap is kept anywhere in the row');
+  const r = S.buildView({ '1': entry([stored]) }, NOW).groups[0].rows[0];
+  assert.ok(r.promptLine.length <= 200);
+  assert.ok(r.promptFull.length <= 500);
+  assert.strictEqual(r.title, undefined);
+});
+
+test('MIGUEL 7: an ended session\'s row shows a clock time, not a countdown', () => {
+  const v = S.buildView({ '1': entry([wrow('a', NOW + 5 * MIN)], { endedAt: NOW - MIN }) }, NOW);
+  assert.strictEqual(v.groups[0].rows[0].whenText, '22:05');
+  assert.strictEqual(S.buildView({ '1': entry([wrow('a', NOW + 5 * MIN)]) }, NOW).groups[0].rows[0].whenText, 'in 5 min', 'a live one still counts down');
+});
+
+test('MIGUEL 3: a durable cron job stays listed after its host is gone, marked as still scheduled by the CLI; the rest of that host\'s rows go', () => {
+  const durable = { ...wrow('d', null), kind: 'cron', cron: '0 6 * * *', recurring: true, durable: true, human: 'every day 06:00' };
+  const plain = { ...wrow('p', null), kind: 'cron', cron: '0 7 * * *', recurring: true, durable: false };
+  const w = wrow('w', NOW + 5 * MIN);
+  const ended = entry([durable, plain, w], { endedAt: NOW - 3 * MIN });
+  const soon = S.buildView({ '1': ended }, NOW).groups.flatMap(g => g.rows);
+  assert.strictEqual(soon.find(r => r.id === 'd').endedText, 'host ended, still scheduled by the CLI');
+  assert.strictEqual(soon.find(r => r.id === 'p').endedText, 'session ended');
+  const later = S.buildView({ '1': ended }, NOW + 30 * MIN).groups.flatMap(g => g.rows);
+  assert.deepStrictEqual(later.map(r => r.id), ['d'], 'only the durable job outlives the ten minutes');
+  assert.strictEqual(later[0].ended, true);
+  assert.strictEqual(S.buildView({ '1': ended }, NOW + 8 * 86_400_000).groups.length, 0, 'its own 7-day life still ends it');
 });

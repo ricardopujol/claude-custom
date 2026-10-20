@@ -49,7 +49,8 @@ test('the hello and every schedules frame feed the reducer, then redraw and repa
 test('the panel draws only while it is on screen, and asks the host for a fresh list when it opens', () => {
   assert.match(BLOCK, /function renderSchedules\(\) \{\s*paintSchedulesBadge\(\);\s*if \(!schedRoot \|\| !shownModules\.has\('schedules'\)\) return;/);
   assert.match(RENDERER, /if \(id === 'schedules'\) \{ requestSchedules\(\); renderSchedules\(\); \}/);
-  assert.match(BLOCK, /ws\.send\(JSON\.stringify\(\{ type: 'schedules' \}\)\)/);
+  assert.match(BLOCK, /function requestSchedules\(\) \{\s*const msg = window\.schedulesDisplay\.requestMsg\(hostControls\);\s*if \(!msg \|\| !ws \|\| ws\.readyState !== WebSocket\.OPEN\) return;\s*try \{ ws\.send\(JSON\.stringify\(msg\)\);/);
+  assert.doesNotMatch(BLOCK, /JSON\.stringify\(\{ type: 'schedules'/, 'no ungated literal frame anywhere in the glue');
 });
 
 test('a click selects the session\'s tab (the Git panel\'s own jump) or opens the one Routines link; nothing else', () => {

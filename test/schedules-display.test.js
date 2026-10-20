@@ -27,7 +27,7 @@ test('hello and a schedules frame both set the list; other frames and junk chang
   assert.strictEqual(hello.view.groups.length, 1);
   const frame = D.reduce(D.emptyState(), { type: 'schedules', schedules: v });
   assert.deepStrictEqual(frame.view, hello.view);
-  for (const junk of [null, undefined, 3, 'x', {}, { type: 'bedtime' }, { type: 'schedules' }, { type: 'schedules', schedules: 'no' }, { type: 'schedules', schedules: { groups: 'no' } }, { type: 'hello' }]) {
+  for (const junk of [null, undefined, 3, 'x', {}, { type: 'bedtime' }, { type: 'schedules' }, { type: 'schedules', schedules: 'no' }, { type: 'schedules', schedules: { groups: 'no' } }]) {
     assert.strictEqual(D.reduce(hello, junk), hello, JSON.stringify(junk));
   }
   assert.strictEqual(D.reduce(D.emptyState(), { type: 'hello' }).view, null, 'an older host sends none: still "not heard"');
@@ -131,4 +131,39 @@ test('rowTarget: the folder of the clicked row, the link of the clicked link, an
   assert.strictEqual(D.clickTarget(el({})), null);
   assert.strictEqual(D.clickTarget(null), null);
   assert.strictEqual(D.clickTarget({}), null);
+});
+
+// ---- PR #200 review pass ----------------------------------------------------------------------------------------------------
+
+test('DEXTER 1: the panel only asks a host whose hello lists the control type; an older host would TYPE the frame into the session', () => {
+  assert.strictEqual(D.hostLists(['resize', 'schedules']), true);
+  for (const old of [['resize', 'health'], [], null, undefined, 'schedules', {}, [1, 2]]) assert.strictEqual(D.hostLists(old), false, JSON.stringify(old));
+  assert.deepStrictEqual(D.requestMsg(['schedules']), { type: 'schedules' });
+  assert.strictEqual(D.requestMsg(['resize']), null);
+  assert.strictEqual(D.requestMsg(null), null, 'no hello yet: nothing is sent');
+});
+
+test('DEXTER 1: a hello from a host that predates Schedules makes the panel say so; a host that sends the list is never called old', () => {
+  const old = D.reduce(D.emptyState(), { type: 'hello', controls: ['resize', 'health'] });
+  assert.strictEqual(old.view, null);
+  assert.match(D.html(old), /predates Schedules: restart it/);
+  assert.doesNotMatch(D.html(old), /waiting for the host/);
+  assert.doesNotMatch(D.html(D.emptyState()), /predates/, 'before any hello it is only waiting');
+  const nolist = D.reduce(D.emptyState(), { type: 'hello' });
+  assert.match(D.html(nolist), /predates Schedules/, 'a hello with no controls at all is the oldest shape');
+  const fresh = D.reduce(D.emptyState(), { type: 'hello', controls: ['schedules'], schedules: view({}) });
+  assert.doesNotMatch(D.html(fresh), /predates/);
+  assert.match(D.html(fresh), /Nothing scheduled/);
+});
+
+test('MIGUEL 5: the hover is built here from the capped prompt, the reason and the owner note', () => {
+  const html = D.html(stateOf({ '1': entry([row('a', NOW + 5 * MIN, { prompt: 'line one\nline two', reason: 'because' })]) }));
+  assert.match(html, /title="line one\nline two\n\nWhy: because\n\nThe session owns its schedule: cancel or change it there\."/);
+});
+
+test('MIGUEL 3: a durable job of an ended host says it is still scheduled by the CLI', () => {
+  const durable = { ...row('d', null), kind: 'cron', cron: '0 6 * * *', recurring: true, durable: true, human: 'every day 06:00' };
+  const html = D.html(stateOf({ '1': entry([durable, row('p', NOW + 5 * MIN)], { endedAt: NOW - 2 * MIN }) }));
+  assert.match(html, /<span class="sched-gone">host ended, still scheduled by the CLI<\/span>/);
+  assert.match(html, /<span class="sched-gone">session ended<\/span>/);
 });

@@ -174,14 +174,20 @@ const stop = (pid) => {
   hook(pid, 'PreToolUse', S({ tool_name: 'ScheduleWakeup', tool_input: { stop: true } }));
   hook(pid, 'PostToolUse', S({ tool_name: 'ScheduleWakeup', tool_input: { stop: true }, tool_response: { stopped: true, cancelledWakeups: 1 } }));
 };
+// The cron events are the shape a REAL `claude -p` run produced (test/cron-capture.fixture.jsonl, CLI 2.1.304): every field the CLI sent
+// is kept, and only the job's own values are put in.
+const CRON_FIXTURE = fs.readFileSync(path.join(ROOT, 'test', 'cron-capture.fixture.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+const fixtureOf = (event, tool) => CRON_FIXTURE.find(r => r.event === event && r.payload.tool_name === tool).payload;
 const cronCreate = (pid, id, cron, prompt, recurring = true, human = null) => {
   const input = { cron, prompt, recurring, durable: false };
-  hook(pid, 'PreToolUse', S({ tool_name: 'CronCreate', tool_input: input }));
-  hook(pid, 'PostToolUse', S({ tool_name: 'CronCreate', tool_input: input, tool_response: { id, humanSchedule: human || cron, recurring, durable: false } }));
+  hook(pid, 'PreToolUse', { ...fixtureOf('PreToolUse', 'CronCreate'), tool_input: input });
+  const out = { ...fixtureOf('PostToolUse', 'CronCreate').tool_response, id, humanSchedule: human || cron, recurring, durable: false };
+  delete out.nextFireAt;                                    // the fixture's is a real instant from another day; the panel computes its own here
+  hook(pid, 'PostToolUse', { ...fixtureOf('PostToolUse', 'CronCreate'), tool_input: input, tool_response: out });
 };
 const cronDelete = (pid, id) => {
-  hook(pid, 'PreToolUse', S({ tool_name: 'CronDelete', tool_input: { id } }));
-  hook(pid, 'PostToolUse', S({ tool_name: 'CronDelete', tool_input: { id }, tool_response: { id } }));
+  hook(pid, 'PreToolUse', { ...fixtureOf('PreToolUse', 'CronDelete'), tool_input: { id } });
+  hook(pid, 'PostToolUse', { ...fixtureOf('PostToolUse', 'CronDelete'), tool_input: { id }, tool_response: { id } });
 };
 
 async function main() {

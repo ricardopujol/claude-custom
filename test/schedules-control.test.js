@@ -243,3 +243,82 @@ test('end() stops a pending retry', async (t) => {
   await new Promise(r => setTimeout(r, 40));
   assert.deepStrictEqual(frames, []);
 });
+
+// ---- PR #200 review pass ----------------------------------------------------------------------------------------------------
+
+const cronPost = (id, durable, extra = {}) => ({ event: 'PostToolUse', payload: { tool_name: 'CronCreate', tool_input: { cron: '0 7 * * 1', prompt: 'weekly', durable }, tool_response: { id, durable, recurring: true, ...extra } } });
+const filed = (s) => JSON.parse(fs.readFileSync(s.store.pathOf(STORE_KEY), 'utf8')).sessions;
+
+test('DEXTER 2: a removal whose save met a busy file is retried on the next heartbeat, so no ghost row is left for the other tabs', (t) => {
+  const s = setup(); t.after(s.cleanup);
+  let busy = false;
+  const flaky = { ...s.store, readState: (n) => (busy ? { status: 'unreadable', value: null, error: new Error('EBUSY') } : s.store.readState(n)), withLock: (n, fn) => s.store.withLock(n, fn), write: (n, v) => s.store.write(n, v) };
+  const a = createSchedulesControl({ store: flaky, key: '1', cwd: 'C:/p/1', label: () => 'proj / one', now: s.clock.now, emit: () => {}, nightView: () => null });
+  a.start();
+  a.event(wake('p', 600, NOW + 600_000));
+  assert.ok(filed(s)['1'], 'saved');
+  busy = true;
+  a.event({ event: 'PostToolUse', payload: { tool_name: 'ScheduleWakeup', tool_input: { stop: true }, tool_response: {} } });
+  assert.ok(filed(s)['1'], 'the save of the removal met the busy file: the ghost is still there');
+  busy = false;
+  a.beat();
+  assert.strictEqual(filed(s)['1'], undefined, 'the heartbeat saved the removal, although there are no rows left to keep alive');
+  a.end();
+});
+
+test('DEXTER 5: another project\'s entry under the same key is not restored (a port outlives its host)', (t) => {
+  const s = setup(); t.after(s.cleanup);
+  const seed = () => s.store.write(STORE_KEY, { version: 1, sessions: { 7402: { key: '7402', cwd: 'C:/proj-y', label: 'y', updatedAt: NOW, endedAt: NOW, rows: [
+    { id: 'weekly', kind: 'cron', cron: '0 9 * * 1', recurring: true, durable: true, prompt: 'p', createdAt: NOW - 1000, at: null, human: null, reason: null }] } } });
+  seed();
+  const z = createSchedulesControl({ store: s.store, key: '7402', cwd: 'C:/proj-z', label: () => 'z', now: s.clock.now, emit: () => {}, nightView: () => null });
+  z.start();
+  assert.deepStrictEqual(rowsOf(z.payload()).filter(r => r.session === 'z'), [], 'proj-y\'s job is not proj-z\'s');
+  seed();                                              // z's start replaced the entry it does not own; seed it again for the owner
+  const y = createSchedulesControl({ store: s.store, key: '7402', cwd: 'C:/proj-y', label: () => 'y', now: s.clock.now, emit: () => {}, nightView: () => null });
+  y.start();
+  assert.deepStrictEqual(rowsOf(y.payload()).map(r => r.id), ['weekly'], 'its own host gets it back (the same folder, whatever the slash or case)');
+  seed();
+  const y2 = createSchedulesControl({ store: s.store, key: '7402', cwd: 'C:\\Proj-Y\\', label: () => 'y', now: s.clock.now, emit: () => {}, nightView: () => null });
+  y2.start();
+  assert.deepStrictEqual(rowsOf(y2.payload()).map(r => r.id), ['weekly']);
+});
+
+test('DEXTER 5: a host that has not started (its bind failed) never writes the shared file, and its end() writes nothing', (t) => {
+  const s = setup(); t.after(s.cleanup);
+  const [a] = s.controls;
+  a.start();
+  a.event(wake('live host\'s row', 600, NOW + 600_000));
+  const before = fs.readFileSync(s.store.pathOf(STORE_KEY), 'utf8');
+  const loser = s.make('1', 'the loser');                  // the same key: it lost the port
+  loser.event(wake('its own', 900, NOW + 900_000));
+  loser.beat();
+  loser.touch();
+  loser.end();
+  assert.strictEqual(fs.readFileSync(s.store.pathOf(STORE_KEY), 'utf8'), before, 'the live host\'s entry is untouched');
+});
+
+test('MIGUEL 3: when an ended host\'s entry is pruned, its durable cron jobs stay in the file (the CLI still fires them)', (t) => {
+  const s = setup(2); t.after(s.cleanup);
+  const [a, b] = s.controls;
+  a.start(); b.start();
+  a.event(wake('w', 3000, NOW + 3000_000));
+  a.event(cronPost('keep', true));
+  a.event(cronPost('lose', false));
+  a.end();
+  s.clock.t += 30 * MIN;
+  b.event(wake('b', 600, s.clock.t + 600_000));              // any write prunes
+  const kept = filed(s)['1'];
+  assert.deepStrictEqual(kept.rows.map(r => r.id), ['keep']);
+  const rows = rowsOf(b.payload()).filter(r => r.session === 'proj / feat-1');
+  assert.deepStrictEqual(rows.map(r => [r.id, r.endedText]), [['keep', 'host ended, still scheduled by the CLI']]);
+});
+
+test('a hook event that arrives before start() is kept in memory and saved by start(), not lost to the restore', (t) => {
+  const s = setup(); t.after(s.cleanup);
+  const [a] = s.controls;
+  a.event(wake('early', 600, NOW + 600_000));
+  assert.strictEqual(fs.existsSync(s.store.pathOf(STORE_KEY)), false, 'nothing is written before start');
+  a.start();
+  assert.deepStrictEqual(filed(s)['1'].rows.map(r => r.prompt), ['early']);
+});

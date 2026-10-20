@@ -26,10 +26,17 @@
  *     persists it to .claude/scheduled_tasks.json), and `restore()` brings only those back after a host restart.
  *   A subagent's events (they carry `agent_id`) never count.
  *
+ * KNOWN LIMITS (reviewed, kept): (1) A bedtime night is its wakeup row, so while the woken turn runs (between the wake and its next
+ * ScheduleWakeup) the night has no row; the moon chip on the terminal bar covers that stretch, and a row from `night.payload()` alone is
+ * the follow-up if it's wanted. (2) Whether the CLI replays a CRON job's prompt verbatim as a UserPromptSubmit was measured for wakeups only
+ * (verify/probe-bedtime-signal.js); if a fire is not verbatim, a one-shot shows "due now" for up to 15 minutes after it ran. (3) DST: a
+ * fixed-time job counts twice in a fall-back hour and not at all in a spring-forward gap (cron-next.js); whether the CLI agrees is unmeasured.
+ *
  * ABSENCE IS NOT A TIME. `Number(null)` is 0 (CLAUDE.md): every numeric read here is a strict typeof check, so "no value" never
  * becomes the epoch or "due now".
  */
 
+const crypto = require('crypto');
 const { isBedtimeLoopPrompt } = require('./bedtime-state');
 const { nextRun } = require('./cron-next');
 
@@ -42,8 +49,10 @@ const HOUR_MS = 3_600_000;
 const ENDED_STALE_MS = 3 * 60_000;         // a host that has not heartbeated for this long is gone
 const ENDED_DROP_MS = 10 * 60_000;         // ...and its rows are dropped this long after it ended
 const MAX_ROWS = 50;
-const MAX_PROMPT = 2000;
-const LINE_MAX = 140;
+const MAX_PROMPT = 500;                    // what a row keeps and every window gets: the hover text. Never the whole prompt (it can hold anything).
+const KEY_PROMPT = 2000;                   // how much of a prompt is the wake's IDENTITY (see promptKey)
+const LINE_MAX = 200;
+const MAX_OFFSET_MS = 15 * 60_000;         // the CLI's per-job offset on a recurring job is at most 15 minutes
 
 const FOOTER = Object.freeze({
   text: 'Routines on claude.ai/code run in the cloud and are not listed here.',
@@ -58,6 +67,13 @@ const isStr = (v) => typeof v === 'string';
 const isMain = (p) => !(isStr(p.agent_id) && p.agent_id !== '');
 const collapse = (s) => s.replace(/\s+/g, ' ').trim();
 const clampDelay = (s) => Math.min(MAX_DELAY_S, Math.max(MIN_DELAY_S, s));
+
+/**
+ * A prompt's identity for matching its replay: a hash of its first 2000 characters, whitespace-collapsed. The row stores only 500
+ * characters of text (for the hover), so identity can't be the stored text; and BOTH sides are cut the same way, so a prompt longer than
+ * the cut still matches its own wake (PR #200 Dexter 6 / Miguel 4).
+ */
+const promptKey = (text) => crypto.createHash('sha1').update(collapse(String(text).slice(0, KEY_PROMPT))).digest('hex');
 
 function kindOfPrompt(prompt) {
   if (isBedtimeLoopPrompt(prompt)) return 'bedtime';
@@ -86,7 +102,7 @@ function createSessionSchedule({ now = Date.now } = {}) {
     const whenAt = believableScheduledFor(said, at) ? said : at + clampDelay(input.delaySeconds) * 1000;
     rows = [...withoutWakeup(), {
       id: 'wakeup', kind: kindOfPrompt(input.prompt), at: whenAt, cron: null, recurring: false, durable: false, human: null,
-      prompt: input.prompt.slice(0, MAX_PROMPT), reason: isStr(input.reason) && input.reason !== '' ? input.reason.slice(0, 500) : null, createdAt: at,
+      prompt: input.prompt.slice(0, MAX_PROMPT), pk: promptKey(input.prompt), reason: isStr(input.reason) && input.reason !== '' ? input.reason.slice(0, 500) : null, createdAt: at,
     }];
     return true;
   }
@@ -95,18 +111,24 @@ function createSessionSchedule({ now = Date.now } = {}) {
     const input = isObj(p.tool_input) ? p.tool_input : {};
     const out = isObj(p.tool_response) ? p.tool_response : {};
     if (!isStr(input.cron) || input.cron.trim() === '') return false;
-    const prompt = isStr(input.prompt) ? input.prompt.slice(0, MAX_PROMPT) : '';
+    const fullPrompt = isStr(input.prompt) ? input.prompt : '';
+    const prompt = fullPrompt.slice(0, MAX_PROMPT);
     const recurring = typeof out.recurring === 'boolean' ? out.recurring : input.recurring !== false;
     const durable = typeof out.durable === 'boolean' ? out.durable : input.durable === true;
     const id = isStr(out.id) && out.id !== '' ? out.id : `cron:${input.cron}|${prompt}`;
+    // The CLI's own answer wins (PR #200 Dexter 3): nextFireAt is "the job's next run, the scheduler's per-job offset included".
+    // Without it, a one-shot's run is computed from the expression; a recurring job's is computed at VIEW time, shifted by the offset
+    // this call revealed (nextFireAt minus the bare match), which is how the CLI spreads jobs by up to 15 minutes.
+    const said = isNum(out.nextFireAt) && out.nextFireAt >= at ? out.nextFireAt : null;
+    const computed = nextRun(input.cron, at);
     let whenAt = null;
-    if (!recurring) {
-      whenAt = nextRun(input.cron, at);
-      if (whenAt === null && isNum(out.nextFireAt) && out.nextFireAt >= at) whenAt = out.nextFireAt;
-    }
+    let offsetMs = 0;
+    if (!recurring) whenAt = said !== null ? said : computed;
+    else if (computed === null) whenAt = said;                                       // an expression we cannot read: the CLI's time
+    else if (said !== null && said - computed >= 0 && said - computed <= MAX_OFFSET_MS) offsetMs = said - computed;
     const row = {
       id, kind: 'cron', at: whenAt, cron: input.cron.trim(), recurring, durable, human: isStr(out.humanSchedule) && out.humanSchedule !== '' ? out.humanSchedule : null,
-      prompt, reason: null, createdAt: at,
+      prompt, pk: promptKey(fullPrompt), reason: null, createdAt: at, offsetMs, nextFireAt: said,
     };
     rows = [...rows.filter(r => r.id !== id), row].slice(-MAX_ROWS);
     return true;
@@ -124,10 +146,10 @@ function createSessionSchedule({ now = Date.now } = {}) {
 
   function onPrompt(p) {
     if (!isStr(p.prompt)) return false;
-    const text = collapse(p.prompt);
+    const text = promptKey(p.prompt);
     const before = rows.length;
     rows = rows.filter(r => {
-      if (collapse(r.prompt || '') !== text) return true;
+      if ((isStr(r.pk) ? r.pk : promptKey(r.prompt || '')) !== text) return true;
       if (r.id === 'wakeup') return false;                      // the wake: this wakeup has fired
       return r.kind === 'cron' && r.recurring;                  // a one-shot has fired; a recurring job stays
     });
@@ -170,8 +192,10 @@ function createSessionSchedule({ now = Date.now } = {}) {
       if (!isObj(r) || r.kind !== 'cron' || r.durable !== true || !isStr(r.cron) || !isStr(r.id) || r.id === '') continue;
       back.push({
         id: r.id, kind: 'cron', at: isNum(r.at) ? r.at : null, cron: r.cron, recurring: r.recurring !== false, durable: true,
-        human: isStr(r.human) ? r.human : null, prompt: isStr(r.prompt) ? r.prompt.slice(0, MAX_PROMPT) : '', reason: null,
+        human: isStr(r.human) ? r.human : null, prompt: isStr(r.prompt) ? r.prompt.slice(0, MAX_PROMPT) : '',
+        pk: isStr(r.pk) ? r.pk : promptKey(isStr(r.prompt) ? r.prompt : ''), reason: null,
         createdAt: isNum(r.createdAt) ? r.createdAt : now(),
+        offsetMs: isNum(r.offsetMs) && r.offsetMs >= 0 && r.offsetMs <= MAX_OFFSET_MS ? r.offsetMs : 0, nextFireAt: isNum(r.nextFireAt) ? r.nextFireAt : null,
       });
     }
     rows = back.slice(-MAX_ROWS);
@@ -240,11 +264,19 @@ function viewRow(entry, row, ended, now) {
   const createdAt = isNum(row.createdAt) ? row.createdAt : now;
   const recurring = kind === 'cron' && row.recurring !== false;
   const cronText = isStr(row.cron) ? row.cron : null;
+  const durable = kind === 'cron' && row.durable === true;
   let at = isNum(row.at) ? row.at : null;
   if (kind === 'cron') {
-    if (now - createdAt > CRON_LIFE_MS) return null;                                   // auto-expired after 7 days
-    if (recurring) at = cronText === null ? null : nextRun(cronText, now);
-    else if (at !== null && now > at + OVERDUE_MS) return null;                        // its one run has come and gone
+    if (recurring) {
+      if (now - createdAt > CRON_LIFE_MS) return null;                                 // a recurring job auto-expires after 7 days (the CLI's schema)
+      // The next match whose OFFSET run (the CLI spreads jobs by up to 15 minutes) is still ahead: while 10:00's run waits for its 10:06
+      // offset, the pending run is still the next one (PR #200 Dexter 3). A job the matcher cannot read keeps the CLI's own first time.
+      const off = isNum(row.offsetMs) && row.offsetMs > 0 && row.offsetMs <= MAX_OFFSET_MS ? row.offsetMs : 0;
+      if (cronText !== null && nextRun(cronText, now) !== null) at = nextRun(cronText, now - off) + off;
+      else at = at !== null && at >= now ? at : null;
+    } else if (at !== null) {
+      if (now > at + OVERDUE_MS) return null;                                          // its one run has come and gone
+    } else if (now - createdAt > CRON_LIFE_MS) return null;                            // a one-shot is kept until it fires; with no time to wait for, a week
   } else {
     if (at === null || now > at + OVERDUE_MS) return null;                             // it should have fired
   }
@@ -270,18 +302,20 @@ function viewRow(entry, row, ended, now) {
   } else if (at === null) {
     whenText = `schedule: ${cronText === null ? '?' : cronText}`;
   } else {
-    whenText = group === 'next-hour' ? inText(delta) : clockText(at, now);
+    // a dead session's countdown is noise: it shows the clock time it was due
+    whenText = group === 'next-hour' && !ended ? inText(delta) : clockText(at, now);
   }
 
   const promptFull = isStr(row.prompt) ? row.prompt.trim() : '';
   const reason = isStr(row.reason) && row.reason !== '' ? row.reason : null;
   const session = isStr(entry.label) && entry.label !== '' ? entry.label : 'a session';
-  const title = [promptFull, reason ? `Why: ${reason}` : null, 'The session owns its schedule: cancel or change it there.'].filter(Boolean).join('\n\n');
+  // The hover text is built by the page from promptFull and reason: the prompt travels once (PR #200 Miguel 5).
   return {
     key: `${entry.key}:${row.id}`, id: row.id, sessionKey: entry.key, cwd: isStr(entry.cwd) ? entry.cwd : null, session, kind,
-    at, group, whenText, nextText, recurring, promptLine: firstLine(promptFull), promptFull, reason,
+    at, group, whenText, nextText, recurring, promptLine: firstLine(promptFull), promptFull: promptFull.slice(0, MAX_PROMPT), reason,
     detail: kind === 'bedtime' ? nightDetail(row.night) : null,
-    ended, endedText: ended ? 'session ended' : null, title, createdAt,
+    // a durable cron job is the CLI's: it fires whether or not this host is alive
+    ended, endedText: ended ? (durable ? 'host ended, still scheduled by the CLI' : 'session ended') : null, durable, createdAt,
   };
 }
 
@@ -289,7 +323,7 @@ function viewRow(entry, row, ended, now) {
  * `entries` is `{ [key]: { key, cwd, label, updatedAt, endedAt, rows } }`. Returns
  * `{ groups: [{ id, label, rows }], nextHour, footer }`: empty groups left out, rows soonest first (no time last), the live session's
  * Next-hour rows counted in `nextHour` (the rail badge). A session is ENDED when its host said so (`endedAt`) or stopped heartbeating
- * (`updatedAt` older than 3 minutes); its rows are dimmed and dropped 10 minutes after.
+ * (`updatedAt` older than 3 minutes); its rows are dimmed and dropped 10 minutes after (its durable cron jobs stay, marked).
  */
 function buildView(entries, now) {
   const buckets = new Map(GROUPS.map(g => [g.id, []]));
@@ -301,10 +335,12 @@ function buildView(entries, now) {
     if (isNum(entry.endedAt)) endedAt = entry.endedAt;
     else if (isNum(entry.updatedAt) && now - entry.updatedAt > ENDED_STALE_MS) endedAt = entry.updatedAt + ENDED_STALE_MS;
     else if (!isNum(entry.updatedAt)) continue;                                          // nothing says it is alive or when it was
-    if (endedAt !== null && now - endedAt > ENDED_DROP_MS) continue;
+    // Ten minutes after it ended a host's rows go, EXCEPT its durable cron jobs: the CLI still fires those (.claude/scheduled_tasks.json).
+    const pastDrop = endedAt !== null && now - endedAt > ENDED_DROP_MS;
     const key = isStr(entry.key) ? entry.key : '';
     const e = { ...entry, key };
     for (const row of entry.rows) {
+      if (pastDrop && !(isObj(row) && row.kind === 'cron' && row.durable === true)) continue;
       const v = viewRow(e, row, endedAt !== null, now);
       if (v === null || seen.has(v.key)) continue;
       seen.add(v.key);
