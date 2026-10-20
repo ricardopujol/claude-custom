@@ -18,6 +18,10 @@
  * typing gate in app/top-bar-display.js, only knows one-line text: a CR submits, and `\` + Enter is the CLI's newline (measured,
  * verify/probe-panel-line-input.js). So a stack of comments is one line, joined with "; ", and each begins "In <path>:<line> —".
  *
+ * KNOWN LIMIT (PR #199 Dexter 10): commentText strips ONE trailing run of backslashes and then trims, so `x \ \` can still end in a backslash
+ * and a path that begins with a space is not refused here; the typing gate refuses the line with its own reason ("not a single-line review
+ * comment") and nothing wrong is ever typed.
+ *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `changesCompare`.
  */
 (function (root) {

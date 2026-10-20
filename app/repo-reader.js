@@ -39,6 +39,15 @@
  *   Leaving with unsaved text asks first: another file (or the same one again), closing the panel or Esc, and
  *   Done. The page also reports the unsaved file to main (`onDirty`) so closing the TAB asks too.
  *
+ * CHANGES COMPARE, KNOWN LIMITS (PR #199 review, documented rather than coded):
+ *   - a change that is only the file's FINAL NEWLINE has no hunk (the line diff drops the trailing empty line on both sides), so `j` / `k` have
+ *     nothing to go to though the list shows the file as changed (Dexter 8);
+ *   - the compare is stamped with the disk side only: after a COMMIT the file is unchanged on disk, so the open Compare stays on the old HEAD
+ *     until the next refresh of that file; the list drops the file at once (Dexter 9);
+ *   - queued comments name path:line as they were when queued; if the file changes under them they can point at shifted lines. The queue is
+ *     visible, and the person presses Enter (Miguel S4: a design question, in the PR's open questions);
+ *   - a typed stack past one screen row is one wrapped logical line; clearing it before a retype relies on the CLI's Ctrl-U reaching the start of it.
+ *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `repoReader`.
  */
 (function (root) {

@@ -17,6 +17,9 @@
  * NOTHING IS ASKED WHILE THE PANEL IS HIDDEN. The host pushes `changed` two seconds after a tool that can change a file; a hidden
  * panel only remembers it, and asks when it is shown again. A push that lands during a refresh makes exactly one more.
  *
+ * KNOWN LIMIT (PR #199 Miguel S5): a list answer for the scope that was just clicked away from is drawn for a moment before the new answer replaces
+ * it; and S1: renderer.js's control-frame switch stays an if-chain per type, with `repoBrowser.handles` as the one place the browser's types are named.
+ *
  * WRAPPED IN AN IIFE (see app/worktree-status-display.js). One name leaves it: `changesDisplay`.
  */
 (function (root) {

@@ -16,6 +16,12 @@
  * page-supplied path is checked lexically (host/repo-guard.js) before it is used, and it only ever follows `<sha>:` in a revision
  * argument, so a name that looks like a flag is a name.
  *
+ * KNOWN LIMITS (PR #199 review, documented rather than coded):
+ *   - an unignored tree of ~200k untracked files passes the 16 MB buffer of `ls-files --others`, and the list then answers "git ls-files failed"
+ *     instead of a capped list (Dexter 12). The repo's own .gitignore is the fix; a streamed read is the code fix if it ever happens.
+ *   - `changed` goes to every window of this host and each re-lists on its own (Miguel S6; one window per tab today); an in-flight git child can
+ *     outlive the host by up to the 8 s timeout (S7). Both read-only and harmless.
+ *
  * Not mutated by Stryker: its tests run the real git on throwaway repositories (a timeout counts as a kill and a hung child outlives it).
  */
 const childProcess = require('child_process');
