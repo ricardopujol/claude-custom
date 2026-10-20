@@ -902,6 +902,12 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
         link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         return { ok: true };
       }
+      case 'mdReveal': {                           // scroll the nth diagram to the middle of the page (for a screenshot)
+        const box = el.md.querySelectorAll('.md-diagram')[Number(a.index) || 0];
+        if (!box) return { ok: false, error: 'no such diagram' };
+        box.scrollIntoView({ block: 'center' });
+        return { ok: true };
+      }
       case 'mdScroll': { const top = el.md.scrollTop; return { ok: true, top, height: el.md.clientHeight }; }
       case 'externalProbe': externalProbe = a.on === false ? null : []; return { ok: true };
       case 'externalOpened': return { ok: true, urls: externalProbe ? externalProbe.slice() : null };

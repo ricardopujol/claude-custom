@@ -274,6 +274,9 @@ async function main() {
   check('2: SECURITY: nothing ran (window.__mdPwned unset) and the app\'s own #reader is still the reader, not the page\'s id=reader div', d2.globals.pwned === null && d2.globals.readerStillThere, JSON.stringify(d2.globals));
   check('2: the image became its alt text (nothing fetched)', d2.textLength > 200);
   await shoot(app, '1-rendered');
+  await rd(app, 'mdReveal', { index: 0 });
+  await sleep(300);
+  await shoot(app, '1b-diagram');
 
   // 3 links
   await rd(app, 'externalProbe', { on: true });
