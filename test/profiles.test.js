@@ -276,3 +276,33 @@ test('property: parseStore never throws and only ever returns valid profiles, wh
     if (r.state === 'ok') for (const p of r.store.profiles) assert.strictEqual(P.validateProfile(p), null);
   }), { numRuns: 300 });
 });
+
+test('N4: containment is by path SEGMENTS: a folder named "..w" inside the default account\'s folder is inside it', () => {
+  const store = storeOf();
+  const inner = path.join(HOME, '.claude', '..w');
+  assert.match(P.addProfile(store, { name: 'N', colour: '#4caf6a', configDir: inner }, { home: HOME }).error, /inside|around/);
+  // and a sibling whose name merely STARTS with the default's is not inside it
+  assert.strictEqual(P.addProfile(store, { name: 'N', colour: '#4caf6a', configDir: path.join(HOME, '.claude-two') }, { home: HOME }).error, undefined);
+});
+
+test('N4: a junction (or symlink) to the default account\'s folder is the default account\'s folder', (t) => {
+  const home = tmpDir('cc-n4-');
+  const real = path.join(home, '.claude');
+  fs.mkdirSync(real, { recursive: true });
+  const link = path.join(tmpDir('cc-n4-link-'), 'acct');
+  try { fs.symlinkSync(real, link, 'junction'); } catch { t.skip('no permission to make a junction'); return; }
+  assert.match(P.addProfile(storeOf(), { name: 'N', colour: '#4caf6a', configDir: link }, { home }).error, /default/);
+  assert.match(P.addProfile(storeOf(), { name: 'N', colour: '#4caf6a', configDir: path.join(link, 'sub') }, { home }).error, /inside|around|default/);
+});
+
+test('N4: an 8.3 short spelling of the default accounts folder is that folder (Windows)', (t) => {
+  if (process.platform !== 'win32') { t.skip('Windows only'); return; }
+  const d = tmpDir('cc-n4-short-with-a-long-name-');
+  let short = '';
+  try {
+    short = require('child_process').execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('" + d.replace(/'/g, "''") + "').ShortPath"], { encoding: 'utf8', windowsHide: true, timeout: 20000 }).trim();
+  } catch { t.skip('could not ask for the short name'); return; }
+  if (!short || short.toLowerCase() === d.toLowerCase()) { t.skip('this volume makes no 8.3 names'); return; }
+  assert.match(P.addProfile(storeOf(), { name: 'N', colour: '#4caf6a', configDir: short }, { home: HOME, defaultDirs: [d] }).error, /default/);
+});

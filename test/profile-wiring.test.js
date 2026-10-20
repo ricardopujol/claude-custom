@@ -119,3 +119,19 @@ test('main marks an identity file that names another folder\'s host as foreign, 
   assert.match(body, /\.\.\.\(foreign \? \{ foreign: true \} : \{\}\)/);
   assert.match(body, /!foreign && typeof raw\.profile === 'string'/);
 });
+
+test('N5: the host log is opened only AFTER the env is built, so a refused spawn leaks no descriptor', () => {
+  const at = MAIN.indexOf('function spawnHost(tab, port, token)');
+  const body = MAIN.slice(at, MAIN.indexOf('async function waitForHost', at));
+  assert.ok(body.indexOf('profiles.spawnEnvFor(tab)') !== -1 && body.indexOf('profiles.spawnEnvFor(tab)') < body.indexOf("fs.openSync(logPath, 'a')"));
+  assert.match(body, /env,\s*\n?\s*\}\);/);
+});
+
+test('N3: a Remove re-proves each running host\'s pid AND start time before its profile counts as in use', () => {
+  const at = MAIN.indexOf('function runningHostProfiles(');
+  const body = MAIN.slice(at, MAIN.indexOf('\nfunction spawnHost', at));
+  assert.match(body, /\{ strict = false \} = \{\}/);
+  assert.match(body, /ToFileTimeUtc\(\)/);
+  assert.match(body, /starts\.get\(f\.pid\) === f\.start/);
+  assert.match(read('app', 'profile-service.js'), /new Set\(inUse\(true\)\)/);
+});

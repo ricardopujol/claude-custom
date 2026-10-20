@@ -41,8 +41,9 @@ const PROFILES = {
 const settle = () => new Promise(r => setImmediate(r));
 const flush = async () => { for (let i = 0; i < 8; i++) await settle(); };
 
-function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = false, stopSlow = false, killer = null, merged = false, chooseThrows = null, failWaitOnce = false, hostProfile } = {}) {
+function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = false, stopSlow = false, killer = null, merged = false, chooseThrows = null, failWaitOnce = false, hostProfile, lateBind = false } = {}) {
   const h = {
+    bind: (port) => { h.running[port] = { cwd: h.late.cwd, side: false }; h.late = null; }, late: null,
     running: {}, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], order: [],
     remembered: [], chooses: [], tokens: 0, slept: 0, stopFails, stubborn, kills: [], identities: {}, onStop: null, spawnN: 0, removes: [], waits: 0,
   };
@@ -66,7 +67,8 @@ function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = f
       spawn: ({ tab, port, token }) => {
         h.order.push(`spawn:${tab.key}`);
         h.spawns.push({ key: tab.key, port, token, profileId: tab.profileId, side: tab.side === true });
-        h.running[port] = { cwd: tab.cwd, side: tab.side === true };
+        if (lateBind && h.lateLeft === undefined) h.lateLeft = 1;
+        if (lateBind && h.lateLeft > 0) { h.lateLeft--; h.late = { port, cwd: tab.cwd }; } else h.running[port] = { cwd: tab.cwd, side: tab.side === true };
         // the host's identity file: its pid and OS start time (what a proven kill is built from) and the profile it runs under
         if (killer !== null) h.identities[port] = { pid: 4000 + ++h.spawnN, start: `S${h.spawnN}`, ...(hostProfile ? { profile: hostProfile } : {}) };
       },
@@ -102,7 +104,7 @@ function harness({ chosen = {}, profiles = true, stopFails = false, stubborn = f
       isFocused: () => true,
     },
     now: () => 1_000_000_000,
-    sleep: async () => { h.slept++; },
+    sleep: async () => { h.slept++; await settle(); },
   };
   // killer: 'ok' | 'none' (nothing provable: identify answers null) | an outcome string. A proven kill ends the host the way taskkill would.
   if (killer !== null) {
@@ -263,14 +265,87 @@ test('REUSED PORT: the tab\'s host exited unseen and another folder\'s host boun
   assert.notStrictEqual(h.spawns[1].port, port);
 });
 
-test('the same pid with a DIFFERENT start time is a different process (pid reuse): nothing is killed', async () => {
+test('the same pid with a DIFFERENT start time is a different process (pid reuse): nothing is killed, and the restart does not attach to it', async () => {
   const h = await opened({ stubborn: true, killer: 'ok' });
   const port = h.shell.tabByKey(key('dev')).port;
   h.identities[port] = { pid: h.identities[port].pid, start: 'REUSED-PID' };
   const r = await h.shell.changeProfile(key('dev'), 'work');
   await flush();
   assert.deepStrictEqual(h.kills, []);
-  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.ok, false, 'a same-folder host that is not the one we spawned is not a success');
+  assert.match(r.error, /another session already serves this folder/);
+});
+
+test('N1: a same-folder host with ANOTHER pid on the old port is not attached under the old account: the switch refuses and says why', async () => {
+  const h = await opened({ stubborn: true, killer: 'ok' });
+  const port = h.shell.tabByKey(key('dev')).port;
+  h.identities[port] = { pid: 200, start: 'S2', profile: 'default' };         // a second window's Default host for the same folder
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  await flush();
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /as default, not as the account you picked/);
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop'), [], 'and the other windows host was not stopped');
+  assert.strictEqual(h.spawns.length, 1);
+  assert.strictEqual(h.shell.tabByKey(key('dev')).started, false);
+});
+
+test('N1: a same-folder host that already runs exactly the picked profile IS attached, and the result says restarted', async () => {
+  const h = await opened({ stubborn: true, killer: 'ok' });
+  const port = h.shell.tabByKey(key('dev')).port;
+  h.identities[port] = { pid: 200, start: 'S2', profile: 'work' };
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  await flush();
+  assert.deepStrictEqual(r, { ok: true, restarted: true });
+  assert.strictEqual(h.shell.tabByKey(key('dev')).hostProof.profile, 'work');
+});
+
+test('N1: restarted:true is not said when the host that came up reports another profile than the pick', async () => {
+  const h = await opened({ killer: 'ok' });
+  const origSpawn = h.spawns.length;
+  // the host spawned for the switch comes up running a different account than asked (a stale default, a bad env)
+  const prev = h.identities;
+  const proxy = new Proxy(prev, { set(t, k, v) { t[k] = { ...v, profile: 'default' }; return true; } });
+  Object.defineProperty(h, 'identities', { value: proxy });
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  await flush();
+  assert.strictEqual(h.spawns.length, origSpawn + 1);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /runs as default, not the account you picked/);
+});
+
+test('N2: a pending host that has not BOUND yet is waited for, then stopped; the late bind cannot be attached under the old account', async () => {
+  const h = await opened({ failWaitOnce: true, lateBind: true });
+  const tab = h.shell.tabByKey(key('dev'));
+  assert.ok(tab.pending);
+  const port = tab.pending.port;
+  const p = h.shell.changeProfile(key('dev'), 'work');
+  for (let i = 0; i < 4; i++) await settle();
+  h.bind(port);                                                     // the Default host finally binds
+  const r = await p;
+  assert.deepStrictEqual(r, { ok: true, restarted: false });
+  assert.strictEqual(h.controls.filter(c => c.msg.type === 'stop').length, 1, 'it was told to stop once it was there to hear it');
+  assert.strictEqual(h.running[port], undefined);
+  await h.shell.select(key('dev'));
+  await flush();
+  assert.strictEqual(h.spawns[h.spawns.length - 1].profileId, 'work');
+});
+
+test('N2: a pending host that never binds in the wait blocks the pick, with a reason, instead of going through', async () => {
+  const h = await opened({ failWaitOnce: true, lateBind: true });
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /hasn't come up yet/);
+  assert.notStrictEqual(h.shell.tabByKey(key('dev')).profileId, 'work');
+});
+
+test('N3: a lingering start whose port now holds ANOTHER folders host is a stranger: no stop is sent, and the pick goes through', async () => {
+  const h = await opened({ failWaitOnce: true, killer: 'ok' });
+  const tab = h.shell.tabByKey(key('dev'));
+  const port = tab.pending.port;
+  h.identities[port] = { pid: 7777, start: 'OTHER', foreign: true };
+  const r = await h.shell.changeProfile(key('dev'), 'work');
+  assert.deepStrictEqual(r, { ok: true, restarted: false });
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop'), []);
 });
 
 test('the identity file being gone mid-teardown is not "someone else": the recorded proof is still what is killed', async () => {

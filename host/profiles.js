@@ -34,9 +34,30 @@ const VERSION = 1;
 
 const isString = (v) => typeof v === 'string';
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
-const dirKey = (d) => (process.platform === 'win32' ? path.resolve(d).toLowerCase() : path.resolve(d));
-/** Is `child` strictly inside `parent`? */
-const inside = (child, parent) => { const rel = path.relative(dirKey(parent), dirKey(child)); return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel); };
+/**
+ * A folder's canonical identity for comparing accounts: the REAL path of its deepest existing ancestor (junctions, symlinks and 8.3 short names
+ * resolve to the same thing) plus the not-yet-existing rest, case-folded where the OS is. Two spellings of one folder must compare equal (Dexter r2 N4).
+ */
+function dirKey(d) {
+  const full = path.resolve(d);
+  let head = full;
+  const rest = [];
+  for (;;) {
+    try { head = fs.realpathSync.native(head); break; } catch { /* not there yet: try its parent */ }
+    const parent = path.dirname(head);
+    if (parent === head) break;
+    rest.unshift(path.basename(head));
+    head = parent;
+  }
+  const joined = path.join(head, ...rest);
+  return process.platform === 'win32' ? joined.toLowerCase() : joined;
+}
+/** Is `child` strictly inside `parent`? Compared by path SEGMENTS, not string prefixes (a folder called "..w" is not "up"). */
+const inside = (child, parent) => {
+  const c = dirKey(child).split(path.sep).filter(Boolean);
+  const p = dirKey(parent).split(path.sep).filter(Boolean);
+  return c.length > p.length && p.every((seg, i) => c[i] === seg);
+};
 
 function defaultDir() { return path.join(os.homedir(), '.claude-custom'); }
 const profilesFile = (dir = defaultDir()) => path.join(dir, 'profiles.json');

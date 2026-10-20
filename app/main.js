@@ -36,7 +36,7 @@ const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
 const { createLean, unionDismissed } = require('./lean-state');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -355,18 +355,27 @@ function hostIdentity({ port, tab }) {
 }
 
 /** The profile ids of the live hosts of every build beside this one (their identity files): "in use" is machine-wide, windows come and go. */
-function runningHostProfiles() {
-  const ids = [];
+function runningHostProfiles({ strict = false } = {}) {
+  const found = [];
   let installs = [INSTALL_DIR];
   try { installs = installsBeside(INSTALL_DIR); } catch { /* this build alone */ }
   for (const install of installs) {
     let entries = [];
     try { entries = identitiesIn(install); } catch { continue; }
     for (const { parsed } of entries) {
-      if (parsed && Number.isInteger(parsed.pid) && parsed.pid > 0 && typeof parsed.profile === 'string' && defaultIsAlive(parsed.pid)) ids.push(parsed.profile);
+      if (parsed && Number.isInteger(parsed.pid) && parsed.pid > 0 && typeof parsed.profile === 'string' && defaultIsAlive(parsed.pid)) found.push({ pid: parsed.pid, start: parsed.processStartedAt, profile: parsed.profile });
     }
   }
-  return ids;
+  if (!strict || found.length === 0) return found.map(f => f.profile);
+  // A killed host leaves its file behind and Windows reuses its pid: before a profile counts as in use for a REMOVE, the process behind the
+  // pid must still be the one that started at the recorded time. One PowerShell for all of them. A query that fails counts them (doubt keeps).
+  let starts = null;
+  try {
+    const script = `Get-Process -Id ${[...new Set(found.map(f => f.pid))].join(',')} -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Id + ' ' + [string]$_.StartTime.ToFileTimeUtc() }`;
+    const out = execFileSync(require('../host/proc-start').POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    starts = new Map(out.split(/\r?\n/).map(l => l.trim().split(' ')).filter(p => p.length === 2).map(p => [Number(p[0]), p[1]]));
+  } catch { starts = null; }
+  return found.filter(f => starts === null || typeof f.start !== 'string' || starts.get(f.pid) === f.start).map(f => f.profile);
 }
 
 function spawnHost(tab, port, token) {
@@ -378,17 +387,18 @@ function spawnHost(tab, port, token) {
   // host writes to stdout it takes EPIPE and dies. The host logs on every hook
   // event, so "detached" sessions were dying almost immediately, which is
   // exactly the detach property this spawn exists to provide.
+  // Built BEFORE the log is opened: a tab whose profile can't be resolved (an unreadable profiles file) throws here, and a descriptor opened first
+  // would leak on every Retry (PR #206 Dexter r2 N5). hostEnv drops the inherited per-tab keys and sets this tab's own, so one tab's token or
+  // port can never reach another's host; everything else passes through, which is how CLAUDE_CUSTOM_BIN reaches a probe's host.
+  const env = hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, ...profiles.spawnEnvFor(tab) });
   const logPath = path.join(__dirname, '..', '.harness', 'host.log');
   try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
   const logFd = fs.openSync(logPath, 'a');
 
-  // hostEnv drops the inherited per-tab keys and sets this tab's own, so one
-  // tab's token or port can never reach another's host. It passes everything
-  // else through, which is how CLAUDE_CUSTOM_BIN reaches a probe's host.
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, ...profiles.spawnEnvFor(tab) }),
+    env,
   });
   console.log('[main] host log:', logPath);
   child.unref();

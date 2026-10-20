@@ -240,3 +240,19 @@ test('switchTo on a tab whose session already ended asks nothing: there is no se
   assert.strictEqual(h.confirms.length, 0);
   assert.deepStrictEqual(h.changes, [['c:\proj\a', WORK]]);
 });
+
+test('N3: Remove asks the host reader for STRICT proof; the advisory list does not (it would cost a process per refresh)', () => {
+  const asks = [];
+  const h = make({ hostProfiles: (o) => { asks.push(!!(o && o.strict)); return []; } });
+  addWork(h);
+  h.svc.stateFor(null);
+  h.svc.remove({ id: WORK });
+  assert.strictEqual(asks.filter(x => x === true).length, 1, 'exactly one strict ask: the Removes');
+});
+
+test('N3: a profile whose only "host" fails the strict proof (pid reused) can be removed', () => {
+  const h = make({ hostProfiles: (o) => (o && o.strict ? [] : [WORK]) });
+  addWork(h);
+  assert.deepStrictEqual(h.svc.stateFor(null).inUse, [WORK], 'advisory: still shown as in use');
+  assert.strictEqual(h.svc.remove({ id: WORK }).ok, true);
+});

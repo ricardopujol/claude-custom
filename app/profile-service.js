@@ -50,11 +50,12 @@ function createProfileService({
 
   // In use = under a tab of THIS window, or under any running host of the machine (hosts are detached and outlive windows; their
   // identity files say which profile they were started under). The store is machine-wide, so the guard has to be too.
-  function inUse() {
+  // `strict` (a Remove, which is not undoable): the hosts' profiles are re-proved (pid AND start time) by the reader before they count.
+  function inUse(strict = false) {
     const s = theShell();
     const ids = new Set();
     try { if (s) for (const id of s.profilesInUse()) ids.add(id); } catch { /* the hosts below still count */ }
-    try { for (const id of hostProfiles()) if (typeof id === 'string' && id !== '') ids.add(id); } catch { /* unreadable: nothing extra known */ }
+    try { for (const id of hostProfiles({ strict })) if (typeof id === 'string' && id !== '') ids.add(id); } catch { /* unreadable: nothing extra known */ }
     return [...ids];
   }
 
@@ -89,7 +90,7 @@ function createProfileService({
 
   const add = (spec) => edit((store) => P.addProfile(store, spec, { home, defaultDirs: [inheritedConfigDir], random }));
   const rename = ({ id, name } = {}) => edit((store) => P.renameProfile(store, id, name));
-  const remove = ({ id } = {}) => edit((store) => P.removeProfile(store, id, new Set(inUse())));
+  const remove = ({ id } = {}) => edit((store) => P.removeProfile(store, id, new Set(inUse(true))));
 
   // --- what the shell and the spawn ask for ----------------------------------------------------------------------------------
 
