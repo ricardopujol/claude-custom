@@ -71,14 +71,51 @@ test('the roster\'s empty line is told whether the profile is the default', () =
   assert.match(RENDERER, /rosterEmptyState\(roster\.size, agentStats, lastAgentStatsPayload, \{ isDefault: /);
 });
 
-test('main\'s kill proof for a stuck host is the identity file\'s pid AND OS start time, ended by a proven kill, never by name', () => {
-  assert.match(MAIN, /killer: \(port\) => hostKiller\(port\)/);
-  const at = MAIN.indexOf('function hostKiller(port)');
+test('main proves a tab\'s host by the identity file\'s pid AND OS start time, for the tab\'s OWN folder; the kill is a proven one, never by name', () => {
+  assert.match(MAIN, /identify: \(arg\) => hostIdentity\(arg\)/);
+  assert.match(MAIN, /kill: \(\{ pid, start \}\) => killProvenAsync\(pid, start\)/);
+  const at = MAIN.indexOf('function hostIdentity({ port, tab })');
   assert.ok(at !== -1);
-  const body = MAIN.slice(at, MAIN.indexOf('\nfunction spawnHost', at));
+  const body = MAIN.slice(at, MAIN.indexOf('/** The profile ids of the live hosts', at));
   assert.match(body, /fileFor\(HARNESS_DIR, port\)/);
   assert.match(body, /Number\(raw\.port\) !== port/);
   assert.ok(body.includes(String.raw`/^\d+$/.test(raw.processStartedAt)`), 'only a decimal FILETIME is a proof');
-  assert.match(body, /killProvenAsync\(pid, processStartedAt\)/);
+  assert.match(body, /samePath\(raw\.cwd, tab\.cwd\)/, 'a host of another folder is not this tab\'s');
+  assert.match(body, /\(raw\.side === true\) !== \(tab\.side === true\)/);
   assert.doesNotMatch(body, /taskkill|\/IM\b|Stop-Process/i);
+});
+
+test('the profile service is built before spawnHost in the source, with the launch-time config dir and the machine-wide host profiles', () => {
+  assert.ok(MAIN.indexOf('const profiles = createProfileService') < MAIN.indexOf('function spawnHost('), 'no TDZ trap');
+  assert.match(MAIN, /const INHERITED_CONFIG_DIR = typeof process\.env\.CLAUDE_CONFIG_DIR === 'string'/);
+  assert.match(MAIN, /inheritedConfigDir: INHERITED_CONFIG_DIR,\s*hostProfiles: runningHostProfiles,/);
+});
+
+test('the task-log registry reads every profile folder, a profile with no sessions folder yet counting as none', () => {
+  assert.match(MAIN, /taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir, dirs\), undefined, taskLogsFs\.profileRegistryDirs\(dirs\)\)/);
+});
+
+test('a profile folder is made owner-only where the OS has modes', () => {
+  assert.match(read('app', 'profile-service.js'), /fs\.mkdirSync\(p, \{ recursive: true, mode: 0o700 \}\)/);
+});
+
+test('the Style panel is not re-drawn under a half-typed Accounts field', () => {
+  const at = RENDERER.indexOf('async function refreshProfiles()');
+  assert.ok(at !== -1);
+  const body = RENDERER.slice(at, RENDERER.indexOf('async function pickProfile', at));
+  assert.match(body, /document\.activeElement/);
+  assert.match(body, /data-section=accounts/);
+});
+
+test('every identity file the host writes carries its profile (it is how "in use" is counted machine-wide)', () => {
+  const calls = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
+  assert.strictEqual(calls.length, 3);
+  for (const c of calls) assert.match(c, /profile: PROFILE_ID/);
+});
+
+test('main marks an identity file that names another folder\'s host as foreign, and gives its profile only when it is the tab\'s own', () => {
+  const at = MAIN.indexOf('function hostIdentity({ port, tab })');
+  const body = MAIN.slice(at, MAIN.indexOf('/** The profile ids of the live hosts', at));
+  assert.match(body, /\.\.\.\(foreign \? \{ foreign: true \} : \{\}\)/);
+  assert.match(body, /!foreign && typeof raw\.profile === 'string'/);
 });

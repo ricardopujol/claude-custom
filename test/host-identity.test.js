@@ -286,3 +286,17 @@ test('the identity carries the claude pid once the host has one, and only a real
     assert.strictEqual('claudePid' in r, false, String(bad));
   }
 });
+
+// --- account profiles (PR #206 Dexter 7): the identity file carries the profile the host runs under, so "in use" is machine-wide ----------
+test('writeIdentity records the host\'s profile id; readIdentity returns it; a non-string or odd id is dropped', () => {
+  const { writeIdentity, readIdentity } = require('../host/host-identity');
+  const dir = require('./tmp-dir').tmpDir('cc-ident-prof-');
+  writeIdentity({ dir, port: 7801, cwd: 'C:\p\dev', profile: 'work-a1b2c3' });
+  assert.strictEqual(readIdentity({ dir, port: 7801, isAlive: () => true }).profile, 'work-a1b2c3');
+  writeIdentity({ dir, port: 7802, cwd: 'C:\p\dev' });
+  assert.strictEqual('profile' in readIdentity({ dir, port: 7802, isAlive: () => true }), false);
+  for (const bad of [5, null, {}, '', 'has space', 'x'.repeat(80), '../up']) {
+    writeIdentity({ dir, port: 7803, cwd: 'C:\p\dev', profile: bad });
+    assert.strictEqual('profile' in readIdentity({ dir, port: 7803, isAlive: () => true }), false, JSON.stringify(bad));
+  }
+});

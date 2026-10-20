@@ -93,24 +93,94 @@ test('readProfiles on an unreadable (garbage) file says bad and does not touch i
   assert.strictEqual(fs.readFileSync(file, 'utf8'), '{garbage');
 });
 
-test('addProfile: the folder defaults to <home>/.claude-profiles/<id>, the id comes from the name', () => {
-  const r = P.addProfile(storeOf(), { name: 'Client Work!', colour: '#4caf6a' }, { home: HOME });
+const seq = (...v) => { let i = 0; return () => v[i++ % v.length]; };
+
+test('addProfile: the folder defaults to <home>/.claude-profiles/<id>; the id is the name\'s slug plus random hex', () => {
+  const r = P.addProfile(storeOf(), { name: 'Client Work!', colour: '#4caf6a' }, { home: HOME, random: seq('a1b2c3') });
   assert.strictEqual(r.error, undefined);
   const added = r.store.profiles[0];
-  assert.strictEqual(added.id, 'client-work');
+  assert.strictEqual(added.id, 'client-work-a1b2c3');
   assert.strictEqual(added.name, 'Client Work!');
-  assert.strictEqual(added.configDir, path.join(HOME, '.claude-profiles', 'client-work'));
-  assert.strictEqual(r.profile.id, 'client-work');
+  assert.strictEqual(added.configDir, path.join(HOME, '.claude-profiles', 'client-work-a1b2c3'));
+  assert.strictEqual(r.profile.id, added.id);
 });
 
-test('addProfile: ids stay unique (a name that slugs to a taken id gets a suffix) and never the reserved default', () => {
-  let store = storeOf();
-  for (let i = 0; i < 3; i++) store = P.addProfile(store, { name: 'Work', colour: '#4caf6a' }, { home: HOME }).store;
-  assert.deepStrictEqual(store.profiles.map(p => p.id), ['work', 'work-2', 'work-3']);
+test('an id and a folder are NEVER recycled: remove "Work", add "Work" again, and it is a different account folder (Dexter 8)', () => {
+  let store = P.addProfile(storeOf(), { name: 'Work', colour: '#4caf6a' }, { home: HOME }).store;
+  const first = store.profiles[0];
+  store = P.removeProfile(store, first.id, new Set()).store;
+  const again = P.addProfile(store, { name: 'Work', colour: '#4caf6a' }, { home: HOME }).profile;
+  assert.notStrictEqual(again.id, first.id);
+  assert.notStrictEqual(dirOf(again.configDir), dirOf(first.configDir));
+});
+const dirOf = (d) => d.toLowerCase();
+
+test('a random id that is taken is drawn again, and "default" is never an id', () => {
+  const store = P.addProfile(storeOf(), { name: 'Work', colour: '#4caf6a' }, { home: HOME, random: seq('aaaaaa') }).store;
+  const r = P.addProfile(store, { name: 'Work', colour: '#4caf6a' }, { home: HOME, random: seq('aaaaaa', 'bbbbbb') });
+  assert.strictEqual(r.profile.id, 'work-bbbbbb');
   const d = P.addProfile(storeOf(), { name: 'Default', colour: '#4caf6a' }, { home: HOME });
   assert.notStrictEqual(d.profile.id, 'default');
-  const symbols = P.addProfile(storeOf(), { name: '!!!', colour: '#4caf6a' }, { home: HOME });
-  assert.match(symbols.profile.id, /^[a-z0-9][a-z0-9-]*$/);
+  assert.match(P.addProfile(storeOf(), { name: '!!!', colour: '#4caf6a' }, { home: HOME }).profile.id, /^[a-z0-9][a-z0-9-]*$/);
+});
+
+test('folderProblem (Windows rules): UNC, device, root, drive-less, ADS and dotted names are refused; a plain drive path is fine (Miguel Y1, Dexter 11)', () => {
+  const w = (d) => P.folderProblem(d, 'win32');
+  for (const bad of ['\\\\evil\\share\\c', '//evil/share/c', '\\\\?\\C:\\x', '\\\\.\\C:\\x', 'C:\\', 'C:', '\\claude-work', '/claude-work', 'D:rel', 'C:\\a:stream', 'C:\\a\\b.', 'C:\\a \\b', 'relative\\dir', '', null, 5]) {
+    assert.strictEqual(typeof w(bad), 'string', JSON.stringify(bad));
+  }
+  for (const ok of ['C:\\Users\\x\\.claude-profiles\\work', 'D:/profiles/work', 'c:\\a b\\c']) assert.strictEqual(w(ok), null, ok);
+});
+
+test('addProfile and validateProfile refuse a UNC folder BEFORE anything could be made or opened', () => {
+  if (process.platform !== 'win32') return;
+  const r = P.addProfile(storeOf(), { name: 'Evil', colour: '#4caf6a', configDir: '\\\\evil\\share\\c' }, { home: HOME });
+  assert.match(r.error, /UNC|network/);
+  assert.strictEqual(typeof P.validateProfile(prof({ configDir: '\\\\evil\\share\\c' })), 'string');
+  assert.strictEqual(P.parseStore(JSON.stringify(storeOf(prof({ configDir: '\\\\?\\C:\\x' })))).store.profiles.length, 0, 'a hand-edited UNC entry is dropped on read');
+});
+
+test('addProfile refuses the home folder, the launch-time default dir, ~/.claude, and any folder inside or around another account\'s (Dexter 9, 11; Miguel Y2)', () => {
+  const store = storeOf(prof());
+  const add = (configDir, extra = {}) => P.addProfile(store, { name: 'N', colour: '#4caf6a', configDir }, { home: HOME, ...extra });
+  assert.match(add(HOME).error, /home/);
+  assert.match(add(path.join(HOME, '.claude')).error, /default/);
+  const inherited = path.join(HOME, 'work-account');
+  assert.match(add(inherited, { defaultDirs: [inherited] }).error, /default/);
+  assert.match(add(path.join(inherited, 'sub'), { defaultDirs: [inherited] }).error, /inside|around/);
+  assert.match(add(path.join(prof().configDir, 'inner')).error, /inside|around/);
+  assert.match(add(path.dirname(prof().configDir)).error, /inside|around/);
+  assert.strictEqual(add(path.join(HOME, 'elsewhere')).error, undefined);
+});
+
+test('colours: #rgb is accepted and stored as #rrggbb; a dropped entry is no longer a surprise for the common shorthand (Dexter 10)', () => {
+  assert.strictEqual(P.validateProfile(prof({ colour: '#abc' })), null);
+  const r = P.addProfile(storeOf(), { name: 'Short', colour: '#AbC' }, { home: HOME });
+  assert.strictEqual(r.profile.colour, '#aabbcc');
+  assert.strictEqual(P.parseStore(JSON.stringify(storeOf(prof({ colour: '#f80' })))).store.profiles[0].colour, '#ff8800');
+});
+
+test('a remembered DEFAULT is a choice: it beats the project\'s last used (Dexter 2)', () => {
+  const store = storeOf(prof(), prof({ id: 'play', name: 'Play', configDir: path.join(HOME, 'play') }));
+  let c = P.remember(P.emptyChoices(), { worktree: 'c:\\p\\dev', project: 'c:\\p' }, 'default');
+  c = P.remember(c, { worktree: 'c:\\p\\feat-a', project: 'c:\\p' }, 'work');
+  assert.strictEqual(P.chooseFor(c, store, { worktree: 'c:\\p\\dev', project: 'c:\\p' }), 'default');
+  assert.strictEqual(P.chooseFor(c, store, { worktree: 'c:\\p\\feat-a', project: 'c:\\p' }), 'work');
+  // and a project whose last used is the default, with a tab that has no pick of its own
+  const d = P.remember(P.emptyChoices(), { worktree: 'c:\\p\\dev', project: 'c:\\p' }, 'default');
+  assert.strictEqual(P.chooseFor(d, store, { worktree: 'c:\\p\\other', project: 'c:\\p' }), 'default');
+});
+
+test('property: a tab\'s own remembered pick (default or a known profile) is always what it opens with', () => {
+  const store = storeOf(prof(), prof({ id: 'play', name: 'Play', configDir: path.join(HOME, 'play') }));
+  const idArb = fc.constantFrom('default', 'work', 'play');
+  fc.assert(fc.property(idArb, idArb, idArb, (own, projectLast, other) => {
+    let c = P.remember(P.emptyChoices(), { worktree: 'w1', project: 'p' }, own);
+    c = P.remember(c, { worktree: 'w2', project: 'p' }, projectLast);
+    c = P.remember(c, { worktree: 'w3', project: 'q' }, other);
+    assert.strictEqual(P.chooseFor(c, store, { worktree: 'w1', project: 'p' }), own);
+    assert.strictEqual(P.chooseFor(c, store, { worktree: 'new', project: 'p' }), projectLast);
+  }));
 });
 
 test('addProfile refuses a bad name or colour, and a folder another profile or the default already uses', () => {

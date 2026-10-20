@@ -311,3 +311,28 @@ test('registryDirs: every profile folder is read too, so a live session under an
   assert.deepStrictEqual(FS.registryDirs(['a'], fixed, undefined), [path.join('home', '.claude', 'sessions')]);
   assert.deepStrictEqual(FS.registryDirs(['a'], fixed, 'nope'), [path.join('home', '.claude', 'sessions')]);
 });
+
+// --- Dexter 3 (PR #206): a profile that never ran a session has no sessions folder; that is "no sessions", not "unreadable" ---------
+test('a profile folder with no sessions folder yet reads as "no sessions for it", and the other registries still count', async () => {
+  const a = tmp();
+  fs.writeFileSync(path.join(a, '1.json'), JSON.stringify({ pid: 1, sessionId: 'aa' }));
+  const neverUsed = path.join(tmp(), 'sessions');            // the folder exists, its sessions\ does not
+  const r = await FS.readRegistries([a, neverUsed], undefined, [neverUsed]);
+  assert.deepStrictEqual(r, { ok: true, entries: [{ pid: 1, sessionId: 'aa', procStart: null }] });
+});
+
+test('only a MISSING optional folder is forgiven: an unreadable or garbled one, and any required one, still makes the answer not ok', async () => {
+  const a = tmp();
+  const garbled = tmp();
+  fs.writeFileSync(path.join(garbled, '1.json'), '{nope');
+  assert.strictEqual((await FS.readRegistries([a, garbled], undefined, [garbled])).ok, false);
+  assert.strictEqual((await FS.readRegistries([a, path.join(a, 'gone')], undefined, [])).ok, false, 'main\'s own dir is never optional');
+  const notADir = path.join(a, 'file');
+  fs.writeFileSync(notADir, 'x');
+  assert.strictEqual((await FS.readRegistries([a, notADir], undefined, [notADir])).ok, false, 'ENOTDIR is not "missing"');
+});
+
+test('profileRegistryDirs names each profile\'s sessions folder, unique, ignoring junk', () => {
+  assert.deepStrictEqual(FS.profileRegistryDirs([path.join('p', 'w'), path.join('p', 'w'), null, '', 5, undefined]), [path.join('p', 'w', 'sessions')]);
+  assert.deepStrictEqual(FS.profileRegistryDirs('x'), []);
+});

@@ -16,6 +16,9 @@
  * Reads say `missing`, `bad` or `ok`, and a `bad` file is never read as empty: the caller must not write over what it could not read
  * (the same rule as host/tab-marks). Entries are strict (`typeof`, never coercing); a hand-edited entry that fails validation is dropped
  * on its own, the others survive. Writes are temp file + rename (host/atomic-write.js).
+ *
+ * KNOWN LIMIT (same as host/store.js): an edit is read, changed, written. Two windows editing within the same few milliseconds can lose
+ * one of the two edits; the file is never torn, and an edit that could not read the file is refused rather than written over it.
  */
 const fs = require('fs');
 const os = require('os');
@@ -26,12 +29,14 @@ const { claudeConfigDir } = require('./claude-config-dir');
 const DEFAULT_ID = 'default';
 const NAME_MAX = 40;
 const ID_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const HEX_RE = /^#[0-9a-f]{6}$/i;
+const HEX_RE = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 const VERSION = 1;
 
 const isString = (v) => typeof v === 'string';
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const dirKey = (d) => (process.platform === 'win32' ? path.resolve(d).toLowerCase() : path.resolve(d));
+/** Is `child` strictly inside `parent`? */
+const inside = (child, parent) => { const rel = path.relative(dirKey(parent), dirKey(child)); return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel); };
 
 function defaultDir() { return path.join(os.homedir(), '.claude-custom'); }
 const profilesFile = (dir = defaultDir()) => path.join(dir, 'profiles.json');
@@ -40,18 +45,44 @@ const choicesFile = (dir = defaultDir()) => path.join(dir, 'profile-choices.json
 /** The built-in profile. `colour` is null: the header draws it in the theme's own colour. */
 const DEFAULT_PROFILE = Object.freeze({ id: DEFAULT_ID, name: 'Default', configDir: null, colour: null });
 
+/**
+ * Why `dir` can't be a profile folder, or null. It is made (mkdir) and opened by main, so what it names must be a plain local folder:
+ * never UNC (\\server\share: touching it sends the person's credentials to that server, the class app/file-link.js refuses), never a
+ * device path (\\?\ and \\.\), never a drive's root, never an alternate data stream, never a name ending in a dot or space. On Windows
+ * it needs a drive letter: \claude-work resolves against whatever drive the process happens to be on. `platform` is a seam for tests.
+ */
+function folderProblem(dir, platform = process.platform) {
+  if (!isString(dir) || dir === '' || dir.includes('\0')) return 'folder must be an absolute path';
+  if (platform === 'win32') {
+    if (/^[\\/]{2}/.test(dir)) return 'a network (UNC) or device path can\'t be a profile folder';
+    if (!/^[A-Za-z]:[\\/]/.test(dir)) return 'folder must start with a drive letter, like C:\\';
+    const rest = dir.slice(2);
+    if (rest.includes(':')) return 'folder must not contain a colon after the drive';
+    const parts = rest.split(/[\\/]+/).filter(Boolean);
+    if (parts.length === 0) return 'a drive\'s root can\'t be a profile folder';
+    if (parts.some(s => /[. ]$/.test(s))) return 'folder names must not end in a dot or a space';
+    return null;
+  }
+  if (!path.isAbsolute(dir)) return 'folder must be an absolute path';
+  if (path.resolve(dir) === path.parse(path.resolve(dir)).root) return 'the root folder can\'t be a profile folder';
+  return null;
+}
+
 /** null when the profile is fine, else a sentence saying what is wrong. */
 function validateProfile(p) {
   if (!isPlainObject(p)) return 'a profile must be an object';
   if (!isString(p.id) || p.id === DEFAULT_ID || !ID_RE.test(p.id)) return 'bad id (lowercase letters, digits and dashes; "default" is reserved)';
   if (!isString(p.name) || p.name.trim() === '' || p.name.trim().length > NAME_MAX) return `name must be 1-${NAME_MAX} characters`;
-  if (!isString(p.configDir) || p.configDir === '' || !path.isAbsolute(p.configDir)) return 'folder must be an absolute path';
-  if (!isString(p.colour) || !HEX_RE.test(p.colour)) return 'colour must be #rrggbb';
+  const bad = folderProblem(p.configDir);
+  if (bad) return bad;
+  if (!isString(p.colour) || !HEX_RE.test(p.colour)) return 'colour must be #rgb or #rrggbb';
   return null;
 }
 
 function cleanProfile(p) {
-  return { id: p.id, name: p.name.trim(), configDir: p.configDir, colour: p.colour.toLowerCase() };
+  const c = p.colour.toLowerCase();
+  const colour = c.length === 4 ? `#${c[1]}${c[1]}${c[2]}${c[2]}${c[3]}${c[3]}` : c;
+  return { id: p.id, name: p.name.trim(), configDir: p.configDir, colour };
 }
 
 /** `{ state: 'missing' }` | `{ state: 'bad' }` | `{ state: 'ok', store }`; never throws. */
@@ -121,12 +152,15 @@ function slugOf(name) {
   return s === '' || s === DEFAULT_ID ? 'profile' : s;
 }
 
-function uniqueId(store, name) {
-  const base = slugOf(name);
+/**
+ * An id is the name's slug plus 6 random hex digits and is NEVER recycled: the default folder is named after the id, so a removed "Work"
+ * (its folder kept, still holding its credentials) and a new "Work" must not share one. `random` is a seam for tests.
+ */
+function uniqueId(store, name, random = () => require('crypto').randomBytes(3).toString('hex')) {
+  const base = slugOf(name).slice(0, 20).replace(/-+$/g, '') || 'profile';
   const taken = new Set(listProfiles(store).map(p => p.id));
-  if (!taken.has(base)) return base;
-  for (let n = 2; ; n++) {
-    const id = `${base}-${n}`;
+  for (;;) {
+    const id = `${base}-${random()}`;
     if (!taken.has(id)) return id;
   }
 }
@@ -135,18 +169,25 @@ function uniqueId(store, name) {
  * Add a profile. `spec` is `{ name, colour, configDir? }`; the folder defaults to `<home>/.claude-profiles/<id>`.
  * -> `{ store, profile }` or `{ error }`. The folder is not created here: the CLI makes it on its first `/login`.
  */
-function addProfile(store, spec, { home = os.homedir() } = {}) {
+function addProfile(store, spec, { home = os.homedir(), defaultDirs = [], random } = {}) {
   const base = store && Array.isArray(store.profiles) ? store : { version: VERSION, profiles: [] };
   const name = spec && isString(spec.name) ? spec.name.trim() : '';
   if (name === '' || name.length > NAME_MAX) return { error: `name must be 1-${NAME_MAX} characters` };
-  if (!spec || !isString(spec.colour) || !HEX_RE.test(spec.colour)) return { error: 'colour must be #rrggbb' };
-  const id = uniqueId(base, name);
+  if (!spec || !isString(spec.colour) || !HEX_RE.test(spec.colour)) return { error: 'colour must be #rgb or #rrggbb' };
+  const id = uniqueId(base, name, random);
   const wantsDir = spec.configDir !== undefined && spec.configDir !== null && spec.configDir !== '';
   const configDir = wantsDir ? spec.configDir : path.join(home, '.claude-profiles', id);
-  if (!isString(configDir) || !path.isAbsolute(configDir)) return { error: 'folder must be an absolute path' };
-  // `env: {}` is the resolver's own answer for "CLAUDE_CONFIG_DIR unset": the default account's folder under `home`.
-  if (dirKey(configDir) === dirKey(claudeConfigDir({ env: {}, home }))) return { error: 'that folder is the default account\'s' };
+  const problem = folderProblem(configDir);
+  if (problem) return { error: problem };
+  // The default account's folder is ~/.claude (the resolver's own answer for "unset") AND whatever CLAUDE_CONFIG_DIR the app was launched
+  // with (`defaultDirs`, captured once at startup): both are "the default account". The home folder itself holds the default's
+  // global .claude.json, so it is refused too, as is any folder inside or around another account's.
+  const defaults = [claudeConfigDir({ env: {}, home }), ...defaultDirs.filter(isString).filter(d => d !== '')];
+  if (defaults.some(d => dirKey(configDir) === dirKey(d))) return { error: 'that folder is the default account\'s' };
+  if (dirKey(configDir) === dirKey(home)) return { error: 'the home folder can\'t be a profile folder' };
+  const others = [...defaults, ...base.profiles.map(p => p.configDir)];
   if (base.profiles.some(p => dirKey(p.configDir) === dirKey(configDir))) return { error: 'another profile already uses that folder' };
+  if (others.some(d => inside(configDir, d) || inside(d, configDir))) return { error: 'that folder is inside, or around, another account\'s folder' };
   const profile = cleanProfile({ id, name, configDir, colour: spec.colour });
   const why = validateProfile(profile);
   if (why) return { error: why };
@@ -205,7 +246,8 @@ function writeChoices(file, choices) {
  * longer has counts as not remembered. `worktree` and `project` are normalised paths (host/project-layout normPath).
  */
 function chooseFor(choices, store, { worktree, project } = {}) {
-  const known = (id) => (isString(id) && id !== DEFAULT_ID && findProfile(store, id) ? id : null);
+  // A remembered 'default' is a CHOICE (the person picked it), not an absence: it must beat the project's last used. Absence is a missing key.
+  const known = (id) => (isString(id) && findProfile(store, id) ? id : null);
   const c = choices && isPlainObject(choices) ? choices : emptyChoices();
   const own = isString(worktree) && c.byWorktree ? known(c.byWorktree[worktree]) : null;
   if (own) return own;
@@ -226,7 +268,7 @@ function remember(choices, { worktree, project } = {}, id) {
 }
 
 module.exports = {
-  DEFAULT_ID, DEFAULT_PROFILE, NAME_MAX, profilesFile, choicesFile,
+  folderProblem, DEFAULT_ID, DEFAULT_PROFILE, NAME_MAX, profilesFile, choicesFile,
   validateProfile, parseStore, readProfiles, writeProfiles, listProfiles, findProfile, configDirFor,
   addProfile, renameProfile, removeProfile,
   emptyChoices, parseChoices, readChoices, writeChoices, chooseFor, remember,

@@ -6890,7 +6890,9 @@ async function refreshProfiles() {
   styleState = reduceAccounts(styleState, { profiles: s.profiles, inUse: s.inUse });
   renderProfileChip();
   renderRoster();
-  renderStylePanel();
+  // Not under a half-typed name or a rename in progress: a redraw replaces every element of the Style panel (Miguel G2).
+  const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#style-sections [data-section=accounts]');
+  if (!typing) renderStylePanel();
 }
 
 async function pickProfile(id) {

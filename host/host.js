@@ -2986,7 +2986,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, profile: PROFILE_ID, sessionId: SIDE ? sessionId : undefined,
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -3003,7 +3003,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, profile: PROFILE_ID, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -3141,7 +3141,7 @@ const handleModRecord = createModRecordHandler({
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, profile: PROFILE_ID, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

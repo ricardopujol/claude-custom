@@ -170,7 +170,7 @@ test('an unknown duration is not described as approximate', () => {
 // --- account profiles (BACKLOG #119 A1): a fresh profile has an empty roster, and says so in one dim line ----------------------
 test('rosterEmptyState: under a non-default profile with no history, it says the profile has no agents yet', () => {
   const s = rosterEmptyState(0, new Map(), { ok: true, agents: [] }, { isDefault: false });
-  assert.match(s, /no agents in this profile yet/i);
+  assert.match(s, /no agent has run under this profile yet/i);
 });
 
 test('rosterEmptyState: the default profile, or a profile with history, or a failed read, keep their own sentences', () => {

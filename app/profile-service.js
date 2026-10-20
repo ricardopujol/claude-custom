@@ -14,10 +14,17 @@ const fs = require('fs');
 const os = require('os');
 const P = require('../host/profiles');
 const profileDisplay = require('./profile-display');
+const { sleepSync } = require('../host/atomic-write');
 
 function createProfileService({
   dir = undefined, home = os.homedir(), shell, confirm, openPath, broadcast = () => {}, projectKeyOf,
-  mkdir = (p) => fs.mkdirSync(p, { recursive: true }), log = () => {},
+  // The folder will hold credentials: owner-only where the OS has modes (Windows ignores it).
+  mkdir = (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }), log = () => {},
+  // The CLAUDE_CONFIG_DIR the app was LAUNCHED with, captured once at startup (or ''): with ~/.claude it is "the default account".
+  inheritedConfigDir = '',
+  // () -> ids of the profiles the running hosts of this machine were started under (their identity files): in use beyond this window.
+  hostProfiles = () => [],
+  random = undefined,
 } = {}) {
   const pfile = () => P.profilesFile(dir);
   const cfile = () => P.choicesFile(dir);
@@ -25,7 +32,9 @@ function createProfileService({
 
   /** { state: 'ok' | 'missing', store } or { state: 'bad' }: a missing file is just no profiles yet. */
   function loadStore() {
-    const r = P.readProfiles(pfile());
+    let r = P.readProfiles(pfile());
+    // A read can fail for a moment (another window's rename landing, an antivirus scan): once more before calling it bad.
+    if (r.state === 'bad') { sleepSync(40); r = P.readProfiles(pfile()); }
     if (r.state === 'ok') return r;
     if (r.state === 'missing') return { state: 'missing', store: { version: 1, profiles: [] } };
     return { state: 'bad', store: { version: 1, profiles: [] } };
@@ -39,9 +48,14 @@ function createProfileService({
   const listOf = (store) => P.listProfiles(store).map(p => ({ id: p.id, name: p.name, colour: p.colour, configDir: p.configDir }));
   const shortList = (store) => listOf(store).map(({ id, name, colour }) => ({ id, name, colour }));
 
+  // In use = under a tab of THIS window, or under any running host of the machine (hosts are detached and outlive windows; their
+  // identity files say which profile they were started under). The store is machine-wide, so the guard has to be too.
   function inUse() {
     const s = theShell();
-    try { return s ? [...s.profilesInUse()] : []; } catch { return []; }
+    const ids = new Set();
+    try { if (s) for (const id of s.profilesInUse()) ids.add(id); } catch { /* the hosts below still count */ }
+    try { for (const id of hostProfiles()) if (typeof id === 'string' && id !== '') ids.add(id); } catch { /* unreadable: nothing extra known */ }
+    return [...ids];
   }
 
   /** What a page needs: the list, which are in use, and the asking tab's own profile (null for a sender that isn't a tab). */
@@ -73,14 +87,16 @@ function createProfileService({
     return changed({ profile: r.profile || null, removed: r.removed || null });
   }
 
-  const add = (spec) => edit((store) => P.addProfile(store, spec, { home }));
+  const add = (spec) => edit((store) => P.addProfile(store, spec, { home, defaultDirs: [inheritedConfigDir], random }));
   const rename = ({ id, name } = {}) => edit((store) => P.renameProfile(store, id, name));
   const remove = ({ id } = {}) => edit((store) => P.removeProfile(store, id, new Set(inUse())));
 
   // --- what the shell and the spawn ask for ----------------------------------------------------------------------------------
 
   function choose(tab) {
-    const { store } = loadStore();
+    const { state, store } = loadStore();
+    // An unreadable store is not an empty one: a tab must not quietly start on the default account because the file was busy.
+    if (state === 'bad') throw new Error("couldn't read your profiles file, so this tab wasn't started on a guessed account. Fix or delete it and retry.");
     return P.chooseFor(loadChoices(), store, { worktree: tab && tab.key, project: projectKeyOf ? projectKeyOf(tab) : undefined });
   }
 
@@ -105,7 +121,11 @@ function createProfileService({
   function spawnEnvFor(tab) {
     const id = tab && typeof tab.profileId === 'string' ? tab.profileId : null;
     if (id === null) return { configDir: null, profileId: null };
-    const configDir = P.configDirFor(loadStore().store, id);
+    if (id === 'default') return { configDir: null, profileId: 'default' };
+    const loaded = loadStore();
+    if (loaded.state === 'bad') throw new Error(`couldn't read your profiles file, so this tab wasn't started on a guessed account (it should run as ${id}). Fix or delete the file and retry.`);
+    const configDir = P.configDirFor(loaded.store, id);
+    // A profile that was removed since the tab chose it: the default is the only honest fallback, and it is reported as the default.
     if (configDir === null) return { configDir: null, profileId: 'default' };
     try { mkdir(configDir); } catch (err) { log('[profiles] could not make', configDir, err && err.message); }
     return { configDir, profileId: id };

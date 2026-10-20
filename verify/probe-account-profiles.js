@@ -17,14 +17,21 @@
  *   switch     picking the default on feat-a (as the chip menu's click does): main asked "Restart this session as Default?",
  *              the old host is gone, a new host starts WITHOUT CLAUDE_CONFIG_DIR, the chip reads Default, the dot goes
  *   remember   the pick is saved: the choices file names feat-a -> default
+ *   port       REUSED PORT: feat-a's host dies unseen and a stranger (another folder's identity file, a live process of its own) takes its port;
+ *              switching feat-a to work kills NOTHING of the stranger and restarts feat-a under work on a port of its own
+ *   sessions   a profile that never ran a session has no sessions folder; the task-log registry read must still be ok
+ *
+ * WHAT IT DOES NOT COVER: cmd.exe as `claude` stops cleanly here, so the proven-kill path for a host that hangs after a stop (measured on
+ * this machine: node-pty teardown) is NOT exercised by a real hang; test/tab-shell-profiles.test.js pins it. Read "all checks passed"
+ * with that in mind.
  *
  * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing runs that bills and no login is needed. The app is driven
  * through CLAUDE_CUSTOM_TABS_PROBE (app/main.js), which does nothing when unset. The profiles dir, registry, portraits and uploads are
  * temp folders. Every process it started is ended through host/kill-tree.js by pid AND start time (verify/lib/seen-pids.js), never by name.
  * WINDOWS ONLY (cmd.exe).
  */
-const { execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { execFileSync, spawn } = require('child_process');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -236,13 +243,18 @@ async function main() {
   // Two profiles and a saved choice per tab, written through the real store so the file is what the app writes.
   fs.mkdirSync(profilesDir, { recursive: true });
   let store = { version: 1, profiles: [] };
-  store = profilesLib.addProfile(store, { name: 'Work', colour: '#4c8bf5', configDir: cfgWork }, { home: tmp }).store;
-  store = profilesLib.addProfile(store, { name: 'Play', colour: '#4caf6a', configDir: cfgPlay }, { home: tmp }).store;
+  // ids are random (never recycled), so they are read back rather than assumed
+  const addedWork = profilesLib.addProfile(store, { name: 'Work', colour: '#4c8bf5', configDir: cfgWork }, { home: tmp });
+  store = addedWork.store;
+  const addedPlay = profilesLib.addProfile(store, { name: 'Play', colour: '#4caf6a', configDir: cfgPlay }, { home: tmp });
+  store = addedPlay.store;
+  const workId = addedWork.profile.id;
+  const playId = addedPlay.profile.id;
   profilesLib.writeProfiles(profilesLib.profilesFile(profilesDir), store);
   const keyOf = (p) => require(path.join(ROOT, 'host', 'project-layout')).normPath(p);
   let choices = profilesLib.emptyChoices();
-  choices = profilesLib.remember(choices, { worktree: keyOf(dev), project: keyOf(container) }, 'work');
-  choices = profilesLib.remember(choices, { worktree: keyOf(featA), project: keyOf(container) }, 'play');
+  choices = profilesLib.remember(choices, { worktree: keyOf(dev), project: keyOf(container) }, workId);
+  choices = profilesLib.remember(choices, { worktree: keyOf(featA), project: keyOf(container) }, playId);
   profilesLib.writeChoices(profilesLib.choicesFile(profilesDir), choices);
 
   const app = await launchApp(container);
@@ -272,7 +284,7 @@ async function main() {
   check("develop's claude was started with CLAUDE_CONFIG_DIR = the work profile's folder", !!devStart && sameDir(devStart.cfg, cfgWork), JSON.stringify(devStart));
   check("feat/a's claude was started with CLAUDE_CONFIG_DIR = the play profile's folder", !!aStart && sameDir(aStart.cfg, cfgPlay), JSON.stringify(aStart));
   check('the two tabs got different folders', !!devStart && !!aStart && !sameDir(devStart.cfg, aStart.cfg));
-  check("the shell holds each tab's profile id", s.profileOf && s.profileOf.develop === 'work' && s.profileOf['feat/a'] === 'play', JSON.stringify(s.profileOf));
+  check("the shell holds each tab's profile id", s.profileOf && s.profileOf.develop === workId && s.profileOf['feat/a'] === playId, JSON.stringify(s.profileOf));
 
   // ===== chip =====
   s = await waitFor(async () => { const x = await state(app); return x.viewDom && x.viewDom.profileChip && x.viewDom.profileChip.text === 'Play' ? x : null; }, 30000, 400);
@@ -339,7 +351,63 @@ async function main() {
   // ===== remember =====
   const saved = profilesLib.readChoices(profilesLib.choicesFile(profilesDir));
   check('the pick is saved: the choices file names feat/a -> default and keeps develop -> work',
-    saved.state === 'ok' && saved.choices.byWorktree[keyOf(featA)] === 'default' && saved.choices.byWorktree[keyOf(dev)] === 'work', JSON.stringify(saved));
+    saved.state === 'ok' && saved.choices.byWorktree[keyOf(featA)] === 'default' && saved.choices.byWorktree[keyOf(dev)] === workId, JSON.stringify(saved));
+
+  // ===== sessions: a profile that never ran a session =====
+  {
+    const taskLogsFs = require(path.join(ROOT, 'host', 'task-logs-fs'));
+    const defaultCfg = path.join(tmp, 'default-cfg');
+    fs.mkdirSync(path.join(defaultCfg, 'sessions'), { recursive: true });
+    const profileCfgs = [cfgWork, cfgPlay];
+    const reg = await taskLogsFs.readRegistries(taskLogsFs.registryDirs([], () => defaultCfg, profileCfgs), undefined, taskLogsFs.profileRegistryDirs(profileCfgs));
+    check('a profile with no sessions folder yet does not make the task-log registry unreadable (the same call main makes)', reg.ok === true, JSON.stringify(reg));
+  }
+
+  // ===== port: a reused port =====
+  {
+    const aNow = hostOf(await state(app), 'feat/a');
+    const P = aNow && aNow.port;
+    let raw = null;
+    try { raw = JSON.parse(fs.readFileSync(path.join(HARNESS_DIR, 'hosts', `${P}.json`), 'utf8')); } catch { /* reported below */ }
+    const procStart = require(path.join(ROOT, 'host', 'proc-start'));
+    const { killProvenAsync } = require(path.join(ROOT, 'host', 'kill-tree'));
+    // the stranger: a live process of its own that stands in for another folder's host
+    const stranger = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+    noteChild(stranger);
+    const strangerStart = ((await procStart.startTimes([stranger.pid])) || new Map()).get(stranger.pid);
+    let decoy = null;
+    const idFile = path.join(HARNESS_DIR, 'hosts', `${P}.json`);
+    try {
+      check('the setup for the reused port exists (feat/a\'s identity file, a stranger with a start time)', !!raw && !!strangerStart, JSON.stringify({ P, raw: !!raw, strangerStart }));
+      if (raw && strangerStart) {
+        // feat/a's own host dies, and the stranger takes the port at once (before the next poll could notice)
+        const k = await killProvenAsync(raw.pid, raw.processStartedAt);
+        decoy = net.createServer((sock) => sock.destroy());
+        let listening = false;
+        for (let i = 0; i < 100 && !listening; i++) {
+          listening = await new Promise((resolve) => { decoy.once('error', () => resolve(false)); decoy.listen(P, '127.0.0.1', () => resolve(true)); });
+          if (!listening) await sleep(30);
+        }
+        fs.writeFileSync(idFile, JSON.stringify({ port: P, cwd: path.join(tmp, 'some-other-project'), pid: stranger.pid, startedAt: Date.now(), processStartedAt: strangerStart }));
+        check('feat/a\'s own host was ended and the stranger holds its port', k === 'killed' && listening, `kill ${k}, listening ${listening}`);
+        const strangerAsks = (await state(app)).profileAsks.length;
+        const r = await command(app, { cmd: 'profile', label: 'feat/a', id: workId }, 90000);
+        check('switching feat/a to work succeeds, and does NOT touch the stranger', r.ok === true && alive(stranger.pid), JSON.stringify(r) + ` stranger alive ${alive(stranger.pid)}`);
+        const after = await waitFor(async () => { const x = await state(app); const h = hostOf(x, 'feat/a'); return h && h.pid && h.pid !== raw.pid && h.pid !== stranger.pid && alive(h.pid) ? x : null; }, 60000, 400);
+        remember(after);
+        check('feat/a restarted under work on a port of its own', !!after && hostOf(after, 'feat/a').port !== P && after.profileOf['feat/a'] === workId, after ? JSON.stringify(hostOf(after, 'feat/a')) : 'no new host');
+        const nh = after && hostOf(after, 'feat/a');
+        const got = !!nh && !!(await recordEnv(nh));
+        const last = got ? startsIn(featA).pop() : null;
+        check('and its claude got the work profile\'s folder', !!last && sameDir(last.cfg, cfgWork), JSON.stringify(last));
+        void strangerAsks;
+      }
+    } finally {
+      try { if (decoy) decoy.close(); } catch { /* ours */ }
+      try { stranger.kill(); } catch { /* ours */ }
+      try { const cur = JSON.parse(fs.readFileSync(idFile, 'utf8')); if (cur.pid === stranger.pid) fs.unlinkSync(idFile); } catch { /* already replaced or gone */ }
+    }
+  }
 
   await quit(app);
 }

@@ -173,7 +173,7 @@ function rosterEmptyState(rosterSize, knownCareers, stats, profile) {
            'portraits light up when one runs in this session.';
   }
   // A fresh account profile has its own (empty) agents folder: say so, instead of implying the project never had agents (BACKLOG #119 A1).
-  if (profile && profile.isDefault === false) return 'No agents in this profile yet — portraits light up when one runs.';
+  if (profile && profile.isDefault === false) return 'No agent has run under this profile yet — portraits light up when one runs.';
   return 'No agents yet — portraits light up when one runs.';
 }
 

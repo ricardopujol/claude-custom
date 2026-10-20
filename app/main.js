@@ -44,7 +44,7 @@ const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
-const { readIdentity, readTokenFile, fileFor } = require('../host/host-identity');
+const { readIdentity, readTokenFile, fileFor, defaultIsAlive } = require('../host/host-identity');
 const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
@@ -181,6 +181,30 @@ const MODE = (PROJECT && PROJECT.kind === 'container' && EXPLICIT_PORT === null)
 // own root and state, as the host would work out for itself.
 const HOST_PROJECT = PROJECT || { kind: 'none', root: LAUNCH_CWD, dev: LAUNCH_CWD };
 const PROJECT_ROOT = HOST_PROJECT.root;
+// --- account profiles (BACKLOG #119 A1) -----------------------------------------------------------------------------
+// The store is machine-wide (~/.claude-custom/profiles.json); a probe points it at a throwaway dir with CLAUDE_CUSTOM_PROFILES_DIR.
+// A tab's profile becomes CLAUDE_CONFIG_DIR for its host (spawnHost), so every reader of the CLI's own state in that host follows it.
+const probeProfileAsks = [];   // the probe driver's record of every "Restart this session as ..." it was asked
+// The CLAUDE_CONFIG_DIR this app was LAUNCHED with, captured once: with ~/.claude it is "the default account" for the guard that stops a
+// profile pointing at it, whatever a later change of the environment does (Dexter 9).
+const INHERITED_CONFIG_DIR = typeof process.env.CLAUDE_CONFIG_DIR === 'string' ? process.env.CLAUDE_CONFIG_DIR : '';
+const profiles = createProfileService({
+  dir: process.env.CLAUDE_CUSTOM_PROFILES_DIR || undefined,
+  inheritedConfigDir: INHERITED_CONFIG_DIR,
+  hostProfiles: runningHostProfiles,
+  shell: () => tabShell,
+  projectKeyOf: () => normPath(HOST_PROJECT.root),
+  confirm: async (text) => {
+    // The probe driver has nobody to click: it says yes, and keeps what it was asked.
+    if (PROBE_PORT) { probeProfileAsks.push(text); return true; }
+    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Restart', 'Cancel'], defaultId: 1, cancelId: 1, message: text });
+    return r.response === 0;
+  },
+  // A profile's folder opens in Explorer through the one guarded path (app/file-link.js: no UNC, no device paths; a folder opens).
+  openPath: async (p) => { const r = await fileLink.open(p, HOST_PROJECT.root, fileFs, shell); return r && r.ok ? '' : `couldn't open it (${(r && r.why) || 'refused'})`; },
+  broadcast: () => forEachView((v) => v.webContents.send('profiles:changed')),
+  log: (...a) => console.log(...a),
+});
 const STATE_ROOT = stateRoot(HOST_PROJECT);
 // The name on the window and on every tab's header: the same source the host
 // labels itself from (its PROJECT_ROOT).
@@ -313,13 +337,36 @@ function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
 
-/** A function that ends the host on `port` if it is still the process its identity file names, or null when there is nothing to prove it by. */
-function hostKiller(port) {
+/**
+ * Which process serves `port` for THIS tab, from the host's identity file: { pid, start (OS start time, FILETIME), profile? }, or null.
+ * The file must name the tab's own folder (and be a side host exactly when the tab is one): a host of another folder that took the port
+ * is not this tab's, and must never become the proof a profile switch kills by (PR #206 Dexter 1). The shell keeps the answer from when it
+ * last SAW its host alive; the kill itself re-proves pid and start time on a held handle (host/kill-tree.js killProvenAsync).
+ */
+function hostIdentity({ port, tab }) {
   let raw = null;
   try { raw = JSON.parse(fs.readFileSync(fileFor(HARNESS_DIR, port), 'utf8')); } catch { return null; }
-  if (!raw || !Number.isInteger(raw.pid) || raw.pid <= 0 || Number(raw.port) !== port || typeof raw.processStartedAt !== 'string' || !/^\d+$/.test(raw.processStartedAt)) return null;
-  const { pid, processStartedAt } = raw;
-  return () => killProvenAsync(pid, processStartedAt);
+  if (!raw || !Number.isInteger(raw.pid) || raw.pid <= 0 || Number(raw.port) !== port) return null;
+  if (typeof raw.processStartedAt !== 'string' || !/^\d+$/.test(raw.processStartedAt)) return null;
+  // A well-formed file that names ANOTHER folder's host (or a side host for a branch tab) is still an answer: `foreign`, so the shell knows the
+  // port belongs to a stranger, and never takes the file as this tab's proof.
+  const foreign = !tab || !samePath(raw.cwd, tab.cwd) || (raw.side === true) !== (tab.side === true);
+  return { pid: raw.pid, start: raw.processStartedAt, ...(foreign ? { foreign: true } : {}), ...(!foreign && typeof raw.profile === 'string' ? { profile: raw.profile } : {}) };
+}
+
+/** The profile ids of the live hosts of every build beside this one (their identity files): "in use" is machine-wide, windows come and go. */
+function runningHostProfiles() {
+  const ids = [];
+  let installs = [INSTALL_DIR];
+  try { installs = installsBeside(INSTALL_DIR); } catch { /* this build alone */ }
+  for (const install of installs) {
+    let entries = [];
+    try { entries = identitiesIn(install); } catch { continue; }
+    for (const { parsed } of entries) {
+      if (parsed && Number.isInteger(parsed.pid) && parsed.pid > 0 && typeof parsed.profile === 'string' && defaultIsAlive(parsed.pid)) ids.push(parsed.profile);
+    }
+  }
+  return ids;
 }
 
 function spawnHost(tab, port, token) {
@@ -921,25 +968,6 @@ async function askWindowClose(files) {
 
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
 
-// --- account profiles (BACKLOG #119 A1) -----------------------------------------------------------------------------
-// The store is machine-wide (~/.claude-custom/profiles.json); a probe points it at a throwaway dir with CLAUDE_CUSTOM_PROFILES_DIR.
-// A tab's profile becomes CLAUDE_CONFIG_DIR for its host (spawnHost), so every reader of the CLI's own state in that host follows it.
-const probeProfileAsks = [];   // the probe driver's record of every "Restart this session as ..." it was asked
-const profiles = createProfileService({
-  dir: process.env.CLAUDE_CUSTOM_PROFILES_DIR || undefined,
-  shell: () => tabShell,
-  projectKeyOf: () => normPath(HOST_PROJECT.root),
-  confirm: async (text) => {
-    // The probe driver has nobody to click: it says yes, and keeps what it was asked.
-    if (PROBE_PORT) { probeProfileAsks.push(text); return true; }
-    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Restart', 'Cancel'], defaultId: 1, cancelId: 1, message: text });
-    return r.response === 0;
-  },
-  // A profile's folder opens in Explorer through the one guarded path (app/file-link.js: no UNC, no device paths; a folder opens).
-  openPath: async (p) => { const r = await fileLink.open(p, HOST_PROJECT.root, fileFs, shell); return r && r.ok ? '' : `couldn't open it (${(r && r.why) || 'refused'})`; },
-  broadcast: () => forEachView((v) => v.webContents.send('profiles:changed')),
-  log: (...a) => console.log(...a),
-});
 // `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
@@ -2073,9 +2101,10 @@ app.whenReady().then(async () => {
       probe: (port) => probePort(port),
       spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
       wait: (port) => waitForHost(port),
-      // BACKLOG #119 A1: the proof of WHICH process serves a port (its pid and OS start time, from its identity file), taken before a stop
-      // removes the file. Used only by a profile switch whose host won't leave (app/tab-shell.js changeProfile): a proven kill, never by name.
-      killer: (port) => hostKiller(port),
+      // BACKLOG #119 A1: WHICH process serves a port for a tab (pid and OS start time), recorded when the tab sees its host alive; and the
+      // proven kill a profile switch uses on a host that won't leave (app/tab-shell.js endHost). Never by name.
+      identify: (arg) => hostIdentity(arg),
+      kill: ({ pid, start }) => killProvenAsync(pid, start),
       tokenFor: tokenForRunningHost,
       tokenFile: tokenFileFor,
       // One secret, handed to the host AND the tab's page. In a single-tab window
@@ -2160,7 +2189,7 @@ app.whenReady().then(async () => {
     taskLogs: {
       everyMs: 60_000,
       scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
-      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir, profiles.stateFor(null).profiles.map(p => p.configDir))),
+      registry: () => { const dirs = profiles.stateFor(null).profiles.map(p => p.configDir); return taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir, dirs), undefined, taskLogsFs.profileRegistryDirs(dirs)); },
       remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
     },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one
