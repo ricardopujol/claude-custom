@@ -29,6 +29,7 @@ const STYLE_SECTIONS = [
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
   { id: 'window', title: 'Window' },
+  { id: 'tray', title: 'System tray' },
   { id: 'panel', title: "Claude's panel" },
 ];
 
@@ -213,11 +214,39 @@ function windowSectionView(state) {
  */
 function panelSectionView(state) {
   const mcp = state && typeof state.mcp === 'boolean' ? state.mcp : null;
+  // BACKLOG #119 A2: the claude-custom mod's switch, in the same section: also a spawn flag, also read when the next session starts.
+  const mod = state && typeof state.mod === 'boolean' ? state.mod : null;
   return {
+    mod,
+    modDescription: mod === null ? 'reading…'
+      : mod ? "claude-custom's mod reads the CLI's own quota, context and agent states and shows them here (it never changes what Claude does). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
+        : "claude-custom's mod is not loaded: quota, context and agent states come from the older sources. A change applies when claude-custom next starts this tab's session; one already running keeps what it has.",
     mcp,
     mcpDescription: mcp === null ? 'reading…'
       : mcp ? "Claude can build things in its panel (it's offered to the CLI as a tool). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
         : "Claude's panel is not offered to the CLI: it can't build anything there. A change applies when claude-custom next starts this tab's session; one already running keeps what it has.",
+  };
+}
+
+/**
+ * The tray icon's two Style switches (BACKLOG #119 A8; app/tray-settings.js owns them, "start minimised" lives in the tray's
+ * own menu). Strict like the window toggles: only a real boolean is known, anything else is null, "reading…".
+ */
+function traySectionView(state) {
+  const bool = (v) => (typeof v === 'boolean' ? v : null);
+  const trayIcon = bool(state && state.trayIcon);
+  const minimiseOnClose = bool(state && state.minimiseOnClose);
+  return {
+    trayIcon,
+    minimiseOnClose,
+    trayDescription: trayIcon === null ? 'reading…'
+      : trayIcon ? 'An icon in the notification area shows how many sessions need you. Click it to go to the one that has waited longest; right-click for the rest.'
+        : 'No tray icon. A toast and the window border still tell you when a session needs you.',
+    closeDescription: minimiseOnClose === null ? 'reading…'
+      : minimiseOnClose ? (trayIcon === false
+        ? 'Closing the window closes it, because this needs the tray icon: with the icon off there would be no way back to a hidden window.'
+        : 'Closing the window hides it to the tray; the sessions keep running and the icon brings it back. Quit from the tray menu.')
+        : 'Closing the window closes it, as it always did. The sessions keep running.',
   };
 }
 
@@ -227,6 +256,7 @@ const SECTION_VIEWS = {
   inactive: inactiveSectionView,
   avatars: avatarsSectionView,
   window: windowSectionView,
+  tray: traySectionView,
   panel: panelSectionView,
 };
 
@@ -256,7 +286,8 @@ function emptyStyleState() {
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
-    panel: { mcp: null },
+    tray: { trayIcon: null, minimiseOnClose: null },
+    panel: { mcp: null, mod: null },
   };
 }
 
@@ -317,6 +348,7 @@ function reduceStyle(prev, msg) {
     inactive: state.inactive,
     avatars: state.avatars || emptyStyleState().avatars,
     window: state.window || emptyStyleState().window,
+    tray: state.tray || emptyStyleState().tray,           // main's, never the host's: a style message must not lose it
     panel: state.panel || emptyStyleState().panel,       // the host never reports it: a style message must not lose it
   };
 }
@@ -376,11 +408,27 @@ function reduceChromeSettings(prev, settings) {
   return { ...state, window: { statusInHeader: pick('statusInHeader'), framelessWindow: pick('framelessWindow') } };
 }
 
+/** Records main's tray switches; only real booleans land, per key (start-minimised is the tray menu's, not shown here). */
+function reduceTraySettings(prev, settings) {
+  const state = prev || emptyStyleState();
+  if (!settings || typeof settings !== 'object') return state;
+  const cur = state.tray || emptyStyleState().tray;
+  const pick = (k) => (typeof settings[k] === 'boolean' ? settings[k] : cur[k]);
+  return { ...state, tray: { trayIcon: pick('trayIcon'), minimiseOnClose: pick('minimiseOnClose') } };
+}
+
 /** Records the panel's MCP switch as main reports it; only a real boolean lands (null = main couldn't tell: stay unknown). */
 function reduceCanvasMcp(prev, value) {
   const state = prev || emptyStyleState();
   if (typeof value !== 'boolean') return state;
   return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mcp: value } };
+}
+
+/** Records the mod's switch as main reports it; only a real boolean lands (null = main couldn't tell: stay unknown). */
+function reduceCcMod(prev, value) {
+  const state = prev || emptyStyleState();
+  if (typeof value !== 'boolean') return state;
+  return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mod: value } };
 }
 
 // How long to wait before asking main again for the panel switch after a read that gave no answer (PR #125 Miguel M3): 1 s, doubling, at most
@@ -394,7 +442,8 @@ function canvasMcpRetryDelay(attempt) {
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
-  coloursSectionView, panelSectionView, reduceCanvasMcp, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
+  traySectionView, reduceTraySettings,
+  coloursSectionView, panelSectionView, reduceCanvasMcp, reduceCcMod, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

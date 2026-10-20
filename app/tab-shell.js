@@ -1611,6 +1611,22 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (!(Number.isInteger(cmd.port) && cmd.port > 0 && cmd.port < 65536)) return { ok: false, error: 'background-open needs a port' };
         return await api.backgroundOpen(cmd.port);
       case 'background-stop-all': return await api.backgroundStopAll();
+      // BACKLOG #119 A8 (verify/probe-tray.js): the tray icon's state, its click and its menu, and its three switches.
+      case 'tray': return await api.tray();
+      case 'tray-click': return await api.trayClick();
+      case 'tray-image':
+        if (typeof cmd.file !== 'string' || !/\.png$/i.test(cmd.file)) return { ok: false, error: 'tray-image needs a .png file' };
+        return await api.trayImage(cmd.file);
+      case 'tray-menu':
+        if (cmd.label !== undefined && typeof cmd.label !== 'string') return { ok: false, error: 'tray-menu label must be text' };
+        return await api.trayMenu(cmd.label);
+      case 'tray-setting':
+        if (!['trayIcon', 'minimiseOnClose', 'startMinimised'].includes(cmd.key) || typeof cmd.value !== 'boolean') {
+          return { ok: false, error: 'tray-setting needs a tray key and true or false' };
+        }
+        return await api.traySetting(cmd.key, cmd.value);
+      // The window's own close, as the X does it: the 'close' handler decides whether it hides to the tray or really closes.
+      case 'win-close': return await api.winClose();
       // #62: a click on one of the strip's lean controls, as a mouse would press it (only these two buttons).
       case 'strip-lean':
         if (cmd.button !== 'lean-btn' && cmd.button !== 'lean-back') return { ok: false, error: 'strip-lean needs lean-btn or lean-back' };

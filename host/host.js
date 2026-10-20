@@ -85,7 +85,11 @@ const { validResizeDims, handleFrame, validAgentLogRequest, raiseTargets, idleSt
         CONTROL_TYPES, isControlClient } = require('./control');
 const { acceptOverride } = require('./layout-override');
 const { readQuota, createQuotaAnnouncer } = require('./quota');
-const { createHostQuota } = require('./quota-share');
+const { createHostQuota, recordModWindows } = require('./quota-share');
+const { createModServer } = require('./mod-feed');
+const { createContextSource } = require('./context-source');
+const { modEnabled, modPluginDirFor, modOffReason, readCliVersion } = require('./cc-mod-settings');
+const { createModRecordHandler } = require('./mod-records');
 const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
@@ -678,7 +682,9 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
     stateDir: path.join(HARNESS_DIR, 'state'),
   },
 }, PORT);
-const ARGS = buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side: SIDE });
+const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
+// Rebuilt once, at boot, with the claude-custom mod when its switch, the CLI's version and its directory allow it (prepareMod below).
+let ARGS = buildClaudeArgs(ARGS_OPTIONS);
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
@@ -1462,7 +1468,7 @@ if (helperExists) {
     if (ev.event === 'Status') {
       // Every document, even one without a model: a document that cannot say
       // must CLEAR the fill (unknown), never leave the last one standing.
-      setContext(readContext(ev.payload));
+      setContext(contextSource.fromRelay(readContext(ev.payload)));
       setStatusFields(readStatusFields(ev.payload));
       const status = readStatus(ev.payload);
       if (status.model !== undefined) setLiveModel(status.model);
@@ -1505,6 +1511,7 @@ if (helperExists) {
     // statusLine right after. Unknown until a document says otherwise.
     if (ev.event === 'SessionStart' && ev.payload
         && (ev.payload.source === 'clear' || ev.payload.source === 'compact')) {
+      contextSource.reset();           // and neither source's older figure may win a tie later
       setContext(null);
     }
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
@@ -1744,6 +1751,10 @@ const INHERITED_SESSION_VARS = [
   'CLAUDE_PID',
   'CLAUDE_EFFORT',
   'CLAUDECODE',
+  // BACKLOG #119 A2: a host started from inside a harness tab inherits that tab's mod port and token; passing them on would send this
+  // session's records to the other host. This host sets its own, or none.
+  'CLAUDE_CUSTOM_MOD_PORT',
+  'CLAUDE_CUSTOM_MOD_TOKEN',
 ];
 
 function cleanEnv() {
@@ -1803,6 +1814,9 @@ function startSession() {
       COLORTERM: 'truecolor',
       // Marks this session as harness-hosted; the hook bridge keys off it later.
       CLAUDE_CUSTOM_SESSION: '1',
+      // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
+      // mod server is up; the window's session token never goes here.
+      ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
       ...sessionEnv,
       ...providerEnv,
     },
@@ -2336,6 +2350,8 @@ wss.on('connection', (ws, req) => {
     // the session as input (PR #75).
     controls: [...CONTROL_TYPES],
     cwd: CWD,
+    // Whether the claude-custom mod is on, off or could not load, and why (PR #197 Miguel Y9): the diagnostics pane says it.
+    modStatus,
     // This session's id, null before SessionStart: the roster cards match a worktree claim on it (backlog #57).
     sessionId,
     // FF21. `project` is the same source of truth as the OS window title
@@ -3061,6 +3077,7 @@ wss.on('error', (err) => {
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
   if (term) { try { term.kill(); } catch {} }
+  try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
   try { canvasControl.close(); } catch {}
   try { schedulesControl.end(); } catch {}
@@ -3090,6 +3107,62 @@ process.on('exit', () => { hostQuota.release(); });
 // This session's scheduled work is over with it: neighbours see "session ended" at once (and a durable cron job stays on the list).
 process.on('exit', () => { schedulesControl.end(); });
 
+// --- the claude-custom mod (BACKLOG #119 A2) ------------------------------------------------------------------------
+// mods/claude-custom is loaded into `claude` with --plugin-dir. It reads the CLI's own usage, subagent states and permission asks and
+// POSTs them to the server below, which only this host's claude is given the port and token of (its environment, startSession).
+// Decided once at boot: the switch (host/cc-mod-settings.js), the CLI's version and the directory. A host with no mod is the host as
+// it was: the poller, the relay and the hooks are all still there, and each is only ever overruled by a FRESHER mod figure.
+const MOD_DIR = path.join(__dirname, '..', 'mods', 'claude-custom');
+const MOD_TOKEN = newToken();
+const contextSource = createContextSource();
+const modServer = createModServer({ token: MOD_TOKEN, onRecord: (rec) => handleModRecord(rec), log: (m) => console.log('[host]', m) });
+let modPort = null;
+
+// Why the mod is not loaded, if it is not: said once in the log and kept for the diagnostics pane (hello + `modStatus`), so a quiet feed
+// is never a mystery (PR #197 Miguel Y9). null while it is on or before it has been decided.
+let modStatus = null;
+function setModStatus(status) {
+  modStatus = status;
+  broadcastControl({ type: 'modStatus', modStatus });
+}
+
+async function prepareMod() {
+  try {
+    const enabled = modEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') });
+    // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
+    const forced = !!process.env.CLAUDE_CUSTOM_BIN;
+    const version = enabled && !forced ? await readCliVersion(CLAUDE_BIN) : null;
+    const why = modOffReason({ enabled, version, dir: MOD_DIR, forced });
+    if (why !== null) {
+      console.log('[host] claude-custom mod: not loaded --', why);
+      setModStatus({ state: enabled ? 'not-loaded' : 'off', reason: why });
+      return;
+    }
+    modPort = await modServer.listen();
+    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir: modPluginDirFor({ enabled, version, dir: MOD_DIR, forced }) });
+    console.log('[host] claude-custom mod: on, posts to 127.0.0.1:' + modPort + ' (CLI', version ? version.join('.') : 'stand-in', ')');
+    setModStatus({ state: 'on', reason: null });
+  } catch (err) {
+    modPort = null;
+    console.log('[host] claude-custom mod: not loaded:', err && err.message);
+    setModStatus({ state: 'not-loaded', reason: 'the claude-custom mod failed to start: ' + (err && err.message) });
+  }
+}
+
+// One record from the mod: host/mod-records.js says what each kind feeds, with these collaborators.
+const handleModRecord = createModRecordHandler({
+  getSessionId: () => sessionId,
+  writeWindows: (windows) => recordModWindows({ windows }),
+  readQuota: () => hostQuota.readNow(),
+  lastWindowsKey: () => JSON.stringify(lastQuota && lastQuota.windows),
+  broadcastQuota: (quota) => broadcastControl({ type: 'quota', quota }),
+  contextSource,
+  setContext,
+  mood,
+  attention,
+  log: (m) => console.log('[host]', m),
+});
+
 // --- boot: the session lock, then the session (Extension X1/X3) -------------
 // Our own OS start time (for the lock's pid-reuse check: one powershell.exe,
 // ~250ms) and Windows' excluded port ranges (two netsh, in parallel, ~100ms)
@@ -3098,7 +3171,7 @@ process.on('exit', () => { schedulesControl.end(); });
 // the lock blocks skips the port block entirely (workOutSessionEnv). A bug in
 // any of this must not cost the person their session: see the catch.
 (async () => {
-  const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges()]);
+  const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges(), prepareMod()]);
   excludedPorts = excluded;
   lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null, install: path.join(__dirname, '..') };
   // The identity again, now with the OS start time: the exact proof the ▾
