@@ -344,10 +344,14 @@ function createShell(deps) {
 
   function issueOf(key) {
     if (typeof key !== 'string') return null;
-    if (issueTabs.has(key)) return issueShape(issueTabs.get(key));
     const branch = branchOf(key);
-    if (!issues || typeof issues.forBranch !== 'function' || branch === null) return null;
-    try { return issueShape(issues.forBranch(branch)); } catch (err) {
+    if (branch === null) return null;
+    // The lane this window made: valid only while the tab is still on the branch it was made on (a git switch drops it).
+    const mine = issueTabs.get(key);
+    if (mine && mine.branch === branch) return issueShape(mine);
+    if (!issues || typeof issues.forBranch !== 'function') return null;
+    const tab = tabs.get(key);
+    try { return issueShape(issues.forBranch(branch, tab ? tab.cwd : null)); } catch (err) {
       log('[shell] issues.forBranch threw:', err && err.message);
       return null;
     }
@@ -399,6 +403,8 @@ function createShell(deps) {
         mark: readMark(branchOf(e.key)),
         // #119 A6: the GitHub issue this lane was started from ({ number, title, url } or null).
         issue: e.side === true ? null : issueOf(e.key),
+        // #119 A6: this tab's lane brief is being written, and its session waits for it.
+        briefing: e.side !== true && briefHolds.has(e.key),
         // #63: the CPU warning chip ({ pct, level } or null).
         resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
@@ -947,7 +953,7 @@ function createShell(deps) {
     // because a session's first move may be to read it. The tab shows its issue number from this moment.
     let briefRun = null;
     if (Number.isInteger(issueNumber) && issueNumber >= 1 && issues && typeof issues.brief === 'function') {
-      issueTabs.set(key, { number: issueNumber, title: null, url: null });
+      issueTabs.set(key, { branch: made.branch, number: issueNumber, title: null, url: null });
       briefHolds.add(key);
       briefRun = (async () => {
         try { return await issues.brief({ number: issueNumber, branch: made.branch, worktree: made.path }); } catch (err) {
@@ -955,53 +961,64 @@ function createShell(deps) {
         }
       })();
     }
-    const withSetup = scriptsAvailable().setup;
-    // Held from here, so the poll that lists it can't start its session early.
-    if (withSetup) setups.set(key, { running: true, line: null, error: null, log: null });
-    if (typeof made.warning === 'string' && made.warning) createdWarnings.set(key, made.warning);
-    pendingBranches.delete(wanted);
-    create = null;
-    selectWhenListed = key;
-    log(`[shell] created ${made.branch} at ${made.path}`);
-    await poll();
+    try {
+      const withSetup = scriptsAvailable().setup;
+      // Held from here, so the poll that lists it can't start its session early.
+      if (withSetup) setups.set(key, { running: true, line: null, error: null, log: null });
+      if (typeof made.warning === 'string' && made.warning) createdWarnings.set(key, made.warning);
+      pendingBranches.delete(wanted);
+      create = null;
+      selectWhenListed = key;
+      log(`[shell] created ${made.branch} at ${made.path}`);
+      await poll();
 
-    if (withSetup) {
-      let s;
-      try {
-        s = await ops.setup({
-          path: made.path,
-          onLine: (line) => {
-            const cur = setups.get(key);
-            if (!cur || cur.running !== true) return;
-            cur.line = line;
-            publish();
-          },
-        });
-      } catch (err) {
-        s = { ok: false, error: errorText(err), log: null };
+      if (withSetup) {
+        let s;
+        try {
+          s = await ops.setup({
+            path: made.path,
+            onLine: (line) => {
+              const cur = setups.get(key);
+              if (!cur || cur.running !== true) return;
+              cur.line = line;
+              publish();
+            },
+          });
+        } catch (err) {
+          s = { ok: false, error: errorText(err), log: null };
+        }
+        // A tab closed by hand meanwhile keeps no error for a later reopen. One
+        // git simply hasn't listed yet keeps it (PR #80 Dexter F3): "no tab" is
+        // not "closed".
+        if ((s && s.ok === true) || state.dismissed.includes(key)) setups.delete(key);
+        else setups.set(key, { running: false, line: null, error: (s && s.error) || 'setup failed', log: (s && s.log) || null });
+        log(`[shell] setup ${key}: ${s && s.ok === true ? 'done' : `failed: ${s && s.error}`}`);
+        if (destroyed) return { ok: true, path: made.path };
+        publish();
       }
-      // A tab closed by hand meanwhile keeps no error for a later reopen. One
-      // git simply hasn't listed yet keeps it (PR #80 Dexter F3): "no tab" is
-      // not "closed".
-      if ((s && s.ok === true) || state.dismissed.includes(key)) setups.delete(key);
-      else setups.set(key, { running: false, line: null, error: (s && s.error) || 'setup failed', log: (s && s.log) || null });
-      log(`[shell] setup ${key}: ${s && s.ok === true ? 'done' : `failed: ${s && s.error}`}`);
-      if (destroyed) return { ok: true, path: made.path };
-      publish();
-    }
-    if (briefRun) {
-      const b = await briefRun;
+      if (briefRun) {
+        const b = await briefRun;
+        briefHolds.delete(key);
+        if (destroyed) return { ok: true, path: made.path };
+        const known = issueShape(b && b.issue) || { number: issueNumber, title: null, url: null };
+        issueTabs.set(key, { branch: made.branch, ...known });
+        // Kept where a restart will find it, whether or not the brief got written (the number is the person's pick).
+        if (issues && typeof issues.remember === 'function') {
+          try { issues.remember({ branch: made.branch, path: made.path, issue: known }); } catch (err) { log('[shell] issues.remember threw:', err && err.message); }
+        }
+        // A tab closed by hand meanwhile keeps no warning for a later reopen (as with a setup error above).
+        const note = b && b.ok !== true ? `the brief wasn't written (${b.error || 'unknown reason'})`
+          : (b && typeof b.warning === 'string' && b.warning) || null;
+        if (note && !state.dismissed.includes(key)) {
+          createdWarnings.set(key, [createdWarnings.get(key), note].filter(Boolean).join('; '));
+        }
+        log(`[shell] brief for ${made.branch}: ${b && b.ok === true ? (b.existed ? 'already there' : 'written') : `not written: ${b && b.error}`}`);
+        publish();
+      }
+    } finally {
+      // Whatever threw in between (a publish, a poll, the setup), the hold comes off: a session that can never start is worse
+      // than one that starts without its brief (PR #202 Miguel Y3).
       briefHolds.delete(key);
-      if (destroyed) return { ok: true, path: made.path };
-      const known = (b && b.ok === true ? issueShape(b.issue) : null) || issueShape(b && b.issue) || issueTabs.get(key);
-      issueTabs.set(key, known);
-      // A tab closed by hand meanwhile keeps no warning for a later reopen (as with a setup error above).
-      if (b && b.ok !== true && !state.dismissed.includes(key)) {
-        const why = `the brief wasn't written (${(b && b.error) || 'unknown reason'})`;
-        createdWarnings.set(key, [createdWarnings.get(key), why].filter(Boolean).join('; '));
-      }
-      log(`[shell] brief for ${made.branch}: ${b && b.ok === true ? (b.existed ? 'already there' : 'written') : `not written: ${b && b.error}`}`);
-      publish();
     }
     const tab = tabByKey(key);
     if (tab && key === selectedKey && !tab.started && !tab.starting) start(tab);

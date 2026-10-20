@@ -122,9 +122,11 @@ test('picking a row fills the branch field, closes the list, and Create carries 
   r.doc.byId['issues-list'].children[0].onclick();
   assert.strictEqual(r.doc.byId['create-branch'].value, 'fix/12-crash-on-start');
   assert.deepStrictEqual(r.calls.at(-1), ['pickerClose']);
-  r.doc.byId['create-branch'].value = 'fix/12-crash-on-start-v2';      // editable before Create
   r.doc.byId.create.onsubmit({ preventDefault() {} });
-  assert.deepStrictEqual(r.calls.at(-1), ['create', 'fix/12-crash-on-start-v2', 12]);
+  assert.deepStrictEqual(r.calls.at(-1), ['create', 'fix/12-crash-on-start', 12]);
+  r.doc.byId['create-branch'].value = 'fix/12-crash-on-start-v2';      // editable before Create, and then it is not the picked branch
+  r.doc.byId.create.onsubmit({ preventDefault() {} });
+  assert.deepStrictEqual(r.calls.at(-1), ['create', 'fix/12-crash-on-start-v2']);
 });
 
 test('emptying the field forgets the pick, and a new form starts with none', async () => {
@@ -135,7 +137,6 @@ test('emptying the field forgets the pick, and a new form starts with none', asy
   r.doc.byId['issues-list'].children[1].onclick();
   const input = r.doc.byId['create-branch'];
   input.value = '';
-  input.oninput();
   input.value = 'feat/other';
   r.doc.byId.create.onsubmit({ preventDefault() {} });
   assert.deepStrictEqual(r.calls.at(-1), ['create', 'feat/other']);
@@ -258,4 +259,54 @@ test('tab-strip.html: the row is inside the form; the list panel is outside #tab
     assert.ok(html.indexOf(`id="${id}"`) > tabsEnd, `${id} is outside #tabs (a repaint rebuilds #tabs)`);
   }
   assert.match(html, /id="issues-panel"[^>]*\bhidden\b/);
+});
+
+// --- PR #202 review: Dexter 2 + Miguel Y1, Dexter 7 ---------------------------------------------
+
+test('Dexter 2 / Miguel Y1: an edited branch is no longer the picked issue\'s: Create sends no number', async () => {
+  const r = rig();
+  r.show({ phase: 'input' });
+  r.show({ phase: 'input', picker: true });
+  await settle();
+  r.doc.byId['issues-list'].children[0].onclick();            // #12 -> fix/12-crash-on-start
+  const input = r.doc.byId['create-branch'];
+  for (const edited of ['feat/13-dark-mode', 'feat/other', 'fix/12-crash-on-start-v2', 'fix/12-crash-on-star']) {
+    input.value = edited;
+    r.doc.byId.create.onsubmit({ preventDefault() {} });
+    assert.deepStrictEqual(r.calls.at(-1), ['create', edited], edited);
+  }
+});
+
+test('typing the picked branch back (or only adding spaces around it) is the pick again', async () => {
+  const r = rig();
+  r.show({ phase: 'input' });
+  r.show({ phase: 'input', picker: true });
+  await settle();
+  r.doc.byId['issues-list'].children[0].onclick();
+  const input = r.doc.byId['create-branch'];
+  input.value = 'feat/x';
+  input.value = '  fix/12-crash-on-start ';
+  r.doc.byId.create.onsubmit({ preventDefault() {} });
+  assert.deepStrictEqual(r.calls.at(-1), ['create', '  fix/12-crash-on-start ', 12]);
+});
+
+test('a refusal then a fix of the name: the number goes only with the branch that was picked', async () => {
+  const r = rig();
+  r.show({ phase: 'input' });
+  r.show({ phase: 'input', picker: true });
+  await settle();
+  r.doc.byId['issues-list'].children[0].onclick();
+  r.show({ phase: 'running', branch: 'fix/12-crash-on-start' });
+  r.show({ phase: 'failed', branch: 'fix/12-crash-on-start', error: 'nope' });
+  r.doc.byId['create-branch'].value = 'feat/mine';
+  r.doc.byId.create.onsubmit({ preventDefault() {} });
+  assert.deepStrictEqual(r.calls.at(-1), ['create', 'feat/mine']);
+});
+
+test('Dexter 7: while the lane\'s brief is being written the pane says so, instead of "is not started yet"', () => {
+  const { paneFor } = require('../app/tab-strip');
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false, briefing: true })] }), { text: 'Writing the brief for feat/a…', retry: null });
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false, briefing: false })] }), { text: 'feat/a is not started yet.', retry: 'k' });
+  assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false, setup: { running: true, line: null }, briefing: true })] }),
+    { text: 'Setting up feat/a…', retry: null }, 'a running setup is the more specific word');
 });

@@ -64,7 +64,9 @@ test('the shell is given the brief writer and the branch-to-issue reader, made f
   const at = MAIN.indexOf('tabShell = createShell({');
   const call = callText(MAIN, at);
   assert.match(call, /issues: \{\s*brief: createLaneBriefWriter\(\{ cwd: HOST_PROJECT\.dev, service: issueService, ops: briefOps \}\),/);
-  assert.match(call, /forBranch: \(branch\) => issueForBranch\(branch, issueService\.cached\(HOST_PROJECT\.dev\)\)/);
+  assert.match(call, /forBranch: \(branch, folder\) => issueLinks\.get\(branch, folder\) \|\| issueForBranch\(branch, issueService\.cached\(HOST_PROJECT\.dev\)\),/);
+  assert.match(call, /remember: \(record\) => issueLinks\.set\(record\),/);
+  assert.match(MAIN, /issueLinksFileFor\(STATE_ROOT\)/, 'the links live with the project state');
   assert.match(MAIN, /issueService = createIssueService\(\);/);
 });
 
@@ -96,7 +98,7 @@ test('the brief script is run like the contract scripts: no shell, never killed'
   const ops = strip(read('host', 'worktree-ops.js'));
   const at = ops.indexOf('async briefPath(');
   const body = ops.slice(at, ops.indexOf('\n    },', at));
-  assert.match(body, /runScript\(\{ script, timeoutMs: TIMEOUT_MS\.create, spawn, args: \[psArg\('Path', wt\)\] \}\)/);
+  assert.match(body, /runScript\(\{ script, timeoutMs: TIMEOUT_MS\.brief, spawn, args: \[psArg\('Path', wt\)\] \}\)/);
   assert.doesNotMatch(body, /\.kill\(/);
 });
 

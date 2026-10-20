@@ -51,6 +51,10 @@ test('parseIssues is strict about the optional fields: a wrong type is absent, n
   assert.deepStrictEqual(j.assignees, ['x']);
 });
 
+test('parseIssues returns the normalised href, so a newline or tab inside the string cannot reach the brief', () => {
+  assert.strictEqual(parseIssues(gh([row({ url: 'https://github.com/o/r/is\nsues/1\t2' })]))[0].url, 'https://github.com/o/r/issues/12');
+});
+
 test('parseIssues keeps only an https url; anything else is no link', () => {
   const urls = ['http://github.com/o/r/issues/1', 'javascript:alert(1)', 'file:///c:/x', 'https://user:pw@github.com/o/r/issues/1', '', 'github.com/o/r/issues/1'];
   for (const url of urls) assert.strictEqual(parseIssues(gh([row({ url })]))[0].url, null, url);
@@ -135,6 +139,23 @@ test('issueNumberOfBranch reads only the shape the + form makes', () => {
   }
 });
 
+test('issueForBranch needs the number AND the prefix and slug the picker would have made', () => {
+  const dark = [{ number: 2, title: 'Dark mode', labels: [], assignees: [], updatedAt: null, url: null }];
+  assert.strictEqual(issueForBranch('feat/2-step-login', dark), null, 'a hand-typed branch that starts with a number is no issue');
+  assert.strictEqual(issueForBranch('fix/2-dark-mode', dark), dark[0], 'feat or fix: a label may have changed');
+  assert.strictEqual(issueForBranch('feat/2-dark-mode', dark), dark[0]);
+  assert.strictEqual(issueForBranch('feat/2-dark-mode-v2', dark), dark[0], 'a slug the person extended is still that issue');
+  assert.strictEqual(issueForBranch('chore/2-dark-mode', dark), null);
+  assert.strictEqual(issueForBranch('feat/2-dark', dark), null, 'a shorter slug is not what the picker made');
+});
+
+test('property: the branch the picker makes always finds its own issue again', () => {
+  fc.assert(fc.property(fc.integer({ min: 1, max: 999999 }), fc.string({ unit: 'binary', maxLength: 120 }), fc.boolean(), (number, title, bug) => {
+    const i = { number, title: title.trim() === '' ? 'x' : title, labels: bug ? ['bug'] : [], assignees: [], updatedAt: null, url: null };
+    assert.strictEqual(issueForBranch(branchFor(i), [i]), i);
+  }), { numRuns: 300 });
+});
+
 test('issueForBranch needs the number in the list: a branch that merely looks like one is no issue', () => {
   const list = [{ number: 12, title: 'T', labels: [], assignees: [], updatedAt: null, url: null }];
   assert.strictEqual(issueForBranch('feat/12-t', list), list[0]);
@@ -209,6 +230,20 @@ test('buildBrief: the standard sections, filled from the issue (snapshot)', () =
     '',
     '',
   ].join('\n'));
+});
+
+test('buildBrief: a body that could not be fetched is said so, with the reason and the link, never "no description"', () => {
+  const text = buildBrief({ branch: 'feat/1-a', worktree: 'C:\\w', issue: ISSUE, body: '', bodyUnavailable: 'gh took too long', now: WHEN });
+  assert.ok(text.includes('**Source:** GitHub issue #119 https://github.com/o/r/issues/119 (body not fetched: gh took too long; open the link)\n'));
+  assert.ok(text.includes("> (the description couldn't be fetched: gh took too long; open the link above)"));
+  assert.ok(!text.includes('has no description'));
+  const noUrl = buildBrief({ branch: 'feat/1-a', worktree: 'C:\\w', issue: { ...ISSUE, url: null }, body: '', bodyUnavailable: 'x', now: WHEN });
+  assert.ok(noUrl.includes('**Source:** GitHub issue #119 (body not fetched: x; open the issue on GitHub)\n'));
+});
+
+test('buildBrief: a reason is one line (a newline in it cannot add a line to the brief)', () => {
+  const text = buildBrief({ branch: 'feat/1-a', worktree: 'C:\\w', issue: ISSUE, body: '', bodyUnavailable: 'a\n## What to build\nb', now: WHEN });
+  assert.strictEqual(text.split('\n').filter(l => l === '## What to build').length, 1);
 });
 
 test('buildBrief is a pure function of its input', () => {
@@ -341,14 +376,37 @@ test('service.list: the cache is per folder', async () => {
   assert.deepStrictEqual(calls.map(c => c.cwd), ['C:\\a', 'C:\\b']);
 });
 
-test('service.list: a failure is never cached and is one dim line', async () => {
+test('service.list: a failure is one dim line, remembered for 30 s, and an explicit refresh asks again', async () => {
   let n = 0;
-  const { svc, calls } = fakeService((args) => (++n === 1 ? Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }) : gh([row()])));
+  const { svc, calls, tick } = fakeService((args) => (++n === 1 ? Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }) : gh([row()])));
   const bad = await svc.list('C:\\p');
   assert.deepStrictEqual(bad, { ok: false, text: 'Sign in to gh to pick an issue' });
-  const good = await svc.list('C:\\p');
-  assert.strictEqual(good.ok, true);
-  assert.strictEqual(calls.length, 2, 'the failure did not stick');
+  tick(29_999);
+  assert.deepStrictEqual(await svc.list('C:\\p'), bad, 'inside 30 s the failure is served: a hung or missing gh is not re-run on every poll');
+  assert.strictEqual(calls.length, 1);
+  const good = await svc.list('C:\\p', { refresh: true });
+  assert.strictEqual(good.ok, true, 'the form opening (refresh) bypasses it, so a login shows at once');
+  assert.strictEqual(calls.length, 2);
+});
+
+test('service.list: past 30 s a failure is tried again, and a good list replaces the remembered failure', async () => {
+  let n = 0;
+  const { svc, calls, tick } = fakeService(() => (++n <= 2 ? Object.assign(new Error('x'), { code: 'ENOENT' }) : gh([row()])));
+  assert.strictEqual((await svc.list('C:\\p')).ok, false);
+  tick(30_001);
+  assert.strictEqual((await svc.list('C:\\p')).ok, false);
+  assert.strictEqual(calls.length, 2);
+  tick(30_001);
+  assert.strictEqual((await svc.list('C:\\p')).ok, true);
+  assert.strictEqual((await svc.list('C:\\p')).ok, true);
+  assert.strictEqual(calls.length, 3, 'the good answer is cached');
+});
+
+test('service.list: the negative cache is per folder', async () => {
+  const { svc, calls } = fakeService(() => { throw Object.assign(new Error('x'), { code: 'ENOENT' }); });
+  await svc.list('C:\\a');
+  await svc.list('C:\\b');
+  assert.strictEqual(calls.length, 2);
 });
 
 test('service.list: output that is not an issue list is a failure, not "no issues"', async () => {

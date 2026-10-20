@@ -48,6 +48,7 @@ function paneFor(payload) {
   if (setup && setup.running === true) {
     return { text: `Setting up ${sel.label}…${nonEmpty(setup.line) ? ` ${setup.line}` : ''}`, retry: null };
   }
+  if (sel.briefing === true) return { text: `Writing the brief for ${sel.label}…`, retry: null };
   const create = objectOr(p.create, null);
   if (create && create.phase === 'running' && create.branch === sel.label) {
     return { text: `Creating ${sel.label}…`, retry: null };
@@ -266,8 +267,9 @@ function paintPlus(doc, payload, bridge) {
   form.dataset.phase = phase;
   form.onsubmit = (ev) => {
     if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
-    // #119 A6: a branch picked from an issue carries the issue's number, so main writes that issue's brief.
-    if (issuePick.number !== null) bridge.create(String(input.value), issuePick.number);
+    // #119 A6: a branch picked from an issue carries the issue's number, so main writes that issue's brief. Only while the
+    // field still holds exactly the branch the pick filled in: any edit makes it somebody else's branch (PR #202 Dexter 2).
+    if (issuePick.number !== null && String(input.value).trim() === issuePick.branch) bridge.create(String(input.value), issuePick.number);
     else bridge.create(String(input.value));
   };
   input.onkeydown = (ev) => {
@@ -275,7 +277,6 @@ function paintPlus(doc, payload, bridge) {
     ev.preventDefault();
     bridge.cancelCreate();
   };
-  input.oninput = () => { if (String(input.value).trim() === '') issuePick.number = null; };
   const cancel = doc.getElementById('create-cancel');
   if (cancel) cancel.onclick = () => bridge.cancelCreate();
   paintIssues(doc, { create, phase, fresh, input }, bridge);
@@ -285,7 +286,8 @@ function paintPlus(doc, payload, bridge) {
 // The form's second way to start. Main answers every question (host/issues.js: the list, the filter, the branch each
 // issue makes); this draws it. The list is a panel over the area under the strip: main hides the selected tab's page
 // while the shell's `create.picker` is true, because a tab's page is a native view that would cover it.
-const issuePick = { number: null };                                  // the issue whose branch is in the field
+// One strip document per process, so these are singletons (hence the `drawnFor` guard below for a test's second document).
+const issuePick = { number: null, branch: null };                    // the issue picked, and the exact branch the pick filled in
 const issueUi = { seq: 0, reply: null, query: '', wasOpen: false, drawn: undefined, drawnFor: null };   // the last answer, and which ask it answers
 
 function issueRowNode(doc, row, onPick) {
@@ -354,6 +356,7 @@ function paintIssues(doc, { create, phase, fresh, input }, bridge) {
   const pick = (row) => {
     input.value = String(row.branch);
     issuePick.number = Number.isInteger(row.number) ? row.number : null;
+    issuePick.branch = String(row.branch);
     closePicker();
   };
   function draw() {
@@ -375,6 +378,7 @@ function paintIssues(doc, { create, phase, fresh, input }, bridge) {
   // already says whether a pick is possible.
   if (fresh) {
     issuePick.number = null;
+    issuePick.branch = null;
     issueUi.reply = null;
     ask('', true);
   }

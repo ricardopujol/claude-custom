@@ -77,3 +77,20 @@ test('createOps.briefPath refuses a worktree path that is not a string, before r
   for (const bad of [undefined, null, '', 5]) assert.strictEqual((await o.briefPath({ path: bad })).ok, false);
   assert.strictEqual(calls.length, 0);
 });
+
+test('Dexter 7: brief-path.ps1 gets its own 30 s budget, not the 5 minutes of the worktree creator', async (t) => {
+  assert.strictEqual(ops.TIMEOUT_MS.brief, 30000);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const child = fakeChild();                     // never exits
+  const o = ops.createOps({ dir: 'D:\s', syncDir: 'D:\sync', spawn: spawnOf(child), exists: () => true });
+  const pending = o.briefPath({ path: 'C:\proj\feat-12-x' });
+  t.mock.timers.tick(29_999);
+  let settled = false;
+  pending.then(() => { settled = true; });
+  await Promise.resolve();
+  assert.strictEqual(settled, false, 'still waiting at 29.999 s');
+  t.mock.timers.tick(2);
+  const r = await pending;
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /brief-path\.ps1 didn't finish in time/);
+});

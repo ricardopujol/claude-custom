@@ -349,6 +349,11 @@ async function main() {
     !!issue && issue.number === 12 && issue.title === 'Crash on start' && issue.url === 'https://github.com/o/r/issues/12', JSON.stringify(issue));
   const dom = withIssue && Array.isArray(withIssue.stripDom) ? withIssue.stripDom.find(d => d.label === 'fix/12-crash-on-start') : null;
   check('and the painted strip shows "#12 Crash on start" on hover', !!dom && /(^|\n)#12 Crash on start$/.test(dom.title), dom && JSON.stringify(dom.title));
+  const linksFile = path.join(dev, '.claude-custom', 'issue-lanes.json');
+  const kept = await waitFor(() => { try { return JSON.parse(fs.readFileSync(linksFile, 'utf8')); } catch { return null; } }, 10000, 250);
+  check('the link is kept with the project state, keyed on the branch and its folder (it outlives a restart and the issue closing)',
+    !!kept && !!kept.lanes['fix/12-crash-on-start'] && kept.lanes['fix/12-crash-on-start'].issue.number === 12
+      && path.resolve(kept.lanes['fix/12-crash-on-start'].path).toLowerCase() === path.resolve(wtPath('fix/12-crash-on-start')).toLowerCase(), kept && JSON.stringify(kept.lanes));
   check('a tab made another way has no issue', !!withIssue && tabOf(withIssue, 'develop').issue === null);
   check('the form closed itself when the creation started', !!withIssue && withIssue.create === null, JSON.stringify(withIssue && withIssue.create));
 
@@ -388,6 +393,15 @@ async function main() {
   }, 40000) || s;
   remember(s);
   check('the typed branch still makes a worktree and a tab', !!s && fs.existsSync(wtPath('feat/typed-by-hand')));
+  await command(app, { cmd: 'create', branch: 'feat/3-hand-typed' });
+  s = await waitFor(async () => { const x = await state(app); return tabOf(x, 'feat/3-hand-typed') ? x : null; }, 30000);
+  s = await waitFor(async () => {
+    const x = await state(app);
+    const h = hostOf(x, 'feat/3-hand-typed');
+    return tabOf(x, 'feat/3-hand-typed') && tabOf(x, 'feat/3-hand-typed').started && h && Number.isInteger(h.pid) ? x : null;
+  }, 40000) || s;
+  remember(s);
+  check('a hand-typed branch that merely starts with an open issue number (#3) is not linked to it', !!s && tabOf(s, 'feat/3-hand-typed').issue === null, s && JSON.stringify(tabOf(s, 'feat/3-hand-typed').issue));
   check('with no brief and no issue (nothing was picked)', !fs.existsSync(briefOf('feat/typed-by-hand')) && tabOf(await state(app), 'feat/typed-by-hand').issue === null);
 
   await command(app, { cmd: 'quit' }, 5000);

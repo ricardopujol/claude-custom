@@ -25,9 +25,9 @@ const porcelain = (entries) => entries.map(([name, branch]) =>
 const ISSUE = { number: 12, title: 'Fix the thing', labels: ['bug'], assignees: [], updatedAt: null, url: 'https://github.com/o/r/issues/12' };
 
 function harness({ issues, withSetup = false } = {}) {
-  const h = { list: porcelain([['dev', 'develop']]), opsCalls: [], briefCalls: [], changes: [], spawns: [], running: {}, order: [] };
+  const h = { list: porcelain([['dev', 'develop']]), opsCalls: [], briefCalls: [], changes: [], spawns: [], running: {}, order: [], remembered: [], forBranchAsks: [], logThrows: null };
   const deps = {
-    mode: 'tabs', container: ROOT, cwd: wt('dev'), launchedFrom: null, log: () => {},
+    mode: 'tabs', container: ROOT, cwd: wt('dev'), launchedFrom: null, log: (...a) => { if (h.logThrows && h.logThrows.test(String(a[0]))) throw new Error('log exploded'); },
     git: { list: async () => { await settle(); return h.list; }, marker: () => null },
     ops: {
       available: () => ({ create: true, setup: withSetup, remove: true }),
@@ -54,7 +54,8 @@ function harness({ issues, withSetup = false } = {}) {
   if (issues !== undefined) {
     deps.issues = issues === null ? null : {
       brief: async (lane) => { h.order.push('brief'); h.briefCalls.push(lane); return typeof issues.brief === 'function' ? issues.brief(lane) : issues.brief; },
-      forBranch: (b) => (issues.forBranch ? issues.forBranch(b) : null),
+      forBranch: (b, p) => { h.forBranchAsks.push([b, p]); return issues.forBranch ? issues.forBranch(b, p) : null; },
+      remember: (r) => { h.remembered.push(r); if (issues.remember) issues.remember(r); },
     };
   }
   h.shell = createShell(deps);
@@ -360,4 +361,82 @@ test('a tab closed by hand while the brief is pending keeps no warning for a lat
   await h.shell.reopen(key('fix-12-fix-the-thing'));
   await flush();
   assert.strictEqual(tabModel.phaseText(entry(h, 'fix-12-fix-the-thing')), null);
+});
+
+// --- PR #202 review: Dexter 1, 5, 6, 7 and Miguel Y3 ---------------------------------------------
+
+test('Dexter 1: a brief written without the issue text carries a warning the tab shows (the issue is still linked)', async () => {
+  const h = harness({ issues: { brief: { ok: true, issue: ISSUE, brief: 'C:\b.md', existed: false, warning: "the issue's text wasn't fetched (gh took too long); the brief links it" } } });
+  await h.shell.open();
+  await flush();
+  await h.shell.createWorktree('fix/12-fix-the-thing', 12);
+  await flush();
+  assert.match(tabModel.phaseText(entry(h, 'fix-12-fix-the-thing')), /^Created, but: the issue's text wasn't fetched \(gh took too long\)/);
+  assert.strictEqual(entry(h, 'fix-12-fix-the-thing').issue.number, 12);
+});
+
+test('Dexter 5: the link is remembered where a restart will find it (branch, worktree, issue), even when the brief failed', async () => {
+  const h = harness({ issues: { brief: { ok: false, error: 'disk full', issue: ISSUE } } });
+  await h.shell.open();
+  await flush();
+  await h.shell.createWorktree('fix/12-fix-the-thing', 12);
+  await flush();
+  assert.deepStrictEqual(h.remembered, [{ branch: 'fix/12-fix-the-thing', path: wt('fix-12-fix-the-thing'), issue: { number: 12, title: 'Fix the thing', url: 'https://github.com/o/r/issues/12' } }]);
+  const bare = harness({ issues: { brief: { ok: false, error: 'x', issue: null } } });
+  await bare.shell.open();
+  await flush();
+  await bare.shell.createWorktree('fix/12-fix-the-thing', 12);
+  await flush();
+  assert.deepStrictEqual(bare.remembered[0].issue, { number: 12, title: null, url: null }, 'the number the person picked is kept even when nothing else is known');
+});
+
+test('Dexter 5: after a restart (no memory) the tab asks the store with its branch AND folder, and shows what it keeps', async () => {
+  const kept = { number: 12, title: 'Fix login', url: 'https://github.com/o/r/issues/12' };
+  const h = harness({ issues: { brief: null, forBranch: (b, p) => (b === 'fix/12-fix-login' ? kept : null) } });
+  h.list = porcelain([['dev', 'develop'], ['fix-12-fix-login', 'fix/12-fix-login']]);
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(entry(h, 'fix-12-fix-login').issue, kept);
+  assert.ok(h.forBranchAsks.some(([b, p]) => b === 'fix/12-fix-login' && p === wt('fix-12-fix-login')), JSON.stringify(h.forBranchAsks));
+});
+
+test('Dexter 6: a git switch in the worktree drops the link the window kept for the old branch', async () => {
+  const h = harness({ issues: { brief: { ok: true, issue: ISSUE, brief: 'C:\b.md', existed: false } } });
+  await h.shell.open();
+  await flush();
+  await h.shell.createWorktree('fix/12-fix-the-thing', 12);
+  await flush();
+  assert.strictEqual(entry(h, 'fix-12-fix-the-thing').issue.number, 12);
+  h.list = porcelain([['dev', 'develop'], ['fix-12-fix-the-thing', 'feat/other']]);
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(entry(h, 'fix-12-fix-the-thing').issue, null, 'the tab is on feat/other now');
+  assert.strictEqual(h.shell.issueOf(key('fix-12-fix-the-thing')), null);
+});
+
+test('Miguel Y3: anything that throws after the hold is taken still releases it, so the session can start', async () => {
+  const h = harness({ issues: { brief: { ok: true, issue: ISSUE, brief: 'C:\b.md', existed: false } } });
+  h.logThrows = /^\[shell\] created /;
+  await h.shell.open();
+  await flush();
+  await assert.rejects(h.shell.createWorktree('fix/12-fix-the-thing', 12), /log exploded/);
+  h.logThrows = null;
+  await h.shell.poll();
+  await flush();
+  assert.ok(h.spawns.includes(key('fix-12-fix-the-thing')), 'the hold is gone: the next poll starts the selected tab');
+});
+
+test('Dexter 7: while the brief is being written the tab says so (the model carries briefing: true)', async () => {
+  const d = deferredBrief();
+  const h = harness({ issues: { brief: d.brief } });
+  await h.shell.open();
+  await flush();
+  const done = h.shell.createWorktree('fix/12-fix-the-thing', 12);
+  for (let i = 0; i < 6; i++) await flush();
+  assert.strictEqual(entry(h, 'fix-12-fix-the-thing').briefing, true);
+  assert.strictEqual(entry(h, 'dev').briefing, false);
+  d.release({ ok: true, issue: ISSUE, brief: 'C:\b.md', existed: false });
+  await done;
+  await flush();
+  assert.strictEqual(entry(h, 'fix-12-fix-the-thing').briefing, false);
 });

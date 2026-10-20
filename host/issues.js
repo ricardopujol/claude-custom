@@ -24,6 +24,7 @@ const { execFile } = require('child_process');
 const { readSeams } = require('./probe-seams');
 
 const CACHE_MS = 60 * 1000;
+const FAIL_MS = 30 * 1000;     // a failed read is remembered this long, so a polling caller doesn't re-run a hung or missing gh
 const LIST_LIMIT = 50;
 const RUN_TIMEOUT_MS = 15 * 1000;
 const SLUG_MAX = 40;
@@ -50,7 +51,7 @@ function safeUrl(v) {
   let u;
   try { u = new URL(s); } catch { return null; }
   if (u.protocol !== 'https:' || u.username !== '' || u.password !== '') return null;
-  return s;
+  return u.href;      // the parsed form: a tab or newline inside the string is gone, so it can't reach a brief's line
 }
 
 const namesOf = (list, key) => (Array.isArray(list) ? list : [])
@@ -110,11 +111,18 @@ function issueNumberOfBranch(branch) {
   return m ? Number(m[1]) : null;
 }
 
-/** The listed issue a branch was made from, or null: a branch that merely looks like one is no issue. */
+/**
+ * The listed issue a branch was made from, or null: a branch that merely looks like one is no issue. The number alone
+ * isn't enough (`feat/2-step-login` typed by hand is not issue #2 "Dark mode"): the branch must start with what the
+ * picker would have made, `feat/<n>-<slug>` or `fix/<n>-<slug>` (a label may have changed), and may go on from there.
+ */
 function issueForBranch(branch, issues) {
   const n = issueNumberOfBranch(branch);
   if (n === null || !Array.isArray(issues)) return null;
-  return issues.find(i => i && i.number === n) || null;
+  const i = issues.find(x => x && x.number === n);
+  if (!i) return null;
+  const stem = `${n}-${slugify(i.title)}`;
+  return branch.startsWith(`feat/${stem}`) || branch.startsWith(`fix/${stem}`) ? i : null;
 }
 
 /** The picker's search: every word must hit the number (a prefix), the title or a label. `#12` hits only the number. */
@@ -197,9 +205,14 @@ function quoted(body) {
  * The text of `documentation/handoffs/CURRENT-<branch>.md` for a lane started from `issue`. Pure: the same
  * input is the same text. `body` is the issue's description (quoted, cut at BODY_MAX); `now` a Date.
  */
-function buildBrief({ branch, worktree, issue, body, now }) {
+function buildBrief({ branch, worktree, issue, body, bodyUnavailable = null, now }) {
   const day = (now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date()).toISOString().slice(0, 10);
-  const { lines: quote, cut } = quoted(body);
+  // A body gh didn't give is NOT an empty one: say so, with the reason, and point at the link.
+  const missed = typeof bodyUnavailable === 'string' && bodyUnavailable.trim() !== '' ? oneLine(bodyUnavailable) : null;
+  const look = issue.url ? 'open the link' : 'open the issue on GitHub';
+  const { lines: quote, cut } = missed
+    ? { lines: [`> (the description couldn't be fetched: ${missed}; ${issue.url ? 'open the link above' : look})`], cut: false }
+    : quoted(body);
   if (cut) quote.push(issue.url ? `> (cut here: the rest is at ${issue.url})` : '> (cut here: the rest is on the issue)');
   const labels = (issue.labels || []).length ? issue.labels.join(', ') : 'none';
   return [
@@ -207,7 +220,7 @@ function buildBrief({ branch, worktree, issue, body, now }) {
     '',
     `**Step:** ${issue.title}`,
     `**Branch:** \`${branch}\`   **Worktree:** \`${worktree}\``,
-    `**Source:** GitHub issue #${issue.number}${issue.url ? ` ${issue.url}` : ''}`,
+    `**Source:** GitHub issue #${issue.number}${issue.url ? ` ${issue.url}` : ''}${missed ? ` (body not fetched: ${missed}; ${look})` : ''}`,
     `**Labels:** ${labels}`,
     '**Builder:** unassigned',
     '',
@@ -278,22 +291,29 @@ function defaultRun(args, cwd, { seam = readSeams(process.env).gh } = {}) {
  * (a failure never); `cached(cwd)` the last good list at any age or null (no gh run); `view(cwd, number)` ->
  * { ok: true, issue, body } | { ok: false, text }. Never rejects.
  */
-function createIssueService({ run = defaultRun, now = Date.now, ttlMs = CACHE_MS } = {}) {
+function createIssueService({ run = defaultRun, now = Date.now, ttlMs = CACHE_MS, failMs = FAIL_MS } = {}) {
   const lists = new Map();      // cwd -> { at, issues }
+  const failed = new Map();     // cwd -> { at, text }: the last failed read
   const inFlight = new Map();   // cwd -> Promise
 
   async function fetchList(cwd) {
     let out;
-    try { out = await run([...GH_LIST_ARGS], cwd); } catch (err) { return { ok: false, text: classifyFailure(err).text }; }
+    const fail = (text) => { failed.set(cwd, { at: now(), text }); return { ok: false, text }; };
+    try { out = await run([...GH_LIST_ARGS], cwd); } catch (err) { return fail(classifyFailure(err).text); }
     const issues = parseIssues(out);
-    if (issues === null) return { ok: false, text: "Couldn't read issues: gh answered something else" };
+    if (issues === null) return fail("Couldn't read issues: gh answered something else");
     lists.set(cwd, { at: now(), issues });
+    failed.delete(cwd);
     return { ok: true, issues };
   }
 
   function list(cwd, { refresh = false } = {}) {
     const hit = lists.get(cwd);
     if (!refresh && hit && now() - hit.at < ttlMs) return Promise.resolve({ ok: true, issues: hit.issues });
+    // A failure is remembered briefly (not for a form opening, which refreshes): the Git panel asks every 30 s, and a
+    // gh that hangs costs 15 s a run.
+    const bad = failed.get(cwd);
+    if (!refresh && bad && now() - bad.at < failMs) return Promise.resolve({ ok: false, text: bad.text });
     if (!inFlight.has(cwd)) {
       inFlight.set(cwd, fetchList(cwd).finally(() => { inFlight.delete(cwd); }));
     }

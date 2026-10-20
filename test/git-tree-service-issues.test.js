@@ -70,3 +70,73 @@ test('an issue record of the wrong shape is cut down to the three fields, or dro
   })).get();
   assert.deepStrictEqual(Object.keys(byName(tree, 'feat/12-fix-it').issue).sort(), ['number', 'title', 'url']);
 });
+
+// --- PR #202 review: Dexter 4 + Miguel Y2, Dexter 5 + 6 -------------------------------------------
+
+test('Dexter 4: a gh that hangs does not hold the tree: it arrives with no issue links after the short bound', async () => {
+  const d = deps({ issuesTimeoutMs: 20, readIssues: () => new Promise(() => {}) });
+  const t0 = Date.now();
+  const tree = await createGitTreeService(d).get();
+  assert.strictEqual(tree.ok, true);
+  assert.ok(Date.now() - t0 < 1000);
+  assert.ok(tree.branches.every(b => b.issue === null));
+});
+
+test('Dexter 4: the issue read starts together with the PR read, not after it', async () => {
+  const order = [];
+  let releasePrs;
+  const d = deps({
+    readOpenPrs: () => new Promise((res) => { order.push('prs:start'); releasePrs = () => res(new Map()); }),
+    readIssues: async () => { order.push('issues:start'); return [ISSUE]; },
+  });
+  const pending = createGitTreeService(d).get();
+  await new Promise(r => setImmediate(r));
+  await new Promise(r => setImmediate(r));
+  assert.deepStrictEqual(order.sort(), ['issues:start', 'prs:start'], 'both are under way before the slower PR read answers');
+  releasePrs();
+  assert.strictEqual((await pending).ok, true);
+});
+
+test('Dexter 4: a reader that rejects is no issue, and still does not fail the tree', async () => {
+  const tree = await createGitTreeService(deps({ readIssues: async () => { throw new Error('gh broke'); } })).get();
+  assert.strictEqual(tree.ok, true);
+});
+
+test('Dexter 5: a stored link shows even when the open list lacks the issue (closed, or older than the newest 50)', async () => {
+  const asked = [];
+  const stored = { number: 99, title: 'Gone but remembered', url: 'https://github.com/o/r/issues/99' };
+  const d = deps({
+    readIssues: async () => [],
+    readLink: (name, folder) => { asked.push([name, folder]); return name === 'feat/99-gone' ? stored : null; },
+  });
+  const tree = await createGitTreeService(d).get();
+  assert.deepStrictEqual(byName(tree, 'feat/99-gone').issue, stored);
+  assert.ok(asked.some(([n]) => n === 'feat/99-gone'));
+});
+
+test('Dexter 5: a stored link works with no issue reader at all (no gh), and a malformed one is no issue', async () => {
+  const tree = await createGitTreeService(deps({ readLink: (n) => (n === 'feat/plain' ? { number: 5, title: 'T', url: null } : null) })).get();
+  assert.deepStrictEqual(byName(tree, 'feat/plain').issue, { number: 5, title: 'T', url: null });
+  for (const bad of [{ number: '5' }, 'x', 5, [], { title: 'x' }]) {
+    const t = await createGitTreeService(deps({ readLink: () => bad })).get();
+    assert.ok(t.branches.every(b => b.issue === null), JSON.stringify(bad));
+  }
+  const throwing = await createGitTreeService(deps({ readLink: () => { throw new Error('disk'); } })).get();
+  assert.strictEqual(throwing.ok, true);
+});
+
+test('Dexter 6: the store is asked with the branch AND its folder, so another worktree\'s link or a switched branch is not reused', async () => {
+  const asked = [];
+  const d = deps({
+    readHistory: async () => ({ ...HISTORY, worktrees: [{ path: 'C:/p/feat-12', branch: 'feat/12-fix-it' }] }),
+    readLink: (name, folder) => { asked.push([name, folder]); return null; },
+  });
+  await createGitTreeService(d).get();
+  assert.ok(asked.some(([n, f]) => n === 'feat/12-fix-it' && f === 'C:/p/feat-12'), JSON.stringify(asked));
+});
+
+test('a stored link wins over one derived from the list', async () => {
+  const stored = { number: 12, title: 'Renamed since', url: 'https://github.com/o/r/issues/12' };
+  const tree = await createGitTreeService(deps({ readIssues: async () => [ISSUE], readLink: (n) => (n === 'feat/12-fix-it' ? stored : null) })).get();
+  assert.strictEqual(byName(tree, 'feat/12-fix-it').issue.title, 'Renamed since');
+});

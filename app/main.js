@@ -72,6 +72,7 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 // BACKLOG #119 A6: start a lane from a GitHub issue (the + form's "From an issue" list, the lane's brief, the tab's link).
 const { createIssueService, answerIssuesRequest, issueArg, issueForBranch, resolveIssueUrl } = require('../host/issues');
 const { createLaneBriefWriter } = require('../host/issue-lane');
+const { createIssueLinks, issueLinksFileFor } = require('../host/issue-links');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
@@ -2056,6 +2057,10 @@ app.whenReady().then(async () => {
   });
   // The GitHub issues of this project's repo (#119 A6). host/probe-seams.js gives the probe a stand-in for gh.
   issueService = createIssueService();
+  // Which issue each lane was made from, kept with the project's state so the link outlives a restart and the issue closing.
+  let linksFile = null;
+  try { linksFile = issueLinksFileFor(STATE_ROOT); } catch (err) { console.log('[main] issue links: kept in memory only:', err && err.message); }
+  const issueLinks = createIssueLinks({ file: linksFile });
   const briefOps = createOps({ dir: scriptsDir(process.env) });
   tabShell = createShell({
     usage: (key) => { try { usageCounters.bump(key); } catch { /* counting never breaks a tab */ } },
@@ -2082,7 +2087,8 @@ app.whenReady().then(async () => {
     // the one its branch name says when the cached list has it).
     issues: {
       brief: createLaneBriefWriter({ cwd: HOST_PROJECT.dev, service: issueService, ops: briefOps }),
-      forBranch: (branch) => issueForBranch(branch, issueService.cached(HOST_PROJECT.dev)),
+      forBranch: (branch, folder) => issueLinks.get(branch, folder) || issueForBranch(branch, issueService.cached(HOST_PROJECT.dev)),
+      remember: (record) => issueLinks.set(record),
     },
     hosts: {
       choosePort: chooseHostPort,

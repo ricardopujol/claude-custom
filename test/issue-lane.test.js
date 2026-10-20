@@ -25,7 +25,7 @@ function rig(over = {}) {
     ops: { briefPath: async (a) => { calls.briefPath.push(a); return over.briefPath || { ok: true, path: BRIEF }; } },
     exists: (p) => files.has(p),
     mkdir: (p) => { calls.mkdir.push(p); },
-    write: (p, text) => { if (over.writeThrows) throw new Error(over.writeThrows); calls.write.push([p, text]); files.add(p); },
+    create: (p, text) => { if (over.createThrows) throw over.createThrows; if (over.writeThrows) throw new Error(over.writeThrows); calls.write.push([p, text]); files.add(p); },
     now: () => new Date('2026-10-20T09:30:00Z'),
   };
   return { write: createLaneBriefWriter(deps), calls, files };
@@ -55,11 +55,42 @@ test('an existing brief is never overwritten: the lane keeps what it has', async
   assert.strictEqual(calls.write.length, 0);
 });
 
-test('gh cannot give the issue but the list has it: the brief is written from the list entry, with no body', async () => {
-  const { write, calls } = rig({ view: { ok: false, text: 'Sign in to gh to pick an issue' }, cached: [ISSUE] });
+test('gh cannot give the issue but the list has it: the brief says the body was NOT fetched (never "no description") and the tab is warned', async () => {
+  const { write, calls } = rig({ view: { ok: false, text: 'Couldn\'t read issues: gh took too long' }, cached: [ISSUE] });
   const r = await write(lane);
   assert.strictEqual(r.ok, true);
+  const text = calls.write[0][1];
+  assert.ok(!text.includes('has no description'), 'a body that was not fetched is not an empty one');
+  assert.match(text, /\*\*Source:\*\* GitHub issue #12 https:\/\/github\.com\/o\/r\/issues\/12 \(body not fetched: Couldn't read issues: gh took too long; open the link\)/);
+  assert.match(text, /> \(the description couldn't be fetched: .*gh took too long/);
+  assert.match(r.warning, /text wasn't fetched.*gh took too long/);
+});
+
+test('a body that WAS fetched and is empty still says the issue has no description, with no warning', async () => {
+  const { write, calls } = rig({ view: { ok: true, issue: ISSUE, body: '' } });
+  const r = await write(lane);
   assert.match(calls.write[0][1], /> \(the issue has no description\)/);
+  assert.strictEqual(r.warning, undefined);
+});
+
+test('an exclusive create that finds the file there (an outside writer got in after the check) leaves it untouched and says existed', async () => {
+  const { write, calls } = rig({ createThrows: Object.assign(new Error('EEXIST: file already exists'), { code: 'EEXIST' }) });
+  const r = await write(lane);
+  assert.deepStrictEqual(r, { ok: true, issue: ISSUE, brief: BRIEF, existed: true });
+  assert.strictEqual(calls.write.length, 0);
+});
+
+test('writeNoClobber: a new file is written; one that exists is never replaced, and no temp file is left', () => {
+  const fs = require('fs');
+  const { tmpDir } = require('./tmp-dir');
+  const { writeNoClobber } = require('../host/issue-lane');
+  const dir = tmpDir('lane-');
+  const file = path.join(dir, 'CURRENT-x.md');
+  writeNoClobber(file, 'first');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'first');
+  assert.throws(() => writeNoClobber(file, 'second'), (e) => e.code === 'EEXIST');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'first');
+  assert.deepStrictEqual(fs.readdirSync(dir), ['CURRENT-x.md'], 'the temp file is gone either way');
 });
 
 test('gh cannot give the issue and the list does not have it: nothing is written, and the error says why', async () => {

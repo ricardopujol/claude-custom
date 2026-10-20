@@ -38,7 +38,8 @@ const { isSibling } = require('./worktree-list');
 
 const STREAM_GRACE_MS = 2000;
 const SCRIPTS = Object.freeze({ create: 'new-worktree.ps1', setup: 'setup-worktree.ps1', remove: 'remove-worktree.ps1' });
-const TIMEOUT_MS = Object.freeze({ create: 5 * 60 * 1000, remove: 10 * 60 * 1000, setup: 2 * 60 * 60 * 1000 });
+// `brief`: brief-path.ps1 only prints a path (about a second). It holds a new lane's session, so it gets its own short budget.
+const TIMEOUT_MS = Object.freeze({ create: 5 * 60 * 1000, remove: 10 * 60 * 1000, setup: 2 * 60 * 60 * 1000, brief: 30 * 1000 });
 const LOG_POLL_MS = 500;
 const LINE_MAX = 200;
 // Miguel Y1: a setup can run for hours. Each stream keeps only its TAIL (the
@@ -290,7 +291,7 @@ function createOps({
       let there = false;
       try { there = exists(script) === true; } catch { there = false; }
       if (!there) return { ok: false, error: `${BRIEF_SCRIPT} isn't installed (looked in ${syncDir}).` };
-      const r = await runScript({ script, timeoutMs: TIMEOUT_MS.create, spawn, args: [psArg('Path', wt)] });
+      const r = await runScript({ script, timeoutMs: TIMEOUT_MS.brief, spawn, args: [psArg('Path', wt)] });
       return parseBriefPath(r);
     },
 
@@ -339,5 +340,5 @@ function createOps({
 
 module.exports = {
   scriptsDir, syncDocsScriptsDir, parseBriefPath, available, psArg, checkBranch, cleanStderr, runScript, parseCreate, parseSetup, parseRemove,
-  setupLogPath, lastLine, createOps, STREAM_GRACE_MS, SCRIPTS, STREAM_KEEP, LINE_SHOWN_MAX,
+  setupLogPath, lastLine, createOps, STREAM_GRACE_MS, SCRIPTS, STREAM_KEEP, LINE_SHOWN_MAX, TIMEOUT_MS,
 };
