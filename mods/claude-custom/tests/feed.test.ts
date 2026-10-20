@@ -1,6 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-const URL_RE = /^http:\/\/127\.0\.0\.1:4711\/mod\?token=abcdef0123456789abcdef$/
+const URL = 'http://127.0.0.1:4711/mod'
+const TOKEN = 'abcdef0123456789abcdef'
+// The feed of an ask is detached from the decision, so a test lets the microtasks run before it looks.
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 40))
 
 const USAGE = {
   context: { tokens: 51000, window: 200000, percent: 26 },
@@ -13,18 +16,19 @@ const USAGE = {
 
 // Every stub a hook of this mod can reach, and a list the test reads the posts from.
 function rig($: any, on: any, env: Record<string, string> = { CLAUDE_CUSTOM_MOD_PORT: '4711', CLAUDE_CUSTOM_MOD_TOKEN: 'abcdef0123456789abcdef' }, refuse = false) {
-  const posts: { url: string; body: any; method: string }[] = []
+  const state: any = { refuse, agents: null }
+  const posts: { url: string; body: any; method: string; headers: Record<string, string> }[] = []
   const clock = mock.clock(on, { now: 10_000 })
   mock.env(on, env)
   on('session.id', () => ({ value: 'sess-1' }))
   on('session.usage', () => ({ value: USAGE }))
-  on('agent.list', () => ({ value: [{ id: 'a1', description: 'secret task text', type: 'Explore', status: 'waiting' }] }))
+  on('agent.list', () => (state.agents ? state.agents() : { value: [{ id: 'a1', description: 'secret task text', type: 'Explore', status: 'waiting' }] }))
   on('http.fetch', ($: any, e: any) => {
-    if (refuse) return { deny: 'connection refused' }
-    posts.push({ url: e.url, body: JSON.parse(e.init.body), method: e.init.method })
+    if (state.refuse) return { deny: 'connection refused' }
+    posts.push({ url: e.url, body: JSON.parse(e.init.body), method: e.init.method, headers: e.init.headers })
     return { value: { status: 204, ok: true, headers: {}, text: '' } }
   })
-  return { posts, clock }
+  return { posts, clock, state }
 }
 
 test('a turn completing posts the usage and the agents, to the harness on loopback', async ($, on) => {
@@ -33,7 +37,8 @@ test('a turn completing posts the usage and the agents, to the harness on loopba
   await $.turn.complete({ turnId: 't1', answer: 'ok', durationMs: 5, isAborted: false, usage: null })
   const kinds = posts.map((p) => p.body.kind)
   expect(kinds).toEqual(['usage', 'agents'])
-  expect(posts[0].url).toMatch(URL_RE)
+  expect(posts[0].url).toBe(URL)
+  expect(posts[0].headers.authorization).toBe('Bearer ' + TOKEN)
   expect(posts[0].method).toBe('POST')
   expect(posts[0].body).toMatchObject({ v: 1, kind: 'usage', sessionId: 'sess-1', at: 10000 })
   expect(posts[0].body.usage.context).toEqual({ tokens: 51000, window: 200000, percent: 26 })
@@ -102,6 +107,7 @@ test('tool.check passes the decision through unchanged and posts an ask by tool 
   on('tool.check', () => ({ decision: 'ask', reason: 'rule says ask' }))
   const out = await $.tool.check({ tool: 'Bash', input: { command: 'echo SECRET-COMMAND' } })
   expect(out).toEqual({ decision: 'ask', reason: 'rule says ask' })
+  await flush()
   expect(posts.map((p) => p.body.kind)).toEqual(['ask', 'agents'])
   expect(posts[0].body).toMatchObject({ v: 1, kind: 'ask', sessionId: 'sess-1', ask: { tool: 'Bash' } })
   expect(posts[1].body.agents).toEqual([{ id: 'a1', status: 'waiting', type: 'Explore' }])
@@ -131,4 +137,54 @@ test('session.end posts an end record', async ($, on) => {
   on('session.end', ($: any, e: any) => ({ sessionId: 'sess-1' }))
   await $.session.end({ reason: 'other' })
   expect(posts[0].body).toMatchObject({ v: 1, kind: 'end', sessionId: 'sess-1', reason: 'other' })
+})
+
+test('the token is in the Authorization header and nowhere in the URL or the body', async ($, on) => {
+  const { posts } = rig($, on)
+  on('turn.complete', () => ({ text: '' }))
+  await $.turn.complete({ turnId: 't1', answer: 'ok', durationMs: 5, isAborted: false, usage: null })
+  for (const p of posts) {
+    expect(p.url).not.toContain(TOKEN)
+    expect(JSON.stringify(p.body)).not.toContain(TOKEN)
+    expect(p.headers.authorization).toBe('Bearer ' + TOKEN)
+  }
+})
+
+test('PR 197 Miguel Y1: an agent list that never answers cannot hold the decision back', async ($, on) => {
+  const { state } = rig($, on)
+  state.agents = () => new Promise(() => {})
+  on('tool.check', () => ({ decision: 'ask', reason: 'rule says ask' }))
+  const winner = await Promise.race([
+    $.tool.check({ tool: 'Bash', input: {} }).then((d: any) => ({ decision: d })),
+    new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 500)),
+  ])
+  expect(winner).toEqual({ decision: { decision: 'ask', reason: 'rule says ask' } })
+})
+
+test('PR 197 Miguel Y1: the ask record is still posted, after the decision', async ($, on) => {
+  const { posts } = rig($, on)
+  on('tool.check', () => ({ decision: 'ask' }))
+  await $.tool.check({ tool: 'Write', input: {} })
+  await flush()
+  expect(posts.map((p) => p.body.kind)).toEqual(['ask', 'agents'])
+})
+
+test('PR 197 Miguel G1: a roster whose post was refused is sent again next time, not remembered as sent', async ($, on) => {
+  const { posts, state } = rig($, on, undefined, true)
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
+  await $.turn.start({ turnId: 't1' })
+  await flush()
+  expect(posts).toEqual([])
+  state.refuse = false
+  await $.turn.start({ turnId: 't2' })
+  await flush()
+  expect(posts.filter((p) => p.body.kind === 'agents').length).toBe(1)
+})
+
+test('PR 197 Miguel G1: with no harness to post to (no port) the roster is not remembered either', async ($, on) => {
+  const { posts } = rig($, on, {})
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
+  await $.turn.start({ turnId: 't1' })
+  await flush()
+  expect(posts).toEqual([])
 })

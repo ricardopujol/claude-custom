@@ -12,20 +12,28 @@ import { MIN_USAGE_GAP_MS, agentsKey, agentsRecord, askRecord, createGate, endRe
 const usageGate = createGate(MIN_USAGE_GAP_MS)
 let lastAgents = ''
 
-// The URL to post to, or null. Strict on both parts: the token goes into a URL, so it is hex or nothing.
+// Where to post and the token to present, or null. Strict on both parts: the port is digits and the token is hex, or nothing.
+// The token goes in an Authorization header, never in the URL (a URL ends up in logs).
 async function target($) {
   const port = await $.env.get('CLAUDE_CUSTOM_MOD_PORT')
   const token = await $.env.get('CLAUDE_CUSTOM_MOD_TOKEN')
   if (typeof port !== 'string' || !/^[0-9]{1,5}$/.test(port)) return null
   if (typeof token !== 'string' || !/^[0-9a-f]{16,128}$/i.test(token)) return null
-  return `http://127.0.0.1:${port}/mod?token=${token}`
+  return { url: `http://127.0.0.1:${port}/mod`, token }
 }
 
-// Fire and forget: the hook never waits on the harness, and a refused connection is not an error here.
-async function post($, record) {
-  const url = await target($)
-  if (url === null) return
-  $.http.fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(record) }).catch(() => {})
+// Fire and forget: the hook never waits on the harness, and a refused connection is not an error here. `onFail` runs when the post did not
+// land (refused, or not a 2xx), so a caller that remembers what it sent can forget it. Returns whether a post was attempted at all.
+async function post($, record, onFail) {
+  const to = await target($)
+  if (to === null) return false
+  const failed = () => { if (onFail) onFail() }
+  $.http.fetch(to.url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${to.token}` },
+    body: JSON.stringify(record),
+  }).then((res) => { if (!res || res.ok !== true) failed() }).catch(failed)
+  return true
 }
 
 async function sessionIdOf($) {
@@ -50,13 +58,21 @@ async function sendAgents($) {
   const key = agentsKey(record)
   if (key === lastAgents) return
   lastAgents = key
-  await post($, record)
+  // Remembered only while the post stands: a refused or unattempted one (the harness is not up yet) is sent again next time.
+  const attempted = await post($, record, () => { if (lastAgents === key) lastAgents = '' })
+  if (!attempted && lastAgents === key) lastAgents = ''
 }
 
 async function sendAsk($, event) {
   const sessionId = await sessionIdOf($)
   if (sessionId === null) return
   await post($, askRecord({ sessionId, at: await $.clock.now(), event }))
+}
+
+// An ask, and the roster as it stands while the prompt is open: an agent that is waiting is said now, not at the turn's end.
+async function feedAsk($, event) {
+  await sendAsk($, event)
+  await sendAgents($)
 }
 
 async function sendEnd($, event) {
@@ -92,15 +108,10 @@ export function register(on) {
   })
 
   // OBSERVE ONLY: the decision is whatever next(e) resolved to, handed back untouched, whatever happens in between.
+  // The decision goes back FIRST: the feed is detached and never awaited here, so a slow `$.agent.list()` cannot hold the permission dialog.
   on('tool.check', async ($, e, next) => {
     const decision = await next(e)
-    try {
-      if (decision !== null && typeof decision === 'object' && decision.decision === 'ask') {
-        await sendAsk($, e)
-        // The roster as it stands while the prompt is open: an agent that is waiting is said now, not at the turn's end.
-        await sendAgents($)
-      }
-    } catch { /* silent */ }
+    if (decision !== null && typeof decision === 'object' && decision.decision === 'ask') feedAsk($, e).catch(() => {})
     return decision
   })
 

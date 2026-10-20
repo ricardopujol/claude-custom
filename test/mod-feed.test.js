@@ -124,9 +124,11 @@ test('context: a percent and a window whose product overflows is unknown, not In
 
 // --- the route -------------------------------------------------------------------------------------------------------
 
-function ask(port, { path = '/mod?token=' + TOKEN, method = 'POST', body = '', headers = {} } = {}) {
+// The token travels as `Authorization: Bearer <token>` (PR #197 Miguel Y2): a URL ends up in logs, a header does not. `auth: null` sends none.
+function ask(port, { path = '/mod', method = 'POST', body = '', headers = {}, auth = 'Bearer ' + TOKEN } = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path, method, headers: { 'content-type': 'application/json', ...headers } }, (res) => {
+    const sent = { 'content-type': 'application/json', ...(auth === null ? {} : { authorization: auth }), ...headers };
+    const req = http.request({ host: '127.0.0.1', port, path, method, headers: sent }, (res) => {
       let text = '';
       res.on('data', (c) => { text += c; });
       res.on('end', () => resolve({ status: res.statusCode, text }));
@@ -155,12 +157,21 @@ test('a good post is accepted (204), handed to onRecord, and the server is on 12
 
 test('a wrong token, a missing token and a token of another length are refused (401) and nothing is delivered', async () => {
   await withServer(async (port, got) => {
-    for (const q of ['?token=' + TOKEN.replace(/a/, 'b'), '', '?token=', '?token=' + TOKEN + '0', '?other=' + TOKEN]) {
-      const r = await ask(port, { path: '/mod' + q, body: JSON.stringify(usage()) });
-      assert.strictEqual(r.status, 401, q);
+    for (const auth of ['Bearer ' + TOKEN.replace(/a/, 'b'), null, 'Bearer ', 'Bearer', 'Bearer ' + TOKEN + '0', 'Basic ' + TOKEN, TOKEN, 'bearer-' + TOKEN]) {
+      const r = await ask(port, { auth, body: JSON.stringify(usage()) });
+      assert.strictEqual(r.status, 401, String(auth));
       assert.ok(!r.text.includes(TOKEN));
     }
     assert.deepStrictEqual(got, []);
+  });
+});
+
+test('PR #197 Miguel Y2: the token in the URL is no token at all: a query alone is refused, and a header wins over a wrong query', async () => {
+  await withServer(async (port, got) => {
+    assert.strictEqual((await ask(port, { path: '/mod?token=' + TOKEN, auth: null, body: JSON.stringify(usage()) })).status, 401);
+    assert.deepStrictEqual(got, []);
+    assert.strictEqual((await ask(port, { path: '/mod?token=wrong', body: JSON.stringify(usage()) })).status, 204);
+    assert.strictEqual(got.length, 1);
   });
 });
 
@@ -186,8 +197,8 @@ test('only POST on /mod: other methods are 405, other paths 404', async () => {
   await withServer(async (port) => {
     assert.strictEqual((await ask(port, { method: 'GET' })).status, 405);
     assert.strictEqual((await ask(port, { method: 'PUT', body: '{}' })).status, 405);
-    assert.strictEqual((await ask(port, { path: '/other?token=' + TOKEN, body: '{}' })).status, 404);
-    assert.strictEqual((await ask(port, { path: '/?token=' + TOKEN, body: '{}' })).status, 404);
+    assert.strictEqual((await ask(port, { path: '/other', body: '{}' })).status, 404);
+    assert.strictEqual((await ask(port, { path: '/', body: '{}' })).status, 404);
   });
 });
 
@@ -215,7 +226,7 @@ test('a body exactly at the cap is parsed', async () => {
 test('a chunked body (no declared length) that grows past the cap is refused too', async () => {
   await withServer(async (port, got) => {
     const r = await new Promise((resolve) => {
-      const req = http.request({ host: '127.0.0.1', port, path: '/mod?token=' + TOKEN, method: 'POST', headers: { 'transfer-encoding': 'chunked' } }, (res) => resolve(res.statusCode));
+      const req = http.request({ host: '127.0.0.1', port, path: '/mod', method: 'POST', headers: { 'transfer-encoding': 'chunked', authorization: 'Bearer ' + TOKEN } }, (res) => resolve(res.statusCode));
       req.on('error', () => resolve('reset'));
       req.write(padded(MAX_BODY_BYTES + 5000));
       req.end();
@@ -243,8 +254,9 @@ test('an onRecord that throws does not take the server down: the post is still a
 
 test('with no token configured the server refuses everything', async () => {
   await withServer(async (port) => {
-    assert.strictEqual((await ask(port, { path: '/mod?token=', body: JSON.stringify(usage()) })).status, 401);
-    assert.strictEqual((await ask(port, { path: '/mod', body: JSON.stringify(usage()) })).status, 401);
+    assert.strictEqual((await ask(port, { auth: 'Bearer ', body: JSON.stringify(usage()) })).status, 401);
+    assert.strictEqual((await ask(port, { auth: null, body: JSON.stringify(usage()) })).status, 401);
+    assert.strictEqual((await ask(port, { auth: 'Bearer anything', body: JSON.stringify(usage()) })).status, 401);
   }, { token: '' });
 });
 

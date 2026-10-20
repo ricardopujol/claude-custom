@@ -4,13 +4,21 @@
  *
  * The mod reads the CLI's own usage (`$.session.usage()` / the `session.measure` event), its subagents' states (`$.agent.list()`)
  * and its permission asks (`tool.check` resolving to `ask`), and POSTs one small JSON record per observation to
- * http://127.0.0.1:<port>/mod?token=<token>. This module is the host's half: it validates a record and serves the route.
+ * http://127.0.0.1:<port>/mod with `Authorization: Bearer <token>` (a URL ends up in logs, a header does not). This module is the host's
+ * half: it validates a record and serves the route.
  *
  *   - STRICT typeof validation. A figure that is absent stays absent: `Number(null)` is 0 (CLAUDE.md), so nothing here coerces.
  *     A wrong-typed field refuses the WHOLE record rather than dropping the field, because a half-read record is a guess.
  *   - THE ROUTE is a second tiny HTTP server on 127.0.0.1, an ephemeral port. Reasons it is not the WebSocket server: that one's
  *     HTTP side answers only upgrades (host/host.js), and its token is the window's, which the pty must never carry. This token is
- *     per spawn, travels in the child's environment (CLAUDE_CUSTOM_MOD_TOKEN), and authorises posting records and nothing else.
+ *     minted once per HOST PROCESS (not per spawn: a restart or resume of the session in the same host keeps it; the route would need a
+ *     mutable expected token to rotate it, and the exposure is the same either way, see the limit below). It travels in the child's
+ *     environment (CLAUDE_CUSTOM_MOD_TOKEN) and authorises posting records and nothing else.
+ *   - KNOWN LIMIT: everything `claude` spawns inherits that environment (Bash tool commands, MCP servers, other plugins), so any of them can
+ *     post a forged record. The validators are strict and nothing executes, so the effect is cosmetic (a wrong header number, a toast), with
+ *     one non-cosmetic side: a forged `usage` record with rate limits makes the OAuth poller yield for up to two minutes (host/quota-share.js
+ *     modCovers). Records for a session other than the host's own are dropped (host/mod-records.js), which stops a second `claude` that
+ *     loaded the mod, not a forger who copies the session id.
  *   - A browser can reach 127.0.0.1 as well as the mod can, so a request that carries an Origin is refused, and the Host header
  *     must be exactly this address and port (DNS rebinding). Body at most 64 KB.
  *
@@ -151,6 +159,12 @@ function contextFromUsage(usage) {
 
 // --- the route ------------------------------------------------------------------------------------------------------
 
+// `Authorization: Bearer <token>` -> the token, or '' for anything else (a query string is never read).
+function bearerOf(header) {
+  const m = typeof header === 'string' ? /^Bearer (\S+)$/.exec(header) : null;
+  return m ? m[1] : '';
+}
+
 function isLoopbackAddress(addr) {
   return addr === '127.0.0.1' || addr === '::ffff:127.0.0.1';
 }
@@ -172,7 +186,7 @@ function createModServer({ token, onRecord = () => {}, maxBytes = MAX_BODY_BYTES
     try { url = new URL(req.url, 'http://127.0.0.1'); } catch { return reply(res, 400, true); }
     if (url.pathname !== '/mod') return reply(res, 404, true);
     if (req.method !== 'POST') return reply(res, 405, true);
-    const verdict = allowConnection({ origin: undefined, token: url.searchParams.get('token') }, { expectedToken: token });
+    const verdict = allowConnection({ origin: undefined, token: bearerOf(req.headers.authorization) }, { expectedToken: token });
     if (!verdict.ok) return reply(res, 401, true);
 
     const declared = Number(req.headers['content-length']);

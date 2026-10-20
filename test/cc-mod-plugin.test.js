@@ -82,21 +82,24 @@ test('the mod only observes: it uses no call that changes the session, the scree
   }
 });
 
-test('tool.check hands back what next(e) resolved to, after calling it first, and a throw in the feed cannot replace it', () => {
+test('tool.check hands back what next(e) resolved to, after calling it first, and the feed it starts is detached and cannot replace it', () => {
   const hook = strip(REGISTER).slice(strip(REGISTER).indexOf("on('tool.check'"));
   const body = hook.slice(0, hook.indexOf('\n  })') + 5);
   const first = body.indexOf('await next(e)');
   assert.ok(first !== -1);
-  assert.ok(first < body.indexOf('sendAsk'), 'next(e) comes before anything else');
-  assert.match(body, /try \{[\s\S]*sendAsk[\s\S]*\} catch/);
+  assert.ok(first < body.indexOf('feedAsk'), 'next(e) comes before anything else');
+  assert.match(body, /feedAsk\(\$, e\)\.catch\(\(\) => \{\}\)/, 'detached, with its failure swallowed');
+  assert.doesNotMatch(body, /await feedAsk|await sendAsk|await sendAgents/, 'never awaited before the decision goes back (Miguel Y1)');
   assert.match(body, /return decision\n/);
   assert.doesNotMatch(body, /decision:\s*['"]/, 'it never builds a decision of its own');
 });
 
-test('the mod posts only to 127.0.0.1, with the port and token from its environment, and never awaits the response', () => {
+test('the mod posts only to 127.0.0.1, the token in a header and never in the URL, and never awaits the response', () => {
   const code = strip(REGISTER);
-  assert.match(code, /`http:\/\/127\.0\.0\.1:\$\{port\}\/mod\?token=\$\{token\}`/);
+  assert.match(code, /`http:\/\/127\.0\.0\.1:\$\{port\}\/mod`/);
+  assert.doesNotMatch(code, /token=/);
+  assert.match(code, /authorization: `Bearer \$\{to\.token\}`/);
   assert.strictEqual((code.match(/https?:\/\//g) || []).length, 1, 'one URL in the file');
-  assert.match(code, /\$\.http\.fetch\([^\n]*\)\.catch\(\(\) => \{\}\)/);
   assert.doesNotMatch(code, /await \$\.http\.fetch/);
+  assert.match(code, /\.catch\(failed\)/);
 });
