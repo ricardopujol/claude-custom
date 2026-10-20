@@ -51,7 +51,9 @@ test("a tab's panel follows its tab: destroyed with it, hidden when it is not se
   const destroy = CODE.slice(CODE.indexOf('function destroyTabView('), CODE.indexOf('// --- pushing the model out'));
   assert.match(destroy, /canvasViews\.destroyFor\(view\.webContents\);/);
   const sel = CODE.slice(CODE.indexOf('function applySelection('), CODE.indexOf('function applySelection(') + 900);
-  assert.match(sel, /canvasViews\.setOwnerVisible\(tab\.view\.webContents, tab\.key === snapshot\.selectedKey\);/);
+  // `shows` is the selected tab, unless the branch form's issue list is open and the strip page draws over the view (#119 A6)
+  assert.match(sel, /const shows = tab\.key === snapshot\.selectedKey && !pickerOpen;/);
+  assert.match(sel, /canvasViews\.setOwnerVisible\(tab\.view\.webContents, shows\);/);
   const lay = CODE.slice(CODE.indexOf('function layoutView('), CODE.indexOf('function setFocusMode('));
   assert.match(lay, /canvasViews\.relayout\(view\.webContents\);/);
 });

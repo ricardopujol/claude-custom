@@ -69,6 +69,10 @@ const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-sessi
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
+// BACKLOG #119 A6: start a lane from a GitHub issue (the + form's "From an issue" list, the lane's brief, the tab's link).
+const { createIssueService, answerIssuesRequest, issueArg, issueForBranch, resolveIssueUrl } = require('../host/issues');
+const { createLaneBriefWriter } = require('../host/issue-lane');
+const { createIssueLinks, issueLinksFileFor } = require('../host/issue-links');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
@@ -432,6 +436,8 @@ function markSubmenu(branch) {
 
 let win = null;
 let tabShell = null;
+// BACKLOG #119 A6: `gh issue list/view` for the + form's "From an issue" list, cached 60 s (host/issues.js). Made in whenReady.
+let issueService = null;
 let resHistoryView = null;         // the view the Resources service last re-sent the history to (#63 follow-up)
 let resources = null;              // the Resources panel's service (#63), built once the shell exists
 let resourceSampler = null;
@@ -663,6 +669,19 @@ function openInBrowser(url, from) {
   return true;
 }
 
+// A tab's GitHub issue (#119 A6) in the browser: the link the tab has, else the one gh gives. Through openInBrowser, the
+// one gate a link leaves the app by.
+async function openIssue(key) {
+  const issue = tabShell ? tabShell.issueOf(key) : null;
+  if (!issue || !issueService) return false;
+  const url = await resolveIssueUrl(issueService, HOST_PROJECT.dev, issue);
+  if (!url) {
+    console.log(`[main] issue: no link for #${issue.number}`);
+    return false;
+  }
+  return openInBrowser(url, 'issue');
+}
+
 function createTabView(tab) {
   const view = new WebContentsView({
     webPreferences: {
@@ -798,11 +817,15 @@ function pushStripAccent() {
 }
 
 function applySelection(snapshot) {
+  const pickerOpen = !!(snapshot.create && snapshot.create.picker === true);
   for (const tab of snapshot.tabs) {
     if (tab.view && !tab.view.webContents.isDestroyed()) {
-      tab.view.setVisible(tab.key === snapshot.selectedKey);
+      // #119 A6: while the form's issue list is open it is drawn by the strip page over the area under the strip,
+      // and a tab's page is a native view that would cover it: the selected one steps aside until the list closes.
+      const shows = tab.key === snapshot.selectedKey && !pickerOpen;
+      tab.view.setVisible(shows);
       // A tab's panel is its own native view: it must leave with its tab, or it floats over whichever tab is selected.
-      canvasViews.setOwnerVisible(tab.view.webContents, tab.key === snapshot.selectedKey);
+      canvasViews.setOwnerVisible(tab.view.webContents, shows);
     }
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
@@ -1124,9 +1147,12 @@ function registerIpc() {
       click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
     };
     if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
+    const issue = tabShell.issueOf(key);
     Menu.buildFromTemplate([
       markSubmenu(tabShell.branchOf(key)),
       { type: 'separator' },
+      // #119 A6: a lane started from a GitHub issue keeps its link.
+      ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
       sideItem,
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
@@ -1152,9 +1178,23 @@ function registerIpc() {
       ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
     ]).popup({ window: win });
   });
-  ipcMain.on('strip:create', (e, branch) => {
+  // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so its brief is written.
+  ipcMain.on('strip:create', (e, branch, issue) => {
     if (!fromStrip(e) || typeof branch !== 'string' || branch.length > 200) return;
-    tabShell.createWorktree(branch).catch(logShellError('create'));
+    tabShell.createWorktree(branch, issueArg(issue)).catch(logShellError('create'));
+  });
+  // The form's "From an issue" list: the rows for a query (host/issues.js owns the matching and the naming), and the
+  // list opening and closing (the shell's state, so the selected tab's page is hidden while it shows).
+  ipcMain.handle('strip:issues', (e, req) => (fromStrip(e) && issueService
+    ? answerIssuesRequest(issueService, HOST_PROJECT.dev, req)
+    : { ok: false, text: 'refused' }));
+  ipcMain.on('strip:pickerOpen', (e) => {
+    if (!fromStrip(e)) return;
+    tabShell.openPicker();
+  });
+  ipcMain.on('strip:pickerClose', (e) => {
+    if (!fromStrip(e)) return;
+    tabShell.closePicker();
   });
   ipcMain.on('strip:cancelCreate', (e) => {
     if (!fromStrip(e)) return;
@@ -1678,6 +1718,8 @@ function startProbeDriver(port) {
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        // #119 A6: whether the selected tab's page is showing (it steps aside while the form's issue list is open); null if unreadable.
+        selectedViewVisible: (() => { const v = selectedView(); try { return v && typeof v.getVisible === 'function' ? v.getVisible() : null; } catch { return null; } })(),
         readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
     },
@@ -1700,6 +1742,27 @@ function startProbeDriver(port) {
       };
     },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
+    // The + menu's *New branch…* (and Ctrl+Alt+T): opens the strip's branch form, which a probe then drives through its page.
+    async openCreate() { return { ok: tabShell.openCreate() }; },
+    // #119 A6: the form's "From an issue" list, through the strip page's own elements. `action` is one of a fixed set
+    // (tab-shell.js STRIP_ISSUE_ACTIONS) and the data goes in as JSON, never spliced into code. Answers what the page shows.
+    async stripIssues(action, args) {
+      const req = JSON.stringify(JSON.stringify({ action, args }));
+      const out = await win.webContents.executeJavaScript(
+        `(() => { const r = JSON.parse(${req}); const $ = (id) => document.getElementById(id);
+          if (r.action === 'open') $('create-issues').click();
+          else if (r.action === 'pick') { const b = [...$('issues-list').querySelectorAll('.issue-row')][r.args.index]; if (!b) return JSON.stringify({ ok: false, error: 'no such row' }); b.click(); }
+          else if (r.action === 'filter') { const f = $('issues-filter'); f.value = r.args.text; f.dispatchEvent(new Event('input')); }
+          else if (r.action === 'submit') $('create').requestSubmit();
+          const btn = $('create-issues');
+          return JSON.stringify({ ok: true, view: {
+            row: { text: btn.textContent, disabled: btn.disabled, dim: btn.className === 'dim', title: btn.title },
+            panelHidden: $('issues-panel').hidden, filterValue: $('issues-filter').value, branchValue: $('create-branch').value,
+            note: $('issues-note').hidden ? null : $('issues-note').textContent,
+            rows: [...$('issues-list').querySelectorAll('.issue-row')].map(b => ({ num: b.querySelector('.issue-num').textContent, title: b.querySelector('.issue-title').textContent, branch: b.querySelector('.issue-branch').textContent, labels: [...b.querySelectorAll('.issue-label')].map(x => x.textContent) })),
+          } }); })()`);
+      return JSON.parse(out);
+    },
     // #81: what the tab menu's Open side session does, by the branch tab's label.
     async sideOpen(label) {
       const key = labelKey(label);
@@ -1992,6 +2055,13 @@ app.whenReady().then(async () => {
     liveClaims: () => occupancyService.current(),
     log: (...a) => console.log(...a),
   });
+  // The GitHub issues of this project's repo (#119 A6). host/probe-seams.js gives the probe a stand-in for gh.
+  issueService = createIssueService();
+  // Which issue each lane was made from, kept with the project's state so the link outlives a restart and the issue closing.
+  let linksFile = null;
+  try { linksFile = issueLinksFileFor(STATE_ROOT); } catch (err) { console.log('[main] issue links: kept in memory only:', err && err.message); }
+  const issueLinks = createIssueLinks({ file: linksFile });
+  const briefOps = createOps({ dir: scriptsDir(process.env) });
   tabShell = createShell({
     usage: (key) => { try { usageCounters.bump(key); } catch { /* counting never breaks a tab */ } },
     mode: MODE,
@@ -2013,6 +2083,13 @@ app.whenReady().then(async () => {
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
     // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
     ops: createOps({ dir: scriptsDir(process.env) }),
+    // #119 A6: a lane started from an issue gets its brief (host/issue-lane.js); a tab keeps its issue (the picked one, else
+    // the one its branch name says when the cached list has it).
+    issues: {
+      brief: createLaneBriefWriter({ cwd: HOST_PROJECT.dev, service: issueService, ops: briefOps }),
+      forBranch: (branch, folder) => issueLinks.get(branch, folder) || issueForBranch(branch, issueService.cached(HOST_PROJECT.dev)),
+      remember: (record) => issueLinks.set(record),
+    },
     hosts: {
       choosePort: chooseHostPort,
       probe: (port) => probePort(port),
@@ -2146,6 +2223,10 @@ app.whenReady().then(async () => {
     if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
   }
   if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
+  // #119 A6: read the repo's open issues once, a little after the window is up, so a tab whose branch came from an
+  // issue already shows its link. Fire and forget: no gh, no login or no network is one dim line later, never a dialog.
+  // Not under the probe driver, whose fake gh counts its calls.
+  if (MODE === 'tabs' && !PROBE_PORT) setTimeout(() => { issueService.list(HOST_PROJECT.dev).catch(() => {}); }, 20_000).unref();
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) runScreenshotPath();

@@ -59,6 +59,8 @@ const { readOpenPrs, parseOpenPrs } = require('./open-prs');
 const { readSeams, announce, fixtureReader } = require('./probe-seams');
 const { createReader: createReviewReader } = require('./review-reports');
 const { createGitTreeService, ledgerFileFor } = require('./git-tree-service');
+const { createIssueService } = require('./issues');
+const { createIssueLinks, issueLinksFileFor } = require('./issue-links');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { createCatalogueCache } = require('./catalogue-cache');
@@ -448,6 +450,12 @@ const usageCounters = createUsageCounters({ store, log: (...a) => console.log(..
 // gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
 const seams = readSeams(process.env);
 announce(seams, (line) => console.log(line));
+// A second issue service beside main's (app/main.js): two caches, two gh runs per repo, by design -- a host and the window that
+// spawned it share no memory. The 60 s cache and the 30 s failure memory keep the cost to a run a minute at most.
+const issueService = createIssueService();
+let issueLinksFile = null;
+try { issueLinksFile = issueLinksFileFor(STATE_ROOT); } catch (err) { console.log('[host] issue links unreadable:', err && err.message); }
+const issueLinks = createIssueLinks({ file: issueLinksFile });
 const gitTree = createGitTreeService({
   cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: seams.projectsDir || defaultProjectsDir(),
   ledgerFile: () => ledgerFileFor(STATE_ROOT),
@@ -455,6 +463,11 @@ const gitTree = createGitTreeService({
   readOpenPrs: seams.openPrsFixture
     ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
     : readOpenPrs,
+  // BACKLOG #119 A6: the GitHub issue a branch the + form made came from (*Open issue* next to *Open PR*). The service caches
+  // for a minute and says "unknown" (null) when gh can't answer.
+  readIssues: async (cwd) => { const r = await issueService.list(cwd); return r.ok ? r.issues : null; },
+  // The issue the lane was made from, kept by the window that made it (host/issue-links.js); survives the issue closing.
+  readLink: (branch, folder) => issueLinks.get(branch, folder),
   // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
   readRemote: readOrigin,
   readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),
