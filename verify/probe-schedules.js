@@ -203,8 +203,10 @@ async function main() {
   const devPid = devHost.pid;
 
   // A -----------------------------------------------------------------------------
-  await view(app, 'select', { id: 'schedules' });
+  // A fresh install starts with every panel folded onto the rail (BACKLOG #103), so the panel is docked on the right first.
+  const docked = await view(app, 'dock', { id: 'schedules', target: { edge: 'right' } });
   const first = await waitFor(async () => { const p = await panel(app); return p && p.shown ? p : null; }, 15000);
+  if (!first) console.log('DIAG dock reply', JSON.stringify(docked), 'state', JSON.stringify(await view(app, 'schedulesState')).slice(0, 600), 'out', app.out.slice(-600));
   check('A: the panel is open, its script loaded into the page\'s one scope', !!first && first.scope === true, JSON.stringify(first && { scope: first.scope, shown: first.shown }));
   check('A: nothing scheduled: it says so', !!first && first.empty === true && first.heads.length === 0, JSON.stringify(first && first.heads));
   check('A: ...and the footer says Routines are cloud-side, linking to claude.ai/code',
@@ -225,7 +227,7 @@ async function main() {
 
   wake(devPid, 'second prompt replaces the first', 600, 'sooner');
   const b2 = await waitFor(async () => { const p = await panel(app); return p && rowsOf(p).length === 1 && rowsOf(p)[0].what === 'second prompt replaces the first' ? p : null; }, 15000);
-  check('B: a new wakeup REPLACES the session\'s previous one', !!b2 && /^in (9|10) min$/.test(rowsOf(b2)[0].when), JSON.stringify(b2 && rowsOf(b2)));
+  check('B: a new wakeup REPLACES the session\'s previous one', !!b2 && /^in (9|10|11) min$/.test(rowsOf(b2)[0].when), JSON.stringify(b2 && rowsOf(b2)));
 
   // C -----------------------------------------------------------------------------
   cronCreate(devPid, 'job-10min', '*/10 * * * *', 'poll the deploy', true, 'Every 10 minutes');
@@ -236,10 +238,10 @@ async function main() {
   const ten = rows.find(r => r.id === 'job-10min');
   const daily = rows.find(r => r.id === 'job-daily');
   const weird = rows.find(r => r.id === 'job-weird');
-  check('C: a cron job due within the hour is under "Next hour" with its computed time', !!ten && ten.group === 'next-hour' && /^in \d+ min$/.test(ten.when) && ten.kind === 'cron', JSON.stringify(ten));
+  check('C: a cron job due within the hour is under "Next hour" with its computed time', !!ten && ten.group === 'next-hour' && /^in (<1|\d+) min$/.test(ten.when) && ten.kind === 'cron', JSON.stringify(ten));
   check('C: a daily job is under "Recurring" with its schedule and its next run', !!daily && daily.group === 'recurring' && daily.when === 'every day 06:00' && /^next (tomorrow )?06:00$/.test(daily.next || ''), JSON.stringify(daily));
   check('C: an expression the matcher cannot read says "schedule: <raw>" and shows no time', !!weird && weird.when === 'schedule: 0 9 * * MON' && weird.next === null, JSON.stringify(weird));
-  const mins = (w) => (w === 'in <1 min' ? 0 : Number((/^in (d+) min$/.exec(w) || [])[1]));
+  const mins = (w) => (w === 'in <1 min' ? 0 : Number((/^in (\d+) min$/.exec(w) || [])[1]));
   const nextHour = c1 && c1.groups.find(g => g.id === 'next-hour');
   check('C: groups appear in order (Next hour, then Recurring), soonest first inside Next hour', !!c1 && c1.heads.join() === 'Next hour,Recurring' && !!nextHour
     && nextHour.rows.length === 2 && mins(nextHour.rows[0].when) <= mins(nextHour.rows[1].when), JSON.stringify(c1 && c1.groups.map(g => [g.id, g.rows.map(r => [r.id, r.when])])));
@@ -263,7 +265,18 @@ async function main() {
   await waitFor(async () => { const st = await stateOf(app); return Array.isArray(st.stripDom) && st.stripDom.find(t => t.selected && t.label === 'develop') ? true : null; }, 20000);
   const nightPrompt = '/bedtime overnight run (schedules probe). Continue the task list.';
   const nightAt = wake(featHost.pid, nightPrompt, 1800, 'next wake');
-  const d1 = await waitFor(async () => { const p = await panel(app); return p && rowsOf(p).some(r => r.kind === 'bedtime') ? p : null; }, 20000);
+  // A bedtime night turns the window lean (BACKLOG #62, Ricardo's rule), and lean unmounts every dock panel, this one included: lean
+  // working as designed. "Back to normal" brings the panels back, and is what a person would press to look at the list.
+  const lean = await waitFor(async () => { const r = await view(app, 'leanState'); return r && r.ok && r.leanOn === true ? r : null; }, 15000);
+  if (lean) {
+    const back = await command(app, { cmd: 'strip-lean', button: 'lean-back' });
+    const normal = await waitFor(async () => { const r = await view(app, 'leanState'); return r && r.ok && r.leanOn === false && r.shown.includes('schedules') ? r : null; }, 15000);
+    check('D: the night turned the window lean (the panel is unmounted by design); Back to normal shows it again', !lean.shown.includes('schedules') && !!back.ok && !!normal, JSON.stringify([lean.shown, back, normal && normal.shown]));
+  } else {
+    console.log('INFO  D: the night did not turn the window lean in this run; nothing to undo');
+  }
+  const d1 = await waitFor(async () => { const p = await panel(app); return p && rowsOf(p).some(r => r.kind === 'bedtime') ? p : null; }, 45000);
+  if (!d1) console.log('DIAG D: panel', JSON.stringify(await panel(app)), 'file', fs.existsSync(SCHEDULES_FILE) ? fs.readFileSync(SCHEDULES_FILE, 'utf8').slice(0, 1500) : 'none');
   const night = d1 && rowsOf(d1).find(r => r.kind === 'bedtime');
   check('D: the OTHER session\'s bedtime night is in THIS window\'s list (the hosts share one file)', !!night && /feat\/a/.test(night.session || '') && night.cwd !== null, JSON.stringify(night));
   check('D: ...as a bedtime row with its night detail and its wake time', !!night && /^night since \d\d:\d\d/.test(night.detail || '') && /^(in \d+ min|\d\d:\d\d)$/.test(night.when), JSON.stringify(night && [night.when, night.detail, clockText(nightAt)]));

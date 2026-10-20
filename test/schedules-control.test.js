@@ -202,3 +202,44 @@ test('junk events and a broken store never throw out of the host\'s hook handler
   assert.doesNotThrow(() => b.payload());
   assert.doesNotThrow(() => b.changed());
 });
+
+// The antivirus scan of a file just renamed can hold it for a moment (measured on this machine, host/wand-control.js): a read that fails
+// then must not blank the OTHER sessions' rows, and what the file holds a moment later must still reach the windows.
+test('a file that cannot be read for a moment keeps showing the last good list, and is looked at again shortly', async (t) => {
+  const s = setup(2); t.after(s.cleanup);
+  const [a] = s.controls;
+  let busy = false;
+  const flaky = { ...s.store, readState: (n) => (busy ? { status: 'unreadable', value: null, error: new Error('EBUSY') } : s.store.readState(n)) };
+  flaky.withLock = (n, fn) => s.store.withLock(n, fn);
+  flaky.write = (n, v) => s.store.write(n, v);
+  const frames = [];
+  const b = createSchedulesControl({ store: flaky, key: '2', cwd: 'C:/p/2', label: () => 'proj / feat-2', now: s.clock.now, emit: (f) => frames.push(f), nightView: () => null, retryMs: 5 });
+  a.start(); b.start();
+  a.event(wake('from a', 600, NOW + 600_000));
+  assert.deepStrictEqual(rowsOf(b.changed().schedules).map(r => r.session), ['proj / feat-1'], 'seen once');
+  busy = true;
+  s.clock.t += MIN;                                     // the clock text moves, so the list is a different list
+  assert.deepStrictEqual(rowsOf(b.payload()).map(r => r.session), ['proj / feat-1'], 'the last good list, not an empty one');
+  const whileBusy = b.changed();
+  assert.ok(whileBusy === null || rowsOf(whileBusy.schedules).length === 1, 'never a frame that drops the other session');
+  a.event(wake('newer', 900, s.clock.t + 900_000));
+  b.changed();                                          // unreadable: nothing new can be told yet, but a retry is armed
+  busy = false;
+  await new Promise(r => setTimeout(r, 60));
+  const last = frames[frames.length - 1];
+  assert.ok(last, 'the retry announced what the file holds now');
+  assert.ok(rowsOf(last.schedules).some(r => r.promptLine === 'newer'), JSON.stringify(rowsOf(last.schedules).map(r => r.promptLine)));
+  b.end();
+});
+
+test('end() stops a pending retry', async (t) => {
+  const s = setup(1); t.after(s.cleanup);
+  const busy = { ...s.store, readState: () => ({ status: 'unreadable', value: null, error: new Error('EBUSY') }), withLock: (n, fn) => s.store.withLock(n, fn), write: (n, v) => s.store.write(n, v) };
+  const frames = [];
+  const b = createSchedulesControl({ store: busy, key: '3', cwd: 'C:/p/3', label: () => 'x', now: s.clock.now, emit: (f) => frames.push(f), nightView: () => null, retryMs: 5 });
+  b.start();
+  b.changed();
+  b.end();
+  await new Promise(r => setTimeout(r, 40));
+  assert.deepStrictEqual(frames, []);
+});

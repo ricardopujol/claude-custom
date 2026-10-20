@@ -53,7 +53,8 @@ function pastDropping(entry, now) {
   return now - endedAt > ENDED_DROP_MS;
 }
 
-function createSchedulesControl({ store, key, cwd = null, label = () => '', now = Date.now, emit = () => {}, nightView = () => null, log = () => {} } = {}) {
+function createSchedulesControl({ store, key, cwd = null, label = () => '', now = Date.now, emit = () => {}, nightView = () => null, log = () => {},
+  retryMs = 250, maxRetries = 20 } = {}) {
   if (!store) throw new Error('createSchedulesControl: store is required');
   if (typeof key !== 'string' || key === '') throw new Error('createSchedulesControl: key is required');
 
@@ -61,6 +62,9 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
   let told = null;                 // JSON of the list the windows of THIS host were last told
   let loggedFailure = false;
   let ended = false;
+  let lastGood = {};               // the other hosts' entries from the last READABLE file: shown while the file is busy
+  let retryTimer = null;
+  let retries = 0;
 
   const say = (line) => { try { log(line); } catch { /* a logger must never stop the host */ } };
 
@@ -115,19 +119,36 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
     }
   }
 
-  /** The list the windows should see: every host's entry from the file, with this host's own taken from memory. */
+  /**
+   * The list the windows should see: every host's entry from the file, with this host's own taken from memory. A file that cannot be
+   * read just now (the antivirus holds a file it has just seen renamed) shows the last good copy, never a list without the other
+   * sessions, and is looked at again shortly (armRetry).
+   */
   function currentView() {
     const at = now();
     const entries = {};
     const cur = readFile();
-    for (const [k, e] of Object.entries(cur.sessions)) if (k !== key && isObj(e)) entries[k] = e;
+    if (cur.ok) { lastGood = cur.sessions; retries = 0; } else armRetry();
+    const others = cur.ok ? cur.sessions : lastGood;
+    for (const [k, e] of Object.entries(others)) if (k !== key && isObj(e)) entries[k] = e;
     if (!ended) {
       const mine = ownEntry(at);
       if (mine.rows.length > 0) entries[key] = mine;
-    } else if (isObj(cur.sessions[key])) {
-      entries[key] = cur.sessions[key];
+    } else if (isObj(others[key])) {
+      entries[key] = others[key];
     }
     return buildView(entries, at);
+  }
+
+  // No further file event is coming to say "look again", so a busy read arms a bounded retry that announces whatever it then finds.
+  function armRetry() {
+    if (retryTimer !== null || ended || retries >= maxRetries) return;
+    retries += 1;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      try { announce(); } catch { /* the next event retries */ }
+    }, retryMs);
+    if (retryTimer && typeof retryTimer.unref === 'function') retryTimer.unref();
   }
 
   const payload = () => {
@@ -191,6 +212,8 @@ function createSchedulesControl({ store, key, cwd = null, label = () => '', now 
     if (ended) return;
     persist({ markEnded: true });
     ended = true;
+    clearTimeout(retryTimer);
+    retryTimer = null;
   }
 
   const handles = (type) => type === CONTROL_TYPE;

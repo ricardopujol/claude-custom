@@ -66,3 +66,11 @@ test('the rail badge is repainted after every layout (the rail rebuilds its butt
   assert.match(BLOCK, /delete b\.dataset\.badge/);
   assert.match(HTML, /button\[data-badge\]::after/);
 });
+
+test('the probe page answers every schedules action the shell lets through, and the shell lets exactly those through', () => {
+  const SHELL = fs.readFileSync(path.join(APP, 'tab-shell.js'), 'utf8');
+  for (const a of ['schedulesState', 'schedulesClick']) {
+    assert.ok(RAW.includes(`case '${a}':`), `renderer.js must answer ${a}`);
+    assert.ok(SHELL.includes(`'${a}'`), `tab-shell.js must let ${a} through (an unlisted action is refused as "view needs a known action")`);
+  }
+});
