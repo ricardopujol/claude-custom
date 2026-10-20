@@ -240,3 +240,27 @@ test('main is the base when there is no develop', async () => {
   const r = await svc(root).handle({ type: 'changes', action: 'list', scope: 'auto' });
   assert.deepStrictEqual([r.scope, r.base, r.files.map(f => f.path)], ['branch', 'main', ['g']]);
 });
+
+test('an untracked LINK is listed but never followed: what it points at is not read for a line count', async (t) => {
+  const root = repo();
+  const outside = tmpDir('cc-changes-outside-');
+  put(outside, 'secret.txt', 'one\ntwo\nthree\n');
+  try { fs.symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'), 'file'); } catch { t.skip('this machine cannot create a symlink'); return; }
+  const read = [];
+  const r = await svc(root, { readFile: async (p) => { read.push(p); return fs.readFileSync(p, 'utf8'); } }).handle({ type: 'changes', action: 'list', scope: 'working' });
+  const f = r.files.find(x => x.path === 'link.txt');
+  assert.ok(f, 'the link is listed');
+  assert.strictEqual(f.add, null, 'its target\'s lines are not counted');
+  assert.ok(!read.some(p => p.endsWith('link.txt')), 'and the link was never read');
+});
+
+test('an untracked path that is not a plain file (a link, a device) is listed with unknown counts and is not read, whatever the platform can create', async () => {
+  const root = repo();
+  put(root, 'odd.txt', 'one\ntwo\n');
+  const read = [];
+  const lstat = async () => ({ isFile: () => false, size: 3 });
+  const r = await svc(root, { lstat, readFile: async (p) => { read.push(p); return ''; } }).handle({ type: 'changes', action: 'list', scope: 'working' });
+  const f = r.files.find(x => x.path === 'odd.txt');
+  assert.deepStrictEqual([f.status, f.add, f.del, f.untracked], ['A', null, null, true]);
+  assert.deepStrictEqual(read, []);
+});

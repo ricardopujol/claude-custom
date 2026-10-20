@@ -52,7 +52,7 @@ function defaultRunGit(execFile) {
 
 const seqOf = (s) => (Number.isSafeInteger(s) || (isStr(s) && s.length <= 64) ? s : undefined);
 
-function createChangesService({ root, execFile = childProcess.execFile, readFile = (p) => fsp.readFile(p, 'utf8'), stat = (p) => fsp.stat(p), cap = MAX_FILES } = {}) {
+function createChangesService({ root, execFile = childProcess.execFile, readFile = (p) => fsp.readFile(p, 'utf8'), lstat = (p) => fsp.lstat(p), cap = MAX_FILES } = {}) {
   const git = defaultRunGit(execFile);
 
   async function baseBranch() {
@@ -88,7 +88,8 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
       let add = null;
       let binary = false;
       try {
-        const st = await stat(lex.abs);
+        // lstat, not stat: a link (to a file outside the worktree, say) is not followed, its lines are not counted
+        const st = await lstat(lex.abs);
         if (st.isFile() && st.size <= MAX_COMPARE_BYTES) {
           const text = await readFile(lex.abs);
           add = countLines(text);
@@ -122,6 +123,7 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
     const asked = msg.scope === undefined ? 'auto' : msg.scope;
     let scope;
     let r;
+    let knownClean = false;
     if (asked === 'working' || asked === 'branch') {
       scope = asked;
       r = await listScope(scope);
@@ -131,6 +133,7 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
       if (r.ok && r.files.length === 0) {
         const branch = await listScope('branch');
         scope = resolveScope('auto', false);
+        knownClean = true;
         // a repo with no integration branch still answers: the empty working tree
         r = branch.ok ? branch : r;
         if (!branch.ok) scope = 'working';
@@ -142,7 +145,7 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
     const summary = summarize(r.files);
     const capped = capFiles(r.files, cap);
     // `dirty` is about the working tree whichever scope is shown: the page's default and its "uncommitted work" cue
-    let dirty = scope === 'working' ? r.files.length > 0 : null;
+    let dirty = scope === 'working' ? r.files.length > 0 : (knownClean ? false : null);
     if (dirty === null) {
       const w = await listScope('working');
       dirty = w.ok ? w.files.length > 0 : null;
