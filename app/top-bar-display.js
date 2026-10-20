@@ -470,6 +470,12 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 // leave a two-row draft and submit nothing.
 const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?(?<!\\)$/;
 
+// A review comment from the Changes panel (BACKLOG #119 A3): `In <path>:<line> — <comment>`, free text behind the fixed prefix "In " (the CLI
+// can't read it as a slash command or a `!` shell line), on ONE line (several comments are joined with "; " by app/changes-compare.js), no control or
+// C1 character, no leading or trailing space, at most 1990 characters (app/changes-compare.js MAX_STACK_CHARS), and NEVER ending in a backslash:
+// `\` + Enter is the CLI's newline, so the person's Enter would leave a two-row draft and submit nothing.
+const COMMENT_LINE = /^In [^\s\p{Cc}\p{Zl}\p{Zp}](?:[^\p{Cc}\p{Zl}\p{Zp}]{0,1985}[^\s\p{Cc}\p{Zl}\p{Zp}])?(?<!\\)$/u;
+
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
  * Dexter F3 / Miguel I2). `screen` is inputState()'s answer. ->
@@ -481,9 +487,10 @@ const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029]
 function planTyping({ command, screen, connected, kind } = {}) {
   const mention = kind === 'mention';
   const panel = kind === 'panel';
-  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : SLASH_COMMAND;
+  const comment = kind === 'comment';
+  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : comment ? COMMENT_LINE : SLASH_COMMAND;
   if (typeof command !== 'string' || !shape.test(command)) {
-    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : 'not a single-line slash command' };
+    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : comment ? 'not a single-line review comment' : 'not a single-line slash command' };
   }
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
