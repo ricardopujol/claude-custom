@@ -10,16 +10,21 @@
  * Pure: no terminal, no socket, no clock. host/terminal-state.js hands it the OSC payloads, host/host.js writes the
  * reply and broadcasts the snapshot, host/attention.js turns the root record into the same cues the hooks raise.
  *
- * WHO ANSWERS DA1 TODAY (measured 2026-10-19, verify/probe-osc-7501.js and a headless xterm run): the program sends
- * "OSC 7501 ; ? ST" and then a DA1 sentinel "CSI c". The HOST's headless xterm (host/terminal-state.js) DOES generate
- * a DA1 answer on its onData ("CSI ? 1 ; 2 c"), but nothing in the host listens to it, so it never reaches the pty.
- * The only answerer is the WINDOW's xterm: its answer travels renderer -> socket -> host -> pty (an `input` frame or a
- * raw frame). A detached host (no window) therefore answers nothing to DA1 at all. The protocol marks itself
- * unsupported for the whole session if the DA1 answer reaches the program BEFORE the 7501 answer, so the ordering is
- * enforced in the host, not hoped for: host/parse-gate.js holds a DA1-shaped input frame until the headless parse has
- * passed every byte the host had already received from the pty, and the OSC handler writes the 7501 answer to the pty
- * synchronously inside that parse. The query always precedes its sentinel in the byte stream, so by the time the
- * sentinel's answer can be released, the query has been parsed and answered.
+ * WHO ANSWERS DA1 (measured 2026-10-19, verify/probe-osc-7501.js and a bare node-pty experiment). The program sends
+ * "OSC 7501 ; ? ST" and then a DA1 sentinel "CSI c"; if the DA1 answer reaches it BEFORE the 7501 answer, the protocol is
+ * marked unsupported for the whole session.
+ *   - Before this lane, on the OS's ConPTY: conhost answered DA1 ITSELF, 3 ms after the program wrote it, and dropped the
+ *     host's OSC reply on the way in, so the program never saw a 7501 answer at all. The window's xterm answered DA1 too
+ *     (twice per query in total). Nothing a host does can beat conhost, so the session runs on node-pty's bundled ConPTY
+ *     (host/conpty-choice.js), which forwards "CSI c" to the host unanswered and delivers the host's reply.
+ *   - Now: with a window attached, the WINDOW's xterm answers DA1 (renderer -> socket -> host -> pty). The host's headless
+ *     xterm generates the same answer ("CSI ? 1 ; 2 c") but sends it on only when NO window is attached
+ *     (host.js onResponse), straight from the parse, so it follows the 7501 answer in stream order. A detached host
+ *     therefore answers the query and the sentinel both.
+ * The ordering with a window is enforced, not hoped for: host/parse-gate.js holds a DA1-shaped input frame until the headless
+ * parse has passed every byte the host had already received from the pty, and the OSC handler writes the 7501 answer to the
+ * pty synchronously inside that parse. The query always precedes its sentinel in the byte stream, so by the time the
+ * sentinel's answer can be released, the query has been parsed and answered (probe: 41 of 41 rounds, 7501 first).
  *
  * Limits (all from the spec): a report over 4096 bytes, with a missing or unknown state, failing base64 or invalid
  * UTF-8, or holding a control character is discarded whole. id <= 128 bytes, <= 32 per segment, <= 8 levels. app <= 32
