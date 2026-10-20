@@ -263,6 +263,7 @@ app.whenReady().then(async () => {
     check('working again: the need is answered (needsInput clears)', await until('document.getElementById("dot").classList.contains("ps-working") && lastReportedTabStatus.needsInput === false'));
     await say(osc('state=done'));
     check('done: ps-done, and the status says finished', await until('document.getElementById("dot").classList.contains("ps-done") && lastReportedTabStatus.finished === true && lastReportedTabStatus.working === false'));
+    await sleep(4500);        // host/attention.js raises each kind at most once per 4 s (the rate limit the protocol asks for): blocked raised input-needed a moment ago
     await say(osc('state=error:msg=' + b64('Rate limited')));
     check('error: ps-error, and it needs you', await until('document.getElementById("dot").classList.contains("ps-error") && lastReportedTabStatus.needsInput === true'));
     await say(osc('state=clear'));
