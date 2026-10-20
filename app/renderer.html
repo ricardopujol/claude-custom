@@ -768,15 +768,20 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
-    /* First-run checks (host/first-run.js): ONE line at the foot of the terminal while a required check fails. Never a modal. */
+    /* First-run checks (host/first-run.js): ONE line at the top of the terminal while a required check fails. Never a modal. */
     #first-run-banner {
-      position: absolute; bottom: 6px; left: 10px; right: 10px; z-index: 15;
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 15;
       display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 5px;
       font-size: 12px; line-height: 1.4; color: var(--text);
       background: color-mix(in srgb, var(--warn, #d9a441) 16%, var(--chrome));
       border: 1px solid color-mix(in srgb, var(--warn, #d9a441) 55%, var(--border));
     }
     #first-run-banner[hidden] { display: none; }
+    /* the same slot as #terminal-banner (top of the terminal, never over the prompt at the foot, never near #occupancy-confirm);
+       when that one shows too, this one sits under it, and both follow the bar */
+    body.bar-open #first-run-banner { top: 46px; }
+    #terminal-banner:not([hidden]) ~ #first-run-banner { top: 50px; }
+    body.bar-open #terminal-banner:not([hidden]) ~ #first-run-banner { top: 90px; }
     #first-run-banner-text { flex: 1; }
     #first-run-banner-dismiss { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 15px; line-height: 1; }
     #first-run-banner-dismiss:hover { color: var(--text); }

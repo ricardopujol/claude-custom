@@ -17,7 +17,8 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-const { resolveLaunchTarget, parseCli, launchEnv, versionLine } = require('../host/launch-target');
+const { resolveLaunchTarget, parseCli, launchEnv } = require('../host/launch-target');
+const { versionText, electronLaunch } = require('../host/exe-entry');
 const { portForCwd } = require('../host/port-for-project');
 
 const INSTALL_DIR = path.join(__dirname, '..');
@@ -32,8 +33,10 @@ try {
 }
 
 if (cli.cmd === 'version') {
-  console.log(versionLine(require('../package.json')));
-  process.exit(0);
+  // One stable line, the same one claude-custom.exe prints. A line that couldn't be written is a failed run.
+  let wrote = true;
+  try { require('fs').writeSync(1, versionText(require('../package.json')) + String.fromCharCode(10)); } catch { wrote = false; }
+  process.exit(wrote ? 0 : 1);
 }
 
 if (cli.cmd === 'help') {
@@ -106,12 +109,13 @@ try {
 
 console.log(`claude-custom: ${target}  (port ~${portForCwd(target)})`);
 
-// electron is resolved from the install's own node_modules rather than the
-// PATH: the launcher can be run from anywhere, and "anywhere" rarely has the
-// right electron on it.
-const electron = require(path.join(INSTALL_DIR, 'node_modules', 'electron'));
+// electron is resolved from the install's own node_modules rather than the PATH: the launcher can be run from anywhere, and
+// "anywhere" rarely has the right electron on it. An installed build ships no node_modules/electron (it's a devDependency), so there
+// the Electron to start is this very exe (the picker runs this script under it): started without ELECTRON_RUN_AS_NODE (launchEnv drops
+// it) and with no folder argument, since CLAUDE_CUSTOM_CWD below is the hand-off.
+const { exe: electron, args: electronArgs } = electronLaunch({ installDir: INSTALL_DIR, execPath: process.execPath });
 
-const child = spawn(electron, [INSTALL_DIR], {
+const child = spawn(electron, electronArgs, {
   stdio: 'inherit',
   env: launchEnv(process.env, target),
 });

@@ -19,22 +19,50 @@ const filesList = (() => {
   return m[1].split('\n').map(l => /^\s+- "?([^"]*)"?\s*$/.exec(l)).filter(Boolean).map(x => x[1]);
 })();
 
-test('test, verify, forge, documentation, reports and .harness are excluded', () => {
-  for (const dir of ['test', 'verify', 'forge', 'documentation', 'reports', '.harness']) {
+const exclusions = filesList.filter(f => f.startsWith('!')).map(f => f.slice(1));
+const inclusions = filesList.filter(f => !f.startsWith('!'));
+
+test('files is an ALLOW-LIST: it names the app folders and nothing like "everything"', () => {
+  assert.ok(!inclusions.includes('**/*') && !inclusions.includes('**') && !inclusions.includes('*'), 'electron-builder reads the disk, not git');
+  assert.deepEqual(inclusions.sort(), ['.harness/hook-helper.exe', 'app/**', 'bin/**', 'host/**', 'package.json', 'registry/**']);
+});
+
+test('test, verify, forge, documentation, reports, backgrounds and portraits are excluded as well', () => {
+  for (const dir of ['test', 'verify', 'forge', 'documentation', 'reports', 'backgrounds', 'portraits']) {
     assert.ok(filesList.includes(`!${dir}/**`), `${dir}/ must be excluded`);
   }
 });
 
-test('the app, host and registry folders are not excluded', () => {
-  for (const dir of ['app', 'host', 'bin', 'registry']) {
-    assert.ok(!filesList.includes(`!${dir}/**`), `${dir}/ must ship`);
+test('what can sit inside a shipped folder and must not ship is excluded: env files, logs, tokens, the vault, migration leftovers', () => {
+  for (const pat of ['**/.env*', '**/*.log', '**/*.pre-migration', '**/secrets.enc', '**/session-token', '**/*.token', '**/*.map']) {
+    assert.ok(filesList.includes(`!${pat}`), `${pat} must be excluded`);
   }
 });
 
-test('the hook helper is re-included after .harness is excluded', () => {
-  const out = filesList.indexOf('!.harness/**');
-  const back = filesList.indexOf('.harness/hook-helper.exe');
-  assert.ok(out !== -1 && back > out);
+// A pattern -> regexp, enough for the globs used in the yml: `**/` (any folders), `**` (anything), `*` (within a name).
+const globToRe = (g) => new RegExp('^' + g.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*\//g, '(?:.*/)?').replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*') + '$');
+const shipped = (rel) => inclusions.some(g => globToRe(g).test(rel)) && !exclusions.some(g => globToRe(g).test(rel));
+
+test('no gitignored file on disk under a shipped folder would be packed (a local .env, backgrounds, a log, a pre-migration copy)', () => {
+  const { execFileSync } = require('child_process');
+  let out = '';
+  try {
+    out = execFileSync('git', ['ls-files', '--others', '--ignored', '--exclude-standard', '--', 'app', 'host', 'bin', 'registry'],
+      { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+  } catch { return; }   // not a git checkout (a source tarball): nothing to compare
+  const escaped = out.split('\n').map(l => l.trim()).filter(Boolean).filter(shipped);
+  assert.deepEqual(escaped, [], 'these ignored files would ship: add a pattern to build/electron-builder.yml');
+});
+
+test('and the matcher itself: a made-up ignored file under each shipped folder is caught by the patterns above', () => {
+  for (const f of ['app/notes.log', 'host/.env', 'host/.env.local', 'registry/projects.json.pre-migration', 'app/x/secrets.enc', 'host/a.map']) {
+    assert.equal(shipped(f), false, f);
+  }
+  for (const f of ['app/main.js', 'host/host.js', 'bin/claude-custom.js', 'registry/projects.json', '.harness/hook-helper.exe', 'package.json']) {
+    assert.equal(shipped(f), true, f);
+  }
+  assert.equal(shipped('backgrounds/a.svg'), false);
+  assert.equal(shipped('.harness/session-token'), false);
 });
 
 test('the host looks for the helper exactly where the package puts it', () => {
@@ -48,6 +76,7 @@ test('a Windows NSIS installer and a zip, per-user, unsigned, and not packed int
   assert.match(YML, /target: zip/);
   assert.match(YML, /^asar: false/m);
   assert.match(YML, /perMachine: false/);
+  assert.match(YML, /allowToChangeInstallationDirectory: false/, 'per-user only: the app writes .harness beside its code');
   assert.match(YML, /signAndEditExecutable: false/);
 });
 

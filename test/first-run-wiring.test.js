@@ -89,8 +89,24 @@ test('the page has the banner (not a modal) and the Diagnostics list', () => {
 
 test('the host runs the checks at listen, skips a side session, and sends them in the handshake and as a frame', () => {
   assert.match(HOST, /const firstRun = require\('\.\/first-run'\);/);
-  assert.match(HOST, /function startFirstRun\(\) \{\s*if \(SIDE\) return;/);
+  assert.match(HOST, /function startFirstRun\(\) \{\s*if \(SIDE\) \{/);
   assert.match(HOST, /boundPort = PORT;\s*startFirstRun\(\);/);
   assert.match(HOST, /firstRun: firstRunState,/);
   assert.match(HOST, /broadcastControl\(\{ type: 'first-run', firstRun: firstRunState \}\)/);
+});
+
+test('a side session reads as "not run in a side session", never as running', () => {
+  const { dom, render } = load();
+  render({ done: true, skipped: true, banner: null, checks: [] });
+  assert.match(dom.els['first-run'].innerHTML, /not run in a side session/);
+  assert.ok(!/running/.test(dom.els['first-run'].innerHTML));
+});
+
+test('the banner sits in the terminal-banner slot at the TOP, never at the foot over the prompt, and clears #terminal-banner when both show', () => {
+  const css = HTML.slice(HTML.indexOf('#first-run-banner {'), HTML.indexOf('#first-run-banner-text'));
+  assert.match(css, /top: 6px;/);
+  assert.ok(!/bottom:/.test(css));
+  assert.match(HTML, /body\.bar-open #first-run-banner \{ top: 46px; \}/);
+  assert.match(HTML, /#terminal-banner:not\(\[hidden\]\) ~ #first-run-banner \{ top: 50px; \}/);
+  assert.ok(HTML.indexOf('id="terminal-banner"') < HTML.indexOf('id="first-run-banner"'), 'it follows #terminal-banner, which the sibling rule needs');
 });

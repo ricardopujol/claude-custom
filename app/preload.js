@@ -220,6 +220,12 @@ contextBridge.exposeInMainWorld('harness', {
         } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('chrome-settings')),
   },
+  // The tray icon's switches (BACKLOG #119 A8) -- see app/tray-settings.js. `get` answers { trayIcon, minimiseOnClose, startMinimised }
+  // or null; `set` takes one of the first two keys and the DESIRED boolean, and answers what main saved (null when it couldn't).
+  tray: {
+    get: () => ipcRenderer.invoke('tray:getSettings'),
+    set: (key, on) => ipcRenderer.invoke('tray:setSetting', key, on),
+  },
   // The background video's play inputs (backlog #34) -- see app/playback-bridge.js. `get` answers
   // { minimised, hidden, onBattery }, each a boolean or null (unknown); `onChange` replaces its
   // one listener and is handed the same shape.
@@ -260,6 +266,11 @@ contextBridge.exposeInMainWorld('harness', {
   // approved and where it goes ({ html, hosts, rect, covered } -> { ok }); `bounds` / `cover` / `hosts` keep it in step;
   // `hide` destroys it (hidden means stopped); `answerHost` is the person's answer to a host question; `onNeedHost` and
   // `onMessage` are main -> page ({ id, origin } / { kind: 'send', text }), each replacing its one listener.
+  // the Style tab's switch for the claude-custom mod (BACKLOG #119 A2): a boolean, or null when main could not tell (read) / save (write)
+  ccMod: {
+    settingsGet: () => ipcRenderer.invoke('ccmod:settings-get'),
+    settingsSet: (on) => ipcRenderer.invoke('ccmod:settings-set', on),
+  },
   canvas: {
     show: (req) => ipcRenderer.invoke('canvas:show', req),
     bounds: (rect) => ipcRenderer.send('canvas:bounds', rect),

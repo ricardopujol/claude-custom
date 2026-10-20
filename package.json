@@ -15,6 +15,7 @@
     "bench:hooks": "node verify/measure-hook-latency.js",
     "mutate": "stryker run",
     "build:reader": "node build/build-reader.mjs",
+    "predist": "node scripts/check-dist-inputs.js",
     "dist": "electron-builder --config build/electron-builder.yml --win"
   },
   "dependencies": {

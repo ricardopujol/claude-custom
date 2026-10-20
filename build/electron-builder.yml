@@ -14,26 +14,32 @@ asar: false
 # node-pty ships N-API prebuilds, so there is nothing to rebuild for Electron.
 npmRebuild: false
 
-# Everything is included, then the folders a second user doesn't need are taken out. The patterns run in order, so the hook
-# helper is put back after `.harness` is excluded: it's the one build artefact the app can't work without (no helper, no hooks).
+# An ALLOW-LIST, never "everything except": electron-builder reads the DISK, not git, so a local backgrounds/ folder, a portraits/
+# folder, a .env or a registry/projects.json.pre-migration would ride along in a build made from a working checkout. Only the app's
+# own folders are named, and the patterns after them take out what can sit inside them. The hook helper is the one build artefact
+# (gitignored, in .harness/) the app can't work without; `npm run dist` refuses to run when it's missing (scripts/check-dist-inputs.js).
+# test/packaging-config.test.js pins all of this, including that no gitignored file under a listed folder escapes a pattern here.
 files:
-  - "**/*"
+  - "app/**"
+  - "host/**"
+  - "bin/**"
+  - "registry/**"
+  - "package.json"
+  - ".harness/hook-helper.exe"
+  - "!**/*.map"
+  - "!**/*.log"
+  - "!**/.env*"
+  - "!**/*.pre-migration"
+  - "!**/secrets.enc"
+  - "!**/session-token"
+  - "!**/*.token"
   - "!test/**"
   - "!verify/**"
   - "!forge/**"
   - "!documentation/**"
   - "!reports/**"
-  - "!scripts/**"
-  - "!build/**"
-  - "!helper/**"
-  - "!dist/**"
-  - "!.stryker-tmp/**"
-  - "!.claude/**"
-  - "!.github/**"
-  - "!stryker.conf.json"
-  - "!CLAUDE.md"
-  - "!.harness/**"
-  - ".harness/hook-helper.exe"
+  - "!backgrounds/**"
+  - "!portraits/**"
 
 win:
   target:
@@ -47,5 +53,7 @@ win:
 nsis:
   oneClick: false
   perMachine: false
-  allowToChangeInstallationDirectory: true
+  # false: the app writes its state (.harness: token, identity, log, layout) beside its code, so it can't live under Program Files.
+  # Per-user only, in %LOCALAPPDATA%\Programs. An update replaces that folder, so layout and log don't survive one (BACKLOG: move .harness to userData).
+  allowToChangeInstallationDirectory: false
   artifactName: claude-custom-setup-${version}.${ext}

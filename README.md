@@ -6,7 +6,7 @@ The founding bet is that it wraps the CLI and never reimplements it. The window 
 
 ![The terminal with the Agents roster docked beside it](docs/screenshots/terminal-roster.png)
 
-![The Resources panel docked on the right](docs/screenshots/resources-panel.png)
+![The Resources chip open over the terminal, with the last hour of CPU and memory](docs/screenshots/resources-history.png)
 
 ## Platforms
 
@@ -32,7 +32,7 @@ npm run build:helper
 npm run dist
 ```
 
-The installer is `dist\claude-custom-setup-0.0.1.exe`, about 87 MB, and `dist` also gets a zip of the same app. The default install is per user, under `%LOCALAPPDATA%\Programs\claude-custom`.
+The installer is `dist\claude-custom-setup-0.0.1.exe`, about 87 MB, and `dist` also gets a zip of the same app. It installs per user, under `%LOCALAPPDATA%\Programs\claude-custom`, and the installer doesn't offer another folder: the app keeps its state (token, log, saved layout) in a `.harness` folder beside its code, and that has to be somewhere you can write to. An update replaces the folder, so a saved layout and the log don't survive one yet.
 
 An installed copy opens the folder you start it in, or the folder you name:
 
@@ -40,7 +40,7 @@ An installed copy opens the folder you start it in, or the folder you name:
 & "$env:LOCALAPPDATA\Programs\claude-custom\claude-custom.exe" C:\path\to\your\project
 ```
 
-If you start it from the Start menu it opens your home folder, and you can switch with the Projects panel.
+If you start it from the Start menu it opens your home folder, and you can switch with the Projects panel. A folder that doesn't exist is refused with one line and no window. `claude-custom.exe --version` prints `claude-custom 0.0.1`, the same line the launcher prints. `--stop` is the launcher's: the exe refuses it.
 
 **Run from source.**
 
@@ -102,14 +102,16 @@ When a session starts, the host checks four things and shows the results under D
 
 1. `claude` runs and is version 2.1.0 or newer.
 2. The hook helper exists and starts.
-3. Claude Code is signed in. It only checks that the credentials file exists, or that `ANTHROPIC_API_KEY` is set, and never reads either.
+3. Claude Code is signed in: the credentials file holds a Claude login, or the session's environment carries a credential (an API key, an auth token, an OAuth token, or a Bedrock or Vertex switch). It only looks for the login entry's presence, and never logs or stores a token or a key. The result says which mechanism it found.
 4. Ollama answers. This one is optional and never raises a warning.
 
-If one of the first three fails you get a single line at the foot of the terminal that says what to run. It's never a modal.
+If one of the first three fails you get a single line at the top of the terminal that says what to run. It's never a modal.
 
 ## Troubleshooting
 
 **"Hooks are off", or agents never go Active.** The hook helper is missing or won't start. Run `npm run build:helper`, or copy a built `hook-helper.exe` into `.harness\`. The host log (`.harness\host.log`) says so too. Without the helper the terminal still works, but the roster and Claude's panel don't.
+
+**"Claude Code didn't answer".** `claude --version` took longer than 8 seconds, which a cold start under a virus scanner can do. Run it in a terminal to see why.
 
 **`npm run build:helper` fails.** Check that the .NET 10 SDK and the Visual Studio C++ build tools are installed. The script adds the Visual Studio Installer folder to `PATH` for you, because a missing `vswhere.exe` makes the native compile fail with an error that names the linker.
 

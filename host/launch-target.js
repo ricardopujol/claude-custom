@@ -24,33 +24,6 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
 }
 
 /**
- * Which folder the INSTALLED build (claude-custom.exe) opens. It has no launcher script, so: the first argument that isn't an option
- * and names a folder that exists; else the folder it was started in; and when that is its own install folder (the Start menu
- * and the desktop shortcut start it there) the home folder, because a Claude session inside the install is never what anyone wants.
- * Pure over what it's handed. `args` is argv without the exe.
- */
-function packagedLaunchCwd({ args = [], cwd, installDir, home, stat = fs.statSync } = {}) {
-  const arg = (Array.isArray(args) ? args : []).find(a => typeof a === 'string' && a.trim() !== '' && !a.startsWith('-'));
-  if (arg !== undefined) {
-    const target = path.resolve(cwd, arg);
-    try { if (stat(target).isDirectory()) return target; } catch { /* not there: fall through to where it started */ }
-  }
-  const inside = (dir, root) => {
-    const rel = path.relative(path.resolve(root), path.resolve(dir));
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-  };
-  return typeof installDir === 'string' && inside(cwd, installDir) ? home : cwd;
-}
-
-/** The one line `--version` prints: `claude-custom 0.0.1`, plus the Electron it runs on when the caller knows it. */
-function versionLine(pkg, electronVersion) {
-  const v = pkg && typeof pkg.version === 'string' && pkg.version !== '' ? pkg.version : null;
-  if (!v) return 'claude-custom (version unknown)';
-  return typeof electronVersion === 'string' && electronVersion !== ''
-    ? `claude-custom ${v} (Electron ${electronVersion})` : `claude-custom ${v}`;
-}
-
-/**
  * The launcher's arguments: `[folder]`, `[folder] --stop` (Windowless sessions
  * PR 3), `-h` / `--help`, `-v` / `--version`. -> { cmd: 'help' } | { cmd: 'version' } | { cmd: 'open', arg }
  * | { cmd: 'stop', folder }. A `--stop` folder is only resolved, never checked:
@@ -144,4 +117,4 @@ function attachOnlyDecision(decision, env) {
   return { ...decision, attachOnly: true };
 }
 
-module.exports = { resolveLaunchTarget, parseCli, versionLine, packagedLaunchCwd, launchEnv, attachEnv, attachOnlyDecision };
+module.exports = { resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision };
