@@ -18,7 +18,8 @@ const PRELOAD = read('app', 'preload-strip.js');
 
 test('host.js: a side host builds claude\'s args with the side option, from the environment flag', () => {
   assert.match(HOST, /const SIDE = isSideEnv\(process\.env\);/);
-  assert.match(HOST, /const ARGS = buildClaudeArgs\(\{ settingsFile, helperExists, canvasMcp, side: SIDE \}\);/);
+  assert.match(HOST, /const ARGS_OPTIONS = \{ settingsFile, helperExists, canvasMcp, side: SIDE \};/);
+  assert.match(HOST, /let ARGS = buildClaudeArgs\(ARGS_OPTIONS\);/);
 });
 
 test('host.js: a side host takes no session lock, so it never holds the worktree\'s writer role', () => {

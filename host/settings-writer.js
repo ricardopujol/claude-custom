@@ -323,7 +323,7 @@ function canvasMcpConfig(c) {
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false } = {}) {
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side = false } = {}) {
   // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
   // override it, so the two never go together; and it is offered no panel of Claude's own.
   // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
@@ -338,6 +338,10 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false }
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
   const mcp = helperExists && side !== true ? canvasMcpConfig(canvasMcp) : null;
   if (mcp) args.push('--mcp-config', mcp);
+  // BACKLOG #119 A2: the claude-custom mod (mods/claude-custom) as a plugin directory, a CLI flag like --settings, so nothing is written to
+  // the user's config. Whether to pass it (the switch, the CLI's version, the directory) is decided by host/cc-mod-settings.js; this only
+  // spells it. It needs no hook helper, and a side session takes it too: the mod only observes.
+  if (typeof modDir === 'string' && modDir !== '') args.push('--plugin-dir', slashes(modDir));
   return args;
 }
 
