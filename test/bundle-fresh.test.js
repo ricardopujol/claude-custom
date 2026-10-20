@@ -62,3 +62,50 @@ test('the bundle is marked generated, so a 600 KB one-line blob stays out of eve
   const attrs = read('.gitattributes');
   assert.match(attrs, /^app\/codemirror-reader\.js\s+linguist-generated(=true)?\s+-diff\s*$/m);
 });
+
+// ---- the Markdown bundle (BACKLOG #119 A9): app/markdown-reader.js, from marked + DOMPurify + Mermaid ----
+
+const { MARKDOWN_ROOTS } = require('../build/inputs-hash');
+
+test('the Markdown bundle\'s header hash is the hash of its current inputs (else: run npm run build:markdown)', () => {
+  const header = read('app', 'markdown-reader.js').split('\n')[0];
+  const m = header.match(/inputs sha256:([0-9a-f]{64})/);
+  assert.ok(m, `no inputs hash in the bundle header: ${header.slice(0, 160)}`);
+  const now = inputsHash({
+    entry: read('build', 'markdown-entry.mjs') + '\n--\n' + read('app', 'markdown-links.js') + '\n--\n' + read('app', 'external-link.js'),
+    builder: read('build', 'build-markdown.mjs'), lock: JSON.parse(read('package-lock.json')), roots: MARKDOWN_ROOTS,
+  });
+  assert.strictEqual(m[1], now, 'app/markdown-reader.js is stale: its entry, the link rule, the build script or a bundled package changed. Run `npm run build:markdown` and commit the result.');
+});
+
+test('with roots, the hash covers the roots\' whole dependency closure and nothing else', () => {
+  const lock = { packages: {
+    '': { name: 'x' },
+    'node_modules/top': { version: '1.0.0', dependencies: { mid: '^1' } },
+    'node_modules/mid': { version: '2.0.0', dependencies: { leaf: '^1' }, optionalDependencies: { opt: '^1' } },
+    'node_modules/mid/node_modules/leaf': { version: '3.1.0' },
+    'node_modules/leaf': { version: '3.0.0' },
+    'node_modules/opt': { version: '4.0.0' },
+    'node_modules/unrelated': { version: '9.0.0' },
+  } };
+  assert.deepStrictEqual(bundledVersions(lock, ['top']), ['leaf@3.0.0', 'leaf@3.1.0', 'mid@2.0.0', 'opt@4.0.0', 'top@1.0.0']);
+  const base = { entry: 'e', builder: 'b', lock, roots: ['top'] };
+  const h = inputsHash(base);
+  const bumpedLeaf = JSON.parse(JSON.stringify(lock));
+  bumpedLeaf.packages['node_modules/mid/node_modules/leaf'].version = '3.1.1';
+  assert.notStrictEqual(inputsHash({ ...base, lock: bumpedLeaf }), h, 'a transitive bump moves the hash');
+  const bumpedOther = JSON.parse(JSON.stringify(lock));
+  bumpedOther.packages['node_modules/unrelated'].version = '9.9.9';
+  assert.strictEqual(inputsHash({ ...base, lock: bumpedOther }), h, 'an unrelated bump does not');
+  assert.notStrictEqual(inputsHash({ ...base, roots: undefined }), h, 'no roots is the CodeMirror pattern, a different hash');
+});
+
+test('the Markdown roots are the three libraries, and the lockfile pins them', () => {
+  assert.deepStrictEqual([...MARKDOWN_ROOTS].sort(), ['dompurify', 'marked', 'mermaid']);
+  const pkg = JSON.parse(read('package.json'));
+  for (const name of MARKDOWN_ROOTS) assert.match(pkg.devDependencies[name], /^\d+\.\d+\.\d+$/, `${name} must be pinned to an exact version`);
+});
+
+test('the Markdown bundle is marked generated too', () => {
+  assert.match(read('.gitattributes'), /^app\/markdown-reader\.js\s+linguist-generated(=true)?\s+-diff\s*$/m);
+});
