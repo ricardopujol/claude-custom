@@ -44,6 +44,9 @@ const MIN_PANE = 240;
 const MIN_TERM = 300;
 const WIDTH_STEP = 24;
 const SCRIPT = './codemirror-reader.js';
+const MD_SCRIPT = './markdown-reader.js';
+const MD_KEY = 'readerMarkdownView';
+const MD_FILE = /\.(md|markdown)$/i;
 
 const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
@@ -88,6 +91,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     conflict: $('reader-conflict'), conflictText: $('reader-conflict-text'), conflictReload: $('reader-conflict-reload'),
     conflictKeep: $('reader-conflict-keep'), conflictCompare: $('reader-conflict-compare'),
     compare: $('reader-compare'), compareRows: $('reader-compare-rows'), compareBack: $('reader-compare-back'),
+    md: $('reader-md'), view: $('reader-view'), viewRendered: $('reader-view-rendered'), viewSource: $('reader-view-source'),
   };
   // Asked before unsaved text is thrown away. No dialog available means NO: nothing is discarded unasked.
   // The probe (a real window has no one to click a native dialog) answers for the person: { answer, asked[] }.
@@ -103,8 +107,13 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     // edit mode: `base` is the version the person started from (what dirty is measured against, and the hash a save
     // names); `conflict` is the banner's state; `reported` is the last unsaved path told to `onDirty`
     editing: false, base: null, conflict: null, comparing: false, saving: false, reported: null,
+    // Markdown (#119): `view` is the person's choice for every .md file, kept per install; `rendered` says the page is on screen
+    view: 'rendered', rendered: false, mdSeq: 0, mdPath: null,
   };
+  try { if (storage && storage.getItem(MD_KEY) === 'source') state.view = 'source'; } catch { /* storage refused */ }
   let cmPromise = null;
+  let mdPromise = null;
+  let externalProbe = null;
 
   // ---- CodeMirror, on first use ----
 
@@ -120,6 +129,92 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
       }).catch((err) => { cmPromise = null; throw err; });
     }
     return cmPromise;
+  }
+
+  // ---- Markdown, on first use (BACKLOG #119 A9) ----
+  // The page is the same file shown another way: the code view stays mounted underneath (selections, Edit and Diff
+  // keep working on it) and #reader-md is laid over it. The bundle (marked + DOMPurify + Mermaid, ~5 MB) is loaded
+  // the first time a .md file is shown rendered, never at startup. Anything that goes wrong shows the source.
+
+  function loadMarkdown() {
+    if (root.repoMarkdown) return Promise.resolve(root.repoMarkdown);
+    if (!mdPromise) {
+      mdPromise = new Promise((resolve, reject) => {
+        const s = doc.createElement('script');
+        s.src = MD_SCRIPT;
+        s.onload = () => (root.repoMarkdown ? resolve(root.repoMarkdown) : reject(new Error('the Markdown viewer did not start')));
+        s.onerror = () => reject(new Error('the Markdown viewer could not be loaded'));
+        doc.head.append(s);
+      }).catch((err) => { mdPromise = null; throw err; });
+    }
+    return mdPromise;
+  }
+
+  const wantsRendered = () => !!(state.path && MD_FILE.test(state.path) && state.view === 'rendered' && state.mode === 'file' && !state.editing && state.base && state.editor);
+
+  // Back to the code view: the page is released, the code is shown (unless a note or the compare view holds the pane).
+  function unrender() {
+    state.mdSeq += 1;                              // a render still in flight is dropped
+    state.rendered = false;
+    el.md.replaceChildren();
+    el.md.hidden = true;
+    if (el.note.hidden && el.compare.hidden) el.body.hidden = false;
+  }
+
+  // Bring the pane in line with what the person wants to see for the file now loaded.
+  async function applyView() {
+    if (!wantsRendered()) { unrender(); return; }
+    const seq = ++state.mdSeq;
+    const path = state.path;
+    const text = state.base.text;
+    const keep = state.mdPath === path ? el.md.scrollTop : 0;
+    el.body.hidden = true;                         // no flash of source while the page is made
+    let result;
+    try {
+      const md = await loadMarkdown();
+      result = await md.render(text, { fromFile: path, onLink: followLink });
+    } catch (err) {
+      if (seq !== state.mdSeq) return;
+      state.status = `couldn't render: ${(err && err.message) || 'unknown error'}; showing the source`;
+      unrender();
+      paintHead();
+      return;
+    }
+    if (seq !== state.mdSeq || !wantsRendered() || state.path !== path) return;
+    el.md.replaceChildren(result.node);
+    el.md.hidden = false;
+    el.body.hidden = true;
+    el.md.scrollTop = keep;
+    state.rendered = true;
+    state.mdPath = path;
+    paintHead();
+  }
+
+  function setView(view) {
+    if (view !== 'rendered' && view !== 'source') return;
+    state.view = view;
+    try { if (storage) storage.setItem(MD_KEY, view); } catch { /* storage refused */ }
+    paintHead();
+    if (state.path && state.base) applyView();
+  }
+
+  function openUrl(url) {
+    const failed = () => { state.status = 'could not open the link in your browser'; paintHead(); };
+    try {
+      if (externalProbe) { externalProbe.push(url); return; }
+      if (!harness || typeof harness.openExternal !== 'function') throw new Error('no way to open it');
+      Promise.resolve(harness.openExternal(url)).then((ok) => { if (ok === false) failed(); }, failed);
+    } catch {
+      failed();
+    }
+  }
+
+  // A click in the page, already classified by the bundle (app/markdown-links.js). Defence in depth: the kind and
+  // the target are checked again here, so a bundle that passed on something odd can't make the reader open it.
+  function followLink(link) {
+    if (!link || typeof link.target !== 'string' || link.target === '') return;
+    if (link.kind === 'file') { open(link.target); return; }
+    if (link.kind === 'http' && /^https?:\/\//i.test(link.target)) openUrl(link.target);
   }
 
   // The plain-text fallback has the same small surface as the CodeMirror handle.
@@ -219,6 +314,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     const r = fullRect();
     el.termwrap.style.width = `${r.width}px`;
     stopEditing({ revert: false });
+    unrender();                                    // the page's DOM is released with the pane
+    state.mdPath = null;
     state.path = null;
     state.stamp = null;
     state.base = null;
@@ -232,12 +329,13 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   function clearBar() { el.bar.hidden = true; el.barText.textContent = ''; el.reload.hidden = false; }
   function showBar(text, { reload }) { el.barText.textContent = text; el.reload.hidden = !reload; el.bar.hidden = false; }
   function showNote(text, { reveal }) {
+    unrender();
     el.noteText.textContent = text;
     el.noteReveal.hidden = !reveal;
     el.note.hidden = false;
     el.body.hidden = true;
   }
-  function hideNote() { el.note.hidden = true; el.body.hidden = false; }
+  function hideNote() { el.note.hidden = true; el.body.hidden = state.rendered; }
 
   function paintHead() {
     el.path.textContent = state.path || '';
@@ -245,6 +343,10 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     const edited = state.path && state.overlayFiles.get(state.path);
     // Diff is offered for a file Claude edited AND for one git calls modified (a Bash or hand change, PR #95 Dexter D2)
     // (not while editing: a diff would replace the text being edited)
+    const seg = !!(state.path && MD_FILE.test(state.path) && state.base && state.mode === 'file' && !state.editing);
+    el.view.hidden = !seg;
+    el.viewRendered.setAttribute('aria-pressed', state.view === 'rendered' ? 'true' : 'false');
+    el.viewSource.setAttribute('aria-pressed', state.view === 'source' ? 'true' : 'false');
     el.diff.hidden = state.editing || !((edited && edited.tier === 'edited') || state.modified);
     el.diff.textContent = state.mode === 'diff' ? 'File' : 'Diff';
     el.diff.setAttribute('aria-pressed', state.mode === 'diff' ? 'true' : 'false');
@@ -303,7 +405,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     editor.show({ text: r.text, name: r.path, mode: 'file', language: lang.languageFor(r.path) });
     if (resume && state.mode === 'file' && state.base.editable && typeof editor.setEditable === 'function') startEditing();
     syncDirty();
-    if (state.mode === 'diff') await showDiff(token);
+    if (state.mode === 'diff') { await showDiff(token); return; }
+    applyView();                                   // not awaited: the file is shown (as code) as soon as it is read
   }
 
   async function showDiff(token) {
@@ -313,6 +416,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     if (token !== state.token) return;
     if (!r.ok) { showNote(`The diff could not be read: ${r.error || r.why || 'unknown error'}`, { reveal: false }); paintHead(); return; }
     if (r.source === null) { showNote('No changes recorded for this file.', { reveal: false }); paintHead(); return; }
+    unrender();
     hideNote();
     state.diffSource = r.source;
     editor.show({ text: r.text, name: r.path, mode: 'diff', language: null });
@@ -372,6 +476,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   }
   function startEditing() {
     state.editing = true;
+    unrender();
     state.editor.setEditable(true);
     if (typeof state.editor.focus === 'function') state.editor.focus();
   }
@@ -394,6 +499,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
       if (isDirty() && !(await confirmLeave(`You have unsaved changes to ${state.path}. Discard them and stop editing?`))) return;
       if (token !== state.token) return;
       stopEditing({ revert: true });
+      applyView();
       return;
     }
     if (!state.base.editable || state.mode !== 'file' || !state.editor || typeof state.editor.setEditable !== 'function') return;
@@ -572,7 +678,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
 
   function mentionSelection() {
     if (!state.path) return;
-    const sel = state.editor && state.mode === 'file' ? state.editor.selection() : null;
+    const sel = state.editor && state.mode === 'file' && !state.rendered ? state.editor.selection() : null;
     const m = mention.mentionText(state.path, sel ? mention.rangeOfLines(sel) : null);
     if (!m.ok) { state.status = `not typed: ${m.reason}`; paintHead(); return; }
     typeMention(m.text, (r) => {
@@ -585,7 +691,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
 
   /** The selected lines of the file on screen as { file, start, end } (1-based, a bare cursor is none), or null. */
   function selectionInfo() {
-    if (!state.path || state.mode !== 'file' || !state.editor) return null;
+    if (!state.path || state.mode !== 'file' || !state.editor || state.rendered) return null;
     const range = mention.rangeOfLines(state.editor.selection());
     return range ? { file: state.path, start: range.from, end: range.to } : null;
   }
@@ -594,7 +700,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     // The host explains the file as it is on DISK; with unsaved edits the buffer's line numbers would name different code (PR #169 Miguel Y3).
     if (isDirty()) { state.status = "save the file first, then click What's this? (it explains the saved file)"; paintHead(); return; }
     const sel = selectionInfo();
-    if (!sel) { state.status = "select some code first, then click What's this?"; paintHead(); return; }
+    if (!sel) { state.status = state.rendered ? "switch to Source, select some code, then click What's this?" : "select some code first, then click What's this?"; paintHead(); return; }
     state.status = '';
     paintHead();
     if (typeof onAsk === 'function') onAsk(sel);
@@ -623,6 +729,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     open(state.path, { keepMode: true, discard: true, keepEditing: true });
   });
   el.edit.addEventListener('click', () => { toggleEdit(); });
+  el.viewRendered.addEventListener('click', () => setView('rendered'));
+  el.viewSource.addEventListener('click', () => setView('source'));
   el.save.addEventListener('click', () => { save(); });
   el.conflictReload.addEventListener('click', conflictReload);
   el.conflictKeep.addEventListener('click', conflictKeep);
@@ -702,6 +810,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
           editTitle: el.edit.title, saveShown: !el.save.hidden, saveDisabled: el.save.disabled, dotShown: !el.dirty.hidden,
           conflictShown: !el.conflict.hidden, conflictText: el.conflictText.textContent, compareShown: !el.compare.hidden,
           compareRows: Array.from(el.compareRows.children || [], (r) => `${r.className}|${r.textContent}`).slice(0, 40),
+          mdSegmentShown: !el.view.hidden, mdView: state.view, mdRenderedOn: state.rendered, mdShown: !el.md.hidden, mdLoaded: !!root.repoMarkdown,
+          mdPressed: { rendered: el.viewRendered.getAttribute('aria-pressed'), source: el.viewSource.getAttribute('aria-pressed') },
           diffVisible: !el.diff.hidden, diffLabel: el.diff.textContent, meta: el.meta.textContent,
           barShown: !el.bar.hidden, barText: el.barText.textContent, reloadShown: !el.reload.hidden,
           noteShown: !el.note.hidden, noteText: el.noteText.textContent, noteRevealShown: !el.noteReveal.hidden,
@@ -755,6 +865,46 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
       }
       case 'storedWidth': { let v = null; try { v = storage ? storage.getItem(keyNow()) : null; } catch { v = null; } return { ok: true, value: v, key: keyNow() }; }
       case 'reveal': return reveal().then(() => ({ ok: true }));
+      // Markdown (verify/probe-markdown-reader.js): the segment by name, what the page holds, a click on its nth link,
+      // and the browser opens recorded instead of performed
+      case 'setView': setView(a.view); return { ok: true };
+      case 'mdDom': {
+        const page = el.md.querySelector('.md-page');
+        if (!page) return { ok: true, page: false };
+        const all = Array.from(page.querySelectorAll('*'));
+        return {
+          ok: true, page: true, textLength: page.textContent.length, rect: (() => { const r = el.md.getBoundingClientRect(); return { width: r.width, height: r.height, scrollHeight: el.md.scrollHeight }; })(),
+          headings: Array.from(page.querySelectorAll('h1,h2,h3,h4,h5,h6'), (h) => ({ tag: h.tagName, text: h.textContent, anchor: h.dataset.mdAnchor || null, ruleLeft: getComputedStyle(h).borderLeftWidth })),
+          tables: page.querySelectorAll('table').length, tableWrapped: Array.from(page.querySelectorAll('table'), (t) => t.parentElement.className === 'md-table' && getComputedStyle(t.parentElement).overflowX === 'auto'),
+          links: Array.from(page.querySelectorAll('a'), (x) => ({ text: x.textContent, kind: x.dataset.mdKind || null, target: x.dataset.mdTarget || null, hasHref: x.hasAttribute('href'), title: x.title })),
+          svgs: page.querySelectorAll('svg').length, diagramBoxes: page.querySelectorAll('.md-diagram').length,
+          diagramErrors: Array.from(page.querySelectorAll('.md-diagram-error'), (n) => n.textContent),
+          fenceBlocks: page.querySelectorAll('pre > code').length,
+          checkboxes: Array.from(page.querySelectorAll('input'), (i) => ({ type: i.type, disabled: i.disabled, checked: i.checked })),
+          danger: {
+            script: page.querySelectorAll('script').length, iframe: page.querySelectorAll('iframe,frame,object,embed').length,
+            img: page.querySelectorAll('img').length, style: page.querySelectorAll('style:not(svg style)').length,
+            onAttr: all.filter((n) => Array.from(n.attributes).some((at) => /^on/i.test(at.name))).length,
+            styleAttr: all.filter((n) => n.hasAttribute('style') && !n.closest('svg')).length,
+            ids: all.filter((n) => n.hasAttribute('id') && !n.closest('svg')).length,
+            hrefAny: page.querySelectorAll('[href]:not(svg *)').length, jsUrls: all.filter((n) => Array.from(n.attributes).some((at) => /^\s*javascript:/i.test(at.value))).length,
+            foreign: page.querySelectorAll('foreignObject').length,
+          },
+          svgDanger: { script: page.querySelectorAll('svg script').length, on: Array.from(page.querySelectorAll('svg *')).filter((n) => Array.from(n.attributes).some((at) => /^on/i.test(at.name))).length,
+            hrefs: Array.from(page.querySelectorAll('svg [href], svg [xlink\\:href]'), (n) => n.getAttribute('href') || n.getAttribute('xlink:href')) },
+          globals: { pwned: root.__mdPwned === undefined ? null : root.__mdPwned, readerStillThere: !!doc.getElementById('reader') && doc.getElementById('reader') === el.pane },
+          mermaidTexts: Array.from(page.querySelectorAll('.md-diagram text'), (t) => t.textContent).slice(0, 20),
+        };
+      }
+      case 'mdLink': {
+        const link = Array.from(el.md.querySelectorAll('.md-page a')).filter((x) => (a.text ? x.textContent === a.text : true))[Number(a.index) || 0];
+        if (!link) return { ok: false, error: 'no such link' };
+        link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return { ok: true };
+      }
+      case 'mdScroll': { const top = el.md.scrollTop; return { ok: true, top, height: el.md.clientHeight }; }
+      case 'externalProbe': externalProbe = a.on === false ? null : []; return { ok: true };
+      case 'externalOpened': return { ok: true, urls: externalProbe ? externalProbe.slice() : null };
       default: return { ok: false, error: `unknown reader action ${action}` };
     }
   }

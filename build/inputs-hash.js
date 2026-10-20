@@ -49,7 +49,7 @@ function inputsHash({ entry, builder, lock, roots } = {}) {
   const h = crypto.createHash('sha256');
   h.update('entry\n'); h.update(lf(entry));
   h.update('\nbuilder\n'); h.update(lf(builder));
-  h.update('\nversions\n'); h.update(bundledVersions(lock).join('\n'));
+  h.update('\nversions\n'); h.update(bundledVersions(lock, roots).join('\n'));
   return h.digest('hex');
 }
 
