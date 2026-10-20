@@ -122,6 +122,35 @@
     #create-branch:disabled { color: var(--dim); }
     #create-cancel { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
     #create-cancel:hover { color: var(--text); }
+    /* BACKLOG #119 A6: the form's second way to start, a lane from a GitHub issue. The row is a button (dim text and
+       disabled when gh can't list); the list is a panel over the area under the strip, which main empties of the
+       selected tab's page while it is open (a tab's page is a native view and would cover it). */
+    #create-issues { height: 22px; box-sizing: border-box; padding: 0 8px; border-radius: 3px; cursor: pointer; flex: 0 0 auto;
+      background: transparent; color: var(--dim); border: 1px solid var(--border); font: inherit; white-space: nowrap; }
+    #create-issues:hover:not(:disabled) { color: var(--text); border-color: var(--dim); }
+    #create-issues.dim, #create-issues:disabled { border-color: transparent; color: var(--dim); font-style: italic; cursor: default; }
+    #create-issues[hidden] { display: none; }
+    #issues-panel { position: absolute; top: 34px; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column;
+      background: var(--bg); }
+    #issues-panel[hidden] { display: none; }
+    #issues-bar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+    #issues-filter { flex: 1 1 auto; height: 24px; box-sizing: border-box; padding: 0 8px; border-radius: 3px; background: var(--chrome);
+      color: var(--text); border: 1px solid var(--border); font: inherit; user-select: text; }
+    #issues-filter:focus { outline: none; border-color: var(--accent); }
+    #issues-close { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; padding: 0 4px; }
+    #issues-close:hover { color: var(--text); }
+    #issues-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 6px; }
+    .issue-row { display: flex; align-items: baseline; gap: 8px; width: 100%; box-sizing: border-box; padding: 6px 8px; border: 0;
+      border-radius: 4px; background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+    .issue-row:hover, .issue-row:focus-visible { background: color-mix(in srgb, var(--accent) 12%, var(--bg)); outline: none; }
+    .issue-num { flex: 0 0 auto; color: var(--accent); font-variant-numeric: tabular-nums; }
+    .issue-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .issue-label { flex: 0 0 auto; font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 3px; color: var(--dim);
+      border: 1px solid var(--border); }
+    .issue-branch { flex: 0 1 auto; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim);
+      font: 11px Consolas, "Cascadia Mono", monospace; }
+    #issues-note { padding: 10px 14px; color: var(--dim); }
+    #issues-note[hidden] { display: none; }
     /* Backlog #66, the indexing field (DESIGN_INDEXING_ASSISTANT.md, revised: a verbatim inbox): a note typed here never
        goes into a session; Enter adds it to the chip's project's backlog `## Inbox`; the counter opens today's list. STATIC, outside #tabs, so a
        repaint never wipes what is being typed. Its toast and list are app/indexing-overlay.html, over the tab views. */
@@ -199,7 +228,8 @@
   <div id="strip"><div id="tabs"></div><button type="button" id="plus" hidden
       title="New branch, or reopen a tab you closed (Ctrl+Shift+T)">+</button><form id="create" hidden><input
       id="create-branch" placeholder="feat/…" spellcheck="false" autocomplete="off"
-      aria-label="New branch name" /><button type="button" id="create-cancel" title="Cancel (Esc)">✕</button></form><div
+      aria-label="New branch name" /><button type="button" id="create-issues"
+      title="Pick one of this repo's open GitHub issues">From an issue ▾</button><button type="button" id="create-cancel" title="Cancel (Esc)">✕</button></form><div
       id="strip-alert" hidden></div><form id="index" autocomplete="off"><input id="index-note"
       placeholder="Note an idea, a bug, a fix…" spellcheck="false" maxlength="10000"
       aria-label="Note for the indexing assistant (Ctrl+Alt+N)" /><button type="button" id="index-chip"
@@ -214,6 +244,15 @@
   <div id="pane" hidden>
     <div id="pane-text"></div>
     <button type="button" id="pane-retry" hidden>Retry</button>
+  </div>
+  <div id="issues-panel" hidden>
+    <div id="issues-bar">
+      <input id="issues-filter" placeholder="Search issues by number, title or label…" spellcheck="false" autocomplete="off"
+        aria-label="Search the repo's open issues" />
+      <button type="button" id="issues-close" title="Close the list (Esc)">✕</button>
+    </div>
+    <div id="issues-list"></div>
+    <div id="issues-note" hidden></div>
   </div>
   <script src="./indexing-display.js"></script>
   <script src="./portrait-media-display.js"></script>

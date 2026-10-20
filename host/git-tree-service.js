@@ -24,6 +24,7 @@ const { buildTree } = require('./git-tree');
 const { totals, emptyLedger } = require('./branch-ledger');
 const { lookDirState, ensureLookDir } = require('./style');
 const { repoUrl, prUrl, remoteHost } = require('./pr-url');
+const { issueForBranch, issueNumberOfBranch } = require('./issues');
 
 const PR_TTL_MS = 60 * 1000;
 const LEDGER_FILE = 'branch-ledger.json';
@@ -89,6 +90,25 @@ function createGitTreeService(d) {
     }
   }
 
+  // BACKLOG #119 A6: the open issues, asked only when some branch is named like one the + form made from an issue (the
+  // reader caches for a minute). Optional like the PR's page: null (unknown) draws no issue link, never a failed tree.
+  async function openIssues(branches) {
+    if (typeof d.readIssues !== 'function' || !branches.some(b => issueNumberOfBranch(b.name) !== null)) return null;
+    try {
+      const list = await d.readIssues(d.cwd);
+      return Array.isArray(list) ? list : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // `{ number, title, url }` for a branch whose issue is in the list, else null. Only those three fields leave here.
+  function issueOf(name, list) {
+    const i = issueForBranch(name, list);
+    if (!i || !Number.isInteger(i.number)) return null;
+    return { number: i.number, title: typeof i.title === 'string' ? i.title : null, url: typeof i.url === 'string' ? i.url : null };
+  }
+
   function reviewsOf(name) {
     try { return d.readReviews ? d.readReviews(name) || [] : []; } catch { return []; }
   }
@@ -101,7 +121,8 @@ function createGitTreeService(d) {
     const tree = buildTree({ history, totals: ledger ? totals(ledger) : {}, openPrs: openPrList,
       projectRoot: d.projectRoot, current: d.currentBranch(d.cwd) });
     try { if (d.readReviews && d.readReviews.refresh) d.readReviews.refresh(); } catch { /* the reader lists again next time */ }
-    const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name) }));
+    const issueList = await openIssues(tree.branches);
+    const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name), issue: issueOf(b.name, issueList) }));
     return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk, project: d.projectRoot };
   }
 

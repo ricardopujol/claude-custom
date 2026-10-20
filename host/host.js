@@ -58,6 +58,7 @@ const { readOpenPrs, parseOpenPrs } = require('./open-prs');
 const { readSeams, announce, fixtureReader } = require('./probe-seams');
 const { createReader: createReviewReader } = require('./review-reports');
 const { createGitTreeService, ledgerFileFor } = require('./git-tree-service');
+const { createIssueService } = require('./issues');
 const { loadCatalogue } = require('./openrouter');
 const { normalizeCatalogue } = require('./models');
 const { createCatalogueCache } = require('./catalogue-cache');
@@ -443,6 +444,7 @@ const usageCounters = createUsageCounters({ store, log: (...a) => console.log(..
 // gh, and the transcripts and the review reports come from the probe's own folders. Logged when set.
 const seams = readSeams(process.env);
 announce(seams, (line) => console.log(line));
+const issueService = createIssueService();
 const gitTree = createGitTreeService({
   cwd: CWD, projectRoot: PROJECT_ROOT, projectsDir: seams.projectsDir || defaultProjectsDir(),
   ledgerFile: () => ledgerFileFor(STATE_ROOT),
@@ -450,6 +452,9 @@ const gitTree = createGitTreeService({
   readOpenPrs: seams.openPrsFixture
     ? fixtureReader(seams.openPrsFixture, { parse: parseOpenPrs, log: (line) => console.log(line) })
     : readOpenPrs,
+  // BACKLOG #119 A6: the GitHub issue a branch the + form made came from (*Open issue* next to *Open PR*). The service caches
+  // for a minute and says "unknown" (null) when gh can't answer.
+  readIssues: async (cwd) => { const r = await issueService.list(cwd); return r.ok ? r.issues : null; },
   // The drawer (Enhancement #46): origin's URL for *Open PR*, and ~/.claude/reviews/<project>/ verdicts.
   readRemote: readOrigin,
   readReviews: createReviewReader({ project: projectLabel(PROJECT_ROOT), reviewsRoot: seams.reviewsDir || undefined }),

@@ -451,6 +451,10 @@ async function act(dial, id) {
       if (!b || !st.onOpenPr) return say(dial, key, "Can't open a browser from here.");
       const ok = await st.onOpenPr(b.prUrl);
       say(dial, key, ok ? `Opened PR #${b.pr} in your browser.` : "Couldn't open the browser.");
+    } else if (id === 'open-issue') {   // BACKLOG #119 A6: the issue the branch was started from; the same browser door as the PR's
+      if (!b || !b.issue || !st.onOpenPr) return say(dial, key, "Can't open a browser from here.");
+      const ok = await st.onOpenPr(b.issue.url);
+      say(dial, key, ok ? `Opened issue #${b.issue.number} in your browser.` : "Couldn't open the browser.");
     } else if (id === 'copy') {
       const name = key === HUB ? st.tree.integration : key;
       if (!st.onCopy) return say(dial, key, "Can't copy from here.");

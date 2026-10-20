@@ -223,6 +223,10 @@ function createShell(deps) {
     // #77: `facts(cwd)` -> { dirtyCount, unpushedCount } (null for a fact git couldn't give). Optional: without it
     // a Ctrl+click close always asks.
     safety = null,
+    // BACKLOG #119 A6, a lane started from a GitHub issue. Optional:
+    //   brief({ number, branch, worktree }) -> Promise<{ ok, issue, brief, existed } | { ok: false, error, issue }>
+    //   forBranch(branch) -> { number, title, url } | null    the issue a branch the + form made came from (the cached list)
+    issues = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -244,9 +248,11 @@ function createShell(deps) {
   // { phase: 'running', branch } / { phase: 'failed', branch, error }.
   let create = null;
   const pendingBranches = new Set();   // branches Contract A is creating right now
+  const briefHolds = new Set();        // keys whose lane brief (#119 A6) is still being written: no session starts before it
   const setups = new Map();            // key -> { running, line, error, log }  (Contract E)
   const createdWarnings = new Map();   // key -> Contract A's optional warning
-  let selectWhenListed = null;         // a tab to select as soon as a poll lists it
+  const issueTabs = new Map();         // key -> { number, title, url }: the issue a tab's lane was started from (#119 A6)
+  let selectWhenListed = null;        // a tab to select as soon as a poll lists it
   // Type /merged: the type-command requests waiting for their page's answer, by id
   const typing = new Map();
   let typingSeq = 0;
@@ -279,7 +285,8 @@ function createShell(deps) {
   // A tab whose worktree Contract A is still making, or Contract E is still
   // setting up, doesn't start its session yet (criterion 10).
   const setupHolds = (tab) => (typeof tab.branch === 'string' && pendingBranches.has(tab.branch))
-    || (setups.has(tab.key) && setups.get(tab.key).running === true);
+    || (setups.has(tab.key) && setups.get(tab.key).running === true)
+    || briefHolds.has(tab.key);
 
   // A mark is decoration: a reader that fails draws none and never takes the strip down.
   function readMark(branch) {
@@ -321,6 +328,29 @@ function createShell(deps) {
   function branchOf(key) {
     const t = state.tabs.find(x => keyOf(x.path) === key);
     return t && typeof t.branch === 'string' && t.branch !== '' ? t.branch : null;
+  }
+
+  // The issue a tab's lane came from: the one this window started it from, else the one its branch name says when
+  // the cached issue list has it. Decoration: a reader that fails or answers oddly draws none.
+  function issueShape(i) {
+    if (!i || typeof i !== 'object' || Array.isArray(i)) return null;
+    if (!Number.isInteger(i.number) || i.number < 1) return null;
+    return {
+      number: i.number,
+      title: typeof i.title === 'string' && i.title !== '' ? i.title : null,
+      url: typeof i.url === 'string' && i.url !== '' ? i.url : null,
+    };
+  }
+
+  function issueOf(key) {
+    if (typeof key !== 'string') return null;
+    if (issueTabs.has(key)) return issueShape(issueTabs.get(key));
+    const branch = branchOf(key);
+    if (!issues || typeof issues.forBranch !== 'function' || branch === null) return null;
+    try { return issueShape(issues.forBranch(branch)); } catch (err) {
+      log('[shell] issues.forBranch threw:', err && err.message);
+      return null;
+    }
   }
 
   /**
@@ -367,6 +397,8 @@ function createShell(deps) {
         badge: tabModel.badgeFor(e),
         phaseText: e.side === true && t && t.ended === true ? SIDE_ENDED_TEXT : tabModel.phaseText(e),
         mark: readMark(branchOf(e.key)),
+        // #119 A6: the GitHub issue this lane was started from ({ number, title, url } or null).
+        issue: e.side === true ? null : issueOf(e.key),
         // #63: the CPU warning chip ({ pct, level } or null).
         resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
@@ -885,7 +917,7 @@ function createShell(deps) {
    * then does its session start (criterion 10). A setup failure still starts
    * it, with the error on the tab. One creation at a time.
    */
-  async function createWorktree(branch) {
+  async function createWorktree(branch, issueNumber) {
     if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
     if (create && create.phase === 'running') return { ok: false, error: 'already creating one' };
     const wanted = typeof branch === 'string' ? branch.trim() : '';
@@ -910,6 +942,19 @@ function createShell(deps) {
 
     countUse('tab:new-worktree');
     const key = keyOf(made.path);
+    // #119 A6: a lane started from an issue gets its brief. It is asked for NOW and runs beside the setup (gh and the brief's
+    // path take a second or two; the tab doesn't wait for them), but the session starts only once the brief is there,
+    // because a session's first move may be to read it. The tab shows its issue number from this moment.
+    let briefRun = null;
+    if (Number.isInteger(issueNumber) && issueNumber >= 1 && issues && typeof issues.brief === 'function') {
+      issueTabs.set(key, { number: issueNumber, title: null, url: null });
+      briefHolds.add(key);
+      briefRun = (async () => {
+        try { return await issues.brief({ number: issueNumber, branch: made.branch, worktree: made.path }); } catch (err) {
+          return { ok: false, error: errorText(err), issue: null };
+        }
+      })();
+    }
     const withSetup = scriptsAvailable().setup;
     // Held from here, so the poll that lists it can't start its session early.
     if (withSetup) setups.set(key, { running: true, line: null, error: null, log: null });
@@ -944,6 +989,20 @@ function createShell(deps) {
       if (destroyed) return { ok: true, path: made.path };
       publish();
     }
+    if (briefRun) {
+      const b = await briefRun;
+      briefHolds.delete(key);
+      if (destroyed) return { ok: true, path: made.path };
+      const known = (b && b.ok === true ? issueShape(b.issue) : null) || issueShape(b && b.issue) || issueTabs.get(key);
+      issueTabs.set(key, known);
+      // A tab closed by hand meanwhile keeps no warning for a later reopen (as with a setup error above).
+      if (b && b.ok !== true && !state.dismissed.includes(key)) {
+        const why = `the brief wasn't written (${(b && b.error) || 'unknown reason'})`;
+        createdWarnings.set(key, [createdWarnings.get(key), why].filter(Boolean).join('; '));
+      }
+      log(`[shell] brief for ${made.branch}: ${b && b.ok === true ? (b.existed ? 'already there' : 'written') : `not written: ${b && b.error}`}`);
+      publish();
+    }
     const tab = tabByKey(key);
     if (tab && key === selectedKey && !tab.started && !tab.starting) start(tab);
     return { ok: true, path: made.path };
@@ -957,6 +1016,28 @@ function createShell(deps) {
   function openCreate() {
     if (!plusMenu().create.enabled) return false;
     create = { phase: 'input' };
+    publish();
+    return true;
+  }
+
+  /**
+   * BACKLOG #119 A6: the form's *From an issue* list. Part of the form's state (`create.picker`), so main hides the
+   * selected tab's page while it is open (the list is drawn by the strip page over that area) and Esc on the form
+   * closes both. Only a form that is open for typing, or one a refusal left open, can take it.
+   */
+  function openPicker() {
+    if (!create || (create.phase !== 'input' && create.phase !== 'failed')) return false;
+    if (create.picker !== true) {
+      create = { ...create, picker: true };
+      publish();
+    }
+    return true;
+  }
+
+  function closePicker() {
+    if (!create || create.picker !== true) return false;
+    const { picker, ...rest } = create;     // eslint-disable-line no-unused-vars
+    create = rest;
     publish();
     return true;
   }
@@ -1358,7 +1439,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked, openSide, sideMenu,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
@@ -1510,6 +1591,8 @@ function sameSecret(a, b) {
   return x.length === y.length && require('crypto').timingSafeEqual(x, y);
 }
 
+const STRIP_ISSUE_ACTIONS = new Set(['read', 'open', 'pick', 'filter', 'submit']);
+
 /**
  * One line of newline-JSON from the probe -> a reply object. NEVER throws.
  * `api` is main's: { state, select(label), close(label), key(key, modifiers),
@@ -1569,6 +1652,15 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
         return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
+      case 'openCreate': return await api.openCreate();
+      // BACKLOG #119 A6: the branch form's "From an issue" list, driven through the strip page's own elements (a real click,
+      // a real input event, a real submit). A named action and its data, never a string of code.
+      case 'stripIssues': {
+        if (!STRIP_ISSUE_ACTIONS.has(cmd.action)) return { ok: false, error: 'stripIssues needs read, open, pick, filter or submit' };
+        if (cmd.action === 'pick' && !(Number.isInteger(cmd.index) && cmd.index >= 0 && cmd.index < 1000)) return { ok: false, error: 'pick needs a row index' };
+        if (cmd.action === 'filter' && !(typeof cmd.text === 'string' && cmd.text.length <= 200)) return { ok: false, error: 'filter needs text' };
+        return await api.stripIssues(cmd.action, { index: cmd.index, text: cmd.text });
+      }
       // #81: the tab menu's Open side session, without a native popup nobody can click.
       case 'side-open':
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'side-open needs a label' };
