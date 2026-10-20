@@ -28,6 +28,7 @@ function createTrayController(deps) {
   let destroyed = false;
   let cues = new Map();
   let shown = { badge: null, tooltip: null };
+  let shownImage = null;
   let counts = { count: 0, sessions: 0 };
   const images = new Map();
 
@@ -51,6 +52,7 @@ function createTrayController(deps) {
       return;
     }
     shown = { badge: '', tooltip: null };
+    shownImage = imageFor('');
     tray.on('click', click);
     tray.on('right-click', () => { popup().catch(e => log(`[main] tray menu failed: ${e && e.message}`)); });
   }
@@ -60,6 +62,7 @@ function createTrayController(deps) {
     try { tray.destroy(); } catch { /* already gone */ }
     tray = null;
     shown = { badge: null, tooltip: null };
+    shownImage = null;
   }
 
   function update() {
@@ -69,7 +72,7 @@ function createTrayController(deps) {
     counts = { count: keys.length, sessions: Array.isArray(tabs) ? tabs.length : 0 };
     if (!tray) return;
     const badge = badgeText(counts.count);
-    if (badge !== shown.badge) { tray.setImage(imageFor(badge)); shown.badge = badge; }
+    if (badge !== shown.badge) { shownImage = imageFor(badge); tray.setImage(shownImage); shown.badge = badge; }
     const tip = tooltipText({ sessions: counts.sessions, needs: counts.count });
     if (tip !== shown.tooltip) { tray.setToolTip(tip); shown.tooltip = tip; }
   }
@@ -109,12 +112,24 @@ function createTrayController(deps) {
 
   function destroy() { destroyed = true; remove(); }
 
-  function state() {
-    return { exists: tray !== null, tooltip: shown.tooltip, badge: shown.badge, count: counts.count, sessions: counts.sessions,
-      cues: [...cues.keys()] };
+  // What the Tray shows, for a probe: the image's size and a digest of its pixels (a Tray can't be screenshotted), or null.
+  function imageInfo() {
+    try {
+      if (!shownImage || typeof shownImage.toBitmap !== 'function') return null;
+      const size = typeof shownImage.getSize === 'function' ? shownImage.getSize() : null;
+      return { size, sha1: require('crypto').createHash('sha1').update(shownImage.toBitmap()).digest('hex') };
+    } catch { return null; }
   }
 
-  return { sync, state, click, popup, template, destroy };
+  function state() {
+    return { exists: tray !== null, tooltip: shown.tooltip, badge: shown.badge, count: counts.count, sessions: counts.sessions,
+      cues: [...cues.keys()], image: imageInfo() };
+  }
+
+  /** The nativeImage on the Tray now (a probe saves it as a PNG to look at), or null. */
+  const image = () => shownImage;
+
+  return { sync, state, image, click, popup, template, destroy };
 }
 
 module.exports = { createTrayController };

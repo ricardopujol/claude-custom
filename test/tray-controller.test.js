@@ -200,3 +200,29 @@ test('destroy: the Tray goes, and a later sync after destroy does not bring it b
   c.sync();
   assert.strictEqual(FakeTray.made.length, 1);
 });
+
+test('state().image tells a probe what the Tray shows: a digest of the pixels that changes with the badge', () => {
+  const imgs = (buf, o) => ({ buf, o, toBitmap: () => buf, getSize: () => ({ width: o.width, height: o.height }) });
+  const { c, state } = setup({ nativeImage: { createFromBitmap: imgs } });
+  c.sync();
+  const plain = c.state().image;
+  assert.deepStrictEqual(plain.size, { width: 32, height: 32 });
+  assert.match(plain.sha1, /^[0-9a-f]{40}$/);
+  state.tabs = [tab('a', { finished: true })];
+  c.sync();
+  assert.notStrictEqual(c.state().image.sha1, plain.sha1);
+  assert.strictEqual(c.image().buf.toString(), '1');
+  state.tabs = [];
+  c.sync();
+  assert.strictEqual(c.state().image.sha1, plain.sha1, 'back to the plain icon at 0');
+});
+
+test('state().image is null where the image cannot be read, and with no Tray', () => {
+  const { c, state } = setup();
+  assert.strictEqual(c.state().image, null);
+  c.sync();
+  assert.strictEqual(c.state().image, null, 'a fake image with no toBitmap');
+  state.settings = { ...state.settings, trayIcon: false };
+  c.sync();
+  assert.strictEqual(c.image(), null);
+});

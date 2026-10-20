@@ -10,7 +10,7 @@ const {
 
 test('the registry lists colours, background and inactive windows, in that order', () => {
   // The container-that-grows design: a new section is one entry here.
-  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'fonts', 'background', 'inactive', 'avatars', 'window', 'panel']);
+  assert.deepStrictEqual(STYLE_SECTIONS.map(s => s.id), ['colours', 'fonts', 'background', 'inactive', 'avatars', 'window', 'tray', 'panel']);
   for (const s of STYLE_SECTIONS) assert.ok(s.title, s.id);
 });
 
@@ -239,7 +239,7 @@ test('F2: an untagged refusal falls back to the background section, never vanish
 test('F2: an unknown ask tag is not used as a state key', () => {
   const s = reduceStyle(reduceStyle(undefined, hello), { type: 'style', error: 'x', ask: '__proto__' });
   assert.strictEqual(s.background.error, 'x');
-  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'panel', 'window']);
+  assert.deepStrictEqual(Object.keys(s).sort(), ['avatars', 'background', 'colours', 'inactive', 'panel', 'tray', 'window']);
 });
 
 test('F3: a refusal keeps the STORED darkness, so the preview can be put back', () => {
@@ -344,4 +344,40 @@ test('canvasMcpRetryDelay (PR #125 Miguel M3): doubles from 1 s, caps at 30 s, s
   assert.strictEqual(CANVAS_MCP_MAX_TRIES, 8);
   assert.deepStrictEqual([0, 1, 2, 3, 4, 5, 6].map(canvasMcpRetryDelay), [1000, 2000, 4000, 8000, 16000, 30000, 30000]);
   for (const bad of [7, 8, 100, -1, 1.5, NaN, Infinity, '1', null, undefined]) assert.strictEqual(canvasMcpRetryDelay(bad), null, String(bad));
+});
+
+// ---- the System tray section (BACKLOG #119 A8): the tray icon and minimise-on-close switches -----------------------------------------------------
+
+const { traySectionView, reduceTraySettings } = require('../app/style-display');
+
+test('the Style tab has a System tray section between Window and Claude\'s panel, unknown until main answers', () => {
+  const section = styleDisplay(emptyStyleState()).find(s => s.id === 'tray');
+  assert.strictEqual(section.title, 'System tray');
+  assert.strictEqual(section.view.trayIcon, null);
+  assert.strictEqual(section.view.minimiseOnClose, null);
+  assert.strictEqual(section.view.trayDescription, 'reading…');
+  assert.strictEqual(section.view.closeDescription, 'reading…');
+});
+
+test('reduceTraySettings records only real booleans, per key', () => {
+  let s = reduceTraySettings(undefined, { trayIcon: true, minimiseOnClose: false, startMinimised: true });
+  assert.deepStrictEqual(s.tray, { trayIcon: true, minimiseOnClose: false });
+  s = reduceTraySettings(s, { trayIcon: 'false', minimiseOnClose: 1 });
+  assert.deepStrictEqual(s.tray, { trayIcon: true, minimiseOnClose: false }, 'junk changes nothing');
+  assert.strictEqual(reduceTraySettings(s, null), s);
+});
+
+test('the tray view says what each switch does, and that minimise-on-close needs the icon', () => {
+  const on = traySectionView({ trayIcon: true, minimiseOnClose: true });
+  const off = traySectionView({ trayIcon: false, minimiseOnClose: false });
+  assert.match(on.trayDescription, /need you/i);
+  assert.match(off.trayDescription, /no tray icon/i);
+  assert.match(on.closeDescription, /hides/i);
+  assert.match(off.closeDescription, /closes/i);
+  assert.match(traySectionView({ trayIcon: false, minimiseOnClose: true }).closeDescription, /needs the tray icon/i);
+});
+
+test('reduceStyle keeps the tray settings, which the host never reports', () => {
+  const prev = reduceTraySettings(reduceStyle(undefined, hello), { trayIcon: false, minimiseOnClose: true });
+  assert.deepStrictEqual(reduceStyle(prev, hello).tray, { trayIcon: false, minimiseOnClose: true });
 });
