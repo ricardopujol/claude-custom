@@ -26,6 +26,7 @@ const hash = inputsHash({
 const result = await build({
   entryPoints: [path.join(root, 'build', 'markdown-entry.mjs')],
   outfile: path.join(root, 'app', 'markdown-reader.js'),
+  write: false,                // written below, after raw control characters are escaped
   bundle: true,
   format: 'iife',
   minify: true,
@@ -38,5 +39,11 @@ const result = await build({
   metafile: true,
   logLevel: 'info',
 });
-const out = Object.values(result.metafile.outputs)[0];
-console.log(`built app/markdown-reader.js: ${(out.bytes / 1024).toFixed(0)} KB`);
+// A library string can hold a raw control character (a 0x01 in one of Mermaid's), which esbuild prints as it is.
+// test/renderer-scope.test.js refuses those in source, because a stray one is invisible in an editor and a diff.
+// Escaped, the meaning is the same in a string, a template or a regex; outside those a raw one cannot occur.
+const text = result.outputFiles[0].text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
+const target = path.join(root, 'app', 'markdown-reader.js');
+fs.writeFileSync(`${target}.tmp`, text);        // a temp file first: a failed write must not truncate the committed bundle
+fs.renameSync(`${target}.tmp`, target);
+console.log(`built app/markdown-reader.js: ${(Buffer.byteLength(text) / 1024).toFixed(0)} KB`);
