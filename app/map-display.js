@@ -27,7 +27,7 @@ const model = typeof module !== 'undefined' && module.exports ? require('./map-m
 const layoutLib = typeof module !== 'undefined' && module.exports ? require('./map-layout') : root.mapLayout;
 
 const FRAME_MIN_MS = 30;           // ~30 fps while animating
-const PACE_EARLY_MS = 6;           // the timer wakes this much before the slot, so the animation frame that follows lands on its vsync
+const PACE_SLACK_MS = 1;           // the timer waits the rest of the slot PLUS this, so the animation frame it asks for is never too early to draw (one wake-up a frame)
 const STEPS_PER_FRAME = 2;         // layout ticks a frame while it is still settling
 const SAVE_AFTER_MS = 700;
 const TOKENS_TTL_MS = 400;
@@ -553,7 +553,7 @@ function mount(opts) {
 
   // Ask for the NEXT frame of the loop: a timer for most of the wait, then one animation frame, so ~30 fps costs ~30 wake-ups a second.
   function arm(t) {
-    const wait = FRAME_MIN_MS - (nowMs() - t) - PACE_EARLY_MS;
+    const wait = FRAME_MIN_MS - (nowMs() - t) + PACE_SLACK_MS;
     if (typeof opts.pace === 'function' && wait >= 2) pacer = opts.pace(() => { pacer = null; if (drawing()) loop = raf(frame); }, wait);
     else loop = raf(frame);
   }

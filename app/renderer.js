@@ -3978,13 +3978,18 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (!mapPanel) return JSON.stringify({ ok: false, error: 'no map panel' });
         const cv = document.querySelector('#map-root .map-canvas');
         const text = (sel) => { const e = document.querySelector('#map-root ' + sel); return e ? e.textContent : null; };
-        // how many distinct colours the canvas holds: a canvas that never drew reads 1
+        // how many sampled pixels differ clearly from the background: a canvas that never drew reads 0. NEVER getImageData on the panel's own
+        // canvas: a few of those and Chromium moves it off the GPU, which would make the probe's cost figures a measurement of the probe.
         let inked = null;
         try {
-          const px = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height).data;
-          const seen = new Set();
-          for (let i = 0; i < px.length; i += 4 * 61) seen.add((px[i] << 16) | (px[i + 1] << 8) | px[i + 2]);
-          inked = seen.size;
+          const t = document.createElement('canvas');
+          t.width = 40; t.height = 40;
+          const tg = t.getContext('2d', { willReadFrequently: true });
+          tg.drawImage(cv, 0, 0, 40, 40);
+          const px = tg.getImageData(0, 0, 40, 40).data;
+          let n = 0;
+          for (let i = 4; i < px.length; i += 4) if (Math.abs(px[i] - px[0]) + Math.abs(px[i + 1] - px[1]) + Math.abs(px[i + 2] - px[2]) > 40) n += 1;
+          inked = n;
         } catch { /* unreadable */ }
         return JSON.stringify({
           ok: true,

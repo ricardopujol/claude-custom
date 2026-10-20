@@ -259,7 +259,7 @@ async function main() {
   check('the strip says what the fake feed says', s1.strip.tasks === 'tasks 3 · 1 PR' && s1.strip.events === 'events 1.8k' && s1.strip.active === 'active 6 / 9' && /^up 2h 03m$/.test(s1.strip.uptime), s1.strip);
   check('the legend has the four states', JSON.stringify(s1.legend) === JSON.stringify(['running', 'needs you', 'done', 'idle']));
   check('the bitmap is sized in DEVICE pixels', s1.bitmap.w === Math.round(s1.canvas.width * s1.dpr) && s1.bitmap.h === Math.round(s1.canvas.height * s1.dpr), { dpr: s1.dpr, css: [s1.canvas.width, s1.canvas.height], bitmap: [s1.bitmap.w, s1.bitmap.h] });
-  check('the canvas is not blank', s1.colours > 12, s1.colours);
+  check('the canvas is not blank (sampled pixels that differ clearly from the background)', s1.colours >= 20, s1.colours);
 
   await mapDo({ op: 'hover', id: 'agent:dexter' });
   const hov = await mapState();
@@ -287,7 +287,8 @@ async function main() {
   const rafsOver = async (ms) => { const a = await mapState(); await sleep(ms); const b = await mapState(); return { rafs: b.rafs - a.rafs, frames: b.state.frames - a.state.frames }; };
   await mapDo({ op: 'leave' });
   const live = await rafsOver(3000);
-  check('ANIMATING: the loop runs at about 30 fps while shown, focused and not lean', live.frames >= 45 && live.frames <= 130, live);
+  check('ANIMATING: the loop runs at about 30 fps while shown, focused and not lean', live.frames >= 60 && live.frames <= 110, live);
+  check('ANIMATING: about one animation frame is asked for per frame drawn (a timer covers the wait)', live.rafs <= live.frames * 1.3, live);
 
   await command({ cmd: 'windowBlur' });
   // the static frame is asked for as the focus goes, and runs a moment later: wait for the loop to have ended, not just for animating to turn false
@@ -360,7 +361,7 @@ async function main() {
         const asked = before && after ? (after.rafs - before.rafs) / wallS : null;
         (frameRates[name] = frameRates[name] || []).push({ drawnPerS: fps, askedPerS: asked, budget: after && after.state.budget, lastCostMs: after && after.state.lastCost, particles: after && after.state.particles });
         readings.push({ round, scenario: name, mode: 'normal', cpu, gpu, scenarioReached: ok });
-        console.log(`round ${round} ${name.padEnd(36)} gpu-proc ${(cpu['gpu-process'] || 0).toFixed(1)}%  renderers ${(cpu.renderer || 0).toFixed(1)}%  main ${(cpu.main || 0).toFixed(1)}%  gpu-engine ${gpu.toFixed(1)}%  drawn ${fps === null ? 'n/a' : fps.toFixed(1)}/s  budget ${after ? after.state.budget.toFixed(2) : 'n/a'}  last frame ${after ? after.state.lastCost.toFixed(1) : 'n/a'} ms`);
+        console.log(`round ${round} ${name.padEnd(36)} gpu-proc ${(cpu['gpu-process'] || 0).toFixed(1)}%  renderers ${(cpu.renderer || 0).toFixed(1)}%  main ${(cpu.main || 0).toFixed(1)}%  gpu-engine ${gpu.toFixed(1)}%  drawn ${fps === null ? 'n/a' : fps.toFixed(1)}/s, asked ${asked === null ? 'n/a' : asked.toFixed(1)}/s  budget ${after ? after.state.budget.toFixed(2) : 'n/a'}  last frame ${after ? after.state.lastCost.toFixed(1) : 'n/a'} ms`);
       }
     }
     await command({ cmd: 'windowFocus' });

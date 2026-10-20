@@ -289,7 +289,7 @@ test('the wait between two frames is a TIMER, then one animation frame: the page
   assert.strictEqual(r.pending.size, 0, 'no animation frame is waiting during the wait');
   assert.strictEqual(r.paced.size, 1, 'a timer is');
   const [{ ms }] = [...r.paced.values()];
-  assert.ok(ms >= 2 && ms < 30, `it waits most of the slot: ${ms} ms`);
+  assert.ok(ms >= 25 && ms <= 31, `it waits the rest of the 30 ms slot, and no less: ${ms} ms`);
   const rafsBefore = r.counts.raf;
   r.pump(10, 34);
   assert.ok(r.counts.raf - rafsBefore <= 10, 'at most one animation frame per drawn frame');
