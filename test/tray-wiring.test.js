@@ -59,7 +59,7 @@ test('start minimised: the window is created without being shown, only when star
 
 test('the tray follows the shell and goes with the app', () => {
   assert.match(bodyOf(/function onShellChanged\(/), /if \(trayController\) trayController\.sync\(\);/);
-  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(resourceSampler\) resourceSampler\.stop\(\); if \(trayController\) trayController\.destroy\(\);/);
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(trayController\) trayController\.destroy\(\);/);
   assert.match(MAIN, /registerTrayHandlers\(\{ ipcMain, store: uiStore, isSender: isTabView,/, 'the switches answer this window\'s views only');
 });
 
@@ -67,11 +67,24 @@ test('the menu actions: Stop is the ▾ menu\'s own (it asks), Quit is app.quit,
   const actions = bodyOf(/function startTray\(\)/);
   assert.match(actions, /stopBackground: \(row\) => \{ focusWindow\(\); backgroundActions\.stop\(row\)/);
   assert.doesNotMatch(actions, /stopHost\(/);
-  assert.match(actions, /quit: \(\) => app\.quit\(\)/);
+  assert.match(actions, /app\.quit\(\); \}/);
   assert.match(actions, /hideAll: \(\) => \{ if \(win && !win\.isDestroyed\(\)\) win\.hide\(\); \}/);
   assert.match(actions, /showAll: focusWindow/);
   assert.match(actions, /openBackground: o => backgroundActions\.open\(o\)/);
   assert.match(actions, /setStartMinimised: on => \{ writeTraySetting\(uiStore, 'startMinimised', on === true\); \}/);
+});
+
+test('Quit from the tray brings a hidden window up first when there is unsaved reader text (Miguel Y1)', () => {
+  assert.match(bodyOf(/function startTray\(\)/), /quit: \(\) => \{ if \(readerUnsaved\.all\(\)\.length > 0\) focusWindow\(\); app\.quit\(\); \}/);
+});
+
+test('a cancelled close puts quitting back, so close-to-tray keeps working (Miguel Y2)', () => {
+  const close = MAIN.slice(MAIN.indexOf("win.on('close'"), MAIN.indexOf("win.on('closed'"));
+  assert.match(close, /closeGuarded = true; win\.close\(\); \}\s*else quitting = false;/);
+});
+
+test('will-quit destroys the tray FIRST, so a throwing sampler stop cannot leave a ghost icon (Miguel S1)', () => {
+  assert.match(MAIN, /app\.on\('will-quit', \(\) => \{ if \(trayController\) trayController\.destroy\(\); if \(resourceSampler\) resourceSampler\.stop\(\);/);
 });
 
 test('the preload and the Style tab: the DESIRED state goes out, the saved answer comes back', () => {

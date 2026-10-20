@@ -212,7 +212,7 @@ async function main() {
 
   // 1 ---------------------------------------------------------------------------------
   const t0 = await trayIs(app, t => t.tray.exists && t.tray.tooltip !== null);
-  check('1: the Tray exists with a tooltip that counts the sessions', !!t0 && t0.tray.tooltip === 'claude-custom · 2 sessions', JSON.stringify(t0 && t0.tray));
+  check('1: the Tray exists with a tooltip that counts the sessions', !!t0 && t0.tray.tooltip === 'claude-custom · proj · 2 sessions', JSON.stringify(t0 && t0.tray));
   check('1: nothing needs you: the plain icon, no badge', !!t0 && t0.tray.badge === '' && t0.tray.count === 0);
   const plainSha = t0 && t0.tray.image && t0.tray.image.sha1;
   check('1: the image is a real 32 x 32 bitmap handed over as a 2x icon', !!t0 && !!t0.tray.image && !!plainSha, JSON.stringify(t0 && t0.tray.image));
@@ -225,7 +225,7 @@ async function main() {
   await command(app, { cmd: 'windowBlur' });          // nobody is looking: the cue holds
   check('2: the hook line was delivered to feat/a\'s host', await fireHook(aPid, 'Stop', {}));
   const t1 = await trayIs(app, t => t.tray.count === 1);
-  check('2: a finished session: badge 1 and "1 needs you"', !!t1 && t1.tray.badge === '1' && t1.tray.tooltip === 'claude-custom · 2 sessions · 1 needs you', JSON.stringify(t1 && t1.tray));
+  check('2: a finished session: badge 1 and "1 needs you"', !!t1 && t1.tray.badge === '1' && t1.tray.tooltip === 'claude-custom · proj · 2 sessions · 1 needs you', JSON.stringify(t1 && t1.tray));
   check('2: ...the image\'s pixels changed', !!t1 && !!t1.tray.image && t1.tray.image.sha1 !== plainSha);
   const sha1 = t1 && t1.tray.image && t1.tray.image.sha1;
   await command(app, { cmd: 'tray-image', file: path.join(shots, 'tray-1-badge1.png') });
@@ -234,7 +234,7 @@ async function main() {
   await sleep(4500);                                   // the hosts keep each kind of attention to one per 4 s
   await fireHook(dPid, 'Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
   const t2 = await trayIs(app, t => t.tray.count === 2);
-  check('3: a second tab needs you: badge 2 and "2 need you"', !!t2 && t2.tray.badge === '2' && t2.tray.tooltip === 'claude-custom · 2 sessions · 2 need you', JSON.stringify(t2 && t2.tray));
+  check('3: a second tab needs you: badge 2 and "2 need you"', !!t2 && t2.tray.badge === '2' && t2.tray.tooltip === 'claude-custom · proj · 2 sessions · 2 need you', JSON.stringify(t2 && t2.tray));
   check('3: ...another image again', !!t2 && !!t2.tray.image && t2.tray.image.sha1 !== sha1 && t2.tray.image.sha1 !== plainSha);
   await command(app, { cmd: 'tray-image', file: path.join(shots, 'tray-2-badge2.png') });
 
@@ -273,7 +273,7 @@ async function main() {
   check('5: the next click goes to the one that is left (develop)', !!c2, JSON.stringify((await tray(app)).selectedKey));
   await command(app, { cmd: 'windowFocus' });          // the window comes back: the look
   const t6 = await trayIs(app, t => t.tray.count === 0);
-  check('5: the window coming back clears the count: no badge, the plain tooltip', !!t6 && t6.tray.badge === '' && t6.tray.tooltip === 'claude-custom · 2 sessions', JSON.stringify(t6 && t6.tray));
+  check('5: the window coming back clears the count: no badge, the plain tooltip', !!t6 && t6.tray.badge === '' && t6.tray.tooltip === 'claude-custom · proj · 2 sessions', JSON.stringify(t6 && t6.tray));
   check('5: ...and the plain icon is back, pixel for pixel', !!t6 && !!t6.tray.image && t6.tray.image.sha1 === plainSha);
   const visBefore = (await tray(app)).visible;
   await command(app, { cmd: 'tray-click' });

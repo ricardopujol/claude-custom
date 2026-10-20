@@ -108,6 +108,13 @@ test('the tooltip and image follow the count; an unchanged count touches nothing
   assert.strictEqual(c.state().badge, '', 'plain icon at 0');
 });
 
+test('the tooltip carries the window label, so two project windows are told apart', () => {
+  const { c, state } = setup({ windowLabel: () => 'alpha' });
+  state.tabs = [tab('a', null)];
+  c.sync();
+  assert.strictEqual(c.state().tooltip, 'claude-custom · alpha · 1 session');
+});
+
 test('the badge is 9+ beyond nine', () => {
   const { c, state } = setup();
   state.tabs = Array.from({ length: 12 }, (_, i) => tab('k' + i, { finished: true }));

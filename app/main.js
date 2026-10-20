@@ -603,6 +603,9 @@ function createWindow() {
       },
     }).then((ok) => {
       if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
+      // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
+      // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
+      else quitting = false;
     }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
   });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
@@ -1022,7 +1025,8 @@ function startTray() {
       hideAll: () => { if (win && !win.isDestroyed()) win.hide(); },
       showAll: focusWindow,
       setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
-      quit: () => app.quit(),
+      // Unsaved reader text asks Save / Discard / Cancel on the window, so the window has to be visible to be answered.
+      quit: () => { if (readerUnsaved.all().length > 0) focusWindow(); app.quit(); },
     },
   });
   trayController.sync();
@@ -2146,6 +2150,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => { quitting = true; });
-app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (trayController) trayController.destroy(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app);

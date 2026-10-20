@@ -40,8 +40,11 @@ const sessionsText = n => (n === 0 ? 'no sessions' : n === 1 ? '1 session' : `${
 const needsText = n => (n === 1 ? '1 needs you' : `${n} need you`);
 
 /** A count it was not given is left out, never shown as zero. */
-function tooltipText({ sessions, needs } = {}) {
+function tooltipText({ sessions, needs, label } = {}) {
+  // Two project windows are two icons: the project says which is which. Capped so the whole tooltip stays under 127.
+  const name = typeof label === 'string' ? label.trim().slice(0, 40) : '';
   const parts = [APP];
+  if (name !== '' && name !== APP) parts.push(name);
   if (isCount(sessions)) parts.push(sessionsText(sessions));
   if (isCount(needs) && needs > 0) parts.push(needsText(needs));
   return parts.join(' · ');

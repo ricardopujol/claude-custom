@@ -73,7 +73,7 @@ function createTrayController(deps) {
     if (!tray) return;
     const badge = badgeText(counts.count);
     if (badge !== shown.badge) { shownImage = imageFor(badge); tray.setImage(shownImage); shown.badge = badge; }
-    const tip = tooltipText({ sessions: counts.sessions, needs: counts.count });
+    const tip = tooltipText({ sessions: counts.sessions, needs: counts.count, label: deps.windowLabel() });
     if (tip !== shown.tooltip) { tray.setToolTip(tip); shown.tooltip = tip; }
   }
 

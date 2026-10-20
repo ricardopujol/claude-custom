@@ -40,6 +40,13 @@ test('tooltipText: the app, the sessions, and who needs you', () => {
   assert.strictEqual(tooltipText({ sessions: 0, needs: 0 }), 'claude-custom · no sessions');
 });
 
+test('tooltipText: the window label says which icon is which; the app name alone is not repeated; a long one is cut', () => {
+  assert.strictEqual(tooltipText({ sessions: 2, needs: 1, label: 'alpha' }), 'claude-custom · alpha · 2 sessions · 1 needs you');
+  assert.strictEqual(tooltipText({ sessions: 2, label: 'claude-custom' }), 'claude-custom · 2 sessions');
+  assert.strictEqual(tooltipText({ sessions: 2, label: '  ' }), 'claude-custom · 2 sessions');
+  assert.ok(tooltipText({ sessions: 999, needs: 999, label: 'x'.repeat(500) }).length <= 127);
+});
+
 test('tooltipText: a count it was not given is not shown as zero', () => {
   assert.strictEqual(tooltipText({ sessions: null, needs: null }), 'claude-custom');
   assert.strictEqual(tooltipText({}), 'claude-custom');
