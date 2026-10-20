@@ -27,7 +27,8 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     set(_t, name, v) { calls.push(['set:' + String(name), v]); return true; },
   });
   const pending = new Map();
-  const counts = { raf: 0, caf: 0 };
+  const paced = new Map();         // the waits between two frames of the loop (timers)
+  const counts = { raf: 0, caf: 0, pace: 0, unpace: 0 };
   let id = 0; let t = 1000;
   const later = [];
   const clicks = { session: [], agent: [] };
@@ -37,6 +38,8 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     doc, root: panel, context: ctx, storage, makeImage,
     raf: (fn) => { counts.raf += 1; id += 1; pending.set(id, fn); return id; },
     caf: (i) => { counts.caf += 1; pending.delete(i); },
+    pace: (fn, ms) => { counts.pace += 1; id += 1; paced.set(id, { fn, ms }); return id; },
+    unpace: (i) => { counts.unpace += 1; paced.delete(i); },
     now: () => t, wall: () => 1_700_000_000_000 + t, later: (fn) => { later.push(fn); return later.length; },
     css: (name) => TOKENS[name] || '', dpr: () => dpr, reducedMotion: () => flags.reduced,
     observe: (el, fn) => { observers.push(fn); return () => {}; },
@@ -51,14 +54,16 @@ function rig({ dpr = 2, reduced = false, storage = null, size = { width: 520, he
     let ran = 0;
     for (let i = 0; i < n; i += 1) {
       t += ms;
+      const waits = [...paced.values()]; paced.clear();
+      waits.forEach(w => w.fn());                         // a wait over: it asks for its animation frame
       const fns = [...pending.values()]; pending.clear();
       fns.forEach(fn => fn()); ran += fns.length;
-      if (fns.length === 0) break;
+      if (fns.length === 0 && waits.length === 0) break;
     }
     return ran;
   };
   const advance = (ms) => { t += ms; };
-  return { m, doc, panel, stage, canvas, ctx, calls, work, pending, counts, pump, advance, later, clicks, flags, observers, now: () => t, size };
+  return { m, doc, panel, stage, canvas, ctx, calls, work, pending, paced, counts, pump, advance, later, clicks, flags, observers, now: () => t, size };
 }
 
 const VIEW_ON = { shown: true, focused: true, lean: false };
@@ -165,10 +170,10 @@ test('LOSING FOCUS mid-animation cancels the loop and leaves one static frame', 
   r.m.setView(VIEW_ON);
   r.m.setData(data());
   r.pump(15);
-  const cancelled = r.counts.caf;
+  const cancelled = r.counts.caf + r.counts.unpace;
   const before = r.m.state().frames;
   r.m.setView({ focused: false });
-  assert.ok(r.counts.caf > cancelled, 'the pending frame was cancelled');
+  assert.ok(r.counts.caf + r.counts.unpace > cancelled, 'the pending frame (or the wait for it) was cancelled');
   r.pump(30);
   const s = r.m.state();
   assert.strictEqual(s.frames, before + 1, 'exactly one more frame: the static one');
@@ -250,10 +255,36 @@ test('the loop runs at about 30 fps: a callback that comes too soon draws nothin
   r.m.setData(data());
   r.pump(1, 34);
   const frames = r.m.state().frames;
-  assert.strictEqual(r.pump(1, 8), 1, 'it still asked again');
+  r.pump(1, 8);
   assert.strictEqual(r.m.state().frames, frames, '8 ms later: skipped');
+  assert.strictEqual(r.m.state().looping, true, 'and it carries on');
   r.pump(1, 40);
   assert.strictEqual(r.m.state().frames, frames + 1);
+});
+
+test('the wait between two frames is a TIMER, then one animation frame: the page is not woken on every vsync to do nothing', () => {
+  const r = rig();
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.pump(1, 34);                                   // the first frame
+  assert.strictEqual(r.pending.size, 0, 'no animation frame is waiting during the wait');
+  assert.strictEqual(r.paced.size, 1, 'a timer is');
+  const [{ ms }] = [...r.paced.values()];
+  assert.ok(ms >= 2 && ms < 30, `it waits most of the slot: ${ms} ms`);
+  const rafsBefore = r.counts.raf;
+  r.pump(10, 34);
+  assert.ok(r.counts.raf - rafsBefore <= 10, 'at most one animation frame per drawn frame');
+  assert.ok(r.counts.pace >= 10);
+});
+
+test('a frame that took the whole slot does not wait at all', () => {
+  const r = rig();
+  r.m.setView(VIEW_ON);
+  r.m.setData(data());
+  r.work.fn = () => r.advance(31);
+  r.pump(1, 34);
+  assert.strictEqual(r.paced.size, 0, 'no timer: the next animation frame is asked for straight away');
+  assert.strictEqual(r.pending.size, 1);
 });
 
 test('a slow frame (over 40 ms of work) halves the particle budget', () => {

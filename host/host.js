@@ -53,6 +53,7 @@ const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
 const { readHistory, readOrigin } = require('./git-history');
 const { readGraph, createGitGraphService } = require('./git-graph');
+const { createMapFeed } = require('./map-feed');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
 const { readOpenPrs, parseOpenPrs } = require('./open-prs');
 const { readSeams, announce, fixtureReader } = require('./probe-seams');
@@ -456,6 +457,8 @@ const gitTree = createGitTreeService({
 });
 // The Git panel's Graph view: the last 50 commits of develop, main and the open branches, with their lanes.
 const gitGraph = createGitGraphService({ cwd: CWD, read: readGraph });
+// The Map panel (BACKLOG #120): hook events counted per agent, for how fast its streams flow. Observation only (host/map-feed.js).
+const mapFeed = createMapFeed({ startedAt: Date.now() });
 // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff for THIS host's worktree
 // (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
 const repoService = createRepoService({
@@ -1448,6 +1451,7 @@ if (helperExists) {
     // the probe that reads it only wants who touched which path.)
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
     occupancy.handle(ev);
+    mapFeed.note(ev);        // the Map panel's event rates (BACKLOG #120): counted for every event, before any early return below
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
     night.handle(ev);
@@ -2809,6 +2813,11 @@ wss.on('connection', (ws, req) => {
       gitGraph.get().then(graph => {
         try { ws.send(JSON.stringify({ type: 'git-graph', ...graph })); } catch { /* the client went away */ }
       });
+      return;
+    }
+    if (msg.type === 'map') {
+      // The Map panel (BACKLOG #120) asks, while it is on screen, for the event rates and the tool in hand. Answers ONLY the asker.
+      try { ws.send(JSON.stringify({ type: 'map', ...mapFeed.snapshot() })); } catch { /* the client went away */ }
       return;
     }
     if (msg.type === 'style') {

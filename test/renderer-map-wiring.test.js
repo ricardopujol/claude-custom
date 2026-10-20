@@ -54,7 +54,7 @@ test('FRAME BUDGET: the panel is told shown x focused x lean, and a page the OS 
 });
 
 test('FRAME BUDGET: every change to any of the three facts calls mapView', () => {
-  assert.match(RENDERER, /shownModules = now;\s*gamesView\(\);[^\n]*\n\s*mapView\(\);/, 'after every layout');
+  assert.match(RENDERER, /shownModules = now;\s*gamesView\(\);[^\n]*\n\s*askView\(\);[^\n]*\n\s*mapView\(\);/, 'after every layout');
   assert.match(RENDERER, /windowFocused = focused === true;\s*syncLeanMotion\(\);\s*mapView\(\);/, 'when main says focus changed');
   assert.match(RENDERER, /leanOn = on;\s*mapView\(\);/, 'when lean switches');
   assert.match(BLOCK, /document\.addEventListener\('visibilitychange', \(\) => \{ mapView\(\);/, 'when the page is hidden or shown');

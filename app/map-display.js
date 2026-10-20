@@ -27,6 +27,7 @@ const model = typeof module !== 'undefined' && module.exports ? require('./map-m
 const layoutLib = typeof module !== 'undefined' && module.exports ? require('./map-layout') : root.mapLayout;
 
 const FRAME_MIN_MS = 30;           // ~30 fps while animating
+const PACE_EARLY_MS = 6;           // the timer wakes this much before the slot, so the animation frame that follows lands on its vsync
 const STEPS_PER_FRAME = 2;         // layout ticks a frame while it is still settling
 const SAVE_AFTER_MS = 700;
 const IMAGES_MAX = 120;
@@ -93,6 +94,7 @@ function portraitSpec(portrait, name, { imagesEnabled, fileUrl } = {}) {
  *   raf(fn) -> id, caf(id)   requestAnimationFrame and cancelAnimationFrame
  *   now()           milliseconds on the frame clock (performance.now); wall() epoch milliseconds (Date.now), for "elapsed"
  *   later(fn, ms)   setTimeout (the debounced save)
+ *   pace(fn, ms) -> id, unpace(id)   setTimeout / clearTimeout for the wait between two frames of the loop (optional: without them it uses animation frames)
  *   css(name)       a colour or font from the project's tokens (--accent, --chrome ...)
  *   dpr()           devicePixelRatio; reducedMotion() -> bool
  *   observe(el, fn) -> disposer   calls fn when el's size changes (ResizeObserver)
@@ -151,7 +153,8 @@ function mount(opts) {
   let view = { x: 0, y: 0, k: 1 };
   let userView = false;              // the person panned or zoomed: stop re-fitting under them
   let size = { w: 0, h: 0, dpr: 0 };
-  let loop = null;
+  let loop = null;                   // a pending animation frame
+  let pacer = null;                  // a pending wait for the next ~30 fps slot (a timer: the page is not woken on every vsync to do nothing)
   let lastFrameAt = null;
   let frames = 0;
   let lastCost = 0;
@@ -438,14 +441,25 @@ function mount(opts) {
     drawFrame(t);
     lastCost = nowMs() - t;
     budget = model.adaptBudget(budget, lastCost);
-    if (wantLoop()) loop = raf(frame);
+    if (wantLoop()) arm(t);
     else lastFrameAt = null;
   }
 
-  function cancel() { if (loop !== null) { if (caf) caf(loop); loop = null; } lastFrameAt = null; }
+  // Ask for the NEXT frame of the loop: a timer for most of the wait, then one animation frame, so ~30 fps costs ~30 wake-ups a second.
+  function arm(t) {
+    const wait = FRAME_MIN_MS - (nowMs() - t) - PACE_EARLY_MS;
+    if (typeof opts.pace === 'function' && wait >= 2) pacer = opts.pace(() => { pacer = null; if (drawing()) loop = raf(frame); }, wait);
+    else loop = raf(frame);
+  }
+
+  function cancel() {
+    if (loop !== null) { if (caf) caf(loop); loop = null; }
+    if (pacer !== null) { if (opts.unpace) opts.unpace(pacer); pacer = null; }
+    lastFrameAt = null;
+  }
   /** Ask for a frame. One is enough: while the loop runs it draws the next change itself. */
   function redraw() {
-    if (loop !== null || !drawing()) return;
+    if (loop !== null || pacer !== null || !drawing()) return;
     lastFrameAt = null;
     loop = raf(frame);
   }
@@ -611,8 +625,9 @@ function mount(opts) {
     /** For tests and the probe: a copy, never the live objects. */
     state() {
       return {
-        drawing: drawing(), animating: animating(), looping: loop !== null, frames, lastCost, budget,
+        drawing: drawing(), animating: animating(), looping: loop !== null || pacer !== null, frames, lastCost, budget,
         settled: layoutLib.settled(layout), particles: particles.list.length, flows: flowsOf().length,
+        particleEdges: [...new Set(particles.list.map(p => p.e))],
         zoom: view.k, view: { ...view }, size: { ...size },
         nodes: graph.nodes.map(n => ({ id: n.id, kind: n.kind, label: n.label, state: n.state, x: n.x, y: n.y, r: n.r })),
         edges: graph.edges.map(e => ({ id: e.id, kind: e.kind, from: e.from, to: e.to, state: e.state, flow: e.flow, label: e.label })),
