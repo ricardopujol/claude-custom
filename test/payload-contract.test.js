@@ -164,3 +164,21 @@ test('a ScheduleWakeup call needs delaySeconds and its result scheduledFor, but 
   assert.strictEqual(checkPayload('PostToolUse', post({ delaySeconds: 60 }, { scheduledFor: 1 })).ok, true);
   assert.strictEqual(checkPayload('PostToolUse', post({ stop: true }, {})).ok, true);
 });
+
+// BACKLOG #119 A7 (the Schedules panel). Shapes from the CLI's own tool schemas (sdk-tools.d.ts): CronCreate { cron, prompt, recurring?,
+// durable? } -> { id, humanSchedule, recurring, durable?, nextFireAt? }; CronDelete { id }. Optional on purpose and so not required here:
+// recurring, durable, humanSchedule, nextFireAt, and ScheduleWakeup's reason.
+test('a CronCreate call needs its cron expression and its result the job id; a CronDelete needs the id; no other tool is asked', () => {
+  const pre = (tool_name, tool_input) => ({ tool_name, permission_mode: 'x', tool_input });
+  assert.deepStrictEqual(checkPayload('PreToolUse', pre('CronCreate', { prompt: 'p' })).missing, ['tool_input.cron']);
+  assert.strictEqual(checkPayload('PreToolUse', pre('CronCreate', { cron: '* * * * *', prompt: 'p' })).ok, true);
+  assert.deepStrictEqual(checkPayload('PreToolUse', pre('CronDelete', {})).missing, ['tool_input.id']);
+  assert.strictEqual(checkPayload('PreToolUse', pre('CronDelete', { id: 'j' })).ok, true);
+  const post = (tool_name, tool_input, tool_response) => ({ tool_name, permission_mode: 'x', tool_input, tool_response });
+  assert.deepStrictEqual(checkPayload('PostToolUse', post('CronCreate', { cron: '* * * * *' }, {})).missing, ['tool_response.id']);
+  assert.strictEqual(checkPayload('PostToolUse', post('CronCreate', { cron: '* * * * *' }, { id: 'j' })).ok, true);
+  assert.strictEqual(checkPayload('PostToolUse', post('CronDelete', { id: 'j' }, { id: 'j' })).ok, true, 'a delete\'s result is not asked for an id twice');
+  assert.strictEqual(checkPayload('PostToolUse', post('Bash', { command: 'ls' }, {})).ok, true);
+  for (const f of ['tool_input.cron', 'tool_input.id']) assert.ok(CONTRACT.PreToolUse.fields[f].used, f);
+  assert.ok(CONTRACT.PostToolUse.fields['tool_response.id'].used);
+});

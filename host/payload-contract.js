@@ -85,6 +85,16 @@ const CONTRACT = {
         used: 'bedtime-state.js, the clamped fallback for a running night\'s next wake when the result carries no believable scheduledFor',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
       },
+      // The Schedules panel (BACKLOG #119 A7). From the CLI's own tool schemas (sdk-tools.d.ts): CronCreate { cron, prompt, recurring?, durable? },
+      // CronDelete { id }. ScheduleWakeup's `reason` and the cron options are optional, so not required here.
+      'tool_input.cron': {
+        used: 'schedules.js, the cron expression whose next run the Schedules panel computes',
+        onlyWhen: p => !!p && p.tool_name === 'CronCreate',
+      },
+      'tool_input.id': {
+        used: 'schedules.js, the cron job a CronDelete removes from the Schedules panel',
+        onlyWhen: p => !!p && p.tool_name === 'CronDelete',
+      },
       ...COMMON_FIELDS,
     },
   },
@@ -98,6 +108,11 @@ const CONTRACT = {
       'tool_response.scheduledFor': {
         used: 'bedtime-state.js, the night\'s next wake, shown on the bedtime chip (#52)',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
+      },
+      // CronCreate's result: { id, humanSchedule, recurring, durable?, nextFireAt? } (sdk-tools.d.ts); the id is what a CronDelete names.
+      'tool_response.id': {
+        used: 'schedules.js, the key of a cron job in the Schedules panel',
+        onlyWhen: p => !!p && p.tool_name === 'CronCreate',
       },
       ...COMMON_FIELDS,
     },
