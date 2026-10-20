@@ -161,7 +161,8 @@ test('Open from the ▾ menu spawns a window through attachEnv, detached, never 
   assert.ok(at !== -1, 'the ▾ actions must get a spawnWindow');
   const body = MAIN.slice(at, MAIN.indexOf('confirmStop:', at));
   assert.match(body, /env: attachEnv\(process\.env, \{ cwd, port \}\)/);
-  assert.match(body, /spawn\(process\.execPath, \[INSTALL_DIR\]/);
+  // the app folder is an argument only in a checkout (host/exe-entry.js appLaunchArgs); an installed exe gets none (PR #203 Dexter r2 N1)
+  assert.match(body, /spawn\(process\.execPath, require\('\.\.\/host\/exe-entry'\)\.appLaunchArgs\(\{ packaged: app\.isPackaged, installDir: INSTALL_DIR \}\)/);
   assert.match(body, /detached: true/);
   assert.doesNotMatch(body, /\.\.\.process\.env|ELECTRON_RUN_AS_NODE/);
 });
