@@ -184,6 +184,7 @@ const forPage = (c) => {
   const out = {};
   for (const f of PAGE_FIELDS) out[f] = f === 'also' ? (Array.isArray(c.also) ? c.also.filter(isStr) : []) : (c[f] === undefined ? null : c[f]);
   if (isReader(c)) out.role = 'reader';     // only a reader carries it: a writer's page payload is what it always was
+  if (Number.isFinite(c.wroteAt)) out.wroteAt = c.wroteAt;     // the Map's conflict edge: when this worktree was last written to (absent: the claim is a read)
   return out;
 };
 

@@ -147,7 +147,8 @@ test('hostile input does not throw and draws nothing it should not', () => {
 
 // --- conflicts ------------------------------------------------------------------------------------------------------------
 
-const claim = (agentId, agent, worktree, also = []) => ({ agentId, agent, worktree, also, lastAt: 1 });
+const claim = (agentId, agent, worktree, also = []) => ({ agentId, agent, worktree, also, lastAt: 1, wroteAt: 1 });
+const readClaim = (agentId, agent, worktree) => ({ agentId, agent, worktree, also: [], lastAt: 1 });   // a claim the producer did not stamp with a write: a read
 
 test('two agents claiming the same worktree get a red dashed edge named for it', () => {
   const g = M.buildGraph({
@@ -174,7 +175,7 @@ test('only the CURRENT worktree of a claim counts: an `also` is where the agent 
 test('no conflict for one agent alone, the same agent twice, different worktrees', () => {
   const none = c => M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [ag('a'), ag('b')], claims: c }).conflicts.length;
   assert.strictEqual(none([claim('1', 'a', 'C:\\p\\x')]), 0);
-  assert.strictEqual(none([claim('1', 'a', 'C:\\p\\x'), claim('2', 'a', 'C:\\p\\x')]), 0, 'two instances of one name are one node');
+  assert.strictEqual(none([claim('1', 'a', 'C:\\p\\x'), claim('1', 'a', 'C:\\p\\x')]), 0, 'one run is one node');
   assert.strictEqual(none([claim('1', 'a', 'C:\\p\\x'), claim('2', 'b', 'C:\\p\\y')]), 0);
   assert.strictEqual(none([claim('1', 'a', 'C:\\p\\x'), claim('2', 'ghost', 'C:\\p\\x')]), 1, 'a claim-only agent is drawn, so it can collide');
   assert.strictEqual(none(null), 0);
@@ -215,24 +216,62 @@ test('DEXTER 1: a reader is not a conflict, a writer and a reader are not, two w
   assert.strictEqual(run(w('1', 'a'), w('2', 'b')).length, 1);
 });
 
-test('DEXTER 1: an agent the mood machine shows reading is no writer either', () => {
-  const g = M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [ag('a', { detail: 'reading' }), ag('b', { detail: 'writing' })], claims: [claim('1', 'a', 'C:/p/x'), claim('2', 'b', 'C:/p/x')] });
-  assert.strictEqual(g.conflicts.length, 0);
-  const h = M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [ag('a', { detail: 'writing' }), ag('b', { detail: 'running' })], claims: [claim('1', 'a', 'C:/p/x'), claim('2', 'b', 'C:/p/x')] });
-  assert.strictEqual(h.conflicts.length, 1);
+test('R1: a claim with no wroteAt is a read, whatever its role or the agent\'s mood: two readers never make an edge, two writers make one', () => {
+  const run = (agents, ...cl) => M.buildGraph({ project: { name: 'p' }, sessions: [], agents, claims: cl }).conflicts.length;
+  const moods = [{}, { detail: 'writing' }, { detail: 'running' }, { detail: 'reading' }];
+  for (const m of moods) {
+    assert.strictEqual(run([ag('a', m), ag('b', m)], readClaim('1', 'a', 'C:/p/x'), readClaim('2', 'b', 'C:/p/x')), 0, `two readers, mood ${JSON.stringify(m)}`);
+    assert.strictEqual(run([ag('a', m), ag('b', m)], claim('1', 'a', 'C:/p/x'), readClaim('2', 'b', 'C:/p/x')), 0, 'a writer and a reader');
+    assert.strictEqual(run([ag('a', m), ag('b', m)], claim('1', 'a', 'C:/p/x'), claim('2', 'b', 'C:/p/x')), 1, `two writers, mood ${JSON.stringify(m)}`);
+  }
+  assert.strictEqual(run([], { ...readClaim('1', 'a', 'C:/p/x'), role: 'reader' }, { ...claim('2', 'b', 'C:/p/x'), role: 'reader' }), 0, 'a reader role never writes');
 });
 
-test('DEXTER 1: a claim that has gone quiet is no longer a place anyone is in', () => {
+test('R1/N1: a write counts while it is recent, or while the agent is working: a quiet idle claim stops, a working writer does not', () => {
   const now = Date.now();
-  const g = M.buildGraph({ project: { name: 'p' }, now, sessions: [], agents: [ag('a'), ag('b')], claims: [{ ...claim('1', 'a', 'C:/p/x'), lastAt: now - 1000 }, { ...claim('2', 'b', 'C:/p/x'), lastAt: now - 3600000 }] });
-  assert.strictEqual(g.conflicts.length, 0);
+  const old = now - 3600000;
+  const stale = (id, name) => ({ ...claim(id, name, 'C:/p/x'), lastAt: old, wroteAt: old });
+  const fresh = (id, name) => ({ ...claim(id, name, 'C:/p/x'), lastAt: now - 1000, wroteAt: now - 1000 });
+  const idle = M.buildGraph({ project: { name: 'p' }, now, sessions: [], agents: [ag('a', { state: 'sleeping', detail: 'sleeping' }), ag('b')], claims: [fresh('1', 'a'), stale('2', 'b')] });
+  assert.strictEqual(idle.conflicts.length, 0, 'b wrote an hour ago and a is asleep');
+  const working = M.buildGraph({ project: { name: 'p' }, now, sessions: [], agents: [ag('a'), ag('b')], claims: [fresh('1', 'a'), stale('2', 'b')] });
+  assert.strictEqual(working.conflicts.length, 1, 'b is WORKING: its last write was long ago but it is still at it');
+  const visitors = M.buildGraph({ project: { name: 'p' }, now, sessions: [], agents: [], claims: [{ ...fresh('1', 'a'), own: false }, { ...stale('2', 'b'), own: false }] });
+  assert.strictEqual(visitors.conflicts.length, 0, 'no state source for a visitor: the quiet rule applies');
+});
+
+test('R3: two live runs of one type in THIS session are two nodes under their agentIds, and can conflict', () => {
+  const g = M.buildGraph({ project: { name: 'p' }, sessions: [sess('d', { self: true, folder: 'C:/p/dev' })], agents: [ag('general-purpose')], claims: [claim('b1', 'general-purpose', 'C:/p/feat-a'), claim('b2', 'general-purpose', 'C:/p/feat-a')] });
+  const ids = g.nodes.filter(n => n.kind === 'agent').map(n => n.id).sort();
+  assert.deepStrictEqual(ids, ['agent:b1', 'agent:b2']);
+  assert.strictEqual(g.conflicts.length, 1);
+  assert.ok(g.edges.filter(e => /^agent:b/.test(e.from) && e.kind === 'tree').every(e => e.to === 'session:d' && e.flow > 0), 'both inherit the card\'s state');
+  const one = M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [ag('general-purpose')], claims: [claim('b1', 'general-purpose', 'C:/p/feat-a')] });
+  assert.deepStrictEqual(one.nodes.filter(n => n.kind === 'agent').map(n => n.id), ['agent:general-purpose']);
+});
+
+test('N2: "active" counts agents with a state, never idle claim-only visitors', () => {
+  const g = M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [ag('a')], claims: [{ ...readClaim('v1', 'visitor', 'C:/p/x'), own: false }, { ...readClaim('v2', 'visitor', 'C:/p/y'), own: false }] });
+  assert.strictEqual(g.nodes.filter(n => n.kind === 'agent').length, 3, 'drawn');
+  assert.strictEqual(g.counts.activeAgents, 1, 'not counted');
+});
+
+test('N3: a tab is working when its MAIN turn is, not only when a subagent runs', () => {
+  assert.strictEqual(M.tabState({ open: true, known: true, working: false, needsInput: false, turn: 'turn' }), 'working');
+  assert.strictEqual(M.tabState({ open: true, known: true, working: false, needsInput: false, turn: 'prompt' }), 'needs');
+  assert.strictEqual(M.tabState({ open: true, known: true, working: false, needsInput: false, turn: 'idle' }), 'idle');
+  const tree = { ok: true, branches: [{ name: 'feat/x', folder: 'C:/p/feat-x' }] };
+  const tabs = [{ folder: 'C:/p/feat-x', open: true, known: true, working: false, needsInput: false, turn: 'turn' }];
+  const sessions = M.sessionsFrom({ tree, tabs, self: { folder: 'C:/p/dev', branch: 'develop', state: 'idle' } });
+  const g = M.buildGraph({ project: { name: 'p' }, sessions, agents: [], claims: [{ ...claim('9', 'builder', 'C:/p/feat-x'), fromRoot: 'C:/p/dev', own: false }] });
+  assert.strictEqual(g.conflicts.length, 1, 'the person is typing in that tab');
 });
 
 test('DEXTER 3: two builders of one type are two nodes and can conflict; a sleeping roster entry hides no agent of another session', () => {
   const g = M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [], claims: [{ ...claim('a1', 'general-purpose', 'C:/p/x'), own: false }, { ...claim('a2', 'general-purpose', 'C:/p/x'), own: false }] });
   assert.strictEqual(g.nodes.filter(n => n.kind === 'agent').length, 2);
   assert.strictEqual(g.conflicts.length, 1);
-  assert.strictEqual(g.counts.activeAgents, 2);
+  assert.strictEqual(g.counts.activeAgents, 0, 'idle visitors are not active agents');
   const h = M.buildGraph({ project: { name: 'p' }, sessions: [], agents: [ag('Explore', { state: 'sleeping', detail: 'sleeping' })], claims: [{ ...claim('e1', 'Explore', 'C:/p/x'), own: false }] });
   assert.ok(h.nodes.some(n => n.id === 'agent:e1'));
 });

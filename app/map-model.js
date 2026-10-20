@@ -64,7 +64,8 @@ function agentLook(mood) {
 /** What the shell knows of a worktree's tab ({ open, known, working, needsInput }) -> a session's state. Unknown is never idle. */
 function tabState(tab) {
   if (!tab || typeof tab !== 'object' || tab.known !== true) return 'unknown';
-  if (tab.needsInput === true) return 'needs';
+  if (tab.needsInput === true || tab.turn === 'prompt') return 'needs';
+  if (tab.turn === 'turn') return 'working';      // the MAIN session's turn (host/turn-state.js), which a person typing makes too: not only a subagent running
   if (tab.working === true) return 'working';
   if (tab.working === false) return 'idle';
   return 'unknown';
@@ -180,7 +181,19 @@ function buildGraph(input) {
   const claims = list(inp.claims).filter(c => c && typeof c === 'object' && isStr(c.agentId) && isStr(c.worktree));
   // a claim of THIS session's own agent (the page says so with own !== false) belongs to its roster card; anything else is its own node
   const ownRoster = c => c.own !== false && isStr(c.agent) && rosterNames.has(c.agent);
-  const nodeKeyOf = c => (ownRoster(c) ? (names.has(c.agent) ? c.agent : null) : c.agentId);
+  // two live runs of ONE type in this session (the roster's x2) are two nodes, each under its own agentId, both showing the card's state
+  const ownIds = new Map();
+  for (const c of claims) {
+    if (!ownRoster(c)) continue;
+    if (!ownIds.has(c.agent)) ownIds.set(c.agent, new Set());
+    ownIds.get(c.agent).add(c.agentId);
+  }
+  for (let i = agents.length - 1; i >= 0; i -= 1) {
+    const a = agents[i];
+    const set = ownIds.get(a.name);
+    if (a.key === a.name && set && set.size >= 2) agents.splice(i, 1, ...[...set].sort().map(id => ({ ...a, key: id })));
+  }
+  const nodeKeyOf = c => (ownRoster(c) ? (names.has(c.agent) ? (ownIds.get(c.agent).size >= 2 ? c.agentId : c.agent) : null) : c.agentId);
   const claimKeys = new Set();
   for (const c of claims) {
     if (ownRoster(c) || !liveClaim(c) || claimKeys.has(c.agentId)) continue;
@@ -224,18 +237,20 @@ function buildGraph(input) {
   // a claim that has gone quiet is no longer a place anyone is in. Only the claim's current worktree counts (an `also` is where it WAS).
   const conflicts = [];
   const byPlace = new Map();
-  const isWriter = c => c.role !== 'reader' && liveClaim(c);
+  // A WRITE is a claim the occupancy producer stamped `wroteAt` (an Edit, Write or NotebookEdit there); a claim without it is a read, whatever its role or
+  // the agent's mood. A write counts while it is recent, or while the mood machine says the agent is working: quiet alone must not drop a working writer.
+  const wroteRecently = c => nowMs === null || nowMs - c.wroteAt <= LIVE_CLAIM_MS;
   const nodeFor = c => {
     const key = nodeKeyOf(c);
     const id = key === null ? null : 'agent:' + key;
-    if (id === null || !ids.has(id)) return null;
-    const node = nodes.find(n => n.id === id);
-    return node && node.data && node.data.detail === 'reading' ? null : id;
+    return id !== null && ids.has(id) ? id : null;
   };
   for (const c of claims) {
-    if (!isWriter(c)) continue;
+    if (c.role === 'reader' || !isNum(c.wroteAt)) continue;
     const nodeId = nodeFor(c);
     if (nodeId === null) continue;
+    const node = nodes.find(n => n.id === nodeId);
+    if (!wroteRecently(c) && !(node && node.state === 'working')) continue;
     const key = keyOfPath(c.worktree);
     if (!byPlace.has(key)) byPlace.set(key, { label: baseOfPath(c.worktree) || c.worktree, who: new Map() });
     const place = byPlace.get(key);
@@ -262,7 +277,8 @@ function buildGraph(input) {
     }
   }
 
-  const active = agents.length;
+  // `active` is every agent with a state of its own that is not idle: a claim-only visitor (idle) is drawn but is not an active agent
+  const active = agents.filter(a => a.state !== 'idle').length;
   const total = isNum(inp.totalAgents) ? Math.max(inp.totalAgents, active) : list(inp.agents).length || active;
   return { nodes, edges, conflicts, counts: { sessions: n, running, activeAgents: active, totalAgents: total } };
 }

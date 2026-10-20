@@ -196,6 +196,13 @@ test('card line: a claim that names no session, or a card whose session isn\'t k
 
 // --- what main pushes to a page -----------------------------------------------------------------
 
+test('viewPayload carries wroteAt only for a claim that has one (the Map conflict edge), and nothing new for the rest', () => {
+  const base = { agentId: 'a', agent: 'x', worktree: 'C:/w', fromRoot: 'C:/d', lastAt: 1 };
+  const out = D.viewPayload([claim({ ...base, wroteAt: 5 }), claim({ ...base, agentId: 'b' })], 'C:/w');
+  assert.strictEqual(out.here[0].wroteAt, 5);
+  assert.ok(!('wroteAt' in out.here[1]));
+});
+
 test('viewPayload: the claims that occupy this tab, and the ones this tab\'s session launched', () => {
   const claims = [
     claim({ agentId: 'in', worktree: 'C:/p/feat-x', fromRoot: 'C:/p/dev' }),

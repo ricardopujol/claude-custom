@@ -67,8 +67,8 @@ function smallGraph(folderA, folderB, worktree) {
       agent('dewey', 'b', 'working', 'writing', { eventsPerMin: 30, tool: 'Edit' }),
     ],
     claims: [
-      { agentId: 'i1', agent: 'dexter', worktree, also: [], lastAt: Date.now() - 20000 },
-      { agentId: 'i2', agent: 'mortimer', worktree, also: [], lastAt: Date.now() - 4000 },
+      { agentId: 'i1', agent: 'dexter', worktree, also: [], lastAt: Date.now() - 20000, wroteAt: Date.now() - 20000 },
+      { agentId: 'i2', agent: 'mortimer', worktree, also: [], lastAt: Date.now() - 4000, wroteAt: Date.now() - 4000 },
     ],
     lanes: { open: 3, withPr: 1 },
     feed: { events: 1834, uptimeMs: 7_380_000 },
@@ -270,6 +270,15 @@ async function main() {
   await mapDo({ op: 'edge', id: conflict.id });
   const hov2 = await mapState();
   check('hovering the conflict edge names both claims', hov2.card.hidden === false && hov2.card.title === 'Conflict · feat-x' && hov2.card.lines.length === 2, hov2.card);
+  // R1: the same two agents on the same worktree, but their claims carry no `wroteAt`: two READERS. No edge, whatever the mood.
+  const readers = smallGraph(folderA, folderB, worktree);
+  readers.claims = readers.claims.map(({ wroteAt, ...c }) => c);
+  await mapDo(readers);
+  const rs = await mapState();
+  check('R1: two readers on one worktree make no conflict edge', rs.state.conflicts === 0 && !rs.state.edges.some(e => e.kind === 'conflict'), rs.state.conflicts);
+  await mapDo(smallGraph(folderA, folderB, worktree));
+  const ws = await mapState();
+  check('R1: two writers on one worktree make one', ws.state.conflicts === 1, ws.state.conflicts);
   const z0 = (await mapState()).state.zoom;
   await mapDo({ op: 'wheel', x: 200, y: 150, deltaY: -400 });
   const z1 = (await mapState());
