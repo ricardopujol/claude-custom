@@ -7,13 +7,34 @@
  *
  * THE FRAME BUDGET (the rule this panel exists under; BACKLOG #99/#100/#192 measured a breathing border at 12-20% of a core):
  *   - it ANIMATES only while the panel is shown, the window is focused and lean mode is off (map-model shouldAnimate), and particles
- *     also need prefers-reduced-motion to be off;
+ *     also need prefers-reduced-motion to be off, and under it the graph is fully static: one frame per change, no easing, no pulse;
  *   - otherwise it draws ONE static frame (settled layout, no particles) and its rAF loop is not running;
  *   - hidden or lean: it draws nothing at all, and asks for no frame;
  *   - even animating, the loop STOPS by itself when the layout has settled and nothing is flowing, and wakes on the next change;
  *   - a presented frame has a fixed price (probe: about 4 ms of CPU across the renderer and the GPU process, whatever is drawn in it), so the
  *     frame GAP is what sets the cost: 50 ms (20 fps) in the app, a knob here (setFrameMs). It also halves its particle budget when a frame's
  *     own work takes over 40 ms (map-model adaptBudget).
+ *
+ * WHAT IT COSTS (verify/probe-activity-map.js --reps=3 --measure-ms=12000 [--sweep]; Katana, 144 Hz display, dark look, 2026-10-20; all Electron
+ * processes, CPU % of ONE core, median of 3 rounds, minus the panel hidden at about 1-2 %; the probe window is off screen with throttling off, so a
+ * covered window is cheaper). Two full runs, because rounds on this machine are noisy (other work, GPU process spikes):
+ *
+ *   state                                              run 1 (PR #205 first look)   run 2 (after the review fixes)
+ *   panel hidden (baseline, absolute)                  2.0  (0.9..2.8)              1.1  (0.4..1.6)
+ *   shown but unfocused (the static frame)             about 0                      +0.7
+ *   one agent working, 50 ms gap                       +7.4                         +6.6
+ *   6 agents, 3 working, 33 ms (30 fps)                +11.3                        +11.9
+ *   6 agents, 3 working, 50 ms (20 fps; THE DEFAULT)   +4.6   (6.2..8.7 total)      +14.4  (11.4..16.6 total, one GPU-process spike round)
+ *   6 agents, 40 ms                                    +6.3                         (not rerun)
+ *   6 agents, 67 ms (15 fps)                           +3.1                         (not rerun)
+ *   48 agents all working (the cap), 50 ms             +14.1 (main-process noise)   +14.2
+ *   6 agents, 50 ms, 500 roster messages a second      (not measured)               +9.6   (the coalescing: churn adds nothing visible)
+ *
+ * READ IT AS: a presented frame costs about 4 ms of CPU across the renderer and the GPU process whatever is drawn in it (one agent costs what six
+ * do), so the cost follows the frame rate, roughly 0.4 % of a core per frame a second, with run-to-run noise of about +-5 points. The default is
+ * 50 ms and not 33 because 30 fps measured about +11 in both runs, which is the breathing border's price (12-20 %); 20 fps measured +5 to +14.
+ * A desynchronized canvas was measured once and not adopted (its numbers overlapped the plain canvas's). Change MAP_FRAME_MS (app/renderer.js) or
+ * STEPS_PER_FRAME only with a new run next to these.
  *
  * TEXT IS CRISP because the canvas is sized in device pixels (css size x devicePixelRatio) and drawn through a transform that includes
  * both the ratio and the zoom, so text and lines are rasterised at their final size, never scaled up from a smaller bitmap.
