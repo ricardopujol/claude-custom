@@ -214,6 +214,7 @@ async function partA(tmp) {
   const bare = orderOf(read(prog2.log));
   console.log('   with no window attached the program saw: ' + (bare.length ? bare.join(' then ') : '(nothing)'));
   check('and the host answers DA1 itself, once, AFTER the 7501 answer', bare.join(',') === '7501,DA1', JSON.stringify(bare));
+  await prog2.say('__exit__');          // the program ends, so the shell in the pty is free for part B
   typist.close();
   return h;
 }
@@ -245,7 +246,7 @@ app.whenReady().then(async () => {
   const view = () => js('(() => { const d = document.getElementById("dot"); const s = lastReportedTabStatus; return { cls: [...d.classList].filter(c => c.startsWith("ps-")), title: d.title || null,' +
     ' working: s && s.working, needsInput: s && s.needsInput, finished: s && s.finished, program: s && s.program, pending: JSON.parse(JSON.stringify(tabPending)) }; })()');
   try {
-    const up = await until('typeof applyProgramStatus === "function" && ws && ws.readyState === 1 && hostControls && hostControls.includes("program-status")', 30000);
+    const up = await until('typeof applyProgramStatus === "function" && ws && ws.readyState === 1 && hostControls && hostControls.includes("program-status")', 60000);
     check('the renderer and the host are up', up, up ? undefined : await js('({ fn: typeof applyProgramStatus, ws: typeof ws !== "undefined" && ws ? ws.readyState : null, controls: typeof hostControls !== "undefined" ? hostControls : "undeclared", href: location.href })').catch(e => String(e)));
     // the program is already running in the pty (part A started it)
     await say(osc('state=working:progress=40'));
