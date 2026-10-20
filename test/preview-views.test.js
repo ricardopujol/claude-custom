@@ -98,8 +98,8 @@ test('the session is locked before anything loads: a dead proxy (loopback stays 
   const r = rig();
   await show(r, { port: 20003 });
   const ses = Object.values(r.sessions)[0];
-  assert.deepStrictEqual(ses.proxy, { mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1' }, 'every non-URL connection (WebRTC TURN over TCP) dies at a dead proxy');
-  assert.ok(!('proxyBypassRules' in ses.proxy), 'no bypass rules: <-loopback> would send loopback to the dead proxy, anything else would open a hole');
+  assert.deepStrictEqual(ses.proxy, { mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1', proxyBypassRules: '<-loopback>;localhost;127.0.0.1;[::1]' }, 'every non-URL connection dies at a dead proxy except the three hosts the guard allows');
+  assert.ok(ses.proxy.proxyBypassRules.startsWith('<-loopback>;'), '<-loopback> first (it removes the implicit bypass of the rest of 127/8, 169.254/16 and fe80::/10), then the explicit hosts: measured, the other order proxies loopback too');
   let granted; ses.permissionRequest({}, 'media', (g) => { granted = g; });
   assert.strictEqual(granted, false);
   assert.strictEqual(ses.permissionCheck({}, 'clipboard-read'), false);
@@ -523,4 +523,24 @@ test('a new view of the session waits for the last one\'s storage to be emptied 
   release();
   await again;
   assert.ok(r.views[1].webContents.calls.some(c => c[0] === 'load'));
+});
+
+test('the bypass list is <-loopback>, then only the guard hosts (Dexter r2 N1, measured order)', () => {
+  const { PREVIEW_BYPASS } = require('../app/preview-views');
+  const guard = require('../app/preview-guard');
+  const parts = PREVIEW_BYPASS.split(';');
+  assert.strictEqual(parts[0], '<-loopback>');
+  assert.deepStrictEqual(parts.slice(1).sort(), [...guard.LOOPBACK_HOSTS].sort());
+});
+
+test('the probe seam can point the session at another proxy, and nothing else changes', async () => {
+  const sessions = {}; const views = []; const owner = new EventEmitter(); owner.id = 7; owner.isDestroyed = () => false;
+  const cfg = { mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:5555', proxyBypassRules: '<-loopback>' };
+  const m = createPreviewViews({
+    WebContentsView: class extends FakeView { constructor(o) { super(o); views.push(this); } },
+    session: { fromPartition: (p) => (sessions[p] = sessions[p] || new FakeSession(p)) },
+    addChild() {}, removeChild() {}, ownerBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }), proxyConfig: cfg,
+  });
+  await m.show(owner, { target: { port: 20003 }, rect: RECT });
+  assert.deepStrictEqual(Object.values(sessions)[0].proxy, cfg);
 });

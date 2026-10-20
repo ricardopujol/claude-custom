@@ -95,3 +95,16 @@ test('the preload bridge carries exactly the Preview channels main answers', () 
   assert.match(PRELOAD, /devtools: \(\) => ipcRenderer\.send\('preview:devtools'\)/);
   assert.match(PRELOAD, /openExternal: \(\) => ipcRenderer\.send\('preview:open-external'\)/);
 });
+
+test('the deny set holds the probe driver port and the host port named by CLAUDE_CUSTOM_PORT (Dexter r2 N4)', () => {
+  assert.ok(CODE.includes('Number.isInteger(EXPLICIT_PORT) ? EXPLICIT_PORT : null'));
+  assert.ok(CODE.includes('denyPorts: [PROBE_PORT ? Number(PROBE_PORT) : null'));
+});
+
+test('another proxy for the session exists only behind the probe driver port AND token', () => {
+  const at = CODE.indexOf('function previewProbeProxy()');
+  assert.ok(at !== -1);
+  const body = CODE.slice(at, CODE.indexOf('\n}', at));
+  assert.ok(body.includes('if (!PROBE_PORT || !PROBE_TOKEN) return undefined;'));
+  assert.ok(CODE.includes('proxyConfig: previewProbeProxy(),'));
+});

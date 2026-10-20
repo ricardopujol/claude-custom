@@ -38,12 +38,12 @@ const BODY = String.raw`  $ErrorActionPreference = 'Stop'
       $out = @(& $ns -ano -p $v)
       if ($LASTEXITCODE -ne 0) { $good = $false }
       foreach ($line in $out) {
-        if ($line -match '^\s*TCP\s+(\S+):(\d+)\s+\S+:0\s+\S+\s+(\d+)\s*$') { $l += [pscustomobject]@{ port=[int]$matches[2]; addr=([string]$matches[1]).Trim('[', ']'); pid=[int]$matches[3] } }
+        if ($line -match '^\s*TCP\s+(\S+):(\d+)\s+\S+:0\s+\S+\s+(\d+)\s*$') { $a = ([string]$matches[1]).Trim('[', ']'); if (@('127.0.0.1', '::1', '0.0.0.0', '::') -contains $a) { $l += [pscustomobject]@{ port=[int]$matches[2]; addr=$a; pid=[int]$matches[3] } } }
       }
     }
   } catch { $good = $false }
   if ($l.Count -eq 0) { $good = $false }
-  $unknown = @($l | Where-Object { $known -notcontains $_.pid })
+  $unknown = @($l | Where-Object { $pairs -notcontains ('{0}:{1}' -f $_.pid, $_.port) })
   $fresh = ($force -or $unknown.Count -gt 0)
   $p = @()
   if ($fresh) {
@@ -57,13 +57,17 @@ const BODY = String.raw`  $ErrorActionPreference = 'Stop'
 `;
 
 /**
- * The script for one sample. `known` are the pids the caller's cached process table already holds; `force` asks for the table regardless
- * (its first read, and its refresh every PROCS_TTL_MS). The table is only read when a listener's owner is not in `known`, or when forced,
+ * The script for one sample. `pairs` are the { pid, port } listeners the caller's cached process table was last checked against; `force` asks for
+ * the table regardless (its first read, and its refresh every PROCS_TTL_MS). The table is read when ANY listener is a pair not in `pairs`, so a NEW
+ * listener on a pid the cache already holds is re-verified, not trusted: Windows reuses pids, and a cached row would attribute a stranger's server
+ * to this session (PR #198 Dexter r2 N5). It is also read when forced,
  * so the steady state is the netstat call alone (PR #198 Miguel Y2). Only integers are written into the script.
  */
-function scriptFor({ known = [], force = true } = {}) {
-  const pids = (Array.isArray(known) ? known : []).filter(n => Number.isInteger(n) && n >= 0).join(',');
-  return `& {\n  $known = @(${pids})\n  $force = ${force === true ? '$true' : '$false'}\n${BODY}}\n`;
+function scriptFor({ pairs = [], force = true } = {}) {
+  const list = (Array.isArray(pairs) ? pairs : [])
+    .filter(p => p !== null && typeof p === 'object' && Number.isInteger(p.pid) && p.pid >= 0 && Number.isInteger(p.port) && p.port >= 1 && p.port <= 65535)
+    .map(p => `'${p.pid}:${p.port}'`).join(',');
+  return `& {\n  $pairs = @(${list})\n  $force = ${force === true ? '$true' : '$false'}\n${BODY}}\n`;
 }
 const SCRIPT = scriptFor();
 
@@ -85,8 +89,10 @@ function parseTable(text) {
 
   const seen = new Set();
   const listeners = [];
+  const pairs = [];                    // EVERY reachable pid:port row, before the one-per-port dedupe: what the next sample is checked against
   for (const l of asList(doc.listeners)) {
     if (l === null || typeof l !== 'object' || !isPort(l.port) || !isPid(l.pid) || typeof l.addr !== 'string' || !REACHABLE.has(l.addr)) continue;
+    pairs.push({ pid: l.pid, port: l.port });
     if (seen.has(l.port)) continue;
     seen.add(l.port);
     listeners.push({ port: l.port, pid: l.pid, addr: l.addr });
@@ -98,7 +104,7 @@ function parseTable(text) {
     if (p === null || typeof p !== 'object' || !isPid(p.pid) || !isPid(p.ppid) || typeof p.name !== 'string') continue;
     procs.push({ pid: p.pid, ppid: p.ppid, name: p.name, start: typeof p.start === 'string' ? p.start : null });
   }
-  return { ok: true, fresh, listeners, procs: fresh ? procs : null };
+  return { ok: true, fresh, pairs, listeners, procs: fresh ? procs : null };
 }
 
 const validBase = (b) => Number.isInteger(b) && b >= RANGE_START && b <= RANGE_LAST_BASE && (b - RANGE_START) % BLOCK === 0;

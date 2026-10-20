@@ -199,8 +199,9 @@ test('the script reports failure of either half and reads the process table only
   assert.ok(ds.SCRIPT.includes('$good = $false'));
   assert.ok(ds.SCRIPT.includes('ok=$good'));
   assert.ok(ds.SCRIPT.includes('$fresh = ($force -or $unknown.Count -gt 0)'));
-  assert.ok(ds.scriptFor({ known: [1, 2], force: false }).includes('$known = @(1,2)\n  $force = $false'));
-  assert.ok(ds.scriptFor({ force: true }).includes('$known = @()\n  $force = $true'));
+  assert.ok(ds.scriptFor({ pairs: [{ pid: 1, port: 80 }, { pid: 2, port: 443 }], force: false }).includes("$pairs = @('1:80','2:443')\n  $force = $false"));
+  assert.ok(ds.scriptFor({ force: true }).includes('$pairs = @()\n  $force = $true'));
   // only integers are written into the script
-  assert.ok(ds.scriptFor({ known: [3, '4); calc', -1, 1.5, NaN, 7] }).includes('$known = @(3,7)'));
+  const dirty = [{ pid: 3, port: 80 }, { pid: '4); calc', port: 1 }, { pid: -1, port: 5 }, { pid: 1.5, port: 5 }, { pid: 7, port: 0 }, { pid: 7, port: 65536 }, null, { pid: 8, port: 9000 }];
+  assert.ok(ds.scriptFor({ pairs: dirty }).includes("$pairs = @('3:80','8:9000')"));
 });

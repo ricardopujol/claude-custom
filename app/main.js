@@ -779,6 +779,12 @@ const previewKeyOf = (owner) => {
   const tab = tabShell ? tabShell.tabForSender(owner) : null;
   return tab ? (worktreeRoot(tab.cwd) || tab.cwd) : null;
 };
+function previewProbeProxy() {
+  if (!PROBE_PORT || !PROBE_TOKEN) return undefined;
+  const rules = process.env.CLAUDE_CUSTOM_PREVIEW_PROXY;
+  if (rules === 'direct') return { mode: 'direct' };
+  return typeof rules === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(rules) ? { mode: 'fixed_servers', proxyRules: rules, proxyBypassRules: require('./preview-views').PREVIEW_BYPASS } : undefined;
+}
 const previewViews = createPreviewViews({
   WebContentsView, session,
   addChild: (v) => win.contentView.addChildView(v),
@@ -788,7 +794,10 @@ const previewViews = createPreviewViews({
   keyOf: previewKeyOf,
   onEvent: (owner, ev) => { if (!owner.isDestroyed()) owner.send('preview:event', ev); },
   openUrl: (url) => openInBrowser(url, 'Preview'),
-  denyPorts: PROBE_PORT ? [Number(PROBE_PORT)] : [],        // the probe driver's own port, besides the session hosts' range (app/preview-guard.js)
+  // The ports of this app that the page may never reach: the probe driver's, and the host's when it was named by CLAUDE_CUSTOM_PORT (besides the session hosts' range, app/preview-guard.js).
+  denyPorts: [PROBE_PORT ? Number(PROBE_PORT) : null, Number.isInteger(EXPLICIT_PORT) ? EXPLICIT_PORT : null].filter(Number.isInteger),
+  // PROBE SEAM, only when the probe driver's port AND token are set: a proxy the probe owns, to count what a session sends to it.
+  proxyConfig: previewProbeProxy(),
   log: (line) => console.log(line),
 });
 // The listening ports of every tab's worktree, from ONE PowerShell call per sample (host/dev-servers.js SCRIPT) through a persistent shell of its

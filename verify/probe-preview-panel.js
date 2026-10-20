@@ -23,6 +23,17 @@
  *   8  the DevTools button toggles without taking the app down
  *   9  stopping the server brings the chip back to 0
  *
+ * THE TURN CHECK (6c) COUNTS CONNECTs AT A PROXY THE PROBE OWNS (PR #198 Dexter r2 N2). The session's proxy is pointed at it (the probe-only seam
+ * CLAUDE_CUSTOM_PREVIEW_PROXY), and a page asks WebRTC (iceTransportPolicy relay) for three TURN servers over TCP: an internet address, a link-local
+ * address and 127.0.0.2. RECORDED 2026-10-20:
+ *   with the fix (<-loopback>;localhost;127.0.0.1;[::1])  the proxy saw CONNECT 127.0.0.2:<port>, CONNECT 203.0.113.7:443, CONNECT 169.254.10.20:3478;
+ *                                                          the 127.0.0.2 listener saw 0 connections; the dev server on 127.0.0.1 was not sent to the proxy.
+ *   old `direct` (PREVIEW_PROBE_PROXY=direct, the NEGATIVE run) the proxy saw nothing at all: none of the three went through it. (This Chromium does
+ *                                                          not dial the 127.0.0.2 listener for TURN even when direct, so that number is 0 in both runs and
+ *                                                          the CONNECT count is what tells the fix from the bug.)
+ * The bypass list's ORDER was measured by verify/probe-preview-bypass.js: `<-loopback>` first, then the three hosts, is the only one of four candidates
+ * that keeps localhost and 127.0.0.1 direct and sends 127.0.0.2, 169.254.x and everything else to the proxy.
+ *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and no prompt is ever sent; ELECTRON_RUN_AS_NODE and every
  * CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; the project is a temp git repo, registry, portraits, uploads and user data are
  * temp folders. Files of THIS checkout touched, because host.js hardcodes its state dir: layout-global.json and layout-tree.json (snapshotted
@@ -99,6 +110,7 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    CLAUDE_CUSTOM_PREVIEW_PROXY: NEGATIVE ? 'direct' : 'http://127.0.0.1:' + proxyPort,
   };
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
@@ -191,6 +203,11 @@ const hits = { ok: 0, leak: 0 };
 let leakPort = 0;
 let turnPort = 0;
 const turnConnections = { n: 0 };
+// A PROXY THE PROBE OWNS (PR #198 Dexter r2 N2): the session's proxy points here, so what a session sends to its proxy is counted. Each entry is the
+// first line of a connection: CONNECT host:port. Loopback is not sent here (the explicit bypass); everything else is.
+const proxyLog = [];
+let proxyPort = 0;
+const NEGATIVE = process.env.PREVIEW_PROBE_PROXY === 'direct';     // the old configuration, once, to prove the check can see a leak
 const END_SCRIPT = '</' + 'script>';
 function pageFor(url, port) {
   const html = (title, body) => `<!doctype html><title>${title}</title>${body}`;
@@ -205,7 +222,7 @@ function pageFor(url, port) {
       + 'fetch("http://127.0.0.2:' + leakPort + '/leak", { mode: "no-cors" }).then(fin, fin);'
       + 'var i = new Image(); i.onload = fin; i.onerror = fin; i.src = "http://127.0.0.2:' + leakPort + '/leak.png";</script>');
     case '/download': return html('download', '<a id="a" href="/file.bin" download="x.bin">x</a><script>document.getElementById("a").click(); document.title = "download:tried";</script>');
-    case '/turn': return html('turn', '<script>try { var pc = new RTCPeerConnection({ iceServers: [{ urls: ' + JSON.stringify('turn:127.0.0.2:' + turnPort + '?transport=tcp') + ', username: "u", credential: "p" }, { urls: "turn:203.0.113.7:443?transport=tcp", username: "u", credential: "p" }] }); pc.createDataChannel("x"); pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { document.title = "turn:started"; }, function (e) { document.title = "turn:error"; }); } catch (e) { document.title = "turn:threw"; }' + END_SCRIPT);
+    case '/turn': return html('turn', '<script>try { var pc = new RTCPeerConnection({ iceServers: [{ urls: ' + JSON.stringify('turn:127.0.0.2:' + turnPort + '?transport=tcp') + ', username: "u", credential: "p" }, { urls: "turn:203.0.113.7:443?transport=tcp", username: "u", credential: "p" }, { urls: "turn:169.254.10.20:3478?transport=tcp", username: "u", credential: "p" }], iceTransportPolicy: "relay" }); pc.createDataChannel("x"); pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () { document.title = "turn:started"; }, function (e) { document.title = "turn:error"; }); } catch (e) { document.title = "turn:threw"; }' + END_SCRIPT);
     case '/frame-ok': return html('frame', '<script>parent.postMessage("http", "*");' + END_SCRIPT);
     case '/frames': return html('frames', '<script>'
       + 'var got = []; addEventListener("message", function (e) { got.push(e.data); document.title = "frames:" + got.sort().join(","); });'
@@ -242,6 +259,14 @@ async function main() {
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
   for (const f of [LAYOUT_FILE, TREE_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
 
+  proxyPort = await new Promise((resolve, reject) => {
+    const srv = net.createServer((sock) => {
+      sock.once('data', (d) => { proxyLog.push(String(d).split(' ').slice(0, 2).join(' ')); sock.end('HTTP/1.1 502 Bad Gateway' + String.fromCharCode(13, 10, 13, 10)); });
+      sock.on('error', () => {});
+    });
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => { hygiene.addCleanup(() => { try { srv.close(); } catch { /* closed */ } }); resolve(srv.address().port); });
+  });
   const app = await launchApp(dev);
   const ready = await viewReady(app);
   check('the window came up with a session', !!ready, ready ? '' : app.out.slice(-600));
@@ -322,7 +347,7 @@ async function main() {
   check('3: a picture of the page was taken', shot.ok === true && shot.bytes > 0, JSON.stringify(shot));
 
   // 4 -----------------------------------------------------------------------------
-  const go = async (text) => { await doit({ op: 'type', text }); await doit({ op: 'go' }); };
+  const go = async (text) => { await doit({ op: 'goto', text }); };      // typed and sent in one turn: a redraw in between would put the old address back
   await go(`localhost:${portA}/storage`);
   const fresh = await waitFor(async () => ((await inspect()).title === 'storage:fresh' ? true : null), 10000, 150);
   await go(`localhost:${portA}/storage?again`);
@@ -397,11 +422,23 @@ async function main() {
   await go('localhost:' + portA + '/');
   await waitFor(async () => ((await note()) === null && (await inspect()).title === 'index' ? true : null), 10000, 150);
   turnConnections.n = 0;
+  proxyLog.length = 0;
   await go('localhost:' + portA + '/turn');
   const turned = await waitFor(async () => { const i = await inspect(); return /^turn:/.test(i.title) ? i : null; }, 15000, 200);
-  await sleep(5000);
-  check('6c: a page that asks WebRTC for a TURN server over TCP gets as far as gathering', !!turned && turned.title === 'turn:started', JSON.stringify(turned && turned.title));
-  if (turnServer) check('6c: ...and ZERO connections reach the listener on 127.0.0.2 (the session sits behind a dead proxy), while the page itself loaded from 127.0.0.1', turnConnections.n === 0 && (await inspect()).url === 'http://localhost:' + portA + '/turn', 'connections ' + turnConnections.n);
+  await sleep(8000);
+  const sent = [...new Set(proxyLog)];
+  const numbers = 'proxy saw ' + JSON.stringify(sent) + '; 127.0.0.2 listener connections ' + turnConnections.n;
+  console.log('NUMBERS ' + (NEGATIVE ? 'direct (the old configuration): ' : 'explicit bypass + <-loopback>: ') + numbers);
+  check('6c: a page that asks WebRTC for TURN servers over TCP gets as far as gathering', !!turned && turned.title === 'turn:started', JSON.stringify(turned && turned.title));
+  if (NEGATIVE) {
+    // MEASURED 2026-10-20: even with the session direct, Chromium does not dial the 127.0.0.2 listener for TURN, so the discriminating number is the CONNECT count at the proxy: none under direct, three with the fix.
+    check('6c NEGATIVE (direct): the proxy gets NONE of the TURN CONNECTs (they are not routed through it: the old configuration)', sent.length === 0, numbers);
+  } else {
+    const want = ['CONNECT 203.0.113.7:443', 'CONNECT 169.254.10.20:3478', 'CONNECT 127.0.0.2:' + turnPort];
+    check('6c: TURN over TCP to an internet address, a link-local address and another 127/8 address each becomes a CONNECT at the PROXY (nothing connects direct)', want.every(w => sent.includes(w)), numbers);
+    check('6c: ...ZERO connections reach the listener on 127.0.0.2 itself', !turnServer || turnConnections.n === 0, numbers);
+    check('6c: ...and the dev server on 127.0.0.1 / localhost is NOT sent to the proxy (the page loaded direct)', !sent.some(x => x.includes(':' + portA)) && (await inspect()).url === 'http://localhost:' + portA + '/turn', numbers);
+  }
 
   // 7 -----------------------------------------------------------------------------
   await go(`localhost:${portA}/`);

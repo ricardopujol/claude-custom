@@ -196,7 +196,7 @@ test('the first sample forces the process table; the next ones name the pids the
   assert.match(r.calls[0], /\$force = \$true/);
   r.tick(); await r.settle();
   assert.match(r.calls[1], /\$force = \$false/);
-  assert.match(r.calls[1], /\$known = @\(40\)/);
+  assert.ok(r.calls[1].includes("$pairs = @('40:20003')"));
 });
 
 test('a sample that did not read the table keeps the cached one, so the names stay', async () => {

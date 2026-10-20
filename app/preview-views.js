@@ -20,6 +20,9 @@
  *     loopback can be chosen, never the app's own ports, and the address field shows it first. It is kept.
  *   - The page may request `devtools:` addresses because the DevTools window needs them in this session; Chromium blocks that scheme for
  *     web content (Miguel S5).
+ *   - The deny of the app's own ports covers URL loads only. A WebRTC TURN socket to 127.0.0.1:77xx is a non-URL connection to loopback,
+ *     which the proxy must leave direct for the dev server to load, so nothing in the session stops it. It carries only fixed STUN bytes with no
+ *     page-chosen field, and every port demands its token (Dexter r2 N3).
  *   - The block of ports for each tab is read from the ports file once per tab per sample, on the main thread (a small read, Miguel S2).
  *   - app/main.js keeps its own `win.on` and `will-quit` lines for the sampler beside the Resources ones, so the lines the Resources
  *     tests pin stay as they are (Miguel S1); the tray's hide/show feeds both (host/dev-servers.js unseen).
@@ -31,7 +34,12 @@ const guard = require('./preview-guard');
 const REMEMBERED_MAX = 64;               // worktrees whose last address is kept (in memory)
 const FAIL_TEXT_MAX = 140;
 // A proxy nothing listens on (the same as Claude's panel, app/canvas-views.js), with NO bypass rules: Chromium's implicit bypass keeps loopback direct.
-const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1' });
+// The bypass rules (PR #198 Dexter r2 N1): <-loopback> FIRST, which removes Chromium's implicit bypass (the rest of 127/8, 169.254/16 and fe80::/10
+// would otherwise connect direct), THEN the three hosts the guard allows. MEASURED by verify/probe-preview-bypass.js (the other order sends
+// localhost and 127.0.0.1 to the proxy too, and the page never loads): with this list localhost and 127.0.0.1 are direct, and 127.0.0.2, 169.254.x and
+// every other address go to the proxy.
+const PREVIEW_BYPASS = '<-loopback>;localhost;127.0.0.1;[::1]';
+const DEAD_PROXY = Object.freeze({ mode: 'fixed_servers', proxyRules: 'http://127.0.0.1:1', proxyBypassRules: PREVIEW_BYPASS });
 const ABORTED = -3;                      // ERR_ABORTED: a navigation replaced by another, not a failure
 
 const isRect = (r) => r !== null && typeof r === 'object' && ['x', 'y', 'width', 'height'].every(k => typeof r[k] === 'number' && Number.isFinite(r[k]));
@@ -41,6 +49,8 @@ const plain = (s, n) => String(s).replace(CONTROL, ' ').replace(/\s+/g, ' ').tri
 function createPreviewViews({
   WebContentsView, session, addChild, removeChild, ownerBounds, keyOf = () => null, onEvent = () => {},
   isOwnerVisible = () => true, openUrl = () => false, log = () => {}, denyPorts = [],
+  // PROBE SEAM only (app/main.js passes it when the probe driver is on): another proxy config, to count what reaches a proxy the probe owns.
+  proxyConfig = DEAD_PROXY,
 } = {}) {
   const deny = { denyPorts };
   const byOwner = new Map();          // owner contents id -> record
@@ -153,7 +163,7 @@ function createPreviewViews({
     // TCP, preconnect) dies at the proxy and never reaches another host. Loopback is NOT listed in the bypass rules: Chromium's own implicit
     // bypass keeps it direct, which is why the dev server still loads. (`direct` here let a TURN allocate reach any host:port; measured by
     // verify/probe-preview-panel.js.)
-    if (!st.ready) st.ready = Promise.resolve(st.ses.setProxy(DEAD_PROXY)).catch((err) => { st.ready = null; throw err; });
+    if (!st.ready) st.ready = Promise.resolve(st.ses.setProxy(proxyConfig)).catch((err) => { st.ready = null; throw err; });
     const view = new WebContentsView({ webPreferences: {
       sandbox: true, contextIsolation: true, nodeIntegration: false, partition,
       // The header's DevTools button needs them; they open detached, and only on that click.
@@ -298,4 +308,4 @@ function createPreviewViews({
   return { show, setBounds, setCovered, setOwnerVisible, relayout, hide, destroyFor: hide, has, reload, toggleDevTools, openExternal, openPort, lastUrl, inspect, shotTarget };
 }
 
-module.exports = { createPreviewViews };
+module.exports = { createPreviewViews, PREVIEW_BYPASS };

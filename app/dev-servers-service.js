@@ -62,12 +62,12 @@ function createDevServersService({
   async function sample() {
     inflight = true;
     try {
-      const known = table ? table.procs.map(p => p.pid) : [];
+      const pairs = table ? table.pairs : [];
       const force = !table || now() - procsAt >= ds.PROCS_TTL_MS;
-      const parsed = ds.parseTable(await exec(ds.scriptFor({ known, force })));
+      const parsed = ds.parseTable(await exec(ds.scriptFor({ pairs, force })));
       if (!parsed.ok) throw new Error('the listener table could not be read');
       if (parsed.fresh) procsAt = now();
-      table = { listeners: parsed.listeners, procs: parsed.fresh ? parsed.procs : (table ? table.procs : []), at: now() };
+      table = { pairs: parsed.pairs, listeners: parsed.listeners, procs: parsed.fresh ? parsed.procs : (table ? table.procs : []), at: now() };
       failures = 0;
       publish(false, false);
     } catch (err) {

@@ -4015,6 +4015,13 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           const f = root.querySelector('#preview-url');
           if (!f) return JSON.stringify({ ok: false, error: 'no address field' });
           f.value = String(a.text);
+        } else if (a.op === 'goto') {
+          // type and press Go in ONE turn: a redraw between the two (an event from the page) would put the old address back in the field
+          const f = root.querySelector('#preview-url');
+          const b = root.querySelector('[data-preview-act="go"]');
+          if (!f || !b) return JSON.stringify({ ok: false, error: 'no address field or go button' });
+          f.value = String(a.text);
+          b.click();
         } else if (a.op === 'go') {
           const b = root.querySelector('[data-preview-act="go"]');
           if (!b) return JSON.stringify({ ok: false, error: 'no go button' });
