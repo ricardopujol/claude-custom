@@ -158,8 +158,10 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
     const rb = boxes.find(x => x.kind === 'rail' && x.modules.includes(at.module));
     const from = at.dir === 'v' ? (at.rect.x < rb.rect.x ? 'right' : 'left') : (at.rect.y < rb.rect.y ? 'bottom' : 'top');
     const pin = rb.id === 'dock' && Array.isArray(layout.rail) && layout.rail.includes(at.module);
-    popover = { ...at, shape, from, pin, tabs: named(at.modules).map(t => ({ ...t, on: t.id === at.module })) };
-    if (popover.tabs.some(t => t.id === at.module)) {
+    // The popover is the hovered panel alone: the rail is where you switch between panels, and a group's other tabs aren't shown.
+    const tab = named([at.module])[0];
+    popover = { ...at, shape, from, pin, tabs: tab ? [{ ...tab, on: true }] : [] };
+    if (tab) {
       shown.push(at.module);
       if (at.module === 'agents') face = shape === 'tall' ? (typeof faceSize === 'function' ? faceSize(at.rect.width) : null) : faceForWide(at.rect.height);
     } else popover = null;
@@ -542,6 +544,7 @@ function moduleOfButton(el) {
 function applyBoxes(plan, doc) {
   const held = doc.activeElement;
   const heldModule = moduleOfButton(held);
+  const heldInPeek = heldModule !== null && !!held.parentNode.parentNode && held.parentNode.parentNode.classList.contains('dpeek');
   const dock = doc.getElementById('dock');
   const store = doc.getElementById('panel-store');
   const overlay = doc.getElementById('dock-overlay');
@@ -711,8 +714,13 @@ function applyBoxes(plan, doc) {
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
   // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
-  if (heldModule !== null && held.isConnected === false) {
-    const next = [...dock.querySelectorAll(`button[data-module="${heldModule}"]`)]
+  if (heldModule !== null && held.isConnected === false && heldInPeek && plan.peek && popover) {
+    // The popover shows one tab, so hovering another rail tab rebuilds its bar around another module: the keyboard follows to it.
+    const bar = popover.querySelector('.zone-tabs');
+    const tab = [...bar.querySelectorAll('button[data-module]')].find(b => b.dataset.module === plan.peek.module);
+    if (tab) tab.focus();
+  } else if (heldModule !== null && held.isConnected === false) {
+    const next =[...dock.querySelectorAll(`button[data-module="${heldModule}"]`)]
       .find(b => b.parentNode.classList.contains('zone-tabs') || b.parentNode.classList.contains('drail'));
     if (next) next.focus();
   }

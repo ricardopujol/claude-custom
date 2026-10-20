@@ -555,7 +555,7 @@ test('D4: a rail\'s popover is one element in the floats layer, holding the pane
   assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'), 'the vault panel was moved in, not rebuilt');
   assert.ok(w.panels.vault.classes.has('on'));
   const tabs = el.querySelector('.zone-tabs').children;
-  assert.ok(tabs.length > 1);
+  assert.strictEqual(tabs.length, 1, 'only the hovered tab (#103), not the rail whole list');
   assert.deepStrictEqual(tabs.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['vault']);
   assert.ok(el.parentNode === w.layer && w.layer.children.indexOf(el) === w.layer.children.length - 1, 'last in the layer: above the floats');
 });
@@ -596,9 +596,9 @@ test('D4: focus on a popover tab survives the popover being redrawn', () => {
   const l = T.defaultLayout(IDS);
   const sel = { collapsed: { right: ['agents'] } };
   V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
-  const tab = peekEl(w).querySelector('.zone-tabs').children.find(b => b.dataset.module === 'git');
+  const tab = peekEl(w).querySelector('.zone-tabs').children.find(b => b.dataset.module === 'vault');
   tab.focus();
-  V.applyBoxes(planD4(l, sel, { module: 'git' }), w.doc);
+  V.applyBoxes(planD4(l, sel, { module: 'vault' }), w.doc);
   assert.strictEqual(w.doc.activeElement, tab, 'the same button, still focused');
 });
 
@@ -681,10 +681,10 @@ test('#85: switching the popover to another rail tab moves the Pin button to it'
   const w = makeDoc();
   const l = T.unpin(T.unpin(T.defaultLayout(IDS), 'git'), 'vault');
   V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
-  const pin = pinOf(peekEl(w));
-  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
-  assert.strictEqual(pinOf(peekEl(w)), pin);
-  assert.strictEqual(pin.dataset.pin, 'vault');
+  assert.strictEqual(pinOf(peekEl(w)).dataset.pin, 'git');
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);     // the bar holds one tab now (#103), so it is redrawn around the new one
+  assert.strictEqual(peekEl(w).querySelector('.zone-tabs').children.filter(c => c.classes.has('dpin')).length, 1, 'one Pin button');
+  assert.strictEqual(pinOf(peekEl(w)).dataset.pin, 'vault');
 });
 
 // --- PR #168 Miguel Y6: the panel slides back out ----------------------------------------------------------------------
@@ -943,4 +943,29 @@ test('a row whose names stay at 8 px or more keeps them, and leaves icons-only w
 test('refitRails on a page with no rail does nothing', () => {
   const w = makeDoc();
   assert.doesNotThrow(() => V.refitRails(w.doc));
+});
+
+test('PR #189 Dexter 3: hovering another rail tab while the popover tab has focus moves focus to the new one-tab bar', () => {
+  const w = makeDoc();
+  const l = T.startLayout(IDS);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const bar = () => peekEl(w).querySelector('.zone-tabs');
+  const first = bar().children.find(b => b.dataset.module === 'git');
+  first.focus();
+  assert.strictEqual(w.doc.activeElement, first);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
+  const next = bar().children.find(b => b.dataset.module === 'vault');
+  assert.notStrictEqual(next, first, 'the bar was rebuilt around the other module');
+  assert.strictEqual(w.doc.activeElement, next, 'the keyboard stays in the popover');
+});
+
+test('PR #189 Dexter 3: focus held outside the popover is left alone when the popover swaps', () => {
+  const w = makeDoc();
+  const l = T.startLayout(IDS);
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);
+  const field = new El('input');
+  w.root.children[0].appendChild(field);
+  field.focus();
+  V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
+  assert.strictEqual(w.doc.activeElement, field);
 });

@@ -28,7 +28,7 @@ const { killChildTree } = require('../host/kill-tree');
    the real model is never asked anything. ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are removed from the
    children's environment first. Only the two processes started here are killed, by their own pid. */
 const { spawn, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -178,6 +178,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     const electronEnv = { ...env, CLAUDE_CUSTOM_TABS_PROBE: String(DRIVER), CLAUDE_CUSTOM_TABS_PROBE_TOKEN: DRIVER_TOKEN };
 
     const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     children.push(host);
     let hostLog = '';
     host.stdout.on('data', (d) => { hostLog += d; });

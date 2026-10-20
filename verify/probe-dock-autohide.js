@@ -341,8 +341,26 @@ async function main() {
   check('the window came up with a session and the probe hook', !!ready, ready ? '' : app.out.slice(-600));
   if (!ready) return;
 
+  // BACKLOG #103: a layout from before the rail pinned nothing on purpose, so it opens with every panel a rail tab.
+  const s1m = (await settled(app)).s;
+  check('1: a layout with no rail opens with every panel a rail tab: no group, one rail holding every module',
+    s1m.groups.length === 0 && s1m.rails.length === 1 && s1m.rails[0].modules.length === IDS.length - 1, JSON.stringify([s1m.groups.length, s1m.rails.map(r => r.modules.length)]));
+  // 1b: hovering one of those tabs opens only that tab, not the rail's whole list.
+  // (Built from unpin alone, so the same probe also draws the before picture on a build without startLayout.)
+  await view(app, 'layout', { layout: IDS.filter(id => id !== 'canvas').reduce((l, id) => T.unpin(l, id), T.defaultLayout(IDS)) });
+  await settled(app);
+  await hoverTab(app, 'vault');
+  const peek1 = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
+  check('1b: hovering a rail tab opens its panel with that one tab at the top, not the whole rail', !!peek1 && peek1.popover.module === 'vault' && peek1.popover.tabs.join() === 'vault' && peek1.popover.on.join() === 'vault',
+    JSON.stringify(peek1 && [peek1.popover.module, peek1.popover.tabs, peek1.popover.on]));
+  await sleep(300);
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '1b-hover-one-tab.png') });
+  await hoverTerm(app);
+  await waitFor(async () => (await viewState(app)).popover === null, 3000, 20);
+  // The rest of the probe measures pinning from the all-docked layout a person who pinned everything has (an explicit empty rail).
+  await view(app, 'layout', { layout: T.defaultLayout(IDS) });
   const s1 = (await settled(app)).s;
-  check('1: a layout with no rail draws no rail, and one right group holds every module',
+  check('1: ...and a layout that records an empty rail (everything pinned) keeps one right group holding every module',
     s1.rails.length === 0 && s1.groups.length === 1 && s1.groups[0].tabs.length === IDS.length - 1, JSON.stringify(s1.groups.map(g => [g.id, g.tabs.length])));
   const t0 = termWidth(s1);
 

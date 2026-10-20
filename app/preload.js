@@ -243,6 +243,8 @@ contextBridge.exposeInMainWorld('harness', {
   resources: {
     get: () => ipcRenderer.invoke('resources:get'),
     setChip: (on) => ipcRenderer.invoke('resources:setChip', on === true),
+    // whether this page is showing the Resources panel (main samples faster while any page does)
+    viewing: (on) => ipcRenderer.send('resources:viewing', on === true),
     // the saved setting, read synchronously so the page decides the chip before its first paint
     chipOn: () => ipcRenderer.sendSync('resources:chipOn') !== false,
     stop: (req) => ipcRenderer.invoke('resources:stop', req),

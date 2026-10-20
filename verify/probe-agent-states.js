@@ -20,7 +20,7 @@
  *   node verify/probe-agent-states.js --window      (parts A and B)
  */
 const { spawn, spawnSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
 const fs = require('fs');
 const net = require('net');
@@ -252,6 +252,7 @@ async function partB() {
   delete env.ELECTRON_RUN_AS_NODE;
 
   const host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
+  noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
   hygiene.registerChild(host);
   let hostOut = '';
   host.stdout.on('data', d => { hostOut += d; });

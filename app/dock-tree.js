@@ -160,6 +160,8 @@ function cleanSeat(raw, hiddenIds, liveGroups) {
       // The modules that shared its group when it left (BACKLOG #85): pinning one joins a mate that is pinned by then.
       const mates = (Array.isArray(s.mates) ? s.mates : []).filter(m => typeof m === 'string' && m !== id).slice(0, 32);
       if (mates.length) seat[id].mates = [...new Set(mates)];
+      // The side of the terminal its group stood on when a whole layout was unpinned at once (readStored): no neighbour is docked then.
+      if (EDGES.includes(s.edge)) seat[id].edge = s.edge;
     }
   }
   return seat;
@@ -240,6 +242,42 @@ function readAny(raw, ids) {
   if (isObject(raw) && raw.version === VERSION) return normalize(raw, ids);
   if (isObject(raw) && isObject(raw.zones)) return fromV1(raw, ids);
   return defaultLayout(ids);
+}
+
+// Every module id a stored version 2 layout names anywhere: the tree, the floats, the rail, the hidden.
+function modulesNamedBy(raw) {
+  const out = new Set();
+  const take = (v) => { if (typeof v === 'string') out.add(v); };
+  const visit = (n, depth) => {
+    if (!isObject(n) || depth > 64) return;
+    if (Array.isArray(n.tabs)) n.tabs.forEach(take);
+    if (Array.isArray(n.kids)) n.kids.forEach(k => visit(k, depth + 1));
+  };
+  visit(raw.root, 0);
+  if (Array.isArray(raw.floats)) raw.floats.forEach(f => visit(f, 0));
+  if (Array.isArray(raw.rail)) raw.rail.forEach(take);
+  if (Array.isArray(raw.hidden)) raw.hidden.forEach(take);
+  return out;
+}
+
+/**
+ * A stored layout as the dock opens it (BACKLOG #103): `readAny`, except a layout saved before the rail existed (an L1 shape, or
+ * a version 2 with no `rail` key) pinned nothing on purpose, so its docked panels start as rail tabs, each remembering its old
+ * side of the terminal. That runs on every load until the first save writes a `rail` array (it is idempotent, so a repeat is
+ * harmless). Anything unreadable is the start layout. A layout that has a `rail` array records the person's pins and is left
+ * alone, except that a module it never listed starts on the rail. `readAny` differs on purpose: junk reads as the all-pinned
+ * `defaultLayout`, and presets (deliberate arrangements) use it.
+ */
+function readStored(raw, ids) {
+  if (isObject(raw) && raw.version === VERSION) {
+    const l = normalize(raw, ids);
+    if (!Array.isArray(raw.rail)) return unpinAll(l);
+    // A module the stored layout never listed (a new build's panel) starts on the rail too, not docked where `normalize` puts it.
+    const named = modulesNamedBy(raw);
+    return ids.filter(id => !named.has(id) && groupOf(l, id)).reduce((acc, id) => unpin(acc, id), l);
+  }
+  if (isObject(raw) && isObject(raw.zones)) return unpinAll(fromV1(raw, ids));
+  return startLayout(ids);
 }
 
 /** A window's L1 selection as a tree selection: group ids are the zone names, so it maps straight across. */
@@ -501,6 +539,8 @@ function show(layout, id) {
   if (seat) {
     if (seat.group && allGroups(layout).some(x => x.id === seat.group)) return dock(layout, id, { cell: seat.group, side: 'center' });
     if (seat.float) return dock(layout, id, { float: { x: seat.float.x, y: seat.float.y, w: seat.float.w, h: seat.float.h } });
+    // Unpinned as a whole layout (readStored): the neighbours left with it, so the side of the terminal is the only anchor.
+    if (seat.edge) return dock(layout, id, { edge: seat.edge });
     const near = seat.beside && groupOf(layout, seat.beside);
     if (near) return dock(layout, id, { cell: near.id, side: seat.side });
     // The neighbour may have floated since (PR #102 Dexter 5): a float takes a tab, never a split.
@@ -559,6 +599,32 @@ function unpinGroup(layout, groupId) {
   const gr = groups(layout).find(x => x.id === groupId);
   if (!gr) return layout;
   return [...gr.tabs].reduce((l, id) => unpin(l, id), layout);
+}
+
+/**
+ * Unpin every panel docked in the tree (floats stay where they were put), in tree order. Every group leaves, so no seat has a
+ * docked neighbour to name; each railed panel instead remembers which side of the terminal its group stood on (`seat.edge`,
+ * which pinning follows before any neighbour), so pinning one restores the old position (PR #189 Dexter 1).
+ */
+function unpinAll(layout) {
+  let termNode = null;
+  walk(layout.root, (n) => { if (n.type === 'term') termNode = n; });
+  const edges = {};
+  if (termNode) for (const gr of groups(layout)) for (const id of gr.tabs) edges[id] = sideOf(layout, gr, termNode);
+  const out = groups(layout).map(gr => gr.id).reduce((l, id) => unpinGroup(l, id), layout);
+  const l = clone(out);
+  for (const id of Object.keys(edges)) if (l.seat[id]) l.seat[id] = { ...l.seat[id], edge: edges[id] };
+  return normalize(l, modulesIn(layout));
+}
+
+/**
+ * What a person meets first (BACKLOG #103): every panel a tab on the rail, the terminal filling the dock, until they pin one.
+ * `defaultLayout` stays the all-pinned layout; this is it unpinned, so a later pin returns each panel to the same group.
+ * Size: each rail seat lists its N-1 mates, so the saved layout grows with N squared (about 2 KB for today's modules; the 8 KB save
+ * cap in layout-bridge.js is reached near 28 modules, and a seat keeps at most 32 mates). A test watches it.
+ */
+function startLayout(ids) {
+  return unpinAll(defaultLayout(ids));
 }
 
 // --- sizes ---------------------------------------------------------------------
@@ -961,7 +1027,7 @@ function fit(layout, selection, viewport) {
 }
 
 const API = {
-  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
+  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, startLayout, unpinAll, readStored, normalize, groups, count, hasTerm,
   fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, unpin, pin, showOnRail, unpinGroup, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, isCollapsed, activeOf, fit, peekFor, PEEK,
 };

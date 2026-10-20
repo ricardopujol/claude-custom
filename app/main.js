@@ -50,7 +50,7 @@ const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 const { createOccupancyService } = require('../host/occupancy-service');
 const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
-const { startTimes, createSelfStartTime } = require('../host/proc-start');
+const { startTimes, createSelfStartTime, isAlive: isPidAlive } = require('../host/proc-start');
 // ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
 // host of this build runs (a plain terminal, an older build). host/occupancy-transcripts.js.
 const { createTranscriptScanner } = require('../host/occupancy-transcripts');
@@ -102,7 +102,13 @@ const repoActions = createRepoActions({
 });
 const { listBackgroundHosts, installsBeside, identitiesIn } = require('../host/background-hosts');
 // The Resources panel (#63): one sampler in this process, its policy and payloads in app/resources-service.js.
-const { createSampler, createExec: createPowerShellExec } = require('../host/resource-sampler');
+const { createExec: createPowerShellExec, scriptFor: resourceScriptFor } = require('../host/resource-sampler');
+// BACKLOG #100 c: ONE sampler for every window of this machine (host/shared-poller.js), one persistent PowerShell, and sampling only
+// while someone looks (the cadence table is host/poller-policy.js).
+const { createSharedSampler } = require('../host/shared-sampler');
+const { createSharedPoller, defaultDir: defaultPollerDir } = require('../host/shared-poller');
+const pollerPolicy = require('../host/poller-policy');
+const { createPersistentExec } = require('../host/persistent-powershell');
 const { killVerified } = require('../host/resource-kill');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
@@ -1007,6 +1013,17 @@ function registerIpc() {
   // not one of our games or not a whole count, so the page can't write anything else.
   ipcMain.handle('games:scores', (e) => (isTabView(e.sender) ? gameScores.read() : null));
   ipcMain.handle('games:submit', (e, game, score) => (isTabView(e.sender) ? gameScores.submit(game, score) : null));
+  // Which pages show the Resources panel (the shared poller's 10 s / 30 s steps); keyed by the page, forgotten when it is destroyed.
+  const resourceViewers = new Set();
+  function noteResourcesViewer(sender, on) {
+    if (!resourceViewers.has(sender.id)) {
+      resourceViewers.add(sender.id);
+      const id = sender.id;
+      sender.once('destroyed', () => { resourceViewers.delete(id); if (resources) resources.forgetViewer(id); });
+    }
+    resources.setViewing(sender.id, on);
+  }
+  ipcMain.on('resources:viewing', (e, on) => { if (isTabView(e.sender) && resources) noteResourcesViewer(e.sender, on === true); });
   ipcMain.on('resources:chipOn', (e) => { e.returnValue = isTabView(e.sender) ? resourceChip.read() !== false : true; });
   ipcMain.handle('resources:setChip', (e, on) => (isTabView(e.sender) && resources ? resources.setChip(on) : null));
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
@@ -1846,6 +1863,8 @@ app.whenReady().then(async () => {
     onChange: () => { if (tabShell) tabShell.refresh(); },
     log: (...a) => console.log(...a),
   });
+  // This process's own start time, asked once: the claims below and the shared sampler's owner record both prove "this process" with it.
+  const ownStartTime = createSelfStartTime();
   transcriptOccupancy = createTranscriptScanner({
     // #81: a side host's session: its agents' claims are readers', whoever writes them
     readerSessions: () => readerSessionIds(ownIdentities() || []),
@@ -1856,7 +1875,7 @@ app.whenReady().then(async () => {
     writer: createClaimWriter({ stateRoot: STATE_ROOT, log: (...a) => console.log(...a) }),
     dir: occupancyDir(STATE_ROOT),
     ownPid: process.pid,
-    ownStartedAt: createSelfStartTime(),
+    ownStartedAt: ownStartTime,
     // one producer per agent: what the readers already show as live is left to whoever wrote it
     liveClaims: () => occupancyService.current(),
     log: (...a) => console.log(...a),
@@ -1923,7 +1942,16 @@ app.whenReady().then(async () => {
   // Read once and REMOVED from the environment, so it never reaches a host, a claude or a window started from them.
   const warnAtSeam = parseWarnAt(process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT);
   delete process.env.CLAUDE_CUSTOM_RESOURCE_WARN_AT;
-  resourceSampler = createSampler({ cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
+  // The first window to start owns the sampling and publishes it; the others read. A probe's UI-state folder keeps its pool apart from the real one.
+  const resourcePoller = createSharedPoller({
+    dir: defaultPollerDir({ uiStateDir: seams.uiStateDir }),
+    self: { pid: process.pid }, selfStart: ownStartTime, pidAlive: isPidAlive,
+    // A listed pid whose start is not the recorded one is a reused pid, not the owner (host/pid-ledger.js's rule); a failed query keeps it.
+    proveOwner: async (owner) => pollerPolicy.startProof(await startTimes([owner.pid]), owner),
+    script: resourceScriptFor, makeExec: () => createPersistentExec(), oneShot: () => createPowerShellExec(),
+    log: (...a) => console.log(...a),
+  });
+  resourceSampler = createSharedSampler({ poller: resourcePoller, cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
   resources = createResourcesService({
     sampler: resourceSampler,
     tabs: () => tabShell.snapshot().tabs,

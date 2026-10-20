@@ -1180,7 +1180,7 @@ document.getElementById('bugvault-add').addEventListener('submit', (e) => {
 const MODULE_IDS = TABS.map(t => t.id);
 const DM = window.dockMigrate;
 const DTm = window.dockTree;
-let globalLayout = DTm.defaultLayout(MODULE_IDS);
+let globalLayout = DTm.startLayout(MODULE_IDS);
 let ownLayout = null;            // this tab's own placement (host), or null
 let pendingOverride = null;      // { layout } sent to the host, not yet echoed back
 let dragLayout = null;           // a divider being dragged: drawn, not yet saved
@@ -1457,6 +1457,19 @@ function renderResources() {
     && el.dataset.resKey === keep.key && el.dataset.resPid === keep.pid);
   if (again) again.focus();
 }
+
+// Whether this page is SHOWING the Resources panel (on screen, docked, peeked or popped, and the page visible), told to main only
+// when it changes: the shared poller samples every 10 s while any page does and every 30 s while only the chip is in view
+// (BACKLOG #100 c). Reads window.harness itself, so a placement that runs before this block's constants exist is safe.
+var resViewingSent = null;   // var: placement can report before this line has run
+function reportResourcesViewing() {
+  const on = shownModules.has('resources') && document.visibilityState === 'visible';
+  if (on === resViewingSent) return;
+  resViewingSent = on;
+  const bridge = window.harness && window.harness.resources;
+  if (bridge && typeof bridge.viewing === 'function') bridge.viewing(on);
+}
+document.addEventListener('visibilitychange', reportResourcesViewing);
 
 function onResourcesState(payload) {
   resPayload = payload;
@@ -1762,6 +1775,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
+  reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   if (fx.vaultLeft) onVaultLeft();
@@ -2083,8 +2097,8 @@ function openLayoutMenu() {
     on: { click: () => { toggleAllZones(); closeLayoutMenu(); } },
   }));
   layoutMenu.appendChild(node('button', {
-    type: 'button', text: 'Reset layout', title: 'Every panel back on the right, default sizes',
-    on: { click: () => { openEveryGroup(); commitPlacement(DTm.defaultLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
+    type: 'button', text: 'Reset layout', title: 'Every panel back on the rail, default sizes',
+    on: { click: () => { openEveryGroup(); commitPlacement(DTm.startLayout(MODULE_IDS), { justThisTab: check.box.checked }); closeLayoutMenu(); } },
   }));
   if (ownLayout) {
     layoutMenu.appendChild(node('button', {
@@ -2856,11 +2870,11 @@ new ResizeObserver(() => { if (shortcutsOpen) placeShortcuts(); }).observe(docum
 function legacyLayout() {
   let legacy = {};
   try { legacy = { sideTab: localStorage.getItem('sideTab'), rosterWidth: localStorage.getItem('rosterWidth') }; } catch {}
-  return DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS);
+  return DTm.unpinAll(DTm.fromV1(DM.fromLegacy(legacy, MODULE_IDS), MODULE_IDS));
 }
 
 async function loadLayout() {
-  globalLayout = DTm.defaultLayout(MODULE_IDS);
+  globalLayout = DTm.startLayout(MODULE_IDS);
   const seeded = localStorage.getItem('dockSelection2') !== null;
   selection = readSelection();
   if (!seeded) saveSelection();            // seeded ONCE from L1's, so a later push never brings another window's choices (Dexter F4)
@@ -2869,7 +2883,7 @@ async function loadLayout() {
   if (bridge) {
     bridge.onChange((l) => {
       layoutPushes += 1;
-      const incoming = DTm.normalize(l, MODULE_IDS);
+      const incoming = DTm.readStored(l, MODULE_IDS);
       // This window's own save comes back as a push: it is already drawn, and redrawing it would queue a terminal
       // refit for a float's move that never touched the terminal (PR #102 Miguel Y2).
       const same = placementOf(incoming) === placementOf(globalLayout);
@@ -2888,9 +2902,9 @@ async function loadLayout() {
     // user's real layout is never overwritten (PR #82 Dexter F3, Miguel I1); their
     // next real change saves as usual.
     const what = window.dockTreeView.afterTreeGet(answer, v1Answer, { v1Bridge: !!window.harness.layout });
-    if (what === 'use') { globalLayout = DTm.normalize(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
+    if (what === 'use') { globalLayout = DTm.readStored(answer.layout, MODULE_IDS); layoutLoaded = true; renderLayout(); }
     else if (what === 'migrate-v1') {
-      globalLayout = DTm.fromV1(v1Answer.layout, MODULE_IDS);
+      globalLayout = DTm.readStored(v1Answer.layout, MODULE_IDS);
       layoutLoaded = true;
       saveGlobalLayout(globalLayout);
       renderLayout();
@@ -2910,7 +2924,7 @@ async function loadLayout() {
 function applyLayoutOverride(incoming) {
   const r = window.dockEffects.overrideOnHello(pendingOverride, incoming);
   if (r.settled) pendingOverride = null;
-  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readAny(r.apply, MODULE_IDS) : null;
+  ownLayout = r.apply && typeof r.apply === 'object' ? DTm.readStored(r.apply, MODULE_IDS) : null;
   if (r.resend && pendingOverride) {
     try { ws.send(JSON.stringify({ type: 'layout-override', layout: pendingOverride.layout })); } catch { /* next hello */ }
   }
@@ -3243,12 +3257,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const el = document.querySelector('#dock > .drail[data-rail="dock"]');
         if (!el) return JSON.stringify({ ok: false, error: 'no dock rail' });
         el.scrollTop = a.to === 'end' ? el.scrollHeight : 0;
-        return JSON.stringify({ ok: true });
-      }
-      case 'peekTabClick': {
-        const b = document.querySelector(`.dpeek .zone-tabs button[data-module="${CSS.escape(String(a.id))}"]`);
-        if (!b) return JSON.stringify({ ok: false, error: 'no such popover tab' });
-        b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
         return JSON.stringify({ ok: true });
       }
       case 'collapse': toggleGroupCollapse(String(a.id)); break;
@@ -3950,8 +3958,6 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         else if (a.op === 'giveMedal') {
           const k = medalMenuEl.querySelector('[data-medal-kind="' + String(a.kind) + '"]'); if (!k) return JSON.stringify({ ok: false, error: 'no menu' });
           k.click();
-          const input = medalMenuEl.querySelector('.medal-reason-input'); input.value = String(a.reason || ''); input.dispatchEvent(new Event('input', { bubbles: true }));
-          medalMenuEl.querySelector('[data-medal-give]').click();
         }
         else if (a.op === 'removeMedal') { const b = medalShelfEl.querySelector('[data-medal-remove]'); if (!b) return JSON.stringify({ ok: false, error: 'no medal on the shelf' }); b.click(); }
         else if (a.op === 'closeLog') { const b = agentLogEl.querySelector('[data-agent-log-close]'); if (b) b.click(); }
@@ -4107,6 +4113,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           }, 150);
         }, 50);
       });
+      // BACKLOG #100 (verify/probe-idle-redraw.js): the attention cue's class and every animation this page is running right now.
+      case 'animState': {
+        const running = document.getAnimations().filter((a) => a.playState === 'running');
+        return JSON.stringify({ ok: true, cue: document.body.classList.contains('attention-cue'), visibility: document.visibilityState,
+          running: running.length, names: [...new Set(running.map((a) => a.animationName || a.constructor.name))] });
+      }
       // Backlog #62 (verify/probe-lean.js): lean mode as this page has it -- the class, what the dock still shows,
       // the terminal's renderer and scrollback, the background layer and the working-agents strip.
       case 'leanState': {
@@ -5548,18 +5560,18 @@ function applyMedals(list) {
 
 // The give-a-medal menu: opened by a right-click on a card or its 🏅 button.
 const medalMenuEl = document.getElementById('medal-menu');
-let medalMenu = null;     // { agent, kind, reason } while open
+let medalMenu = null;     // { agent, opener } while open: opener is the element that had focus, given it back on close
 function paintMedalMenu() {
   if (!medalMenuEl) return;
   if (!medalMenu) { medalMenuEl.hidden = true; medalMenuEl.innerHTML = ''; return; }
-  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.kind, medalMenu.agent === ASK_AGENT ? explainerLabel() : medalMenu.agent);
+  medalMenuEl.innerHTML = window.medalsDisplay.menuHtml(medalMenu.agent, medalMenu.agent === ASK_AGENT ? explainerLabel() : medalMenu.agent);
   medalMenuEl.hidden = false;
-  const input = medalMenuEl.querySelector('.medal-reason-input');
-  if (input) { input.value = medalMenu.reason; input.focus(); }
+  const first = medalMenuEl.querySelector('[data-medal-kind]');
+  if (first) first.focus();      // keyboard users land on the kinds, not at the end of the page
 }
 function openMedalMenu(agent, x, y) {
   if (!medalMenuEl) return;
-  medalMenu = { agent, kind: null, reason: '' };
+  medalMenu = { agent, opener: document.activeElement };
   paintMedalMenu();
   const w = medalMenuEl.offsetWidth || 260;
   const h = medalMenuEl.offsetHeight || 200;
@@ -5568,27 +5580,22 @@ function openMedalMenu(agent, x, y) {
 }
 function closeMedalMenu() {
   if (!medalMenu) return false;
+  const opener = medalMenu.opener;
   medalMenu = null;
   paintMedalMenu();
+  if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus();   // the menu's button is gone: focus must not fall to <body>
   return true;
 }
-function giveMedal() {
-  if (!medalMenu || !medalMenu.kind) return;
-  sendJson({ type: 'medal', action: 'give', agent: medalMenu.agent, kind: medalMenu.kind, reason: medalMenu.reason });
+// One click on a kind gives the medal and closes the menu (BACKLOG #102): no reason, no Give button.
+function giveMedal(kind) {
+  if (!medalMenu || !window.medalsDisplay.kindOf(kind)) return;
+  sendJson({ type: 'medal', action: 'give', agent: medalMenu.agent, kind });
   closeMedalMenu();
 }
 if (medalMenuEl) {
   medalMenuEl.addEventListener('click', (e) => {
     const kind = e.target.closest && e.target.closest('[data-medal-kind]');
-    if (kind) { medalMenu.kind = kind.dataset.medalKind; paintMedalMenu(); return; }
-    if (e.target.closest('[data-medal-give]')) giveMedal();
-    else if (e.target.closest('[data-medal-cancel]')) closeMedalMenu();
-  });
-  medalMenuEl.addEventListener('input', (e) => {
-    if (medalMenu && e.target.classList && e.target.classList.contains('medal-reason-input')) medalMenu.reason = e.target.value;
-  });
-  medalMenuEl.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.classList && e.target.classList.contains('medal-reason-input')) { e.preventDefault(); giveMedal(); }
+    if (kind) giveMedal(kind.dataset.medalKind);
   });
 }
 window.addEventListener('mousedown', (e) => {
