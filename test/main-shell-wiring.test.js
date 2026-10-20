@@ -300,7 +300,7 @@ test('every tab view is created with context isolation on and node integration o
   assert.match(body, /contextIsolation: true/);
   assert.match(body, /nodeIntegration: false/);
   assert.match(body, /preload: path\.join\(__dirname, 'preload\.js'\)/);
-  const win = MAIN.slice(MAIN.indexOf('function createWindow('), MAIN.indexOf('function createWindow(') + 700);
+  const win = MAIN.slice(MAIN.indexOf('function createWindow('), MAIN.indexOf('function createWindow(') + 900);
   assert.match(win, /preload: path\.join\(__dirname, 'preload-strip\.js'\)/);
   assert.match(win, /contextIsolation: true/);
   assert.match(win, /nodeIntegration: false/);

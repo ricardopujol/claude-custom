@@ -20,7 +20,7 @@ test('the CLI theme is read after the new-project seed, and the settings file is
   const seed = at('seedLookIfNew({');
   const launch = at('const LAUNCH_CLI_THEME =', seed);
   const write = at('writeHarnessSettings(HARNESS_DIR', launch);
-  const args = at('const ARGS = buildClaudeArgs', write);
+  const args = at('const ARGS_OPTIONS =', write);
   assert.ok(seed < launch && launch < write && write < args);
   assert.match(HOST.slice(write, args), /theme: LAUNCH_CLI_THEME/);
 });
