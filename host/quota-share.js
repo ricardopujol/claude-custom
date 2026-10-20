@@ -61,6 +61,10 @@ const DATA_STALE_MS = 240_000;
 const MAX_FAILURES = 2;
 // A readAt or lease stamp this far in the future is a clock fault or a bad file, not data.
 const FUTURE_SKEW_MS = 60_000;
+// BACKLOG #119 A2: the claude-custom mod (mods/claude-custom) reports the CLI's own rate limits. While its figure is this fresh
+// and covers every window the last poll found, the poller yields (no network call). Under DATA_STALE_MS so a mod gone quiet
+// hands back to the poller long before the figure would read as unknown.
+const MOD_FRESH_MS = 120_000;
 
 function defaultDir() { return path.join(os.homedir(), '.claude-custom'); }
 
@@ -184,6 +188,60 @@ function recordFailureAsPoller({ dir = defaultDir(), configDir, owner, result, n
   });
 }
 
+const keyOf = (w) => (w && typeof w === 'object' && typeof w.key === 'string' ? w.key : null);
+
+/**
+ * Write the mod's windows through the SAME file the poller writes, so every host and `quota-cli` benefit. The mod only knows the
+ * windows the CLI reports (five_hour, seven_day: no model-scoped one), so a window the last poll found and the mod does not report
+ * is CARRIED over in its place, with the age of the poll it came from (`carriedReadAt`); one older than DATA_STALE_MS is dropped,
+ * never shown as fresh. `complete` says whether the mod covers every window the last poll found, which is what lets the poller
+ * yield (`modCovers`); with no poll ever seen it is false, so the poller keeps learning what windows exist.
+ * An empty list writes nothing: absence is not a figure. Returns whether it wrote.
+ */
+function recordModWindows({ dir = defaultDir(), configDir, windows, now = Date.now } = {}) {
+  if (!Array.isArray(windows) || windows.length === 0) return false;
+  const mine = windows.filter(w => keyOf(w) !== null).map(cleanWindow);
+  if (mine.length === 0) return false;
+  const file = quotaPath(dir, configDir);
+  const t = now();
+  fs.mkdirSync(dir, { recursive: true });
+  const prior = readJsonFile(file);
+  // Can't read the last file right now: writing would drop what it carried.
+  if (prior.kind === 'unknown') return false;
+  const p = prior.kind === 'value' && prior.value && typeof prior.value === 'object' && !Array.isArray(prior.value) ? prior.value : null;
+  const priorWindows = p && Array.isArray(p.windows) ? p.windows.filter(w => keyOf(w) !== null) : [];
+  const fromMod = !!p && p.source === 'mod';
+  const pollKeys = fromMod && Array.isArray(p.pollKeys) ? p.pollKeys.filter(k => typeof k === 'string')
+    : (p && isNum(p.readAt) ? priorWindows.map(keyOf) : null);
+  const carriedReadAt = fromMod ? (isNum(p.carriedReadAt) ? p.carriedReadAt : null) : (p && isNum(p.readAt) ? p.readAt : null);
+  const modKeys = new Set(mine.map(keyOf));
+  const carryOk = carriedReadAt !== null && t - carriedReadAt <= DATA_STALE_MS;
+  // The API's order is kept: a window the mod reports takes its old place, a new one goes last.
+  const out = [];
+  const placed = new Set();
+  for (const w of priorWindows) {
+    const k = keyOf(w);
+    if (modKeys.has(k)) { if (!placed.has(k)) { out.push(mine.find(m => keyOf(m) === k)); placed.add(k); } }
+    else if (carryOk) out.push(cleanWindow(w));
+  }
+  for (const w of mine) if (!placed.has(keyOf(w))) out.push(w);
+  const complete = pollKeys !== null && pollKeys.every(k => modKeys.has(k));
+  writeFileAtomic(file, JSON.stringify({
+    version: 1, readAt: t, windows: out, lastError: null, source: 'mod', complete, pollKeys: pollKeys || [], carriedReadAt,
+  }, null, 2));
+  return true;
+}
+
+/** True when the mod's figure is fresh (under MOD_FRESH_MS) and covers every window the last poll found: the poller may yield. */
+function modCovers({ dir = defaultDir(), configDir, now = Date.now } = {}) {
+  const r = readJsonFile(quotaPath(dir, configDir));
+  if (r.kind !== 'value') return false;
+  const b = r.value;
+  if (!b || typeof b !== 'object' || Array.isArray(b) || b.source !== 'mod' || b.complete !== true || !isNum(b.readAt)) return false;
+  const age = now() - b.readAt;
+  return age >= 0 && age < MOD_FRESH_MS;
+}
+
 // The windows file is written by this module from quota.js's own normalised shape, so everything but
 // the number passes through (a field added there reaches every host); only `percent` is re-checked.
 function cleanWindow(w) {
@@ -279,6 +337,8 @@ function createSharedQuota({
 
   async function refresh() {
     if (now() < sitOutUntil) return readShared({ dir, configDir, now });
+    // The mod's figure is fresh and complete: nothing to ask the network for (#119 A2).
+    if (modCovers({ dir, configDir, now })) return readShared({ dir, configDir, now });
 
     let claimed;
     try {
@@ -348,11 +408,18 @@ function createHostQuota({ readQuota, onQuota = () => {}, log = () => {}, owner 
       .finally(() => { pending = null; });
     return pending;
   }
-  return { refresh, release: shared.release };
+  // What the shared file says right now, with no poll and no lease: for the mod's records (#119 A2), which arrive every couple
+  // of seconds and must never cost a network call. Goes to `onQuota` like a refresh does.
+  function readNow() {
+    const q = readShared({ dir: rest.dir, configDir: rest.configDir, now: rest.now });
+    onQuota(q);
+    return q;
+  }
+  return { refresh, readNow, release: shared.release };
 }
 
 module.exports = {
   createHostQuota, createSharedQuota, claimPoller, renewPoller, releasePoller, recordPoll, recordFailureAsPoller,
-  readShared, formatLine, formatAge, defaultDir, accountKey, quotaPath, leasePath,
+  recordModWindows, modCovers, MOD_FRESH_MS, readShared, formatLine, formatAge, defaultDir, accountKey, quotaPath, leasePath,
   DATA_STALE_MS, LEASE_STALE_MS, POLL_INTERVAL_MS, POLL_TIMEOUT_MS, MAX_FAILURES,
 };

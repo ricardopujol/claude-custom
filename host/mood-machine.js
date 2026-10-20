@@ -44,6 +44,8 @@
  *   writing   Edit | Write | NotebookEdit    (working only; an error shows stressed)
  *   reading   Read | Grep | Glob
  *
+ * `waiting` has a second source (BACKLOG #119 A2): the claude-custom mod's agent snapshot, see observeAgents().
+ *
  * Reading and writing come from PreToolUse alone (their PostToolUse isn't
  * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
  * are sequential: its newest call (a Pre, or a Post of a call whose only hook
@@ -260,7 +262,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // What an invocation tracks for its detail: Bash calls in flight (id -> when
   // they began), the newest file tool ({kind, at}), and an open prompt.
   // `quiet`: it launched background work, so what it waits on emits no hook of its own.
-  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, quiet: false });
+  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, quiet: false });
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -286,7 +288,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     const take = d => { if ((RANK[d] || 0) > (RANK[best] || 0)) best = d; };
     for (const inv of invs) {
       if (inv.name !== agent) continue;
-      if (inv.waiting) { take(WAITING); continue; }
+      if (inv.waiting || inv.modWaiting) { take(WAITING); continue; }
       const kids = fgChildren(inv).length > 0;
       // A Bash in flight for longer than the stall clock isn't: its result was lost (PR #154, Dexter 2).
       const flying = [...inv.bash.values()].filter(at => t - at <= stallMs);
@@ -624,6 +626,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     if (!inv) return;
     refresh(inv);
     inv.waiting = false;                               // its next call: the prompt was answered
+    inv.modWaiting = false;
     // Calls of one run are sequential, and a Bash that was denied, blocked by a hook or lost never gets a result:
     // a new call means the older ones are over (PR #154, Dexter 2).
     inv.bash.clear();
@@ -704,6 +707,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (parent) {
         refresh(parent);
         parent.waiting = false;                  // launching a helper is a tool call: its prompt was answered
+        parent.modWaiting = false;
         parent.bash.clear();
         parent.tool = null;
         if (inv.background) parent.quiet = true;
@@ -734,7 +738,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const spawned = spawnKey !== null ? spawns.get(spawnKey) : undefined;
       if (spawned || (spawnKey !== null && endedKeys.has(spawnKey))) {
         const spawner = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
-        if (spawner) { refresh(spawner); spawner.waiting = false; spawner.bash.clear(); spawner.tool = null; }
+        if (spawner) { refresh(spawner); spawner.waiting = false; spawner.modWaiting = false; spawner.bash.clear(); spawner.tool = null; }
         spawnResult(spawned, event, p, interrupted);
         return;
       }
@@ -759,6 +763,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (!inv) return;                       // no running agent to attribute to
       if (p.agent_id) refresh(inv); else refreshAll();
       inv.waiting = false;
+      inv.modWaiting = false;
       if (tool === 'Bash') clearBash(inv, p.tool_use_id);
       else { inv.bash.clear(); inv.tool = null; }      // a call whose only hook is its Post (SendMessage, Artifact) is a newer call too
 
@@ -870,7 +875,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       // older one has refreshAll() touching everything, so there the cap stays.
       const capped = !(inv.background && saysWho) && t - inv.startedAt > maxInvocationMs;
       // An open prompt is the person's to answer, not a silent run: the stall clock doesn't reap it (the age cap above still does).
-      const stale = capped || (!inv.waiting && t - inv.lastActivity > stallMs);
+      const stale = capped || (!inv.waiting && !inv.modWaiting && t - inv.lastActivity > stallMs);
       if (stale && !fgChildren(inv).some(c => !gone.has(c))) gone.add(inv);
     }
     // A reaped run was cut off, so it sleeps at once -- not whenever the idle
@@ -903,7 +908,22 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     settle();
   }
 
+  // BACKLOG #119 A2: the claude-custom mod's `$.agent.list()` snapshot, a SECOND source for the finer `waiting` detail. The hooks keep
+  // identity and lifecycle: this only marks a run they have already opened AND bound to an agent_id, never opens, binds, ends or
+  // sleeps one, and ignores every status but `waiting` (a status the CLI adds later changes nothing until it is named here). A
+  // snapshot is the whole truth of the moment: an agent it no longer lists as waiting is cleared, and so is one whose own next
+  // hooked event arrives (the clear sites of `waiting`).
+  function observeAgents(list) {
+    const waiting = new Set();
+    if (Array.isArray(list)) {
+      for (const a of list) if (a && typeof a === 'object' && typeof a.id === 'string' && a.status === 'waiting') waiting.add(a.id);
+    }
+    for (const inv of invs) inv.modWaiting = typeof inv.agentId === 'string' && waiting.has(inv.agentId);
+    settle();
+  }
+
   machine.handle = handle;
+  machine.observeAgents = observeAgents;
   machine.tick = tick;
   machine.stateOf = agent => (agents.get(agent) || { state: SLEEPING }).state;
   // Every live invocation's NAME, in start order -- one entry per running
