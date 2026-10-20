@@ -72,8 +72,11 @@ function writeModSetting(stateDir, on) {
 /** `[major, minor, patch]` from the first x.y.z in the text, or null. */
 function parseCliVersion(text) {
   if (typeof text !== 'string') return null;
-  const m = /(\d+)\.(\d+)\.(\d+)/.exec(text);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  const m = /(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z][0-9A-Za-z.-]*)?/.exec(text);
+  if (!m) return null;
+  const v = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (m[4]) v.pre = true;          // a prerelease (2.1.290-beta.1) precedes its release
+  return v;
 }
 
 function versionAtLeast(version, min) {
@@ -81,7 +84,7 @@ function versionAtLeast(version, min) {
   for (let i = 0; i < 3; i++) {
     if (version[i] !== min[i]) return version[i] > min[i];
   }
-  return true;
+  return version.pre !== true;      // equal numbers: a prerelease of the floor is below it
 }
 
 /**
@@ -95,7 +98,7 @@ function modPluginDirFor({ enabled, version, dir, exists = fs.existsSync, forced
 }
 
 /** Ask a binary for its version: `[major, minor, patch]` or null (missing, slow, or not a version). Never throws. */
-function readCliVersion(bin, { timeoutMs = 8000 } = {}) {
+function readCliVersion(bin, { timeoutMs = 3000 } = {}) {
   return new Promise((resolve) => {
     try {
       execFile(bin, ['--version'], { timeout: timeoutMs, windowsHide: true }, (err, stdout) => {

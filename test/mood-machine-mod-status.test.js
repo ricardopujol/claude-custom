@@ -19,6 +19,7 @@ function rig() {
   let n = 0;
   const api = {
     m,
+    now: () => t,
     advance(ms) { t += ms; m.tick(); },
     ev(event, payload) { m.handle({ event, payload }); },
     spawn(type) {
@@ -61,13 +62,53 @@ test('the agent\'s own next hooked event clears it: the prompt was answered', ()
   assert.notStrictEqual(r.detail('miguel'), 'waiting');
 });
 
-test('a waiting agent is not reaped by silence past the stall clock', () => {
+test('a waiting agent is not reaped by silence past the stall clock while the mod keeps saying so', () => {
   const r = rig();
   const a = started(r);
   r.m.observeAgents([row(a, 'waiting')]);
-  r.advance(STALL_MS + 1000);
+  for (let i = 0; i < 2; i++) {
+    r.advance(STALL_MS * 0.6);
+    r.m.observeAgents([row(a, 'waiting')]);          // a fresh snapshot inside every stall window
+  }
   assert.strictEqual(r.detail('miguel'), 'waiting');
   assert.strictEqual(r.m.stateOf('miguel'), 'working');
+});
+
+test('PR #197 Miguel G2: a waiting the mod stops repeating lapses after the stall window, and the stall clock applies again', () => {
+  const r = rig();
+  const a = started(r);
+  r.m.observeAgents([row(a, 'waiting')]);
+  r.advance(STALL_MS - 1000);
+  assert.strictEqual(r.detail('miguel'), 'waiting', 'still inside the window');
+  r.advance(2000);
+  assert.notStrictEqual(r.detail('miguel'), 'waiting');
+  assert.strictEqual(r.m.invocations().length, 0, 'silent for the whole stall window, so it is reaped like any silent run');
+});
+
+test('PR #197 Dexter 8: a snapshot taken before the hook that cleared the prompt never re-raises waiting', () => {
+  const r = rig();
+  const a = started(r);
+  r.ev('PermissionRequest', { tool_name: 'Edit', tool_input: {}, agent_id: a.id, agent_type: a.type });
+  assert.strictEqual(r.detail('miguel'), 'waiting');
+  const snapshotAt = r.now();                           // the mod takes its snapshot: a1 waiting
+  r.advance(10);
+  r.pre(a, 'Read', { file_path: 'x' });                 // the hook bridge delivers the answered prompt first
+  assert.notStrictEqual(r.detail('miguel'), 'waiting');
+  r.m.observeAgents([row(a, 'waiting')], snapshotAt);   // ...and then the older HTTP snapshot lands
+  assert.notStrictEqual(r.detail('miguel'), 'waiting');
+});
+
+test('PR #197 Dexter 8: a snapshot taken after the clearing hook still raises waiting; one with no time is taken as current', () => {
+  const r = rig();
+  const a = started(r);
+  r.advance(10);
+  r.pre(a, 'Read', { file_path: 'x' });
+  r.advance(10);
+  r.m.observeAgents([row(a, 'waiting')], r.now());
+  assert.strictEqual(r.detail('miguel'), 'waiting');
+  r.m.observeAgents([row(a, 'running')]);
+  r.m.observeAgents([row(a, 'waiting')]);
+  assert.strictEqual(r.detail('miguel'), 'waiting');
 });
 
 test('an id the hooks never opened is ignored: the mod opens no card, binds no run', () => {

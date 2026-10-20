@@ -262,7 +262,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // What an invocation tracks for its detail: Bash calls in flight (id -> when
   // they began), the newest file tool ({kind, at}), and an open prompt.
   // `quiet`: it launched background work, so what it waits on emits no hook of its own.
-  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, quiet: false });
+  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, modWaitingAt: 0, clearedAt: -Infinity, quiet: false });
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -627,6 +627,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     refresh(inv);
     inv.waiting = false;                               // its next call: the prompt was answered
     inv.modWaiting = false;
+    inv.clearedAt = now();
     // Calls of one run are sequential, and a Bash that was denied, blocked by a hook or lost never gets a result:
     // a new call means the older ones are over (PR #154, Dexter 2).
     inv.bash.clear();
@@ -708,6 +709,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         refresh(parent);
         parent.waiting = false;                  // launching a helper is a tool call: its prompt was answered
         parent.modWaiting = false;
+        parent.clearedAt = now();
         parent.bash.clear();
         parent.tool = null;
         if (inv.background) parent.quiet = true;
@@ -738,7 +740,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const spawned = spawnKey !== null ? spawns.get(spawnKey) : undefined;
       if (spawned || (spawnKey !== null && endedKeys.has(spawnKey))) {
         const spawner = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
-        if (spawner) { refresh(spawner); spawner.waiting = false; spawner.modWaiting = false; spawner.bash.clear(); spawner.tool = null; }
+        if (spawner) { refresh(spawner); spawner.waiting = false; spawner.modWaiting = false; spawner.clearedAt = now(); spawner.bash.clear(); spawner.tool = null; }
         spawnResult(spawned, event, p, interrupted);
         return;
       }
@@ -764,6 +766,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (p.agent_id) refresh(inv); else refreshAll();
       inv.waiting = false;
       inv.modWaiting = false;
+      inv.clearedAt = now();
       if (tool === 'Bash') clearBash(inv, p.tool_use_id);
       else { inv.bash.clear(); inv.tool = null; }      // a call whose only hook is its Post (SendMessage, Artifact) is a newer call too
 
@@ -864,6 +867,9 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     // parent is never ended while a descendant it is waiting on still runs.
     // Children are younger, so they cross their own limits first and the
     // parent follows them out -- in this same pass, when it is stale too.
+    // A mod `waiting` is only as good as its last snapshot: with none newer inside the stall window it lapses, and the stall clock below
+    // applies again (a mod gone quiet must not keep a run from being reaped for ever).
+    for (const inv of invs) if (inv.modWaiting && t - inv.modWaitingAt > stallMs) inv.modWaiting = false;
     const gone = new Set();
     for (let k = invs.length - 1; k >= 0; k--) {
       const inv = invs[k];
@@ -913,12 +919,20 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // sleeps one, and ignores every status but `waiting` (a status the CLI adds later changes nothing until it is named here). A
   // snapshot is the whole truth of the moment: an agent it no longer lists as waiting is cleared, and so is one whose own next
   // hooked event arrives (the clear sites of `waiting`).
-  function observeAgents(list) {
+  function observeAgents(list, at) {
     const waiting = new Set();
     if (Array.isArray(list)) {
       for (const a of list) if (a && typeof a === 'object' && typeof a.id === 'string' && a.status === 'waiting') waiting.add(a.id);
     }
-    for (const inv of invs) inv.modWaiting = typeof inv.agentId === 'string' && waiting.has(inv.agentId);
+    // `at` is when the mod took the snapshot. One older than the agent's last clearing hook (its next tool call, a launched helper) says
+    // what was true before that hook and never re-raises `waiting`; without an `at` the snapshot is taken as current.
+    for (const inv of invs) {
+      const listed = typeof inv.agentId === 'string' && waiting.has(inv.agentId);
+      const stale = typeof at === 'number' && Number.isFinite(at) && at < inv.clearedAt;
+      const on = listed && !stale;
+      if (on) inv.modWaitingAt = now();
+      inv.modWaiting = on;
+    }
     settle();
   }
 

@@ -136,3 +136,32 @@ test('readCliVersion asks the binary for --version and parses the answer', async
 test('readCliVersion is null for a binary that does not exist, never a throw', async () => {
   assert.strictEqual(await readCliVersion(path.join(state(), 'no-such-claude.exe')), null);
 });
+
+// --- PR #197 Dexter 10: a prerelease of the floor is below the floor ---------------------------------------------------------------
+
+test('Dexter 10: 2.1.290-beta.1 fails the 2.1.290 gate; a release of 2.1.290 and a prerelease of a later version pass', () => {
+  const pre = parseCliVersion('2.1.290-beta.1 (Claude Code)');
+  assert.deepStrictEqual([...pre], [2, 1, 290]);
+  assert.strictEqual(pre.pre, true);
+  assert.strictEqual(versionAtLeast(pre, MIN_CLI_VERSION), false);
+  assert.strictEqual(versionAtLeast(parseCliVersion('2.1.290 (Claude Code)'), MIN_CLI_VERSION), true);
+  assert.strictEqual(versionAtLeast(parseCliVersion('2.1.291-rc.2'), MIN_CLI_VERSION), true);
+  assert.strictEqual(versionAtLeast(parseCliVersion('2.1.289-beta'), MIN_CLI_VERSION), false);
+});
+
+test('Dexter 10: a plain version carries no prerelease mark, so it still equals a plain array', () => {
+  assert.deepStrictEqual(parseCliVersion('2.1.304 (Claude Code)'), [2, 1, 304]);
+  assert.strictEqual(parseCliVersion('2.1.304').pre, undefined);
+});
+
+test('Dexter 10: modPluginDirFor refuses the prerelease of the floor', () => {
+  const dir = 'C:/m';
+  assert.strictEqual(modPluginDirFor({ enabled: true, version: parseCliVersion('2.1.290-beta.1'), dir, exists: () => true }), null);
+});
+
+// --- PR #197 Miguel Y9: the version read is bounded short ----------------------------------------------------------------------------
+
+test('Miguel Y9: the version read gives up after three seconds by default', () => {
+  const src = require('fs').readFileSync(path.join(__dirname, '..', 'host', 'cc-mod-settings.js'), 'utf8');
+  assert.match(src, /timeoutMs = 3000/);
+});
