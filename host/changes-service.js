@@ -5,7 +5,7 @@
  *
  *   createChangesService({ root, execFile, readFile, stat, cap }).handle(msg) -> Promise<reply>   (host/host.js)
  *     list { scope }                  scope: 'auto' | 'working' | 'branch'
- *         -> { ok, scope, base, against, files, total, more, summary, dirty }
+ *         -> { ok, scope, base, against, files, total, more, summary }
  *            base: the integration branch (develop, else main, else master) or null; against: what this list was compared with (HEAD or that branch)
  *     base { scope, path, oldPath? }  the file as it was at the scope's base: HEAD (working) or the merge-base with the integration branch (branch)
  *         -> { ok, text } | { ok: false, why: 'new' | 'too-large' | 'binary' | ... }
@@ -22,7 +22,7 @@ const childProcess = require('child_process');
 const fsp = require('fs/promises');
 const { lexical } = require('./repo-guard');
 const {
-  parseNameStatusZ, parseNumstatZ, parseNulList, buildChangeset, capFiles, summarize, countLines, resolveScope, MAX_FILES, MAX_COMPARE_BYTES,
+  parseNameStatusZ, parseNumstatZ, parseNulList, buildChangeset, capFiles, summarize, countLines, resolveScope, decodeBase, MAX_FILES, MAX_COMPARE_BYTES, MAX_COUNT_BYTES,
 } = require('./changes');
 
 const GIT_TIMEOUT_MS = 8000;
@@ -33,17 +33,18 @@ const GIT_ENV = { GIT_OPTIONAL_LOCKS: '0' };
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 function defaultRunGit(execFile) {
-  return (root, args, { maxBuffer = 16 * 1024 * 1024 } = {}) => new Promise((resolve) => {
+  return (root, args, { maxBuffer = 16 * 1024 * 1024, raw = false } = {}) => new Promise((resolve) => {
     try {
-      execFile('git', ['-C', root, '-c', 'core.quotePath=false', ...args],
-        { encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer, windowsHide: true, env: { ...process.env, ...GIT_ENV } },
+      // core.fsmonitor=false: a repo's fsmonitor is a program its config names, and diff / ls-files would run it (PR #199 Miguel S2)
+      execFile('git', ['-C', root, '-c', 'core.quotePath=false', '-c', 'core.fsmonitor=false', ...args],
+        { encoding: raw ? 'buffer' : 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer, windowsHide: true, env: { ...process.env, ...GIT_ENV } },
         (err, stdout, stderr) => {
           if (err) {
             const first = String(stderr || '').split(/\r?\n/).find(Boolean) || err.message || 'unknown error';
             resolve({ ok: false, error: first, code: err.code, tooBig: err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' });
             return;
           }
-          resolve({ ok: true, stdout: String(stdout || '') });
+          resolve({ ok: true, stdout: raw ? (Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout || '')) : String(stdout || '') });
         });
     } catch (err) {
       resolve({ ok: false, error: String(err && err.message) });
@@ -91,7 +92,7 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
       try {
         // lstat, not stat: a link (to a file outside the worktree, say) is not followed, its lines are not counted
         const st = await lstat(lex.abs);
-        if (st.isFile() && st.size <= MAX_COMPARE_BYTES) {
+        if (st.isFile() && st.size <= MAX_COUNT_BYTES) {
           const text = await readFile(lex.abs);
           add = countLines(text);
           binary = add === null;
@@ -107,7 +108,9 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
   async function listScope(scope) {
     const base = await baseFor(scope);
     if (!base.ok) return base;
-    const diffArgs = ['diff', '--no-ext-diff', '--no-textconv', '-M', '-z'];
+    // --relative: paths are spelled from THIS folder, as ls-files does and as the reader and the Files tab do, whether or not the session
+    // folder is the repository's top level (PR #199 Dexter 3); a change outside the folder is not this worktree's to list
+    const diffArgs = ['diff', '--no-ext-diff', '--no-textconv', '--relative', '-M', '-z'];
     const [ns, num, un] = await Promise.all([
       git(root, [...diffArgs, '--name-status', base.sha, '--']),
       git(root, [...diffArgs, '--numstat', base.sha, '--']),
@@ -124,17 +127,15 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
     const asked = msg.scope === undefined ? 'auto' : msg.scope;
     let scope;
     let r;
-    let knownClean = false;
     if (asked === 'working' || asked === 'branch') {
       scope = asked;
       r = await listScope(scope);
     } else {
-      // auto: the working tree if it holds anything, else the branch (and the working tree's emptiness is `dirty: false`)
+      // auto: the working tree if it holds anything, else the branch
       r = await listScope('working');
       if (r.ok && r.files.length === 0) {
         const branch = await listScope('branch');
         scope = resolveScope('auto', false);
-        knownClean = true;
         // a repo with no integration branch still answers: the empty working tree
         r = branch.ok ? branch : r;
         if (!branch.ok) scope = 'working';
@@ -145,16 +146,10 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
     if (!r.ok) return { ok: false, scope, error: r.error };
     const summary = summarize(r.files);
     const capped = capFiles(r.files, cap);
-    // `dirty` is about the working tree whichever scope is shown: the page's default and its "uncommitted work" cue
-    let dirty = scope === 'working' ? r.files.length > 0 : (knownClean ? false : null);
-    if (dirty === null) {
-      const w = await listScope('working');
-      dirty = w.ok ? w.files.length > 0 : null;
-    }
     // `base` is the integration branch the `vs <base>` scope compares with (the panel names its button after it), whichever scope is shown;
     // `against` is what THIS list was compared with (HEAD, or that branch's merge-base)
     const integration = r.base.label !== 'HEAD' ? r.base.label : ((await baseBranch()) || {}).name || null;
-    return { ok: true, scope, base: integration, against: r.base.label, files: capped.files, total: capped.total, more: capped.more, summary, dirty };
+    return { ok: true, scope, base: integration, against: r.base.label, files: capped.files, total: capped.total, more: capped.more, summary };
   }
 
   // The file as it was at the scope's base. A new file has no base (`why: 'new'`), a big or binary one is not compared.
@@ -166,16 +161,18 @@ function createChangesService({ root, execFile = childProcess.execFile, readFile
     if (isStr(msg.oldPath) && msg.oldPath !== '' && !lexical(root, msg.path).ok) return { ok: false, why: 'bad path' };
     const base = await baseFor(scope);
     if (!base.ok) return { ok: false, why: 'no base', error: base.error };
-    const spec = `${base.sha}:${lex.rel}`;
+    // `<rev>:./path` is relative to the folder git runs in (this one), where `<rev>:path` would be from the top level
+    const spec = `${base.sha}:./${lex.rel}`;
     const size = await git(root, ['cat-file', '-s', spec]);
     if (!size.ok) return { ok: false, why: 'new' };
     const n = Number(size.stdout.trim());
     if (!Number.isFinite(n)) return { ok: false, why: 'unreadable', error: 'git did not give a size' };
     if (n > MAX_COMPARE_BYTES) return { ok: false, why: 'too-large', size: n, limit: MAX_COMPARE_BYTES };
-    const r = await git(root, ['show', '--no-textconv', spec], { maxBuffer: MAX_COMPARE_BYTES + 1024 });
+    const r = await git(root, ['show', '--no-textconv', spec], { maxBuffer: MAX_COMPARE_BYTES + 1024, raw: true });
     if (!r.ok) return { ok: false, why: r.tooBig ? 'too-large' : 'unreadable', error: r.error };
-    if (r.stdout.includes('\0')) return { ok: false, why: 'binary' };
-    return { ok: true, text: r.stdout, size: n, base: base.label };
+    const d = decodeBase(r.stdout);
+    if (!d.ok) return { ok: false, why: d.why };
+    return { ok: true, text: d.text, size: n, base: base.label };
   }
 
   async function handle(msg) {

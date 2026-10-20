@@ -161,3 +161,22 @@ test('PROPERTY: no input makes a parser throw, and the summary never counts more
     assert.strictEqual(C.summarize(b).files, b.length);
   }));
 });
+
+test('decodeBase: BOM dropped, CRLF folded, UTF-16 is `encoding`, a NUL is `binary`, a non-buffer is refused', () => {
+  assert.deepStrictEqual(C.decodeBase(Buffer.from([0xef, 0xbb, 0xbf, 0x61, 0x0d, 0x0a, 0x62])), { ok: true, text: 'a\nb' });
+  assert.deepStrictEqual(C.decodeBase(Buffer.from('plain\r\n')), { ok: true, text: 'plain\n' });
+  assert.deepStrictEqual(C.decodeBase(Buffer.from([0xff, 0xfe, 0x61, 0x00])), { ok: false, why: 'encoding' });
+  assert.deepStrictEqual(C.decodeBase(Buffer.from([0xfe, 0xff, 0x00, 0x61])), { ok: false, why: 'encoding' });
+  assert.deepStrictEqual(C.decodeBase(Buffer.from([0x61, 0x00, 0x62])), { ok: false, why: 'binary' });
+  assert.deepStrictEqual(C.decodeBase(Buffer.alloc(0)), { ok: true, text: '' });
+  assert.strictEqual(C.decodeBase('text').ok, false);
+  assert.strictEqual(C.MAX_COUNT_BYTES, 256 * 1024);
+});
+
+test('PROPERTY: decodeBase of valid UTF-8 text never keeps a CR+LF pair or a leading BOM', () => {
+  fc.assert(fc.property(fc.string({ maxLength: 60 }).filter(s => !s.includes('\0')), (s) => {
+    const r = C.decodeBase(Buffer.from(String.fromCharCode(0xfeff) + s.replace(/\n/g, '\r\n')));
+    assert.strictEqual(r.ok, true);
+    assert.ok(!r.text.includes('\r\n') && r.text.charCodeAt(0) !== 0xfeff || s.startsWith(String.fromCharCode(0xfeff)));
+  }));
+});

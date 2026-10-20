@@ -11,6 +11,8 @@
  *   commentText(path, line, text)  { ok, text } `In <path>:<line> — <comment>`, ONE line, or { ok: false, reason }
  *   stackText(list)             { ok, text, count } several comments joined on ONE line, within what the prompt can be typed with
  *   buildRows(doc, rows)        the DOM rows (a fake document is enough to test it)
+ *   normalizeText(text)         a text as the Compare lines it up: a leading BOM dropped, CRLF folded to LF (both sides, PR #199 Dexter 4)
+ *   appendComment({ owned, text })  { ok, command }: what to type so a comment ADDS to what this feature already typed (PR #199 Dexter 1)
  *
  * WHY ONE LINE. A comment is TYPED into the CLI's input box and read back (renderer.js typeAndCheck), and that read-back, like the
  * typing gate in app/top-bar-display.js, only knows one-line text: a CR submits, and `\` + Enter is the CLI's newline (measured,
@@ -119,6 +121,23 @@ function stackText(list) {
   return { ok: true, text, count: items.length };
 }
 
+function normalizeText(text) {
+  let s = typeof text === 'string' ? text : '';
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+  return s.replace(/\r\n/g, '\n');
+}
+
+// The typing path REPLACES the line it types into (it clears first, then reads the box back as exactly the command), so "add a second
+// comment" is "type the first one again, then the new one": `owned` is the line this feature typed last and that the box still holds
+// (the page checks the screen); anything else in the box is not ours and is replaced like any other typed command. Never a clear that
+// loses a comment of ours (PR #199 Dexter 1).
+function appendComment({ owned, text } = {}) {
+  if (typeof text !== 'string' || text === '') return { ok: false, reason: 'no comment to type' };
+  const command = typeof owned === 'string' && owned !== '' ? `${owned}${SEP}${text}` : text;
+  if (command.length > MAX_STACK_CHARS) return { ok: false, reason: 'the prompt line is full: send what is typed (Enter in the terminal), then type the rest' };
+  return { ok: true, command, appended: command !== text };
+}
+
 // ---- the DOM ----
 
 function buildRows(doc, rows) {
@@ -149,7 +168,7 @@ function buildRows(doc, rows) {
   });
 }
 
-const API = { sideBySide, fold, hunkStarts, nextHunk, prevHunk, commentText, stackText, buildRows, MAX_STACK_CHARS, CONTEXT, MAX_ROWS };
+const API = { sideBySide, fold, hunkStarts, nextHunk, prevHunk, commentText, stackText, buildRows, normalizeText, appendComment, MAX_STACK_CHARS, CONTEXT, MAX_ROWS };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.changesCompare = API;
 

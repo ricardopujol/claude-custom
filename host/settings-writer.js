@@ -60,6 +60,11 @@ const POST_TOOL_MATCHER = 'Agent|Task|Bash|SendMessage|Artifact';    // completi
 // Running panel -- their PostToolUse isn't hooked, so the panel would show every Read as running forever.
 // The same tools as host/agent-occupancy.js TOUCH_TOOLS (test/settings-writer.test.js holds them together).
 const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
+// BACKLOG #119 A3 (the Changes panel): the panel must look again AFTER an edit lands, and an edit's PreToolUse fires before the permission
+// prompt (PR #199 Dexter 2). So the edit tools and PowerShell get a PostToolUse entry of their own, opt-in (`changes: true`) and SEPARATE,
+// consumed by host/changes-notifier.js and never forwarded (isChangesOnly): the mood engine and the Running panel would show an Edit as a
+// process. Bash is not here: POST_TOOL_MATCHER above hooks its Post already. The names are host/changes-notifier.js POST_ONLY_TOOLS.
+const CHANGES_POST_MATCHER = 'Edit|Write|MultiEdit|NotebookEdit|PowerShell';
 // Backlog #52 (bedtime): a /bedtime night is the loop's own ScheduleWakeup calls (host/bedtime-state.js, measured by
 // verify/probe-bedtime-signal.js): the call itself (PreToolUse: delaySeconds, prompt, stop) and its result
 // (PostToolUse: tool_response.scheduledFor). Opt-in (`bedtime: true`) and SEPARATE entries, so the mood engine's are
@@ -141,7 +146,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest, theme } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest, theme, changes } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -192,6 +197,8 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
   if (loadoutEntry) settings.hooks.PreToolUse.push(loadoutEntry);
   // LAST, so PreToolUse[0] stays the mood engine's and [1] the tool belt's.
   if (occupancy === true) settings.hooks.PreToolUse.push(entry(OCCUPANCY_MATCHER, 'PreToolUse'));
+  // after the mood engine's own entry, so PostToolUse[0] stays theirs
+  if (changes === true) settings.hooks.PostToolUse.push(entry(CHANGES_POST_MATCHER, 'PostToolUse'));
   if (bedtime === true) {
     settings.hooks.PreToolUse.push(entry(BEDTIME_MATCHER, 'PreToolUse'));
     settings.hooks.PostToolUse.push(entry(BEDTIME_MATCHER, 'PostToolUse'));
@@ -341,4 +348,4 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false }
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, CHANGES_POST_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };

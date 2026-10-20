@@ -20,6 +20,8 @@
  * scope is the tree against the merge-base with `develop` (else `main`, else `master`): everything this lane did, committed or not.
  */
 const MAX_FILES = 500;
+// An untracked file is read for its line count only up to this size; a bigger one shows `?` (PR #199 Miguel Y3: every refresh re-reads them all)
+const MAX_COUNT_BYTES = 256 * 1024;
 // A file over this is not compared (the reader would draw a wall); the page says "too large to compare".
 const MAX_COMPARE_BYTES = 1024 * 1024;
 const SCOPES = Object.freeze(['working', 'branch']);
@@ -145,6 +147,18 @@ function countLines(text) {
   return parts.length;
 }
 
+// A blob as the Compare shows it, made the way host/repo-read.js makes the NOW side (a UTF-8 BOM dropped, CRLF folded to LF), so a line
+// is marked changed only when it is (PR #199 Dexter 4). UTF-16 is refused as its own reason, not called binary.
+//   -> { ok: true, text } | { ok: false, why: 'binary' | 'encoding' }
+function decodeBase(buf) {
+  if (!Buffer.isBuffer(buf)) return { ok: false, why: 'unreadable' };
+  if (buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff))) return { ok: false, why: 'encoding' };
+  if (buf.includes(0)) return { ok: false, why: 'binary' };
+  let text = buf.toString('utf8');
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  return { ok: true, text: text.replace(/\r\n/g, '\n') };
+}
+
 function resolveScope(asked, dirty) {
   if (asked === 'working' || asked === 'branch') return asked;
   if (asked === 'auto' || asked === undefined) return dirty ? 'working' : 'branch';
@@ -152,6 +166,6 @@ function resolveScope(asked, dirty) {
 }
 
 module.exports = {
-  parseNameStatusZ, parseNumstatZ, parseNulList, buildChangeset, capFiles, summarize, summaryLine, countLines, resolveScope,
-  MAX_FILES, MAX_COMPARE_BYTES, SCOPES,
+  parseNameStatusZ, parseNumstatZ, parseNulList, buildChangeset, capFiles, summarize, summaryLine, countLines, resolveScope, decodeBase,
+  MAX_FILES, MAX_COMPARE_BYTES, MAX_COUNT_BYTES, SCOPES,
 };

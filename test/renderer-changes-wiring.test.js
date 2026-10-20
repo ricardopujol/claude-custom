@@ -60,16 +60,26 @@ test('the panel is told whether it is on screen after every layout, and asks aga
   assert.match(RENDERER, /repoBrowser\.setControls\(msg\.controls\);\s*if \(changesPanel && shownModules\.has\('changes'\)\) changesPanel\.refresh\(\);/);
 });
 
-test('a review comment is typed through the page\'s ONE typing path, as kind `comment`, and counted only when it was typed', () => {
-  assert.match(RENDERER, /typeComment: \(text, done\) => typeCommand\(text, r => \{ if \(r\.ok\) usage\('changes:comment-typed'\); done\(r\.ok \? \{ ok: true \} : \{ ok: false, reason: r\.reason \}\); \}, 'comment'\)/);
-  // typeCommand without `opts.submit` never presses Enter: the call passes none
-  const at = RENDERER.indexOf("'comment')");
+test('a review comment is typed through the page\'s ONE typing path, as kind `comment`, appended to what it typed before, and never submitted', () => {
+  assert.match(RENDERER, /typeComment: \(text, done\) => typeReviewComment\(text, done\)/);
+  const at = RENDERER.indexOf('function typeReviewComment');
   assert.ok(at !== -1);
-  assert.doesNotMatch(RENDERER.slice(at - 260, at + 12), /submit\s*:/);
+  const body = strip(RENDERER.slice(at, RENDERER.indexOf('\nfunction typeCommand', at)));
+  assert.match(body, /commandTyped\(lines, lastCommentLine,/, 'the SCREEN says whether the box still holds our line');
+  assert.match(body, /window\.changesCompare\.appendComment\(\{ owned: ours \? lastCommentLine : '', text \}\)/);
+  assert.match(body, /'comment', ours \? \{ ownBox: true \} : undefined\)/, 'never `submit`: nothing here can press Enter');
+  assert.doesNotMatch(body, /submit\s*:/);
+  assert.match(body, /usage\('changes:comment-typed'\)/);
+  // our own wrapped line is one logical line, not a multi-line draft
+  assert.match(RENDERER, /opts && opts\.ownBox === true && screenNow === 'multiline' \? 'ready' : screenNow/);
 });
 
-test('the page routes the host\'s `changes` frames (answers and the changed push) to the browser, next to `repo`', () => {
-  assert.match(RENDERER, /if \(msg\.type === 'repo' \|\| msg\.type === 'changes'\) \{\s*repoBrowser\.onMessage\(msg\);\s*return;\s*\}/);
+test('the page routes a frame to the browser by repoBrowser.handles, which says yes to `repo` and `changes` and to nothing else', () => {
+  assert.match(RENDERER, /if \(window\.repoBrowser\.handles\(msg\)\) \{\s*repoBrowser\.onMessage\(msg\);\s*return;\s*\}/);
+  const { handles, FRAME_TYPES } = require('../app/repo-browser');
+  assert.deepStrictEqual([...FRAME_TYPES].sort(), ['changes', 'repo']);
+  for (const t of FRAME_TYPES) assert.strictEqual(handles({ type: t, action: 'list', seq: 1 }), true, t);
+  for (const m of [{ type: 'ask' }, { type: 'hello' }, { type: 'changed' }, { type: 'Repo' }, {}, null, undefined, 'repo', 5]) assert.strictEqual(handles(m), false, JSON.stringify(m));
 });
 
 test('both control conversations of the browser are gated on the host\'s hello and cleared when the socket drops', () => {

@@ -288,10 +288,11 @@ async function main() {
   const queued = await rp(app, 'reader.state');
   check('6: Shift+Enter queues comments (two queued, nothing typed yet)', queued.pending.length === 2 && queued.queueShown && boxLine() === want, JSON.stringify({ pending: queued.pending, box: boxLine() }));
   await rp(app, 'reader.sendQueued');
-  const stackWant = `In src/app.js:4 ${DASH} first; In src/app.js:7 ${DASH} second`;
+  // the queue is ADDED to what is typed (PR #199 Dexter 1): the first comment is still in the box, ours, so the box holds all three
+  const stackWant = `${want}; In src/app.js:4 ${DASH} first; In src/app.js:7 ${DASH} second`;
   const stacked = await waitFor(async () => (boxLine() === stackWant ? true : null), 15000, 300);
   await sleep(1500);
-  check('6: the queue is typed as ONE line, in order, and still not submitted', !!stacked && submitted().length === 0, JSON.stringify({ box: boxLine(), submitted: submitted() }));
+  check('6: the queue is ADDED to the comment already typed (the box holds all three on one line, in order), and still not submitted', !!stacked && submitted().length === 0, JSON.stringify({ box: boxLine(), submitted: submitted() }));
 
   // 7 --------------------------------------------------------------------------------
   fs.writeFileSync(path.join(dev, 'src', 'later.js'), 'exports.later = 1;\n');

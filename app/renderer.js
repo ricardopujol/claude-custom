@@ -819,7 +819,7 @@ const repoBrowser = window.repoBrowser.create({
   storageKey: () => `repoReaderWidth:${document.getElementById('cwd').textContent || ''}`,
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
   // a review comment from the Changes Compare (#119 A3): typed like the @ mention and NEVER submitted, the person presses Enter
-  typeComment: (text, done) => typeCommand(text, r => { if (r.ok) usage('changes:comment-typed'); done(r.ok ? { ok: true } : { ok: false, reason: r.reason }); }, 'comment'),
+  typeComment: (text, done) => typeReviewComment(text, done),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
   // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
@@ -7078,6 +7078,25 @@ const SUBMIT_RECHECK_MS = 400;
 const QUEUED_POLL_MS = 150;
 const QUEUED_POLLS = 6;
 
+// The review comments the Changes Compare typed (PR #199 Dexter 1). The typing path REPLACES the line it types into, so a second
+// comment is the first one typed again with the new one after it, never a clear that loses it: `lastCommentLine` is what was typed last,
+// and the SCREEN says whether the box still holds exactly that (the person may have sent it, or cleared it). A box that does not hold it
+// is replaced as for any typed command, and `cleared` says what was there so the reader can name Ctrl+Y.
+let lastCommentLine = '';
+function typeReviewComment(text, done) {
+  const lines = screenLines();
+  if (vimInsertShown(lines)) vimSeen = true;
+  const ours = lastCommentLine !== '' && commandTyped(lines, lastCommentLine, { vim: vimSeen, termRows: term.rows });
+  const plan = window.changesCompare.appendComment({ owned: ours ? lastCommentLine : '', text });
+  if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
+  typeCommand(plan.command, (r) => {
+    if (!r.ok) { done({ ok: false, reason: r.reason }); return; }
+    lastCommentLine = plan.command;
+    usage('changes:comment-typed');
+    done({ ok: true, appended: plan.appended, ...(plan.appended || !r.box ? {} : { cleared: r.box }) });
+  }, 'comment', ours ? { ownBox: true } : undefined);
+}
+
 function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
@@ -7085,9 +7104,11 @@ function typeCommand(command, done, kind, opts) {
   const submit = !!(opts && opts.submit);
   // No refusal from the hook state here (F3): when the host says 'prompt' but the SCREEN is a normal ready box,
   // the command is typed with no Enter. planTyping's screen check is what refuses a dialog it can see.
+  // the box holds OUR comment line, wrapped over several rows: it is one logical line, not a multi-line draft (opts.ownBox, typeReviewComment)
+  const screenNow = inputState(lines, { vim: vimSeen });
   const plan = planTyping({
     command,
-    screen: inputState(lines, { vim: vimSeen }),
+    screen: opts && opts.ownBox === true && screenNow === 'multiline' ? 'ready' : screenNow,
     connected: !!ws && ws.readyState === WebSocket.OPEN,
     kind,                       // 'mention' types the reader's `@path#Lx-y` (never Enter, like /merged)
   });
@@ -8689,7 +8710,7 @@ function handleControl(msg) {
     return;
   }
   // `changes` (the Changes panel, #119 A3) shares the browser's requester: left out here, every answer and every `changed` push is dropped
-  if (msg.type === 'repo' || msg.type === 'changes') {
+  if (window.repoBrowser.handles(msg)) {
     repoBrowser.onMessage(msg);
     return;
   }

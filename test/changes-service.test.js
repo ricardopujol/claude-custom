@@ -47,7 +47,7 @@ test('a clean lane: auto picks the BRANCH scope, against develop, with the commi
   assert.strictEqual(r.seq, 7);
   assert.strictEqual(r.scope, 'branch');
   assert.deepStrictEqual([r.base, r.against], ['develop', 'develop']);
-  assert.strictEqual(r.dirty, false);
+  assert.strictEqual(r.dirty, undefined, 'nothing read it, so nothing computes it (PR #199 Miguel Y2)');
   assert.deepStrictEqual(r.files.map(f => [f.path, f.status, f.add, f.del]), [['a.txt', 'M', 2, 1], ['b.txt', 'D', 0, 1], ['c.txt', 'A', 1, 0]]);
   assert.deepStrictEqual(r.summary, { files: 3, add: 3, del: 2, unknown: 0 });
 });
@@ -60,19 +60,17 @@ test('a dirty tree: auto picks the WORKING TREE, staged and unstaged together, u
   git(root, 'add', 'staged.txt');
   const r = await svc(root).handle({ type: 'changes', action: 'list', scope: 'auto' });
   assert.strictEqual(r.scope, 'working');
-  assert.strictEqual(r.dirty, true);
   assert.deepStrictEqual([r.base, r.against], ['develop', 'HEAD'], 'the working-tree list still names the branch the other button compares with');
   assert.deepStrictEqual(r.files.map(f => [f.path, f.status, f.add, f.del, !!f.untracked]), [
     ['a.txt', 'M', 1, 0, false], ['new file.txt', 'A', 2, 0, true], ['staged.txt', 'A', 1, 0, false],
   ]);
 });
 
-test('an explicit scope stands: the branch scope of a dirty tree also holds the uncommitted edit, and reports dirty', async () => {
+test('an explicit scope stands: the branch scope of a dirty tree also holds the uncommitted edit', async () => {
   const root = repo();
   put(root, 'a.txt', 'only\n');
   const r = await svc(root).handle({ type: 'changes', action: 'list', scope: 'branch' });
   assert.strictEqual(r.scope, 'branch');
-  assert.strictEqual(r.dirty, true);
   assert.deepStrictEqual(r.files.map(f => f.path), ['a.txt', 'b.txt', 'c.txt']);
   assert.deepStrictEqual(r.files.find(f => f.path === 'a.txt'), { path: 'a.txt', status: 'M', add: 1, del: 3, binary: false });
 });
@@ -264,4 +262,77 @@ test('an untracked path that is not a plain file (a link, a device) is listed wi
   const f = r.files.find(x => x.path === 'odd.txt');
   assert.deepStrictEqual([f.status, f.add, f.del, f.untracked], ['A', null, null, true]);
   assert.deepStrictEqual(read, []);
+});
+
+// ---- PR #199 fix pass ----
+
+test('DEXTER 3: a session folder BELOW the repository top level lists paths spelled from that folder, and each opens and compares', async () => {
+  const root = tmpDir('cc-changes-sub-');
+  git(root, 'init', '-q', '-b', 'develop');
+  put(root, 'app/a.js', 'one\ntwo\n');
+  put(root, 'README.md', 'top\n');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'base');
+  put(root, 'app/a.js', 'one\n2\n');            // modified inside the folder
+  put(root, 'app/new.js', 'x\ny\n');            // untracked inside the folder
+  put(root, 'README.md', 'changed at the top\n'); // changed OUTSIDE the folder
+  const sub = path.join(root, 'app');
+  const s = svc(sub);
+  const r = await s.handle({ type: 'changes', action: 'list', scope: 'working' });
+  assert.deepStrictEqual(r.files.map(f => [f.path, f.status]), [['a.js', 'M'], ['new.js', 'A']], 'both spelled from the folder; the change above it is not this worktree\'s');
+  // every listed path is one the reader can open through the same root, and a modified file's base is found (it is not drawn as deleted)
+  for (const f of r.files) {
+    assert.ok(fs.existsSync(path.join(sub, f.path)), `${f.path} exists under the session folder`);
+    if (f.status === 'M') {
+      const b = await s.handle({ type: 'changes', action: 'base', scope: 'working', path: f.path });
+      assert.deepStrictEqual([b.ok, b.text], [true, 'one\ntwo\n']);
+    }
+  }
+  const b2 = await s.handle({ type: 'changes', action: 'list', scope: 'branch' });
+  assert.deepStrictEqual(b2.files.map(f => f.path), ['a.js', 'new.js']);
+});
+
+test('DEXTER 4: the base is made like the NOW text: a UTF-8 BOM dropped, CRLF folded; UTF-16 is its own reason, not "binary"', async () => {
+  const root = repo();
+  fs.writeFileSync(path.join(root, 'bom.ps1'), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('a\r\nb\r\n')]));
+  fs.writeFileSync(path.join(root, 'u16.txt'), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('h\0i\0', 'binary')]));
+  git(root, 'add', '-A');
+  git(root, 'commit', '-q', '-m', 'bom and utf16');
+  fs.writeFileSync(path.join(root, 'bom.ps1'), 'a\nc\n');
+  fs.writeFileSync(path.join(root, 'u16.txt'), 'plain now\n');
+  const s = svc(root);
+  const bom = await s.handle({ type: 'changes', action: 'base', scope: 'working', path: 'bom.ps1' });
+  assert.deepStrictEqual([bom.ok, bom.text], [true, 'a\nb\n']);
+  const u = await s.handle({ type: 'changes', action: 'base', scope: 'working', path: 'u16.txt' });
+  assert.deepStrictEqual([u.ok, u.why], [false, 'encoding']);
+});
+
+test('MIGUEL Y3: an untracked file over 256 KB is listed with an unknown count (never read whole), one under it is counted', async () => {
+  const root = repo();
+  put(root, 'big.log', 'x\n'.repeat(140 * 1024));        // 280 KB
+  put(root, 'small.log', 'x\n'.repeat(1000));
+  const read = [];
+  const r = await svc(root, { readFile: async (p) => { read.push(path.basename(p)); return fs.readFileSync(p, 'utf8'); } }).handle({ type: 'changes', action: 'list', scope: 'working' });
+  assert.strictEqual(r.files.find(f => f.path === 'big.log').add, null);
+  assert.strictEqual(r.files.find(f => f.path === 'small.log').add, 1000);
+  assert.ok(!read.includes('big.log'));
+});
+
+test('MIGUEL S2: every git call turns the repo\'s fsmonitor off, so a read never runs a program the config names', async () => {
+  const root = repo();
+  put(root, 'a.txt', 'dirty\n');
+  const seen = [];
+  const execFile = (cmd, args, opts, cb) => { seen.push(args); return childProcess.execFile(cmd, args, opts, cb); };
+  await svc(root, { execFile }).handle({ type: 'changes', action: 'list', scope: 'auto' });
+  assert.ok(seen.length > 3);
+  for (const a of seen) assert.ok(a.includes('core.fsmonitor=false'), a.join(' '));
+});
+
+test('MIGUEL Y2: a list is ONE listing: the branch scope does not list the working tree a second time', async () => {
+  const root = repo();
+  put(root, 'a.txt', 'dirty\n');
+  let diffs = 0;
+  const execFile = (cmd, args, opts, cb) => { if (args.includes('diff') && args.includes('--numstat')) diffs += 1; return childProcess.execFile(cmd, args, opts, cb); };
+  await svc(root, { execFile }).handle({ type: 'changes', action: 'list', scope: 'branch' });
+  assert.strictEqual(diffs, 1);
 });

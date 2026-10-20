@@ -93,7 +93,12 @@ function create({ doc, send, harness, storage, typeMention, typeComment, focusTe
   };
 }
 
-const API = { create };
+// Which control frames the browser's requesters answer: the Files tab's `repo` and the Changes panel's `changes` (PR #199 Miguel Y5: the page
+// routes by THIS, so a frame type added here is routed, and one that is not is visibly not).
+const FRAME_TYPES = Object.freeze(['repo', 'changes']);
+const handles = (msg) => !!msg && typeof msg === 'object' && FRAME_TYPES.includes(msg.type);
+
+const API = { create, handles, FRAME_TYPES };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.repoBrowser = API;
 

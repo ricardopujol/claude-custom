@@ -75,7 +75,7 @@ const DASH = String.fromCharCode(0x2014);
 const NOW = 'one\nTWO\nthree\nfour\n';
 const BASE = 'one\ntwo\nthree\n';
 
-function setup() {
+function setup({ typeImpl } = {}) {
   const cm = fakeCodeMirror();
   globalThis.repoCodeMirror = cm;
   const { doc, el } = fakeDoc();
@@ -87,7 +87,7 @@ function setup() {
   const { create } = require('../app/repo-reader');
   const rd = create({
     doc, requester, changes, harness: {}, storage: null, typeMention: () => {}, onClose: () => {},
-    typeComment: (text, done) => { typed.push(text); done(typeAnswer); },
+    typeComment: (text, done) => { typed.push(text); if (typeImpl) typeImpl(text, done); else done(typeAnswer); },
     confirmDiscard: async () => true,
   });
   return { rd, requester, changes, el, typed, setTypeAnswer: (a) => { typeAnswer = a; } };
@@ -319,4 +319,151 @@ test('j and k typed in the comment field are text, not navigation', async () => 
   const rowsEl = s.el('reader-compare-rows');
   const e = rowsEl.fire('keydown', { key: 'j', target: { tagName: 'INPUT' } });
   assert.strictEqual(e.defaultPrevented, false);
+});
+
+// ---- PR #199 fix pass ----
+
+// The page's typing path as the renderer runs it (typeReviewComment): the box holds one line; a comment is typed AFTER what this feature
+// typed before while the box still holds exactly that, and replaces anything else.
+function boxModel(initial = '') {
+  const { appendComment } = require('../app/changes-compare');
+  const { planTyping } = require('../app/top-bar-display');
+  const m = { box: initial, last: '', calls: [] };
+  m.type = (text, done) => {
+    const ours = m.last !== '' && m.box === m.last;
+    const plan = appendComment({ owned: ours ? m.last : '', text });
+    m.calls.push(text);
+    if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
+    if (!planTyping({ command: plan.command, screen: 'ready', connected: true, kind: 'comment' }).ok) { done({ ok: false, reason: 'gate' }); return; }
+    const was = m.box;
+    m.box = plan.command;
+    m.last = plan.command;
+    done({ ok: true, appended: plan.appended, ...(plan.appended || !was ? {} : { cleared: was }) });
+  };
+  return m;
+}
+
+test('DEXTER 1, pinned verbatim: Enter on line 3, then Enter on line 9: the box holds BOTH comments, in order, and nothing was submitted', async () => {
+  const model = boxModel();
+  const s = setup({ typeImpl: model.type });
+  await openAnswered(s, { now: Array.from({ length: 12 }, (_, i) => `l${i + 1}`).join('\n') + '\n', base: Array.from({ length: 12 }, (_, i) => `x${i + 1}`).join('\n') + '\n' });
+  const typeOn = async (line, text) => {
+    const rowsEl = s.el('reader-compare-rows');
+    const row = rowsEl.children.find(r => r.dataset && r.dataset.line === String(line));
+    const btn = row.children[4].children[0];
+    rowsEl.fire('click', { target: { closest: (sel) => (sel === '[data-act="comment"]' ? btn : null), dataset: btn.dataset } });
+    const input = row.children[row.children.length - 1].children.find(c => c.className === 'sbs-input');
+    input.value = text;
+    input.fire('keydown', { key: 'Enter', shiftKey: false });
+    await settle();
+  };
+  await typeOn(3, 'rename this');
+  await typeOn(9, 'guard null');
+  assert.strictEqual(model.box, `In src/a.js:3 ${DASH} rename this; In src/a.js:9 ${DASH} guard null`);
+  assert.deepStrictEqual(model.calls, [`In src/a.js:3 ${DASH} rename this`, `In src/a.js:9 ${DASH} guard null`], 'the reader hands over only what is NEW each time');
+  assert.match(s.rd.probe('state').meta, /added 1 comment to what was typed/);
+  assert.deepStrictEqual(s.rd.probe('state').pending, []);
+});
+
+test('DEXTER 1: a box that is NOT ours (a draft the person typed, or one they sent) is replaced as for any typed command, and the reader says Ctrl+Y brings it back', async () => {
+  const model = boxModel('my own draft');
+  const s = setup({ typeImpl: model.type });
+  await openAndComment(s, 2, 'first');
+  assert.strictEqual(model.box, `In src/a.js:2 ${DASH} first`);
+  assert.match(s.rd.probe('state').meta, /Ctrl\+Y in that tab brings it back/);
+  // the person sends it (the box empties): the next comment starts a new line, it does not drag the sent one back
+  model.box = '';
+  const rowsEl = s.el('reader-compare-rows');
+  const row = rowsEl.children.find(r => r.dataset && r.dataset.line === '4');
+  const btn = row.children[4].children[0];
+  rowsEl.fire('click', { target: { closest: () => btn, dataset: btn.dataset } });
+  const input = row.children[row.children.length - 1].children.find(c => c.className === 'sbs-input');
+  input.value = 'second';
+  input.fire('keydown', { key: 'Enter', shiftKey: false });
+  await settle();
+  assert.strictEqual(model.box, `In src/a.js:4 ${DASH} second`);
+});
+
+test('DEXTER 11: a comment queued while the last send is still typing stays queued; only what was typed leaves', async () => {
+  let release = null;
+  const s = setup({ typeImpl: (text, done) => { release = () => done({ ok: true }); } });
+  await openAndComment(s, 2, 'A');
+  assert.strictEqual(s.typed.length, 1);
+  // while A is typing, B is added with Shift+Enter
+  const rowsEl = s.el('reader-compare-rows');
+  const row = rowsEl.children.find(r => r.dataset && r.dataset.line === '4');
+  const btn = row.children[4].children[0];
+  rowsEl.fire('click', { target: { closest: () => btn, dataset: btn.dataset } });
+  const input = row.children[row.children.length - 1].children.find(c => c.className === 'sbs-input');
+  input.value = 'B';
+  input.fire('keydown', { key: 'Enter', shiftKey: true });
+  assert.strictEqual(s.rd.probe('state').pending.length, 2, 'A (typing) and B');
+  release();
+  await settle();
+  assert.deepStrictEqual(s.rd.probe('state').pending, [`In src/a.js:4 ${DASH} B`]);
+  assert.strictEqual(s.el('reader-compare-queue').hidden, false);
+});
+
+test('DEXTER 6: a queue too long to type together can still be worked off: Type sends one comment, Remove drops one, Clear is not the only exit', async () => {
+  const s = setup();
+  await openAnswered(s);
+  const rowsEl = s.el('reader-compare-rows');
+  const add = (line, text) => {
+    const row = rowsEl.children.find(r => r.dataset && r.dataset.line === String(line));
+    const btn = row.children[4].children[0];
+    rowsEl.fire('click', { target: { closest: () => btn, dataset: btn.dataset } });
+    const input = row.children[row.children.length - 1].children.find(c => c.className === 'sbs-input');
+    input.value = text;
+    input.fire('keydown', { key: 'Enter', shiftKey: true });
+  };
+  const long = (c) => c.repeat(390);
+  add(2, long('a')); add(4, long('b')); add(2, long('c')); add(4, long('d')); add(2, long('e'));
+  assert.strictEqual(s.rd.probe('state').pending.length, 5);
+  s.el('reader-compare-send').click();
+  await settle();
+  assert.deepStrictEqual(s.typed, [], 'all five do not fit one line');
+  assert.match(s.rd.probe('state').meta, /not typed: .*too long/);
+  const items = s.el('reader-compare-queue-items').children;
+  assert.strictEqual(items.length, 5, 'one row per queued comment');
+  const [typeBtn, removeBtn] = [items[0].children[1], items[1].children[2]];
+  assert.deepStrictEqual([typeBtn.dataset.q, removeBtn.dataset.q], ['send', 'remove']);
+  s.el('reader-compare-queue-items').fire('click', { target: { closest: () => typeBtn, dataset: typeBtn.dataset } });
+  await settle();
+  assert.strictEqual(s.typed.length, 1);
+  assert.ok(s.typed[0].includes('a'.repeat(390)) && !s.typed[0].includes('b'.repeat(390)), 'just that one');
+  assert.strictEqual(s.rd.probe('state').pending.length, 4, 'and it left the queue');
+  const second = s.el('reader-compare-queue-items').children[0].children[2];
+  s.el('reader-compare-queue-items').fire('click', { target: { closest: () => second, dataset: second.dataset } });
+  assert.strictEqual(s.rd.probe('state').pending.length, 3, 'Remove drops one and nothing else');
+});
+
+test('DEXTER 4: a base with a BOM or CRLF against a NOW without them marks only the line that really changed', async () => {
+  const s = setup();
+  await openAnswered(s, { base: String.fromCharCode(0xfeff) + 'a\r\nb\r\n', now: 'a\nc\n' });
+  const changed = rowsText(s).filter(r => !r.startsWith('sbs-row same|'));
+  assert.strictEqual(changed.length, 1, rowsText(s).join(' / '));
+  assert.ok(changed[0].startsWith('sbs-row change|') && changed[0].includes('b') && changed[0].includes('c'));
+  const u = setup();
+  const p = openIt(u);
+  await tick();
+  u.requester.last('read').resolve({ ok: true, text: 'x\n', size: 2, mtimeMs: 1 });
+  u.changes.last('base').resolve({ ok: false, why: 'encoding' });
+  await p; await settle();
+  assert.match(u.rd.probe('state').noteText, /UTF-16/);
+});
+
+test('MIGUEL S3: Enter that ends an IME composition is the IME\'s, not a comment', async () => {
+  const s = setup();
+  await openAnswered(s);
+  const rowsEl = s.el('reader-compare-rows');
+  const row = rowsEl.children.find(r => r.dataset && r.dataset.line === '2');
+  const btn = row.children[4].children[0];
+  rowsEl.fire('click', { target: { closest: () => btn, dataset: btn.dataset } });
+  const input = row.children[row.children.length - 1].children.find(c => c.className === 'sbs-input');
+  input.value = 'composing';
+  const e = input.fire('keydown', { key: 'Enter', isComposing: true });
+  await settle();
+  assert.deepStrictEqual(s.typed, []);
+  assert.strictEqual(e.defaultPrevented, false);
+  assert.strictEqual(s.rd.probe('state').pending.length, 0);
 });

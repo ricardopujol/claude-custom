@@ -407,9 +407,13 @@
     .chg-add { color: var(--ok); }
     .chg-del { color: var(--bad); }
     .chg-more { padding: 6px 4px; font-size: 11px; color: var(--dim); font-style: italic; }
-    #reader-compare-queue { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 11px; background: color-mix(in srgb, var(--accent) 14%, var(--chrome)); border-bottom: 1px solid var(--accent); }
+    #reader-compare-queue { flex: 0 0 auto; display: flex; flex-direction: column; gap: 3px; padding: 4px 8px; font-size: 11px; background: color-mix(in srgb, var(--accent) 14%, var(--chrome)); border-bottom: 1px solid var(--accent); }
     #reader-compare-queue[hidden] { display: none; }
     #reader-compare-queue-text { flex: 1; }
+    #reader-compare-queue-bar { display: flex; align-items: center; gap: 8px; }
+    #reader-compare-queue-items { max-height: 7.5em; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+    .q-item { display: flex; align-items: center; gap: 6px; }
+    .q-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--dim); }
     #reader-compare-back[hidden] { display: none; }
     #reader-compare-rows .sbs-row { display: grid; grid-template-columns: 3.2em minmax(0, 1fr) 3.2em minmax(0, 1fr) 2em; white-space: pre; position: relative; }
     .sbs-no { text-align: right; padding-right: 6px; color: var(--dim); font-size: 10.5px; user-select: none; }
@@ -2193,7 +2197,7 @@
         </header>
         <div id="reader-bar" role="status" hidden><span id="reader-bar-text"></span><button type="button" id="reader-reload">Reload</button></div>
         <div id="reader-conflict" role="alert" hidden><span id="reader-conflict-text"></span><button type="button" id="reader-conflict-reload" title="Drop your changes and show the file as it is on disk">Reload</button><button type="button" id="reader-conflict-keep" title="Keep your text; the next save replaces the disk version">Keep mine</button><button type="button" id="reader-conflict-compare" title="Show the two versions line by line">Compare</button></div>
-        <div id="reader-compare" hidden><div id="reader-compare-head"><span id="reader-compare-title">On disk now, against yours</span><button type="button" id="reader-compare-back">Back to editing</button></div><div id="reader-compare-queue" hidden><span id="reader-compare-queue-text"></span><button type="button" id="reader-compare-send" title="Type the queued comments into the prompt (you press Enter)">Type into prompt</button><button type="button" id="reader-compare-clear">Clear</button></div><div id="reader-compare-rows" tabindex="0" aria-label="Line by line differences"></div></div>
+        <div id="reader-compare" hidden><div id="reader-compare-head"><span id="reader-compare-title">On disk now, against yours</span><button type="button" id="reader-compare-back">Back to editing</button></div><div id="reader-compare-queue" hidden><div id="reader-compare-queue-bar"><span id="reader-compare-queue-text"></span><button type="button" id="reader-compare-send" title="Type all the queued comments into the prompt (you press Enter)">Type all</button><button type="button" id="reader-compare-clear" title="Drop every queued comment">Clear</button></div><div id="reader-compare-queue-items"></div></div><div id="reader-compare-rows" tabindex="0" aria-label="Line by line differences"></div></div>
         <div id="reader-body"></div>
         <div id="reader-note" role="status" hidden><span id="reader-note-text"></span><button type="button" id="reader-note-reveal" hidden>Show in Explorer</button></div>
       </section>

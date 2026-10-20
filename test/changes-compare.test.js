@@ -181,3 +181,39 @@ test('buildRows: a gap row says how many lines it hides; empty text keeps its he
   assert.match(els[0].className, /sbs-row gap/);
   assert.match(els[0].textContent, /\d+ unchanged lines/);
 });
+
+test('normalizeText: a leading BOM dropped, CRLF folded, anything else untouched, non-strings are empty', () => {
+  const bom = String.fromCharCode(0xfeff);
+  assert.strictEqual(X.normalizeText(`${bom}a\r\nb\r\n`), 'a\nb\n');
+  assert.strictEqual(X.normalizeText('a\rb\nc'), 'a\rb\nc', 'a lone CR is not a line ending here');
+  assert.strictEqual(X.normalizeText(`x${bom}y`), `x${bom}y`, 'only a LEADING BOM');
+  assert.strictEqual(X.normalizeText(undefined), '');
+  assert.strictEqual(X.normalizeText(7), '');
+});
+
+test('appendComment: with nothing of ours in the box the comment alone; with ours, ours then "; " then the new one; refused past the typing limit', () => {
+  const a = X.commentText('a.js', 3, 'one').text;
+  const b = X.commentText('b.js', 9, 'two').text;
+  assert.deepStrictEqual(X.appendComment({ owned: '', text: a }), { ok: true, command: a, appended: false });
+  assert.deepStrictEqual(X.appendComment({ owned: a, text: b }), { ok: true, command: `${a}; ${b}`, appended: true });
+  assert.deepStrictEqual(X.appendComment({ text: a }), { ok: true, command: a, appended: false });
+  assert.strictEqual(X.appendComment({ owned: 'x'.repeat(1985), text: b }).ok, false);
+  assert.match(X.appendComment({ owned: 'x'.repeat(1985), text: b }).reason, /full/);
+  assert.strictEqual(X.appendComment({ owned: a, text: '' }).ok, false);
+  assert.strictEqual(X.appendComment().ok, false);
+});
+
+test('PROPERTY: appending comments one by one builds exactly the stack of all of them, and every step is a line the typing gate accepts', () => {
+  const { planTyping } = require('../app/top-bar-display');
+  fc.assert(fc.property(fc.array(fc.tuple(fc.integer({ min: 1, max: 999 }), fc.string({ minLength: 1, maxLength: 40 })), { minLength: 1, maxLength: 6 }), (items) => {
+    const lines = items.map(([n, t]) => X.commentText('src/a.js', n, t)).filter(r => r.ok).map(r => r.text);
+    let box = '';
+    for (const l of lines) {
+      const p = X.appendComment({ owned: box, text: l });
+      if (!p.ok) break;
+      box = p.command;
+      assert.strictEqual(planTyping({ command: box, screen: 'ready', connected: true, kind: 'comment' }).ok, true, box);
+    }
+    if (box) assert.ok(lines.join('; ').startsWith(box));
+  }));
+});

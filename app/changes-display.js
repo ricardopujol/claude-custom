@@ -30,7 +30,7 @@ const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string';
 
 function emptyState() {
-  return { asked: 'auto', scope: null, base: null, files: [], total: 0, more: 0, summary: null, dirty: null, loaded: false, error: null, selected: null };
+  return { asked: 'auto', scope: null, base: null, files: [], total: 0, more: 0, summary: null, loaded: false, error: null, selected: null };
 }
 
 function withReply(state, reply) {
@@ -45,7 +45,6 @@ function withReply(state, reply) {
     total: Number.isInteger(reply.total) ? reply.total : files.length,
     more: Number.isInteger(reply.more) && reply.more > 0 ? reply.more : 0,
     summary: isObj(reply.summary) ? reply.summary : null,
-    dirty: typeof reply.dirty === 'boolean' ? reply.dirty : null,
     loaded: true,
     error: null,
     selected: files.some(f => f.path === state.selected) ? state.selected : null,
@@ -195,6 +194,9 @@ function mount({ doc, root: host, request, isTouched, openChange, usage } = {}) 
   });
 
   host.addEventListener('keydown', (e) => {
+    // Enter on a focused scope or refresh button is that button's own (it is a click): the list's keys are the list's (PR #199 Dexter 7 + Miguel Y4)
+    const t = e && e.target;
+    if (t && (t.tagName === 'BUTTON' || (typeof t.closest === 'function' && t.closest('button')))) return;
     const a = keyAction(e);
     if (!a) return;
     if (a.type === 'move') {

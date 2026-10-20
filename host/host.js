@@ -112,7 +112,7 @@ const { readFog } = require('./fog');
 const { createRepoService } = require('./repo-service');
 // The Changes panel (BACKLOG #119 A3): the worktree's changeset, read-only from git (host/changes.js), and when to look again (host/changes-notifier.js).
 const { createChangesService } = require('./changes-service');
-const { createChangesNotifier } = require('./changes-notifier');
+const { createChangesNotifier, isChangesOnly } = require('./changes-notifier');
 // "Ask the repo" (BACKLOG #33): the panel's questions and explanations, answered from this worktree's index (host/ask-service.js).
 const { createAskService, createRepoFactory, EXPLAINER_AGENT } = require('./ask-service');
 const { createExplainer: createAskExplainer } = require('./ask-explainer');
@@ -660,6 +660,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   pipeName: PIPE_NAME,
   // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
   occupancy: true,
+  // Edit / Write / MultiEdit / NotebookEdit / PowerShell PostToolUse, for the Changes panel's refresh only (consumed below, never forwarded).
+  changes: true,
   // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
   bedtime: true,
   // PermissionRequest, observe-only, so "waiting on you" can name the agent (BACKLOG #55; host/settings-writer.js).
@@ -1466,6 +1468,8 @@ if (helperExists) {
     attention.activity(ev);
     // ...but the mood engine reads them for one thing only: which tool an agent is using now (reading, writing,
     // BACKLOG #55). They open no run and touch no panel; a Read is never a process.
+    // The Post of the edit tools exists only so the Changes panel can look after the edit landed: it ends here.
+    if (isChangesOnly(ev)) return;
     if (isOccupancyOnly(ev)) { mood.handle(ev); return; }
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.

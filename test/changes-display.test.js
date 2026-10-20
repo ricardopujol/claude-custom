@@ -16,7 +16,7 @@ const FILES = [
   { path: 'new/name.js', oldPath: 'old/name.js', status: 'R', add: 0, del: 0, binary: false },
   { path: 'gone.txt', status: 'D', add: 0, del: 7, binary: false },
 ];
-const reply = (over) => ({ ok: true, type: 'changes', action: 'list', scope: 'working', base: 'develop', files: FILES, total: 5, more: 0, summary: { files: 5, add: 52, del: 10, unknown: 1 }, dirty: true, ...over });
+const reply = (over) => ({ ok: true, type: 'changes', action: 'list', scope: 'working', base: 'develop', files: FILES, total: 5, more: 0, summary: { files: 5, add: 52, del: 10, unknown: 1 }, ...over });
 
 test('a fresh state asks for `auto` and shows nothing yet', () => {
   const s = D.emptyState();
@@ -28,7 +28,7 @@ test('a fresh state asks for `auto` and shows nothing yet', () => {
 
 test('a list answer fills the state; the scope SHOWN is the one the host used, the one ASKED is unchanged', () => {
   const s = D.withReply(D.emptyState(), reply());
-  assert.deepStrictEqual([s.asked, s.scope, s.base, s.loaded, s.dirty, s.total], ['auto', 'working', 'develop', true, true, 5]);
+  assert.deepStrictEqual([s.asked, s.scope, s.base, s.loaded, s.total], ['auto', 'working', 'develop', true, 5]);
   assert.strictEqual(s.files.length, 5);
 });
 
@@ -259,6 +259,19 @@ test('mounted: Enter opens the selected row, arrows move it, and the keys are co
   const empty = mount();
   empty.p.show(); await empty.answer(reply({ files: [], total: 0 }));
   assert.strictEqual(empty.root.key({ key: 'Enter' }), false, 'Enter with nothing selected does nothing');
+});
+
+test('DEXTER 7 / MIGUEL Y4: Enter and the arrows on a focused BUTTON belong to the button: the list does not open the selected file or swallow the key', async () => {
+  const m = mount();
+  m.p.show(); await m.answer(reply());
+  m.root.key({ key: 'ArrowDown' });
+  const onScope = { tagName: 'BUTTON', closest: (s) => (s === 'button' ? {} : null) };
+  assert.strictEqual(m.root.key({ key: 'Enter', target: onScope }), false, 'not consumed, so the browser clicks the button');
+  assert.strictEqual(m.root.key({ key: 'ArrowDown', target: { tagName: 'SPAN', closest: (s) => (s === 'button' ? {} : null) } }), false);
+  assert.deepStrictEqual(m.opened, []);
+  assert.strictEqual(m.p.state().selected, 'app/a.js');
+  assert.strictEqual(m.root.key({ key: 'Enter', target: { tagName: 'DIV', closest: () => null } }), true, 'on the list it still opens');
+  assert.strictEqual(m.opened.length, 1);
 });
 
 test('mounted: a request that fails is shown, not swallowed, and the next refresh recovers', async () => {

@@ -94,7 +94,7 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
     conflict: $('reader-conflict'), conflictText: $('reader-conflict-text'), conflictReload: $('reader-conflict-reload'),
     conflictKeep: $('reader-conflict-keep'), conflictCompare: $('reader-conflict-compare'),
     compare: $('reader-compare'), compareRows: $('reader-compare-rows'), compareBack: $('reader-compare-back'), compareTitle: $('reader-compare-title'),
-    queue: $('reader-compare-queue'), queueText: $('reader-compare-queue-text'), send: $('reader-compare-send'), clear: $('reader-compare-clear'),
+    queue: $('reader-compare-queue'), queueText: $('reader-compare-queue-text'), queueItems: $('reader-compare-queue-items'), send: $('reader-compare-send'), clear: $('reader-compare-clear'),
   };
   // Asked before unsaved text is thrown away. No dialog available means NO: nothing is discarded unasked.
   // The probe (a real window has no one to click a native dialog) answers for the person: { answer, asked[] }.
@@ -111,7 +111,7 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
     // names); `conflict` is the banner's state; `reported` is the last unsaved path told to `onDirty`
     editing: false, base: null, conflict: null, comparing: false, saving: false, reported: null,
     // the Changes Compare: what is being compared, and the comments queued to be typed into the prompt
-    change: null, pending: [],
+    change: null, pending: [], sending: false,
   };
   let cmPromise = null;
 
@@ -618,11 +618,13 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
     if (!base.ok) {
       refuseChange(base.why === 'too-large' ? 'The base version is too large to compare (over 1 MB).'
         : base.why === 'binary' ? 'This file was a binary file at the base, so there is nothing to compare.'
+          : base.why === 'encoding' ? 'This file was UTF-16 at the base, an encoding the compare does not decode.'
           : `The base version could not be read: ${base.error || base.why || 'unknown error'}`);
       return;
     }
     closeComposer();
-    c.rows = changesCompare.fold(changesCompare.sideBySide(lineDiff.diffLines(base.text, now.text)));
+    // both sides are made the same way (a BOM dropped, CRLF folded), so a line is marked changed only when it is (PR #199 Dexter 4)
+    c.rows = changesCompare.fold(changesCompare.sideBySide(lineDiff.diffLines(changesCompare.normalizeText(base.text), changesCompare.normalizeText(now.text))));
     c.hunks = changesCompare.hunkStarts(c.rows);
     c.cur = null;
     state.stamp = deleted ? null : { size: now.size, mtimeMs: now.mtimeMs };
@@ -690,6 +692,8 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
         return;
       }
       if (e.key !== 'Enter') return;
+      // Enter that ends an IME composition is the IME's, not a comment (PR #199 Miguel S3)
+      if (e.isComposing) return;
       e.preventDefault();
       addComment(line, input.value, { send: !e.shiftKey });
     });
@@ -709,7 +713,7 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
   function addComment(line, text, { send }) {
     const r = changesCompare.commentText(state.path, line, text);
     if (!r.ok) { state.status = `not added: ${r.reason}`; paintHead(); return; }
-    state.pending.push(r.text);
+    addPending(r.text);
     closeComposer();
     state.status = '';
     renderQueue();
@@ -717,27 +721,76 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
     if (send) sendPending();
   }
 
+  // The queue: each comment has its own Type and Remove, so a stack too long to type in one go (or one comment that is wrong) is never a
+  // choice between "type nothing" and "lose everything" (PR #199 Dexter 6). Entries carry an id: a comment added while a send is typing
+  // stays queued, and only what was sent leaves (Dexter 11).
+  let nextPendingId = 1;
+
+  function addPending(text) {
+    state.pending.push({ id: nextPendingId, text });
+    nextPendingId += 1;
+  }
+
   function renderQueue() {
     const n = state.pending.length;
     el.queue.hidden = n === 0;
     el.queueText.textContent = n === 0 ? '' : `${n} ${plural(n, 'comment', 'comments')} queued`;
+    const items = state.pending.map((p) => {
+      const row = doc.createElement('div');
+      row.className = 'q-item';
+      const t = doc.createElement('span');
+      t.className = 'q-text';
+      t.textContent = p.text;
+      t.title = p.text;
+      const send = doc.createElement('button');
+      send.type = 'button';
+      send.className = 'q-send';
+      send.textContent = 'Type';
+      send.title = 'Type just this comment into the prompt';
+      send.dataset.q = 'send';
+      send.dataset.id = String(p.id);
+      const rm = doc.createElement('button');
+      rm.type = 'button';
+      rm.className = 'q-remove';
+      rm.textContent = 'Remove';
+      rm.dataset.q = 'remove';
+      rm.dataset.id = String(p.id);
+      row.append(t, send, rm);
+      return row;
+    });
+    el.queueItems.replaceChildren(...items);
   }
 
-  function sendPending() {
-    const s = changesCompare.stackText(state.pending);
+  // `ids`: only these queued comments (the per-item Type); none: all of them
+  function sendPending(ids) {
+    if (state.sending) { state.status = 'not typed: the last comments are still being typed'; paintHead(); return; }
+    const chosen = Array.isArray(ids) ? state.pending.filter(p => ids.includes(p.id)) : state.pending.slice();
+    const s = changesCompare.stackText(chosen.map(p => p.text));
     if (!s.ok) { state.status = `not typed: ${s.reason}`; paintHead(); return; }
     if (typeof typeComment !== 'function') { state.status = 'not typed: this window cannot type into the prompt'; paintHead(); return; }
     const n = s.count;
+    const sentIds = new Set(chosen.map(p => p.id));
+    state.sending = true;
     typeComment(s.text, (r) => {
+      state.sending = false;
       if (r && r.ok) {
-        state.pending = [];
-        state.status = `typed ${n} ${plural(n, 'comment', 'comments')}; press Enter in the terminal to send ${plural(n, 'it', 'them')}`;
+        // only what was typed leaves the queue: a comment added while this was typing stays
+        state.pending = state.pending.filter(p => !sentIds.has(p.id));
+        const how = r.appended ? `added ${n} ${plural(n, 'comment', 'comments')} to what was typed` : `typed ${n} ${plural(n, 'comment', 'comments')}`;
+        // a box that was not empty and not ours was replaced (a draft, or the CLI's placeholder: the text cannot tell)
+        const lost = r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : '';
+        state.status = `${how}; press Enter in the terminal to send ${plural(n, 'it', 'them')}.${lost}`;
       } else {
         state.status = `not typed: ${(r && r.reason) || 'refused'}`;
       }
       renderQueue();
       paintHead();
     });
+  }
+
+  function removePending(id) {
+    state.pending = state.pending.filter(p => p.id !== id);
+    renderQueue();
   }
 
   function clearPending() {
@@ -838,7 +891,14 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
   el.conflictKeep.addEventListener('click', conflictKeep);
   el.conflictCompare.addEventListener('click', conflictCompare);
   el.compareBack.addEventListener('click', () => { hideCompare(); if (state.editor && typeof state.editor.focus === 'function') state.editor.focus(); });
-  el.send.addEventListener('click', sendPending);
+  el.send.addEventListener('click', () => sendPending());
+  el.queueItems.addEventListener('click', (e) => {
+    const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-q]') : null;
+    if (!t) return;
+    const id = Number(t.dataset.id);
+    if (t.dataset.q === 'send') sendPending([id]);
+    else if (t.dataset.q === 'remove') removePending(id);
+  });
   el.clear.addEventListener('click', clearPending);
   // the Changes Compare: a "+" opens the comment field, a click on a row makes it the current one, j / k walk the hunks, Ctrl+/ comments on the current line
   el.compareRows.addEventListener('click', (e) => {
@@ -935,7 +995,7 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
           editing: state.editing, dirty: isDirty(), editShown: !el.edit.hidden, editDisabled: el.edit.disabled, editLabel: el.edit.textContent,
           editTitle: el.edit.title, saveShown: !el.save.hidden, saveDisabled: el.save.disabled, dotShown: !el.dirty.hidden,
           change: state.change ? { scope: state.change.scope, base: state.change.base, status: state.change.status, hunks: state.change.hunks.length, cur: state.change.cur } : null,
-          pending: state.pending.slice(), queueShown: !el.queue.hidden, compareTitle: el.compareTitle.textContent,
+          pending: state.pending.map(p => p.text), queueShown: !el.queue.hidden, compareTitle: el.compareTitle.textContent,
           conflictShown: !el.conflict.hidden, conflictText: el.conflictText.textContent, compareShown: !el.compare.hidden,
           compareRows: Array.from(el.compareRows.children || [], (r) => `${r.className}|${r.textContent}`).slice(0, 40),
           diffVisible: !el.diff.hidden, diffLabel: el.diff.textContent, meta: el.meta.textContent,
@@ -963,6 +1023,8 @@ function create({ doc, requester, changes, harness, storage, storageKey = 'repoR
       }
       case 'hunk': jumpHunk(a.dir === 'prev' ? -1 : 1); return { ok: true, cur: state.change ? state.change.cur : null };
       case 'sendQueued': sendPending(); return { ok: true };
+      case 'sendQueuedItem': sendPending([Number(a.id)]); return { ok: true };
+      case 'removeQueued': removePending(Number(a.id)); return { ok: true };
       case 'clearQueued': clearPending(); return { ok: true };
       case 'ask': askSelection(); return { ok: true };
       case 'close': return close(a).then((closed) => ({ ok: true, closed }));
