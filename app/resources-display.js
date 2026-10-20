@@ -367,7 +367,7 @@ function childHtml(c) {
   const stop = c.canStop
     ? `<button type="button" class="res-stop" data-res-act="ask-stop" data-res-pid="${esc(c.pid)}" data-res-start="${esc(c.start)}" data-res-name="${esc(c.name)}" aria-label="Stop ${esc(c.name)}, PID ${esc(c.pid)}" title="Stop ${esc(c.name)}, PID ${esc(c.pid)}">■</button>`
     : '';
-  // ONE line per child: name (truncated first), CPU, memory, then a small square Stop at the end. The command line is the
+  // The name gets the first line; CPU, memory and a small square Stop wrap under it (CSS). The command line is the
   // row's hover tooltip, not a line of its own.
   let h = `<div class="res-child" title="${esc(c.full)}"><span class="res-cname">${esc(c.name)}</span>`
     + `<span class="res-fig">${esc(c.cpuFig)}</span><span class="res-fig">${esc(c.memFig)}</span>${stop || '<span class="res-stop-gap" aria-hidden="true"></span>'}</div>`;

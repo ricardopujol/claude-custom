@@ -195,6 +195,16 @@ function reason(err, fallback) {
  * same rung can announce again for the new window. Within one instance a rung
  * still announces once, and a falling percentage still says nothing.
  */
+// The window INSTANCE, by the instant it resets, not by the string that spells it (BACKLOG #119 A2): the poll says
+// `2026-10-20T05:10:00.006953+00:00` and the CLI's mod says `2026-10-20T05:10:00.000Z` for the same instant, and keying on the text announced
+// the same rung again on every switch between the two. Rounded to the minute (resets sit on a minute grid; the sources differ by
+// milliseconds). A stamp that does not parse keeps its own text, as before.
+function instanceOf(w) {
+  if (!w || !w.resetsAt) return null;
+  const ms = Date.parse(w.resetsAt);
+  return `${w.key}@${Number.isFinite(ms) ? Math.round(ms / 60000) : w.resetsAt}`;
+}
+
 function createQuotaAnnouncer() {
   // instanceKey -> highest threshold already announced for it.
   const announced = new Map();
@@ -217,7 +227,7 @@ function createQuotaAnnouncer() {
       // behaviour this function exists to escape, restored whenever the
       // discriminator happens to be missing. Better to risk announcing twice
       // than to go permanently silent.
-      const instance = w.resetsAt ? `${w.key}@${w.resetsAt}` : null;
+      const instance = instanceOf(w);
 
       const reached = QUOTA_THRESHOLDS.filter(t => w.percent >= t).pop();
       if (reached === undefined) continue;
@@ -258,7 +268,7 @@ function createQuotaAnnouncer() {
     for (const w of windows) {
       if (!w || !w.resetsAt) continue;
       const prefix = `${w.key}@`;
-      const live = `${w.key}@${w.resetsAt}`;
+      const live = instanceOf(w);
       for (const k of [...announced.keys()]) {
         if (k.startsWith(prefix) && k !== live) announced.delete(k);
       }
