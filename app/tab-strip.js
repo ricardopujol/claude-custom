@@ -269,7 +269,9 @@ function paintPlus(doc, payload, bridge) {
     if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
     // #119 A6: a branch picked from an issue carries the issue's number, so main writes that issue's brief. Only while the
     // field still holds exactly the branch the pick filled in: any edit makes it somebody else's branch (PR #202 Dexter 2).
-    if (issuePick.number !== null && String(input.value).trim() === issuePick.branch) bridge.create(String(input.value), issuePick.number);
+    // The same predicate drives the button's label (pickState), so what the form says is what Create does.
+    const p = pickState(input);
+    if (p && p.attached) bridge.create(String(input.value), p.number);
     else bridge.create(String(input.value));
   };
   input.onkeydown = (ev) => {
@@ -289,6 +291,16 @@ function paintPlus(doc, payload, bridge) {
 // One strip document per process, so these are singletons (hence the `drawnFor` guard below for a test's second document).
 const issuePick = { number: null, branch: null };                    // the issue picked, and the exact branch the pick filled in
 const issueUi = { seq: 0, reply: null, query: '', wasOpen: false, drawn: undefined, drawnFor: null };   // the last answer, and which ask it answers
+
+/**
+ * The pick as the field holds it now: null when nothing was picked, else the issue's number and whether the field
+ * still holds exactly the picked branch (spaces around it allowed). ONE predicate for Create and for the button's
+ * label (Ricardo 2026-10-21: an edit that detaches the issue must say so, not drop it silently).
+ */
+function pickState(input) {
+  if (issuePick.number === null) return null;
+  return { number: issuePick.number, attached: String(input.value).trim() === issuePick.branch };
+}
 
 function issueRowNode(doc, row, onPick) {
   const b = doc.createElement('button');
@@ -318,8 +330,13 @@ function issueRowNode(doc, row, onPick) {
   return b;
 }
 
-/** What the row and the panel say for main's last answer. Pure; exported for the test. */
-function issuesView(reply) {
+/**
+ * What the row and the panel say for main's last answer, and for the pick (`pickState`'s shape, or null). Pure; exported
+ * for the test. With a pick the button is the notice: `#12 ▾` while the field holds the picked branch, `Detached from
+ * #12 ▾` once it was edited (Create then makes a plain branch, no issue brief). A failed read keeps its error text: the
+ * label never hides why the list can't open.
+ */
+function issuesView(reply, pick = null) {
   if (!reply || typeof reply !== 'object') return { button: { text: 'From an issue ▾', enabled: true, dim: false, title: 'Pick one of this repo’s open GitHub issues' }, note: 'Loading issues…', rows: [] };
   if (reply.ok !== true) {
     const text = nonEmpty(reply.text) ? reply.text : 'Couldn’t read issues';
@@ -329,10 +346,15 @@ function issuesView(reply) {
   const total = Number.isInteger(reply.total) ? reply.total : rows.length;
   let note = '';
   if (rows.length === 0) note = total === 0 ? 'No open issues.' : 'No issue matches.';
-  return {
-    button: { text: 'From an issue ▾', enabled: true, dim: false, title: `${total} open issue${total === 1 ? '' : 's'}` },
-    note, rows,
-  };
+  let button = { text: 'From an issue ▾', enabled: true, dim: false, title: `${total} open issue${total === 1 ? '' : 's'}` };
+  if (pick && Number.isInteger(pick.number)) {
+    button = pick.attached === true
+      ? { text: `#${pick.number} ▾`, enabled: true, dim: false,
+        title: `This branch comes from issue #${pick.number}: Create writes its brief. Editing the name detaches it.` }
+      : { text: `Detached from #${pick.number} ▾`, enabled: true, dim: false,
+        title: `The name was edited, so Create makes a plain branch with no issue brief. Type issue #${pick.number}’s branch back, or pick it again, to reattach.` };
+  }
+  return { button, note, rows };
 }
 
 function paintIssues(doc, { create, phase, fresh, input }, bridge) {
@@ -358,9 +380,10 @@ function paintIssues(doc, { create, phase, fresh, input }, bridge) {
     issuePick.number = Number.isInteger(row.number) ? row.number : null;
     issuePick.branch = String(row.branch);
     closePicker();
+    draw();                                                           // the button says `#n ▾` before main's next repaint
   };
   function draw() {
-    const v = issuesView(issueUi.reply);
+    const v = issuesView(issueUi.reply, pickState(input));
     btn.textContent = v.button.text;
     btn.disabled = !v.button.enabled || phase === 'running';
     btn.title = v.button.title;
@@ -383,6 +406,7 @@ function paintIssues(doc, { create, phase, fresh, input }, bridge) {
     ask('', true);
   }
   btn.onclick = () => { if (typeof bridge.pickerOpen === 'function') bridge.pickerOpen(); };
+  input.oninput = draw;                                                // every keystroke re-reads the pick state: attached or detached
   if (panel) {
     panel.hidden = !open;
     if (open && !issueUi.wasOpen) {
