@@ -352,7 +352,7 @@ function issuesView(reply, pick = null) {
       ? { text: `#${pick.number} ▾`, enabled: true, dim: false,
         title: `This branch comes from issue #${pick.number}: Create writes its brief. Editing the name detaches it.` }
       : { text: `Detached from #${pick.number} ▾`, enabled: true, dim: false,
-        title: `The name was edited, so Create makes a plain branch with no issue brief. Type issue #${pick.number}’s branch back, or pick it again, to reattach.` };
+        title: `The name was edited, so Create makes a plain branch with no issue brief. Pick issue #${pick.number} again (or type its branch back) to reattach.` };
   }
   return { button, note, rows };
 }
