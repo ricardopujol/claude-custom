@@ -557,6 +557,7 @@ const CLAUDE_FOLDER_ALLOWED = [
   ['host/claude-config-dir.js', "path.join(opts.home || os.homedir(), '.claude')", 'the resolver itself: the default when unset'],
   ['host/review-reports.js', "'.claude', 'reviews'", "Ricardo's own reviews folder, not the CLI's state"],
   ['host/worktree-ops.js', "'.claude', 'skills', 'worktree'", "Ricardo's own worktree skill scripts, not the CLI's state"],
+  ['host/worktree-ops.js', "'.claude', 'skills', 'sync-docs', 'scripts'", "Ricardo's own sync-docs skill scripts (brief-path.ps1), not the CLI's state"],
   ['host/drop.js', "'.config', '.claude', '.azure'", 'a deny-list NAME for the drop guard'],
   ['host/host.js', "path.join(CWD, '.claude', 'skills')", 'project-level (under the tab cwd)'],
   ['host/roster-index.js', "path.join(cwd, '.claude', 'agents')", 'project-level'],

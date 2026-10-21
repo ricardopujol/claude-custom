@@ -273,13 +273,16 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-two members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-five members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate',
+      // #119 A6, the form's "From an issue" list (main answers them; host/issues.js has the rules)
+      'issues', 'pickerOpen', 'pickerClose',
+      'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
       // #66, the indexing field (app/indexing-bridge.js answers them)
       'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus',
       // #62, lean mode (app/lean-bridge.js answers them)
