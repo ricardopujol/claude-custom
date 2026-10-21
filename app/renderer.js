@@ -1825,9 +1825,9 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   if (settle) settleDock();
   window.dockTreeView.applyBoxes(plan, document);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
-  // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
+  // Lean mode unmounts every dock panel except the ones leanDisplay.LEAN_KEEPS names (Schedules: its content is the night itself), so each panel's own hide effects run (the vault's secrets go,
   // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
-  const now = new Set(leanOn ? [] : plan.shown);
+  const now = leanDisplay.leanShown(plan.shown, leanOn);
   const fx = window.dockEffects.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
