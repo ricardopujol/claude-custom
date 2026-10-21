@@ -24,7 +24,10 @@ const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
-const { killTree, killPidTree } = require('./kill-tree');
+const { createProgramStatusHost, windowAttachedAmong } = require('./program-status-host');
+const { choosePtyBackend } = require('./conpty-choice');
+const { stopPty } = require('./pty-stop');
+const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
@@ -888,7 +891,7 @@ function enqueuePty(text) {
     if (next === undefined) { ptyDraining = false; return; }
     // A window the session lock blocked has no pty yet: nothing to type into.
     if (!term) { console.log('[host] no session yet; dropped a queued pty line'); setTimeout(step, 0); return; }
-    try { term.write(next); } catch (err) {
+    try { writeInput(next); } catch (err) {
       console.log('[host] pty write failed:', err && err.message);
     }
     setTimeout(step, PTY_LINE_GAP_MS);
@@ -1789,6 +1792,8 @@ function startSession() {
     cols,
     rows,
     cwd: CWD,
+    // The bundled ConPTY, so the CLI's OSC 7501 query reaches us and our answer reaches it (host/conpty-choice.js).
+    ...PTY_BACKEND.options,
     env: {
       ...cleanEnv(),
       TERM: 'xterm-256color',
@@ -1802,6 +1807,7 @@ function startSession() {
       ...providerEnv,
     },
   });
+  trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.
   if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
@@ -1864,9 +1870,41 @@ const wss = new WebSocketServer({
 });
 const clients = new Set();
 
+// Which ConPTY the pty runs on, decided once (host/conpty-choice.js): the bundled one lets the CLI's OSC 7501 query reach us; a missing
+// install or CLAUDE_CUSTOM_CONPTY=builtin falls back to the OS's, and then the status protocol is off. Said in the log, and in the hello
+// for the diagnostics pane.
+const PTY_BACKEND = choosePtyBackend();
+console.log('[host] pty backend   :', PTY_BACKEND.backend === 'bundled' ? "node-pty's bundled ConPTY" : 'OS ConPTY' + (PTY_BACKEND.reason ? ' (' + PTY_BACKEND.reason + ')' : ''));
+
+// A window is a connection that is not a one-shot control client (those answer no terminal query).
+const windowAttached = () => windowAttachedAmong(clients);
+
+// The CLI's own state (OSC 7501, BACKLOG #116; the protocol and its limits are in host/program-status.js, the behaviour in
+// host/program-status-host.js). Answered HERE and not in the window so a detached host answers too, from inside the headless parse so the
+// answer reaches the pty before anything that follows the query in the byte stream.
+const programStatusHost = createProgramStatusHost({
+  writePty: (d) => { if (term) term.write(d); },
+  broadcast: (frame) => broadcastControl(frame),
+  attention,
+  windowAttached,
+  hostAnswersQueries: PTY_BACKEND.hostAnswersQueries,
+});
+
 // Authoritative screen, so a GUI attaching later gets the CURRENT state rather
 // than nothing until the TUI happens to repaint.
-const termState = createTerminalState({ cols: 120, rows: 30 });
+const termState = createTerminalState({
+  cols: 120, rows: 30,
+  onProgramStatus: programStatusHost.onOsc,
+  onPromptStart: programStatusHost.onPromptStart,
+  onReset: programStatusHost.onReset,
+  onResponse: programStatusHost.onResponse,
+});
+
+// Every byte of input to the pty goes through here, so a window's DA1 answer can never overtake the 7501 answer
+// (host/parse-gate.js). Typing is not delayed: only a DA1-shaped input ever waits, and only for the parse.
+function writeInput(data) {
+  programStatusHost.input(data, (d) => { if (term) term.write(d); });
+}
 
 // The TUI is the only authority on the current permission mode: the user can
 // change it with shift+tab at any moment. Read it back out of the screen we
@@ -1971,7 +2009,7 @@ seedRosterIndex()
 // The pty's two event handlers, attached when startSession() spawns it.
 function wireTerm(t) {
   t.onData((data) => {
-    termState.write(data);
+    termState.write(data, programStatusHost.deliver());
     const frame = Buffer.from(data, 'utf8');
     for (const ws of clients) {
       if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
@@ -2301,6 +2339,7 @@ wss.on('connection', (ws, req) => {
   ws.openedAt = Date.now();
   // A one-shot control client (raise, stop) never gets what is held for the next WINDOW (PR #93 Dexter F8)
   const oneShot = isControlClient(req && req.url);
+  ws.isWindow = !oneShot;     // a one-shot control client is not a window: it answers no terminal query
   console.log(`[host] client attached (${clients.size} total)`);
 
   // Dexter, logic review 2026-09-15: a malformed WEBSOCKET frame (invalid
@@ -2353,6 +2392,10 @@ wss.on('connection', (ws, req) => {
     background: styleResolved.background,
     style: { source: styleResolved.source, kind: styleResolved.kind, setAt: styleResolved.setAt, look: styleResolved.look, cliTheme: RUNNING_CLI_THEME },
     usage: currentUsage(),
+    // OSC 7501 (BACKLOG #116): what the CLI reports about itself; { live: false, root: null, children: [] } until it does.
+    programStatus: programStatusHost.frame(),
+    // Which ConPTY this session runs on, and why not the bundled one (the diagnostics pane says it).
+    ptyBackend: { backend: PTY_BACKEND.backend, reason: PTY_BACKEND.reason },
     roster: mood.roster().map(r => describe(r.agent, r.state, r.detail)),
     // host/turn-state.js: 'idle' | 'turn' | 'prompt', or null before the session has started
     turn: turnState.snapshot(),
@@ -2596,7 +2639,7 @@ wss.on('connection', (ws, req) => {
       // node-pty's deferred write queue and can throw OUTSIDE this function's
       // caller's try/catch if the pty is not yet ready -- an uncaught
       // exception that kills the host and the session with it.
-      if (typeof msg.data === 'string' && term) term.write(msg.data);
+      if (typeof msg.data === 'string' && term) writeInput(msg.data);
       return;
     }
     if (msg.type === 'layout-override') {
@@ -2937,7 +2980,7 @@ wss.on('connection', (ws, req) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) term.write(t); });
+      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) writeInput(t); });
       if (error) {
         // A handler that threw is not "not control JSON" -- `handleFrame`
         // guarantees this text was never passed to `term.write`. Log and
@@ -2946,7 +2989,7 @@ wss.on('connection', (ws, req) => {
       }
       return;
     }
-    if (term) term.write(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
+    if (term) writeInput(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
   });
 
   ws.on('close', () => {
@@ -3051,7 +3094,7 @@ wss.on('error', (err) => {
 // file belongs to whoever did. Deleting it there would make the LIVE host
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
-  if (term) { try { term.kill(); } catch {} }
+  stopPty(term, { killChildTree });
   try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
   try { canvasControl.close(); } catch {}

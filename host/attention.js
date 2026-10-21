@@ -92,7 +92,7 @@ const ENDED_MEMORY = 200;
 const unrefTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t.unref) t.unref(); return t; };
 
 // `shellStartedAt(task, stopPayload)` -> ms since epoch, or null when it can't be told.
-function createAttention({ now = Date.now, project = '', agents = () => [],
+function createAttention({ now = Date.now, project = '', agents = () => [], settleMs = 1500,
                           debounceMs = DEFAULT_DEBOUNCE_MS,
                           shellStartedAt = makeShellStartedAt(),
                           setTimer = unrefTimer, clearTimer = clearTimeout } = {}) {
@@ -116,7 +116,36 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   let held = null;
   const ended = new Set();
 
-  function raise(kind, { title, body, urgent }) {
+  // OSC 7501 (host/program-status.js) is a second source, and the AUTHORITY for the main session's own cue. Once the CLI has
+  // spoken it, the hook-derived raises for the main session stop and `programStatus` decides. Sticky for the host's life: a CLI that
+  // speaks the protocol keeps speaking it, and a gap between two reports must not hand the cue back to the hooks.
+  // WHAT STAYS WITH THE HOOKS, always: anything that names an agent (a payload with an agent_id, a Notification of type
+  // `agent_needs_input`). The root record says nothing of a background agent that stops on a prompt after the turn ended.
+  // The mod's `ask` (below) comes in as a Notification without an agent_id: it is the main session's prompt, so 7501 owns it.
+  // Child records are read too (programStatus): a child going blocked raises like the root does.
+  // The hooks keep running underneath either way (the held-back bookkeeping, agent cards, occupancy and the mood machine are not
+  // touched); only what they RAISE for the main session is held back.
+  // MEASURED (verify/probe-osc-7501.js part D, claude 2.1.304, 2026-10-20; one run, a background subagent asked to write a file): the CLI DOES
+  // report a background task as a CHILD record, with an opaque task id (not a path like agent/a1) and state working. The root went
+  // working -> done while that child was still working, then working again when its result came back, then done: so a root `done` does
+  // not mean the background work is over, and the held-back check on `done` is needed. No permission prompt came up in that run
+  // (the subagent's write was allowed), so a child going `blocked` was NOT observed, and neither was the root lifting a child's wait.
+  // Until it is measured, the hooks keep raising for anything that names an agent, and a child's blocked/error raises here.
+  let statusLive = false;
+  let statusState = null;
+  const childStates = new Map();        // child id -> last state seen, to raise on a change only
+  // A 7501 `done` is NOT raised at once, and is never released by one event alone (PR #201 Dexter r2 N1, N3). In the measured flow the
+  // root says done while a background task still works, the task's SubagentStop fires just BEFORE its result starts the next main
+  // turn, and the root then goes working and done again. So a `done` waits for a settle window (SETTLE_MS) in which no `working`
+  // arrives, and is raised only if then nothing is running: no child record in state working, and no subagent or young shell a Stop
+  // listed. The check reads the hook state when the window ends, so it does not matter whether the Stop hook or the report came first.
+  // SubagentStop, a child changing and the shell timer only start a new window; they never raise.
+  let statusDonePending = false;
+  let settleTimer = null;
+  const SETTLE_MS = settleMs;
+
+  function raise(kind, { title, body, urgent }, { fromStatus = false, agentNamed = false } = {}) {
+    if (statusLive && !fromStatus && !agentNamed) return;
     const t = now();
     const previous = lastSent.get(kind);
     if (previous !== undefined && t - previous < debounceMs) return;
@@ -124,12 +153,93 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     emitter.emit('attention', { kind, project, title, body, urgent, at: t });
   }
 
+  // A hook-held "finished" is let go (the agents stopped, the shell aged out, the CLI went idle). With 7501 live the main cue is 7501's:
+  // the release only starts a new settle window for a pending `done`, and says nothing itself.
+  function releaseFinished(p) {
+    if (!statusLive) { finished(p); return; }
+    if (statusDonePending) scheduleSettle();
+  }
+  const nothingRunning = () => held === null || settled();
+  const childWorking = () => [...childStates.values()].includes('working');
+  function scheduleSettle() {
+    if (settleTimer !== null) clearTimer(settleTimer);
+    settleTimer = setTimer(settleCheck, SETTLE_MS);
+  }
+  function cancelSettle() {
+    statusDonePending = false;
+    if (settleTimer !== null) { clearTimer(settleTimer); settleTimer = null; }
+  }
+  function settleCheck() {
+    settleTimer = null;
+    if (!statusDonePending || (statusState !== 'done' && statusState !== 'idle')) return;
+    if (childWorking() || !nothingRunning()) return;          // still pending: the next event starts a new window
+    statusDonePending = false;
+    raise('finished', FINISHED_STATUS(lastDoneMsg), { fromStatus: true });
+  }
+  let lastDoneMsg = null;
+  const FINISHED_STATUS = (said) => ({
+    title: project ? `${project} finished` : 'Claude finished',
+    body: said || summarize('Stop', {}, { agents: agents() }),
+    urgent: false,
+  });
+
   function finished(p) {
     raise('finished', {
       title: project ? `${project} finished` : 'Claude finished',
       body: summarize('Stop', p, { agents: agents() }),
       urgent: false,
     });
+  }
+
+  const STATUS_WORDS = {
+    permission: 'Waiting for your permission',
+    question: 'Has a question for you',
+    auth: 'Needs you to sign in',
+  };
+
+  // What a toast says of the program's own message: capped, because it comes from the CLI and goes to the OS (PR #201 Miguel S2).
+  const TOAST_MSG_MAX = 200;
+  const wordsOf = (rec) => {
+    const said = typeof rec.msg === 'string' && rec.msg !== '' ? rec.msg.slice(0, TOAST_MSG_MAX) : null;
+    return said || (rec.state === 'error' ? 'Hit an error' : STATUS_WORDS[rec.kind] || 'Waiting for you');
+  };
+  const needsYou = (rec) => raise('input-needed', {
+    title: project ? `${project} needs you` : 'Claude needs you',
+    body: wordsOf(rec),
+    urgent: true,
+  }, { fromStatus: true });
+
+  // The snapshot host/program-status.js keeps, handed over on every change. Only a CHANGE of a record's state raises, so a new
+  // message on the same state (or a re-report) cannot toast twice. working / idle / a cleared record raise nothing here: the window
+  // clears its cue when it sees them (app/tab-status.js pendingAfter 'answered'). `error` raises like blocked: something is waiting
+  // on you (BACKLOG #116, default). The root is the main session; a child going blocked or error raises the same cue.
+  // A root `done` goes through the same held-back check a Stop does: a running subagent or a young shell holds "finished" back, and
+  // it is raised when they are over (SubagentStop / the shell timer / idle_prompt), not before.
+  function programStatus(snapshot) {
+    const live = !!snapshot && snapshot.live === true;
+    if (live) statusLive = true;
+    const root = live && snapshot.root && typeof snapshot.root === 'object' ? snapshot.root : null;
+    const state = root && typeof root.state === 'string' ? root.state : null;
+
+    const kids = live && Array.isArray(snapshot.children) ? snapshot.children : [];
+    const seen = new Set();
+    for (const c of kids) {
+      if (!c || typeof c !== 'object' || typeof c.id !== 'string' || typeof c.state !== 'string') continue;
+      seen.add(c.id);
+      if (childStates.get(c.id) !== c.state && (c.state === 'blocked' || c.state === 'error')) needsYou(c);
+      childStates.set(c.id, c.state);
+    }
+    for (const id of [...childStates.keys()]) if (!seen.has(id)) childStates.delete(id);
+
+    if (state !== statusState) {
+      statusState = state;
+      if (state === 'blocked' || state === 'error') { cancelSettle(); needsYou(root); }
+      else if (state === 'done') {
+        statusDonePending = true;
+        lastDoneMsg = typeof root.msg === 'string' && root.msg !== '' ? root.msg.slice(0, TOAST_MSG_MAX) : null;
+      } else if (state !== 'idle') cancelSettle();            // working, or nothing: the turn is not over (idle keeps a pending done)
+    }
+    if (statusDonePending) scheduleSettle();                  // a child changing is a new reason to look again
   }
 
   // Young shells a held-back Stop waits on: when each turns 10 minutes old (ms). `starts` is the best start known
@@ -154,7 +264,7 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   // wall clock) finds the shell still young by a millisecond: it re-arms for the rest, it never gives up.
   function expire() {
     timer = null;
-    if (settled()) { held = null; finished({}); return; }
+    if (settled()) { held = null; releaseFinished({}); return; }
     armShellTimer();
   }
 
@@ -185,13 +295,13 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
     // A turn that ended in an error sends no Stop. Whatever cancelled the timer (a prompt), it is over now, so a
     // shell that is still young gets its timer back, and one that has aged out releases the held "finished".
     if (event === 'StopFailure') {
-      if (settled()) { held = null; finished({}); } else armShellTimer();
+      if (settled()) { held = null; releaseFinished({}); } else armShellTimer();
       return;
     }
 
     if (event === 'Notification') {
       if (p.notification_type === 'idle_prompt') {
-        if (settled()) { held = null; finished({}); return; }
+        if (settled()) { held = null; releaseFinished({}); return; }
         armShellTimer();                                       // quiet now, and the shell is still young: wait for it
       }
       if (p.notification_type !== undefined && !NEEDS_INPUT.has(p.notification_type)) return;
@@ -199,7 +309,22 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
         title: project ? `${project} needs you` : 'Claude needs you',
         body: summarize('Notification', p, {}),
         urgent: true,
-      });
+      }, { agentNamed: (typeof p.agent_id === 'string' && p.agent_id !== '') || p.notification_type === 'agent_needs_input' ||
+        p.notification_type === 'elicitation_dialog' || p.notification_type === 'elicitation_url_dialog' });   // an MCP form may be a background agent's
+      return;
+    }
+
+    // A background agent's prompt: its identity travels on PermissionRequest only (a Notification never carries agent_id, host/payload-contract.js),
+    // and the CLI's root record does not show it. So with 7501 live it still raises. A PermissionRequest with no agent_id is the main
+    // session's own prompt: 7501's root `blocked`, or the Notification above, owns that one.
+    if (event === 'PermissionRequest') {
+      if (typeof p.agent_id === 'string' && p.agent_id !== '') {
+        raise('input-needed', {
+          title: project ? `${project} needs you` : 'Claude needs you',
+          body: summarize('Notification', { message: typeof p.agent_type === 'string' && p.agent_type ? `${p.agent_type} needs your permission` : 'An agent needs your permission' }, {}),
+          urgent: true,
+        }, { agentNamed: true });
+      }
       return;
     }
 
@@ -224,11 +349,12 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
         ended.add(p.agent_id);
         if (ended.size > ENDED_MEMORY) ended.delete(ended.values().next().value);
         if (held !== null) held.ids.delete(p.agent_id);
+        if (statusDonePending) scheduleSettle();           // a new window, not a release: its result may be about to start the next turn
       }
       return;
     }
 
-    if (event === 'SessionEnd') { held = null; ended.clear(); starts.clear(); stopTimer(); }
+    if (event === 'SessionEnd') { held = null; ended.clear(); starts.clear(); stopTimer(); cancelSettle(); }
   }
 
   // BACKLOG #119 A2: a permission ask the claude-custom mod saw (`tool.check` resolved to `ask`). It is the CLI's own
@@ -242,6 +368,7 @@ function createAttention({ now = Date.now, project = '', agents = () => [],
   emitter.handle = handle;
   emitter.ask = ask;
   emitter.activity = activity;
+  emitter.programStatus = programStatus;
   return emitter;
 }
 

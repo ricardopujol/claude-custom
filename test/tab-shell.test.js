@@ -226,13 +226,13 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
 });
 
 test('sanitizeStatus keeps eight fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
+    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null });
+    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
 });
 
 // Backlog #39: a renderer may say its summary, cut down to the known fields; garbage is none.
@@ -2923,6 +2923,14 @@ test('usage: tab:merged-close counts a removal, not an already-removed row, a ke
   assert.deepStrictEqual(await run({ ok: true, already: true }), []);
   assert.deepStrictEqual(await run({ ok: false, kept: true, reason: 'brief' }), []);
   assert.deepStrictEqual(await run({ ok: false, error: 'x' }), []);
+});
+
+// OSC 7501 (BACKLOG #116): a renderer may say what the CLI reports, cut down to the known fields; garbage is none.
+test('sanitizeStatus keeps a usable program state and drops an unusable one', () => {
+  assert.deepStrictEqual(
+    sanitizeStatus({ program: { state: 'blocked', kind: 'question', msg: 'Which?', progress: null, secret: 'x', title: 't' } }).program,
+    { state: 'blocked', kind: 'question', msg: 'Which?', progress: null });
+  for (const bad of [null, undefined, 'blocked', { state: 'busy' }, [], 5]) assert.strictEqual(sanitizeStatus({ program: bad }).program, null, JSON.stringify(bad));
 });
 
 test('handleProbeCommand: the tray ops (BACKLOG #119 A8), with a known setting key and a real boolean only', async () => {
