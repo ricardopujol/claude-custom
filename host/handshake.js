@@ -20,7 +20,11 @@
 
 const { samePath, normalizeProjectPath } = require('./project-path');
 
-function decideAttach({ requestedCwd, occupant, requestedSide = false } = {}) {
+// What a host IS, for telling the folder's own host, its side host and its shell host apart: 'shell' | 'side' | 'own'.
+const roleOfOccupant = (o) => (o.kind === 'shell' ? 'shell' : o.side === true ? 'side' : 'own');
+const roleRequested = (kind, side) => (kind === 'shell' ? 'shell' : side === true ? 'side' : 'own');
+
+function decideAttach({ requestedCwd, occupant, requestedSide = false, requestedKind } = {}) {
   // Asked first: if we do not know which project we WANT, no answer about the
   // occupant can be right. main.js reads this from an environment variable,
   // so "unset" is an ordinary input, not a programming error.
@@ -38,7 +42,8 @@ function decideAttach({ requestedCwd, occupant, requestedSide = false } = {}) {
 
   if (samePath(occupant.cwd, requestedCwd)) {
     // #81: a folder has its own host and, beside it, a read-only side host. Each is looked for as what it is.
-    if ((occupant.side === true) !== (requestedSide === true)) return { action: 'refuse', reason: 'side-session', occupiedBy: occupant.cwd };
+    // A5: ... and a plain shell host beside both. Each is looked for as what it is.
+    if (roleOfOccupant(occupant) !== roleRequested(requestedKind, requestedSide)) return { action: 'refuse', reason: 'side-session', occupiedBy: occupant.cwd };
     return { action: 'attach' };
   }
   return { action: 'refuse', reason: 'other-project', occupiedBy: occupant.cwd };

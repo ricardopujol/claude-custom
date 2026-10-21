@@ -83,6 +83,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
         h.sideHostReads++;
         return Object.entries(h.running).filter(([, o]) => o.side === true).map(([p, o]) => ({ port: Number(p), cwd: o.cwd }));
       },
+      shellHosts: () => [],      // #119 A5: no shell host anywhere, so no shell walk
       identity: () => null,
       readToken: () => null,
     },

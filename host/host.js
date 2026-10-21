@@ -130,13 +130,15 @@ const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
-const { resolveLaunchTarget } = require('./launch-target');
+const { resolveLaunchTarget, pickShell, shellEnv } = require('./launch-target');
 const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
 // BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
 const { isSideEnv, siblingSessions } = require('./side-session');
+// BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
+const { isShellEnv } = require('./shell-tab');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -384,7 +386,9 @@ async function currentFog() {
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
 // missing binary would fire on every Task and Bash call and invoke nothing.
-const helperExists = fs.existsSync(HELPER_PATH);
+// A shell host runs no claude, so it has no hooks to wire (A5).
+const SHELL = isShellEnv(process.env);
+const helperExists = !SHELL && fs.existsSync(HELPER_PATH);
 // Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) rides in on --mcp-config, added to the user's own servers, unless the
 // setting (host/canvas-settings.js) turns it off. It learns its session through this host's pointer file, which the control keeps.
 const CANVAS_POINTER_FILE = path.join(HARNESS_DIR, 'state', 'canvas', `_tab-${PORT}.json`);
@@ -401,7 +405,9 @@ function ownIdentities() {
   try { return identitiesIn(INSTALL); } catch { return []; }
 }
 
-if (!helperExists) {
+if (SHELL) {
+  console.log('[host] shell host: no hooks, no session lock, no quota, no mod');
+} else if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
 }
 
@@ -698,6 +704,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
 const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 // Rebuilt once, at boot, with the claude-custom mod when its switch, the CLI's version and its directory allow it (prepareMod below).
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
+// A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
+const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
@@ -1713,7 +1721,7 @@ function openProject(msg, ws) {
   child.unref();
 }
 
-console.log('[host] claude binary :', CLAUDE_BIN);
+console.log(SHELL ? '[host] shell binary  :' : '[host] claude binary :', SHELL ? `${SHELL_TARGET.bin} (${SHELL_TARGET.source})` : CLAUDE_BIN);
 console.log('[host] cwd           :', CWD);
 
 // Inherited CLAUDE_CODE_* markers must not leak into the hosted session.
@@ -1754,7 +1762,8 @@ function cleanEnv() {
 // blocked, until the person picks *Open anyway*. Every use of `term` below is
 // guarded for that. Design: documentation/PLAN_WORKTREE_TABS.md, Extension X.
 let term = null;
-const SESSION_LOCK = SIDE ? null : lockPathFor(CWD);
+// A shell host takes none either: it is a terminal, not a session (A5).
+const SESSION_LOCK = SIDE || SHELL ? null : lockPathFor(CWD);
 let lockOwner = null;                  // what we wrote into the lock, once taken
 let lockState = { state: 'pending' };  // host/session-gate.js documents the shapes
 // WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE (Extension X3),
@@ -1787,25 +1796,28 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  term = pty.spawn(CLAUDE_BIN, ARGS, {
+  term = pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: CWD,
     // The bundled ConPTY, so the CLI's OSC 7501 query reaches us and our answer reaches it (host/conpty-choice.js).
     ...PTY_BACKEND.options,
-    env: {
-      ...cleanEnv(),
-      TERM: 'xterm-256color',
-      COLORTERM: 'truecolor',
-      // Marks this session as harness-hosted; the hook bridge keys off it later.
-      CLAUDE_CUSTOM_SESSION: '1',
-      // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
-      // mod server is up; the window's session token never goes here.
-      ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
-      ...sessionEnv,
-      ...providerEnv,
-    },
+    env: SHELL
+      // A5: an arbitrary program gets the person's environment and the worktree's, and none of the harness's own (host/launch-target.js shellEnv).
+      ? { ...shellEnv(cleanEnv()), TERM: 'xterm-256color', COLORTERM: 'truecolor', ...sessionEnv }
+      : {
+        ...cleanEnv(),
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+        // Marks this session as harness-hosted; the hook bridge keys off it later.
+        CLAUDE_CUSTOM_SESSION: '1',
+        // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
+        // mod server is up; the window's session token never goes here.
+        ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
+        ...sessionEnv,
+        ...providerEnv,
+      },
   });
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   console.log('[host] pty pid       :', term.pid);
@@ -2227,7 +2239,8 @@ let terminalsRunning = false;
 // and dies with the session (host/layout-override.js).
 let layoutOverride = null;
 async function refreshTerminals() {
-  if (terminalsRunning) return;
+  // A shell host is no claude session: the "another session in this worktree" check is for the folder's own host (#119 A5).
+  if (SHELL || terminalsRunning) return;
   terminalsRunning = true;
   try {
     // The holder re-read from the lock (Dexter, PR #71 F8): a host blocked
@@ -2290,7 +2303,8 @@ usageTimer.unref();
 // someone else's service for a number that barely moves. Broadcast only on a
 // CHANGE, so an idle session is silent on the wire.
 const QUOTA_POLL_MS = 60_000;
-const quotaTimer = setInterval(() => {
+// A shell host shows no quota and takes no part in the lease on the usage endpoint (A5).
+const quotaTimer = SHELL ? null : setInterval(() => {
   const before = JSON.stringify(lastQuota && lastQuota.windows);
   refreshQuota().then((quota) => {
     // A used-up window is also re-sent every poll: the header's countdown (BACKLOG #90) ages the payload by its readAt, so a
@@ -2302,11 +2316,11 @@ const quotaTimer = setInterval(() => {
     }
   });
 }, QUOTA_POLL_MS);
-quotaTimer.unref();
+if (quotaTimer) quotaTimer.unref();
 
 // The first reading immediately, for the same reason usage does: a header that
 // says "reading…" for a full minute reads as broken rather than as honest.
-refreshQuota().then((quota) => broadcastControl({ type: 'quota', quota }));
+if (!SHELL) refreshQuota().then((quota) => broadcastControl({ type: 'quota', quota }));
 
 // The first reading immediately rather than five seconds in. A cold read of
 // this project's transcripts is ~330ms, so waiting a full tick would show the
@@ -2520,7 +2534,7 @@ wss.on('connection', (ws, req) => {
 
   // A client that attached before the first quota read landed would otherwise
   // sit on "reading…" until the next poll a minute later.
-  if (!lastQuota) {
+  if (!lastQuota && !SHELL) {
     refreshQuota()
       .then((quota) => {
         if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'quota', quota });
@@ -3038,7 +3052,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, kind: SHELL ? 'shell' : undefined, sessionId: SIDE ? sessionId : undefined,
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -3055,7 +3069,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, kind: SHELL ? 'shell' : undefined, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -3142,6 +3156,8 @@ function setModStatus(status) {
 }
 
 async function prepareMod() {
+  // A shell host loads no mod: there is no claude to load it into (A5).
+  if (SHELL) { setModStatus({ state: 'off', reason: 'a shell tab runs no claude' }); return; }
   try {
     const enabled = modEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') });
     // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
@@ -3193,7 +3209,7 @@ const handleModRecord = createModRecordHandler({
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, kind: SHELL ? 'shell' : undefined, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

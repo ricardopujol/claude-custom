@@ -116,4 +116,62 @@ function attachOnlyDecision(decision, env) {
   return { ...decision, attachOnly: true };
 }
 
-module.exports = { resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision };
+// --- BACKLOG #119 A5: the "shell" target ---------------------------------------------------------------------------------
+// A shell tab's pty runs the person's shell, not `claude`. Which binary is decided here, pure: every collaborator is injected.
+
+const SHELL_OVERRIDE = 'CLAUDE_CUSTOM_SHELL';
+
+/** The first file called `name` in the PATH folders, or null. A name with a folder in it is not looked up. */
+function findOnPath(name, { pathVar = process.env.PATH || process.env.Path || '', platform = process.platform, stat = fs.statSync } = {}) {
+  if (typeof name !== 'string' || name === '' || /[\\/]/.test(name)) return null;
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  for (const dir of String(pathVar).split(p.delimiter)) {
+    const folder = dir.trim().replace(/^"(.*)"$/, '$1');
+    if (folder === '') continue;
+    const candidate = p.join(folder, name);
+    try { if (stat(candidate).isFile()) return candidate; } catch { /* not in this folder */ }
+  }
+  return null;
+}
+
+/**
+ * Which program a shell tab runs. -> { bin, args: [], source: 'override' | 'pwsh' | 'powershell' | 'env-shell' | 'sh' }.
+ *   - CLAUDE_CUSTOM_SHELL (an absolute path, or a command on PATH) wins. It is returned as given when it is a path, and as the file
+ *     PATH finds when it is a command; a command PATH can't find stays the name, so the pty fails loudly rather than the pick
+ *     quietly choosing something the person did not ask for.
+ *   - else PowerShell 7 (pwsh.exe on PATH), else Windows PowerShell at its fixed System32 path.
+ * No arguments: the person gets their shell, not a script. Off Windows (this app is Windows-only; kept honest for the tests): $SHELL, else /bin/sh.
+ */
+function pickShell(env = {}, { platform = process.platform, onPath = findOnPath, exists = (f) => fs.existsSync(f), systemRoot = (env && env.SystemRoot) || process.env.SystemRoot || 'C:\\Windows' } = {}) {
+  const win = platform === 'win32';
+  const raw = typeof (env || {})[SHELL_OVERRIDE] === 'string' ? env[SHELL_OVERRIDE].trim().replace(/^"(.*)"$/, '$1').trim() : '';
+  if (raw !== '') {
+    const isPath = (win ? path.win32 : path.posix).isAbsolute(raw) || /[\\/]/.test(raw);
+    if (isPath) return { bin: raw, args: [], source: 'override' };
+    const found = onPath(raw) || (win && !/\.[A-Za-z0-9]+$/.test(raw) ? onPath(`${raw}.exe`) : null);
+    return { bin: found || raw, args: [], source: 'override' };
+  }
+  if (!win) {
+    const sh = env && typeof env.SHELL === 'string' && env.SHELL.trim() !== '' ? env.SHELL.trim() : null;
+    return sh ? { bin: sh, args: [], source: 'env-shell' } : { bin: '/bin/sh', args: [], source: 'sh' };
+  }
+  const pwsh = onPath('pwsh.exe');
+  if (pwsh) return { bin: pwsh, args: [], source: 'pwsh' };
+  const ps5 = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return { bin: exists(ps5) ? ps5 : 'powershell.exe', args: [], source: 'powershell' };
+}
+
+/**
+ * The environment of a program in a shell tab. An arbitrary program must not get the harness's own variables (the host's session
+ * token above all), and must not inherit ELECTRON_RUN_AS_NODE: the host itself runs as Node through it (host/tab-env.js), and an
+ * Electron app started from the shell would silently run as plain Node.
+ */
+function shellEnv(base) {
+  const out = {};
+  for (const [k, v] of Object.entries(base || {})) {
+    if (!k.startsWith('CLAUDE_CUSTOM_') && k !== 'ELECTRON_RUN_AS_NODE') out[k] = v;
+  }
+  return out;
+}
+
+module.exports = { resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };
