@@ -170,6 +170,9 @@ const LOCATE_SCAN = 400;
 const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
+// OSC 7501 (BACKLOG #116): the CLI's own root state as the host last said it (cleaned), or null. The host parses the stream
+// and answers the CLI; this only shows it and moves the cue (host/attention.js raises the toast and the urgent/finished frame).
+let programRoot = null;
 function pend(event) {
   if (window.tabStatus) tabPending = window.tabStatus.pendingAfter(tabPending, event);
 }
@@ -187,13 +190,28 @@ function reportTabStatus() {
     health: tabHealth,
     turn: sessionTurn,
     night: bar.bedtime !== null,
+    program: programRoot,
     summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
     // with no summary yet, why (Ollama off) rides on the hover card alone: the bar does not pop up for it
     summaryNote: sum.summary ? null : summaryDisplay.offNote(sum.off),
-  }, { healthMarker: worktreeStatus.healthMarker });
+  }, { healthMarker: worktreeStatus.healthMarker, cleanProgram: programStatusDisplay.clean });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
   window.harness.tabStatus(status);
+}
+// A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
+// of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
+function applyProgramStatus(rootRecord, how) {
+  const next = programStatusDisplay.clean(rootRecord);
+  for (const event of programStatusDisplay.cueEvents(programRoot, next, how)) pend(event);
+  programRoot = next;
+  const headerDot = document.getElementById('dot');
+  if (headerDot) {
+    headerDot.classList.remove('ps-working', 'ps-blocked', 'ps-done', 'ps-error');
+    const view = programStatusDisplay.headerView(next);
+    if (view) { headerDot.classList.add(view.cls); headerDot.title = view.title; } else headerDot.removeAttribute('title');
+  }
+  reportTabStatus();
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
@@ -8443,10 +8461,20 @@ function noteModStatus(status) {
   logLine('claude-custom mod', status.reason);
 }
 
+// PR #201 Miguel S1: which ConPTY the session runs on, in the diagnostics pane's log (Ctrl+Shift+D), once per reason. Said only when it is
+// not the bundled one, since that is what turns the CLI's status protocol off.
+let lastPtyBackendLogged = null;
+function notePtyBackend(info) {
+  if (!info || typeof info !== 'object' || info.backend === 'bundled' || typeof info.reason !== 'string' || info.reason === lastPtyBackendLogged) return;
+  lastPtyBackendLogged = info.reason;
+  logLine('pty backend', 'OS ConPTY: ' + info.reason);
+}
+
 function handleControl(msg) {
   if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
   if (msg.type === 'hello') {
     noteModStatus(msg.modStatus);
+    notePtyBackend(msg.ptyBackend);
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.
@@ -8460,6 +8488,8 @@ function handleControl(msg) {
     askWasDocked = null;       // a (re)attached host knows nothing of this window: say it again
     if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
+    // OSC 7501: the CLI's state as the host holds it; an older host has none, which is no program state (never a guessed idle).
+    applyProgramStatus(programStatusDisplay.hostListsProgramStatus(hostControls) && msg.programStatus ? msg.programStatus.root : null, 'hello');
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
@@ -8696,6 +8726,11 @@ function handleControl(msg) {
     renderStatusFields(msg.fields);
     return;
   }
+  if (msg.type === 'program-status') {
+    // Sent by a host that lists it in its hello; one that doesn't never sends it, and a frame from anywhere else is ignored.
+    if (programStatusDisplay.hostListsProgramStatus(hostControls)) applyProgramStatus(msg.root);
+    return;
+  }
   if (msg.type === 'attention') {
     gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
     // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
@@ -8920,6 +8955,8 @@ function handleControl(msg) {
   }
   if (msg.type === 'exit') {
     term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    // The session is over: nothing it said last (working, blocked) is still true (PR #201 Dexter 1).
+    applyProgramStatus(null);
     return;
   }
 }
@@ -9010,6 +9047,8 @@ function connect() {
     }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
+    applyProgramStatus(null, 'lost');
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
     if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just
