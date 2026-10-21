@@ -12,7 +12,7 @@
  *   - hidden or lean: it draws nothing at all, and asks for no frame;
  *   - even animating, the loop STOPS by itself when the layout has settled and nothing is flowing, and wakes on the next change;
  *   - a presented frame has a fixed price (probe: about 4 ms of CPU across the renderer and the GPU process, whatever is drawn in it), so the
- *     frame GAP is what sets the cost: 50 ms (20 fps) in the app, a knob here (setFrameMs). It also halves its particle budget when a frame's
+ *     frame GAP is what sets the cost: 33 ms (30 fps) in the app, a knob here (setFrameMs). It also halves its particle budget when a frame's
  *     own work takes over 40 ms (map-model adaptBudget).
  *
  * WHAT IT COSTS (verify/probe-activity-map.js --reps=3 --measure-ms=12000 [--sweep]; Katana, 144 Hz display, dark look, 2026-10-20; all Electron
@@ -23,8 +23,8 @@
  *   panel hidden (baseline, absolute)                  2.0  (0.9..2.8)              1.1  (0.4..1.6)
  *   shown but unfocused (the static frame)             about 0                      +0.7
  *   one agent working, 50 ms gap                       +7.4                         +6.6
- *   6 agents, 3 working, 33 ms (30 fps)                +11.3                        +11.9
- *   6 agents, 3 working, 50 ms (20 fps; THE DEFAULT)   +4.6   (6.2..8.7 total)      +14.4  (11.4..16.6 total, one GPU-process spike round)
+ *   6 agents, 3 working, 33 ms (30 fps; THE DEFAULT)   +11.3                        +11.9
+ *   6 agents, 3 working, 50 ms (20 fps)                +4.6   (6.2..8.7 total)      +14.4  (11.4..16.6 total, one GPU-process spike round)
  *   6 agents, 40 ms                                    +6.3                         (not rerun)
  *   6 agents, 67 ms (15 fps)                           +3.1                         (not rerun)
  *   48 agents all working (the cap), 50 ms             +14.1 (main-process noise)   +14.2
@@ -32,7 +32,8 @@
  *
  * READ IT AS: a presented frame costs about 4 ms of CPU across the renderer and the GPU process whatever is drawn in it (one agent costs what six
  * do), so the cost follows the frame rate, roughly 0.4 % of a core per frame a second, with run-to-run noise of about +-5 points. The default is
- * 50 ms and not 33 because 30 fps measured about +11 in both runs, which is the breathing border's price (12-20 %); 20 fps measured +5 to +14.
+ * 33 ms (30 fps) since 2026-10-21: Ricardo picked smoothness over the ~+6 points it costs (30 fps measured about +11 in both runs, 20 fps +5 to +14);
+ * 50 ms is the cheaper setting if the cost ever matters.
  * A desynchronized canvas was measured once and not adopted (its numbers overlapped the plain canvas's). Change MAP_FRAME_MS (app/renderer.js) or
  * STEPS_PER_FRAME only with a new run next to these.
  *
@@ -49,7 +50,7 @@
 const model = typeof module !== 'undefined' && module.exports ? require('./map-model') : root.mapModel;
 const layoutLib = typeof module !== 'undefined' && module.exports ? require('./map-layout') : root.mapLayout;
 
-const FRAME_MIN_MS = 30;           // the default gap between frames, ms (the app asks for 50: renderer.js MAP_FRAME_MS); see setFrameMs
+const FRAME_MIN_MS = 30;           // the default gap between frames, ms (the app asks for 33: renderer.js MAP_FRAME_MS); see setFrameMs
 const FRAME_MAX_MS = 250;
 const PACE_EARLY_MS = 6;           // the timer wakes this long BEFORE the next slot, so the animation frame it asks for lands on the slot's own vsync, not the one after it
 const FRAME_SLOP_MS = 5;           // a frame is drawn if the gap since the last one is at least the target minus this (vsync and timer jitter)

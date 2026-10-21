@@ -1285,7 +1285,7 @@ const mapOwn = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnP
 // 20 frames a second, not 30: a presented frame has a fixed price on this machine (about 4 ms of CPU across the renderer and the GPU process, whatever
 // is drawn in it), so the cost of the animation is its frame rate. Frames land on vsyncs, so the useful gaps are 33, 50 and 67 ms (30, 20 and 15 fps).
 // Measured by verify/probe-activity-map.js; BACKLOG #120.
-const MAP_FRAME_MS = 50;
+const MAP_FRAME_MS = 33;
 const mapMountOptions = {
   doc: document,
   source: () => mapInput(),
