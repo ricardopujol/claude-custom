@@ -39,6 +39,9 @@ const { filetimeToMs } = require('./background-hosts');
 
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit']);
 const SEARCH_TOOLS = new Set(['Grep', 'Glob']);
+// The tools that CHANGE a file. A claim records a touch, and a Read is one too; only these make a claim a WRITE (`wroteAt`), which is what the Map's
+// conflict edge needs (an old claim without `wroteAt` is a read).
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
 // Every tool whose PreToolUse the occupancy matcher asks for (host/settings-writer.js OCCUPANCY_MATCHER).
 const TOUCH_TOOLS = new Set([...FILE_TOOLS, ...SEARCH_TOOLS]);
 const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
@@ -159,7 +162,7 @@ function claimFrom(event, roots, ownRoot) {
   if (agentId === null) return null;
   const worktree = touchOf(p.tool_name, p.tool_input, roots, ownRoot);
   if (worktree === null) return null;
-  return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree, sessionId: safeSessionId(p.session_id) };
+  return { agentId, agent: isStr(p.agent_type) ? p.agent_type : null, worktree, sessionId: safeSessionId(p.session_id), tool: isStr(p.tool_name) ? p.tool_name : null };
 }
 
 const validTouch = t => !!t && typeof t === 'object' && isStr(t.worktree) && normPath(t.worktree) !== null
@@ -213,6 +216,9 @@ function buildClaim({ agentId, agent, fromBranch, fromRoot, sessionId, hostPid, 
     lastAt: t.lastAt,
     count: positiveInt(t.count) ? t.count : 1,
   };
+  // The tool of the latest touch and when this worktree was last WRITTEN to (an Edit, Write or NotebookEdit there). Present only when known.
+  if (isStr(t.tool)) claim.tool = t.tool;
+  if (finite(t.wroteAt)) claim.wroteAt = t.wroteAt;
   // #81: a read-only side session's agents are readers. Only a reader is marked; a writer's claim is what it always was.
   if (role === READER) claim.role = READER;
   return claim;
@@ -223,6 +229,7 @@ function serializeClaim(c) {
     agentId: c.agentId, agent: c.agent, worktree: c.worktree, also: c.also, fromBranch: c.fromBranch,
     fromRoot: c.fromRoot, sessionId: c.sessionId, hostPid: c.hostPid, hostStartedAt: c.hostStartedAt,
     firstAt: c.firstAt, lastAt: c.lastAt, count: c.count, role: c.role === READER ? READER : undefined,
+    tool: isStr(c.tool) ? c.tool : undefined, wroteAt: finite(c.wroteAt) ? c.wroteAt : undefined,
   }, null, 2) + '\n';
 }
 
@@ -252,10 +259,12 @@ function parseClaim(text) {
     count: d.count,
   };
   if (d.role === READER) parsed.role = READER;
+  if (isStr(d.tool)) parsed.tool = d.tool.slice(0, 40);
+  if (finite(d.wroteAt)) parsed.wroteAt = d.wroteAt;
   return { ok: true, claim: parsed };
 }
 
 module.exports = {
   claimFrom, touchOf, latest, buildClaim, serializeClaim, parseClaim, claimFileName, safeAgentId, ALSO_MAX,
-  TOUCH_TOOLS,
+  TOUCH_TOOLS, WRITE_TOOLS,
 };

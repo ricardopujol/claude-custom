@@ -25,7 +25,22 @@ const claim = (ev, own = DEV, roots = ROOTS) => O.claimFrom(ev, roots, own);
 
 test('an Edit inside a sibling worktree claims it, naming the agent', () => {
   const c = claim(pre('Edit', { file_path: path.join(FEAT, 'app', 'x.js') }));
-  assert.deepStrictEqual(c, { agentId: 'ac7618c6a7668687d', agent: 'electron-pro', worktree: FEAT, sessionId: null });
+  assert.deepStrictEqual(c, { agentId: 'ac7618c6a7668687d', agent: 'electron-pro', worktree: FEAT, sessionId: null, tool: 'Edit' });
+});
+
+test('the claim names the TOOL, and only Edit, Write and NotebookEdit are writes (the Map\'s conflict edge needs it)', () => {
+  for (const t of ['Edit', 'Write', 'NotebookEdit']) assert.ok(O.WRITE_TOOLS.has(t), t);
+  for (const t of ['Read', 'Grep', 'Glob', 'Bash']) assert.ok(!O.WRITE_TOOLS.has(t), t);
+  assert.strictEqual(claim(pre('Read', { file_path: path.join(FEAT, 'a') })).tool, 'Read');
+});
+
+test('wroteAt and tool are in the claim file, read back, and absent when unknown (an old claim is a read)', () => {
+  const r = O.parseClaim(O.serializeClaim({ ...GOOD, tool: 'Edit', wroteAt: 1500 }));
+  assert.strictEqual(r.claim.wroteAt, 1500);
+  assert.strictEqual(r.claim.tool, 'Edit');
+  const old = O.parseClaim(O.serializeClaim(GOOD)).claim;
+  assert.ok(!('wroteAt' in old) && !('tool' in old));
+  assert.ok(!('wroteAt' in O.parseClaim(JSON.stringify({ ...GOOD, wroteAt: 'x' })).claim), 'junk is not a time');
 });
 
 test('the claim names the session the call came from: the hook payload\'s session_id (backlog #57, PR #96 Dexter F5)', () => {
