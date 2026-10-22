@@ -66,6 +66,8 @@ const { createStore } = require('../host/store');
 const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
+// BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
+const { isShellKey, shellHostsOf } = require('../host/shell-tab');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
@@ -291,8 +293,10 @@ async function chooseHostPort(tab) {
   // #81: a branch tab's side session is looked for as a side host, on a port of its own: never the window's explicit one
   // (that is the branch tab's), and the walk never attaches it to the folder's own host.
   const side = tab.side === true;
-  if (!side && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
-  if (!side && EXPLICIT_PORT) {
+  // A5: so is a branch tab's shell: a host of its own, found only as a shell host.
+  const companion = side || tab.shell === true;
+  if (!companion && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (!companion && EXPLICIT_PORT) {
     // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
     const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
@@ -307,7 +311,7 @@ async function chooseHostPort(tab) {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: tab.cwd, occupantAt, side });
+  return resolvePort({ cwd: tab.cwd, occupantAt, side, kind: tab.shell === true ? 'shell' : undefined });
 }
 
 // This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
@@ -335,7 +339,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, shell: tab.shell === true }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -1146,7 +1150,16 @@ function registerIpc() {
       enabled: side.enabled,
       click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
     };
+    // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is just this item; it restarts one whose shell has exited.
+    // Named shellState, not shell: Electron's shell is imported under that name.
+    const shellState = tabShell.shellMenu(key);
+    const shellItem = {
+      label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
+      enabled: shellState.enabled,
+      click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
+    };
     if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
+    if (isShellKey(key)) { Menu.buildFromTemplate([shellItem]).popup({ window: win }); return; }
     const issue = tabShell.issueOf(key);
     Menu.buildFromTemplate([
       markSubmenu(tabShell.branchOf(key)),
@@ -1154,6 +1167,7 @@ function registerIpc() {
       // #119 A6: a lane started from a GitHub issue keeps its link.
       ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
       sideItem,
+      shellItem,
       { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
       { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
     ]).popup({ window: win });
@@ -1174,6 +1188,12 @@ function registerIpc() {
         label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
         enabled: m.create.enabled,
         click: () => tabShell.openCreate(),
+      },
+      // #119 A5: a plain shell for the selected lane
+      {
+        label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
+        enabled: m.shell.enabled,
+        click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
       },
       ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
     ]).popup({ window: win });
@@ -1675,7 +1695,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), shell: t.classList.contains('shell'), dots: [...t.querySelectorAll('.dot')].map(d => d.className + '|' + d.title), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1762,6 +1782,12 @@ function startProbeDriver(port) {
             rows: [...$('issues-list').querySelectorAll('.issue-row')].map(b => ({ num: b.querySelector('.issue-num').textContent, title: b.querySelector('.issue-title').textContent, branch: b.querySelector('.issue-branch').textContent, labels: [...b.querySelectorAll('.issue-label')].map(x => x.textContent) })),
           } }); })()`);
       return JSON.parse(out);
+    },
+    // #119 A5: what the tab menu's Open shell here does, by the branch tab's label.
+    async shellOpen(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.openShell(key);
     },
     // #81: what the tab menu's Open side session does, by the branch tab's label.
     async sideOpen(label) {
@@ -2104,6 +2130,8 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
+      // #119 A5: ... and the shell hosts, the same way
+      shellHosts: () => shellHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
       readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),

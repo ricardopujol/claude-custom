@@ -6222,6 +6222,8 @@ function renderUsage(usage) {
 // HOW to draw it lives in app/quota-display.js so it can be tested; this only
 // turns that decision into markup.
 const quotaEl = document.getElementById('quota');
+// What kind of host this page is attached to: 'shell' for a plain shell tab (the hello says), else null. Claude-only controls refuse on 'shell'.
+let hostKind = null;
 let lastQuotaPayload = null;
 
 // #90: when a window is used up its meter reads "Claude back in 2h 14m" (a model-scoped one, "Fable back Thu 09:00"), and when
@@ -6271,7 +6273,7 @@ function renderQuota(quota) {
     return;
   }
   // A window still reported used up after its reset passed is drawn unknown, not as the old red 100% (the next poll says).
-  const d = quotaDisplay(quotaSettlePastResets(lastQuotaPayload, nowMs));
+  const d = quotaDisplay(quotaSettlePastResets(lastQuotaPayload, nowMs), nowMs, hostKind);
 
   if (d.state !== 'ready') {
     // No bars. Three tracks sitting at zero would claim the plan is untouched,
@@ -7036,6 +7038,7 @@ function requestSwitch(kind, raw) {
     current: kind === 'model' ? currentModel() : currentEffort,
     screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
+    hostKind,
   });
   if (!plan.ok) {
     setTopBarNotice(kind, switchNotice({ kind, result: 'refused', notice: plan.notice }));
@@ -7079,6 +7082,8 @@ function requestSwitch(kind, raw) {
 // share one input box, and the top bar's Enter could submit what the other typed (Dexter D8).
 let typingBusy = false;
 function typeAndCheck(enterInsert, command, done) {
+  // The one place every typed command passes (the top bar, the wand, the Git drawer, the reader, Claude's panel): a shell tab gets none.
+  if (hostKind === 'shell') { done({ ok: false, reason: SHELL_TAB_REFUSAL }); return; }
   if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
   typingBusy = true;
   const settle = done;
@@ -7139,6 +7144,7 @@ function typeCommand(command, done, kind, opts) {
     screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
     kind,                       // 'mention' types the reader's `@path#Lx-y` (never Enter, like /merged)
+    hostKind,                   // 'shell': nothing is sent to a plain shell tab, see PR 208 Miguel Y3
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
@@ -7165,7 +7171,8 @@ function typeCommand(command, done, kind, opts) {
  */
 function submitTyped(command, opts, done) {
   const typeOnly = opts.typeOnly;
-  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly, kind: hostKind });
+  if (gate.reason) { done({ ok: false, reason: gate.reason }); return; }
   if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
   if (!gate.recheck) { pressEnter(done, command, opts.enterInsert); return; }
   typingBusy = true;
@@ -8477,6 +8484,8 @@ function handleControl(msg) {
   if (msg.type === 'hello') {
     noteModStatus(msg.modStatus);
     notePtyBackend(msg.ptyBackend);
+    // Which kind of host this is (a shell tab's says 'shell'); set before anything below can render or type.
+    hostKind = msg.kind === 'shell' ? 'shell' : null;
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.
@@ -8956,7 +8965,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'exit') {
-    term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    term.write('\r\n\x1b[33m' + shellExitText(hostKind, msg.error) + '\x1b[0m\r\n');
     // The session is over: nothing it said last (working, blocked) is still true (PR #201 Dexter 1).
     applyProgramStatus(null);
     return;

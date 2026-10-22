@@ -135,7 +135,7 @@ const ALLOWED_GLOBALS = new Set([
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'boxHoldsLine', 'scrollCapRows', 'menuPlacement',
   // PR #93 Dexter F3: the typing plan the top bar and the Git drawer's Type /merged share
-  'planTyping', 'typingKeys', 'boxText',
+  'planTyping', 'SHELL_TAB_REFUSAL', 'shellExitText', 'typingKeys', 'boxText',
   // app/context-fill-display.js (BACKLOG #6)
   'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
   // app/worktree-status-display.js (PR 1b, Extension X1/X4): one namespace object.

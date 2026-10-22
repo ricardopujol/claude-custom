@@ -23,13 +23,13 @@ test('host.js: a side host builds claude\'s args with the side option, from the 
 });
 
 test('host.js: a side host takes no session lock, so it never holds the worktree\'s writer role', () => {
-  assert.match(HOST, /const SESSION_LOCK = SIDE \? null : lockPathFor\(CWD\);/);
+  assert.match(HOST, /const SESSION_LOCK = SIDE \|\| SHELL \? null : lockPathFor\(CWD\);/);
 });
 
 test('host.js: every identity the host writes says whether it is a side host', () => {
   const writes = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
   assert.ok(writes.length >= 3, `found ${writes.length} writeIdentity calls`);
-  for (const w of writes) assert.match(w, /side: SIDE/, w);
+  for (const w of writes) assert.match(w, /\.\.\.identityFor\(\)/, w);   // identityFor carries side (host/shell-tab.js identityFields)
 });
 
 test('host.js: a side host\'s subagents claim worktrees as readers', () => {
@@ -37,11 +37,11 @@ test('host.js: a side host\'s subagents claim worktrees as readers', () => {
 });
 
 test('main.js: a side tab\'s host is spawned with the side flag, and found as a side host, never through the window\'s explicit port', () => {
-  assert.match(MAIN, /hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
-  assert.match(MAIN, /resolvePort\(\{ cwd: tab\.cwd, occupantAt, side \}\)/);
+  assert.match(MAIN, /hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true, shell: tab\.shell === true \}\)/);
+  assert.match(MAIN, /resolvePort\(\{ cwd: tab\.cwd, occupantAt, side, kind: tab\.shell === true \? 'shell' : undefined \}\)/);
   const choose = MAIN.slice(MAIN.indexOf('async function chooseHostPort'), MAIN.indexOf('function spawnHost'));
   assert.match(choose, /const side = tab\.side === true;/);
-  assert.match(choose, /if \(!side && EXPLICIT_PORT\)/);
+  assert.match(choose, /if \(!companion && EXPLICIT_PORT\)/);
 });
 
 test('main.js: the tab menu offers the side session, and its click opens it on the branch tab it names', () => {
