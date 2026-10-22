@@ -969,3 +969,30 @@ test('PR #189 Dexter 3: focus held outside the popover is left alone when the po
   V.applyBoxes(planD4(l, NO_SEL, { module: 'vault' }), w.doc);
   assert.strictEqual(w.doc.activeElement, field);
 });
+
+test('lean keeps (PR #200): the group that shows a kept panel is marked data-lean-keep, one that shows any other is not', () => {
+  const w = makeDoc();
+  const l = T.defaultLayout(IDS);
+  V.applyBoxes(plan(l, { active: { right: 'schedules' }, foldAll: false }), w.doc, ['schedules']);
+  assert.ok('leanKeep' in groupEl(w.dock, 'right').dataset, 'the group showing Schedules carries the mark');
+  V.applyBoxes(plan(l, { active: { right: 'vault' }, foldAll: false }), w.doc, ['schedules']);
+  assert.ok(!('leanKeep' in groupEl(w.dock, 'right').dataset), 'the same element loses it when another panel is the one showing');
+  V.applyBoxes(plan(l, { active: { right: 'schedules' }, foldAll: false }), w.doc, ['schedules']);
+  assert.ok('leanKeep' in groupEl(w.dock, 'right').dataset, 'and gets it back');
+});
+
+test('lean keeps: with no keep list nothing is marked (the default, so a caller that does not know about lean changes nothing)', () => {
+  const w = makeDoc();
+  V.applyBoxes(plan(T.defaultLayout(IDS), { active: { right: 'schedules' }, foldAll: false }), w.doc);
+  assert.ok(groupEls(w.dock).every(e => !('leanKeep' in e.dataset)));
+  V.applyBoxes(plan(T.defaultLayout(IDS), { active: { right: 'schedules' }, foldAll: false }), w.doc, null);
+  assert.ok(groupEls(w.dock).every(e => !('leanKeep' in e.dataset)), 'a null list is no list');
+});
+
+test('lean keeps: a float showing a kept panel is marked too', () => {
+  const w = makeDoc();
+  const l = T.dock(T.defaultLayout(IDS), 'schedules', { float: true });
+  V.applyBoxes(plan(l), w.doc, ['schedules']);
+  const f = floatEl(w, l.floats[0].id);
+  assert.ok(f && 'leanKeep' in f.dataset);
+});

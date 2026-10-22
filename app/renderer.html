@@ -1936,9 +1936,11 @@
     body.focus-mode #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
     /* Lean mode (#62): only the terminal, like focus mode but with the strip kept (it carries the tab marks and the
        way back). Nothing else changes: the colours, the terminal theme and the background are the project's own. */
-    body.lean header, body.lean .zone, body.lean #diag,
+    body.lean header, body.lean .zone:not([data-lean-keep]), body.lean #diag,
     body.lean .dgutter, body.lean .drail, body.lean #dock-overlay { display: none; }
-    body.lean #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
+    /* A box that shows a panel leanDisplay.LEAN_KEEPS names (Schedules, PR #200) carries data-lean-keep (dock-tree-display.js applyBoxes) and is
+       drawn where the dock puts it. The terminal then keeps the rectangle the plan gave it, beside that box, instead of filling the page under it. */
+    body.lean:not(:has(.dgroup[data-lean-keep])) #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;

@@ -1841,7 +1841,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   lastPlan = plan;
   if (peek && !plan.peek) railEvent({ type: 'gone' });     // its rail went (the window grew, the group was opened): so does the popover
   if (settle) settleDock();
-  window.dockTreeView.applyBoxes(plan, document);
+  window.dockTreeView.applyBoxes(plan, document, leanDisplay.LEAN_KEEPS);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
   // Lean mode unmounts every dock panel except the ones leanDisplay.LEAN_KEEPS names (Schedules: its content is the night itself), so each panel's own hide effects run (the vault's secrets go,
   // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
@@ -4236,7 +4236,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const cs = getComputedStyle(document.documentElement);
         return JSON.stringify({
           ok: true, leanOn, bodyLean: document.body.classList.contains('lean'), shown: [...shownModules],
-          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length, headerVisible: visible(document.querySelector('header')),
+          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length,
+          zones: [...document.querySelectorAll('.zone')].filter(visible).map((z) => ({ group: z.dataset.group || null, keep: 'leanKeep' in z.dataset, panels: [...z.querySelectorAll('.zone-panels > .panel.on')].map((p) => p.dataset.panel), rect: rectOf(z) })),
+          headerVisible: visible(document.querySelector('header')),
           barVisible: visible(document.getElementById('terminal-bar')),
           webgl: !!webglAddon, termRect: rectOf(document.getElementById('termwrap')), page: { width: window.innerWidth, height: window.innerHeight },
           buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
