@@ -68,3 +68,9 @@ test('applyBoxes is handed LEAN_KEEPS by the renderer, so the mark has one sourc
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
   assert.match(src, /window\.dockTreeView\.applyBoxes\(plan, document, leanDisplay\.LEAN_KEEPS\)/);
 });
+
+test('under lean a marked box hides its tab bar, so no tab click can switch Schedules out (Miguel Y1)', () => {
+  const r = leanRules().find(x => x.selectors.includes('body.lean .zone[data-lean-keep] .zone-tabs'));
+  assert.ok(r, 'the rule exists');
+  assert.match(r.body, /display:\s*none/);
+});

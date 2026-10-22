@@ -996,3 +996,14 @@ test('lean keeps: a float showing a kept panel is marked too', () => {
   const f = floatEl(w, l.floats[0].id);
   assert.ok(f && 'leanKeep' in f.dataset);
 });
+
+test('lean keeps: with two groups only the one showing Schedules is marked', () => {
+  const w = makeDoc();
+  const l = T.dock(T.defaultLayout(IDS), 'git', { edge: 'bottom' });
+  const gitGroup = T.groupOf(l, 'git').id;
+  const schedGroup = T.groupOf(l, 'schedules').id;
+  assert.notStrictEqual(gitGroup, schedGroup, 'sanity: two groups');
+  V.applyBoxes(plan(l, { active: { [schedGroup]: 'schedules', [gitGroup]: 'git' }, foldAll: false }), w.doc, ['schedules']);
+  assert.ok('leanKeep' in groupEl(w.dock, schedGroup).dataset, 'the Schedules group is marked');
+  assert.ok(!('leanKeep' in groupEl(w.dock, gitGroup).dataset), 'the other group is not');
+});

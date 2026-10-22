@@ -1941,6 +1941,8 @@
     /* A box that shows a panel leanDisplay.LEAN_KEEPS names (Schedules, PR #200) carries data-lean-keep (dock-tree-display.js applyBoxes) and is
        drawn where the dock puts it. The terminal then keeps the rectangle the plan gave it, beside that box, instead of filling the page under it. */
     body.lean:not(:has(.dgroup[data-lean-keep])) #termwrap { left: 0 !important; top: 0 !important; width: 100% !important; height: 100% !important; }
+    /* ...and its tab bar goes: a click on another panel's tab would unmount Schedules with no way back but leaving lean (PR #200 Miguel Y1). */
+    body.lean .zone[data-lean-keep] .zone-tabs { display: none; }
     #focus-hot { display: none; }
     body.focus-mode #focus-hot {
       display: flex; justify-content: flex-end; align-items: flex-start;
