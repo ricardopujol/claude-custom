@@ -187,3 +187,30 @@ test('the stop list carries a shell host kind, and an ordinary or side host carr
   assert.strictEqual(by[7702].kind, 'shell');
   for (const p of [7701, 7703, 7704]) assert.ok(!('kind' in by[p]), String(p));
 });
+
+// --- PR #208 review: Dexter 1 (a shell that can't start ends the host), Miguel G5 (one identity helper) ---
+
+test('startShellPty: a spawn that works hands the pty back', () => {
+  const pty = { pid: 7 };
+  assert.deepStrictEqual(shell.startShellPty(() => pty), { term: pty });
+});
+
+test('startShellPty: a spawn that throws is an exit frame with the reason, never a thrown error and never a bound host with no pty', () => {
+  for (const err of [new Error('File not found: nu'), new Error('Cannot create process, error code: 193'), 'plain string', null]) {
+    const r = shell.startShellPty(() => { throw err; });
+    assert.strictEqual(r.term, null);
+    assert.strictEqual(r.frame.type, 'exit');
+    assert.notStrictEqual(r.frame.exitCode, 0, 'a failed start is not a clean exit');
+    assert.strictEqual(r.frame.signal, null);
+    assert.strictEqual(typeof r.frame.error, 'string');
+    assert.ok(r.frame.error !== '');
+    assert.strictEqual(r.message, r.frame.error);
+  }
+  assert.match(shell.startShellPty(() => { throw new Error('File not found: nu'); }).frame.error, /File not found: nu/);
+});
+
+test('identityFields: kind only for a shell host, side and sessionId only for a side host', () => {
+  assert.deepStrictEqual(shell.identityFields({ side: false, shell: false, sessionId: 's' }), { side: false, kind: undefined, sessionId: undefined });
+  assert.deepStrictEqual(shell.identityFields({ side: true, shell: false, sessionId: 's' }), { side: true, kind: undefined, sessionId: 's' });
+  assert.deepStrictEqual(shell.identityFields({ side: false, shell: true, sessionId: 's' }), { side: false, kind: 'shell', sessionId: undefined });
+});

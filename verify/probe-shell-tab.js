@@ -104,7 +104,7 @@ function makeContainer() {
 
 // --- one app instance = one "window" --------------------------------------------------
 let windowNo = 0;
-async function launchApp(cwd) {
+async function launchApp(cwd, extraEnv = {}) {
   windowNo++;
   const port = await freePort();
   const token = require('crypto').randomBytes(16).toString('hex');
@@ -118,6 +118,7 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    ...extraEnv,
   };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.CLAUDE_CUSTOM_PORT;
@@ -456,6 +457,30 @@ async function main() {
   check('hand-closing feat/a ends BOTH hosts', closed.ok === true && !!bothGone, JSON.stringify(closed));
   check('and both tabs leave the strip', !!s && !tabOf(s, 'feat/a') && !tabOf(s, SHELL_A), labelsOf(s).join(', '));
   check('the folder is still there', fs.existsSync(featA));
+  await quit(app);
+
+  // ===== a shell that cannot start (Dexter 1): the host must END, not sit bound with no pty =====
+  const BOGUS = path.join(tmp, 'no-such-dir', 'no-such-shell.exe');
+  const SHELL_B = 'feat/b · shell';
+  app = await launchApp(container, { CLAUDE_CUSTOM_SHELL: BOGUS });
+  s = await driverUp(app);
+  if (!s) { check('the window for the bogus-shell stage came up', false, app.out.split('\n').slice(-15).join('\n')); skipped = true; return; }
+  const bOpen = await command(app, { cmd: 'shell-open', label: 'feat/b' }, 60000);
+  const bEnded = await waitFor(async () => {
+    const x = await state(app);
+    const t = tabOf(x, SHELL_B);
+    return t && /exited/.test(t.phaseText || '') ? x : null;
+  }, 40000, 400);
+  remember(bEnded || (await state(app)));
+  const bShellIds = identitiesUnder(path.join(container, 'feat-b')).filter(i => i.kind === 'shell');
+  for (const i of bShellIds) seenPids.add(i.pid, i.processStartedAt);
+  const bGone = await waitFor(async () => identitiesUnder(path.join(container, 'feat-b')).filter(i => i.kind === 'shell').every(i => !alive(i.pid)), 20000, 300);
+  let hostLog = '';
+  try { hostLog = fs.readFileSync(path.join(HARNESS_DIR, 'host.log'), 'utf8'); } catch { /* none */ }
+  check('a shell that cannot start (a bogus CLAUDE_CUSTOM_SHELL) opens the tab and the tab then says the shell exited, with Restart on offer',
+    bOpen.ok === true && !!bEnded, bEnded ? tabOf(bEnded, SHELL_B).phaseText : JSON.stringify(bOpen));
+  check('and its host is GONE, not left bound with no pty', !!bGone && bShellIds.every(i => !alive(i.pid)), JSON.stringify(bShellIds.map(i => i.pid)));
+  check('and host.log says why', hostLog.includes('could not start the shell:') && hostLog.includes('no-such-shell.exe'));
   await quit(app);
 }
 

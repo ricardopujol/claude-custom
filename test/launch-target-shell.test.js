@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 
-const { pickShell, shellEnv } = require('../host/launch-target');
+const { pickShell, shellEnv, findOnPath, splitCommand, launchEnv } = require('../host/launch-target');
 
 const WIN = { platform: 'win32', systemRoot: 'C:\\Windows' };
 const PS5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
@@ -92,4 +92,107 @@ test('shellEnv does not change its input', () => {
   const base = { CLAUDE_CUSTOM_TOKEN: 't', ELECTRON_RUN_AS_NODE: '1', A: 'b' };
   shellEnv(base);
   assert.deepStrictEqual(base, { CLAUDE_CUSTOM_TOKEN: 't', ELECTRON_RUN_AS_NODE: '1', A: 'b' });
+});
+
+// --- PR #208 review: Dexter 2 (PATHEXT), Miguel Y1 (findOnPath and the real default), Dexter 1 (override with arguments), Dexter 3 ---
+
+// A fake file system: stat(file) says isFile for exactly the listed files, and throws for the rest.
+const fakeFs = (files) => {
+  const set = new Set(files.map(f => f.toLowerCase()));
+  return (f) => { if (set.has(String(f).toLowerCase())) return { isFile: () => true }; throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
+};
+const NPM = 'C:\\Users\\r\\AppData\\Roaming\\npm';
+const win = (files, over = {}) => ({ platform: 'win32', pathVar: `${NPM};C:\\bin`, stat: fakeFs(files), pathExt: '.COM;.EXE;.BAT;.CMD;.VBS;.JS', ...over });
+
+test('findOnPath: npm\'s extensionless shim never beats name.cmd (Dexter 2)', () => {
+  const files = [`${NPM}\\codex`, `${NPM}\\codex.cmd`, `${NPM}\\codex.ps1`];
+  assert.strictEqual(findOnPath('codex', win(files)), `${NPM}\\codex.cmd`);
+});
+
+test('findOnPath: only an extensionless file is no match on Windows', () => {
+  assert.strictEqual(findOnPath('codex', win([`${NPM}\\codex`, `${NPM}\\codex.ps1`])), null);
+});
+
+test('findOnPath: a command that exists only as name.exe is found, and the order is PATHEXT\'s', () => {
+  assert.strictEqual(findOnPath('nu', win(['C:\\bin\\nu.exe'])), 'C:\\bin\\nu.exe');
+  assert.strictEqual(findOnPath('x', win(['C:\\bin\\x.cmd', 'C:\\bin\\x.exe'])), 'C:\\bin\\x.exe', '.EXE before .CMD in PATHEXT');
+  assert.strictEqual(findOnPath('x', win(['C:\\bin\\x.cmd', 'C:\\bin\\x.exe'], { pathExt: '.CMD;.EXE' })), 'C:\\bin\\x.cmd');
+});
+
+test('findOnPath: folders are searched in order, and an earlier folder wins over a better extension later', () => {
+  assert.strictEqual(findOnPath('x', win([`${NPM}\\x.cmd`, 'C:\\bin\\x.exe'])), `${NPM}\\x.cmd`);
+});
+
+test('findOnPath: a name that already ends in a runnable extension is taken as it is; a .ps1 or .js is not runnable', () => {
+  assert.strictEqual(findOnPath('pwsh.exe', win(['C:\\bin\\pwsh.exe'])), 'C:\\bin\\pwsh.exe');
+  assert.strictEqual(findOnPath('tool.ps1', win(['C:\\bin\\tool.ps1'])), null);
+  assert.strictEqual(findOnPath('PWSH.EXE', win(['C:\\bin\\pwsh.exe'])), 'C:\\bin\\PWSH.EXE', 'case-insensitive file system; the name is kept as typed');
+});
+
+test('findOnPath: a missing or empty PATHEXT falls back to the four runnable extensions; non-runnable ones are ignored', () => {
+  assert.strictEqual(findOnPath('x', win(['C:\\bin\\x.bat'], { pathExt: undefined })), 'C:\\bin\\x.bat');
+  assert.strictEqual(findOnPath('x', win(['C:\\bin\\x.bat'], { pathExt: '.VBS;.JS' })), 'C:\\bin\\x.bat');
+  assert.strictEqual(findOnPath('x', win(['C:\\bin\\x.vbs'], { pathExt: '.VBS' })), null);
+});
+
+test('findOnPath: quoted and blank PATH entries are tolerated; a name with a folder in it, or no name, is not looked up', () => {
+  assert.strictEqual(findOnPath('nu', win(['C:\\my bin\\nu.exe'], { pathVar: ';  ;"C:\\my bin"' })), 'C:\\my bin\\nu.exe');
+  assert.strictEqual(findOnPath('a\\nu', win(['C:\\bin\\a\\nu.exe'])), null);
+  assert.strictEqual(findOnPath('', win([])), null);
+  assert.strictEqual(findOnPath(undefined, win([])), null);
+});
+
+test('findOnPath: off Windows the bare name is the file', () => {
+  const stat = fakeFs(['/usr/bin/zsh']);
+  assert.strictEqual(findOnPath('zsh', { platform: 'linux', pathVar: '/bin:/usr/bin', stat }), '/usr/bin/zsh');
+});
+
+test('pickShell with the REAL findOnPath over a fake PATH and fake files: pwsh found as pwsh.exe, else the System32 copy (Miguel Y1)', () => {
+  const PS7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+  const onPath = (n) => findOnPath(n, win([PS7], { pathVar: 'C:\\Program Files\\PowerShell\\7' }));
+  assert.strictEqual(pickShell({}, { ...WIN, onPath, exists: () => true }).bin, PS7);
+  const none = (n) => findOnPath(n, win([], { pathVar: 'C:\\Program Files\\PowerShell\\7' }));
+  assert.strictEqual(pickShell({}, { ...WIN, onPath: none, exists: (p) => p === PS5 }).bin, PS5);
+});
+
+test('pickShell: CLAUDE_CUSTOM_SHELL=codex resolves to codex.cmd, not the shim (Dexter 2, end to end through the real lookup)', () => {
+  const files = [`${NPM}\\codex`, `${NPM}\\codex.cmd`];
+  const r = pickShell({ CLAUDE_CUSTOM_SHELL: 'codex' }, { ...WIN, onPath: (n) => findOnPath(n, win(files)), exists: (f) => files.includes(f) });
+  assert.deepStrictEqual(r, { bin: `${NPM}\\codex.cmd`, args: [], source: 'override' });
+});
+
+test('pickShell: an override with arguments is cut into the program and its arguments (Dexter 1)', () => {
+  const onPath = (n) => (n === 'pwsh' ? 'C:\\p\\pwsh.exe' : null);
+  assert.deepStrictEqual(pickShell({ CLAUDE_CUSTOM_SHELL: 'pwsh -NoLogo -NoProfile' }, { ...WIN, onPath, exists: () => false }),
+    { bin: 'C:\\p\\pwsh.exe', args: ['-NoLogo', '-NoProfile'], source: 'override' });
+  assert.deepStrictEqual(pickShell({ CLAUDE_CUSTOM_SHELL: '"C:\\Program Files\\Git\\bin\\bash.exe" --login -i' }, { ...WIN, onPath: () => null, exists: () => false }),
+    { bin: 'C:\\Program Files\\Git\\bin\\bash.exe', args: ['--login', '-i'], source: 'override' });
+});
+
+test('pickShell: an unquoted path with spaces that names an existing file is that file, with no arguments', () => {
+  const file = 'C:\\Program Files\\Git\\bin\\bash.exe';
+  assert.deepStrictEqual(pickShell({ CLAUDE_CUSTOM_SHELL: file }, { ...WIN, onPath: () => null, exists: (f) => f === file }), { bin: file, args: [], source: 'override' });
+});
+
+test('pickShell: a path with no runnable extension gets the one that exists; one that exists as given is left alone', () => {
+  assert.strictEqual(pickShell({ CLAUDE_CUSTOM_SHELL: 'D:\\tools\\nu' }, { ...WIN, onPath: () => null, exists: (f) => f === 'D:\\tools\\nu.exe' }).bin, 'D:\\tools\\nu.exe');
+  assert.strictEqual(pickShell({ CLAUDE_CUSTOM_SHELL: 'D:\\tools\\nu' }, { ...WIN, onPath: () => null, exists: () => false }).bin, 'D:\\tools\\nu');
+});
+
+test('splitCommand: spaces separate, double quotes group and vanish, empty is no words', () => {
+  assert.deepStrictEqual(splitCommand('a  b "c d" e"f g"h'), ['a', 'b', 'c d', 'ef gh']);
+  assert.deepStrictEqual(splitCommand('   '), []);
+  assert.deepStrictEqual(splitCommand('""'), ['']);
+});
+
+test('property: splitCommand of a join of quote-free words with spaces gives the words back', () => {
+  fc.assert(fc.property(fc.array(fc.stringMatching(/^[A-Za-z0-9_.\\:-]{1,10}$/), { minLength: 1, maxLength: 6 }), (words) => {
+    assert.deepStrictEqual(splitCommand(words.join(' ')), words);
+  }), { numRuns: 100, seed: 7501 });
+});
+
+test('launchEnv lets CLAUDE_CUSTOM_SHELL through (the person\'s choice) and still strips every other CLAUDE_CUSTOM_* key (Dexter 3)', () => {
+  const out = launchEnv({ CLAUDE_CUSTOM_SHELL: 'nu', CLAUDE_CUSTOM_TOKEN: 't', CLAUDE_CUSTOM_SHELL_HOST: '1', CLAUDE_CUSTOM_PORT: '1', PATH: 'p' }, 'C:/proj');
+  assert.deepStrictEqual(Object.keys(out).sort(), ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_SHELL', 'PATH']);
+  assert.strictEqual(out.CLAUDE_CUSTOM_SHELL, 'nu');
 });

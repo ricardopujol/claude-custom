@@ -65,4 +65,23 @@ function shellHostsOf(identities) {
   return out;
 }
 
-module.exports = { SHELL_SUFFIX, COMPANION_SUFFIXES, SHELL_HOST_ENV, isCompanionKey, isShellKey, shellKeyOf, parentKeyOfShell, shellLabel, isShellEnv, shellHostsOf };
+/**
+ * Start the shell's pty. A spawn that throws (node-pty: "File not found", error 193 for a file Windows can't run) is not an error to
+ * propagate: the host must END like an exited shell, so the answer is the exit frame to send. -> { term } | { term: null, frame, message }.
+ */
+function startShellPty(spawn) {
+  try {
+    return { term: spawn() };
+  } catch (err) {
+    const raw = err && typeof err.message === 'string' ? err.message : typeof err === 'string' ? err : '';
+    const message = raw !== '' ? raw : 'the shell could not be started';
+    return { term: null, frame: { type: 'exit', exitCode: 1, signal: null, error: message }, message };
+  }
+}
+
+/** The role fields of every writeIdentity call (host/host-identity.js): one place, so no call forgets `kind`. */
+function identityFields({ side, shell, sessionId }) {
+  return { side: side === true, kind: shell === true ? 'shell' : undefined, sessionId: side === true ? sessionId : undefined };
+}
+
+module.exports = { startShellPty, identityFields, SHELL_SUFFIX, COMPANION_SUFFIXES, SHELL_HOST_ENV, isCompanionKey, isShellKey, shellKeyOf, parentKeyOfShell, shellLabel, isShellEnv, shellHostsOf };

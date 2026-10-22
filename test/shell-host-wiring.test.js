@@ -22,11 +22,11 @@ test('host.js: a shell host takes no session lock', () => {
 
 test('host.js: the pty runs the picked shell with its (empty) arguments, not claude with claude\'s', () => {
   assert.match(HOST, /const SHELL_TARGET = SHELL \? pickShell\(process\.env\) : null;/);
-  assert.match(HOST, /term = pty\.spawn\(SHELL \? SHELL_TARGET\.bin : CLAUDE_BIN, SHELL \? SHELL_TARGET\.args : ARGS, \{/);
+  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : CLAUDE_BIN, SHELL \? SHELL_TARGET\.args : ARGS, \{/);
 });
 
 test('host.js: a shell\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {
-  const spawn = HOST.slice(HOST.indexOf('term = pty.spawn('), HOST.indexOf('trackExit(term);'));
+  const spawn = HOST.slice(HOST.indexOf('const spawnPty = () => pty.spawn('), HOST.indexOf('trackExit(term);'));
   const from = spawn.indexOf('env: SHELL');
   assert.ok(from > 0, 'the env is chosen by SHELL');
   const shellBranch = spawn.slice(from, spawn.indexOf('\n      : {', from));
@@ -38,7 +38,18 @@ test('host.js: a shell\'s environment goes through shellEnv and gets no provider
 test('host.js: every identity the host writes says whether it is a shell host, as well as a side host', () => {
   const writes = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
   assert.ok(writes.length >= 3, `found ${writes.length} writeIdentity calls`);
-  for (const w of writes) assert.match(w, /kind: SHELL \? 'shell' : undefined/, w);
+  for (const w of writes) assert.match(w, /\.\.\.identityFor\(\)/, w);
+  assert.match(HOST, /const identityFor = \(\) => identityFields\(\{ side: SIDE, shell: SHELL, sessionId \}\);/);
+});
+
+test('host.js: a shell that fails to spawn ENDS the host through the same exit path as an exited shell (Dexter 1)', () => {
+  const start = HOST.slice(HOST.indexOf('function startSession()'), HOST.indexOf('trackExit(term);'));
+  assert.match(start, /const started = startShellPty\(spawnPty\);\s*\n\s*if \(!started\.term\) \{/);
+  assert.match(start, /endHost\(started\.frame\.exitCode, started\.frame\.signal, \{ error: started\.frame\.error \}\);\s*\n\s*return;/);
+  assert.match(start, /\} else \{\s*\n\s*term = spawnPty\(\);/, 'claude keeps the plain spawn');
+  const end = HOST.slice(HOST.indexOf('function endHost('));
+  assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);
+  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,200}endHost\(exitCode, signal\);/);
 });
 
 test('host.js: a shell host polls no quota, asks for none on attach, and loads no mod', () => {

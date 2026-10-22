@@ -139,7 +139,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 // BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
-const { isShellEnv } = require('./shell-tab');
+const { isShellEnv, startShellPty, identityFields } = require('./shell-tab');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -709,6 +709,8 @@ const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
+// What every writeIdentity call says about this host's role (host/shell-tab.js identityFields): one place, so a fourth call can't forget it.
+const identityFor = () => identityFields({ side: SIDE, shell: SHELL, sessionId });
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
@@ -1828,7 +1830,7 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  term = pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
     name: 'xterm-256color',
     cols,
     rows,
@@ -1851,6 +1853,19 @@ function startSession() {
         ...providerEnv,
       },
   });
+  if (SHELL) {
+    // A shell that can't start (a missing binary, a file Windows can't run) must END the host the way an exited shell does, so the
+    // tab says so and offers Restart. Left bound with no pty it would serve a blank tab for ever (Dexter, PR #208 F1).
+    const started = startShellPty(spawnPty);
+    if (!started.term) {
+      console.error('[host] could not start the shell:', started.message, '--', SHELL_TARGET.bin);
+      endHost(started.frame.exitCode, started.frame.signal, { error: started.frame.error });
+      return;
+    }
+    term = started.term;
+  } else {
+    term = spawnPty();
+  }
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.
@@ -2062,16 +2077,21 @@ function wireTerm(t) {
 
   t.onExit(({ exitCode, signal }) => {
     console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
-    releaseSessionLock(SESSION_LOCK, lockOwner);
-    for (const ws of clients) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(
-          JSON.stringify({ type: 'exit', exitCode, signal })
-        );
-      }
-    }
-    process.exit(exitCode ?? 0);
+    endHost(exitCode, signal);
   });
+}
+
+// The session is over: tell every client, then end the host. `extra` rides on the exit frame (a failed shell start says why).
+function endHost(exitCode, signal, extra = {}) {
+  releaseSessionLock(SESSION_LOCK, lockOwner);
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) {
+      ws.send(
+        JSON.stringify({ type: 'exit', exitCode, signal, ...extra })
+      );
+    }
+  }
+  process.exit(exitCode ?? 0);
 }
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
@@ -2411,6 +2431,8 @@ wss.on('connection', (ws, req) => {
   const summaryNow = summary.snapshot();
   sendControl(ws, {
     type: 'hello',
+    // 'shell' for a plain shell tab's host (the page shows no account limits and types no Claude command into it), else absent.
+    kind: identityFor().kind,
     // What this host accepts as control. host/host-client.js sends `stop` /
     // `raise` only to a host that lists them: an older one would type them into
     // the session as input (PR #75).
@@ -3091,7 +3113,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, kind: SHELL ? 'shell' : undefined, sessionId: SIDE ? sessionId : undefined,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(),
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -3108,7 +3130,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, kind: SHELL ? 'shell' : undefined, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(), processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -3251,7 +3273,7 @@ const handleModRecord = createModRecordHandler({
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, kind: SHELL ? 'shell' : undefined, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(), processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

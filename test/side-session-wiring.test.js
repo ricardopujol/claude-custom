@@ -29,7 +29,7 @@ test('host.js: a side host takes no session lock, so it never holds the worktree
 test('host.js: every identity the host writes says whether it is a side host', () => {
   const writes = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
   assert.ok(writes.length >= 3, `found ${writes.length} writeIdentity calls`);
-  for (const w of writes) assert.match(w, /side: SIDE/, w);
+  for (const w of writes) assert.match(w, /\.\.\.identityFor\(\)/, w);   // identityFor carries side (host/shell-tab.js identityFields)
 });
 
 test('host.js: a side host\'s subagents claim worktrees as readers', () => {

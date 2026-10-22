@@ -80,7 +80,8 @@ function launchEnv(env, target) {
   // the correct shape -- and the only shape that also strips whatever is added
   // to it next year by someone who never reads this function.
   for (const [k, v] of Object.entries(env || {})) {
-    if (!k.startsWith('CLAUDE_CUSTOM_')) out[k] = v;
+    // CLAUDE_CUSTOM_SHELL is the one key that is the PERSON'S choice (which shell a shell tab runs), not the harness talking to itself.
+    if (!k.startsWith('CLAUDE_CUSTOM_') || k === SHELL_OVERRIDE) out[k] = v;
   }
   delete out.ELECTRON_RUN_AS_NODE;
   out.CLAUDE_CUSTOM_CWD = target;
@@ -121,35 +122,82 @@ function attachOnlyDecision(decision, env) {
 
 const SHELL_OVERRIDE = 'CLAUDE_CUSTOM_SHELL';
 
-/** The first file called `name` in the PATH folders, or null. A name with a folder in it is not looked up. */
-function findOnPath(name, { pathVar = process.env.PATH || process.env.Path || '', platform = process.platform, stat = fs.statSync } = {}) {
+// What CreateProcess can start. PATHEXT may also list .VBS, .JS, .MSC ...; those are not programs a pty can run.
+const RUNNABLE_EXTS = Object.freeze(['.com', '.exe', '.bat', '.cmd']);
+
+/** The extensions a bare command may be completed with, in PATHEXT order (lower case); the four runnable ones when PATHEXT is unset. */
+function runnableExts(pathExt) {
+  const listed = typeof pathExt === 'string' && pathExt.trim() !== ''
+    ? pathExt.split(';').map(e => e.trim().toLowerCase()).filter(e => RUNNABLE_EXTS.includes(e))
+    : [];
+  return listed.length > 0 ? listed : [...RUNNABLE_EXTS];
+}
+
+const hasRunnableExt = (name) => RUNNABLE_EXTS.includes(path.win32.extname(name).toLowerCase());
+
+/**
+ * The first program called `name` in the PATH folders, or null. A name with a folder in it is not looked up.
+ * On Windows the way cmd and CreateProcess do it (Dexter, PR #208 F2): folder by folder, a name that already ends in a runnable
+ * extension as it is, any other with each PATHEXT extension added. A file with no extension is never picked: npm leaves a `codex`
+ * sh script beside `codex.cmd`, and Windows can't run the first.
+ */
+function findOnPath(name, { pathVar = process.env.PATH || process.env.Path || '', platform = process.platform, stat = fs.statSync, pathExt = process.env.PATHEXT } = {}) {
   if (typeof name !== 'string' || name === '' || /[\\/]/.test(name)) return null;
-  const p = platform === 'win32' ? path.win32 : path.posix;
+  const win = platform === 'win32';
+  const p = win ? path.win32 : path.posix;
+  const names = !win ? [name] : hasRunnableExt(name) ? [name] : runnableExts(pathExt).map(e => name + e);
   for (const dir of String(pathVar).split(p.delimiter)) {
     const folder = dir.trim().replace(/^"(.*)"$/, '$1');
     if (folder === '') continue;
-    const candidate = p.join(folder, name);
-    try { if (stat(candidate).isFile()) return candidate; } catch { /* not in this folder */ }
+    for (const n of names) {
+      const candidate = p.join(folder, n);
+      try { if (stat(candidate).isFile()) return candidate; } catch { /* not in this folder */ }
+    }
   }
   return null;
 }
 
+/** A command line cut into words: spaces separate, double quotes group (and are dropped). No escapes, no variables. */
+function splitCommand(line) {
+  const out = [];
+  let cur = '';
+  let inWord = false;
+  let quoted = false;
+  for (const ch of String(line)) {
+    if (ch === '"') { quoted = !quoted; inWord = true; continue; }
+    if (!quoted && /\s/.test(ch)) { if (inWord) { out.push(cur); cur = ''; inWord = false; } continue; }
+    cur += ch;
+    inWord = true;
+  }
+  if (inWord) out.push(cur);
+  return out;
+}
+
 /**
- * Which program a shell tab runs. -> { bin, args: [], source: 'override' | 'pwsh' | 'powershell' | 'env-shell' | 'sh' }.
- *   - CLAUDE_CUSTOM_SHELL (an absolute path, or a command on PATH) wins. It is returned as given when it is a path, and as the file
- *     PATH finds when it is a command; a command PATH can't find stays the name, so the pty fails loudly rather than the pick
- *     quietly choosing something the person did not ask for.
- *   - else PowerShell 7 (pwsh.exe on PATH), else Windows PowerShell at its fixed System32 path.
- * No arguments: the person gets their shell, not a script. Off Windows (this app is Windows-only; kept honest for the tests): $SHELL, else /bin/sh.
+ * Which program a shell tab runs. -> { bin, args, source: 'override' | 'pwsh' | 'powershell' | 'env-shell' | 'sh' }.
+ *   - CLAUDE_CUSTOM_SHELL wins. It is a program with optional arguments ("pwsh -NoLogo", a quoted path with arguments):
+ *     when the whole value names an existing file it is that file alone (a path with spaces needs no quotes); otherwise it is cut into
+ *     words, the first the program and the rest its arguments. The program is a path (kept as given, a missing runnable extension added
+ *     when that file exists) or a command, resolved on PATH the way Windows does (findOnPath). A command PATH can't find stays the name:
+ *     the pty then fails to start and the host ends (host/shell-tab.js startShellPty), which the tab shows, rather than the pick quietly
+ *     choosing something the person did not ask for.
+ *   - else PowerShell 7 (pwsh.exe on PATH), else Windows PowerShell at its fixed System32 path, with no arguments: the person gets
+ *     their shell, not a script. Off Windows (this app is Windows-only; kept honest for the tests): $SHELL, else /bin/sh.
  */
 function pickShell(env = {}, { platform = process.platform, onPath = findOnPath, exists = (f) => fs.existsSync(f), systemRoot = (env && env.SystemRoot) || process.env.SystemRoot || 'C:\\Windows' } = {}) {
   const win = platform === 'win32';
-  const raw = typeof (env || {})[SHELL_OVERRIDE] === 'string' ? env[SHELL_OVERRIDE].trim().replace(/^"(.*)"$/, '$1').trim() : '';
+  const p = win ? path.win32 : path.posix;
+  const raw = typeof (env || {})[SHELL_OVERRIDE] === 'string' ? env[SHELL_OVERRIDE].trim().replace(/^"(.*)"$/, (m, inner) => (inner.includes('"') ? m : inner)).trim() : '';
   if (raw !== '') {
-    const isPath = (win ? path.win32 : path.posix).isAbsolute(raw) || /[\\/]/.test(raw);
-    if (isPath) return { bin: raw, args: [], source: 'override' };
-    const found = onPath(raw) || (win && !/\.[A-Za-z0-9]+$/.test(raw) ? onPath(`${raw}.exe`) : null);
-    return { bin: found || raw, args: [], source: 'override' };
+    // A path (not a bare name, which would be looked up in the host's own folder) that is a file: the whole value, spaces and all.
+    if (/[\\/]/.test(raw) && exists(raw)) return { bin: raw, args: [], source: 'override' };
+    const [first, ...args] = splitCommand(raw);
+    if (first === undefined) return { bin: raw, args: [], source: 'override' };
+    if (p.isAbsolute(first) || /[\\/]/.test(first)) {
+      const completed = win && !hasRunnableExt(first) ? RUNNABLE_EXTS.map(e => first + e).find(c => exists(c)) : undefined;
+      return { bin: completed || first, args, source: 'override' };
+    }
+    return { bin: onPath(first) || first, args, source: 'override' };
   }
   if (!win) {
     const sh = env && typeof env.SHELL === 'string' && env.SHELL.trim() !== '' ? env.SHELL.trim() : null;
@@ -174,4 +222,4 @@ function shellEnv(base) {
   return out;
 }
 
-module.exports = { resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };
+module.exports = { splitCommand, runnableExts, resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };
