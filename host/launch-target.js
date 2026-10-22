@@ -122,6 +122,11 @@ function attachOnlyDecision(decision, env) {
 
 const SHELL_OVERRIDE = 'CLAUDE_CUSTOM_SHELL';
 
+/** Is `f` an existing FILE? (existsSync is true for a folder too.) */
+function isFileSync(f) {
+  try { return fs.statSync(f).isFile(); } catch { return false; }
+}
+
 // What CreateProcess can start. PATHEXT may also list .VBS, .JS, .MSC ...; those are not programs a pty can run.
 const RUNNABLE_EXTS = Object.freeze(['.com', '.exe', '.bat', '.cmd']);
 
@@ -184,18 +189,24 @@ function splitCommand(line) {
  *   - else PowerShell 7 (pwsh.exe on PATH), else Windows PowerShell at its fixed System32 path, with no arguments: the person gets
  *     their shell, not a script. Off Windows (this app is Windows-only; kept honest for the tests): $SHELL, else /bin/sh.
  */
-function pickShell(env = {}, { platform = process.platform, onPath = findOnPath, exists = (f) => fs.existsSync(f), systemRoot = (env && env.SystemRoot) || process.env.SystemRoot || 'C:\\Windows' } = {}) {
+function pickShell(env = {}, { platform = process.platform, onPath = findOnPath, exists = isFileSync, systemRoot = (env && env.SystemRoot) || process.env.SystemRoot || 'C:\\Windows' } = {}) {
   const win = platform === 'win32';
   const p = win ? path.win32 : path.posix;
   const raw = typeof (env || {})[SHELL_OVERRIDE] === 'string' ? env[SHELL_OVERRIDE].trim().replace(/^"(.*)"$/, (m, inner) => (inner.includes('"') ? m : inner)).trim() : '';
   if (raw !== '') {
-    // A path (not a bare name, which would be looked up in the host's own folder) that is a file: the whole value, spaces and all.
-    if (/[\\/]/.test(raw) && exists(raw)) return { bin: raw, args: [], source: 'override' };
+    // `exists` means "is a FILE" (a folder is not a program). A path-like value that is a runnable file is taken whole, spaces and all;
+    // one that is not (a folder `C:\tools\nu`, npm's extensionless `...\codex`) is completed with a runnable extension that does exist
+    // (Dexter r2 N1).
+    const complete = (f) => (win && !hasRunnableExt(f) ? RUNNABLE_EXTS.map(e => f + e).find(c => exists(c)) : undefined);
+    if (/[\\/]/.test(raw)) {
+      if (exists(raw) && (!win || hasRunnableExt(raw))) return { bin: raw, args: [], source: 'override' };
+      const whole = complete(raw);
+      if (whole) return { bin: whole, args: [], source: 'override' };
+    }
     const [first, ...args] = splitCommand(raw);
     if (first === undefined) return { bin: raw, args: [], source: 'override' };
     if (p.isAbsolute(first) || /[\\/]/.test(first)) {
-      const completed = win && !hasRunnableExt(first) ? RUNNABLE_EXTS.map(e => first + e).find(c => exists(c)) : undefined;
-      return { bin: completed || first, args, source: 'override' };
+      return { bin: complete(first) || first, args, source: 'override' };
     }
     return { bin: onPath(first) || first, args, source: 'override' };
   }
@@ -222,4 +233,4 @@ function shellEnv(base) {
   return out;
 }
 
-module.exports = { splitCommand, runnableExts, resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };
+module.exports = { isFileSync, splitCommand, runnableExts, resolveLaunchTarget, parseCli, launchEnv, attachEnv, attachOnlyDecision, pickShell, shellEnv, findOnPath, SHELL_OVERRIDE };

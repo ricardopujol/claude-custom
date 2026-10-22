@@ -45,7 +45,7 @@ test('host.js: every identity the host writes says whether it is a shell host, a
 test('host.js: a shell that fails to spawn ENDS the host through the same exit path as an exited shell (Dexter 1)', () => {
   const start = HOST.slice(HOST.indexOf('function startSession()'), HOST.indexOf('trackExit(term);'));
   assert.match(start, /const started = startShellPty\(spawnPty\);\s*\n\s*if \(!started\.term\) \{/);
-  assert.match(start, /endHost\(started\.frame\.exitCode, started\.frame\.signal, \{ error: started\.frame\.error \}\);\s*\n\s*return;/);
+  assert.match(start, /endHost\(started\.frame\.exitCode, started\.frame\.signal, \{ error: started\.frame\.error \}, FAILED_START_LINGER_MS\);\s*\n\s*return;/);
   assert.match(start, /\} else \{\s*\n\s*term = spawnPty\(\);/, 'claude keeps the plain spawn');
   const end = HOST.slice(HOST.indexOf('function endHost('));
   assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);

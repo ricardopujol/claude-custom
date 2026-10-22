@@ -410,6 +410,16 @@ function boxHoldsLine(lines, command) {
 // Said by every typing path when the tab is a plain shell tab: nothing of Claude's is typed into it.
 const SHELL_TAB_REFUSAL = 'this is a plain shell tab, not a Claude session: nothing is typed into it';
 
+/**
+ * The line the terminal ends with when the session's process has gone. A shell tab names the shell and, for a failed start, why.
+ * Plain text only (the page writes it with term.write, never as markup); control characters in the reason are blanked.
+ */
+function shellExitText(kind, error) {
+  if (kind !== 'shell') return '[claude exited]';
+  const why = typeof error === 'string' ? error.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim().slice(0, 300) : '';
+  return why === '' ? '[shell exited]' : `[shell exited: ${why}]`;
+}
+
 const SCREEN_REFUSALS = {
   dialog: 'a dialog is open in the terminal; answer it or press Esc first',
   multiline: 'your draft spans several lines; send or clear it first',
@@ -560,7 +570,7 @@ if (typeof module !== 'undefined' && module.exports) {
     modelFamily, cueColour, chosenAccent, withChosenAccent, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
-    vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, SHELL_TAB_REFUSAL, typingKeys, boxText,
+    vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, SHELL_TAB_REFUSAL, shellExitText, typingKeys, boxText,
   };
 } else {
   root.modelFamily = modelFamily;
@@ -587,6 +597,7 @@ if (typeof module !== 'undefined' && module.exports) {
   root.menuPlacement = menuPlacement;
   root.planTyping = planTyping;
   root.SHELL_TAB_REFUSAL = SHELL_TAB_REFUSAL;
+  root.shellExitText = shellExitText;
   root.typingKeys = typingKeys;
   root.boxText = boxText;
 }

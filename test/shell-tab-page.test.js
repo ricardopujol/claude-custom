@@ -99,3 +99,41 @@ test('host: the hello carries the kind from the one identity helper', () => {
   const host = read('host/host.js');
   assert.match(host, /type: 'hello',\s*\n(?:\s*\/\/[^\n]*\n)*\s*kind: identityFor\(\)\.kind,/);
 });
+
+// --- Dexter r2 N2 (a failed start lingers) and N3 (the terminal's end line) ---
+
+test('N2: the failed-start linger is at least two of the window\'s 150 ms probes and bounded', () => {
+  const { FAILED_START_LINGER_MS } = require('../app/../host/shell-tab');
+  assert.ok(FAILED_START_LINGER_MS >= 300, String(FAILED_START_LINGER_MS));
+  assert.ok(FAILED_START_LINGER_MS <= 5000, String(FAILED_START_LINGER_MS));
+});
+
+test('N2: the host passes the linger to endHost for a failed start only, delays process.exit by it, and sends the frame to a late client', () => {
+  const host = read('host/host.js');
+  assert.match(host, /error: started\.frame\.error \}, FAILED_START_LINGER_MS\);/);
+  const end = host.slice(host.indexOf('function endHost('), host.indexOf('function endHost(') + 600);
+  assert.match(end, /if \(lingerMs > 0\) \{ setTimeout\(\(\) => process\.exit\(exitCode \?\? 0\), lingerMs\); return; \}\s*\n\s*process\.exit\(exitCode \?\? 0\);/);
+  assert.match(host, /endHost\(exitCode, signal\);/, 'an exited shell or claude still ends at once');
+  assert.match(host, /if \(endedFrame\) ws\.send\(endedFrame\);/);
+});
+
+test('N3: the terminal\'s end line names the shell and the reason for a shell tab, and stays "[claude exited]" otherwise', () => {
+  const { shellExitText } = require('../app/top-bar-display');
+  assert.strictEqual(shellExitText(null, undefined), '[claude exited]');
+  assert.strictEqual(shellExitText(null, 'File not found: nu'), '[claude exited]', 'a claude tab ignores any reason');
+  assert.strictEqual(shellExitText('shell', undefined), '[shell exited]');
+  assert.strictEqual(shellExitText('shell', ''), '[shell exited]');
+  assert.strictEqual(shellExitText('shell', 'File not found: nu'), '[shell exited: File not found: nu]');
+});
+
+test('N3: the reason is plain text: control characters are blanked, it is trimmed and bounded, non-strings are no reason', () => {
+  const { shellExitText } = require('../app/top-bar-display');
+  assert.strictEqual(shellExitText('shell', '\x1b]0;x\x07boom\r\n'), '[shell exited: ]0;x boom]');
+  assert.ok(!/[\x00-\x1f]/.test(shellExitText('shell', 'a\x1b[31mb\x00c')));
+  assert.ok(shellExitText('shell', 'x'.repeat(5000)).length <= 300 + '[shell exited: ]'.length);
+  for (const v of [42, {}, [], null]) assert.strictEqual(shellExitText('shell', v), '[shell exited]');
+});
+
+test('N3: the renderer writes the exit line through shellExitText with the host kind and the frame\'s error', () => {
+  assert.match(renderer, /term\.write\('\\r\\n\\x1b\[33m' \+ shellExitText\(hostKind, msg\.error\) \+ '\\x1b\[0m\\r\\n'\);/);
+});

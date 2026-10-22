@@ -139,7 +139,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 // BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
-const { isShellEnv, startShellPty, identityFields } = require('./shell-tab');
+const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -1859,7 +1859,7 @@ function startSession() {
     const started = startShellPty(spawnPty);
     if (!started.term) {
       console.error('[host] could not start the shell:', started.message, '--', SHELL_TARGET.bin);
-      endHost(started.frame.exitCode, started.frame.signal, { error: started.frame.error });
+      endHost(started.frame.exitCode, started.frame.signal, { error: started.frame.error }, FAILED_START_LINGER_MS);
       return;
     }
     term = started.term;
@@ -2082,15 +2082,15 @@ function wireTerm(t) {
 }
 
 // The session is over: tell every client, then end the host. `extra` rides on the exit frame (a failed shell start says why).
-function endHost(exitCode, signal, extra = {}) {
+// `lingerMs`: stay up that long first (a failed start: the window must get to see the host, and a late client is sent the frame too).
+let endedFrame = null;
+function endHost(exitCode, signal, extra = {}, lingerMs = 0) {
   releaseSessionLock(SESSION_LOCK, lockOwner);
+  endedFrame = JSON.stringify({ type: 'exit', exitCode, signal, ...extra });
   for (const ws of clients) {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(
-        JSON.stringify({ type: 'exit', exitCode, signal, ...extra })
-      );
-    }
+    if (ws.readyState === ws.OPEN) ws.send(endedFrame);
   }
+  if (lingerMs > 0) { setTimeout(() => process.exit(exitCode ?? 0), lingerMs); return; }
   process.exit(exitCode ?? 0);
 }
 
@@ -2610,6 +2610,7 @@ wss.on('connection', (ws, req) => {
 
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
+  if (endedFrame) ws.send(endedFrame);       // a client that arrives while a failed start lingers still hears why
 
   // The actual side effects for each known control type. Kept as a plain
   // function (not inline in the message handler) so `handleFrame` -- the

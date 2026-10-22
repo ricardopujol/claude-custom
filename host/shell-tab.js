@@ -79,9 +79,13 @@ function startShellPty(spawn) {
   }
 }
 
+// How long a host whose shell failed to start stays up after saying so: the window probes a new host every 150 ms, and a host gone
+// before one probe saw it listening reads as "never started" instead of "shell exited". At least two probe intervals; bounded.
+const FAILED_START_LINGER_MS = 1500;
+
 /** The role fields of every writeIdentity call (host/host-identity.js): one place, so no call forgets `kind`. */
 function identityFields({ side, shell, sessionId }) {
   return { side: side === true, kind: shell === true ? 'shell' : undefined, sessionId: side === true ? sessionId : undefined };
 }
 
-module.exports = { startShellPty, identityFields, SHELL_SUFFIX, COMPANION_SUFFIXES, SHELL_HOST_ENV, isCompanionKey, isShellKey, shellKeyOf, parentKeyOfShell, shellLabel, isShellEnv, shellHostsOf };
+module.exports = { FAILED_START_LINGER_MS, startShellPty, identityFields, SHELL_SUFFIX, COMPANION_SUFFIXES, SHELL_HOST_ENV, isCompanionKey, isShellKey, shellKeyOf, parentKeyOfShell, shellLabel, isShellEnv, shellHostsOf };

@@ -8965,7 +8965,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'exit') {
-    term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    term.write('\r\n\x1b[33m' + shellExitText(hostKind, msg.error) + '\x1b[0m\r\n');
     // The session is over: nothing it said last (working, blocked) is still true (PR #201 Dexter 1).
     applyProgramStatus(null);
     return;

@@ -196,3 +196,42 @@ test('launchEnv lets CLAUDE_CUSTOM_SHELL through (the person\'s choice) and stil
   assert.deepStrictEqual(Object.keys(out).sort(), ['CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_SHELL', 'PATH']);
   assert.strictEqual(out.CLAUDE_CUSTOM_SHELL, 'nu');
 });
+
+// --- Dexter r2 N1: an explicit path counts only as a FILE with a runnable extension; else it is completed like a bare name ---
+
+test('N1: npm\'s extensionless shim given as a path picks the .cmd beside it, not the shim', () => {
+  const files = [`${NPM}\\codex`, `${NPM}\\codex.cmd`];
+  const r = pickShell({ CLAUDE_CUSTOM_SHELL: `${NPM}\\codex` }, { ...WIN, onPath: () => null, exists: (f) => files.includes(f) });
+  assert.deepStrictEqual(r, { bin: `${NPM}\\codex.cmd`, args: [], source: 'override' });
+});
+
+test('N1: a folder never wins: C:\\tools\\nu (a folder) with nu.exe beside it picks nu.exe', () => {
+  const files = ['C:\\tools\\nu.exe'];                // the folder is not a FILE, so `exists` (is-a-file) says no to it
+  const r = pickShell({ CLAUDE_CUSTOM_SHELL: 'C:\\tools\\nu' }, { ...WIN, onPath: () => null, exists: (f) => files.includes(f) });
+  assert.strictEqual(r.bin, 'C:\\tools\\nu.exe');
+});
+
+test('N1: a .exe path with spaces that is a file is still taken whole; so is a .cmd', () => {
+  for (const file of ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\x\\y.cmd']) {
+    assert.deepStrictEqual(pickShell({ CLAUDE_CUSTOM_SHELL: file }, { ...WIN, onPath: () => null, exists: (f) => f === file }), { bin: file, args: [], source: 'override' });
+  }
+});
+
+test('N1: an existing file with a NON-runnable extension is not taken whole (it falls through to a runnable sibling, else stays as given)', () => {
+  const r = pickShell({ CLAUDE_CUSTOM_SHELL: 'C:\\t\\tool.ps1' }, { ...WIN, onPath: () => null, exists: (f) => f === 'C:\\t\\tool.ps1' });
+  assert.strictEqual(r.bin, 'C:\\t\\tool.ps1');
+  const both = pickShell({ CLAUDE_CUSTOM_SHELL: 'C:\\t\\tool' }, { ...WIN, onPath: () => null, exists: (f) => f === 'C:\\t\\tool' || f === 'C:\\t\\tool.cmd' });
+  assert.strictEqual(both.bin, 'C:\\t\\tool.cmd', 'the extensionless file is not a program on Windows');
+});
+
+test('N1: the default "exists" is a real is-a-file check: a folder is false, a file is true, a missing path is false', () => {
+  const { isFileSync } = require('../host/launch-target');
+  assert.strictEqual(isFileSync(__dirname), false);
+  assert.strictEqual(isFileSync(__filename), true);
+  assert.strictEqual(isFileSync(__filename + '.nope'), false);
+});
+
+test('N1: off Windows a path that is a file is taken whole whatever its name', () => {
+  const r = pickShell({ CLAUDE_CUSTOM_SHELL: '/opt/my shell/zsh' }, { platform: 'linux', onPath: () => null, exists: (f) => f === '/opt/my shell/zsh' });
+  assert.strictEqual(r.bin, '/opt/my shell/zsh');
+});
