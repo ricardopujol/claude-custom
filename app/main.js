@@ -1151,7 +1151,8 @@ function registerIpc() {
       click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
     };
     // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is just this item; it restarts one whose shell has exited.
-    const shellState = tabShell.shellMenu(key);      // not `shell`: Electron's is imported under that name
+    // Named shellState, not shell: Electron's shell is imported under that name.
+    const shellState = tabShell.shellMenu(key);
     const shellItem = {
       label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
       enabled: shellState.enabled,

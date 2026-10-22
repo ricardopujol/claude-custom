@@ -9,6 +9,7 @@ const fc = require('fast-check');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { tmpDir } = require('./tmp-dir');
 
 const shell = require('../host/shell-tab');
 const side = require('../host/side-session');
@@ -80,8 +81,7 @@ test('hostEnv keeps CLAUDE_CUSTOM_SHELL (the person\'s choice of shell): the hos
 });
 
 function inTmp(fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-shell-id-'));
-  try { return fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  return fn(tmpDir('cc-shell-id-'));
 }
 
 test('identity: a shell host says kind "shell", an ordinary and a side host say nothing of it', () => {

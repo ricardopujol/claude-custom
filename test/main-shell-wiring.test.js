@@ -150,7 +150,7 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
   const body = topLevelBody(at);
-  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
+  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true, shell: tab\.shell === true \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);

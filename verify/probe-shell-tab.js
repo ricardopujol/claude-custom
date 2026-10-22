@@ -400,7 +400,7 @@ async function main() {
     !!needTab && needTab.pulse === 'needs' && !!needTab.program && needTab.program.state === 'blocked' && needTab.program.msg === 'Publish v0.1.0?', JSON.stringify(needTab && { p: needTab.pulse, g: needTab.program }));
   if (s) {
     const d = domOf(s, SHELL_A);
-    check('the strip PAINTED the needs-you dot with the program\'s message in its tooltip, and the pulse', !!d && d.dots.some(x => /^dot needs\|/.test(x) && /Publish v0\.1\.0\?/.test(x)) && d.pulse === 'needs', JSON.stringify(d && { dots: d.dots, pulse: d.pulse }));
+    check('the strip PAINTED the needs-you dot with the program\'s message in its tooltip, and the pulse', !!d && d.dots.some(x => /^dot needs\|/.test(x) && /Publish v0\.1\.0\?/.test(x)) && d.pulse === 'pulse-needs', JSON.stringify(d && { dots: d.dots, pulse: d.pulse }));
     const branch = tabOf(s, 'feat/a');
     const dBranch = domOf(s, 'feat/a');
     check('feat/a (the branch tab) stays quiet: its own state is not the shell\'s', !!branch && branch.needsInput === false && branch.pulse === null && !!dBranch && dBranch.dots.length === 0, JSON.stringify(branch && { n: branch.needsInput, p: branch.pulse }));
