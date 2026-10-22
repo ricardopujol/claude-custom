@@ -1285,6 +1285,63 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
 
+// --- the Schedules panel (BACKLOG #119 A7) ------------------------------------------------------------------------------------
+// SCHEDULES-BEGIN
+// app/schedules-display.js decides what is drawn; the list is the host's (host/schedules.js buildView): every session's wakeups, loops,
+// bedtime nights and cron jobs, grouped. READ-ONLY in v1: a click on a row selects that session's tab (the Git panel's own jump).
+// var, not let: the first layout can paint the rail badge before this block has run (the Resources panel's resViewingSent is the same).
+var schedState = window.schedulesDisplay.emptyState();
+var schedRoot = document.getElementById('schedules-root');
+var schedLastHtml = null;
+
+// The count of wakeups due in the next hour, on every rail button and tab of the panel (the rail rebuilds its buttons, so this runs after each layout).
+function paintSchedulesBadge() {
+  const n = window.schedulesDisplay.badge(schedState);
+  const text = window.schedulesDisplay.badgeText(n);
+  const base = TABS.find(t => t.id === 'schedules');
+  for (const b of document.querySelectorAll('button[data-module="schedules"]')) {
+    if (text) b.dataset.badge = text; else delete b.dataset.badge;
+    if (base) b.title = text ? base.title + ' (' + n + ' due in the next hour)' : base.title;
+  }
+}
+
+function renderSchedules() {
+  paintSchedulesBadge();
+  if (!schedRoot || !shownModules.has('schedules')) return;
+  const html = window.schedulesDisplay.html(schedState);
+  if (html === schedLastHtml && schedRoot.firstChild) return;      // nothing changed: no flicker, no lost hover or focus
+  // The markup is replaced on a change: keep the keyboard on the same row.
+  const focused = document.activeElement && schedRoot.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused && focused.dataset ? focused.dataset.schedKey : null;
+  schedRoot.innerHTML = html;
+  schedLastHtml = html;
+  if (!keep) return;
+  const again = [...schedRoot.querySelectorAll('[data-sched-key]')].find(el => el.dataset.schedKey === keep);
+  if (again && !again.disabled) again.focus();
+}
+
+// The panel opened: ask for the list as it is now (the hello and every change also carry it).
+// ONLY to a host whose hello lists the type: an older host (they outlive app updates) would type the frame into the session as JSON
+// (the PR #140 rule; PR #200 Dexter 1). The panel says "predates Schedules" for such a host instead.
+function requestSchedules() {
+  const msg = window.schedulesDisplay.requestMsg(hostControls);
+  if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify(msg)); } catch { /* not attached */ }
+}
+
+if (schedRoot) {
+  schedRoot.addEventListener('click', (e) => {
+    const t = window.schedulesDisplay.clickTarget(e.target);
+    if (!t) return;
+    e.preventDefault();
+    if (t.kind === 'select') { jumpToFolder(t.folder); return; }
+    if (t.kind === 'link') {
+      if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(t.url);
+    }
+  });
+}
+// SCHEDULES-END
+
 // --- the Ask panel (BACKLOG #33) ------------------------------------------------------------------------------------------
 // ASK-BEGIN
 // app/ask-display.js builds the panel; its questions go to THIS tab's host over the socket (app/ask-requester.js, the `ask` control), and
@@ -1367,6 +1424,7 @@ function onModuleShown(id) {
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
+  if (id === 'schedules') { requestSchedules(); renderSchedules(); }
   if (id === 'canvas') { canvasFetchIfNeeded(); renderCanvas(); }
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
@@ -1783,11 +1841,11 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   lastPlan = plan;
   if (peek && !plan.peek) railEvent({ type: 'gone' });     // its rail went (the window grew, the group was opened): so does the popover
   if (settle) settleDock();
-  window.dockTreeView.applyBoxes(plan, document);
+  window.dockTreeView.applyBoxes(plan, document, leanDisplay.LEAN_KEEPS);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
-  // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
+  // Lean mode unmounts every dock panel except the ones leanDisplay.LEAN_KEEPS names (Schedules: its content is the night itself), so each panel's own hide effects run (the vault's secrets go,
   // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
-  const now = new Set(leanOn ? [] : plan.shown);
+  const now = leanDisplay.leanShown(plan.shown, leanOn);
   const fx = window.dockEffects.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
@@ -1796,6 +1854,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
+  paintSchedulesBadge();            // a rebuilt rail button has lost its count
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -3634,6 +3693,36 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         send(JSON.stringify({ type: 'input', data: a.data }));
         return JSON.stringify({ ok: true });
       }
+      // BACKLOG #119 A7 (verify/probe-schedules.js): the Schedules panel as drawn, and a click on a row as a pointer makes it.
+      case 'schedulesState': {
+        const root = document.getElementById('schedules-root');
+        const q = (el, sel) => { const n = el.querySelector(sel); return n ? n.textContent : null; };
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.schedulesDisplay === 'object' && typeof window.schedulesDisplay.html === 'function',
+          shown: document.querySelector('.panel[data-panel="schedules"]').classList.contains('on'),
+          heads: [...root.querySelectorAll('.sched-head')].map(h => h.textContent),
+          groups: [...root.querySelectorAll('.sched-group')].map(g => ({
+            id: g.dataset.schedGroup,
+            rows: [...g.querySelectorAll('.sched-btn')].map(b => ({
+              id: b.dataset.schedId, key: b.dataset.schedKey, cwd: b.dataset.schedCwd || null, when: q(b, '.sched-when'), next: q(b, '.sched-next'), kind: q(b, '.sched-chip'),
+              what: q(b, '.sched-what'), session: q(b, '.sched-session'), reason: q(b, '.sched-reason'), detail: q(b, '.sched-detail'),
+              gone: q(b, '.sched-gone'), dimmed: b.parentElement.classList.contains('sched-ended'), title: b.title, disabled: b.disabled,
+            })),
+          })),
+          empty: !!root.querySelector('.sched-empty'),
+          foot: q(root, '.sched-foot'),
+          link: (root.querySelector('[data-sched-link]') || { dataset: {} }).dataset.schedLink || null,
+          badge: [...document.querySelectorAll('button[data-module="schedules"]')].map(b => b.dataset.badge || null),
+          nextHour: window.schedulesDisplay.badge(schedState),
+        });
+      }
+      case 'schedulesClick': {
+        const b = [...document.querySelectorAll('#schedules-root .sched-btn')].find(x => x.dataset.schedId === a.id && (a.key === undefined || x.dataset.schedKey === a.key));
+        if (!b || b.disabled) return JSON.stringify({ ok: false, error: 'no clickable schedule row ' + JSON.stringify(a) });
+        b.click();
+        return JSON.stringify({ ok: true });
+      }
       // backlog #51 (verify/probe-wand.js): read the wand and operate its controls as a pointer would.
       case 'wandState': {
         const root = document.getElementById('wand-root');
@@ -4147,7 +4236,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const cs = getComputedStyle(document.documentElement);
         return JSON.stringify({
           ok: true, leanOn, bodyLean: document.body.classList.contains('lean'), shown: [...shownModules],
-          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length, headerVisible: visible(document.querySelector('header')),
+          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length,
+          zones: [...document.querySelectorAll('.zone')].filter(visible).map((z) => ({ group: z.dataset.group || null, keep: 'leanKeep' in z.dataset, panels: [...z.querySelectorAll('.zone-panels > .panel.on')].map((p) => p.dataset.panel), rect: rectOf(z) })),
+          headerVisible: visible(document.querySelector('header')),
           barVisible: visible(document.getElementById('terminal-bar')),
           webgl: !!webglAddon, termRect: rectOf(document.getElementById('termwrap')), page: { width: window.innerWidth, height: window.innerHeight },
           buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
@@ -8478,6 +8569,8 @@ function handleControl(msg) {
     rosterIndexPayload = msg.rosterIndex || null;
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    schedState = window.schedulesDisplay.reduce(schedState, msg);
+    renderSchedules();
     canvasOnFrame(msg.canvas);
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
@@ -8504,6 +8597,11 @@ function handleControl(msg) {
   if (msg.type === 'wand') {
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    return;
+  }
+  if (msg.type === 'schedules') {
+    schedState = window.schedulesDisplay.reduce(schedState, msg);
+    renderSchedules();
     return;
   }
   if (msg.type === 'canvas') {
