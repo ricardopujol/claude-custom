@@ -101,6 +101,7 @@ const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
 const { createNightStatus } = require('./night-status');
+const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
 const { countNightPrs } = require('./night-prs');
 const { createSummaryService, TICK_MS } = require('./summary-service');
 const { createScheduler } = require('./summary-scheduler');
@@ -682,6 +683,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   occupancy: true,
   // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
   bedtime: true,
+  // CronCreate / CronDelete Pre + Post, for the Schedules panel only (consumed below, never forwarded).
+  schedules: true,
   // PermissionRequest, observe-only, so "waiting on you" can name the agent (BACKLOG #55; host/settings-writer.js).
   permissionRequest: true,
   statusRelay: {
@@ -1422,10 +1425,35 @@ function noteNight(payload) {     // usage counters: a night counts once, when i
   if (payload && !nightWasOn) usageCounters.bump('bedtime:start');
   nightWasOn = Boolean(payload);
 }
+// BACKLOG #119 A7: the Schedules panel. This session's wakeups, loops, bedtime night and cron jobs, kept in the install-wide
+// .harness/state/schedules.json beside every other host's (host/schedules-control.js). Built BEFORE the night: a PR count that lands
+// refreshes the bedtime row's detail.
+const schedulesControl = createSchedulesControl({
+  store,
+  key: `${PORT}:${normalizeFolder(CWD)}`,   // a port outlives its host: the folder (however spelled) is part of who owns an entry
+  cwd: CWD,
+  label: () => { const b = currentBranch(CWD); return `${projectLabel(PROJECT_ROOT)}${b ? ` / ${b}` : ''}`; },
+  nightView: () => night.payload(),
+  emit: (frame) => broadcastControl(frame),
+  log: (line) => console.log(line),
+});
+// start() is called once the socket is listening (below): a host that loses the bind (EADDRINUSE) must never write the shared file.
+// The Schedules panel lists every host's rows: another host's write must reach THIS host's windows (host/schedules-control.js).
+watchDir({
+  dir: path.join(HARNESS_DIR, 'state'),
+  create: true,
+  match: (f) => f === 'schedules.json',
+  onChange: () => {
+    const frame = schedulesControl.changed();
+    if (frame) broadcastControl(frame);
+  },
+});
+// ...and a host with rows says it is still alive (a neighbour reads three silent minutes as "session ended"); the clock text moves along.
+setInterval(() => { schedulesControl.beat(); }, 30_000);
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); },
+  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
@@ -1481,6 +1509,8 @@ if (helperExists) {
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
     night.handle(ev);
+    // The Schedules panel (#119 A7) sees every event too: a wake is a UserPromptSubmit, a session's end clears its wakeups.
+    schedulesControl.event(ev);
     // The turn state sees them too: a turn that only Reads and Edits (a blocked Stop's continuation, a turn an
     // agent's result opened) is live, and the early returns below would leave it 'idle' (BACKLOG #77 R1).
     if (turnState.handle(ev)) broadcastControl({ type: 'turn', turn: turnState.snapshot() });
@@ -1493,6 +1523,8 @@ if (helperExists) {
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
     if (isBedtimeOnly(ev)) return;
+    // ...and a CronCreate / CronDelete is the Schedules panel's: the mood engine would read it as work.
+    if (isSchedulesOnly(ev)) return;
     // An Artifact publish is the panel's shelf's and nobody else's (host/canvas-shelf.js): the mood engine would read it as work.
     if (canvasControl.handlesShelfEvent(ev)) {
       canvasControl.shelfEvent(ev);
@@ -2416,6 +2448,8 @@ wss.on('connection', (ws, req) => {
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
     prompt: promptKeeper.snapshot(),
     bedtime: night.payload(),
+    // BACKLOG #119 A7: everything scheduled in every session, grouped (host/schedules.js buildView).
+    schedules: schedulesControl.payload(),
     // Backlog #39: this session's "where are we" summary (null: none yet) and why there is no fresh one (null: nothing wrong).
     summary: summaryNow.summary,
     summaryOff: summaryNow.off,
@@ -2816,6 +2850,10 @@ wss.on('connection', (ws, req) => {
       canvasControl.handle(msg);
       return;
     }
+    if (schedulesControl.handles(msg.type)) {
+      sendControl(ws, schedulesControl.reply(msg));
+      return;
+    }
     if (wandControl.handles(msg.type)) {
       // Broadcast, refusal included: the frame carries the true state, and two windows disagreeing about
       // a favourite is worse than a redraw. Answers are never `quiet` (host/wand-control.js).
@@ -3049,6 +3087,7 @@ let boundPort = null;                 // set only once the bind has succeeded
 
 wss.on('listening', () => {
   boundPort = PORT;
+  schedulesControl.start();                   // BACKLOG #119 A7: only a host that owns its port keeps an entry in the shared schedules file
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
@@ -3112,6 +3151,7 @@ function shutdown({ removeIdentity = true } = {}) {
   try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
   try { canvasControl.close(); } catch {}
+  try { schedulesControl.end(); } catch {}
   releaseSessionLock(SESSION_LOCK, lockOwner);
   killTree(healthChild);
   if (hookBridge) { hookBridge.close().catch(() => {}); }
@@ -3135,6 +3175,8 @@ process.on('SIGTERM', () => { shutdown(); process.exit(0); });
 process.on('exit', () => { killTree(healthChild); releaseSessionLock(SESSION_LOCK, lockOwner); });
 // The quota poller's lease goes too, so another host polls on its next tick, not after the bound.
 process.on('exit', () => { hostQuota.release(); });
+// This session's scheduled work is over with it: neighbours see "session ended" at once (and a durable cron job stays on the list).
+process.on('exit', () => { schedulesControl.end(); });
 
 // --- the claude-custom mod (BACKLOG #119 A2) ------------------------------------------------------------------------
 // mods/claude-custom is loaded into `claude` with --plugin-dir. It reads the CLI's own usage, subagent states and permission asks and

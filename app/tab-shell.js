@@ -1687,6 +1687,8 @@ const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'tog
   'repoProbe',
   // backlog #51: verify/probe-wand.js reads the wand and operates its controls
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
+  // BACKLOG #119 A7: verify/probe-schedules.js reads the Schedules panel and clicks a row
+  'schedulesState', 'schedulesClick',
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #41: verify/probe-games.js reads the Games panel and operates it
