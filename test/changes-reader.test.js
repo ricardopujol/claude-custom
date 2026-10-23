@@ -16,6 +16,7 @@ class El {
   }
   addEventListener(type, fn) { (this.handlers[type] = this.handlers[type] || []).push(fn); }
   setAttribute(k, v) { this.attrs[k] = v; }
+  getAttribute(k) { return this.attrs[k] === undefined ? null : this.attrs[k]; }
   getBoundingClientRect() { return { left: 0, right: 0, width: 0, top: 0, bottom: 0 }; }
   replaceChildren(...c) { this.children = c; }
   append(...c) { this.children.push(...c); }

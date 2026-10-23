@@ -845,6 +845,8 @@ const repoBrowser = window.repoBrowser.create({
   confirmDiscard: async (message) => window.confirm(message),
   // What's this? on the reader (#33): the selected lines go to the Ask panel, which is brought on screen
   onAsk: (sel) => { askExplain(sel); },
+  // an http(s) link in a rendered Markdown page (BACKLOG #119 A9): the reader already refused anything else; main's openInBrowser checks it again
+  onOpenUrl: (url) => (window.harness && window.harness.openExternal ? window.harness.openExternal(url) : false),
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
