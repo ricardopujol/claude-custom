@@ -333,3 +333,15 @@ test('Dexter F8: host.js holds the milestone and the quota warning for a WINDOW,
   assert.match(host, /if \(!oneShot && pendingMilestone && ws\.readyState === ws\.OPEN\)/);
   assert.match(host, /if \(!oneShot && pendingQuotaWarning && ws\.readyState === ws\.OPEN\)/);
 });
+
+test('a program-status frame is control, never typed into the pty (OSC 7501, BACKLOG #116)', () => {
+  // The host broadcasts it to windows; a client that echoes or sends one must not have it TYPED into a session that may
+  // be running with permissions bypassed. The hello lists every control type, which is how a window learns the host has it.
+  const written = [];
+  let dispatchedWith = null;
+  const result = handleFrame('{"type":"program-status","root":null}', (msg) => { dispatchedWith = msg; }, (t) => written.push(t));
+  assert.strictEqual(result.handled, true);
+  assert.deepStrictEqual(written, []);
+  assert.deepStrictEqual(dispatchedWith, { type: 'program-status', root: null });
+  assert.ok(CONTROL_TYPES.has('program-status'));
+});

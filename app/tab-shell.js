@@ -45,6 +45,7 @@ const { parsePorcelain, tabWorktrees } = require('../host/worktree-list');
 const { checkBranch } = require('../host/worktree-ops');
 const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
+const programStatusDisplay = require('./program-status-display');
 const tabStatusLib = require('./tab-status');
 const occupancyDisplay = require('./occupancy-display');
 const { closeReason } = require('../host/close-safety');
@@ -141,6 +142,8 @@ function sanitizeStatus(s) {
     night: o.night === true,
     summary: tabStatusLib.cleanSummary(o.summary),
     summaryNote: typeof o.summaryNote === 'string' && o.summaryNote !== '' && o.summaryNote.length <= 300 ? o.summaryNote : null,
+    // OSC 7501 (BACKLOG #116): the CLI's own state, cut down to the four known fields; null for anything else.
+    program: programStatusDisplay.clean(o.program),
   };
 }
 
@@ -1583,6 +1586,8 @@ const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'tog
   'repoProbe',
   // backlog #51: verify/probe-wand.js reads the wand and operates its controls
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
+  // BACKLOG #119 A7: verify/probe-schedules.js reads the Schedules panel and clicks a row
+  'schedulesState', 'schedulesClick',
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #41: verify/probe-games.js reads the Games panel and operates it

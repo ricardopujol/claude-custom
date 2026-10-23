@@ -539,9 +539,9 @@ function moduleOfButton(el) {
 /**
  * Copy a plan onto the page. `doc` holds `#dock` (with `#termwrap`, `#dock-floats`
  * and `#dock-overlay` in it), the `.panel[data-panel=…]` blocks and the
- * `#panel-store` that keeps panels no group is showing.
+ * `#panel-store` that keeps panels no group is showing. `leanKeeps` (leanDisplay.LEAN_KEEPS) names the panels lean mode leaves drawn: a group showing one gets data-lean-keep.
  */
-function applyBoxes(plan, doc) {
+function applyBoxes(plan, doc, leanKeeps) {
   const held = doc.activeElement;
   const heldModule = moduleOfButton(held);
   const heldInPeek = heldModule !== null && !!held.parentNode.parentNode && held.parentNode.parentNode.classList.contains('dpeek');
@@ -587,6 +587,8 @@ function applyBoxes(plan, doc) {
   for (const b of groupBoxes) {
     const el = elOfBox(b);
     el.dataset.shape = b.shape;
+    // The group shows a panel lean mode keeps (leanDisplay.LEAN_KEEPS, PR #200): the page's lean CSS leaves a marked box drawn.
+    if (Array.isArray(leanKeeps) && b.panel !== null && leanKeeps.includes(b.panel)) el.dataset.leanKeep = '1'; else delete el.dataset.leanKeep;
     setRect(el, b.rect);
     // Floats come in stacking order, so the draw order IS the order: its rank inside the layer (0 = lowest). The
     // elements are never re-appended to raise one: a re-append resets the panel's scroll and drops focus from a

@@ -153,8 +153,12 @@ function paintTab(doc, entry, bridge) {
   // (app/summary-display.js hoverLines, labelled as a local model's); this only draws them.
   const said = Array.isArray(entry.summaryLines) ? entry.summaryLines.filter(nonEmpty) : [];
   if (said.length) tab.title = [tab.title, ...said].join('\n');
-  if (entry.working) tab.appendChild(el(doc, 'span', 'dot working')).title = 'Working';
-  if (entry.needsInput) tab.appendChild(el(doc, 'span', 'dot needs')).title = 'Needs your input';
+  // The dots read the CLI's own state when it reports one (OSC 7501, app/program-status-display.js); without it they are
+  // exactly what they always were. The kind and message ride in the tooltip as text, never in the tab's chrome.
+  const ps = typeof module !== 'undefined' && module.exports ? require('./program-status-display') : root.programStatusDisplay;
+  for (const d of ps.stripDots({ working: entry.working, needsInput: entry.needsInput, program: entry.program })) {
+    tab.appendChild(el(doc, 'span', `dot ${d.cls}`)).title = d.title;
+  }
   // #40: the person's own mark on the tab; its meaning on hover.
   const mark = entry.mark;
   if (mark && typeof mark === 'object' && nonEmpty(mark.emoji)) {

@@ -821,3 +821,24 @@ test('tab-strip.html: the faces sit left of the lean chip, 18 px round, and the 
   assert.match(html, /\.lean-face \{[^}]*width: 18px; height: 18px; border-radius: 50%/);
   assert.match(html, /img-src 'self'; media-src 'self'/);
 });
+
+test('OSC 7501 (BACKLOG #116): the dots read the program state, with the kind and message in the tooltip as text', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [
+    entry({ key: 'plain', working: true, needsInput: true }),
+    entry({ key: 'blk', needsInput: true, program: { state: 'blocked', kind: 'permission', msg: 'Allow Edit?' } }),
+    entry({ key: 'err', needsInput: true, program: { state: 'error', msg: 'Rate limited' } }),
+    entry({ key: 'dn', program: { state: 'done' } }),
+    entry({ key: 'wk', working: true, program: { state: 'working', progress: 30 } }),
+  ] }, bridgeSpy());
+  const [plain, blk, err, dn, wk] = doc.byId.tabs.children;
+  assert.strictEqual(child(plain, 'working').title, 'Working');
+  assert.strictEqual(child(plain, 'needs').title, 'Needs your input');
+  assert.match(child(blk, 'needs').title, /permission/);
+  assert.match(child(blk, 'needs').title, /Allow Edit\?/);
+  assert.ok(child(err, 'error') && child(err, 'needs'));
+  assert.match(child(err, 'needs').title, /Rate limited/);
+  assert.ok(child(dn, 'done'));
+  assert.match(child(wk, 'working').title, /30%/);
+  assert.strictEqual(child(dn, 'working'), undefined);
+});
