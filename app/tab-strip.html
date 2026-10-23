@@ -129,7 +129,7 @@
     /* BACKLOG #119 A6: the form's second way to start, a lane from a GitHub issue. The row is a button (dim text and
        disabled when gh can't list); the list is a panel over the area under the strip, which main empties of the
        selected tab's page while it is open (a tab's page is a native view and would cover it). */
-    #create-issues { height: 22px; box-sizing: border-box; padding: 0 8px; border-radius: 3px; cursor: pointer; flex: 0 0 auto;
+    #create-issues { height: 22px; box-sizing: border-box; padding: 0 8px; border-radius: 3px; cursor: pointer; flex: 0 0 auto; min-width: 150px;  /* fits "Detached from #123 ▾": the label swap must not nudge the cancel button or the tabs (PR #207 S2) */
       background: transparent; color: var(--dim); border: 1px solid var(--border); font: inherit; white-space: nowrap; }
     #create-issues:hover:not(:disabled) { color: var(--text); border-color: var(--dim); }
     #create-issues.dim, #create-issues:disabled { border-color: transparent; color: var(--dim); font-style: italic; cursor: default; }

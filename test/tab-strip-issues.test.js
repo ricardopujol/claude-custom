@@ -310,3 +310,39 @@ test('Dexter 7: while the lane\'s brief is being written the pane says so, inste
   assert.deepStrictEqual(paneFor({ model: [entry({ selected: true, started: false, setup: { running: true, line: null }, briefing: true })] }),
     { text: 'Setting up feat/a…', retry: null }, 'a running setup is the more specific word');
 });
+
+test('the From-an-issue button says which issue the branch carries, and that an edit detached it (Ricardo 2026-10-21)', async () => {
+  const r = rig();
+  r.show({ phase: 'input' });
+  r.show({ phase: 'input', picker: true });
+  await settle();
+  const btn = r.doc.byId['create-issues'];
+  const input = r.doc.byId['create-branch'];
+  assert.strictEqual(btn.textContent, 'From an issue ▾');
+  r.doc.byId['issues-list'].children[0].onclick();
+  assert.strictEqual(btn.textContent, '#12 ▾', 'attached: the button names the issue');
+  assert.match(btn.title, /issue #12/);
+  assert.match(btn.title, /detach/i);
+  input.value = 'fix/12-crash';
+  input.oninput();
+  assert.strictEqual(btn.textContent, 'Detached from #12 ▾', 'an edit shows the notice in the button itself');
+  assert.match(btn.title, /no issue brief/i);
+  r.show({ phase: 'input' });                      // a poll repaints: the notice stays
+  assert.strictEqual(btn.textContent, 'Detached from #12 ▾');
+  r.doc.byId.create.onsubmit({ preventDefault() {} });
+  assert.deepStrictEqual(r.calls.at(-1), ['create', 'fix/12-crash'], 'what the button says is what Create does');
+  input.value = ' fix/12-crash-on-start ';
+  input.oninput();
+  assert.strictEqual(btn.textContent, '#12 ▾', 'typing the picked branch back reattaches, and the button says so');
+  r.show(null);
+  r.show({ phase: 'input' });
+  await settle();
+  assert.strictEqual(btn.textContent, 'From an issue ▾', 'a fresh form carries nothing');
+});
+
+test('the issue label never hides a failed read: the error text wins', () => {
+  const failed = issuesView({ ok: false, text: 'Sign in to gh to pick an issue' }, { number: 12, attached: true });
+  assert.strictEqual(failed.button.text, 'Sign in to gh to pick an issue');
+  assert.strictEqual(issuesView(OK, { number: 12, attached: false }).button.text, 'Detached from #12 ▾');
+  assert.strictEqual(issuesView(OK, null).button.text, 'From an issue ▾');
+});
