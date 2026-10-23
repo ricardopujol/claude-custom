@@ -62,3 +62,79 @@ test('the bundle is marked generated, so a 600 KB one-line blob stays out of eve
   const attrs = read('.gitattributes');
   assert.match(attrs, /^app\/codemirror-reader\.js\s+linguist-generated(=true)?\s+-diff\s*$/m);
 });
+
+// ---- the Markdown bundle (BACKLOG #119 A9): app/markdown-reader.js, from marked + DOMPurify + Mermaid ----
+
+const { MARKDOWN_ROOTS, markdownEntryText, noticePackages } = require('../build/inputs-hash');
+
+test('the Markdown bundle\'s header hash is the hash of its current inputs (else: run npm run build:markdown)', () => {
+  const header = read('app', 'markdown-reader.js').split('\n')[0];
+  const m = header.match(/inputs sha256:([0-9a-f]{64})/);
+  assert.ok(m, `no inputs hash in the bundle header: ${header.slice(0, 160)}`);
+  const now = inputsHash({
+    entry: markdownEntryText(read),
+    builder: read('build', 'build-markdown.mjs'), lock: JSON.parse(read('package-lock.json')), roots: MARKDOWN_ROOTS,
+  });
+  assert.strictEqual(m[1], now, 'app/markdown-reader.js is stale: its entry, the link rule, the build script or a bundled package changed. Run `npm run build:markdown` and commit the result.');
+});
+
+test('with roots, the hash covers the roots\' whole dependency closure and nothing else', () => {
+  const lock = { packages: {
+    '': { name: 'x' },
+    'node_modules/top': { version: '1.0.0', dependencies: { mid: '^1' } },
+    'node_modules/mid': { version: '2.0.0', dependencies: { leaf: '^1' }, optionalDependencies: { opt: '^1' } },
+    'node_modules/mid/node_modules/leaf': { version: '3.1.0' },
+    'node_modules/leaf': { version: '3.0.0' },
+    'node_modules/opt': { version: '4.0.0' },
+    'node_modules/unrelated': { version: '9.0.0' },
+  } };
+  assert.deepStrictEqual(bundledVersions(lock, ['top']), ['leaf@3.0.0', 'leaf@3.1.0', 'mid@2.0.0', 'opt@4.0.0', 'top@1.0.0']);
+  const base = { entry: 'e', builder: 'b', lock, roots: ['top'] };
+  const h = inputsHash(base);
+  const bumpedLeaf = JSON.parse(JSON.stringify(lock));
+  bumpedLeaf.packages['node_modules/mid/node_modules/leaf'].version = '3.1.1';
+  assert.notStrictEqual(inputsHash({ ...base, lock: bumpedLeaf }), h, 'a transitive bump moves the hash');
+  const bumpedOther = JSON.parse(JSON.stringify(lock));
+  bumpedOther.packages['node_modules/unrelated'].version = '9.9.9';
+  assert.strictEqual(inputsHash({ ...base, lock: bumpedOther }), h, 'an unrelated bump does not');
+  assert.notStrictEqual(inputsHash({ ...base, roots: undefined }), h, 'no roots is the CodeMirror pattern, a different hash');
+});
+
+test('the Markdown roots are the three libraries, and the lockfile pins them', () => {
+  assert.deepStrictEqual([...MARKDOWN_ROOTS].sort(), ['dompurify', 'marked', 'mermaid']);
+  const pkg = JSON.parse(read('package.json'));
+  for (const name of MARKDOWN_ROOTS) assert.match(pkg.devDependencies[name], /^\d+\.\d+\.\d+$/, `${name} must be pinned to an exact version`);
+});
+
+test('the Markdown bundle is marked generated too', () => {
+  assert.match(read('.gitattributes'), /^app\/markdown-reader\.js\s+linguist-generated(=true)?\s+-diff\s*$/m);
+});
+
+test('Y3: THIRD-PARTY-NOTICES.md is current and lists every package the Markdown bundle ships', () => {
+  const notices = read('app', 'THIRD-PARTY-NOTICES.md').split(String.fromCharCode(13)).join('');   // a Windows checkout is CRLF
+  const bundleHash = read('app', 'markdown-reader.js').split('\n')[0].match(/inputs sha256:([0-9a-f]{64})/)[1];
+  assert.ok(notices.split('\n')[0].includes(`inputs sha256:${bundleHash}`), 'the notices were generated with another build than the bundle: run npm run build:markdown');
+  const lock = JSON.parse(read('package-lock.json'));
+  const shipped = noticePackages(lock);
+  assert.ok(shipped.length > 80, `the closure must be found to mean anything (${shipped.length})`);
+  for (const p of ['marked', 'dompurify', 'mermaid', 'khroma', 'dagre-d3-es', 'd3']) assert.ok(shipped.some((x) => x.name === p), `${p} is shipped`);
+  for (const p of shipped) assert.ok(notices.includes(`\n## ${p.name} ${p.version}\n`), `${p.name} ${p.version} is missing from THIRD-PARTY-NOTICES.md`);
+  assert.ok(!shipped.some((x) => x.name === 'elkjs' || x.name.startsWith('@types/')), 'elkjs and type packages are not shipped');
+  assert.doesNotMatch(notices, /\n## elkjs /, 'elkjs (EPL-2.0) is not in the bundle');
+  assert.match(notices, /## dompurify [^\n]+\n\nLicense: [^\n]*used here under Apache-2\.0/, 'DOMPurify is taken under Apache-2.0');
+  assert.match(notices, /## khroma [^\n]+\n\nLicense: MIT/, 'khroma has no licence field; its licence file is MIT');
+});
+
+test('the notices are marked generated', () => {
+  assert.match(read('.gitattributes'), /^app\/THIRD-PARTY-NOTICES\.md\s+linguist-generated(=true)?\s*$/m);
+});
+
+test('noticePackages drops elkjs and type packages and keeps every version of a shipped name', () => {
+  const lock = { packages: {
+    'node_modules/mermaid': { version: '1.0.0', dependencies: { elkjs: '^1', d3: '^1', '@types/d3': '^1' } },
+    'node_modules/elkjs': { version: '0.9.3' }, 'node_modules/@types/d3': { version: '7.0.0' },
+    'node_modules/d3': { version: '7.9.0' }, 'node_modules/mermaid/node_modules/d3': { version: '6.0.0' },
+    'node_modules/marked': { version: '2.0.0' }, 'node_modules/dompurify': { version: '3.0.0' }, 'node_modules/unrelated': { version: '9.0.0' },
+  } };
+  assert.deepStrictEqual(noticePackages(lock).map((x) => `${x.name}@${x.version}`), ['d3@6.0.0', 'd3@7.9.0', 'dompurify@3.0.0', 'marked@2.0.0', 'mermaid@1.0.0']);
+});

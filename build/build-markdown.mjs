@@ -1,0 +1,90 @@
+// Builds the Markdown reader's bundle (BACKLOG #119 A9): build/markdown-entry.mjs -> app/markdown-reader.js.
+//
+//   npm run build:markdown
+//
+// Same pattern as build/build-reader.mjs: the OUTPUT IS COMMITTED, so the app runs from a checkout with no build
+// step; one minified IIFE for Chromium 130 (Electron 33); nothing is fetched at runtime. It is large (Mermaid), which
+// is why the page loads it lazily, on the first Markdown file shown rendered. The header carries a hash of the
+// inputs (the entry, the link rule it bundles, this script, the lockfile's versions of the three libraries and
+// everything they pull in): test/bundle-fresh.test.js recomputes it, so a stale bundle fails a test.
+//
+// EXPECTED TO CHANGE RARELY: only on a bump of marked, DOMPurify or Mermaid, or an edit to the entry, the sanitizing
+// module or the link rule. Each rebuild commits a ~3.7 MB blob (about 1 MB compressed in history), which is why
+// .gitattributes marks it generated and -diff (PR #204 Miguel S3).
+import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const { inputsHash, MARKDOWN_ROOTS, markdownEntryText, noticePackages } = createRequire(import.meta.url)('./inputs-hash.js');
+const read = (...p) => fs.readFileSync(path.join(root, ...p), 'utf8');
+const lock = JSON.parse(read('package-lock.json'));
+const hash = inputsHash({
+  entry: markdownEntryText(read),
+  builder: read('build', 'build-markdown.mjs'),
+  lock,
+  roots: MARKDOWN_ROOTS,
+});
+
+const result = await build({
+  entryPoints: [path.join(root, 'build', 'markdown-entry.mjs')],
+  outfile: path.join(root, 'app', 'markdown-reader.js'),
+  write: false,                // written below, after raw control characters are escaped
+  bundle: true,
+  format: 'iife',
+  minify: true,
+  target: 'chrome130',
+  legalComments: 'none',       // the notices travel in app/THIRD-PARTY-NOTICES.md instead, generated below (PR #204 Miguel Y3)
+  charset: 'ascii',            // no raw non-ASCII bytes: a stray control character can't hide in the blob
+  define: { 'process.env.NODE_ENV': '"production"' },
+  alias: { 'elkjs/lib/elk.bundled.js': path.join(root, 'build', 'markdown-elk-stub.mjs') },   // 1.6 MB and EPL-2.0: see the stub
+  banner: { js: `/* claude-custom Markdown reader: marked + DOMPurify + Mermaid, bundled from npm by build/build-markdown.mjs. Do not edit. inputs sha256:${hash} */` },
+  metafile: true,
+  logLevel: 'info',
+});
+// A library string can hold a raw control character (a 0x01 in one of Mermaid's), which esbuild prints as it is.
+// test/renderer-scope.test.js refuses those in source, because a stray one is invisible in an editor and a diff.
+// Escaped, the meaning is the same in a string, a template or a regex; outside those a raw one cannot occur.
+const text = result.outputFiles[0].text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, (ch) => `\\x${ch.charCodeAt(0).toString(16).padStart(2, '0')}`);
+const target = path.join(root, 'app', 'markdown-reader.js');
+fs.writeFileSync(`${target}.tmp`, text);        // a temp file first: a failed write must not truncate the committed bundle
+fs.renameSync(`${target}.tmp`, target);
+console.log(`built app/markdown-reader.js: ${(Buffer.byteLength(text) / 1024).toFixed(0)} KB`);
+
+// THIRD-PARTY-NOTICES.md, next to the bundle: MIT, BSD and Apache-2.0 all want the copyright notice to travel with the
+// code, and the minifier dropped the in-source ones. One section per shipped package (the closure of the three
+// libraries, less elkjs, which is aliased out, and type-only packages), with its licence text as the package ships it.
+// test/bundle-fresh.test.js checks the list and the hash.
+const LICENSE_FILE = /^(licen[cs]e|copying|unlicense)(\.|$)/i;
+function licenceOf(dir, pkg) {
+  let spdx = typeof pkg.license === 'string' ? pkg.license : (pkg.license && pkg.license.type) || null;
+  let body = '';
+  for (const f of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+    if (LICENSE_FILE.test(f) && fs.statSync(path.join(dir, f)).isFile()) { body = fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n').trim(); break; }
+  }
+  if (!spdx) spdx = /Permission is hereby granted, free of charge/.test(body) ? 'MIT' : 'see the licence text';
+  return { spdx, body };
+}
+const sections = [];
+for (const p of noticePackages(lock)) {
+  const dir = path.join(root, p.key);
+  const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+  const { spdx, body } = licenceOf(dir, pkg);
+  const used = p.name === 'dompurify' ? `${spdx} (used here under Apache-2.0)` : spdx;
+  sections.push(`## ${p.name} ${p.version}\n\nLicense: ${used}\n\n${body ? `\`\`\`text\n${body}\n\`\`\`` : '(the package ships no licence file)'}\n`);
+}
+const notices = [
+  `<!-- generated by build/build-markdown.mjs with app/markdown-reader.js. Do not edit. inputs sha256:${hash} -->`,
+  '# Third-party notices: the Markdown reader',
+  '',
+  'app/markdown-reader.js bundles marked, DOMPurify and Mermaid and what they depend on. Their licences follow. elkjs (EPL-2.0) is',
+  'deliberately NOT bundled (build/markdown-elk-stub.mjs).',
+  '',
+  ...sections,
+].join('\n');
+const noticeTarget = path.join(root, 'app', 'THIRD-PARTY-NOTICES.md');
+fs.writeFileSync(`${noticeTarget}.tmp`, notices);
+fs.renameSync(`${noticeTarget}.tmp`, noticeTarget);
+console.log(`built app/THIRD-PARTY-NOTICES.md: ${sections.length} packages`);
