@@ -5453,7 +5453,7 @@ function renderRoster() {
   if (roster.size === 0 && !exRow) {
     // Three different situations, not one sentence. "No agents yet" is a
     // positive claim about history and must not be made on a read that failed.
-    paintAgents(`<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload))}</div>`);
+    paintAgents(`<div class="empty">${escapeHtml(rosterEmptyState(roster.size, agentStats, lastAgentStatsPayload, { isDefault: currentProfileIsDefault() }))}</div>`);
     return;
   }
   // Active agents first, then alphabetical, so the thing you care about is at
@@ -6938,6 +6938,90 @@ function renderContextFill(ctx) {
   applyContextFill(tbContextEl, ctx);
 }
 
+// --- account profiles (BACKLOG #119 A1) -------------------------------------------------------------------------------------
+// The chip names the Claude account THIS tab's host runs under: the hello's `profile`, the host's own word (a host that outlived a window
+// may predate the last pick). A click lists the profiles; a pick goes to main, which asks "Restart this session as ...?" itself when a
+// session is live and does nothing on Cancel. The decisions are app/profile-display.js's; this is only the wiring.
+const tbProfileEl = document.getElementById('tb-profile');
+const tbProfileMenu = document.getElementById('tb-profile-menu');
+let hostProfileId = null;        // the hello's profile; null before the first hello
+let profileList = [];            // [{ id, name, colour, configDir }] as main last said
+let profileNotice = null;        // why the last pick didn't take, until the next one
+let profileNoticeTimer = null;
+
+function currentProfileIsDefault() { return hostProfileId === null || hostProfileId === 'default'; }
+
+function renderProfileChip() {
+  if (!tbProfileEl) return;
+  const v = profileDisplay.chipView({ profiles: profileList, currentId: hostProfileId });
+  tbProfileEl.innerHTML = profileDisplay.userIconSvg() + `<span class="tb-profile-name">${escapeHtml(v.name)}</span>`;
+  tbProfileEl.title = profileNotice || v.title;
+  tbProfileEl.classList.toggle('unknown', !v.known);
+  tbProfileEl.classList.toggle('notice', !!profileNotice);
+  if (v.colour) tbProfileEl.style.setProperty('--profile-colour', v.colour);
+  else tbProfileEl.style.removeProperty('--profile-colour');
+}
+
+function renderProfileMenu() {
+  if (!tbProfileMenu) return;
+  const m = profileDisplay.menuView({ profiles: profileList, currentId: hostProfileId });
+  tbProfileMenu.textContent = '';
+  const add = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text) el.textContent = text; return el; };
+  for (const r of m.rows) {
+    const b = add('button');
+    b.type = 'button';
+    b.dataset.profile = r.id;
+    b.setAttribute('role', 'menuitemradio');
+    b.setAttribute('aria-checked', String(r.current));
+    const dot = add('span', 'pm-dot');
+    if (r.colour) dot.style.background = r.colour;
+    b.append(dot, add('span', 'pm-name', r.name), add('span', 'pm-check', r.current ? '✓' : ''));
+    tbProfileMenu.appendChild(b);
+  }
+  tbProfileMenu.appendChild(add('div', 'pm-sep'));
+  const manage = add('button', '', m.manageLabel);
+  manage.type = 'button';
+  manage.dataset.manage = '1';
+  tbProfileMenu.appendChild(manage);
+}
+
+function setProfileNotice(text) {
+  profileNotice = text;
+  clearTimeout(profileNoticeTimer);
+  if (text) profileNoticeTimer = setTimeout(() => { profileNotice = null; renderProfileChip(); }, 12000);
+  renderProfileChip();
+}
+
+async function refreshProfiles() {
+  if (!window.harness || typeof window.harness.profilesState !== 'function') return;
+  let s = null;
+  try { s = await window.harness.profilesState(); } catch { s = null; }
+  if (!s || !Array.isArray(s.profiles)) return;
+  profileList = s.profiles;
+  styleState = reduceAccounts(styleState, { profiles: s.profiles, inUse: s.inUse });
+  renderProfileChip();
+  renderRoster();
+  // Not under a half-typed name or a rename in progress: a redraw replaces every element of the Style panel (Miguel G2).
+  const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#style-sections [data-section=accounts]');
+  if (!typing) renderStylePanel();
+}
+
+async function pickProfile(id) {
+  closeTopBarMenus();
+  let r = null;
+  try { r = await window.harness.profilesSwitch(id); } catch (err) { r = { ok: false, error: (err && err.message) || String(err) }; }
+  if (r && r.ok === false && r.cancelled !== true) setProfileNotice(`didn't switch: ${r.error || 'unknown error'}`);
+}
+
+function manageProfiles() {
+  closeTopBarMenus();
+  revealModule('style');
+  requestAnimationFrame(() => {
+    const sec = document.querySelector('#style-sections [data-section="accounts"]');
+    if (sec && sec.scrollIntoView) sec.scrollIntoView({ block: 'start' });
+  });
+}
+
 function renderTopBar() {
   const state = topBarState({
     model: currentModel(), effort: currentEffort,
@@ -7449,9 +7533,10 @@ function toggleMenu(menu, otherMenu, chip) {
 }
 
 function closeTopBarMenus() {
-  const open = (tbModelMenu && !tbModelMenu.hidden) || (tbEffortMenu && !tbEffortMenu.hidden);
+  const open = (tbModelMenu && !tbModelMenu.hidden) || (tbEffortMenu && !tbEffortMenu.hidden) || (tbProfileMenu && !tbProfileMenu.hidden);
   if (tbModelMenu) tbModelMenu.hidden = true;
   if (tbEffortMenu) tbEffortMenu.hidden = true;
+  if (tbProfileMenu) tbProfileMenu.hidden = true;
   return open;
 }
 
@@ -7462,6 +7547,23 @@ function submitCustomModel() {
   closeTopBarMenus();
 }
 
+if (tbProfileEl) {
+  tbProfileEl.addEventListener('click', () => {
+    const opening = tbProfileMenu && tbProfileMenu.hidden;
+    if (opening) { if (tbModelMenu) tbModelMenu.hidden = true; if (tbEffortMenu) tbEffortMenu.hidden = true; renderProfileMenu(); }
+    toggleMenu(tbProfileMenu, null, tbProfileEl);
+  });
+}
+if (tbProfileMenu) {
+  tbProfileMenu.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-profile]');
+    if (row) { pickProfile(row.dataset.profile); return; }
+    if (e.target.closest('[data-manage]')) manageProfiles();
+  });
+}
+// Opening the model or effort menu puts the profile menu away (their own handlers only know each other).
+for (const chip of [tbModelEl, tbEffortEl]) if (chip) chip.addEventListener('click', () => { if (tbProfileMenu) tbProfileMenu.hidden = true; }, true);
+if (window.harness && typeof window.harness.onProfilesChanged === 'function') window.harness.onProfilesChanged(refreshProfiles);   // another tab or window edited the store
 if (tbModelEl) tbModelEl.addEventListener('click', () => toggleMenu(tbModelMenu, tbEffortMenu, tbModelEl));
 if (tbEffortEl) tbEffortEl.addEventListener('click', () => toggleMenu(tbEffortMenu, tbModelMenu, tbEffortEl));
 if (tbModelMenu) {
@@ -7772,6 +7874,27 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'accounts' && v) {
+    // Ids and data attributes written out in full: test/renderer-scope.test.js finds them by text.
+    if (!v.known) return `<section class="style-section" data-section="accounts">${header}<div class="style-current">reading…</div></section>`;
+    const rows = v.rows.map((r) => (
+      `<div class="acct-row" data-acct="${escapeHtml(r.id)}">` +
+      `<span class="acct-dot"${r.colour ? ` style="background:${escapeHtml(r.colour)}"` : ''}></span>` +
+      `<input type="text" class="acct-name" value="${escapeHtml(r.name)}" maxlength="40" aria-label="Profile name"${r.canRename ? '' : ' disabled'}>` +
+      (r.canRename ? `<button type="button" data-acct-rename="${escapeHtml(r.id)}">Rename</button>` : '') +
+      (r.canOpenFolder ? `<button type="button" data-acct-open="${escapeHtml(r.id)}">Open folder</button>` : '') +
+      (r.isDefault ? '' : `<button type="button" data-acct-remove="${escapeHtml(r.id)}"${r.canRemove ? '' : ` disabled title="${escapeHtml(r.removeWhy || '')}"`}>Remove</button>`) +
+      `</div><div class="acct-folder">${escapeHtml(r.folder || '')}</div>`
+    )).join('');
+    return (
+      `<section class="style-section" data-section="accounts">${header}` + rows +
+      (v.error ? `<div class="style-error">${escapeHtml(v.error)}</div>` : '') +
+      `<div class="acct-add"><input type="text" id="acct-new-name" placeholder="New profile name" maxlength="40" aria-label="New profile name">` +
+      `<input type="color" id="acct-new-colour" value="${escapeHtml(v.addColourDefault)}" aria-label="Profile colour">` +
+      `<input type="text" id="acct-new-folder" placeholder="Folder (optional)" aria-label="Profile folder"><button type="button" id="acct-add">Add</button></div>` +
+      `<div class="style-note">${escapeHtml(v.addFolderHint)}</div><div class="style-note">${escapeHtml(v.note)}</div></section>`
+    );
+  }
   // A future section with no view function yet still gets its title drawn,
   // rather than vanishing -- "say something rather than nothing", the same
   // rule the fog and projects panels follow for a failed read.
@@ -7797,6 +7920,36 @@ function paintAccentPreview(hex) {
   root.setProperty('--on-accent', p.onAccent);
   currentTheme = withChosenAccent(currentTheme, p.accent, p.onAccent);
   renderTopBar();
+}
+
+// BACKLOG #119 A1: the Accounts section's controls. Every edit goes to main (it owns the store); the list that comes back replaces ours.
+function takeAccountsReply(r) {
+  if (r && r.ok === true) { styleState = reduceAccounts(styleState, { profiles: r.profiles, inUse: r.inUse }); profileList = r.profiles; renderProfileChip(); }
+  else styleState = reduceAccounts(styleState, { error: (r && r.error) || 'that didn\'t work' });
+  renderStylePanel();
+}
+function bindAccountsSection() {
+  const h = window.harness;
+  if (!h || typeof h.profilesAdd !== 'function') return;
+  const addBtn = document.getElementById('acct-add');
+  if (addBtn) {
+    addBtn.addEventListener('click', () => {
+      const val = (id) => { const el = document.getElementById(id); return el ? el.value : ''; };
+      h.profilesAdd({ name: val('acct-new-name'), colour: val('acct-new-colour'), configDir: val('acct-new-folder').trim() }).then(takeAccountsReply, () => takeAccountsReply(null));
+    });
+  }
+  for (const b of document.querySelectorAll('[data-acct-rename]')) {
+    b.addEventListener('click', () => {
+      const input = b.closest('.acct-row').querySelector('.acct-name');
+      h.profilesRename(b.dataset.acctRename, input ? input.value : '').then(takeAccountsReply, () => takeAccountsReply(null));
+    });
+  }
+  for (const b of document.querySelectorAll('[data-acct-remove]')) {
+    b.addEventListener('click', () => h.profilesRemove(b.dataset.acctRemove).then(takeAccountsReply, () => takeAccountsReply(null)));
+  }
+  for (const b of document.querySelectorAll('[data-acct-open]')) {
+    b.addEventListener('click', () => h.profilesOpenFolder(b.dataset.acctOpen).then((r) => { if (r && r.ok === false) takeAccountsReply(r); }, () => takeAccountsReply(null)));
+  }
 }
 
 function renderStylePanel() {
@@ -7855,6 +8008,7 @@ function bindStyleSections() {
 
   bindAvatarSection();
   bindFontSection();
+  bindAccountsSection();
 
   const reroll = document.getElementById('style-reroll');
   if (reroll) reroll.addEventListener('click', () => sendStyle('colours', { action: 'reroll-look' }));
@@ -8499,6 +8653,11 @@ function handleControl(msg) {
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
     if (typeof msg.project === 'string' && msg.project) currentProjectName = msg.project;
     currentBranchName = typeof msg.branch === 'string' ? msg.branch : null;
+    // BACKLOG #119 A1: which account this session runs under. An older host sends none: the default, and main hears nothing.
+    hostProfileId = typeof msg.profile === 'string' && msg.profile !== '' ? msg.profile : null;
+    if (hostProfileId !== null && window.harness && typeof window.harness.reportProfile === 'function') window.harness.reportProfile(msg.profile);
+    refreshProfiles();
+    renderProfileChip();
     renderTitle();
     // Layout pass L1: this tab's own layout survives a reattach because the host
     // kept it. Absent on an older host -> the global layout, as before.

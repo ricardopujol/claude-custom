@@ -22,6 +22,21 @@ contextBridge.exposeInMainWorld('harness', {
   //   raise       a host said `raise`: select this tab, bring the window forward
   //   onTabSelected / onLockOverride: main -> page, replace-don't-accumulate
   tabStatus: (status) => ipcRenderer.send('tab:status', status),
+  // BACKLOG #119 A1, account profiles. All answered by main; the page sends plain data.
+  //   profilesState      -> { profiles: [{ id, name, colour, configDir }], inUse: [ids], current }  (current: this tab's profile)
+  //   profilesSwitch     id -> { ok, restarted? | cancelled? | error? }: main asks "Restart this session as ...?" itself when one is live
+  //   profilesAdd / profilesRename / profilesRemove / profilesOpenFolder: the Style panel's Accounts section
+  //   reportProfile      the hello's profile id: the host's own word for which account this tab runs under
+  //   onProfilesChanged  main -> page: the store changed (another tab, another window): ask profilesState again
+  profilesState: () => ipcRenderer.invoke('profiles:state'),
+  profilesSwitch: (id) => ipcRenderer.invoke('profiles:switch', id),
+  profilesAdd: (spec) => ipcRenderer.invoke('profiles:add', spec),
+  profilesRename: (id, name) => ipcRenderer.invoke('profiles:rename', { id, name }),
+  profilesRemove: (id) => ipcRenderer.invoke('profiles:remove', { id }),
+  profilesOpenFolder: (id) => ipcRenderer.invoke('profiles:openFolder', { id }),
+  reportProfile: (id) => ipcRenderer.send('tab:profile', id),
+  onProfilesChanged: (fn) => (ipcRenderer.removeAllListeners('profiles:changed'), ipcRenderer.on('profiles:changed',
+    () => { try { fn(); } catch (err) { console.error('[preload] profiles:changed listener threw', err); } }), () => ipcRenderer.removeAllListeners('profiles:changed')),
   closeTab: () => ipcRenderer.send('tab:close'),
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
   //   selectFolder a worktree folder -> { kind, text? }: the Git panel's *Jump to its tab*

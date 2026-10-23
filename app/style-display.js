@@ -29,6 +29,7 @@ const STYLE_SECTIONS = [
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
   { id: 'window', title: 'Window' },
+  { id: 'accounts', title: 'Accounts' },
   { id: 'tray', title: 'System tray' },
   { id: 'panel', title: "Claude's panel" },
 ];
@@ -229,6 +230,56 @@ function panelSectionView(state) {
 }
 
 /**
+ * BACKLOG #119 A1: the Accounts section. `state` is what main reports (`reduceAccounts`): `{ profiles: [{ id, name, colour, configDir }],
+ * inUse: [ids a tab uses], error }`. Strict: before main answers the list is unknown ("reading…"), never an empty list of accounts.
+ * The default profile is the CLI's own folder: listed, never renamed, never removed. A profile some tab uses can't be removed (the
+ * reason is on the row). There is no sign-in button: the terminal's own /login does that on that profile's first session.
+ */
+function accountsSectionView(state) {
+  const profiles = state && Array.isArray(state.profiles) ? state.profiles : null;
+  const inUse = new Set(state && Array.isArray(state.inUse) ? state.inUse : []);
+  const note = 'Each profile is a separate Claude account with its own folder. A new one starts signed out: switch a tab to it and sign in with /login in the terminal. '
+    + 'Removing a profile here never deletes its folder.';
+  const error = errorOf(state);
+  const addFolderHint = 'Leave the folder empty to use ~\\.claude-profiles\\<name>';
+  if (!profiles) return { known: false, rows: [], error, note, addColourDefault: '#4c8bf5', addFolderHint };
+  return {
+    known: true,
+    error,
+    note,
+    addColourDefault: '#4c8bf5',
+    addFolderHint,
+    rows: profiles.map((p) => {
+      const isDefault = p.id === 'default';
+      const used = inUse.has(p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        colour: typeof p.colour === 'string' && HEX_RE.test(p.colour) ? p.colour : null,
+        isDefault,
+        folder: isDefault ? "Claude's own folder" : p.configDir,
+        canRename: !isDefault,
+        canRemove: !isDefault && !used,
+        removeWhy: isDefault ? "the default account can't be removed" : used ? 'a tab is using it; switch that tab first' : null,
+        canOpenFolder: !isDefault && typeof p.configDir === 'string' && p.configDir !== '',
+      };
+    }),
+  };
+}
+
+/** Main's profile list lands in `state.accounts`. A reply that isn't a list changes nothing; `{ error }` sits beside the last good list. */
+function reduceAccounts(prev, msg) {
+  const state = prev || emptyStyleState();
+  const cur = state.accounts || emptyStyleState().accounts;
+  if (msg && typeof msg.error === 'string' && msg.error !== '') return { ...state, accounts: { ...cur, error: msg.error } };
+  if (!msg || !Array.isArray(msg.profiles)) return state;
+  const profiles = msg.profiles.filter(p => p && typeof p === 'object' && typeof p.id === 'string' && p.id !== '' && typeof p.name === 'string');
+  const inUse = Array.isArray(msg.inUse) ? msg.inUse.filter(id => typeof id === 'string') : [];
+  return { ...state, accounts: { profiles, inUse, error: null } };
+}
+
+
+/**
  * The tray icon's two Style switches (BACKLOG #119 A8; app/tray-settings.js owns them, "start minimised" lives in the tray's
  * own menu). Strict like the window toggles: only a real boolean is known, anything else is null, "reading…".
  */
@@ -256,6 +307,7 @@ const SECTION_VIEWS = {
   inactive: inactiveSectionView,
   avatars: avatarsSectionView,
   window: windowSectionView,
+  accounts: accountsSectionView,
   tray: traySectionView,
   panel: panelSectionView,
 };
@@ -288,6 +340,7 @@ function emptyStyleState() {
     window: { statusInHeader: null, framelessWindow: null },
     tray: { trayIcon: null, minimiseOnClose: null },
     panel: { mcp: null, mod: null },
+    accounts: { profiles: null, inUse: [], error: null },
   };
 }
 
@@ -443,7 +496,7 @@ const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
   traySectionView, reduceTraySettings,
-  coloursSectionView, panelSectionView, reduceCanvasMcp, reduceCcMod, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
+  coloursSectionView, panelSectionView, accountsSectionView, reduceAccounts, reduceCanvasMcp, reduceCcMod, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

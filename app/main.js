@@ -36,7 +36,7 @@ const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
 const { createLean, unionDismissed } = require('./lean-state');
 const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -44,7 +44,7 @@ const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
-const { readIdentity, readTokenFile } = require('../host/host-identity');
+const { readIdentity, readTokenFile, fileFor, defaultIsAlive } = require('../host/host-identity');
 const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
@@ -87,7 +87,8 @@ const { createUnsaved, closeDetail, guardWindowClose } = require('./reader-unsav
 // readlink come first, so a symlink to a share is refused before stat follows it.
 const fileFs = { lstat: (p) => fs.promises.lstat(p), readlink: (p) => fs.promises.readlink(p),
   stat: (p) => fs.promises.stat(p), realpath: (p) => fs.promises.realpath(p) };
-const { projectOf, stateRoot, samePath } = require('../host/project-layout');
+const { projectOf, stateRoot, samePath, normPath } = require('../host/project-layout');
+const { createProfileService } = require('./profile-service');
 // The repo browser's two main-only actions (#45): Show in Explorer, and the drag-out. Both re-run the path
 // guard against the asking tab's own worktree, and neither ever opens or runs a file (app/repo-actions.js).
 // The drag icon is a small accent-coloured square: startDrag wants a non-empty image, and a real file icon
@@ -185,6 +186,30 @@ const MODE = (PROJECT && PROJECT.kind === 'container' && EXPLICIT_PORT === null)
 // own root and state, as the host would work out for itself.
 const HOST_PROJECT = PROJECT || { kind: 'none', root: LAUNCH_CWD, dev: LAUNCH_CWD };
 const PROJECT_ROOT = HOST_PROJECT.root;
+// --- account profiles (BACKLOG #119 A1) -----------------------------------------------------------------------------
+// The store is machine-wide (~/.claude-custom/profiles.json); a probe points it at a throwaway dir with CLAUDE_CUSTOM_PROFILES_DIR.
+// A tab's profile becomes CLAUDE_CONFIG_DIR for its host (spawnHost), so every reader of the CLI's own state in that host follows it.
+const probeProfileAsks = [];   // the probe driver's record of every "Restart this session as ..." it was asked
+// The CLAUDE_CONFIG_DIR this app was LAUNCHED with, captured once: with ~/.claude it is "the default account" for the guard that stops a
+// profile pointing at it, whatever a later change of the environment does (Dexter 9).
+const INHERITED_CONFIG_DIR = typeof process.env.CLAUDE_CONFIG_DIR === 'string' ? process.env.CLAUDE_CONFIG_DIR : '';
+const profiles = createProfileService({
+  dir: process.env.CLAUDE_CUSTOM_PROFILES_DIR || undefined,
+  inheritedConfigDir: INHERITED_CONFIG_DIR,
+  hostProfiles: runningHostProfiles,
+  shell: () => tabShell,
+  projectKeyOf: () => normPath(HOST_PROJECT.root),
+  confirm: async (text) => {
+    // The probe driver has nobody to click: it says yes, and keeps what it was asked.
+    if (PROBE_PORT) { probeProfileAsks.push(text); return true; }
+    const r = await dialog.showMessageBox(win, { type: 'question', buttons: ['Restart', 'Cancel'], defaultId: 1, cancelId: 1, message: text });
+    return r.response === 0;
+  },
+  // A profile's folder opens in Explorer through the one guarded path (app/file-link.js: no UNC, no device paths; a folder opens).
+  openPath: async (p) => { const r = await fileLink.open(p, HOST_PROJECT.root, fileFs, shell); return r && r.ok ? '' : `couldn't open it (${(r && r.why) || 'refused'})`; },
+  broadcast: () => forEachView((v) => v.webContents.send('profiles:changed')),
+  log: (...a) => console.log(...a),
+});
 const STATE_ROOT = stateRoot(HOST_PROJECT);
 // The name on the window and on every tab's header: the same source the host
 // labels itself from (its PROJECT_ROOT).
@@ -317,6 +342,47 @@ function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
 
+/**
+ * Which process serves `port` for THIS tab, from the host's identity file: { pid, start (OS start time, FILETIME), profile? }, or null.
+ * The file must name the tab's own folder (and be a side host exactly when the tab is one): a host of another folder that took the port
+ * is not this tab's, and must never become the proof a profile switch kills by (PR #206 Dexter 1). The shell keeps the answer from when it
+ * last SAW its host alive; the kill itself re-proves pid and start time on a held handle (host/kill-tree.js killProvenAsync).
+ */
+function hostIdentity({ port, tab }) {
+  let raw = null;
+  try { raw = JSON.parse(fs.readFileSync(fileFor(HARNESS_DIR, port), 'utf8')); } catch { return null; }
+  if (!raw || !Number.isInteger(raw.pid) || raw.pid <= 0 || Number(raw.port) !== port) return null;
+  if (typeof raw.processStartedAt !== 'string' || !/^\d+$/.test(raw.processStartedAt)) return null;
+  // A well-formed file that names ANOTHER folder's host (or a side host for a branch tab) is still an answer: `foreign`, so the shell knows the
+  // port belongs to a stranger, and never takes the file as this tab's proof.
+  const foreign = !tab || !samePath(raw.cwd, tab.cwd) || (raw.side === true) !== (tab.side === true);
+  return { pid: raw.pid, start: raw.processStartedAt, ...(foreign ? { foreign: true } : {}), ...(!foreign && typeof raw.profile === 'string' ? { profile: raw.profile } : {}) };
+}
+
+/** The profile ids of the live hosts of every build beside this one (their identity files): "in use" is machine-wide, windows come and go. */
+function runningHostProfiles({ strict = false } = {}) {
+  const found = [];
+  let installs = [INSTALL_DIR];
+  try { installs = installsBeside(INSTALL_DIR); } catch { /* this build alone */ }
+  for (const install of installs) {
+    let entries = [];
+    try { entries = identitiesIn(install); } catch { continue; }
+    for (const { parsed } of entries) {
+      if (parsed && Number.isInteger(parsed.pid) && parsed.pid > 0 && typeof parsed.profile === 'string' && defaultIsAlive(parsed.pid)) found.push({ pid: parsed.pid, start: parsed.processStartedAt, profile: parsed.profile });
+    }
+  }
+  if (!strict || found.length === 0) return found.map(f => f.profile);
+  // A killed host leaves its file behind and Windows reuses its pid: before a profile counts as in use for a REMOVE, the process behind the
+  // pid must still be the one that started at the recorded time. One PowerShell for all of them. A query that fails counts them (doubt keeps).
+  let starts = null;
+  try {
+    const script = `Get-Process -Id ${[...new Set(found.map(f => f.pid))].join(',')} -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.Id + ' ' + [string]$_.StartTime.ToFileTimeUtc() }`;
+    const out = execFileSync(require('../host/proc-start').POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8', windowsHide: true, timeout: 20000 });
+    starts = new Map(out.split(/\r?\n/).map(l => l.trim().split(' ')).filter(p => p.length === 2).map(p => [Number(p[0]), p[1]]));
+  } catch { starts = null; }
+  return found.filter(f => starts === null || typeof f.start !== 'string' || starts.get(f.pid) === f.start).map(f => f.profile);
+}
+
 function spawnHost(tab, port, token) {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
   // detached:true is the point — the host must outlive this window so a session
@@ -326,17 +392,18 @@ function spawnHost(tab, port, token) {
   // host writes to stdout it takes EPIPE and dies. The host logs on every hook
   // event, so "detached" sessions were dying almost immediately, which is
   // exactly the detach property this spawn exists to provide.
+  // Built BEFORE the log is opened: a tab whose profile can't be resolved (an unreadable profiles file) throws here, and a descriptor opened first
+  // would leak on every Retry (PR #206 Dexter r2 N5). hostEnv drops the inherited per-tab keys and sets this tab's own, so one tab's token or
+  // port can never reach another's host; everything else passes through, which is how CLAUDE_CUSTOM_BIN reaches a probe's host.
+  const env = hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, ...profiles.spawnEnvFor(tab) });
   const logPath = path.join(__dirname, '..', '.harness', 'host.log');
   try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
   const logFd = fs.openSync(logPath, 'a');
 
-  // hostEnv drops the inherited per-tab keys and sets this tab's own, so one
-  // tab's token or port can never reach another's host. It passes everything
-  // else through, which is how CLAUDE_CUSTOM_BIN reaches a probe's host.
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
+    env,
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -937,6 +1004,7 @@ async function askWindowClose(files) {
 }
 
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
+
 // `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
@@ -1236,6 +1304,19 @@ function registerIpc() {
     if (!isTabView(e.sender) || typeof on !== 'boolean') return;
     setFocusMode(on);
   });
+  // BACKLOG #119 A1: account profiles. Any tab page may read the list and switch ITS OWN tab; the Accounts section edits the shared store.
+  // Shapes are checked here: a page sends plain data, and only these fields of it are used.
+  const str = (v) => (typeof v === 'string' ? v : '');
+  ipcMain.handle('profiles:state', (e) => (isTabView(e.sender) ? profiles.stateFor(e.sender) : null));
+  ipcMain.handle('profiles:switch', (e, id) => (isTabView(e.sender) ? profiles.switchTo(e.sender, str(id)) : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:add', (e, spec) => (isTabView(e.sender)
+    ? profiles.add({ name: str(spec && spec.name), colour: str(spec && spec.colour), configDir: str(spec && spec.configDir) })
+    : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:rename', (e, arg) => (isTabView(e.sender) ? profiles.rename({ id: str(arg && arg.id), name: str(arg && arg.name) }) : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:remove', (e, arg) => (isTabView(e.sender) ? profiles.remove({ id: str(arg && arg.id) }) : { ok: false, error: 'not a tab' }));
+  ipcMain.handle('profiles:openFolder', (e, arg) => (isTabView(e.sender) ? profiles.openFolder({ id: str(arg && arg.id) }) : { ok: false, error: 'not a tab' }));
+  // The page's host says which profile it runs under (hello.profile): that is the truth for the strip's dot.
+  ipcMain.on('tab:profile', (e, id) => { if (isTabView(e.sender)) tabShell.reportProfile(e.sender, id); });
   ipcMain.on('tab:status', (e, status) => {
     if (!isTabView(e.sender)) return;
     tabShell.report(e.sender, status);
@@ -1679,7 +1760,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, profileDot: t.querySelector('.profile-dot') ? { bg: t.querySelector('.profile-dot').style.background, title: t.querySelector('.profile-dot').title } : null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1705,7 +1786,10 @@ function startProbeDriver(port) {
           viewDom = JSON.parse(await sel.webContents.executeJavaScript(
             "JSON.stringify({ xterm: document.querySelectorAll('.xterm').length, title: (document.getElementById('title') || {}).textContent || null, hasTerm: typeof term !== 'undefined', "
             // Layout pass L2 (#27): the header's copy of the CLI status row.
-            + "statusFields: (() => { const el = document.getElementById('status-fields'); if (!el) return null; const r = el.getBoundingClientRect(); return { hidden: el.hidden, text: el.textContent, rect: { left: Math.round(r.left), width: Math.round(r.width), right: Math.round(r.right) }, viewport: window.innerWidth, display: getComputedStyle(el).display, scrollWidth: el.scrollWidth, focusRight: Math.round(((document.getElementById('focus-btn') || el).getBoundingClientRect()).right) }; })() })"));
+            + "statusFields: (() => { const el = document.getElementById('status-fields'); if (!el) return null; const r = el.getBoundingClientRect(); return { hidden: el.hidden, text: el.textContent, rect: { left: Math.round(r.left), width: Math.round(r.width), right: Math.round(r.right) }, viewport: window.innerWidth, display: getComputedStyle(el).display, scrollWidth: el.scrollWidth, focusRight: Math.round(((document.getElementById('focus-btn') || el).getBoundingClientRect()).right) }; })(), "
+            // BACKLOG #119 A1: the Profile chip as painted, and how many Accounts rows the Style panel drew.
+            + "profileChip: (() => { const c = document.getElementById('tb-profile'); if (!c) return null; const n = c.querySelector('.tb-profile-name'); return { text: n ? n.textContent : null, title: c.title, colour: c.style.getPropertyValue('--profile-colour') || null }; })(), "
+            + "accountsRows: document.querySelectorAll('#style-sections [data-section=accounts] .acct-row').length })"));
         } catch (err) { viewDom = { error: err.message }; }
       }
       // No menu bar: no application menu AND none on the window.
@@ -1721,11 +1805,19 @@ function startProbeDriver(port) {
       const snap = tabShell.snapshot();
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
-        create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(), profileAsks: probeProfileAsks.slice(),
+        profileOf: Object.fromEntries(snap.tabs.map((t) => [t.branch || projectLabel(t.cwd), t.profileId])),
         // #119 A6: whether the selected tab's page is showing (it steps aside while the form's issue list is open); null if unreadable.
         selectedViewVisible: (() => { const v = selectedView(); try { return v && typeof v.getVisible === 'function' ? v.getVisible() : null; } catch { return null; } })(),
         readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
+    },
+    // BACKLOG #119 A1: the page's own profile pick (the chip menu's click), through the same service call the IPC makes.
+    async profile(label, id) {
+      const k = labelKey(label);
+      const tab = k ? tabShell.tabByKey(k) : null;
+      if (!tab || !tab.view) return { ok: false, error: 'no such tab view' };
+      return profiles.switchTo(tab.view.webContents, id);      // an IPC sender is the page's webContents
     },
     // PR 3: what the + menu and the branch form do, without a mouse.
     // Started, not awaited: the probe watches the setup's progress through `state`.
@@ -2074,6 +2166,7 @@ app.whenReady().then(async () => {
     launchedFrom: LAUNCH_CWD,
     log: (...a) => console.log(...a),
     git: { list: listWorktrees, marker: readMergedMarker },
+    profiles: { choose: (t) => profiles.choose(t), resolve: (id) => profiles.resolve(id), remember: (t, id) => profiles.remember(t, id) },
     marks: { markFor: (branch) => tabMarks.markFor(marks.store, branch) },
     // #63: each tab's "over 40% CPU for 30 s" chip, from the Resources service (cleared while the panel is hidden).
     resources: { warnFor: (key) => (resources ? resources.warnFor(key) : null) },
@@ -2099,6 +2192,10 @@ app.whenReady().then(async () => {
       probe: (port) => probePort(port),
       spawn: ({ tab, port, token }) => spawnHost(tab, port, token),
       wait: (port) => waitForHost(port),
+      // BACKLOG #119 A1: WHICH process serves a port for a tab (pid and OS start time), recorded when the tab sees its host alive; and the
+      // proven kill a profile switch uses on a host that won't leave (app/tab-shell.js endHost). Never by name.
+      identify: (arg) => hostIdentity(arg),
+      kill: ({ pid, start }) => killProvenAsync(pid, start),
       tokenFor: tokenForRunningHost,
       tokenFile: tokenFileFor,
       // One secret, handed to the host AND the tab's page. In a single-tab window
@@ -2183,7 +2280,7 @@ app.whenReady().then(async () => {
     taskLogs: {
       everyMs: 60_000,
       scan: () => taskLogsFs.scanTaskFiles(taskLogsRoot),
-      registry: () => taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir)),
+      registry: () => { const dirs = profiles.stateFor(null).profiles.map(p => p.configDir); return taskLogsFs.readRegistries(taskLogsFs.registryDirs(tabShell.snapshot().tabs.map(t => t.cwd), claudeConfigDir, dirs), undefined, taskLogsFs.profileRegistryDirs(dirs)); },
       remove: (row) => taskLogsFs.deleteTaskLog(taskLogsRoot, row),
     },
     // verify/probe-resource-panel.js only: the warning's CPU threshold (a percentage), 40 when unset or not one

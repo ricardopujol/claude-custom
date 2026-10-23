@@ -113,8 +113,18 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       note: isString(t.note) && t.note !== '' ? t.note : null,
       setup: rt && rt.setup && typeof rt.setup === 'object' ? rt.setup : null,
       createdWarning: rt && isString(rt.createdWarning) && rt.createdWarning !== '' ? rt.createdWarning : null,
+      profileDot: profileDotOf(rt),
     };
   });
+}
+
+// BACKLOG #119 A1: the tab's account profile as a dot, or null (the default, no colour, or anything malformed draws nothing).
+const HEX6 = /^#[0-9a-f]{6}$/i;
+function profileDotOf(rt) {
+  const p = rt && rt.profile;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) return null;
+  if (!isString(p.colour) || !HEX6.test(p.colour) || !isString(p.name) || p.name === '') return null;
+  return { colour: p.colour, name: p.name };
 }
 
 const MERGED_PHASES = ['finishing', 'removing', 'kept'];

@@ -37,7 +37,7 @@ test('host.js: a side host\'s subagents claim worktrees as readers', () => {
 });
 
 test('main.js: a side tab\'s host is spawned with the side flag, and found as a side host, never through the window\'s explicit port', () => {
-  assert.match(MAIN, /hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
+  assert.match(MAIN, /hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true, \.\.\.profiles\.spawnEnvFor\(tab\) \}\)/);
   assert.match(MAIN, /resolvePort\(\{ cwd: tab\.cwd, occupantAt, side \}\)/);
   const choose = MAIN.slice(MAIN.indexOf('async function chooseHostPort'), MAIN.indexOf('function spawnHost'));
   assert.match(choose, /const side = tab\.side === true;/);

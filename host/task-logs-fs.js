@@ -45,9 +45,11 @@ async function scanTaskFiles(root, fsp = fs.promises) {
   return out;
 }
 
-async function readRegistry(dir, fsp = fs.promises) {
+async function readRegistry(dir, fsp = fs.promises, { missingOk = false } = {}) {
   let names;
-  try { names = await fsp.readdir(dir); } catch { return { ok: false, entries: [] }; }
+  // `missingOk`: a folder that does not exist YET (a profile that never ran a session) holds no sessions. Anything else that stops the
+  // read (permissions, not a folder, a busy disk) is still doubt.
+  try { names = await fsp.readdir(dir); } catch (err) { return { ok: missingOk && !!err && err.code === 'ENOENT', entries: [] }; }
   const entries = [];
   let ok = true;
   for (const n of names.filter(x => /^\d+\.json$/.test(x))) {
@@ -65,16 +67,26 @@ async function readRegistry(dir, fsp = fs.promises) {
  * tab's `claude` runs in its folder, and a RELATIVE CLAUDE_CONFIG_DIR resolves against that folder, not main's cwd).
  * `configDir({ cwd })` is host/claude-config-dir.js. Unique, in order.
  */
-function registryDirs(tabCwds, configDir) {
+function registryDirs(tabCwds, configDir, profileDirs) {
   const dirs = [configDir()];
   for (const cwd of Array.isArray(tabCwds) ? tabCwds : []) if (typeof cwd === 'string' && cwd !== '') dirs.push(configDir({ cwd }));
+  // BACKLOG #119 A1: a tab under an account profile registers its sessions in that profile's folder, which main's own env never names.
+  for (const d of Array.isArray(profileDirs) ? profileDirs : []) if (typeof d === 'string' && d !== '') dirs.push(d);
   return [...new Set(dirs.map(d => path.join(d, 'sessions')))];
 }
 
+/** The `sessions` folder of each profile's config dir (BACKLOG #119 A1): the ones a missing folder is not doubt for. Unique. */
+function profileRegistryDirs(profileDirs) {
+  const out = [];
+  for (const d of Array.isArray(profileDirs) ? profileDirs : []) if (typeof d === 'string' && d !== '') out.push(path.join(d, 'sessions'));
+  return [...new Set(out)];
+}
+
 // Every config dir a session of this machine may be registered in: merged, and not ok if any one is not.
-async function readRegistries(dirs, fsp = fs.promises) {
+async function readRegistries(dirs, fsp = fs.promises, optional = []) {
   const list = [...new Set(dirs)];
-  const all = await Promise.all(list.map(d => readRegistry(d, fsp)));
+  const may = new Set(Array.isArray(optional) ? optional : []);
+  const all = await Promise.all(list.map(d => readRegistry(d, fsp, { missingOk: may.has(d) })));
   return { ok: list.length > 0 && all.every(r => r.ok), entries: all.flatMap(r => r.entries) };
 }
 
@@ -144,4 +156,5 @@ async function deleteTaskLog(root, row, { fsp = fs.promises, now = Date.now, idl
   return res;
 }
 
-module.exports = { scanTaskFiles, readRegistry, readRegistries, registryDirs, deleteTaskLog };
+module.exports = {
+  profileRegistryDirs, scanTaskFiles, readRegistry, readRegistries, registryDirs, deleteTaskLog };

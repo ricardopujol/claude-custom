@@ -160,7 +160,7 @@ function mergeAgentStats(prevMap, stats) {
  * project genuinely has no history, or the project has history and simply
  * nothing has run in this window yet. Only the middle one may say "no agents".
  */
-function rosterEmptyState(rosterSize, knownCareers, stats) {
+function rosterEmptyState(rosterSize, knownCareers, stats, profile) {
   if (rosterSize > 0) return '';
   const readFailed = !!stats && stats.ok === false;
   const known = knownCareers ? knownCareers.size : 0;
@@ -172,6 +172,8 @@ function rosterEmptyState(rosterSize, knownCareers, stats) {
     return `${known} agent${known === 1 ? ' has' : 's have'} run in this project — ` +
            'portraits light up when one runs in this session.';
   }
+  // A fresh account profile has its own (empty) agents folder: say so, instead of implying the project never had agents (BACKLOG #119 A1).
+  if (profile && profile.isDefault === false) return 'No agent has run under this profile yet — portraits light up when one runs.';
   return 'No agents yet — portraits light up when one runs.';
 }
 

@@ -295,6 +295,25 @@ test('summaryNote follows the status: a string is carried, anything else is null
   assert.strictEqual(strip([DEV], {})[0].summaryNote, null);
 });
 
+// --- account profiles (BACKLOG #119 A1): a small coloured dot on a tab that runs under a non-default profile ---------------------
+test('profileDot: a runtime profile with a colour draws as a dot with its name; none draws nothing', () => {
+  const k = keyOf(A.path);
+  const [, a] = strip([DEV, A], { [k]: { started: true, profile: { colour: '#4c8bf5', name: 'Work' } } });
+  assert.deepStrictEqual(a.profileDot, { colour: '#4c8bf5', name: 'Work' });
+  const [dev, a2] = strip([DEV, A], { [k]: { started: true } });
+  assert.strictEqual(dev.profileDot, null);
+  assert.strictEqual(a2.profileDot, null);
+});
+
+test('profileDot: a colour that is not #rrggbb, or a name that is not text, is not drawn', () => {
+  const k = keyOf(A.path);
+  for (const profile of [{ colour: 'red', name: 'W' }, { colour: '#12345', name: 'W' }, { colour: null, name: 'W' }, { colour: '#4c8bf5' },
+    { colour: '#4c8bf5', name: 5 }, 'x', [], null]) {
+    const [, a] = strip([DEV, A], { [k]: { started: true, profile } });
+    assert.strictEqual(a.profileDot, null, JSON.stringify(profile));
+  }
+});
+
 test('program (OSC 7501) follows the status: the cleaned record, null for none', () => {
   const k = keyOf(DEV.path);
   const on = strip([DEV], { [k]: { started: true, status: { working: true, program: { state: 'blocked', kind: 'permission', msg: 'Allow?', progress: null } } } })[0];

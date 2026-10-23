@@ -183,6 +183,8 @@ const CLAUDE_BIN = resolveClaude();
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 // A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
 setConfigAnchor(CWD);
+// BACKLOG #119 A1: the account profile this host was started under (main sets it with CLAUDE_CONFIG_DIR). The page shows it from the hello.
+const PROFILE_ID = process.env.CLAUDE_CUSTOM_PROFILE || 'default';
 // CWD is this tab's worktree: the pty, the session lock and everything git.
 // PROJECT_ROOT and STATE_ROOT are the project's (theme, label / look, style):
 // one set shared by every tab of a container. For a flat repo all three are
@@ -2402,6 +2404,8 @@ wss.on('connection', (ws, req) => {
     // the session as input (PR #75).
     controls: [...CONTROL_TYPES],
     cwd: CWD,
+    // BACKLOG #119 A1: the account profile this session runs under; the header chip and the tab's dot follow it.
+    profile: PROFILE_ID,
     // Whether the claude-custom mod is on, off or could not load, and why (PR #197 Miguel Y9): the diagnostics pane says it.
     modStatus,
     // This session's id, null before SessionStart: the roster cards match a worktree claim on it (backlog #57).
@@ -3077,7 +3081,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, profile: PROFILE_ID, sessionId: SIDE ? sessionId : undefined,
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -3094,7 +3098,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, profile: PROFILE_ID, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -3235,7 +3239,7 @@ const handleModRecord = createModRecordHandler({
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, profile: PROFILE_ID, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

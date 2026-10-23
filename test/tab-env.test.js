@@ -74,7 +74,7 @@ test('the base env is not mutated', () => {
 
 test('PER_TAB_KEYS is the documented list', () => {
   assert.deepStrictEqual([...PER_TAB_KEYS].sort(), [
-    'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PROJECT_ROOT',
+    'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PROFILE', 'CLAUDE_CUSTOM_PROJECT_ROOT',
     'CLAUDE_CUSTOM_PROJECT_STATE', 'CLAUDE_CUSTOM_SESSION_ID', 'CLAUDE_CUSTOM_SIDE_SESSION', 'CLAUDE_CUSTOM_SIDE_TAB',
     'CLAUDE_CUSTOM_TOKEN',
   ]);
@@ -111,4 +111,35 @@ test('PROPERTY: CLAUDE_CUSTOM_* keys are base minus per-tab plus the five set ke
       assert.strictEqual(JSON.stringify(base), before);
     },
   ));
+});
+
+// --- account profiles (BACKLOG #119 A1) -------------------------------------------------------------------------------------
+
+test('a tab with a profile folder spawns its host (and so its claude) with CLAUDE_CONFIG_DIR set to it', () => {
+  const env = hostEnv({ CLAUDE_CONFIG_DIR: 'D:\from-the-shell' }, args({ configDir: 'C:\profiles\work', profileId: 'work' }));
+  assert.strictEqual(env.CLAUDE_CONFIG_DIR, 'C:\profiles\work');
+  assert.strictEqual(env.CLAUDE_CUSTOM_PROFILE, 'work');
+});
+
+test('the default profile sets nothing: an inherited CLAUDE_CONFIG_DIR stays, an absent one stays absent', () => {
+  const kept = hostEnv({ CLAUDE_CONFIG_DIR: 'D:\from-the-shell' }, args({ configDir: null, profileId: 'default' }));
+  assert.strictEqual(kept.CLAUDE_CONFIG_DIR, 'D:\from-the-shell');
+  const none = hostEnv({}, args({ configDir: null, profileId: 'default' }));
+  assert.ok(!('CLAUDE_CONFIG_DIR' in none));
+  const bare = hostEnv({}, args());
+  assert.ok(!('CLAUDE_CONFIG_DIR' in bare));
+  assert.ok(!('CLAUDE_CUSTOM_PROFILE' in bare));
+});
+
+test('an inherited CLAUDE_CUSTOM_PROFILE never reaches another tab: it is a per-tab key', () => {
+  assert.ok(PER_TAB_KEYS.includes('CLAUDE_CUSTOM_PROFILE'));
+  const env = hostEnv({ CLAUDE_CUSTOM_PROFILE: 'work' }, args());
+  assert.ok(!('CLAUDE_CUSTOM_PROFILE' in env));
+});
+
+test('a non-string or empty configDir is ignored, never written as "undefined" or "null"', () => {
+  for (const configDir of [undefined, null, '', 5, {}, []]) {
+    const env = hostEnv({}, args({ configDir }));
+    assert.ok(!('CLAUDE_CONFIG_DIR' in env), String(configDir));
+  }
 });

@@ -29,11 +29,18 @@ const PER_TAB_KEYS = Object.freeze([
   'CLAUDE_CUSTOM_SIDE_SESSION',
   'CLAUDE_CUSTOM_PROJECT_ROOT',
   'CLAUDE_CUSTOM_PROJECT_STATE',
+  // BACKLOG #119 A1: the account profile this tab's host was started under (its own id, never the next tab's).
+  'CLAUDE_CUSTOM_PROFILE',
 ]);
 
 const nonEmpty = v => typeof v === 'string' && v.length > 0;
 
-function hostEnv(baseEnv, { cwd, port, token, project, side = false } = {}) {
+/**
+ * `configDir` / `profileId` (BACKLOG #119 A1, host/profiles.js): the tab's account. A profile folder becomes CLAUDE_CONFIG_DIR for the host
+ * and, through it, the `claude` and every reader of the CLI's own state (host/claude-config-dir.js). The default profile passes null: the
+ * variable is left exactly as the launching shell had it, set or not.
+ */
+function hostEnv(baseEnv, { cwd, port, token, project, side = false, configDir = null, profileId = null } = {}) {
   if (!nonEmpty(cwd)) throw new Error('hostEnv: cwd must be a non-empty string');
   if (!nonEmpty(token)) throw new Error('hostEnv: token must be a non-empty string');
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -55,6 +62,8 @@ function hostEnv(baseEnv, { cwd, port, token, project, side = false } = {}) {
   out.CLAUDE_CUSTOM_PROJECT_ROOT = project.root;
   out.CLAUDE_CUSTOM_PROJECT_STATE = state;
   if (side === true) out.CLAUDE_CUSTOM_SIDE_SESSION = '1';
+  if (nonEmpty(configDir)) out.CLAUDE_CONFIG_DIR = configDir;
+  if (nonEmpty(profileId)) out.CLAUDE_CUSTOM_PROFILE = profileId;
   return out;
 }
 

@@ -128,7 +128,7 @@ test('Leftovers Stop (B): the bridge, the gated IPC handler and the page\'s clic
 test('Leftovers task logs (#74 F(3)): main hands the service the stat-only scan of %TEMP%\\claude, the CLI registry, and the one guarded delete', () => {
   assert.match(MAIN, /taskLogsRoot = path\.join\(require\('os'\)\.tmpdir\(\), 'claude'\)/);
   assert.match(MAIN, /scan: \(\) => taskLogsFs\.scanTaskFiles\(taskLogsRoot\)/);
-  assert.match(MAIN, /registry: \(\) => taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir\)\)/);
+  assert.match(MAIN, /registry: \(\) => \{ const dirs = profiles\.stateFor\(null\)\.profiles\.map\(p => p\.configDir\); return taskLogsFs\.readRegistries\(taskLogsFs\.registryDirs\(tabShell\.snapshot\(\)\.tabs\.map\(t => t\.cwd\), claudeConfigDir, dirs\), undefined, taskLogsFs\.profileRegistryDirs\(dirs\)\); \},/);
   assert.match(MAIN, /remove: \(row\) => taskLogsFs\.deleteTaskLog\(taskLogsRoot, row\)/);
   assert.doesNotMatch(MAIN, /\bunlink|rmSync|\.rm\(/, 'main never deletes a file itself');
 });
