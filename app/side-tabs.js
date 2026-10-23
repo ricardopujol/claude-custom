@@ -43,6 +43,9 @@ const TABS = [
   // BACKLOG #63: CPU and memory per session, per project and in total. An ordinary module like the rest: it docks, moves
   // and hides through the same layout, and it samples only while it is showing (app/resources-service.js).
   { id: 'resources', label: 'Resources', title: 'CPU and memory: which session is using the machine' },
+  // BACKLOG #119 A7: what will run, when, from which session: wakeups, loops, bedtime nights and cron jobs of every session in one list. An
+  // ordinary module like the rest: it docks, moves and hides through the same layout. Read-only; a click selects the session's tab.
+  { id: 'schedules', label: 'Schedules', title: 'What will run, when, and from which session: wakeups, loops, bedtime nights and cron jobs' },
   // BACKLOG #71: a panel the running Claude builds itself, a sandboxed page per tab. An ordinary module like the rest, with
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.

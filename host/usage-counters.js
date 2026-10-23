@@ -42,7 +42,7 @@ const STATIC_KEYS = Object.freeze([
   'changes:file-opened', 'changes:scope', 'changes:comment-typed',
 ]);
 const STATIC_SET = new Set(STATIC_KEYS);
-const PANEL_IDS = Object.freeze(['agents', 'vault', 'bugvault', 'fog', 'changes', 'git', 'models', 'projects', 'style', 'wand', 'resources', 'canvas', 'ask', 'games']);
+const PANEL_IDS = Object.freeze(['agents', 'vault', 'bugvault', 'fog', 'changes', 'git', 'models', 'projects', 'style', 'wand', 'resources', 'schedules', 'canvas', 'ask', 'games']);
 const GAME_IDS = Object.freeze(['stack', 'merge', 'pipeline']);
 const PANEL_SET = new Set(PANEL_IDS.map((id) => `panel:${id}`));
 const GAME_SET = new Set(GAME_IDS.map((id) => `game:${id}:start`));

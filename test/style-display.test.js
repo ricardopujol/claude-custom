@@ -317,7 +317,7 @@ test('reduceStyle keeps the panel switch, which the host never reports (a style 
 test("the Style tab has a Claude's panel section after Window, with its switch unknown until main answers", () => {
   const section = styleDisplay(emptyStyleState()).find(s => s.id === 'panel');
   assert.strictEqual(section.title, "Claude's panel");
-  assert.deepStrictEqual(section.view, { mcp: null, mcpDescription: 'reading…' });
+  assert.deepStrictEqual(section.view, { mcp: null, mcpDescription: 'reading…', mod: null, modDescription: 'reading…' });
   assert.strictEqual(STYLE_SECTIONS[STYLE_SECTIONS.length - 1].id, 'panel');
 });
 
@@ -325,8 +325,44 @@ test('the switch view says what the next session gets, strictly: only a real boo
   assert.match(panelSectionView({ mcp: true }).mcpDescription, /Claude can build things in its panel.*next starts this tab's session; one already running keeps what it has/);
   assert.match(panelSectionView({ mcp: false }).mcpDescription, /not offered to the CLI.*next starts this tab's session; one already running keeps what it has/);
   for (const bad of [undefined, null, {}, { mcp: null }, { mcp: 'false' }, { mcp: 0 }, { mcp: 1 }]) {
-    assert.deepStrictEqual(panelSectionView(bad), { mcp: null, mcpDescription: 'reading…' }, JSON.stringify(bad));
+    assert.deepStrictEqual(panelSectionView(bad), { mcp: null, mcpDescription: 'reading…', mod: null, modDescription: 'reading…' }, JSON.stringify(bad));
   }
+});
+
+// ---- the claude-custom mod's switch (BACKLOG #119 A2): a second checkbox in the same section -----------------------------------------------------
+
+const { reduceCcMod } = require('../app/style-display');
+
+test('the mod switch view says what the next session gets, strictly: only a real boolean is known', () => {
+  assert.match(panelSectionView({ mod: true }).modDescription, /reads the CLI's own quota, context and agent states.*next starts this tab's session; one already running keeps what it has/);
+  assert.match(panelSectionView({ mod: false }).modDescription, /not loaded.*quota.*next starts this tab's session; one already running keeps what it has/);
+  for (const bad of [undefined, null, {}, { mod: null }, { mod: 'false' }, { mod: 0 }, { mod: 1 }]) {
+    const v = panelSectionView(bad);
+    assert.strictEqual(v.mod, null, JSON.stringify(bad));
+    assert.strictEqual(v.modDescription, 'reading…', JSON.stringify(bad));
+  }
+});
+
+test('the two switches are independent: each view field reads only its own state field', () => {
+  assert.deepStrictEqual([panelSectionView({ mcp: true, mod: false }).mcp, panelSectionView({ mcp: true, mod: false }).mod], [true, false]);
+  assert.deepStrictEqual([panelSectionView({ mcp: false, mod: true }).mcp, panelSectionView({ mcp: false, mod: true }).mod], [false, true]);
+});
+
+test('reduceCcMod: a real boolean lands, anything else changes nothing, and neither the other switch nor the rest of the state moves', () => {
+  const start = reduceCanvasMcp(emptyStyleState(), true);
+  const on = reduceCcMod(start, true);
+  assert.strictEqual(on.panel.mod, true);
+  assert.strictEqual(on.panel.mcp, true, 'the panel switch is untouched');
+  assert.strictEqual(reduceCcMod(on, false).panel.mod, false);
+  for (const bad of [null, undefined, 'true', 1, {}]) assert.strictEqual(reduceCcMod(on, bad), on, String(bad));
+  assert.deepStrictEqual({ ...on, panel: null }, { ...start, panel: null });
+  assert.strictEqual(reduceCcMod(undefined, true).panel.mod, true);
+  assert.strictEqual(reduceCanvasMcp(on, false).panel.mod, true, 'and the panel reducer leaves the mod switch alone');
+});
+
+test('reduceStyle keeps the mod switch, which the host never reports', () => {
+  const known = reduceCcMod(emptyStyleState(), false);
+  assert.strictEqual(reduceStyleForPanel(known, hello).panel.mod, false);
 });
 
 test('reduceCanvasMcp: a real boolean lands, anything else changes nothing, and nothing else in the state moves', () => {

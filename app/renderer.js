@@ -170,6 +170,9 @@ const LOCATE_SCAN = 400;
 const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
+// OSC 7501 (BACKLOG #116): the CLI's own root state as the host last said it (cleaned), or null. The host parses the stream
+// and answers the CLI; this only shows it and moves the cue (host/attention.js raises the toast and the urgent/finished frame).
+let programRoot = null;
 function pend(event) {
   if (window.tabStatus) tabPending = window.tabStatus.pendingAfter(tabPending, event);
 }
@@ -187,13 +190,28 @@ function reportTabStatus() {
     health: tabHealth,
     turn: sessionTurn,
     night: bar.bedtime !== null,
+    program: programRoot,
     summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
     // with no summary yet, why (Ollama off) rides on the hover card alone: the bar does not pop up for it
     summaryNote: sum.summary ? null : summaryDisplay.offNote(sum.off),
-  }, { healthMarker: worktreeStatus.healthMarker });
+  }, { healthMarker: worktreeStatus.healthMarker, cleanProgram: programStatusDisplay.clean });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
   window.harness.tabStatus(status);
+}
+// A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
+// of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
+function applyProgramStatus(rootRecord, how) {
+  const next = programStatusDisplay.clean(rootRecord);
+  for (const event of programStatusDisplay.cueEvents(programRoot, next, how)) pend(event);
+  programRoot = next;
+  const headerDot = document.getElementById('dot');
+  if (headerDot) {
+    headerDot.classList.remove('ps-working', 'ps-blocked', 'ps-done', 'ps-error');
+    const view = programStatusDisplay.headerView(next);
+    if (view) { headerDot.classList.add(view.cls); headerDot.title = view.title; } else headerDot.removeAttribute('title');
+  }
+  reportTabStatus();
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
@@ -1302,6 +1320,62 @@ function changesView() {
 }
 document.addEventListener('visibilitychange', changesView);
 // CHANGES-END
+// --- the Schedules panel (BACKLOG #119 A7) ------------------------------------------------------------------------------------
+// SCHEDULES-BEGIN
+// app/schedules-display.js decides what is drawn; the list is the host's (host/schedules.js buildView): every session's wakeups, loops,
+// bedtime nights and cron jobs, grouped. READ-ONLY in v1: a click on a row selects that session's tab (the Git panel's own jump).
+// var, not let: the first layout can paint the rail badge before this block has run (the Resources panel's resViewingSent is the same).
+var schedState = window.schedulesDisplay.emptyState();
+var schedRoot = document.getElementById('schedules-root');
+var schedLastHtml = null;
+
+// The count of wakeups due in the next hour, on every rail button and tab of the panel (the rail rebuilds its buttons, so this runs after each layout).
+function paintSchedulesBadge() {
+  const n = window.schedulesDisplay.badge(schedState);
+  const text = window.schedulesDisplay.badgeText(n);
+  const base = TABS.find(t => t.id === 'schedules');
+  for (const b of document.querySelectorAll('button[data-module="schedules"]')) {
+    if (text) b.dataset.badge = text; else delete b.dataset.badge;
+    if (base) b.title = text ? base.title + ' (' + n + ' due in the next hour)' : base.title;
+  }
+}
+
+function renderSchedules() {
+  paintSchedulesBadge();
+  if (!schedRoot || !shownModules.has('schedules')) return;
+  const html = window.schedulesDisplay.html(schedState);
+  if (html === schedLastHtml && schedRoot.firstChild) return;      // nothing changed: no flicker, no lost hover or focus
+  // The markup is replaced on a change: keep the keyboard on the same row.
+  const focused = document.activeElement && schedRoot.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused && focused.dataset ? focused.dataset.schedKey : null;
+  schedRoot.innerHTML = html;
+  schedLastHtml = html;
+  if (!keep) return;
+  const again = [...schedRoot.querySelectorAll('[data-sched-key]')].find(el => el.dataset.schedKey === keep);
+  if (again && !again.disabled) again.focus();
+}
+
+// The panel opened: ask for the list as it is now (the hello and every change also carry it).
+// ONLY to a host whose hello lists the type: an older host (they outlive app updates) would type the frame into the session as JSON
+// (the PR #140 rule; PR #200 Dexter 1). The panel says "predates Schedules" for such a host instead.
+function requestSchedules() {
+  const msg = window.schedulesDisplay.requestMsg(hostControls);
+  if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify(msg)); } catch { /* not attached */ }
+}
+
+if (schedRoot) {
+  schedRoot.addEventListener('click', (e) => {
+    const t = window.schedulesDisplay.clickTarget(e.target);
+    if (!t) return;
+    e.preventDefault();
+    if (t.kind === 'select') { jumpToFolder(t.folder); return; }
+    if (t.kind === 'link') {
+      if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(t.url);
+    }
+  });
+}
+// SCHEDULES-END
 
 // --- the Ask panel (BACKLOG #33) ------------------------------------------------------------------------------------------
 // ASK-BEGIN
@@ -1385,6 +1459,7 @@ function onModuleShown(id) {
   if (id === 'projects') requestProjects();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
+  if (id === 'schedules') { requestSchedules(); renderSchedules(); }
   if (id === 'canvas') { canvasFetchIfNeeded(); renderCanvas(); }
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
@@ -1801,11 +1876,11 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   lastPlan = plan;
   if (peek && !plan.peek) railEvent({ type: 'gone' });     // its rail went (the window grew, the group was opened): so does the popover
   if (settle) settleDock();
-  window.dockTreeView.applyBoxes(plan, document);
+  window.dockTreeView.applyBoxes(plan, document, leanDisplay.LEAN_KEEPS);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
-  // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
+  // Lean mode unmounts every dock panel except the ones leanDisplay.LEAN_KEEPS names (Schedules: its content is the night itself), so each panel's own hide effects run (the vault's secrets go,
   // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
-  const now = new Set(leanOn ? [] : plan.shown);
+  const now = leanDisplay.leanShown(plan.shown, leanOn);
   const fx = window.dockEffects.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
@@ -1815,6 +1890,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
+  paintSchedulesBadge();            // a rebuilt rail button has lost its count
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -3676,6 +3752,36 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         send(JSON.stringify({ type: 'input', data: a.data }));
         return JSON.stringify({ ok: true });
       }
+      // BACKLOG #119 A7 (verify/probe-schedules.js): the Schedules panel as drawn, and a click on a row as a pointer makes it.
+      case 'schedulesState': {
+        const root = document.getElementById('schedules-root');
+        const q = (el, sel) => { const n = el.querySelector(sel); return n ? n.textContent : null; };
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.schedulesDisplay === 'object' && typeof window.schedulesDisplay.html === 'function',
+          shown: document.querySelector('.panel[data-panel="schedules"]').classList.contains('on'),
+          heads: [...root.querySelectorAll('.sched-head')].map(h => h.textContent),
+          groups: [...root.querySelectorAll('.sched-group')].map(g => ({
+            id: g.dataset.schedGroup,
+            rows: [...g.querySelectorAll('.sched-btn')].map(b => ({
+              id: b.dataset.schedId, key: b.dataset.schedKey, cwd: b.dataset.schedCwd || null, when: q(b, '.sched-when'), next: q(b, '.sched-next'), kind: q(b, '.sched-chip'),
+              what: q(b, '.sched-what'), session: q(b, '.sched-session'), reason: q(b, '.sched-reason'), detail: q(b, '.sched-detail'),
+              gone: q(b, '.sched-gone'), dimmed: b.parentElement.classList.contains('sched-ended'), title: b.title, disabled: b.disabled,
+            })),
+          })),
+          empty: !!root.querySelector('.sched-empty'),
+          foot: q(root, '.sched-foot'),
+          link: (root.querySelector('[data-sched-link]') || { dataset: {} }).dataset.schedLink || null,
+          badge: [...document.querySelectorAll('button[data-module="schedules"]')].map(b => b.dataset.badge || null),
+          nextHour: window.schedulesDisplay.badge(schedState),
+        });
+      }
+      case 'schedulesClick': {
+        const b = [...document.querySelectorAll('#schedules-root .sched-btn')].find(x => x.dataset.schedId === a.id && (a.key === undefined || x.dataset.schedKey === a.key));
+        if (!b || b.disabled) return JSON.stringify({ ok: false, error: 'no clickable schedule row ' + JSON.stringify(a) });
+        b.click();
+        return JSON.stringify({ ok: true });
+      }
       // backlog #51 (verify/probe-wand.js): read the wand and operate its controls as a pointer would.
       case 'wandState': {
         const root = document.getElementById('wand-root');
@@ -4189,7 +4295,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const cs = getComputedStyle(document.documentElement);
         return JSON.stringify({
           ok: true, leanOn, bodyLean: document.body.classList.contains('lean'), shown: [...shownModules],
-          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length, headerVisible: visible(document.querySelector('header')),
+          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length,
+          zones: [...document.querySelectorAll('.zone')].filter(visible).map((z) => ({ group: z.dataset.group || null, keep: 'leanKeep' in z.dataset, panels: [...z.querySelectorAll('.zone-panels > .panel.on')].map((p) => p.dataset.panel), rect: rectOf(z) })),
+          headerVisible: visible(document.querySelector('header')),
           barVisible: visible(document.getElementById('terminal-bar')),
           webgl: !!webglAddon, termRect: rectOf(document.getElementById('termwrap')), page: { width: window.innerWidth, height: window.innerHeight },
           buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
@@ -7756,6 +7864,9 @@ function renderStyleSection(section) {
       `<label class="style-row"><input type="checkbox" id="style-canvas-mcp"${v.mcp === true ? ' checked' : ''}${v.mcp === null ? ' disabled' : ''}>` +
       ` Let Claude build in its panel (next session)</label>` +
       `<div class="style-note">${escapeHtml(v.mcpDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-cc-mod"${v.mod === true ? ' checked' : ''}${v.mod === null ? ' disabled' : ''}>` +
+      ` Feed quota, context and agent states from the CLI (next session)</label>` +
+      `<div class="style-note">${escapeHtml(v.modDescription)}</div>` +
       `</section>`
     );
   }
@@ -7991,6 +8102,13 @@ function bindAvatarSection() {
       window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
     });
   }
+  // BACKLOG #119 A2: the claude-custom mod's switch, the same shape: send the desired state, settle on main's answer, re-read on null.
+  const ccModBox = document.getElementById('style-cc-mod');
+  if (ccModBox && window.harness && window.harness.ccMod) {
+    ccModBox.addEventListener('change', () => {
+      window.harness.ccMod.settingsSet(ccModBox.checked).then(settledCcMod).catch(() => refreshCcMod());
+    });
+  }
   // BACKLOG #119 A8: the tray icon and minimise-on-close. Send the DESIRED state; main answers what it saved, and null (a failed
   // save) re-reads the truth instead of trusting the click.
   const tray = window.harness && window.harness.tray;
@@ -8040,6 +8158,23 @@ function refreshCanvasMcp(attempt = 0) {
   };
   window.harness.canvas.settingsGet().then((v) => {
     if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
+  }).catch(again);
+}
+// BACKLOG #119 A2: the mod's switch, read the same way as the panel's (one loop, backing off with the same delays, then stopping).
+function settledCcMod(value) {
+  if (typeof value === 'boolean') { styleState = reduceCcMod(styleState, value); renderStylePanel(); } else refreshCcMod();
+}
+let ccModLoop = false;
+function refreshCcMod(attempt = 0) {
+  if (!(window.harness && window.harness.ccMod && window.harness.ccMod.settingsGet)) return;
+  if (attempt === 0) { if (ccModLoop) return; ccModLoop = true; }
+  const again = () => {
+    const wait = canvasMcpRetryDelay(attempt);
+    if (wait === null) { ccModLoop = false; return; }
+    setTimeout(() => refreshCcMod(attempt + 1), wait);
+  };
+  window.harness.ccMod.settingsGet().then((v) => {
+    if (typeof v === 'boolean') { ccModLoop = false; settledCcMod(v); } else again();
   }).catch(again);
 }
 // BACKLOG #119 A8: main's tray switches. Null (main couldn't read the file) stays unknown and asks again, never a guessed answer.
@@ -8148,6 +8283,7 @@ if (window.harness && window.harness.chrome) {
 }
 refreshTraySettings();             // BACKLOG #119 A8: the tray switches in the Style tab
 refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
+refreshCcMod();                    // #119 A2: the claude-custom mod's switch, next to it
 
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
@@ -8418,8 +8554,29 @@ function requestStyleBackground(files) {
   sendStyle('background', { action: 'set-background', path });
 }
 
+// PR #197 Miguel Y9: why the claude-custom mod is not loaded, in the diagnostics pane's log (Ctrl+Shift+D). Said only for a mod that is
+// off or could not load, and once per reason, so a hello after every reattach does not stack the same line.
+let lastModStatusLogged = null;
+function noteModStatus(status) {
+  if (!status || typeof status !== 'object' || status.state === 'on' || typeof status.reason !== 'string' || status.reason === lastModStatusLogged) return;
+  lastModStatusLogged = status.reason;
+  logLine('claude-custom mod', status.reason);
+}
+
+// PR #201 Miguel S1: which ConPTY the session runs on, in the diagnostics pane's log (Ctrl+Shift+D), once per reason. Said only when it is
+// not the bundled one, since that is what turns the CLI's status protocol off.
+let lastPtyBackendLogged = null;
+function notePtyBackend(info) {
+  if (!info || typeof info !== 'object' || info.backend === 'bundled' || typeof info.reason !== 'string' || info.reason === lastPtyBackendLogged) return;
+  lastPtyBackendLogged = info.reason;
+  logLine('pty backend', 'OS ConPTY: ' + info.reason);
+}
+
 function handleControl(msg) {
+  if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
   if (msg.type === 'hello') {
+    noteModStatus(msg.modStatus);
+    notePtyBackend(msg.ptyBackend);
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.
@@ -8434,6 +8591,8 @@ function handleControl(msg) {
     askWasDocked = null;       // a (re)attached host knows nothing of this window: say it again
     if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
+    // OSC 7501: the CLI's state as the host holds it; an older host has none, which is no program state (never a guessed idle).
+    applyProgramStatus(programStatusDisplay.hostListsProgramStatus(hostControls) && msg.programStatus ? msg.programStatus.root : null, 'hello');
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
@@ -8511,6 +8670,8 @@ function handleControl(msg) {
     rosterIndexPayload = msg.rosterIndex || null;
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    schedState = window.schedulesDisplay.reduce(schedState, msg);
+    renderSchedules();
     canvasOnFrame(msg.canvas);
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
@@ -8537,6 +8698,11 @@ function handleControl(msg) {
   if (msg.type === 'wand') {
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    return;
+  }
+  if (msg.type === 'schedules') {
+    schedState = window.schedulesDisplay.reduce(schedState, msg);
+    renderSchedules();
     return;
   }
   if (msg.type === 'canvas') {
@@ -8661,6 +8827,11 @@ function handleControl(msg) {
   if (msg.type === 'statusFields') {
     // BACKLOG #27: the CLI status row's cost / lines / time, or null.
     renderStatusFields(msg.fields);
+    return;
+  }
+  if (msg.type === 'program-status') {
+    // Sent by a host that lists it in its hello; one that doesn't never sends it, and a frame from anywhere else is ignored.
+    if (programStatusDisplay.hostListsProgramStatus(hostControls)) applyProgramStatus(msg.root);
     return;
   }
   if (msg.type === 'attention') {
@@ -8888,6 +9059,8 @@ function handleControl(msg) {
   }
   if (msg.type === 'exit') {
     term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    // The session is over: nothing it said last (working, blocked) is still true (PR #201 Dexter 1).
+    applyProgramStatus(null);
     return;
   }
 }
@@ -8978,6 +9151,8 @@ function connect() {
     }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
+    applyProgramStatus(null, 'lost');
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
     if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just
