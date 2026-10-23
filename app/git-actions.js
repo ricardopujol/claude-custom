@@ -15,6 +15,7 @@
  * state, or one whose tab can't be read, is not idle, so *Type /merged* stays off.
  *
  *   open-pr         the PR's GitHub page (origin's URL)
+ *   open-issue      the GitHub issue the branch was started from (only for a branch that has one; #119 A6)
  *   jump            select the branch's open worktree tab
  *   open-worktree   an existing branch gets a worktree: DISABLED until agent-creator can attach one
  *   type-merged      "Run /merged" (BACKLOG #61): the tab's page types /merged and, once it reads back, presses
@@ -52,6 +53,18 @@ function openPr(b, c) {
     return no('open-pr', label, `origin points at ${c.originHost}, not a github.com address it can open`);
   }
   return no('open-pr', label, 'no GitHub remote ("origin") to open it on');
+}
+
+/**
+ * BACKLOG #119 A6: the GitHub issue a branch the + form made came from. Only a branch that HAS one gets the action, so the
+ * drawer is never padded with a disabled one that can never apply. `issue` is host/git-tree-service.js's { number, title, url }.
+ */
+function openIssue(b) {
+  const i = b.issue;
+  if (!i || typeof i !== 'object' || Array.isArray(i) || !Number.isInteger(i.number) || i.number < 1) return null;
+  const label = `Open issue #${i.number}`;
+  if (typeof i.url === 'string' && i.url) return yes('open-issue', label);
+  return no('open-issue', label, "couldn't work out this issue's page");
 }
 
 function jump(b, c) {
@@ -108,7 +121,7 @@ function typeMerged(b, c) {
 function actionsFor(branch, ctx) {
   const b = branch || {};
   const c = ctx || {};
-  return [openPr(b, c), jump(b, c), openWorktree(b, c), typeMerged(b, c), yes('copy', 'Copy name')];
+  return [openPr(b, c), openIssue(b), jump(b, c), openWorktree(b, c), typeMerged(b, c), yes('copy', 'Copy name')].filter(a => a !== null);
 }
 
 /**

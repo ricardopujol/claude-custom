@@ -273,13 +273,16 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-two members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-five members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate',
+      // #119 A6, the form's "From an issue" list (main answers them; host/issues.js has the rules)
+      'issues', 'pickerOpen', 'pickerClose',
+      'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
       // #66, the indexing field (app/indexing-bridge.js answers them)
       'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus',
       // #62, lean mode (app/lean-bridge.js answers them)
@@ -817,4 +820,25 @@ test('tab-strip.html: the faces sit left of the lean chip, 18 px round, and the 
   assert.ok(html.indexOf('id="lean-faces"') < html.indexOf('id="lean-chip"'));
   assert.match(html, /\.lean-face \{[^}]*width: 18px; height: 18px; border-radius: 50%/);
   assert.match(html, /img-src 'self'; media-src 'self'/);
+});
+
+test('OSC 7501 (BACKLOG #116): the dots read the program state, with the kind and message in the tooltip as text', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [
+    entry({ key: 'plain', working: true, needsInput: true }),
+    entry({ key: 'blk', needsInput: true, program: { state: 'blocked', kind: 'permission', msg: 'Allow Edit?' } }),
+    entry({ key: 'err', needsInput: true, program: { state: 'error', msg: 'Rate limited' } }),
+    entry({ key: 'dn', program: { state: 'done' } }),
+    entry({ key: 'wk', working: true, program: { state: 'working', progress: 30 } }),
+  ] }, bridgeSpy());
+  const [plain, blk, err, dn, wk] = doc.byId.tabs.children;
+  assert.strictEqual(child(plain, 'working').title, 'Working');
+  assert.strictEqual(child(plain, 'needs').title, 'Needs your input');
+  assert.match(child(blk, 'needs').title, /permission/);
+  assert.match(child(blk, 'needs').title, /Allow Edit\?/);
+  assert.ok(child(err, 'error') && child(err, 'needs'));
+  assert.match(child(err, 'needs').title, /Rate limited/);
+  assert.ok(child(dn, 'done'));
+  assert.match(child(wk, 'working').title, /30%/);
+  assert.strictEqual(child(dn, 'working'), undefined);
 });
