@@ -1,1 +1,3 @@
 app/codemirror-reader.js linguist-generated=true -diff
+app/markdown-reader.js linguist-generated=true -diff
+app/THIRD-PARTY-NOTICES.md linguist-generated=true
