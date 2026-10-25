@@ -55,7 +55,7 @@ test('a tab\'s Preview follows its tab: destroyed with it, hidden when it is not
   const destroy = CODE.slice(CODE.indexOf('function destroyTabView('), CODE.indexOf('// --- pushing the model out'));
   assert.match(destroy, /previewViews\.destroyFor\(view\.webContents\);/);
   const sel = CODE.slice(CODE.indexOf('function applySelection('), CODE.indexOf('function applySelection(') + 1000);
-  assert.match(sel, /previewViews\.setOwnerVisible\(tab\.view\.webContents, tab\.key === snapshot\.selectedKey\);/);
+  assert.match(sel, /previewViews\.setOwnerVisible\(tab\.view\.webContents, shows\);/);
   const lay = CODE.slice(CODE.indexOf('function layoutView('), CODE.indexOf('function setFocusMode('));
   assert.match(lay, /previewViews\.relayout\(view\.webContents\);/);
 });

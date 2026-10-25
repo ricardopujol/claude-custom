@@ -650,3 +650,34 @@ test('M10: without a port the shared file is returned and no per-port file is cr
   const nul = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'P' }, null);
   assert.strictEqual(path.basename(nul), 'harness-settings.json');
 });
+
+// BACKLOG #119 A7 (the Schedules panel): cron jobs are CronCreate / CronDelete calls, which no matcher above saw. Opt-in and SEPARATE
+// entries after the bedtime one (Pre for the intent, Post for the result that carries the job's id), so the mood engine's are untouched.
+test('schedules adds a CronCreate|CronDelete entry to PreToolUse AND PostToolUse, last, and only when asked', () => {
+  const { CRON_MATCHER } = require('../host/settings-writer');
+  assert.strictEqual(CRON_MATCHER, 'CronCreate|CronDelete');
+  const plain = buildHarnessSettings(opts);
+  const s = buildHarnessSettings({ ...opts, schedules: true });
+  for (const event of ['PreToolUse', 'PostToolUse']) {
+    assert.strictEqual(s.hooks[event].length, plain.hooks[event].length + 1);
+    const last = s.hooks[event][s.hooks[event].length - 1];
+    assert.strictEqual(last.matcher, CRON_MATCHER);
+    assert.strictEqual(last.hooks[0].command, plain.hooks[event][0].hooks[0].command.replace(/--event \w+$/, `--event ${event}`));
+    assert.strictEqual(JSON.stringify(s.hooks[event][0]), JSON.stringify(plain.hooks[event][0]), `${event}[0] still belongs to the mood engine`);
+  }
+  for (const v of [false, undefined, null, 'yes', 1]) {
+    assert.strictEqual(buildHarnessSettings({ ...opts, schedules: v }).hooks.PreToolUse.length, plain.hooks.PreToolUse.length, String(v));
+  }
+});
+
+test('schedules composes with bedtime after it, and changes nothing but PreToolUse and PostToolUse', () => {
+  const { CRON_MATCHER } = require('../host/settings-writer');
+  const plain = buildHarnessSettings(opts);
+  const both = buildHarnessSettings({ ...opts, bedtime: true, schedules: true });
+  assert.deepStrictEqual(both.hooks.PreToolUse.map(e => e.matcher).slice(-2), [BEDTIME_MATCHER, CRON_MATCHER]);
+  assert.deepStrictEqual(both.hooks.PostToolUse.map(e => e.matcher).slice(-2), [BEDTIME_MATCHER, CRON_MATCHER]);
+  for (const event of Object.keys(plain.hooks)) {
+    if (event === 'PreToolUse' || event === 'PostToolUse') continue;
+    assert.strictEqual(JSON.stringify(both.hooks[event]), JSON.stringify(plain.hooks[event]), event);
+  }
+});

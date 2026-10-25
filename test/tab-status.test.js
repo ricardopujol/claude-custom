@@ -68,8 +68,8 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
 });
 
 // Backlog #52: the host's word that a /bedtime night is on (host/bedtime-state.js), for the strip's night tab.
@@ -177,4 +177,64 @@ test('summaryNote: a non-empty string only, else null; and a change is a change'
   for (const bad of [undefined, null, '', 5, {}, 'x'.repeat(301)]) assert.strictEqual(ts({ summaryNote: bad }).summaryNote, null, JSON.stringify(bad));
   assert.strictEqual(sameStatus(ts({}), ts({ summaryNote: 'x' })), false);
   assert.strictEqual(sameStatus(ts({ summaryNote: 'x' }), ts({ summaryNote: 'x' })), true);
+});
+
+// --- OSC 7501 (BACKLOG #116): the CLI's own state rides on the status --------------------------------------------
+
+const cleanProgram = require('../app/program-status-display').clean;
+const tsp = (inputs) => tabStatus(inputs, { healthMarker, cleanProgram });
+
+test('program is the cleaned root record, or null when there is none or nothing to clean it with', () => {
+  assert.deepStrictEqual(tsp({ program: { state: 'blocked', kind: 'permission', msg: 'Allow?', id: '', title: 'x' } }).program,
+    { state: 'blocked', kind: 'permission', msg: 'Allow?', progress: null });
+  assert.strictEqual(tsp({ program: null }).program, null);
+  assert.strictEqual(tsp({ program: { state: 'nonsense' } }).program, null);
+  assert.strictEqual(ts({ program: { state: 'working' } }).program, null, 'no cleaner injected: never trust a raw record');
+});
+
+test('working: the CLI saying working counts, and it never makes a working roster look idle', () => {
+  assert.strictEqual(tsp({ mainMood: null, program: { state: 'working' } }).working, true);
+  assert.strictEqual(tsp({ mainMood: 'working', program: { state: 'done' } }).working, true);
+  assert.strictEqual(tsp({ mainMood: null, program: { state: 'done' } }).working, false);
+});
+
+test('sameStatus sees a change of program state, kind, message and progress', () => {
+  const base = tsp({ program: { state: 'blocked', kind: 'permission', msg: 'a' } });
+  assert.strictEqual(sameStatus(base, tsp({ program: { state: 'blocked', kind: 'permission', msg: 'a' } })), true);
+  for (const p of [{ state: 'blocked', kind: 'question', msg: 'a' }, { state: 'blocked', kind: 'permission', msg: 'b' }, { state: 'working' }, { state: 'blocked', kind: 'permission', msg: 'a', progress: 3 }, null]) {
+    assert.strictEqual(sameStatus(base, tsp({ program: p })), false, JSON.stringify(p));
+  }
+  assert.strictEqual(sameStatus({ ...base, program: undefined }, tsp({})), true, 'an older status without the field is no program');
+});
+
+test('pendingAfter answered: the need is answered, a finished turn is kept', () => {
+  assert.deepStrictEqual(pendingAfter({ urgent: true, finished: false }, 'answered'), { urgent: false, finished: false });
+  assert.deepStrictEqual(pendingAfter({ urgent: true, finished: true }, 'answered'), { urgent: false, finished: true });
+});
+
+test('afterSelected keeps the program state: a look clears the cue, not what the CLI is doing', () => {
+  const s = tsp({ pendingUrgent: true, program: { state: 'blocked', kind: 'auth' } });
+  assert.deepStrictEqual(afterSelected(s).program, s.program);
+});
+
+test('PR #201 Dexter 1: once the program state is cleared (exit, closed socket) the status is not working and carries program null', () => {
+  const working = tsp({ program: { state: 'working' } });
+  assert.strictEqual(working.working, true);
+  const cleared = tsp({ program: null });
+  assert.strictEqual(cleared.working, false);
+  assert.strictEqual(cleared.program, null);
+  assert.strictEqual(sameStatus(working, cleared), false);
+});
+
+test('N2: close while blocked then a hello with blocked: the page ends with needsInput up; the exit path ends with it down', () => {
+  const { cueEvents } = require('../app/program-status-display');
+  const blocked = { state: 'blocked', kind: 'permission' };
+  // the page held the need (as the host attention frame set it) when the socket dropped
+  let pending = { urgent: true, finished: false };
+  for (const e of cueEvents(blocked, null, 'lost')) pending = pendingAfter(pending, e);
+  for (const e of cueEvents(null, blocked, 'hello')) pending = pendingAfter(pending, e);
+  assert.strictEqual(tsp({ pendingUrgent: pending.urgent, program: blocked }).needsInput, true);
+  let gone = { urgent: true, finished: false };
+  for (const e of cueEvents(blocked, null)) gone = pendingAfter(gone, e);
+  assert.strictEqual(tsp({ pendingUrgent: gone.urgent, program: null }).needsInput, false);
 });

@@ -66,6 +66,10 @@ const OCCUPANCY_MATCHER = 'Read|Edit|Write|NotebookEdit|Grep|Glob';
 // untouched; host/host.js consumes them itself (isBedtimeOnly) and never lets them reach the mood engine or the
 // Running panel, which would show a ScheduleWakeup as a process. One call per wake (~every 25 min), so no tax.
 const BEDTIME_MATCHER = 'ScheduleWakeup';
+// BACKLOG #119 A7 (the Schedules panel): a cron job is a CronCreate call (its result carries the job's id) and a CronDelete. Opt-in
+// (`schedules: true`) and SEPARATE entries after the bedtime one, consumed by host/host.js itself (isSchedulesOnly) and never forwarded
+// to the mood engine or the Running panel. A handful of calls a day, so no tax.
+const CRON_MATCHER = 'CronCreate|CronDelete';
 const HOOK_TIMEOUT_SECONDS = 5;
 // Backlog #55 ("waiting on you"): the CLI's PermissionRequest hook runs BEFORE a permission prompt is shown and is the one event of the
 // prompt that carries the asking agent's agent_id (a Notification never does: CLI 2.1.296 builds it with no tool context). OBSERVE-ONLY:
@@ -141,7 +145,7 @@ function buildLoadoutEntry(loadoutHook) {
   return { matcher: LOADOUT_MATCHER, hooks: [{ type: 'command', command, timeout: LOADOUT_TIMEOUT_SECONDS }] };
 }
 
-function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, permissionRequest, theme } = {}) {
+function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, occupancy, bedtime, schedules, permissionRequest, theme } = {}) {
   if (!helperPath) throw new Error('buildHarnessSettings: helperPath is required');
   if (!pipeName) throw new Error('buildHarnessSettings: pipeName is required');
 
@@ -195,6 +199,10 @@ function buildHarnessSettings({ helperPath, pipeName, statusRelay, loadoutHook, 
   if (bedtime === true) {
     settings.hooks.PreToolUse.push(entry(BEDTIME_MATCHER, 'PreToolUse'));
     settings.hooks.PostToolUse.push(entry(BEDTIME_MATCHER, 'PostToolUse'));
+  }
+  if (schedules === true) {
+    settings.hooks.PreToolUse.push(entry(CRON_MATCHER, 'PreToolUse'));
+    settings.hooks.PostToolUse.push(entry(CRON_MATCHER, 'PostToolUse'));
   }
   return settings;
 }
@@ -323,7 +331,7 @@ function canvasMcpConfig(c) {
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false } = {}) {
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side = false } = {}) {
   // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
   // override it, so the two never go together; and it is offered no panel of Claude's own.
   // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
@@ -338,7 +346,11 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, side = false }
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).
   const mcp = helperExists && side !== true ? canvasMcpConfig(canvasMcp) : null;
   if (mcp) args.push('--mcp-config', mcp);
+  // BACKLOG #119 A2: the claude-custom mod (mods/claude-custom) as a plugin directory, a CLI flag like --settings, so nothing is written to
+  // the user's config. Whether to pass it (the switch, the CLI's version, the directory) is decided by host/cc-mod-settings.js; this only
+  // spells it. It needs no hook helper, and a side session takes it too: the mod only observes.
+  if (typeof modDir === 'string' && modDir !== '') args.push('--plugin-dir', slashes(modDir));
   return args;
 }
 
-module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };
+module.exports = { OCCUPANCY_MATCHER, BEDTIME_MATCHER, CRON_MATCHER, buildHarnessSettings, writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme };

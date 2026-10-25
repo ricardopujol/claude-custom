@@ -266,6 +266,11 @@ contextBridge.exposeInMainWorld('harness', {
   // approved and where it goes ({ html, hosts, rect, covered } -> { ok }); `bounds` / `cover` / `hosts` keep it in step;
   // `hide` destroys it (hidden means stopped); `answerHost` is the person's answer to a host question; `onNeedHost` and
   // `onMessage` are main -> page ({ id, origin } / { kind: 'send', text }), each replacing its one listener.
+  // the Style tab's switch for the claude-custom mod (BACKLOG #119 A2): a boolean, or null when main could not tell (read) / save (write)
+  ccMod: {
+    settingsGet: () => ipcRenderer.invoke('ccmod:settings-get'),
+    settingsSet: (on) => ipcRenderer.invoke('ccmod:settings-set', on),
+  },
   canvas: {
     show: (req) => ipcRenderer.invoke('canvas:show', req),
     bounds: (rect) => ipcRenderer.send('canvas:bounds', rect),

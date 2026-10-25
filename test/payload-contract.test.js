@@ -164,3 +164,28 @@ test('a ScheduleWakeup call needs delaySeconds and its result scheduledFor, but 
   assert.strictEqual(checkPayload('PostToolUse', post({ delaySeconds: 60 }, { scheduledFor: 1 })).ok, true);
   assert.strictEqual(checkPayload('PostToolUse', post({ stop: true }, {})).ok, true);
 });
+
+// BACKLOG #119 A7 (the Schedules panel). Shapes from the CLI's own tool schemas (sdk-tools.d.ts): CronCreate { cron, prompt, recurring?,
+// durable? } -> { id, humanSchedule, recurring, durable?, nextFireAt? }; CronDelete { id }. Optional on purpose and so not required here:
+// recurring, durable, humanSchedule, nextFireAt, and ScheduleWakeup's reason.
+test('a CronCreate Post needs its cron expression and the job id; a CronDelete Post needs the id; the Pre is asked for nothing (the model ignores it)', () => {
+  const pre = (tool_name, tool_input) => ({ tool_name, permission_mode: 'x', tool_input });
+  assert.strictEqual(checkPayload('PreToolUse', pre('CronCreate', { prompt: 'p' })).ok, true);
+  assert.strictEqual(checkPayload('PreToolUse', pre('CronDelete', {})).ok, true);
+  const post = (tool_name, tool_input, tool_response) => ({ tool_name, permission_mode: 'x', tool_input, tool_response });
+  assert.deepStrictEqual(checkPayload('PostToolUse', post('CronCreate', { prompt: 'p' }, { id: 'j' })).missing, ['tool_input.cron']);
+  assert.deepStrictEqual(checkPayload('PostToolUse', post('CronDelete', {}, { id: 'j' })).missing, ['tool_input.id']);
+  assert.deepStrictEqual(checkPayload('PostToolUse', post('CronCreate', { cron: '* * * * *' }, {})).missing, ['tool_response.id']);
+  assert.strictEqual(checkPayload('PostToolUse', post('CronCreate', { cron: '* * * * *' }, { id: 'j' })).ok, true);
+  assert.strictEqual(checkPayload('PostToolUse', post('CronDelete', { id: 'j' }, { id: 'j' })).ok, true, 'a delete\'s result is not asked for an id twice');
+  assert.strictEqual(checkPayload('PostToolUse', post('Bash', { command: 'ls' }, {})).ok, true);
+  for (const f of ['tool_input.cron', 'tool_input.id']) { assert.ok(CONTRACT.PostToolUse.fields[f].used, f); assert.strictEqual(CONTRACT.PreToolUse.fields[f], undefined, f); }
+  assert.ok(CONTRACT.PostToolUse.fields['tool_response.id'].used);
+});
+
+test('FIXTURE: the real CronCreate / CronDelete hook payloads (claude -p 2.1.304) carry every field the contract asks of them', () => {
+  const rows = require('fs').readFileSync(require('path').join(__dirname, 'cron-capture.fixture.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepStrictEqual(rows.map(r => r.event + ' ' + r.payload.tool_name), ['PreToolUse CronCreate', 'PostToolUse CronCreate', 'PreToolUse CronDelete', 'PostToolUse CronDelete']);
+  for (const r of rows) assert.deepStrictEqual(checkPayload(r.event, r.payload), { ok: true, missing: [], error: null }, r.event + ' ' + r.payload.tool_name);
+  assert.strictEqual(typeof rows[1].payload.tool_response.nextFireAt, 'number', 'the CLI answers with its own next run');
+});

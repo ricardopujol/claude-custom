@@ -102,6 +102,8 @@ const ALLOWED_GLOBALS = new Set([
   'gamesRules', 'gamesRound', 'gamesDisplay',
   // app/ask-panel-state.js, app/ask-profile.js, app/ask-requester.js, app/ask-display.js (BACKLOG #33): Ask the repo. ONE name leaves each IIFE.
   'askPanelState', 'askProfile', 'askExplainerDisplay', 'askRequester', 'askController', 'askDisplay',
+  // app/schedules-display.js (BACKLOG #119 A7): the Schedules panel. ONE name leaves its IIFE.
+  'schedulesDisplay',
   // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
   'resourcesDisplay',
   // app/canvas-display.js (BACKLOG #71): Claude's panel. ONE name leaves its IIFE.
@@ -122,7 +124,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
   // app/style-display.js, Window section (layout pass L2, #27/#28)
-  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'traySectionView', 'reduceTraySettings', 'panelSectionView', 'reduceCanvasMcp', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
+  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'traySectionView', 'reduceTraySettings', 'panelSectionView', 'reduceCanvasMcp', 'reduceCcMod', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
   // app/status-fields-display.js (BACKLOG #27)
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
@@ -142,6 +144,7 @@ const ALLOWED_GLOBALS = new Set([
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  'programStatusDisplay',                  // OSC 7501 (BACKLOG #116): app/program-status-display.js
   // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
   'occupancyDisplay', 'occupancyConfirm',
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions

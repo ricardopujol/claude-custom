@@ -246,3 +246,57 @@ test('#37: a file-link provider asks main, and a click goes through shouldOpen t
   // Miguel S4: a throw on a hover answers "no links", never an unhandled error.
   assert.match(s, /provideLinks\(lineNumber, callback\) \{\s*try \{/);
 });
+
+// --- OSC 7501 (BACKLOG #116) --------------------------------------------------------------------------------------
+
+test('OSC 7501: the page loads the display script before the status script and the renderer', () => {
+  const a = HTML.indexOf('<script src="./program-status-display.js"></script>');
+  const b = HTML.indexOf('<script src="./tab-status.js"></script>');
+  const c = HTML.indexOf('<script src="./renderer.js"></script>');
+  assert.ok(a !== -1 && a < b && b < c, 'program-status-display.js must come before tab-status.js and renderer.js');
+});
+
+test('OSC 7501: a program-status frame is applied only if the hello listed it, and the hello brings the current state', () => {
+  const frame = branch('program-status');
+  assert.match(frame, /hostListsProgramStatus\(hostControls\)/);
+  assert.match(frame, /applyProgramStatus\(msg\.root\)/);
+  assert.match(branch('hello'), /applyProgramStatus\(/);
+  assert.match(branch('hello'), /msg\.programStatus/);
+});
+
+test('OSC 7501: a change of state moves the cue through the same pending flags and re-reports the status', () => {
+  const body = fnBody('applyProgramStatus');
+  assert.match(body, /programStatusDisplay\.clean\(/);
+  assert.match(body, /programStatusDisplay\.cueEvents\(/);
+  assert.match(body, /pend\(/);
+  assert.match(body, /headerView\(/);
+  assert.match(body, /reportTabStatus\(\)/);
+});
+
+test('OSC 7501: the status carries the program state, cleaned by the display script', () => {
+  const body = fnBody('reportTabStatus');
+  assert.match(body, /program: programRoot/);
+  assert.match(body, /cleanProgram: programStatusDisplay\.clean/);
+});
+
+test('OSC 7501: the header dot has colours for the four states from existing tokens', () => {
+  for (const [cls, token] of [['ps-working', 'ok'], ['ps-blocked', 'accent'], ['ps-done', 'ok'], ['ps-error', 'bad']]) {
+    assert.match(HTML, new RegExp(`header \\.dot\\.${cls}\\s*\\{[^}]*var\\(--${token}\\)`), cls);
+  }
+});
+
+// --- PR #201 Dexter 1: a dead session leaves no program state behind -------------------------------------------------
+
+test('OSC 7501: the exit frame and a dropped socket both clear the program state (header dot off, working false)', () => {
+  assert.match(branch('exit'), /applyProgramStatus\(null\)/);
+  const start = JS.indexOf('ws.onclose = () => {');
+  assert.ok(start !== -1);
+  const body = JS.slice(start, JS.indexOf('\n  };', start));
+  assert.match(body, /applyProgramStatus\(null, 'lost'\)/);
+  assert.match(JS, /msg\.programStatus\.root : null, 'hello'\)/);
+});
+
+test('the diagnostics pane hears which ConPTY the session runs on when it is not the bundled one', () => {
+  assert.match(JS, /notePtyBackend\(msg\.ptyBackend\)/);
+  assert.match(fnBody('notePtyBackend'), /info\.backend === 'bundled'/);
+});
