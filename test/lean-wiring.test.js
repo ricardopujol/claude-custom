@@ -45,8 +45,8 @@ test('the tab preload exposes lean get / set / night / onChange on the channels 
   assert.match(PRELOAD, /lean:\s*\{[\s\S]*get:[\s\S]*set:[\s\S]*night:[\s\S]*onChange:/);
 });
 
-test('the dock shows no panel while lean: renderLayout takes an empty set, so every panel\'s hide effect runs', () => {
-  assert.match(RENDERER, /const now = new Set\(leanOn \? \[\] : plan\.shown\)/);
+test('the dock shows no panel while lean except LEAN_KEEPS (Schedules): renderLayout takes leanShown, so every other panel\'s hide effect runs', () => {
+  assert.match(RENDERER, /const now = leanDisplay\.leanShown\(plan\.shown, leanOn\)/);
 });
 
 test('lean\'s unmount and remount are QUIET and leave the keyboard with the terminal, never the vault (Dexter F1)', () => {

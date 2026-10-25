@@ -38,7 +38,8 @@ const { isSibling } = require('./worktree-list');
 
 const STREAM_GRACE_MS = 2000;
 const SCRIPTS = Object.freeze({ create: 'new-worktree.ps1', setup: 'setup-worktree.ps1', remove: 'remove-worktree.ps1' });
-const TIMEOUT_MS = Object.freeze({ create: 5 * 60 * 1000, remove: 10 * 60 * 1000, setup: 2 * 60 * 60 * 1000 });
+// `brief`: brief-path.ps1 only prints a path (about a second). It holds a new lane's session, so it gets its own short budget.
+const TIMEOUT_MS = Object.freeze({ create: 5 * 60 * 1000, remove: 10 * 60 * 1000, setup: 2 * 60 * 60 * 1000, brief: 30 * 1000 });
 const LOG_POLL_MS = 500;
 const LINE_MAX = 200;
 // Miguel Y1: a setup can run for hours. Each stream keeps only its TAIL (the
@@ -248,15 +249,51 @@ function lastLine(text) {
   return lines.length ? lines[lines.length - 1].slice(0, LINE_MAX) : null;
 }
 
+// --- the lane's brief (BACKLOG #119 A6) ------------------------------------------------------
+// sync-docs' brief-path.ps1 prints where a worktree's handoff brief lives. It's the same script /handoff and
+// /pickup use, so a brief written there is found by both. Not one of the three contract scripts: it isn't in SCRIPTS
+// or `available()`, and a lane without it simply starts without a brief (the caller says so).
+const BRIEF_SCRIPT = 'brief-path.ps1';
+
+function syncDocsScriptsDir(env = process.env) {
+  const own = env && env.CLAUDE_CUSTOM_SYNCDOCS_SCRIPTS;
+  if (typeof own === 'string' && own !== '') return own;
+  return path.join(os.homedir(), '.claude', 'skills', 'sync-docs', 'scripts');
+}
+
+/** `{ ok: true, path }` when the script's last line is an absolute .md path, else `{ ok: false, error }`. */
+function parseBriefPath(run) {
+  const r = run || {};
+  if (r.timedOut) return { ok: false, error: `${BRIEF_SCRIPT} didn't finish in time (it may still be running).` };
+  if (r.spawnError || r.code !== 0) return { ok: false, error: unrun(BRIEF_SCRIPT, r) };
+  const lines = String(r.stdout || '').replace(BOM_AT_START, '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const last = lines.length ? lines[lines.length - 1] : '';
+  // eslint-disable-next-line no-control-regex
+  if (last !== '' && path.isAbsolute(last) && /\.md$/i.test(last) && !/[\u0000-\u001f]/.test(last)) return { ok: true, path: last };
+  return { ok: false, error: `${BRIEF_SCRIPT} finished, but its answer wasn't a brief path (${last.slice(0, 200) || 'no output'}).` };
+}
+
 function createOps({
   dir, spawn = childProcess.spawn, exists = fs.existsSync, pollMs = LOG_POLL_MS,
   logPath = setupLogPath, readFile = (p) => fs.readFileSync(p, 'utf8'),
+  syncDir = syncDocsScriptsDir(),
 } = {}) {
   const scriptPath = (k) => path.join(dir, SCRIPTS[k]);
   const missing = (k) => `${SCRIPTS[k]} isn't installed (looked in ${dir}).`;
 
   return {
     available: () => available(dir, exists),
+
+    /** Where the handoff brief of `path`'s worktree goes: `{ ok, path }` | `{ ok: false, error }`. */
+    async briefPath({ path: wt } = {}) {
+      if (typeof wt !== 'string' || wt === '') return { ok: false, error: 'no worktree to find a brief for' };
+      const script = path.join(syncDir, BRIEF_SCRIPT);
+      let there = false;
+      try { there = exists(script) === true; } catch { there = false; }
+      if (!there) return { ok: false, error: `${BRIEF_SCRIPT} isn't installed (looked in ${syncDir}).` };
+      const r = await runScript({ script, timeoutMs: TIMEOUT_MS.brief, spawn, args: [psArg('Path', wt)] });
+      return parseBriefPath(r);
+    },
 
     async create({ container, branch } = {}) {
       const bad = checkBranch(branch);
@@ -302,6 +339,6 @@ function createOps({
 }
 
 module.exports = {
-  scriptsDir, available, psArg, checkBranch, cleanStderr, runScript, parseCreate, parseSetup, parseRemove,
-  setupLogPath, lastLine, createOps, STREAM_GRACE_MS, SCRIPTS, STREAM_KEEP, LINE_SHOWN_MAX,
+  scriptsDir, syncDocsScriptsDir, parseBriefPath, available, psArg, checkBranch, cleanStderr, runScript, parseCreate, parseSetup, parseRemove,
+  setupLogPath, lastLine, createOps, STREAM_GRACE_MS, SCRIPTS, STREAM_KEEP, LINE_SHOWN_MAX, TIMEOUT_MS,
 };

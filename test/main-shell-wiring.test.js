@@ -286,7 +286,9 @@ test('the notification click goes to the tab that raised it', () => {
 
 test('each tab view is shown only when selected and laid out below the strip', () => {
   assert.match(MAIN, /const STRIP_HEIGHT = 34/);
-  assert.match(MAIN, /tab\.view\.setVisible\(tab\.key === snapshot\.selectedKey\)/);
+  // ...and not while the branch form's issue list is open (#119 A6): the strip page draws it over that area.
+  assert.match(MAIN, /const shows = tab\.key === snapshot\.selectedKey && !pickerOpen;\s*tab\.view\.setVisible\(shows\)/);
+  assert.match(MAIN, /const pickerOpen = !!\(snapshot\.create && snapshot\.create\.picker === true\)/);
   // Below the strip -- unless focus mode lifts it over the strip (layout pass L1, #1),
   // which a frameless window doesn't (Dexter L2 #3; the rule is viewTop's, unit-tested).
   assert.match(MAIN, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
