@@ -91,6 +91,7 @@ const { createLaneBriefWriter } = require('../host/issue-lane');
 const { createIssueLinks, issueLinksFileFor } = require('../host/issue-links');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const { guardNavigation } = require('./nav-guard');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
 const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
@@ -754,6 +755,9 @@ function createTabView(tab) {
     openInBrowser(url, tab.key);
     return { action: 'deny' };
   });
+  // The tab page never navigates: it is loaded once, below. A link that reaches the DOM (PR #204: a Markdown diagram's
+  // <a xlink:href>) must not replace the harness UI with a remote page, so every navigation is refused (app/nav-guard.js).
+  guardNavigation(wc);
 
   wc.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(tab.port), cwd: tab.cwd,

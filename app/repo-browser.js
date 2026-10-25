@@ -18,7 +18,7 @@
  */
 (function (root) {
 
-function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect, confirmDiscard, onDirty, onAsk } = {}) {
+function create({ doc, send, harness, storage, typeMention, focusTerminal, storageKey, isShown, termRect, confirmDiscard, onDirty, onAsk, onOpenUrl } = {}) {
   const R = root.repoRequester || (typeof require === 'function' ? require('./repo-requester') : null);
   const Panel = root.repoFilesPanel || (typeof require === 'function' ? require('./repo-files-panel') : null);
   const Reader = root.repoReader || (typeof require === 'function' ? require('./repo-reader') : null);
@@ -28,7 +28,7 @@ function create({ doc, send, harness, storage, typeMention, focusTerminal, stora
   let said = () => {};
 
   const reader = Reader.create({
-    doc, requester, harness, storage, storageKey, typeMention, termRect, confirmDiscard, onDirty, onAsk,
+    doc, requester, harness, storage, storageKey, typeMention, termRect, confirmDiscard, onDirty, onAsk, onOpenUrl,
     onClose: () => { panel.setSelected(null); if (focusTerminal) focusTerminal(); },
   });
 
