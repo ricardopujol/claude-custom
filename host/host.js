@@ -100,6 +100,7 @@ const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
+const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, NIGHT_BUDGET_MS } = require('./kill-switch');
 const { createNightStatus } = require('./night-status');
 const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
 const { countNightPrs } = require('./night-prs');
@@ -1442,10 +1443,33 @@ watchDir({
 });
 // ...and a host with rows says it is still alive (a neighbour reads three silent minutes as "session ended"); the clock text moves along.
 setInterval(() => { schedulesControl.beat(); }, 30_000);
+// --- the kill switch and the night budget (documentation/PLAN_SAFETY_NET.md lane 2; host/kill-switch.js) ---------------
+// The stop path that doesn't depend on the agent. ~/.claude/STOP-ALL (every host) or <dev>/.claude-custom/STOP (this project)
+// appearing kills this session's claude tree by the pty's own pid (pty-stop + kill-tree's killChildTree, never by name) and leaves
+// the file; a host that starts while one exists never spawns claude. A /bedtime night is stopped NIGHT_BUDGET_MS after it began.
+// Every closure below reads `term`, `broadcastControl` and `termState` at call time: the first poll is a second after load.
+const KILL_SWITCH_PATHS = sentinelsFor({ claudeHome: stopAllHome({ seam: seams.claudeHome, home: os.homedir() }), stateRoot: STATE_ROOT });
+console.log('[host] kill switch   :', KILL_SWITCH_PATHS.join(' | ') || '(no sentinel path)');
+const killStop = createStopper({
+  term: () => term,
+  stopPty,
+  killChildTree,
+  log: (line) => console.log(line),
+  notify: (state) => { sayInTab(state.text); broadcastControl({ type: 'killSwitch', killSwitch: state }); },
+});
+const killSwitch = watchKillSwitch({
+  sentinelPaths: KILL_SWITCH_PATHS,
+  onTrip: ({ sentinel, scope }) => killStop.stop({ kind: term ? 'tripped' : 'refused', sentinel, scope }),
+});
+const killLinger = createLinger();
+const nightBudget = createNightBudget({
+  nightNow: () => night.payload(),
+  onExpire: ({ startedAt }) => killStop.stop({ kind: 'night-budget', startedAt, budgetMs: NIGHT_BUDGET_MS }),
+});
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); },
+  onChange: (payload) => { noteNight(payload); nightBudget.update(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
@@ -1811,6 +1835,14 @@ function workOutSessionEnv() {
 
 function startSession() {
   if (term) return;
+  // The kill switch (host/kill-switch.js): asked now, not at the next poll, so a sentinel already there is never raced by the spawn;
+  // and a host it already stopped stays stopped (a fresh tab is a fresh host). The check itself records the refusal and says why.
+  killSwitch.check();
+  if (killStop.state() !== null) {
+    console.log('[host] not starting claude: the kill switch stopped this host');
+    releaseSessionLock(SESSION_LOCK, lockOwner);
+    return;
+  }
   if (sessionEnv === null) {
     sessionEnv = workOutSessionEnv();
     console.log('[host] worktree env  :', JSON.stringify(sessionEnv));
@@ -2038,6 +2070,17 @@ seedRosterIndex()
   .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
   .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
 
+// A line from the host itself in the tab (the kill switch's reason): into the headless screen, so a window attaching later gets it in
+// the replay, and to every window open now.
+function sayInTab(text) {
+  const line = `\r\n\x1b[31m[claude-custom] ${text}\x1b[0m\r\n`;
+  termState.write(line);
+  const frame = Buffer.from(line, 'utf8');
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
+  }
+}
+
 // The pty's two event handlers, attached when startSession() spawns it.
 function wireTerm(t) {
   t.onData((data) => {
@@ -2136,6 +2179,12 @@ function setLockState(lock) {
 // window attaching resets the clock, so a reopen never races the exit (F2).
 const idleWatch = createIdleWatch();
 function checkIdle() {
+  // A host the kill switch kept from starting has nothing to run and nothing to show once no window is left (host/kill-switch.js).
+  if (killLinger.update(killStop.state() !== null && term === null, clients.size)) {
+    console.log('[host] stopped by the kill switch, no session and no window: exiting');
+    shutdown();
+    process.exit(0);
+  }
   if (!idleWatch.update(lockState, term !== null, clients.size)) return;
   console.log('[host] blocked, no session and no window: exiting');
   shutdown();
@@ -2434,6 +2483,8 @@ wss.on('connection', (ws, req) => {
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
     prompt: promptKeeper.snapshot(),
     bedtime: night.payload(),
+    // The kill switch's stop (host/kill-switch.js createStopper: kind, sentinel, text), null while it has not stopped this host.
+    killSwitch: killStop.state(),
     // BACKLOG #119 A7: everything scheduled in every session, grouped (host/schedules.js buildView).
     schedules: schedulesControl.payload(),
     // Backlog #39: this session's "where are we" summary (null: none yet) and why there is no fresh one (null: nothing wrong).
@@ -3134,6 +3185,7 @@ wss.on('error', (err) => {
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
   stopPty(term, { killChildTree });
+  try { killSwitch.stop(); nightBudget.stop(); } catch {}
   try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
   try { canvasControl.close(); } catch {}

@@ -569,6 +569,7 @@ const CLAUDE_FOLDER_ALLOWED = [
   ['host/settings-writer.js', "path.basename(configDir) === '.claude'", 'the default config dir, whose global config .claude.json sits beside it (findUserTheme)'],
   ['host/probe-seams.js', 'not gh / ~/.claude', 'a log message, no path built'],
   ['host/heavy-lock.js', "path.join(os.homedir(), '.claude', 'scripts', 'heavy-lock.ps1')", "Ricardo's own machine-wide script, not CLI state: it stays put when the CLI config dir is relocated"],
+  ['host/kill-switch.js', "path.join(home, '.claude')", "the machine-wide STOP-ALL sentinel, not CLI state: one place every host watches, whatever a host's CLI config dir is"],
 ];
 
 function scanDirs() {

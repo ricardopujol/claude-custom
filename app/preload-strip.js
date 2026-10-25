@@ -3,7 +3,7 @@
  * The tab strip page's bridge (PR 2, worktree tabs). The strip is the window's
  * OWN page; the tabs' pages are separate views with app/preload.js.
  *
- * Twenty-five members and no more (lean mode, #62, added four; the issue picker, #119, three): nine ways to ask main for something and two ways
+ * Twenty-six members and no more (lean mode, #62, added four; the issue picker, #119, three; the kill switch's STOP ALL one): nine ways to ask main for something and two ways
  * to hear what main pushes (the model, and the accent colour: a #rrggbb, or
  * null when the selected tab hasn't reported one), plus the indexing field's
  * five asks and two pushes (#66). Layout pass L2: minimise and
@@ -75,4 +75,7 @@ contextBridge.exposeInMainWorld('strip', {
     (_e, state) => {
       try { fn(state); } catch (err) { console.error('[preload-strip] lean listener threw', err); }
     }), () => ipcRenderer.removeAllListeners('lean-state')),
+  // The kill switch's STOP ALL (documentation/PLAN_SAFETY_NET.md lane 2): main asks once, then writes ~/.claude/STOP-ALL. Resolves
+  // with requestStopAll's outcome ('written' | 'cancelled' | 'failed'), or null when main ignored it (busy, not this strip).
+  stopAll: () => ipcRenderer.invoke('strip:stopAll'),
 });

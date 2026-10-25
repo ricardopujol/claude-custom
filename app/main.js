@@ -119,6 +119,8 @@ const { createPersistentExec } = require('../host/persistent-powershell');
 const { killVerified } = require('../host/resource-kill');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
+const { stopAllHome, sentinelsFor, requestStopAll } = require('../host/kill-switch');
+const { writeFileAtomic } = require('../host/atomic-write');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
 const taskLogsFs = require('../host/task-logs-fs');
 const { claudeConfigDir } = require('../host/claude-config-dir');
@@ -937,6 +939,21 @@ async function askWindowClose(files) {
 }
 
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
+
+// The kill switch's STOP ALL (documentation/PLAN_SAFETY_NET.md lane 2): the one question before every session on the machine stops.
+// Cancel is the default. The probe driver has nobody to click and never writes the real file: it records the ask and answers no.
+async function confirmStopAll(file) {
+  if (PROBE_PORT) { probeConfirms.push({ label: 'stop-all', reason: '', unsaved: null }); return false; }
+  const r = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Stop every session', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: 'Stop every Claude session on this computer?',
+    detail: `This writes ${file}. Every claude-custom session on this computer stops within a few seconds, and none starts again until that file is deleted.`,
+  });
+  return r.response === 0;
+}
 // `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
@@ -1223,6 +1240,22 @@ function registerIpc() {
     try { await showBackgroundMenu(); } catch (err) {
       console.log('[main] background menu failed:', err && err.message);
     } finally { backgroundBusy = false; }
+  });
+  // STOP ALL (host/kill-switch.js): one confirm, then ~/.claude/STOP-ALL, the file every host polls. One at a time. The file comes from
+  // the home folder, never the CLI's config dir, so it is the same one every host watches; the probe seam stands in for it.
+  let stopAllBusy = false;
+  ipcMain.handle('strip:stopAll', async (e) => {
+    if (!fromStrip(e) || stopAllBusy) return null;
+    stopAllBusy = true;
+    try {
+      const file = sentinelsFor({ claudeHome: stopAllHome({ seam: readSeams(process.env).claudeHome, home: require('os').homedir() }) })[0];
+      const r = await requestStopAll({ file, confirm: () => confirmStopAll(file), write: (f, data) => writeFileAtomic(f, data) });
+      console.log(`[main] STOP ALL: ${r.outcome}${r.error ? ` (${r.error})` : ''} -> ${file}`);
+      if (r.outcome === 'failed' && win && !win.isDestroyed()) {
+        dialog.showMessageBox(win, { type: 'error', buttons: ['OK'], message: "Couldn't write the stop file", detail: `${file}: ${r.error}. No session was stopped.` }).catch(() => {});
+      }
+      return r.outcome;
+    } finally { stopAllBusy = false; }
   });
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab

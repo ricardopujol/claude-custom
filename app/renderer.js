@@ -8474,10 +8474,22 @@ function notePtyBackend(info) {
   logLine('pty backend', 'OS ConPTY: ' + info.reason);
 }
 
+// The kill switch (host/kill-switch.js; documentation/PLAN_SAFETY_NET.md lane 2): which sentinel stopped this session, or the night
+// budget, in the diagnostics pane's log (Ctrl+Shift+D). The tab itself already shows the line the host wrote into the screen. Once
+// per stop, so the hello after every reattach does not stack it.
+let lastKillSwitchLogged = null;
+function noteKillSwitch(stop) {
+  if (!stop || typeof stop !== 'object' || typeof stop.text !== 'string' || stop.text === lastKillSwitchLogged) return;
+  lastKillSwitchLogged = stop.text;
+  logLine('kill switch', stop.text);
+}
+
 function handleControl(msg) {
   if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
+  if (msg.type === 'killSwitch') { noteKillSwitch(msg.killSwitch); return; }
   if (msg.type === 'hello') {
     noteModStatus(msg.modStatus);
+    noteKillSwitch(msg.killSwitch);
     notePtyBackend(msg.ptyBackend);
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
