@@ -182,7 +182,7 @@ test('the card\'s session is the host\'s: from `hello`, then every `session` mes
   const hello = RENDERER.slice(helloAt, RENDERER.indexOf("if (msg.type === 'loadout') {", helloAt));
   const set = hello.indexOf('occupancy.session = sessionIdOf(msg.sessionId);');
   assert.ok(set !== -1 && set < hello.lastIndexOf('renderRoster();'), 'set in hello, before its renderRoster');
-  assert.match(RENDERER, /if \(msg\.type === 'session'\) \{\s*occupancy\.session = sessionIdOf\(msg\.sessionId\);\s*renderRoster\(\);\s*return;\s*\}/);
+  assert.match(RENDERER, /if \(msg\.type === 'session'\) \{\s*(?:agentPauses\.sessionIs\(msg\.sessionId\);[^\n]*\s*)?occupancy\.session = sessionIdOf\(msg\.sessionId\);\s*renderRoster\(\);\s*return;\s*\}/);
 });
 
 test('a `session` message, run as written, sets the card\'s session and repaints; an empty or non-string id is "not known" (PR #124 Miguel M3)', () => {
@@ -194,8 +194,8 @@ test('a `session` message, run as written, sets the card\'s session and repaints
   const run = (msg) => {
     const calls = [];
     const occupancy = { session: 'old' };
-    const handle = new Function('msg', 'occupancy', 'renderRoster', 'sessionIdOf', `${block}\n return 'fell through';`);
-    const out = handle(msg, occupancy, () => calls.push(occupancy.session), new Function(`return ${sessionIdOf[1]}`)());
+    const handle = new Function('msg', 'occupancy', 'renderRoster', 'sessionIdOf', 'agentPauses', `${block}\n return 'fell through';`);
+    const out = handle(msg, occupancy, () => calls.push(occupancy.session), new Function(`return ${sessionIdOf[1]}`)(), { sessionIs() {} });
     return { out, calls, session: occupancy.session };
   };
   assert.deepStrictEqual(run({ type: 'session', sessionId: 'S2' }), { out: undefined, calls: ['S2'], session: 'S2' });
