@@ -68,11 +68,13 @@ function menuModel(list, { now, tabsByPort = new Map(), projectRoot = null } = {
     // #81: a side session is labelled as one. It is a tab of its branch's tab, never a window of its own (a window on it would be
     // refused by the handshake), so Open only goes to its tab when it is one here.
     const side = row.side === true;
+    // #119 A5: a plain shell is a tab of its branch's tab in the same way, and just as unopenable as a window.
+    const shell = row.kind === 'shell';
     let open = null;
     if (here) open = { kind: 'select-tab', key: tabKey };
-    else if (row.own && !side) open = { kind: 'window', port: row.port, cwd: row.cwd };
+    else if (row.own && !side && !shell) open = { kind: 'window', port: row.port, cwd: row.cwd };
     return {
-      label: [folderText(row.cwd), ...(side ? ['side'] : []), row.build, ageText(row.startedAt, now), where].join('  ·  '),
+      label: [folderText(row.cwd), ...(side ? ['side'] : []), ...(shell ? ['shell'] : []), row.build, ageText(row.startedAt, now), where].join('  ·  '),
       open,
       stop: !here && !(Number.isInteger(row.windows) && row.windows > 0),
       row,

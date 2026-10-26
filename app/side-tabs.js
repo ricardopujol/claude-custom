@@ -29,6 +29,9 @@ const TABS = [
   // The Files tab (#45) took the Map's slot. The id stays `fog`: saved layouts and the dock tests name it, and a
   // renamed id would drop it from every stored layout.
   { id: 'fog', label: 'Files', title: 'Browse this worktree and read its files; what Claude touched is marked' },
+  // BACKLOG #119 A3: the worktree's changeset (working tree, or the whole lane against develop), side by side in the reader, with a comment on a line
+  // typed into the prompt. An ordinary module like the rest; it asks the host only while it is showing.
+  { id: 'changes', label: 'Changes', title: "This worktree's changed files, side by side with what they were, and a comment on a line goes into your prompt" },
   // Layout pass L3 (documentation/PLAN_GIT_TREE.md): every branch on one dial.
   { id: 'git', label: 'Git', title: 'Every branch this project has grown' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
@@ -47,6 +50,9 @@ const TABS = [
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.
   { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
+  // BACKLOG #119 A4: the page of a dev server this worktree runs, in a sandboxed view that only reaches this computer. An ordinary module
+  // like the rest; it docks at its own width (app/dock-tree.js OWN_ROW_SIZE).
+  { id: 'preview', label: 'Preview', title: 'The page of a dev server running in this worktree: only localhost opens here' },
   // BACKLOG #33: ask about this repo, or have the code you selected explained, by a local model (or Haiku / Sonnet on your plan).
   // An ordinary module like the rest: it docks, moves and hides through the same layout.
   { id: 'ask', label: 'Ask', title: 'Ask where something is in this repo, or have selected code explained: a local model answers, and every place is a link' },

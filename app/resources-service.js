@@ -60,6 +60,7 @@ function createResourcesService({
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
   let lastPayload = null;
+  let hostPids = new Map();    // tab key -> the session host pid proven in the last full sample (BACKLOG #119 A4: the Dev servers join walks from it)
   let chipOn = chipStore.read() !== false;   // ON by default: only a stored real `false` turns it off
   let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
@@ -310,6 +311,7 @@ function createResourcesService({
     if (snap.mode === 'full' && snap.sample) {
       const proven = tree.provenHosts(snap.sample.procs, claims());
       const list = tabList().map(t => ({ key: t.key, label: t.label, hostPid: hostOfPort(proven, t.port) }));
+      hostPids = new Map(list.filter(t => t.hostPid !== null).map(t => [t.key, t.hostPid]));
       built = model.buildModel({
         sample: snap.sample, prev: snap.prev, cores, tabs: list, hosts: proven,
         installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPid, labelOf, paused: pauseStore.listConfirmed(), pauseOffered: !!suspend,
@@ -486,6 +488,8 @@ function createResourcesService({
       push();
       return chipOn;
     },
+    /** The session host pid the last full sample proved for this tab, or null. */
+    hostPidOf: (key) => (hostPids.has(key) ? hostPids.get(key) : null),
     get: (full = true) => (full ? withHistory(lastPayload) : lastLight),
     warnFor(key) {
       const s = warnings.get(key);

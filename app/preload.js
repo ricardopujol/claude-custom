@@ -294,6 +294,31 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(msg); } catch (err) { console.error('[preload] canvas:message listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('canvas:message')),
   },
+  // The Preview panel and the Dev servers chip (BACKLOG #119 A4). The dev server's page is a native view of its own that main lays over the
+  // dock panel's body (app/preview-views.js); THIS page is its trusted controller. `show` takes { target?: { port } | { typed }, rect, covered }
+  // -> { ok, url }; with no target main resumes the address this worktree had. `bounds` / `cover` / `hide` keep it in step; `reload`,
+  // `devtools` and `openExternal` act on the page's current address (main reads it; this page never supplies one); `openPort` opens a
+  // listening port in the browser. `onEvent` ({ kind: 'url' | 'blocked' | 'failed' | 'loading' }) and `onDevServers` (this tab's
+  // listening ports) are main -> page, each replacing its one listener; `devServers` asks for the last answer.
+  preview: {
+    show: (req) => ipcRenderer.invoke('preview:show', req),
+    bounds: (rect) => ipcRenderer.send('preview:bounds', rect),
+    cover: (on) => ipcRenderer.send('preview:cover', on === true),
+    hide: () => ipcRenderer.send('preview:hide'),
+    reload: () => ipcRenderer.send('preview:reload'),
+    devtools: () => ipcRenderer.send('preview:devtools'),
+    openExternal: () => ipcRenderer.send('preview:open-external'),
+    openPort: (port) => ipcRenderer.send('preview:open-port', port),
+    devServers: () => ipcRenderer.invoke('devservers:get'),
+    onEvent: (fn) => (ipcRenderer.removeAllListeners('preview:event'), ipcRenderer.on('preview:event',
+      (_e, ev) => {
+        try { fn(ev); } catch (err) { console.error('[preload] preview:event listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('preview:event')),
+    onDevServers: (fn) => (ipcRenderer.removeAllListeners('devservers:state'), ipcRenderer.on('devservers:state',
+      (_e, state) => {
+        try { fn(state); } catch (err) { console.error('[preload] devservers:state listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('devservers:state')),
+  },
   // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
   // tab view has to cover the strip); the page hides its header and zones when
   // told through onChange, which replaces its one listener.

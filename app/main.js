@@ -66,6 +66,8 @@ const { createStore } = require('../host/store');
 const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
+// BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
+const { isShellKey, shellHostsOf } = require('../host/shell-tab');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
@@ -78,6 +80,11 @@ const { externalUrl } = require('./external-link');
 const { guardNavigation } = require('./nav-guard');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
+const { createPreviewViews } = require('./preview-views');
+const { createDevServersService } = require('./dev-servers-service');
+const devServersHost = require('../host/dev-servers');
+const { lookup: lookupPortBlock } = require('../host/port-blocks');
+const { worktreeRoot } = require('../host/worktree-env');
 const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
@@ -297,8 +304,10 @@ async function chooseHostPort(tab) {
   // #81: a branch tab's side session is looked for as a side host, on a port of its own: never the window's explicit one
   // (that is the branch tab's), and the walk never attaches it to the folder's own host.
   const side = tab.side === true;
-  if (!side && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
-  if (!side && EXPLICIT_PORT) {
+  // A5: so is a branch tab's shell: a host of its own, found only as a shell host.
+  const companion = side || tab.shell === true;
+  if (!companion && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (!companion && EXPLICIT_PORT) {
     // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
     const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
@@ -313,7 +322,7 @@ async function chooseHostPort(tab) {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: tab.cwd, occupantAt, side });
+  return resolvePort({ cwd: tab.cwd, occupantAt, side, kind: tab.shell === true ? 'shell' : undefined });
 }
 
 // This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
@@ -346,7 +355,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, shell: tab.shell === true }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -445,6 +454,44 @@ function markSubmenu(branch) {
   };
 }
 
+/**
+ * A tab's right-click menu, as a template: the strip's popup builds it, and so does the probe driver's tabMenu (a native popup
+ * nobody can click), so the item a probe clicks is the item a person clicks.
+ */
+function tabMenuTemplate(key) {
+  const st = tabShell.menuState(key);
+  // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
+  const side = tabShell.sideMenu(key);
+  const sideItem = {
+    label: side.enabled ? side.label : `${side.label} (${side.why})`,
+    enabled: side.enabled,
+    click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
+  };
+  // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is this item (it restarts one whose shell has exited) and
+  // its close (Ricardo's look, 2026-10-26: a shell tab couldn't be closed). Named shellState, not shell: Electron's shell is
+  // imported under that name.
+  const shellState = tabShell.shellMenu(key);
+  const shellItem = {
+    label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
+    enabled: shellState.enabled,
+    click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
+  };
+  const closeShellItem = { label: 'Close shell', enabled: st.close, click: () => closeTabFlow(key) };
+  if (isSideKey(key)) return [sideItem];
+  if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
+  const issue = tabShell.issueOf(key);
+  return [
+    markSubmenu(tabShell.branchOf(key)),
+    { type: 'separator' },
+    // #119 A6: a lane started from a GitHub issue keeps its link.
+    ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
+    sideItem,
+    shellItem,
+    { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
+    { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
+  ];
+}
+
 let win = null;
 let tabShell = null;
 // BACKLOG #119 A6: `gh issue list/view` for the + form's "From an issue" list, cached 60 s (host/issues.js). Made in whenReady.
@@ -482,6 +529,7 @@ function layoutView(view) {
   const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
   canvasViews.relayout(view.webContents);     // its panel's offset moved with it (focus mode, a frameless toggle)
+  previewViews.relayout(view.webContents);
 }
 
 function setFocusMode(on) {
@@ -573,6 +621,8 @@ function createWindow() {
   // Hidden to the tray is minimised as far as the polling and the cue go: nobody is looking.
   win.on('hide', () => { focused = false; if (resources) resources.setMinimised(true); });
   win.on('show', () => { if (resources) resources.setMinimised(false); });
+  // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
+  for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, syncDevServersSampling);
   // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
   win.on('session-end', () => { quitting = true; });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
@@ -797,10 +847,52 @@ const canvasViews = createCanvasViews({
   log: (line) => console.log(line),
 });
 
+// --- The Preview panel and the Dev servers chip (BACKLOG #119 A4) ------------------------------
+// One native view per tab (app/preview-views.js), on its own in-memory session, that shows a page a dev server of THIS worktree serves:
+// loopback http only, no preload, no Node, no new windows, no downloads (app/preview-guard.js). The tab's page is the trusted controller.
+// The worktree a tab's panel belongs to (what its last address is remembered by): the worktree folder, else the tab's own folder.
+const previewKeyOf = (owner) => {
+  const tab = tabShell ? tabShell.tabForSender(owner) : null;
+  return tab ? (worktreeRoot(tab.cwd) || tab.cwd) : null;
+};
+function previewProbeProxy() {
+  if (!PROBE_PORT || !PROBE_TOKEN) return undefined;
+  const rules = process.env.CLAUDE_CUSTOM_PREVIEW_PROXY;
+  if (rules === 'direct') return { mode: 'direct' };
+  return typeof rules === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(rules) ? { mode: 'fixed_servers', proxyRules: rules, proxyBypassRules: require('./preview-views').PREVIEW_BYPASS } : undefined;
+}
+const previewViews = createPreviewViews({
+  WebContentsView, session,
+  addChild: (v) => win.contentView.addChildView(v),
+  removeChild: (v) => win.contentView.removeChildView(v),
+  ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
+  isOwnerVisible: (owner) => { const sel = selectedView(); return !!sel && sel.webContents === owner; },
+  keyOf: previewKeyOf,
+  onEvent: (owner, ev) => { if (!owner.isDestroyed()) owner.send('preview:event', ev); },
+  openUrl: (url) => openInBrowser(url, 'Preview'),
+  // The ports of this app that the page may never reach: the probe driver's, and the host's when it was named by CLAUDE_CUSTOM_PORT (besides the session hosts' range, app/preview-guard.js).
+  denyPorts: [PROBE_PORT ? Number(PROBE_PORT) : null, Number.isInteger(EXPLICIT_PORT) ? EXPLICIT_PORT : null].filter(Number.isInteger),
+  // PROBE SEAM, only when the probe driver's port AND token are set: a proxy the probe owns, to count what a session sends to it.
+  proxyConfig: previewProbeProxy(),
+  log: (line) => console.log(line),
+});
+// The listening ports of every tab's worktree, from ONE PowerShell call per sample (host/dev-servers.js SCRIPT) through a persistent shell of its
+// own, every 10 s while a window is in view (app/dev-servers-service.js). The block comes from the file host/port-blocks.js keeps (a read, never an
+// allocation); the session host each tab's join starts from is the one the Resources sampler proved.
+let devServers = null;
+let devServersExec = null;
+// Sampling follows what the window shows (host/dev-servers.js unseen): a window hidden to the tray, minimised, or not made yet samples nothing.
+function syncDevServersSampling() {
+  if (!devServers) return;
+  const gone = !win || win.isDestroyed();
+  devServers.setMinimised(devServersHost.unseen({ visible: gone ? false : win.isVisible(), minimized: gone ? true : win.isMinimized() }));
+}
+
 function destroyTabView(tab) {
   const view = tab.view;
   if (!view) return;
   canvasViews.destroyFor(view.webContents);
+  previewViews.destroyFor(view.webContents);
   liveViews.delete(view);
   // a closed tab's /bedtime night cannot keep the window lean for ever
   // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
@@ -840,6 +932,7 @@ function applySelection(snapshot) {
       tab.view.setVisible(shows);
       // A tab's panel is its own native view: it must leave with its tab, or it floats over whichever tab is selected.
       canvasViews.setOwnerVisible(tab.view.webContents, shows);
+      previewViews.setOwnerVisible(tab.view.webContents, shows);
     }
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
@@ -861,6 +954,7 @@ function applySelection(snapshot) {
   pushStripAccent();
   // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
   if (resources) resources.refresh();
+  if (devServers) devServers.refresh();      // a tab that came or went changes whose ports are asked about
   // Only the selected page's payload carries the one-hour history, so a page that has just been selected is sent it now,
   // not up to 10 s later (#63 follow-up).
   if (resources && live !== resHistoryView) { resHistoryView = live; resources.resend(); }
@@ -1112,6 +1206,22 @@ function registerIpc() {
   ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
   ipcMain.on('canvas:set-shelf', (e, items) => { if (isTabView(e.sender)) canvasViews.setShelf(e.sender, items); });
   ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
+  // The Preview panel and the Dev servers chip (#119 A4). Every channel is the TAB's page, the trusted controller, and is gated on it. The dev
+  // server's page has no channel at all: it gets no preload. What `reload`, `devtools` and `openExternal` act on is the view's own current
+  // address, read here; the page never supplies one. `show` and `openPort` take a port or typed text, which app/preview-guard.js judges.
+  ipcMain.handle('preview:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
+    ? previewViews.show(e.sender, req) : { ok: false, error: 'refused' }));
+  ipcMain.on('preview:bounds', (e, rect) => { if (isTabView(e.sender)) previewViews.setBounds(e.sender, rect); });
+  ipcMain.on('preview:cover', (e, on) => { if (isTabView(e.sender)) previewViews.setCovered(e.sender, on === true); });
+  ipcMain.on('preview:hide', (e) => { if (isTabView(e.sender)) previewViews.hide(e.sender); });
+  ipcMain.on('preview:reload', (e) => { if (isTabView(e.sender)) previewViews.reload(e.sender); });
+  ipcMain.on('preview:devtools', (e) => { if (isTabView(e.sender)) previewViews.toggleDevTools(e.sender); });
+  ipcMain.on('preview:open-external', (e) => { if (isTabView(e.sender)) previewViews.openExternal(e.sender); });
+  ipcMain.on('preview:open-port', (e, port) => { if (isTabView(e.sender)) previewViews.openPort(port); });
+  ipcMain.handle('devservers:get', (e) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab && devServers ? devServers.snapshot(tab.key) : null;
+  });
   // The Style tab's switch for the panel's MCP server (#71 question 8): the file the host reads when it builds `claude`'s arguments, so a
   // change takes effect on the next session. null means unknown (a read or write that failed): the page keeps asking, never guesses.
   ipcMain.handle('canvas:settings-get', (e) => (isTabView(e.sender) ? readMcpSetting(uiStore.dir) : null));
@@ -1174,25 +1284,7 @@ function registerIpc() {
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
-    const st = tabShell.menuState(key);
-    // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
-    const side = tabShell.sideMenu(key);
-    const sideItem = {
-      label: side.enabled ? side.label : `${side.label} (${side.why})`,
-      enabled: side.enabled,
-      click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
-    };
-    if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
-    const issue = tabShell.issueOf(key);
-    Menu.buildFromTemplate([
-      markSubmenu(tabShell.branchOf(key)),
-      { type: 'separator' },
-      // #119 A6: a lane started from a GitHub issue keeps its link.
-      ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
-      sideItem,
-      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
-      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
-    ]).popup({ window: win });
+    Menu.buildFromTemplate(tabMenuTemplate(key)).popup({ window: win });
   });
   // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
   // by hand in this window, most recent first.
@@ -1210,6 +1302,12 @@ function registerIpc() {
         label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
         enabled: m.create.enabled,
         click: () => tabShell.openCreate(),
+      },
+      // #119 A5: a plain shell for the selected lane
+      {
+        label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
+        enabled: m.shell.enabled,
+        click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
       },
       ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
     ]).popup({ window: win });
@@ -1725,6 +1823,17 @@ function startProbeDriver(port) {
     const e = tabShell.model().find((x) => x.label === label);
     return e ? e.key : null;
   };
+  // A real left click in the strip page on the tab labelled `label` (its x when `onX`): its position is read from the DOM and the
+  // click is an input event, so the page's own handler decides what to ask main.
+  const stripClick = async (label, onX, modifiers) => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); const n = t && ${onX ? "t.querySelector('.x')" : 't'}; if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
+    if (!rect) return { ok: false, error: onX ? `no close button on a tab labelled ${label}` : `no tab labelled ${label}` };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1737,7 +1846,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), shell: t.classList.contains('shell'), dots: [...t.querySelectorAll('.dot')].map(d => d.className + '|' + d.title), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1825,6 +1934,12 @@ function startProbeDriver(port) {
           } }); })()`);
       return JSON.parse(out);
     },
+    // #119 A5: what the tab menu's Open shell here does, by the branch tab's label.
+    async shellOpen(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.openShell(key);
+    },
     // #81: what the tab menu's Open side session does, by the branch tab's label.
     async sideOpen(label) {
       const key = labelKey(label);
@@ -1848,14 +1963,22 @@ function startProbeDriver(port) {
     },
     // #77: a real Ctrl+click on a tab in the strip page: its position is read from the DOM, the click is an input
     // event with the control modifier, so the page's own handler decides what to ask main.
-    async ctrlClick(label) {
-      const rect = JSON.parse(await win.webContents.executeJavaScript(
-        `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
-      if (!rect) return { ok: false, error: `no tab labelled ${label}` };
-      const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: ['control'] };
-      win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
-      win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
-      return { ok: true };
+    async ctrlClick(label) { return stripClick(label, false, ['control']); },
+    // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
+    async xClick(label) { return stripClick(label, true, []); },
+    // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
+    // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
+    async tabMenu(label, item) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      const built = Menu.buildFromTemplate(tabMenuTemplate(key)).items.filter(i => i.type !== 'separator');
+      const items = built.map(i => ({ label: i.label, enabled: i.enabled }));
+      if (item === undefined) return { ok: true, items };
+      const hit = built.find(i => i.label === item);
+      if (!hit) return { ok: false, error: `no item ${item}`, items };
+      if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
+      hit.click();
+      return { ok: true, items };
     },
     // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
     // pointer events decide what is hovered, as for a mouse.
@@ -1882,6 +2005,17 @@ function startProbeDriver(port) {
       if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
       if (action === 'inspect') return { ok: true, ...canvasViews.inspect(sel.webContents) };
       return { ok: canvasViews.click(sel.webContents, args.x, args.y) };
+    },
+    // #119 A4: the selected tab's Preview view, from the outside: where it is, whether it shows, its address and the title its page set.
+    async preview(action, file) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (action === 'shot') {
+        const wc = previewViews.shotTarget(sel.webContents);
+        if (!wc || wc.isDestroyed()) return { ok: false, error: 'no preview view' };
+        return { ok: true, bytes: await capture(wc, file) };
+      }
+      return { ok: true, ...previewViews.inspect(sel.webContents) };
     },
     async screenshot(file) {
       const sel = selectedView();
@@ -2167,6 +2301,8 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
+      // #119 A5: ... and the shell hosts, the same way
+      shellHosts: () => shellHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
       readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),
@@ -2267,11 +2403,27 @@ app.whenReady().then(async () => {
   sweepPaused();
   setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 
+  // The Dev servers chip (#119 A4): its own persistent PowerShell, sampled like the Resources panel (host/dev-servers.js INTERVAL_MS).
+  devServersExec = createPersistentExec();
+  devServers = createDevServersService({
+    exec: devServersExec,
+    tabs: () => tabShell.snapshot().tabs.filter(t => t.view && !t.view.webContents.isDestroyed()),
+    portBaseOf: (cwd) => { const root = worktreeRoot(cwd); return root ? lookupPortBlock(root) : null; },
+    hostPidOf: (key) => (resources ? resources.hostPidOf(key) : null),
+    send: (key, state) => {
+      const tab = tabShell.snapshot().tabs.find(t => t.key === key);
+      if (tab && tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.send('devservers:state', state);
+    },
+    log: (...a) => console.log(...a),
+  });
+  devServers.start();
+
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
   createWindow();
+  syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
   startTray();
@@ -2311,6 +2463,7 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+app.on('will-quit', () => { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); });
 // A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
 // The quit is held once, for as long as the resumes take, and then asked for again.
 let pausedWoken = false;
