@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const P = 'C:/Users/ricar/VibeCode/agent-creator/portraits';
+const P = require('../host/portraits-dir').resolvePortraitsDir().replace(/\\/g, '/');
 const AGENT = 'code-reviewer';
 const STATES = ['sleeping', 'working', 'happy', 'stressed'];
 
