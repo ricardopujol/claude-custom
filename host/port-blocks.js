@@ -183,4 +183,20 @@ function allocate(worktree, opts = {}) {
   }
 }
 
-module.exports = { allocate, parseExcludedRanges, excludedRanges, defaultPortsFile, RANGE_START, RANGE_LAST_BASE, BLOCK };
+/**
+ * The block `worktree` already has, or null: a read, never an allocation (BACKLOG #119 A4). The Dev servers chip asks about every
+ * tab on a timer; that must not take the lock, write the file, or hand a block to a worktree whose host never asked for one. A
+ * missing or unusable file answers null and is left exactly as it was (allocate is the one that sets a bad file aside).
+ */
+function lookup(worktree, opts = {}) {
+  const key = typeof worktree === 'string' && worktree ? normPath(worktree) : null;
+  if (!key) return null;
+  try {
+    const blocks = readBlocks(opts.file || defaultPortsFile());
+    return blocks && validBase(blocks[key]) ? blocks[key] : null;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { allocate, lookup, parseExcludedRanges, excludedRanges, defaultPortsFile, RANGE_START, RANGE_LAST_BASE, BLOCK };

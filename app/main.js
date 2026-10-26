@@ -80,6 +80,11 @@ const { externalUrl } = require('./external-link');
 const { guardNavigation } = require('./nav-guard');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
+const { createPreviewViews } = require('./preview-views');
+const { createDevServersService } = require('./dev-servers-service');
+const devServersHost = require('../host/dev-servers');
+const { lookup: lookupPortBlock } = require('../host/port-blocks');
+const { worktreeRoot } = require('../host/worktree-env');
 const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
@@ -516,6 +521,7 @@ function layoutView(view) {
   const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
   canvasViews.relayout(view.webContents);     // its panel's offset moved with it (focus mode, a frameless toggle)
+  previewViews.relayout(view.webContents);
 }
 
 function setFocusMode(on) {
@@ -607,6 +613,8 @@ function createWindow() {
   // Hidden to the tray is minimised as far as the polling and the cue go: nobody is looking.
   win.on('hide', () => { focused = false; if (resources) resources.setMinimised(true); });
   win.on('show', () => { if (resources) resources.setMinimised(false); });
+  // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
+  for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, syncDevServersSampling);
   // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
   win.on('session-end', () => { quitting = true; });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
@@ -831,10 +839,52 @@ const canvasViews = createCanvasViews({
   log: (line) => console.log(line),
 });
 
+// --- The Preview panel and the Dev servers chip (BACKLOG #119 A4) ------------------------------
+// One native view per tab (app/preview-views.js), on its own in-memory session, that shows a page a dev server of THIS worktree serves:
+// loopback http only, no preload, no Node, no new windows, no downloads (app/preview-guard.js). The tab's page is the trusted controller.
+// The worktree a tab's panel belongs to (what its last address is remembered by): the worktree folder, else the tab's own folder.
+const previewKeyOf = (owner) => {
+  const tab = tabShell ? tabShell.tabForSender(owner) : null;
+  return tab ? (worktreeRoot(tab.cwd) || tab.cwd) : null;
+};
+function previewProbeProxy() {
+  if (!PROBE_PORT || !PROBE_TOKEN) return undefined;
+  const rules = process.env.CLAUDE_CUSTOM_PREVIEW_PROXY;
+  if (rules === 'direct') return { mode: 'direct' };
+  return typeof rules === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(rules) ? { mode: 'fixed_servers', proxyRules: rules, proxyBypassRules: require('./preview-views').PREVIEW_BYPASS } : undefined;
+}
+const previewViews = createPreviewViews({
+  WebContentsView, session,
+  addChild: (v) => win.contentView.addChildView(v),
+  removeChild: (v) => win.contentView.removeChildView(v),
+  ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
+  isOwnerVisible: (owner) => { const sel = selectedView(); return !!sel && sel.webContents === owner; },
+  keyOf: previewKeyOf,
+  onEvent: (owner, ev) => { if (!owner.isDestroyed()) owner.send('preview:event', ev); },
+  openUrl: (url) => openInBrowser(url, 'Preview'),
+  // The ports of this app that the page may never reach: the probe driver's, and the host's when it was named by CLAUDE_CUSTOM_PORT (besides the session hosts' range, app/preview-guard.js).
+  denyPorts: [PROBE_PORT ? Number(PROBE_PORT) : null, Number.isInteger(EXPLICIT_PORT) ? EXPLICIT_PORT : null].filter(Number.isInteger),
+  // PROBE SEAM, only when the probe driver's port AND token are set: a proxy the probe owns, to count what a session sends to it.
+  proxyConfig: previewProbeProxy(),
+  log: (line) => console.log(line),
+});
+// The listening ports of every tab's worktree, from ONE PowerShell call per sample (host/dev-servers.js SCRIPT) through a persistent shell of its
+// own, every 10 s while a window is in view (app/dev-servers-service.js). The block comes from the file host/port-blocks.js keeps (a read, never an
+// allocation); the session host each tab's join starts from is the one the Resources sampler proved.
+let devServers = null;
+let devServersExec = null;
+// Sampling follows what the window shows (host/dev-servers.js unseen): a window hidden to the tray, minimised, or not made yet samples nothing.
+function syncDevServersSampling() {
+  if (!devServers) return;
+  const gone = !win || win.isDestroyed();
+  devServers.setMinimised(devServersHost.unseen({ visible: gone ? false : win.isVisible(), minimized: gone ? true : win.isMinimized() }));
+}
+
 function destroyTabView(tab) {
   const view = tab.view;
   if (!view) return;
   canvasViews.destroyFor(view.webContents);
+  previewViews.destroyFor(view.webContents);
   liveViews.delete(view);
   // a closed tab's /bedtime night cannot keep the window lean for ever
   // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
@@ -874,6 +924,7 @@ function applySelection(snapshot) {
       tab.view.setVisible(shows);
       // A tab's panel is its own native view: it must leave with its tab, or it floats over whichever tab is selected.
       canvasViews.setOwnerVisible(tab.view.webContents, shows);
+      previewViews.setOwnerVisible(tab.view.webContents, shows);
     }
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
@@ -895,6 +946,7 @@ function applySelection(snapshot) {
   pushStripAccent();
   // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
   if (resources) resources.refresh();
+  if (devServers) devServers.refresh();      // a tab that came or went changes whose ports are asked about
   // Only the selected page's payload carries the one-hour history, so a page that has just been selected is sent it now,
   // not up to 10 s later (#63 follow-up).
   if (resources && live !== resHistoryView) { resHistoryView = live; resources.resend(); }
@@ -1131,6 +1183,22 @@ function registerIpc() {
   ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
   ipcMain.on('canvas:set-shelf', (e, items) => { if (isTabView(e.sender)) canvasViews.setShelf(e.sender, items); });
   ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
+  // The Preview panel and the Dev servers chip (#119 A4). Every channel is the TAB's page, the trusted controller, and is gated on it. The dev
+  // server's page has no channel at all: it gets no preload. What `reload`, `devtools` and `openExternal` act on is the view's own current
+  // address, read here; the page never supplies one. `show` and `openPort` take a port or typed text, which app/preview-guard.js judges.
+  ipcMain.handle('preview:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
+    ? previewViews.show(e.sender, req) : { ok: false, error: 'refused' }));
+  ipcMain.on('preview:bounds', (e, rect) => { if (isTabView(e.sender)) previewViews.setBounds(e.sender, rect); });
+  ipcMain.on('preview:cover', (e, on) => { if (isTabView(e.sender)) previewViews.setCovered(e.sender, on === true); });
+  ipcMain.on('preview:hide', (e) => { if (isTabView(e.sender)) previewViews.hide(e.sender); });
+  ipcMain.on('preview:reload', (e) => { if (isTabView(e.sender)) previewViews.reload(e.sender); });
+  ipcMain.on('preview:devtools', (e) => { if (isTabView(e.sender)) previewViews.toggleDevTools(e.sender); });
+  ipcMain.on('preview:open-external', (e) => { if (isTabView(e.sender)) previewViews.openExternal(e.sender); });
+  ipcMain.on('preview:open-port', (e, port) => { if (isTabView(e.sender)) previewViews.openPort(port); });
+  ipcMain.handle('devservers:get', (e) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab && devServers ? devServers.snapshot(tab.key) : null;
+  });
   // The Style tab's switch for the panel's MCP server (#71 question 8): the file the host reads when it builds `claude`'s arguments, so a
   // change takes effect on the next session. null means unknown (a read or write that failed): the page keeps asking, never guesses.
   ipcMain.handle('canvas:settings-get', (e) => (isTabView(e.sender) ? readMcpSetting(uiStore.dir) : null));
@@ -1889,6 +1957,17 @@ function startProbeDriver(port) {
       if (action === 'inspect') return { ok: true, ...canvasViews.inspect(sel.webContents) };
       return { ok: canvasViews.click(sel.webContents, args.x, args.y) };
     },
+    // #119 A4: the selected tab's Preview view, from the outside: where it is, whether it shows, its address and the title its page set.
+    async preview(action, file) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (action === 'shot') {
+        const wc = previewViews.shotTarget(sel.webContents);
+        if (!wc || wc.isDestroyed()) return { ok: false, error: 'no preview view' };
+        return { ok: true, bytes: await capture(wc, file) };
+      }
+      return { ok: true, ...previewViews.inspect(sel.webContents) };
+    },
     async screenshot(file) {
       const sel = selectedView();
       const viewBytes = sel ? await capture(sel.webContents, file) : 0;
@@ -2275,11 +2354,27 @@ app.whenReady().then(async () => {
   sweepPaused();
   setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 
+  // The Dev servers chip (#119 A4): its own persistent PowerShell, sampled like the Resources panel (host/dev-servers.js INTERVAL_MS).
+  devServersExec = createPersistentExec();
+  devServers = createDevServersService({
+    exec: devServersExec,
+    tabs: () => tabShell.snapshot().tabs.filter(t => t.view && !t.view.webContents.isDestroyed()),
+    portBaseOf: (cwd) => { const root = worktreeRoot(cwd); return root ? lookupPortBlock(root) : null; },
+    hostPidOf: (key) => (resources ? resources.hostPidOf(key) : null),
+    send: (key, state) => {
+      const tab = tabShell.snapshot().tabs.find(t => t.key === key);
+      if (tab && tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.send('devservers:state', state);
+    },
+    log: (...a) => console.log(...a),
+  });
+  devServers.start();
+
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
   createWindow();
+  syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
   startTray();
@@ -2319,6 +2414,7 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+app.on('will-quit', () => { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); });
 // A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
 // The quit is held once, for as long as the resumes take, and then asked for again.
 let pausedWoken = false;
