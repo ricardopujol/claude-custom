@@ -101,7 +101,7 @@ const check = (name, ok, detail) => { results.push({ name, ok }); console.log(`$
   const b = await startHost();
   await until(() => /not starting claude/.test(b.out), 20000);
   check('B1 it did not spawn claude', ptyPid(b) === null && /not starting claude: the kill switch stopped this host/.test(b.out));
-  check('B2 it said which file and how to undo it', b.out.includes('[kill-switch] Kill switch: ' + PROJECT_STOP + ' exists, so claude was not started'));
+  check('B2 it said which file and how to undo it', b.out.includes('[kill-switch] Kill switch: ' + PROJECT_STOP + ' exists, so claude didn\'t start'));
   const bStart = Date.now();
   await until(() => b.exited, 40000, 250);
   check('B3 with no window it went by itself after the grace', b.exited && /stopped by the kill switch, no session and no window: exiting/.test(b.out),

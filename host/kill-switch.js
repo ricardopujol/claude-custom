@@ -186,7 +186,7 @@ function describeStop(stop) {
     return `Night budget: this /bedtime night started at ${started} and ran ${hoursMinutes(stop.budgetMs || NIGHT_BUDGET_MS)}, so its claude was stopped. A fresh tab starts normally.`;
   }
   const where = nonEmpty(stop.sentinel) ? stop.sentinel : 'a stop file';
-  if (stop.kind === 'refused') return `Kill switch: ${where} exists, so claude was not started. Delete that file, then close and reopen this tab.`;
+  if (stop.kind === 'refused') return `Kill switch: ${where} exists, so claude didn't start. Delete that file and this tab starts by itself.`;
   return `Kill switch: ${where} appeared, so this session's claude was stopped. Delete that file, then close and reopen this tab to start again.`;
 }
 

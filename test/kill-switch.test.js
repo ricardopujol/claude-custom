@@ -497,9 +497,12 @@ test('describeStop: names the sentinel and how to undo it, for a trip, a refusal
   const trip = ks.describeStop({ kind: 'tripped', sentinel: 'C:/h/.claude/STOP-ALL' });
   assert.match(trip, /C:\/h\/\.claude\/STOP-ALL/);
   assert.match(trip, /delete/i);
+  assert.match(trip, /close and reopen/i, 'a stopped session does not restart itself');
   const refused = ks.describeStop({ kind: 'refused', sentinel: 'C:/p/dev/.claude-custom/STOP' });
   assert.match(refused, /C:\/p\/dev\/\.claude-custom\/STOP/);
-  assert.match(refused, /not started/i);
+  assert.match(refused, /didn't start/);
+  assert.match(refused, /starts by itself/);
+  assert.doesNotMatch(refused, /close and reopen/i);
   const night = ks.describeStop({ kind: 'night-budget', startedAt: Date.UTC(2026, 9, 25, 1, 0), budgetMs: ks.NIGHT_BUDGET_MS });
   assert.match(night, /8 h 30 min/);
   assert.strictEqual(ks.describeStop(null), '');
