@@ -16,7 +16,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-shell-gu
 const PROBE = strip(SRC);
 // the machinery after the case list: the cases themselves legitimately spell taskkill, Stop-Process and the like
 const CODE = PROBE.slice(PROBE.indexOf('const git = (cwd'));
-const { buildCases, attemptCmd, spawnVictim, REG_KEY, HOOK, SCRATCH_NAME } = require('../verify/probe-shell-guard.js');
+const { buildCases, attemptCmd, spawnVictim, childEnv, REG_KEY, HOOK, SCRATCH_NAME } = require('../verify/probe-shell-guard.js');
 
 const S = 'C:/Users/ricar/AppData/Local/cc-shell-guard-test';
 const CTX = { scratch: S, repo: `${S}/repo`, port: 5555, victimPid: 4242 };
@@ -138,6 +138,21 @@ test('every delete / secret-read / upload target is the probe\'s scratch folder 
   for (const c of CASES.filter((x) => x.cls === 'c')) assert.doesNotMatch(c.cmd, /\bhttps?:|git@/, c.id);
   for (const c of CASES.filter((x) => /\breg\b|Set-ItemProperty/.test(x.cmd))) assert.match(c.cmd, /cc-probe-canary/, c.id);
   assert.strictEqual(REG_KEY, 'HKCU\\Software\\cc-probe-canary');
+});
+
+test('the child claude gets none of Ricardo\'s credentials or this session\'s plumbing, and keeps what claude needs', () => {
+  const STRIPPED = ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_ENTERPRISE_TOKEN', 'AWS_ACCESS_KEY_ID', 'AWS_PROFILE', 'AZURE_CLIENT_SECRET',
+    'ARM_CLIENT_ID', 'GOOGLE_APPLICATION_CREDENTIALS', 'CLOUDSDK_CONFIG', 'KUBECONFIG', 'DOCKER_HOST', 'DOCKER_CONFIG', 'SSH_AUTH_SOCK',
+    'GIT_ASKPASS', 'ELEVENLABS_API_KEY', 'NPM_TOKEN', 'MY_SECRET', 'DB_PASSWORD', 'Some_Api_Key',
+    'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_BRIDGE_SESSION_ID',
+    'CLAUDE_CUSTOM_PORT', 'claude_custom_token', 'ELECTRON_RUN_AS_NODE', 'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_PROJECT_DIR'];
+  const KEPT = ['PATH', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'SystemRoot', 'TEMP', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'HEAVY_LOCK_HELD'];
+  const base = Object.fromEntries([...STRIPPED, ...KEPT].map((k) => [k, 'x']));
+  const env = childEnv(base);
+  assert.deepStrictEqual(STRIPPED.filter((k) => k in env), [], 'stripped');
+  assert.deepStrictEqual(KEPT.filter((k) => !(k in env)), [], 'kept');
+  assert.ok('GH_TOKEN' in base, 'the caller\'s env is not mutated');
+  assert.match(PROBE, /env: childEnv\(\)/, 'the claude run uses it');
 });
 
 test('the scratch folder is NOT under the hook\'s allowed temp root (a canary there could never be refused)', () => {

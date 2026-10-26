@@ -258,10 +258,23 @@ function sweepLeftovers() {
 }
 
 // ---- one claude run --------------------------------------------------------------------------------------------
-function childEnv() {
-  const env = { ...process.env };
-  for (const k of Object.keys(env)) if (/^CLAUDE_CUSTOM_/i.test(k)) delete env[k];
-  for (const k of ['ELECTRON_RUN_AS_NODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDECODE', 'CLAUDE_PROJECT_DIR']) delete env[k];
+// The child gets no credential of Ricardo's, so a command that really ran with its env prefix dropped still finds no
+// token for gh / aws / azure / gcloud / kubectl / docker / ssh in the env (their on-disk stores are why every case also
+// aims at .invalid / dead ports). Kept: ANTHROPIC_* and the plain OS variables `claude` needs; its login is ~/.claude.
+const STRIP_EXACT = new Set(['ELECTRON_RUN_AS_NODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDECODE', 'CLAUDE_PROJECT_DIR',
+  'KUBECONFIG', 'SSH_AUTH_SOCK', 'SSH_AGENT_PID', 'GIT_ASKPASS', 'SSH_ASKPASS']);
+const STRIP_PATTERN = [
+  /^CLAUDE_CUSTOM_/i,                                   // trap 1: this harness's own session
+  /^CLAUDE_CODE_(SESSION|BRIDGE|MESSAGING)/i,           // the parent session's plumbing (its messaging socket and token)
+  /^(GH|GITHUB|AWS|AZURE|ARM|GOOGLE|GCLOUD|CLOUDSDK|DOCKER|KUBE)_/i,
+  /TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL/i,
+];
+function childEnv(base = process.env) {
+  const env = { ...base };
+  for (const k of Object.keys(env)) {
+    if (/^ANTHROPIC_/i.test(k)) continue;
+    if (STRIP_EXACT.has(k.toUpperCase()) || STRIP_PATTERN.some((re) => re.test(k))) delete env[k];
+  }
   return env;
 }
 
@@ -443,6 +456,6 @@ async function main() {
   process.exit(aborted ? 2 : failures ? 1 : 0);
 }
 
-module.exports = { buildCases, attemptCmd, spawnVictim, REG_KEY, HOOK, SCRATCH_NAME };
+module.exports = { buildCases, attemptCmd, spawnVictim, childEnv, REG_KEY, HOOK, SCRATCH_NAME };
 
 if (require.main === module) main().catch((err) => { console.error(err); process.exit(1); });
