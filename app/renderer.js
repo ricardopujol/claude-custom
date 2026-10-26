@@ -972,6 +972,7 @@ function renderGitTree(tree) {
   });
   adoptGitViewProject(tree);
   renderGitGraph();        // the graph's strip reads the tree's address and worktrees
+  mapRefresh();            // the Map's lanes and other sessions come from the same tree and tab states
 }
 // The tabs' states move faster than the tree does (a session starts and stops working), so they're asked
 // for on their own, every couple of seconds while the panel is showing, and with every tree.
@@ -1287,6 +1288,157 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
 
+// --- the Map panel (BACKLOG #120) -------------------------------------------------------------------------------------------
+// MAP-BEGIN
+// app/map-display.js draws the graph, app/map-model.js decides what is on it and app/map-layout.js where it sits. What is here is what only
+// this page knows: the roster, the claims, the Git tree and the tab states it already asks for, the host's event rates (the `map` control),
+// and the three facts that decide whether the panel may move at all: shown, focused, lean. THE FRAME-BUDGET RULE lives in the display; this
+// only tells it the facts (mapView) and keeps the polls off while it can't be seen.
+const mapRoot = document.getElementById('map-root');
+let mapRates = null;                // the host's last answer to `map`: { events, perMinute, tools, uptimeMs }; null until it comes (an older host never sends it)
+let mapRafs = 0;                    // probe: how many animation frames this panel has ASKED for since the page loaded
+let mapChurn = null;                // probe: a timer that calls mapRefresh() a burst at a time, like a busy session's roster messages
+let mapFake = null;                 // probe only: a made-up { sessions, agents, claims } in place of the real ones
+let mapLive = false;               // set by the first hello: every top-level `const` this reads (roster, occupancy...) exists by then
+const mapSince = new Map();         // agent -> epoch ms this page saw it START working; absent means it was already working when this page attached
+const mapOwn = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
+// 20 frames a second, not 30: a presented frame has a fixed price on this machine (about 4 ms of CPU across the renderer and the GPU process, whatever
+// is drawn in it), so the cost of the animation is its frame rate. Frames land on vsyncs, so the useful gaps are 33, 50 and 67 ms (30, 20 and 15 fps).
+// Measured by verify/probe-activity-map.js; BACKLOG #120.
+const MAP_FRAME_MS = 33;
+const mapMountOptions = {
+  doc: document,
+  source: () => mapInput(),
+  frameMs: MAP_FRAME_MS,
+  root: mapRoot,
+  raf: (fn) => { mapRafs += 1; return requestAnimationFrame(fn); },
+  caf: (id) => cancelAnimationFrame(id),
+  now: () => performance.now(),
+  wall: () => Date.now(),
+  later: (fn, ms) => setTimeout(fn, ms),
+  pace: (fn, ms) => setTimeout(fn, ms),         // the wait between two frames: a timer, so the page isn't woken on every vsync
+  unpace: (id) => clearTimeout(id),
+  css: (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
+  dpr: () => window.devicePixelRatio || 1,
+  reducedMotion: () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+  observe: (el, onResize) => {
+    if (typeof ResizeObserver !== 'function') return null;           // none: the panel then reads its size every frame
+    const o = new ResizeObserver(() => onResize());
+    o.observe(el);
+    return () => o.disconnect();
+  },
+  makeImage: () => new Image(),
+  storage: (() => { try { return { read: (k) => localStorage.getItem(k), write: (k, v) => localStorage.setItem(k, v) }; } catch { return null; } })(),
+  // a session: this window's own gives the keyboard back to the terminal, another is its tab (the Git panel's *Jump to its tab*)
+  onSession: (s) => {
+    if (s && s.self) term.focus();
+    else if (s && typeof s.folder === 'string' && window.harness && window.harness.selectFolder) window.harness.selectFolder(s.folder);
+  },
+  // an agent: its card in the Agents panel, with its activity log open (the card's own click path)
+  onAgent: (name) => { selectModule('agents'); openAgentLog(name); },
+};
+// A function, so the probe can swap the panel for one drawn another way (verify/probe-activity-map.js, op 'remount').
+const mapMountPanel = (extra) => window.mapDisplay.mount({ ...mapMountOptions, ...extra });
+let mapPanel = mapRoot ? mapMountPanel({}) : null;
+
+// What the graph is drawn from, assembled from state this page already holds. Absence stays absence (null), never a zero.
+function mapInput() {
+  if (mapFake) return mapFake;
+  const mm = window.mapModel;
+  const cwd = document.getElementById('cwd').textContent;
+  const sessions = mm.sessionsFrom({ tree: lastGitTree, tabs: lastGitTabs, self: cwd ? { folder: cwd, branch: currentBranchName, state: mm.turnState(sessionTurn) } : null });
+  // A claim is this session's own (it belongs to a roster card) only if THIS session launched it; one launched elsewhere, or by another session, is its own node.
+  const mine = new Set();
+  for (const c of occupancy.launched) {
+    if (c && typeof c.agentId === 'string' && !(typeof c.sessionId === 'string' && typeof occupancy.session === 'string' && c.sessionId !== occupancy.session)) mine.add(c.agentId);
+  }
+  const claims = [];
+  const seen = new Set();
+  for (const c of [...occupancy.here, ...occupancy.launched]) {
+    if (c && typeof c.agentId === 'string' && !seen.has(c.agentId)) { seen.add(c.agentId); claims.push({ ...c, own: mine.has(c.agentId) }); }
+  }
+  const agents = [];
+  for (const r of roster.values()) {
+    if (r.agent === ASK_AGENT) continue;
+    const entry = rosterIndexEntry(r.agent);
+    const persona = entry && typeof entry.persona === 'string' && entry.persona && entry.persona.toLowerCase() !== r.agent.toLowerCase() ? entry.persona : null;
+    const st = agentStats.get(r.agent);
+    const claim = claims.find(c => c.agent === r.agent);
+    agents.push({
+      name: r.agent, state: r.state, detail: r.detail,
+      label: persona, role: persona ? r.agent : null,
+      portrait: window.mapDisplay.portraitSpec(r.portrait, persona || r.agent, { imagesEnabled: agentImagesEnabled === true, fileUrl: window.portraitMedia.fileUrl }),
+      model: modelLine(modelEntry(sessionModel && sessionModel.agents, r.agent), sessionModel && sessionModel.errors).text,
+      tokens: st && typeof st.tokens === 'number' ? st.tokens : null,
+      eventsPerMin: mapRates ? mapOwn(mapRates.perMinute, r.agent) : undefined,
+      tool: mapRates ? mapOwn(mapRates.tools, r.agent) : undefined,
+      since: mapSince.has(r.agent) ? mapSince.get(r.agent) : null,
+      worktree: claim ? claim.worktree : null,
+    });
+  }
+  return {
+    project: { name: currentProjectName, path: lastGitTree && typeof lastGitTree.project === 'string' ? lastGitTree.project : null },
+    now: Date.now(),
+    sessions, agents, claims,
+    totalAgents: Math.max(wholeRosterEntries().length, roster.size),
+    lanes: mm.lanesOf(lastGitTree),
+    feed: mapRates ? { events: mapRates.events, uptimeMs: mapRates.uptimeMs } : null,
+  };
+}
+// Every roster, mood, turn and tab message lands here: the panel rebuilds from mapInput() at most once per frame slot (app/map-display.js invalidate).
+function mapRefresh() { if (mapLive && mapPanel && shownModules.has('map') && !leanOn) mapPanel.invalidate(); }
+// shown x focused x lean: all three are this page's to say. `focused` is main's word, and a page the OS says is hidden is not focused.
+function mapView() {
+  if (!mapPanel) return;
+  const focused = windowFocused === null ? null : (windowFocused === true && document.visibilityState === 'visible');
+  mapPanel.setView({ shown: shownModules.has('map'), focused, lean: leanOn });
+  if (shownModules.has('map') && !leanOn) mapRefresh();
+}
+// The polls run only while the map can move: shown, focused, visible, not lean. Each ask is one small message; the Git tree (lanes, the
+// other sessions) is asked for once in ten.
+const MAP_POLL_MS = 3000;
+let mapTicks = 0;
+function mapWanted() { return !!mapPanel && shownModules.has('map') && !leanOn && windowFocused === true && document.visibilityState === 'visible'; }
+function mapAsk() {
+  // ONLY to a host that lists it: an older host would type the frame into the session as JSON
+  if (!hostControls || !hostControls.includes('map') || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'map' })); } catch { /* not attached: the next poll asks again */ }
+}
+function mapPoll() {
+  if (!mapWanted()) return;
+  mapAsk();
+  requestGitTabs();
+  if (mapTicks % 10 === 0) requestGitTree();
+  mapTicks += 1;
+}
+function mapPollNow() { mapTicks = 0; mapPoll(); }
+setInterval(mapPoll, MAP_POLL_MS);
+// Two things the panel can't see by itself when it has stopped: reduced motion turning OFF (the streams may start), and the screen's pixel ratio changing
+// (the window moved to another monitor: the bitmap must be made again). Each asks it to measure and draw once.
+if (window.matchMedia) {
+  window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => { if (mapPanel) mapPanel.refresh(); });
+  const mapWatchRatio = () => {
+    const q = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    q.addEventListener('change', () => { if (mapPanel) mapPanel.refresh(); mapWatchRatio(); }, { once: true });
+  };
+  mapWatchRatio();
+}
+// The mood message is where an agent starts or stops working: the only place "since when" can be known.
+function mapNoteMood(m) {
+  const was = roster.get(m.agent);
+  const wasActive = !!was && was.state !== 'sleeping';
+  if (m.state === 'sleeping') mapSince.delete(m.agent);
+  else if (!wasActive) mapSince.set(m.agent, Date.now());
+}
+// A page the OS hides (minimised, another virtual desktop) is not focused for the map's purposes; shown again, it asks at once.
+document.addEventListener('visibilitychange', () => { mapView(); if (document.visibilityState === 'visible') mapPollNow(); });
+function mapOnMap(msg) {
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  mapRates = { events: num(msg.events), perMinute: msg.perMinute && typeof msg.perMinute === 'object' ? msg.perMinute : {}, tools: msg.tools && typeof msg.tools === 'object' ? msg.tools : {}, uptimeMs: num(msg.uptimeMs) };
+  mapRefresh();
+}
+// MAP-END
+
 // --- the Schedules panel (BACKLOG #119 A7) ------------------------------------------------------------------------------------
 // SCHEDULES-BEGIN
 // app/schedules-display.js decides what is drawn; the list is the host's (host/schedules.js buildView): every session's wakeups, loops,
@@ -1424,6 +1576,7 @@ function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
   if (id === 'git') { usage('git:opened'); requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
+  if (id === 'map') mapPollNow();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
   if (id === 'schedules') { requestSchedules(); renderSchedules(); }
@@ -1861,6 +2014,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
+  mapView();                        // the map draws only while shown, and moves only while the window is focused and not lean
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
@@ -3969,6 +4123,55 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
         });
       }
+      // backlog #120 (verify/probe-activity-map.js): read the Map panel, and operate it as a pointer would
+      case 'mapState': {
+        if (!mapPanel) return JSON.stringify({ ok: false, error: 'no map panel' });
+        const cv = document.querySelector('#map-root .map-canvas');
+        const text = (sel) => { const e = document.querySelector('#map-root ' + sel); return e ? e.textContent : null; };
+        // how many sampled pixels differ clearly from the background: a canvas that never drew reads 0. NEVER getImageData on the panel's own
+        // canvas: a few of those and Chromium moves it off the GPU, which would make the probe's cost figures a measurement of the probe.
+        let inked = null;
+        try {
+          const t = document.createElement('canvas');
+          t.width = 40; t.height = 40;
+          const tg = t.getContext('2d', { willReadFrequently: true });
+          tg.drawImage(cv, 0, 0, 40, 40);
+          const px = tg.getImageData(0, 0, 40, 40).data;
+          let n = 0;
+          for (let i = 4; i < px.length; i += 4) if (Math.abs(px[i] - px[0]) + Math.abs(px[i + 1] - px[1]) + Math.abs(px[i + 2] - px[2]) > 40) n += 1;
+          inked = n;
+        } catch { /* unreadable */ }
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.mapModel === 'object' && typeof window.mapLayout === 'object' && typeof window.mapDisplay === 'object',
+          shown: document.querySelector('.panel[data-panel="map"]').classList.contains('on'),
+          shownModule: shownModules.has('map'), focused: windowFocused, visibility: document.visibilityState, leanOn,
+          state: mapPanel.state(), rafs: mapRafs, fake: !!mapFake, rates: mapRates,
+          strip: { tasks: text('[data-stat="tasks"]'), events: text('[data-stat="events"]'), active: text('[data-stat="active"]'), uptime: text('[data-stat="uptime"]'), zoom: text('.map-zoom') },
+          legend: [...document.querySelectorAll('#map-root .map-key')].map(k => k.textContent),
+          card: { hidden: document.querySelector('#map-root .map-card').hidden, title: text('.map-card-title'), lines: [...document.querySelectorAll('#map-root .map-card-line')].map(l => l.textContent) },
+          canvas: rectOf(cv), bitmap: { w: cv.width, h: cv.height }, dpr: window.devicePixelRatio, colours: inked,
+          accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        });
+      }
+      case 'mapDo': {
+        if (!mapPanel) return JSON.stringify({ ok: false, error: 'no map panel' });
+        const cv = document.querySelector('#map-root .map-canvas');
+        const at = (id) => { const p = mapPanel.screenPos(id); const r = cv.getBoundingClientRect(); return p ? { clientX: r.left + p.x, clientY: r.top + p.y } : null; };
+        if (a.op === 'fake') { mapFake = { project: { name: String(a.project || currentProjectName || 'probe') }, sessions: a.sessions || [], agents: a.agents || [], claims: a.claims || [], totalAgents: a.totalAgents, lanes: a.lanes || null, feed: a.feed || null }; mapRefresh(); }
+        else if (a.op === 'unfake') { mapFake = null; mapRefresh(); }
+        else if (a.op === 'fit') mapPanel.fit();
+        else if (a.op === 'churn') { clearInterval(mapChurn); mapChurn = null; if (Number(a.n) > 0) mapChurn = setInterval(() => { for (let i = 0; i < Number(a.n); i += 1) mapRefresh(); }, 100); }
+        else if (a.op === 'frameMs') mapPanel.setFrameMs(Number(a.ms));
+        else if (a.op === 'remount') { mapPanel.destroy(); mapPanel = mapMountPanel({ desynchronized: a.desynchronized === true, ...(Number.isFinite(Number(a.ms)) && a.ms ? { frameMs: Number(a.ms) } : {}) }); mapView(); mapRefresh(); }
+        else if (a.op === 'hover') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointermove', { ...p, bubbles: true })); }
+        else if (a.op === 'click') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointerdown', { ...p, bubbles: true })); cv.dispatchEvent(new PointerEvent('pointerup', { ...p, bubbles: true })); }
+        else if (a.op === 'wheel') { const r = cv.getBoundingClientRect(); cv.dispatchEvent(new WheelEvent('wheel', { clientX: r.left + (a.x || 100), clientY: r.top + (a.y || 100), deltaY: Number(a.deltaY) || 0, bubbles: true, cancelable: true })); }
+        else if (a.op === 'leave') cv.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        else if (a.op === 'edge') { const p = mapPanel.edgePos(String(a.id), 0.5); if (!p) return JSON.stringify({ ok: false, error: 'no edge ' + a.id }); const r = cv.getBoundingClientRect(); cv.dispatchEvent(new PointerEvent('pointermove', { clientX: r.left + p.x, clientY: r.top + p.y, bubbles: true })); }
+        else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
+        return JSON.stringify({ ok: true, state: mapPanel.state() });
+      }
       // backlog #33 (verify/probe-ask-panel.js): read the Ask panel, and operate it as a pointer or a keyboard would
       case 'askState': {
         if (!askPanel) return JSON.stringify({ ok: false, error: 'no ask panel' });
@@ -4341,7 +4544,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true });
       }
       // The Style tab's own sends, as the drop zone would make them: a path the host copies in.
-      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}) }); break;
+      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}), ...(a.mode ? { mode: a.mode } : {}) }); break;
       // The Match colours button, as a click would press it.
       case 'bgMatch': {
         const b = document.getElementById('style-match');
@@ -5449,6 +5652,7 @@ document.getElementById('roster-show-hidden').addEventListener('click', () => {
 });
 
 function renderRoster() {
+  mapRefresh();       // the Map reads the same roster (a no-op unless it is on screen and not lean)
   // Lean mode keeps only a strip of the working agents' still portraits; the panel is not drawn (nor its videos churned).
   if (leanOn) { paintLeanFaces(); return; }
   const showBtnEl = document.getElementById('roster-show-hidden');
@@ -6716,6 +6920,7 @@ function applyLean(payload) {
   leanNight = s.night;
   if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
   leanOn = on;
+  mapView();                       // lean stops the map outright; leaving lean draws it again
   if (on) usage('lean:on');
   document.body.classList.toggle('lean', on);
   closeLayoutMenu();
@@ -8290,6 +8495,8 @@ if (window.harness && window.harness.onWindowFocus) {
     document.body.classList.toggle('unfocused', !focused);
     windowFocused = focused === true;
     syncLeanMotion();
+    mapView();                     // the map moves only while the window is focused
+    if (windowFocused) mapPollNow();
   });
 }
 refreshDim();
@@ -8619,6 +8826,10 @@ function handleControl(msg) {
     renderAgentStats(msg.agentStats);
     agentPauses.sessionIs(msg.sessionId);     // seeds the id (a reattach, a reload, a reconnect), so the next different one is seen as a new session
     occupancy.session = sessionIdOf(msg.sessionId);
+    mapLive = true;                // from here on every top-level const the map reads exists
+    mapSince.clear();              // a (re)attach: whatever is already working started before this page saw it
+    mapRates = null;
+    mapView();
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (msg.maxSeats) seatMax = msg.maxSeats;
@@ -8653,6 +8864,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'mood') {
+    mapNoteMood(msg);
     roster.set(msg.agent, msg);
     renderRoster();
     reportTabStatus();
@@ -8831,6 +9043,11 @@ function handleControl(msg) {
     if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
     paintBar();
     reportTabStatus();
+    mapRefresh();
+    return;
+  }
+  if (msg.type === 'map') {
+    mapOnMap(msg);
     return;
   }
   if (msg.type === 'prompt') {

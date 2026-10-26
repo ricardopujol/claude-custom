@@ -40,7 +40,7 @@ const STATIC_KEYS = Object.freeze([
   'tab:merged-close', 'bedtime:start', 'quota:countdown-shown', 'ask:explain',
 ]);
 const STATIC_SET = new Set(STATIC_KEYS);
-const PANEL_IDS = Object.freeze(['agents', 'vault', 'bugvault', 'fog', 'git', 'models', 'projects', 'style', 'wand', 'resources', 'schedules', 'canvas', 'ask', 'games']);
+const PANEL_IDS = Object.freeze(['agents', 'vault', 'bugvault', 'fog', 'git', 'models', 'projects', 'style', 'wand', 'resources', 'schedules', 'canvas', 'ask', 'games', 'map']);
 const GAME_IDS = Object.freeze(['stack', 'merge', 'pipeline']);
 const PANEL_SET = new Set(PANEL_IDS.map((id) => `panel:${id}`));
 const GAME_SET = new Set(GAME_IDS.map((id) => `game:${id}:start`));

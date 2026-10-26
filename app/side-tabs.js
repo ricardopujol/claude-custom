@@ -53,6 +53,9 @@ const TABS = [
   // BACKLOG #41: three wait games (app/games-display.js). An ordinary module like the rest. It pauses itself and hands the keyboard
   // back to the terminal whenever Claude needs Ricardo or finishes, and it draws only while it is on screen.
   { id: 'games', label: 'Games', title: 'Stack the PRs, Merge 2048 and Pipeline: something to do while Claude works. It stops when Claude needs you' },
+  // BACKLOG #120: this project's sessions and agents as a live graph, with particles flowing along the edges of whatever is working. An
+  // ordinary module like the rest. It draws only while it is on screen, and animates only while the window is focused and not lean.
+  { id: 'map', label: 'Map', title: 'This project\'s sessions and agents as a live graph: particles flow along the edges of whatever is working' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to
