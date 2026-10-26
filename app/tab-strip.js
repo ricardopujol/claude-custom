@@ -471,7 +471,7 @@ function paintLean(doc, state, bridge) {
  * ~/.claude/STOP-ALL (host/kill-switch.js requestStopAll). Busy, and so deaf to a second press, until main answers, whatever it answers.
  */
 function paintStopAll(doc, bridge) {
-  const btn = doc && doc.getElementById('stop-all');
+  const btn = doc && typeof doc.getElementById === 'function' ? doc.getElementById('stop-all') : null;
   if (!btn || !bridge || typeof bridge.stopAll !== 'function') return;
   let busy = false;
   btn.onclick = () => {
@@ -528,7 +528,7 @@ if (typeof module !== 'undefined' && module.exports) {
   if (root.strip && typeof root.strip.onAccent === 'function') {
     root.strip.onAccent((hex) => paintAccent(root.document, hex));
   }
-  if (root.strip) paintStopAll(root.document, root.strip);
+  if (root.strip && typeof root.strip.stopAll === 'function') paintStopAll(root.document, root.strip);
   if (root.strip && typeof root.strip.onLean === 'function') {
     // the state on load; a push that already arrived is not undone by a slower answer
     let pushed = false;

@@ -879,6 +879,8 @@ test('paintStopAll: a bridge that throws or rejects frees the button too', async
 
 test('paintStopAll: no button, or no bridge member, is a no-op', () => {
   assert.doesNotThrow(() => paintStopAll({ getElementById: () => null }, {}));
+  assert.doesNotThrow(() => paintStopAll({}, { stopAll: () => {} }), 'a document with no getElementById (a vm page load)');
+  assert.doesNotThrow(() => paintStopAll(null, { stopAll: () => {} }));
   const btn = node('button');
   paintStopAll({ getElementById: () => btn }, {});
   assert.strictEqual(btn.onclick, null);

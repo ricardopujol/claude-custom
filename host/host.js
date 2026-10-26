@@ -1469,7 +1469,7 @@ const nightBudget = createNightBudget({
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => { noteNight(payload); nightBudget.update(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); },
+  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); nightBudget.update(payload); },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
