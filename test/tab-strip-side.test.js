@@ -36,15 +36,18 @@ const bridgeSpy = () => {
 };
 const child = (tab, cls) => tab.children.find(c => c.className.split(' ').includes(cls));
 const classesOf = (t) => t.className.split(' ');
-const SIDE = (o = {}) => entry({ key: 'k|side', label: 'feat/a · side', closable: false, side: true, parentKey: 'k', role: 'reader', ...o });
+const SIDE = (o = {}) => entry({ key: 'k|side', label: 'feat/a · side', closable: true, side: true, parentKey: 'k', role: 'reader', ...o });
 
-test('a side tab is drawn as a small tab: the "side" class, its label, and NO close button', () => {
+test('a side tab is drawn as a small tab: the "side" class, its label, and a close button of its own', () => {
   const doc = fakeDoc();
   paint(doc, { model: [entry({}), SIDE()] }, bridgeSpy());
   const [, side] = doc.byId.tabs.children;
   assert.ok(classesOf(side).includes('side'));
   assert.strictEqual(child(side, 'label').textContent, 'feat/a · side');
-  assert.strictEqual(child(side, 'x'), undefined, 'it ends with its branch tab, not by a click of its own');
+  const x = child(side, 'x');
+  assert.ok(x, 'Ricardo\'s look, 2026-10-26: a side tab could not be closed');
+  assert.match(x.title, /Close side session/);
+  assert.match(x.title, /branch tab's session keeps running/);
   assert.match(side.title, /only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite/, 'its hover says what it is, and only what is true');
   assert.match(side.title, /No Bash, PowerShell, Edit, Write or MCP/);
 });
@@ -55,14 +58,25 @@ test('an ordinary tab carries no "side" class, whatever else it has', () => {
   assert.ok(!classesOf(doc.byId.tabs.children[0]).includes('side'));
 });
 
-test('clicking a side tab selects it, and a Ctrl+click on it only selects: nothing closes it', () => {
+test('clicking a side tab selects it; its x and a Ctrl+click close it, by its own key', () => {
   const doc = fakeDoc();
   const bridge = bridgeSpy();
   paint(doc, { model: [SIDE()] }, bridge);
   const tab = doc.byId.tabs.children[0];
   tab.listeners.click({});
+  child(tab, 'x').listeners.click({ stopPropagation() {} });
   tab.listeners.click({ ctrlKey: true });
-  assert.deepStrictEqual(bridge.calls, [['select', 'k|side'], ['select', 'k|side']]);
+  assert.deepStrictEqual(bridge.calls, [['select', 'k|side'], ['close', 'k|side', undefined], ['close', 'k|side', true]]);
+});
+
+test('a side tab the model marks not closable draws no x and only selects on a Ctrl+click', () => {
+  const doc = fakeDoc();
+  const bridge = bridgeSpy();
+  paint(doc, { model: [SIDE({ closable: false })] }, bridge);
+  const tab = doc.byId.tabs.children[0];
+  assert.strictEqual(child(tab, 'x'), undefined);
+  tab.listeners.click({ ctrlKey: true });
+  assert.deepStrictEqual(bridge.calls, [['select', 'k|side']]);
 });
 
 test('right-clicking a side tab asks main for its menu, by its own key', () => {
