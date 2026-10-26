@@ -13,7 +13,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const root = process.argv[2] || 'C:/Users/ricar/VibeCode/agent-creator/portraits/_geom';
+const portraitsDir = require('../host/portraits-dir').resolvePortraitsDir().replace(/\\/g, '/');
+const root = process.argv[2] || `${portraitsDir}/_geom`;
 const outFile = process.argv[3] || 'C:/Users/ricar/VibeCode/claude-custom/.harness/actual-size.html';
 
 const STATES = ['sleeping', 'working', 'happy', 'stressed'];

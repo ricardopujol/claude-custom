@@ -31,6 +31,7 @@ const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
+const { resolvePortraitsDir } = require('./portraits-dir');
 const { userGlobalDir, migrationCandidates, adoptOnStart } = require('./global-portrait-store');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
@@ -413,9 +414,7 @@ const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, 
 // Portraits live with the agents, in the agent-creator repo, not here: they are
 // a property of the agent roster, which more than one project consumes. The
 // forge writes there and the harness reads from there.
-const PORTRAITS_DIR =
-  process.env.CLAUDE_CUSTOM_PORTRAITS ||
-  'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
+const PORTRAITS_DIR = resolvePortraitsDir();
 // FF7's other two tiers. Both are PER-INSTALL: HARNESS_DIR sits beside this
 // file, not in the project folder, so an upload made in one project shows in
 // every project -- an agent is the same character everywhere (Ricardo,
