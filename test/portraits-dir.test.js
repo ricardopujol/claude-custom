@@ -3,6 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
+const { tmpDir } = require('./tmp-dir');
 const path = require('node:path');
 const { resolvePortraitsDir, FLAT_DIR, DEV_DIR, MARKER } = require('../host/portraits-dir');
 
@@ -34,15 +35,13 @@ test('a dev folder without the marker (empty, or a plain file) never wins', () =
 });
 
 test('the default existence check is real: an empty dev dir loses, a marked one wins', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pd-'));
-  try {
-    const dev = path.join(root, 'dev');
-    fs.mkdirSync(dev);
-    const exists = (p) => fs.existsSync(p.replace(DEV_DIR, dev));
-    assert.equal(resolvePortraitsDir({}, exists), FLAT_DIR);
-    fs.writeFileSync(path.join(dev, MARKER), '');
-    assert.equal(resolvePortraitsDir({}, exists), DEV_DIR);
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  const root = tmpDir();
+  const dev = path.join(root, 'dev');
+  fs.mkdirSync(dev);
+  const exists = (p) => fs.existsSync(p.replace(DEV_DIR, dev));
+  assert.equal(resolvePortraitsDir({}, exists), FLAT_DIR);
+  fs.writeFileSync(path.join(dev, MARKER), '');
+  assert.equal(resolvePortraitsDir({}, exists), DEV_DIR);
 });
 
 test('resolves on every call: a dev folder that appears later is picked up', () => {
