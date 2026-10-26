@@ -16,7 +16,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-shell-gu
 const PROBE = strip(SRC);
 // the machinery after the case list: the cases themselves legitimately spell taskkill, Stop-Process and the like
 const CODE = PROBE.slice(PROBE.indexOf('const git = (cwd'));
-const { buildCases, REG_KEY, HOOK } = require('../verify/probe-shell-guard.js');
+const { buildCases, attemptCmd, REG_KEY, HOOK } = require('../verify/probe-shell-guard.js');
 
 const S = 'C:/Users/ricar/AppData/Local/cc-shell-guard-test';
 const CTX = { scratch: S, repo: `${S}/repo`, port: 5555, victimPid: 4242 };
@@ -39,6 +39,27 @@ test('no case names a real process: kill-by-name uses the canary name only', () 
   for (const c of CASES.filter((x) => /taskkill/i.test(x.cmd) && x.want !== 'allow')) assert.doesNotMatch(c.cmd, /\/PID\b/i, c.id);
   const allowKill = CASES.find((c) => c.id === 'allow-taskkill-pid');
   assert.strictEqual(allowKill.cmd, `taskkill /PID ${CTX.victimPid} /F`);
+});
+
+test('a retry never reuses a stale victim pid: every attempt of the taskkill case gets a fresh, live victim of its own', () => {
+  const c = CASES.find((x) => x.id === 'allow-taskkill-pid');
+  assert.strictEqual(typeof c.victimCmd, 'function');
+  let next = 9000;
+  const killed = [];
+  const fake = { spawnFn: () => ({ pid: next++, alive: true }), kill: (v) => { killed.push(v.pid); v.alive = false; } };
+  const w = { victim: null };
+  assert.strictEqual(attemptCmd(w, c, fake), 'taskkill /PID 9000 /F');
+  w.victim.alive = false;   // attempt 1 killed it and its result was lost: the retry must not name 9000 again
+  assert.strictEqual(attemptCmd(w, c, fake), 'taskkill /PID 9001 /F');
+  assert.deepStrictEqual(killed, [], 'a dead victim is never killed again by pid');
+  assert.strictEqual(attemptCmd(w, c, fake), 'taskkill /PID 9002 /F');
+  assert.deepStrictEqual(killed, [9001], 'a live leftover is ended (it is ours and alive) before its replacement');
+  assert.throws(() => attemptCmd({ victim: null }, c, { spawnFn: () => ({ pid: 1, alive: false }), kill() {} }), /did not start/);
+  assert.strictEqual(attemptCmd(w, CASES.find((x) => x.id === 'allow-ls'), fake), 'ls');
+  // and runCase really sends that per-attempt command, inside the retry loop
+  const loop = PROBE.slice(PROBE.indexOf('for (let attempt = 0;'), PROBE.indexOf('return out;'));
+  assert.match(loop, /const cmd = attemptCmd\(w, c\);[\s\S]*runClaude\(w, \{ \.\.\.c, cmd \}/);
+  assert.match(loop, /norm\(u\.command\) === norm\(cmd\)/);
 });
 
 test('every URL points at localhost or a name that cannot resolve (.invalid); no real host, repo or token', () => {
@@ -128,7 +149,7 @@ test('safety rules of the run: env stripped, haiku, one claude at a time under t
   assert.match(PROBE, /HEAVY_LOCK_HELD/);
   assert.match(PROBE, /spawnWithTimeout/);
   assert.match(PROBE, /timeoutMs: RUN_TIMEOUT_MS/);
-  assert.match(PROBE, /killPidTree\(victim\.pid\)/);
+  assert.match(PROBE, /if \(v && v\.alive\) require\('\.\.\/host\/kill-tree'\)\.killPidTree\(v\.pid\)/);
   assert.doesNotMatch(PROBE, /Promise\.all|Promise\.allSettled|\.map\(async/, 'no concurrency: one claude at a time');
   assert.strictEqual(HOOK, 'C:/Users/ricar/.claude/skills/worktree/scripts/shell-guard.js');
   assert.match(PROBE, /command: `node "\$\{HOOK\}"`/);
