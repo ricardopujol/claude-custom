@@ -20,7 +20,7 @@
 
 const { samePath, normalizeProjectPath } = require('./project-path');
 
-function decideAttach({ requestedCwd, occupant } = {}) {
+function decideAttach({ requestedCwd, occupant, requestedSide = false } = {}) {
   // Asked first: if we do not know which project we WANT, no answer about the
   // occupant can be right. main.js reads this from an environment variable,
   // so "unset" is an ordinary input, not a programming error.
@@ -36,7 +36,11 @@ function decideAttach({ requestedCwd, occupant } = {}) {
     return { action: 'refuse', reason: 'unidentified' };
   }
 
-  if (samePath(occupant.cwd, requestedCwd)) return { action: 'attach' };
+  if (samePath(occupant.cwd, requestedCwd)) {
+    // #81: a folder has its own host and, beside it, a read-only side host. Each is looked for as what it is.
+    if ((occupant.side === true) !== (requestedSide === true)) return { action: 'refuse', reason: 'side-session', occupiedBy: occupant.cwd };
+    return { action: 'attach' };
+  }
   return { action: 'refuse', reason: 'other-project', occupiedBy: occupant.cwd };
 }
 

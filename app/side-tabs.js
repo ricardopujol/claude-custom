@@ -35,15 +35,24 @@ const TABS = [
   { id: 'projects', label: 'Projects', title: 'Switch to another project, each in its own window' },
   { id: 'style', label: 'Style', title: 'How the harness looks' },
   // BACKLOG #51: favourite skills as emoji buttons. An ordinary module like the rest: it docks, moves and
-  // hides through the same layout (app/dock-layout.js), which this entry does not touch.
+  // hides through the same layout (app/dock-tree.js), which this entry does not touch.
   { id: 'wand', label: 'Wand', title: 'Favourite skills: one click types the command, you press Enter' },
   // BACKLOG #63: CPU and memory per session, per project and in total. An ordinary module like the rest: it docks, moves
   // and hides through the same layout, and it samples only while it is showing (app/resources-service.js).
   { id: 'resources', label: 'Resources', title: 'CPU and memory: which session is using the machine' },
+  // BACKLOG #119 A7: what will run, when, from which session: wakeups, loops, bedtime nights and cron jobs of every session in one list. An
+  // ordinary module like the rest: it docks, moves and hides through the same layout. Read-only; a click selects the session's tab.
+  { id: 'schedules', label: 'Schedules', title: 'What will run, when, and from which session: wakeups, loops, bedtime nights and cron jobs' },
   // BACKLOG #71: a panel the running Claude builds itself, a sandboxed page per tab. An ordinary module like the rest, with
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.
   { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
+  // BACKLOG #33: ask about this repo, or have the code you selected explained, by a local model (or Haiku / Sonnet on your plan).
+  // An ordinary module like the rest: it docks, moves and hides through the same layout.
+  { id: 'ask', label: 'Ask', title: 'Ask where something is in this repo, or have selected code explained: a local model answers, and every place is a link' },
+  // BACKLOG #41: three wait games (app/games-display.js). An ordinary module like the rest. It pauses itself and hands the keyboard
+  // back to the terminal whenever Claude needs Ricardo or finishes, and it draws only while it is on screen.
+  { id: 'games', label: 'Games', title: 'Stack the PRs, Merge 2048 and Pipeline: something to do while Claude works. It stops when Claude needs you' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

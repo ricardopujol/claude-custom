@@ -40,6 +40,14 @@ test('toastModel: filed is "Added to the inbox" with the note\'s first line, and
   assert.strictEqual(d.toastModel({ state: 'filed', text: 'x', undoable: false }).undo, false);
 });
 
+test('toastModel (#79, Ricardo 2026-10-09): the line names only the parts this note created', () => {
+  const line = (over) => d.toastModel({ state: 'filed', text: 'x', undoable: true, createdBacklog: true, ...over }).line;
+  assert.strictEqual(line({ createdFolder: true, createdIgnore: true }), 'Created documentation\\, the backlog and its .gitignore entry, and filed your note');
+  assert.strictEqual(line({ createdFolder: true, createdIgnore: false }), 'Created documentation\\ and the backlog, and filed your note');
+  assert.strictEqual(line({ createdFolder: false, createdIgnore: false }), 'Created the backlog and filed your note');
+  assert.strictEqual(line({ createdFolder: undefined }), 'Created the backlog and filed your note');
+});
+
 test('toastModel (#79): a note that created the backlog says so, and still offers Undo only while Undo is exact', () => {
   assert.deepStrictEqual(d.toastModel({ state: 'filed', text: 'first', undoable: true, createdBacklog: true }),
     { kind: 'added', line: 'Created the backlog and filed your note', note: 'first', undo: true, copy: false });
@@ -97,4 +105,14 @@ test('short: a long note is cut for one line, never mid surrogate pair', () => {
   assert.strictEqual(d.short('x'.repeat(70), 64).length, 64);
   assert.ok(d.short('x'.repeat(70), 64).endsWith('…'));
   assert.ok(!/[\uD800-\uDBFF]…$/.test(d.short('a'.repeat(62) + '😀😀', 64)));
+});
+
+test('toastModel (#146 D3): a .gitignore that was left alone is said so', () => {
+  const m = d.toastModel({ state: 'filed', text: 'x', undoable: true, createdBacklog: true, createdFolder: true, createdIgnore: false, ignoreSkipped: true });
+  assert.strictEqual(m.line, "Created documentation\\ and the backlog, and filed your note. Your .gitignore wasn't changed.");
+});
+
+test('reasonText (#146 D4): the two permanent create failures have words', () => {
+  assert.match(d.reasonText('docs-blocked'), /file named documentation/);
+  assert.match(d.reasonText('gitignore-blocked'), /\.gitignore can't be changed/);
 });

@@ -33,7 +33,7 @@ test('the keeper and the night are built once, and the night pushes through the 
   const block = HOST.slice(HOST.indexOf('const night = createNightStatus({'), HOST.indexOf('});', HOST.indexOf('const night = createNightStatus({')));
   assert.match(block, /bedtime: createBedtime\(\)/);
   assert.match(block, /countPrs: \(since\) => countNightPrs\(CWD, since\)/);
-  assert.match(block, /onChange: \(payload\) => broadcastControl\(\{ type: 'bedtime', bedtime: payload \}\)/);
+  assert.match(block, /onChange: \(payload\) => \{ noteNight\(payload\); broadcastControl\(\{ type: 'bedtime', bedtime: payload /);
 });
 
 test('every hook event reaches the keeper and the night, and a ScheduleWakeup goes no further than the night', () => {
@@ -41,16 +41,25 @@ test('every hook event reaches the keeper and the night, and a ScheduleWakeup go
   const give = body.indexOf('occupancy.handle(ev);');
   const keeper = body.indexOf('if (promptKeeper.handle(ev)) broadcastControl({ type: \'prompt\', prompt: promptKeeper.snapshot() });');
   const nightAt = body.indexOf('night.handle(ev);');
-  const occOnly = body.indexOf('if (isOccupancyOnly(ev)) return;');
+  const occOnly = body.indexOf('if (isOccupancyOnly(ev)) { mood.handle(ev); return; }');   // BACKLOG #55: the mood engine reads the file tools' PreToolUse, for reading and writing
   const bedOnly = body.indexOf('if (isBedtimeOnly(ev)) return;');
   for (const [name, at] of [['keeper', keeper], ['night', nightAt], ['bedtime-only return', bedOnly]]) assert.ok(at !== -1, name);
   assert.ok(give < keeper && give < nightAt, 'after the producer, before any early return: the main session\'s own file-tool calls keep a night awake');
   assert.ok(keeper < occOnly && nightAt < occOnly, 'before the occupancy-only return, so a Read in the night is seen');
   assert.ok(occOnly < bedOnly, 'then the two early returns');
   for (const consumer of ['attention.handle(ev)', 'mood.handle(ev)', 'processes.handle(ev)', "console.log(`[hook]"]) {
-    assert.ok(body.indexOf(consumer) > bedOnly, `${consumer} must come after the bedtime-only return`);
+    assert.ok(body.lastIndexOf(consumer) > bedOnly, `${consumer} must come after the bedtime-only return`);
   }
   assert.ok(body.indexOf("if (ev.event === 'Status')") < keeper, 'the Status document never reaches them');
+});
+
+test('attention hears every hook event BEFORE the occupancy-only return: a main-session Read cancels the shell wait (PR #147 D1)', () => {
+  const body = handlerBody();
+  const activity = body.indexOf('attention.activity(ev);');
+  assert.ok(activity !== -1, 'attention.activity(ev) is called');
+  assert.ok(activity < body.indexOf('if (isOccupancyOnly(ev)) { mood.handle(ev); return; }'), 'before the occupancy-only return');
+  assert.ok(activity > body.indexOf("if (ev.event === 'Status')"), 'after the Status document, which is not a hook');
+  assert.strictEqual((body.match(/attention\.activity\(/g) || []).length, 1);
 });
 
 test('the person\'s words are never logged by the keeper wiring (the hook debug line is the only place a payload prints)', () => {

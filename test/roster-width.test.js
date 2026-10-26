@@ -149,7 +149,8 @@ test('persistence fails CLOSED: only an explicit choice is stored', () => {
   // COUNT THE SAVES, don't parse the calls (Mortimer, PR #33: a pattern that
   // matched the call's shape waved a second persisting site through).
   const saves = [...grips.matchAll(/commitPlacement\(/g)];
-  assert.strictEqual(saves.length, 1, `exactly one divider path may save; found ${saves.length}`);
+  // Two human paths: a grip released, and (D4) an arrow key pressed on a focused divider (renderer-dock-wiring pins that one).
+  assert.strictEqual(saves.length, 2, `exactly two divider paths may save (release, arrow key); found ${saves.length}`);
   const up = grips.indexOf("addEventListener('pointerup'");
   const move = grips.indexOf("addEventListener('pointermove'");
   assert.ok(up !== -1 && move !== -1 && saves[0].index > up,

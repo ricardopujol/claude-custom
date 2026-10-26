@@ -98,6 +98,8 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       closable: t.isDev !== true && !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
+      // OSC 7501 (BACKLOG #116): what the CLI says it is doing, already cleaned by the shell (app/tab-shell.js sanitizeStatus); null for none.
+      program: st && st.program && typeof st.program === 'object' && !Array.isArray(st.program) ? st.program : null,
       // Backlog #52: the session is in a /bedtime night (a real true only).
       night: !!st && st.night === true,
       // Backlog #39: the "where are we" summary for the hover card (cut down in the shell by app/tab-status.js cleanSummary; null when none).
@@ -208,7 +210,7 @@ function initialSelection(tabs, launchedFrom, { keyOf = identity, isInside = () 
   return keyOf(containing[0].path);
 }
 
-const api = { stripModel, select, neighbour, afterClose, initialSelection, phaseText, badgeFor };
+const api = { stripModel, select, neighbour, afterClose, initialSelection, phaseText, badgeFor, pulseFor };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

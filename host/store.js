@@ -18,6 +18,23 @@
  *                                  withLock and readState: a file it could not
  *                                  read is never written over.
  *
+ *   .harness/state/medals.json     host/medals.js, STORE_KEY 'medals' (BACKLOG #80: the medals
+ *                                  Ricardo gives agents). Install-wide, keyed by agent name. Given
+ *                                  by hand, so like the wand it opts in to withLock and readState.
+ *   .harness/state/usage-counters.json  host/usage-counters.js, STORE_KEY 'usage-counters' (audit move 2: how often
+ *                                  each feature is used; keys and timestamps only). Install-wide, never shown in the UI;
+ *                                  it opts in to withLock and readState, and an unreadable file is never written over.
+ *   .harness/state/ask-counts.json host/ask-counts.js, STORE_KEY 'ask-counts' (BACKLOG #33 gamification: the Ask
+ *                                  explainer's questions answered and places opened). Install-wide, one explainer per
+ *                                  person. A count can't be recomputed, so like the medals it opts in to withLock and
+ *                                  readState: a file it could not read is never written over.
+ *   .harness/state/schedules.json  host/schedules-control.js, STORE_KEY 'schedules' (BACKLOG #119 A7, the Schedules panel: every
+ *                                  session's wakeups, loops, bedtime night and cron jobs). Install-wide, one entry per host (keyed by
+ *                                  its port), each host writes only its own inside withLock; regenerable, so a corrupt file is
+ *                                  replaced, while a file that could not be read just now is never written over.
+ *   .harness/state/bubbles.json    host/bubbles.js, STORE_KEY 'bubbles' (BACKLOG #80: the speech
+ *                                  bubbles' on/off switch). Install-wide, regenerable.
+ *
  *   .harness/state/vault.json      host/bugvault.js, STORE_KEY 'vault' (the bug
  *                                  vault; irreplaceable, so it opts in to
  *                                  withLock and readState).
@@ -26,6 +43,9 @@
  *   .harness/state/provider.json   host/host.js READS 'provider'. Nothing in
  *                                  this repo writes it; a missing file is the
  *                                  default, 'claude-max'.
+ *   'wait-games'                   written by Electron MAIN, app/main.js (the games' score store, host/game-scores.js,
+ *                                  BACKLOG #41): the best of each wait game, install-wide. It opts in to withLock for a
+ *                                  raise, since another window may be raising the same file.
  *   'look-global'                  written by Electron MAIN, app/main.js UI_KEY,
  *                                  not by the host (see below).
  *
@@ -59,7 +79,8 @@
  *
  * The host owns every write. The GUI reads through the control protocol and
  * never writes. ONE EXCEPTION (Miguel, feat/project-look #2): Electron MAIN
- * writes the 'look-global' key -- the install-wide unfocused-window dim --
+ * writes the 'look-global' key -- the install-wide unfocused-window dim, and
+ * lean mode's list of dismissed /bedtime nights (#62, `leanDismissed`) --
  * because focus is a fact only main knows and no host is involved. Its own
  * key, regenerable, last-writer-wins by design: two windows moving the same
  * slider should end on whichever moved last.
@@ -252,10 +273,10 @@ function createStore({ dir } = {}) {
    * So the vault opts in, and everything else keeps the old, documented,
    * accepted risk.
    */
-  function withLock(name, fn) {
+  function withLock(name, fn, opts) {
     const file = pathOf(name);          // validates the name before touching disk
     fs.mkdirSync(dir, { recursive: true });
-    return withFileLock(`${file}.lock`, fn);
+    return withFileLock(`${file}.lock`, fn, opts);
   }
 
   return { read, readState, write, update, withLock, pathOf, dir };

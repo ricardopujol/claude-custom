@@ -7,7 +7,7 @@
  *                            | { ok: false, reason: 'ollama-down' }
  *                            | { ok: false, reason: 'model-missing', model, embed }   (the ANSWER model)
  *   embed(texts[])          -> { ok: true, vectors } | { ok: false, reason: 'ollama-down'|'timeout'|'model-missing'|'bad-reply'|'http', ... }
- *   generate({system,prompt}) -> { ok: true, text } | { ok: false, reason: same set }
+ *   generate({system,prompt,numPredict?,temperature?,keepAlive?,neverShorten?}) -> { ok: true, text } | { ok: false, reason: same set }
  *   unload()                -> asks Ollama to drop the answer model now (keep_alive 0)
  *
  * A missing EMBED model is not fatal: the index then runs on keywords alone and the panel says so. A missing answer model
@@ -15,9 +15,10 @@
  * code excerpts are never logged here.
  *
  * keep_alive: the answer model stays loaded 5 minutes after a question, the embedder 2. Measured 2026-10-09 (reviews/claude-custom/
- * 2026-10-09-ask-repo-measure.md): Ollama keeps ONE generation model in memory on the 8 GB GPU, so asking with a model other than
- * the summaries client's llama3.2:3b costs a 4-6 s load, and the next summary tick a ~4 s reload. Default answer model qwen3.5:4b
- * (best graded answers); it's a thinking-capable model, so `think: false` is sent (every measurement ran with it off).
+ * 2026-10-09-ask-repo-measure.md) Ollama swapped a second generation model in at a 4-6 s load; since flash attention and the q8_0 KV
+ * cache the server keeps TWO resident here (this model and the summaries client's llama3.2:3b: ~5.8 GB on the 8 GB card, measured
+ * 2026-10-13, reviews/claude-custom/2026-10-14-ollama-gpu-91.md), so the old swap isn't paid but the memory is. Default answer
+ * model qwen3.5:4b (best graded answers); it's a thinking-capable model, so `think: false` is sent (every measurement ran with it off).
  */
 
 const DEFAULT_URL = 'http://127.0.0.1:11434';
@@ -25,6 +26,12 @@ const DEFAULT_ANSWER_MODEL = 'qwen3.5:4b';
 const DEFAULT_EMBED_MODEL = 'snowflake-arctic-embed2:latest';
 const NUM_CTX = 8192;
 const NUM_PREDICT = 350;
+// Background callers (speech bubbles, the docs-drift check) pass this as `keepAlive`: they are rare, fire-and-forget decoration or
+// housekeeping, so the 3.2 GB answer model needn't stay warm 5 minutes for them (BACKLOG #91). Ask answers keep the 5m default.
+const KEEP_ALIVE_BACKGROUND = '45s';
+const PS_TIMEOUT_MS = 1_500;
+const UNIT_SECONDS = { s: 1, m: 60, h: 3600 };
+const secondsOf = (v) => { const m = /^(\d+)([smh])$/.exec(typeof v === 'string' ? v.trim() : ''); return m ? Number(m[1]) * UNIT_SECONDS[m[2]] : null; };
 
 const usable = (n, fallback) => (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : fallback);
 const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
@@ -32,7 +39,7 @@ const withTag = (m) => (m.includes(':') ? m : m + ':latest');
 
 function createAskOllama({
   baseUrl = DEFAULT_URL, answerModel = DEFAULT_ANSWER_MODEL, embedModel = DEFAULT_EMBED_MODEL, fetchImpl = globalThis.fetch,
-  tagsTimeoutMs, embedTimeoutMs, generateTimeoutMs,
+  tagsTimeoutMs, embedTimeoutMs, generateTimeoutMs, now = Date.now,
 } = {}) {
   const base = String(baseUrl).replace(/\/+$/, '');
   const tagsMs = usable(tagsTimeoutMs, 5_000);
@@ -91,11 +98,32 @@ function createAskOllama({
     return good ? { ok: true, vectors: v } : { ok: false, reason: 'bad-reply' };
   }
 
-  async function generate({ system, prompt }) {
+  /**
+   * keep_alive belongs to the LOADED model and the last request's value wins, so a short one from a background caller would cut a
+   * longer window an Ask just set. With `neverShorten`, the model's remaining time in Ollama's /api/ps (machine-wide, so other hosts'
+   * requests count) is read first and the value sent is max(keepAlive, remaining), whole seconds rounded up. Not loaded, ps down,
+   * slow (1.5 s) or unreadable: the plain keepAlive.
+   */
+  async function keepAliveFor(keepAlive, neverShorten) {
+    const value = typeof keepAlive === 'string' && keepAlive.trim() ? keepAlive : '5m';
+    const floor = secondsOf(value);
+    if (!neverShorten || floor === null) return value;
+    const r = await call('/api/ps', { timeoutMs: PS_TIMEOUT_MS });
+    if (!r.reached || r.status !== 200 || !isObject(r.body) || !Array.isArray(r.body.models)) return value;
+    const want = withTag(answerModel);
+    const loaded = r.body.models.filter(isObject).find(m => withTag(String(m.name || m.model || '')) === want);
+    const until = loaded ? Date.parse(loaded.expires_at) : NaN;
+    if (!Number.isFinite(until)) return value;
+    const remaining = Math.ceil((until - now()) / 1000);
+    return remaining > floor ? remaining + 's' : value;
+  }
+
+  async function generate({ system, prompt, numPredict, temperature, keepAlive, neverShorten }) {
+    const keep = await keepAliveFor(keepAlive, neverShorten === true);
     const r = await call('/api/generate', {
       method: 'POST',
       timeoutMs: generateMs,
-      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: '5m', options: { num_ctx: NUM_CTX, temperature: 0, num_predict: NUM_PREDICT } },
+      json: { model: answerModel, system, prompt, stream: false, think: false, keep_alive: keep, options: { num_ctx: NUM_CTX, temperature: typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 ? temperature : 0, num_predict: usable(numPredict, NUM_PREDICT) } },
     });
     const bad = failure(r, answerModel);
     if (bad) return bad;
@@ -110,4 +138,4 @@ function createAskOllama({
   return { check, embed, generate, unload, answerModel, embedModel };
 }
 
-module.exports = { createAskOllama, DEFAULT_URL, DEFAULT_ANSWER_MODEL, DEFAULT_EMBED_MODEL, NUM_CTX, NUM_PREDICT };
+module.exports = { createAskOllama, DEFAULT_URL, DEFAULT_ANSWER_MODEL, DEFAULT_EMBED_MODEL, NUM_CTX, NUM_PREDICT, KEEP_ALIVE_BACKGROUND };

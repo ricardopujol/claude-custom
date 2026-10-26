@@ -2,7 +2,7 @@
 /**
  * Review verdicts for the Git drawer (documentation/DESIGN_GIT_TREE.md, "Enhancement #46").
  *
- * Reviewers (Dexter, Miguel, Mortimer) write their report to
+ * Reviewers (Dexter, Miguel, Mortimer, El Gordo, Vladimir) write their report to
  *   ~/.claude/reviews/<project>/YYYY-MM-DD-<branch-dir>-<reviewer>[-rN].md
  * and the verdict line is read the merge gate's way (the worktree skill's review-status.ps1), best effort.
  * The LATEST report per reviewer is its latest date, then highest round (latest() says why that differs
@@ -18,11 +18,13 @@ const nodeFs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const REVIEWERS = ['dexter', 'miguel', 'mortimer'];
+const REVIEWERS = ['dexter', 'miguel', 'mortimer', 'gordo', 'vladimir'];
 const MAX_VERDICT_CHARS = 160;
 
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-const display = reviewer => reviewer.charAt(0).toUpperCase() + reviewer.slice(1);
+// Reports are filed under the short name; the person Ricardo knows is "El Gordo".
+const DISPLAY_NAMES = { gordo: 'El Gordo' };
+const display = reviewer => DISPLAY_NAMES[reviewer] || reviewer.charAt(0).toUpperCase() + reviewer.slice(1);
 
 /** The worktree layout's folder name for a branch (host/git-tree.js laneFolder): `feat/x` -> `feat-x`. */
 const branchDir = branch => String(branch).replace(/\//g, '-');

@@ -139,3 +139,97 @@ test('S19: quiet is true only for an exact statusInHeader: true in a readable fi
   assert.strictEqual(quiet(null), false);
   assert.strictEqual(quiet(''), false);
 });
+
+// --- kill tests for the release-176 survivors: M14, the ENDED half of the sweep protocol (BACKLOG #94) ------------------------
+//
+// sweepEnded is not exported; what it read is observable in the SEEDED rescan a failed sweep starts for the parents it had ended
+// (the second PowerShell run), so these go through killTree with `run` injected. No process is touched.
+
+// What a failed sweep that printed `stdout` makes the fallback rescan: the [{id,start,exit}] in the seeded script, or null when no
+// rescan was started.
+function rescanFor(stdout) {
+  const runs = [];
+  killTree({ pid: 100, kill() {} }, 0, {
+    run: (...a) => { runs.push(a); return runs.length === 1 ? { status: 5, stdout } : { status: 0 }; },
+    proveBatch: () => new Map(),
+  });
+  const seeded = runs.slice(1).find(r => r[0] === 'powershell.exe');
+  if (!seeded) return null;
+  const script = seeded[1][3];
+  assert.match(script, /^\$ErrorActionPreference='Stop'\r?\n\$root=100\r?\n/);
+  assert.match(script, /\$seeded=\$true\r?\n\$pending=@\(\);\$known=@\{\};\$endedIds=@\{\}\r?\n\$levelParents=@\(/);
+  assert.match(script, /\)\r?\n\$kill=@\(\)/);
+  assert.doesNotMatch(script, /\$seeded=\$false/, 'a rescan is seeded, not rooted');
+  assert.strictEqual(seeded[2].timeout, 10000);
+  const list = /\$levelParents=@\((.*)\)\r?\n\$kill=@\(\)/.exec(script)[1];
+  return list ? list.split(',').map((e) => {
+    const m = /^\[pscustomobject\]@\{id=(\d+);start=(\d+);exit=(\d+);alive=\$false\}$/.exec(e);
+    assert.ok(m, `an entry in the seed list: ${e}`);
+    return { id: Number(m[1]), start: m[2], exit: m[3] };
+  }) : [];
+}
+const ent = (id, start, exit) => ({ id, start: String(start), exit: String(exit) });
+
+test('M14: the parents a failed sweep had ENDED are rescanned, each with its pid, start and exit bound', { skip: !onWin }, () => {
+  assert.deepStrictEqual(rescanFor('ENDED 1:2:3 4:5:6\n'), [ent(1, 2, 3), ent(4, 5, 6)]);
+  assert.deepStrictEqual(rescanFor('ENDED 11:22:33\r\n'), [ent(11, 22, 33)], 'CRLF');
+  assert.deepStrictEqual(rescanFor('ENDED 123456:9876543210:9876543211\n'), [ent(123456, '9876543210', '9876543211')], 'multi-digit numbers');
+  assert.deepStrictEqual(rescanFor('ENDED 1:2:3 \n'), [ent(1, 2, 3)], 'trailing blanks are allowed');
+});
+
+test('M14: only the LAST complete ENDED line counts, and noise lines are not ENDED lines', { skip: !onWin }, () => {
+  assert.deepStrictEqual(rescanFor('ENDED 1:1:1\nENDED 2:2:2\nnoise\n'), [ent(2, 2, 2)]);
+  assert.deepStrictEqual(rescanFor('ENDED 1:1:1\nALIVE 5:5\nENDED 2:2:2 3:3:3\nALIVE 6:6\n'), [ent(2, 2, 2), ent(3, 3, 3)]);
+});
+
+test('M14: a line that is not exactly ENDED followed by pid:start:exit triples is not read', { skip: !onWin }, () => {
+  for (const bad of [
+    ' ENDED 1:2:3\n', 'xENDED 1:2:3\n', 'ENDED 1:2:3x\n', 'ENDED 1:2:3 x\n', 'ENDED 1:2\n', 'ENDED 1:2:3:4\n', 'ENDED 1 2 3\n',
+    'ENDED a:2:3\n', 'ENDED 1:b:3\n', 'ENDED 1:2:c\n', 'ENDED 1:2:3 4:5\n', 'ended 1:2:3\n', 'ENDED1:2:3\n',
+  ]) assert.strictEqual(rescanFor(bad), null, JSON.stringify(bad));
+});
+
+test('M14: a bare ENDED line names no parent, so no rescan starts', { skip: !onWin }, () => {
+  assert.strictEqual(rescanFor('ENDED\n'), null);
+  assert.strictEqual(rescanFor('ENDED \n'), null);
+  assert.strictEqual(rescanFor(''), null);
+  assert.strictEqual(rescanFor(undefined), null);
+  assert.strictEqual(rescanFor(null), null);
+});
+
+test('M14: an unterminated last line may be cut mid-number and is never read; the line before it is', { skip: !onWin }, () => {
+  assert.strictEqual(rescanFor('ENDED 1:2:3'), null, 'a single unterminated line names nothing');
+  assert.deepStrictEqual(rescanFor('ENDED 1:2:3\nENDED 4:5:6 7:8:9'), [ent(1, 2, 3)]);
+  assert.strictEqual(rescanFor('ENDED 10:5:1'), null);
+});
+
+test('M14: at most 200 ended parents are rescanned, the first 200 of the line', { skip: !onWin }, () => {
+  const triples = Array.from({ length: 250 }, (_, i) => `${i + 1}:${i + 1000}:${i + 2000}`);
+  const got = rescanFor(`ENDED ${triples.join(' ')}\n`);
+  assert.strictEqual(got.length, 200);
+  assert.deepStrictEqual(got[0], ent(1, 1000, 2000));
+  assert.deepStrictEqual(got[199], ent(200, 1199, 2199));
+});
+
+test('M14: a sweep that finished (exit 0) starts no rescan, whatever it printed', { skip: !onWin }, () => {
+  const runs = [];
+  killTree({ pid: 100, kill() {} }, 0, {
+    run: (...a) => { runs.push(a); return { status: 0, stdout: 'ENDED 1:2:3\n' }; },
+    proveBatch: () => new Map(),
+  });
+  assert.strictEqual(runs.length, 1);
+});
+
+test('M14: a rescan that throws is swallowed', { skip: !onWin }, () => {
+  let n = 0;
+  assert.doesNotThrow(() => killTree({ pid: 100, kill() {} }, 0, {
+    run: () => { n += 1; if (n === 3) throw new Error('boom'); return n === 1 ? { status: 5, stdout: 'ENDED 1:2:3\n' } : { status: 0 }; },
+    proveBatch: () => new Map(),
+  }));
+  assert.strictEqual(n, 3);
+});
+
+test('M14: sweepPids accepts trailing blanks on the ALIVE line, as ENDED does', () => {
+  assert.deepStrictEqual(sweepPids('ALIVE 1:2 \n'), [{ pid: 1, start: '2' }]);
+  assert.deepStrictEqual(sweepPids('ALIVE 1:2\t\n'), [{ pid: 1, start: '2' }]);
+});

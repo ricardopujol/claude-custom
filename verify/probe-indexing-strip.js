@@ -19,6 +19,8 @@ const { killChildTree } = require('../host/kill-tree');
      5  with no backlog file, a note creates it (title, Inbox, the note) and the toast says "Created the backlog and
         filed your note" with Undo; Undo removes the file too (#79)
      6  the list opens from the counter, shows both notes, and closes again
+     7  with no documentation folder at all, a note makes the folder, the backlog and the sync-docs .gitignore block
+        (Ricardo, 2026-10-09); Undo takes all three out again
 
    Safe: the host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing billable runs; the journal and the project docs
    are temp files (CLAUDE_CUSTOM_INDEXING_JOURNAL, a temp project), so the real documentation is never touched. The
@@ -26,7 +28,7 @@ const { killChildTree } = require('../host/kill-tree');
    the real model is never asked anything. ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are removed from the
    children's environment first. Only the two processes started here are killed, by their own pid. */
 const { spawn, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -50,8 +52,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-indexing-'));
 const project = path.join(tmp, 'probeproj');
 const docs = path.join(project, 'documentation');
 fs.mkdirSync(docs, { recursive: true });
-fs.mkdirSync(path.join(project, '.git'));             // a backlog is only ever created in a git root (PR #138)
-fs.writeFileSync(path.join(project, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+// a backlog is only ever created in a git root (PR #138); a REAL repo, because Undo asks git whether the .gitignore was committed (PR #146)
+execFileSync('git', ['init', '-q'], { cwd: project, windowsHide: true });
 const BACKLOG = path.join(docs, 'PROBE_BACKLOG.md');
 const BACKLOG_TEXT = '# probe — Backlog\n\n**Status (2026-10-05):** a probe.\n\n## 1. The wand runs skills\nbody\n\n## 2. A resource panel\nmore\n';
 fs.writeFileSync(path.join(docs, 'PROBE_BUILD_LOG.md'), '# log\n');
@@ -176,6 +178,7 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     const electronEnv = { ...env, CLAUDE_CUSTOM_TABS_PROBE: String(DRIVER), CLAUDE_CUSTOM_TABS_PROBE_TOKEN: DRIVER_TOKEN };
 
     const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     children.push(host);
     let hostLog = '';
     host.stdout.on('data', (d) => { hostLog += d; });
@@ -322,6 +325,25 @@ ${electronLog.slice(-3000)}`);
       check('6 the counter closes it again', !!closed);
       list.close();
     }
+    // 7 (#79, 2026-10-09) -------------------------------------------------------------------------------------------
+    fs.rmSync(docs, { recursive: true, force: true });
+    const IGNORE = path.join(project, '.gitignore');
+    const NEW_BACKLOG = path.join(docs, 'PROBEPROJ_BACKLOG.md');
+    await evalIn(strip, "document.getElementById('index-note').focus()");
+    await strip.send('Input.insertText', { text: 'a note with no folder either' });
+    await key(strip, 'keyDown', 'Enter', 'Enter', 13);
+    await key(strip, 'keyUp', 'Enter', 'Enter', 13);
+    const made3 = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'added' ? t.querySelector('.t1').textContent : null; })()`));
+    check('7 no documentation folder: the toast names the folder, the backlog and the .gitignore entry', made3 === 'Created documentation\\, the backlog and its .gitignore entry, and filed your note', made3);
+    check('7 ...the folder and the backlog exist, with the note', fs.existsSync(NEW_BACKLOG) && /· a note with no folder either\n$/.test(fs.readFileSync(NEW_BACKLOG, 'utf8')));
+    const ignoreText = fs.existsSync(IGNORE) ? fs.readFileSync(IGNORE, 'utf8') : '';
+    check('7 ...and the repo has a .gitignore with the sync-docs block', ignoreText.includes('# --- sync-docs (gitignore) ---') && ignoreText.includes('documentation/*'), JSON.stringify(ignoreText));
+    await shoot(toast, '7-toast-created-folder.png');
+    await evalIn(toast, "[...document.querySelectorAll('button')].find(b => b.textContent === 'Undo').click()");
+    const undone3 = await waitFor(() => evalIn(toast, `(() => { const t = document.querySelector('.toast'); return t && t.dataset.kind === 'undone' ? t.querySelector('.t1').textContent : null; })()`));
+    check('7 Undo says so', undone3 === 'Undone. Removed from the inbox.', undone3);
+    check('7 ...and the folder and the .gitignore it made are gone too', !fs.existsSync(docs) && !fs.existsSync(IGNORE));
+
     toast.close();
     view.close();
     strip.close();

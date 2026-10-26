@@ -3,7 +3,7 @@
  * The tab strip page's bridge (PR 2, worktree tabs). The strip is the window's
  * OWN page; the tabs' pages are separate views with app/preload.js.
  *
- * Eighteen members and no more: nine ways to ask main for something and two ways
+ * Twenty-five members and no more (lean mode, #62, added four; the issue picker, #119, three): nine ways to ask main for something and two ways
  * to hear what main pushes (the model, and the accent colour: a #rrggbb, or
  * null when the selected tab hasn't reported one), plus the indexing field's
  * five asks and two pushes (#66). Layout pass L2: minimise and
@@ -26,8 +26,13 @@ contextBridge.exposeInMainWorld('strip', {
   close: (key, ifSafe) => ipcRenderer.send('strip:close', key, ifSafe === true),
   contextMenu: (key) => ipcRenderer.send('strip:contextMenu', key),
   plus: () => ipcRenderer.send('strip:plus'),
-  create: (branch) => ipcRenderer.send('strip:create', branch),
+  // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so main writes its brief.
+  create: (branch, issue) => ipcRenderer.send('strip:create', branch, issue),
   cancelCreate: () => ipcRenderer.send('strip:cancelCreate'),
+  // The form's "From an issue" list: ask for the rows ({ query, refresh }), open it, close it (main hides the tab's page while it's open).
+  issues: (req) => ipcRenderer.invoke('strip:issues', req),
+  pickerOpen: () => ipcRenderer.send('strip:pickerOpen'),
+  pickerClose: () => ipcRenderer.send('strip:pickerClose'),
   background: () => ipcRenderer.invoke('strip:background'),
   onModel: (fn) => (ipcRenderer.removeAllListeners('strip-model'), ipcRenderer.on('strip-model',
     (_e, payload) => {
@@ -59,4 +64,15 @@ contextBridge.exposeInMainWorld('strip', {
     () => {
       try { fn(); } catch (err) { console.error('[preload-strip] index focus listener threw', err); }
     }), () => ipcRenderer.removeAllListeners('strip-index-focus')),
+  // Backlog #62, lean mode: the ☾ Lean button and Back to normal (leanSet), the state on load (leanGet), and its pushes.
+  leanGet: () => ipcRenderer.invoke('lean:get'),
+  leanSet: (on) => ipcRenderer.send('lean:set', on === true),
+  onLeanFaces: (fn) => (ipcRenderer.removeAllListeners('lean-faces'), ipcRenderer.on('lean-faces',
+    (_e, list) => {
+      try { fn(list); } catch (err) { console.error('[preload-strip] lean faces listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('lean-faces')),
+  onLean: (fn) => (ipcRenderer.removeAllListeners('lean-state'), ipcRenderer.on('lean-state',
+    (_e, state) => {
+      try { fn(state); } catch (err) { console.error('[preload-strip] lean listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('lean-state')),
 });

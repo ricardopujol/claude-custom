@@ -34,6 +34,14 @@
  *      delete asks, then removes; a second tab sees the list; an unreadable layout-presets.json is left
  *      untouched, shown as "couldn't read", saving is off, and it recovers when the file becomes readable
  *
+ *  13  dockable panels D4: a group collapsed to its rail in this window only (the layout file and the push count do
+ *      not move); a rail's button opens its panel as a popover (on top, inside the window, nothing resized or saved,
+ *      switching tabs, Esc / a press outside / the button again close it, Enter on the button puts focus in it,
+ *      widening the window or opening the group closes it); dividers as focusable separators moved 16 px by the
+ *      arrow keys along them, stopping at the minimum; the tab's menu and its Move (zones lit with one hot, the
+ *      words, arrows, Esc, Enter, Tab to the float zone); the settle class and transition, and none under
+ *      reduced motion
+ *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and
  * every CLAUDE_CUSTOM_* variable are deleted before the window is launched; registry, portraits,
  * uploads and user data are temp folders. The window's store is `<worktree>/.harness/state`: the
@@ -70,6 +78,11 @@ hygiene.setResumeFn(() => true);
 hygiene.install();
 
 const IDS = TABS.map(t => t.id);
+// BACKLOG #103: the Reset layout button now gives the start layout (every panel a rail tab). Most checks want the old all-docked
+// baseline, so they set it through the layout hook; check 3b presses the real button.
+const dockTreeApi = require(path.join(ROOT, 'app', 'dock-tree'));
+// The other checks call this instead of pressing Reset layout on purpose: the real button now gives the start layout, and 3b presses it.
+const baseline = (app) => view(app, 'layout', { layout: dockTreeApi.defaultLayout(IDS) });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-dock-tree-'));
 const container = path.join(tmp, 'proj');
@@ -168,6 +181,7 @@ async function sizesAgree(app) {
   const s = await waitFor(async () => {
     const v = await viewState(app);
     if (!v || !v.ok || !v.fit || !v.sent) return null;
+    if (v.settling) return null;                  // a drop glides for 120 ms (D4): boxes read mid-glide are in between
     const same = v.term.cols === v.fit.cols && v.term.rows === v.fit.rows
       && v.sent.cols === v.term.cols && v.sent.rows === v.term.rows;
     return same ? v : null;
@@ -341,14 +355,10 @@ async function main() {
   // 2 -----------------------------------------------------------------------------
   const first = await settled(app);
   const s2 = first.s;
-  const right = s2.groups.find(g => g.id === 'right');
-  const bottom = s2.groups.find(g => g.id === 'bottom');
-  check('2: the L1 picture again: the right group is 240 wide and shows Vault, the bottom group is 160 high and shows Agents',
-    !!right && !!bottom && Math.abs(right.rect.width - 240) <= 1 && right.panels[0] === 'vault'
-      && Math.abs(bottom.rect.height - 160) <= 1 && bottom.panels[0] === 'agents' && Math.abs(bottom.rect.width - s2.dock.width) <= 1,
-    JSON.stringify(s2.groups.map(g => [g.id, Math.round(g.rect.width), Math.round(g.rect.height), g.panels])));
-  check('2: ...with the right group above the bottom one and the terminal taking the rest',
-    !!right && !!bottom && right.rect.bottom <= bottom.rect.top + 1 && tiles(s2).length === 0, tiles(s2).join('; '));
+  // BACKLOG #103: a layout saved before the rail pinned nothing on purpose, so its panels open as rail tabs.
+  check('2: an L1 layout opens with every panel a rail tab: no group, one rail holding every module, the terminal taking the rest',
+    s2.groups.length === 0 && s2.rails.length === 1 && s2.rails[0].modules.length === IDS.length - 1 /* canvas starts hidden */ && tiles(s2).length === 0,
+    JSON.stringify([s2.groups.length, s2.rails.map(r => r.modules.length), tiles(s2)]));
   const wrote = await waitFor(() => fs.existsSync(TREE_FILE), 5000);
   check('2: layout-tree.json now exists', !!wrote, TREE_FILE);
   check('2: layout-global.json is byte-identical to before', Buffer.compare(readBytes(V1_FILE) || Buffer.alloc(0), v1Before) === 0);
@@ -363,9 +373,9 @@ async function main() {
   if (!ready) check('3: the window came up on an unreadable layout-tree.json', false, app.out.slice(-600));
   const s3 = ready && (await settled(app)).s;
   const g3 = s3 && s3.groups;
-  check('3: an unreadable layout-tree.json draws the default: one right group of 180, every module, Agents showing',
-    !!g3 && g3.length === 1 && g3[0].id === 'right' && Math.abs(g3[0].rect.width - 180) <= 1 && g3[0].tabs.length === IDS.length && g3[0].panels[0] === 'agents',
-    JSON.stringify(g3 && g3.map(g => [g.id, g.rect.width, g.tabs.length, g.panels])));
+  check('3: an unreadable layout-tree.json draws the start layout: no group, every module a rail tab',
+    !!s3 && s3.groups.length === 0 && s3.rails.length === 1 && s3.rails[0].modules.length === IDS.length - 1 /* canvas starts hidden */,
+    JSON.stringify(s3 && [s3.groups.length, s3.rails.map(r => r.modules.length)]));
   await sleep(1500);
   check('3: ...and the file is left exactly as it was', readBytes(TREE_FILE).toString() === junk);
   check('3: ...and the page says it could not read it', !!s3 && /Couldn't read the saved layout/.test(s3.title), s3 && s3.title);
@@ -376,11 +386,18 @@ async function main() {
   ({ app, ready } = await launchReady(container));
   if (!ready) { check('the window came up again', false, app.out.slice(-600)); return; }
 
+  // 3b (BACKLOG #103): the real Reset layout button gives the start layout too, with a docked layout to reset from.
+  await baseline(app);
+  await view(app, 'openMenu', { which: 'layout' });
+  await view(app, 'menuButton', { text: 'Reset layout' });
+  const s3b = (await settled(app)).s;
+  check('3b: Reset layout puts every panel on the rail, as a fresh start does', s3b.groups.length === 0 && s3b.rails.length === 1 && s3b.rails[0].modules.length === IDS.length - 1,
+    JSON.stringify([s3b.groups.length, s3b.rails.map(r => r.modules.length)]));
+
   // 4 -----------------------------------------------------------------------------
   // "Agents and Vault side by side under the terminal; Git over Map over Bug vault in a right column;
   //  the rest hidden." Reset first, through the Window menu, so that path is exercised too.
-  await view(app, 'openMenu', { which: 'layout' });
-  await view(app, 'menuButton', { text: 'Reset layout' });
+  await baseline(app);
   const steps = [
     ['hide style', 'hide', { id: 'style' }],
     ['hide projects', 'hide', { id: 'projects' }],
@@ -417,7 +434,7 @@ async function main() {
     !!gr('agents') && !!gr('vault') && gr('agents') !== gr('vault') && sameRow(gr('agents'), gr('vault')) && gr('agents').rect.right <= gr('vault').rect.left + 6
       && gr('agents').rect.top >= cur.termwrap.bottom - 1,
     JSON.stringify([gr('agents') && gr('agents').rect, gr('vault') && gr('vault').rect]));
-  check('4: ...and the rest hidden', JSON.stringify([...cur.layout.hidden].sort()) === JSON.stringify(['models', 'projects', 'style']), JSON.stringify(cur.layout.hidden));
+  check('4: ...and the rest hidden', JSON.stringify([...cur.layout.hidden].sort()) === JSON.stringify(['canvas', 'models', 'projects', 'style']), JSON.stringify(cur.layout.hidden));
   await command(app, { cmd: 'screenshot', file: path.join(shots, '4-example.png') });
   const example = cur.layout;
 
@@ -567,7 +584,11 @@ async function main() {
     menu.ok && menu.rows.filter(r => r.id).length === IDS.length && menu.rows.filter(r => r.id).every(r => !r.checked), JSON.stringify(menu.rows && menu.rows.map(r => [r.id, r.checked])));
   await view(app, 'menuTick', { id: 'git' });
   const ticked = (await settled(app)).s;
-  check('8: ticking one brings it back, showing', !!groupWith(ticked, 'git') && groupWith(ticked, 'git').panels[0] === 'git' && tiles(ticked).length === 0);
+  // PR #168 (BACKLOG #85): a panel ticked back in comes back as an unpinned rail tab, not as a docked group
+  // (verify/probe-dock-autohide.js check 8 pins the same thing from the rail's side).
+  check('8: ticking one brings it back as a rail tab (unpinned, the default), not hidden, no group made for it',
+    !groupWith(ticked, 'git') && ticked.rails.some(r => r.modules.includes('git')) && !ticked.layout.hidden.includes('git') && tiles(ticked).length === 0,
+    JSON.stringify([ticked.rails.map(r => r.modules), ticked.layout.hidden]));
   await view(app, 'closeMenu');
   await view(app, 'layout', { layout: example });
   cur = (await settled(app)).s;
@@ -582,7 +603,7 @@ async function main() {
   small.push(['480: the terminal keeps at least 320 x 160', sq.termwrap.width >= 319 && sq.termwrap.height >= 159, `${sq.termwrap.width}x${sq.termwrap.height}`]);
   await view(app, 'squeeze', { width: 440, height: 520 });
   sq = (await settled(app)).s;
-  small.push(['440: the right column is a rail listing git, fog, bugvault', sq.rails.some(r => ['git', 'fog', 'bugvault'].every(m => r.modules.includes(m)) && r.rect.width <= 29), JSON.stringify(sq.rails.map(r => [r.dir, r.rect.width, r.modules]))]);
+  small.push(['440: the right column is a rail listing git, fog, bugvault', sq.rails.some(r => ['git', 'fog', 'bugvault'].every(m => r.modules.includes(m)) && r.rect.width <= 53), JSON.stringify(sq.rails.map(r => [r.dir, r.rect.width, r.modules]))]);
   small.push(['440: the terminal keeps at least 320 x 160, the boxes tile', sq.termwrap.width >= 319 && sq.termwrap.height >= 159 && tiles(sq).length === 0, `${sq.termwrap.width}x${sq.termwrap.height} ${tiles(sq).join('; ')}`]);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '9-small.png') });
   await view(app, 'squeeze', { width: 330, height: 520 });
@@ -628,8 +649,7 @@ async function main() {
   // the grip; join a float as a tab; dock back by a tab; the terminal and the pty never notice; a float is kept
   // inside a squeezed window and comes back; Ctrl+B and focus mode hide floats; raising is this window's alone.
   {
-    await view(app, 'openMenu', { which: 'layout' });
-    await view(app, 'menuButton', { text: 'Reset layout' });
+    await baseline(app);
     const f0 = (await settled(app)).s;
     const termKey = v => JSON.stringify([Math.round(v.termwrap.left - v.dock.left), Math.round(v.termwrap.top - v.dock.top), Math.round(v.termwrap.width), Math.round(v.termwrap.height)]);
     const term0 = termKey(f0);
@@ -953,7 +973,7 @@ async function main() {
         && saved.rows[0].labels.includes('Rename preset \'Reviewing\'') && saved.rows[0].labels.includes('Delete preset \'Reviewing\'') && saved.rows[0].focusable,
       JSON.stringify(saved && saved.rows));
     check('12: after a save, focus is on that preset\'s row (never dropped to the page)',
-      saved.active.preset === 'Reviewing' && saved.active.act === 'apply', JSON.stringify(saved.active));
+      !!saved && saved.active.preset === 'Reviewing' && saved.active.act === 'apply', JSON.stringify(saved && saved.active));
     const f1 = fileList();
     check('12: ...the file holds that one preset: its name and exactly the placement that was on screen',
       Array.isArray(f1) && f1.length === 1 && f1[0].name === 'Reviewing' && JSON.stringify(f1[0].layout) === JSON.stringify(example), JSON.stringify(f1).slice(0, 300));
@@ -978,7 +998,7 @@ async function main() {
     await openMenu();
     await mclick(rowSel('Reviewing', 'apply'));
     await sleep(1200);
-    check('12: applying a preset identical to the current layout changes nothing and writes nothing', (await layoutPushes12()) === lp1 && (await ask()).pushes === saved.pushes);
+    check('12: applying a preset identical to the current layout changes nothing and writes nothing', (await layoutPushes12()) === lp1 && !!saved && (await ask()).pushes === saved.pushes);
 
     // save under the same name: asks, then replaces in place
     await view(app, 'hide', { id: 'fog' });
@@ -1023,7 +1043,7 @@ async function main() {
     const layoutOfFirst = JSON.stringify(fileList()[0].layout);
     await type('input[data-preset-field="rename"]', 'Writing', 'Enter');
     const renamedTo = await waitFor12(p => p.names.includes('Writing'));
-    check('12: after a rename, focus is on the renamed row', renamedTo.active.preset === 'Writing' && renamedTo.active.act === 'apply', JSON.stringify(renamedTo.active));
+    check('12: after a rename, focus is on the renamed row', !!renamedTo && renamedTo.active.preset === 'Writing' && renamedTo.active.act === 'apply', JSON.stringify(renamedTo && renamedTo.active));
     check('12: renaming changes the name in place, keeps the order and the layout, and writes the file once',
       fileNames() === 'Writing,Other' && JSON.stringify(fileList()[0].layout) === layoutOfFirst, fileNames());
     await wroteOnce(pr1.pushes, 'rename');
@@ -1055,7 +1075,7 @@ async function main() {
     await mclick('[data-preset-act="delete-confirm"]');
     const afterDelete = await waitFor12(p => !p.names.includes('Writing'));
     check('12: confirming deletes it and only it', fileNames() === 'Other', fileNames());
-    check('12: ...and focus moves to the next row (here the only one left), not to the page', afterDelete.active.preset === 'Other' && afterDelete.active.act === 'apply', JSON.stringify(afterDelete.active));
+    check('12: ...and focus moves to the next row (here the only one left), not to the page', !!afterDelete && afterDelete.active.preset === 'Other' && afterDelete.active.act === 'apply', JSON.stringify(afterDelete && afterDelete.active));
     await wroteOnce(pr2.pushes, 'delete');
     await view(app, 'closeMenu');
 
@@ -1177,6 +1197,230 @@ async function main() {
     check('12: ...and a save leaves them in the file as they were, unknown fields included, with the new preset after them',
       Array.isArray(fl) && fl.length === 4 && fl[0].pinned === true && fl[1] === 'junk' && JSON.stringify(fl[2]) === '{"shape":"later"}' && fl[3].name === 'Plus', JSON.stringify(fl).slice(0, 300));
     await view(app, 'closeMenu');
+  }
+
+  // 13 (dockable panels D4: collapse one group, a rail's panel over the terminal, the keyboard, the settle motion) ------
+  {
+    const st = () => viewState(app);
+    const stFor = (pred, ms = 3000) => waitFor(async () => { const v = await st(); return v && v.ok && pred(v) ? v : null; }, ms, 100);
+    const treeNow = () => readBytes(TREE_FILE);
+    const same = (a, b) => !!a && !!b && Buffer.compare(a, b) === 0;
+    await view(app, 'reducedMotion', { on: false });                 // this machine's own setting must not decide the checks below
+    await baseline(app);
+    await view(app, 'closeMenu');
+    let s = (await settled(app)).s;
+    await sleep(1200);                                              // the reset's write has landed
+    const treeBefore = treeNow();
+    const pushes0 = (await st()).pushes;
+    const visible = IDS.filter(id => !['canvas'].includes(id));
+
+    // collapse: this window folds one group to its rail; the shared layout is not touched
+    await view(app, 'collapse', { id: 'right' });
+    const folded = await settled(app);
+    s = folded.s;
+    check('13: collapsing the right group folds it to one 52 px rail on the right edge, the terminal takes the room, nothing overlaps',
+      s.groups.length === 0 && s.rails.length === 1 && Math.abs(s.rails[0].rect.width - 52) <= 1 && s.rails[0].dir === 'v'
+        && Math.abs(s.termwrap.width - (s.dock.width - 52)) <= 2 && tiles(s).length === 0 && s.rails[0].modules.length === visible.length,
+      JSON.stringify([s.groups.length, s.rails.map(r => [r.dir, r.rect.width, r.modules.length]), s.termwrap.width, s.dock.width, tiles(s)]));
+    check('13: ...terminal, fit and pty agree', folded.ok, sizeText(s));
+    check('13: ...the choice is this window\'s: the selection says so, the layout file is byte-identical and no push reached the page',
+      !!s.selection.collapsed.right && same(treeNow(), treeBefore) && s.pushes === pushes0, JSON.stringify([s.selection.collapsed, s.pushes, pushes0]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-collapsed.png') });
+
+    // a rail's panel over the terminal
+    const term0 = s.term;
+    const sent0 = JSON.stringify(s.sent);
+    const tag0 = s.vaultNode;
+    await view(app, 'railClick', { id: 'vault' });
+    let p = await stFor(v => v.popover);
+    await sleep(400);                                                // it slides in (dpeek-from-right): read its box once it has landed
+    p = await st();
+    check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with only the hovered tab at the top (BACKLOG #103) and the Vault panel inside it',
+      !!p && p.popover.module === 'vault' && p.popover.on[0] === 'vault' && p.popover.panels[0] === 'vault' && p.popover.tabs.length === 1 && p.popover.tabs[0] === 'vault'
+        && p.popover.hit && Math.abs(p.popover.rect.width - 280) <= 1 && p.popover.rect.right <= p.rails[0].rect.left + 1 && p.popover.rect.left >= p.dock.left - 1
+        && p.popover.panelRects[0].left >= p.popover.rect.left - 1 && p.popover.panelRects[0].right <= p.popover.rect.right + 1 && p.popover.panelRects[0].height > 100,
+      p && JSON.stringify([p.popover.tabs.length, visible.length, p.popover.rect, p.rails.map(r => r.rect), p.dock]));
+    check('13: ...which resizes nothing and saves nothing: the terminal and the last size sent are as they were, the file and the push count too, the Vault\'s field is the same node',
+      !!p && p.term.cols === term0.cols && p.term.rows === term0.rows && JSON.stringify(p.sent) === sent0 && same(treeNow(), treeBefore) && p.pushes === pushes0 && p.vaultNode === tag0,
+      p && JSON.stringify([p.term, p.sent, sent0, p.pushes, p.vaultNode === tag0]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-rail-popover.png') });
+    await view(app, 'railClick', { id: 'git' });                       // the popover has one tab now (#103): another panel is the rail's other button
+    p = await stFor(v => v.popover && v.popover.module === 'git');
+    check('13: another rail button switches the popover to it (Git shows, the Vault panel waits in the store), and it still saves nothing',
+      !!p && p.popover.panels[0] === 'git' && !p.shown.includes('vault') && p.shown.includes('git') && p.vaultNode === tag0 && same(treeNow(), treeBefore),
+      p && JSON.stringify([p.popover.panels, p.shown]));
+    // A popover opened by a mouse press takes the focus (PR #159 Miguel I1: the press left it on the rail button)
+    p = await st();
+    check('13: a popover tab pressed with the mouse keeps the keyboard in the popover (the redraw replaced its button)', !!p.held && /zone-tabs/.test(p.held.parent || '') && p.held.module === 'git', JSON.stringify(p.held));
+    // Esc is the popover's only when focus is in it; the keyboard leaving it for the terminal closes it, and then Esc is Claude's interrupt
+    await view(app, 'focus', { selector: '.xterm-helper-textarea' });
+    p = await stFor(v => !v.popover);
+    check('13: the keyboard going to the terminal closes the popover', !!p && p.peek === null);
+    const passed = await view(app, 'key', { key: 'Escape' });
+    check('13: Esc with the keyboard in the terminal is left alone (the interrupt reaches Claude)', passed.prevented === false);
+    await view(app, 'railClick', { id: 'git' });
+    p = await stFor(v => v.popover);
+    check('13: a mouse press on the rail opens it again, with the keyboard in it', !!p && !!p.held && /zone-tabs/.test(p.held.parent || '') && p.held.module === 'git', p && JSON.stringify(p.held));
+    await view(app, 'key', { key: 'Escape' });
+    p = await stFor(v => !v.popover);
+    check('13: Esc in the popover closes it, and the keyboard goes back to its rail button',
+      !!p && p.peek === null && !!p.held && p.held.module === 'git' && /drail/.test(p.held.parent || ''), p && JSON.stringify(p.held));
+    await view(app, 'railClick', { id: 'agents' });
+    await stFor(v => v.popover);
+    await view(app, 'outsidePress', { selector: '#termwrap' });
+    p = await stFor(v => !v.popover);
+    check('13: a press outside it closes it', !!p && p.peek === null);
+    await view(app, 'railClick', { id: 'agents' });
+    await stFor(v => v.popover);
+    await view(app, 'railClick', { id: 'agents' });
+    p = await stFor(v => !v.popover);
+    check('13: pressing its rail button again closes it', !!p && p.peek === null);
+    await view(app, 'railClick', { id: 'models', byKey: true });
+    p = await stFor(v => v.popover && v.held);
+    check('13: opened with the keyboard (Enter on the button), focus is in the popover on the chosen tab',
+      !!p && p.held.module === 'models' && /zone-tabs/.test(p.held.parent || '') && /\bon\b/.test(p.held.cls || ''), p && JSON.stringify(p.held));
+    await view(app, 'key', { key: 'Escape' });
+    await stFor(v => !v.popover);
+    // the popover goes with its rail: widening the window, or opening the group, closes it by itself
+    await view(app, 'dblclick', { selector: '.drail button[data-module="agents"]' });
+    p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    check('13: double-clicking the rail opens the group again, in this window only (the selection forgets it, the file is untouched)',
+      !!p && !p.selection.collapsed.right && same(treeNow(), treeBefore) && p.pushes === pushes0, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.length]));
+    await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs button' });
+    await sleep(300);
+    p = await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    check('13: double-clicking a TAB does not fold its group', !!p && !p.selection.collapsed.right);
+    // PR #168 (BACKLOG #85): double-clicking the empty part of a tab bar no longer folds the group (this window only); it UNPINS
+    // the group, so every tab goes to the rail and the shared layout is saved. The fold of a group is now Ctrl+B / `collapse`.
+    await view(app, 'dblclick', { selector: '.dgroup > .zone-tabs' });
+    p = await stFor(v => v.groups.length === 0 && v.rails.length === 1);
+    check('13: double-clicking a group\'s tab bar unpins it: every tab goes to the rail, and it is not a fold of this window',
+      !!p && !p.selection.collapsed.right && p.rails[0].modules.length === visible.length, p && JSON.stringify([p.selection.collapsed, p.groups.length, p.rails.map(r => r.modules.length)]));
+    // that save moved the shared layout: put the default back (and the group with it) for the checks that follow
+    await baseline(app);
+    await view(app, 'closeMenu');
+    await stFor(v => v.groups.length === 1 && v.rails.length === 0);
+    await sleep(1200);
+    await view(app, 'collapse', { id: 'right' });
+    await stFor(v => v.groups.length === 0 && v.rails.length === 1);
+    await view(app, 'railClick', { id: 'vault' });
+    await stFor(v => v.popover);
+    await view(app, 'collapse', { id: 'right' });
+    p = await stFor(v => v.groups.length === 1 && !v.popover);
+    check('13: ...and opening the group closes the popover of its rail', !!p && p.peek === null && !p.popover, p && JSON.stringify([p.peek, p.shown]));
+
+    // a window too narrow for the group folds it by force; its rail opens the same popover, and widening closes it
+    await view(app, 'squeeze', { width: 420 });
+    p = await stFor(v => v.rails.length === 1 && v.groups.length === 0, 4000);
+    check('13: a window too narrow for the group folds it to a rail, as before', !!p, p && JSON.stringify(p.rails.map(r => r.rect.width)));
+    await view(app, 'railClick', { id: 'git' });
+    p = await stFor(v => v.popover);
+    check('13: ...and that rail opens its panel as well, inside the window', !!p && p.popover.rect.left >= p.dock.left - 1 && p.popover.rect.right <= p.dock.right + 1 && p.popover.hit, p && JSON.stringify(p.popover && p.popover.rect));
+    await view(app, 'squeeze', {});
+    p = await stFor(v => v.groups.length === 1 && !v.popover, 4000);
+    check('13: widening the window brings the group back and closes the popover of the rail that went', !!p && p.peek === null, p && JSON.stringify([p.groups.length, p.peek]));
+
+    // dividers by keyboard
+    s = (await settled(app)).s;
+    if (!s.groups.length) {
+      // a failed step above left the dock without its group: say so, put the default back, and let the later checks report
+      check('13: the dock has its right group again before the divider checks', false, JSON.stringify([s.groups.length, s.rails.length]));
+      await view(app, 'squeeze', {});
+      await baseline(app);
+      await view(app, 'closeMenu');
+      await stFor(v => v.groups.length >= 1 && v.rails.length === 0, 4000);
+      s = (await settled(app)).s;
+    }
+    const w0 = s.groups[0].rect.width;
+    await view(app, 'focus', { selector: '.dgutter' });
+    let k = await st();
+    check('13: a divider is a focusable separator and holds the keyboard', !!k.held && k.held.role === 'separator' && /dgutter/.test(k.held.cls || ''), JSON.stringify(k.held));
+    await view(app, 'key', { key: 'ArrowLeft' });
+    let kk = await settled(app);
+    check('13: ArrowLeft on the divider beside the terminal gives the group on the right 16 px, and the keyboard stays on the divider',
+      Math.abs(kk.s.groups[0].rect.width - (w0 + 16)) <= 1 && kk.ok && kk.s.held && kk.s.held.role === 'separator', JSON.stringify([w0, kk.s.groups[0].rect.width, kk.s.held]));
+    await view(app, 'key', { key: 'ArrowRight' });
+    kk = await settled(app);
+    check('13: ArrowRight takes them back', Math.abs(kk.s.groups[0].rect.width - w0) <= 1 && kk.ok);
+    const wrong = await view(app, 'key', { key: 'ArrowUp' });
+    kk = await settled(app);
+    check('13: an arrow across the divider moves nothing and is left alone', wrong.prevented === false && Math.abs(kk.s.groups[0].rect.width - w0) <= 1);
+    for (let i = 0; i < 14; i++) await view(app, 'key', { key: 'ArrowRight' });
+    kk = await settled(app);
+    check('13: pushed to the group\'s minimum it stops at 120 px, and the terminal and pty still agree', kk.s.groups[0].rect.width >= 119 && kk.s.groups[0].rect.width <= 121 && kk.ok, String(kk.s.groups[0].rect.width));
+    await view(app, 'dock', { id: 'vault', target: { cell: 'right', side: 'bottom' } });
+    s = (await settled(app)).s;
+    const low = groupWith(s, 'vault');
+    await view(app, 'focus', { selector: '.dgutter[data-dir="col"]' });
+    await view(app, 'key', { key: 'ArrowUp' });
+    kk = await settled(app);
+    check('13: ArrowUp on a column\'s divider gives the group below it 16 px',
+      Math.abs(groupWith(kk.s, 'vault').rect.height - (low.rect.height + 16)) <= 1 && kk.ok, JSON.stringify([low.rect.height, groupWith(kk.s, 'vault').rect.height]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-divider-focus.png') });
+
+    // keyboard move
+    await baseline(app);
+    await view(app, 'closeMenu');
+    s = (await settled(app)).s;
+    await sleep(1200);
+    const treeMid = treeNow();
+    const menu = await view(app, 'tabMenu', { id: 'git' });
+    // PR #168 (BACKLOG #85) replaced "Collapse group" with Unpin / Unpin group (a group's fold is Ctrl+B now)
+    check('13: the tab\'s menu (Shift+F10 / right-click) offers Move, Unpin, Unpin group, Float and Hide, with the keyboard in it on Move',
+      menu.ok && JSON.stringify(menu.items.slice(0, 5)) === JSON.stringify(['Move', 'Unpin', 'Unpin group', 'Float', 'Hide']) && menu.held === 'Move', JSON.stringify(menu));
+    await view(app, 'menuButton', { text: 'Move' });
+    k = await st();
+    check('13: Move lights the zones of the group and the rim with one hot, and says in words where Git would land',
+      !!k.kbMove && k.kbMove.id === 'git' && k.overlay.zones > 4 && k.overlay.hot === 1 && /Moving Git: as a tab in the .* group/.test(k.announce), JSON.stringify([k.kbMove, k.overlay, k.announce]));
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '13-keyboard-move.png') });
+    const gitGroupBefore = groupWith(s, 'git').id;
+    const arrow = await view(app, 'key', { key: 'ArrowLeft', selector: 'body' });
+    k = await st();
+    check('13: ArrowLeft steps to the group\'s left band (the key is taken, none reaches the terminal) and the words follow',
+      arrow.prevented === true && k.kbMove.target.cell === gitGroupBefore && k.kbMove.target.side === 'left' && /left of the .* group/.test(k.announce), JSON.stringify([k.kbMove, k.announce]));
+    await view(app, 'key', { key: 'Escape' });
+    k = (await settled(app)).s;
+    check('13: Esc cancels: nothing lit, nothing moved, nothing saved, and it says so',
+      !k.kbMove && k.overlay.zones === 0 && JSON.stringify(k.layout) === JSON.stringify(s.layout) && k.announce === 'Move cancelled.' && same(treeNow(), treeMid), JSON.stringify([k.kbMove, k.overlay, k.announce]));
+    await view(app, 'tabMenu', { id: 'git' });
+    await view(app, 'menuButton', { text: 'Move' });
+    await view(app, 'key', { key: 'ArrowLeft', selector: 'body' });
+    await view(app, 'key', { key: 'Enter', selector: 'body' });
+    k = await settled(app);
+    const git = groupWith(k.s, 'git');
+    const agents = groupWith(k.s, 'agents');
+    check('13: Enter drops it there: Git is a group of its own to the left of the one it came from, sizes agree and the boxes tile',
+      !!git && !!agents && git !== agents && git.tabs.length === 1 && git.rect.right <= agents.rect.left + 6 && k.ok && tiles(k.s).length === 0 && !k.s.kbMove,
+      JSON.stringify([git && git.rect, agents && agents.rect]));
+    // Tab walks every zone: it reaches the float zone, and Enter there floats the panel
+    await view(app, 'tabMenu', { id: 'vault' });
+    await view(app, 'menuButton', { text: 'Move' });
+    let reached = false;
+    for (let i = 0; i < 60 && !reached; i++) {
+      await view(app, 'key', { key: 'Tab', selector: 'body' });
+      const q = await st();
+      reached = !!q.kbMove && q.kbMove.target.float === true;
+    }
+    check('13: Tab walks the zones one by one until it reaches the terminal\'s float zone', reached);
+    await view(app, 'key', { key: 'Enter', selector: 'body' });
+    await stFor(v => v.floats.length > 0, 3000);
+    k = await settled(app);
+    check('13: Enter on the float zone floats the panel: one float holding Vault, inside the window', k.s.floats.length === 1 && k.s.floats[0].tabs[0] === 'vault'
+      && k.s.floats[0].rect.left >= k.s.dock.left - 1 && k.s.floats[0].rect.right <= k.s.dock.right + 1, JSON.stringify(k.s.floats.map(f => [f.tabs, f.rect])));
+
+    // the settle motion
+    await baseline(app);
+    await view(app, 'closeMenu');
+    await settled(app);
+    const glide = await view(app, 'settleProbe', { id: 'vault', target: { edge: 'bottom' }, reduced: false });
+    check('13: a drop settles: the groups, rails and dividers get a 120 ms transition while it lasts, the terminal none, and it ends',
+      glide.during.settling === true && /^0.12s(, 0.12s)*$/.test(glide.during.group) && /^0.12s(, 0.12s)*$/.test(glide.during.gutter) && glide.during.termwrap === '0s' && glide.after.settling === false && glide.after.group === '0s',
+      JSON.stringify(glide));
+    await settled(app);
+    const snap = await view(app, 'settleProbe', { id: 'git', target: { edge: 'left' }, reduced: true });
+    check('13: with prefers-reduced-motion the boxes snap: no settling class, no transition', snap.during.settling === false && snap.during.group === '0s', JSON.stringify(snap));
+    await view(app, 'reducedMotion', { on: false });
+    await settled(app);
   }
 
   await quitApp(app);

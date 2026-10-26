@@ -17,7 +17,7 @@ const run = (from, n, over) => Array.from({ length: n }, (_, i) => pt(from + i *
 
 test('fractions: cpu is a percent, memory is used over total, an unmeasured one is null', () => {
   assert.deepStrictEqual(D.fractions(pt(1, { cpu: 50, cpuOurs: 20, memUsed: 250, memOurs: 100 })),
-    { at: 1, brk: false, cpu: 0.5, cpuOurs: 0.2, mem: 0.25, memOurs: 0.1 });
+    { at: 1, brk: false, cpu: 0.5, cpuOurs: 0.2, mem: 0.25, memOurs: 0.1, gpu: null, gpumem: null });
   const f = D.fractions(nul(1));
   assert.deepStrictEqual([f.cpu, f.cpuOurs, f.mem, f.memOurs], [null, null, null, null]);
   assert.strictEqual(D.fractions(pt(1, { memTotal: 0 })).mem, null, 'no total, no fraction (never a divide to Infinity)');
@@ -206,7 +206,7 @@ const opened = () => step(D.popoverInit(), { type: 'chip-click' }).state;
 
 test('popover: the chip toggles it, and opening starts with no hover', () => {
   const s0 = D.popoverInit();
-  assert.deepStrictEqual(s0, { open: false, hover: { cpu: null, mem: null } });
+  assert.deepStrictEqual(s0, { open: false, hover: { cpu: null, mem: null, gpu: null, gpumem: null } });
   const s1 = step(s0, { type: 'chip-click' }).state;
   assert.strictEqual(s1.open, true);
   assert.strictEqual(step(s1, { type: 'chip-click' }).state.open, false);
@@ -236,12 +236,12 @@ test('S4: Esc is consumed only when it closed the popover (otherwise it reaches 
 
 test('Y2: hovering one graph clears the other; leaving the plot (padding, between graphs, out of the popover) clears it', () => {
   let s = step(opened(), { type: 'hover', kind: 'cpu', minutes: 12 }).state;
-  assert.deepStrictEqual(s.hover, { cpu: 12, mem: null });
+  assert.deepStrictEqual(s.hover, { cpu: 12, mem: null, gpu: null, gpumem: null });
   s = step(s, { type: 'hover', kind: 'mem', minutes: 40 }).state;
-  assert.deepStrictEqual(s.hover, { cpu: null, mem: 40 });
+  assert.deepStrictEqual(s.hover, { cpu: null, mem: 40, gpu: null, gpumem: null });
   s = step(s, { type: 'leave' }).state;
-  assert.deepStrictEqual(s.hover, { cpu: null, mem: null });
-  assert.strictEqual(step(s, { type: 'hover', kind: 'bogus', minutes: 3 }).state, s, 'only the two graphs');
+  assert.deepStrictEqual(s.hover, { cpu: null, mem: null, gpu: null, gpumem: null });
+  assert.strictEqual(step(s, { type: 'hover', kind: 'bogus', minutes: 3 }).state, s, 'only the four graphs');
   assert.strictEqual(step(s, { type: 'hover', kind: 'cpu', minutes: NaN }).state, s);
 });
 
@@ -249,7 +249,7 @@ test('Y2: closing forgets the hover, so a reopened popover never shows an old cu
   let s = step(opened(), { type: 'hover', kind: 'cpu', minutes: 12 }).state;
   s = step(s, { type: 'chip-click' }).state;
   s = step(s, { type: 'chip-click' }).state;
-  assert.deepStrictEqual(s.hover, { cpu: null, mem: null });
+  assert.deepStrictEqual(s.hover, { cpu: null, mem: null, gpu: null, gpumem: null });
 });
 
 test('hoverView: the cursor and readout for each graph from the hover state (now when not hovered)', () => {

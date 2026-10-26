@@ -89,6 +89,18 @@ test('hooks only the events the harness actually consumes', () => {
   );
 });
 
+test('every registered event has exactly one entry whose command names that event (an emptied list or a wrong event fails)', () => {
+  const s = buildHarnessSettings(opts);
+  for (const [event, entries] of Object.entries(s.hooks)) {
+    assert.strictEqual(entries.length, 1, `${event} has its one entry`);
+    assert.strictEqual(entries[0].hooks.length, 1, `${event} runs one command`);
+    assert.match(entries[0].hooks[0].command, new RegExp(`--event ${event}$`), `${event} reports itself`);
+  }
+  // Attention (blocked on input) and turn-finished must not be droppable unnoticed.
+  assert.strictEqual(s.hooks.Notification[0].matcher, '');
+  assert.strictEqual(s.hooks.Stop[0].matcher, '');
+});
+
 test('UserPromptSubmit is hooked, every prompt, so the host knows a main-session turn opened (PR #93 Dexter F1)', () => {
   // The subagent roster can't see a turn that calls no agent: Type /merged typed into one. The helper prints
   // nothing and always exits 0 (helper/hook-helper.cs), so the hook can never add to or block a prompt.
@@ -504,5 +516,168 @@ test('the panel DOES depend on the hook helper (PR #125 Dexter #8): without it n
 test('an incomplete canvasMcp is no injection rather than a broken one', () => {
   for (const bad of [{}, { nodePath: 'node' }, { ...CANVAS, scriptPath: '' }, { ...CANVAS, root: undefined }, { ...CANVAS, pointerFile: 5 }]) {
     assert.ok(!buildClaudeArgs({ helperExists: false, canvasMcp: bad }).includes('--mcp-config'), JSON.stringify(bad));
+  }
+});
+
+// BACKLOG #55 / PR #154 round 2 (N1): "waiting on you" is driven by the PermissionRequest hook, which names the agent.
+test('PermissionRequest is hooked only when asked for, for every tool, with a short timeout', () => {
+  assert.strictEqual(buildHarnessSettings(opts).hooks.PermissionRequest, undefined, 'a host that does not ask writes the settings it always did');
+  const s = buildHarnessSettings({ ...opts, permissionRequest: true });
+  const entry = s.hooks.PermissionRequest;
+  assert.ok(Array.isArray(entry) && entry.length === 1);
+  assert.strictEqual(entry[0].matcher, '', 'every tool');
+  assert.match(entry[0].hooks[0].command, /--event PermissionRequest$/);
+  assert.strictEqual(entry[0].hooks[0].type, 'command');
+  assert.ok(entry[0].hooks[0].timeout <= 2, 'awaited before the prompt is shown: short');
+  assert.strictEqual(buildHarnessSettings({ ...opts, permissionRequest: 'yes' }).hooks.PermissionRequest, undefined, 'only an explicit true');
+});
+
+test('PermissionRequest uses the same native helper as every other hook, and adds nothing else', () => {
+  const plain = buildHarnessSettings(opts).hooks;
+  const withIt = buildHarnessSettings({ ...opts, permissionRequest: true }).hooks;
+  const { PermissionRequest, ...rest } = withIt;
+  assert.deepStrictEqual(rest, plain, 'no other hook changes');
+  assert.ok(PermissionRequest[0].hooks[0].command.startsWith(plain.Stop[0].hooks[0].command.replace(/--event Stop$/, '')));
+});
+
+// --- kill tests for the release-176 survivors (BACKLOG #94) ----------------------
+
+const { findUserStatusLine, findUserTheme } = require('../host/settings-writer');
+const { tmpDir: killsTmpDir } = require('./tmp-dir');
+
+const relay = (userStatusLine) => ({ ...opts, statusRelay: { nodePath: 'C:/n/node.exe', scriptPath: 'C:/cc/status-relay.js', userStatusLine } });
+
+test('M10: only a status line that is an object with type command and a string command is chained', () => {
+  const chained = (u) => / --then /.test(buildHarnessSettings(relay(u)).statusLine.command);
+  assert.strictEqual(chained({ type: 'command', command: 'echo hi' }), true);
+  assert.strictEqual(chained({ type: 'other', command: 'echo hi' }), false);
+  assert.strictEqual(chained({ type: 'command', command: 42 }), false);
+  assert.strictEqual(chained({ type: 'command', command: '' }), false);
+  assert.strictEqual(chained('echo hi'), false);
+  assert.strictEqual(chained(null), false);
+});
+
+test('M10: a user status line that is not an object contributes none of its fields', () => {
+  const sl = buildHarnessSettings(relay('echo hi')).statusLine;
+  assert.deepStrictEqual(Object.keys(sl).sort(), ['command', 'padding', 'type']);
+  assert.strictEqual(sl.padding, 0);
+});
+
+test('M10: the pipe prefix is stripped only from the front of the name', () => {
+  const inside = 'zz\\\\.\\pipe\\name';
+  const cmd = buildHarnessSettings({ helperPath: HELPER, pipeName: inside }).hooks.PreToolUse[0].hooks[0].command;
+  assert.ok(cmd.includes('zz'), cmd);
+  assert.ok(cmd.includes('.\\pipe\\name'), 'the middle of the name is left alone');
+  const front = buildHarnessSettings({ helperPath: HELPER, pipeName: PIPE }).hooks.PreToolUse[0].hooks[0].command;
+  assert.ok(front.includes('--pipe "claude-custom-abc123"'), front);
+});
+
+test('M10: a loadout hook that is not an object, or is missing a part, adds no entry', () => {
+  const entries = (loadoutHook) => buildHarnessSettings({ ...opts, loadoutHook }).hooks.PreToolUse.length;
+  assert.strictEqual(entries({ nodePath: 'n', scriptPath: 's', stateDir: 'd' }), 2);
+  assert.strictEqual(entries('nope'), 1);
+  assert.strictEqual(entries({ nodePath: 'n', scriptPath: 's' }), 1);
+  assert.strictEqual(entries(undefined), 1);
+});
+
+test('M10: findUserStatusLine returns a runnable command, and null for anything else', () => {
+  const dir = killsTmpDir('cc-sl-');
+  const cfg = path.join(dir, 'cfg');
+  fs.mkdirSync(cfg);
+  const put = (sl) => fs.writeFileSync(path.join(cfg, 'settings.json'), JSON.stringify({ statusLine: sl }));
+  put({ type: 'command', command: 'echo hi' });
+  assert.deepStrictEqual(findUserStatusLine({ configDir: cfg }), { type: 'command', command: 'echo hi' });
+  for (const bad of [{ type: 'command', command: 123 }, { type: 'command', command: '' }, { type: 'x', command: 'echo' }, 'echo', null]) {
+    put(bad);
+    assert.strictEqual(findUserStatusLine({ configDir: cfg }), null, JSON.stringify(bad));
+  }
+});
+
+test('M10: the theme sits in .claude.json BESIDE a .claude config dir, and a dir with another name does not look there', () => {
+  const home = killsTmpDir('cc-theme-home-');
+  const dotClaude = path.join(home, '.claude');
+  const other = path.join(home, 'other');
+  fs.mkdirSync(dotClaude);
+  fs.mkdirSync(other);
+  assert.strictEqual(findUserTheme({ configDir: dotClaude }), null);
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ theme: 'light-ansi' }));
+  assert.strictEqual(findUserTheme({ configDir: dotClaude }), 'light-ansi');
+  assert.strictEqual(findUserTheme({ configDir: other }), null, 'its parent holds a .claude.json, which is not its global config');
+});
+
+test('M10: findUserTheme with no config dir reads the project layers only, and with nothing at all finds nothing', () => {
+  const cwd = killsTmpDir('cc-theme-cwd-only-');
+  fs.mkdirSync(path.join(cwd, '.claude'));
+  assert.strictEqual(findUserTheme({ cwd }), null);
+  fs.writeFileSync(path.join(cwd, '.claude', 'settings.local.json'), JSON.stringify({ theme: 'dark-ansi' }));
+  assert.strictEqual(findUserTheme({ cwd }), 'dark-ansi');
+  assert.strictEqual(findUserTheme(), null);
+  assert.strictEqual(findUserTheme({}), null);
+});
+
+test('M10: only the CLI\'s own theme names are accepted, whole', () => {
+  const cfg = killsTmpDir('cc-theme-names-');
+  const file = path.join(cfg, 'settings.json');
+  const themeOf = (t) => { fs.writeFileSync(file, JSON.stringify({ theme: t })); return findUserTheme({ configDir: cfg }); };
+  for (const ok of ['auto', 'dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi']) assert.strictEqual(themeOf(ok), ok);
+  for (const bad of ['xdark', 'darkx', 'dark-', 'auto2', 'dark-ansi-x', 'Dark', ' dark', 'dark\n', '']) assert.strictEqual(themeOf(bad), null, JSON.stringify(bad));
+  fs.writeFileSync(file, 'null');
+  assert.strictEqual(findUserTheme({ configDir: cfg }), null);
+  fs.writeFileSync(file, JSON.stringify({ theme: ['dark'] }));
+  assert.strictEqual(findUserTheme({ configDir: cfg }), null);
+});
+
+test('M10: a half-written file is retried after a real pause of about RETRY_WAIT_MS', () => {
+  const cfg = killsTmpDir('cc-theme-wait-');
+  const file = path.join(cfg, 'settings.json');
+  fs.writeFileSync(file, JSON.stringify({ theme: 'dark' }));
+  let reads = 0;
+  const fsImpl = { readFileSync: (f, enc) => { if (f === file && ++reads === 1) return '{ "theme": "da'; return fs.readFileSync(f, enc); } };
+  const t0 = process.hrtime.bigint();
+  assert.strictEqual(findUserTheme({ configDir: cfg, fsImpl }), 'dark');
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms >= 50, `the default sleep waited ${ms} ms`);
+});
+
+test('M10: without a port the shared file is returned and no per-port file is created; port 0 is a port', () => {
+  const dir = killsTmpDir('cc-hs-');
+  const shared = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'P' });
+  assert.strictEqual(path.basename(shared), 'harness-settings.json');
+  assert.deepStrictEqual(fs.readdirSync(dir), ['harness-settings.json']);
+  const zero = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'P' }, 0);
+  assert.strictEqual(path.basename(zero), 'harness-settings-0.json');
+  assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['harness-settings-0.json', 'harness-settings.json']);
+  const nul = writeHarnessSettings(dir, { helperPath: 'h.exe', pipeName: 'P' }, null);
+  assert.strictEqual(path.basename(nul), 'harness-settings.json');
+});
+
+// BACKLOG #119 A7 (the Schedules panel): cron jobs are CronCreate / CronDelete calls, which no matcher above saw. Opt-in and SEPARATE
+// entries after the bedtime one (Pre for the intent, Post for the result that carries the job's id), so the mood engine's are untouched.
+test('schedules adds a CronCreate|CronDelete entry to PreToolUse AND PostToolUse, last, and only when asked', () => {
+  const { CRON_MATCHER } = require('../host/settings-writer');
+  assert.strictEqual(CRON_MATCHER, 'CronCreate|CronDelete');
+  const plain = buildHarnessSettings(opts);
+  const s = buildHarnessSettings({ ...opts, schedules: true });
+  for (const event of ['PreToolUse', 'PostToolUse']) {
+    assert.strictEqual(s.hooks[event].length, plain.hooks[event].length + 1);
+    const last = s.hooks[event][s.hooks[event].length - 1];
+    assert.strictEqual(last.matcher, CRON_MATCHER);
+    assert.strictEqual(last.hooks[0].command, plain.hooks[event][0].hooks[0].command.replace(/--event \w+$/, `--event ${event}`));
+    assert.strictEqual(JSON.stringify(s.hooks[event][0]), JSON.stringify(plain.hooks[event][0]), `${event}[0] still belongs to the mood engine`);
+  }
+  for (const v of [false, undefined, null, 'yes', 1]) {
+    assert.strictEqual(buildHarnessSettings({ ...opts, schedules: v }).hooks.PreToolUse.length, plain.hooks.PreToolUse.length, String(v));
+  }
+});
+
+test('schedules composes with bedtime after it, and changes nothing but PreToolUse and PostToolUse', () => {
+  const { CRON_MATCHER } = require('../host/settings-writer');
+  const plain = buildHarnessSettings(opts);
+  const both = buildHarnessSettings({ ...opts, bedtime: true, schedules: true });
+  assert.deepStrictEqual(both.hooks.PreToolUse.map(e => e.matcher).slice(-2), [BEDTIME_MATCHER, CRON_MATCHER]);
+  assert.deepStrictEqual(both.hooks.PostToolUse.map(e => e.matcher).slice(-2), [BEDTIME_MATCHER, CRON_MATCHER]);
+  for (const event of Object.keys(plain.hooks)) {
+    if (event === 'PreToolUse' || event === 'PostToolUse') continue;
+    assert.strictEqual(JSON.stringify(both.hooks[event]), JSON.stringify(plain.hooks[event]), event);
   }
 });

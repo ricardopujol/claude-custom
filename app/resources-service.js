@@ -22,6 +22,7 @@ const stopper = require('../host/resource-stop');
 const { createPauser, reasonText: pauseText } = require('../host/resource-pause');
 const { createPauseStore } = require('../host/pause-state');
 const { createHistory } = require('../host/resource-history');
+const gpuLib = require('../host/resource-gpu');
 const leftovers = require('../host/leftovers');
 const taskLogsLib = require('../host/task-logs');
 
@@ -87,7 +88,16 @@ function createResourcesService({
   // Q1 (Ricardo, PR #113): the process tree is sampled ALWAYS, panel open or not, so the tab warning works with it closed.
   // The one exception is a minimised window.
   const panelWanted = () => !minimised;
-  function refresh() { sampler.setWanted({ panel: panelWanted(), chip: !minimised }); }
+  // Which pages are SHOWING the Resources panel (BACKLOG #100 c): the shared poller samples every 10 s while any window shows it and
+  // every 30 s while only the chip is in view (host/poller-policy.js). Keyed by the page's id; only a real `true` counts, and a
+  // page that goes away is forgotten, or its last word would keep the faster cadence alive.
+  const viewers = new Map();
+  function refresh() {
+    const wanted = { panel: panelWanted(), chip: !minimised };
+    // Told only when true, so a sampler that does not care (the per-window one) hears exactly what it always did.
+    if (!minimised && viewers.size > 0) wanted.viewing = true;
+    sampler.setWanted(wanted);
+  }
 
   const tabList = () => (typeof tabs === 'function' ? tabs() : []).map(t => ({
     key: t.key, port: t.port, label: t.branch ? t.branch : basename(t.cwd),
@@ -126,6 +136,8 @@ function createResourcesService({
       at, wall: now(), cpu: machine.cpu,
       cpuOurs: ours ? ours.cpu : null, memOurs: ours ? ours.bytes : null,
       memUsed: machine.mem ? machine.mem.usedBytes : null, memTotal: machine.mem ? machine.mem.totalBytes : null,
+      gpu: machine.gpu ? machine.gpu.busy : null,
+      gpuMemUsed: machine.gpu && machine.gpu.mem ? machine.gpu.mem.usedBytes : null, gpuMemTotal: machine.gpu && machine.gpu.mem ? machine.gpu.mem.totalBytes : null,
     });
   }
 
@@ -276,8 +288,11 @@ function createResourcesService({
 
   function onUpdate(snap) {
     const last = snap.machine && snap.machine.last;
+    // The GPU figures come from the same sample (BACKLOG #82): `machine.gpu` is always an object once there is a sample, its parts null
+    // where the counters could not be read; the process list rides only on the full payload (a name is somebody else's string).
+    const gpu = last ? gpuLib.buildGpu(snap.machine.prev, last) : null;
     const machine = last
-      ? { cpu: sample.machineCpu(snap.machine.prev, last), mem: sample.machineMemory(last) }
+      ? { cpu: sample.machineCpu(snap.machine.prev, last), mem: sample.machineMemory(last), gpu: { busy: gpu.busy, mem: gpu.mem } }
       : null;
     const status = {
       stale: snap.stale === true, expired: snap.expired === true,
@@ -329,7 +344,7 @@ function createResourcesService({
     tlListed = null;     // set again by leftoversOf from THIS sample; an expired or machine-only one deletes nothing
     const left = built && snap.expired !== true ? leftoversOf(snap, built) : null;
     if (!left) lastFound = null;
-    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null, pauseNote };
+    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null, gpuProcs: built && gpu ? gpu.procs : null, pauseNote };
     lastLight = { model: null, status, machine, chipOn, pauseNote };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(withHistory(lastPayload), lastLight);
@@ -445,6 +460,12 @@ function createResourcesService({
       refresh();
     },
     refresh,
+    /** A page says whether it is showing the Resources panel (docked, peeked or popped). */
+    setViewing(id, on) {
+      if (on === true) viewers.set(id, true); else viewers.delete(id);
+      refresh();
+    },
+    forgetViewer(id) { if (viewers.delete(id)) refresh(); },
     onUpdate,
     /** The page that shows the chip changed (a tab was selected): it gets the last payload again, history included, at once. */
     resend: push,

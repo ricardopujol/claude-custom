@@ -36,8 +36,9 @@ test("every attaching window's hello feeds the panel's state, and a `canvas` fra
 test('the panel docks itself only when canvasDisplay says Claude wrote a page: shown if hidden, selected if shown', () => {
   const dock = BLOCK.slice(BLOCK.indexOf('function canvasOnFrame('), BLOCK.indexOf('function canvasOnFrame(') + 900);
   assert.match(dock, /if \(window\.canvasDisplay\.shouldDock\(frame\)\) canvasDock\(\);/);
-  assert.match(BLOCK, /commitPlacement\(DTm\.show\(placementLayout\(\), 'canvas'\), \{ select: 'canvas' \}\)/);
-  assert.match(BLOCK, /else selectModule\('canvas'\);/);
+  // hidden: shown; unpinned (#85): opened from its rail, held; docked: selected: all three in the one shared helper
+  assert.match(BLOCK, /function canvasDock\(\) \{\s*revealModule\('canvas'\);/);
+  assert.match(JS, /function revealModule\(id\) \{[\s\S]*?commitPlacement\(DTm\.show\(settledLayout\(\), id\), \{ select: id \}\)[\s\S]*?\} else selectModule\(id\);/);
 });
 
 test('hidden means stopped: the native view exists only while the module shows, the page is visible and there is a page to show', () => {

@@ -24,20 +24,22 @@
  */
 (function (root) {
 
-// Loaded the way app/dock-zones-display.js loads it: required under Node, a page global in the window.
-const layoutApi = typeof module !== 'undefined' && module.exports
-  ? require('./dock-layout')
-  : root.dockLayout;
+// L1's saved shape is read by app/dock-migrate.js: required under Node, a page global in the window.
+const migrateApi = typeof module !== 'undefined' && module.exports
+  ? require('./dock-migrate')
+  : root.dockMigrate;
 
 const VERSION = 2;
 const MIN = { width: 120, height: 80 };               // a panel
 const TERM_MIN = { width: 320, height: 160 };         // the terminal wins
-const RAIL = { side: 28, wide: 30 };
+// A rail tab is an emoji over a name (BACKLOG #85 follow-up): 52 px beside the terminal, 34 tall above or below it.
+const RAIL = { side: 52, wide: 34 };
 const GUTTER = 5;
 const DEFAULT_SIZE = { row: 180, col: 160 };          // a new cell beside / under the terminal
 // A module's OWN width when it gets a cell of its own beside the terminal (Ricardo, 2026-10-06, #71 question 1: Claude's panel docks itself at
 // 320, the 180 above is too cramped for its question card). A column default and every other module stay as above.
-const OWN_ROW_SIZE = Object.freeze({ canvas: 320 });
+// The Ask panel docks at 360 (Ricardo, 2026-10-13, #33: "360 px of its own"); in a shared group it follows the group.
+const OWN_ROW_SIZE = Object.freeze({ canvas: 320, ask: 360 });
 // No screen is wider than this; a bigger stored size (1e306 from a damaged file)
 // overflowed L1's fitting arithmetic into NaN.
 const MAX_SIZE = 10000;
@@ -69,7 +71,7 @@ function defaultLayout(ids) {
   const rootNode = tabs.length
     ? { type: 'split', dir: 'row', kids: [TERM(), { type: 'group', id: 'right', tabs }], sizes: [0, DEFAULT_SIZE.row] }
     : TERM();
-  return { version: VERSION, root: rootNode, floats: [], hidden: away, seat: {} };
+  return { version: VERSION, root: rootNode, floats: [], rail: [], hidden: away, seat: {} };
 }
 
 const hasTerm = n => n.type === 'term' || (n.type === 'split' && n.kids.some(hasTerm));
@@ -155,6 +157,11 @@ function cleanSeat(raw, hiddenIds, liveGroups) {
       // A lone floating panel comes back floating where it was: its rectangle rides in the seat.
       const f = s.float;
       if (isObject(f) && isNum(f.x) && isNum(f.y) && isSize(f.w) && isSize(f.h)) seat[id].float = floatRect(f);
+      // The modules that shared its group when it left (BACKLOG #85): pinning one joins a mate that is pinned by then.
+      const mates = (Array.isArray(s.mates) ? s.mates : []).filter(m => typeof m === 'string' && m !== id).slice(0, 32);
+      if (mates.length) seat[id].mates = [...new Set(mates)];
+      // The side of the terminal its group stood on when a whole layout was unpinned at once (readStored): no neighbour is docked then.
+      if (EDGES.includes(s.edge)) seat[id].edge = s.edge;
     }
   }
   return seat;
@@ -175,7 +182,7 @@ function normalize(raw, ids) {
     },
   };
   let r = clean(raw.root, st, 0);
-  // Each module is claimed in the tree first, then in a float, then as hidden: the first place that lists it keeps it.
+  // Each module is claimed in the tree first, then in a float, then on the rail, then as hidden: the first place that lists it keeps it.
   const floats = (Array.isArray(raw.floats) ? raw.floats : []).map(f => cleanFloat(f, st)).filter(Boolean);
   const reserved = seatGroups(raw.seat);
   if (r) walk(r, (n) => { if (n.type === 'group' && n.id === null) n.id = freshId(st.ids, reserved); });
@@ -187,6 +194,8 @@ function normalize(raw, ids) {
     else r = { type: 'split', dir: 'row', kids: [TERM(), r], sizes: [0, DEFAULT_SIZE.row] };
   }
 
+  // The rail (BACKLOG #85) is the unpinned panels, in order; a layout from a build before it has none, and nothing moves.
+  const railIds = (Array.isArray(raw.rail) ? raw.rail : []).filter(id => st.claim(id));
   const hiddenIds = (Array.isArray(raw.hidden) ? raw.hidden : []).filter(id => st.claim(id));
   const missing = [...known].filter(id => !placed.has(id) && !HIDDEN_UNTIL_USED.includes(id));
   for (const id of known) if (!placed.has(id) && HIDDEN_UNTIL_USED.includes(id)) hiddenIds.push(id);
@@ -198,7 +207,7 @@ function normalize(raw, ids) {
   }
 
   const live = new Set([...groups({ root: r }).map(x => x.id), ...floats.map(f => f.id)]);
-  return { version: VERSION, root: r, floats, hidden: hiddenIds, seat: cleanSeat(raw.seat, hiddenIds, live) };
+  return { version: VERSION, root: r, floats, rail: railIds, hidden: hiddenIds, seat: cleanSeat(raw.seat, [...hiddenIds, ...railIds], live) };
 }
 
 // Only a plain object of string -> string survives; nothing else a window stored is trusted.
@@ -212,13 +221,13 @@ function stringMap(o) {
 /**
  * L1's four zones as a tree: col[top, row[left, term, right], bottom], each
  * non-empty zone one group named after its zone, sizes carried, hidden carried.
- * L1's own normalizer reads the input first, so its rules (unknown modules
- * dropped, missing ones back on the right) clean it before it becomes a tree.
+ * app/dock-migrate.js reads the input first (L1's rules: unknown modules
+ * dropped, missing ones back on the right), which cleans it before it becomes a tree.
  */
 function fromV1(raw, ids) {
   // An L1 layout predates the opt-in modules: the L1 normalizer would drop one into a zone, so it is not told about them and
   // the normalize below (which does know) hides them.
-  const l = layoutApi.normalizeLayout(raw, ids.filter(id => !HIDDEN_UNTIL_USED.includes(id)));
+  const l = migrateApi.normalizeV1(raw, ids.filter(id => !HIDDEN_UNTIL_USED.includes(id)));
   const zone = z => (l.zones[z].length ? { type: 'group', id: z, tabs: l.zones[z] } : null);
   const strip = (kids, sizes, dir) => ({
     type: 'split', dir, kids: kids.filter(Boolean), sizes: sizes.filter((_, i) => kids[i]),
@@ -235,15 +244,52 @@ function readAny(raw, ids) {
   return defaultLayout(ids);
 }
 
+// Every module id a stored version 2 layout names anywhere: the tree, the floats, the rail, the hidden.
+function modulesNamedBy(raw) {
+  const out = new Set();
+  const take = (v) => { if (typeof v === 'string') out.add(v); };
+  const visit = (n, depth) => {
+    if (!isObject(n) || depth > 64) return;
+    if (Array.isArray(n.tabs)) n.tabs.forEach(take);
+    if (Array.isArray(n.kids)) n.kids.forEach(k => visit(k, depth + 1));
+  };
+  visit(raw.root, 0);
+  if (Array.isArray(raw.floats)) raw.floats.forEach(f => visit(f, 0));
+  if (Array.isArray(raw.rail)) raw.rail.forEach(take);
+  if (Array.isArray(raw.hidden)) raw.hidden.forEach(take);
+  return out;
+}
+
+/**
+ * A stored layout as the dock opens it (BACKLOG #103): `readAny`, except a layout saved before the rail existed (an L1 shape, or
+ * a version 2 with no `rail` key) pinned nothing on purpose, so its docked panels start as rail tabs, each remembering its old
+ * side of the terminal. That runs on every load until the first save writes a `rail` array (it is idempotent, so a repeat is
+ * harmless). Anything unreadable is the start layout. A layout that has a `rail` array records the person's pins and is left
+ * alone, except that a module it never listed starts on the rail. `readAny` differs on purpose: junk reads as the all-pinned
+ * `defaultLayout`, and presets (deliberate arrangements) use it.
+ */
+function readStored(raw, ids) {
+  if (isObject(raw) && raw.version === VERSION) {
+    const l = normalize(raw, ids);
+    if (!Array.isArray(raw.rail)) return unpinAll(l);
+    // A module the stored layout never listed (a new build's panel) starts on the rail too, not docked where `normalize` puts it.
+    const named = modulesNamedBy(raw);
+    return ids.filter(id => !named.has(id) && groupOf(l, id)).reduce((acc, id) => unpin(acc, id), l);
+  }
+  if (isObject(raw) && isObject(raw.zones)) return unpinAll(fromV1(raw, ids));
+  return startLayout(ids);
+}
+
 /** A window's L1 selection as a tree selection: group ids are the zone names, so it maps straight across. */
 function selectionFromV1(raw) {
-  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false, floatOrder: [] };
+  return { active: stringMap(isObject(raw) ? raw.active : null), foldAll: false, floatOrder: [], collapsed: {} };
 }
 
 // --- docking, hiding, showing -------------------------------------------------
 
 const clone = v => JSON.parse(JSON.stringify(v));
-const modulesIn = layout => [...groups(layout).flatMap(gr => gr.tabs), ...layout.floats.flatMap(f => f.tabs), ...layout.hidden];
+const railOf = layout => (Array.isArray(layout.rail) ? layout.rail : []);
+const modulesIn = layout => [...groups(layout).flatMap(gr => gr.tabs), ...layout.floats.flatMap(f => f.tabs), ...railOf(layout), ...layout.hidden];
 const groupOf = (layout, id) => groups(layout).find(gr => gr.tabs.includes(id)) || null;
 /** The float that holds a module, or null. (`groups` and `groupOf` are the TREE's: everything that walks the tree relies on that.) */
 const floatOf = (layout, id) => layout.floats.find(f => f.tabs.includes(id)) || null;
@@ -271,7 +317,7 @@ function replaceCell(l, cell, wrap) {
 function dock(layout, id, target) {
   const fromTree = groupOf(layout, id);
   const from = fromTree || floatOf(layout, id);                             // the tree group or the float it sits in
-  if (!from && !layout.hidden.includes(id)) return layout;                  // unknown module
+  if (!from && !layout.hidden.includes(id) && !railOf(layout).includes(id)) return layout;   // unknown module
   if (!isObject(target)) return layout;
   const byFloat = Object.prototype.hasOwnProperty.call(target, 'float');
   const byEdge = typeof target.edge === 'string';
@@ -294,6 +340,7 @@ function dock(layout, id, target) {
   const src = groupOf(l, id) || floatOf(l, id);
   if (src) src.tabs = src.tabs.filter(t => t !== id);
   l.hidden = l.hidden.filter(h => h !== id);
+  l.rail = railOf(l).filter(r => r !== id);
   delete l.seat[id];
 
   const used = new Set(allGroups(l).map(gr => gr.id));
@@ -456,6 +503,12 @@ function hideFloating(layout, id) {
  * shared (design section 4's op table).
  */
 function hide(layout, id) {
+  if (railOf(layout).includes(id)) {                                         // off the rail: its seat (where pinning would put it) stays
+    const l = clone(layout);
+    l.rail = l.rail.filter(r => r !== id);
+    l.hidden.push(id);
+    return normalize(l, modulesIn(layout));
+  }
   const gr = groupOf(layout, id);
   if (!gr) return hideFloating(layout, id);                                  // a float's panel, or unknown, or already hidden
   const order = groups(layout).flatMap(x => x.tabs);                         // tree order
@@ -486,6 +539,8 @@ function show(layout, id) {
   if (seat) {
     if (seat.group && allGroups(layout).some(x => x.id === seat.group)) return dock(layout, id, { cell: seat.group, side: 'center' });
     if (seat.float) return dock(layout, id, { float: { x: seat.float.x, y: seat.float.y, w: seat.float.w, h: seat.float.h } });
+    // Unpinned as a whole layout (readStored): the neighbours left with it, so the side of the terminal is the only anchor.
+    if (seat.edge) return dock(layout, id, { edge: seat.edge });
     const near = seat.beside && groupOf(layout, seat.beside);
     if (near) return dock(layout, id, { cell: near.id, side: seat.side });
     // The neighbour may have floated since (PR #102 Dexter 5): a float takes a tab, never a split.
@@ -493,6 +548,83 @@ function show(layout, id) {
     if (nearFloat) return dock(layout, id, { cell: nearFloat.id, side: 'center' });
   }
   return dock(layout, id, { edge: 'right' });
+}
+
+// --- the rail: pinned and unpinned panels (BACKLOG #85) ----------------------------
+
+/** Unpin a docked or floating module: it leaves the layout for the end of the rail, and remembers its seat for `pin`. */
+function unpin(layout, id) {
+  const tree = typeof id === 'string' ? groupOf(layout, id) : null;
+  const host = tree || (typeof id === 'string' ? floatOf(layout, id) : null);
+  if (!host) return layout;
+  const away = hide(layout, id);                                             // the seat is made exactly as for a hidden panel
+  const l = clone(away);
+  l.hidden = l.hidden.filter(h => h !== id);
+  l.rail = [...railOf(l), id];
+  // Its mates: the tabs still in its group, and the tabs of the same group already on the rail. Pinning any of them later
+  // rejoins whichever is pinned by then, so a group unpinned and pinned again is one group in any order (PR #168 Dexter 2).
+  const railedMates = railOf(layout).filter(r => ((layout.seat[r] || {}).mates || []).includes(id));
+  const mates = [...new Set([...host.tabs.filter(t => t !== id), ...railedMates])];
+  if (mates.length) l.seat[id] = { ...l.seat[id], mates };
+  // The last tab out takes the group with it: the mates already on the rail learn where the group stood.
+  if (tree && host.tabs.length === 1 && l.seat[id]) {
+    for (const r of railedMates) if (l.seat[r]) l.seat[r] = { ...l.seat[r], group: null, beside: l.seat[id].beside, side: l.seat[id].side };
+  }
+  return normalize(l, modulesIn(layout));
+}
+
+/** Pin a railed module: a real panel again, back at its seat (else a new group beside the terminal, on the right). */
+function pin(layout, id) {
+  if (typeof id !== 'string' || !railOf(layout).includes(id)) return layout;
+  const l = clone(layout);
+  l.rail = l.rail.filter(r => r !== id);
+  l.hidden.push(id);
+  const back = normalize(l, modulesIn(layout));
+  const mate = ((back.seat[id] || {}).mates || []).map(m => groupOf(back, m)).find(Boolean);
+  if (mate) return dock(back, id, { cell: mate.id, side: 'center' });       // a mate of its old group is pinned: join it
+  return show(back, id);
+}
+
+/** Bring a hidden module back as a rail tab (unpinned, the default), keeping the seat `pin` will use. */
+function showOnRail(layout, id) {
+  if (typeof id !== 'string' || !layout.hidden.includes(id)) return layout;
+  const l = clone(layout);
+  l.hidden = l.hidden.filter(h => h !== id);
+  l.rail = [...railOf(l), id];
+  return normalize(l, modulesIn(layout));
+}
+
+/** Unpin every tab of a tree group (a fold, open question 2), in tab order. */
+function unpinGroup(layout, groupId) {
+  const gr = groups(layout).find(x => x.id === groupId);
+  if (!gr) return layout;
+  return [...gr.tabs].reduce((l, id) => unpin(l, id), layout);
+}
+
+/**
+ * Unpin every panel docked in the tree (floats stay where they were put), in tree order. Every group leaves, so no seat has a
+ * docked neighbour to name; each railed panel instead remembers which side of the terminal its group stood on (`seat.edge`,
+ * which pinning follows before any neighbour), so pinning one restores the old position (PR #189 Dexter 1).
+ */
+function unpinAll(layout) {
+  let termNode = null;
+  walk(layout.root, (n) => { if (n.type === 'term') termNode = n; });
+  const edges = {};
+  if (termNode) for (const gr of groups(layout)) for (const id of gr.tabs) edges[id] = sideOf(layout, gr, termNode);
+  const out = groups(layout).map(gr => gr.id).reduce((l, id) => unpinGroup(l, id), layout);
+  const l = clone(out);
+  for (const id of Object.keys(edges)) if (l.seat[id]) l.seat[id] = { ...l.seat[id], edge: edges[id] };
+  return normalize(l, modulesIn(layout));
+}
+
+/**
+ * What a person meets first (BACKLOG #103): every panel a tab on the rail, the terminal filling the dock, until they pin one.
+ * `defaultLayout` stays the all-pinned layout; this is it unpinned, so a later pin returns each panel to the same group.
+ * Size: each rail seat lists its N-1 mates, so the saved layout grows with N squared (about 2 KB for today's modules; the 8 KB save
+ * cap in layout-bridge.js is reached near 28 modules, and a seat keeps at most 32 mates). A test watches it.
+ */
+function startLayout(ids) {
+  return unpinAll(defaultLayout(ids));
 }
 
 // --- sizes ---------------------------------------------------------------------
@@ -507,6 +639,21 @@ function minSize(n) {
   return { width: Math.max(...ms.map(m => m.width)), height: ms.reduce((s, m) => s + m.height, 0) + gutters };
 }
 const along = (n, dir) => minSize(n)[dir === 'row' ? 'width' : 'height'];
+
+// What `fit` needs of a subtree in THIS window: a group the window collapsed costs its rail (not a panel's minimum),
+// and no gutter is drawn against a rail. `setSplitSizes` stays on the selection-blind `minSize`: it stores the shared layout.
+function minSizeSel(n, sel) {
+  if (n.type === 'term') return { ...TERM_MIN };
+  if (isShut(n, sel)) return { width: RAIL.side, height: RAIL.wide };
+  if (n.type === 'group') return { ...MIN };
+  const ms = n.kids.map(k => minSizeSel(k, sel));
+  const open = n.kids.map(k => !isShut(k, sel));
+  // With the terminal in the split every open fixed kid has one gutter on the spine's side; without it, two open kids side by side share one.
+  const gaps = hasTerm(n) ? open.filter((o, i) => o && !hasTerm(n.kids[i])).length : open.filter((o, i) => o && i > 0 && open[i - 1]).length;
+  if (n.dir === 'row') return { width: ms.reduce((s, m) => s + m.width, 0) + GUTTER * gaps, height: Math.max(...ms.map(m => m.height)) };
+  return { width: Math.max(...ms.map(m => m.width)), height: ms.reduce((s, m) => s + m.height, 0) + GUTTER * gaps };
+}
+const alongSel = (n, dir, sel) => minSizeSel(n, sel)[dir === 'row' ? 'width' : 'height'];
 
 /**
  * A divider drag's result: the sizes of the split at `path` (child indexes from
@@ -535,10 +682,13 @@ function setSplitSizes(layout, path, sizes) {
 //
 // Which tab each group shows, and whether everything is folded (Ctrl+B), belong
 // to the WINDOW (localStorage), not to the layout: clicking Vault in one window
-// never switches another (L1 S3a). A selection is { active: { [groupId]: moduleId }, foldAll }.
+// never switches another (L1 S3a). A selection is { active: { [groupId]: moduleId }, foldAll, floatOrder,
+// collapsed: { [groupId]: true } } -- the groups this window collapsed on purpose (D4), as Ctrl+B folds them all.
 
 /** A selection from anything stored. */
 const MAX_FLOAT_ORDER = 32;                           // a damaged file can't grow the list without end
+const MAX_COLLAPSED = 64;                             // ...nor can this one
+const MAX_COLLAPSED_TABS = 32;
 
 // A selection also holds which float is on top, bottom to top: pressing a float raises it in THIS window only,
 // so a click never writes the shared layout. Ids of floats that are gone stay until pushed out; `fit` ignores them.
@@ -547,7 +697,19 @@ function cleanSelection(raw) {
   const order = (Array.isArray(r.floatOrder) ? r.floatOrder : []).filter(x => typeof x === 'string' && x !== '');
   // Unique, keeping each id's LAST place (that is where it was last raised).
   const floatOrder = order.filter((x, i) => order.lastIndexOf(x) === i).slice(-MAX_FLOAT_ORDER);
-  return { active: stringMap(r.active), foldAll: r.foldAll === true, floatOrder };
+  // Only a non-empty list of ids collapses: `true`, `1`, `'yes'` and `{}` are damage, not a choice.
+  const collapsed = {};
+  if (isObject(r.collapsed)) {
+    for (const [k, v] of Object.entries(r.collapsed)) {
+      if (k === '' || Object.keys(collapsed).length >= MAX_COLLAPSED) continue;
+      // The module ids of the group when it was collapsed: another layout can hand its name to a different group.
+      if (Array.isArray(v)) {
+        const ids = v.filter(x => typeof x === 'string' && x !== '').slice(0, MAX_COLLAPSED_TABS);
+        if (ids.length) collapsed[k] = ids;
+      }
+    }
+  }
+  return { active: stringMap(r.active), foldAll: r.foldAll === true, floatOrder, collapsed };
 }
 
 /** Put a float on top of the others, in this window's selection. */
@@ -562,8 +724,47 @@ function selectTab(sel, layout, id) {
   const s = cleanSelection(sel);
   const gr = groupOf(layout, id) || floatOf(layout, id);
   if (!gr) return s;
-  const picked = { ...s, active: { ...s.active, [gr.id]: id }, foldAll: false };
+  // A tab is chosen to be SEEN (a click on it in a popover, a panel dropped or ticked into its group): its group opens.
+  const { [gr.id]: _was, ...stillShut } = s.collapsed;
+  const picked = { ...s, active: { ...s.active, [gr.id]: id }, foldAll: false, collapsed: stillShut };
   return layout.floats.includes(gr) ? raiseFloat(picked, gr.id) : picked;
+}
+
+/** Collapse a group of the tree to its rail in this window, or open it again. Floats, the terminal and unknown names change nothing. */
+function toggleCollapse(sel, layout, groupId) {
+  const s = cleanSelection(sel);
+  if (typeof groupId !== 'string' || !groups(layout).some(gr => gr.id === groupId)) return s;
+  const collapsed = { ...s.collapsed };
+  const gr = groups(layout).find(x => x.id === groupId);
+  // Which group, not just which name: another layout can hand the name to a different group (PR #159 Dexter 3).
+  if (collapsed[groupId]) delete collapsed[groupId]; else collapsed[groupId] = [...gr.tabs].slice(0, MAX_COLLAPSED_TABS);
+  return { ...s, collapsed };
+}
+
+/**
+ * The selection without collapsed groups the layout no longer has: a destroyed group's name is free to reuse, and
+ * a new group handed it would start collapsed. The very same selection when nothing was stale.
+ */
+function pruneCollapsed(sel, layout) {
+  const grs = groups(layout);
+  const keepsRail = ([k, v]) => { const gr = grs.find(x => x.id === k); return !!gr && isCollapsed({ collapsed: { [k]: v } }, gr); };
+  if (!isObject(sel) || !isObject(sel.collapsed) || Object.entries(sel.collapsed).every(keepsRail)) return sel;
+  return cleanSelection({ ...sel, collapsed: Object.fromEntries(Object.entries(sel.collapsed).filter(keepsRail)) });
+}
+
+/**
+ * Whether a node is drawn as a rail because of what this window collapsed: a collapsed group, or a split with no terminal
+ * in it whose every kid is (a column of folded groups is one rail, whose popover lists them all; PR #159 Dexter 2).
+ */
+function isShut(n, sel) {
+  if (n.type === 'group') return isCollapsed(sel, n);
+  return n.type === 'split' && !hasTerm(n) && n.kids.every(k => isShut(k, sel));
+}
+
+/** Whether this window collapsed THIS group: its name is in the list and (when the choice remembers tabs) it still holds one of them. */
+function isCollapsed(sel, group) {
+  const rec = isObject(sel) && isObject(sel.collapsed) && isObject(group) ? sel.collapsed[group.id] : undefined;
+  return Array.isArray(rec) && Array.isArray(group.tabs) && group.tabs.some(t => rec.includes(t));
 }
 
 function toggleFoldAll(sel) {
@@ -601,13 +802,20 @@ function wholePixels(shares, total) {
 }
 
 // The pixels of a split with no terminal in it: sizes are proportions, a kid under its minimum is raised.
-function plainLengths(n, length) {
-  const m = n.kids.length;
-  const gutter = length >= GUTTER * (m - 1) ? GUTTER : 0;                    // a window too small for them has none
-  const avail = length - gutter * (m - 1);
-  const mins = n.kids.map(k => along(k, n.dir));
-  const total = n.sizes.reduce((a, b) => a + b, 0);
-  let w = n.sizes.map(s => (total > 0 ? avail * s / total : avail / m));
+// `shut[i]`: kid i is a group this window collapsed -- a rail, with no gutter against it; the others share the rest.
+function plainLengths(n, length, shut, sel) {
+  const rail = n.dir === 'row' ? RAIL.side : RAIL.wide;
+  // (A split whose every kid is collapsed is a rail in ITS parent, so it never gets here; the root always holds the
+  // terminal.) Rails that don't fit are no choice anyone made: the split is drawn open.
+  const folded = shut.every(Boolean) || rail * shut.filter(Boolean).length > length ? shut.map(() => false) : shut;
+  const idx = n.kids.map((_, i) => i).filter(i => !folded[i]);
+  const room = length - rail * (n.kids.length - idx.length);
+  const gaps = idx.filter((i, k) => k > 0 && idx[k - 1] === i - 1).length;   // two open kids side by side
+  const gutter = room >= GUTTER * gaps ? GUTTER : 0;                         // a window too small for them has none
+  const avail = room - gutter * gaps;
+  const mins = idx.map(i => alongSel(n.kids[i], n.dir, sel));
+  const total = idx.reduce((a, i) => a + n.sizes[i], 0);
+  let w = idx.map(i => (total > 0 ? avail * n.sizes[i] / total : avail / idx.length));
   if (mins.reduce((a, b) => a + b, 0) <= avail && w.some((x, i) => x < mins[i])) {
     // The ones under their minimum take it; the others pay, in proportion to their slack. That never
     // takes anyone under their own minimum, because the slack covers the deficit whenever the minimums fit.
@@ -616,8 +824,13 @@ function plainLengths(n, length) {
     const slack = w.reduce((s, x, i) => s + (under[i] ? 0 : x - mins[i]), 0);
     w = w.map((x, i) => (under[i] ? mins[i] : x - deficit * (x - mins[i]) / slack));
   }
-  const len = wholePixels(w, avail);
-  return { len, state: len.map(() => 'open'), gutter: len.map((_, i) => (i > 0 ? gutter : 0)) };
+  const px = wholePixels(w, avail);
+  const len = n.kids.map((_, i) => (folded[i] ? rail : px[idx.indexOf(i)]));
+  return {
+    len,
+    state: folded.map(f => (f ? 'rail' : 'open')),
+    gutter: len.map((_, i) => (i > 0 && !folded[i] && !folded[i - 1] ? gutter : 0)),
+  };
 }
 
 /*
@@ -633,16 +846,20 @@ function plainLengths(n, length) {
  *      the rails, farthest first.
  * `foldAll` (Ctrl+B) starts at c with everything folded.
  */
-function spineLengths(n, length, foldAll) {
+function spineLengths(n, length, foldAll, shut, sel) {
   const { dir, kids } = n;
   const s = kids.findIndex(hasTerm);
   const termMin = dir === 'row' ? TERM_MIN.width : TERM_MIN.height;
   const rail = dir === 'row' ? RAIL.side : RAIL.wide;
-  const need = along(kids[s], dir);
-  const mins = kids.map(k => along(k, dir));
+  const need = alongSel(kids[s], dir, sel);
+  const mins = kids.map(k => alongSel(k, dir, sel));
   const ask = i => Math.max(mins[i], Math.round(n.sizes[i]));
   const fixed = kids.map((_, i) => i).filter(i => i !== s);
-  const order = [...fixed].sort((a, b) => Math.abs(b - s) - Math.abs(a - s) || b - a);
+  // Farthest from the spine folds first. The groups this window collapsed are rails already: they head the order,
+  // and the search for room starts after them (a, b, c, d below then work on the kids still open).
+  const far = (a, b) => Math.abs(b - s) - Math.abs(a - s) || b - a;
+  const order = [...fixed.filter(i => shut[i]).sort(far), ...fixed.filter(i => !shut[i]).sort(far)];
+  const collapsedCount = fixed.filter(i => shut[i]).length;
 
   const settle = (folded, dropped, sizes) => {
     const len = kids.map(() => 0);
@@ -662,7 +879,7 @@ function spineLengths(n, length, foldAll) {
   };
 
   // The last pass (k = every kid folded) always returns, so the loop has no other way out.
-  for (let k = foldAll ? order.length : 0; ; k += 1) {
+  for (let k = foldAll ? order.length : collapsedCount; ; k += 1) {
     const open = order.slice(k);
     const avail = length - GUTTER * open.length - rail * k;
     if (k === order.length) {
@@ -697,11 +914,12 @@ function place(n, rect, path, ctx) {
   }
   const isRow = n.dir === 'row';
   const length = isRow ? rect.width : rect.height;
-  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll) : plainLengths(n, length);
+  const shut = n.kids.map(k => isShut(k, ctx.sel));
+  const { len, state, gutter } = hasTerm(n) ? spineLengths(n, length, ctx.sel.foldAll, shut, ctx.sel) : plainLengths(n, length, shut, ctx.sel);
   ctx.splits.push({
-    path, dir: n.dir, px: len,
+    path, dir: n.dir, px: len, state,
     // A rail is as small as it gets, so a divider drag can't ask it for less.
-    min: n.kids.map((k, i) => (state[i] === 'open' ? along(k, n.dir) : len[i])),
+    min: n.kids.map((k, i) => (state[i] === 'open' ? alongSel(k, n.dir, ctx.sel) : len[i])),
   });
   let pos = isRow ? rect.x : rect.y;
   n.kids.forEach((k, i) => {
@@ -715,7 +933,8 @@ function place(n, rect, path, ctx) {
     const r = isRow ? { x: pos, y: rect.y, width: len[i], height: rect.height } : { x: rect.x, y: pos, width: rect.width, height: len[i] };
     pos += len[i];
     if (state[i] === 'gone') return;
-    if (state[i] === 'rail') ctx.boxes.push({ kind: 'rail', dir: isRow ? 'v' : 'h', modules: modulesUnder(k), rect: r });
+    // `groups`: the groups behind the rail (a folded column holds several), so a keyboard move can start on the one that holds a panel.
+    if (state[i] === 'rail') ctx.boxes.push({ kind: 'rail', dir: isRow ? 'v' : 'h', modules: modulesUnder(k), groups: groups({ root: k }).map(gr => ({ id: gr.id, tabs: [...gr.tabs] })), rect: r });
     else place(k, r, [...path, i], ctx);
   });
 }
@@ -736,6 +955,43 @@ function placeFloats(layout, ctx, area) {
   }
 }
 
+// --- a rail's panel over the terminal (D4) --------------------------------------------------
+
+// How much of the window the popover of a rail takes: a vertical rail's is this wide, a horizontal rail's this high,
+// and along the rail it is at least this long (more when the rail is longer).
+const PEEK = { side: 280, wide: 220, span: 420 };
+
+/**
+ * Where the panel of a module on a rail opens. A group folded to a rail (collapsed on purpose, Ctrl+B, or squeezed by a
+ * narrow window) has no room for its panel, so it opens as a popover beside the rail, on the side with the most room,
+ * over whatever is drawn there. Whole pixels, always inside the window, never over its own rail.
+ * `boxes` are `fit`'s; the answer is { module, modules, dir, rect } -- `modules` the rail's, for the popover's tabs --
+ * or null when no rail holds the module (the popover closes by itself when its rail goes) or the window is junk.
+ */
+function peekFor(boxes, module, viewport) {
+  const vp = viewportOf(viewport);
+  if (!vp || typeof module !== 'string' || !Array.isArray(boxes)) return null;
+  const rail = boxes.find(b => isObject(b) && b.kind === 'rail' && Array.isArray(b.modules) && b.modules.includes(module)
+    && isObject(b.rect) && ['x', 'y', 'width', 'height'].every(k => isNum(b.rect[k])));
+  if (!rail || (rail.dir !== 'v' && rail.dir !== 'h')) return null;
+  const r = rail.rect;
+  const clampTo = (v, room) => Math.max(0, Math.min(Math.round(v), room));
+  if (rail.dir === 'v') {
+    const before = r.x;
+    const after = vp.width - (r.x + r.width);
+    const width = Math.floor(Math.min(PEEK.side, Math.max(before, after)));
+    const height = Math.min(vp.height, Math.max(Math.round(r.height), PEEK.span));
+    if (width <= 0 || height <= 0) return null;
+    return { module, modules: [...rail.modules], dir: 'v', rect: { x: Math.round(after >= before ? r.x + r.width : r.x - width), y: clampTo(r.y, vp.height - height), width, height } };
+  }
+  const before = r.y;
+  const after = vp.height - (r.y + r.height);
+  const height = Math.floor(Math.min(PEEK.wide, Math.max(before, after)));
+  const width = Math.min(vp.width, Math.max(Math.round(r.width), PEEK.span));
+  if (width <= 0 || height <= 0) return null;
+  return { module, modules: [...rail.modules], dir: 'h', rect: { x: clampTo(r.x, vp.width - width), y: Math.round(after >= before ? r.y + r.height : r.y - height), width, height } };
+}
+
 /**
  * @param layout    a normalized layout
  * @param selection this window's choices (anything: it is cleaned)
@@ -746,16 +1002,34 @@ function placeFloats(layout, ctx, area) {
 function fit(layout, selection, viewport) {
   const vp = isObject(viewport) ? viewport : {};
   const ctx = { layout, sel: cleanSelection(selection), boxes: [], splits: [] };
-  const area = { width: dim(vp.width), height: dim(vp.height) };
-  place(layout.root, { x: 0, y: 0, ...area }, [], ctx);
-  if (!ctx.sel.foldAll) placeFloats(layout, ctx, area);
-  return { boxes: ctx.boxes, splits: ctx.splits };
+  const whole = { width: dim(vp.width), height: dim(vp.height) };
+  const run = (width) => {
+    const c = { layout, sel: ctx.sel, boxes: [], splits: [] };
+    const a = { width, height: whole.height };
+    place(layout.root, { x: 0, y: 0, ...a }, [], c);
+    if (!c.sel.foldAll) placeFloats(layout, c, a);
+    return c;
+  };
+  const termWidth = c => c.boxes.find(b => b.kind === 'term').rect.width;
+  const shutRails = c => c.boxes.filter(b => b.kind === 'rail').length;
+  // Unpinned panels are tabs on one rail at the right edge (BACKLOG #85). It is a strip of its own, so the terminal's width
+  // never depends on whether a rail panel is open. The terminal wins (PR #168 Dexter 4): when the strip would take the terminal
+  // under its minimum, or cost a folded group its rail, the window is too small for it and none is drawn.
+  const railIds = railOf(layout);
+  let drawn = run(whole.width);
+  let strip = 0;
+  if (railIds.length && whole.width > RAIL.side) {
+    const narrower = run(whole.width - RAIL.side);
+    if (termWidth(narrower) >= TERM_MIN.width && shutRails(narrower) >= shutRails(drawn)) { drawn = narrower; strip = RAIL.side; }
+  }
+  if (strip) drawn.boxes.push({ kind: 'rail', id: 'dock', dir: 'v', modules: [...railIds], groups: [], rect: { x: whole.width - strip, y: 0, width: strip, height: whole.height } });
+  return { boxes: drawn.boxes, splits: drawn.splits };
 }
 
 const API = {
-  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, minSize, setSplitSizes,
-  cleanSelection, selectTab, raiseFloat, toggleFoldAll, activeOf, fit,
+  HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, startLayout, unpinAll, readStored, normalize, groups, count, hasTerm,
+  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, unpin, pin, showOnRail, unpinGroup, minSize, setSplitSizes,
+  cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, isCollapsed, activeOf, fit, peekFor, PEEK,
 };
 
 // One namespace on the page (`window.dockTree`), not a dozen loose globals.

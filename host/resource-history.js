@@ -9,7 +9,7 @@
  */
 
 const CAPACITY = 360;
-const FIELDS = ['cpu', 'cpuOurs', 'memUsed', 'memOurs', 'memTotal'];
+const FIELDS = ['cpu', 'cpuOurs', 'memUsed', 'memOurs', 'memTotal', 'gpu', 'gpuMemUsed', 'gpuMemTotal'];
 // A step bigger than this between two points means samples were missed. The cadence is a 10 s gap AFTER a sample and a sample
 // can take up to its 20 s timeout, so a good, slow sample is 30 s after the last (Dexter, PR #114 D3): a minute is the margin.
 const MAX_STEP_MS = 60000;
@@ -18,7 +18,7 @@ const MAX_STEP_MS = 60000;
 const WALL_SLACK_MS = 5000;
 
 const isNum = v => typeof v === 'number' && Number.isFinite(v);
-const round = (f, v) => (f === 'cpu' || f === 'cpuOurs' ? Math.round(v * 10) / 10 : Math.round(v));
+const round = (f, v) => (f === 'cpu' || f === 'cpuOurs' || f === 'gpu' ? Math.round(v * 10) / 10 : Math.round(v));
 
 /**
  * `at` is a MONOTONIC time in ms (main's `performance.now()`): it orders and spaces the points. The wall clock can step, and a
@@ -46,7 +46,7 @@ function createHistory({ capacity = CAPACITY } = {}) {
   }
 
   return {
-    /** `{ at, wall?, cpu, cpuOurs, memUsed, memOurs, memTotal }`: any figure that is not a finite number is stored as null. */
+    /** `{ at, wall?, cpu, cpuOurs, memUsed, memOurs, memTotal, gpu, gpuMemUsed, gpuMemTotal }`: any figure that is not a finite number is stored as null. */
     record(p) { push(p && p.at, p && p.wall, p || {}); },
     /** A sample that failed: nothing was measured, so every figure is null. */
     recordFailure(at, wall) { push(at, wall, {}); },

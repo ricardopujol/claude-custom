@@ -267,8 +267,6 @@ async function readAgentDefDir(dir, { readFile = (p) => fsp.readFile(p, 'utf8') 
     const name = nameFromFrontmatter(raw, fallback);
     names.push(name);
     const info = agentInfo(raw);
-    // A "persona" that is just the role again says nothing the card doesn't.
-    if (info.persona && info.persona.toLowerCase() === name.toLowerCase()) info.persona = null;
     infos.set(name, info);
   }
   return { names, infos, unreadable };

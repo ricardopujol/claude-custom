@@ -113,6 +113,21 @@ function cacheReadOf(s) {
   return count(s && s.cacheRead);
 }
 
+// The header's short wording (#42): "62M tok". Rounds INSIDE the unit, like host/milestones.js and the renderer's
+// compact(): the naive version printed "1000k" for 999,950. Strict typeof: a stringy or missing count is a dash, never "0 tok".
+const TOK_UNITS = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
+function tokText(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return UNKNOWN;
+  for (let i = 0; i < TOK_UNITS.length; i++) {
+    const [size, suffix] = TOK_UNITS[i];
+    if (n < size) continue;
+    const scaled = Number((n / size).toFixed(1));
+    if (scaled >= 1000 && i > 0) return `${Number((n / TOK_UNITS[i - 1][0]).toFixed(1))}${TOK_UNITS[i - 1][1]} tok`;
+    return `${scaled}${suffix} tok`;
+  }
+  return `${Math.round(n)} tok`;
+}
+
 function usageDisplay(usage) {
   if (!usage || !usage.project) {
     return { state: 'reading', placeholder: UNKNOWN, prefix: '', note: 'reading transcripts…' };
@@ -153,9 +168,10 @@ function usageDisplay(usage) {
 // renderer, which has no module system at all. Same shape as
 // app/attention-surface.js.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { usageDisplay, spendOf, cacheWriteOf, cacheReadOf, UNKNOWN, AT_LEAST };
+  module.exports = { usageDisplay, tokText, spendOf, cacheWriteOf, cacheReadOf, UNKNOWN, AT_LEAST };
 } else {
   root.usageDisplay = usageDisplay;
+  root.tokText = tokText;
   root.spendOf = spendOf;
   root.cacheWriteOf = cacheWriteOf;
   root.cacheReadOf = cacheReadOf;

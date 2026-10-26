@@ -38,6 +38,9 @@ const errWith = (code, message) => Object.assign(new Error(message), code ? { co
 
 // ---- the size gate ----
 
+// #50 added the edit fields (hash, bom, eol, editable); these tests pin the original ones.
+const core = ({ ok, text, size, mtimeMs }) => ({ ok, text, size, mtimeMs });
+
 test('a file bigger than the cap is refused from its stat alone, with its true size and the limit, without a read', async () => {
   const { api, log } = fakeFs(Buffer.alloc(40, 0x61), { size: 1000 });
   const r = await readRepoFile('f', { fsApi: api, maxBytes: 10 });
@@ -50,7 +53,7 @@ test('a file of exactly the cap reads whole; the stream is never asked for more 
   const body = Buffer.from('abcdefghij');
   const { api, log } = fakeFs(body);
   const r = await readRepoFile('f', { fsApi: api, maxBytes: 10 });
-  assert.deepStrictEqual(r, { ok: true, text: 'abcdefghij', size: 10, mtimeMs: 123 });
+  assert.deepStrictEqual(core(r), { ok: true, text: 'abcdefghij', size: 10, mtimeMs: 123 });
   const asked = log.reads.reduce((n, [len]) => n + len, 0);
   assert.ok(asked <= 10 + 1 + 1, `asked for ${asked} bytes`);
   assert.deepStrictEqual(log.reads[0], [11, 0]);
@@ -77,7 +80,7 @@ test('short reads are stitched back together without the zero padding of an unfi
   const text = 'the quick brown fox';
   const { api } = fakeFs(Buffer.from(text), { perRead: 4 });
   const r = await readRepoFile('f', { fsApi: api, maxBytes: 100 });
-  assert.deepStrictEqual(r, { ok: true, text, size: text.length, mtimeMs: 123 });
+  assert.deepStrictEqual(core(r), { ok: true, text, size: text.length, mtimeMs: 123 });
 });
 
 test('the default cap is MAX_BYTES, and a big file is read in chunks of at most 256 KiB', async () => {
@@ -123,7 +126,7 @@ test('a failure after the open (stat or read) is reported the same way, and the 
 
 test('a close that throws does not turn a good read into a failure', async () => {
   const { api } = fakeFs(Buffer.from('hi'), { closeError: new Error('already closed') });
-  assert.deepStrictEqual(await readRepoFile('f', { fsApi: api }), { ok: true, text: 'hi', size: 2, mtimeMs: 123 });
+  assert.deepStrictEqual(core(await readRepoFile('f', { fsApi: api })), { ok: true, text: 'hi', size: 2, mtimeMs: 123 });
 });
 
 test('statRepoFile answers size and mtime for a file, and maps its failures like a read does', async () => {
@@ -155,7 +158,7 @@ const be = (s) => { const b = Buffer.from(s, 'utf16le'); b.swap16(); return b; }
 
 test('a UTF-16LE file with a BOM is decoded as UTF-16, the BOM dropped', async () => {
   const r = await read(Buffer.concat([Buffer.from([0xff, 0xfe]), le('héllo\r\n')]));
-  assert.deepStrictEqual(r, { ok: true, text: 'héllo\r\n', size: 2 + 14, mtimeMs: 123 });
+  assert.deepStrictEqual(core(r), { ok: true, text: 'héllo\r\n', size: 2 + 14, mtimeMs: 123 });
 });
 
 test('a UTF-16BE file with a BOM is decoded as UTF-16', async () => {
@@ -194,8 +197,8 @@ test('only a full BOM counts: one matching byte of the two is just text', async 
 });
 
 test('a one-byte file is read as text, whatever the byte', async () => {
-  assert.deepStrictEqual(await read([0xff]), { ok: true, text: '�', size: 1, mtimeMs: 123 });
-  assert.deepStrictEqual(await read([0x41]), { ok: true, text: 'A', size: 1, mtimeMs: 123 });
+  assert.deepStrictEqual(core(await read([0xff])), { ok: true, text: '�', size: 1, mtimeMs: 123 });
+  assert.deepStrictEqual(core(await read([0x41])), { ok: true, text: 'A', size: 1, mtimeMs: 123 });
 });
 
 test('a UTF-32LE BOM (FF FE 00 00) is not decoded: its NULs make it binary, at exactly four bytes and beyond', async () => {
@@ -235,5 +238,5 @@ test('a leading UTF-8 BOM is dropped; one in the middle stays; Latin-1 bytes bec
 });
 
 test('an empty file reads as empty text', async () => {
-  assert.deepStrictEqual(await read([]), { ok: true, text: '', size: 0, mtimeMs: 123 });
+  assert.deepStrictEqual(core(await read([])), { ok: true, text: '', size: 0, mtimeMs: 123 });
 });

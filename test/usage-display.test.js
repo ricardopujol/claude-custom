@@ -229,3 +229,27 @@ test('KILL: a non-finite counter is 0, never NaN or Infinity on the headline', (
     assert.strictEqual(cacheReadOf({ cacheRead: bad }), 0, `cacheRead ${bad}`);
   }
 });
+
+// --- #42: the header's short wording -----------------------------------------------
+
+test('tokText: "62M tok" for the header; the full breakdown stays in the tooltip', () => {
+  const { tokText } = require('../app/usage-display');
+  assert.strictEqual(tokText(62_000_000), '62M tok');
+  assert.strictEqual(tokText(1_234_567), '1.2M tok');
+  assert.strictEqual(tokText(984_000), '984k tok');
+  assert.strictEqual(tokText(512), '512 tok');
+  assert.strictEqual(tokText(0), '0 tok');
+  assert.strictEqual(tokText(2_100_000_000), '2.1B tok');
+});
+
+test('tokText: rounds inside the unit, so 999,950 is not "1000k" (the host/milestones.js rule)', () => {
+  const { tokText } = require('../app/usage-display');
+  assert.strictEqual(tokText(999_950), '1M tok');
+  assert.strictEqual(tokText(999_949), '999.9k tok');
+  assert.strictEqual(tokText(999_999_999), '1B tok');
+});
+
+test('tokText: absence is a dash, never "0 tok" (a stringy or missing count must not become a zero)', () => {
+  const { tokText } = require('../app/usage-display');
+  for (const bad of [null, undefined, NaN, Infinity, '62000000', {}]) assert.strictEqual(tokText(bad), '—', String(bad));
+});

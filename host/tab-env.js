@@ -25,13 +25,15 @@ const PER_TAB_KEYS = Object.freeze([
   'CLAUDE_CUSTOM_TOKEN',
   'CLAUDE_CUSTOM_SESSION_ID',
   'CLAUDE_CUSTOM_SIDE_TAB',
+  // #81: this host is a tab's read-only side session. Per-tab identity: a side host's flag must never reach the next one.
+  'CLAUDE_CUSTOM_SIDE_SESSION',
   'CLAUDE_CUSTOM_PROJECT_ROOT',
   'CLAUDE_CUSTOM_PROJECT_STATE',
 ]);
 
 const nonEmpty = v => typeof v === 'string' && v.length > 0;
 
-function hostEnv(baseEnv, { cwd, port, token, project } = {}) {
+function hostEnv(baseEnv, { cwd, port, token, project, side = false } = {}) {
   if (!nonEmpty(cwd)) throw new Error('hostEnv: cwd must be a non-empty string');
   if (!nonEmpty(token)) throw new Error('hostEnv: token must be a non-empty string');
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -52,6 +54,7 @@ function hostEnv(baseEnv, { cwd, port, token, project } = {}) {
   out.CLAUDE_CUSTOM_TOKEN = token;
   out.CLAUDE_CUSTOM_PROJECT_ROOT = project.root;
   out.CLAUDE_CUSTOM_PROJECT_STATE = state;
+  if (side === true) out.CLAUDE_CUSTOM_SIDE_SESSION = '1';
   return out;
 }
 

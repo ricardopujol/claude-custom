@@ -1276,3 +1276,24 @@ test('the default tick copes with a handle that has no unref, or no handle at al
   }
   await Promise.all(inflight);
 });
+
+// --- #81 (PR #149 Dexter 6): a side session's agents are readers, whichever producer writes their claim ---------------
+
+test('a claim the scanner writes for a side session\'s agent carries role "reader"; any other session\'s does not', async () => {
+  const SIDE_SESSION = '2f72d188-bd6d-49bd-8fe4-1f1cde460011';
+  const r = rig({ readerSessions: () => [SIDE_SESSION] });
+  r.put('aside-1', line('aside-1', [read(path.join(FEAT, 'a.js'))]), { meta: { agentType: 'Explore' }, session: SIDE_SESSION });
+  r.put('amain-1', line('amain-1', [read(path.join(FEAT, 'b.js'))]), { meta: { agentType: 'Explore' }, session: 's1' });
+  await r.scanner.pass();
+  assert.strictEqual(r.claim('aside-1').role, 'reader');
+  assert.ok(!('role' in r.claim('amain-1')), 'an ordinary session\'s claim is what it always was');
+});
+
+test('a seam that throws or answers with something else is "no side sessions": the claim is written, as a writer', async () => {
+  for (const readerSessions of [() => { throw new Error('boom'); }, () => null, () => 'x']) {
+    const r = rig({ readerSessions });
+    r.put('aoops-1', line('aoops-1', [read(path.join(FEAT, 'a.js'))]), { meta: PLAIN });
+    await r.scanner.pass();
+    assert.ok(r.claim('aoops-1') && !('role' in r.claim('aoops-1')));
+  }
+});

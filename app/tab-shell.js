@@ -45,11 +45,13 @@ const { parsePorcelain, tabWorktrees } = require('../host/worktree-list');
 const { checkBranch } = require('../host/worktree-ops');
 const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
+const programStatusDisplay = require('./program-status-display');
 const tabStatusLib = require('./tab-status');
 const occupancyDisplay = require('./occupancy-display');
 const { closeReason } = require('../host/close-safety');
 const summaryDisplay = require('./summary-display');
 const { planGoTo } = require('./go-to-session');
+const { sideKeyOf, parentKeyOf, isSideKey, sideLabel } = require('../host/side-session');
 
 // --- pure helpers ------------------------------------------------------------
 
@@ -115,11 +117,11 @@ function observeWorktrees(porcelain, container, readMarker) {
 // What a tab says when no port could be found or refused for its folder.
 const NO_PORT_ERROR = 'no usable port for this folder';
 
+// #81: what a side tab says once its claude has ended.
+const SIDE_ENDED_TEXT = "This side session has ended. Reopen it from this tab's menu.";
+
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
-
-// How long a turn must have been idle before a Ctrl+click close counts the session as at rest.
-const IDLE_SETTLE_MS = 10_000;
 
 const cleanLock = (s) => (typeof s === 'string' && s ? s : null);
 
@@ -140,6 +142,8 @@ function sanitizeStatus(s) {
     night: o.night === true,
     summary: tabStatusLib.cleanSummary(o.summary),
     summaryNote: typeof o.summaryNote === 'string' && o.summaryNote !== '' && o.summaryNote.length <= 300 ? o.summaryNote : null,
+    // OSC 7501 (BACKLOG #116): the CLI's own state, cut down to the four known fields; null for anything else.
+    program: programStatusDisplay.clean(o.program),
   };
 }
 
@@ -174,6 +178,7 @@ function sanitizeStatus(s) {
  *   occupancy.claims()     -> [claim]    the LIVE worktree-occupancy claims (host/occupancy-service.js); optional
  *   now()                  -> ms         the clock the "4 min" labels read; optional
  *   safety.facts(cwd)      -> Promise<{ dirtyCount, unpushedCount }>  the folder's git facts for a Ctrl+click close (#77); optional
+ *   safety.readerUnsaved(tab) -> string|null  the file with unsaved edits in the tab's code reader (#50); optional
  *   ui.confirmClose(tab, { reason }?) -> Promise<boolean>   `reason` only when a Ctrl+click close wasn't safe
  *   ui.changed(snapshot)
  *   ui.focusWindow()       restore + show + focus + flash
@@ -200,6 +205,8 @@ const INTEGRATION = ['develop', 'main', 'master'];
 const errorText = (err) => (err && err.message) || String(err);
 
 function createShell(deps) {
+  // Usage counters are fire and forget: a throwing counter never aborts a tab's setup or removal.
+  const countUse = (key) => { try { if (typeof deps.usage === 'function') deps.usage(key); } catch { /* counting never breaks a tab */ } };
   const {
     mode = 'tabs', container = null, cwd = null, launchedFrom = null,
     git, hosts, ops, views, ui, log = () => {},
@@ -210,6 +217,7 @@ function createShell(deps) {
     // Worktree occupancy (#44 + #47): `claims()` -> the live claims. Optional; a reader that fails draws none.
     occupancy = null,
     now = Date.now,
+    // Usage counters (audit move 2): `deps.usage(key)`, fire and forget, optional (see countUse below).
     // How long Type /merged waits for the target page's answer; injected so a test doesn't wait.
     sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
     // Type /merged's own re-check (PR #93 Miguel I3): `openFor(folder, branch)` -> true / false / null
@@ -218,6 +226,10 @@ function createShell(deps) {
     // #77: `facts(cwd)` -> { dirtyCount, unpushedCount } (null for a fact git couldn't give). Optional: without it
     // a Ctrl+click close always asks.
     safety = null,
+    // BACKLOG #119 A6, a lane started from a GitHub issue. Optional:
+    //   brief({ number, branch, worktree }) -> Promise<{ ok, issue, brief, existed } | { ok: false, error, issue }>
+    //   forBranch(branch) -> { number, title, url } | null    the issue a branch the + form made came from (the cached list)
+    issues = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -239,9 +251,11 @@ function createShell(deps) {
   // { phase: 'running', branch } / { phase: 'failed', branch, error }.
   let create = null;
   const pendingBranches = new Set();   // branches Contract A is creating right now
+  const briefHolds = new Set();        // keys whose lane brief (#119 A6) is still being written: no session starts before it
   const setups = new Map();            // key -> { running, line, error, log }  (Contract E)
   const createdWarnings = new Map();   // key -> Contract A's optional warning
-  let selectWhenListed = null;         // a tab to select as soon as a poll lists it
+  const issueTabs = new Map();         // key -> { number, title, url }: the issue a tab's lane was started from (#119 A6)
+  let selectWhenListed = null;        // a tab to select as soon as a poll lists it
   // Type /merged: the type-command requests waiting for their page's answer, by id
   const typing = new Map();
   let typingSeq = 0;
@@ -274,7 +288,8 @@ function createShell(deps) {
   // A tab whose worktree Contract A is still making, or Contract E is still
   // setting up, doesn't start its session yet (criterion 10).
   const setupHolds = (tab) => (typeof tab.branch === 'string' && pendingBranches.has(tab.branch))
-    || (setups.has(tab.key) && setups.get(tab.key).running === true);
+    || (setups.has(tab.key) && setups.get(tab.key).running === true)
+    || briefHolds.has(tab.key);
 
   // A mark is decoration: a reader that fails draws none and never takes the strip down.
   function readMark(branch) {
@@ -318,15 +333,81 @@ function createShell(deps) {
     return t && typeof t.branch === 'string' && t.branch !== '' ? t.branch : null;
   }
 
+  // The issue a tab's lane came from: the one this window started it from, else the one its branch name says when
+  // the cached issue list has it. Decoration: a reader that fails or answers oddly draws none.
+  function issueShape(i) {
+    if (!i || typeof i !== 'object' || Array.isArray(i)) return null;
+    if (!Number.isInteger(i.number) || i.number < 1) return null;
+    return {
+      number: i.number,
+      title: typeof i.title === 'string' && i.title !== '' ? i.title : null,
+      url: typeof i.url === 'string' && i.url !== '' ? i.url : null,
+    };
+  }
+
+  function issueOf(key) {
+    if (typeof key !== 'string') return null;
+    const branch = branchOf(key);
+    if (branch === null) return null;
+    // The lane this window made: valid only while the tab is still on the branch it was made on (a git switch drops it).
+    const mine = issueTabs.get(key);
+    if (mine && mine.branch === branch) return issueShape(mine);
+    if (!issues || typeof issues.forBranch !== 'function') return null;
+    const tab = tabs.get(key);
+    try { return issueShape(issues.forBranch(branch, tab ? tab.cwd : null)); } catch (err) {
+      log('[shell] issues.forBranch threw:', err && err.message);
+      return null;
+    }
+  }
+
+  /**
+   * The strip's entries with each branch tab's side session (BACKLOG #81) right after it. A side tab is not a worktree, so
+   * the reducer's state never lists it; it is joined here, from the shell's own records.
+   */
+  function entriesWithSides() {
+    const sideSelected = isSideKey(selectedKey) && tabs.has(selectedKey) ? selectedKey : null;
+    const base = tabModel.stripModel(state, runtime(), sideSelected ? parentKeyOf(sideSelected) : selectedKey, { keyOf });
+    const out = [];
+    for (const e of base) {
+      const mine = tabs.get(e.key);
+      // While its side tab is the one showing, the branch tab is not selected, so it can call for a look again.
+      out.push(sideSelected !== null && e.selected
+        ? { ...e, selected: false, pulse: tabModel.pulseFor(mine && mine.status ? mine.status : null) } : e);
+      const sk = sideKeyOf(e.key);
+      const rec = sk ? tabs.get(sk) : null;
+      if (rec) out.push(sideEntry(e, rec, sideSelected === sk));
+    }
+    return out;
+  }
+
+  function sideEntry(parent, rec, selected) {
+    const st = rec.status;
+    return {
+      key: rec.key, label: sideLabel(parent.label), isDev: false, selected, started: rec.started === true,
+      // It stays until its branch tab closes: no close button of its own.
+      closable: false,
+      working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
+      summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
+      lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null,
+      side: true, parentKey: parent.key, role: 'reader',
+    };
+  }
+
   function model() {
     const claims = readClaims();
     const at = now();
-    return tabModel.stripModel(state, runtime(), selectedKey, { keyOf }).map((e) => {
+    return entriesWithSides().map((e) => {
       const t = tabs.get(e.key);
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
-        badge: tabModel.badgeFor(e), phaseText: tabModel.phaseText(e), mark: readMark(branchOf(e.key)),
+        badge: tabModel.badgeFor(e),
+        phaseText: e.side === true && t && t.ended === true ? SIDE_ENDED_TEXT : tabModel.phaseText(e),
+        mark: readMark(branchOf(e.key)),
+        // #119 A6: the GitHub issue this lane was started from ({ number, title, url } or null).
+        issue: e.side === true ? null : issueOf(e.key),
+        // #119 A6: this tab's lane brief is being written, and its session waits for it.
+        briefing: e.side !== true && briefHolds.has(e.key),
         // #63: the CPU warning chip ({ pct, level } or null).
         resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
@@ -344,7 +425,7 @@ function createShell(deps) {
     const claims = readClaims();
     for (const tab of tabs.values()) {
       if (!tab.view) continue;
-      const payload = occupancyDisplay.viewPayload(claims, tab.key, { keyOf });
+      const payload = occupancyDisplay.viewPayload(claims, tab.folderKey || tab.key, { keyOf });
       const text = JSON.stringify(payload);
       if (text === tab.occupancySent) continue;
       tab.occupancySent = text;
@@ -356,7 +437,7 @@ function createShell(deps) {
   function occupancyFor(sender) {
     const tab = tabForSender(sender);
     if (!tab) return null;
-    const payload = occupancyDisplay.viewPayload(readClaims(), tab.key, { keyOf });
+    const payload = occupancyDisplay.viewPayload(readClaims(), tab.folderKey || tab.key, { keyOf });
     tab.occupancySent = JSON.stringify(payload);
     return payload;
   }
@@ -390,6 +471,20 @@ function createShell(deps) {
       started: false, starting: false, error: null, status: null, closed: false, startPromise: null, pending: null,
       attachPromise: null, unconfirmed: null, ended: false, occupancySent: EMPTY_OCCUPANCY,
     };
+  }
+
+  /**
+   * A branch tab's side session: the same folder, a host of its own (the record's `side` flag makes main spawn it as a side
+   * host and look for it as one). `branch` is the name the Resources panel and a close dialog show.
+   */
+  function newSideRecord(parent) {
+    const rec = newRecord({ path: parent.cwd, branch: null, isDev: false });
+    rec.key = sideKeyOf(parent.key);
+    rec.side = true;
+    rec.parentKey = parent.key;
+    rec.folderKey = parent.key;
+    rec.branch = sideLabel(parent.branch || path.basename(parent.cwd));
+    return rec;
   }
 
   // Create the tab's view. The session is running by now (attached or spawned).
@@ -440,6 +535,9 @@ function createShell(deps) {
         if (tab.started) return;
         const chosen = await hosts.choosePort(tab);
         if (!chosen) throw new Error(NO_PORT_ERROR);
+        // A side session never spawns into a folder that is being removed, or for a tab that closed during the walk (PR #149 R2-2).
+        // (A host the walk FOUND is still attached below, and stopped if its tab closed: it is already running.)
+        if (tab.side === true && chosen.action === 'spawn' && (tab.closed || destroyed || phaseOf(tab.parentKey) === 'removing')) return;
         port = chosen.port;
         // Dexter, PR #75 F2: a spawn whose wait timed out left a host that may
         // still be coming up. Retry must not spawn a second one onto its port.
@@ -466,6 +564,8 @@ function createShell(deps) {
           spawned = true;
           if (!(await hosts.wait(port))) {
             tab.pending = { port, token };
+            // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
+            if (tab.closed && tab.side === true) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
@@ -476,8 +576,9 @@ function createShell(deps) {
         // written yet -- our own host, just past its bind.
         token = hosts.tokenFile(port) || token;
         if (tab.closed || destroyed) {
-          // Closed while starting: don't leave the host we just made behind.
-          if (spawned) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
+          // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
+          // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
+          if (spawned || tab.side === true) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
           return;
         }
         present(tab, port, token);
@@ -517,6 +618,7 @@ function createShell(deps) {
   // changed, which is what afterClose needs.
   function apply(actions, before) {
     let reselect = false;
+    let sideList;           // the side hosts the identity files list, read at most once per batch of actions (Miguel Y2)
     for (const a of actions) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
@@ -525,6 +627,8 @@ function createShell(deps) {
         const tab = newRecord(entry);
         tabs.set(key, tab);
         attachIfRunning(tab);
+        if (sideList === undefined) sideList = listSideHosts();
+        adoptSide(tab, sideList);
       } else if (a.type === 'stop') {
         const t = tabByKey(key);
         if (t && t.started && t.port && t.token) {
@@ -534,6 +638,10 @@ function createShell(deps) {
       } else if (a.type === 'close') {
         const t = tabByKey(key);
         if (!t) continue;
+        // A side session lives and dies with its branch tab (#81).
+        const sk = sideKeyOf(key);
+        const sideShowing = sk !== null && selectedKey === sk;
+        if (sk !== null) dropSide(sk, { stop: true });
         t.closed = true;
         if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
         t.view = null;
@@ -542,8 +650,9 @@ function createShell(deps) {
         // Reopen meanwhile can't start it early (PR #80 Dexter F1).
         if (!(setups.has(key) && setups.get(key).running === true)) setups.delete(key);
         createdWarnings.delete(key);
-        if (key === selectedKey) {
-          selectedKey = tabModel.afterClose(before, key, selectedKey);
+        if (key === selectedKey || sideShowing) {
+          // The model from before, without the side tab that went with it: it is not a neighbour to land on.
+          selectedKey = tabModel.afterClose(before.filter(e => e.parentKey !== key), key, key);
           reselect = true;
         }
       } else if (a.type === 'error') {
@@ -563,7 +672,8 @@ function createShell(deps) {
   // Contract C, for a tab the reducer moved to `removing`: its session ended
   // after the merge. Exactly one removeResult per remove, whatever happens.
   function runRemove(p) {
-    Promise.resolve()
+    // The side claude has this folder as its working folder: the remover can't take a busy folder, so it is ended first (Dexter 2).
+    endSide(keyOf(p))
       .then(() => ops.remove({ path: p }))
       .then(r => r, err => ({ ok: false, error: errorText(err) }))
       .then((r) => {
@@ -571,6 +681,7 @@ function createShell(deps) {
         const what = r && r.ok === true ? (r.already ? 'already removed' : 'removed')
           : (r && r.kept === true ? `kept: ${r.reason}` : `failed: ${r && r.error}`);
         log(`[shell] remove ${keyOf(p)}: ${what}`);
+        if (r && r.ok === true && !r.already) countUse('tab:merged-close');
         const before = model();
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
@@ -671,28 +782,22 @@ function createShell(deps) {
   }
 
   /**
-   * What the tab's OWN session is doing: 'idle' | 'busy' | 'waiting', or null when that can't be told. Its
-   * `working` covers the agents and teammates it launched (the roster), and a stop ends them all. A tab with no
-   * session at all (nothing started, pending or found) is idle. Dexter D1.
-   */
-  function sessionOf(tab, hostFound) {
-    const st = tab.status;
-    if (!st) return (tab.started || tab.pending || tab.starting || tab.unconfirmed || hostFound) ? null : 'idle';
-    // a /bedtime night between wakes is the run's, and a stop would end it (Dexter R1)
-    if (st.working === true || st.turn === 'turn' || st.night === true) return 'busy';
-    if (st.needsInput === true || st.turn === 'prompt') return 'waiting';
-    if (busyWhy(st) !== null) return null;
-    // A Stop that another Stop hook blocks reads idle until the continuation's first tool call (Dexter F1): a turn that
-    // went idle less than IDLE_SETTLE_MS ago, or whose time is unknown, is not at rest yet.
-    return typeof tab.idleSince === 'number' && now() - tab.idleSince >= IDLE_SETTLE_MS ? 'idle' : 'busy';
+  /** The file with unsaved edits in the tab's code reader (#50), or null. A hook that throws says nothing. */
+  function readerUnsavedOf(tab) {
+    if (!safety || typeof safety.readerUnsaved !== 'function') return null;
+    try { return safety.readerUnsaved(tab); } catch (err) {
+      log('[shell] safety.readerUnsaved threw:', err && err.message);
+      return null;
+    }
   }
 
   /**
    * The facts closeReason judges: git's (read earlier, passed in) with everything cheap read fresh. Merged is
    * the marker for the branch that is checked out NOW AND that commit being on origin/develop (Dexter D5): a
-   * commit after the merge, or a switch to another branch, is not merged.
+   * commit after the merge, or a switch to another branch, is not merged. The tab's own session is not a fact:
+   * Ctrl+click closes it even mid-turn (Ricardo, 2026-10-09).
    */
-  function closeFactsOf(tab, g, { hostFound = false } = {}) {
+  function closeFactsOf(tab, g) {
     const f = g && typeof g === 'object' ? g : {};
     let merged = null;
     if (typeof f.branch === 'string' && f.branch !== '') {
@@ -704,7 +809,8 @@ function createShell(deps) {
     }
     return {
       merged, dirtyCount: f.dirtyCount, unpushedCount: f.unpushedCount,
-      agentsHere: agentsHereOf(tab), session: sessionOf(tab, hostFound),
+      agentsHere: agentsHereOf(tab),
+      readerUnsaved: readerUnsavedOf(tab),
     };
   }
 
@@ -714,6 +820,8 @@ function createShell(deps) {
    * Hand close, once per tab at a time. A second request for a tab already closing (a double click) is ignored.
    */
   async function closeTab(key, opts) {
+    // A side tab has no close of its own: it ends with its branch tab (#81).
+    if (isSideKey(key)) return { ok: false, error: 'not closable' };
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
     try { return await closeTabOnce(key, opts); } finally { closing.delete(key); }
@@ -777,7 +885,7 @@ function createShell(deps) {
       // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
       const gitAgain = await gitFactsOf(tab);
       if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
-      const again = closeReason(closeFactsOf(tab, gitAgain, { hostFound: target !== null }));
+      const again = closeReason(closeFactsOf(tab, gitAgain));
       if (again !== '') {
         let ok = false;
         try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
@@ -818,7 +926,7 @@ function createShell(deps) {
    * then does its session start (criterion 10). A setup failure still starts
    * it, with the error on the tab. One creation at a time.
    */
-  async function createWorktree(branch) {
+  async function createWorktree(branch, issueNumber) {
     if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
     if (create && create.phase === 'running') return { ok: false, error: 'already creating one' };
     const wanted = typeof branch === 'string' ? branch.trim() : '';
@@ -841,40 +949,79 @@ function createShell(deps) {
       return { ok: false, error };
     }
 
+    countUse('tab:new-worktree');
     const key = keyOf(made.path);
-    const withSetup = scriptsAvailable().setup;
-    // Held from here, so the poll that lists it can't start its session early.
-    if (withSetup) setups.set(key, { running: true, line: null, error: null, log: null });
-    if (typeof made.warning === 'string' && made.warning) createdWarnings.set(key, made.warning);
-    pendingBranches.delete(wanted);
-    create = null;
-    selectWhenListed = key;
-    log(`[shell] created ${made.branch} at ${made.path}`);
-    await poll();
+    // #119 A6: a lane started from an issue gets its brief. It is asked for NOW and runs beside the setup (gh and the brief's
+    // path take a second or two; the tab doesn't wait for them), but the session starts only once the brief is there,
+    // because a session's first move may be to read it. The tab shows its issue number from this moment.
+    let briefRun = null;
+    if (Number.isInteger(issueNumber) && issueNumber >= 1 && issues && typeof issues.brief === 'function') {
+      issueTabs.set(key, { branch: made.branch, number: issueNumber, title: null, url: null });
+      briefHolds.add(key);
+      briefRun = (async () => {
+        try { return await issues.brief({ number: issueNumber, branch: made.branch, worktree: made.path }); } catch (err) {
+          return { ok: false, error: errorText(err), issue: null };
+        }
+      })();
+    }
+    try {
+      const withSetup = scriptsAvailable().setup;
+      // Held from here, so the poll that lists it can't start its session early.
+      if (withSetup) setups.set(key, { running: true, line: null, error: null, log: null });
+      if (typeof made.warning === 'string' && made.warning) createdWarnings.set(key, made.warning);
+      pendingBranches.delete(wanted);
+      create = null;
+      selectWhenListed = key;
+      log(`[shell] created ${made.branch} at ${made.path}`);
+      await poll();
 
-    if (withSetup) {
-      let s;
-      try {
-        s = await ops.setup({
-          path: made.path,
-          onLine: (line) => {
-            const cur = setups.get(key);
-            if (!cur || cur.running !== true) return;
-            cur.line = line;
-            publish();
-          },
-        });
-      } catch (err) {
-        s = { ok: false, error: errorText(err), log: null };
+      if (withSetup) {
+        let s;
+        try {
+          s = await ops.setup({
+            path: made.path,
+            onLine: (line) => {
+              const cur = setups.get(key);
+              if (!cur || cur.running !== true) return;
+              cur.line = line;
+              publish();
+            },
+          });
+        } catch (err) {
+          s = { ok: false, error: errorText(err), log: null };
+        }
+        // A tab closed by hand meanwhile keeps no error for a later reopen. One
+        // git simply hasn't listed yet keeps it (PR #80 Dexter F3): "no tab" is
+        // not "closed".
+        if ((s && s.ok === true) || state.dismissed.includes(key)) setups.delete(key);
+        else setups.set(key, { running: false, line: null, error: (s && s.error) || 'setup failed', log: (s && s.log) || null });
+        log(`[shell] setup ${key}: ${s && s.ok === true ? 'done' : `failed: ${s && s.error}`}`);
+        if (destroyed) return { ok: true, path: made.path };
+        publish();
       }
-      // A tab closed by hand meanwhile keeps no error for a later reopen. One
-      // git simply hasn't listed yet keeps it (PR #80 Dexter F3): "no tab" is
-      // not "closed".
-      if ((s && s.ok === true) || state.dismissed.includes(key)) setups.delete(key);
-      else setups.set(key, { running: false, line: null, error: (s && s.error) || 'setup failed', log: (s && s.log) || null });
-      log(`[shell] setup ${key}: ${s && s.ok === true ? 'done' : `failed: ${s && s.error}`}`);
-      if (destroyed) return { ok: true, path: made.path };
-      publish();
+      if (briefRun) {
+        const b = await briefRun;
+        briefHolds.delete(key);
+        if (destroyed) return { ok: true, path: made.path };
+        const known = issueShape(b && b.issue) || { number: issueNumber, title: null, url: null };
+        issueTabs.set(key, { branch: made.branch, ...known });
+        // Kept where a restart will find it, whether or not the brief got written (the number is the person's pick).
+        if (issues && typeof issues.remember === 'function') {
+          try { issues.remember({ branch: made.branch, path: made.path, issue: known }); } catch (err) { log('[shell] issues.remember threw:', err && err.message); }
+        }
+        // A tab closed by hand meanwhile keeps no warning for a later reopen (as with a setup error above).
+        const note = b && b.ok !== true ? `the brief wasn't written (${b.error || 'unknown reason'})`
+          : (b && typeof b.warning === 'string' && b.warning) || null;
+        if (note && !state.dismissed.includes(key)) {
+          createdWarnings.set(key, [createdWarnings.get(key), note].filter(Boolean).join('; '));
+        }
+        log(`[shell] brief for ${made.branch}: ${b && b.ok === true ? (b.existed ? 'already there' : 'written') : `not written: ${b && b.error}`}`);
+        publish();
+      }
+    } finally {
+      // Whatever threw in between (a publish, a poll, the setup), the hold comes off: a session that can never start is worse
+      // than one that starts without its brief (PR #202 Miguel Y3).
+      briefHolds.delete(key);
     }
     const tab = tabByKey(key);
     if (tab && key === selectedKey && !tab.started && !tab.starting) start(tab);
@@ -889,6 +1036,28 @@ function createShell(deps) {
   function openCreate() {
     if (!plusMenu().create.enabled) return false;
     create = { phase: 'input' };
+    publish();
+    return true;
+  }
+
+  /**
+   * BACKLOG #119 A6: the form's *From an issue* list. Part of the form's state (`create.picker`), so main hides the
+   * selected tab's page while it is open (the list is drawn by the strip page over that area) and Esc on the form
+   * closes both. Only a form that is open for typing, or one a refusal left open, can take it.
+   */
+  function openPicker() {
+    if (!create || (create.phase !== 'input' && create.phase !== 'failed')) return false;
+    if (create.picker !== true) {
+      create = { ...create, picker: true };
+      publish();
+    }
+    return true;
+  }
+
+  function closePicker() {
+    if (!create || create.picker !== true) return false;
+    const { picker, ...rest } = create;     // eslint-disable-line no-unused-vars
+    create = rest;
     publish();
     return true;
   }
@@ -957,8 +1126,6 @@ function createShell(deps) {
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
     if (tabStatusLib.sameStatus(tab.status, next)) return true;
-    if (next.turn !== 'idle') tab.idleSince = null;
-    else if (!tab.status || tab.status.turn !== 'idle' || typeof tab.idleSince !== 'number') tab.idleSince = now();
     tab.status = next;
     publish();
     return true;
@@ -1141,6 +1308,24 @@ function createShell(deps) {
     return { key, override: e.lockGlyph === 'blocked', close: e.closable === true && mode === 'tabs' };
   }
 
+  /** The menu's side-session item for a branch tab or a side tab: its text, whether it works, and which branch tab it acts on. */
+  function sideMenu(key) {
+    const gone = { enabled: false, label: 'Open side session', target: null };
+    if (mode !== 'tabs') return { ...gone, why: 'not a project window' };
+    // From the shell's own records: a right-click must not rebuild the whole strip model (claims, marks...).
+    const target = isSideKey(key) ? (tabs.has(key) ? parentKeyOf(key) : null) : key;
+    const parent = target === null ? null : tabByKey(target);
+    if (!parent) return { ...gone, why: 'no such tab' };
+    const rec = tabs.get(sideKeyOf(target));
+    const label = !rec ? 'Open side session' : (rec.ended === true ? 'Reopen side session' : 'Go to side session');
+    if (phaseOf(target) === 'removing') return { enabled: false, label, target, why: 'its folder is being removed' };
+    if (setupHolds(parent)) return { enabled: false, label, target, why: 'its worktree is still being set up' };
+    return { enabled: true, label, target };
+  }
+
+  // The reducer's phase of a branch tab ('removing' while its folder is being deleted), or null.
+  const phaseOf = (key) => { const t = state.tabs.find(x => keyOf(x.path) === key); return t && typeof t.phase === 'string' ? t.phase : null; };
+
   function override(key) {
     const tab = tabByKey(key);
     if (!tab || !tab.view) return false;
@@ -1170,11 +1355,111 @@ function createShell(deps) {
     return tab.isDev ? 'dev' : 'tab';
   }
 
+  // --- #81: the standing read-only side session ---------------------------------------------------------------
+
+  /**
+   * Stop and forget a branch tab's side session. Its host is sent a stop (an ended one has nobody to hear it, which is
+   * fine); the page goes; the selection is the caller's to move.
+   */
+  function dropSide(sk, { stop }) {
+    const t = tabs.get(sk);
+    if (!t) return;
+    t.closed = true;
+    if (stop === true) {
+      const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
+      if (target) {
+        hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } })
+          .then(r => log(`[shell] stop ${sk}: ${r && r.ok ? 'sent' : (r && r.error)}`), () => {});
+      }
+    }
+    if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+    t.view = null;
+    tabs.delete(sk);
+  }
+
+  /**
+   * *Open side session* (a tab's menu): a second real claude in the tab's folder, in plan mode, as a small tab right after
+   * its branch tab. Once open it stays; asking again goes to it. A stopped one is dropped and started afresh.
+   */
+  async function openSide(key) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    const sk = sideKeyOf(key);
+    const parent = sk === null ? null : tabByKey(key);
+    if (!parent || parent.closed) return { ok: false, error: 'no such tab' };
+    // A claude started in a folder `git worktree remove` is deleting leaves it half removed (Dexter 5): the same refusal a hand close has.
+    if (phaseOf(key) === 'removing') return { ok: false, error: 'its folder is being removed' };
+    if (setupHolds(parent)) return { ok: false, error: 'its worktree is still being set up' };
+    const existing = tabs.get(sk);
+    if (existing && existing.ended !== true) {
+      await select(sk);          // an unstarted one (a failed start) is tried again by the selection
+      return { ok: true, already: true };
+    }
+    // An ended record has no host to stop. (A timed-out spawn's `pending` can't be on a record that is also `ended`: pending is only
+    // set while the start has not presented, and `ended` only after it has.)
+    if (existing) dropSide(sk, { stop: false });
+    tabs.set(sk, newSideRecord(parent));
+    await select(sk);
+    return { ok: true };
+  }
+
+  /** At open: a side host still running from an earlier window comes back as the tab's side tab, with no spawn. */
+  function adoptSide(parent, list) {
+    const sk = sideKeyOf(parent.key);
+    if (sk === null) return;
+    // The identity files say which folders have a side host: a tab with none costs no port walk, and no place in the start queue.
+    if (Array.isArray(list) && !list.some(h => h && typeof h.cwd === 'string' && keyOf(h.cwd) === parent.key)) return;
+    queue.run(async () => {
+      if (parent.closed || destroyed || tabs.has(sk)) return;
+      const rec = newSideRecord(parent);
+      let chosen = null;
+      try { chosen = await hosts.choosePort(rec); } catch (err) { log('[shell] side port probe failed:', err && err.message); }
+      if (!chosen || chosen.action !== 'attach' || tabs.has(sk)) return;
+      const token = hosts.tokenFile(chosen.port) || hosts.tokenFor(chosen.port);
+      if (!token) return;
+      if (parent.closed || destroyed) {
+        // Its branch tab closed while this was looking: the host it just proved is there has no tab to end with, so it ends now (Dexter 4).
+        hosts.control({ port: chosen.port, token, msg: { type: 'stop' } }).catch(() => {});
+        return;
+      }
+      tabs.set(sk, rec);
+      present(rec, chosen.port, token);
+    }).then(publish, publish);
+  }
+
+  /** The side hosts this build's identity files list ([{ port, cwd }]), or null when that can't be told (then each tab is looked for). */
+  function listSideHosts() {
+    if (typeof hosts.sideHosts !== 'function') return null;
+    try { const l = hosts.sideHosts(); return Array.isArray(l) ? l : null; } catch (err) {
+      log('[shell] hosts.sideHosts threw:', err && err.message);
+      return null;
+    }
+  }
+
+  /**
+   * Stop a branch tab's side session and wait for its host to be gone, then forget it. The remover (Contract C) can't take a folder
+   * a claude is working in, so this runs before it. A host that doesn't answer its stop is not waited on for ever: the caller goes on.
+   */
+  async function endSide(parentKey) {
+    const sk = sideKeyOf(parentKey);
+    const t = sk ? tabs.get(sk) : null;
+    if (!t) return;
+    // Closed first, so a start still in its port walk gives up before it spawns; then wait for it to settle, so what it made or found
+    // is on the record when it is stopped below (R2-2). The remover must not start with a claude about to appear in the folder.
+    t.closed = true;
+    if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
+    const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
+    if (target) {
+      try { await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }); } catch { /* the remover reports a folder still in use */ }
+    }
+    dropSide(sk, { stop: false });
+    publish();
+  }
+
   function destroy() { destroyed = true; }
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, plusMenu, reopen, looked,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
@@ -1238,6 +1523,9 @@ function shortcutFor(input) {
   if (!input || typeof input !== 'object' || input.type !== 'keyDown' || typeof input.key !== 'string') return null;
   const key = input.key.toLowerCase();
   if (key === 'f12') return 'devtools';
+  // #43: the shortcuts page. Bare F1 only, so Shift/Ctrl/Alt+F1 stay the terminal's. The CLI binds no F1 (it takes no
+  // function keys), and with no menu bar Electron has no Help accelerator on it either.
+  if (key === 'f1' && !input.control && !input.alt && !input.shift && !input.meta) return 'shortcuts';
   // #35: a new tab is a new worktree. Ctrl+Alt+T, not Ctrl+T: the CLI owns that
   // one (it toggles its task list), and every key not named here reaches it.
   if (key === 't' && input.control && input.alt && !input.shift) return 'new-branch';
@@ -1271,39 +1559,61 @@ function shortcutWillAct(action, shell) {
 const PROBE_TOKEN_MIN = 16;
 // The selected view's probe actions (layout pass L1): named, so the driver can
 // never hand the page a string of code to run.
-const VIEW_PROBE_ACTIONS = new Set(['state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
+const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
   // dockable panels D1: verify/probe-dock-tree.js
   'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'gutterRace', 'abortedDrag', 'menuTick', 'menuButton', 'squeeze',
   // dockable panels D3: verify/probe-dock-tree.js
   'presets', 'menuClick', 'menuType',
   // dockable panels D2: floating panels
   'floatDrag', 'floatPress', 'secretField', 'floatSecret',
+  // dockable panels D4: collapse, a rail's popover, the keyboard, the settle motion
+  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
+  // BACKLOG #85: the dock rail's hover and the Pin button
+  'hover', 'pinClick', 'menuCheck', 'railScroll',
+  // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
+  'uiFont', 'leanClass', 'focusMode',
   // layout pass L3: verify/probe-git-tree.js
   'gitState', 'gitRefresh', 'gitHover', 'gitPin', 'gitJump', 'gitRerender', 'gitKey', 'gitFocus',
   // Enhancement #46: the drawer's actions, the swing, the tabs' states, and a session's screen
   'gitAct', 'gitMotion', 'gitTabs', 'gitScreen',
+  // the Graph view: verify/probe-git-graph.js
+  'ggState', 'ggView', 'ggClick', 'ggAct', 'ggKey', 'ggRerender',
+  // backlog #39 job 2: verify/probe-docs-drift.js reads the docs-drift list and clicks a note's Dismiss
+  'driftState', 'driftDismiss',
   // PR #93: type into the selected tab's own session (the probe's stand-in CLI box)
   'gitTermInput',
   // the repo browser and code reader: verify/probe-repo-browser.js
   'repoProbe',
   // backlog #51: verify/probe-wand.js reads the wand and operates its controls
   'wandState', 'wandClick', 'wandSetField', 'wandDrag', 'wandFocus', 'wandKey',
+  // BACKLOG #119 A7: verify/probe-schedules.js reads the Schedules panel and clicks a row
+  'schedulesState', 'schedulesClick',
   // backlog #63: verify/probe-resource-panel.js reads the Resources panel and chip, and clicks them
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
+  // backlog #41: verify/probe-games.js reads the Games panel and operates it
+  'gamesState', 'gamesDo',
+  // backlog #33: verify/probe-ask-panel.js reads the Ask panel and operates it
+  'askState', 'askDo', 'explainerState', 'explainerDo',
   // backlog #71: verify/probe-canvas-panel.js reads Claude's panel frame and clicks its controls
   'canvasState', 'canvasClick', 'canvasOverlay', 'canvasMcpBox',
-  // backlog #34: verify/probe-video-background.js
-  'bgState', 'bgStyle', 'bgMatch',
+  // backlog #34: verify/probe-video-background.js; #88 + #92: the font and plain-colour actions of verify/probe-fonts-colour.js
+  'bgState', 'bgStyle', 'bgMatch', 'fontsState', 'fontsSet', 'fontsSearch', 'fontsPick',
   // backlog #44 + #47: the occupancy banner, confirm and card line, and a probe keystroke / click / turn
   'occState', 'occKey', 'occClick', 'occTurn',
   // backlog #49 + #52: verify/probe-terminal-bar.js
-  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection']);
+  'barState', 'barScroll', 'barClick', 'barClear', 'barLook', 'barSelection',
+  // backlog #42 + #43: verify/probe-shortcuts-page.js reads the shortcuts sheet and drives the bits a real key can't
+  'shortcutsState', 'shortcutsDo',
+  // backlog #62: verify/probe-lean.js reads lean mode as the page has it
+  'leanState']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));
   const y = Buffer.from(String(b));
   return x.length === y.length && require('crypto').timingSafeEqual(x, y);
 }
+
+const STRIP_ISSUE_ACTIONS = new Set(['read', 'open', 'pick', 'filter', 'submit']);
 
 /**
  * One line of newline-JSON from the probe -> a reply object. NEVER throws.
@@ -1335,6 +1645,12 @@ async function handleProbeCommand(line, api, expectedToken) {
         // #77: a real Ctrl+click on the strip's tab, so the page's own handler runs.
         if (typeof cmd.label !== 'string') return { ok: false, error: 'ctrlClick needs a label' };
         return await api.ctrlClick(cmd.label);
+      case 'mouseMove': {
+        // BACKLOG #85: a real pointer move over the selected view, so hover is judged by hit-testing and not by a dispatched event.
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseMove needs whole-number x and y' };
+        return await api.mouseMove(cmd.x, cmd.y);
+      }
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };
@@ -1358,8 +1674,23 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.branch !== 'string' || cmd.branch === '') return { ok: false, error: 'markMenu needs a branch' };
         return await api.markMenu(cmd.branch);
       case 'cancelCreate': return await api.cancelCreate();
+      case 'openCreate': return await api.openCreate();
+      // BACKLOG #119 A6: the branch form's "From an issue" list, driven through the strip page's own elements (a real click,
+      // a real input event, a real submit). A named action and its data, never a string of code.
+      case 'stripIssues': {
+        if (!STRIP_ISSUE_ACTIONS.has(cmd.action)) return { ok: false, error: 'stripIssues needs read, open, pick, filter or submit' };
+        if (cmd.action === 'pick' && !(Number.isInteger(cmd.index) && cmd.index >= 0 && cmd.index < 1000)) return { ok: false, error: 'pick needs a row index' };
+        if (cmd.action === 'filter' && !(typeof cmd.text === 'string' && cmd.text.length <= 200)) return { ok: false, error: 'filter needs text' };
+        return await api.stripIssues(cmd.action, { index: cmd.index, text: cmd.text });
+      }
+      // #81: the tab menu's Open side session, without a native popup nobody can click.
+      case 'side-open':
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'side-open needs a label' };
+        return await api.sideOpen(cmd.label);
       // #31: what the window's own `focus` event does, without an OS to hand over focus.
       case 'windowFocus': return await api.windowFocus();
+      // #62: the window losing focus, as the OS would (Ricardo's lean video rule reads focus).
+      case 'windowBlur': return await api.windowBlur();
       case 'view':
         // Layout pass L1: one of the selected view's NAMED probe actions
         // (renderer.js window.__dockProbe), never a string of code.
@@ -1393,6 +1724,26 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (!(Number.isInteger(cmd.port) && cmd.port > 0 && cmd.port < 65536)) return { ok: false, error: 'background-open needs a port' };
         return await api.backgroundOpen(cmd.port);
       case 'background-stop-all': return await api.backgroundStopAll();
+      // BACKLOG #119 A8 (verify/probe-tray.js): the tray icon's state, its click and its menu, and its three switches.
+      case 'tray': return await api.tray();
+      case 'tray-click': return await api.trayClick();
+      case 'tray-image':
+        if (typeof cmd.file !== 'string' || !/\.png$/i.test(cmd.file)) return { ok: false, error: 'tray-image needs a .png file' };
+        return await api.trayImage(cmd.file);
+      case 'tray-menu':
+        if (cmd.label !== undefined && typeof cmd.label !== 'string') return { ok: false, error: 'tray-menu label must be text' };
+        return await api.trayMenu(cmd.label);
+      case 'tray-setting':
+        if (!['trayIcon', 'minimiseOnClose', 'startMinimised'].includes(cmd.key) || typeof cmd.value !== 'boolean') {
+          return { ok: false, error: 'tray-setting needs a tray key and true or false' };
+        }
+        return await api.traySetting(cmd.key, cmd.value);
+      // The window's own close, as the X does it: the 'close' handler decides whether it hides to the tray or really closes.
+      case 'win-close': return await api.winClose();
+      // #62: a click on one of the strip's lean controls, as a mouse would press it (only these two buttons).
+      case 'strip-lean':
+        if (cmd.button !== 'lean-btn' && cmd.button !== 'lean-back') return { ok: false, error: 'strip-lean needs lean-btn or lean-back' };
+        return await api.stripLean(cmd.button);
       default: return { ok: false, error: `unknown command: ${cmd.cmd}` };
     }
   } catch (err) {

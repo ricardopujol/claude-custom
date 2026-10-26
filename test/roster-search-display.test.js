@@ -11,16 +11,26 @@ const { normalizeMode, cardNames, matches, emptyMessage, MODES } = require('../a
 
 const miguel = { agent: 'code-reviewer', persona: 'Miguel', fn: 'Elite code reviewer for PRs.' };
 
-test('normalizeMode keeps the two real modes and defaults everything else to role', () => {
+test('normalizeMode keeps the two real modes and defaults everything else to name (Ricardo, 2026-10-09)', () => {
   assert.strictEqual(normalizeMode('name'), 'name');
   assert.strictEqual(normalizeMode('role'), 'role');
-  for (const v of [undefined, null, '', 'NAME', 'both', 3, {}, true]) assert.strictEqual(normalizeMode(v), 'role');
+  for (const v of [undefined, null, '', 'NAME', 'ROLE', 'both', 3, {}, true]) assert.strictEqual(normalizeMode(v), 'name');
   assert.deepStrictEqual([...MODES], ['role', 'name']);
 });
 
 test('cardNames puts the toggle\'s pick big and the other small', () => {
   assert.deepStrictEqual(cardNames('code-reviewer', miguel, 'role'), { big: 'code-reviewer', small: 'Miguel' });
   assert.deepStrictEqual(cardNames('code-reviewer', miguel, 'name'), { big: 'Miguel', small: 'code-reviewer' });
+});
+
+test('cardNames with no mode yet shows the persona big (the default is Name)', () => {
+  assert.deepStrictEqual(cardNames('code-reviewer', miguel, undefined), { big: 'Miguel', small: 'code-reviewer' });
+});
+
+test('cardNames shows Cedar once, as "Cedar", when the persona is the role again ignoring case (Ricardo, 2026-10-09)', () => {
+  const cedar = { persona: 'Cedar', fn: 'Interrogator.' };
+  assert.deepStrictEqual(cardNames('cedar', cedar, 'name'), { big: 'Cedar', small: null });
+  assert.deepStrictEqual(cardNames('cedar', cedar, 'role'), { big: 'Cedar', small: null });
 });
 
 test('cardNames shows the role only for an agent with no persona, in both modes', () => {
@@ -63,6 +73,7 @@ test('property: cardNames always has a non-empty big, and a persona-bearing agen
       const r = cardNames(agent, persona === null ? null : { persona }, mode);
       assert.ok(r.big.length > 0);
       if (persona === null) assert.strictEqual(r.small, null);
+      else if (persona.toLowerCase() === agent.toLowerCase()) assert.deepStrictEqual([r.big, r.small], [persona, null]);
       else assert.deepStrictEqual([r.big, r.small].sort(), [agent, persona].sort());
     }));
 });

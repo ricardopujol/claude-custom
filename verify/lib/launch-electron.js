@@ -11,18 +11,34 @@
  *     never by name; and does that again from process 'exit' and SIGINT/SIGTERM, so a probe that dies still stops it.
  * An Electron whose start time cannot be read is killed at once and the launch fails: an unproven process is one
  * nothing could safely reap.
+ *
+ * WHERE A PROBE'S WINDOW GOES (host/probe-window.js). Probe windows used to open on the desktop and take focus while a
+ * person worked. Measured 2026-10-15 on the Katana (Windows 11, Electron 33, a second monitor at -1932,-1440):
+ *   - x/y = -20000, skipTaskbar, focusable:false, backgroundThrottling:false, `show` as the probe wrote it, held:
+ *     getBounds() reads back -20000/-20000 (not clamped), isFocused() is false, capturePage returns a real image, and the
+ *     probes that ran (quota-header, dock-autohide and a dozen more) pass as they do with the window visible. That is
+ *     what probeWindowOptions does by default.
+ *   - Not tried, because the above held: `show: false` (capturePage on a hidden window may come back empty on Windows) and
+ *     a minimized window. `offscreen: true` stays out: it hangs capturePage here (see CLAUDE.md).
+ * A probe that needs real keyboard focus passes `focusable: true` and stays off screen. A probe whose own main.js is a
+ * template written to a temp dir requires host/probe-window by absolute path. The real app's window takes the same
+ * options only when CLAUDE_CUSTOM_TABS_PROBE is set (app/main.js forProbe). CLAUDE_CUSTOM_PROBE_VISIBLE=1 shows the
+ * windows as before; this launcher passes that one CLAUDE_CUSTOM_* through its env stripping.
  */
 const { spawn } = require('child_process');
 const { killPidTree } = require('../../host/kill-tree');
 const { startTimes: realStartTimes, createSelfStartTime } = require('../../host/proc-start');
 const ledger = require('../../host/pid-ledger');
+const { VISIBLE_VAR } = require('../../host/probe-window');
+const path = require('path');
+const { createProcessLock, HeavyLockError } = require('../../host/heavy-lock');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 function cleanElectronEnv(env = process.env, extra = {}) {
   const out = {};
   for (const [k, v] of Object.entries(env)) {
-    if (k === 'ELECTRON_RUN_AS_NODE' || k.startsWith('CLAUDE_CUSTOM_')) continue;
+    if (k === 'ELECTRON_RUN_AS_NODE' || (k.startsWith('CLAUDE_CUSTOM_') && k !== VISIBLE_VAR)) continue;
     out[k] = v;
   }
   for (const [k, v] of Object.entries(extra || {})) {
@@ -42,13 +58,53 @@ function probeEnv(childEnv, parentEnv = process.env, keep = []) {
   const out = {};
   for (const [k, v] of Object.entries(childEnv || parentEnv)) {
     if (k === 'ELECTRON_RUN_AS_NODE') continue;
-    if (k.startsWith('CLAUDE_CUSTOM_') && parentEnv[k] === v && !keep.includes(k)) continue;
+    if (k.startsWith('CLAUDE_CUSTOM_') && k !== VISIBLE_VAR && parentEnv[k] === v && !keep.includes(k)) continue;
     out[k] = v;
   }
   return out;
 }
 
 const defaultSelfStart = createSelfStartTime();
+// The machine-wide heavy-work lock (BACKLOG #100 d; the rules are in host/heavy-lock.js). A probe is a process whose script
+// lives under verify/. It takes the lock the moment this module is first required (probes require this before they start
+// a host or anything else heavy; test/probe-lock-order.test.js pins that), and releases it when it ends, after its
+// Electron trees are stopped. Any other process (the unit tests above all) takes NO lock unless it is handed one through
+// the `heavyLock` option, so a test can't touch the real machine lock by forgetting a flag.
+const VERIFY_DIR = path.resolve(__dirname, '..');
+function probeName(argv1 = process.argv[1]) {
+  if (!argv1) return null;
+  const abs = path.resolve(argv1);
+  // With the separator: a sibling such as verify2\ is not under verify\ (Miguel r2 N2).
+  return (path.dirname(abs) + path.sep).toLowerCase().startsWith((VERIFY_DIR + path.sep).toLowerCase()) ? path.basename(abs) : null;
+}
+const defaultHeavyLock = createProcessLock({ label: probeName() || 'probe', beforeRelease: () => sweepLive() });
+// A probe's Electron root is work the lock's holder started: recorded, so a dead probe with a live Electron isn't a dead holder.
+const noteWork = (heavyLock, handle) => {
+  const lock = lockFor(heavyLock);
+  if (lock && typeof lock.addWork === 'function' && typeof handle.start === 'string') { try { lock.addWork(handle.pid, handle.start); } catch { /* a safety net */ } }
+};
+// A host.js / claude a probe starts by hand with a plain spawn: the same work record. Written at once with an unknown start
+// (a hard kill during the 0.5-1.5 s start query still leaves it listed), then again with the start time. Nothing if the
+// lock isn't held, or the child never got a pid. Returns the child.
+const noteChild = (child, heavyLock) => {
+  const lock = lockFor(heavyLock);
+  const pid = child && child.pid;
+  if (lock && typeof lock.addWork === 'function' && Number.isInteger(pid)) {
+    try { lock.addWork(pid, null); lock.addWork(pid); } catch { /* a safety net */ }
+  }
+  return child;
+};
+const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
+
+// Busy / too loaded is one clear line and exit 1, not a stack trace; anything else is thrown as it was.
+function takeLock(lock, exit = (c) => process.exit(c), say = console.error) {
+  if (!lock) return;
+  try { lock.ensure(); } catch (err) {
+    if (err instanceof HeavyLockError) { say(`[heavy-lock] ${probeName() || 'probe'} did not run: ${err.message}`); exit(1); }
+    throw err;
+  }
+}
+if (probeName()) takeLock(defaultHeavyLock);
 const live = new Set();            // handles not yet stopped, for the exit / signal sweep
 let sweepInstalled = false;
 
@@ -115,9 +171,10 @@ async function prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, 
 async function launchElectron({
   electronPath, args = [], env = process.env, extraEnv = {}, cwd, label = '', kind = 'probe-window',
   ledgerFile = ledger.defaultLedgerFile(), spawnFn = spawn, startTimes = realStartTimes,
-  selfStart = defaultSelfStart, killFn = killPidTree, install = true, stdio,   // kill-ok(held-handle): the default killFn, called only while the child's handle is held
+  selfStart = defaultSelfStart, killFn = killPidTree, install = true, stdio, heavyLock,   // kill-ok(held-handle): the default killFn, called only while the child's handle is held
 } = {}) {
   const exe = electronPath || require('electron');
+  takeLock(lockFor(heavyLock));   // a probe never runs without its turn
   if (install) installSweep();
   const opts = { env: cleanElectronEnv(env, extraEnv) };
   if (cwd) opts.cwd = cwd;
@@ -127,6 +184,7 @@ async function launchElectron({
   const proof = await prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label });
   if (proof === 'exited-early') throw new Error(`launchElectron: pid ${child.pid} exited before its start time could be read`);
   if (proof === 'unproven') throw new Error(`launchElectron: could not read the start time of pid ${child.pid}; killed it rather than leave an unproven process`);
+  noteWork(heavyLock, handle);
   handle.stop = (o) => stopElectron(handle, o);
   return handle;
 }
@@ -140,13 +198,14 @@ async function launchElectron({
 function spawnElectron(exe, args = [], opts = {}, {
   spawnFn = spawn, startTimes = realStartTimes, selfStart = defaultSelfStart, killFn = killPidTree,   // kill-ok(held-handle): the default killFn, called only while the child's handle is held
   ledgerFile = ledger.defaultLedgerFile(), install = true, label = '', kind = 'probe-window', parentEnv = process.env,
-  keepEnv = [],
+  keepEnv = [], heavyLock,
 } = {}) {
+  takeLock(lockFor(heavyLock));   // a probe never runs without its turn
   if (install) installSweep();
   const child = spawnFn(exe, args, { ...opts, env: probeEnv(opts.env, parentEnv, keepEnv) });
   const handle = track(child, { killFn, ledgerFile, label });
   child.ledgered = prove(handle, { startTimes, selfStart, killFn, ledgerFile, kind, label })
-    .then(p => p === 'recorded' || (p === 'unrecorded' && !ledgerFile));
+    .then(p => { noteWork(heavyLock, handle); return p === 'recorded' || (p === 'unrecorded' && !ledgerFile); });
   return child;
 }
 
@@ -202,4 +261,4 @@ async function stopElectron(handle, { polite, killFn = handle.killFn || killPidT
   return { how };
 }
 
-module.exports = { cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, installSweep, waitForExit, sleep };
+module.exports = { noteChild, takeLock, probeName, cleanElectronEnv, probeEnv, launchElectron, spawnElectron, stopElectron, sweepLive, installSweep, waitForExit, sleep };

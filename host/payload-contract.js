@@ -85,6 +85,7 @@ const CONTRACT = {
         used: 'bedtime-state.js, the clamped fallback for a running night\'s next wake when the result carries no believable scheduledFor',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
       },
+      // (The Schedules panel reads CronCreate / CronDelete on the PostToolUse only: a Pre is an intent, so nothing is required of it here.)
       ...COMMON_FIELDS,
     },
   },
@@ -98,6 +99,22 @@ const CONTRACT = {
       'tool_response.scheduledFor': {
         used: 'bedtime-state.js, the night\'s next wake, shown on the bedtime chip (#52)',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
+      },
+      // The Schedules panel (BACKLOG #119 A7). MEASURED with a real `claude -p` run (2.1.304, haiku; test/cron-capture.fixture.jsonl): CronCreate
+      // is { tool_input: { cron, prompt, recurring, durable }, tool_response: { id, humanSchedule, recurring, durable, nextFireAt } } and CronDelete
+      // { tool_input: { id }, tool_response: { id } }. recurring, durable, humanSchedule and nextFireAt are optional by the schema, so not required.
+      'tool_input.cron': {
+        used: 'schedules.js, the cron expression whose next run the Schedules panel computes',
+        onlyWhen: p => !!p && p.tool_name === 'CronCreate',
+      },
+      'tool_input.id': {
+        used: 'schedules.js, the cron job a CronDelete removes from the Schedules panel',
+        onlyWhen: p => !!p && p.tool_name === 'CronDelete',
+      },
+      // CronCreate's result: the id is what a CronDelete names.
+      'tool_response.id': {
+        used: 'schedules.js, the key of a cron job in the Schedules panel',
+        onlyWhen: p => !!p && p.tool_name === 'CronCreate',
       },
       ...COMMON_FIELDS,
     },
@@ -192,6 +209,15 @@ const CONTRACT = {
     // measured, it carries no permission_mode.
     fields: {},
   },
+  // The permission prompt's own hook (BACKLOG #55). Bundle 2.1.296: base fields + tool_name, tool_input, permission_suggestions?, mcp_server?;
+  // built with the tool-use context, so agent_id / agent_type are present inside a subagent and absent for the main session's own prompt.
+  // Observe-only: the helper prints nothing, so mood-machine.js only ever marks the named agent "waiting on you".
+  PermissionRequest: {
+    fields: {
+      tool_name: { used: 'mood-machine.js, which only needs to know a prompt is opening for the agent that named itself' },
+      ...COMMON_FIELDS,
+    },
+  },
   Notification: {
     fields: {
       message: { used: 'attention-summary.js, to say what is being asked for' },
@@ -202,6 +228,8 @@ const CONTRACT = {
     // agent_needs_input (idle_prompt only as a held "finished"'s backstop); an
     // older CLI that sends none raises as before. Measured in CLI 2.1.286's own
     // input schema; verify/probe-notification-type.js is the tripwire.
+    // NOT read for a card (BACKLOG #55): a Notification never carries agent_id (CLI 2.1.296 builds it with no tool context,
+    // verify/probe-agent-states.js), so it can't say which agent is waiting; the PermissionRequest hook above does.
   },
 };
 

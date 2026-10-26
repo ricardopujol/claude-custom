@@ -10,11 +10,12 @@
   "scripts": {
     "start": "electron .",
     "host": "node host/host.js",
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node scripts/with-heavy-lock.js node --test --test-concurrency=2 \"test/**/*.test.js\"",
     "build:helper": "powershell -NoProfile -ExecutionPolicy Bypass -File helper/build.ps1",
     "bench:hooks": "node verify/measure-hook-latency.js",
     "mutate": "stryker run",
-    "build:reader": "node build/build-reader.mjs"
+    "build:reader": "node build/build-reader.mjs",
+    "build:markdown": "node build/build-markdown.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -23,10 +24,11 @@
     "@xterm/addon-webgl": "^0.18.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^5.5.0",
-    "node-pty": "^1.0.0",
+    "node-pty": "^1.1.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.12",
     "@codemirror/lang-javascript": "^6.2.5",
@@ -42,8 +44,12 @@
     "@codemirror/view": "^6.43.13",
     "@lezer/highlight": "^1.2.5",
     "@stryker-mutator/core": "^10.0.0",
+    "dompurify": "3.4.17",
     "electron": "^33.0.0",
     "esbuild": "^0.28.2",
-    "fast-check": "^4.10.2"
+    "fast-check": "^4.10.2",
+    "jsdom": "29.1.1",
+    "marked": "18.1.1",
+    "mermaid": "12.2.0"
   }
 }

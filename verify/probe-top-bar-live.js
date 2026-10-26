@@ -36,7 +36,7 @@
    ELECTRON_RUN_AS_NODE is deleted for this process and set ONLY for the host
    child, exactly as app/main.js does. */
 const { spawn } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const path = require('path');
 
 if (!process.versions.electron) {
@@ -49,6 +49,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -109,11 +110,12 @@ app.on('ready', async () => {
       CLAUDE_CUSTOM_CWD: REPO, CLAUDE_CUSTOM_TOKEN: TOKEN, CLAUDE_CUSTOM_HELPER: HELPER };
     delete env.ANTHROPIC_API_KEY;
     host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     host.stdout.on('data', d => { hostLog += d; });
     host.stderr.on('data', d => { hostLog += d; });
 
     fs.mkdirSync(OUT_DIR, { recursive: true });
-    const win = new BrowserWindow({
+    const win = new BrowserWindow(probeWindowOptions({
       width: 1300, height: 760, show: true,
       // backgroundThrottling off: with the display asleep, locked or the window
       // occluded, Chromium throttles timers -- and requestSwitch's spaced key
@@ -121,7 +123,7 @@ app.on('ready', async () => {
       // minutes before this; the page was fine, the clock was throttled.
       webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
         preload: path.join(REPO, 'app', 'preload.js') },
-    });
+    }));
     await sleep(2500);
     // NOT awaited: the returned promise never settled here (the page keeps a
     // load in flight), and app/main.js does not await it either.

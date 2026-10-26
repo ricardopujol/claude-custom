@@ -1,0 +1,121 @@
+'use strict';
+/**
+ * BACKLOG #80 wiring, by source: the frames the host sends are ones the renderer handles, the frames the renderer sends are
+ * ones the host will not type into the pty, and the page has the elements and scripts the wiring looks up. The behaviour itself
+ * is pinned by medals.test.js, bubbles.test.js and bubble-display.test.js, and measured in a real window by
+ * verify/probe-medals-bubbles.js (no unit test can see a shared-scope collision or a bubble painted over a real card).
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const path = require('path');
+
+const { parseControlFrame } = require('../host/control');
+
+const read = (...p) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+const renderer = read('app', 'renderer.js');
+const html = read('app', 'renderer.html');
+const host = read('host', 'host.js');
+const bubblesSrc = read('host', 'bubbles.js');
+
+test('a medal frame and a bubbles frame are control frames, never typed into the session', () => {
+  assert.ok(parseControlFrame(JSON.stringify({ type: 'medal', action: 'give', agent: 'a', kind: 'fast' })));
+  assert.ok(parseControlFrame(JSON.stringify({ type: 'bubbles', action: 'visible', visible: true })));
+});
+
+test('every frame the host broadcasts for medals and bubbles is handled by the renderer', () => {
+  for (const type of ['medals', 'bubbles', 'bubble']) {
+    assert.match(type === 'bubble' ? bubblesSrc : host, new RegExp(`type: '${type}'`), `host sends ${type}`);
+    assert.match(renderer, new RegExp(`msg\\.type === '${type}'`), `renderer handles ${type}`);
+  }
+});
+
+test('every frame the renderer sends for them is handled by the host', () => {
+  assert.match(renderer, /type: 'medal', action: 'give'/);
+  assert.match(renderer, /type: 'medal', action: 'remove'/);
+  assert.match(renderer, /type: 'bubbles', action: 'set-enabled'/);
+  assert.match(renderer, /type: 'bubbles', action: 'visible'/);
+  assert.match(host, /msg\.type === 'medal'/);
+  assert.match(host, /msg\.type === 'bubbles'/);
+});
+
+test('hello carries the medals and the bubbles switch, and the renderer reads both', () => {
+  assert.match(host, /medals: medals\.all\(\)/);
+  assert.match(host, /bubbles: \{ enabled: bubbleSettings\.enabled\(\) \}/);
+  assert.match(renderer, /msg\.medals/);
+  assert.match(renderer, /msg\.bubbles/);
+});
+
+test('the page has the scripts and elements the wiring looks up', () => {
+  assert.match(html, /<script src="\.\/medals-display\.js"><\/script>/);
+  assert.match(html, /<script src="\.\/bubble-display\.js"><\/script>/);
+  for (const id of ['bubbles-toggle', 'agent-medals', 'medal-menu']) assert.match(html, new RegExp(`id="${id}"`), id);
+  // the log panel hides every sibling but the log: the shelf is the other thing it keeps
+  assert.match(html, /\.panel\.logging > :not\(#agent-log\):not\(#agent-medals\)/);
+});
+
+test('reduced motion turns the bubble animation off', () => {
+  assert.match(html, /prefers-reduced-motion: reduce\) \{ \.agent-bubble, \.agent-bubble\[data-settled\] \{ animation: none; \} \}/);
+});
+
+test('a bubble never takes a click from its card', () => {
+  assert.match(html, /\.agent-bubble \{[^}]*pointer-events: none/);
+});
+
+test('a repaint of the roster puts the bubbles back, and images going off takes them away', () => {
+  assert.match(renderer, /setRosterHtml\(html\);\s*paintBubbles\(\);/);
+  assert.match(renderer, /function applyAgentImages[\s\S]*?paintBubbles\(\);[\s\S]*?tellHostBubblesVisible\(\);/);
+});
+
+test('the host starts a bubble only through the mood listener, without waiting for it', () => {
+  assert.match(host, /bubbles\.onMood\(\{ agent, state \}\);/);
+  assert.ok(!/await bubbles\.onMood/.test(host));
+});
+
+test('every element renderer.js looks up at load comes BEFORE its script tag (the menu once sat after it, and was null)', () => {
+  const script = html.indexOf('<script src="./renderer.js"></script>');
+  assert.ok(script > 0);
+  for (const id of ['bubbles-toggle', 'agent-medals', 'medal-menu']) {
+    const at = html.indexOf(`id="${id}"`);
+    assert.ok(at > 0 && at < script, `${id} must be parsed before renderer.js runs`);
+  }
+});
+
+test('visibility is per socket: a window that closes is dropped, and the install-wide files are watched for other hosts\' changes', () => {
+  assert.match(host, /bubbles\.setViewer\(ws, msg\.visible === true\)/);
+  assert.match(host, /bubbles\.dropViewer\(ws\)/);
+  assert.match(host, /medalsWatch\.tick\(\); bubblesWatch\.tick\(\)/);
+  assert.match(host, /medalsWatch\.note\(out\.medals\)/);
+  assert.match(host, /bubblesWatch\.note\(told\)/);
+  assert.ok(!/setVisible/.test(host));
+});
+
+test('a settled bubble does not replay its fade-in', () => {
+  assert.match(html, /\.agent-bubble\[data-settled\] \{ animation: bubble-out/);
+});
+
+test('the shelf removes a medal in two clicks through reduceRemove, with no confirm() dialog', () => {
+  assert.match(renderer, /window\.medalsDisplay\.reduceRemove\(medalRemovePending/);
+  assert.match(renderer, /if \(step\.send\) sendJson\(\{ type: 'medal', action: 'remove'/);
+  assert.ok(!/\bconfirm\(/.test(renderer.slice(renderer.indexOf('medalRemovePending'), renderer.indexOf('medalRemovePending') + 1500)));
+  assert.match(html, /\.medal-remove\.confirm/);
+});
+
+test('a click on a medal kind gives it at once and closes the menu; there is no reason or Give wiring left', () => {
+  const start = renderer.indexOf('const medalMenuEl');
+  const end = renderer.indexOf("agentsEl.addEventListener('contextmenu'", start);
+  assert.ok(start > 0 && end > start, 'markers found');
+  const block = renderer.slice(start, end);
+  assert.match(block, /sendJson\(\{ type: 'medal', action: 'give', agent: medalMenu\.agent, kind \}/);
+  assert.ok(!/medal-reason-input|data-medal-give|data-medal-cancel|medalMenu\.reason/.test(block));
+  assert.ok(!/medal-reason-input|data-medal-give/.test(renderer), 'the probe hook no longer types a reason or presses Give');
+});
+
+test('the medal menu moves focus to its first kind on open and gives it back to the opener on close', () => {
+  const start = renderer.indexOf('function paintMedalMenu');
+  const end = renderer.indexOf('function giveMedal', start);
+  const block = renderer.slice(start, end);
+  assert.match(block, /const first = medalMenuEl\.querySelector\('\[data-medal-kind\]'\);\s*if \(first\) first\.focus\(\);/);
+  assert.match(block, /opener: document\.activeElement/);
+  assert.match(block, /opener\.isConnected[\s\S]*?opener\.focus\(\)/);
+});

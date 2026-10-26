@@ -114,7 +114,7 @@ test('the history goes to the selected page only: a newly selected page is re-se
 });
 
 test('the popover Open Resources panel button closes it, shows the panel when hidden, selects and focuses it', () => {
-  assert.match(BLOCK, /closest\('\[data-hist-act="open-panel"\]'\)[\s\S]*?resPopStep\(\{ type: 'panel-link' \}\);\s*if \(placementLayout\(\)\.hidden\.includes\('resources'\)\) commitPlacement\(DTm\.show\(placementLayout\(\), 'resources'\), \{ select: 'resources' \}\);\s*else selectModule\('resources'\);[\s\S]*?resRoot\.focus\(\)/);
+  assert.match(BLOCK, /closest\('\[data-hist-act="open-panel"\]'\)[\s\S]*?resPopStep\(\{ type: 'panel-link' \}\);\s*revealModule\('resources'\);[\s\S]*?resRoot\.focus\(\)/);
 });
 
 test('Leftovers Stop (B): the bridge, the gated IPC handler and the page\'s click all line up, and the page names rows, never processes', () => {
@@ -137,4 +137,11 @@ test('Leftovers (F2): the stop is the async killProven, the launcher is re-asked
   assert.match(MAIN, /kill: \(pid, start\) => killProvenAsync\(pid, start\)/);
   assert.match(MAIN, /createLeftoverSeams\(\{/);
   assert.doesNotMatch(MAIN, /\bkillProven\(/);
+});
+
+test('#82: the chip is handed the GPU figure, and the Resources tab the GPU graphs from the history display', () => {
+  assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(c\.cpuText, c\.memText, resHistory\(\), resHistoryNow\(\), c\.gpuText\)/);
+  assert.match(BLOCK, /resourcesDisplay\.html\(window\.resourcesDisplay\.view\(resState\), \{ gpuGraphs: window\.resourcesHistoryDisplay\.gpuGraphs\(resHistory\(\), resHistoryNow\(\)\) \}\)/);
+  assert.match(HTML, /aria-label="CPU, memory and GPU over the last hour"/);
+  assert.match(HTML, /\.res-gpu \.hg-plot \{ width: 100% !important;/);
 });

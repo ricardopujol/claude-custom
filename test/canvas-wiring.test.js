@@ -25,7 +25,7 @@ test('every canvas message is a KNOWN control type, or it is typed into the pty 
 
 test('the host builds the control on the state folder, the live session id and the shared watcher', () => {
   assert.match(HOST, /const \{ createCanvasControl \} = require\('\.\/canvas-control'\);/);
-  assert.match(HOST, /const canvasControl = createCanvasControl\(\{\s*stateDir: path\.join\(HARNESS_DIR, 'state'\),\s*getSessionId: \(\) => sessionId,\s*emit: \(frame\) => broadcastControl\(frame\),\s*watch: watchDir,/);
+  assert.match(HOST, /const canvasControl = createCanvasControl\(\{\s*stateDir: path\.join\(HARNESS_DIR, 'state'\),\s*getSessionId: \(\) => sessionId,\s*emit: \(frame\) => \{[^\n]*usageCounters\.bump\('canvas:render'\); broadcastControl\(frame\); \},\s*watch: watchDir,/);
 });
 
 test("every attaching window is told the panel's state in its hello", () => {
@@ -68,7 +68,8 @@ test("Claude's panel's MCP server is injected through buildClaudeArgs, only when
   assert.match(HOST, /const \{ canvasMcpEnabled \} = require\('\.\/canvas-settings'\);/);
   assert.match(HOST, /const CANVAS_POINTER_FILE = path\.join\(HARNESS_DIR, 'state', 'canvas', `_tab-\$\{PORT\}\.json`\);/);
   assert.match(HOST, /const canvasMcp = helperExists && canvasMcpEnabled\(\{ env: process\.env, stateDir: path\.join\(HARNESS_DIR, 'state'\) \}\)/, 'never without the hook helper (Dexter #8)');
-  assert.match(HOST, /const ARGS = buildClaudeArgs\(\{ settingsFile, helperExists, canvasMcp \}\);/);
+  assert.match(HOST, /const ARGS_OPTIONS = \{ settingsFile, helperExists, canvasMcp, side: SIDE \};/);
+  assert.match(HOST, /let ARGS = buildClaudeArgs\(ARGS_OPTIONS\);/);
   assert.match(HOST, /pointerFile: canvasMcp \? CANVAS_POINTER_FILE : null,/, 'the same file the server reads is the one the control writes, and none when no server is offered (Miguel S5)');
   assert.match(HOST, /scriptPath: path\.join\(__dirname, 'canvas-mcp\.js'\)/);
 });

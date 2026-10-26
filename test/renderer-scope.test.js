@@ -43,9 +43,11 @@ const ALLOWED_GLOBALS = new Set([
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
   'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
-  // app/dock-layout.js, app/dock-zones-display.js (layout pass L1): one
+  // app/rail-icons.js (#85 follow-up): the rail tabs' vendored line icons, one namespace.
+  'railIcons',
+  // app/dock-migrate.js, app/dock-effects.js (L1's survivors, dockable panels D4): one
   // namespace each, reached through `window.`.
-  'dockLayout', 'dockZones',
+  'dockMigrate', 'dockEffects',
   // app/dock-tree.js, app/dock-drag.js, app/dock-tree-display.js (dockable panels D1): the same.
   'dockTree', 'dockDrag', 'dockTreeView',
   // app/dock-presets.js (dockable panels D3): the layout presets, one namespace.
@@ -54,6 +56,8 @@ const ALLOWED_GLOBALS = new Set([
   'createMask', 'surfacesFor',
   // the display modules
   'usageDisplay', 'spendOf', 'cacheReadOf',
+  // app/usage-display.js tokText, app/shortcut-table.js, app/shortcuts-display.js (#42 + #43): the header's short wording, and one namespace each.
+  'tokText', 'shortcutTable', 'shortcutsDisplay',
   // app/roster-width.js -- the panel width POLICY, moved out of renderer.js
   // (Miguel, PR #33, A1) so its three tuned numbers can be asserted.
   'rosterWidth', 'rosterMax', 'faceSize',
@@ -68,6 +72,9 @@ const ALLOWED_GLOBALS = new Set([
   // app/hidden-agents-display.js (BACKLOG #14)
   'reconcileHidden', 'visibleRows', 'hideButtonFor', 'hiddenCount', 'rosterActionFromClick', 'repaintNeeded',
   'quotaDisplay', 'formatQuotaCountdown',
+  // app/quota-countdown.js (BACKLOG #90): deliberate exports from an IIFE-wrapped module
+  'quotaBackText', 'quotaCountdownState', 'createQuotaResetWatcher', 'createQuotaToastGate', 'quotaTickDelayMs',
+  'quotaSettlePastResets', 'quotaClockText', 'quotaWeekdayText',
   // app/bugvault-display.js. Both are DELIBERATE exports from a correctly
   // IIFE-wrapped module, not leaks -- checked before allowlisting them, since
   // "a name escaped into the shared scope" and "a module deliberately published
@@ -82,13 +89,21 @@ const ALLOWED_GLOBALS = new Set([
   'bugVaultDisplay', 'formatBugRow',
   'projectsDisplay',
   // app/style-display.js
-  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
+  'styleDisplay', 'STYLE_SECTIONS', 'formatSetAt', 'describeSource', 'backgroundSectionView', 'coloursSectionView', 'toPercent', 'reduceStyle', 'emptyStyleState',
   // app/agent-card-display.js
   'instanceCounts', 'modelLine', 'modelEntry',
+  // app/agent-state-display.js (BACKLOG #55): ONE name leaves its IIFE.
+  'agentStateDisplay',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
   'wandDisplay',
+  // app/games-rules.js, app/games-round.js, app/games-display.js (BACKLOG #41): the wait games. ONE name leaves each IIFE.
+  'gamesRules', 'gamesRound', 'gamesDisplay',
+  // app/ask-panel-state.js, app/ask-profile.js, app/ask-requester.js, app/ask-display.js (BACKLOG #33): Ask the repo. ONE name leaves each IIFE.
+  'askPanelState', 'askProfile', 'askExplainerDisplay', 'askRequester', 'askController', 'askDisplay',
+  // app/schedules-display.js (BACKLOG #119 A7): the Schedules panel. ONE name leaves its IIFE.
+  'schedulesDisplay',
   // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
   'resourcesDisplay',
   // app/canvas-display.js (BACKLOG #71): Claude's panel. ONE name leaves its IIFE.
@@ -100,16 +115,22 @@ const ALLOWED_GLOBALS = new Set([
   'portraitMedia',
   // app/bg-media-display.js (BACKLOG #34): one namespace object, IIFE-wrapped.
   'bgMedia',
+  // app/fonts-display.js (BACKLOG #88): one namespace object, IIFE-wrapped.
+  'fontsDisplay',
+  // app/lean-display.js (BACKLOG #62, lean mode): one namespace object, IIFE-wrapped; also loaded by the strip page.
+  'leanDisplay',
   // app/colour-seeds.js (BACKLOG #34): one namespace object, IIFE-wrapped.
   'colourSeeds',
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
   // app/style-display.js, Window section (layout pass L2, #27/#28)
-  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'panelSectionView', 'reduceCanvasMcp', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
+  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'traySectionView', 'reduceTraySettings', 'panelSectionView', 'reduceCanvasMcp', 'reduceCcMod', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
   // app/status-fields-display.js (BACKLOG #27)
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
+  // app/medals-display.js, app/bubble-display.js (BACKLOG #80): one namespace each, reached through `window.`.
+  'medalsDisplay', 'bubbleDisplay',
   // app/top-bar-display.js (FF12)
   'modelFamily', 'cueColour', 'chosenAccent', 'withChosenAccent', 'pendingResolver', 'topBarState', 'topBarDisplay',
   'MODEL_CHOICES', 'EFFORT_LEVELS', 'PENDING_TIMEOUT_MS', 'mainModelOf',
@@ -123,11 +144,14 @@ const ALLOWED_GLOBALS = new Set([
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  'programStatusDisplay',                  // OSC 7501 (BACKLOG #116): app/program-status-display.js
   // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
   'occupancyDisplay', 'occupancyConfirm',
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
   'terminalBar',
   'summaryDisplay',
+  // app/docs-drift-display.js (backlog #39 job 2): one namespace object, IIFE-wrapped.
+  'docsDriftDisplay',
   // app/link-click.js (fix/terminal-links): one namespace object, IIFE-wrapped.
   'linkClick',
   // app/accent-preview.js (backlog #64): one namespace object, IIFE-wrapped.
@@ -136,8 +160,10 @@ const ALLOWED_GLOBALS = new Set([
   'terminalRows', 'filePathParse',
   // app/git-rings.js + app/git-rings-display.js (layout pass L3): one namespace object each, IIFE-wrapped.
   'gitRings', 'gitRingsDisplay',
+  // app/git-graph-display.js (BACKLOG #2 follow-up, the Graph view): one namespace object, IIFE-wrapped.
+  'gitGraphDisplay',
   // app/repo-*.js (#45 + #32, the Files tab and the code reader): one namespace object each, IIFE-wrapped.
-  'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoBrowser',
+  'repoLanguage', 'repoMention', 'repoTreeDisplay', 'repoRequester', 'repoRefresh', 'repoFilesPanel', 'repoReader', 'repoLineDiff', 'repoBrowser',
   // app/git-swing.js + app/git-actions.js (Enhancement #46): one namespace object each, IIFE-wrapped.
   'gitSwing', 'gitActions',
   // app/paste-action.js (BACKLOG #12, #8). Both called as bare globals from

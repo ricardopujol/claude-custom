@@ -62,7 +62,7 @@
    does (CLAUDE.md: it is inherited from Claude Code). The host runs on its own
    port with its own token and only the host PID this probe spawned is killed. */
 const { spawn } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const path = require('path');
 
 if (!process.versions.electron) {
@@ -128,9 +128,11 @@ app.on('ready', async () => {
     if (HELPER) env.CLAUDE_CUSTOM_HELPER = HELPER;
     delete env.ANTHROPIC_API_KEY;
     host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
     host.stdout.on('data', d => { hostLog += d; });
     host.stderr.on('data', d => { hostLog += d; });
 
+    // Not wrapped in probeWindowOptions on purpose: paste needs a real, focused window.
     const win = new BrowserWindow({
       width: 1200, height: 760, show: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,

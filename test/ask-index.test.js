@@ -55,6 +55,24 @@ test('a build indexes every file once and saves outside the worktree', async () 
   assert.ok(!path.resolve(dir).toLowerCase().startsWith(WT.toLowerCase()));
 });
 
+test('PR #169 Dexter 3: the files indexed so far can be searched while the first build runs; the finished index replaces it', async () => {
+  const w = world({ 'a.js': 'alpha one', 'b.js': 'beta two', 'c.js': 'gamma three' });
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let calls = 0;
+  const idx = createIndex({ dir: tmpDir(), ...w.deps, embed: async (texts) => { calls += 1; if (calls === 2) await gate; return w.deps.embed(texts); } });
+  assert.strictEqual(idx.snapshot(WT), null, 'nothing indexed, nothing to search');
+  const build = idx.refresh(WT);
+  for (let i = 0; i < 50 && calls < 2; i += 1) await new Promise(r => setImmediate(r));
+  const mid = idx.snapshot(WT);
+  assert.deepStrictEqual(mid.files.map(f => f.rel), ['a.js'], 'the first file is done, the second is being embedded, the third is not read yet');
+  assert.strictEqual(idx.get(WT), null, 'get() is still the FINISHED index: none yet');
+  release();
+  await build;
+  assert.deepStrictEqual(idx.snapshot(WT).files.map(f => f.rel), ['a.js', 'b.js', 'c.js']);
+  assert.strictEqual(idx.snapshot(WT), idx.get(WT), 'after the build the snapshot is the finished index itself');
+});
+
 test('a second refresh with nothing changed embeds nothing', async () => {
   const w = world({ 'a.js': 'one\ntwo' });
   const idx = createIndex({ dir: tmpDir(), ...w.deps });

@@ -31,7 +31,7 @@
  * stopped. ELECTRON_RUN_AS_NODE is deleted for every Electron launch. WINDOWS ONLY.
  */
 const { spawn, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -107,6 +107,7 @@ function startHost(name, cwd, port) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry') };
   delete env.ELECTRON_RUN_AS_NODE;
   const child = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env });
+  noteChild(child);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
   hygiene.registerChild(child);
   const h = { name, port, token, child, out: '' };
   child.stdout.on('data', d => { h.out += d; });

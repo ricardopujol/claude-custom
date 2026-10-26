@@ -44,7 +44,7 @@
    cannot start. Exit code is the number of FAILs. */
 
 const { spawn, spawnSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const http = require('http');
@@ -170,6 +170,7 @@ async function main() {
   delete env.ELECTRON_RUN_AS_NODE;     // inherited from any Claude Code session; would start Electron as plain Node
 
   const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
   let hostLog = '';
   host.stdout.on('data', d => { hostLog += d; });
   host.stderr.on('data', d => { hostLog += d; });

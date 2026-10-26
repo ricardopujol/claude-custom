@@ -2,7 +2,7 @@
 /**
  * Drawing a dock tree (BACKLOG #53, dockable panels D1, Task 9).
  *
- * Two halves, as app/dock-zones-display.js is. `treePlan`, `dragSizes`,
+ * Two halves. `treePlan`, `dragSizes`,
  * `sizesAfterDrag`, `menuRows` and `afterTreeGet` are pure: what each group
  * shows, how a divider drag changes the sizes, what the Window menu lists, what
  * the page does with the store's answer. `applyBoxes` copies a plan onto the page
@@ -21,15 +21,57 @@
  */
 (function (root) {
 
-// Loaded the way app/dock-zones-display.js loads app/dock-layout.js.
+// Loaded the way app/dock-tree.js loads its own helpers: required under Node, a page global in the window.
+const iconsApi = typeof module !== 'undefined' && module.exports ? require('./rail-icons') : root.railIcons;
 const treeApi = typeof module !== 'undefined' && module.exports ? require('./dock-tree') : root.dockTree;
-const zonesApi = typeof module !== 'undefined' && module.exports ? require('./dock-zones-display') : root.dockZones;
+const effectsApi = typeof module !== 'undefined' && module.exports ? require('./dock-effects') : root.dockEffects;
 const { fit, hasTerm } = treeApi;
-const { WIDE_FACE_CHROME } = zonesApi;
+const { WIDE_FACE_CHROME } = effectsApi;
 
 const isNumber = v => typeof v === 'number' && Number.isFinite(v);
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const isSize = v => isNumber(v) && v > 0;
+
+/**
+ * A name that doesn't fit its rail shrinks, never grows (11 px at most). Beside the terminal (data-dir v) each name must fit the
+ * rail's width; above or below it (h) the tabs sit in a row, so every name shrinks by the same factor until the row fits the rail's
+ * length (data-room is that width or length). Measured (a layout read) only when the buttons, the room, the direction or the UI
+ * font changed since the last time. Where the page has no layout (the test document) nothing measures and names stay at 11 px.
+ */
+function fitRailNames(el, doc, force) {
+  const style = doc.documentElement && doc.documentElement.style;
+  const font = style && typeof style.getPropertyValue === 'function' ? style.getPropertyValue('--font-ui') : '';
+  const room = Number(el.dataset.room) || 0;
+  const key = `${el.dataset.sig}|${el.dataset.dir}|${room}|${font}`;
+  if (!force && el.dataset.fit === key) return;
+  const tabs = [...el.children].map(btn => ({ btn, name: btn.querySelector('.rail-name') })).filter(t => t.name);
+  delete el.dataset.names;                                    // measure with the names showing
+  for (const t of tabs) t.name.style.fontSize = '';           // ...at the stylesheet's 11 px
+  // A rail that is not on screen (lean or focus mode, display: none) measures zeros. That is no measurement: store no key, so the
+  // fit runs when it shows (the page draws the dock again when lean or focus mode changes, and refits when a hidden tab becomes visible).
+  if (tabs.length && !tabs.some(t => t.name.scrollWidth > 0)) { delete el.dataset.fit; return; }
+  el.dataset.fit = key;
+  let sizes;
+  if (el.dataset.dir === 'h') {
+    const widths = tabs.map(t => t.name.scrollWidth);
+    const chrome = tabs.reduce((sum, t) => sum + (t.btn.scrollWidth - t.name.scrollWidth), 0);
+    const row = fitRow(widths, chrome, room);
+    if (row.iconsOnly) { el.dataset.names = 'off'; return; }  // the CSS hides the names; the row scrolls if the icons still do not fit
+    sizes = tabs.map(() => row.size);
+  } else {
+    sizes = tabs.map(t => fitNameSize(t.name.scrollWidth, room));
+  }
+  tabs.forEach((t, i) => { if (sizes[i] < NAME_MAX) t.name.style.fontSize = `${sizes[i]}px`; });
+}
+
+/**
+ * The UI font changed, or fonts finished loading: every rail's names are measured again (the page calls this; applyBoxes does the rest).
+ * `force` measures even when nothing in the key changed: a web font that finished loading changes widths without changing its name.
+ */
+function refitRails(doc, force) {
+  const dock = doc.getElementById('dock');
+  if (dock) for (const el of dock.querySelectorAll(':scope > .drail')) fitRailNames(el, doc, force === true);
+}
 
 /** A box at least twice as wide as tall lays its panel out as a row (every panel has both shapes from L1). */
 const shapeOf = rect => (rect.width >= 2 * rect.height ? 'wide' : 'tall');
@@ -37,16 +79,52 @@ const shapeOf = rect => (rect.width >= 2 * rect.height ? 'wide' : 'tall');
 /** Portraits in a wide group: bounded by its height minus its tab bar and the card's name line. */
 const faceForWide = height => Math.max(28, Math.min(150, height - WIDE_FACE_CHROME));
 
+/** A rail tab's name is 11 px at most; one too wide for the tab shrinks in proportion until it fits on one line, with no floor. */
+const NAME_MAX = 11;
+/** The tab's side padding (2 px each), taken off the rail's inner width to get the room a name has. */
+const NAME_PAD = 4;
+/** The rail's own side borders (1 px each), and a pixel of slack because scrollWidth is a whole number. */
+const RAIL_BORDER = 2;
+const NAME_SLACK = 1;
+/** The room a name has inside a rail this wide, from the rail's rectangle: no layout read. 0 when there is none to speak of. */
+function nameRoom(railWidth) {
+  return isNumber(railWidth) ? Math.max(0, railWidth - RAIL_BORDER - NAME_PAD - NAME_SLACK) : 0;
+}
+/**
+ * One size for every name of a row of tabs: `names` are their widths at 11 px, `chrome` the rest of the row (padding, icons, gaps),
+ * `room` the row's length. 11 px when the row fits or something can't be measured; else the size that makes it fit exactly, never
+ * below 0.01 (no floor, but never zero or negative).
+ */
+function fitRowNameSize(names, chrome, room) {
+  const sum = names.reduce((a, b) => a + b, 0);
+  if (!(room > 0) || !names.every(n => n > 0 && Number.isFinite(n)) || !Number.isFinite(chrome) || sum + chrome <= room) return NAME_MAX;
+  if (room <= chrome) return 0.01;
+  return Math.max(0.01, Math.floor((NAME_MAX * (room - chrome) / sum) * 100) / 100);
+}
+/** A row whose names would be under this many px shows its tabs as icons only (Ricardo: "icons only when tight"). */
+const ICONS_ONLY_BELOW = 8;
+/** The row's verdict: the one name size, and whether the names give way to icons only. */
+function fitRow(names, chrome, room) {
+  const size = fitRowNameSize(names, chrome, room);
+  return { size, iconsOnly: size < ICONS_ONLY_BELOW };
+}
+function fitNameSize(natural, room) {
+  if (!(natural > room && room > 0 && Number.isFinite(natural))) return NAME_MAX;      // fits, or nothing measured (NaN, 0, hidden)
+  return Math.floor((NAME_MAX * room / natural) * 100) / 100;       // rounded down: the name is never a hair too wide
+}
+
 /**
  * @param layout   a normalized layout (app/dock-tree.js)
  * @param selection this window's choices ({ active, foldAll })
  * @param tabs     the module registry: [{ id, label, title }] (app/side-tabs.js TABS)
  * @param viewport { width, height } of #dock
  * @param faceSize width -> portrait px (app/roster-width.js)
- * @returns { boxes, splits, shown, face } `fit`'s boxes with each group's tabs, panel and shape filled in;
- *          `shown` the panels on screen; `face` the portrait size while Agents shows, else null.
+ * @param peek     { module } the rail button this window pressed (D4), or null: its panel opens over the terminal
+ * @returns { boxes, splits, shown, face, peek } `fit`'s boxes with each group's tabs, panel and shape filled in;
+ *          `shown` the panels on screen (the popover's included); `face` the portrait size while Agents shows, else null;
+ *          `peek` the popover { module, rect, dir, tabs } or null (no such rail any more).
  */
-function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
+function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
   const { boxes, splits } = fit(layout, selection, viewport);
   const byId = new Map(tabs.map(t => [t.id, t]));
   const shown = [];
@@ -70,7 +148,86 @@ function treePlan(layout, selection, tabs, viewport, { faceSize } = {}) {
       tabs: named(b.tabs).map(t => ({ ...t, on: t.id === b.active })),
     };
   });
-  return { boxes: drawn, splits, shown, face };
+  // A rail's panel opened over the terminal. It is on screen like any other panel (so the vault rule sees it come and go).
+  let popover = null;
+  const at = isObject(peek) ? treeApi.peekFor(boxes, peek.module, viewport) : null;
+  if (at) {
+    const shape = shapeOf(at.rect);
+    // Pin shows only on a panel of the dock's own rail (#85): one a folded group put on a rail was never unpinned.
+    // `from`: the side of the popover its rail is on, which is where it slides in from.
+    const rb = boxes.find(x => x.kind === 'rail' && x.modules.includes(at.module));
+    const from = at.dir === 'v' ? (at.rect.x < rb.rect.x ? 'right' : 'left') : (at.rect.y < rb.rect.y ? 'bottom' : 'top');
+    const pin = rb.id === 'dock' && Array.isArray(layout.rail) && layout.rail.includes(at.module);
+    // The popover is the hovered panel alone: the rail is where you switch between panels, and a group's other tabs aren't shown.
+    const tab = named([at.module])[0];
+    popover = { ...at, shape, from, pin, tabs: tab ? [{ ...tab, on: true }] : [] };
+    if (tab) {
+      shown.push(at.module);
+      if (at.module === 'agents') face = shape === 'tall' ? (typeof faceSize === 'function' ? faceSize(at.rect.width) : null) : faceForWide(at.rect.height);
+    } else popover = null;
+  }
+  return { boxes: drawn, splits, shown, face, peek: popover };
+}
+
+/** The rail's hover state when nothing is open or waiting (see `railAfter`). */
+const RAIL_IDLE = Object.freeze({ module: null, held: false, pending: null, leaving: false });
+
+/**
+ * The hover behaviour of the dock's rail tabs (BACKLOG #85), pure and timer-free: the page owns the two timers (a hover waits
+ * 100 ms before it opens a panel; leaving waits 100 ms before it closes one) and feeds `open-timer` / `close-timer` back in.
+ * State { module, held, pending, leaving }: the open panel; whether a click or Enter holds it open (leaving then closes
+ * nothing); the tab hovered and waiting for its timer; whether the pointer left and the close timer is running.
+ *   enter {module}      the pointer is on a rail tab: opens it at once (unheld) when another is open, else waits (`pending`);
+ *                       on the open tab itself it changes nothing but the grace (a hold stays)
+ *   enter-panel         the pointer is in the open panel: the grace is cancelled, a hover wait dropped
+ *   hold                a press or the keyboard is inside the open panel: it stays until Esc or a press outside (Miguel Y2)
+ *   leave               the pointer left the tab and the panel: a wait is dropped, an unheld panel starts its grace
+ *   open-timer {module} the wait ran out: opens that tab if it is still the one waiting
+ *   close-timer         the grace ran out: closes an unheld panel
+ *   click {module}      opens and holds; on the open one: holds it, and on a held one closes it
+ *   tab {module}        a tab inside the open panel switches it
+ *   escape / outside / drop / gone   closes it
+ * Anything else, and any junk, changes nothing (a junk state reads as idle).
+ */
+function railAfter(state, ev) {
+  const s = isObject(state) && typeof state.module === 'string' && state.module !== ''
+    ? { module: state.module, held: state.held === true, pending: null, leaving: state.held !== true && state.leaving === true }
+    : { module: null, held: false, pending: isObject(state) && typeof state.pending === 'string' && state.pending !== '' ? state.pending : null, leaving: false };
+  const e = isObject(ev) ? ev : {};
+  const mod = typeof e.module === 'string' && e.module !== '' ? e.module : null;
+  switch (e.type) {
+    case 'enter':
+      if (mod === null) return s;
+      // A swap by hover is a hover: the hold belongs to the click that made it, not to whichever panel is open (PR #168 Dexter 1).
+      // The tab already open is not a swap: the page redraws the rail under a still pointer after a click, and the pointerover
+      // that follows must not undo the click's hold.
+      if (s.module === mod) return { ...s, pending: null, leaving: false };
+      return s.module !== null ? { module: mod, held: false, pending: null, leaving: false } : { ...s, pending: mod };
+    case 'enter-panel': return { ...s, pending: null, leaving: false };
+    case 'hold': return s.module !== null ? { ...s, held: true, leaving: false } : s;
+    case 'leave':
+      if (s.module === null) return { ...s, pending: null };
+      return s.held ? s : { ...s, leaving: true };
+    case 'open-timer': return s.module === null && mod !== null && s.pending === mod ? { ...RAIL_IDLE, module: mod } : s;
+    case 'close-timer': return s.module !== null && s.leaving && !s.held ? RAIL_IDLE : s;
+    case 'click':
+      if (mod === null) return s;
+      if (s.module === mod && s.held) return RAIL_IDLE;
+      return { module: mod, held: true, pending: null, leaving: false };
+    case 'tab': return s.module !== null && mod !== null ? { ...s, module: mod, leaving: false } : s;
+    case 'escape': case 'outside': case 'drop': case 'gone': return RAIL_IDLE;
+    default: return s;
+  }
+}
+
+/**
+ * Where the keyboard goes after a rail's button was pressed (PR #159 Miguel I1). A mouse press leaves the focus on the button, so
+ * the popover that opens takes it ('popover'); when it closes, a press hands it back to the terminal ('terminal'), and Enter on
+ * the button keeps it on the button ('rail'), where the person is.
+ */
+function peekFocus(opened, byKeyboard) {
+  if (opened === true) return 'popover';
+  return byKeyboard === true ? 'rail' : 'terminal';
 }
 
 /**
@@ -105,15 +262,95 @@ function dragSizes(px, min, i, delta) {
  */
 function sizesAfterDrag(node, split, i, delta) {
   if (!isObject(node) || node.type !== 'split' || !isObject(split)) return null;
+  // A kid drawn as a rail (collapsed in this window, or folded by a narrow one) is not the user's size to store: its
+  // RAIL.side or RAIL.wide is the rail's, and writing it would shrink the group in every other window (PR #159 Dexter 1).
+  const state = Array.isArray(split.state) && split.state.length === node.kids.length ? split.state : null;
+  const open = k => state === null || state[k] === 'open';
+  if (!Number.isInteger(i) || i < 1 || i >= node.kids.length) return null;
+  if (!open(i - 1) || !open(i)) return railNeighbourSizes(node, split, i, delta, open);
   const dragged = dragSizes(split.px, split.min, i, delta);
   if (!dragged) return null;
   // Nothing moved (no delta, or a neighbour at its minimum): not a choice, so nothing to store.
   if (dragged.every((v, k) => v === split.px[k])) return null;
-  if (!hasTerm(node)) return dragged;
+  if (!hasTerm(node)) {
+    if (state === null || state.every(s => s === 'open')) return dragged;
+    // Proportions with a rail in the row: the rail keeps its stored share, written in the drawn pixels' units.
+    const tOpen = node.kids.reduce((a, _, k) => a + (open(k) ? node.sizes[k] : 0), 0);
+    const sOpen = split.px.reduce((a, v, k) => a + (open(k) ? v : 0), 0);
+    return dragged.map((v, k) => (open(k) ? v : node.sizes[k] * sOpen / tOpen));
+  }
   return dragged.map((v, k) => {
     if (k === i - 1 || k === i || hasTerm(node.kids[k])) return v;
     return isSize(node.sizes[k]) ? node.sizes[k] : v;
   });
+}
+
+const DIVIDER_STEP = 16;                       // px one arrow key moves a divider
+/** How long boxes take to settle into their new places after a drop (D4); a drag itself never animates. */
+const SETTLE_MS = 120;
+/** How long the rail panel takes to slide in or out (BACKLOG #85); the CSS animation is the same number. */
+const PEEK_SLIDE_MS = 160;
+
+/** The pixels a key moves a divider: the arrow that points along it (left/right for a row's, up/down for a column's), else null. */
+function dividerStep(key, dir) {
+  if (dir === 'row') return key === 'ArrowLeft' ? -DIVIDER_STEP : key === 'ArrowRight' ? DIVIDER_STEP : null;
+  if (dir === 'col') return key === 'ArrowUp' ? -DIVIDER_STEP : key === 'ArrowDown' ? DIVIDER_STEP : null;
+  return null;
+}
+
+/**
+ * The layout after a key moves the divider before kid `i` of the split at `path`, by the same rules as dragging it
+ * (neither neighbour under its minimum, the terminal's side still flexing), or null when nothing moves: not an arrow
+ * along it, no such split or divider, a neighbour already at its minimum.
+ * The page itself saves a burst of keys through dividerKeySizes + rebaseDrag; this whole-layout form is the tested reference
+ * for what one press means (the tests call it), kept exported for them.
+ * @param splits `fit`'s per-split { path, px, min }
+ */
+function dividerKey(layout, splits, path, i, key) {
+  const moved = dividerKeySizes(layout, splits, path, i, key);
+  if (!moved) return null;
+  const next = treeApi.setSplitSizes(layout, path, moved.sizes);
+  return next === layout ? null : next;
+}
+
+/**
+ * What `dividerKey` asks the model for, before it asks: { node, sizes } -- the split as it was and the sizes a drag of that
+ * divider would answer -- or null. A burst of key presses is saved from these through `rebaseDrag`, exactly as a pointer
+ * release is, so it lands on the placement as it is by then and never overwrites a change made meanwhile.
+ */
+function dividerKeySizes(layout, splits, path, i, key) {
+  if (!isObject(layout) || !isObject(layout.root) || !Array.isArray(path) || !Array.isArray(splits)) return null;
+  let node = layout.root;
+  for (const k of path) {
+    if (!isObject(node) || node.type !== 'split' || !Number.isInteger(k) || k < 0 || k >= node.kids.length) return null;
+    node = node.kids[k];
+  }
+  if (!isObject(node) || node.type !== 'split') return null;
+  const delta = dividerStep(key, node.dir);
+  if (delta === null) return null;
+  const split = splits.find(s => isObject(s) && Array.isArray(s.path) && s.path.length === path.length && s.path.every((v, k) => v === path[k]));
+  const sizes = sizesAfterDrag(node, split, i, delta);
+  if (!sizes) return null;
+  return treeApi.setSplitSizes(layout, path, sizes) === layout ? null : { node, sizes };
+}
+
+/** Milliseconds boxes take to settle after a drop: none when the person asked for reduced motion (or it isn't known they didn't). */
+function settleMs(reducedMotion) { return reducedMotion === false ? SETTLE_MS : 0; }
+
+/**
+ * The divider beside a rail: the rail keeps what is stored, and the open kid on its other side trades with the room across
+ * the rail (the terminal's side), against its own minimum. Only in a row or column that holds the terminal; null elsewhere
+ * (a plain split has no room to trade with), and when nothing moves.
+ */
+function railNeighbourSizes(node, split, i, delta, open) {
+  const o = open(i) ? i : (open(i - 1) ? i - 1 : -1);
+  if (o < 0 || !hasTerm(node) || hasTerm(node.kids[o]) || !isNumber(delta)) return null;
+  const s = node.kids.findIndex(hasTerm);
+  if (split.px[o] < split.min[o]) return null;
+  const grow = o === i ? -delta : delta;                 // right/down shrinks the kid after the divider, grows the one before
+  const d = Math.round(Math.min(Math.max(0, split.px[s] - split.min[s]), Math.max(split.min[o] - split.px[o], grow)));
+  if (d === 0) return null;
+  return node.kids.map((k, j) => (j === o ? split.px[o] + d : (hasTerm(k) ? split.px[j] : node.sizes[j])));
 }
 
 /**
@@ -185,8 +422,9 @@ function layoutSaved(answer) { return isObject(answer); }
  * menu is how a float is hidden, and how it comes back (to its own rectangle).
  */
 function menuRows(layout, tabs) {
-  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden]);
-  return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id) }));
+  const railed = Array.isArray(layout.rail) ? layout.rail : [];
+  const placed = new Set([...treeApi.allGroups(layout).flatMap(g => g.tabs), ...layout.hidden, ...railed]);
+  return tabs.filter(t => placed.has(t.id)).map(t => ({ id: t.id, label: t.label, shown: !layout.hidden.includes(t.id), railed: railed.includes(t.id) }));
 }
 
 /**
@@ -271,6 +509,26 @@ function applyTabs(doc, nav, tabs) {
   }
 }
 
+// The Pin / Pinned button at the end of a tab bar (BACKLOG #85), for the module in `spec` ({ module, pinned }), or none. It is no
+// tab (`data-pin`, never `data-module`), so the tab handlers and the focus search never meet it, and it is made once and kept
+// across renders; a bar rebuilt around it has lost it, and it is made again.
+function syncPin(doc, nav, spec) {
+  let btn = nav.querySelector('.dpin');
+  if (!spec) { if (btn) btn.remove(); return; }
+  if (!btn) {
+    btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'dpin';
+  }
+  if (btn.parentNode !== nav || nav.children[nav.children.length - 1] !== btn) nav.appendChild(btn);
+  btn.dataset.pin = spec.module;
+  btn.textContent = spec.pinned ? 'Pinned' : 'Pin';
+  btn.setAttribute('aria-pressed', spec.pinned ? 'true' : 'false');
+  btn.title = spec.pinned
+    ? 'Pinned: docked beside the terminal. Press to unpin it to the rail, where it slides open on hover'
+    : 'Pin it: dock this panel beside the terminal and keep it open';
+}
+
 // The module whose tab or rail button is `el` (what holds keyboard focus), or null.
 function moduleOfButton(el) {
   const holder = el && el.parentNode;
@@ -281,11 +539,12 @@ function moduleOfButton(el) {
 /**
  * Copy a plan onto the page. `doc` holds `#dock` (with `#termwrap`, `#dock-floats`
  * and `#dock-overlay` in it), the `.panel[data-panel=…]` blocks and the
- * `#panel-store` that keeps panels no group is showing.
+ * `#panel-store` that keeps panels no group is showing. `leanKeeps` (leanDisplay.LEAN_KEEPS) names the panels lean mode leaves drawn: a group showing one gets data-lean-keep.
  */
-function applyBoxes(plan, doc) {
+function applyBoxes(plan, doc, leanKeeps) {
   const held = doc.activeElement;
   const heldModule = moduleOfButton(held);
+  const heldInPeek = heldModule !== null && !!held.parentNode.parentNode && held.parentNode.parentNode.classList.contains('dpeek');
   const dock = doc.getElementById('dock');
   const store = doc.getElementById('panel-store');
   const overlay = doc.getElementById('dock-overlay');
@@ -312,14 +571,24 @@ function applyBoxes(plan, doc) {
   const floatPool = syncPool(layer, ':scope > .dgroup', floatBoxes, b => b.id, makeGroup, null);
   const elOfBox = b => treePool.elOf.get(b) || floatPool.elOf.get(b);
   const gutters = plan.boxes.filter(b => b.kind === 'gutter');
-  const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, () => mk('div', 'dgutter'), overlay);
+  // A divider can be reached and moved with the arrow keys (D4): a separator, in the tab order.
+  const makeGutter = () => {
+    const el = mk('div', 'dgutter');
+    el.setAttribute('role', 'separator');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', 'Resize panels: the arrow keys move this divider');
+    return el;
+  };
+  const gutterPool = syncPool(dock, ':scope > .dgutter', gutters, b => `${b.path.join('.')}/${b.i}`, makeGutter, overlay);
   const rails = plan.boxes.filter(b => b.kind === 'rail');
-  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.modules.join(','), () => mk('div', 'drail'), overlay);
+  const railPool = syncPool(dock, ':scope > .drail', rails, b => b.id || b.modules.join(','), () => mk('div', 'drail'), overlay);
 
   let floatsDrawn = 0;
   for (const b of groupBoxes) {
     const el = elOfBox(b);
     el.dataset.shape = b.shape;
+    // The group shows a panel lean mode keeps (leanDisplay.LEAN_KEEPS, PR #200): the page's lean CSS leaves a marked box drawn.
+    if (Array.isArray(leanKeeps) && b.panel !== null && leanKeeps.includes(b.panel)) el.dataset.leanKeep = '1'; else delete el.dataset.leanKeep;
     setRect(el, b.rect);
     // Floats come in stacking order, so the draw order IS the order: its rank inside the layer (0 = lowest). The
     // elements are never re-appended to raise one: a re-append resets the panel's scroll and drops focus from a
@@ -329,12 +598,13 @@ function applyBoxes(plan, doc) {
     el.style.zIndex = isFloat ? String(floatsDrawn++) : '';
     const grip = el.querySelector('.dfloat-grip');
     if (isFloat && !grip) {
-      // Pointer-only until D4's keyboard work (move and resize without a mouse): so it is no control for assistive tech.
+      // Pointer-only (a float's size by keyboard is not built; the tab's Move re-docks it from the keyboard): so it is no control for assistive tech.
       const g = mk('div', 'dfloat-grip');
       g.setAttribute('aria-hidden', 'true');
       el.appendChild(g);
     } else if (!isFloat && grip) grip.remove();
     applyTabs(doc, el.querySelector('.zone-tabs'), b.tabs);
+    syncPin(doc, el.querySelector('.zone-tabs'), b.panel ? { module: b.panel, pinned: true } : null);       // Pinned unpins the panel the group shows
     const holder = el.querySelector('.zone-panels');
     if (b.panel !== null) {
       const p = doc.querySelector(`.panel[data-panel="${b.panel}"]`);
@@ -346,11 +616,20 @@ function applyBoxes(plan, doc) {
     el.dataset.path = b.path.join('.');
     el.dataset.i = String(b.i);
     el.dataset.dir = b.dir;
+    el.setAttribute('aria-orientation', b.dir === 'row' ? 'vertical' : 'horizontal');     // a row's divider is a vertical bar
+    // A window splitter says where it stands: the pane before it, its least, and the most the two panes can give it.
+    const sp = plan.splits.find(s => s.path.join('.') === b.path.join('.'));
+    if (sp && isNumber(sp.px[b.i - 1]) && isNumber(sp.px[b.i]) && isNumber(sp.min[b.i - 1]) && isNumber(sp.min[b.i])) {
+      el.setAttribute('aria-valuenow', String(sp.px[b.i - 1]));
+      el.setAttribute('aria-valuemin', String(sp.min[b.i - 1]));
+      el.setAttribute('aria-valuemax', String(sp.px[b.i - 1] + sp.px[b.i] - sp.min[b.i]));
+    }
     setRect(el, b.rect);
   }
   for (const b of rails) {
     const el = railPool.elOf.get(b);
     el.dataset.dir = b.dir;
+    if (b.id) el.dataset.rail = b.id; else delete el.dataset.rail;      // the dock's own rail (#85): its tabs open on hover
     setRect(el, b.rect);
     const sig = b.modules.join(',');
     if (el.dataset.sig !== sig) {
@@ -361,8 +640,65 @@ function applyBoxes(plan, doc) {
         btn.type = 'button';
         btn.dataset.module = t.id;
         btn.title = t.title;
-        btn.textContent = t.label;
+        const icon = mk('span', 'rail-icon-box');
+        icon.innerHTML = iconsApi.svgFor(t.id);               // constant vendored markup (app/rail-icons.js), never user data; aria-hidden inside
+        const name = mk('span', 'rail-name');
+        name.textContent = t.label;
+        btn.setAttribute('aria-label', t.label);              // the icon is decoration: the label alone names the button
+        btn.append(icon, name);
+        btn.setAttribute('aria-haspopup', 'true');
         el.appendChild(btn);
+      }
+    }
+    el.dataset.room = String(b.dir === 'v' ? nameRoom(b.rect.width) : b.rect.width);      // from the rectangle the plan gave, not from the page
+    fitRailNames(el, doc);
+    // Which button has its panel open over the terminal moves without rebuilding the buttons (focus stays on the one pressed).
+    for (const btn of el.children) btn.setAttribute('aria-expanded', plan.peek && plan.peek.module === btn.dataset.module ? 'true' : 'false');
+  }
+
+  // A rail's panel opened over the terminal (D4): one element in the floats' layer, last, so it is above them. It is a
+  // .zone like a group so every panel's own styles apply, and not a .dgroup, so no pool mistakes it for one.
+  let popover = layer.querySelector(':scope > .dpeek');
+  if (plan.peek) {
+    if (!popover) {
+      popover = mk('aside', 'zone dpeek');
+      popover.append(mk('nav', 'zone-tabs'), mk('div', 'zone-panels'));
+      layer.appendChild(popover);
+    }
+    delete popover.dataset.closing;                       // opened again while it was sliding out: it stays
+    popover.dataset.module = plan.peek.module;
+    popover.setAttribute('role', 'group');
+    popover.setAttribute('aria-label', `${(plan.peek.tabs.find(t => t.on) || { label: plan.peek.module }).label} panel, opened from its rail`);
+    popover.dataset.shape = plan.peek.shape;
+    popover.dataset.dir = plan.peek.dir;
+    setRect(popover, plan.peek.rect);
+    popover.dataset.from = plan.peek.from;
+    applyTabs(doc, popover.querySelector('.zone-tabs'), plan.peek.tabs);
+    syncPin(doc, popover.querySelector('.zone-tabs'), plan.peek.pin ? { module: plan.peek.module, pinned: false } : null);
+    const holder = popover.querySelector('.zone-panels');
+    const p = doc.querySelector(`.panel[data-panel="${plan.peek.module}"]`);
+    if (p && p.parentNode !== holder) holder.appendChild(p);
+  }
+
+  // A panel closing slides back out (BACKLOG #85): the popover stays, marked, with its panel in it and drawn, until the slide has
+  // run; then the panel goes to the store. Under reduced motion (or a page that cannot say) it closes at once, as before.
+  let closingPanel = null;
+  let closeNow = false;
+  if (popover && !plan.peek) {
+    const win = doc.defaultView;
+    const motion = !!win && typeof win.matchMedia === 'function' && typeof win.setTimeout === 'function'
+      && !win.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (!motion) closeNow = true;
+    else {
+      closingPanel = popover.dataset.module;
+      if (!popover.dataset.closing) {
+        popover.dataset.closing = '1';
+        const el = popover;
+        win.setTimeout(() => {
+          if (!el.dataset.closing) return;                // opened again meanwhile
+          for (const p of el.querySelectorAll('.panel[data-panel]')) { p.classList.remove('on'); store.appendChild(p); }
+          el.remove();
+        }, PEEK_SLIDE_MS + 40);
       }
     }
   }
@@ -370,23 +706,30 @@ function applyBoxes(plan, doc) {
   // Panels no group is showing wait in the store; that includes every panel of a group about to be removed.
   const showing = new Set(plan.shown);
   for (const p of doc.querySelectorAll('.panel[data-panel]')) {
-    const on = showing.has(p.dataset.panel);
+    const on = showing.has(p.dataset.panel) || p.dataset.panel === closingPanel;
     p.classList.toggle('on', on);
     if (!on && store && p.parentNode !== store) store.appendChild(p);
   }
-  for (const el of [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale]) el.remove();
+  const stale = [...treePool.stale, ...floatPool.stale, ...gutterPool.stale, ...railPool.stale];
+  if (closeNow) stale.push(popover);
+  for (const el of stale) el.remove();
   // A redraw that replaced the element holding focus (a group folding to a rail or back, a tab bar rebuilt)
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
   // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
-  if (heldModule !== null && held.isConnected === false) {
-    const next = [...dock.querySelectorAll(`button[data-module="${heldModule}"]`)]
+  if (heldModule !== null && held.isConnected === false && heldInPeek && plan.peek && popover) {
+    // The popover shows one tab, so hovering another rail tab rebuilds its bar around another module: the keyboard follows to it.
+    const bar = popover.querySelector('.zone-tabs');
+    const tab = [...bar.querySelectorAll('button[data-module]')].find(b => b.dataset.module === plan.peek.module);
+    if (tab) tab.focus();
+  } else if (heldModule !== null && held.isConnected === false) {
+    const next =[...dock.querySelectorAll(`button[data-module="${heldModule}"]`)]
       .find(b => b.parentNode.classList.contains('zone-tabs') || b.parentNode.classList.contains('drail'));
     if (next) next.focus();
   }
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

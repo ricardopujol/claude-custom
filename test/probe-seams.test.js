@@ -11,7 +11,7 @@ const { readSeams, announce, fixtureReader, SEAMS } = require('../host/probe-sea
 const { parseOpenPrs } = require('../host/open-prs');
 
 test('readSeams: unset in real use is no seam at all', () => {
-  assert.deepStrictEqual(readSeams({}), { openPrsFixture: null, projectsDir: null, reviewsDir: null, claudeHome: null, ollamaUrl: null, summaryDir: null, summaryPower: null, indexingJournal: null, active: [] });
+  assert.deepStrictEqual(readSeams({}), { openPrsFixture: null, projectsDir: null, reviewsDir: null, claudeHome: null, ollamaUrl: null, summaryDir: null, summaryPower: null, indexingJournal: null, askRecord: null, askIndexDir: null, uiStateDir: null, gh: null, active: [] });
   assert.deepStrictEqual(readSeams({ CLAUDE_CUSTOM_REVIEWS_DIR: '' }).active, [], 'an empty value is unset');
 });
 
@@ -21,7 +21,8 @@ test('readSeams: each seam, and which are active', () => {
   assert.strictEqual(s.reviewsDir, 'C:/p/reviews');
   assert.strictEqual(s.projectsDir, null);
   assert.deepStrictEqual(s.active, ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_REVIEWS_DIR']);
-  assert.deepStrictEqual(SEAMS, ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME', 'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_INDEXING_JOURNAL']);
+  assert.deepStrictEqual(SEAMS, ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME', 'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_INDEXING_JOURNAL', 'CLAUDE_CUSTOM_ASK_RECORD', 'CLAUDE_CUSTOM_ASK_INDEX_DIR', 'CLAUDE_CUSTOM_UI_STATE_DIR', 'CLAUDE_CUSTOM_GH']);
+  assert.strictEqual(readSeams({ CLAUDE_CUSTOM_UI_STATE_DIR: 'C:/p/ui' }).uiStateDir, 'C:/p/ui', 'a probe keeps the UI records (fonts, layouts) out of the real state folder');
   assert.strictEqual(readSeams({ CLAUDE_CUSTOM_CLAUDE_HOME: 'C:/p/claude' }).claudeHome, 'C:/p/claude');
   // the where-are-we summary (verify/probe-where-summary.js): a fake Ollama, and a throwaway summaries/slot folder
   const sm = readSeams({ CLAUDE_CUSTOM_OLLAMA_URL: 'http://127.0.0.1:5555', CLAUDE_CUSTOM_SUMMARY_DIR: 'C:/p/sum' });

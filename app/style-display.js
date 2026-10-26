@@ -24,10 +24,12 @@
 
 const STYLE_SECTIONS = [
   { id: 'colours', title: 'Colours' },
+  { id: 'fonts', title: 'Fonts' },
   { id: 'background', title: 'Background' },
   { id: 'inactive', title: 'Inactive windows' },
   { id: 'avatars', title: 'Agent pictures' },
   { id: 'window', title: 'Window' },
+  { id: 'tray', title: 'System tray' },
   { id: 'panel', title: "Claude's panel" },
 ];
 
@@ -65,9 +67,20 @@ function colourView(set, painted, fallback, resetTitle) {
   return { value: paintedHex || fallback, isSet: false, resetTitle };
 }
 
+// The CLI takes its theme when the host STARTS it, and a window reopening only reattaches to the running one.
+const MODE_NOTE = "Claude's colours switch the next time this session restarts";
+
+// Dark or light, on either side of the comparison: a never-chosen mode, 'auto' and the dark families read as dark,
+// and 'light-ansi' / 'light-daltonized' as light (only the light or dark half is compared, not the family).
+const modeOf = (v) => (typeof v === 'string' && v.startsWith('light') ? 'light' : 'dark');
+
 function coloursSectionView(state) {
   const s = state || {};
+  const mode = modeOf(s.mode);
   return {
+    mode,
+    // The CLI takes its theme when it starts, so while the look and the running CLI disagree the person is told.
+    cliNote: mode === modeOf(s.cliTheme) ? null : MODE_NOTE,
     known: !!state && (typeof s.baseBg === 'string' || typeof s.appColor === 'string'),
     app: colourView(s.appColor, s.baseBg, FALLBACK_BG, THEME_RESET),
     text: colourView(s.textColor, s.baseText, FALLBACK_TEXT, THEME_RESET),
@@ -113,9 +126,14 @@ function describeSource(state) {
 
 function backgroundSectionView(state) {
   const isOverride = !!(state && state.source === 'override');
+  // #92: Plain colour paints the project's app colour instead of the picture (the picture's file stays on disk).
+  const plainColour = !!(state && state.backgroundMode === 'colour');
   const note = (state && typeof state.videoError === 'string' && state.videoError) || null;
   return {
-    description: describeSource(state),
+    description: plainColour ? 'Plain colour: your app colour, no picture' : describeSource(state),
+    plainColour,
+    // The darkness slider needs something to darken: your own picture, or the plain colour.
+    showVeil: isOverride || plainColour,
     // Only meaningful once there IS an override -- resetting a generated
     // background to itself is not an action, so the button starts disabled.
     isOverride,
@@ -124,8 +142,10 @@ function backgroundSectionView(state) {
     note,
     // "Match colours to this background" needs the person's own picture, and a
     // frame to take colours from -- a video that won't play has none.
-    canMatch: isOverride && note === null,
+    canMatch: isOverride && note === null && !plainColour,
     darknessPercent: toPercent(state && state.darkness),
+    // In light mode the veil over the picture is light, so the slider is how bright it gets.
+    veilLabel: modeOf(state && state.mode) === 'light' ? 'Brightness' : 'Darkness',
     error: errorOf(state),
   };
 }
@@ -194,11 +214,39 @@ function windowSectionView(state) {
  */
 function panelSectionView(state) {
   const mcp = state && typeof state.mcp === 'boolean' ? state.mcp : null;
+  // BACKLOG #119 A2: the claude-custom mod's switch, in the same section: also a spawn flag, also read when the next session starts.
+  const mod = state && typeof state.mod === 'boolean' ? state.mod : null;
   return {
+    mod,
+    modDescription: mod === null ? 'reading…'
+      : mod ? "claude-custom's mod reads the CLI's own quota, context and agent states and shows them here (it never changes what Claude does). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
+        : "claude-custom's mod is not loaded: quota, context and agent states come from the older sources. A change applies when claude-custom next starts this tab's session; one already running keeps what it has.",
     mcp,
     mcpDescription: mcp === null ? 'reading…'
       : mcp ? "Claude can build things in its panel (it's offered to the CLI as a tool). A change applies when claude-custom next starts this tab's session; one already running keeps what it has."
         : "Claude's panel is not offered to the CLI: it can't build anything there. A change applies when claude-custom next starts this tab's session; one already running keeps what it has.",
+  };
+}
+
+/**
+ * The tray icon's two Style switches (BACKLOG #119 A8; app/tray-settings.js owns them, "start minimised" lives in the tray's
+ * own menu). Strict like the window toggles: only a real boolean is known, anything else is null, "reading…".
+ */
+function traySectionView(state) {
+  const bool = (v) => (typeof v === 'boolean' ? v : null);
+  const trayIcon = bool(state && state.trayIcon);
+  const minimiseOnClose = bool(state && state.minimiseOnClose);
+  return {
+    trayIcon,
+    minimiseOnClose,
+    trayDescription: trayIcon === null ? 'reading…'
+      : trayIcon ? 'An icon in the notification area shows how many sessions need you. Click it to go to the one that has waited longest; right-click for the rest.'
+        : 'No tray icon. A toast and the window border still tell you when a session needs you.',
+    closeDescription: minimiseOnClose === null ? 'reading…'
+      : minimiseOnClose ? (trayIcon === false
+        ? 'Closing the window closes it, because this needs the tray icon: with the icon off there would be no way back to a hidden window.'
+        : 'Closing the window hides it to the tray; the sessions keep running and the icon brings it back. Quit from the tray menu.')
+        : 'Closing the window closes it, as it always did. The sessions keep running.',
   };
 }
 
@@ -208,6 +256,7 @@ const SECTION_VIEWS = {
   inactive: inactiveSectionView,
   avatars: avatarsSectionView,
   window: windowSectionView,
+  tray: traySectionView,
   panel: panelSectionView,
 };
 
@@ -233,11 +282,12 @@ const ASKABLE = ['colours', 'background'];
 function emptyStyleState() {
   return {
     colours: null,
-    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null },
+    background: { source: null, kind: null, setAt: null, error: null, videoError: null, darkness: null, mode: null, backgroundMode: null },
     inactive: { dim: null },
     avatars: { global: null, imagesEnabled: null, error: null },
     window: { statusInHeader: null, framelessWindow: null },
-    panel: { mcp: null },
+    tray: { trayIcon: null, minimiseOnClose: null },
+    panel: { mcp: null, mod: null },
   };
 }
 
@@ -281,11 +331,16 @@ function reduceStyle(prev, msg) {
       appColor: look.appColor, textColor: look.textColor,
       accentColor: look.accentColor, secondaryColor: look.secondaryColor,
       baseBg: chrome.bg, baseText: chrome.text, baseAccent: chrome.accent, baseDim: chrome.dim,
+      mode: look.mode,
+      // What the running CLI was started with. Only a hello says; a style change is not a relaunch, so a
+      // message without it keeps what the panel already knew.
+      cliTheme: typeof style.cliTheme === 'string' || style.cliTheme === null
+        ? style.cliTheme : (state.colours && state.colours.cliTheme),
       error: keep('colours'),
     },
     background: {
       source: style.source || 'generated', kind: style.kind === 'video' ? 'video' : 'image', setAt: style.setAt || null,
-      darkness: look.darkness, error: keep('background'),
+      darkness: look.darkness, mode: look.mode, backgroundMode: look.backgroundMode === 'colour' ? 'colour' : null, error: keep('background'),
       // The note is about ONE file: the same file re-announced (a darkness change) is not reloaded, so
       // it stands; a different file, kind or a reset is tried afresh.
       videoError: sameBackground(state.background, style) ? (state.background.videoError || null) : null,
@@ -293,6 +348,7 @@ function reduceStyle(prev, msg) {
     inactive: state.inactive,
     avatars: state.avatars || emptyStyleState().avatars,
     window: state.window || emptyStyleState().window,
+    tray: state.tray || emptyStyleState().tray,           // main's, never the host's: a style message must not lose it
     panel: state.panel || emptyStyleState().panel,       // the host never reports it: a style message must not lose it
   };
 }
@@ -352,11 +408,27 @@ function reduceChromeSettings(prev, settings) {
   return { ...state, window: { statusInHeader: pick('statusInHeader'), framelessWindow: pick('framelessWindow') } };
 }
 
+/** Records main's tray switches; only real booleans land, per key (start-minimised is the tray menu's, not shown here). */
+function reduceTraySettings(prev, settings) {
+  const state = prev || emptyStyleState();
+  if (!settings || typeof settings !== 'object') return state;
+  const cur = state.tray || emptyStyleState().tray;
+  const pick = (k) => (typeof settings[k] === 'boolean' ? settings[k] : cur[k]);
+  return { ...state, tray: { trayIcon: pick('trayIcon'), minimiseOnClose: pick('minimiseOnClose') } };
+}
+
 /** Records the panel's MCP switch as main reports it; only a real boolean lands (null = main couldn't tell: stay unknown). */
 function reduceCanvasMcp(prev, value) {
   const state = prev || emptyStyleState();
   if (typeof value !== 'boolean') return state;
   return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mcp: value } };
+}
+
+/** Records the mod's switch as main reports it; only a real boolean lands (null = main couldn't tell: stay unknown). */
+function reduceCcMod(prev, value) {
+  const state = prev || emptyStyleState();
+  if (typeof value !== 'boolean') return state;
+  return { ...state, panel: { ...(state.panel || emptyStyleState().panel), mod: value } };
 }
 
 // How long to wait before asking main again for the panel switch after a read that gave no answer (PR #125 Miguel M3): 1 s, doubling, at most
@@ -370,7 +442,8 @@ function canvasMcpRetryDelay(attempt) {
 const API = {
   reduceStyle, emptyStyleState, styleDisplay, STYLE_SECTIONS, formatSetAt, describeSource, backgroundSectionView, toPercent,
   avatarsSectionView, reduceAvatars, reduceImagesEnabled, windowSectionView, reduceChromeSettings, reduceVideoError,
-  panelSectionView, reduceCanvasMcp, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
+  traySectionView, reduceTraySettings,
+  coloursSectionView, panelSectionView, reduceCanvasMcp, reduceCcMod, canvasMcpRetryDelay, CANVAS_MCP_MAX_TRIES,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

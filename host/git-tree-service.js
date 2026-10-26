@@ -24,8 +24,10 @@ const { buildTree } = require('./git-tree');
 const { totals, emptyLedger } = require('./branch-ledger');
 const { lookDirState, ensureLookDir } = require('./style');
 const { repoUrl, prUrl, remoteHost } = require('./pr-url');
+const { issueForBranch, issueNumberOfBranch } = require('./issues');
 
 const PR_TTL_MS = 60 * 1000;
+const ISSUES_BOUND_MS = 2000;
 const LEDGER_FILE = 'branch-ledger.json';
 
 /**
@@ -89,6 +91,36 @@ function createGitTreeService(d) {
     }
   }
 
+  // BACKLOG #119 A6: the open issues, asked only when some branch is named like one the + form made from an issue, and
+  // alongside the PR read, never after it. Optional like the PR's page: null (unknown) draws no issue link, never a failed
+  // tree -- and a gh that hangs is given up on after ISSUES_BOUND_MS, so it can't hold the frame the panel waits for
+  // (PR #202 Dexter 4). The service remembers a failure for 30 s, so a failing gh isn't re-run on every ask.
+  async function openIssues(history) {
+    if (typeof d.readIssues !== 'function') return null;
+    const names = [...(history.merges || []).map(m => m && m.branch), ...(history.lanes || []).map(u => u && u.name)];
+    if (!names.some(n => issueNumberOfBranch(n) !== null)) return null;
+    let timer;
+    const bound = new Promise((resolve) => { timer = setTimeout(() => resolve(null), d.issuesTimeoutMs || ISSUES_BOUND_MS); });
+    try {
+      const list = await Promise.race([Promise.resolve().then(() => d.readIssues(d.cwd)), bound]);
+      return Array.isArray(list) ? list : null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // `{ number, title, url }` for a branch: the link the lane was made with (kept by the window that made it, so it survives
+  // the issue closing; checked against the branch and its folder), else the open list's issue the branch name says.
+  function issueOf(name, folder, list) {
+    let i = null;
+    try { i = d.readLink ? d.readLink(name, folder || null) : null; } catch { i = null; }
+    if (!i || typeof i !== 'object' || Array.isArray(i) || !Number.isInteger(i.number) || i.number < 1) i = issueForBranch(name, list);
+    if (!i || !Number.isInteger(i.number)) return null;
+    return { number: i.number, title: typeof i.title === 'string' ? i.title : null, url: typeof i.url === 'string' ? i.url : null };
+  }
+
   function reviewsOf(name) {
     try { return d.readReviews ? d.readReviews(name) || [] : []; } catch { return []; }
   }
@@ -96,13 +128,13 @@ function createGitTreeService(d) {
   async function compute() {
     const history = await d.readHistory(d.cwd);
     if (!history.ok) return { ok: false, error: history.error };
-    const [ledgerOk, openPrList, o] = await Promise.all([refreshLedger(ledgerWorktrees(history)).catch(() => false), openPrs(), origin()]);
+    const [ledgerOk, openPrList, o, issueList] = await Promise.all([refreshLedger(ledgerWorktrees(history)).catch(() => false), openPrs(), origin(), openIssues(history)]);
     const repo = o.repo;
     const tree = buildTree({ history, totals: ledger ? totals(ledger) : {}, openPrs: openPrList,
       projectRoot: d.projectRoot, current: d.currentBranch(d.cwd) });
     try { if (d.readReviews && d.readReviews.refresh) d.readReviews.refresh(); } catch { /* the reader lists again next time */ }
-    const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name) }));
-    return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk };
+    const branches = tree.branches.map(b => ({ ...b, prUrl: prUrl(repo, b.pr), reviews: reviewsOf(b.name), issue: issueOf(b.name, b.folder, issueList) }));
+    return { ...tree, branches, repoUrl: repo, originHost: o.host, ledgerOk, project: d.projectRoot };
   }
 
   function get() {

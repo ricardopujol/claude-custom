@@ -198,6 +198,9 @@ function createIndex({
       return { embedModel, builtAt: now(), files: [...byRel.values()].sort((a, b) => (a.rel < b.rel ? -1 : 1)) };
     };
 
+    // What is indexed so far can be searched while the build runs (PR #169 Dexter 3, design Round 7: questions work at once).
+    w.live = assemble;
+
     for (const t of todo) {
       let file = t.prev;
       if (!file) {
@@ -281,13 +284,15 @@ function createIndex({
       w.failedAt = now();
       w.progress = { state: w.data ? (w.partial ? 'partial' : 'ready') : 'failed', done: w.progress.done, total: w.progress.total };
       throw err;
-    }).finally(() => { w.running = null; });
+    }).finally(() => { w.running = null; w.live = null; });
     return w.running;
   }
 
   return {
     refresh,
     get: (wt) => world(wt).data,
+    /** The files indexed so far, searchable while a build runs (a first build or an interrupted one): { embedModel, builtAt, files } | the finished index | null. */
+    snapshot: (wt) => { const w = world(wt); return w.live ? w.live() : w.data; },
     load: async (wt) => { const w = world(wt); await load(wt, w); return w.data; },
     isRunning: (wt) => Boolean(world(wt).running),
     progress: (wt) => {

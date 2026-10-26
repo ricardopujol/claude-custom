@@ -21,6 +21,7 @@ const GLYPHS = {
 };
 // PR 3: a merged worktree (finishing, removing, kept), or one that failed to go.
 const BADGES = { merged: 'merged', warn: String.fromCodePoint(0x26a0) };
+const SIDE_TITLE = 'A side session: it starts in plan mode and has only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite. No Bash, PowerShell, Edit, Write or MCP, whatever mode it is switched to. It ends when this branch\'s tab closes.';
 const GLYPH_TITLES = {
   open: 'Second session in this worktree (lock overridden, not saved)',
   warn: 'No session lock: a second window on this worktree would not be stopped',
@@ -47,6 +48,7 @@ function paneFor(payload) {
   if (setup && setup.running === true) {
     return { text: `Setting up ${sel.label}…${nonEmpty(setup.line) ? ` ${setup.line}` : ''}`, retry: null };
   }
+  if (sel.briefing === true) return { text: `Writing the brief for ${sel.label}…`, retry: null };
   const create = objectOr(p.create, null);
   if (create && create.phase === 'running' && create.branch === sel.label) {
     return { text: `Creating ${sel.label}…`, retry: null };
@@ -97,6 +99,8 @@ function occupancyOf(o) {
     tags,
     more: Number.isInteger(o.more) && o.more > 0 ? o.more : 0,
     warn: o.warn === true,
+    // #81: only readers here (an agent of a read-only side session): shown, but nobody is WORKING in the folder.
+    readersOnly: o.readersOnly === true,
     lines: Array.isArray(o.lines) ? o.lines.filter(nonEmpty) : [],
   };
 }
@@ -112,6 +116,13 @@ function resourceWarnOf(w) {
   return { pct: Math.round(w.pct), level: w.level };
 }
 
+/** `#12 Fix the thing` for a tab's issue, or null: strict, so a malformed record draws nothing. */
+function issueLine(i) {
+  if (!i || typeof i !== 'object' || Array.isArray(i)) return null;
+  if (!Number.isInteger(i.number) || i.number < 1) return null;
+  return nonEmpty(i.title) ? `#${i.number} ${i.title}` : `#${i.number}`;
+}
+
 function paintTab(doc, entry, bridge) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
@@ -121,7 +132,9 @@ function paintTab(doc, entry, bridge) {
   if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
   // The hatched lower edge. It NEVER animates: movement on the strip means "needs you".
   const occ = occupancyOf(entry.occupancy);
-  if (occ) cls.push(occ.warn ? 'occupied occupied-warn' : 'occupied');
+  if (occ) cls.push(occ.readersOnly ? 'reading' : (occ.warn ? 'occupied occupied-warn' : 'occupied'));
+  // #81: a branch tab's read-only side session: a small tab, no close button of its own (it ends with its branch tab).
+  if (entry.side === true) cls.push('side');
   // Backlog #52: a /bedtime night turns the tab deep blue. Distinct from #31's pulse, which still wins while the tab
   // needs you (the pulse animates the background; the night is a still colour).
   const night = entry.night === true;
@@ -130,14 +143,22 @@ function paintTab(doc, entry, bridge) {
   tab.dataset.key = entry.key;
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
+  if (entry.side === true) tab.title = [tab.title, SIDE_TITLE].join('\n');
+  // #119 A6: the GitHub issue this lane was started from (right-click: Open issue).
+  const issue = issueLine(entry.issue);
+  if (issue) tab.title = [tab.title, issue].join('\n');
   // One line per agent under the name, from the model (it has the minutes and the two-writers line).
   if (occ && occ.lines.length) tab.title = [tab.title, ...occ.lines].join('\n');
   // Backlog #39: the local model's "where are we", under every other line. The shell worked the lines out
   // (app/summary-display.js hoverLines, labelled as a local model's); this only draws them.
   const said = Array.isArray(entry.summaryLines) ? entry.summaryLines.filter(nonEmpty) : [];
   if (said.length) tab.title = [tab.title, ...said].join('\n');
-  if (entry.working) tab.appendChild(el(doc, 'span', 'dot working')).title = 'Working';
-  if (entry.needsInput) tab.appendChild(el(doc, 'span', 'dot needs')).title = 'Needs your input';
+  // The dots read the CLI's own state when it reports one (OSC 7501, app/program-status-display.js); without it they are
+  // exactly what they always were. The kind and message ride in the tooltip as text, never in the tab's chrome.
+  const ps = typeof module !== 'undefined' && module.exports ? require('./program-status-display') : root.programStatusDisplay;
+  for (const d of ps.stripDots({ working: entry.working, needsInput: entry.needsInput, program: entry.program })) {
+    tab.appendChild(el(doc, 'span', `dot ${d.cls}`)).title = d.title;
+  }
   // #40: the person's own mark on the tab; its meaning on hover.
   const mark = entry.mark;
   if (mark && typeof mark === 'object' && nonEmpty(mark.emoji)) {
@@ -244,12 +265,16 @@ function paintPlus(doc, payload, bridge) {
   const was = form.dataset.phase || '';
   form.hidden = !create;
   input.disabled = phase === 'running';
-  if (phase === 'input' && was !== 'input') { input.value = ''; input.focus(); }
+  const fresh = phase === 'input' && was !== 'input';
+  if (fresh) { input.value = ''; input.focus(); }
   if (phase === 'failed' && was === 'running') input.focus();
   form.dataset.phase = phase;
   form.onsubmit = (ev) => {
     if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
-    bridge.create(String(input.value));
+    // #119 A6: a branch picked from an issue carries the issue's number, so main writes that issue's brief. Only while the
+    // field still holds exactly the branch the pick filled in: any edit makes it somebody else's branch (PR #202 Dexter 2).
+    if (issuePick.number !== null && String(input.value).trim() === issuePick.branch) bridge.create(String(input.value), issuePick.number);
+    else bridge.create(String(input.value));
   };
   input.onkeydown = (ev) => {
     if (!ev || ev.key !== 'Escape') return;
@@ -258,6 +283,129 @@ function paintPlus(doc, payload, bridge) {
   };
   const cancel = doc.getElementById('create-cancel');
   if (cancel) cancel.onclick = () => bridge.cancelCreate();
+  paintIssues(doc, { create, phase, fresh, input }, bridge);
+}
+
+// --- BACKLOG #119 A6: start a lane from a GitHub issue -----------------------------------------
+// The form's second way to start. Main answers every question (host/issues.js: the list, the filter, the branch each
+// issue makes); this draws it. The list is a panel over the area under the strip: main hides the selected tab's page
+// while the shell's `create.picker` is true, because a tab's page is a native view that would cover it.
+// One strip document per process, so these are singletons (hence the `drawnFor` guard below for a test's second document).
+const issuePick = { number: null, branch: null };                    // the issue picked, and the exact branch the pick filled in
+const issueUi = { seq: 0, reply: null, query: '', wasOpen: false, drawn: undefined, drawnFor: null };   // the last answer, and which ask it answers
+
+function issueRowNode(doc, row, onPick) {
+  const b = doc.createElement('button');
+  b.type = 'button';
+  b.className = 'issue-row';
+  const parts = [`#${row.number}`, String(row.title)];
+  const num = doc.createElement('span');
+  num.className = 'issue-num';
+  num.textContent = parts[0];
+  const title = doc.createElement('span');
+  title.className = 'issue-title';
+  title.textContent = parts[1];
+  b.appendChild(num);
+  b.appendChild(title);
+  for (const l of Array.isArray(row.labels) ? row.labels : []) {
+    const chip = doc.createElement('span');
+    chip.className = 'issue-label';
+    chip.textContent = String(l);
+    b.appendChild(chip);
+  }
+  const branch = doc.createElement('span');
+  branch.className = 'issue-branch';
+  branch.textContent = String(row.branch);
+  b.appendChild(branch);
+  b.title = `${row.branch}`;
+  b.onclick = () => onPick(row);
+  return b;
+}
+
+/** What the row and the panel say for main's last answer. Pure; exported for the test. */
+function issuesView(reply) {
+  if (!reply || typeof reply !== 'object') return { button: { text: 'From an issue ▾', enabled: true, dim: false, title: 'Pick one of this repo’s open GitHub issues' }, note: 'Loading issues…', rows: [] };
+  if (reply.ok !== true) {
+    const text = nonEmpty(reply.text) ? reply.text : 'Couldn’t read issues';
+    return { button: { text, enabled: false, dim: true, title: text }, note: text, rows: [] };
+  }
+  const rows = Array.isArray(reply.rows) ? reply.rows : [];
+  const total = Number.isInteger(reply.total) ? reply.total : rows.length;
+  let note = '';
+  if (rows.length === 0) note = total === 0 ? 'No open issues.' : 'No issue matches.';
+  return {
+    button: { text: 'From an issue ▾', enabled: true, dim: false, title: `${total} open issue${total === 1 ? '' : 's'}` },
+    note, rows,
+  };
+}
+
+function paintIssues(doc, { create, phase, fresh, input }, bridge) {
+  const btn = doc.getElementById('create-issues');
+  if (!btn || typeof bridge.issues !== 'function') return;
+  const panel = doc.getElementById('issues-panel');
+  const filter = doc.getElementById('issues-filter');
+  const list = doc.getElementById('issues-list');
+  const note = doc.getElementById('issues-note');
+  const open = !!create && create.picker === true;
+
+  const ask = (query, refresh) => {
+    const mine = ++issueUi.seq;
+    issueUi.query = query;
+    let asked;
+    try { asked = Promise.resolve(bridge.issues({ query, refresh })); } catch (err) { asked = Promise.reject(err); }
+    asked.then((r) => { if (mine === issueUi.seq) { issueUi.reply = r; draw(); } },
+      () => { if (mine === issueUi.seq) { issueUi.reply = { ok: false, text: 'Couldn’t read issues' }; draw(); } });
+  };
+  const closePicker = () => { if (typeof bridge.pickerClose === 'function') bridge.pickerClose(); input.focus(); };
+  const pick = (row) => {
+    input.value = String(row.branch);
+    issuePick.number = Number.isInteger(row.number) ? row.number : null;
+    issuePick.branch = String(row.branch);
+    closePicker();
+  };
+  function draw() {
+    const v = issuesView(issueUi.reply);
+    btn.textContent = v.button.text;
+    btn.disabled = !v.button.enabled || phase === 'running';
+    btn.title = v.button.title;
+    btn.className = v.button.dim ? 'dim' : '';
+    if (!panel) return;
+    // Rebuilt only for a new answer: every poll repaints, and a button replaced under a click would eat the click.
+    if (issueUi.drawn === issueUi.reply && issueUi.drawnFor === doc) return;
+    issueUi.drawn = issueUi.reply;
+    issueUi.drawnFor = doc;
+    if (list) list.replaceChildren(...v.rows.map(r => issueRowNode(doc, r, pick)));
+    if (note) { note.textContent = v.note; note.hidden = v.note === ''; }
+  }
+
+  // A fresh form: nothing carried over, and the repo's issues are read once now (refreshed on open) so the row
+  // already says whether a pick is possible.
+  if (fresh) {
+    issuePick.number = null;
+    issuePick.branch = null;
+    issueUi.reply = null;
+    ask('', true);
+  }
+  btn.onclick = () => { if (typeof bridge.pickerOpen === 'function') bridge.pickerOpen(); };
+  if (panel) {
+    panel.hidden = !open;
+    if (open && !issueUi.wasOpen) {
+      if (filter) { filter.value = ''; filter.focus(); }
+      ask('', false);
+    }
+    if (filter) {
+      filter.oninput = () => ask(String(filter.value), false);
+      filter.onkeydown = (ev) => {
+        if (!ev || ev.key !== 'Escape') return;
+        ev.preventDefault();
+        closePicker();
+      };
+    }
+    const close = doc.getElementById('issues-close');
+    if (close) close.onclick = closePicker;
+  }
+  issueUi.wasOpen = open;
+  draw();
 }
 
 /**
@@ -295,7 +443,61 @@ function paintAccent(doc, hex) {
   return true;
 }
 
-const api = { paneFor, alertFor, resourceWarnOf, paint, paintAccent, windowChrome, GLYPHS };
+/**
+ * Lean mode (BACKLOG #62): the ☾ Lean button while normal, and while lean the chip `☾ lean` (+ `bedtime HH:MM` when a
+ * night started it) with Back to normal. The state is main's (app/lean-state.js); this only draws it and sends the
+ * button's word. The body class stops the working dots' pulse (CSS in tab-strip.html); a tab that NEEDS you keeps its
+ * pulse, because a notification is not an animation to save. A missing state is normal: nothing says lean until main does.
+ */
+function paintLean(doc, state, bridge) {
+  const lean = typeof module !== 'undefined' && module.exports ? require('./lean-display') : root.leanDisplay;
+  const chip = lean.chip(state);
+  const btn = doc.getElementById('lean-btn');
+  const box = doc.getElementById('lean-chip');
+  if (doc.body && doc.body.classList) doc.body.classList.toggle('lean', chip !== null);
+  if (btn) { btn.hidden = chip !== null; btn.onclick = () => bridge.leanSet(true); }
+  if (!box) return;
+  box.hidden = chip === null;
+  const label = doc.getElementById('lean-chip-label');
+  const night = doc.getElementById('lean-chip-night');
+  const back = doc.getElementById('lean-back');
+  if (label) label.textContent = chip ? chip.label : '';
+  if (night) { night.textContent = chip && chip.night ? chip.night : ''; night.hidden = !(chip && chip.night); }
+  if (back) { back.textContent = chip ? chip.back : ''; back.onclick = () => bridge.leanSet(false); }
+}
+
+const LEAN_FACES_MAX = 6;
+
+/**
+ * The working agents' portraits next to the lean chip (BACKLOG #62, Ricardo's option C): 18 px round STILL images (app/lean-display.js
+ * stillNode), at most six then "+N", the agent's name on hover, only while lean, nothing at all when none work. `faces` is main's set
+ * for the whole window (app/lean-faces.js); the DOM is built with createElement and textContent, never innerHTML.
+ */
+function paintLeanFaces(doc, faces, on) {
+  const box = doc.getElementById('lean-faces');
+  if (!box) return;
+  const list = on === true && Array.isArray(faces) ? faces : [];
+  box.hidden = list.length === 0;
+  const lean = typeof module !== 'undefined' && module.exports ? require('./lean-display') : root.leanDisplay;
+  const pm = typeof module !== 'undefined' && module.exports ? require('./portrait-media-display') : root.portraitMedia;
+  const nodes = list.slice(0, LEAN_FACES_MAX).map((f) => {
+    const span = doc.createElement('span');
+    span.className = 'lean-face';
+    span.title = String(f.agent);
+    span.appendChild(lean.stillNode(doc, f, pm));
+    return span;
+  });
+  if (list.length > LEAN_FACES_MAX) {
+    const more = doc.createElement('span');
+    more.className = 'lean-more';
+    more.textContent = '+' + (list.length - LEAN_FACES_MAX);
+    more.title = `${list.length - LEAN_FACES_MAX} more working`;
+    nodes.push(more);
+  }
+  box.replaceChildren(...nodes);
+}
+
+const api = { paneFor, alertFor, resourceWarnOf, issuesView, issueLine, issuePick, paint, paintAccent, paintLean, paintLeanFaces, windowChrome, GLYPHS, LEAN_FACES_MAX };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
@@ -306,6 +508,24 @@ if (typeof module !== 'undefined' && module.exports) {
   }
   if (root.strip && typeof root.strip.onAccent === 'function') {
     root.strip.onAccent((hex) => paintAccent(root.document, hex));
+  }
+  if (root.strip && typeof root.strip.onLean === 'function') {
+    // the state on load; a push that already arrived is not undone by a slower answer
+    let pushed = false;
+    let faces = [];
+    let leanOn = false;
+    const take = (state) => {
+      paintLean(root.document, state, root.strip);
+      leanOn = root.leanDisplay.normalize(state).on;
+      paintLeanFaces(root.document, faces, leanOn);
+    };
+    root.strip.onLean((state) => { pushed = true; take(state); });
+    if (typeof root.strip.onLeanFaces === 'function') {
+      root.strip.onLeanFaces((list) => { faces = Array.isArray(list) ? list : []; paintLeanFaces(root.document, faces, leanOn); });
+    }
+    if (typeof root.strip.leanGet === 'function') {
+      Promise.resolve(root.strip.leanGet()).then((state) => { if (!pushed) take(state); }, () => {});
+    }
   }
   if (root.strip && typeof root.strip.onModel === 'function') {
     root.strip.onModel((payload) => paint(root.document, payload, root.strip));

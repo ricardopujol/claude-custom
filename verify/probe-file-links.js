@@ -37,6 +37,7 @@ if (!process.versions.electron) {
 }
 
 const { app, BrowserWindow, ipcMain } = require('electron');
+const { probeWindowOptions } = require('../host/probe-window');
 const fs = require('fs');
 const os = require('os');
 const fileLink = require('../app/file-link');
@@ -103,11 +104,11 @@ const bail = setTimeout(() => { console.error('TIMED OUT'); failed++; finish(); 
 
 app.on('ready', async () => {
   try {
-    const win = new BrowserWindow({
+    const win = new BrowserWindow(probeWindowOptions({
       width: 1100, height: 760, show: true,
       webPreferences: { contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
         preload: path.join(REPO, 'app', 'preload.js') },
-    });
+    }));
     win.webContents.on('console-message', (_e, level, message) => {
       if (level >= 3) console.log(`      [page error] ${String(message).slice(0, 200)}`);
     });

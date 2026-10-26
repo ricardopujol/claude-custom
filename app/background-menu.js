@@ -65,11 +65,14 @@ function menuModel(list, { now, tabsByPort = new Map(), projectRoot = null } = {
     const tabKey = row.own ? tabsByPort.get(row.port) : undefined;
     const here = tabKey !== undefined;
     const where = here ? 'open here' : windowsText(row.windows);
+    // #81: a side session is labelled as one. It is a tab of its branch's tab, never a window of its own (a window on it would be
+    // refused by the handshake), so Open only goes to its tab when it is one here.
+    const side = row.side === true;
     let open = null;
     if (here) open = { kind: 'select-tab', key: tabKey };
-    else if (row.own) open = { kind: 'window', port: row.port, cwd: row.cwd };
+    else if (row.own && !side) open = { kind: 'window', port: row.port, cwd: row.cwd };
     return {
-      label: [folderText(row.cwd), row.build, ageText(row.startedAt, now), where].join('  ·  '),
+      label: [folderText(row.cwd), ...(side ? ['side'] : []), row.build, ageText(row.startedAt, now), where].join('  ·  '),
       open,
       stop: !here && !(Number.isInteger(row.windows) && row.windows > 0),
       row,

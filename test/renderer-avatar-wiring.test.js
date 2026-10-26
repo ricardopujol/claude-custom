@@ -65,8 +65,11 @@ test('the face pencil sends the same portrait-set message a drop sends, and is n
   assert.doesNotMatch(handler, /stop(?:Immediate)?Propagation/);
   assert.doesNotMatch(SRC.slice(i, i + handler.length + 10), /\}, true\);/, 'registered without a capture flag');
   assert.match(body('function faceEditHtml'), /data-no-card-click/, 'the card-click contract: buttons marked no-card-click');
-  assert.match(handler, /type: 'portrait', action: 'set', agent, state, path/);
-  assert.match(handler, /window\.harness\.avatar\.pick\(\)/);
+  // the pick and the send are ONE helper the Ask panel's picture uses too (PR #169 El Gordo 2)
+  assert.match(handler, /pickAndSetPortrait\(agent, state\)/);
+  const helper = body('function pickAndSetPortrait');
+  assert.match(helper, /type: 'portrait', action: 'set', agent, state, path/);
+  assert.match(helper, /window\.harness\.avatar\.pick\(\)/);
 });
 
 test('the pencil is only drawn when the picker bridge exists', () => {

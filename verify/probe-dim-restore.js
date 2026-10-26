@@ -41,7 +41,7 @@ if (process.versions.electron && process.type === 'browser') {
 
 function launcher() {
   const { spawn } = require('child_process');
-  const { spawnElectron } = require('./lib/launch-electron');
+  const { spawnElectron, noteChild } = require('./lib/launch-electron');
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
@@ -58,6 +58,7 @@ function launcher() {
   const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], {
     env, stdio: ['ignore', 'pipe', 'pipe'],
   });
+  noteChild(host);   // the lock's work record covers a host / claude this probe started by hand (BACKLOG #112)
   let hostLog = '';
   host.stdout.on('data', d => { hostLog += d.toString(); });
   host.stderr.on('data', d => { hostLog += d.toString(); });
@@ -145,6 +146,7 @@ function driver() {
             let other = null;
             if (kind === 'B') {
               await sleep(300);
+              // Not wrapped in probeWindowOptions on purpose: the trial is about real focus moving to another visible window.
               other = new BrowserWindow({ width: 200, height: 120, show: true });
               other.focus();
             }

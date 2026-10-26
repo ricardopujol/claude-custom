@@ -55,6 +55,10 @@ contextBridge.exposeInMainWorld('harness', {
   openPath: (p) => ipcRenderer.invoke('tab:openPath', p),
   // The Files tab (#45): a path RELATIVE to this tab's worktree. Main re-runs the realpath guard against the
   // tab's own folder, then shows it in Explorer / starts an OS drag of the file. Neither ever opens or runs it.
+  // The code reader's unsaved file (a path relative to the worktree) or null, so ending this tab can warn (#50).
+  // main asks every page to save its reader (the window-close question's Save): the page answers by reporting null
+  onReaderSave: (fn) => { ipcRenderer.on('reader-save', () => { try { fn(); } catch (err) { console.error('[preload] reader-save listener threw', err); } }); },
+  readerDirty: (rel) => ipcRenderer.send('tab:readerDirty', rel === null ? null : String(rel)),
   repoReveal: (rel) => ipcRenderer.invoke('tab:repoReveal', rel),
   repoDrag: (rel) => ipcRenderer.invoke('tab:repoDrag', rel),
   // drag-out, in the gesture (PR #95 Miguel M2): prepare when the pointer reaches a row, then a SYNCHRONOUS start
@@ -197,7 +201,7 @@ contextBridge.exposeInMainWorld('harness', {
     setRosterNames: (mode) => ipcRenderer.invoke('avatar:setRosterNames', mode),
     onRosterNames: (fn) => (ipcRenderer.removeAllListeners('avatar-roster-names'), ipcRenderer.on('avatar-roster-names',
       (_e, mode) => {
-        try { fn(mode === 'name' ? 'name' : 'role'); } catch (err) { console.error('[preload] avatar-roster-names listener threw', err); }
+        try { fn(mode === 'role' ? 'role' : 'name'); } catch (err) { console.error('[preload] avatar-roster-names listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('avatar-roster-names')),
   },
   // Window chrome (layout pass L2): "status line in the header" (#27) and
@@ -216,6 +220,12 @@ contextBridge.exposeInMainWorld('harness', {
         } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('chrome-settings')),
   },
+  // The tray icon's switches (BACKLOG #119 A8) -- see app/tray-settings.js. `get` answers { trayIcon, minimiseOnClose, startMinimised }
+  // or null; `set` takes one of the first two keys and the DESIRED boolean, and answers what main saved (null when it couldn't).
+  tray: {
+    get: () => ipcRenderer.invoke('tray:getSettings'),
+    set: (key, on) => ipcRenderer.invoke('tray:setSetting', key, on),
+  },
   // The background video's play inputs (backlog #34) -- see app/playback-bridge.js. `get` answers
   // { minimised, hidden, onBattery }, each a boolean or null (unknown); `onChange` replaces its
   // one listener and is handed the same shape.
@@ -226,6 +236,12 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(state); } catch (err) { console.error('[preload] playback-state listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('playback-state')),
   },
+  // The Games panel (BACKLOG #41): the best of each wait game, install-wide. main keeps them (host/game-scores.js) and refuses
+  // anything but one of the three games and a whole count.
+  games: {
+    scores: () => ipcRenderer.invoke('games:scores'),
+    submit: (game, score) => ipcRenderer.invoke('games:submit', game, score),
+  },
   // The Resources panel and the top bar's machine chip (BACKLOG #63). Main owns the sampler (host/resource-sampler.js
   // through app/resources-service.js); the page hears each payload
   // `{ model, status, machine }` (onState replaces its one listener), and asks for a Stop by pid and start time:
@@ -233,6 +249,8 @@ contextBridge.exposeInMainWorld('harness', {
   resources: {
     get: () => ipcRenderer.invoke('resources:get'),
     setChip: (on) => ipcRenderer.invoke('resources:setChip', on === true),
+    // whether this page is showing the Resources panel (main samples faster while any page does)
+    viewing: (on) => ipcRenderer.send('resources:viewing', on === true),
     // the saved setting, read synchronously so the page decides the chip before its first paint
     chipOn: () => ipcRenderer.sendSync('resources:chipOn') !== false,
     stop: (req) => ipcRenderer.invoke('resources:stop', req),
@@ -251,6 +269,11 @@ contextBridge.exposeInMainWorld('harness', {
   // approved and where it goes ({ html, hosts, rect, covered } -> { ok }); `bounds` / `cover` / `hosts` keep it in step;
   // `hide` destroys it (hidden means stopped); `answerHost` is the person's answer to a host question; `onNeedHost` and
   // `onMessage` are main -> page ({ id, origin } / { kind: 'send', text }), each replacing its one listener.
+  // the Style tab's switch for the claude-custom mod (BACKLOG #119 A2): a boolean, or null when main could not tell (read) / save (write)
+  ccMod: {
+    settingsGet: () => ipcRenderer.invoke('ccmod:settings-get'),
+    settingsSet: (on) => ipcRenderer.invoke('ccmod:settings-set', on),
+  },
   canvas: {
     show: (req) => ipcRenderer.invoke('canvas:show', req),
     bounds: (rect) => ipcRenderer.send('canvas:bounds', rect),
@@ -282,6 +305,20 @@ contextBridge.exposeInMainWorld('harness', {
         try { fn(on === true); } catch (err) { console.error('[preload] focus-mode listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('focus-mode')),
   },
+  // Lean mode (BACKLOG #62; main's half is app/lean-bridge.js): one window-level state. `get` asks it, `set` is the
+  // button, `night` forwards THIS session's /bedtime night (its start in ms, or null when it ended: the host's word),
+  // and `onChange` replaces its one listener.
+  lean: {
+    get: () => ipcRenderer.invoke('lean:get'),
+    set: (on) => ipcRenderer.send('lean:set', on === true),
+    // this page's working agents (name, images flag, portrait result), for the strip's portraits
+    faces: (list) => ipcRenderer.send('lean:faces', Array.isArray(list) ? list.slice(0, 48) : []),
+    night: (startedAt) => ipcRenderer.send('lean:night', typeof startedAt === 'number' && Number.isFinite(startedAt) ? startedAt : null),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('lean-state'), ipcRenderer.on('lean-state',
+      (_e, state) => {
+        try { fn(state); } catch (err) { console.error('[preload] lean-state listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('lean-state')),
+  },
   // The global dock layout (layout pass L1) -- see app/layout-bridge.js. `get`
   // answers null when nothing is saved yet (the page migrates); `onChange`
   // replaces its one listener, like onImagesEnabled.
@@ -292,6 +329,17 @@ contextBridge.exposeInMainWorld('harness', {
       (_e, layout) => {
         try { fn(layout); } catch (err) { console.error('[preload] layout-global listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('layout-global')),
+  },
+  // Fonts (BACKLOG #88) -- see app/fonts-bridge.js. `get` answers { status, settings }, `set` the settings main stored (null: not saved),
+  // `list` { ok, families } of every installed family; `onChange` replaces its one listener.
+  fonts: {
+    get: () => ipcRenderer.invoke('fonts:get'),
+    set: (settings) => ipcRenderer.invoke('fonts:set', settings),
+    list: () => ipcRenderer.invoke('fonts:list'),
+    onChange: (fn) => (ipcRenderer.removeAllListeners('fonts-global'), ipcRenderer.on('fonts-global',
+      (_e, settings) => {
+        try { fn(settings); } catch (err) { console.error('[preload] fonts-global listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('fonts-global')),
   },
   // The split-tree layout (dockable panels D1): the same shape under its own key. The page reads
   // `layout` once, to migrate from it, and never writes it.
