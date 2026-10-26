@@ -89,6 +89,7 @@ def test_count_tokens_matches_the_real_clip_tokenizer():
 def test_every_described_agent_fits():
     """The real appearances file, every agent, every state."""
     from pathlib import Path
+    from portraits_dir import resolve_portraits_dir
     from prompts import (appearance_for, derive_identity, load_appearances,
                          load_style, parse_agent_file)
 
