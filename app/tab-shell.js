@@ -1733,6 +1733,8 @@ const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'tog
   'resourcesState', 'resourcesClick', 'resourcesChipMenu', 'resourcesHistoryDo',
   // backlog #41: verify/probe-games.js reads the Games panel and operates it
   'gamesState', 'gamesDo',
+  // backlog #119 A3: verify/probe-changes-panel.js reads the Changes panel and operates it
+  'changesProbe',
   // backlog #120: verify/probe-activity-map.js reads the Map panel and operates it
   'mapState', 'mapDo',
   // backlog #33: verify/probe-ask-panel.js reads the Ask panel and operates it

@@ -122,6 +122,9 @@ const { detectRunner, parseResults, healthFrom } = require('./health');
 const { createCappedBuffer } = require('./capped-buffer');
 const { readFog } = require('./fog');
 const { createRepoService } = require('./repo-service');
+// The Changes panel (BACKLOG #119 A3): the worktree's changeset, read-only from git (host/changes.js), and when to look again (host/changes-notifier.js).
+const { createChangesService } = require('./changes-service');
+const { createChangesNotifier, isChangesOnly } = require('./changes-notifier');
 // "Ask the repo" (BACKLOG #33): the panel's questions and explanations, answered from this worktree's index (host/ask-service.js).
 const { createAskService, createRepoFactory, EXPLAINER_AGENT } = require('./ask-service');
 const { createExplainer: createAskExplainer } = require('./ask-explainer');
@@ -490,6 +493,9 @@ const mapFeed = createMapFeed({ startedAt: Date.now() });
 const repoService = createRepoService({
   root: CWD, projectsDir: seams.projectsDir || undefined, announce: (msg) => broadcastControl(msg),
 });
+// The Changes panel: list / base by `action` (host/changes.js), and a `changed` push after a hook event for a tool that can change a file.
+const changesService = createChangesService({ root: CWD });
+const changesNotifier = createChangesNotifier({ announce: (msg) => broadcastControl(msg) });
 // The `ask` conversation (BACKLOG #33). Local answers come from Ollama; a Claude model answers through the real claude CLI on the
 // person's plan (host/ask-claude.js: no tools, no API key in its environment). The index is per worktree, kept under the harness state.
 const askOllama = createAskOllama({ baseUrl: seams.ollamaUrl || undefined });
@@ -683,6 +689,8 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
   pipeName: PIPE_NAME,
   // Read/Edit/Write/NotebookEdit PreToolUse, for the occupancy claim only (consumed below, never forwarded).
   occupancy: true,
+  // Edit / Write / MultiEdit / NotebookEdit / PowerShell PostToolUse, for the Changes panel's refresh only (consumed below, never forwarded).
+  changes: true,
   // ScheduleWakeup Pre + Post, for the bedtime night only (consumed below, never forwarded).
   bedtime: true,
   // CronCreate / CronDelete Pre + Post, for the Schedules panel only (consumed below, never forwarded).
@@ -1513,6 +1521,7 @@ if (helperExists) {
     // the probe that reads it only wants who touched which path.)
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
     occupancy.handle(ev);
+    changesNotifier.handle(ev);
     mapFeed.note(ev);        // the Map panel's event rates (BACKLOG #120): counted for every event, before any early return below
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
@@ -1527,6 +1536,8 @@ if (helperExists) {
     attention.activity(ev);
     // ...but the mood engine reads them for one thing only: which tool an agent is using now (reading, writing,
     // BACKLOG #55). They open no run and touch no panel; a Read is never a process.
+    // The Post of the edit tools exists only so the Changes panel can look after the edit landed: it ends here.
+    if (isChangesOnly(ev)) return;
     if (isOccupancyOnly(ev)) { mood.handle(ev); return; }
     // A ScheduleWakeup is the night's and nobody else's: the mood engine would read it as work, and the Running
     // panel would show it as a process.
@@ -2922,6 +2933,13 @@ wss.on('connection', (ws, req) => {
       });
       return;
     }
+    if (msg.type === 'changes') {
+      // Answered asynchronously, and the reply names the asking `seq`. The service never rejects: a failure is { ok: false, error | why }.
+      changesService.handle(msg).then(reply => {
+        try { ws.send(JSON.stringify(reply)); } catch { /* the client went away */ }
+      });
+      return;
+    }
     if (msg.type === 'ask') {
       // Which windows have an Ask panel open (per socket, so one window can't cancel another): the explainer is Active while any does.
       // Not answered: it asks for nothing.
@@ -3184,6 +3202,7 @@ function shutdown({ removeIdentity = true } = {}) {
   stopPty(term, { killChildTree });
   try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
+  try { changesNotifier.close(); } catch {}
   try { canvasControl.close(); } catch {}
   try { schedulesControl.end(); } catch {}
   releaseSessionLock(SESSION_LOCK, lockOwner);

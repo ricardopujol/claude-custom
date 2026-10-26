@@ -78,6 +78,10 @@ test('renderer: every typing path is gated on the host kind: the choke point, th
   assert.match(renderer, /planSwitch\(\{[\s\S]{0,300}?hostKind,\s*\n\s*\}\);/);
   assert.match(renderer, /planTyping\(\{[\s\S]{0,400}?hostKind,/);
   assert.match(renderer, /planSubmit\(\{ turn: sessionTurn, typeOnly, kind: hostKind \}\);\s*\n\s*if \(gate\.reason\) \{ done\(\{ ok: false, reason: gate\.reason \}\); return; \}/);
+  // the Changes panel's review comment (PR #199): its planner and its append sender, which can't use typeAndCheck (no cleanup on a failed read-back)
+  assert.match(renderer, /planCommentTyping\(\{[\s\S]{0,300}?hostKind \}\);/);
+  const ta = renderer.slice(renderer.indexOf('function typeAppended('), renderer.indexOf('function typeAppended(') + 300);
+  assert.match(ta, /^function typeAppended\([^)]*\) \{\s*\n\s*if \(hostKind === 'shell'\) \{ done\(\{ ok: false, reason: SHELL_TAB_REFUSAL \}\); return; \}\s*\n\s*if \(typingBusy\)/, 'refuses before anything is typed');
 });
 
 test('renderer: every function that sends programmatic keystrokes to the pty is reached only through typeAndCheck or pressEnter', () => {
@@ -90,7 +94,7 @@ test('renderer: every function that sends programmatic keystrokes to the pty is 
     for (let j = i; j >= 0; j--) { const m = /^(?:async )?function (\w+)\(/.exec(lines[j]); if (m) return m[1]; }
     return null;
   });
-  const allowed = new Set(['typeAndCheck', 'typePlanned', 'pressEnter', 'clearTypedLine']);
+  const allowed = new Set(['typeAndCheck', 'typePlanned', 'pressEnter', 'clearTypedLine', 'typeAppended']);
   const outsiders = where.filter(n => !allowed.has(n));
   assert.deepStrictEqual(outsiders, [], where.join(','));
 });

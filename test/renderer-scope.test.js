@@ -100,6 +100,10 @@ const ALLOWED_GLOBALS = new Set([
   'wandDisplay',
   // app/games-rules.js, app/games-round.js, app/games-display.js (BACKLOG #41): the wait games. ONE name leaves each IIFE.
   'gamesRules', 'gamesRound', 'gamesDisplay',
+  // app/changes-compare.js, app/changes-display.js (BACKLOG #119 A3): the Changes panel. ONE name leaves each IIFE.
+  'changesCompare', 'changesDisplay',
+  // app/top-bar-display.js (PR #199 r2): the review comment's non-destructive typing plan
+  'boxIsCommand', 'appendKeys', 'planCommentTyping',
   // app/map-model.js, app/map-layout.js, app/map-display.js (BACKLOG #120): the Map panel. ONE name leaves each IIFE.
   'mapModel', 'mapLayout', 'mapDisplay',
   // app/ask-panel-state.js, app/ask-profile.js, app/ask-requester.js, app/ask-display.js (BACKLOG #33): Ask the repo. ONE name leaves each IIFE.
