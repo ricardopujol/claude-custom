@@ -52,6 +52,12 @@ test('main.js: the tab menu offers the side session, and its click opens it on t
   assert.match(menu, /tabShell\.openSide\(side\.target\)/);
 });
 
+test('main.js: a side tab\'s menu has its side item and a Close side session that goes through the hand close (Ricardo\'s look, 2026-10-26)', () => {
+  const menu = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
+  assert.ok(menu.includes("const closeSideItem = { label: 'Close side session', enabled: st.close, click: () => closeTabFlow(key) };"));
+  assert.ok(menu.includes("if (isSideKey(key)) return [sideItem, { type: 'separator' }, closeSideItem];"));
+});
+
 test('main.js: the probe driver can open a side session by the branch tab\'s label', () => {
   assert.match(MAIN, /async sideOpen\(label\)/);
   assert.match(MAIN, /tabShell\.openSide\(key\)/);

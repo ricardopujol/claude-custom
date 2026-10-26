@@ -447,7 +447,8 @@ function markSubmenu(branch) {
  */
 function tabMenuTemplate(key) {
   const st = tabShell.menuState(key);
-  // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
+  // #81: the read-only side session. On a side tab the menu is this item (it reopens one that has stopped) and its close (Ricardo's
+  // look, 2026-10-26: a side tab couldn't be closed).
   const side = tabShell.sideMenu(key);
   const sideItem = {
     label: side.enabled ? side.label : `${side.label} (${side.why})`,
@@ -464,7 +465,8 @@ function tabMenuTemplate(key) {
     click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
   };
   const closeShellItem = { label: 'Close shell', enabled: st.close, click: () => closeTabFlow(key) };
-  if (isSideKey(key)) return [sideItem];
+  const closeSideItem = { label: 'Close side session', enabled: st.close, click: () => closeTabFlow(key) };
+  if (isSideKey(key)) return [sideItem, { type: 'separator' }, closeSideItem];
   if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
   const issue = tabShell.issueOf(key);
   return [

@@ -415,8 +415,9 @@ function createShell(deps) {
     const st = rec.status;
     return {
       key: rec.key, label: sideLabel(parent.label), isDev: false, selected, started: rec.started === true,
-      // It stays until its branch tab closes: no close button of its own.
-      closable: false,
+      // A close of its own (Ricardo's look, 2026-10-26: a side tab couldn't be closed). Closing it ends only this host; the branch
+      // tab's session keeps running, and Open side session starts a fresh one.
+      closable: true,
       working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
       summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
       lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null,
@@ -869,11 +870,10 @@ function createShell(deps) {
    * Hand close, once per tab at a time. A second request for a tab already closing (a double click) is ignored.
    */
   async function closeTab(key, opts) {
-    // A side tab has no close of its own: it ends with its branch tab (#81). A shell tab has one (closeShellOnce).
-    if (isSideKey(key)) return { ok: false, error: 'not closable' };
+    // A side or shell tab closes without a question (closeCompanionOnce); it also ends with its branch tab (#81).
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
-    try { return await (isShellKey(key) ? closeShellOnce(key) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
+    try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
   }
   /**
    * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
@@ -1572,22 +1572,23 @@ function createShell(deps) {
   }
 
   /**
-   * A shell tab closed by hand (Ricardo's look, 2026-10-26): its x, a Ctrl+click, the menu's Close shell, or its page's own close.
-   * Nothing asks: it is a terminal and the folder stays. Reopen doesn't offer it back (Open shell here starts a fresh one). If it
-   * was showing, its own branch tab shows next.
+   * A shell or side tab closed by hand (Ricardo's look, 2026-10-26): its x, a Ctrl+click, the menu's Close shell / Close side
+   * session, or a shell page's own close. Nothing asks: a shell is a terminal, a side session is a reader that can write nothing
+   * (the work is in the branch tab), and the folder stays. Only this tab's own host is stopped, never its branch tab's. Reopen
+   * doesn't offer it back (Open shell here / Open side session starts a fresh one). If it was showing, its own branch tab shows next.
    */
-  async function closeShellOnce(key) {
+  async function closeCompanionOnce(key) {
     const t = tabs.get(key);
     if (!t || mode !== 'tabs') return { ok: false, error: 'not closable' };
     const failure = await stopCompanion(t);
     if (!tabs.has(key)) return { ok: true };     // gone meanwhile: its branch tab closed, or its folder was removed
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
-    const parentKey = parentKeyOfShell(key);
+    const parentKey = companionParentOf(key);
     if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
     else publish();
     if (failure !== null) {
-      closeNotice = `Couldn't end the shell in ${t.branch}: ${failure}. It may still be running.`;
+      closeNotice = `Couldn't end the ${isShellKey(key) ? 'shell' : 'side session'} in ${t.branch}: ${failure}. It may still be running.`;
       log(`[shell] ${key}: ${closeNotice}`);
       publish();
       return { ok: true, stopError: failure };

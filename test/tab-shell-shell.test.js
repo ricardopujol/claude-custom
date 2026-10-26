@@ -260,14 +260,14 @@ test('closing a shell tab that was NOT showing leaves the selection where it was
   assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
 });
 
-test('the tab menu offers the close on a shell tab, and still not on a side tab', async () => {
+test('the tab menu offers the close on a shell tab and on a side tab', async () => {
   const h = await opened();
   await h.shell.openShell(key('feat-a'));
   await h.shell.openSide(key('feat-a'));
   assert.strictEqual(h.shell.menuState(skey('feat-a')).close, true);
-  assert.strictEqual(h.shell.menuState(sidekey('feat-a')).close, false, 'a side tab still ends with its branch tab (#81)');
-  assert.strictEqual(h.shell.model().find(e => e.key === sidekey('feat-a')).closable, false);
-  assert.strictEqual((await h.shell.closeTab(sidekey('feat-a'))).ok, false);
+  assert.strictEqual(h.shell.menuState(sidekey('feat-a')).close, true, 'a side tab closes by hand too');
+  assert.strictEqual(h.shell.model().find(e => e.key === sidekey('feat-a')).closable, true);
+  assert.strictEqual((await h.shell.closeTab(sidekey('feat-a'))).ok, true);
 });
 
 test('a shell host that does not answer its stop: the tab still goes, and the strip says it may still be running', async () => {

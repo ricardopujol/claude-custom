@@ -144,7 +144,7 @@ test('the side tab sits right after its branch tab, labelled "<branch> · side",
   assert.strictEqual(side.role, 'reader');
   assert.strictEqual(side.selected, true);
   assert.strictEqual(side.started, true);
-  assert.strictEqual(side.closable, false, 'it stays until its branch tab closes: no close button of its own');
+  assert.strictEqual(side.closable, true, 'it has a close of its own (Ricardo\'s look, 2026-10-26: a side tab could not be closed)');
   assert.strictEqual(h.shell.model().filter(e => e.selected).length, 1, 'exactly one tab is selected');
   assert.ok(h.viewsMade.some(v => v.tab === skey('feat-a')));
 });
@@ -204,13 +204,125 @@ test('Ctrl+Tab walks through the side tab in strip order', async () => {
   assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
 });
 
-test('the side tab cannot be closed by hand: it ends with its branch tab', async () => {
+// --- closing it by hand (Ricardo's look, 2026-10-26: "when opening a side session, this one can't be closed") -----------
+
+test('closing the side tab by hand stops ITS host only, drops its page, asks nothing, and goes back to its branch tab', async () => {
   const h = await opened();
   await h.shell.openSide(key('feat-a'));
   const r = await h.shell.closeTab(skey('feat-a'));
-  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopError, undefined);
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop').map(c => [c.port, c.token]), [[7702, 'tok-7702']]);
+  assert.strictEqual(h.running[7702], undefined, 'the side host is gone');
+  assert.ok(h.running[7701], 'the branch tab\'s own session is untouched');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(h.viewsGone.includes(skey('feat-a')));
+  assert.ok(!h.viewsGone.includes(key('feat-a')), 'the branch tab\'s page stays');
+  assert.deepStrictEqual(h.confirms, [], 'a reader of the lane closes without a question; the folder stays');
+  assert.deepStrictEqual(h.shell.model().filter(e => e.selected).map(e => e.key), [key('feat-a')], 'the lane it belonged to shows next');
+});
+
+test('a Ctrl+click close (ifSafe) of the side tab closes it the same way, with no question', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  const r = await h.shell.closeTab(skey('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(h.confirms, []);
-  assert.strictEqual(labels(h).includes(SIDE_A), true);
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop').map(c => c.port), [7702]);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+});
+
+test('closing a side tab that is working asks nothing either: it can write nothing, and the branch tab keeps the work', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.shell.tabByKey(skey('feat-a')).status = { working: true };
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+});
+
+test('closing the side tab leaves the branch tab\'s session running, and Open side session starts a fresh one afterwards', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.closeTab(skey('feat-a'));
+  assert.ok(h.running[7701], 'the branch tab\'s host still runs');
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop').map(c => c.port), [7702], 'only the side host was told to stop');
+  assert.deepStrictEqual(h.shell.sideMenu(key('feat-a')), { enabled: true, label: 'Open side session', target: key('feat-a') });
+  const again = await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(again.ok, true);
+  assert.notStrictEqual(again.already, true);
+  assert.strictEqual(h.spawns.filter(s => s.side).length, 2, 'a fresh host');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, skey('feat-a'));
+});
+
+test('closing a side tab that was NOT showing leaves the selection where it was', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.select(key('feat-b'));
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
+});
+
+test('the tab menu offers the close on a side tab', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(h.shell.menuState(skey('feat-a')).close, true);
+});
+
+test('a side host that does not answer its stop: the tab still goes, and the strip says it may still be running', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopError, 'no answer');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the side session in feat\/a · side: no answer\. It may still be running\./);
+});
+
+test('an ended side session closes with no stop sent: its port may be another host\'s by now', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  delete h.running[7702];
+  await h.shell.poll();
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.controls.length, 0);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.strictEqual(h.changes[h.changes.length - 1].closeNotice, null);
+});
+
+test('a side session closed while its start is still walking the ports never spawns', async () => {
+  const h = await opened();
+  let release;
+  h.holdSide = new Promise(r => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));
+  await flush();
+  const closing = h.shell.closeTab(skey('feat-a'));
+  await flush();
+  release();
+  await opening;
+  const r = await closing;
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.spawns, [], 'nothing was started for a tab that is gone');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+});
+
+test('a double click on the side tab\'s close is one close: one stop', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  const [a, b] = await Promise.all([h.shell.closeTab(skey('feat-a')), h.shell.closeTab(skey('feat-a'))]);
+  assert.deepStrictEqual([a.ok, b.ok].sort(), [false, true]);
+  assert.strictEqual(h.controls.filter(c => c.msg.type === 'stop').length, 1);
+});
+
+test('a closed side session is not offered back by the + menu\'s Reopen', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.closeTab(skey('feat-a'));
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, []);
 });
 
 // --- it ends with its branch tab -------------------------------------------------------------------------------

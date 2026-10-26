@@ -21,7 +21,8 @@ const GLYPHS = {
 };
 // PR 3: a merged worktree (finishing, removing, kept), or one that failed to go.
 const BADGES = { merged: 'merged', warn: String.fromCodePoint(0x26a0) };
-const SIDE_TITLE = 'A side session: it starts in plan mode and has only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite. No Bash, PowerShell, Edit, Write or MCP, whatever mode it is switched to. It ends when this branch\'s tab closes.';
+const SIDE_TITLE = 'A side session: it starts in plan mode and has only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite. No Bash, PowerShell, Edit, Write or MCP, whatever mode it is switched to. It ends when you close it, or when this branch\'s tab closes.';
+const SIDE_CLOSE_TITLE = 'Close side session (ends this reader only; the branch tab\'s session keeps running)';
 // #119 A5: a branch tab's plain shell.
 const SHELL_TITLE = 'A shell in this branch\'s folder, not a Claude session. It shows a dot when the program running in it reports its state. It ends when this branch\'s tab closes.';
 const GLYPH_TITLES = {
@@ -135,7 +136,7 @@ function paintTab(doc, entry, bridge) {
   // The hatched lower edge. It NEVER animates: movement on the strip means "needs you".
   const occ = occupancyOf(entry.occupancy);
   if (occ) cls.push(occ.readersOnly ? 'reading' : (occ.warn ? 'occupied occupied-warn' : 'occupied'));
-  // #81: a branch tab's read-only side session: a small tab, no close button of its own (it ends with its branch tab).
+  // #81: a branch tab's read-only side session: a small tab. It closes by hand (Ricardo's look, 2026-10-26) and with its branch tab.
   if (entry.side === true) cls.push('side');
   if (entry.shell === true) cls.push('shell');
   // Backlog #52: a /bedtime night turns the tab deep blue. Distinct from #31's pulse, which still wins while the tab
@@ -191,7 +192,8 @@ function paintTab(doc, entry, bridge) {
   if (entry.closable) {
     const x = tab.appendChild(el(doc, 'button', 'x', '×'));
     x.type = 'button';
-    x.title = entry.shell === true ? 'Close shell (ends the shell and what runs in it; the folder stays)' : 'Close tab (ends its session; the folder stays)';
+    x.title = entry.shell === true ? 'Close shell (ends the shell and what runs in it; the folder stays)'
+      : entry.side === true ? SIDE_CLOSE_TITLE : 'Close tab (ends its session; the folder stays)';
     x.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (ev && ev.ctrlKey === true) bridge.close(entry.key, true); else bridge.close(entry.key);
