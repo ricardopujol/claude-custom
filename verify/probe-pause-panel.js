@@ -197,9 +197,10 @@ async function main() {
   const sessionKey = `s:${tabKey}`;
   const rs = () => view(app, 'resourcesState');
 
-  await view(app, 'select', { id: 'resources' });
+  // Opened from its own tab, docked, as verify/probe-resource-panel.js does (the default layout no longer has it selectable).
+  const clicked = await view(app, 'dock', { id: 'resources', target: { edge: 'right' } });
   const opened = await waitFor(async () => { const s = await rs(); return s && s.shown ? s : null; }, 10000, 200);
-  check('1: the Resources panel opens', !!opened);
+  check('1: the Resources panel opens', !!opened, JSON.stringify(clicked));
   check('1: resources-display.js and agent-pause-display.js loaded in the shared plain-script scope', !!opened && opened.scope === true && opened.pauseScope === true, JSON.stringify(opened && [opened.scope, opened.pauseScope]));
   const full = await waitFor(async () => { const s = await rs(); return s && s.payloadHasModel && s.rows.some(r => r.key === sessionKey) ? s : null; }, 60000, 300);
   check('the tab\'s session has a row', !!full);
