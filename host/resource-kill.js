@@ -24,27 +24,10 @@ const START_MAX = '9223372036854775807';       // the script casts the start to 
 const startFits = s => /^\d{1,19}$/.test(s) && /[1-9]/.test(s) && (s.length < START_MAX.length || s <= START_MAX);
 const validTarget = t => !!t && Number.isInteger(t.pid) && t.pid > 0 && t.pid <= PID_MAX && typeof t.start === 'string' && startFits(t.start);
 
-function killScript(targets) {
-  const [root, ...rest] = targets;
-  const calls = rest.map(t => `K ${t.pid} ${t.start}`).join('\n');
-  // The protected roles by image, as host/resource-tree.js roleOf names them (claude, Electron, a session host's host.js).
-  return `$ErrorActionPreference='SilentlyContinue'
-$done = @{}
-$tried = @{}
-function K($id, [long]$want) {
-  $script:tried[$id] = 1
-  $p = Get-Process -Id $id
-  if (-not $p) { return "$id gone" }
-  try { $null = $p.Handle } catch { return "$id failed could not open it: $($_.Exception.Message)" }
-  if ($p.HasExited) { return "$id gone" }
-  $got = $p.StartTime.ToFileTimeUtc()
-  if ([math]::Abs($got - $want) -gt ${START_SLACK}) { return "$id reused" }
-  try { $p.Kill() } catch { return "$id failed $($_.Exception.Message)" }
-  [void]$p.WaitForExit(3000)
-  if ($p.HasExited) { $script:done[$id] = $want; return "$id killed" }
-  return "$id failed it is still running"
-}
-function Below($seeds) {
+// The three helpers every Resources-panel script shares (the kill here, host/process-suspend.js's Pause): the processes below a
+// proven root (start-time ordered, so a reused pid adopts nothing), the protected roles by image as host/resource-tree.js roleOf
+// names them (claude, Electron, a session host's host.js), and a session's own console hosts.
+const BELOW_PROT_OWN = `function Below($seeds) {
   $t = @(Get-CimInstance Win32_Process | ForEach-Object { [pscustomobject]@{ id=[int]$_.ProcessId; pp=[int]$_.ParentProcessId; name=[string]$_.Name; cmd=[string]$_.CommandLine; st=$(if ($_.CreationDate) { $_.CreationDate.ToFileTimeUtc() } else { [long]0 }) } })
   $queue = New-Object System.Collections.ArrayList
   $seen = @{}
@@ -63,7 +46,28 @@ function Below($seeds) {
   $found
 }
 function Prot($c) { ($c.name -like 'claude*') -or ($c.name -eq 'electron.exe') -or ($c.cmd -match 'host[\\\\/]host\\.js') }
-function Own($c) { ($c.name -eq 'conhost.exe') -or ($c.name -eq 'OpenConsole.exe') }
+function Own($c) { ($c.name -eq 'conhost.exe') -or ($c.name -eq 'OpenConsole.exe') }`;
+
+function killScript(targets) {
+  const [root, ...rest] = targets;
+  const calls = rest.map(t => `K ${t.pid} ${t.start}`).join('\n');
+  return `$ErrorActionPreference='SilentlyContinue'
+$done = @{}
+$tried = @{}
+function K($id, [long]$want) {
+  $script:tried[$id] = 1
+  $p = Get-Process -Id $id
+  if (-not $p) { return "$id gone" }
+  try { $null = $p.Handle } catch { return "$id failed could not open it: $($_.Exception.Message)" }
+  if ($p.HasExited) { return "$id gone" }
+  $got = $p.StartTime.ToFileTimeUtc()
+  if ([math]::Abs($got - $want) -gt ${START_SLACK}) { return "$id reused" }
+  try { $p.Kill() } catch { return "$id failed $($_.Exception.Message)" }
+  [void]$p.WaitForExit(3000)
+  if ($p.HasExited) { $script:done[$id] = $want; return "$id killed" }
+  return "$id failed it is still running"
+}
+${BELOW_PROT_OWN}
 $rootId = ${root.pid}
 $bad = @(Below @{ ${root.pid} = ${root.start} } | Where-Object { Prot $_ })
 if ($bad.Count -gt 0) {
@@ -118,4 +122,4 @@ async function killVerified(targets, { exec }) {
   return parseKillOutput(out, list);
 }
 
-module.exports = { killVerified, killScript, parseKillOutput };
+module.exports = { killVerified, killScript, parseKillOutput, validTarget, BELOW_PROT_OWN };

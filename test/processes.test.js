@@ -322,3 +322,17 @@ test('the no-id fallback only closes a call of the same owner', () => {
   h.t.handle(ev('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'npm test' } }));   // main session
   assert.strictEqual(runningOnly(h.t).length, 1, 'the main session cannot close agent A\'s call');
 });
+
+test('N4: a TaskStop whose call FAILED stays listed (stale, failed) with its task, so the page can undo "stop seen"; a successful one still leaves', () => {
+  const h = harness();
+  h.pre('TaskStop', { task_id: 'X' }, 't1');
+  h.t.handle({ event: 'PostToolUseFailure', payload: { tool_name: 'TaskStop', tool_input: { task_id: 'X' }, tool_use_id: 't1' } });
+  const [row] = h.t.list();
+  assert.deepStrictEqual({ tool: row.tool, state: row.state, taskId: row.taskId, failed: row.failed }, { tool: 'TaskStop', state: 'stale', taskId: 'X', failed: true });
+  h.pre('TaskStop', { task_id: 'Y' }, 't2');
+  h.post('TaskStop', { task_id: 'Y' }, 't2');
+  assert.deepStrictEqual(h.t.list().map(p => p.taskId), ['X'], 'the successful one is gone');
+  h.pre('Bash', { command: 'x' }, 'b1');
+  h.t.handle({ event: 'PostToolUseFailure', payload: { tool_name: 'Bash', tool_input: { command: 'x' }, tool_use_id: 'b1' } });
+  assert.strictEqual(h.t.list().filter(p => p.tool === 'Bash').length, 0, 'only a TaskStop failure is kept');
+});
