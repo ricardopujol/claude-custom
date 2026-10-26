@@ -27,7 +27,7 @@ const { createTerminalState } = require('./terminal-state');
 const { createProgramStatusHost, windowAttachedAmong } = require('./program-status-host');
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
-const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree');
+const { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
@@ -1458,6 +1458,7 @@ const killStop = createStopper({
   term: () => term,
   stopPty,
   killChildTree,
+  outcomeOf: killOutcomeOf,
   log: (line) => console.log(line),
   notify: (state) => { sayInTab(state.text); broadcastControl({ type: 'killSwitch', killSwitch: state }); },
 });
@@ -1467,6 +1468,8 @@ const killSwitch = watchKillSwitch({
   // A host that was kept from starting starts once the file is gone, even a dev tab no one can close (Dexter F4 / Miguel Y1, PR #210).
   onClear: () => { if (killStop.clearRefused()) restartAfterRefusal(); },
 });
+// A kill that did not land (the proof timed out under load) is tried again every few seconds, a handful of times.
+setInterval(() => { try { killStop.retry(); } catch { /* the next tick tries again */ } }, 5000).unref();
 const killLinger = createLinger();
 // The first night's start is kept on disk (one per project), so a host replaced mid-night keeps the deadline (Dexter F1, PR #210).
 const NIGHT_ANCHOR_FILE = path.join(STATE_ROOT, '.claude-custom', 'night-anchor.json');

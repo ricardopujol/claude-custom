@@ -594,7 +594,7 @@ test('createStopper: a trip with a live pty says why first, then stops exactly t
   assert.match(calls[0][1], /H\/STOP-ALL/);
   assert.strictEqual(calls[2][1], pty, 'the tracked pty itself, not a pid looked up by name');
   assert.strictEqual(calls[2][2], 'the-kill-tree-fn');
-  assert.deepStrictEqual(calls[1][1], { kind: 'tripped', sentinel: 'H/STOP-ALL', scope: 'all', at: 1234, text: calls[0][1].replace(/^\[kill-switch\] /, '') });
+  assert.deepStrictEqual(calls[1][1], { kind: 'tripped', sentinel: 'H/STOP-ALL', scope: 'all', at: 1234, kill: null, text: calls[0][1].replace(/^\[kill-switch\] /, '') });
   assert.deepStrictEqual(s.state(), calls[1][1]);
 });
 
@@ -610,6 +610,81 @@ test('createStopper: once per host; a second stop (the budget after a trip) does
   assert.strictEqual(s.stop({ kind: 'night-budget', startedAt: 0, budgetMs: 1 }), false);
   assert.strictEqual(calls.filter(c => c[0] === 'stopPty').length, 1);
   assert.strictEqual(s.state().kind, 'tripped');
+});
+
+// --- F5: the kill outcome is read, logged for what it was, and retried when it did not land ---------------------------------
+
+// A pty whose kill answers from a script, the way host/kill-tree.js's killChildTree would: one answer per attempt.
+function scriptedKill(answers) {
+  const calls = [];
+  const logs = [];
+  const notes = [];
+  let last = null;
+  let i = 0;
+  const pty = { pid: 55 };
+  const s = ks.createStopper({
+    term: () => pty,
+    stopPty: () => { calls.push('stopPty'); last = answers[Math.min(i++, answers.length - 1)]; },
+    killChildTree: () => {},
+    outcomeOf: () => last,
+    log: (l) => logs.push(l),
+    notify: (st) => notes.push(st),
+    now: () => 1,
+    ...{},
+  });
+  return { s, calls, logs, notes };
+}
+
+test('F5: a proven kill is logged with its real outcome; an unproven one says so and is retried by retry()', () => {
+  const { s, calls, logs } = scriptedKill(['unknown', 'unknown', 'killed']);
+  s.stop({ kind: 'tripped', sentinel: 'H/STOP-ALL', scope: 'all' });
+  assert.strictEqual(calls.length, 1);
+  assert.match(logs.join('\n'), /unknown/);
+  assert.doesNotMatch(logs.slice(1).join('\n'), /was stopped/, 'the outcome line does not claim a stop that was not proven');
+  assert.strictEqual(s.state().kill, 'unknown');
+  assert.strictEqual(s.retry(), true);
+  assert.strictEqual(calls.length, 2);
+  assert.strictEqual(s.retry(), true);
+  assert.strictEqual(calls.length, 3);
+  assert.strictEqual(s.state().kill, 'killed');
+  assert.match(logs[logs.length - 1], /killed/);
+  assert.strictEqual(s.retry(), false, 'proven: nothing more to do');
+  assert.strictEqual(calls.length, 3);
+});
+
+test('F5: retry() gives up after maxRetries, and does nothing for a kill that landed or a host with no pty', () => {
+  const unlanded = scriptedKill(['failed']);
+  unlanded.s.stop({ kind: 'tripped', sentinel: 'x' });
+  let tries = 0;
+  while (unlanded.s.retry()) tries++;
+  assert.strictEqual(tries, 5);
+  const landed = scriptedKill(['gone']);
+  landed.s.stop({ kind: 'tripped', sentinel: 'x' });
+  assert.strictEqual(landed.s.retry(), false);
+  const refused = ks.createStopper({ term: () => null, stopPty: () => assert.fail('no pty'), killChildTree: () => {}, outcomeOf: () => 'unknown' });
+  refused.stop({ kind: 'refused', sentinel: 'x' });
+  assert.strictEqual(refused.retry(), false);
+});
+
+test('F5: the latch does not block a later sentinel or the budget from trying the kill again', () => {
+  const { s, calls } = scriptedKill(['unknown', 'killed']);
+  assert.strictEqual(s.stop({ kind: 'night-budget', startedAt: 0, budgetMs: 1 }), true);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(s.stop({ kind: 'tripped', sentinel: 'H/STOP-ALL', scope: 'all' }), false, 'still one stop per host');
+  assert.strictEqual(calls.length, 2, 'but the second ask tried the kill again');
+  assert.strictEqual(s.state().kind, 'night-budget', 'and did not rewrite why it began');
+  assert.strictEqual(s.state().kill, 'killed');
+  assert.strictEqual(s.stop({ kind: 'tripped', sentinel: 'H/STOP-ALL' }), false);
+  assert.strictEqual(calls.length, 2, 'a landed kill is not repeated');
+});
+
+test('F5: an unproven kill tells the tab, not only host.log', () => {
+  const { s, notes } = scriptedKill(['unknown', 'killed']);
+  s.stop({ kind: 'tripped', sentinel: 'H/STOP-ALL' });
+  assert.strictEqual(notes.length, 2);
+  assert.match(notes[1].text, /not confirmed/i);
+  s.retry();
+  assert.strictEqual(notes.length, 2, 'a landed retry adds no alarm');
 });
 
 test('createStopper: a throwing log or notify still kills the pty', () => {

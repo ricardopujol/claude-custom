@@ -38,6 +38,7 @@ const TRACKED = Symbol.for('claude-custom.child.tracked');
 const KILLED = Symbol.for('claude-custom.child.killed');
 const START = Symbol.for('claude-custom.child.start');
 const START_READ = Symbol.for('claude-custom.child.startRead');
+const OUTCOME = Symbol.for('claude-custom.child.killOutcome');
 
 function trackExit(child, { startTimes } = {}) {
   if (!child || child[TRACKED]) return child;
@@ -64,6 +65,8 @@ function childExited(child) {
 
 // Kill a child's tree by its pid, but only while the child is provably still running, and only once. An IPty whose
 // start is known is killed through killProven. True if a kill was sent.
+// "Once" is once per ATTEMPT THAT WAS JUDGED: a proven kill that answers 'unknown' (a PowerShell that timed out under load) or 'failed'
+// (taskkill refused) did not land, so the next call tries again. killOutcomeOf says what the last attempt answered (PR #210 Dexter F5).
 function killChildTree(child, { killFn = killPidTree, provenKill = killProven } = {}) {
   if (!child || !child.pid || child[KILLED]) return false;
   if (childExited(child)) {
@@ -71,9 +74,21 @@ function killChildTree(child, { killFn = killPidTree, provenKill = killProven } 
     return false;
   }
   child[KILLED] = true;
-  if (!('exitCode' in child) && typeof child[START] === 'string') provenKill(child.pid, child[START]);
-  else killFn(child.pid);
+  if (!('exitCode' in child) && typeof child[START] === 'string') {
+    const outcome = provenKill(child.pid, child[START]);
+    child[OUTCOME] = typeof outcome === 'string' ? outcome : null;
+    if (outcome === 'unknown' || outcome === 'failed') child[KILLED] = false;
+  } else {
+    killFn(child.pid);
+    child[OUTCOME] = 'sent';
+  }
   return true;
+}
+
+// What killChildTree's last attempt on this child answered: killProven's 'killed' | 'gone' | 'mismatch' | 'failed' | 'unknown', or
+// 'sent' (a raw-pid kill, no proof), or null (no attempt, or an injected kill that said nothing).
+function killOutcomeOf(child) {
+  return child && typeof child[OUTCOME] === 'string' ? child[OUTCOME] : null;
 }
 
 // child is a Node ChildProcess (has .pid, .exitCode, .kill()) -- the shape
@@ -244,4 +259,4 @@ async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershel
   } catch { return 'unknown'; }
 }
 
-module.exports = { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill };
+module.exports = { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill };

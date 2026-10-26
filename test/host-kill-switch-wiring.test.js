@@ -42,6 +42,13 @@ test('the stopper kills the tracked pty through pty-stop and kill-tree\'s killCh
   assert.doesNotMatch(b, /taskkill|killPidTree|\/IM/);
 });
 
+test('the stopper reads the kill outcome from kill-tree, and an unproven kill is retried on a timer', () => {
+  assert.match(HOST, /const \{ killTree, killPidTree, killChildTree, killOutcomeOf, trackExit \} = require\('\.\/kill-tree'\);/);
+  const b = block('const killStop = createStopper({', '\n});');
+  assert.match(b, /outcomeOf: killOutcomeOf,/);
+  assert.match(HOST, /setInterval\(\(\) => \{ try \{ killStop\.retry\(\); \} catch \{[^}]*\} \}, 5000\)\.unref\(\);/);
+});
+
 test('the watch trips the stopper: a kill when a session runs, a refusal when none does', () => {
   const b = block('const killSwitch = watchKillSwitch({', '\n});');
   assert.match(b, /sentinelPaths: KILL_SWITCH_PATHS/);

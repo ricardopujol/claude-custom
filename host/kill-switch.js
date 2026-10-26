@@ -191,20 +191,54 @@ function describeStop(stop) {
 /**
  * The host's one stop (a trip, a refusal at start, the night budget): said FIRST (host.log, then `notify`, which tells the windows and
  * writes the line into the tab), then the tracked pty is ended through host/pty-stop.js with kill-tree's killChildTree: by the pty's
- * own pid, proven by its start time, once. Never by name. Once per host: a host that stopped exits with its claude, and one that
- * refused stays refused until it is replaced, so a second stop has nothing to add.
+ * own pid, proven by its start time. Never by name. One stop per host, but its KILL is read, not assumed (Dexter F5, PR #210): after
+ * stopPty, outcomeOf(term) (kill-tree's killOutcomeOf) says what the proven kill answered, the real outcome goes to host.log, and a
+ * kill that did not land ('unknown', 'failed') is tried again by retry() (the host calls it on a timer, up to maxRetries) and by any
+ * later stop() (a sentinel after the budget, say), which kill-tree allows because it reopens the "once" for exactly those answers.
+ * A host that refused at start (no pty) stays refused until clearRefused(), which the host calls once the file is gone.
  */
-function createStopper({ term, stopPty, killChildTree, log = () => {}, notify = () => {}, now = Date.now } = {}) {
+function createStopper({ term, stopPty, killChildTree, outcomeOf = () => null, log = () => {}, notify = () => {}, now = Date.now, maxRetries = 5 } = {}) {
   let state = null;
+  let retries = 0;
+
+  const unproven = () => state !== null && (state.kill === 'unknown' || state.kill === 'failed');
+  const say = (line) => { try { log(`[kill-switch] ${line}`); } catch { /* the kill still runs */ } };
+
+  function kill(t, again) {
+    stopPty(t, { killChildTree });
+    let outcome = null;
+    try { outcome = outcomeOf(t); } catch { /* an unreadable outcome is no outcome */ }
+    state.kill = outcome;
+    if (outcome === null) return;
+    say(`${again ? 'retry: ' : ''}kill of pid ${t.pid}: ${outcome}`);
+    if (unproven() && !again) {
+      const text = `Kill switch: the kill of this session's claude was not confirmed (${outcome}). Retrying.`;
+      try { notify({ ...state, text }); } catch { /* the retry still runs */ }
+    }
+  }
+
   return {
     stop(info) {
-      if (state !== null) return false;
+      if (state !== null) {
+        const t = unproven() ? term() : null;
+        if (t) kill(t, true);                      // a later ask retries a kill that did not land; it does not rewrite why this began
+        return false;
+      }
       const text = describeStop(info);
-      state = { ...info, at: now(), text };
-      try { log(`[kill-switch] ${text}`); } catch { /* the kill below still runs */ }
-      try { notify(state); } catch { /* ...and so does it here */ }
+      state = { ...info, at: now(), text, kill: null };
+      say(text);
+      try { notify(state); } catch { /* the kill below still runs */ }
       const t = term();
-      if (t) stopPty(t, { killChildTree });
+      if (t) kill(t, false);
+      return true;
+    },
+    // Called on a timer by the host: only a kill that is still unproven does anything, and only maxRetries times.
+    retry() {
+      if (!unproven() || retries >= maxRetries) return false;
+      const t = term();
+      if (!t) return false;
+      retries++;
+      kill(t, true);
       return true;
     },
     state: () => state,
