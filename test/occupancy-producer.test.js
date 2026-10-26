@@ -44,8 +44,24 @@ test('an agent\'s Edit in another worktree writes its claim, with the host\'s fa
   assert.strictEqual(r.writes.length, 1);
   assert.deepStrictEqual(r.writes[0], {
     agentId: 'ag1', agent: 'electron-pro', worktree: FEAT, also: [], fromBranch: 'develop', fromRoot: DEV,
-    sessionId: 'sess-1', hostPid: 4242, hostStartedAt: '1000', firstAt: 1000, lastAt: 1000, count: 1,
+    sessionId: 'sess-1', hostPid: 4242, hostStartedAt: '1000', firstAt: 1000, lastAt: 1000, count: 1, tool: 'Edit', wroteAt: 1000,
   });
+});
+
+test('R1: a Read stamps no wroteAt; an Edit does; a Read after an Edit keeps the time of the write', () => {
+  const r = rig();
+  const read = (file) => ev('PreToolUse', { tool_name: 'Read', tool_input: { file_path: file }, agent_id: 'ag1', agent_type: 'electron-pro', session_id: 'sess-1' });
+  r.p.handle(read(path.join(FEAT, 'a.js')));
+  assert.ok(!('wroteAt' in r.writes[0]), 'a reader\'s claim has no write time');
+  assert.strictEqual(r.writes[0].tool, 'Read');
+  r.clock = 2000;
+  r.p.handle(edit(path.join(FEAT, 'a.js')));
+  assert.strictEqual(r.writes[1].wroteAt, 2000);
+  r.clock = 3000;
+  r.p.handle(read(path.join(FEAT, 'b.js')));
+  assert.strictEqual(r.writes[2].wroteAt, 2000, 'the write is still the last write');
+  assert.strictEqual(r.writes[2].lastAt, 3000);
+  assert.strictEqual(r.writes[2].tool, 'Read');
 });
 
 test('the claim names the session its call came from, so a hub card matches its OWN session\'s run (backlog #57, Dexter F5)', () => {
