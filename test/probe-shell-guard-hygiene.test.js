@@ -16,7 +16,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-shell-gu
 const PROBE = strip(SRC);
 // the machinery after the case list: the cases themselves legitimately spell taskkill, Stop-Process and the like
 const CODE = PROBE.slice(PROBE.indexOf('const git = (cwd'));
-const { buildCases, attemptCmd, REG_KEY, HOOK } = require('../verify/probe-shell-guard.js');
+const { buildCases, attemptCmd, spawnVictim, REG_KEY, HOOK, SCRATCH_NAME } = require('../verify/probe-shell-guard.js');
 
 const S = 'C:/Users/ricar/AppData/Local/cc-shell-guard-test';
 const CTX = { scratch: S, repo: `${S}/repo`, port: 5555, victimPid: 4242 };
@@ -184,6 +184,35 @@ test('cleanup: the registry canary, the listener, the victim and the scratch fol
   assert.match(PROBE, /server\.close\(\)/);
   assert.match(PROBE, /fs\.rmSync\(w\.dir, \{ recursive: true/);
   assert.match(PROBE, /process\.on\('exit', cleanup\)/);
+});
+
+test('cleanup is armed before anything is made, on exit AND on signals, and leftovers of a killed run are swept under the lock', () => {
+  const made = PROBE.indexOf('w = makeWorld();');
+  assert.ok(made > 0);
+  for (const marker of ["process.on('exit', cleanup)", 'process.on(sig, () => { cleanup(); process.exit(code); })', 'sweepLeftovers();']) {
+    const at = PROBE.indexOf(marker);
+    assert.ok(at > 0 && at < made, `${marker} comes before makeWorld`);
+  }
+  assert.ok(PROBE.indexOf('sweepLeftovers();') > PROBE.indexOf("if (!process.env.HEAVY_LOCK_HELD)"), 'the sweep runs only once the lock is held');
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) assert.match(PROBE, new RegExp(`\\['${sig}', \\d+\\]`));
+  assert.match(PROBE, /if \(cleaned\) return;/, 'cleanup runs once even when exit follows a signal');
+  // the sweep takes only this probe's own mkdtemp folders
+  assert.match(PROBE, /mkdtempSync\(path\.join\(SCRATCH_BASE, 'cc-shell-guard-'\)\)/);
+  for (const n of ['cc-shell-guard-aq8keV', 'cc-shell-guard-0oDV2q']) assert.match(n, SCRATCH_NAME);
+  for (const n of ['cc-shell-guard-', 'cc-shell-guard-aq8keV2', 'cc-shell-guard-aq8ke.', 'Temp', 'claude-cli-nodejs', 'xcc-shell-guard-aq8keV']) assert.doesNotMatch(n, SCRATCH_NAME, n);
+});
+
+test('the victim expires on its own (a run killed before cleanup cannot leave it spinning forever)', async () => {
+  assert.match(PROBE, /const VICTIM_TTL_MS = 10 \* 60000;/);
+  const v = spawnVictim(300);
+  try {
+    assert.ok(v.alive);
+    const deadline = Date.now() + 5000;
+    while (v.alive && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.strictEqual(v.alive, false, 'the victim exited by itself');
+  } finally {
+    if (v.alive) v.proc.kill();   // the held child handle
+  }
 });
 
 test('every case list entry agrees with the hook itself (skipped when the hook is not installed)', (t) => {

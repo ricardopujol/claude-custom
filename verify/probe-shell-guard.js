@@ -220,9 +220,13 @@ const changed = (b, a) => Object.keys(b).filter((k) => JSON.stringify(b[k]) !== 
 
 // The process the allow control ends. A FRESH one before every attempt, never reused: if attempt 1 killed it and its
 // result was lost, a retry would send taskkill to a pid Windows may already have recycled for something real.
-function spawnVictim() {
-  const proc = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
-  const v = { pid: proc.pid, alive: proc.pid !== undefined };
+// It exits on its own after VICTIM_TTL_MS (an attempt is at most RUN_TIMEOUT_MS), so a run killed before its cleanup
+// can't leave it spinning forever.
+const VICTIM_TTL_MS = 10 * 60000;
+function spawnVictim(ttlMs = VICTIM_TTL_MS) {
+  const src = `setTimeout(() => process.exit(0), ${Number(ttlMs)}); setInterval(() => {}, 1000);`;
+  const proc = spawn(process.execPath, ['-e', src], { stdio: 'ignore', windowsHide: true });
+  const v = { pid: proc.pid, alive: proc.pid !== undefined, proc };
   proc.on('exit', () => { v.alive = false; });
   proc.on('error', () => { v.alive = false; });
   return v;
@@ -238,6 +242,19 @@ function attemptCmd(w, c, { spawnFn = spawnVictim, kill = killVictim } = {}) {
   w.victim = spawnFn();
   if (!w.victim.alive) throw new Error('the victim did not start');
   return c.victimCmd(w.victim.pid);
+}
+
+// Leftovers of an earlier run killed before its cleanup ran (on a signal the heavy-lock wrapper ends this probe's tree
+// by pid, so no handler of ours runs): its scratch folders, matched by their mkdtemp name, and the registry canary.
+// Called only while the lock is held, so it can never take a live run's folder.
+const SCRATCH_NAME = /^cc-shell-guard-[A-Za-z0-9]{6}$/;
+function sweepLeftovers() {
+  let names = [];
+  try { names = fs.readdirSync(SCRATCH_BASE); } catch { return; }
+  for (const n of names.filter((x) => SCRATCH_NAME.test(x))) {
+    try { fs.rmSync(path.join(SCRATCH_BASE, n), { recursive: true, force: true }); } catch { /* best effort */ }
+  }
+  spawnSync('reg', ['delete', REG_KEY, '/f'], { windowsHide: true, stdio: 'ignore' });
 }
 
 // ---- one claude run --------------------------------------------------------------------------------------------
@@ -343,22 +360,30 @@ async function main() {
   if (!fs.existsSync(HOOK)) { console.error(`FAIL: hook not found at ${HOOK}`); process.exit(2); }
   const { decide } = require(HOOK);
 
-  const w = makeWorld();
-  const server = http.createServer((req, res) => { req.resume(); req.on('end', () => { w.hits.push(`${req.method} ${req.url}`); res.end('ok'); }); });
+  // Cleanup is armed BEFORE anything is made (an early throw cleans up too), and on signals as well: 'exit' alone does
+  // not fire on Ctrl-C / SIGTERM / a closed console on Windows. If the wrapper's kill wins the race, sweepLeftovers and
+  // the victim's own expiry are the backstop.
+  let w = null, server = null, cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    try { if (w) killVictim(w.victim); } catch { /* gone */ }
+    try { if (server) server.close(); } catch { /* closed */ }
+    spawnSync('reg', ['delete', REG_KEY, '/f'], { windowsHide: true });
+    try { if (w) fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* best effort */ }
+  };
+  process.on('exit', cleanup);
+  for (const [sig, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129], ['SIGBREAK', 149]]) process.on(sig, () => { cleanup(); process.exit(code); });
+  sweepLeftovers();
+
+  w = makeWorld();
+  server = http.createServer((req, res) => { req.resume(); req.on('end', () => { w.hits.push(`${req.method} ${req.url}`); res.end('ok'); }); });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   w.port = server.address().port;
   w.victim = null;   // spawned per attempt by attemptCmd, only for the kill-by-pid allow control
 
   const settingsFile = path.join(w.dir, 'settings.json');
   fs.writeFileSync(settingsFile, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: `node "${HOOK}"` }] }] } }, null, 2));
-
-  const cleanup = () => {
-    try { killVictim(w.victim); } catch { /* gone */ }
-    try { server.close(); } catch { /* closed */ }
-    spawnSync('reg', ['delete', REG_KEY, '/f'], { windowsHide: true });
-    try { fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* best effort */ }
-  };
-  process.on('exit', cleanup);
 
   const ctx = { scratch: w.scratch, repo: w.repo, port: w.port, victimPid: 0 };   // 0: listing only, each attempt bakes in its own
   const only = process.env.PROBE_ONLY ? process.env.PROBE_ONLY.split(',') : null;   // re-run named cases (the gate still runs first)
@@ -418,6 +443,6 @@ async function main() {
   process.exit(aborted ? 2 : failures ? 1 : 0);
 }
 
-module.exports = { buildCases, attemptCmd, REG_KEY, HOOK };
+module.exports = { buildCases, attemptCmd, spawnVictim, REG_KEY, HOOK, SCRATCH_NAME };
 
 if (require.main === module) main().catch((err) => { console.error(err); process.exit(1); });
