@@ -52,6 +52,8 @@ const { closeReason } = require('../host/close-safety');
 const summaryDisplay = require('./summary-display');
 const { planGoTo } = require('./go-to-session');
 const { sideKeyOf, parentKeyOf, isSideKey, sideLabel } = require('../host/side-session');
+// #119 A5: a branch tab's plain shell, a tab of the same kind of its own (host/shell-tab.js).
+const { shellKeyOf, parentKeyOfShell, isShellKey, shellLabel } = require('../host/shell-tab');
 
 // --- pure helpers ------------------------------------------------------------
 
@@ -119,6 +121,12 @@ const NO_PORT_ERROR = 'no usable port for this folder';
 
 // #81: what a side tab says once its claude has ended.
 const SIDE_ENDED_TEXT = "This side session has ended. Reopen it from this tab's menu.";
+// #119 A5: ... and a shell tab once its shell has exited.
+const SHELL_ENDED_TEXT = "This shell has exited. Restart it from this tab's menu.";
+
+// The branch tab a side or shell tab belongs to, or null for any other key.
+const companionParentOf = (k) => (isSideKey(k) ? parentKeyOf(k) : isShellKey(k) ? parentKeyOfShell(k) : null);
+const isCompanionEntry = (e) => !!e && (e.side === true || e.shell === true);
 
 const noWindowText = (h) => `That session is in another claude-custom (pid ${h.pid}, port ${h.port}) ` +
   'with no window open. Open its project to see it.';
@@ -171,6 +179,8 @@ function sanitizeStatus(s) {
  *   hosts.newToken()       -> string
  *   hosts.control({ port, token, msg })    -> Promise<{ ok, reply? , error? }>
  *   hosts.identity({ install, port }), hosts.readToken(install, port)  (planGoTo's)
+ *   hosts.sideHosts() / hosts.shellHosts()  -> [{ port, cwd }] | null   the side / shell hosts the identity files list (optional;
+ *                                               without one each tab is looked for the slow way, by a port walk)
  *   views.create(tab)      -> view          shows the tab's renderer
  *   views.destroy(tab)
  *   views.send(tab, channel, payload)
@@ -365,8 +375,9 @@ function createShell(deps) {
    * the reducer's state never lists it; it is joined here, from the shell's own records.
    */
   function entriesWithSides() {
-    const sideSelected = isSideKey(selectedKey) && tabs.has(selectedKey) ? selectedKey : null;
-    const base = tabModel.stripModel(state, runtime(), sideSelected ? parentKeyOf(sideSelected) : selectedKey, { keyOf });
+    // The side or shell tab showing, if one is (#119 A5: after its branch tab come its side tab, then its shell tab).
+    const sideSelected = companionParentOf(selectedKey) !== null && tabs.has(selectedKey) ? selectedKey : null;
+    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf });
     const out = [];
     for (const e of base) {
       const mine = tabs.get(e.key);
@@ -376,8 +387,28 @@ function createShell(deps) {
       const sk = sideKeyOf(e.key);
       const rec = sk ? tabs.get(sk) : null;
       if (rec) out.push(sideEntry(e, rec, sideSelected === sk));
+      const hk = shellKeyOf(e.key);
+      const shellRec = hk ? tabs.get(hk) : null;
+      if (shellRec) out.push(shellEntry(e, shellRec, sideSelected === hk));
     }
     return out;
+  }
+
+  /** A branch tab's shell (#119 A5): a small tab like the side tab, but not a reader. */
+  function shellEntry(parent, rec, selected) {
+    const st = rec.status;
+    return {
+      key: rec.key, label: shellLabel(parent.label), isDev: false, selected, started: rec.started === true,
+      // A close of its own (Ricardo's look, 2026-10-26): it is a terminal, not a reader of its lane. A develop tab never closes, so
+      // ending only with its branch tab left that lane's shell no way to end at all.
+      closable: true,
+      working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
+      summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
+      lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null,
+      // OSC 7501 is a shell tab's only feed: the dots and the tooltip read the program's own state (app/tab-strip.js stripDots).
+      program: st && st.program && typeof st.program === 'object' && !Array.isArray(st.program) ? st.program : null,
+      shell: true, parentKey: parent.key,
+    };
   }
 
   function sideEntry(parent, rec, selected) {
@@ -402,12 +433,13 @@ function createShell(deps) {
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
         badge: tabModel.badgeFor(e),
-        phaseText: e.side === true && t && t.ended === true ? SIDE_ENDED_TEXT : tabModel.phaseText(e),
+        phaseText: t && t.ended === true && e.side === true ? SIDE_ENDED_TEXT
+          : t && t.ended === true && e.shell === true ? SHELL_ENDED_TEXT : tabModel.phaseText(e),
         mark: readMark(branchOf(e.key)),
         // #119 A6: the GitHub issue this lane was started from ({ number, title, url } or null).
-        issue: e.side === true ? null : issueOf(e.key),
+        issue: isCompanionEntry(e) ? null : issueOf(e.key),
         // #119 A6: this tab's lane brief is being written, and its session waits for it.
-        briefing: e.side !== true && briefHolds.has(e.key),
+        briefing: !isCompanionEntry(e) && briefHolds.has(e.key),
         // #63: the CPU warning chip ({ pct, level } or null).
         resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
@@ -487,6 +519,17 @@ function createShell(deps) {
     return rec;
   }
 
+  /** A branch tab's plain shell (#119 A5): the same folder, a host of its own that main spawns as a shell host and looks for as one. */
+  function newShellRecord(parent) {
+    const rec = newRecord({ path: parent.cwd, branch: null, isDev: false });
+    rec.key = shellKeyOf(parent.key);
+    rec.shell = true;
+    rec.parentKey = parent.key;
+    rec.folderKey = parent.key;
+    rec.branch = shellLabel(parent.branch || path.basename(parent.cwd));
+    return rec;
+  }
+
   // Create the tab's view. The session is running by now (attached or spawned).
   function present(tab, port, token) {
     tab.port = port;
@@ -537,7 +580,7 @@ function createShell(deps) {
         if (!chosen) throw new Error(NO_PORT_ERROR);
         // A side session never spawns into a folder that is being removed, or for a tab that closed during the walk (PR #149 R2-2).
         // (A host the walk FOUND is still attached below, and stopped if its tab closed: it is already running.)
-        if (tab.side === true && chosen.action === 'spawn' && (tab.closed || destroyed || phaseOf(tab.parentKey) === 'removing')) return;
+        if (isCompanionEntry(tab) && chosen.action === 'spawn' && (tab.closed || destroyed || phaseOf(tab.parentKey) === 'removing')) return;
         port = chosen.port;
         // Dexter, PR #75 F2: a spawn whose wait timed out left a host that may
         // still be coming up. Retry must not spawn a second one onto its port.
@@ -565,7 +608,7 @@ function createShell(deps) {
           if (!(await hosts.wait(port))) {
             tab.pending = { port, token };
             // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
-            if (tab.closed && tab.side === true) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
+            if (tab.closed && isCompanionEntry(tab)) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
@@ -578,7 +621,7 @@ function createShell(deps) {
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
           // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
-          if (spawned || tab.side === true) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
+          if (spawned || isCompanionEntry(tab)) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
           return;
         }
         present(tab, port, token);
@@ -619,6 +662,7 @@ function createShell(deps) {
   function apply(actions, before) {
     let reselect = false;
     let sideList;           // the side hosts the identity files list, read at most once per batch of actions (Miguel Y2)
+    let shellList;          // ... and the shell hosts (#119 A5), the same way
     for (const a of actions) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
@@ -629,6 +673,8 @@ function createShell(deps) {
         attachIfRunning(tab);
         if (sideList === undefined) sideList = listSideHosts();
         adoptSide(tab, sideList);
+        if (shellList === undefined) shellList = listShellHosts();
+        adoptShell(tab, shellList);
       } else if (a.type === 'stop') {
         const t = tabByKey(key);
         if (t && t.started && t.port && t.token) {
@@ -640,8 +686,10 @@ function createShell(deps) {
         if (!t) continue;
         // A side session lives and dies with its branch tab (#81).
         const sk = sideKeyOf(key);
-        const sideShowing = sk !== null && selectedKey === sk;
+        const hk = shellKeyOf(key);
+        const sideShowing = (sk !== null && selectedKey === sk) || (hk !== null && selectedKey === hk);
         if (sk !== null) dropSide(sk, { stop: true });
+        if (hk !== null) dropSide(hk, { stop: true });     // a shell (#119 A5) lives and dies with its branch tab too
         t.closed = true;
         if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
         t.view = null;
@@ -673,7 +721,8 @@ function createShell(deps) {
   // after the merge. Exactly one removeResult per remove, whatever happens.
   function runRemove(p) {
     // The side claude has this folder as its working folder: the remover can't take a busy folder, so it is ended first (Dexter 2).
-    endSide(keyOf(p))
+    // ... and so is the lane's shell, whose working folder this is too (#119 A5).
+    Promise.all([endSide(keyOf(p)), endShell(keyOf(p))])
       .then(() => ops.remove({ path: p }))
       .then(r => r, err => ({ ok: false, error: errorText(err) }))
       .then((r) => {
@@ -820,11 +869,11 @@ function createShell(deps) {
    * Hand close, once per tab at a time. A second request for a tab already closing (a double click) is ignored.
    */
   async function closeTab(key, opts) {
-    // A side tab has no close of its own: it ends with its branch tab (#81).
+    // A side tab has no close of its own: it ends with its branch tab (#81). A shell tab has one (closeShellOnce).
     if (isSideKey(key)) return { ok: false, error: 'not closable' };
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
-    try { return await closeTabOnce(key, opts); } finally { closing.delete(key); }
+    try { return await (isShellKey(key) ? closeShellOnce(key) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
   }
   /**
    * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
@@ -1099,7 +1148,11 @@ function createShell(deps) {
     if (mode !== 'tabs') why = 'not a project window';
     else if (busy) why = 'creating…';
     else if (!scripts.create) why = 'worktree scripts not installed';
-    return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [] };
+    // #119 A5: a Shell tab for the SELECTED lane (or, with its side or shell tab showing, that tab's lane).
+    const lane = companionParentOf(selectedKey) || selectedKey;
+    const sm = shellMenu(lane);
+    const shell = sm.label === 'Open shell here' ? { ...sm, label: 'Shell tab' } : sm;
+    return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [], shell };
   }
 
   /**
@@ -1313,7 +1366,7 @@ function createShell(deps) {
     const gone = { enabled: false, label: 'Open side session', target: null };
     if (mode !== 'tabs') return { ...gone, why: 'not a project window' };
     // From the shell's own records: a right-click must not rebuild the whole strip model (claims, marks...).
-    const target = isSideKey(key) ? (tabs.has(key) ? parentKeyOf(key) : null) : key;
+    const target = companionParentOf(key) !== null ? (tabs.has(key) ? companionParentOf(key) : null) : key;
     const parent = target === null ? null : tabByKey(target);
     if (!parent) return { ...gone, why: 'no such tab' };
     const rec = tabs.get(sideKeyOf(target));
@@ -1382,8 +1435,18 @@ function createShell(deps) {
    * its branch tab. Once open it stays; asking again goes to it. A stopped one is dropped and started afresh.
    */
   async function openSide(key) {
+    return openCompanion(key, sideKeyOf, newSideRecord);
+  }
+
+  /** *Open shell here* (a tab's menu, or the + menu): the same lifecycle as the side session, with a host that runs the person's shell (#119 A5). */
+  async function openShell(key) {
+    return openCompanion(key, shellKeyOf, newShellRecord);
+  }
+
+  /** The side session and the shell share one lifecycle: one per lane, kept until the lane closes, restarted once ended. */
+  async function openCompanion(key, keyFn, newRec) {
     if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
-    const sk = sideKeyOf(key);
+    const sk = keyFn(key);
     const parent = sk === null ? null : tabByKey(key);
     if (!parent || parent.closed) return { ok: false, error: 'no such tab' };
     // A claude started in a folder `git worktree remove` is deleting leaves it half removed (Dexter 5): the same refusal a hand close has.
@@ -1397,22 +1460,31 @@ function createShell(deps) {
     // An ended record has no host to stop. (A timed-out spawn's `pending` can't be on a record that is also `ended`: pending is only
     // set while the start has not presented, and `ended` only after it has.)
     if (existing) dropSide(sk, { stop: false });
-    tabs.set(sk, newSideRecord(parent));
+    tabs.set(sk, newRec(parent));
     await select(sk);
     return { ok: true };
   }
 
   /** At open: a side host still running from an earlier window comes back as the tab's side tab, with no spawn. */
   function adoptSide(parent, list) {
-    const sk = sideKeyOf(parent.key);
+    adoptCompanion(parent, list, sideKeyOf, newSideRecord, 'side');
+  }
+
+  /** At open: a shell host still running from an earlier window comes back as the tab's shell tab, with no spawn (#119 A5). */
+  function adoptShell(parent, list) {
+    adoptCompanion(parent, list, shellKeyOf, newShellRecord, 'shell');
+  }
+
+  function adoptCompanion(parent, list, keyFn, newRec, what) {
+    const sk = keyFn(parent.key);
     if (sk === null) return;
     // The identity files say which folders have a side host: a tab with none costs no port walk, and no place in the start queue.
     if (Array.isArray(list) && !list.some(h => h && typeof h.cwd === 'string' && keyOf(h.cwd) === parent.key)) return;
     queue.run(async () => {
       if (parent.closed || destroyed || tabs.has(sk)) return;
-      const rec = newSideRecord(parent);
+      const rec = newRec(parent);
       let chosen = null;
-      try { chosen = await hosts.choosePort(rec); } catch (err) { log('[shell] side port probe failed:', err && err.message); }
+      try { chosen = await hosts.choosePort(rec); } catch (err) { log(`[shell] ${what} port probe failed:`, err && err.message); }
       if (!chosen || chosen.action !== 'attach' || tabs.has(sk)) return;
       const token = hosts.tokenFile(chosen.port) || hosts.tokenFor(chosen.port);
       if (!token) return;
@@ -1428,11 +1500,34 @@ function createShell(deps) {
 
   /** The side hosts this build's identity files list ([{ port, cwd }]), or null when that can't be told (then each tab is looked for). */
   function listSideHosts() {
-    if (typeof hosts.sideHosts !== 'function') return null;
-    try { const l = hosts.sideHosts(); return Array.isArray(l) ? l : null; } catch (err) {
-      log('[shell] hosts.sideHosts threw:', err && err.message);
+    return listHosts('sideHosts');
+  }
+
+  /** The shell hosts the identity files list, the same way (#119 A5). */
+  function listShellHosts() {
+    return listHosts('shellHosts');
+  }
+
+  function listHosts(name) {
+    if (typeof hosts[name] !== 'function') return null;
+    try { const l = hosts[name](); return Array.isArray(l) ? l : null; } catch (err) {
+      log(`[shell] hosts.${name} threw:`, err && err.message);
       return null;
     }
+  }
+
+  /** The menu's shell item for a lane or its shell tab: its text, whether it works, and which branch tab it acts on (#119 A5). */
+  function shellMenu(key) {
+    const gone = { enabled: false, label: 'Open shell here', target: null };
+    if (mode !== 'tabs') return { ...gone, why: 'not a project window' };
+    const target = companionParentOf(key) !== null ? (tabs.has(key) ? companionParentOf(key) : null) : key;
+    const parent = target === null || target === undefined ? null : tabByKey(target);
+    if (!parent) return { ...gone, why: 'no such tab' };
+    const rec = tabs.get(shellKeyOf(target));
+    const label = !rec ? 'Open shell here' : (rec.ended === true ? 'Restart shell' : 'Go to shell');
+    if (phaseOf(target) === 'removing') return { enabled: false, label, target, why: 'its folder is being removed' };
+    if (setupHolds(parent)) return { enabled: false, label, target, why: 'its worktree is still being set up' };
+    return { enabled: true, label, target };
   }
 
   /**
@@ -1440,26 +1535,72 @@ function createShell(deps) {
    * a claude is working in, so this runs before it. A host that doesn't answer its stop is not waited on for ever: the caller goes on.
    */
   async function endSide(parentKey) {
-    const sk = sideKeyOf(parentKey);
+    return endCompanion(sideKeyOf(parentKey));
+  }
+
+  /** The same for the lane's shell (#119 A5): the remover can't take a folder a shell is standing in either. */
+  async function endShell(parentKey) {
+    return endCompanion(shellKeyOf(parentKey));
+  }
+
+  async function endCompanion(sk) {
     const t = sk ? tabs.get(sk) : null;
     if (!t) return;
-    // Closed first, so a start still in its port walk gives up before it spawns; then wait for it to settle, so what it made or found
-    // is on the record when it is stopped below (R2-2). The remover must not start with a claude about to appear in the folder.
-    t.closed = true;
-    if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
-    const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
-    if (target) {
-      try { await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }); } catch { /* the remover reports a folder still in use */ }
-    }
+    await stopCompanion(t);     // a stop that fails: the remover reports a folder still in use
     dropSide(sk, { stop: false });
     publish();
+  }
+
+  /**
+   * End a side or shell tab's host and wait for its answer: why it may still be running, or null. Closed first, so a start still in
+   * its port walk gives up before it spawns; then the start is let settle, so what it made or found is on the record when it is
+   * stopped (R2-2). The remover must not start with a claude about to appear in the folder. The host's stop is its own teardown: the
+   * pty tree killed by pid (host/pty-stop.js, host/kill-tree.js) and its identity file removed. An ended record is sent nothing: its
+   * host is gone, and its port may be another host's by now.
+   */
+  async function stopCompanion(t) {
+    t.closed = true;
+    if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
+    const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || null);
+    if (!target) return null;
+    try {
+      const r = await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } });
+      return r && r.ok === true ? null : ((r && r.error) || 'no answer');
+    } catch (err) {
+      return (err && err.message) || String(err);
+    }
+  }
+
+  /**
+   * A shell tab closed by hand (Ricardo's look, 2026-10-26): its x, a Ctrl+click, the menu's Close shell, or its page's own close.
+   * Nothing asks: it is a terminal and the folder stays. Reopen doesn't offer it back (Open shell here starts a fresh one). If it
+   * was showing, its own branch tab shows next.
+   */
+  async function closeShellOnce(key) {
+    const t = tabs.get(key);
+    if (!t || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    const failure = await stopCompanion(t);
+    if (!tabs.has(key)) return { ok: true };     // gone meanwhile: its branch tab closed, or its folder was removed
+    const showing = selectedKey === key;
+    dropSide(key, { stop: false });
+    const parentKey = parentKeyOfShell(key);
+    if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
+    else publish();
+    if (failure !== null) {
+      closeNotice = `Couldn't end the shell in ${t.branch}: ${failure}. It may still be running.`;
+      log(`[shell] ${key}: ${closeNotice}`);
+      publish();
+      return { ok: true, stopError: failure };
+    }
+    log(`[shell] closed ${key}`);
+    return { ok: true };
   }
 
   function destroy() { destroyed = true; }
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
@@ -1647,6 +1788,15 @@ async function handleProbeCommand(line, api, expectedToken) {
         // #77: a real Ctrl+click on the strip's tab, so the page's own handler runs.
         if (typeof cmd.label !== 'string') return { ok: false, error: 'ctrlClick needs a label' };
         return await api.ctrlClick(cmd.label);
+      case 'xClick':
+        // Ricardo's look, 2026-10-26: a real plain click on the tab's own x.
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'xClick needs a label' };
+        return await api.xClick(cmd.label);
+      case 'tabMenu':
+        // The tab's right-click menu as built, and one item's own click: a native popup nobody can click.
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'tabMenu needs a label' };
+        if (cmd.item !== undefined && typeof cmd.item !== 'string') return { ok: false, error: 'tabMenu item must be a label' };
+        return await api.tabMenu(cmd.label, cmd.item);
       case 'mouseMove': {
         // BACKLOG #85: a real pointer move over the selected view, so hover is judged by hit-testing and not by a dispatched event.
         const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
@@ -1689,6 +1839,10 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'side-open':
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'side-open needs a label' };
         return await api.sideOpen(cmd.label);
+      // #119 A5: the tab menu's Open shell here, the same way.
+      case 'shell-open':
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'shell-open needs a label' };
+        return await api.shellOpen(cmd.label);
       // #31: what the window's own `focus` event does, without an OS to hand over focus.
       case 'windowFocus': return await api.windowFocus();
       // #62: the window losing focus, as the OS would (Ricardo's lean video rule reads focus).

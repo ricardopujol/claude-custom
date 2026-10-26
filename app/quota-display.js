@@ -129,7 +129,9 @@ function formatResetClock(resetsAt, now = Date.now()) {
  *            but the note must not say the read failed (Dexter, PR #73 F1).
  *   ready    draw the meters.
  */
-function quotaDisplay(quota, now = Date.now()) {
+function quotaDisplay(quota, now = Date.now(), hostKind = null) {
+  // A shell tab's host reads no account limits and never will: say nothing, not "reading" for ever (PR #208 Dexter 4).
+  if (hostKind === 'shell') return { state: 'hidden', note: '', meters: [] };
   if (!quota) {
     return { state: 'reading', note: 'reading account limits…', meters: [] };
   }
