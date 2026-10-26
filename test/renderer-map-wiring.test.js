@@ -99,7 +99,8 @@ test('"since when" is learned from the mood message only: an agent already worki
 test('the roster, the tree and the turn all refresh the map', () => {
   assert.match(RENDERER, /function renderRoster\(\) \{\s*mapRefresh\(\);/);
   assert.match(RENDERER, /renderGitGraph\(\);[^\n]*\n\s*mapRefresh\(\);/);
-  assert.match(RENDERER, /sessionTurn = msg\.turn === undefined \? null : msg\.turn;\s*paintBar\(\);\s*reportTabStatus\(\);\s*mapRefresh\(\);/);
+  // the turn handler may do its own work first (PR #158's agent-pause clock sits there), but it ends by repainting and refreshing the map
+  assert.match(RENDERER, /sessionTurn = msg\.turn === undefined \? null : msg\.turn;(?:(?!\n {2}\}|sessionTurn = msg)[\s\S]){0,800}?paintBar\(\);\s*reportTabStatus\(\);\s*mapRefresh\(\);\s*return;/);
 });
 
 test('opening the panel, or the window coming back to the front, asks at once', () => {
