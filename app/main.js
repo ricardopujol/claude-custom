@@ -127,7 +127,7 @@ const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
 const taskLogsFs = require('../host/task-logs-fs');
 const { claudeConfigDir } = require('../host/claude-config-dir');
 const os = require('os');
-const taskLogsRoot = path.join(os.tmpdir(), 'claude');
+const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { createScoreStore } = require('../host/game-scores');
@@ -1271,7 +1271,8 @@ function registerIpc() {
         // Hosts from before the kill switch don't watch the file (Dexter F3): say how many the file can't reach.
         countUnstoppable: () => countUnstoppable({ installs: stopAllInstalls(), identitiesIn, isAlive: defaultIsAlive }),
       });
-      console.log(`[main] STOP ALL: ${r.outcome}${r.error ? ` (${r.error})` : ''}${r.unstoppable ? `, ${r.unstoppable} older-build session(s) can't be stopped by the file` : ''} -> ${r.file}`);
+      console.log(`[main] STOP ALL: ${r.outcome}${r.error ? ` (${r.error})` : ''} -> ${r.file}`);
+      if (r.unstoppable) console.log('[main] STOP ALL: ' + r.unstoppable + ' older-build session(s) cannot be stopped by the file');
       if (r.outcome === 'failed' && win && !win.isDestroyed()) {
         dialog.showMessageBox(win, { type: 'error', buttons: ['OK'], message: "Couldn't write the stop file", detail: `${r.file}: ${r.error}. No session was stopped.` }).catch(() => {});
       }

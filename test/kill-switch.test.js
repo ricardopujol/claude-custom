@@ -712,12 +712,11 @@ test('stopAllHome: ~/.claude from the home folder, whatever CLAUDE_CONFIG_DIR sa
 // --- main's whole STOP ALL path, for real (Miguel Y2) --------------------------------------------------------------------------
 
 const fs = require('fs');
-const os = require('os');
 const { writeFileAtomic } = require('../host/atomic-write');
 const { writeIdentity } = require('../host/host-identity');
 const { identitiesIn } = require('../host/background-hosts');
 
-function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'ks-stopall-')); }
+const { tmpDir } = require('./tmp-dir');
 
 test('runStopAll: the question gets the real path, a yes writes ~/.claude/STOP-ALL through the atomic write, and nothing else is left behind', async () => {
   const home = tmpDir();
