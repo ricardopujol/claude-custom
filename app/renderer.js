@@ -836,6 +836,8 @@ const repoBrowser = window.repoBrowser.create({
   // the reader's width is kept per tab: every tab's page shares one localStorage, so the key names this one
   storageKey: () => `repoReaderWidth:${document.getElementById('cwd').textContent || ''}`,
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
+  // a review comment from the Changes Compare (#119 A3): typed like the @ mention and NEVER submitted, the person presses Enter
+  typeComment: (text, done) => typeReviewComment(text, done),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
   // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
@@ -1287,6 +1289,40 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 // The page is going away mid-round: bank the score it has (best effort; the raise is the same safe write as at a round's end).
 window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
+
+// --- the Changes panel (BACKLOG #119 A3) -----------------------------------------------------------------------------------
+// CHANGES-BEGIN
+// app/changes-display.js builds the list and decides what a click or a key means; the changeset comes from THIS tab's host over the socket
+// (the `changes` control, host/changes-service.js, read-only git), and a file opens in the reader's side-by-side Compare
+// (app/repo-reader.js openChange). What is here is what only this page knows: the socket, the reader, which files Claude edited (the Files
+// tab's overlay, asked for with each list so the dots are never a refresh behind) and whether the panel is on screen.
+const changesRoot = document.getElementById('changes-root');
+const changesPanel = changesRoot ? window.changesDisplay.mount({
+  doc: document,
+  root: changesRoot,
+  request: async (action, body) => {
+    const [reply] = await Promise.all([
+      repoBrowser.changes.request(action, body),
+      action === 'list' ? repoBrowser.refreshTouched().catch(() => false) : null,
+    ]);
+    return reply;
+  },
+  isTouched: (p) => repoBrowser.isTouched(p),
+  openChange: (info) => { repoBrowser.openChange(info).catch(() => {}); },
+  usage,
+}) : null;
+// the host's `changed` push: two seconds after a tool that can change a file (host/changes-notifier.js). Acted on only while the panel shows.
+repoBrowser.changes.onChanged(() => { if (changesPanel) changesPanel.onChanged(); });
+let changesWasShown = false;
+function changesView() {
+  if (!changesPanel) return;
+  const now = shownModules.has('changes') && document.visibilityState === 'visible';
+  if (now === changesWasShown) return;
+  changesWasShown = now;
+  if (now) changesPanel.show(); else changesPanel.hide();
+}
+document.addEventListener('visibilitychange', changesView);
+// CHANGES-END
 
 // --- the Map panel (BACKLOG #120) -------------------------------------------------------------------------------------------
 // MAP-BEGIN
@@ -2015,6 +2051,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
   mapView();                        // the map draws only while shown, and moves only while the window is focused and not lean
+  changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
@@ -3849,6 +3886,29 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
       // the repo browser (verify/probe-repo-browser.js): named sub-actions of the Files tab and the reader
+      // the Changes panel (verify/probe-changes-panel.js): read it, and operate it as a pointer or a key would
+      case 'changesProbe': {
+        if (!changesPanel) return JSON.stringify({ ok: false, error: 'no Changes panel' });
+        if (a.what === 'state') return JSON.stringify(changesPanel.probe());
+        if (a.what === 'refresh') { changesPanel.refresh(); return JSON.stringify({ ok: true }); }
+        if (a.what === 'clickRow') {
+          const row = Array.from(changesRoot.querySelectorAll('.chg-row')).find(r => r.dataset.path === a.path);
+          if (!row) return JSON.stringify({ ok: false, error: `no row for ${a.path}` });
+          row.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.what === 'clickScope') {
+          const b = changesRoot.querySelector(`.chg-scope-btn[data-scope="${a.scope === 'branch' ? 'branch' : 'working'}"]`);
+          if (!b) return JSON.stringify({ ok: false, error: 'no scope button' });
+          b.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.what === 'key') {
+          changesRoot.dispatchEvent(new KeyboardEvent('keydown', { key: String(a.key), bubbles: true, cancelable: true }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: `unknown changes action ${a.what}` });
+      }
       case 'repoProbe': {
         const r = repoBrowser.probe(a.what, a);
         return r && typeof r.then === 'function' ? r.then(x => JSON.stringify(x)) : JSON.stringify(r);
@@ -7379,6 +7439,52 @@ const SUBMIT_RECHECK_MS = 400;
 const QUEUED_POLL_MS = 150;
 const QUEUED_POLLS = 6;
 
+// The review comments the Changes Compare typed (PR #199 Dexter 1, r2 N1-N3): THE COMPOSER IS NEVER DESTRUCTIVE. A second comment is ADDED at the end of
+// the line this feature typed (`lastCommentLine`), with no clear at all, when the SCREEN says the box still holds exactly that line (any editor mode,
+// app/top-bar-display.js boxIsCommand). MEASURED on the real CLI (verify/probe-ctrl-u-wrapped.js, claude 2.1.x, 150 characters): Ctrl-U on a line wrapped
+// over rows kills only its LAST row (80 columns: 3 rows -> 2 left; 120 columns: 2 -> 1), so a clear-and-retype of a wrapped line is no clear, and
+// Ctrl-E followed by more text appends correctly at both widths. So nothing here ever sends Ctrl-U to a box that may hold a comment of ours: if the
+// read-back after an append is not exactly what was expected, it STOPS and leaves the box as it is. A box that holds none of our line is typed into the
+// ordinary way (a draft is replaced, with the Ctrl+Y note); one that looks like our comment but is not exactly it is refused, never cleared.
+let lastCommentLine = '';
+const APPEND_UNCONFIRMED = "the prompt didn't read back as expected. What is typed stays as it is; Ctrl+Y in that tab restores an older draft. The comments not typed are still queued";
+function typeReviewComment(text, done) {
+  const lines = screenLines();
+  if (vimInsertShown(lines)) vimSeen = true;
+  const plan = planCommentTyping({ lines, last: lastCommentLine, text, vim: vimSeen, termRows: term.rows, connected: !!ws && ws.readyState === WebSocket.OPEN, hostKind });
+  if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
+  if (plan.mode === 'fresh') {
+    typeCommand(plan.command, (r) => {
+      if (!r.ok) { done({ ok: false, reason: r.reason }); return; }
+      lastCommentLine = plan.command;
+      usage('changes:comment-typed');
+      done({ ok: true, appended: false, ...(r.box ? { cleared: r.box } : {}) });
+    }, 'comment');
+    return;
+  }
+  typeAppended(plan.keys, plan.expected, (r) => {
+    if (r.ok) {
+      lastCommentLine = plan.expected;
+      usage('changes:comment-typed');
+    }
+    done(r);
+  });
+}
+
+// The append's own typing (it can't go through typeAndCheck, whose failed read-back clears the box): gated like it, a shell tab first, then the lock;
+// spaced like every other typing, and NO cleanup path of any kind.
+function typeAppended(keys, expected, done) {
+  if (hostKind === 'shell') { done({ ok: false, reason: SHELL_TAB_REFUSAL }); return; }
+  if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
+  typingBusy = true;
+  term.focus();
+  keys.forEach((k, i) => setTimeout(() => send(JSON.stringify({ type: 'input', data: k })), PTY_STEP_MS * i));
+  setTimeout(() => {
+    typingBusy = false;
+    done(boxIsCommand(screenLines(), expected, { termRows: term.rows }) ? { ok: true, appended: true } : { ok: false, reason: APPEND_UNCONFIRMED });
+  }, PTY_STEP_MS * (keys.length + 2));
+}
+
 function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
@@ -8742,6 +8848,7 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    if (changesPanel && shownModules.has('changes')) changesPanel.refresh();      // the socket opens before the hello: a panel showing since load asks now
     // the Ask panel asks nothing of a host that doesn't list `ask` (an older host would type the frame into the session)
     askRequester.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (askPanel && shownModules.has('ask')) askPanel.show();
@@ -9079,7 +9186,8 @@ function handleControl(msg) {
     renderCooldowns(msg.cooldowns);
     return;
   }
-  if (msg.type === 'repo') {
+  // `changes` (the Changes panel, #119 A3) shares the browser's requester: left out here, every answer and every `changed` push is dropped
+  if (window.repoBrowser.handles(msg)) {
     repoBrowser.onMessage(msg);
     return;
   }

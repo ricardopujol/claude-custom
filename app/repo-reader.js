@@ -8,6 +8,9 @@
  *   create({ doc, requester, harness, storage, storageKey, typeMention, onClose }) ->
  *     { open(path), openAt(path, line, endLine), selectionInfo(), close(), isOpen(), path(), setOverlay(overlay), onRepoChanged(), probe(action, args) }
  *
+ *   Changes view   openChange(info): a file picked in the Changes panel (BACKLOG #119 A3), its base version (HEAD, or the merge-base
+ *                  with develop) beside what is on disk now, side by side. A "+" on a line opens a one-line field; Enter types
+ *                  `In <path>:<line> - <comment>` into the prompt and NEVER submits it. See "the Changes Compare" below.
  *   Diff toggle    only on a file the overlay says Claude edited. Claude's own Edit / Write calls first, git
  *                  diff HEAD as the fallback (host/repo-diff.js); "no changes recorded" when neither.
  *   @ in prompt    types `@path` or `@path#L40-60` (the selected lines) into the CLI's input box through the
@@ -35,6 +38,16 @@
  *     Compare     the two versions line by line (app/repo-linediff.js), with Back to editing.
  *   Leaving with unsaved text asks first: another file (or the same one again), closing the panel or Esc, and
  *   Done. The page also reports the unsaved file to main (`onDirty`) so closing the TAB asks too.
+ *
+ * CHANGES COMPARE, KNOWN LIMITS (PR #199 review, documented rather than coded):
+ *   - a change that is only the file's FINAL NEWLINE has no hunk (the line diff drops the trailing empty line on both sides), so `j` / `k` have
+ *     nothing to go to though the list shows the file as changed (Dexter 8);
+ *   - the compare is stamped with the disk side only: after a COMMIT the file is unchanged on disk, so the open Compare stays on the old HEAD
+ *     until the next refresh of that file; the list drops the file at once (Dexter 9);
+ *   - queued comments name path:line as they were when queued; if the file changes under them they can point at shifted lines. The queue is
+ *     visible, and the person presses Enter (Miguel S4: a design question, in the PR's open questions);
+ *   - a typed stack past one screen row is one wrapped logical line. Nothing here clears it: MEASURED (verify/probe-ctrl-u-wrapped.js) Ctrl-U kills only the
+ *     last wrapped row, so a comment is ADDED at the end (app/top-bar-display.js planCommentTyping) and a failed read-back leaves the box as it is.
  *
  * MARKDOWN (BACKLOG #119 A9). A .md / .markdown file opens as a rendered PAGE (marked + DOMPurify + Mermaid, one lazily
  * loaded bundle: app/markdown-reader.js, built by build/build-markdown.mjs) with a Rendered | Source segment in the
@@ -83,11 +96,14 @@ const saveFailure = (r) => (r && SAVE_WHY[r.why] ? SAVE_WHY[r.why](r) : (r && (r
 
 const OLD_HOST = "this session's host is older than this window and can't save; restart the session to edit";
 
-function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidth', typeMention, onClose, termRect, confirmDiscard, onDirty, onAsk, onOpenUrl } = {}) {
+// `changes` is the `changes` conversation (request(action, body)) and `typeComment(text, done)` the page's typing path for a review comment
+// (planTyping kind `comment`); both come from app/repo-browser.js and are absent in an older wiring.
+function create({ doc, requester, changes, harness, storage, storageKey = 'repoReaderWidth', typeMention, typeComment, onClose, termRect, confirmDiscard, onDirty, onAsk, onOpenUrl } = {}) {
   const keyNow = () => (typeof storageKey === 'function' ? storageKey() : storageKey);
   const lang = root.repoLanguage || (typeof require === 'function' ? require('./repo-language') : null);
   const mention = root.repoMention || (typeof require === 'function' ? require('./repo-mention') : null);
   const lineDiff = root.repoLineDiff || (typeof require === 'function' ? require('./repo-linediff') : null);
+  const changesCompare = root.changesCompare || (typeof require === 'function' ? require('./changes-compare') : null);
   const $ = (id) => doc.getElementById(id);
   const el = {
     pane: $('reader'), split: $('reader-split'), path: $('reader-path'), meta: $('reader-meta'),
@@ -98,7 +114,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     dirty: $('reader-dirty'), edit: $('reader-edit'), save: $('reader-save'),
     conflict: $('reader-conflict'), conflictText: $('reader-conflict-text'), conflictReload: $('reader-conflict-reload'),
     conflictKeep: $('reader-conflict-keep'), conflictCompare: $('reader-conflict-compare'),
-    compare: $('reader-compare'), compareRows: $('reader-compare-rows'), compareBack: $('reader-compare-back'),
+    compare: $('reader-compare'), compareRows: $('reader-compare-rows'), compareBack: $('reader-compare-back'), compareTitle: $('reader-compare-title'),
+    queue: $('reader-compare-queue'), queueText: $('reader-compare-queue-text'), queueItems: $('reader-compare-queue-items'), send: $('reader-compare-send'), clear: $('reader-compare-clear'),
     md: $('reader-md'), view: $('reader-view'), viewRendered: $('reader-view-rendered'), viewSource: $('reader-view-source'),
   };
   // Asked before unsaved text is thrown away. No dialog available means NO: nothing is discarded unasked.
@@ -115,6 +132,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     // edit mode: `base` is the version the person started from (what dirty is measured against, and the hash a save
     // names); `conflict` is the banner's state; `reported` is the last unsaved path told to `onDirty`
     editing: false, base: null, conflict: null, comparing: false, saving: false, reported: null,
+    // the Changes Compare: what is being compared, and the comments queued to be typed into the prompt
+    change: null, pending: [], sending: false, deferredNote: '',
     // Markdown (#119): `view` is the person's choice for every .md file, kept per install; `rendered` says the page is on screen
     view: 'rendered', rendered: false, mdSeq: 0, mdPath: null,
   };
@@ -328,6 +347,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     state.path = null;
     state.stamp = null;
     state.base = null;
+    state.change = null;
+    closeComposer();
     syncDirty();
     if (onClose) onClose();
     return true;
@@ -356,9 +377,11 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     el.view.hidden = !seg;
     el.viewRendered.setAttribute('aria-pressed', state.view === 'rendered' ? 'true' : 'false');
     el.viewSource.setAttribute('aria-pressed', state.view === 'source' ? 'true' : 'false');
-    el.diff.hidden = state.editing || !((edited && edited.tier === 'edited') || state.modified);
-    el.diff.textContent = state.mode === 'diff' ? 'File' : 'Diff';
-    el.diff.setAttribute('aria-pressed', state.mode === 'diff' ? 'true' : 'false');
+    // in the Changes Compare the same button goes back to the plain file
+    const inChanges = state.mode === 'changes';
+    el.diff.hidden = inChanges ? false : state.editing || !((edited && edited.tier === 'edited') || state.modified);
+    el.diff.textContent = inChanges || state.mode === 'diff' ? 'File' : 'Diff';
+    el.diff.setAttribute('aria-pressed', inChanges || state.mode === 'diff' ? 'true' : 'false');
     // Edit: only with an editor that can edit (not the plain-text fallback), on a file view; disabled with the
     // host's reason when the file can't be written back faithfully
     const canEdit = !!(state.base && state.mode === 'file' && state.editor && typeof state.editor.setEditable === 'function');
@@ -372,7 +395,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     el.save.hidden = !state.editing;
     el.save.disabled = !dirty || state.saving;
     const bits = [];
-    if (state.mode === 'diff' && state.diffSource) bits.push(state.diffSource === 'claude' ? "Claude's edits" : 'git diff HEAD');
+    if (inChanges && state.change) bits.push(`${changeBaseLabel()} vs now`);
+    else if (state.mode === 'diff' && state.diffSource) bits.push(state.diffSource === 'claude' ? "Claude's edits" : 'git diff HEAD');
     else if (state.stamp) bits.push(fmtSize(state.stamp.size));
     if (state.status) bits.push(state.status);
     el.meta.textContent = bits.join(' · ');
@@ -435,6 +459,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   async function toggleDiff() {
     if (!state.path || state.editing) return;
     const token = ++state.token;
+    if (state.mode === 'changes') { state.mode = 'file'; await open(state.path, { keepMode: true, discard: true }); return; }
     if (state.mode === 'diff') { state.mode = 'file'; await open(state.path, { keepMode: true, discard: true }); return; }
     state.mode = 'diff';
     paintHead();
@@ -653,9 +678,251 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     }
     if (out.length >= COMPARE_MAX_ROWS) row('gap', 'the rest is not shown', null, null);
     el.compareRows.replaceChildren(...out);
+    el.compareTitle.textContent = 'On disk now, against yours';
+    el.compareBack.hidden = false;
     state.comparing = true;
     el.compare.hidden = false;
     el.body.hidden = true;
+  }
+
+  // ---- the Changes Compare (BACKLOG #119 A3) ----
+  // A file picked in the Changes panel: its BASE version (HEAD, or the merge-base with the integration branch) beside what is on
+  // disk now, aligned by the same line diff as the conflict Compare. Read-only. A line has a "+" that opens a one-line field:
+  // Enter types `In <path>:<line> - <comment>` into the prompt, Shift+Enter queues it, and a queue is typed as ONE line. Nothing is
+  // ever submitted: the person presses Enter in the terminal.
+
+  const COMPARE_MAX_BYTES = 1024 * 1024;
+  const changeBaseLabel = () => { const c = state.change; return c && c.scope === 'branch' ? (c.base || 'the base') : 'HEAD'; };
+  const plural = (n, one, many) => (n === 1 ? one : many);
+
+  async function openChange(info) {
+    const i = info && typeof info === 'object' ? info : {};
+    if (typeof i.path !== 'string' || i.path === '') return;
+    if (isDirty() && !(await confirmLeave(`You have unsaved changes to ${state.path}. Discard them and open the changes of ${i.path}?`))) return false;
+    stopEditing({ revert: false });
+    closeComposer();
+    state.path = i.path;
+    state.base = null;
+    state.mode = 'changes';
+    state.status = '';
+    state.diffSource = null;
+    state.change = {
+      path: i.path, oldPath: typeof i.oldPath === 'string' && i.oldPath !== '' ? i.oldPath : null, status: i.status,
+      scope: i.scope === 'branch' ? 'branch' : 'working', base: typeof i.base === 'string' ? i.base : null, rows: [], hunks: [], cur: null,
+    };
+    const token = ++state.token;
+    showPane();
+    clearBar();
+    paintHead();
+    showNote('reading...', { reveal: false });
+    await renderChange(token);
+  }
+
+  function refuseChange(text) {
+    hideCompare();
+    showNote(text, { reveal: false });
+    paintHead();
+  }
+
+  async function renderChange(token) {
+    const c = state.change;
+    if (!c) return;
+    if (!changes || typeof changes.request !== 'function') { refuseChange('The Changes compare is not available in this window.'); return; }
+    const deleted = c.status === 'D';
+    const fresh = c.status === 'A';
+    const baseBody = { scope: c.scope, path: c.path, ...(c.oldPath ? { oldPath: c.oldPath } : {}) };
+    let [now, base] = await Promise.all([
+      deleted ? Promise.resolve({ ok: true, text: '', size: 0 }) : requester.request('read', { path: c.path }),
+      fresh ? Promise.resolve({ ok: true, text: '' }) : changes.request('base', baseBody),
+    ]);
+    if (token !== state.token || state.change !== c) return;
+    if (!now.ok && now.why === 'gone') now = { ok: true, text: '', size: 0 };
+    if (!now.ok) { refuseChange(now.why === 'too-large' ? 'This file is too large to compare (over 1 MB).' : refusalText(now)); return; }
+    if (now.size > COMPARE_MAX_BYTES) { refuseChange(`This file is ${fmtSize(now.size)}, too large to compare (over 1 MB).`); return; }
+    if (!base.ok && base.why === 'new') base = { ok: true, text: '' };
+    if (!base.ok) {
+      refuseChange(base.why === 'too-large' ? 'The base version is too large to compare (over 1 MB).'
+        : base.why === 'binary' ? 'This file was a binary file at the base, so there is nothing to compare.'
+          : base.why === 'encoding' ? 'This file was UTF-16 at the base, an encoding the compare does not decode.'
+          : `The base version could not be read: ${base.error || base.why || 'unknown error'}`);
+      return;
+    }
+    closeComposer();
+    // both sides are made the same way (a BOM dropped, CRLF folded), so a line is marked changed only when it is (PR #199 Dexter 4)
+    c.rows = changesCompare.fold(changesCompare.sideBySide(lineDiff.diffLines(changesCompare.normalizeText(base.text), changesCompare.normalizeText(now.text))));
+    c.hunks = changesCompare.hunkStarts(c.rows);
+    c.cur = null;
+    state.stamp = deleted ? null : { size: now.size, mtimeMs: now.mtimeMs };
+    el.compareRows.replaceChildren(...changesCompare.buildRows(doc, c.rows));
+    el.compareTitle.textContent = `${changeBaseLabel()} against now`;
+    el.compareBack.hidden = true;
+    hideNote();
+    state.comparing = true;
+    el.compare.hidden = false;
+    el.body.hidden = true;
+    paintHead();
+    renderQueue();
+  }
+
+  // -- the current row, and the hunks --
+
+  function setCur(i) {
+    const c = state.change;
+    const rows = el.compareRows.children;
+    if (!c || !rows[i]) return;
+    if (Number.isInteger(c.cur) && rows[c.cur]) rows[c.cur].className = rows[c.cur].className.replace(/ cur\b/g, '');
+    c.cur = i;
+    rows[i].className += ' cur';
+    if (typeof rows[i].scrollIntoView === 'function') rows[i].scrollIntoView({ block: 'center' });
+  }
+
+  function jumpHunk(dir) {
+    const c = state.change;
+    if (!c) return;
+    const at = dir > 0 ? changesCompare.nextHunk(c.hunks, c.cur) : changesCompare.prevHunk(c.hunks, c.cur);
+    if (at !== null) setCur(at);
+  }
+
+  // -- the comment field --
+
+  let composer = null;
+  function closeComposer() {
+    if (composer) { composer.field.remove(); composer = null; }
+  }
+
+  function openComposer(row) {
+    if (!row || !row.dataset || !row.dataset.line) return;
+    closeComposer();
+    const line = Number(row.dataset.line);
+    const field = doc.createElement('div');
+    field.className = 'sbs-compose';
+    const input = doc.createElement('input');
+    input.className = 'sbs-input';
+    input.type = 'text';
+    input.maxLength = 400;
+    input.placeholder = `Comment on line ${line}`;
+    input.setAttribute('aria-label', `Comment on line ${line}`);
+    const hint = doc.createElement('span');
+    hint.className = 'sbs-hint';
+    hint.textContent = 'Enter types it into the prompt. Shift+Enter adds it to the stack. Esc cancels.';
+    field.append(input, hint);
+    row.append(field);
+    composer = { field, input, line };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (typeof e.stopPropagation === 'function') e.stopPropagation();
+        closeComposer();
+        if (typeof el.compareRows.focus === 'function') el.compareRows.focus();
+        return;
+      }
+      if (e.key !== 'Enter') return;
+      // Enter that ends an IME composition is the IME's, not a comment (PR #199 Miguel S3)
+      if (e.isComposing) return;
+      e.preventDefault();
+      addComment(line, input.value, { send: !e.shiftKey });
+    });
+    if (typeof input.focus === 'function') input.focus();
+  }
+
+  function composeAtCurrent() {
+    const c = state.change;
+    if (!c) return;
+    const rows = el.compareRows.children;
+    const from = Number.isInteger(c.cur) ? c.cur : (c.hunks.length ? c.hunks[0] : 0);
+    for (let i = from; i < rows.length; i += 1) {
+      if (rows[i].dataset && rows[i].dataset.line) { setCur(i); openComposer(rows[i]); return; }
+    }
+  }
+
+  function addComment(line, text, { send }) {
+    const r = changesCompare.commentText(state.path, line, text);
+    if (!r.ok) { state.status = `not added: ${r.reason}`; paintHead(); return; }
+    addPending(r.text);
+    closeComposer();
+    state.status = '';
+    renderQueue();
+    paintHead();
+    if (send) sendPending();
+  }
+
+  // The queue: each comment has its own Type and Remove, so a stack too long to type in one go (or one comment that is wrong) is never a
+  // choice between "type nothing" and "lose everything" (PR #199 Dexter 6). Entries carry an id: a comment added while a send is typing
+  // stays queued, and only what was sent leaves (Dexter 11).
+  let nextPendingId = 1;
+
+  function addPending(text) {
+    state.pending.push({ id: nextPendingId, text });
+    nextPendingId += 1;
+  }
+
+  function renderQueue() {
+    const n = state.pending.length;
+    el.queue.hidden = n === 0;
+    el.queueText.textContent = n === 0 ? '' : `${n} ${plural(n, 'comment', 'comments')} queued`;
+    const items = state.pending.map((p) => {
+      const row = doc.createElement('div');
+      row.className = 'q-item';
+      const t = doc.createElement('span');
+      t.className = 'q-text';
+      t.textContent = p.text;
+      t.title = p.text;
+      const send = doc.createElement('button');
+      send.type = 'button';
+      send.className = 'q-send';
+      send.textContent = 'Type';
+      send.title = 'Type just this comment into the prompt';
+      send.dataset.q = 'send';
+      send.dataset.id = String(p.id);
+      const rm = doc.createElement('button');
+      rm.type = 'button';
+      rm.className = 'q-remove';
+      rm.textContent = 'Remove';
+      rm.dataset.q = 'remove';
+      rm.dataset.id = String(p.id);
+      row.append(t, send, rm);
+      return row;
+    });
+    el.queueItems.replaceChildren(...items);
+  }
+
+  // `ids`: only these queued comments (the per-item Type); none: all of them
+  function sendPending(ids) {
+    // a refusal made while the last send is typing is kept and shown AFTER that send's own result, so it is never overwritten (PR #199 Dexter r2 N5)
+    if (state.sending) { state.deferredNote = 'The comment added meanwhile is queued: the last one was still being typed. Press Type when it is done.'; paintHead(); return; }
+    const chosen = Array.isArray(ids) ? state.pending.filter(p => ids.includes(p.id)) : state.pending.slice();
+    const s = changesCompare.stackText(chosen.map(p => p.text));
+    if (!s.ok) { state.status = `not typed: ${s.reason}`; paintHead(); return; }
+    if (typeof typeComment !== 'function') { state.status = 'not typed: this window cannot type into the prompt'; paintHead(); return; }
+    const n = s.count;
+    const sentIds = new Set(chosen.map(p => p.id));
+    state.sending = true;
+    typeComment(s.text, (r) => {
+      state.sending = false;
+      if (r && r.ok) {
+        // only what was typed leaves the queue: a comment added while this was typing stays
+        state.pending = state.pending.filter(p => !sentIds.has(p.id));
+        const how = r.appended ? `added ${n} ${plural(n, 'comment', 'comments')} to what was typed` : `typed ${n} ${plural(n, 'comment', 'comments')}`;
+        // a box that was not empty and not ours was replaced (a draft, or the CLI's placeholder: the text cannot tell)
+        const lost = r.cleared ? " Its input box wasn't empty: if that was a draft, Ctrl+Y in that tab brings it back." : '';
+        state.status = `${how}; press Enter in the terminal to send ${plural(n, 'it', 'them')}.${lost}`;
+      } else {
+        state.status = `not typed: ${(r && r.reason) || 'refused'}`;
+      }
+      if (state.deferredNote) { state.status = `${state.status} ${state.deferredNote}`; state.deferredNote = ''; }
+      renderQueue();
+      paintHead();
+    });
+  }
+
+  function removePending(id) {
+    state.pending = state.pending.filter(p => p.id !== id);
+    renderQueue();
+  }
+
+  function clearPending() {
+    state.pending = [];
+    renderQueue();
   }
 
   // ---- changed on disk ----
@@ -676,6 +943,13 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
     }
     if (!r.ok) return;                                  // can't tell: say nothing rather than guess
     if (r.size !== state.stamp.size || r.mtimeMs !== state.stamp.mtimeMs) {
+      if (state.mode === 'changes') {
+        // a comment being typed is never redrawn from under the person: the bar offers Reload instead
+        if (composer) { showBar('This file changed on disk.', { reload: true }); return; }
+        clearBar();
+        await renderChange(token);
+        return;
+      }
       if (isDirty()) { await raiseConflict(); return; }       // unsaved edits: the three-way banner, never the plain bar
       showBar('This file changed on disk.', { reload: true });
     } else if (!el.bar.hidden) {
@@ -734,6 +1008,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   // The bar rose over a file with no unsaved edits, but edits can be typed after that: ask again at click time.
   el.reload.addEventListener('click', async () => {
     if (!state.path) return;
+    if (state.mode === 'changes') { clearBar(); renderChange(state.token); return; }
     if (isDirty() && !(await confirmLeave(`You have unsaved changes to ${state.path}. Discard them and reload it from disk?`))) return;
     open(state.path, { keepMode: true, discard: true, keepEditing: true });
   });
@@ -745,6 +1020,37 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   el.conflictKeep.addEventListener('click', conflictKeep);
   el.conflictCompare.addEventListener('click', conflictCompare);
   el.compareBack.addEventListener('click', () => { hideCompare(); if (state.editor && typeof state.editor.focus === 'function') state.editor.focus(); });
+  el.send.addEventListener('click', () => sendPending());
+  el.queueItems.addEventListener('click', (e) => {
+    const t = e && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-q]') : null;
+    if (!t) return;
+    const id = Number(t.dataset.id);
+    if (t.dataset.q === 'send') sendPending([id]);
+    else if (t.dataset.q === 'remove') removePending(id);
+  });
+  el.clear.addEventListener('click', clearPending);
+  // the Changes Compare: a "+" opens the comment field, a click on a row makes it the current one, j / k walk the hunks, Ctrl+/ comments on the current line
+  el.compareRows.addEventListener('click', (e) => {
+    if (state.mode !== 'changes') return;
+    const t = e && e.target;
+    const btn = t && typeof t.closest === 'function' ? t.closest('[data-act="comment"]') : null;
+    const row = t && typeof t.closest === 'function' ? t.closest('.sbs-row') : null;
+    if (btn) {
+      const rows = Array.from(el.compareRows.children);
+      const at = rows.findIndex(r => r.dataset && r.dataset.line === btn.dataset.line);
+      if (at >= 0) { setCur(at); openComposer(rows[at]); }
+      return;
+    }
+    if (row) { const i = Array.from(el.compareRows.children).indexOf(row); if (i >= 0) setCur(i); }
+  });
+  el.compareRows.addEventListener('keydown', (e) => {
+    const t = e && e.target;
+    if (t && t.tagName === 'INPUT') return;
+    if (state.mode !== 'changes' || !state.change) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key === '/') { e.preventDefault(); composeAtCurrent(); return; }
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.key === 'j' || e.key === 'k') { e.preventDefault(); jumpHunk(e.key === 'j' ? 1 : -1); }
+  });
   const reveal = async () => {
     if (!state.path) return;
     const r = harness && harness.repoReveal ? await harness.repoReveal(state.path) : { ok: false, why: 'unavailable' };
@@ -817,6 +1123,8 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
           lines: state.editor ? state.editor.lines() : 0, text, bodyHidden: el.body.hidden,
           editing: state.editing, dirty: isDirty(), editShown: !el.edit.hidden, editDisabled: el.edit.disabled, editLabel: el.edit.textContent,
           editTitle: el.edit.title, saveShown: !el.save.hidden, saveDisabled: el.save.disabled, dotShown: !el.dirty.hidden,
+          change: state.change ? { scope: state.change.scope, base: state.change.base, status: state.change.status, hunks: state.change.hunks.length, cur: state.change.cur } : null,
+          pending: state.pending.map(p => p.text), queueShown: !el.queue.hidden, compareTitle: el.compareTitle.textContent,
           conflictShown: !el.conflict.hidden, conflictText: el.conflictText.textContent, compareShown: !el.compare.hidden,
           compareRows: Array.from(el.compareRows.children || [], (r) => `${r.className}|${r.textContent}`).slice(0, 40),
           mdSegmentShown: !el.view.hidden, mdView: state.view, mdRenderedOn: state.rendered, mdShown: !el.md.hidden, mdLoaded: !!root.repoMarkdown,
@@ -832,6 +1140,23 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
       }
       case 'open': return open(a.path).then(() => ({ ok: true }));
       case 'openAt': return openAt(a.path, a.line, a.endLine).then(() => ({ ok: true }));
+      // the Changes Compare (verify/probe-changes-panel.js): open a change, comment on a line the way a click and Enter would, walk the hunks
+      case 'openChange': return openChange(a).then(() => ({ ok: true }));
+      case 'comment': {
+        const btn = el.compareRows.querySelector(`.sbs-row[data-line="${Number(a.line)}"] .sbs-btn`);
+        if (!btn) return { ok: false, error: `no commentable line ${a.line}` };
+        btn.click();
+        const input = el.compareRows.querySelector('.sbs-input');
+        if (!input) return { ok: false, error: 'the comment field did not open' };
+        input.value = String(a.text);
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: a.send === false, bubbles: true, cancelable: true }));
+        return { ok: true };
+      }
+      case 'hunk': jumpHunk(a.dir === 'prev' ? -1 : 1); return { ok: true, cur: state.change ? state.change.cur : null };
+      case 'sendQueued': sendPending(); return { ok: true };
+      case 'sendQueuedItem': sendPending([Number(a.id)]); return { ok: true };
+      case 'removeQueued': removePending(Number(a.id)); return { ok: true };
+      case 'clearQueued': clearPending(); return { ok: true };
       case 'ask': askSelection(); return { ok: true };
       case 'close': return close(a).then((closed) => ({ ok: true, closed }));
       case 'toggleDiff': return toggleDiff().then(() => ({ ok: true }));
@@ -930,7 +1255,7 @@ function create({ doc, requester, harness, storage, storageKey = 'repoReaderWidt
   }
 
   return {
-    open, openAt, selectionInfo, close, isOpen: () => !el.pane.hidden, path: () => state.path, hasUnsaved: isDirty, save,
+    open, openAt, openChange, selectionInfo, close, isOpen: () => !el.pane.hidden, path: () => state.path, hasUnsaved: isDirty, save,
     setOverlay, onRepoChanged: checkStale, probe, layout,
     editor: () => state.editor,
   };
