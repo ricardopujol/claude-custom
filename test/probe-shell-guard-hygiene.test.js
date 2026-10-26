@@ -61,21 +61,19 @@ test('cloud and gh CLIs only run with a sandbox env prefix pointing at a dead lo
 const DOCKER_ENV = 'DOCKER_HOST=tcp://127.0.0.1:1 ';
 const GAP_OPTION = /^docker (-H tcp:\/\/127\.0\.0\.1:1|--context cc-probe-canary-none) /;
 
-test('no docker prune (it would wipe Ricardo\'s real stopped containers with DOCKER_HOST dropped), except the known-gap one behind two dead endpoints', () => {
-  for (const c of CASES.filter((x) => /\bprune\b/i.test(x.cmd))) {
-    assert.ok(c.knownGap, `${c.id}: prune only as a known-gap case`);
-    assert.ok(c.cmd.startsWith(`${DOCKER_ENV}docker -H tcp://127.0.0.1:1 `), `${c.id}: DOCKER_HOST prefix AND -H, both dead`);
-  }
+test('no prune anywhere in the case list (bare, docker prune wipes Ricardo\'s real stopped containers; no carve-outs)', () => {
+  for (const c of CASES) assert.doesNotMatch(c.cmd, /\bprune\b/i, c.id);
 });
 
 test('known-gap cases: docker only, a dead endpoint or a missing context under the DOCKER_HOST prefix, deny wanted', () => {
   const gaps = CASES.filter((c) => c.knownGap);
-  assert.deepStrictEqual(gaps.map((c) => c.id), ['gap-docker-H-prune', 'gap-docker-context-volume-rm', 'gap-docker-H-rm-f']);
+  assert.deepStrictEqual(gaps.map((c) => c.id), ['gap-docker-H-volume-rm', 'gap-docker-context-volume-rm', 'gap-docker-H-rm-f']);
   for (const c of gaps) {
     assert.strictEqual(c.want, 'deny', c.id);
     assert.ok(c.cmd.startsWith(DOCKER_ENV), c.id);
     assert.match(c.cmd.slice(DOCKER_ENV.length), GAP_OPTION, c.id);
-    assert.match(c.cmd, /\bcc-probe-canary(-none)?\b|system prune -f$/, c.id);
+    // run bare against the real daemon it still removes nothing: the object it names does not exist
+    assert.match(c.cmd, / (volume rm cc-probe-canary-none|rm -f cc-probe-canary)$/, c.id);
   }
 });
 

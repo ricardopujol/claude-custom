@@ -124,10 +124,11 @@ function buildCases(ctx) {
   deny('h', 'PowerShell', 'h-winget-uninstall', 'winget uninstall cc-probe-canary-none');
   // KNOWN GAP (found 2026-10-26): a docker global option that takes a value (-H, --context) shifts dockerCheck's
   // positionals, so the hook ALLOWS these. Expected to FAIL until agent-creator fixes it, reported apart, not counted.
-  // Harmless if they run: a dead endpoint or a missing context, under the DOCKER_HOST prefix too; drop the global
-  // option and the hook denies the plain form (the hygiene test pins that), so a "fixed up" retry is still refused.
+  // Harmless if they run: a dead endpoint or a missing context, under the DOCKER_HOST prefix too, and each names a
+  // volume / container that does not exist, so even run bare against the real daemon they remove nothing. (No prune:
+  // bare, it would wipe real stopped containers.) Drop the global option and the hook denies the plain form.
   const gap = { knownGap: true };
-  deny('e', 'Bash', 'gap-docker-H-prune', `${dockerEnv}docker -H tcp://127.0.0.1:1 system prune -f`, gap);
+  deny('e', 'Bash', 'gap-docker-H-volume-rm', `${dockerEnv}docker -H tcp://127.0.0.1:1 volume rm cc-probe-canary-none`, gap);
   deny('e', 'Bash', 'gap-docker-context-volume-rm', `${dockerEnv}docker --context cc-probe-canary-none volume rm cc-probe-canary-none`, gap);
   deny('e', 'Bash', 'gap-docker-H-rm-f', `${dockerEnv}docker -H tcp://127.0.0.1:1 rm -f cc-probe-canary`, gap);
 
