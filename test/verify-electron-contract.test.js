@@ -16,6 +16,8 @@
  * so the scanner does not need to know how a process is started. ALLOWED lists the deliberate exceptions, with reasons.
  *
  * Kill by name: `/IM`, `IMAGENAME`, `Stop-Process -Name`, `Get-Process <name> | Stop-Process`, pkill, killall, in code.
+ * The one exemption is a guard-case line (test/guard-case.js, shared with test/kill-by-handle.test.js): a class-b deny
+ * case in verify/probe-shell-guard.js that names only the canary process, handed to the hook to be refused.
  *
  * Comments are stripped by a small string-aware scanner (a `'app/*'` string no longer swallows code up to the next
  * `*` + `/`).
@@ -29,6 +31,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
+const { isGuardCaseLine } = require('./guard-case');
 
 const VERIFY = path.join(__dirname, '..', 'verify');
 const LAUNCHER = path.join(VERIFY, 'lib', 'launch-electron.js');
@@ -113,9 +116,11 @@ function electronSpawnViolations(source) {
     }
   }
   const KILL_BY_NAME = [/['"`\s]\/IM\b/i, /IMAGENAME/i, /Stop-Process\b[^\n]*-Name\b/i, /Get-Process\s+['"]?[A-Za-z][\w.-]*['"]?\s*\|\s*Stop-Process/i, /\bpkill\b/, /\bkillall\b/];
+  // a guard-case line (test/guard-case.js, the same exemption kill-by-handle takes) is a command for the hook to refuse
+  const killSrc = stripComments(source.split('\n').map((l) => (isGuardCaseLine(l.replace(/\r$/, '')) ? '' : l)).join('\n'));
   for (const re of KILL_BY_NAME) {
-    const m = re.exec(src);
-    if (m) out.push(`kill by name: ${src.slice(m.index, m.index + 50).replace(/\s+/g, ' ')}`);
+    const m = re.exec(killSrc);
+    if (m) out.push(`kill by name: ${killSrc.slice(m.index, m.index + 50).replace(/\s+/g, ' ')}`);
   }
   return out;
 }
@@ -158,6 +163,30 @@ test('scanner: kill by name in any spelling (Dexter #4 items 1-3)', () => {
     "execSync('taskkill /FI \"IMAGENAME eq node.exe\" /F');",
     "execSync('pkill electron');",
   ]) assert.ok(killByName(fx), fx);
+});
+
+test('scanner: the guard-case exemption covers only canary deny cases; a real kill by name still fails, in any file', () => {
+  const NOTE = '   // kill-ok(guard-case): for the hook to refuse';
+  for (const fx of [
+    `execSync('taskkill /IM node.exe /F');${NOTE}`,                                         // a real kill wearing the annotation
+    `deny('b', 'PowerShell', 'b-x', 'taskkill /IM node.exe /F');${NOTE}`,                    // a deny case with a real name
+    `deny('b', 'PowerShell', 'b-x', 'taskkill /IM cc-probe-canary.exe /IM electron.exe');${NOTE}`,   // the canary plus a real one
+    `deny('b', 'PowerShell', 'b-x', 'Stop-Process -Name claude -Force; Get-Process cc-probe-canary');${NOTE}`,
+    `deny('a', 'Bash', 'a-x', 'pkill cc-probe-canary');${NOTE}`,                              // not a class-b case
+    "deny('b', 'Bash', 'b-pkill', 'pkill cc-probe-canary');",                                // no annotation
+    `deny('b', 'Bash', 'b-pkill', 'pkill cc-probe-canary');${NOTE}\nspawnSync('pkill', ['electron']);`,   // a guard line hides nothing below it
+  ]) assert.ok(killByName(fx), fx);
+  for (const fx of [
+    `deny('b', 'PowerShell', 'b-taskkill-im', 'taskkill /IM cc-probe-canary.exe /F');${NOTE}`,
+    `deny('b', 'PowerShell', 'b-stop-process-name', 'Stop-Process -Name cc-probe-canary -Force');${NOTE}`,
+    `deny('b', 'PowerShell', 'b-get-process-pipe', 'Get-Process cc-probe-canary | Stop-Process');${NOTE}`,
+    `deny('b', 'Bash', 'b-pkill', 'pkill cc-probe-canary');${NOTE}`,
+  ]) assert.deepStrictEqual(electronSpawnViolations(fx), [], fx);
+  // the real probe passes as it is, and a kill by name added anywhere else in it fails
+  const probe = fs.readFileSync(path.join(VERIFY, 'probe-shell-guard.js'), 'utf8');
+  assert.ok(!killByName(probe));
+  assert.ok(killByName(probe.replace('function sweepLeftovers() {', "function sweepLeftovers() {\n  execSync('taskkill /IM node.exe /F');")));
+  assert.ok(killByName(`${probe}\nspawnSync('powershell', ['-Command', 'Stop-Process -Name electron -Force']);\n`));
 });
 
 test('scanner: reads of the image name, the module API, and the word inside a generated main are not launches', () => {
