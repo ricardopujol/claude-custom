@@ -399,7 +399,9 @@ function createShell(deps) {
     const st = rec.status;
     return {
       key: rec.key, label: shellLabel(parent.label), isDev: false, selected, started: rec.started === true,
-      closable: false,
+      // A close of its own (Ricardo's look, 2026-10-26): it is a terminal, not a reader of its lane. A develop tab never closes, so
+      // ending only with its branch tab left that lane's shell no way to end at all.
+      closable: true,
       working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
       summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
       lockGlyph: null, health: null, phase: null, error: null, note: null, setup: null, createdWarning: null,
@@ -867,11 +869,11 @@ function createShell(deps) {
    * Hand close, once per tab at a time. A second request for a tab already closing (a double click) is ignored.
    */
   async function closeTab(key, opts) {
-    // A side tab has no close of its own: it ends with its branch tab (#81).
-    if (isSideKey(key) || isShellKey(key)) return { ok: false, error: 'not closable' };
+    // A side tab has no close of its own: it ends with its branch tab (#81). A shell tab has one (closeShellOnce).
+    if (isSideKey(key)) return { ok: false, error: 'not closable' };
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
-    try { return await closeTabOnce(key, opts); } finally { closing.delete(key); }
+    try { return await (isShellKey(key) ? closeShellOnce(key) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
   }
   /**
    * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
@@ -1544,16 +1546,54 @@ function createShell(deps) {
   async function endCompanion(sk) {
     const t = sk ? tabs.get(sk) : null;
     if (!t) return;
-    // Closed first, so a start still in its port walk gives up before it spawns; then wait for it to settle, so what it made or found
-    // is on the record when it is stopped below (R2-2). The remover must not start with a claude about to appear in the folder.
-    t.closed = true;
-    if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
-    const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
-    if (target) {
-      try { await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }); } catch { /* the remover reports a folder still in use */ }
-    }
+    await stopCompanion(t);     // a stop that fails: the remover reports a folder still in use
     dropSide(sk, { stop: false });
     publish();
+  }
+
+  /**
+   * End a side or shell tab's host and wait for its answer: why it may still be running, or null. Closed first, so a start still in
+   * its port walk gives up before it spawns; then the start is let settle, so what it made or found is on the record when it is
+   * stopped (R2-2). The remover must not start with a claude about to appear in the folder. The host's stop is its own teardown: the
+   * pty tree killed by pid (host/pty-stop.js, host/kill-tree.js) and its identity file removed. An ended record is sent nothing: its
+   * host is gone, and its port may be another host's by now.
+   */
+  async function stopCompanion(t) {
+    t.closed = true;
+    if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
+    const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || null);
+    if (!target) return null;
+    try {
+      const r = await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } });
+      return r && r.ok === true ? null : ((r && r.error) || 'no answer');
+    } catch (err) {
+      return (err && err.message) || String(err);
+    }
+  }
+
+  /**
+   * A shell tab closed by hand (Ricardo's look, 2026-10-26): its x, a Ctrl+click, the menu's Close shell, or its page's own close.
+   * Nothing asks: it is a terminal and the folder stays. Reopen doesn't offer it back (Open shell here starts a fresh one). If it
+   * was showing, its own branch tab shows next.
+   */
+  async function closeShellOnce(key) {
+    const t = tabs.get(key);
+    if (!t || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    const failure = await stopCompanion(t);
+    if (!tabs.has(key)) return { ok: true };     // gone meanwhile: its branch tab closed, or its folder was removed
+    const showing = selectedKey === key;
+    dropSide(key, { stop: false });
+    const parentKey = parentKeyOfShell(key);
+    if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
+    else publish();
+    if (failure !== null) {
+      closeNotice = `Couldn't end the shell in ${t.branch}: ${failure}. It may still be running.`;
+      log(`[shell] ${key}: ${closeNotice}`);
+      publish();
+      return { ok: true, stopError: failure };
+    }
+    log(`[shell] closed ${key}`);
+    return { ok: true };
   }
 
   function destroy() { destroyed = true; }
@@ -1746,6 +1786,15 @@ async function handleProbeCommand(line, api, expectedToken) {
         // #77: a real Ctrl+click on the strip's tab, so the page's own handler runs.
         if (typeof cmd.label !== 'string') return { ok: false, error: 'ctrlClick needs a label' };
         return await api.ctrlClick(cmd.label);
+      case 'xClick':
+        // Ricardo's look, 2026-10-26: a real plain click on the tab's own x.
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'xClick needs a label' };
+        return await api.xClick(cmd.label);
+      case 'tabMenu':
+        // The tab's right-click menu as built, and one item's own click: a native popup nobody can click.
+        if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'tabMenu needs a label' };
+        if (cmd.item !== undefined && typeof cmd.item !== 'string') return { ok: false, error: 'tabMenu item must be a label' };
+        return await api.tabMenu(cmd.label, cmd.item);
       case 'mouseMove': {
         // BACKLOG #85: a real pointer move over the selected view, so hover is judged by hit-testing and not by a dispatched event.
         const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;

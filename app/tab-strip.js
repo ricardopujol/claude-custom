@@ -191,7 +191,7 @@ function paintTab(doc, entry, bridge) {
   if (entry.closable) {
     const x = tab.appendChild(el(doc, 'button', 'x', '×'));
     x.type = 'button';
-    x.title = 'Close tab (ends its session; the folder stays)';
+    x.title = entry.shell === true ? 'Close shell (ends the shell and what runs in it; the folder stays)' : 'Close tab (ends its session; the folder stays)';
     x.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (ev && ev.ctrlKey === true) bridge.close(entry.key, true); else bridge.close(entry.key);

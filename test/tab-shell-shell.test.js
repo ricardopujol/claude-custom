@@ -143,7 +143,7 @@ test('the shell tab sits right after its branch tab, labelled "<branch> · shell
   assert.strictEqual(e.role, undefined, 'a shell can write: it is not a reader');
   assert.strictEqual(e.selected, true);
   assert.strictEqual(e.started, true);
-  assert.strictEqual(e.closable, false, 'it stays until its branch tab closes: no close button of its own');
+  assert.strictEqual(e.closable, true, 'it has a close of its own (Ricardo\'s look, 2026-10-26: a shell tab could not be closed)');
   assert.strictEqual(h.shell.model().filter(x => x.selected).length, 1, 'exactly one tab is selected');
   assert.ok(h.viewsMade.some(v => v.tab === skey('feat-a')));
 });
@@ -222,13 +222,112 @@ test('Ctrl+Tab walks through the shell tab in strip order', async () => {
   assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
 });
 
-test('the shell tab cannot be closed by hand: it ends with its branch tab', async () => {
+// --- closing it by hand (Ricardo's look, 2026-10-26: "a shell tab can't be closed") ------------------------------
+
+test('closing the shell tab by hand stops ITS host only, drops its page, asks nothing, and goes back to its branch tab', async () => {
   const h = await opened();
   await h.shell.openShell(key('feat-a'));
   const r = await h.shell.closeTab(skey('feat-a'));
-  assert.strictEqual(r.ok, false);
-  assert.deepStrictEqual(h.confirms, []);
-  assert.strictEqual(labels(h).includes(SHELL_A), true);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopError, undefined);
+  // The stop is what makes the host end its pty tree by pid (host/pty-stop.js, host/kill-tree.js) and remove its identity file.
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop').map(c => [c.port, c.token]), [[7702, 'tok-7702']]);
+  assert.strictEqual(h.running[7702], undefined, 'the shell host is gone');
+  assert.ok(h.running[7701], 'the branch tab\'s own host is untouched');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(h.viewsGone.includes(skey('feat-a')));
+  assert.deepStrictEqual(h.confirms, [], 'a terminal closes without a question; the folder stays');
+  const sel = h.shell.model().filter(e => e.selected);
+  assert.deepStrictEqual(sel.map(e => e.key), [key('feat-a')], 'the lane it belonged to is what shows next');
+});
+
+test('the develop tab\'s shell closes too: that tab never closes, so its shell had no way to end at all', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('dev'));
+  const r = await h.shell.closeTab(shellKeyOf(key('dev')));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop').map(c => c.port), [7702]);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('dev'));
+});
+
+test('closing a shell tab that was NOT showing leaves the selection where it was', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  await h.shell.select(key('feat-b'));
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+});
+
+test('the tab menu offers the close on a shell tab, and still not on a side tab', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(h.shell.menuState(skey('feat-a')).close, true);
+  assert.strictEqual(h.shell.menuState(sidekey('feat-a')).close, false, 'a side tab still ends with its branch tab (#81)');
+  assert.strictEqual(h.shell.model().find(e => e.key === sidekey('feat-a')).closable, false);
+  assert.strictEqual((await h.shell.closeTab(sidekey('feat-a'))).ok, false);
+});
+
+test('a shell host that does not answer its stop: the tab still goes, and the strip says it may still be running', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  h.controlOk = false;
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopError, 'no answer');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the shell in feat\/a · shell: no answer\. It may still be running\./);
+});
+
+test('an exited shell closes with no stop sent: its port may be another host\'s by now', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  delete h.running[7702];
+  await h.shell.poll();
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.controls.length, 0);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.strictEqual(h.changes[h.changes.length - 1].closeNotice, null);
+});
+
+test('a shell closed while its start is still walking the ports never spawns', async () => {
+  const h = await opened();
+  let release;
+  h.holdShell = new Promise(r => { release = r; });
+  const opening = h.shell.openShell(key('feat-a'));
+  await flush();
+  const closing = h.shell.closeTab(skey('feat-a'));
+  await flush();
+  release();
+  await opening;
+  const r = await closing;
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.spawns, [], 'nothing was started for a tab that is gone');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+});
+
+test('a double click on the close is one close: one stop', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  const [a, b] = await Promise.all([h.shell.closeTab(skey('feat-a')), h.shell.closeTab(skey('feat-a'))]);
+  assert.deepStrictEqual([a.ok, b.ok].sort(), [false, true]);
+  assert.strictEqual(h.controls.filter(c => c.msg.type === 'stop').length, 1);
+});
+
+test('a closed shell is not offered back by the + menu\'s Reopen, and Open shell here starts a fresh one', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  await h.shell.closeTab(skey('feat-a'));
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, []);
+  assert.strictEqual(h.shell.shellMenu(key('feat-a')).label, 'Open shell here');
+  const r = await h.shell.openShell(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.notStrictEqual(r.already, true);
+  assert.strictEqual(h.spawns.filter(s => s.shell).length, 2);
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SHELL_A, 'feat/b']);
 });
 
 // --- it ends with its branch tab -------------------------------------------------------------------------------
@@ -492,4 +591,22 @@ test('the probe driver can open a shell by label, and refuses it without one', a
     assert.strictEqual((await probe({ cmd: 'shell-open', ...bad }, api)).ok, false, JSON.stringify(bad));
   }
   assert.strictEqual(seen.length, 1);
+});
+
+test('the probe driver can click a tab\'s x and its menu\'s items by label (Ricardo\'s look, 2026-10-26), and refuses them without one', async () => {
+  const seen = [];
+  const api = {
+    xClick: async (label) => { seen.push(['x', label]); return { ok: true }; },
+    tabMenu: async (label, item) => { seen.push(['menu', label, item]); return { ok: true, items: [] }; },
+  };
+  assert.deepStrictEqual(await probe({ cmd: 'xClick', label: SHELL_A }, api), { ok: true });
+  assert.deepStrictEqual(await probe({ cmd: 'tabMenu', label: SHELL_A }, api), { ok: true, items: [] });
+  assert.deepStrictEqual(await probe({ cmd: 'tabMenu', label: SHELL_A, item: 'Close shell' }, api), { ok: true, items: [] });
+  assert.deepStrictEqual(seen, [['x', SHELL_A], ['menu', SHELL_A, undefined], ['menu', SHELL_A, 'Close shell']]);
+  for (const bad of [{}, { label: '' }, { label: 5 }]) {
+    assert.strictEqual((await probe({ cmd: 'xClick', ...bad }, api)).ok, false, JSON.stringify(bad));
+    assert.strictEqual((await probe({ cmd: 'tabMenu', ...bad }, api)).ok, false, JSON.stringify(bad));
+  }
+  assert.strictEqual((await probe({ cmd: 'tabMenu', label: SHELL_A, item: 5 }, api)).ok, false, 'an item is a label');
+  assert.strictEqual(seen.length, 3);
 });

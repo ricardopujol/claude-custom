@@ -438,6 +438,44 @@ function markSubmenu(branch) {
   };
 }
 
+/**
+ * A tab's right-click menu, as a template: the strip's popup builds it, and so does the probe driver's tabMenu (a native popup
+ * nobody can click), so the item a probe clicks is the item a person clicks.
+ */
+function tabMenuTemplate(key) {
+  const st = tabShell.menuState(key);
+  // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
+  const side = tabShell.sideMenu(key);
+  const sideItem = {
+    label: side.enabled ? side.label : `${side.label} (${side.why})`,
+    enabled: side.enabled,
+    click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
+  };
+  // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is this item (it restarts one whose shell has exited) and
+  // its close (Ricardo's look, 2026-10-26: a shell tab couldn't be closed). Named shellState, not shell: Electron's shell is
+  // imported under that name.
+  const shellState = tabShell.shellMenu(key);
+  const shellItem = {
+    label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
+    enabled: shellState.enabled,
+    click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
+  };
+  const closeShellItem = { label: 'Close shell', enabled: st.close, click: () => closeTabFlow(key) };
+  if (isSideKey(key)) return [sideItem];
+  if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
+  const issue = tabShell.issueOf(key);
+  return [
+    markSubmenu(tabShell.branchOf(key)),
+    { type: 'separator' },
+    // #119 A6: a lane started from a GitHub issue keeps its link.
+    ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
+    sideItem,
+    shellItem,
+    { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
+    { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
+  ];
+}
+
 let win = null;
 let tabShell = null;
 // BACKLOG #119 A6: `gh issue list/view` for the + form's "From an issue" list, cached 60 s (host/issues.js). Made in whenReady.
@@ -1142,35 +1180,7 @@ function registerIpc() {
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
-    const st = tabShell.menuState(key);
-    // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
-    const side = tabShell.sideMenu(key);
-    const sideItem = {
-      label: side.enabled ? side.label : `${side.label} (${side.why})`,
-      enabled: side.enabled,
-      click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
-    };
-    // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is just this item; it restarts one whose shell has exited.
-    // Named shellState, not shell: Electron's shell is imported under that name.
-    const shellState = tabShell.shellMenu(key);
-    const shellItem = {
-      label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
-      enabled: shellState.enabled,
-      click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
-    };
-    if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
-    if (isShellKey(key)) { Menu.buildFromTemplate([shellItem]).popup({ window: win }); return; }
-    const issue = tabShell.issueOf(key);
-    Menu.buildFromTemplate([
-      markSubmenu(tabShell.branchOf(key)),
-      { type: 'separator' },
-      // #119 A6: a lane started from a GitHub issue keeps its link.
-      ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
-      sideItem,
-      shellItem,
-      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
-      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
-    ]).popup({ window: win });
+    Menu.buildFromTemplate(tabMenuTemplate(key)).popup({ window: win });
   });
   // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
   // by hand in this window, most recent first.
@@ -1683,6 +1693,17 @@ function startProbeDriver(port) {
     const e = tabShell.model().find((x) => x.label === label);
     return e ? e.key : null;
   };
+  // A real left click in the strip page on the tab labelled `label` (its x when `onX`): its position is read from the DOM and the
+  // click is an input event, so the page's own handler decides what to ask main.
+  const stripClick = async (label, onX, modifiers) => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); const n = t && ${onX ? "t.querySelector('.x')" : 't'}; if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
+    if (!rect) return { ok: false, error: onX ? `no close button on a tab labelled ${label}` : `no tab labelled ${label}` };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1812,14 +1833,22 @@ function startProbeDriver(port) {
     },
     // #77: a real Ctrl+click on a tab in the strip page: its position is read from the DOM, the click is an input
     // event with the control modifier, so the page's own handler decides what to ask main.
-    async ctrlClick(label) {
-      const rect = JSON.parse(await win.webContents.executeJavaScript(
-        `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
-      if (!rect) return { ok: false, error: `no tab labelled ${label}` };
-      const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: ['control'] };
-      win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
-      win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
-      return { ok: true };
+    async ctrlClick(label) { return stripClick(label, false, ['control']); },
+    // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
+    async xClick(label) { return stripClick(label, true, []); },
+    // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
+    // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
+    async tabMenu(label, item) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      const built = Menu.buildFromTemplate(tabMenuTemplate(key)).items.filter(i => i.type !== 'separator');
+      const items = built.map(i => ({ label: i.label, enabled: i.enabled }));
+      if (item === undefined) return { ok: true, items };
+      const hit = built.find(i => i.label === item);
+      if (!hit) return { ok: false, error: `no item ${item}`, items };
+      if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
+      hit.click();
+      return { ok: true, items };
     },
     // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
     // pointer events decide what is hovered, as for a mouse.

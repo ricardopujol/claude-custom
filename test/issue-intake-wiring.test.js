@@ -71,8 +71,7 @@ test('the shell is given the brief writer and the branch-to-issue reader, made f
 });
 
 test('Open issue is in the tab\'s right-click menu, and its link leaves the app only through openInBrowser', () => {
-  const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const menu = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
+  const menu = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
   assert.match(menu, /tabShell\.issueOf\(key\)/);
   assert.match(menu, /label: `Open issue #\$\{issue\.number\}/);
   assert.match(menu, /menuText\(issue\.title\)/, 'a title is somebody else\'s string: it goes through menuText');

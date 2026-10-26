@@ -73,12 +73,37 @@ test('main.js: a shell tab\'s host is spawned with the shell flag, and found as 
 });
 
 test('main.js: the tab menu offers Open shell here, and its click opens it on the branch tab the menu names', () => {
-  const menu = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:contextMenu'"), MAIN.indexOf("ipcMain.on('strip:plus'"));
+  const menu = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
   assert.match(menu, /tabShell\.shellMenu\(key\)/);
   assert.match(menu, /label: shellState\.enabled \? shellState\.label : `\$\{shellState\.label\} \(\$\{shellState\.why\}\)`/);
   assert.match(menu, /tabShell\.openShell\(shellState\.target\)/);
-  assert.match(menu, /if \(isShellKey\(key\)\) \{ Menu\.buildFromTemplate\(\[shellItem\]\)/);
+  assert.match(menu, /if \(isShellKey\(key\)\) return \[shellItem,/, 'on a shell tab the menu starts with this item');
   assert.match(menu, /sideItem,\s*\n\s*shellItem,/, 'the shell item sits right after the side item on a branch tab');
+});
+
+test('main.js: a shell tab\'s menu has its shell item and a Close shell that goes through the hand close (Ricardo\'s look, 2026-10-26)', () => {
+  const menu = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
+  assert.ok(menu.includes("const closeShellItem = { label: 'Close shell', enabled: st.close, click: () => closeTabFlow(key) };"));
+  assert.ok(menu.includes("if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];"));
+});
+
+test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x with a real click (Ricardo\'s look, 2026-10-26)', () => {
+  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
+  assert.match(drv, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.items/, 'the popup\'s own template, built by Electron');
+  assert.match(drv, /if \(!hit\.enabled\) return \{ ok: false, error: `\$\{item\} is disabled`, items \};\s*hit\.click\(\);/, 'a disabled item is not clicked');
+  assert.match(drv, /async xClick\(label\) \{ return stripClick\(label, true, \[\]\); \}/);
+  assert.match(drv, /async ctrlClick\(label\) \{ return stripClick\(label, false, \['control'\]\); \}/);
+  assert.match(drv, /win\.webContents\.sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\);/, 'a real input event, so the page\'s own handler runs');
+});
+
+test('host.js: a stop ends the shell host the way it ends any host: the pty tree by pid, then its identity file', () => {
+  const stop = HOST.slice(HOST.indexOf("if (msg.type === 'stop') {"), HOST.indexOf("if (msg.type === 'raise') {"));
+  assert.match(stop, /shutdown\(\);\s*process\.exit\(0\);/);
+  const down = HOST.slice(HOST.indexOf('function shutdown({ removeIdentity = true } = {}) {'), HOST.indexOf("process.on('SIGINT'"));
+  assert.ok(down.includes('stopPty(term, { killChildTree });'), 'host/kill-tree.js by pid, proven by start time');
+  assert.match(down, /if \(removeIdentity\) \{\s*try \{ fs\.unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\); \} catch \{\}/);
+  assert.doesNotMatch(down, /SHELL/, 'nothing in the teardown is skipped for a shell host');
+  assert.ok(HOST.includes('trackExit(term);'), 'the pty is tracked at spawn, so its tree can be killed by pid');
 });
 
 test('main.js: the + menu offers a Shell tab for the selected lane', () => {

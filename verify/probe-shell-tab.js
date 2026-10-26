@@ -11,7 +11,7 @@
  * again as itself and never as the folder's own host.
  *
  * Against a throwaway container repo  <tmp>\proj\dev  (+ feat-a, feat-b made with `git worktree add`):
- *   open       Open shell here on feat/a: a tab "feat/a . shell" right after feat/a, selected, started, small, no close button
+ *   open       Open shell here on feat/a: a tab "feat/a . shell" right after feat/a, selected, started, small, with a close button
  *   argv       the shell host's pty process is the shell with NO arguments; the branch tab's is the other way (claude's arguments)
  *   hosts      two hosts for one folder: different pids and ports, the identity file says kind:'shell' for one only
  *   lock       the shell host does not hold the worktree's session lock; the branch tab's host does
@@ -21,7 +21,10 @@
  *              broadcasts the input-needed attention frame (the toast's source); the branch tab stays quiet
  *   exit       the shell exits: the tab says so and Open shell here restarts a FRESH host, still one tab
  *   adopt      close the window and reopen: the running shell host comes back as the shell tab, same pid, nothing spawned
- *   ends       hand-closing feat/a ends BOTH hosts and removes both tabs
+ *   close      a real Ctrl+click on the shell tab closes it (Ricardo's look, 2026-10-26): its host, its shell and a ping the shell
+ *              started all end, its identity file goes, nothing asks, feat/a shows next; a shell opened from the branch tab's menu
+ *              closes the same way by a real click on its x and by its own menu's Close shell; the develop tab's shell closes too
+ *   ends       hand-closing feat/a ends BOTH hosts (a fresh shell opened for it) and removes both tabs
  *   shots      screenshots of the strip with the shell tab (open, and with its dot on) land in the directory named
  *
  * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN) and the shell is cmd.exe too (CLAUDE_CUSTOM_SHELL), so nothing runs that
@@ -156,6 +159,7 @@ const tabOf = (s, label) => (s && s.tabs ? s.tabs.find(t => t.label === label) :
 const hostOf = (s, label) => (s && s.hosts ? s.hosts.find(h => h.label === label) : null);
 const domOf = (s, label) => (s && Array.isArray(s.stripDom) ? s.stripDom.find(d => d.label === label) : null);
 const SHELL_A = 'feat/a \u00b7 shell';
+const SHELL_DEV = 'develop \u00b7 shell';
 
 async function driverUp(app) {
   return waitFor(async () => {
@@ -192,6 +196,18 @@ function commandLineOf(pid) {
   try {
     return execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command',
       `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: 'utf8', windowsHide: true, timeout: 20000 }).trim();
+  } catch { return null; }
+}
+
+// A ping.exe the shell `parent` started (the close stage's grandchild), or null. Read only: nothing is ever ended by name.
+function pingUnder(parent) {
+  if (!Number.isInteger(parent)) return null;
+  try {
+    const out = execFileSync(POWERSHELL, ['-NoProfile', '-NonInteractive', '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ParentProcessId=${parent} AND Name='PING.EXE'" | Select-Object -First 1).ProcessId`],
+    { encoding: 'utf8', windowsHide: true, timeout: 20000 }).trim();
+    const pid = Number(out);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch { return null; }
 }
 
@@ -296,12 +312,12 @@ async function main() {
   check('it sits right after its branch tab, before feat/b',
     JSON.stringify(labelsOf(s)) === JSON.stringify(['develop', 'feat/a', SHELL_A, 'feat/b']), labelsOf(s).join(', '));
   const shellTab = tabOf(s, SHELL_A);
-  check('it is selected, a shell (not a side session, not a reader), and not closable',
-    shellTab.selected === true && shellTab.shell === true && shellTab.side !== true && shellTab.role === undefined && shellTab.closable === false, JSON.stringify(shellTab));
+  check('it is selected, a shell (not a side session, not a reader), and closable (Ricardo\'s look, 2026-10-26)',
+    shellTab.selected === true && shellTab.shell === true && shellTab.side !== true && shellTab.role === undefined && shellTab.closable === true, JSON.stringify(shellTab));
   s = await waitFor(async () => { const x = await state(app); return domOf(x, SHELL_A) ? x : null; }, 15000) || s;
   const dom = domOf(s, SHELL_A);
-  check('the strip PAINTED it as a small shell tab with no close button, and no dot yet',
-    !!dom && dom.shell === true && dom.side === false && dom.hasClose === false && Array.isArray(dom.dots) && dom.dots.length === 0, JSON.stringify(dom));
+  check('the strip PAINTED it as a small shell tab with a close button of its own, and no dot yet',
+    !!dom && dom.shell === true && dom.side === false && dom.hasClose === true && Array.isArray(dom.dots) && dom.dots.length === 0, JSON.stringify(dom));
   check('and its hover says it is a shell, not a Claude session', !!dom && /shell/i.test(dom.title || '') && /not a Claude session/.test(dom.title || ''), dom && dom.title);
   check('the shell tab\'s page rendered and connected (xterm mounted)', !!(await waitFor(async () => {
     const x = await state(app);
@@ -356,8 +372,9 @@ async function main() {
   check('the shell host answers a client like any host, and lists program-status among its control types', !!hello && hello.controls.includes('program-status'));
   check('and its quota is not polled: no quota frame ever reaches a client', c.of('quota').length === 0);
   check('and no mod is loaded into it', !!hello && (!hello.modStatus || hello.modStatus.state !== 'on'), hello && JSON.stringify(hello.modStatus));
-  const prompt = await waitFor(() => c.screen().some(l => /^[A-Za-z]:\\.*>/.test(l)) || null, 20000, 200);
-  check('the shell shows its prompt in the lane\'s folder', !!prompt && c.screen().some(l => l.toLowerCase().startsWith(featA.toLowerCase() + '>')), c.screen().filter(Boolean).slice(-3).join(' | '));
+  const prompt = await waitFor(() => c.screen().join('').toLowerCase().includes(featA.toLowerCase() + '>') || null, 20000, 200);
+  // The rows joined: a long temp folder wraps the prompt past the 100 columns, and the pty breaks it into rows.
+  check('the shell shows its prompt in the lane\'s folder', !!prompt && c.screen().join('').toLowerCase().includes(featA.toLowerCase() + '>'), c.screen().filter(Boolean).slice(-3).join(' | '));
   // cmd expands an undefined %NAME% to the literal text, so the ENVCHECK line shows the name when the variable is NOT set.
   // The typed lines hold only %T% and %E%, so a line that STARTS with ENVCHECK is the program's own output.
   c.type('set "T=%CLAUDE_CUSTOM_TOKEN%"\r');
@@ -450,9 +467,87 @@ async function main() {
   check('and the branch tab did not pick the shell host up as its own, nor become a side session',
     !!s && !!hostOf(s, 'feat/a') && hostOf(s, 'feat/a').pid === aHost.pid && !labelsOf(s).some(l => /side$/.test(l)), s && `feat/a host ${(hostOf(s, 'feat/a') || {}).pid}/${aHost.pid}`);
 
+  // ===== close by hand (Ricardo's look, 2026-10-26: a shell tab could not be closed) =====
+  // A grandchild in the shell (a background ping), so what is checked is the pty's whole TREE ending, not only the shell.
+  // Its own shell, whatever the adopt stage left: an open goes to a live one, or starts one.
+  await command(app, { cmd: 'shell-open', label: 'feat/a' }, 60000);
+  s = await waitFor(async () => { const x = await state(app); return tabOf(x, SHELL_A) && tabOf(x, SHELL_A).started && hostOf(x, SHELL_A) ? x : null; }, 40000);
+  remember(s);
+  const closingShell = s && hostOf(s, SHELL_A);
+  if (!closingShell) { check('a shell on feat/a to close', false, s ? labelsOf(s).join(', ') : 'no state'); skipped = true; return; }
+  const closingId = await waitFor(async () => { const i = identitiesUnder(featA).find(x => x.pid === closingShell.pid); return i && i.claudePid ? i : null; }, 15000, 300);
+  if (closingId) seenPids.add(closingId.pid, closingId.processStartedAt);
+  const cc = closingShell ? await connectTo(closingShell.port) : null;
+  if (cc) cc.type('start /b "" ping -n 600 127.0.0.1 >nul\r');
+  const pingPid = closingId && closingId.claudePid ? await waitFor(async () => pingUnder(closingId.claudePid), 15000, 500) : null;
+  if (pingPid) seenPids.see(pingPid);
+  if (cc) cc.close();
+  check('the shell tab has a process tree to end: its shell, and a ping the shell started', !!closingId && !!pingPid && alive(closingId.claudePid),
+    closingId ? `shell ${closingId.claudePid}, ping ${pingPid}` : 'no shell host');
+  const confirmsBefore = (((await state(app)) || {}).confirms || []).length;
+  const clicked = await command(app, { cmd: 'ctrlClick', label: SHELL_A });
+  const treeGone = await waitFor(async () => !alive(closingShell.pid) && !alive(closingId.claudePid) && !alive(pingPid), 20000, 300);
+  s = await waitFor(async () => { const x = await state(app); return x && !tabOf(x, SHELL_A) ? x : null; }, 10000, 300);
+  check('a real Ctrl+click on the shell tab in the strip closes it: the host, its shell and the ping are all gone',
+    clicked.ok === true && !!treeGone, `host ${alive(closingShell.pid) ? 'alive' : 'gone'}, shell ${alive(closingId.claudePid) ? 'alive' : 'gone'}, ping ${alive(pingPid) ? 'alive' : 'gone'}`);
+  check('its identity file is gone with it', !identitiesUnder(featA).some(i => i.kind === 'shell'), JSON.stringify(identitiesUnder(featA).map(i => i.kind || null)));
+  check('the tab left the strip, its branch tab shows next and its host is untouched',
+    !!s && JSON.stringify(labelsOf(s)) === JSON.stringify(['develop', 'feat/a', 'feat/b']) && (tabOf(s, 'feat/a') || {}).selected === true && alive(aHost.pid),
+    s ? labelsOf(s).join(', ') : 'no state');
+  check('closing a shell asked nothing', !!s && (s.confirms || []).length === confirmsBefore, s && JSON.stringify(s.confirms));
+
+  // Every other close a person has: the tab's own x, and its menu's Close shell. Each on a shell opened the way Ricardo opened his,
+  // from the branch tab's right-click Open shell here (the popup's own template, clicked by the driver).
+  async function openFromMenu() {
+    const opened = await command(app, { cmd: 'tabMenu', label: 'feat/a', item: 'Open shell here' }, 60000);
+    const x = await waitFor(async () => { const y = await state(app); return tabOf(y, SHELL_A) && tabOf(y, SHELL_A).started && hostOf(y, SHELL_A) ? y : null; }, 40000);
+    remember(x);
+    const host = x && hostOf(x, SHELL_A);
+    const id = host ? await waitFor(async () => { const i = identitiesUnder(featA).find(z => z.pid === host.pid); return i && i.claudePid ? i : null; }, 15000, 300) : null;
+    if (id) seenPids.add(id.pid, id.processStartedAt);
+    return { opened, host, id };
+  }
+  for (const way of [
+    { name: 'a real click on its x', cmd: { cmd: 'xClick', label: SHELL_A } },
+    { name: 'its menu\'s Close shell', cmd: { cmd: 'tabMenu', label: SHELL_A, item: 'Close shell' } },
+  ]) {
+    const o = await openFromMenu();
+    check(`the branch tab's menu Open shell here opens a shell (to close by ${way.name})`,
+      o.opened.ok === true && !!o.host && !!o.id && alive(o.id.claudePid), JSON.stringify(o.opened));
+    if (!o.host || !o.id) continue;
+    if (way.cmd.cmd === 'tabMenu') {
+      const menu = await command(app, { cmd: 'tabMenu', label: SHELL_A });
+      check('the shell tab\'s menu is Go to shell and Close shell, both on',
+        JSON.stringify(menu.items) === JSON.stringify([{ label: 'Go to shell', enabled: true }, { label: 'Close shell', enabled: true }]), JSON.stringify(menu));
+    }
+    const r = await command(app, way.cmd);
+    const gone = await waitFor(async () => !alive(o.host.pid) && !alive(o.id.claudePid) && !identitiesUnder(featA).some(i => i.kind === 'shell'), 20000, 300);
+    const x = await waitFor(async () => { const y = await state(app); return y && !tabOf(y, SHELL_A) ? y : null; }, 10000, 300);
+    check(`${way.name} closes the shell tab: its host and its shell end, its identity file goes, feat/a shows next`,
+      r.ok === true && !!gone && !!x && (tabOf(x, 'feat/a') || {}).selected === true && alive(aHost.pid),
+      `host ${alive(o.host.pid) ? 'alive' : 'gone'}, shell ${alive(o.id.claudePid) ? 'alive' : 'gone'}, tabs ${x ? labelsOf(x).join(', ') : '?'}`);
+  }
+
+  // The develop tab never closes, so its shell is the one that had no way to end at all.
+  const devOpened = await command(app, { cmd: 'shell-open', label: 'develop' }, 60000);
+  s = await waitFor(async () => { const x = await state(app); return tabOf(x, SHELL_DEV) && tabOf(x, SHELL_DEV).started && hostOf(x, SHELL_DEV) ? x : null; }, 40000);
+  remember(s);
+  const devShell = s && hostOf(s, SHELL_DEV);
+  check('a shell opens on the develop tab', devOpened.ok === true && !!devShell && alive(devShell.pid), JSON.stringify(devOpened));
+  const devClosed = devShell ? await command(app, { cmd: 'close', label: SHELL_DEV }) : { ok: false };
+  const devGone = devShell && await waitFor(async () => !alive(devShell.pid) && !identitiesUnder(dev).some(i => i.kind === 'shell'), 20000, 300);
+  s = await state(app);
+  check('and closing it ends its host and removes its identity file, while the develop tab stays',
+    devClosed.ok === true && !!devGone && !!s && !tabOf(s, SHELL_DEV) && !!tabOf(s, 'develop'), JSON.stringify(devClosed));
+
   // ===== ends with its branch tab =====
+  const lastOpen = await command(app, { cmd: 'shell-open', label: 'feat/a' }, 60000);
+  s = await waitFor(async () => { const x = await state(app); return tabOf(x, SHELL_A) && tabOf(x, SHELL_A).started && hostOf(x, SHELL_A) ? x : null; }, 40000);
+  remember(s);
+  const lastShell = s && hostOf(s, SHELL_A);
+  check('Open shell here after a hand close starts a fresh one', lastOpen.ok === true && !!lastShell && lastShell.pid !== closingShell.pid, JSON.stringify(lastOpen));
   const closed = await command(app, { cmd: 'close', label: 'feat/a' });
-  const bothGone = await waitFor(async () => !alive(aHost.pid) && !alive(before.shell), 20000, 300);
+  const bothGone = await waitFor(async () => !alive(aHost.pid) && !!lastShell && !alive(lastShell.pid), 20000, 300);
   s = await state(app);
   check('hand-closing feat/a ends BOTH hosts', closed.ok === true && !!bothGone, JSON.stringify(closed));
   check('and both tabs leave the strip', !!s && !tabOf(s, 'feat/a') && !tabOf(s, SHELL_A), labelsOf(s).join(', '));

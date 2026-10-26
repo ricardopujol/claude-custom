@@ -45,7 +45,7 @@ test('main.js: a side tab\'s host is spawned with the side flag, and found as a 
 });
 
 test('main.js: the tab menu offers the side session, and its click opens it on the branch tab it names', () => {
-  const menu = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:contextMenu'"), MAIN.indexOf("ipcMain.on('strip:plus'"));
+  const menu = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
   assert.match(menu, /tabShell\.sideMenu\(key\)/);
   assert.match(menu, /label: side\.enabled \? side\.label : `\$\{side\.label\} \(\$\{side\.why\}\)`/);
   assert.match(menu, /enabled: side\.enabled/);
