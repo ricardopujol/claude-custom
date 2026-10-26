@@ -63,9 +63,10 @@ test('a retry never reuses a stale victim pid: every attempt of the taskkill cas
 });
 
 test('kill-ok(guard-case) is used only on deny cases that name the canary process (the class excuses nothing else)', () => {
+  const { isGuardCaseLine } = require('./guard-case');   // the exemption both kill rules share
   const lines = SRC.split(/\r?\n/).filter((l) => /kill-ok\(guard-case\)/.test(l));
-  assert.ok(lines.length >= 1);
-  for (const l of lines) assert.match(l, /^\s*deny\('b', '\w+', '[\w-]+', '[^']*cc-probe-canary[^']*'\);/, l.trim());
+  assert.strictEqual(lines.length, CASES.filter((c) => c.cls === 'b').length, 'every class-b case, and nothing else');
+  for (const l of lines) assert.ok(isGuardCaseLine(l), l.trim());
 });
 
 test('every URL points at localhost or a name that cannot resolve (.invalid); no real host, repo or token', () => {

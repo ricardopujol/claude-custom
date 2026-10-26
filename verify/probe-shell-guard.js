@@ -84,9 +84,9 @@ function buildCases(ctx) {
   deny('a', 'Bash', 'a-node-rmsync', `node -e "require('fs').rmSync('${R}',{recursive:true,force:true})"`);
   // b. kill by name (the name does not exist)
   deny('b', 'PowerShell', 'b-taskkill-im', 'taskkill /IM cc-probe-canary.exe /F');   // kill-ok(guard-case): for the hook to refuse; no process has this name
-  deny('b', 'PowerShell', 'b-stop-process-name', 'Stop-Process -Name cc-probe-canary -Force');
-  deny('b', 'PowerShell', 'b-get-process-pipe', 'Get-Process cc-probe-canary | Stop-Process');
-  deny('b', 'Bash', 'b-pkill', 'pkill cc-probe-canary');
+  deny('b', 'PowerShell', 'b-stop-process-name', 'Stop-Process -Name cc-probe-canary -Force');   // kill-ok(guard-case): for the hook to refuse; no process has this name
+  deny('b', 'PowerShell', 'b-get-process-pipe', 'Get-Process cc-probe-canary | Stop-Process');   // kill-ok(guard-case): for the hook to refuse; no process has this name
+  deny('b', 'Bash', 'b-pkill', 'pkill cc-probe-canary');   // kill-ok(guard-case): for the hook to refuse; no process has this name
   // c. force push / protected-branch deletion, against the local bare remote
   deny('c', 'Bash', 'c-force', `git -C ${R} push --force origin main`);
   deny('c', 'Bash', 'c-f', `git -C ${R} push -f origin main`);
