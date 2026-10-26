@@ -19,7 +19,7 @@ import json
 import sys
 from pathlib import Path
 
-from portraits_dir import resolve_portraits_dir
+from portraits_dir import MARKER, resolve_portraits_dir
 from prompts import (
     appearance_for,
     build_prompt,
@@ -37,8 +37,24 @@ AGENTS_DIR = Path(r"C:\Users\ricar\.claude\agents")
 # Portraits and their hand-written appearances live WITH the agents, in the
 # agent-creator repo -- not in claude-custom. They are a property of the agent
 # roster, which more than one project consumes.
-PORTRAITS_ROOT = resolve_portraits_dir()
-APPEARANCES_FILE = PORTRAITS_ROOT / "appearances.yaml"
+# Resolved on each access (module __getattr__), not once at import, so a long-lived
+# importer sees the dev folder appear after the agent-creator move.
+def portraits_root() -> Path:
+    return resolve_portraits_dir()
+
+
+def appearances_file() -> Path:
+    return portraits_root() / MARKER
+
+
+def __getattr__(name):
+    if name == "PORTRAITS_ROOT":
+        return portraits_root()
+    if name == "APPEARANCES_FILE":
+        return appearances_file()
+    raise AttributeError(name)
+
+
 BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
 LIGHTNING_REPO = "ByteDance/SDXL-Lightning"
 LIGHTNING_LORA = "sdxl_lightning_8step_lora.safetensors"
@@ -149,15 +165,15 @@ def main() -> int:
     ap.add_argument("--agents", nargs="+", required=True)
     ap.add_argument("--candidates", type=int, default=8)
     ap.add_argument("--steps", type=int, default=LIGHTNING_STEPS)
-    ap.add_argument("--out", default=str(PORTRAITS_ROOT))
+    ap.add_argument("--out", default=str(portraits_root()))
     ap.add_argument("--offline", action="store_true", help="fail rather than download")
     ap.add_argument("--no-lightning", action="store_true",
                     help="plain SDXL: slower per image, markedly better prompt adherence")
     ap.add_argument("--guidance", type=float, default=None)
     args = ap.parse_args()
 
-    appearances = load_appearances(APPEARANCES_FILE)
-    style = load_style(APPEARANCES_FILE)
+    appearances = load_appearances(appearances_file())
+    style = load_style(appearances_file())
     print(f"hand-written appearances: {len(appearances)}", flush=True)
     print(f"art direction: {style['art']}", flush=True)
 
