@@ -75,6 +75,7 @@ test('startSession refuses to spawn claude while a sentinel exists or after this
   const refusal = b.slice(refuse, b.indexOf('\n  }\n', refuse));
   assert.match(refusal, /releaseSessionLock\(SESSION_LOCK, lockOwner\)/, 'a host that runs nothing holds no worktree');
   assert.match(refusal, /return;/);
+  assert.strictEqual(HOST.split('pty.spawn(').length - 1, 1, 'one spawn path in host.js, so none can slip past the refusal');
 });
 
 test('the night budget follows the night\'s payload and stops the session at its deadline', () => {
