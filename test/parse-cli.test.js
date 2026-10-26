@@ -44,3 +44,13 @@ test('two folders is an error, not "the first one wins"', () => {
   assert.throws(() => parseCli(['a', 'b'], { cwd: CWD }), /one folder/);
   assert.throws(() => parseCli(['a', '--stop', 'b'], { cwd: CWD }), /one folder/);
 });
+
+test('--version or -v asks for the version, and wins over a folder', () => {
+  assert.deepStrictEqual(parseCli(['--version'], { cwd: CWD }), { cmd: 'version' });
+  assert.deepStrictEqual(parseCli(['-v'], { cwd: CWD }), { cmd: 'version' });
+  assert.deepStrictEqual(parseCli(['x', '--version'], { cwd: CWD }), { cmd: 'version' });
+});
+
+test('--help still wins over --version', () => {
+  assert.deepStrictEqual(parseCli(['--version', '--help'], { cwd: CWD }), { cmd: 'help' });
+});

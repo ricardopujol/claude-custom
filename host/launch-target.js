@@ -25,7 +25,7 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
 
 /**
  * The launcher's arguments: `[folder]`, `[folder] --stop` (Windowless sessions
- * PR 3), `-h` / `--help`. -> { cmd: 'help' } | { cmd: 'open', arg }
+ * PR 3), `-h` / `--help`, `-v` / `--version`. -> { cmd: 'help' } | { cmd: 'version' } | { cmd: 'open', arg }
  * | { cmd: 'stop', folder }. A `--stop` folder is only resolved, never checked:
  * the folder being cleaned up may already be gone. An unknown option or a
  * second folder throws, rather than opening a folder named "--stpo" or quietly
@@ -33,6 +33,7 @@ function resolveLaunchTarget(arg, { cwd = process.cwd(), stat = fs.statSync } = 
  */
 function parseCli(argv, { cwd = process.cwd() } = {}) {
   if (argv.includes('-h') || argv.includes('--help')) return { cmd: 'help' };
+  if (argv.includes('-v') || argv.includes('--version')) return { cmd: 'version' };
   let stop = false;
   const folders = [];
   for (const a of argv) {

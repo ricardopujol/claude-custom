@@ -21,6 +21,22 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
+// ENTRY (host/exe-entry.js). Before electron or anything else loads:
+//  - started as plain Node (ELECTRON_RUN_AS_NODE inherited from some tab's shell, or the picker running the exe as Node): run again as
+//    the app, without the variable (argv[1] is the script Node was asked to run, so it isn't passed on). Node answers its own `--version` before any script, so a bare `exe --version` can't be caught
+//    here: that is why a tab's pty no longer inherits the variable (host/pty-env.js).
+//  - `--version` / `--help` / a refused command line (installed build): say it, with the exit code the write earned, and leave.
+{
+  const entry = require('../host/exe-entry');
+  const plan = entry.nodeModePlan(process.env);
+  if (plan.action === 'giveup') { try { require('fs').writeSync(2, plan.text + String.fromCharCode(10)); } catch { /* nowhere to say it */ } process.exit(1); }
+  if (plan.action === 'rerun') {
+    // argv[1] stays: for `electron <checkout>` it IS the app, and for an installed exe it's the app folder, which decideEntry ignores.
+    const r = require('child_process').spawnSync(process.execPath, process.argv.slice(1), { env: plan.env, stdio: 'inherit' });
+    process.exit(r.status == null ? 1 : r.status);
+  }
+  delete process.env[entry.REEXEC];   // we are the app: the one-hop marker has done its job and must not travel on
+}
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
@@ -178,7 +194,17 @@ function explicitPort() {
 const EXPLICIT_PORT = explicitPort();
 
 // --- what this window is ----------------------------------------------------------
-const LAUNCH_CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
+// The launcher script sets CLAUDE_CUSTOM_CWD; the installed exe has no launcher, so it works the folder out itself and a folder on its own
+// command line beats an inherited CLAUDE_CUSTOM_CWD (host/exe-entry.js).
+const ENTRY = require('../host/exe-entry').decideEntry({
+  args: process.argv.slice(1), env: process.env, cwd: process.cwd(), installDir: path.dirname(process.execPath),
+  home: require('os').homedir(), packaged: app.isPackaged, pkg: require('../package.json'),
+  // the app's own folder is never a project: `electron <appDir>` in a checkout, and what an older spawner passed an installed exe
+  appDirs: [path.join(__dirname, '..')],
+});
+const writeFd = (fd, text) => { try { fs.writeSync(fd, text); return true; } catch { return false; } };
+if (require('../host/exe-entry').carryOut(ENTRY, { write: writeFd, exit: (c) => process.exit(c) })) { /* exited above */ }
+const LAUNCH_CWD = ENTRY.cwd;
 const PROJECT = projectOf(LAUNCH_CWD);
 const MODE = (PROJECT && PROJECT.kind === 'container' && EXPLICIT_PORT === null) ? 'tabs' : 'single';
 // What hostEnv hands each host as its project. A folder in no project is its
@@ -993,7 +1019,9 @@ const backgroundActions = createBackgroundActions({
   focusWindow,
   // Attach-only: it attaches to that host or refuses (host/launch-target.js).
   spawnWindow: ({ cwd, port }) => {
-    const child = spawn(process.execPath, [INSTALL_DIR], {
+    // The project travels in the environment (attachEnv), never as an argument: an installed exe finds its own app, and the app folder as
+    // its one argument would read as the folder to open.
+    const child = spawn(process.execPath, require('../host/exe-entry').appLaunchArgs({ packaged: app.isPackaged, installDir: INSTALL_DIR }), {
       detached: true, stdio: 'ignore', env: attachEnv(process.env, { cwd, port }),
     });
     child.on('error', err => console.log('[main] Open (background) failed:', err.message));

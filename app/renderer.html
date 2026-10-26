@@ -809,6 +809,31 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
+    /* First-run checks (host/first-run.js): ONE line at the top of the terminal while a required check fails. Never a modal. */
+    #first-run-banner {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 15;
+      display: flex; align-items: flex-start; gap: 8px; padding: 6px 10px; border-radius: 5px;
+      font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--warn, #d9a441) 16%, var(--chrome));
+      border: 1px solid color-mix(in srgb, var(--warn, #d9a441) 55%, var(--border));
+    }
+    #first-run-banner[hidden] { display: none; }
+    /* the same slot as #terminal-banner (top of the terminal, never over the prompt at the foot, never near #occupancy-confirm);
+       when that one shows too, this one sits under it, and both follow the bar */
+    body.bar-open #first-run-banner { top: 46px; }
+    #terminal-banner:not([hidden]) ~ #first-run-banner { top: 50px; }
+    body.bar-open #terminal-banner:not([hidden]) ~ #first-run-banner { top: 90px; }
+    #first-run-banner-text { flex: 1; }
+    #first-run-banner-dismiss { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 15px; line-height: 1; }
+    #first-run-banner-dismiss:hover { color: var(--text); }
+    #first-run { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    #first-run h3 { margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: normal; }
+    #first-run div { padding: 3px 0; font-size: 12px; color: var(--dim); }
+    #first-run div.ok { color: var(--ok); }
+    #first-run div.fail { color: var(--text); }
+    #first-run .mark { display: inline-block; width: 16px; }
+    #first-run .detail { display: block; padding-left: 16px; font-size: 11px; color: var(--dim); }
+
     /* The terminal bar (#49 last prompt + #52 bedtime, with #47's occupancy banner folded in as a chip;
        documentation/DESIGN_TERMINAL_BAR.md): ONE row over the terminal, the prompt on the left once it has scrolled
        away, the status chips on the right. Absent when there is nothing to say. It never animates (movement means
@@ -2153,6 +2178,10 @@
           <span id="terminal-banner-text"></span>
           <button type="button" id="terminal-banner-dismiss" title="Dismiss until the sessions change">&times;</button>
         </div>
+        <div id="first-run-banner" role="status" hidden>
+          <span id="first-run-banner-text"></span>
+          <button type="button" id="first-run-banner-dismiss" title="Dismiss until the next start">&times;</button>
+        </div>
         <!-- The terminal bar (#49 + #52, with #47's occupancy banner folded in as a chip): one row, the prompt left
              once it has scrolled away, the chips right. Text only, painted from app/terminal-bar.js's model. -->
         <div id="terminal-bar" role="group" aria-label="Last prompt and status" hidden>
@@ -2222,6 +2251,7 @@
       </div>
       <aside id="diag">
         <h2>Key diagnostics</h2>
+        <div id="first-run"></div>
         <div id="checks"></div>
         <div id="log"></div>
       </aside>
