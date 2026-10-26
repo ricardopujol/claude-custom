@@ -69,7 +69,7 @@ test('startSession refuses to spawn claude while a sentinel exists or after this
   const b = block('function startSession() {', '\n}\n');
   const check = b.indexOf('killSwitch.check();');
   const refuse = b.indexOf('if (killStop.state() !== null) {');
-  const spawn = b.indexOf('term = pty.spawn(');
+  const spawn = b.indexOf('const spawnPty = () => pty.spawn(');
   assert.ok(check !== -1 && refuse !== -1 && spawn !== -1);
   assert.ok(check < refuse && refuse < spawn, 'checked, then refused, then (only otherwise) spawned');
   const refusal = b.slice(refuse, b.indexOf('\n  }\n', refuse));
