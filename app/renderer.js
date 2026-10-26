@@ -2050,8 +2050,8 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
-  changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   mapView();                        // the map draws only while shown, and moves only while the window is focused and not lean
+  changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }

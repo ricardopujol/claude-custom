@@ -56,7 +56,7 @@ test('the host\'s changed push reaches the panel, which acts on it only while it
 });
 
 test('the panel is told whether it is on screen after every layout, and asks again when the hello arrives', () => {
-  assert.match(RENDERER, /shownModules = now;\s*gamesView\(\);[^\n]*\s*askView\(\);[^\n]*\s*changesView\(\);/);
+  assert.match(RENDERER, /shownModules = now;\s*gamesView\(\);[^\n]*\s*askView\(\);[^\n]*\s*(?:mapView\(\);[^\n]*\s*)?changesView\(\);/);
   assert.match(RENDERER, /repoBrowser\.setControls\(msg\.controls\);\s*if \(changesPanel && shownModules\.has\('changes'\)\) changesPanel\.refresh\(\);/);
 });
 
