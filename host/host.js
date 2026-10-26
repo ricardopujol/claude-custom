@@ -1464,6 +1464,8 @@ const killStop = createStopper({
 const killSwitch = watchKillSwitch({
   sentinelPaths: KILL_SWITCH_PATHS,
   onTrip: ({ sentinel, scope }) => killStop.stop({ kind: term ? 'tripped' : 'refused', sentinel, scope }),
+  // A host that was kept from starting starts once the file is gone, even a dev tab no one can close (Dexter F4 / Miguel Y1, PR #210).
+  onClear: () => { if (killStop.clearRefused()) restartAfterRefusal(); },
 });
 const killLinger = createLinger();
 // The first night's start is kept on disk (one per project), so a host replaced mid-night keeps the deadline (Dexter F1, PR #210).
@@ -1838,6 +1840,24 @@ function workOutSessionEnv() {
   } catch (err) {
     console.log('[host] worktree env failed, starting without it:', err && err.message);
     return {};
+  }
+}
+
+// The lock was released when the switch refused the start (startSession), so a start after the file is gone takes it again, the
+// way the boot and "Open anyway" do.
+async function restartAfterRefusal() {
+  if (term || lockBusy || !lockOwner) return;
+  lockBusy = true;
+  try {
+    console.log('[host] kill switch cleared: starting the session that was held back');
+    const g = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
+    if (term) return;
+    setLockState(g.lock);
+    if (g.start) startSession();
+  } catch (err) {
+    console.error('[host] could not start after the kill switch cleared:', err && err.message);
+  } finally {
+    lockBusy = false;
   }
 }
 

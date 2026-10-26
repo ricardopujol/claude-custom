@@ -182,7 +182,94 @@ test('watch: no sentinel paths is a watch that never trips', () => {
   assert.deepStrictEqual(trips, []);
 });
 
-/// --- the night budget --------------------------------------------------------------------------------------------
+//// --- a refused host stays refused only while the file is there ---------------------------------------------------------
+
+// Dexter F4 / Miguel Y1 (PR #210): the host the switch kept from starting must be able to start once the file is deleted,
+// including one that is reattached or a dev tab that can't be closed.
+function refusedHost() {
+  const present = new Set(['H/STOP-ALL']);
+  const t = fakeTimers();
+  let term = null;
+  const calls = [];
+  const s = ks.createStopper({ term: () => term, stopPty: () => {}, killChildTree: () => {}, log: () => {}, notify: () => {} });
+  const w = ks.watch({
+    sentinelPaths: ['H/STOP-ALL'],
+    exists: (p) => present.has(p),
+    onTrip: ({ sentinel, scope }) => s.stop({ kind: term ? 'tripped' : 'refused', sentinel, scope }),
+    onClear: () => { if (s.clearRefused()) calls.push('restart'); },
+    setInterval: t.setInterval, clearInterval: t.clearInterval,
+  });
+  return { present, t, s, w, calls, setTerm: (x) => { term = x; } };
+}
+
+test('refused F4: a host refused at start is refused while the file stays, and can start once it is deleted', () => {
+  const { present, t, s, w, calls } = refusedHost();
+  w.check();                                                    // startSession's own check at boot
+  assert.strictEqual(s.state().kind, 'refused');
+  t.fire();
+  assert.strictEqual(s.state().kind, 'refused', 'still there: still refused');
+  assert.deepStrictEqual(calls, []);
+  present.delete('H/STOP-ALL');
+  t.fire();                                                     // the next poll sees it gone
+  assert.strictEqual(s.state(), null, 'the refusal is cleared');
+  assert.deepStrictEqual(calls, ['restart'], 'and the host is told to start its session, once');
+  t.fire();
+  assert.deepStrictEqual(calls, ['restart']);
+});
+
+test('refused F4: startSession\'s own check() clears it too (a window reattached before the next poll)', () => {
+  const { present, s, w, calls } = refusedHost();
+  w.check();
+  present.delete('H/STOP-ALL');
+  assert.strictEqual(w.check(), null);
+  assert.strictEqual(s.state(), null);
+  assert.deepStrictEqual(calls, ['restart']);
+});
+
+test('refused F4: the file coming back after a clear refuses (and re-trips) again', () => {
+  const { present, s, w } = refusedHost();
+  w.check();
+  present.delete('H/STOP-ALL');
+  w.check();
+  present.add('H/STOP-ALL');
+  w.check();
+  assert.strictEqual(s.state().kind, 'refused');
+});
+
+test('refused F4: clearRefused() clears only a refusal; a trip or the night budget stays', () => {
+  const pty = { pid: 7 };
+  for (const info of [{ kind: 'tripped', sentinel: 'H/STOP-ALL' }, { kind: 'night-budget', startedAt: 0, budgetMs: 1 }]) {
+    const { s } = stopper(pty);
+    s.stop(info);
+    assert.strictEqual(s.clearRefused(), false);
+    assert.strictEqual(s.state().kind, info.kind);
+  }
+  const { s } = stopper(null);
+  assert.strictEqual(s.clearRefused(), false, 'nothing stopped: nothing to clear');
+  s.stop({ kind: 'refused', sentinel: 'x' });
+  assert.strictEqual(s.clearRefused(), true);
+  assert.strictEqual(s.state(), null);
+  assert.strictEqual(s.stop({ kind: 'refused', sentinel: 'x' }), true, 'a cleared host can be refused again');
+});
+
+test('watch: onClear fires once when the sentinel that tripped it is gone, never for a sentinel that never tripped; a throwing onClear is contained', () => {
+  const present = new Set();
+  let cleared = 0;
+  const { t, w } = setup(present, { onClear: () => { cleared++; throw new Error('listener'); } });
+  t.fire();
+  assert.strictEqual(cleared, 0);
+  present.add('A/STOP-ALL');
+  t.fire();
+  assert.strictEqual(cleared, 0);
+  present.delete('A/STOP-ALL');
+  assert.doesNotThrow(() => t.fire());
+  assert.strictEqual(cleared, 1);
+  t.fire();
+  assert.strictEqual(cleared, 1);
+  assert.strictEqual(w.check(), null);
+});
+
+// --- the night budget --------------------------------------------------------------------------------------------
 
 test('NIGHT_BUDGET_MS is 8 h 30 min, and it is under bedtime-state\'s 12 h cap (a budget at or over it could never fire)', () => {
   const { MAX_NIGHT_MS } = require('../host/bedtime-state');

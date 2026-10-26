@@ -22,13 +22,14 @@
  *
  *   stopAllHome({ seam, home }) -> the folder STOP-ALL is in
  *   sentinelsFor({ claudeHome, stateRoot }) -> [path]               STOP-ALL first; no project, no STOP
- *   watch({ sentinelPaths, intervalMs, onTrip, exists, setInterval, clearInterval }) -> { check(), stop() }
+ *   watch({ sentinelPaths, intervalMs, onTrip, onClear, exists, setInterval, clearInterval }) -> { check(), stop() }
  *       onTrip({ sentinel, scope })   scope 'all' | 'project'; check() answers the present sentinel (or null) at once, and trips
+ *       onClear()                     once, when the last sentinel that tripped it is gone
  *   createNightBudget({ budgetMs, freshAfterMs, onExpire, nightNow, now, load, save, setInterval, clearInterval }) -> { update(payload), stop() }
  *       onExpire({ startedAt, deadline })       startedAt is the anchor
  *   loadAnchor(file, { read }) -> ms | null, saveAnchor(file, ms, { write, mkdir })   the anchor file, { anchor }
  *   describeStop(stop) -> the one line the host logs and shows
- *   createStopper({ term, stopPty, killChildTree, log, notify }) -> { stop(info) -> stopped?, state() }   says why, then kills, once
+ *   createStopper({ term, stopPty, killChildTree, log, notify }) -> { stop(info) -> stopped?, state(), clearRefused() }   says why, then kills, once
  *   createLinger({ graceMs, now }) -> { update(stopped, windowCount) -> leave? }   a refused host with no window goes
  *   requestStopAll({ file, confirm, write, mkdir, now }) -> { outcome: 'written' | 'cancelled' | 'failed', error? }   the button's half
  */
@@ -68,7 +69,7 @@ function scopeOf(sentinel) {
 const positiveMs = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
 
 function watch({
-  sentinelPaths, intervalMs = POLL_MS, onTrip = () => {}, exists = fs.existsSync,
+  sentinelPaths, intervalMs = POLL_MS, onTrip = () => {}, onClear = () => {}, exists = fs.existsSync,
   setInterval: every = setInterval, clearInterval: cancel = clearInterval,
 } = {}) {
   if (!positiveMs(intervalMs)) throw new Error('kill-switch watch: intervalMs must be a positive number of ms');
@@ -79,7 +80,13 @@ function watch({
 
   function check() {
     const found = paths.find(isThere) || null;
-    if (found === null) { tripped = null; return null; }        // every one gone: re-armed
+    if (found === null) {                                        // every one gone: re-armed
+      if (tripped !== null) {
+        tripped = null;
+        try { onClear(); } catch { /* a listener never stops the watch */ }
+      }
+      return null;
+    }
     if (tripped === null) {
       tripped = found;
       try { onTrip({ sentinel: found, scope: scopeOf(found) }); } catch { /* a listener never stops the watch */ }
@@ -201,6 +208,13 @@ function createStopper({ term, stopPty, killChildTree, log = () => {}, notify = 
       return true;
     },
     state: () => state,
+    // A refusal is not a kill: once the file is gone the host may start its session (Dexter F4 / Miguel Y1, PR #210). A trip or the
+    // night budget stays, because that host's claude is dead and the host leaves with it.
+    clearRefused() {
+      if (state === null || state.kind !== 'refused') return false;
+      state = null;
+      return true;
+    },
   };
 }
 

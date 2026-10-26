@@ -48,6 +48,16 @@ test('the watch trips the stopper: a kill when a session runs, a refusal when no
   assert.match(b, /killStop\.stop\(\{ kind: term \? 'tripped' : 'refused', sentinel, scope \}\)/);
 });
 
+test('the watch clears a refusal when the file is gone and restarts the held-back session under the lock, like the boot', () => {
+  const w = block('const killSwitch = watchKillSwitch({', '\n});');
+  assert.match(w, /onClear: \(\) => \{ if \(killStop\.clearRefused\(\)\) restartAfterRefusal\(\); \},/);
+  const b = block('async function restartAfterRefusal() {', '\n}\n');
+  assert.match(b, /if \(term \|\| lockBusy \|\| !lockOwner\) return;/);
+  assert.match(b, /gateFromAcquire\(await acquireSessionLock\(SESSION_LOCK, lockOwner\)\)/, 'the lock the refusal released is taken again');
+  assert.match(b, /if \(g\.start\) startSession\(\);/);
+  assert.match(b, /finally \{\s*lockBusy = false;/);
+});
+
 test('startSession refuses to spawn claude while a sentinel exists or after this host was stopped, BEFORE pty.spawn', () => {
   const b = block('function startSession() {', '\n}\n');
   const check = b.indexOf('killSwitch.check();');
