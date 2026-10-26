@@ -37,6 +37,8 @@ const APP = path.join(__dirname, '..', 'app');
 const ALLOWED_GLOBALS = new Set([
   // app/resources-history-display.js (#63 follow-up): one namespace, reached through `window.`.
   'resourcesHistoryDisplay',
+  // app/preview-display.js (BACKLOG #119 A4): the Preview panel and the Dev servers chip, one namespace.
+  'previewDisplay',
   // app/agent-pause-display.js (#19): an agent card's Pause / Resume, one namespace, reached through `window.`.
   'agentPauseDisplay',
   // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:

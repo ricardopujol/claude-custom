@@ -1617,6 +1617,7 @@ function onModuleShown(id) {
   if (id === 'resources') renderResources();
   if (id === 'schedules') { requestSchedules(); renderSchedules(); }
   if (id === 'canvas') { canvasFetchIfNeeded(); renderCanvas(); }
+  if (id === 'preview') renderPreview();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
@@ -2009,6 +2010,191 @@ if (canvasBridge && canvasRoot) {
 }
 // CANVAS-END
 
+// --- the Preview panel and the Dev servers chip (BACKLOG #119 A4) -------------------------------------------------
+// PREVIEW-BEGIN
+// app/preview-display.js decides everything (the frame, the chip, the menu rows). The page of the dev server is NOT part of this document: it
+// is a native view that main lays over `#preview-slot` at the rectangle measured here (app/preview-views.js), so this page is its trusted
+// controller. It never hands main an address of the page's own: a port or typed text goes in, and main judges it (app/preview-guard.js). Hidden
+// means stopped: the view is destroyed when the module is not on screen, and main remembers the last address of this worktree.
+const previewBridge = window.harness && window.harness.preview;
+let previewState = window.previewDisplay.emptyState();
+const previewRoot = document.getElementById('preview-root');
+const tbDevEl = document.getElementById('tb-devservers');
+const dvPopEl = document.getElementById('dv-popover');
+let previewLive = false;         // main has a native view for this tab
+let previewLastRect = null;
+let previewRectKey = '';
+let previewLastCover = null;
+let devOpen = false;             // the chip's list is open
+
+function previewSlotRect() {
+  const el = previewRoot && previewRoot.querySelector('#preview-slot');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+}
+
+// Is the slot itself topmost at this point? Whatever else is drawn over it (a float, a menu, the chip's list) must hide the native view,
+// which paints above the whole page: the same hit-test Claude's panel uses (window.canvasDisplay.slotObstructed).
+function previewIsSlotAt(x, y) {
+  const slot = previewRoot && previewRoot.querySelector('#preview-slot');
+  const el = document.elementFromPoint(x, y);
+  return !el || !slot || el === slot || slot.contains(el);
+}
+
+function syncPreviewView() {
+  if (!previewBridge) return;
+  const want = shownModules.has('preview') && document.visibilityState === 'visible';
+  if (!want) {
+    if (previewLive) { previewBridge.hide(); previewLive = false; previewRectKey = ''; previewLastCover = null; }
+    return;
+  }
+  const rect = previewSlotRect();
+  const covered = rect !== null && window.canvasDisplay.slotObstructed(rect, previewIsSlotAt);
+  if (rect) previewLastRect = rect;
+  if (!previewLive) {
+    // Nothing asked for yet: main goes back to the address this worktree had, if it had one.
+    previewLive = true; previewRectKey = JSON.stringify(rect); previewLastCover = covered;
+    previewBridge.show({ rect, covered }).then(previewShown, () => {});
+    return;
+  }
+  if (covered !== previewLastCover) { previewLastCover = covered; previewBridge.cover(covered); }
+  const key = JSON.stringify(rect);
+  if (rect && key !== previewRectKey) { previewRectKey = key; previewBridge.bounds(rect); }
+}
+
+// main's answer to a show: the address the view is on, or why not. A `stale` answer means a hide overtook it, which is not an error.
+function previewShown(res) {
+  if (!res || typeof res !== 'object') return;
+  if (res.stale === true) { previewLive = false; return; }
+  if (res.ok === true && typeof res.url === 'string') {
+    const next = window.previewDisplay.withEvent(previewState, { kind: 'url', url: res.url });
+    if (next !== previewState) { previewState = next; renderPreview(); }
+  }
+}
+
+function renderPreview() {
+  if (!previewRoot) return;
+  if (shownModules.has('preview')) {
+    // The address field keeps what the person is typing: a redraw (a port appeared, a page moved) must not take their words or their caret.
+    const field = previewRoot.querySelector('#preview-url');
+    const keep = field && document.activeElement === field ? { value: field.value, from: field.selectionStart, to: field.selectionEnd } : null;
+    previewRoot.innerHTML = window.previewDisplay.html(window.previewDisplay.view(previewState));
+    if (keep) {
+      const again = previewRoot.querySelector('#preview-url');
+      if (again) { again.value = keep.value; again.focus(); try { again.setSelectionRange(keep.from, keep.to); } catch { /* not a text field right now */ } }
+    }
+  }
+  syncPreviewView();
+}
+
+// A port (the picker, the chip's list) or typed text (the field). main judges it; a refusal arrives as a `blocked` event for the header.
+function previewGo(target) {
+  if (!previewBridge) return;
+  previewLive = true;
+  const rect = previewSlotRect() || previewLastRect;
+  previewRectKey = JSON.stringify(rect);
+  previewBridge.show({ target, rect, covered: false }).then(previewShown, () => {});
+}
+
+if (previewBridge && previewRoot) {
+  previewBridge.onEvent((ev) => {
+    if (ev && ev.kind === 'loading') return;            // not drawn: a redraw per page load would only cost the field its caret
+    const next = window.previewDisplay.withEvent(previewState, ev);
+    if (next === previewState) return;
+    previewState = next;
+    renderPreview();
+  });
+  previewRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-preview-act]') : null;
+    const a = el ? window.previewDisplay.actionOf(el.dataset) : null;
+    if (!a) return;
+    if (a.act === 'go') { const f = previewRoot.querySelector('#preview-url'); if (f) previewGo({ typed: f.value }); }
+    else if (a.act === 'reload') previewBridge.reload();
+    else if (a.act === 'browser') previewBridge.openExternal();
+    else if (a.act === 'devtools') previewBridge.devtools();
+  });
+  previewRoot.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target && e.target.id === 'preview-url') { e.preventDefault(); previewGo({ typed: e.target.value }); }
+  });
+  previewRoot.addEventListener('change', (e) => {
+    if (!e.target || e.target.id !== 'preview-port' || !/^[1-9]\d{0,4}$/.test(e.target.value)) return;
+    previewGo({ port: Number(e.target.value) });
+  });
+  let previewFrame = 0;
+  const previewSchedule = () => {
+    if (previewFrame) return;
+    previewFrame = requestAnimationFrame(() => { previewFrame = 0; syncPreviewView(); });
+  };
+  new ResizeObserver(previewSchedule).observe(previewRoot);
+  document.addEventListener('visibilitychange', syncPreviewView);
+  for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) window.addEventListener(ev, () => setTimeout(previewSchedule, 0), true);
+  window.addEventListener('pointermove', (e) => { if (e.buttons) previewSchedule(); }, true);
+  setInterval(() => { if (previewLive) previewSchedule(); }, 250);
+}
+
+// The Dev servers chip: this tab's listening ports, from main's sampler (app/dev-servers-service.js).
+let devState = null;
+function renderDevChip() {
+  if (!tbDevEl) return;
+  const v = window.previewDisplay.chipView(devState);
+  tbDevEl.hidden = v.hidden;
+  if (v.hidden) { if (devOpen) closeDevMenu(); return; }
+  tbDevEl.classList.toggle('dv-idle', v.state === 'idle');
+  tbDevEl.classList.toggle('dv-unknown', v.state === 'unknown');
+  tbDevEl.title = v.title;
+  tbDevEl.textContent = '';
+  tbDevEl.insertAdjacentHTML('afterbegin', window.previewDisplay.serverIcon());
+  const n = document.createElement('span');
+  n.textContent = v.text;
+  tbDevEl.appendChild(n);
+  if (devOpen) renderDevMenu();
+}
+function renderDevMenu() {
+  if (!dvPopEl || !tbDevEl) return;
+  dvPopEl.innerHTML = window.previewDisplay.menuHtml(devState);
+  dvPopEl.hidden = false;
+  const pos = window.menuPlacement(tbDevEl.getBoundingClientRect(), { width: dvPopEl.offsetWidth, height: dvPopEl.offsetHeight }, { width: window.innerWidth, height: window.innerHeight });
+  dvPopEl.style.left = `${Math.round(pos.left)}px`;
+  dvPopEl.style.top = `${Math.round(pos.top)}px`;
+}
+function closeDevMenu() {
+  devOpen = false;
+  if (dvPopEl) dvPopEl.hidden = true;
+  if (tbDevEl) tbDevEl.setAttribute('aria-expanded', 'false');
+}
+function onDevServers(state) {
+  devState = state !== null && typeof state === 'object' ? state : null;
+  previewState = window.previewDisplay.withDev(previewState, devState);
+  renderDevChip();
+  if (shownModules.has('preview')) renderPreview();
+}
+if (previewBridge) {
+  previewBridge.onDevServers(onDevServers);
+  previewBridge.devServers().then(onDevServers, () => {});
+  if (tbDevEl && dvPopEl) {
+    tbDevEl.addEventListener('click', () => {
+      if (devOpen) { closeDevMenu(); return; }
+      devOpen = true;
+      tbDevEl.setAttribute('aria-expanded', 'true');
+      renderDevMenu();
+    });
+    dvPopEl.addEventListener('click', (e) => {
+      const el = e.target && e.target.closest ? e.target.closest('[data-dev-act]') : null;
+      const a = el ? window.previewDisplay.devActionOf(el.dataset) : null;
+      if (!a) return;
+      closeDevMenu();
+      if (a.act === 'preview') { previewGo({ port: a.port }); revealModule('preview'); }
+      else previewBridge.openPort(a.port);
+    });
+    window.addEventListener('pointerdown', (e) => {
+      if (devOpen && !dvPopEl.contains(e.target) && !tbDevEl.contains(e.target)) closeDevMenu();
+    }, true);
+    window.addEventListener('keydown', (e) => { if (devOpen && e.key === 'Escape') { closeDevMenu(); tbDevEl.focus(); } }, true);
+  }
+}
+// PREVIEW-END
+
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
 // outlives the moment someone needed it. "Leaving" is anything that stops it
@@ -2056,6 +2242,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
+  syncPreviewView();                // and the Preview panel's, the same way
   paintSchedulesBadge();            // a rebuilt rail button has lost its count
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
@@ -4129,6 +4316,83 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           && (a.id === undefined || e.dataset.canvasId === String(a.id)) && (a.origin === undefined || e.dataset.canvasOrigin === String(a.origin)));
         if (!el) return JSON.stringify({ ok: false, error: 'no canvas control ' + JSON.stringify(a) });
         el.click();
+        return JSON.stringify({ ok: true });
+      }
+      // backlog #119 A4: verify/probe-preview-panel.js reads the Preview panel's frame and the Dev servers chip (the page itself is a
+      // native view main reports on) and operates them as a pointer and a keyboard would
+      case 'previewState': {
+        const root = document.getElementById('preview-root');
+        const slot = root.querySelector('#preview-slot');
+        const sr = slot ? slot.getBoundingClientRect() : null;
+        const panel = document.querySelector('.panel[data-panel="preview"]');
+        const chip = document.getElementById('tb-devservers');
+        const pop = document.getElementById('dv-popover');
+        const pick = root.querySelector('#preview-port');
+        const field = root.querySelector('#preview-url');
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.previewDisplay === 'object' && typeof window.previewDisplay.view === 'function',
+          shown: panel.classList.contains('on'),
+          inShownModules: shownModules.has('preview'),
+          chip: { hidden: chip.hidden, text: chip.textContent, title: chip.title, cls: chip.className, icon: !!chip.querySelector('svg'), expanded: chip.getAttribute('aria-expanded') },
+          menu: { open: !pop.hidden, rows: [...pop.querySelectorAll('.dv-row')].map(r => r.textContent), text: pop.textContent },
+          url: field ? field.value : null,
+          note: (root.querySelector('.pv-note') || {}).textContent || null,
+          options: pick ? [...pick.options].map(o => ({ v: o.value, t: o.textContent, s: o.selected })) : [],
+          slot: sr ? { x: sr.left, y: sr.top, width: sr.width, height: sr.height } : null,
+          empty: !!root.querySelector('.pv-empty'),
+          live: previewLive,
+          visibility: document.visibilityState,
+        });
+      }
+      case 'previewDo': {
+        const root = document.getElementById('preview-root');
+        if (a.op === 'type') {
+          const f = root.querySelector('#preview-url');
+          if (!f) return JSON.stringify({ ok: false, error: 'no address field' });
+          f.value = String(a.text);
+        } else if (a.op === 'goto') {
+          // type and press Go in ONE turn: a redraw between the two (an event from the page) would put the old address back in the field
+          const f = root.querySelector('#preview-url');
+          const b = root.querySelector('[data-preview-act="go"]');
+          if (!f || !b) return JSON.stringify({ ok: false, error: 'no address field or go button' });
+          f.value = String(a.text);
+          b.click();
+        } else if (a.op === 'go') {
+          const b = root.querySelector('[data-preview-act="go"]');
+          if (!b) return JSON.stringify({ ok: false, error: 'no go button' });
+          b.click();
+        } else if (a.op === 'act') {
+          const b = root.querySelector('[data-preview-act="' + String(a.act) + '"]');
+          if (!b) return JSON.stringify({ ok: false, error: 'no control ' + String(a.act) });
+          b.click();
+        } else if (a.op === 'pick') {
+          const s = root.querySelector('#preview-port');
+          if (!s) return JSON.stringify({ ok: false, error: 'no picker' });
+          s.value = String(a.value);
+          s.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (a.op === 'chip') {
+          document.getElementById('tb-devservers').click();
+        } else if (a.op === 'menu') {
+          const b = document.querySelector('#dv-popover [data-dev-act="' + String(a.act) + '"][data-dev-port="' + String(a.port) + '"]');
+          if (!b) return JSON.stringify({ ok: false, error: 'no menu button ' + JSON.stringify(a) });
+          b.click();
+        } else if (a.op === 'overlay') {
+          // a stand-in for a float / menu crossing the slot: it must hide the native view
+          let box = document.querySelector('.probe-preview-overlay');
+          if (box) box.remove();
+          if (a.on === true) {
+            const slot = root.querySelector('#preview-slot');
+            if (!slot) return JSON.stringify({ ok: false, error: 'no slot' });
+            const r = slot.getBoundingClientRect();
+            box = document.createElement('div');
+            box.className = 'probe-preview-overlay';
+            box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
+            document.body.appendChild(box);
+          }
+        } else {
+          return JSON.stringify({ ok: false, error: 'unknown op' });
+        }
         return JSON.stringify({ ok: true });
       }
       case 'canvasMcpBox': {

@@ -1717,7 +1717,7 @@ function shortcutWillAct(action, shell) {
 const PROBE_TOKEN_MIN = 16;
 // The selected view's probe actions (layout pass L1): named, so the driver can
 // never hand the page a string of code to run.
-const VIEW_PROBE_ACTIONS = new Set(['animState', 'state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
+const VIEW_PROBE_ACTIONS = new Set(['previewState', 'previewDo', 'animState', 'state', 'move', 'select', 'toggleAll', 'dropOwn', 'measure', 'openMenu', 'closeMenu', 'secretRedraw', 'reconnect', 'focusState',
   // dockable panels D1: verify/probe-dock-tree.js
   'boxes', 'layout', 'dock', 'hide', 'show', 'foldAll', 'drag', 'tabClick', 'gutter', 'gutterRace', 'abortedDrag', 'menuTick', 'menuButton', 'squeeze',
   // dockable panels D3: verify/probe-dock-tree.js
@@ -1880,6 +1880,12 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (cmd.action === 'click' && whole(cmd.x) && whole(cmd.y)) return await api.canvas('click', { x: cmd.x, y: cmd.y });
         return { ok: false, error: 'canvas needs inspect, or click with whole-number x and y' };
       }
+      // #119 A4: where the Preview panel's native view is, whether it shows, its address and the title its page set. Inspect only.
+      case 'preview':
+        if (cmd.action === 'inspect') return await api.preview('inspect');
+        // Only ever a picture of the panel's page, as for `screenshot`.
+        if (cmd.action === 'shot' && typeof cmd.file === 'string' && /.png$/i.test(cmd.file)) return await api.preview('shot', cmd.file);
+        return { ok: false, error: 'preview needs inspect, or shot with a .png file' };
       // #34: the window minimised or restored as the OS would, and the OS's reduced-motion setting
       // emulated -- the two inputs of the background video's play rule a probe can't reach by hand.
       case 'window-state':

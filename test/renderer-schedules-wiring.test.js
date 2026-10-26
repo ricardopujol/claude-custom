@@ -61,7 +61,7 @@ test('a click selects the session\'s tab (the Git panel\'s own jump) or opens th
 });
 
 test('the rail badge is repainted after every layout (the rail rebuilds its buttons) and after every frame', () => {
-  assert.match(RENDERER, /syncCanvasView\(\);[^\n]*\n\s*paintSchedulesBadge\(\);/);
+  assert.match(RENDERER, /syncCanvasView\(\);[^\n]*\n(?:\s*syncPreviewView\(\);[^\n]*\n)?\s*paintSchedulesBadge\(\);/);
   assert.match(BLOCK, /document\.querySelectorAll\('button\[data-module="schedules"\]'\)/);
   assert.match(BLOCK, /b\.dataset\.badge = text/);
   assert.match(BLOCK, /delete b\.dataset\.badge/);
