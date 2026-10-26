@@ -19,6 +19,7 @@ import json
 import sys
 from pathlib import Path
 
+from portraits_dir import resolve_portraits_dir
 from prompts import (
     appearance_for,
     build_prompt,
@@ -36,7 +37,7 @@ AGENTS_DIR = Path(r"C:\Users\ricar\.claude\agents")
 # Portraits and their hand-written appearances live WITH the agents, in the
 # agent-creator repo -- not in claude-custom. They are a property of the agent
 # roster, which more than one project consumes.
-PORTRAITS_ROOT = Path(r"C:\Users\ricar\VibeCode\agent-creator\portraits")
+PORTRAITS_ROOT = resolve_portraits_dir()
 APPEARANCES_FILE = PORTRAITS_ROOT / "appearances.yaml"
 BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
 LIGHTNING_REPO = "ByteDance/SDXL-Lightning"

@@ -92,7 +92,7 @@ def test_every_described_agent_fits():
     from prompts import (appearance_for, derive_identity, load_appearances,
                          load_style, parse_agent_file)
 
-    yaml_path = Path(r"C:\Users\ricar\VibeCode\agent-creator\portraits\appearances.yaml")
+    yaml_path = resolve_portraits_dir() / "appearances.yaml"
     agents_dir = Path(r"C:\Users\ricar\.claude\agents")
     if not yaml_path.exists() or not agents_dir.exists():
         pytest.skip("appearances or agents not present on this machine")
