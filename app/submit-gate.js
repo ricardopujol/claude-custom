@@ -47,7 +47,9 @@ const plan = (enter, recheck, flash) => ({ enter, recheck, flash, reason: null }
 
 function planSubmit(input) {
   const o = input !== null && typeof input === 'object' ? input : {};
-  const { turn, typeOnly } = o;
+  const { turn, typeOnly, kind } = o;
+  // A plain shell tab (BACKLOG #119 A5): Enter is never pressed for a Claude command (PR #208 Miguel Y3).
+  if (kind === 'shell') return { enter: false, recheck: false, flash: null, reason: 'this is a plain shell tab, not a Claude session' };
   if (turn === 'prompt') return plan(false, false, FLASH.waiting);
   if (typeOnly !== false && typeOnly !== undefined) return plan(false, false, FLASH.typed);
   if (turn === 'idle') return plan(true, false, FLASH.sent);

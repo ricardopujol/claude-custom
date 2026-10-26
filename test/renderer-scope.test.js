@@ -37,6 +37,8 @@ const APP = path.join(__dirname, '..', 'app');
 const ALLOWED_GLOBALS = new Set([
   // app/resources-history-display.js (#63 follow-up): one namespace, reached through `window.`.
   'resourcesHistoryDisplay',
+  // app/agent-pause-display.js (#19): an agent card's Pause / Resume, one namespace, reached through `window.`.
+  'agentPauseDisplay',
   // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
@@ -102,6 +104,8 @@ const ALLOWED_GLOBALS = new Set([
   'changesCompare', 'changesDisplay',
   // app/top-bar-display.js (PR #199 r2): the review comment's non-destructive typing plan
   'boxIsCommand', 'appendKeys', 'planCommentTyping',
+  // app/map-model.js, app/map-layout.js, app/map-display.js (BACKLOG #120): the Map panel. ONE name leaves each IIFE.
+  'mapModel', 'mapLayout', 'mapDisplay',
   // app/ask-panel-state.js, app/ask-profile.js, app/ask-requester.js, app/ask-display.js (BACKLOG #33): Ask the repo. ONE name leaves each IIFE.
   'askPanelState', 'askProfile', 'askExplainerDisplay', 'askRequester', 'askController', 'askDisplay',
   // app/schedules-display.js (BACKLOG #119 A7): the Schedules panel. ONE name leaves its IIFE.
@@ -139,7 +143,7 @@ const ALLOWED_GLOBALS = new Set([
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'boxHoldsLine', 'scrollCapRows', 'menuPlacement',
   // PR #93 Dexter F3: the typing plan the top bar and the Git drawer's Type /merged share
-  'planTyping', 'typingKeys', 'boxText',
+  'planTyping', 'SHELL_TAB_REFUSAL', 'shellExitText', 'typingKeys', 'boxText',
   // app/context-fill-display.js (BACKLOG #6)
   'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
   // app/worktree-status-display.js (PR 1b, Extension X1/X4): one namespace object.

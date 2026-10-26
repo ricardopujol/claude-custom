@@ -71,6 +71,7 @@ function claimOf(install, port, parsed) {
   const claim = { install, port, pid: parsed.pid, cwd: parsed.cwd, startedAt: parsed.startedAt, exactStart, claudePid };
   // #81: a tab's read-only side session; only a real true, and only then does the row carry it.
   if (parsed.side === true) claim.side = true;
+  if (parsed.kind === 'shell') claim.kind = 'shell';
   return claim;
 }
 
@@ -154,6 +155,7 @@ async function listBackgroundHosts({ ownInstall } = {}, deps = {}) {
     exact: c.exact,
     windows: windowsOf(c.pid),
     ...(c.side === true ? { side: true } : {}),
+    ...(c.kind === 'shell' ? { kind: 'shell' } : {}),
   }));
   // This build's own first (they can be opened), then newest first.
   rows.sort((a, b) => (b.own - a.own) || (b.startedAt - a.startedAt));

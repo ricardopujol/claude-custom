@@ -150,7 +150,7 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
   const body = topLevelBody(at);
-  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
+  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true, shell: tab\.shell === true \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);
@@ -240,10 +240,11 @@ test('there is NO application menu bar: it is nulled once, before the window, an
 
 test('override and close live in the right-click popup only', () => {
   const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
+  const handler = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
+  const body = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
-  assert.match(body, /\.popup\(/);
+  assert.match(handler, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.popup\(\{ window: win \}\);/, 'the popup is that template');
 });
 
 test('the shortcuts are registered on the strip AND on every tab view, and only shortcutFor decides', () => {
@@ -611,7 +612,7 @@ test('#37: shell.openPath and shell.showItemInFolder are reached only through ap
 // --- #40 tab marks ---------------------------------------------------------------
 
 test('the tab menu offers Mark first, for the branch the tab is on NOW (Dexter #87 F1)', () => {
-  assert.match(MAIN, /Menu\.buildFromTemplate\(\[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
+  assert.match(MAIN, /return \[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
 });
 
 test('the shell reads marks from the loaded store; the window prunes once, in tabs mode', () => {

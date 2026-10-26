@@ -31,6 +31,7 @@ const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
+const { resolvePortraitsDir } = require('./portraits-dir');
 const { userGlobalDir, migrationCandidates, adoptOnStart } = require('./global-portrait-store');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
@@ -56,6 +57,7 @@ const { projectLabel } = require('./project-path');
 const { currentBranch } = require('./git-branch');
 const { readHistory, readOrigin } = require('./git-history');
 const { readGraph, createGitGraphService } = require('./git-graph');
+const { createMapFeed } = require('./map-feed');
 const { loadLedger, updateLedger, saveLedger } = require('./branch-ledger');
 const { readOpenPrs, parseOpenPrs } = require('./open-prs');
 const { readSeams, announce, fixtureReader } = require('./probe-seams');
@@ -134,13 +136,15 @@ const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
-const { resolveLaunchTarget } = require('./launch-target');
+const { resolveLaunchTarget, pickShell, shellEnv } = require('./launch-target');
 const { samePath } = require('./project-path');
 const { lockPathFor, acquire: acquireSessionLock, release: releaseSessionLock,
         updateOwn: updateSessionLock, readHolder } = require('./session-lock');
 const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-start');
 // BACKLOG #81: a tab's read-only side session is a host of its own (host/side-session.js).
 const { isSideEnv, siblingSessions } = require('./side-session');
+// BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
+const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -388,7 +392,9 @@ async function currentFog() {
 
 // Attached only once the native helper exists (step 2). Wiring hooks to a
 // missing binary would fire on every Task and Bash call and invoke nothing.
-const helperExists = fs.existsSync(HELPER_PATH);
+// A shell host runs no claude, so it has no hooks to wire (A5).
+const SHELL = isShellEnv(process.env);
+const helperExists = !SHELL && fs.existsSync(HELPER_PATH);
 // Claude's panel's MCP server (BACKLOG #71, host/canvas-mcp.js) rides in on --mcp-config, added to the user's own servers, unless the
 // setting (host/canvas-settings.js) turns it off. It learns its session through this host's pointer file, which the control keeps.
 const CANVAS_POINTER_FILE = path.join(HARNESS_DIR, 'state', 'canvas', `_tab-${PORT}.json`);
@@ -405,7 +411,9 @@ function ownIdentities() {
   try { return identitiesIn(INSTALL); } catch { return []; }
 }
 
-if (!helperExists) {
+if (SHELL) {
+  console.log('[host] shell host: no hooks, no session lock, no quota, no mod');
+} else if (!helperExists) {
   console.log('[host] hook helper absent — running without hooks:', HELPER_PATH);
 }
 
@@ -416,9 +424,7 @@ const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, 
 // Portraits live with the agents, in the agent-creator repo, not here: they are
 // a property of the agent roster, which more than one project consumes. The
 // forge writes there and the harness reads from there.
-const PORTRAITS_DIR =
-  process.env.CLAUDE_CUSTOM_PORTRAITS ||
-  'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
+const portraitsDir = () => resolvePortraitsDir();
 // FF7's other two tiers. Both are PER-INSTALL: HARNESS_DIR sits beside this
 // file, not in the project folder, so an upload made in one project shows in
 // every project -- an agent is the same character everywhere (Ricardo,
@@ -480,6 +486,8 @@ const gitTree = createGitTreeService({
 });
 // The Git panel's Graph view: the last 50 commits of develop, main and the open branches, with their lanes.
 const gitGraph = createGitGraphService({ cwd: CWD, read: readGraph });
+// The Map panel (BACKLOG #120): hook events counted per agent, for how fast its streams flow. Observation only (host/map-feed.js).
+const mapFeed = createMapFeed({ startedAt: Date.now() });
 // The repo browser and code reader (#45 / #32): list / overlay / read / stat / diff for THIS host's worktree
 // (host/repo-service.js). The watch starts on the first ask; a change is announced to every window.
 const repoService = createRepoService({
@@ -513,7 +521,7 @@ const askService = createAskService({
   repoFor: createRepoFactory({ index: askIndex, ollama: askOllama, claude: askClaude }),
   // the explainer's picture is an agent's picture: uploaded through `portrait set`, chosen from the forge's generated agents
   portraitOf: (agent, state) => portraitOf(agent, state),
-  forgeAgents: () => fs.readdirSync(PORTRAITS_DIR, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_')).map(d => d.name).sort(),
+  forgeAgents: () => fs.readdirSync(portraitsDir(), { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_')).map(d => d.name).sort(),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
@@ -630,7 +638,7 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 // tab's call sites once passed only portraitsDir, so an upload showed there as
 // "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
 const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
-  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR, baseState,
+  portraitsDir: portraitsDir(), uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR, baseState,
 });
 // `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
 // nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
@@ -709,6 +717,10 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
 const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 // Rebuilt once, at boot, with the claude-custom mod when its switch, the CLI's version and its directory allow it (prepareMod below).
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
+// A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
+const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
+// What every writeIdentity call says about this host's role (host/shell-tab.js identityFields): one place, so a fourth call can't forget it.
+const identityFor = () => identityFields({ side: SIDE, shell: SHELL, sessionId });
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
@@ -1416,7 +1428,10 @@ function seatPayload(seats) {
 // down, and reading it here at startup is a TDZ ReferenceError that stops the
 // host before it serves anything. The closure reads it at first send, by which
 // point the whole module has run.
-const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
+// `agents` rides on every processes message: the live runs' names and ids, so an agent card's Pause can say which task it means and tell OUR
+// TaskStop from another (#19).
+const liveAgents = () => mood.invocations().filter(i => typeof i.agentId === 'string' && i.agentId && typeof i.name === 'string' && i.name).map(i => ({ name: i.name, agentId: i.agentId }));
+const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl({ ...msg, agents: liveAgents() }));
 
 // Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
 // calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.
@@ -1507,6 +1522,7 @@ if (helperExists) {
     if (process.env.CLAUDE_CUSTOM_HOOK_DEBUG && isOccupancyOnly(ev)) console.log('[hook:full] ' + JSON.stringify(withoutFileText(ev.payload)));
     occupancy.handle(ev);
     changesNotifier.handle(ev);
+    mapFeed.note(ev);        // the Map panel's event rates (BACKLOG #120): counted for every event, before any early return below
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
     night.handle(ev);
@@ -1756,7 +1772,7 @@ function openProject(msg, ws) {
   child.unref();
 }
 
-console.log('[host] claude binary :', CLAUDE_BIN);
+console.log(SHELL ? '[host] shell binary  :' : '[host] claude binary :', SHELL ? `${SHELL_TARGET.bin} (${SHELL_TARGET.source})` : CLAUDE_BIN);
 console.log('[host] cwd           :', CWD);
 
 // Inherited CLAUDE_CODE_* markers must not leak into the hosted session.
@@ -1797,7 +1813,8 @@ function cleanEnv() {
 // blocked, until the person picks *Open anyway*. Every use of `term` below is
 // guarded for that. Design: documentation/PLAN_WORKTREE_TABS.md, Extension X.
 let term = null;
-const SESSION_LOCK = SIDE ? null : lockPathFor(CWD);
+// A shell host takes none either: it is a terminal, not a session (A5).
+const SESSION_LOCK = SIDE || SHELL ? null : lockPathFor(CWD);
 let lockOwner = null;                  // what we wrote into the lock, once taken
 let lockState = { state: 'pending' };  // host/session-gate.js documents the shapes
 // WORKTREE_NAME / COMPOSE_PROJECT_NAME / WORKTREE_PORT_BASE (Extension X3),
@@ -1830,26 +1847,42 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  term = pty.spawn(CLAUDE_BIN, ARGS, {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
     name: 'xterm-256color',
     cols,
     rows,
     cwd: CWD,
     // The bundled ConPTY, so the CLI's OSC 7501 query reaches us and our answer reaches it (host/conpty-choice.js).
     ...PTY_BACKEND.options,
-    env: {
-      ...cleanEnv(),
-      TERM: 'xterm-256color',
-      COLORTERM: 'truecolor',
-      // Marks this session as harness-hosted; the hook bridge keys off it later.
-      CLAUDE_CUSTOM_SESSION: '1',
-      // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
-      // mod server is up; the window's session token never goes here.
-      ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
-      ...sessionEnv,
-      ...providerEnv,
-    },
+    env: SHELL
+      // A5: an arbitrary program gets the person's environment and the worktree's, and none of the harness's own (host/launch-target.js shellEnv).
+      ? { ...shellEnv(cleanEnv()), TERM: 'xterm-256color', COLORTERM: 'truecolor', ...sessionEnv }
+      : {
+        ...cleanEnv(),
+        TERM: 'xterm-256color',
+        COLORTERM: 'truecolor',
+        // Marks this session as harness-hosted; the hook bridge keys off it later.
+        CLAUDE_CUSTOM_SESSION: '1',
+        // BACKLOG #119 A2: where the mod (loaded with --plugin-dir) posts, and the per-spawn token that authorises it. Only when the
+        // mod server is up; the window's session token never goes here.
+        ...(modPort === null ? {} : { CLAUDE_CUSTOM_MOD_PORT: String(modPort), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN }),
+        ...sessionEnv,
+        ...providerEnv,
+      },
   });
+  if (SHELL) {
+    // A shell that can't start (a missing binary, a file Windows can't run) must END the host the way an exited shell does, so the
+    // tab says so and offers Restart. Left bound with no pty it would serve a blank tab for ever (Dexter, PR #208 F1).
+    const started = startShellPty(spawnPty);
+    if (!started.term) {
+      console.error('[host] could not start the shell:', started.message, '--', SHELL_TARGET.bin);
+      endHost(started.frame.exitCode, started.frame.signal, { error: started.frame.error }, FAILED_START_LINGER_MS);
+      return;
+    }
+    term = started.term;
+  } else {
+    term = spawnPty();
+  }
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.
@@ -2061,16 +2094,21 @@ function wireTerm(t) {
 
   t.onExit(({ exitCode, signal }) => {
     console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
-    releaseSessionLock(SESSION_LOCK, lockOwner);
-    for (const ws of clients) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(
-          JSON.stringify({ type: 'exit', exitCode, signal })
-        );
-      }
-    }
-    process.exit(exitCode ?? 0);
+    endHost(exitCode, signal);
   });
+}
+
+// The session is over: tell every client, then end the host. `extra` rides on the exit frame (a failed shell start says why).
+// `lingerMs`: stay up that long first (a failed start: the window must get to see the host, and a late client is sent the frame too).
+let endedFrame = null;
+function endHost(exitCode, signal, extra = {}, lingerMs = 0) {
+  releaseSessionLock(SESSION_LOCK, lockOwner);
+  endedFrame = JSON.stringify({ type: 'exit', exitCode, signal, ...extra });
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) ws.send(endedFrame);
+  }
+  if (lingerMs > 0) { setTimeout(() => process.exit(exitCode ?? 0), lingerMs); return; }
+  process.exit(exitCode ?? 0);
 }
 
 // The machine is deliberately passive: it schedules nothing itself, so the host
@@ -2270,7 +2308,8 @@ let terminalsRunning = false;
 // and dies with the session (host/layout-override.js).
 let layoutOverride = null;
 async function refreshTerminals() {
-  if (terminalsRunning) return;
+  // A shell host is no claude session: the "another session in this worktree" check is for the folder's own host (#119 A5).
+  if (SHELL || terminalsRunning) return;
   terminalsRunning = true;
   try {
     // The holder re-read from the lock (Dexter, PR #71 F8): a host blocked
@@ -2333,7 +2372,8 @@ usageTimer.unref();
 // someone else's service for a number that barely moves. Broadcast only on a
 // CHANGE, so an idle session is silent on the wire.
 const QUOTA_POLL_MS = 60_000;
-const quotaTimer = setInterval(() => {
+// A shell host shows no quota and takes no part in the lease on the usage endpoint (A5).
+const quotaTimer = SHELL ? null : setInterval(() => {
   const before = JSON.stringify(lastQuota && lastQuota.windows);
   refreshQuota().then((quota) => {
     // A used-up window is also re-sent every poll: the header's countdown (BACKLOG #90) ages the payload by its readAt, so a
@@ -2345,11 +2385,11 @@ const quotaTimer = setInterval(() => {
     }
   });
 }, QUOTA_POLL_MS);
-quotaTimer.unref();
+if (quotaTimer) quotaTimer.unref();
 
 // The first reading immediately, for the same reason usage does: a header that
 // says "reading…" for a full minute reads as broken rather than as honest.
-refreshQuota().then((quota) => broadcastControl({ type: 'quota', quota }));
+if (!SHELL) refreshQuota().then((quota) => broadcastControl({ type: 'quota', quota }));
 
 // The first reading immediately rather than five seconds in. A cold read of
 // this project's transcripts is ~330ms, so waiting a full tick would show the
@@ -2408,6 +2448,8 @@ wss.on('connection', (ws, req) => {
   const summaryNow = summary.snapshot();
   sendControl(ws, {
     type: 'hello',
+    // 'shell' for a plain shell tab's host (the page shows no account limits and types no Claude command into it), else absent.
+    kind: identityFor().kind,
     // What this host accepts as control. host/host-client.js sends `stop` /
     // `raise` only to a host that lists them: an older one would type them into
     // the session as input (PR #75).
@@ -2565,7 +2607,7 @@ wss.on('connection', (ws, req) => {
 
   // A client that attached before the first quota read landed would otherwise
   // sit on "reading…" until the next poll a minute later.
-  if (!lastQuota) {
+  if (!lastQuota && !SHELL) {
     refreshQuota()
       .then((quota) => {
         if (ws.readyState === ws.OPEN) sendControl(ws, { type: 'quota', quota });
@@ -2585,6 +2627,7 @@ wss.on('connection', (ws, req) => {
 
   const replay = termState.serialize();
   if (replay) ws.send(Buffer.from(replay, 'utf8'), { binary: true });
+  if (endedFrame) ws.send(endedFrame);       // a client that arrives while a failed start lingers still hears why
 
   // The actual side effects for each known control type. Kept as a plain
   // function (not inline in the message handler) so `handleFrame` -- the
@@ -2939,6 +2982,11 @@ wss.on('connection', (ws, req) => {
       });
       return;
     }
+    if (msg.type === 'map') {
+      // The Map panel (BACKLOG #120) asks, while it is on screen, for the event rates and the tool in hand. Answers ONLY the asker.
+      try { ws.send(JSON.stringify({ type: 'map', ...mapFeed.snapshot() })); } catch { /* the client went away */ }
+      return;
+    }
     if (msg.type === 'style') {
       // set-background / reset-background / set-look / reroll-look. A refusal answers ONLY the asking
       // client -- it is that action failing, not a state change anyone else
@@ -3095,7 +3143,7 @@ wss.on('listening', () => {
   console.log(`[host] listening on ws://127.0.0.1:${PORT}`);
   writeTokenFiles();
   try {
-    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined,
+    console.log('[host] identity     :', writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(),
       processStartedAt: lockOwner ? lockOwner.processStartedAt : undefined, claudePid: term ? term.pid : undefined }));
   } catch (err) {
     // A host that cannot publish still works for the window that spawned it;
@@ -3112,7 +3160,7 @@ wss.on('listening', () => {
 function republishIdentity() {
   if (boundPort !== PORT || !lockOwner || typeof lockOwner.processStartedAt !== 'string') return;
   try {
-    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
+    writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(), processStartedAt: lockOwner.processStartedAt, claudePid: term ? term.pid : undefined });
   } catch (err) {
     console.error('[host] could not add its claude to its identity:', err.message);
   }
@@ -3203,6 +3251,8 @@ function setModStatus(status) {
 }
 
 async function prepareMod() {
+  // A shell host loads no mod: there is no claude to load it into (A5).
+  if (SHELL) { setModStatus({ state: 'off', reason: 'a shell tab runs no claude' }); return; }
   try {
     const enabled = modEnabled({ env: process.env, stateDir: path.join(HARNESS_DIR, 'state') });
     // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
@@ -3254,7 +3304,7 @@ const handleModRecord = createModRecordHandler({
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host
   // that bound the port -- a loser must never write over the winner's file.
   if (boundPort === PORT && typeof processStartedAt === 'string') {
-    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE ? sessionId : undefined, processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
+    try { writeIdentity({ dir: HARNESS_DIR, port: PORT, cwd: CWD, ...identityFor(), processStartedAt, claudePid: term ? term.pid : undefined }); } catch (err) {
       console.error('[host] could not re-publish identity with its start time:', err.message);
     }
   }

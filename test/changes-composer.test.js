@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 
-const { planCommentTyping, boxIsCommand, appendKeys, commandTyped } = require('../app/top-bar-display');
+const { planCommentTyping, boxIsCommand, appendKeys, commandTyped, SHELL_TAB_REFUSAL } = require('../app/top-bar-display');
 const { commentText } = require('../app/changes-compare');
 const { createBox } = require('./cli-box-sim');
 
@@ -125,6 +125,18 @@ test('a box that LOOKS like our comment but is not exactly it is refused even wi
   const r = planCommentTyping({ lines: sim.screen(), last: '', text: B, vim: false, termRows: 40, connected: true });
   assert.strictEqual(r.ok, false);
   assert.match(r.reason, /Nothing was changed/);
+});
+
+test('a plain shell tab (PR #208) gets no review comment: refused before anything else, the append path included, which skips typeAndCheck', () => {
+  const sim = createBox();
+  const st = { last: '' };
+  enter(sim, st, A);
+  for (const last of ['', st.last]) {
+    const r = planCommentTyping({ lines: sim.screen(), last, text: B, vim: false, termRows: 40, connected: true, hostKind: 'shell' });
+    assert.strictEqual(r.ok, false, `refused with last=${JSON.stringify(last)}`);
+    assert.strictEqual(r.reason, SHELL_TAB_REFUSAL);
+  }
+  assert.strictEqual(planCommentTyping({ lines: sim.screen(), last: st.last, text: B, vim: false, termRows: 40, connected: true, hostKind: null }).mode, 'append');
 });
 
 test('a foreign draft or an empty box: typed fresh, the ordinary way (a draft is replaced, and the page says Ctrl+Y)', () => {

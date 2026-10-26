@@ -67,9 +67,11 @@ test('a review comment is typed through the page\'s plan: appended with NO clear
   const body = strip(RENDERER.slice(at, RENDERER.indexOf('\nfunction typeCommand', at)));
   assert.match(body, /planCommentTyping\(\{ lines, last: lastCommentLine, text, vim: vimSeen/);
   assert.match(body, /typeCommand\(plan\.command, [\s\S]*?'comment'\)/, 'a box with none of our text goes through the ordinary typing path');
-  const append = body.slice(body.indexOf('if (typingBusy)'));
+  assert.match(body, /typeAppended\(plan\.keys, plan\.expected, /, 'a box that holds our line is appended to through the gated sender');
+  const append = body.slice(body.indexOf('function typeAppended('));
+  assert.ok(append.startsWith('function typeAppended('));
   assert.doesNotMatch(append, /x15|x03|clearTypedLine|typeAndCheck|typePlanned/, 'nothing in the append branch can clear, interrupt or clean up');
-  assert.match(append, /boxIsCommand\(screenLines\(\), plan\.expected/);
+  assert.match(append, /boxIsCommand\(screenLines\(\), expected/);
   assert.match(append, /APPEND_UNCONFIRMED/);
   assert.doesNotMatch(body, /submit\s*:|\\r/, 'never an Enter');
   assert.match(body, /usage\('changes:comment-typed'\)/);

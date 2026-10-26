@@ -1644,6 +1644,33 @@
     .games-cover-note { margin: 0 0 8px; max-width: 36ch; font-size: 12px; color: var(--dim); }
     .games-cover-note:empty { display: none; }
     .games-cover-btn { font: inherit; font-size: 12px; padding: 3px 12px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--accent); border-radius: 4px; }
+    /* The Map panel (BACKLOG #120). Markup from app/map-display.js; colours are the project's tokens, so the accent follows each
+       project's look. The canvas fills the stage and is drawn in device pixels (the script sizes it), so it stays crisp. */
+    #map-body { padding: 0; }
+    #map-root { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none; }
+    .zone[data-shape="wide"] .panel.on > #map-root { flex: 1 1 auto; min-width: 320px; max-width: none; }
+    .map-root { flex: 1; min-height: 0; display: flex; flex-direction: column; min-width: 0; }
+    .map-strip { flex: 0 0 auto; display: flex; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; padding: 6px 8px; font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+    .map-stat { white-space: nowrap; }
+    .map-sp { flex: 1; }
+    .map-zoom { font-family: var(--font-mono); }
+    .map-fit { font: inherit; font-size: 11px; padding: 2px 9px; cursor: pointer; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; }
+    .map-fit:hover, .map-fit:focus-visible { border-color: var(--accent); outline: none; }
+    .map-stage { position: relative; flex: 1; min-height: 220px; overflow: hidden; background: var(--bg); }
+    .map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; outline: none; }
+    .map-canvas:active { cursor: grabbing; }
+    .map-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .map-card { position: absolute; z-index: 2; pointer-events: none; width: max-content; max-width: 230px; padding: 6px 9px; font-size: 11px; line-height: 1.45; color: var(--text); background: color-mix(in srgb, var(--chrome) 94%, transparent); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .35); }
+    .map-card[hidden] { display: none; }
+    .map-card-title { font-weight: 600; margin-bottom: 2px; overflow-wrap: anywhere; }
+    .map-card-body { display: grid; gap: 1px; }
+    .map-card-line { color: var(--dim); overflow-wrap: anywhere; }
+    .map-legend { position: absolute; left: 8px; bottom: 8px; display: flex; gap: 4px 10px; flex-wrap: wrap; font-size: 10.5px; color: var(--dim); pointer-events: none; }
+    .map-key { display: inline-flex; align-items: center; gap: 4px; }
+    .map-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); display: inline-block; }
+    .map-dot[data-state="working"] { background: var(--accent); }
+    .map-dot[data-state="needs"] { background: var(--warn); }
+    .map-dot[data-state="done"] { background: var(--ok); }
     /* The Resources panel (BACKLOG #63) and its top-bar chip. Markup from app/resources-display.js; the bars are
        two segments, claude-custom in the accent colour and everything else neutral. */
     #resources-body { padding: 8px 4px; }
@@ -1692,6 +1719,22 @@
     /* the square stays small (Ricardo's pick) but the target is 24 x 24 (WCAG 2.2 AA 2.5.8), and a keyboard user sees where they are */
     .res-stop::after { content: ''; position: absolute; inset: -5px; }
     .res-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    /* Pause / Resume (#19): a small button like Stop's, before it. A paused row carries "paused HH:MM" on a line of its own, as its LAST child, so the figures keep their places. */
+    .res-pause, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
+    .res-pause { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 3px; }
+    .res-pause::after { content: ''; position: absolute; inset: -5px; }
+    .res-pause:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .res-pause:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .res-pause:disabled { opacity: 0.5; cursor: default; }
+    .res-paused-row { flex-wrap: wrap; }
+    .res-paused { flex: 0 0 100%; font-size: 10px; color: var(--accent); }
+    /* An agent card's Pause / Resume (#19) */
+    .agent-pause { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+    .agent-pause-btn { font: inherit; font-size: 10.5px; padding: 1px 8px; cursor: pointer; background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; }
+    .agent-pause-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .agent-pause-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .agent-paused-badge { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
     .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
       border: 1px solid var(--border); border-radius: 4px; }
     .res-stop:hover, .res-confirm button:hover { border-color: var(--bad); color: var(--bad); }
@@ -2458,6 +2501,10 @@
         <div class="panel" data-panel="games" id="games-body">
           <div id="games-root" tabindex="-1"></div>
         </div>
+        <!-- BACKLOG #120: the Map. app/map-display.js builds everything inside #map-root. -->
+        <div class="panel" data-panel="map" id="map-body">
+          <div id="map-root" tabindex="-1"></div>
+        </div>
         <div class="panel" data-panel="style" id="style-body">
           <div id="style-sections"></div>
         </div>
@@ -2494,6 +2541,7 @@
   <script src="./projects-display.js"></script>
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
+  <script src="./agent-pause-display.js"></script>
   <script src="./agent-state-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
@@ -2518,6 +2566,9 @@
   <script src="./games-round.js"></script>
   <script src="./games-display.js"></script>
   <script src="./schedules-display.js"></script>
+  <script src="./map-model.js"></script>
+  <script src="./map-layout.js"></script>
+  <script src="./map-display.js"></script>
   <!-- BACKLOG #63 follow-up: the chip's popover (CPU and memory over the last hour), drawn by app/resources-history-display.js -->
   <div id="res-popover" hidden role="region" aria-label="CPU, memory and GPU over the last hour"></div>
   <!-- BACKLOG #43: the shortcuts sheet, a centred card over the window below the header (so the header's "?" stays clickable). Rows come

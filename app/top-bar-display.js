@@ -407,6 +407,19 @@ function boxHoldsLine(lines, command) {
   return text.includes(want.slice(0, n)) || text.includes(want.slice(-n));
 }
 
+// Said by every typing path when the tab is a plain shell tab: nothing of Claude's is typed into it.
+const SHELL_TAB_REFUSAL = 'this is a plain shell tab, not a Claude session: nothing is typed into it';
+
+/**
+ * The line the terminal ends with when the session's process has gone. A shell tab names the shell and, for a failed start, why.
+ * Plain text only (the page writes it with term.write, never as markup); control characters in the reason are blanked.
+ */
+function shellExitText(kind, error) {
+  if (kind !== 'shell') return '[claude exited]';
+  const why = typeof error === 'string' ? error.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim().slice(0, 300) : '';
+  return why === '' ? '[shell exited]' : `[shell exited: ${why}]`;
+}
+
 const SCREEN_REFUSALS = {
   dialog: 'a dialog is open in the terminal; answer it or press Esc first',
   multiline: 'your draft spans several lines; send or clear it first',
@@ -423,7 +436,7 @@ const SCREEN_REFUSALS = {
  * on a change, so a pending switch would always time out (Dexter #6); the
  * caller resolves it at once instead.
  */
-function planSwitch({ kind, raw, current, screen, connected } = {}) {
+function planSwitch({ kind, raw, current, screen, connected, hostKind } = {}) {
   let value;
   if (kind === 'model') {
     const v = validModelInput(raw);
@@ -437,7 +450,7 @@ function planSwitch({ kind, raw, current, screen, connected } = {}) {
     return { ok: false, notice: 'nothing to switch' };
   }
   const command = `/${kind} ${value}`;
-  const typing = planTyping({ command, screen, connected });
+  const typing = planTyping({ command, screen, connected, hostKind });
   if (!typing.ok) return { ok: false, notice: `didn't send ${command}: ${typing.reason}` };
   const alreadyRunning = kind === 'model' ? modelMatches(current, value) : effortMatches(current, value);
   return { ok: true, value, command, alreadyRunning, enterInsert: typing.enterInsert };
@@ -489,7 +502,9 @@ const APPEND_SEP = '; ';
  * A box that LOOKS like one of our comments (it starts "In ") but is not exactly `last` is refused, never cleared: it may be ours with the screen
  * mid-redraw, or the person's edit of it.
  */
-function planCommentTyping({ lines, last, text, vim, termRows, connected } = {}) {
+function planCommentTyping({ lines, last, text, vim, termRows, connected, hostKind } = {}) {
+  // A plain shell tab (PR #208): the append path sends its keys without typeAndCheck, so the refusal is here too.
+  if (hostKind === 'shell') return { ok: false, reason: SHELL_TAB_REFUSAL };
   if (typeof text !== 'string' || text === '') return { ok: false, reason: 'no comment to type' };
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   const state = inputState(lines, { vim });
@@ -542,6 +557,11 @@ const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029]
 // `\` + Enter is the CLI's newline, so the person's Enter would leave a two-row draft and submit nothing.
 const COMMENT_LINE = /^In [^\s\p{Cc}\p{Zl}\p{Zp}](?:[^\p{Cc}\p{Zl}\p{Zp}]{0,1985}[^\s\p{Cc}\p{Zl}\p{Zp}])?(?<!\\)$/u;
 
+// An agent card's Pause / Resume line (BACKLOG #19, app/agent-pause-display.js commandFor): prose, so it is allowed ONLY as exactly these two sentences
+// (PR #158 Dexter R2-8), on one line, with a plain agent name between double quotes and an optional plain task id: no free text, no control or
+// line-separator character, nothing after the final full stop. Left to the slash-command shape these lines were refused every time (Dexter 1).
+const AGENT_PAUSE_LINE = /^(?:Stop the background agent "[A-Za-z0-9 _.:-]{1,200}"(?: \(task id [A-Za-z0-9_-]{1,64}\))? with TaskStop so it can be resumed later with its conversation kept\. Do nothing else\.|Resume the stopped agent "[A-Za-z0-9 _.:-]{1,200}"(?: \(task id [A-Za-z0-9_-]{1,64}\))?: send it a message with SendMessage to continue where it stopped, with its earlier context\. Do nothing else\.)$/;
+
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
  * Dexter F3 / Miguel I2). `screen` is inputState()'s answer. ->
@@ -550,13 +570,16 @@ const COMMENT_LINE = /^In [^\s\p{Cc}\p{Zl}\p{Zp}](?:[^\p{Cc}\p{Zl}\p{Zp}]{0,1985
  * A dialog, a draft over several lines or no box on screen gets nothing: the keys would land in the dialog,
  * or the rest of the draft would be submitted with the command.
  */
-function planTyping({ command, screen, connected, kind } = {}) {
+function planTyping({ command, screen, connected, kind, hostKind } = {}) {
+  // A plain shell tab (BACKLOG #119 A5) is no Claude session: a slash command typed there is a command line for the shell (PR #208 Miguel Y3).
+  if (hostKind === 'shell') return { ok: false, reason: SHELL_TAB_REFUSAL };
   const mention = kind === 'mention';
   const panel = kind === 'panel';
   const comment = kind === 'comment';
-  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : comment ? COMMENT_LINE : SLASH_COMMAND;
+  const agentPause = kind === 'agent-pause';
+  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : comment ? COMMENT_LINE : agentPause ? AGENT_PAUSE_LINE : SLASH_COMMAND;
   if (typeof command !== 'string' || !shape.test(command)) {
-    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : comment ? 'not a single-line review comment' : 'not a single-line slash command' };
+    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : comment ? 'not a single-line review comment' : agentPause ? 'not an agent Pause / Resume line' : 'not a single-line slash command' };
   }
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
@@ -628,7 +651,7 @@ if (typeof module !== 'undefined' && module.exports) {
     modelFamily, cueColour, chosenAccent, withChosenAccent, pendingResolver, topBarState, topBarDisplay,
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
-    vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, typingKeys, boxText,
+    vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, SHELL_TAB_REFUSAL, shellExitText, typingKeys, boxText,
     boxIsCommand, appendKeys, planCommentTyping,
   };
 } else {
@@ -655,6 +678,8 @@ if (typeof module !== 'undefined' && module.exports) {
   root.scrollCapRows = scrollCapRows;
   root.menuPlacement = menuPlacement;
   root.planTyping = planTyping;
+  root.SHELL_TAB_REFUSAL = SHELL_TAB_REFUSAL;
+  root.shellExitText = shellExitText;
   root.typingKeys = typingKeys;
   root.boxText = boxText;
   root.boxIsCommand = boxIsCommand;

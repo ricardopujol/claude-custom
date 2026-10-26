@@ -39,7 +39,8 @@ const DEFAULT_SIZE = { row: 180, col: 160 };          // a new cell beside / und
 // A module's OWN width when it gets a cell of its own beside the terminal (Ricardo, 2026-10-06, #71 question 1: Claude's panel docks itself at
 // 320, the 180 above is too cramped for its question card). A column default and every other module stay as above.
 // The Ask panel docks at 360 (Ricardo, 2026-10-13, #33: "360 px of its own"); in a shared group it follows the group.
-const OWN_ROW_SIZE = Object.freeze({ canvas: 320, ask: 360 });
+// The Map docks at 520 (BACKLOG #120: a graph needs room, and its brief names 520 px of its own); in a shared group it follows the group.
+const OWN_ROW_SIZE = Object.freeze({ canvas: 320, ask: 360, map: 520 });
 // No screen is wider than this; a bigger stored size (1e306 from a damaged file)
 // overflowed L1's fitting arithmetic into NaN.
 const MAX_SIZE = 10000;

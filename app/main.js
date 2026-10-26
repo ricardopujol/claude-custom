@@ -66,6 +66,8 @@ const { createStore } = require('../host/store');
 const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
+// BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
+const { isShellKey, shellHostsOf } = require('../host/shell-tab');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
@@ -117,6 +119,8 @@ const { createSharedPoller, defaultDir: defaultPollerDir } = require('../host/sh
 const pollerPolicy = require('../host/poller-policy');
 const { createPersistentExec } = require('../host/persistent-powershell');
 const { killVerified } = require('../host/resource-kill');
+const { suspendVerified } = require('../host/process-suspend');
+const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -292,8 +296,10 @@ async function chooseHostPort(tab) {
   // #81: a branch tab's side session is looked for as a side host, on a port of its own: never the window's explicit one
   // (that is the branch tab's), and the walk never attaches it to the folder's own host.
   const side = tab.side === true;
-  if (!side && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
-  if (!side && EXPLICIT_PORT) {
+  // A5: so is a branch tab's shell: a host of its own, found only as a shell host.
+  const companion = side || tab.shell === true;
+  if (!companion && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (!companion && EXPLICIT_PORT) {
     // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
     const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
@@ -308,7 +314,7 @@ async function chooseHostPort(tab) {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: tab.cwd, occupantAt, side });
+  return resolvePort({ cwd: tab.cwd, occupantAt, side, kind: tab.shell === true ? 'shell' : undefined });
 }
 
 // This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
@@ -336,7 +342,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, shell: tab.shell === true }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -433,6 +439,44 @@ function markSubmenu(branch) {
       { label: 'Clear mark', enabled: m.canClear, click: () => chooseMark(branch, null) },
     ],
   };
+}
+
+/**
+ * A tab's right-click menu, as a template: the strip's popup builds it, and so does the probe driver's tabMenu (a native popup
+ * nobody can click), so the item a probe clicks is the item a person clicks.
+ */
+function tabMenuTemplate(key) {
+  const st = tabShell.menuState(key);
+  // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
+  const side = tabShell.sideMenu(key);
+  const sideItem = {
+    label: side.enabled ? side.label : `${side.label} (${side.why})`,
+    enabled: side.enabled,
+    click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
+  };
+  // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is this item (it restarts one whose shell has exited) and
+  // its close (Ricardo's look, 2026-10-26: a shell tab couldn't be closed). Named shellState, not shell: Electron's shell is
+  // imported under that name.
+  const shellState = tabShell.shellMenu(key);
+  const shellItem = {
+    label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
+    enabled: shellState.enabled,
+    click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
+  };
+  const closeShellItem = { label: 'Close shell', enabled: st.close, click: () => closeTabFlow(key) };
+  if (isSideKey(key)) return [sideItem];
+  if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
+  const issue = tabShell.issueOf(key);
+  return [
+    markSubmenu(tabShell.branchOf(key)),
+    { type: 'separator' },
+    // #119 A6: a lane started from a GitHub issue keeps its link.
+    ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
+    sideItem,
+    shellItem,
+    { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
+    { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
+  ];
 }
 
 let win = null;
@@ -1127,6 +1171,13 @@ function registerIpc() {
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
+  // Pause / Resume (#19): the same guard as Stop, re-checked in main (host/resource-pause.js) however the page asks.
+  ipcMain.handle('resources:pause', (e, req) => (isTabView(e.sender) && resources
+    ? resources.pause(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
+  ipcMain.handle('resources:resume', (e, req) => (isTabView(e.sender) && resources
+    ? resources.resume(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
   ipcMain.handle('resources:stopLeftovers', (e, req) => (isTabView(e.sender) && resources
     ? resources.stopLeftovers(req)
     : { ok: false, text: 'refused' }));
@@ -1142,25 +1193,7 @@ function registerIpc() {
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
-    const st = tabShell.menuState(key);
-    // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
-    const side = tabShell.sideMenu(key);
-    const sideItem = {
-      label: side.enabled ? side.label : `${side.label} (${side.why})`,
-      enabled: side.enabled,
-      click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
-    };
-    if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
-    const issue = tabShell.issueOf(key);
-    Menu.buildFromTemplate([
-      markSubmenu(tabShell.branchOf(key)),
-      { type: 'separator' },
-      // #119 A6: a lane started from a GitHub issue keeps its link.
-      ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
-      sideItem,
-      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
-      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
-    ]).popup({ window: win });
+    Menu.buildFromTemplate(tabMenuTemplate(key)).popup({ window: win });
   });
   // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
   // by hand in this window, most recent first.
@@ -1178,6 +1211,12 @@ function registerIpc() {
         label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
         enabled: m.create.enabled,
         click: () => tabShell.openCreate(),
+      },
+      // #119 A5: a plain shell for the selected lane
+      {
+        label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
+        enabled: m.shell.enabled,
+        click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
       },
       ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
     ]).popup({ window: win });
@@ -1667,6 +1706,17 @@ function startProbeDriver(port) {
     const e = tabShell.model().find((x) => x.label === label);
     return e ? e.key : null;
   };
+  // A real left click in the strip page on the tab labelled `label` (its x when `onX`): its position is read from the DOM and the
+  // click is an input event, so the page's own handler decides what to ask main.
+  const stripClick = async (label, onX, modifiers) => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); const n = t && ${onX ? "t.querySelector('.x')" : 't'}; if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
+    if (!rect) return { ok: false, error: onX ? `no close button on a tab labelled ${label}` : `no tab labelled ${label}` };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1679,7 +1729,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), shell: t.classList.contains('shell'), dots: [...t.querySelectorAll('.dot')].map(d => d.className + '|' + d.title), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1767,6 +1817,12 @@ function startProbeDriver(port) {
           } }); })()`);
       return JSON.parse(out);
     },
+    // #119 A5: what the tab menu's Open shell here does, by the branch tab's label.
+    async shellOpen(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.openShell(key);
+    },
     // #81: what the tab menu's Open side session does, by the branch tab's label.
     async sideOpen(label) {
       const key = labelKey(label);
@@ -1790,14 +1846,22 @@ function startProbeDriver(port) {
     },
     // #77: a real Ctrl+click on a tab in the strip page: its position is read from the DOM, the click is an input
     // event with the control modifier, so the page's own handler decides what to ask main.
-    async ctrlClick(label) {
-      const rect = JSON.parse(await win.webContents.executeJavaScript(
-        `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
-      if (!rect) return { ok: false, error: `no tab labelled ${label}` };
-      const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: ['control'] };
-      win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
-      win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
-      return { ok: true };
+    async ctrlClick(label) { return stripClick(label, false, ['control']); },
+    // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
+    async xClick(label) { return stripClick(label, true, []); },
+    // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
+    // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
+    async tabMenu(label, item) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      const built = Menu.buildFromTemplate(tabMenuTemplate(key)).items.filter(i => i.type !== 'separator');
+      const items = built.map(i => ({ label: i.label, enabled: i.enabled }));
+      if (item === undefined) return { ok: true, items };
+      const hit = built.find(i => i.label === item);
+      if (!hit) return { ok: false, error: `no item ${item}`, items };
+      if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
+      hit.click();
+      return { ok: true, items };
     },
     // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
     // pointer events decide what is hovered, as for a mouse.
@@ -1868,8 +1932,9 @@ function startProbeDriver(port) {
         `(() => { const b = document.getElementById(${JSON.stringify(button)}); if (!b || b.hidden || (b.offsetParent === null && !b.getClientRects().length)) return false; b.click(); return true; })()`);
       return { ok: clicked === true, clicked: clicked === true };
     },
-    async quit() {
-      setTimeout(() => app.exit(0), 200);
+    async quit(graceful) {
+      // A probe's hard exit skips will-quit; graceful is the path a closed window takes (verify/probe-pause-panel.js needs it).
+      setTimeout(() => (graceful === true ? app.quit() : app.exit(0)), 200);
       return { ok: true };
     },
     // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
@@ -2108,6 +2173,8 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
+      // #119 A5: ... and the shell hosts, the same way
+      shellHosts: () => shellHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
       readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),
@@ -2145,6 +2212,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   resourceSampler = createSharedSampler({ poller: resourcePoller, cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
+  const ownProcStart = await ownStartTime().then(s => (typeof s === 'string' ? s : null), () => null);
   resources = createResourcesService({
     sampler: resourceSampler,
     tabs: () => tabShell.snapshot().tabs,
@@ -2170,6 +2238,12 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Pause / Resume (#19): NtSuspendProcess / NtResumeProcess on a handle that re-proves pid and start time (host/process-suspend.js).
+    suspend: (action, targets) => suspendVerified(action, targets, { exec: createPowerShellExec(20000) }),
+    // What is paused is kept on disk, so a crash can be undone at the next start (host/pause-persist.js).
+    // An owner is a pid AND a start time: 'absent', the running process's start, or null (could not be told).
+    pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, ownStart: ownProcStart,
+      ownerState: async (pid) => { const m = await startTimes([pid]); return !m ? null : (m.has(pid) ? m.get(pid) : 'absent'); }, log: (...a) => console.log(...a) }),
     // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
     // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
     // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
@@ -2197,6 +2271,9 @@ app.whenReady().then(async () => {
   watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
+  const sweepPaused = () => resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
+  sweepPaused();
+  setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
@@ -2242,6 +2319,15 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+// A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
+// The quit is held once, for as long as the resumes take, and then asked for again.
+let pausedWoken = false;
+app.on('will-quit', (e) => {
+  if (!resources || pausedWoken || !resources.hasPaused()) return;
+  pausedWoken = true;
+  e.preventDefault();
+  resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
+});
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
