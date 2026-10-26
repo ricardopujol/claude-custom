@@ -549,7 +549,9 @@ async function main() {
   const closed = await command(app, { cmd: 'close', label: 'feat/a' });
   const bothGone = await waitFor(async () => !alive(aHost.pid) && !!lastShell && !alive(lastShell.pid), 20000, 300);
   s = await state(app);
-  check('hand-closing feat/a ends BOTH hosts', closed.ok === true && !!bothGone, JSON.stringify(closed));
+  check('hand-closing feat/a ends BOTH hosts', closed.ok === true && !!bothGone,
+    `${JSON.stringify(closed)}; branch host ${aHost.pid} ${alive(aHost.pid) ? 'ALIVE' : 'gone'}, shell host ${lastShell && lastShell.pid} ${lastShell && alive(lastShell.pid) ? 'ALIVE' : 'gone'}`);
+  if (!bothGone) console.log(app.out.split('\n').filter(l => l.includes('[shell]')).slice(-15).join('\n'));
   check('and both tabs leave the strip', !!s && !tabOf(s, 'feat/a') && !tabOf(s, SHELL_A), labelsOf(s).join(', '));
   check('the folder is still there', fs.existsSync(featA));
   await quit(app);
