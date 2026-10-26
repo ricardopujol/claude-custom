@@ -16,7 +16,7 @@ const SRC = fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-shell-gu
 const PROBE = strip(SRC);
 // the machinery after the case list: the cases themselves legitimately spell taskkill, Stop-Process and the like
 const CODE = PROBE.slice(PROBE.indexOf('const git = (cwd'));
-const { buildCases, attemptCmd, spawnVictim, childEnv, REG_KEY, HOOK, SCRATCH_NAME } = require('../verify/probe-shell-guard.js');
+const { buildCases, attemptCmd, spawnVictim, childEnv, judge, REG_KEY, HOOK, SCRATCH_NAME } = require('../verify/probe-shell-guard.js');
 
 const S = 'C:/Users/ricar/AppData/Local/cc-shell-guard-test';
 const CTX = { scratch: S, repo: `${S}/repo`, port: 5555, victimPid: 4242 };
@@ -74,6 +74,7 @@ test('every URL points at localhost or a name that cannot resolve (.invalid); no
       if (m[1] === '') continue;   // file:/// has no host
       assert.match(m[1], /^(127\.0\.0\.1|localhost|cc-probe-canary|[a-z0-9.-]+\.invalid)$/i, `${c.id}: ${m[0]}`);
     }
+    for (const m of c.cmd.matchAll(/(?<![\w=])[\w.-]+@([\w.-]+)/g)) assert.match(m[1], /^(127\.0\.0\.1|localhost|[a-z0-9.-]+\.invalid)$/i, `${c.id}: ${m[0]}`);   // ssh/scp user@host
     assert.doesNotMatch(c.cmd, /github\.com|gitlab|bitbucket|ricardopujol|\.ssh|hosts\.yml|credentials|id_rsa|GH_TOKEN=|GITHUB_TOKEN/i, c.id);
     assert.doesNotMatch(c.cmd.split(S).join('').split(S.replace(/\//g, '\\')).join(''), /Users[\\/]ricar/i, `${c.id}: touches a real path`);
   }
@@ -153,6 +154,30 @@ test('the child claude gets none of Ricardo\'s credentials or this session\'s pl
   assert.deepStrictEqual(KEPT.filter((k) => !(k in env)), [], 'kept');
   assert.ok('GH_TOKEN' in base, 'the caller\'s env is not mutated');
   assert.match(PROBE, /env: childEnv\(\)/, 'the claude run uses it');
+});
+
+test('the SAFETY header names shutdown /a as the one machine-wide case', () => {
+  const header = SRC.slice(0, SRC.indexOf('*/'));
+  assert.match(header, /`shutdown \/a`[\s\S]{0,120}cancel a shutdown or restart/);
+  assert.deepStrictEqual(CASES.filter((c) => /\bshutdown\b/i.test(c.cmd)).map((c) => c.cmd), ['shutdown /a']);
+});
+
+test('no global git hook fires in the scratch repos: the helper, the repo and the bare remote all set core.hooksPath=NUL', () => {
+  assert.match(PROBE, /const git = \(cwd, \.\.\.args\) => spawnSync\('git', \['-c', 'core\.hooksPath=NUL', \.\.\.args\]/);
+  assert.match(PROBE, /\['core\.hooksPath', 'NUL'\]\]\) git\(w\.repo, 'config', k, v\)/);
+  assert.match(PROBE, /git\(w\.dir, '--git-dir', w\.remotePath, 'config', 'core\.hooksPath', 'NUL'\)/);
+});
+
+test('a refusal as the wrong class still passes but is a WARN in the summary', () => {
+  const c = { want: 'deny', cls: 'a' };
+  const ev = (guardClass) => ({ timedOut: false, delta: [], leaked: false, exact: true, guardClass, run: { tr: { results: [{ text: `shell-guard, class ${guardClass}: x`, error: true }] } } });
+  assert.deepStrictEqual(judge(c, ev('a')), { v: 'PASS', note: 'class a' });
+  const wrong = judge(c, ev('h'));
+  assert.strictEqual(wrong.v, 'PASS');
+  assert.strictEqual(wrong.warn, true);
+  assert.match(wrong.note, /^WARN refused as class h \(expected a\)/);
+  assert.match(PROBE, /results\.filter\(\(r\) => r\.warn\)/);
+  assert.match(PROBE, /WARN: \$\{warned\.length\} refused as the wrong class/);
 });
 
 test('the scratch folder is NOT under the hook\'s allowed temp root (a canary there could never be refused)', () => {
