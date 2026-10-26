@@ -182,129 +182,226 @@ test('watch: no sentinel paths is a watch that never trips', () => {
   assert.deepStrictEqual(trips, []);
 });
 
-// --- the night budget --------------------------------------------------------------------------------------------
+/// --- the night budget --------------------------------------------------------------------------------------------
 
-test('NIGHT_BUDGET_MS is 8 h 30 min, and it is not bedtime-state\'s 12 h display cap', () => {
+test('NIGHT_BUDGET_MS is 8 h 30 min, and it is under bedtime-state\'s 12 h cap (a budget at or over it could never fire)', () => {
+  const { MAX_NIGHT_MS } = require('../host/bedtime-state');
   assert.strictEqual(ks.NIGHT_BUDGET_MS, (8 * 60 + 30) * 60_000);
-  assert.notStrictEqual(ks.NIGHT_BUDGET_MS, require('../host/bedtime-state').MAX_NIGHT_MS);
+  assert.ok(ks.NIGHT_BUDGET_MS < MAX_NIGHT_MS, 'the view drops a night older than MAX_NIGHT_MS, so a later deadline is never seen');
+  assert.ok(ks.NIGHT_FRESH_AFTER_MS > ks.NIGHT_BUDGET_MS, 'a new night can only be fresh after the old budget is spent');
+  assert.strictEqual(ks.NIGHT_FRESH_AFTER_MS, 16 * 3_600_000);
 });
 
+// The clock only moves through `go(ms)`, which also runs the poll once (the host's 1 s tick, as long as it is armed).
 function budget(start = 1_000_000, opts = {}) {
   const t = fakeTimers(start);
   const fired = [];
+  const saved = [];
   let on = null;
   const b = ks.createNightBudget({
     budgetMs: 1000,
+    freshAfterMs: 4000,
     onExpire: (x) => fired.push(x),
     nightNow: () => on,
     now: t.now,
-    setTimeout: t.setTimeout,
-    clearTimeout: t.clearTimeout,
+    save: (a) => saved.push(a),
+    setInterval: t.setInterval,
+    clearInterval: t.clearInterval,
     ...opts,
   });
-  return { t, fired, b, setNight: (p) => { on = p; b.update(p); } };
+  return { t, fired, saved, b, setNight: (p) => { on = p; b.update(p); }, go: (ms) => { t.run(ms); t.fire(); } };
 }
 
 test('budget: fires once at the deadline counted from the night\'s start, not before', () => {
-  const { t, fired, setNight } = budget(1_000_000);
+  const { fired, setNight, go } = budget(1_000_000);
   setNight({ startedAt: 1_000_000 - 200 });     // the night began 200 ms before the host heard of it
-  t.run(799);
+  go(799);
   assert.deepStrictEqual(fired, []);
-  t.run(1);
+  go(1);
   assert.deepStrictEqual(fired, [{ startedAt: 999_800, deadline: 1_000_800 }]);
 });
 
 test('budget: does not fire again, whatever the night does after', () => {
-  const { t, fired, setNight } = budget(0);
+  const { fired, setNight, go } = budget(0);
   setNight({ startedAt: 0 });
-  t.run(1000);
+  go(1000);
   setNight({ startedAt: 0 });
   setNight({ startedAt: 5000 });
-  t.run(10_000);
+  go(10_000);
   assert.strictEqual(fired.length, 1);
 });
 
-test('budget: a payload for the same night re-arms nothing (every wake pushes one)', () => {
-  const { t, fired, setNight } = budget(0);
+test('budget: a payload for the same night changes nothing (every wake pushes one)', () => {
+  const { t, fired, saved, setNight, go } = budget(0);
   setNight({ startedAt: 0, wakes: 0 });
-  t.run(500);
+  go(500);
   setNight({ startedAt: 0, wakes: 1 });
-  assert.strictEqual(t.timeouts.size, 1);
-  t.run(500);
+  assert.strictEqual(t.intervals.size, 1);
+  assert.deepStrictEqual(saved, [0]);
+  go(500);
   assert.strictEqual(fired.length, 1);
 });
 
-test('budget: a night that ended before the deadline is disarmed', () => {
-  const { t, fired, setNight } = budget(0);
+test('budget: a night that ended, with no new one started, is not killed at its deadline (nothing is running)', () => {
+  const { fired, setNight, go } = budget(0);
   setNight({ startedAt: 0 });
-  t.run(400);
+  go(400);
   setNight(null);
-  t.run(5000);
-  assert.deepStrictEqual(fired, []);
-  assert.strictEqual(t.timeouts.size, 0);
-});
-
-test('budget: at the deadline it asks the night again, and a night that ended without saying so is not killed', () => {
-  const { t, fired, b } = budget(0, { nightNow: () => null });
-  b.update({ startedAt: 0 });
-  t.run(1000);
+  go(5000);
   assert.deepStrictEqual(fired, []);
 });
 
-test('budget: a newer night than the one armed is not killed by the older deadline', () => {
-  const { t, fired, b } = budget(0, { nightNow: () => ({ startedAt: 700 }) });
-  b.update({ startedAt: 0 });
-  t.run(1000);
+// Dexter F1 (PR #210): the budget is keyed on the FIRST night start, which the agent can't reset. `ScheduleWakeup({ stop: true })`
+// ends the night, the next bedtime wake starts a "new" one; the deadline stays the first night's.
+test('budget F1: a stop followed by a new night does not move the kill (stop at 07:00, re-schedule, the kill still lands at 07:30)', () => {
+  const H = 3_600_000;
+  const { fired, setNight, go } = budget(23 * H, { budgetMs: 8.5 * H, freshAfterMs: 16 * H });   // 23:00
+  setNight({ startedAt: 23 * H });
+  go(8 * H);                                    // 07:00
+  setNight(null);                               // ScheduleWakeup({ stop: true })
+  go(5000);
+  setNight({ startedAt: 31 * H + 5000 });       // 07:00:05, a "new" night
   assert.deepStrictEqual(fired, []);
+  go(0.5 * H - 5000);                           // 07:30
+  assert.deepStrictEqual(fired, [{ startedAt: 23 * H, deadline: 31.5 * H }]);
 });
 
-test('budget: a dormant night that comes back (same start) keeps its first deadline, and one already past fires at once', () => {
-  const { t, fired, setNight } = budget(0);
+test('budget F1: a new night after the deadline already passed is killed at once, not given a fresh 8 h 30 min', () => {
+  const { fired, setNight, go } = budget(0);
   setNight({ startedAt: 0 });
-  t.run(300);
-  setNight(null);                 // overdue: the view drops it
-  t.run(2000);                    // past its deadline while dormant
-  setNight({ startedAt: 0 });     // the late wake revives it
-  t.run(0);
+  go(300);
+  setNight(null);
+  go(2000);                                     // 2300: past the 1000 deadline while no night was on
+  setNight({ startedAt: 2300 });
   assert.deepStrictEqual(fired, [{ startedAt: 0, deadline: 1000 }]);
 });
 
-test('budget: a new night after an ended one gets its own deadline', () => {
+test('budget F1: a night freshAfterMs after the anchor gets its own deadline, and the new anchor is saved', () => {
+  const b = budget(0);
+  b.setNight({ startedAt: 0 });
+  b.setNight(null);
+  b.go(4000);                                   // the anchor is now 4000 ms old = freshAfterMs
+  assert.deepStrictEqual(b.fired, [], 'nobody was running a night, so nothing was stopped');
+  b.setNight({ startedAt: 4000 });
+  assert.deepStrictEqual(b.saved, [0, 4000]);
+  b.go(999);
+  assert.deepStrictEqual(b.fired, []);
+  b.go(1);
+  assert.deepStrictEqual(b.fired, [{ startedAt: 4000, deadline: 5000 }]);
+});
+
+test('budget F1: one ms short of freshAfterMs the old anchor still stands', () => {
+  const b = budget(0);
+  b.setNight({ startedAt: 0 });
+  b.setNight(null);
+  b.go(3999);
+  b.setNight({ startedAt: 3999 });
+  assert.deepStrictEqual(b.saved, [0]);
+  assert.deepStrictEqual(b.fired, [{ startedAt: 0, deadline: 1000 }]);
+});
+
+test('budget F1: a host restart mid-night keeps the deadline (the anchor is loaded, not re-learned from the new night)', () => {
+  const first = budget(0);
+  first.setNight({ startedAt: 0 });
+  assert.deepStrictEqual(first.saved, [0]);
+  // the host is replaced 600 ms in; the loop resumes there and starts a "new" night at its first wake
+  const second = budget(600, { load: () => first.saved[first.saved.length - 1] });
+  second.setNight({ startedAt: 600 });
+  assert.deepStrictEqual(second.saved, [], 'the old anchor stands, nothing new is written');
+  second.go(399);
+  assert.deepStrictEqual(second.fired, []);
+  second.go(1);
+  assert.deepStrictEqual(second.fired, [{ startedAt: 0, deadline: 1000 }]);
+});
+
+test('budget F1: a loaded anchor is watched from the start, so a night that appears after the deadline is killed on the next tick', () => {
+  const b = budget(2000, { load: () => 0 });
+  assert.strictEqual(b.t.intervals.size, 1);
+  b.go(1000);
+  assert.deepStrictEqual(b.fired, [], 'no night is on: nothing to stop');
+  b.setNight({ startedAt: 3000 });
+  assert.strictEqual(b.fired.length, 1);
+});
+
+test('budget F1: a loaded anchor that is stale, in the future, or junk is ignored', () => {
+  for (const bad of [0, -5000, 10_000, NaN, null, undefined, '0', {}]) {
+    const b = budget(5000, { load: () => bad });
+    if (bad === 0) { assert.strictEqual(b.t.intervals.size, 0, 'older than freshAfterMs'); continue; }
+    assert.strictEqual(b.t.intervals.size, 0, String(bad));
+    b.setNight({ startedAt: 5000 });
+    assert.deepStrictEqual(b.saved, [5000], String(bad));
+  }
+  assert.doesNotThrow(() => budget(0, { load: () => { throw new Error('unreadable'); } }));
+  assert.doesNotThrow(() => budget(0, { save: () => { throw new Error('read-only'); } }).setNight({ startedAt: 0 }));
+});
+
+// Miguel Y3 (PR #210): one long setTimeout may not wake on time after the lid was shut. The poll compares the wall clock instead.
+test('budget Y3: sleeping past the deadline trips on the first tick after waking (an injected clock jump)', () => {
   const { t, fired, setNight } = budget(0);
   setNight({ startedAt: 0 });
-  setNight(null);
-  t.run(5000);
-  setNight({ startedAt: 5000 });
-  t.run(999);
+  t.run(300); t.fire();
   assert.deepStrictEqual(fired, []);
-  t.run(1);
-  assert.deepStrictEqual(fired, [{ startedAt: 5000, deadline: 6000 }]);
+  t.run(3000);                                  // the machine slept: one jump, no ticks in between
+  assert.deepStrictEqual(fired, []);
+  t.fire();                                     // the first tick after waking
+  assert.deepStrictEqual(fired, [{ startedAt: 0, deadline: 1000 }]);
+});
+
+test('budget Y3: it polls with the interval, not a timeout; and stops polling once it has fired, and on stop()', () => {
+  const a = budget(0);
+  a.setNight({ startedAt: 0 });
+  assert.strictEqual(a.t.timeouts.size, 0);
+  assert.strictEqual(a.t.intervals.size, 1);
+  a.go(1000);
+  assert.strictEqual(a.t.intervals.size, 0);
+  const again = budget(0);
+  again.setNight({ startedAt: 0 });
+  again.b.stop();
+  assert.strictEqual(again.t.intervals.size, 0);
+  again.go(5000);
+  assert.deepStrictEqual(again.fired, []);
 });
 
 test('budget: junk payloads change nothing; a non-number start is no night', () => {
-  const { t, fired, b } = budget(0);
+  const { t, fired, saved, b, go } = budget(0);
   for (const junk of [undefined, 42, 'x', {}, { startedAt: null }, { startedAt: '0' }, { startedAt: NaN }]) b.update(junk);
-  t.run(10_000);
+  go(10_000);
   assert.deepStrictEqual(fired, []);
-  assert.strictEqual(t.timeouts.size, 0);
+  assert.deepStrictEqual(saved, []);
+  assert.strictEqual(t.intervals.size, 0);
 });
 
 test('budget: a throwing onExpire is contained', () => {
-  const { t, setNight } = budget(0, { onExpire: () => { throw new Error('x'); } });
+  const { setNight, go } = budget(0, { onExpire: () => { throw new Error('x'); } });
   setNight({ startedAt: 0 });
-  assert.doesNotThrow(() => t.run(1000));
+  assert.doesNotThrow(() => go(1000));
 });
 
-test('budget: stop() disarms', () => {
-  const { t, fired, setNight, b } = budget(0);
-  setNight({ startedAt: 0 });
-  b.stop();
-  t.run(5000);
-  assert.deepStrictEqual(fired, []);
-});
-
-test('budget: a bad budget is refused', () => {
+test('budget: a bad budget, or a fresh window not longer than it, is refused', () => {
   for (const bad of [0, -5, NaN, '1']) assert.throws(() => budget(0, { budgetMs: bad }), /budgetMs/);
+  assert.throws(() => budget(0, { freshAfterMs: 1000 }), /freshAfterMs/);
+  assert.throws(() => budget(0, { freshAfterMs: NaN }), /freshAfterMs/);
+});
+
+// --- the anchor on disk --------------------------------------------------------------------------------------------
+
+test('loadAnchor / saveAnchor: the anchor survives a round trip through the injected file ops; a bad file is no anchor', () => {
+  const files = new Map();
+  const io = {
+    read: (f) => { if (!files.has(f)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); return files.get(f); },
+    write: (f, data) => files.set(f, data),
+    mkdir: () => {},
+  };
+  const f = path.join('P', '.claude-custom', 'night-anchor.json');
+  assert.strictEqual(ks.loadAnchor(f, io), null);
+  ks.saveAnchor(f, 12345, io);
+  assert.strictEqual(ks.loadAnchor(f, io), 12345);
+  for (const bad of ['', 'not json', '{}', '{"anchor":"1"}', '{"anchor":null}', '[1]', 'null']) {
+    files.set(f, bad);
+    assert.strictEqual(ks.loadAnchor(f, io), null, bad);
+  }
+  assert.strictEqual(ks.loadAnchor('', io), null);
+  assert.throws(() => ks.saveAnchor('', 1, io));
 });
 
 // --- what the host says ------------------------------------------------------------------------------------------

@@ -11,18 +11,22 @@
  * the file where it is: a host that starts while one exists doesn't spawn claude at all. The trip fires ONCE while any sentinel stays;
  * once every one is gone it re-arms, and a fresh tab (close it, reopen it) starts normally. The watcher never deletes a sentinel.
  *
- * THE NIGHT BUDGET. A /bedtime night (host/bedtime-state.js, through host/night-status.js's payload) is hard-stopped NIGHT_BUDGET_MS
- * after the night's own start, whatever the agent does, once. bedtime-state's MAX_NIGHT_MS (12 h) is a different thing: the cap after
- * which the chip stops calling a run a night. It ends nothing, so this is a constant of its own. At the deadline the budget asks the
- * night again (`nightNow`): a night that ended by the clock without an event saying so, or a newer night than the one armed, is not
- * killed by an old deadline.
+ * THE NIGHT BUDGET. A /bedtime run (host/bedtime-state.js, through host/night-status.js's payload) is hard-stopped NIGHT_BUDGET_MS
+ * after the FIRST night start, whatever the agent does, once. The anchor is the first night's start, not the current night's: the
+ * agent can end a night (`ScheduleWakeup({ stop: true })`) and start another, so a budget keyed on "the night" would reset (Dexter F1,
+ * PR #210). The anchor is saved (`save`) and loaded (`load`) so a replaced host keeps it, and a night may set a fresh anchor only
+ * once the old one is NIGHT_FRESH_AFTER_MS old (the next evening). The deadline is checked against the wall clock on a 1 s poll, not
+ * one long timer, so a laptop that slept through it trips on waking (Miguel Y3). At or past the deadline it kills only while a night
+ * is on (`nightNow`), and a new night after the deadline is killed at once. bedtime-state's MAX_NIGHT_MS (12 h) is a different thing:
+ * the cap after which the chip stops calling a run a night. A budget at or over it could never see its night, so the budget stays under it.
  *
  *   stopAllHome({ seam, home }) -> the folder STOP-ALL is in
  *   sentinelsFor({ claudeHome, stateRoot }) -> [path]               STOP-ALL first; no project, no STOP
  *   watch({ sentinelPaths, intervalMs, onTrip, exists, setInterval, clearInterval }) -> { check(), stop() }
  *       onTrip({ sentinel, scope })   scope 'all' | 'project'; check() answers the present sentinel (or null) at once, and trips
- *   createNightBudget({ budgetMs, onExpire, nightNow, now, setTimeout, clearTimeout }) -> { update(payload), stop() }
- *       onExpire({ startedAt, deadline })
+ *   createNightBudget({ budgetMs, freshAfterMs, onExpire, nightNow, now, load, save, setInterval, clearInterval }) -> { update(payload), stop() }
+ *       onExpire({ startedAt, deadline })       startedAt is the anchor
+ *   loadAnchor(file, { read }) -> ms | null, saveAnchor(file, ms, { write, mkdir })   the anchor file, { anchor }
  *   describeStop(stop) -> the one line the host logs and shows
  *   createStopper({ term, stopPty, killChildTree, log, notify }) -> { stop(info) -> stopped?, state() }   says why, then kills, once
  *   createLinger({ graceMs, now }) -> { update(stopped, windowCount) -> leave? }   a refused host with no window goes
@@ -34,6 +38,8 @@ const path = require('path');
 const STOP_ALL = 'STOP-ALL';
 const PROJECT_STOP = 'STOP';
 const NIGHT_BUDGET_MS = (8 * 60 + 30) * 60_000;
+// A new night gets a fresh budget only once the first night's start is this old (the next evening). Ricardo's Q3b.
+const NIGHT_FRESH_AFTER_MS = 16 * 60 * 60_000;
 const POLL_MS = 1000;
 const LINGER_MS = 20_000;
 
@@ -87,41 +93,74 @@ function watch({
 }
 
 function createNightBudget({
-  budgetMs = NIGHT_BUDGET_MS, onExpire = () => {}, nightNow = () => null, now = Date.now,
-  setTimeout: later = setTimeout, clearTimeout: cancel = clearTimeout,
+  budgetMs = NIGHT_BUDGET_MS, freshAfterMs = NIGHT_FRESH_AFTER_MS, onExpire = () => {}, nightNow = () => null, now = Date.now,
+  load = () => null, save = () => {}, setInterval: every = setInterval, clearInterval: cancel = clearInterval, intervalMs = POLL_MS,
 } = {}) {
   if (!positiveMs(budgetMs)) throw new Error('kill-switch night budget: budgetMs must be a positive number of ms');
-  let armedFor = null;              // the startedAt the timer is for
+  if (!positiveMs(freshAfterMs) || freshAfterMs <= budgetMs) throw new Error('kill-switch night budget: freshAfterMs must be longer than budgetMs');
+  let anchor = null;                // the FIRST night start still inside freshAfterMs: the deadline is anchor + budgetMs
   let timer = null;
   let fired = false;
 
   const startOf = (p) => (p && typeof p === 'object' && typeof p.startedAt === 'number' && Number.isFinite(p.startedAt) ? p.startedAt : null);
 
-  function disarm() {
+  function unpoll() {
     if (timer !== null) cancel(timer);
     timer = null;
-    armedFor = null;
   }
 
-  function expire(startedAt) {
-    timer = null;
-    if (fired || startOf(nightNow()) !== startedAt) { armedFor = null; return; }   // that night is over, or a newer one began
-    fired = true;
-    try { onExpire({ startedAt, deadline: startedAt + budgetMs }); } catch { /* the host's handler logs its own failures */ }
+  // Wall clock on a 1 s poll, not one long timeout: a laptop that slept through the deadline trips on its first tick after waking.
+  function poll() {
+    if (timer !== null || fired) return;
+    timer = every(tick, intervalMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
   }
+
+  function tick() {
+    if (fired || anchor === null) return;
+    const t = now();
+    if (t - anchor >= freshAfterMs) { anchor = null; unpoll(); return; }       // that run is long over: the next night starts afresh
+    if (t < anchor + budgetMs) return;
+    if (startOf(nightNow()) === null) return;                                 // past the deadline, but no night is on: nothing to stop
+    fired = true;
+    unpoll();
+    try { onExpire({ startedAt: anchor, deadline: anchor + budgetMs }); } catch { /* the host's handler logs its own failures */ }
+  }
+
+  // A host restarted mid-night finds the anchor on disk: the new host's first "night" is not a new run (Dexter F1, PR #210).
+  try {
+    const saved = load();
+    if (typeof saved === 'number' && Number.isFinite(saved) && saved <= now() && now() - saved < freshAfterMs) { anchor = saved; poll(); }
+  } catch { /* unreadable: no anchor */ }
 
   function update(payload) {
     if (fired) return;
     const startedAt = startOf(payload);
-    if (startedAt === null) { disarm(); return; }
-    if (startedAt === armedFor) return;                          // the same night, another push (a wake, a PR count)
-    disarm();
-    armedFor = startedAt;
-    timer = later(() => expire(startedAt), Math.max(0, startedAt + budgetMs - now()));
-    if (timer && typeof timer.unref === 'function') timer.unref();
+    if (startedAt === null) return;                  // a night that ended does not disarm: the agent can start another one
+    if (anchor === null || now() - anchor >= freshAfterMs) {
+      anchor = startedAt;
+      try { save(anchor); } catch { /* the budget still holds in memory */ }
+    }
+    poll();
+    tick();
   }
 
-  return { update, stop: disarm };
+  return { update, stop: unpoll };
+}
+
+// The anchor file: { anchor: <ms> }. Atomic write is the host's (injected); a missing or odd file is simply no anchor.
+function loadAnchor(file, { read = (f) => fs.readFileSync(f, 'utf8') } = {}) {
+  if (!nonEmpty(file)) return null;
+  try {
+    const doc = JSON.parse(read(file));
+    return doc && typeof doc === 'object' && typeof doc.anchor === 'number' && Number.isFinite(doc.anchor) ? doc.anchor : null;
+  } catch { return null; }
+}
+
+function saveAnchor(file, anchor, { write, mkdir = (d) => fs.mkdirSync(d, { recursive: true }) } = {}) {
+  if (!nonEmpty(file)) throw new Error('no anchor path');
+  mkdir(path.dirname(file));
+  write(file, JSON.stringify({ anchor }));
 }
 
 function hoursMinutes(ms) {
@@ -192,5 +231,5 @@ async function requestStopAll({ file, confirm, write, mkdir = (d) => fs.mkdirSyn
 
 module.exports = {
   stopAllHome, sentinelsFor, scopeOf, watch, createNightBudget, describeStop, createStopper, createLinger, requestStopAll,
-  NIGHT_BUDGET_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
+  loadAnchor, saveAnchor, NIGHT_BUDGET_MS, NIGHT_FRESH_AFTER_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
 };

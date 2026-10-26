@@ -100,7 +100,8 @@ const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
-const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, NIGHT_BUDGET_MS } = require('./kill-switch');
+const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, NIGHT_BUDGET_MS } = require('./kill-switch');
+const { writeFileAtomic } = require('./atomic-write');
 const { createNightStatus } = require('./night-status');
 const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
 const { countNightPrs } = require('./night-prs');
@@ -1465,7 +1466,11 @@ const killSwitch = watchKillSwitch({
   onTrip: ({ sentinel, scope }) => killStop.stop({ kind: term ? 'tripped' : 'refused', sentinel, scope }),
 });
 const killLinger = createLinger();
+// The first night's start is kept on disk (one per project), so a host replaced mid-night keeps the deadline (Dexter F1, PR #210).
+const NIGHT_ANCHOR_FILE = path.join(STATE_ROOT, '.claude-custom', 'night-anchor.json');
 const nightBudget = createNightBudget({
+  load: () => loadAnchor(NIGHT_ANCHOR_FILE),
+  save: (anchor) => saveAnchor(NIGHT_ANCHOR_FILE, anchor, { write: (f, data) => writeFileAtomic(f, data) }),
   nightNow: () => night.payload(),
   onExpire: ({ startedAt }) => killStop.stop({ kind: 'night-budget', startedAt, budgetMs: NIGHT_BUDGET_MS }),
 });
