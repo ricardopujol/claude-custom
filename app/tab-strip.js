@@ -22,6 +22,8 @@ const GLYPHS = {
 // PR 3: a merged worktree (finishing, removing, kept), or one that failed to go.
 const BADGES = { merged: 'merged', warn: String.fromCodePoint(0x26a0) };
 const SIDE_TITLE = 'A side session: it starts in plan mode and has only Read, Grep, Glob, WebFetch, WebSearch and TodoWrite. No Bash, PowerShell, Edit, Write or MCP, whatever mode it is switched to. It ends when this branch\'s tab closes.';
+// #119 A5: a branch tab's plain shell.
+const SHELL_TITLE = 'A shell in this branch\'s folder, not a Claude session. It shows a dot when the program running in it reports its state. It ends when this branch\'s tab closes.';
 const GLYPH_TITLES = {
   open: 'Second session in this worktree (lock overridden, not saved)',
   warn: 'No session lock: a second window on this worktree would not be stopped',
@@ -135,6 +137,7 @@ function paintTab(doc, entry, bridge) {
   if (occ) cls.push(occ.readersOnly ? 'reading' : (occ.warn ? 'occupied occupied-warn' : 'occupied'));
   // #81: a branch tab's read-only side session: a small tab, no close button of its own (it ends with its branch tab).
   if (entry.side === true) cls.push('side');
+  if (entry.shell === true) cls.push('shell');
   // Backlog #52: a /bedtime night turns the tab deep blue. Distinct from #31's pulse, which still wins while the tab
   // needs you (the pulse animates the background; the night is a still colour).
   const night = entry.night === true;
@@ -144,6 +147,7 @@ function paintTab(doc, entry, bridge) {
   if (entry.startError) tab.title = `${entry.label}: ${entry.startError}`;
   else tab.title = nonEmpty(entry.phaseText) ? `${entry.label}: ${entry.phaseText}` : entry.label;
   if (entry.side === true) tab.title = [tab.title, SIDE_TITLE].join('\n');
+  if (entry.shell === true) tab.title = [tab.title, SHELL_TITLE].join('\n');
   // #119 A6: the GitHub issue this lane was started from (right-click: Open issue).
   const issue = issueLine(entry.issue);
   if (issue) tab.title = [tab.title, issue].join('\n');
@@ -187,7 +191,7 @@ function paintTab(doc, entry, bridge) {
   if (entry.closable) {
     const x = tab.appendChild(el(doc, 'button', 'x', '×'));
     x.type = 'button';
-    x.title = 'Close tab (ends its session; the folder stays)';
+    x.title = entry.shell === true ? 'Close shell (ends the shell and what runs in it; the folder stays)' : 'Close tab (ends its session; the folder stays)';
     x.addEventListener('click', (ev) => {
       ev.stopPropagation();
       if (ev && ev.ctrlKey === true) bridge.close(entry.key, true); else bridge.close(entry.key);

@@ -29,7 +29,7 @@
  * The touch book is bounded (AGENTS_MAX agents, TOUCHES_MAX worktrees each), oldest forgotten first.
  */
 
-const { claimFrom, buildClaim, safeAgentId, TOUCH_TOOLS } = require('./agent-occupancy');
+const { claimFrom, buildClaim, safeAgentId, TOUCH_TOOLS, WRITE_TOOLS } = require('./agent-occupancy');
 const { normPath } = require('./project-layout');
 const { filetimeToMs } = require('./background-hosts');
 
@@ -132,7 +132,9 @@ function createOccupancyProducer({
     const key = normPath(claim.worktree);
     const prev = touches.get(key);
     touches.delete(key);
-    touches.set(key, { worktree: claim.worktree, firstAt: prev ? prev.firstAt : t, lastAt: t, count: (prev ? prev.count : 0) + 1 });
+    // wroteAt: the last time an Edit / Write / NotebookEdit touched this worktree; a Read or a search keeps the one before it (or none)
+    const wrote = WRITE_TOOLS.has(claim.tool) ? t : (prev ? prev.wroteAt : undefined);
+    touches.set(key, { worktree: claim.worktree, firstAt: prev ? prev.firstAt : t, lastAt: t, count: (prev ? prev.count : 0) + 1, tool: claim.tool || undefined, wroteAt: wrote });
     while (touches.size > TOUCHES_MAX) touches.delete(touches.keys().next().value);
 
     // No start time, no file. A claim without the proof is never shown by any reader, and writing it would

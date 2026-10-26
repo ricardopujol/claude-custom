@@ -11,7 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const root = path.resolve(process.argv[2] || 'C:/Users/ricar/VibeCode/agent-creator/portraits');
+const root = path.resolve(process.argv[2] || require('../host/portraits-dir').resolvePortraitsDir());
 const outFile = path.resolve(process.argv[3] || 'C:/Users/ricar/VibeCode/claude-custom/.harness/states.html');
 
 const STATES = ['sleeping', 'working', 'happy', 'stressed'];
