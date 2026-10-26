@@ -68,6 +68,7 @@ Panels sit in a rail on the right and can be docked, moved, floated or hidden. T
 **The machine**
 
 - **Resources** shows CPU and memory per session, per project and in total, with a one-hour history. It can stop a runaway child process of a session.
+- **Schedules** lists what will run and when: wakeups, loops, bedtime nights and cron jobs, and which session each one belongs to.
 - Per-project looks, including backgrounds, set in **Style**.
 
 **The repo**
