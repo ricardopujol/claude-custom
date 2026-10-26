@@ -149,15 +149,17 @@ function blankComments(src) {
   return out;
 }
 
-const KILL_CLASSES = ['held-handle', 'table-row', 'definition', 'own-spawn'];   // held-handle: reached only while the child's handle is held; table-row: a row read from the process table with its command line this run; definition: the primitive's own definition or a re-export; own-spawn: a process this very test/probe spawned and still holds
+const KILL_CLASSES = ['held-handle', 'table-row', 'definition', 'own-spawn', 'guard-case'];   // held-handle: reached only while the child's handle is held; table-row: a row read from the process table with its command line this run; definition: the primitive's own definition or a re-export; own-spawn: a process this very test/probe spawned and still holds; guard-case: a command string handed to a guard hook under test to be REFUSED, never run by the probe itself, naming only a process that does not exist (counts only where test/guard-case.js's isGuardCaseLine says so, the same exemption the verify Electron contract takes)
 const KILL_OK = new RegExp('//.*\\bkill-ok\\((?:' + KILL_CLASSES.join('|') + ')\\):[ \\t]*\\S');
+const GUARD_CASE_CLASS = /\bkill-ok\(guard-case\)/;
+const { isGuardCaseLine } = require('./guard-case');
 
 function rawKills(source) {
   const orig = source.split(/\r?\n/);
   const code = blankComments(source).split(/\r?\n/);
   const out = [];
   code.forEach((line, i) => {
-    if (KILL_OK.test(orig[i])) return;
+    if (KILL_OK.test(orig[i]) && (!GUARD_CASE_CLASS.test(orig[i]) || isGuardCaseLine(orig[i]))) return;
     const hits = [];
     const imp = /^\s*(?:const|let|var)\s*\{([^}]*)\}\s*=\s*require\(/.exec(line);
     if (imp) { if (/\bkillPidTree\s*:/.test(imp[1])) hits.push('renamed killPidTree import'); }
@@ -197,7 +199,11 @@ test('rule fixtures: every bypass from the round-2 review is flagged (Dexter #3)
     'killPidTree(pid);   // kill-ok: read from the identity json',
     "for (const pid of seenPids) killPidTree(pid);   // kill-ok: identity-file pids, the seenPids class",
         "execFileSync('taskkill', ['/PID', String(pid)]);   // kill-ok: a host pid read from app state",
+    // guard-case excuses only a canary deny case (test/guard-case.js), never a real kill wearing the class
+    "execFileSync('taskkill', ['/PID', String(pid)]);   // kill-ok(guard-case): for the hook to refuse",
+    "deny('b', 'PowerShell', 'b-x', 'taskkill /IM node.exe /F');   // kill-ok(guard-case): for the hook to refuse",
   ]) assert.ok(flagged(fx), fx);
+  assert.deepStrictEqual(rawKills("deny('b', 'PowerShell', 'b-taskkill-im', 'taskkill /IM cc-probe-canary.exe /F');   // kill-ok(guard-case): for the hook to refuse"), []);
 });
 
 test('rule fixtures: the held-child forms, a liveness probe, a reasoned exception, log text and comments are not flagged', () => {

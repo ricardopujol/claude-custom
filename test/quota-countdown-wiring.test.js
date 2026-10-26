@@ -42,7 +42,7 @@ test('the toast goes through the visibility gate and a persistent live region (D
 });
 
 test('a used-up window whose reset passed is settled before drawing (Miguel Y5)', () => {
-  assert.match(fnBody(renderer, 'renderQuota'), /quotaDisplay\(quotaSettlePastResets\(lastQuotaPayload, nowMs\)\)/);
+  assert.match(fnBody(renderer, 'renderQuota'), /quotaDisplay\(quotaSettlePastResets\(lastQuotaPayload, nowMs\), nowMs, hostKind\)/);
 });
 
 test('only the countdown text is patched while the markup is unchanged (Miguel G3)', () => {
@@ -57,7 +57,7 @@ test('a dropped socket stops a running countdown (Dexter 7)', () => {
 });
 
 test('the host re-sends a used-up payload every poll, so its readAt never ages on the page (Dexter 7)', () => {
-  const i = host.indexOf('const quotaTimer = setInterval');
+  const i = host.indexOf('const quotaTimer = SHELL ? null : setInterval');
   const body = host.slice(i, host.indexOf('quotaTimer.unref()', i));
   assert.match(body, /usedUp \|\| JSON\.stringify\(quota && quota\.windows\) !== before/);
   assert.match(body, /w\.percent >= 100/);

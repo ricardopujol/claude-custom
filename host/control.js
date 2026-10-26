@@ -110,6 +110,12 @@ const CONTROL_TYPES = new Set([
   // "Ask the repo" (BACKLOG #33): status / places / ask / explain / start-ollama, by `op` (host/ask-service.js). Off this list a question
   // would be TYPED into the pty as JSON.
   'ask',
+  // The Changes panel (BACKLOG #119 A3): list / base by `action` (host/changes.js), and the host's `changed` push. Off this list a list
+  // request would be TYPED into the pty as JSON.
+  'changes',
+  // The Map panel (BACKLOG #120) asks for the event rates and the tool in hand every few seconds while it shows. Off this list the
+  // frame would be TYPED into the pty as JSON.
+  'map',
   // The Schedules panel (BACKLOG #119 A7): a window asks for the current list when the panel opens (host/schedules-control.js). Off this
   // list the frame is TYPED into the pty as JSON.
   'schedules',

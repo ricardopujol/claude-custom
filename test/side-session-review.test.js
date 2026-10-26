@@ -139,7 +139,7 @@ test('host.js: the terminal-session warning excludes the folder\'s sibling side/
 test('host.js: a side host republishes its identity with its session id once it knows it', () => {
   const writes = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
   assert.ok(writes.length >= 3);
-  for (const w of writes) assert.match(w, /sessionId: SIDE \? sessionId : undefined/, w);
+  for (const w of writes) assert.match(w, /\.\.\.identityFor\(\)/, w);   // identityFields carries sessionId for a side host (test/shell-tab.test.js pins it)
   const at = HOST.indexOf("console.log('[host] session id     :', sessionId);");
   assert.ok(at > 0);
   assert.match(HOST.slice(at, at + 400), /if \(SIDE\) republishIdentity\(\);/);

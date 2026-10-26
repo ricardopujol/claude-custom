@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const dir = 'C:/Users/ricar/VibeCode/agent-creator/portraits/_tuning/logic-reviewer';
+const dir = require('../host/portraits-dir').resolvePortraitsDir().replace(/\\/g, '/') + '/_tuning/logic-reviewer';
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.png')).sort((a, b) => {
   const g = s => parseFloat((s.match(/g([\d.]+)/) || [0, 99])[1]);
   return g(a) - g(b);
