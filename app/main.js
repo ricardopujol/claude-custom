@@ -117,6 +117,8 @@ const { createSharedPoller, defaultDir: defaultPollerDir } = require('../host/sh
 const pollerPolicy = require('../host/poller-policy');
 const { createPersistentExec } = require('../host/persistent-powershell');
 const { killVerified } = require('../host/resource-kill');
+const { suspendVerified } = require('../host/process-suspend');
+const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -1127,6 +1129,13 @@ function registerIpc() {
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
+  // Pause / Resume (#19): the same guard as Stop, re-checked in main (host/resource-pause.js) however the page asks.
+  ipcMain.handle('resources:pause', (e, req) => (isTabView(e.sender) && resources
+    ? resources.pause(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
+  ipcMain.handle('resources:resume', (e, req) => (isTabView(e.sender) && resources
+    ? resources.resume(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
   ipcMain.handle('resources:stopLeftovers', (e, req) => (isTabView(e.sender) && resources
     ? resources.stopLeftovers(req)
     : { ok: false, text: 'refused' }));
@@ -1868,8 +1877,9 @@ function startProbeDriver(port) {
         `(() => { const b = document.getElementById(${JSON.stringify(button)}); if (!b || b.hidden || (b.offsetParent === null && !b.getClientRects().length)) return false; b.click(); return true; })()`);
       return { ok: clicked === true, clicked: clicked === true };
     },
-    async quit() {
-      setTimeout(() => app.exit(0), 200);
+    async quit(graceful) {
+      // A probe's hard exit skips will-quit; graceful is the path a closed window takes (verify/probe-pause-panel.js needs it).
+      setTimeout(() => (graceful === true ? app.quit() : app.exit(0)), 200);
       return { ok: true };
     },
     // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
@@ -2145,6 +2155,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   resourceSampler = createSharedSampler({ poller: resourcePoller, cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
+  const ownProcStart = await ownStartTime().then(s => (typeof s === 'string' ? s : null), () => null);
   resources = createResourcesService({
     sampler: resourceSampler,
     tabs: () => tabShell.snapshot().tabs,
@@ -2170,6 +2181,12 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Pause / Resume (#19): NtSuspendProcess / NtResumeProcess on a handle that re-proves pid and start time (host/process-suspend.js).
+    suspend: (action, targets) => suspendVerified(action, targets, { exec: createPowerShellExec(20000) }),
+    // What is paused is kept on disk, so a crash can be undone at the next start (host/pause-persist.js).
+    // An owner is a pid AND a start time: 'absent', the running process's start, or null (could not be told).
+    pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, ownStart: ownProcStart,
+      ownerState: async (pid) => { const m = await startTimes([pid]); return !m ? null : (m.has(pid) ? m.get(pid) : 'absent'); }, log: (...a) => console.log(...a) }),
     // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
     // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
     // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
@@ -2197,6 +2214,9 @@ app.whenReady().then(async () => {
   watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
+  const sweepPaused = () => resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
+  sweepPaused();
+  setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
@@ -2242,6 +2262,15 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+// A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
+// The quit is held once, for as long as the resumes take, and then asked for again.
+let pausedWoken = false;
+app.on('will-quit', (e) => {
+  if (!resources || pausedWoken || !resources.hasPaused()) return;
+  pausedWoken = true;
+  e.preventDefault();
+  resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
+});
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
