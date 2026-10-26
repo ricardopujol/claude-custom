@@ -70,12 +70,6 @@ test('clicking a shell tab selects it; its x and a Ctrl+click close it, by its o
   assert.deepStrictEqual(bridge.calls, [['select', 'k|shell'], ['close', 'k|shell', undefined], ['close', 'k|shell', true]]);
 });
 
-test('a side tab still has no close button: it ends with its branch tab (#81)', () => {
-  const doc = fakeDoc();
-  paint(doc, { model: [entry({ key: 'k|side', side: true, closable: false })] }, bridgeSpy());
-  assert.strictEqual(child(doc.byId.tabs.children[0], 'x'), undefined);
-});
-
 test('right-clicking a shell tab asks main for its menu, by its own key', () => {
   const doc = fakeDoc();
   const bridge = bridgeSpy();
