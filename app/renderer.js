@@ -843,6 +843,8 @@ const repoBrowser = window.repoBrowser.create({
   confirmDiscard: async (message) => window.confirm(message),
   // What's this? on the reader (#33): the selected lines go to the Ask panel, which is brought on screen
   onAsk: (sel) => { askExplain(sel); },
+  // an http(s) link in a rendered Markdown page (BACKLOG #119 A9): the reader already refused anything else; main's openInBrowser checks it again
+  onOpenUrl: (url) => (window.harness && window.harness.openExternal ? window.harness.openExternal(url) : false),
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
@@ -1574,6 +1576,15 @@ async function resourcesAct(a) {
     let result;
     try { result = await resBridge.stopLeftovers(a.act === 'left-stop' ? { rows: [{ pid: a.pid, start: a.start }] } : a.act === 'left-delete' ? { taskLog: a.key } : { group: a.group }); } catch { result = null; }
     resState = D.leftStopResult(resState, result);
+  }
+  else if (a.act === 'pause' || a.act === 'resume') {
+    // One at a time: the buttons are disabled while a request is in flight. Main re-checks everything; the page only names the process.
+    if (!resBridge || resState.pauseBusy) return;
+    resState = D.beginPause(resState, a);
+    renderResources();
+    let result;
+    try { result = await resBridge[a.act]({ pid: a.pid, startTime: a.start }); } catch { result = null; }
+    resState = D.pauseResult(resState, a, result, a.act);
   }
   else if (a.act === 'confirm-stop') {
     const req = resState.confirm;
@@ -3781,6 +3792,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         };
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
+          pauseScope: typeof window.agentPauseDisplay === 'object' && typeof window.agentPauseDisplay.createAgentPauses === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
           chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
@@ -3790,7 +3802,10 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
             figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
-            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent,
+            pause: (c.querySelector('[data-res-act="pause"]') || { dataset: {} }).dataset.resPid || null,
+            resume: (c.querySelector('[data-res-act="resume"]') || { dataset: {} }).dataset.resPid || null,
+            paused: c.classList.contains('res-paused-row') })),
           // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
           stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
           figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
@@ -5131,6 +5146,31 @@ document.addEventListener('click', (e) => {
   if (b && b.dataset.whereRoot) jumpToFolder(b.dataset.whereRoot).then(() => {}, () => {});
 });
 
+// An agent card's Pause / Resume (BACKLOG #19). The state machine and the markup live in app/agent-pause-display.js; the typing goes through
+// typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
+const agentPauses = window.agentPauseDisplay.createAgentPauses();
+let latestAgentIds = [];      // [{ name, agentId }] of the live runs, from every `processes` frame
+function agentPauseHtml(agent, counts) {
+  return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.agent-pause-btn');
+  const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
+  if (!act) return;
+  // The run's task id, when the host knows exactly one: named in the line, and what our TaskStop is recognised by (app/agent-pause-display.js).
+  const ids = latestAgentIds.filter(a => a.name === act.agent).map(a => a.agentId);
+  const taskId = ids.length === 1 ? ids[0] : undefined;
+  const command = window.agentPauseDisplay.commandFor(act.act, act.agent, taskId) || window.agentPauseDisplay.commandFor(act.act, act.agent);
+  if (!command || !agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)) return;
+  renderRoster();
+  // A Pause that never took effect is called off after the timeout, so the card must be drawn again then.
+  setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
+  typeCommand(command, (r) => {
+    // typed and not submitted (the gate said wait) is NOT a pause either: nothing was asked of the model
+    if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
+  }, window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false });
+});
+
 function countBadgeHtml(agent, counts) {
   // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
   // concurrent run is news.
@@ -5459,6 +5499,7 @@ function renderRoster() {
   // A card waiting on you floats to the top, then base state, then name (app/agent-state-display.js sortRows).
   const rows = window.agentStateDisplay.sortRows([...roster.values(), ...(exRow ? [exRow] : [])]);
   const counts = instanceCounts(latestParty);
+  agentPauses.seen(counts, Date.now(), { turn: sessionTurn });
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
   // ever draws a hide flag on an awake agent. The host stays authoritative:
@@ -5503,6 +5544,7 @@ function renderRoster() {
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
       `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
@@ -8584,6 +8626,7 @@ function handleControl(msg) {
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
+    agentPauses.sessionIs(msg.sessionId);     // seeds the id (a reattach, a reload, a reconnect), so the next different one is seen as a new session
     occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
@@ -8594,6 +8637,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'session') {
+    agentPauses.sessionIs(msg.sessionId);     // a different session id (after /clear) forgets every agent pause: its background agents are gone
     occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     return;
@@ -8688,6 +8732,13 @@ function handleControl(msg) {
     // `mode`, so calling renderMode(undefined) here hid the badge a second after
     // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
+    latestAgentIds = Array.isArray(msg.agents) ? msg.agents.filter(a => a && typeof a.name === 'string' && typeof a.agentId === 'string') : [];
+    // Our Pause's TaskStop, seen as the CLI's own tool call (app/agent-pause-display.js: "paused" needs it).
+    for (const p of Array.isArray(msg.running) ? msg.running : []) {
+      if (p && p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt, p.taskId);
+      // ...and one that FAILED stopped nothing (PR #158 Dexter R3 N4).
+      if (p && p.tool === 'TaskStop' && p.failed === true && typeof p.startedAt === 'number') agentPauses.stopFailed(p.startedAt, p.taskId);
+    }
     latestParty = msg.party || [];
     renderParty(msg.party);
     // The ×N badge is derived from `party`, which just changed; the roster map
@@ -8784,6 +8835,9 @@ function handleControl(msg) {
   }
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
+    agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
+    // ...so the card is drawn again PAUSE_TIMEOUT_MS after it, not only after the click: a quiet idle session sends no other frame (PR #158 Dexter R3 N5).
+    if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
     paintBar();
     reportTabStatus();
     return;

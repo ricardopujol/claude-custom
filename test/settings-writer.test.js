@@ -464,7 +464,7 @@ test('bedtime changes only PreToolUse and PostToolUse, and composes with occupan
   }
   const loadoutHook = { nodePath: 'node', scriptPath: 'C:/x/loadout-hook.js', stateDir: 'C:/x/state' };
   const all = buildHarnessSettings({ ...opts, loadoutHook, occupancy: true, bedtime: true });
-  assert.deepStrictEqual(all.hooks.PreToolUse.map(e => e.matcher), ['Agent|Task|Bash', 'Agent|Task', OCCUPANCY_MATCHER, BEDTIME_MATCHER]);
+  assert.deepStrictEqual(all.hooks.PreToolUse.map(e => e.matcher), ['Agent|Task|Bash|TaskStop', 'Agent|Task', OCCUPANCY_MATCHER, BEDTIME_MATCHER]);
 });
 
 // BACKLOG #71: the artifact shelf is filled from the Artifact tool's own PostToolUse (host/canvas-shelf.js). Result only: a

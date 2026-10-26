@@ -19,6 +19,8 @@ const model = require('../host/resource-model');
 const tree = require('../host/resource-tree');
 const warning = require('../host/resource-warning');
 const stopper = require('../host/resource-stop');
+const { createPauser, reasonText: pauseText } = require('../host/resource-pause');
+const { createPauseStore } = require('../host/pause-state');
 const { createHistory } = require('../host/resource-history');
 const gpuLib = require('../host/resource-gpu');
 const leftovers = require('../host/leftovers');
@@ -49,6 +51,11 @@ function createResourcesService({
   // remove(row) -> { deleted, failed, kept, freed } (the one guarded delete), everyMs }. Scanned on its own slow cadence, stat
   // only. With no `taskLogs` the group is simply absent.
   taskLogs = null,
+  // Pause / Resume (#19): `suspend(action, [{ pid, start }])` -> results (host/process-suspend.js suspendVerified with a PowerShell exec). With none,
+  // Pause is refused and no row offers it. `pauseNote`: a sentence shown next to Pause (what the CLI does with a long-suspended shell), or null.
+  suspend = null, pauseNote = null,
+  // The paused set on disk (host/pause-persist.js): { save(list), async takeDead() -> { entries, release() } }. With none, a crash leaves what it paused frozen.
+  pausePersist = null,
 }) {
   let minimised = false;
   let warnings = new Map();    // tab key -> host/resource-warning.js state
@@ -56,6 +63,7 @@ function createResourcesService({
   let chipOn = chipStore.read() !== false;   // ON by default: only a stored real `false` turns it off
   let lastLight = null;        // the same payload with no process model: what a page that is not showing the panel gets
   let lastSignature = '';
+  const pauseStore = createPauseStore({ now, onChange: (list) => { if (pausePersist) pausePersist.save(list); } });
   const history = createHistory();   // the one-hour sparklines' data: in memory only, starts empty after a restart
   let lastRecordedSample = null;   // the sample object a point was last made from: a re-sent old one makes none
   let lastRecordMono = -Infinity;
@@ -292,12 +300,19 @@ function createResourcesService({
     };
 
     let built = null;
+    // A paused process that left the table (or whose pid is another process now) is no longer paused. Only a sample that was really read
+    // can say so: an expired or machine-only one forgets nothing.
+    if (snap.mode === 'full' && snap.sample && snap.expired !== true) {
+      // A root that left while members of its set are still suspended: they are woken (by their proved starts), never forgotten (#158 Dexter 6).
+      const ended = pauseStore.reconcile(snap.sample.procs);
+      if (pauser && ended.some(e => e.alive.length > 0)) pauser.wakeOrphans(ended).catch(err => log('[pause] waking orphans threw:', err && err.message));
+    }
     if (snap.mode === 'full' && snap.sample) {
       const proven = tree.provenHosts(snap.sample.procs, claims());
       const list = tabList().map(t => ({ key: t.key, label: t.label, hostPid: hostOfPort(proven, t.port) }));
       built = model.buildModel({
         sample: snap.sample, prev: snap.prev, cores, tabs: list, hosts: proven,
-        installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPid, labelOf,
+        installDirs: typeof installDirs === 'function' ? installDirs() : [], ownPid, labelOf, paused: pauseStore.listConfirmed(), pauseOffered: !!suspend,
       });
     }
 
@@ -329,8 +344,8 @@ function createResourcesService({
     tlListed = null;     // set again by leftoversOf from THIS sample; an expired or machine-only one deletes nothing
     const left = built && snap.expired !== true ? leftoversOf(snap, built) : null;
     if (!left) lastFound = null;
-    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null, gpuProcs: built && gpu ? gpu.procs : null };
-    lastLight = { model: null, status, machine, chipOn };
+    lastPayload = { model: built, status, machine, chipOn, leftovers: left ? left.payload : null, gpuProcs: built && gpu ? gpu.procs : null, pauseNote };
+    lastLight = { model: null, status, machine, chipOn, pauseNote };
     // Command lines (which can carry a token in argv) go only to the page that shows the panel (Miguel S5).
     send(withHistory(lastPayload), lastLight);
     // AFTER the send: the panel paints first. The stop waits a macrotask before each kill (host/leftovers.js), and an adhoc sample
@@ -411,6 +426,30 @@ function createResourcesService({
     });
   }
 
+  // Pause / Resume (#19). Judged by Stop's own guard (host/resource-pause.js); the sample is re-read afterwards so the row updates at once.
+  const pauser = suspend ? createPauser({
+    readProcs: () => sampler.sampleNow(),
+    hostPids: (procs) => {
+      const ports = new Set(tabList().map(t => t.port));
+      return tree.provenHosts(procs, claims()).filter(h => ports.has(h.port)).map(h => h.pid);
+    },
+    suspend, store: pauseStore, log,
+  }) : null;
+  const unavailable = () => ({ ok: false, reason: 'unavailable', text: pauseText('unavailable') });
+  const rereadSample = async () => { try { await sampler.sampleNow(); } catch { /* the next sample on the cadence shows it */ } };
+  async function pause(request) {
+    if (!pauser) return unavailable();
+    const res = await pauser.pause(request);
+    if (res.ok) await rereadSample();
+    return res;
+  }
+  async function resume(request) {
+    if (!pauser) return unavailable();
+    const res = await pauser.resume(request);
+    if (res.ok || res.reason === 'gone' || res.reason === 'reused') await rereadSample();
+    return res;
+  }
+
   return {
     // A minimised window samples nothing, so no `onUpdate` would ever clear the counters: do it here, or the count (and a lit
     // chip) would carry across the gap and one reading after it could be "the third" (Dexter, PR #113 N4).
@@ -454,6 +493,20 @@ function createResourcesService({
     },
     stop,
     stopLeftovers,
+    pause,
+    resume,
+    /** The app is quitting: wake every process this window paused. */
+    resumeAll: (opts) => (pauser ? pauser.resumeAll(opts) : Promise.resolve({ resumed: 0, failed: 0 })),
+    /** Is anything paused from this window right now, or a pause still being made? */
+    hasPaused: () => pauseStore.list().length > 0 || (!!pauser && pauser.pending() > 0),
+    /** At start, and on a timer: wake what a dead run of the app (or a sibling window that died) left suspended (its file, host/pause-persist.js), by proved starts. */
+    async wakeLeftover() {
+      if (!pauser || !pausePersist) return { stuck: 0 };
+      const dead = await pausePersist.takeDead();
+      const res = await pauser.wakeStale(dead.entries);   // recorded here first, woken, removed from the store once confirmed
+      dead.release();                                     // only now do the dead owners' files go (a throw above leaves them)
+      return res;
+    },
   };
 }
 

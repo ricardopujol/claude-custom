@@ -68,6 +68,7 @@ const REPO_SCANNING = new Set([
   'status-relay-process.test.js',
   'probe-hygiene-process.test.js',
   'settings-writer-process.test.js',
+  'process-suspend-process.test.js',   // #19: runs host/process-suspend.js against a real child (real PowerShell, seconds); the pure tests are in process-suspend.test.js
   // #43 shortcuts page: source text of tab-shell.js / main.js / renderer.js against the key table. It requires shortcut-table only for the rows,
   // which shortcut-table.test.js pins itself.
   'shortcut-table-wiring.test.js',

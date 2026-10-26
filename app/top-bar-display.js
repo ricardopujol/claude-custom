@@ -483,6 +483,11 @@ const SLASH_COMMAND = /^\/[A-Za-z0-9:_-]+(?: [^\x00-\x1f\x7f-\x9f]*)?$/;
 // leave a two-row draft and submit nothing.
 const PANEL_LINE = /^\(from Claude's panel\) [^\s\x00-\x1f\x7f-\x9f\u2028\u2029](?:[^\x00-\x1f\x7f-\x9f\u2028\u2029]{0,1998}[^\s\x00-\x1f\x7f-\x9f\u2028\u2029])?(?<!\\)$/;
 
+// An agent card's Pause / Resume line (BACKLOG #19, app/agent-pause-display.js commandFor): prose, so it is allowed ONLY as exactly these two sentences
+// (PR #158 Dexter R2-8), on one line, with a plain agent name between double quotes and an optional plain task id: no free text, no control or
+// line-separator character, nothing after the final full stop. Left to the slash-command shape these lines were refused every time (Dexter 1).
+const AGENT_PAUSE_LINE = /^(?:Stop the background agent "[A-Za-z0-9 _.:-]{1,200}"(?: \(task id [A-Za-z0-9_-]{1,64}\))? with TaskStop so it can be resumed later with its conversation kept\. Do nothing else\.|Resume the stopped agent "[A-Za-z0-9 _.:-]{1,200}"(?: \(task id [A-Za-z0-9_-]{1,64}\))?: send it a message with SendMessage to continue where it stopped, with its earlier context\. Do nothing else\.)$/;
+
 /**
  * Typing `command` into this tab's live box (the top bar's switches; the Git drawer's Type /merged, PR #93
  * Dexter F3 / Miguel I2). `screen` is inputState()'s answer. ->
@@ -496,9 +501,10 @@ function planTyping({ command, screen, connected, kind, hostKind } = {}) {
   if (hostKind === 'shell') return { ok: false, reason: SHELL_TAB_REFUSAL };
   const mention = kind === 'mention';
   const panel = kind === 'panel';
-  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : SLASH_COMMAND;
+  const agentPause = kind === 'agent-pause';
+  const shape = mention ? AT_MENTION : panel ? PANEL_LINE : agentPause ? AGENT_PAUSE_LINE : SLASH_COMMAND;
   if (typeof command !== 'string' || !shape.test(command)) {
-    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : 'not a single-line slash command' };
+    return { ok: false, reason: mention ? 'not a single-line @ mention' : panel ? "not a single-line message from Claude's panel" : agentPause ? 'not an agent Pause / Resume line' : 'not a single-line slash command' };
   }
   if (!connected) return { ok: false, reason: 'not connected to the session' };
   // vim NORMAL: an `i` first puts the editor in INSERT, so the rest lands as
