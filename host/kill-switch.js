@@ -32,6 +32,8 @@
  *   createStopper({ term, stopPty, killChildTree, log, notify }) -> { stop(info) -> stopped?, state(), clearRefused() }   says why, then kills, once
  *   createLinger({ graceMs, now }) -> { update(stopped, windowCount) -> leave? }   a refused host with no window goes
  *   requestStopAll({ file, confirm, write, mkdir, now }) -> { outcome: 'written' | 'cancelled' | 'failed', error? }   the button's half
+ *   runStopAll({ seam, home, confirm, write, mkdir, now, countUnstoppable }) -> { outcome, error?, file, unstoppable }   main's whole path
+ *   countUnstoppable({ installs, identitiesIn, isAlive }) -> n, describeUnstoppable(n) -> text   hosts too old to watch the file
  */
 const fs = require('fs');
 const path = require('path');
@@ -277,7 +279,53 @@ async function requestStopAll({ file, confirm, write, mkdir = (d) => fs.mkdirSyn
   }
 }
 
+/**
+ * STOP ALL, end to end except the dialogs (main.js is the thin shell around it, so the path from the claude home to the file on disk
+ * is tested for real, Miguel Y2): the file is ~/.claude/STOP-ALL (or the probe seam), the question is asked once with that path,
+ * and only a yes writes. After a write, `countUnstoppable()` says how many running hosts can't see the file at all (Dexter F3).
+ *   runStopAll({ seam, home, confirm(file), write, mkdir, now, countUnstoppable }) -> { outcome, error?, file, unstoppable }
+ */
+async function runStopAll({ seam, home, confirm, write, mkdir, now, countUnstoppable = () => 0 } = {}) {
+  const file = sentinelsFor({ claudeHome: stopAllHome({ seam, home }) })[0];
+  const r = await requestStopAll({ file, confirm: () => confirm(file), write, mkdir, now });
+  let unstoppable = 0;
+  if (r.outcome === 'written') {
+    try { const n = Number(countUnstoppable()); unstoppable = Number.isInteger(n) && n > 0 ? n : 0; } catch { unstoppable = 0; }
+  }
+  return { ...r, file, unstoppable };
+}
+
+/**
+ * Hosts started before this build don't watch the sentinel: the file stops nothing there (Dexter F3, PR #210). A host publishes
+ * killSwitch: true in its identity file (host/host-identity.js writeIdentity); a live host whose file lacks it is counted.
+ *   countUnstoppable({ installs, identitiesIn, isAlive }) -> number      identitiesIn(install) is host/background-hosts.js's
+ */
+function countUnstoppable({ installs = [], identitiesIn = () => [], isAlive = () => false } = {}) {
+  let n = 0;
+  for (const install of installs) {
+    let rows = [];
+    try { rows = identitiesIn(install); } catch { continue; }
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const p = row && row.parsed;
+      if (!p || typeof p !== 'object' || !Number.isInteger(p.pid) || p.pid <= 0) continue;
+      if (p.killSwitch === true) continue;
+      let alive = false;
+      try { alive = isAlive(p.pid) === true; } catch { alive = false; }
+      if (alive) n++;
+    }
+  }
+  return n;
+}
+
+// A plain count. The wording beyond it is Ricardo's (the lane's Q1).
+function describeUnstoppable(n) {
+  if (!Number.isInteger(n) || n <= 0) return '';
+  const sessions = n === 1 ? '1 running session' : `${n} running sessions`;
+  return `${sessions} started on an older build and can't be stopped by this file. Stop ${n === 1 ? 'it' : 'them'} by hand, or restart ${n === 1 ? 'it' : 'them'} on this build.`;
+}
+
 module.exports = {
+  runStopAll, countUnstoppable, describeUnstoppable,
   stopAllHome, sentinelsFor, scopeOf, watch, createNightBudget, describeStop, createStopper, createLinger, requestStopAll,
   loadAnchor, saveAnchor, NIGHT_BUDGET_MS, NIGHT_FRESH_AFTER_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
 };

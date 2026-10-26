@@ -75,7 +75,9 @@ function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, cl
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
-  const doc = { port, cwd, pid, startedAt: Date.now() };
+  // killSwitch: this host watches the kill switch's sentinels (host/kill-switch.js). A host from before it has no such key, and the
+  // STOP ALL button counts those as sessions the file can't stop (Dexter F3, PR #210).
+  const doc = { port, cwd, pid, startedAt: Date.now(), killSwitch: true };
   if (typeof processStartedAt === 'string' && processStartedAt) doc.processStartedAt = processStartedAt;
   if (Number.isInteger(claudePid) && claudePid > 0) doc.claudePid = claudePid;
   // #81: a tab's read-only side session shares the folder; this keeps the port walk from mistaking it for the folder's own host.

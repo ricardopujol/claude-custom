@@ -22,7 +22,8 @@ function block(startMarker, endMarker) {
 }
 
 test('main requires the kill switch and the atomic write by name', () => {
-  assert.match(MAIN, /const \{ stopAllHome, sentinelsFor, requestStopAll \} = require\('\.\.\/host\/kill-switch'\);/);
+  assert.match(MAIN, /const \{ runStopAll, countUnstoppable, describeUnstoppable \} = require\('\.\.\/host\/kill-switch'\);/);
+  assert.match(MAIN, /^const os = require\('os'\);$/m, 'os is required once at the top, not inline in the handler');
   assert.match(MAIN, /const \{ writeFileAtomic \} = require\('\.\.\/host\/atomic-write'\);/);
 });
 
@@ -35,8 +36,21 @@ test('strip:stopAll answers only this window\'s strip, one at a time', () => {
 
 test('the file is the one every host watches: STOP-ALL in the home folder\'s .claude (or the probe seam), written atomically', () => {
   const b = block("ipcMain.handle('strip:stopAll', async (e) => {", '\n  });');
-  assert.match(b, /sentinelsFor\(\{ claudeHome: stopAllHome\(\{ seam: readSeams\(process\.env\)\.claudeHome, home: require\('os'\)\.homedir\(\) \}\) \}\)\[0\]/);
-  assert.match(b, /requestStopAll\(\{ file, confirm: \(\) => confirmStopAll\(file\), write: \(f, data\) => writeFileAtomic\(f, data\) \}\)/);
+  // The path, the question and the write are host/kill-switch.js runStopAll's, tested for real in test/kill-switch.test.js; main only supplies them.
+  assert.match(b, /runStopAll\(\{/);
+  assert.match(b, /seam: readSeams\(process\.env\)\.claudeHome,/);
+  assert.match(b, /home: os\.homedir\(\),/);
+  assert.match(b, /confirm: confirmStopAll,/);
+  assert.match(b, /write: \(f, data\) => writeFileAtomic\(f, data\),/);
+  assert.doesNotMatch(b, /require\('os'\)/);
+});
+
+test('hosts too old to watch the file are counted from this build and its sibling worktrees, and said in a dialog after the write', () => {
+  const b = block("ipcMain.handle('strip:stopAll', async (e) => {", '\n  });');
+  assert.match(b, /countUnstoppable: \(\) => countUnstoppable\(\{ installs: stopAllInstalls\(\), identitiesIn, isAlive: defaultIsAlive \}\)/);
+  assert.match(b, /r\.outcome === 'written' && r\.unstoppable > 0/);
+  assert.match(b, /describeUnstoppable\(r\.unstoppable\)/);
+  assert.match(MAIN, /function stopAllInstalls\(\) \{\n  try \{ return installsBeside\(INSTALL_DIR\); \} catch \{ return \[INSTALL_DIR\]; \}/);
 });
 
 test('a failed write is said in a dialog, not swallowed', () => {

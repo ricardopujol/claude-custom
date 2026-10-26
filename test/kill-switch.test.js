@@ -709,3 +709,102 @@ test('stopAllHome: ~/.claude from the home folder, whatever CLAUDE_CONFIG_DIR sa
   assert.strictEqual(ks.stopAllHome({ seam: '', home }), path.join(home, '.claude'));
   assert.strictEqual(ks.stopAllHome({}), null);
 });
+// --- main's whole STOP ALL path, for real (Miguel Y2) --------------------------------------------------------------------------
+
+const fs = require('fs');
+const os = require('os');
+const { writeFileAtomic } = require('../host/atomic-write');
+const { writeIdentity } = require('../host/host-identity');
+const { identitiesIn } = require('../host/background-hosts');
+
+function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'ks-stopall-')); }
+
+test('runStopAll: the question gets the real path, a yes writes ~/.claude/STOP-ALL through the atomic write, and nothing else is left behind', async () => {
+  const home = tmpDir();
+  try {
+    const asked = [];
+    const r = await ks.runStopAll({
+      home,
+      confirm: async (file) => { asked.push(file); return true; },
+      write: (f, data) => writeFileAtomic(f, data),
+      now: () => Date.UTC(2026, 9, 26, 1, 2, 3),
+    });
+    const file = path.join(home, '.claude', 'STOP-ALL');
+    assert.deepStrictEqual(asked, [file], 'asked once, with the path that will be written');
+    assert.strictEqual(r.outcome, 'written');
+    assert.strictEqual(r.file, file);
+    assert.match(fs.readFileSync(file, 'utf8'), /2026-10-26T01:02:03.*STOP ALL button/);
+    assert.deepStrictEqual(fs.readdirSync(path.join(home, '.claude')), ['STOP-ALL'], 'no temp file left beside it');
+    assert.strictEqual(ks.sentinelsFor({ claudeHome: path.join(home, '.claude') })[0], file, 'the very path every host polls');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('runStopAll: a no writes nothing and creates nothing; the probe seam stands in for the home', async () => {
+  const home = tmpDir();
+  const seam = tmpDir();
+  try {
+    const no = await ks.runStopAll({ home, confirm: async () => false, write: (f, d) => writeFileAtomic(f, d) });
+    assert.strictEqual(no.outcome, 'cancelled');
+    assert.strictEqual(fs.existsSync(path.join(home, '.claude')), false);
+    const yes = await ks.runStopAll({ home, seam, confirm: async () => true, write: (f, d) => writeFileAtomic(f, d) });
+    assert.strictEqual(yes.file, path.join(seam, 'STOP-ALL'));
+    assert.strictEqual(fs.existsSync(path.join(seam, 'STOP-ALL')), true);
+    assert.strictEqual(fs.existsSync(path.join(home, '.claude')), false, 'the real home is never touched while a seam is set');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(seam, { recursive: true, force: true }); }
+});
+
+test('runStopAll: no home and no seam fails up front, without asking', async () => {
+  const r = await ks.runStopAll({ confirm: async () => assert.fail('must not ask'), write: () => assert.fail('must not write') });
+  assert.strictEqual(r.outcome, 'failed');
+});
+
+test('runStopAll: the unstoppable count rides on a written result only; a throwing or odd counter is zero', async () => {
+  const base = { home: 'H', mkdir: () => {}, write: () => {} };
+  assert.strictEqual((await ks.runStopAll({ ...base, confirm: async () => true, countUnstoppable: () => 3 })).unstoppable, 3);
+  assert.strictEqual((await ks.runStopAll({ ...base, confirm: async () => false, countUnstoppable: () => 3 })).unstoppable, 0, 'cancelled: nothing was written');
+  assert.strictEqual((await ks.runStopAll({ ...base, confirm: async () => true, write: () => { throw new Error('EPERM'); }, countUnstoppable: () => 3 })).unstoppable, 0);
+  for (const odd of [() => { throw new Error('x'); }, () => NaN, () => -2, () => 1.5, () => 'many', () => null]) {
+    assert.strictEqual((await ks.runStopAll({ ...base, confirm: async () => true, countUnstoppable: odd })).unstoppable, 0);
+  }
+});
+
+// Dexter F3 (PR #210): a host from before this build doesn't watch the file. Its identity file has no killSwitch key.
+test('F3: a host publishes killSwitch in its identity file, so STOP ALL can tell the old ones from the new', () => {
+  const dir = tmpDir();
+  try {
+    writeIdentity({ dir, port: 7711, cwd: 'C:/proj', pid: 4242 });
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'hosts', '7711.json'), 'utf8')).killSwitch, true);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('F3: countUnstoppable counts live hosts without killSwitch, in every install, and not dead ones, new ones or unreadable ones', () => {
+  const a = tmpDir();
+  const b = tmpDir();
+  try {
+    const put = (install, port, doc) => {
+      fs.mkdirSync(path.join(install, '.harness', 'hosts'), { recursive: true });
+      fs.writeFileSync(path.join(install, '.harness', 'hosts', `${port}.json`), typeof doc === 'string' ? doc : JSON.stringify(doc));
+    };
+    writeIdentity({ dir: path.join(a, '.harness'), port: 7001, cwd: 'C:/p', pid: 101 });                // new build, alive
+    put(a, 7002, { port: 7002, cwd: 'C:/p', pid: 102, startedAt: 1 });                                   // old build, alive
+    put(a, 7003, { port: 7003, cwd: 'C:/p', pid: 103, startedAt: 1, side: true });                       // old side host, alive
+    put(a, 7004, { port: 7004, cwd: 'C:/p', pid: 104, startedAt: 1 });                                   // old build, dead
+    put(b, 7005, { port: 7005, cwd: 'C:/q', pid: 105, startedAt: 1 });                                   // a sibling worktree's old host
+    put(b, 7006, 'not json');
+    put(b, 7007, { port: 7007, cwd: 'C:/q', pid: 'x' });
+    const alive = new Set([101, 102, 103, 105]);
+    const n = ks.countUnstoppable({ installs: [a, b], identitiesIn, isAlive: (pid) => alive.has(pid) });
+    assert.strictEqual(n, 3);
+    assert.strictEqual(ks.countUnstoppable({ installs: [a], identitiesIn, isAlive: () => false }), 0);
+    assert.strictEqual(ks.countUnstoppable({ installs: [path.join(a, 'missing'), a], identitiesIn: (i) => { if (i !== a) throw new Error('unreadable'); return identitiesIn(i); }, isAlive: (pid) => alive.has(pid) }), 2, 'an install that cannot be listed is skipped');
+    assert.strictEqual(ks.countUnstoppable(), 0);
+  } finally { fs.rmSync(a, { recursive: true, force: true }); fs.rmSync(b, { recursive: true, force: true }); }
+});
+
+test('F3: describeUnstoppable is a plain count, singular and plural, and empty for none', () => {
+  assert.match(ks.describeUnstoppable(1), /^1 running session started on an older build/);
+  assert.match(ks.describeUnstoppable(4), /^4 running sessions started on an older build/);
+  assert.strictEqual(ks.describeUnstoppable(0), '');
+  assert.strictEqual(ks.describeUnstoppable(NaN), '');
+});
+

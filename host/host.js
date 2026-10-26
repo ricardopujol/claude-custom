@@ -3216,7 +3216,8 @@ wss.on('error', (err) => {
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
   stopPty(term, { killChildTree });
-  try { killSwitch.stop(); nightBudget.stop(); } catch {}
+  try { killSwitch.stop(); } catch { /* a plain cancel */ }
+  try { nightBudget.stop(); } catch { /* one stop's throw never skips the other (Miguel S1) */ }
   try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
   try { canvasControl.close(); } catch {}

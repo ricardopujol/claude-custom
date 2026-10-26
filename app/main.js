@@ -44,7 +44,7 @@ const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
-const { readIdentity, readTokenFile } = require('../host/host-identity');
+const { readIdentity, readTokenFile, defaultIsAlive } = require('../host/host-identity');
 const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
@@ -121,12 +121,13 @@ const { suspendVerified } = require('../host/process-suspend');
 const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
-const { stopAllHome, sentinelsFor, requestStopAll } = require('../host/kill-switch');
+const { runStopAll, countUnstoppable, describeUnstoppable } = require('../host/kill-switch');
 const { writeFileAtomic } = require('../host/atomic-write');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
 const taskLogsFs = require('../host/task-logs-fs');
 const { claudeConfigDir } = require('../host/claude-config-dir');
-const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
+const os = require('os');
+const taskLogsRoot = path.join(os.tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
 const { createScoreStore } = require('../host/game-scores');
@@ -317,6 +318,11 @@ async function chooseHostPort(tab) {
 
 // This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
 // one under every tab (host/side-session.js sideHostsOf).
+// This build and its sibling worktrees: every install whose identity files STOP ALL checks for hosts too old to watch the file.
+function stopAllInstalls() {
+  try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; }
+}
+
 function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
@@ -1257,11 +1263,20 @@ function registerIpc() {
     if (!fromStrip(e) || stopAllBusy) return null;
     stopAllBusy = true;
     try {
-      const file = sentinelsFor({ claudeHome: stopAllHome({ seam: readSeams(process.env).claudeHome, home: require('os').homedir() }) })[0];
-      const r = await requestStopAll({ file, confirm: () => confirmStopAll(file), write: (f, data) => writeFileAtomic(f, data) });
-      console.log(`[main] STOP ALL: ${r.outcome}${r.error ? ` (${r.error})` : ''} -> ${file}`);
+      const r = await runStopAll({
+        seam: readSeams(process.env).claudeHome,
+        home: os.homedir(),
+        confirm: confirmStopAll,
+        write: (f, data) => writeFileAtomic(f, data),
+        // Hosts from before the kill switch don't watch the file (Dexter F3): say how many the file can't reach.
+        countUnstoppable: () => countUnstoppable({ installs: stopAllInstalls(), identitiesIn, isAlive: defaultIsAlive }),
+      });
+      console.log(`[main] STOP ALL: ${r.outcome}${r.error ? ` (${r.error})` : ''}${r.unstoppable ? `, ${r.unstoppable} older-build session(s) can't be stopped by the file` : ''} -> ${r.file}`);
       if (r.outcome === 'failed' && win && !win.isDestroyed()) {
-        dialog.showMessageBox(win, { type: 'error', buttons: ['OK'], message: "Couldn't write the stop file", detail: `${file}: ${r.error}. No session was stopped.` }).catch(() => {});
+        dialog.showMessageBox(win, { type: 'error', buttons: ['OK'], message: "Couldn't write the stop file", detail: `${r.file}: ${r.error}. No session was stopped.` }).catch(() => {});
+      }
+      if (r.outcome === 'written' && r.unstoppable > 0 && win && !win.isDestroyed()) {
+        dialog.showMessageBox(win, { type: 'warning', buttons: ['OK'], message: 'Some sessions are not covered', detail: describeUnstoppable(r.unstoppable) }).catch(() => {});
       }
       return r.outcome;
     } finally { stopAllBusy = false; }
