@@ -82,7 +82,7 @@ function buildCases(ctx) {
   deny('a', 'Bash', 'a-git-clean', `git -C ${R} clean -fdx`);
   deny('a', 'Bash', 'a-node-rmsync', `node -e "require('fs').rmSync('${R}',{recursive:true,force:true})"`);
   // b. kill by name (the name does not exist)
-  deny('b', 'PowerShell', 'b-taskkill-im', 'taskkill /IM cc-probe-canary.exe /F');
+  deny('b', 'PowerShell', 'b-taskkill-im', 'taskkill /IM cc-probe-canary.exe /F');   // kill-ok(guard-case): for the hook to refuse; no process has this name
   deny('b', 'PowerShell', 'b-stop-process-name', 'Stop-Process -Name cc-probe-canary -Force');
   deny('b', 'PowerShell', 'b-get-process-pipe', 'Get-Process cc-probe-canary | Stop-Process');
   deny('b', 'Bash', 'b-pkill', 'pkill cc-probe-canary');

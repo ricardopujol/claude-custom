@@ -62,6 +62,12 @@ test('a retry never reuses a stale victim pid: every attempt of the taskkill cas
   assert.match(loop, /norm\(u\.command\) === norm\(cmd\)/);
 });
 
+test('kill-ok(guard-case) is used only on deny cases that name the canary process (the class excuses nothing else)', () => {
+  const lines = SRC.split(/\r?\n/).filter((l) => /kill-ok\(guard-case\)/.test(l));
+  assert.ok(lines.length >= 1);
+  for (const l of lines) assert.match(l, /^\s*deny\('b', '\w+', '[\w-]+', '[^']*cc-probe-canary[^']*'\);/, l.trim());
+});
+
 test('every URL points at localhost or a name that cannot resolve (.invalid); no real host, repo or token', () => {
   for (const c of CASES) {
     for (const m of c.cmd.matchAll(/\b[a-z][a-z0-9+.-]*:\/\/([^/\s:'"]+)/gi)) {

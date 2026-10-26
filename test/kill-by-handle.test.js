@@ -149,7 +149,7 @@ function blankComments(src) {
   return out;
 }
 
-const KILL_CLASSES = ['held-handle', 'table-row', 'definition', 'own-spawn'];   // held-handle: reached only while the child's handle is held; table-row: a row read from the process table with its command line this run; definition: the primitive's own definition or a re-export; own-spawn: a process this very test/probe spawned and still holds
+const KILL_CLASSES = ['held-handle', 'table-row', 'definition', 'own-spawn', 'guard-case'];   // held-handle: reached only while the child's handle is held; table-row: a row read from the process table with its command line this run; definition: the primitive's own definition or a re-export; own-spawn: a process this very test/probe spawned and still holds; guard-case: a command string handed to a guard hook under test to be REFUSED, never run by the probe itself, naming only a process that does not exist (verify/probe-shell-guard.js; its hygiene test pins where the class may appear)
 const KILL_OK = new RegExp('//.*\\bkill-ok\\((?:' + KILL_CLASSES.join('|') + ')\\):[ \\t]*\\S');
 
 function rawKills(source) {
