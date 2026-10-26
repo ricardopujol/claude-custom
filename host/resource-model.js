@@ -93,8 +93,12 @@ const cpuOf = (cpus, pid) => (cpus && cpus.has(pid) ? cpus.get(pid) : null);
  * The top 3 of `pids` (minus claude) by CPU, then memory, and what is left over. `canStop(pid)` is the Stop guard's own
  * verdict (host/resource-tree.js stopBlock) so a button is offered only where Stop can succeed; the default is the
  * image-name rule alone. An unknown memory figure is null ("—"), never 0.
+ *
+ * `pauseView` ({ pausedAt(pid, proc) -> since | null, canPause(pid) }, BACKLOG #19) marks the paused rows and says where Pause is
+ * offered. A paused process uses no CPU, so by the CPU order it would sink into "more" and a paused thing would silently leave the
+ * panel: paused rows come first and are all shown. Without a pauseView nothing is paused and Pause is not offered.
  */
-function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECTED(tree.roleOf(p)), mem = new Map()) {
+function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECTED(tree.roleOf(p)), mem = new Map(), pauseView = null) {
   const byPid = new Map(procs.map(p => [p.pid, p]));
   const rows = pids.filter(pid => pid !== claudePid && byPid.has(pid)).map((pid) => {
     const p = byPid.get(pid);
@@ -109,8 +113,16 @@ function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECT
     const bn = b.cpu === null ? 1 : 0;
     return (an - bn) || ((b.cpu || 0) - (a.cpu || 0)) || ((b.bytes || 0) - (a.bytes || 0)) || (a.pid - b.pid);
   });
-  const rest = rows.slice(CHILDREN_SHOWN);
-  const shown = rows.slice(0, CHILDREN_SHOWN).map(r => ({ ...r, canStop: canStop(r.pid, byPid.get(r.pid)) === true }));
+  const sinceOf = r => (pauseView ? pauseView.pausedAt(r.pid, byPid.get(r.pid)) : null);
+  const pausedRows = rows.filter(r => sinceOf(r) !== null);
+  const ordered = [...pausedRows, ...rows.filter(r => sinceOf(r) === null)];
+  const take = Math.max(CHILDREN_SHOWN, pausedRows.length);
+  const shown = ordered.slice(0, take).map((r) => {
+    const since = sinceOf(r);
+    const stoppable = canStop(r.pid, byPid.get(r.pid)) === true;
+    return { ...r, canStop: stoppable, paused: since === null ? null : { since }, canPause: stoppable && since === null && !!pauseView && pauseView.canPause(r.pid) === true };
+  });
+  const rest = ordered.slice(take);
   return {
     children: shown,
     more: { count: rest.length, underOnePct: rest.every(r => typeof r.cpu === 'number' && r.cpu < 1) },
@@ -119,7 +131,7 @@ function childrenOf(procs, pids, cpus, claudePid, canStop = (pid, p) => !PROTECT
 
 const PARTS = [['main', 'Electron main'], ['renderers', 'Renderers'], ['hosts', 'Session hosts']];
 
-function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], installDirs = [], ownPid, labelOf = basename }) {
+function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], installDirs = [], ownPid, labelOf = basename, paused = [], pauseOffered = true }) {
   const procs = next.procs;
   const mem = new Map([...next.perf].filter(([, v]) => typeof v.ws === 'number').map(([pid, v]) => [pid, v.ws]));
   const cpus = sample.cpuPercents(prev, next, cores);
@@ -132,11 +144,24 @@ function buildModel({ sample: next, prev = null, cores, tabs = [], hosts = [], i
   });
   const pidsOf = id => a.buckets.get(id) || [];
 
+  // Paused (BACKLOG #19): the entries host/pause-state.js holds. A process is "the paused one" by pid AND start; it is held
+  // (suspended with it) when it is anywhere in an entry's set. Pause is not offered where it, or anything below it, is held.
+  const byPidAll = new Map(procs.map(p => [p.pid, p]));
+  const pausedList = Array.isArray(paused) ? paused : [];
+  const sameProc = (pid, start) => { const q = byPidAll.get(pid); return !!q && tree.sameStart(start, q.start); };
+  const pauseView = {
+    pausedAt(pid) {
+      const e = pausedList.find(x => x && x.pid === pid && sameProc(pid, x.start));
+      return e && typeof e.since === 'number' ? e.since : null;
+    },
+    canPause: pid => pauseOffered === true && !tree.killSet(procs, pid).some(k => pausedList.some(e => e && Array.isArray(e.pids) && e.pids.some(x => x.pid === k.pid && sameProc(k.pid, x.start)))),
+  };
+
   // Stop is offered only on a tab's own session, and only where the guard would allow it (the same predicate).
   const sessionRow = (s, key, label, stoppable) => {
     const pids = pidsOf(`session:${s.hostPid}`);
     const canStop = stoppable ? (pid) => tree.stopBlock(procs, pid, [s.hostPid]) === null : () => false;
-    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid, canStop, mem);
+    const { children, more } = childrenOf(procs, pids, cpus, s.claudePid, canStop, mem, pauseView);
     const claude = s.claudePid === null ? null
       : { pid: s.claudePid, cpu: cpuOf(cpus, s.claudePid), bytes: sumBytes([s.claudePid], mem) };
     return { key, label, hostPid: s.hostPid, ...figures(pids, cpus, mem), claude, children, more };

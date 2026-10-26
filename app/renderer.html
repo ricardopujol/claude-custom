@@ -1662,6 +1662,22 @@
     /* the square stays small (Ricardo's pick) but the target is 24 x 24 (WCAG 2.2 AA 2.5.8), and a keyboard user sees where they are */
     .res-stop::after { content: ''; position: absolute; inset: -5px; }
     .res-stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    /* Pause / Resume (#19): a small button like Stop's, before it. A paused row carries "paused HH:MM" on a line of its own, as its LAST child, so the figures keep their places. */
+    .res-pause, .res-stop-gap { flex: none; width: 16px; height: 16px; box-sizing: border-box; }
+    .res-pause { position: relative; font: inherit; font-size: 8px; line-height: 1; padding: 0; cursor: pointer; background: transparent; color: var(--dim);
+      border: 1px solid var(--border); border-radius: 3px; }
+    .res-pause::after { content: ''; position: absolute; inset: -5px; }
+    .res-pause:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .res-pause:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    .res-pause:disabled { opacity: 0.5; cursor: default; }
+    .res-paused-row { flex-wrap: wrap; }
+    .res-paused { flex: 0 0 100%; font-size: 10px; color: var(--accent); }
+    /* An agent card's Pause / Resume (#19) */
+    .agent-pause { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+    .agent-pause-btn { font: inherit; font-size: 10.5px; padding: 1px 8px; cursor: pointer; background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; }
+    .agent-pause-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .agent-pause-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .agent-paused-badge { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
     .res-confirm button { font: inherit; font-size: 10.5px; padding: 1px 7px; cursor: pointer; background: transparent; color: var(--text);
       border: 1px solid var(--border); border-radius: 4px; }
     .res-stop:hover, .res-confirm button:hover { border-color: var(--bad); color: var(--bad); }
@@ -2464,6 +2480,7 @@
   <script src="./projects-display.js"></script>
   <script src="./style-display.js"></script>
   <script src="./agent-card-display.js"></script>
+  <script src="./agent-pause-display.js"></script>
   <script src="./agent-state-display.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>

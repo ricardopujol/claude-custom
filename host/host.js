@@ -31,6 +31,7 @@ const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
+const { resolvePortraitsDir } = require('./portraits-dir');
 const { userGlobalDir, migrationCandidates, adoptOnStart } = require('./global-portrait-store');
 const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portrait-upload');
 const { watchGlobalDir } = require('./global-watch');
@@ -414,9 +415,7 @@ const REGISTRY_DIR = process.env.CLAUDE_CUSTOM_REGISTRY || path.join(__dirname, 
 // Portraits live with the agents, in the agent-creator repo, not here: they are
 // a property of the agent roster, which more than one project consumes. The
 // forge writes there and the harness reads from there.
-const PORTRAITS_DIR =
-  process.env.CLAUDE_CUSTOM_PORTRAITS ||
-  'C:\\Users\\ricar\\VibeCode\\agent-creator\\portraits';
+const portraitsDir = () => resolvePortraitsDir();
 // FF7's other two tiers. Both are PER-INSTALL: HARNESS_DIR sits beside this
 // file, not in the project folder, so an upload made in one project shows in
 // every project -- an agent is the same character everywhere (Ricardo,
@@ -510,7 +509,7 @@ const askService = createAskService({
   repoFor: createRepoFactory({ index: askIndex, ollama: askOllama, claude: askClaude }),
   // the explainer's picture is an agent's picture: uploaded through `portrait set`, chosen from the forge's generated agents
   portraitOf: (agent, state) => portraitOf(agent, state),
-  forgeAgents: () => fs.readdirSync(PORTRAITS_DIR, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_')).map(d => d.name).sort(),
+  forgeAgents: () => fs.readdirSync(portraitsDir(), { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('_')).map(d => d.name).sort(),
 });
 const cooldowns = createCooldowns({ store });
 const loadoutControl = createLoadoutControl({ store });
@@ -627,7 +626,7 @@ console.log('[host] provider      :', provider.label, provider.metered ? '(meter
 // tab's call sites once passed only portraitsDir, so an upload showed there as
 // "no picture yet" (Dexter F2, PR #35; pinned by test/portrait-upload.test.js).
 const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
-  portraitsDir: PORTRAITS_DIR, uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR, baseState,
+  portraitsDir: portraitsDir(), uploadsDir: UPLOADS_DIR, shippedDir: SHIPPED_DIR, globalDir: GLOBAL_PORTRAIT_DIR, baseState,
 });
 // `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
 // nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
@@ -1411,7 +1410,10 @@ function seatPayload(seats) {
 // down, and reading it here at startup is a TDZ ReferenceError that stops the
 // host before it serves anything. The closure reads it at first send, by which
 // point the whole module has run.
-const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl(msg));
+// `agents` rides on every processes message: the live runs' names and ids, so an agent card's Pause can say which task it means and tell OUR
+// TaskStop from another (#19).
+const liveAgents = () => mood.invocations().filter(i => typeof i.agentId === 'string' && i.agentId && typeof i.name === 'string' && i.name).map(i => ({ name: i.name, agentId: i.agentId }));
+const processesBroadcast = createProcessesBroadcast((msg) => broadcastControl({ ...msg, agents: liveAgents() }));
 
 // Backlog #52: is this session in a /bedtime night, and when does it wake next? From the loop's own ScheduleWakeup
 // calls (host/bedtime-state.js). The PR count is asked of gh in the project folder at the start and at each wake.

@@ -1715,7 +1715,8 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'reduced-motion':
         if (typeof cmd.on !== 'boolean') return { ok: false, error: 'reduced-motion needs true or false' };
         return await api.reducedMotion(cmd.on);
-      case 'quit': return await api.quit();
+      // `graceful: true` quits the way closing the window does (app.quit(): will-quit runs); without it the probe's hard exit.
+      case 'quit': return await api.quit(cmd.graceful === true);
       // The strip's ▾ menu, without a native popup nobody can click.
       case 'background': return await api.background();
       case 'background-stop':
