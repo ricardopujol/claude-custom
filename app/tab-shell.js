@@ -125,6 +125,8 @@ const SIDE_ENDED_TEXT = "This side session has ended. Reopen it from this tab's 
 const SHELL_ENDED_TEXT = "This shell has exited. Restart it from this tab's menu.";
 
 // The branch tab a side or shell tab belongs to, or null for any other key.
+// What a companion tab is called in a sentence; null for any other key, so a third kind has to be named here.
+const companionNounOf = (k) => (isSideKey(k) ? 'side session' : isShellKey(k) ? 'shell' : null);
 const companionParentOf = (k) => (isSideKey(k) ? parentKeyOf(k) : isShellKey(k) ? parentKeyOfShell(k) : null);
 const isCompanionEntry = (e) => !!e && (e.side === true || e.shell === true);
 
@@ -609,7 +611,7 @@ function createShell(deps) {
           if (!(await hosts.wait(port))) {
             tab.pending = { port, token };
             // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
-            if (tab.closed && isCompanionEntry(tab)) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
+            if (tab.closed && isCompanionEntry(tab)) tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
@@ -622,7 +624,7 @@ function createShell(deps) {
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
           // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
-          if (spawned || isCompanionEntry(tab)) hosts.control({ port, token, msg: { type: 'stop' } }).catch(() => {});
+          if (spawned || isCompanionEntry(tab)) tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
           return;
         }
         present(tab, port, token);
@@ -1551,6 +1553,13 @@ function createShell(deps) {
     publish();
   }
 
+  /** A host's answer to a stop as the close reports it: why it may still be running, or null. Never rejects. */
+  function stopOutcome(sent) {
+    return Promise.resolve(sent).then(
+      (r) => (r && r.ok === true ? null : ((r && r.error) || 'no answer')),
+      (err) => (err && err.message) || String(err));
+  }
+
   /**
    * End a side or shell tab's host and wait for its answer: why it may still be running, or null. Closed first, so a start still in
    * its port walk gives up before it spawns; then the start is let settle, so what it made or found is on the record when it is
@@ -1561,14 +1570,12 @@ function createShell(deps) {
   async function stopCompanion(t) {
     t.closed = true;
     if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
+    // A start that gave up because this tab closed has already sent the stop to the host it made or found: wait for THAT one and
+    // report how it went (Dexter F3, PR #214), rather than saying closed about a stop nobody looked at.
+    if (t.closeStop) return await t.closeStop;
     const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || null);
     if (!target) return null;
-    try {
-      const r = await hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } });
-      return r && r.ok === true ? null : ((r && r.error) || 'no answer');
-    } catch (err) {
-      return (err && err.message) || String(err);
-    }
+    return stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
   }
 
   /**
@@ -1579,16 +1586,25 @@ function createShell(deps) {
    */
   async function closeCompanionOnce(key) {
     const t = tabs.get(key);
-    if (!t || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    const noun = companionNounOf(key);
+    if (!t || noun === null || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    // A side tab's code reader is a full editor (Dexter F1, PR #214): an unsaved edit in it asks, exactly as a branch tab's close
+    // does (the question names the file). Nothing unsaved, nothing asked. A shell has no reader.
+    if (isSideKey(key) && readerUnsavedOf(t)) {
+      let yes = false;
+      try { yes = (await ui.confirmClose(t)) === true; } catch { yes = false; }
+      if (!yes) return { ok: false, cancelled: true };
+      if (tabs.get(key) !== t) return { ok: true };     // gone while the dialog was up
+    }
     const failure = await stopCompanion(t);
-    if (!tabs.has(key)) return { ok: true };     // gone meanwhile: its branch tab closed, or its folder was removed
+    if (tabs.get(key) !== t) return { ok: true };     // gone meanwhile (its branch tab closed, or its folder was removed), or the key is a newer tab's now (Dexter F4)
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
     const parentKey = companionParentOf(key);
     if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
     else publish();
     if (failure !== null) {
-      closeNotice = `Couldn't end the ${isShellKey(key) ? 'shell' : 'side session'} in ${t.branch}: ${failure}. It may still be running.`;
+      closeNotice = `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`;
       log(`[shell] ${key}: ${closeNotice}`);
       publish();
       return { ok: true, stopError: failure };

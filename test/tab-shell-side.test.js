@@ -40,7 +40,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
   const h = {
     running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
     confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
-    order: [], holdSide: null, removeHold: null, sideWalks: 0, sideHostReads: 0, controlOk: true,
+    order: [], holdSide: null, holdWait: null, removeHold: null, sideWalks: 0, sideHostReads: 0, controlOk: true,
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -70,7 +70,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
         h.spawns.push({ key: tab.key, port, token, side: tab.side === true, cwd: tab.cwd });
         h.running[port] = { cwd: tab.cwd, side: tab.side === true };
       },
-      wait: async () => true,
+      wait: async () => { if (h.holdWait) await h.holdWait; return true; },
       tokenFor: tokenOf,
       tokenFile: tokenOf,
       newToken: () => `fresh-${++h.tokens}`,
@@ -323,6 +323,101 @@ test('a closed side session is not offered back by the + menu\'s Reopen', async 
   await h.shell.openSide(key('feat-a'));
   await h.shell.closeTab(skey('feat-a'));
   assert.deepStrictEqual(h.shell.plusMenu().reopen, []);
+});
+
+// --- review of PR #214 (Dexter F1, F3, F4) ----------------------------------------------------------------------------
+
+const UNSAVED_SIDE = { safety: { readerUnsaved: (tab) => (tab.key === skey('feat-a') ? 'README.md' : null) } };
+
+test('Dexter F1: a side tab whose code reader holds an unsaved edit asks before it closes, and Cancel keeps the tab and its host', async () => {
+  const h = await opened(UNSAVED_SIDE);
+  await h.shell.openSide(key('feat-a'));
+  h.confirm = false;
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.cancelled, true);
+  assert.strictEqual(h.confirms.length, 1, 'the branch tab\'s own unsaved-file question, asked once');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+  assert.ok(h.running[7702], 'the side host is still running');
+  assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop'), []);
+  assert.ok(!h.viewsGone.includes(skey('feat-a')), 'its page, with the edit in it, stays');
+});
+
+test('Dexter F1: answering yes closes it; a Ctrl+click close (ifSafe) asks the same question', async () => {
+  for (const opts of [undefined, { ifSafe: true }]) {
+    const h = await opened(UNSAVED_SIDE);
+    await h.shell.openSide(key('feat-a'));
+    const r = await h.shell.closeTab(skey('feat-a'), opts);
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(h.confirms.length, 1, JSON.stringify(opts));
+    assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+    assert.deepStrictEqual(h.controls.filter(c => c.msg.type === 'stop').map(c => c.port), [7702]);
+  }
+});
+
+test('Dexter F1: with nothing unsaved a side tab still closes without asking, and the branch tab\'s unsaved edit is not its business', async () => {
+  const h = await opened({ safety: { readerUnsaved: (tab) => (tab.key === key('feat-a') ? 'README.md' : null) } });
+  await h.shell.openSide(key('feat-a'));
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
+  assert.deepStrictEqual(h.confirms, []);
+});
+
+test('Dexter F3: a close while the side host is still starting waits for the stop of the host the start made, and says when it failed', async () => {
+  const h = await opened();
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));
+  await flush();
+  h.controlOk = false;
+  let settled = false;
+  const closing = h.shell.closeTab(skey('feat-a')).then((r) => { settled = true; return r; });
+  await flush();
+  release();
+  await opening;
+  const r = await closing;
+  assert.strictEqual(settled, true);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopError, 'no answer', 'the failed stop is reported, not dropped');
+  assert.strictEqual(h.controls.filter(c => c.msg.type === 'stop').length, 1, 'one stop, not one from the start and another from the close');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the side session in feat\/a · side: no answer\. It may still be running\./);
+});
+
+test('Dexter F3: when that stop works, the host is gone before the close reports, so a reopen starts fresh instead of attaching to it', async () => {
+  const h = await opened();
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));
+  await flush();
+  const closing = h.shell.closeTab(skey('feat-a'));
+  await flush();
+  release();
+  await opening;
+  const r = await closing;
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.stopError, undefined);
+  assert.strictEqual(h.running[7702], undefined, 'the dying host is already gone');
+  h.holdWait = null;
+  const again = await h.shell.openSide(key('feat-a'));
+  assert.strictEqual(again.ok, true);
+  assert.strictEqual(h.spawns.length, 2, 'a second host was spawned, none attached');
+  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', SIDE_A, 'feat/b']);
+});
+
+test('Dexter F4: a newer side tab opened under the same key while the close waited is not dropped by it', async () => {
+  const h = await opened();
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  const opening = h.shell.openSide(key('feat-a'));
+  await flush();
+  const closing = h.shell.closeTab(skey('feat-a'));
+  await flush();
+  const fresh = { key: skey('feat-a'), closed: false, started: false, branch: SIDE_A };
+  h.shell._tabs.set(skey('feat-a'), fresh);       // the old record's key, taken by a tab opened after the close began
+  release();
+  await opening;
+  await closing;
+  assert.strictEqual(h.shell._tabs.get(skey('feat-a')), fresh, 'the newer record stays');
 });
 
 // --- it ends with its branch tab -------------------------------------------------------------------------------
