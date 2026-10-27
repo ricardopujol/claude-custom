@@ -27,6 +27,7 @@ const { createTerminalState } = require('./terminal-state');
 const { createProgramStatusHost, windowAttachedAmong } = require('./program-status-host');
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
+const { runShutdown } = require('./bounded-shutdown');
 const { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
@@ -3277,24 +3278,34 @@ wss.on('error', (err) => {
 // case: a bind that failed, where this process never owned the port and the
 // file belongs to whoever did. Deleting it there would make the LIVE host
 // unidentifiable -- Finding 1 from the other direction.
+//
+// BACKLOG #121: what other processes wait on (the session lock, the quota lease, the identity file) is freed FIRST, and the
+// teardown that can block (the pty: a taskkill and a native kill) runs under a watchdog process that ends this host after
+// SHUTDOWN_BOUND_MS whatever the teardown is doing (host/bounded-shutdown.js).
 function shutdown({ removeIdentity = true } = {}) {
-  stopPty(term, { killChildTree });
-  try { killSwitch.stop(); } catch { /* a plain cancel */ }
-  try { nightBudget.stop(); } catch { /* one stop's throw never skips the other (Miguel S1) */ }
-  try { modServer.close(); } catch {}
-  try { repoService.close(); } catch {}
-  try { changesNotifier.close(); } catch {}
-  try { canvasControl.close(); } catch {}
-  try { schedulesControl.end(); } catch {}
-  releaseSessionLock(SESSION_LOCK, lockOwner);
-  killTree(healthChild);
-  if (hookBridge) { hookBridge.close().catch(() => {}); }
-  // Best effort. The reader already treats a leftover file as absent once the
-  // pid is gone, so this is tidiness rather than correctness -- which is why it
-  // is safe to swallow, and why the pid check exists instead of relying on it.
-  if (removeIdentity) {
-    try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch {}
-  }
+  runShutdown({
+    logFile: path.join(HARNESS_DIR, 'host.log'),
+    release: [
+      () => releaseSessionLock(SESSION_LOCK, lockOwner),
+      () => hostQuota.release(),
+      // Best effort. The reader already treats a leftover file as absent once the
+      // pid is gone, so this is tidiness rather than correctness -- which is why it
+      // is safe to swallow, and why the pid check exists instead of relying on it.
+      () => { if (removeIdentity) fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); },
+    ],
+    teardown: [
+      () => stopPty(term, { killChildTree }),
+      () => killSwitch.stop(),   // a plain cancel
+      () => nightBudget.stop(),   // one stop's throw never skips the other (Miguel S1)
+      () => modServer.close(),
+      () => repoService.close(),
+      () => changesNotifier.close(),
+      () => canvasControl.close(),
+      () => schedulesControl.end(),
+      () => killTree(healthChild),
+      () => { if (hookBridge) hookBridge.close().catch(() => {}); },
+    ],
+  });
 }
 
 // SIGINT is not how this host usually dies: main.js spawns it DETACHED so it

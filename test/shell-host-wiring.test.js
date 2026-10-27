@@ -100,8 +100,13 @@ test('host.js: a stop ends the shell host the way it ends any host: the pty tree
   const stop = HOST.slice(HOST.indexOf("if (msg.type === 'stop') {"), HOST.indexOf("if (msg.type === 'raise') {"));
   assert.match(stop, /shutdown\(\);\s*process\.exit\(0\);/);
   const down = HOST.slice(HOST.indexOf('function shutdown({ removeIdentity = true } = {}) {'), HOST.indexOf("process.on('SIGINT'"));
-  assert.ok(down.includes('stopPty(term, { killChildTree });'), 'host/kill-tree.js by pid, proven by start time');
-  assert.match(down, /if \(removeIdentity\) \{\s*try \{ fs\.unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\); \} catch \{\}/);
+  assert.ok(down.includes('stopPty(term, { killChildTree })'), 'host/kill-tree.js by pid, proven by start time');
+  assert.match(down, /if \(removeIdentity\) fs\.unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\)/);
+  // #121: what others wait on is freed before the pty teardown, which runs under the watchdog.
+  assert.ok(down.indexOf('release: [') < down.indexOf('teardown: ['), 'release steps come first');
+  assert.ok(down.indexOf('releaseSessionLock(') < down.indexOf('teardown: ['));
+  assert.ok(down.indexOf('hostQuota.release()') < down.indexOf('teardown: ['));
+  assert.ok(down.indexOf('fs.unlinkSync(fileFor(') < down.indexOf('teardown: ['));
   assert.doesNotMatch(down, /SHELL/, 'nothing in the teardown is skipped for a shell host');
   assert.ok(HOST.includes('trackExit(term);'), 'the pty is tracked at spawn, so its tree can be killed by pid');
 });

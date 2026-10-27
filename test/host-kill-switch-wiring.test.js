@@ -103,8 +103,8 @@ test('the hello carries the stop, so a window that attaches later still learns w
 
 test('shutdown stops the watch and the budget', () => {
   const b = block('function shutdown({ removeIdentity = true } = {}) {', '\n}\n');
-  assert.match(b, /try \{ killSwitch\.stop\(\); \} catch/);
-  assert.match(b, /try \{ nightBudget\.stop\(\); \} catch/, 'its own try: one stop\'s throw never skips the other');
+  assert.match(b, /\(\) => killSwitch\.stop\(\)/);
+  assert.match(b, /\(\) => nightBudget\.stop\(\)/, 'its own step: runShutdown isolates each, so one stop\'s throw never skips the other');
 });
 
 test('sayInTab writes into the headless screen (replayed on attach) and to every open window', () => {
