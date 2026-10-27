@@ -28,6 +28,10 @@
  *                                  explainer's questions answered and places opened). Install-wide, one explainer per
  *                                  person. A count can't be recomputed, so like the medals it opts in to withLock and
  *                                  readState: a file it could not read is never written over.
+ *   .harness/state/schedules.json  host/schedules-control.js, STORE_KEY 'schedules' (BACKLOG #119 A7, the Schedules panel: every
+ *                                  session's wakeups, loops, bedtime night and cron jobs). Install-wide, one entry per host (keyed by
+ *                                  its port), each host writes only its own inside withLock; regenerable, so a corrupt file is
+ *                                  replaced, while a file that could not be read just now is never written over.
  *   .harness/state/bubbles.json    host/bubbles.js, STORE_KEY 'bubbles' (BACKLOG #80: the speech
  *                                  bubbles' on/off switch). Install-wide, regenerable.
  *

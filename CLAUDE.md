@@ -38,3 +38,10 @@ These cost real time. Do not rediscover them.
 Probes live in `verify/` and are re-runnable. They exist because this project's rule is that a claim
 is measured, not assumed — `verify/probe-renderer-origin.js` and `verify/probe-quota-header.js` both
 record the traps above in their own headers.
+
+## Environment switches
+
+- `CLAUDE_CUSTOM_CONPTY=builtin` runs the session's pty on the OS's ConPTY instead of node-pty's bundled one (`host/conpty-choice.js`).
+  The bundled one is what lets the CLI's OSC 7501 status protocol work (conhost answers DA1 itself and drops the host's reply); the OS's
+  keeps every session as it was before and turns the status dots back into hook-driven ones. A missing bundled install falls back to
+  the OS's on its own, with a line in host.log and the diagnostics pane.

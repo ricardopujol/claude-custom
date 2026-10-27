@@ -29,6 +29,9 @@ const TABS = [
   // The Files tab (#45) took the Map's slot. The id stays `fog`: saved layouts and the dock tests name it, and a
   // renamed id would drop it from every stored layout.
   { id: 'fog', label: 'Files', title: 'Browse this worktree and read its files; what Claude touched is marked' },
+  // BACKLOG #119 A3: the worktree's changeset (working tree, or the whole lane against develop), side by side in the reader, with a comment on a line
+  // typed into the prompt. An ordinary module like the rest; it asks the host only while it is showing.
+  { id: 'changes', label: 'Changes', title: "This worktree's changed files, side by side with what they were, and a comment on a line goes into your prompt" },
   // Layout pass L3 (documentation/PLAN_GIT_TREE.md): every branch on one dial.
   { id: 'git', label: 'Git', title: 'Every branch this project has grown' },
   { id: 'models', label: 'Models', title: 'Browse every model OpenRouter offers, and seat the council' },
@@ -40,16 +43,25 @@ const TABS = [
   // BACKLOG #63: CPU and memory per session, per project and in total. An ordinary module like the rest: it docks, moves
   // and hides through the same layout, and it samples only while it is showing (app/resources-service.js).
   { id: 'resources', label: 'Resources', title: 'CPU and memory: which session is using the machine' },
+  // BACKLOG #119 A7: what will run, when, from which session: wakeups, loops, bedtime nights and cron jobs of every session in one list. An
+  // ordinary module like the rest: it docks, moves and hides through the same layout. Read-only; a click selects the session's tab.
+  { id: 'schedules', label: 'Schedules', title: 'What will run, when, and from which session: wakeups, loops, bedtime nights and cron jobs' },
   // BACKLOG #71: a panel the running Claude builds itself, a sandboxed page per tab. An ordinary module like the rest, with
   // one difference: it starts hidden (app/dock-tree.js HIDDEN_UNTIL_USED) and docks itself on the right the first time
   // Claude renders into it, which only happens when it is asked to.
   { id: 'canvas', label: "Claude's panel", title: 'A panel Claude builds for this session: a clock, a list of artifacts, a button that asks something' },
+  // BACKLOG #119 A4: the page of a dev server this worktree runs, in a sandboxed view that only reaches this computer. An ordinary module
+  // like the rest; it docks at its own width (app/dock-tree.js OWN_ROW_SIZE).
+  { id: 'preview', label: 'Preview', title: 'The page of a dev server running in this worktree: only localhost opens here' },
   // BACKLOG #33: ask about this repo, or have the code you selected explained, by a local model (or Haiku / Sonnet on your plan).
   // An ordinary module like the rest: it docks, moves and hides through the same layout.
   { id: 'ask', label: 'Ask', title: 'Ask where something is in this repo, or have selected code explained: a local model answers, and every place is a link' },
   // BACKLOG #41: three wait games (app/games-display.js). An ordinary module like the rest. It pauses itself and hands the keyboard
   // back to the terminal whenever Claude needs Ricardo or finishes, and it draws only while it is on screen.
   { id: 'games', label: 'Games', title: 'Stack the PRs, Merge 2048 and Pipeline: something to do while Claude works. It stops when Claude needs you' },
+  // BACKLOG #120: this project's sessions and agents as a live graph, with particles flowing along the edges of whatever is working. An
+  // ordinary module like the rest. It draws only while it is on screen, and animates only while the window is focused and not lean.
+  { id: 'map', label: 'Map', title: 'This project\'s sessions and agents as a live graph: particles flow along the edges of whatever is working' },
 ];
 
 // Agents, because it is the panel that changes on its own: the roster reacts to

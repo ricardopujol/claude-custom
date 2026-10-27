@@ -461,7 +461,7 @@ test('every exit that follows shutdown() is synchronous: shutdown is a plain fun
   const body = code.slice(defAt, code.indexOf('\n}', defAt));
   assert.doesNotMatch(body, /\bawait\b|\.then\s*\(|setTimeout|setImmediate|nextTick|new Promise/, 'nothing deferred inside shutdown');
   const calls = [...code.matchAll(/(?<!function\s)\bshutdown\s*\(([^)]*)\)/g)];
-  assert.strictEqual(calls.length, 7, 'the pin sees exactly the 7 call sites (update with a new quit path, and keep it synchronous)');
+  assert.strictEqual(calls.length, 8, 'the pin sees exactly the 8 call sites (update with a new quit path, and keep it synchronous; the 8th: a host the kill switch stopped, with no window)');
   for (const m of calls) {
     assert.match(code.slice(m.index + m[0].length), /^\s*;\s*process\.exit\(\s*\d\s*\)/, `shutdown(${m[1]}) at offset ${m.index} is followed directly by process.exit()`);
   }

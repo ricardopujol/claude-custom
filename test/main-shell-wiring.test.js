@@ -150,7 +150,7 @@ test('the per-window constants are gone: the port, token and cwd belong to a tab
 test('a host is spawned through hostEnv, never an inline environment', () => {
   const at = MAIN.indexOf('function spawnHost(');
   const body = topLevelBody(at);
-  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true \}\)/);
+  assert.match(body, /env: hostEnv\(process\.env, \{ cwd: tab\.cwd, port, token, project: HOST_PROJECT, side: tab\.side === true, shell: tab\.shell === true \}\)/);
   assert.doesNotMatch(body, /\.\.\.process\.env/);
   assert.doesNotMatch(body, /ELECTRON_RUN_AS_NODE/);
   assert.match(body, /detached: true/);
@@ -240,10 +240,11 @@ test('there is NO application menu bar: it is nulled once, before the window, an
 
 test('override and close live in the right-click popup only', () => {
   const at = MAIN.indexOf("ipcMain.on('strip:contextMenu'");
-  const body = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
+  const handler = MAIN.slice(at, MAIN.indexOf("ipcMain.on('strip:plus'", at));
+  const body = MAIN.slice(MAIN.indexOf('function tabMenuTemplate('), MAIN.indexOf('let win = null;'));
   assert.match(body, /label: 'Allow a second session here'/);
   assert.match(body, /label: 'Close tab'/);
-  assert.match(body, /\.popup\(/);
+  assert.match(handler, /Menu\.buildFromTemplate\(tabMenuTemplate\(key\)\)\.popup\(\{ window: win \}\);/, 'the popup is that template');
 });
 
 test('the shortcuts are registered on the strip AND on every tab view, and only shortcutFor decides', () => {
@@ -262,6 +263,17 @@ test('the raise flashes the frame as well as focusing (Windows may refuse to han
   assert.match(body, /flashFrame\(true\)/);
 });
 
+test('setCue drives the taskbar flash from cueFlash, and focus stops it (BACKLOG #117)', () => {
+  const at = MAIN.indexOf('function setCue(on)');
+  const body = MAIN.slice(at, at + 400);
+  assert.match(body, /cueFlash\(cueOn, !!on, focused\)/);
+  assert.match(body, /win\.flashFrame\(flash\)/);
+  assert.ok(body.indexOf('cueFlash(') < body.indexOf('cueOn = !!on'), 'the previous state must be read before it is overwritten');
+  assert.match(MAIN, /require\('\.\/cue-flash'\)/);
+  const f = MAIN.indexOf("win.on('focus'");
+  assert.match(MAIN.slice(f, f + 300), /flashFrame\(false\)/);
+});
+
 test('the screenshot path captures the SELECTED view and the strip beside it', () => {
   assert.match(MAIN, /capture\(sel\.webContents, outFile\)/);
   assert.match(MAIN, /capture\(win\.webContents, stripFileFor\(outFile\)\)/);
@@ -274,7 +286,9 @@ test('the notification click goes to the tab that raised it', () => {
 
 test('each tab view is shown only when selected and laid out below the strip', () => {
   assert.match(MAIN, /const STRIP_HEIGHT = 34/);
-  assert.match(MAIN, /tab\.view\.setVisible\(tab\.key === snapshot\.selectedKey\)/);
+  // ...and not while the branch form's issue list is open (#119 A6): the strip page draws it over that area.
+  assert.match(MAIN, /const shows = tab\.key === snapshot\.selectedKey && !pickerOpen;\s*tab\.view\.setVisible\(shows\)/);
+  assert.match(MAIN, /const pickerOpen = !!\(snapshot\.create && snapshot\.create\.picker === true\)/);
   // Below the strip -- unless focus mode lifts it over the strip (layout pass L1, #1),
   // which a frameless window doesn't (Dexter L2 #3; the rule is viewTop's, unit-tested).
   assert.match(MAIN, /const top = viewTop\(\{ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT \}\);/);
@@ -287,7 +301,7 @@ test('every tab view is created with context isolation on and node integration o
   assert.match(body, /contextIsolation: true/);
   assert.match(body, /nodeIntegration: false/);
   assert.match(body, /preload: path\.join\(__dirname, 'preload\.js'\)/);
-  const win = MAIN.slice(MAIN.indexOf('function createWindow('), MAIN.indexOf('function createWindow(') + 700);
+  const win = MAIN.slice(MAIN.indexOf('function createWindow('), MAIN.indexOf('function createWindow(') + 900);
   assert.match(win, /preload: path\.join\(__dirname, 'preload-strip\.js'\)/);
   assert.match(win, /contextIsolation: true/);
   assert.match(win, /nodeIntegration: false/);
@@ -598,7 +612,7 @@ test('#37: shell.openPath and shell.showItemInFolder are reached only through ap
 // --- #40 tab marks ---------------------------------------------------------------
 
 test('the tab menu offers Mark first, for the branch the tab is on NOW (Dexter #87 F1)', () => {
-  assert.match(MAIN, /Menu\.buildFromTemplate\(\[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
+  assert.match(MAIN, /return \[\s*markSubmenu\(tabShell\.branchOf\(key\)\),/);
 });
 
 test('the shell reads marks from the loaded store; the window prunes once, in tabs mode', () => {

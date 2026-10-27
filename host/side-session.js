@@ -45,6 +45,7 @@ const SIDE_REVIEWED_TOOLS = Object.freeze([
 ]);
 
 const { samePath } = require('./project-layout');
+const { isCompanionKey } = require('./shell-tab');
 
 const nonEmpty = s => typeof s === 'string' && s !== '';
 const posInt = n => Number.isInteger(n) && n > 0;
@@ -56,7 +57,7 @@ function isSideKey(k) {
 
 /** The side tab's key for a branch tab's key; null for no key and for a key that is already a side's. */
 function sideKeyOf(parentKey) {
-  if (!nonEmpty(parentKey) || isSideKey(parentKey)) return null;
+  if (!nonEmpty(parentKey) || isCompanionKey(parentKey)) return null;
   return parentKey + SIDE_SUFFIX;
 }
 
@@ -87,6 +88,8 @@ function siblingSessions(identities, { cwd, side = false, ownPort } = {}) {
   for (const e of asList(identities)) {
     const p = e && typeof e === 'object' ? e.parsed : null;
     if (!p || typeof p !== 'object' || !nonEmpty(p.cwd) || p.port === ownPort || e.port === ownPort) continue;
+    // A shell host (BACKLOG #119 A5) runs no claude: it is neither the folder's own host nor its side host.
+    if (p.kind === 'shell') continue;
     if (!samePath(p.cwd, cwd) || (p.side === true) === (side === true)) continue;
     if (posInt(p.claudePid) && !out.pids.includes(p.claudePid)) out.pids.push(p.claudePid);
     if (nonEmpty(p.sessionId) && !out.sessionIds.includes(p.sessionId)) out.sessionIds.push(p.sessionId);

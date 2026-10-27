@@ -294,3 +294,11 @@ test('summaryNote follows the status: a string is carried, anything else is null
   assert.strictEqual(strip([DEV], { [k]: { started: true, status: { summaryNote: 5 } } })[0].summaryNote, null);
   assert.strictEqual(strip([DEV], {})[0].summaryNote, null);
 });
+
+test('program (OSC 7501) follows the status: the cleaned record, null for none', () => {
+  const k = keyOf(DEV.path);
+  const on = strip([DEV], { [k]: { started: true, status: { working: true, program: { state: 'blocked', kind: 'permission', msg: 'Allow?', progress: null } } } })[0];
+  assert.deepStrictEqual(on.program, { state: 'blocked', kind: 'permission', msg: 'Allow?', progress: null });
+  assert.strictEqual(strip([DEV], {})[0].program, null);
+  assert.strictEqual(strip([DEV], { [k]: { started: true, status: { program: 'blocked' } } })[0].program, null);
+});

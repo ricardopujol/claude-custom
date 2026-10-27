@@ -85,6 +85,7 @@ const CONTRACT = {
         used: 'bedtime-state.js, the clamped fallback for a running night\'s next wake when the result carries no believable scheduledFor',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
       },
+      // (The Schedules panel reads CronCreate / CronDelete on the PostToolUse only: a Pre is an intent, so nothing is required of it here.)
       ...COMMON_FIELDS,
     },
   },
@@ -98,6 +99,22 @@ const CONTRACT = {
       'tool_response.scheduledFor': {
         used: 'bedtime-state.js, the night\'s next wake, shown on the bedtime chip (#52)',
         onlyWhen: p => !!p && p.tool_name === 'ScheduleWakeup' && !(p.tool_input && p.tool_input.stop === true),
+      },
+      // The Schedules panel (BACKLOG #119 A7). MEASURED with a real `claude -p` run (2.1.304, haiku; test/cron-capture.fixture.jsonl): CronCreate
+      // is { tool_input: { cron, prompt, recurring, durable }, tool_response: { id, humanSchedule, recurring, durable, nextFireAt } } and CronDelete
+      // { tool_input: { id }, tool_response: { id } }. recurring, durable, humanSchedule and nextFireAt are optional by the schema, so not required.
+      'tool_input.cron': {
+        used: 'schedules.js, the cron expression whose next run the Schedules panel computes',
+        onlyWhen: p => !!p && p.tool_name === 'CronCreate',
+      },
+      'tool_input.id': {
+        used: 'schedules.js, the cron job a CronDelete removes from the Schedules panel',
+        onlyWhen: p => !!p && p.tool_name === 'CronDelete',
+      },
+      // CronCreate's result: the id is what a CronDelete names.
+      'tool_response.id': {
+        used: 'schedules.js, the key of a cron job in the Schedules panel',
+        onlyWhen: p => !!p && p.tool_name === 'CronCreate',
       },
       ...COMMON_FIELDS,
     },

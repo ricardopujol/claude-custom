@@ -15,6 +15,8 @@
  *   CLAUDE_CUSTOM_ASK_INDEX_DIR      the Ask panel's per-worktree index lives here, not in .harness/state/ask-index (verify/probe-ask-panel.js)
  *   CLAUDE_CUSTOM_UI_STATE_DIR       main's install-wide UI records (fonts, layouts, toggles) live here, not in .harness/state, so a probe never
  *                                    touches the real ones or the person's open windows (verify/probe-fonts-colour.js)
+ *   CLAUDE_CUSTOM_GH                 a .js file stands in for `gh issue list/view` (run under node); any other value is the gh
+ *                                    executable itself (host/issues.js ghCommand; verify/probe-issue-intake.js)
  *
  * They're read by the production host and main, so a seam that leaks in (a shell that exported one) must be
  * visible: announce() logs one line naming every active seam, and a fixture that can't be read or isn't gh's
@@ -25,7 +27,7 @@ const nodeFs = require('fs');
 
 const SEAMS = ['CLAUDE_CUSTOM_OPEN_PRS_FIXTURE', 'CLAUDE_CUSTOM_GIT_PROJECTS_DIR', 'CLAUDE_CUSTOM_REVIEWS_DIR', 'CLAUDE_CUSTOM_CLAUDE_HOME',
   'CLAUDE_CUSTOM_OLLAMA_URL', 'CLAUDE_CUSTOM_SUMMARY_DIR', 'CLAUDE_CUSTOM_SUMMARY_POWER', 'CLAUDE_CUSTOM_INDEXING_JOURNAL',
-  'CLAUDE_CUSTOM_ASK_RECORD', 'CLAUDE_CUSTOM_ASK_INDEX_DIR', 'CLAUDE_CUSTOM_UI_STATE_DIR'];
+  'CLAUDE_CUSTOM_ASK_RECORD', 'CLAUDE_CUSTOM_ASK_INDEX_DIR', 'CLAUDE_CUSTOM_UI_STATE_DIR', 'CLAUDE_CUSTOM_GH'];
 
 const val = (env, k) => (env && typeof env[k] === 'string' && env[k] !== '' ? env[k] : null);
 
@@ -42,6 +44,7 @@ function readSeams(env) {
     askRecord: val(env, SEAMS[8]),
     askIndexDir: val(env, SEAMS[9]),
     uiStateDir: val(env, SEAMS[10]),
+    gh: val(env, SEAMS[11]),
     active: SEAMS.filter(k => (k === SEAMS[6] ? ['mains', 'battery'].includes(val(env, k)) : val(env, k) !== null)),
   };
 }

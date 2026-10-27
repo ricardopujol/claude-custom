@@ -273,17 +273,22 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-two members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-six members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate', 'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
+    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate',
+      // #119 A6, the form's "From an issue" list (main answers them; host/issues.js has the rules)
+      'issues', 'pickerOpen', 'pickerClose',
+      'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',
       // #66, the indexing field (app/indexing-bridge.js answers them)
       'indexSubmit', 'indexFocus', 'indexLeave', 'indexChip', 'indexList', 'onIndex', 'onIndexFocus',
       // #62, lean mode (app/lean-bridge.js answers them)
-      'leanGet', 'leanSet', 'onLeanFaces', 'onLean']);
+      'leanGet', 'leanSet', 'onLeanFaces', 'onLean',
+      // the kill switch's STOP ALL (host/kill-switch.js requestStopAll; main asks once, then writes ~/.claude/STOP-ALL)
+      'stopAll']);
   assert.match(src, /'strip:winMinimize'/);
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
@@ -293,6 +298,7 @@ test('the strip bridge exposes its twenty-two members -- and nothing else', () =
   assert.match(src, /'strip:create'/);
   assert.match(src, /'strip:cancelCreate'/);
   assert.match(src, /invoke\('strip:background'\)/);
+  assert.match(src, /stopAll: \(\) => ipcRenderer\.invoke\('strip:stopAll'\)/);
   assert.match(src, /removeAllListeners\('strip-model'\)/);
 });
 
@@ -817,4 +823,74 @@ test('tab-strip.html: the faces sit left of the lean chip, 18 px round, and the 
   assert.ok(html.indexOf('id="lean-faces"') < html.indexOf('id="lean-chip"'));
   assert.match(html, /\.lean-face \{[^}]*width: 18px; height: 18px; border-radius: 50%/);
   assert.match(html, /img-src 'self'; media-src 'self'/);
+});
+
+test('OSC 7501 (BACKLOG #116): the dots read the program state, with the kind and message in the tooltip as text', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [
+    entry({ key: 'plain', working: true, needsInput: true }),
+    entry({ key: 'blk', needsInput: true, program: { state: 'blocked', kind: 'permission', msg: 'Allow Edit?' } }),
+    entry({ key: 'err', needsInput: true, program: { state: 'error', msg: 'Rate limited' } }),
+    entry({ key: 'dn', program: { state: 'done' } }),
+    entry({ key: 'wk', working: true, program: { state: 'working', progress: 30 } }),
+  ] }, bridgeSpy());
+  const [plain, blk, err, dn, wk] = doc.byId.tabs.children;
+  assert.strictEqual(child(plain, 'working').title, 'Working');
+  assert.strictEqual(child(plain, 'needs').title, 'Needs your input');
+  assert.match(child(blk, 'needs').title, /permission/);
+  assert.match(child(blk, 'needs').title, /Allow Edit\?/);
+  assert.ok(child(err, 'error') && child(err, 'needs'));
+  assert.match(child(err, 'needs').title, /Rate limited/);
+  assert.ok(child(dn, 'done'));
+  assert.match(child(wk, 'working').title, /30%/);
+  assert.strictEqual(child(dn, 'working'), undefined);
+});
+
+
+// --- the kill switch's STOP ALL (documentation/PLAN_SAFETY_NET.md lane 2) -----------------------------------------
+
+const { paintStopAll } = require('../app/tab-strip');
+
+test('paintStopAll: the button asks main (which confirms and writes), and is busy until main answers', async () => {
+  const btn = node('button');
+  const doc = { getElementById: (id) => (id === 'stop-all' ? btn : null) };
+  let answer;
+  let asked = 0;
+  paintStopAll(doc, { stopAll: () => { asked++; return new Promise((res) => { answer = res; }); } });
+  btn.onclick();
+  assert.strictEqual(asked, 1);
+  assert.strictEqual(btn.disabled, true);
+  btn.onclick();
+  assert.strictEqual(asked, 1, 'a second press while the confirm is up asks nothing');
+  answer('cancelled');
+  await new Promise((r) => setImmediate(r));
+  assert.strictEqual(btn.disabled, false);
+});
+
+test('paintStopAll: a bridge that throws or rejects frees the button too', async () => {
+  for (const stopAll of [() => { throw new Error('x'); }, () => Promise.reject(new Error('y'))]) {
+    const btn = node('button');
+    paintStopAll({ getElementById: () => btn }, { stopAll });
+    btn.onclick();
+    await new Promise((r) => setImmediate(r));
+    assert.strictEqual(btn.disabled, false);
+  }
+});
+
+test('paintStopAll: no button, or no bridge member, is a no-op', () => {
+  assert.doesNotThrow(() => paintStopAll({ getElementById: () => null }, {}));
+  assert.doesNotThrow(() => paintStopAll({}, { stopAll: () => {} }), 'a document with no getElementById (a vm page load)');
+  assert.doesNotThrow(() => paintStopAll(null, { stopAll: () => {} }));
+  const btn = node('button');
+  paintStopAll({ getElementById: () => btn }, {});
+  assert.strictEqual(btn.onclick, null);
+});
+
+test('the strip page draws the STOP ALL button, before the running-sessions menu', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const at = html.indexOf('id="stop-all"');
+  assert.ok(at !== -1);
+  assert.ok(at < html.indexOf('id="bg"'));
+  assert.match(html, /#stop-all \{[^}]*var\(--bad\)/, 'red');
+  assert.ok(at > html.indexOf('<div id="strip">'), 'inside #strip, so `body.frameless #strip button` keeps it clickable');
 });

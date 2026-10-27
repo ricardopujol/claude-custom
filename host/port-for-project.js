@@ -54,7 +54,7 @@ function portForCwd(cwd) {
 // screen.
 const DEADLINE_MS = 6000;
 
-async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS, side = false } = {}) {
+async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS, side = false, kind } = {}) {
   const first = portForCwd(cwd);
   const giveUpAt = Date.now() + deadlineMs;
   // Dexter, PR #75 F1: a live host of ours ANYWHERE in the range wins over the
@@ -83,7 +83,7 @@ async function resolvePort({ cwd, occupantAt, deadlineMs = DEADLINE_MS, side = f
     tried++;
     // Awaited because the real probe opens a socket. A synchronous answer --
     // which is what every test injects -- passes through await unchanged.
-    const { action } = decideAttach({ requestedCwd: cwd, occupant: await occupantAt(port), requestedSide: side === true });
+    const { action } = decideAttach({ requestedCwd: cwd, occupant: await occupantAt(port), requestedSide: side === true, requestedKind: kind });
     if (action === 'attach') return { port, action };
     if (action === 'spawn' && firstFree === null) firstFree = port;
   }

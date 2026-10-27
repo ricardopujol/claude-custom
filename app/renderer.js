@@ -170,6 +170,9 @@ const LOCATE_SCAN = 400;
 const BAR_COVER_PX = 40;
 let wasWorking = false;
 let lastReportedTabStatus = null;
+// OSC 7501 (BACKLOG #116): the CLI's own root state as the host last said it (cleaned), or null. The host parses the stream
+// and answers the CLI; this only shows it and moves the cue (host/attention.js raises the toast and the urgent/finished frame).
+let programRoot = null;
 function pend(event) {
   if (window.tabStatus) tabPending = window.tabStatus.pendingAfter(tabPending, event);
 }
@@ -187,13 +190,28 @@ function reportTabStatus() {
     health: tabHealth,
     turn: sessionTurn,
     night: bar.bedtime !== null,
+    program: programRoot,
     summary: sum.summary ? { ...sum.summary, note: summaryDisplay.offNote(sum.off) } : null,
     // with no summary yet, why (Ollama off) rides on the hover card alone: the bar does not pop up for it
     summaryNote: sum.summary ? null : summaryDisplay.offNote(sum.off),
-  }, { healthMarker: worktreeStatus.healthMarker });
+  }, { healthMarker: worktreeStatus.healthMarker, cleanProgram: programStatusDisplay.clean });
   if (lastReportedTabStatus && window.tabStatus.sameStatus(lastReportedTabStatus, status)) return;
   lastReportedTabStatus = status;
   window.harness.tabStatus(status);
+}
+// A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
+// of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
+function applyProgramStatus(rootRecord, how) {
+  const next = programStatusDisplay.clean(rootRecord);
+  for (const event of programStatusDisplay.cueEvents(programRoot, next, how)) pend(event);
+  programRoot = next;
+  const headerDot = document.getElementById('dot');
+  if (headerDot) {
+    headerDot.classList.remove('ps-working', 'ps-blocked', 'ps-done', 'ps-error');
+    const view = programStatusDisplay.headerView(next);
+    if (view) { headerDot.classList.add(view.cls); headerDot.title = view.title; } else headerDot.removeAttribute('title');
+  }
+  reportTabStatus();
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
@@ -818,6 +836,8 @@ const repoBrowser = window.repoBrowser.create({
   // the reader's width is kept per tab: every tab's page shares one localStorage, so the key names this one
   storageKey: () => `repoReaderWidth:${document.getElementById('cwd').textContent || ''}`,
   typeMention: (text, done) => typeCommand(text, r => done(r.ok ? { ok: true } : { ok: false, reason: r.reason }), 'mention'),
+  // a review comment from the Changes Compare (#119 A3): typed like the @ mention and NEVER submitted, the person presses Enter
+  typeComment: (text, done) => typeReviewComment(text, done),
   focusTerminal: () => term.focus(),
   isShown: () => shownModules.has('fog'),
   // edit mode (#50): the file with unsaved text goes to main, so ending this tab can warn; confirm() is the native question
@@ -825,6 +845,8 @@ const repoBrowser = window.repoBrowser.create({
   confirmDiscard: async (message) => window.confirm(message),
   // What's this? on the reader (#33): the selected lines go to the Ask panel, which is brought on screen
   onAsk: (sel) => { askExplain(sel); },
+  // an http(s) link in a rendered Markdown page (BACKLOG #119 A9): the reader already refused anything else; main's openInBrowser checks it again
+  onOpenUrl: (url) => (window.harness && window.harness.openExternal ? window.harness.openExternal(url) : false),
   // the dock tree's full rectangle for the terminal (the reader takes a strip of it: app/repo-reader.js layout())
   termRect: () => { const b = lastPlan && lastPlan.boxes.find(x => x.kind === 'term'); return b ? b.rect : null; },
 });
@@ -952,6 +974,7 @@ function renderGitTree(tree) {
   });
   adoptGitViewProject(tree);
   renderGitGraph();        // the graph's strip reads the tree's address and worktrees
+  mapRefresh();            // the Map's lanes and other sessions come from the same tree and tab states
 }
 // The tabs' states move faster than the tree does (a session starts and stops working), so they're asked
 // for on their own, every couple of seconds while the panel is showing, and with every tree.
@@ -1267,6 +1290,248 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pagehide', () => { if (gamesPanel) gamesPanel.bankNow(); });
 // GAMES-END
 
+// --- the Changes panel (BACKLOG #119 A3) -----------------------------------------------------------------------------------
+// CHANGES-BEGIN
+// app/changes-display.js builds the list and decides what a click or a key means; the changeset comes from THIS tab's host over the socket
+// (the `changes` control, host/changes-service.js, read-only git), and a file opens in the reader's side-by-side Compare
+// (app/repo-reader.js openChange). What is here is what only this page knows: the socket, the reader, which files Claude edited (the Files
+// tab's overlay, asked for with each list so the dots are never a refresh behind) and whether the panel is on screen.
+const changesRoot = document.getElementById('changes-root');
+const changesPanel = changesRoot ? window.changesDisplay.mount({
+  doc: document,
+  root: changesRoot,
+  request: async (action, body) => {
+    const [reply] = await Promise.all([
+      repoBrowser.changes.request(action, body),
+      action === 'list' ? repoBrowser.refreshTouched().catch(() => false) : null,
+    ]);
+    return reply;
+  },
+  isTouched: (p) => repoBrowser.isTouched(p),
+  openChange: (info) => { repoBrowser.openChange(info).catch(() => {}); },
+  usage,
+}) : null;
+// the host's `changed` push: two seconds after a tool that can change a file (host/changes-notifier.js). Acted on only while the panel shows.
+repoBrowser.changes.onChanged(() => { if (changesPanel) changesPanel.onChanged(); });
+let changesWasShown = false;
+function changesView() {
+  if (!changesPanel) return;
+  const now = shownModules.has('changes') && document.visibilityState === 'visible';
+  if (now === changesWasShown) return;
+  changesWasShown = now;
+  if (now) changesPanel.show(); else changesPanel.hide();
+}
+document.addEventListener('visibilitychange', changesView);
+// CHANGES-END
+
+// --- the Map panel (BACKLOG #120) -------------------------------------------------------------------------------------------
+// MAP-BEGIN
+// app/map-display.js draws the graph, app/map-model.js decides what is on it and app/map-layout.js where it sits. What is here is what only
+// this page knows: the roster, the claims, the Git tree and the tab states it already asks for, the host's event rates (the `map` control),
+// and the three facts that decide whether the panel may move at all: shown, focused, lean. THE FRAME-BUDGET RULE lives in the display; this
+// only tells it the facts (mapView) and keeps the polls off while it can't be seen.
+const mapRoot = document.getElementById('map-root');
+let mapRates = null;                // the host's last answer to `map`: { events, perMinute, tools, uptimeMs }; null until it comes (an older host never sends it)
+let mapRafs = 0;                    // probe: how many animation frames this panel has ASKED for since the page loaded
+let mapChurn = null;                // probe: a timer that calls mapRefresh() a burst at a time, like a busy session's roster messages
+let mapFake = null;                 // probe only: a made-up { sessions, agents, claims } in place of the real ones
+let mapLive = false;               // set by the first hello: every top-level `const` this reads (roster, occupancy...) exists by then
+const mapSince = new Map();         // agent -> epoch ms this page saw it START working; absent means it was already working when this page attached
+const mapOwn = (o, k) => (o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k) ? o[k] : undefined);
+// 20 frames a second, not 30: a presented frame has a fixed price on this machine (about 4 ms of CPU across the renderer and the GPU process, whatever
+// is drawn in it), so the cost of the animation is its frame rate. Frames land on vsyncs, so the useful gaps are 33, 50 and 67 ms (30, 20 and 15 fps).
+// Measured by verify/probe-activity-map.js; BACKLOG #120.
+const MAP_FRAME_MS = 33;
+const mapMountOptions = {
+  doc: document,
+  source: () => mapInput(),
+  frameMs: MAP_FRAME_MS,
+  root: mapRoot,
+  raf: (fn) => { mapRafs += 1; return requestAnimationFrame(fn); },
+  caf: (id) => cancelAnimationFrame(id),
+  now: () => performance.now(),
+  wall: () => Date.now(),
+  later: (fn, ms) => setTimeout(fn, ms),
+  pace: (fn, ms) => setTimeout(fn, ms),         // the wait between two frames: a timer, so the page isn't woken on every vsync
+  unpace: (id) => clearTimeout(id),
+  css: (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim(),
+  dpr: () => window.devicePixelRatio || 1,
+  reducedMotion: () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+  observe: (el, onResize) => {
+    if (typeof ResizeObserver !== 'function') return null;           // none: the panel then reads its size every frame
+    const o = new ResizeObserver(() => onResize());
+    o.observe(el);
+    return () => o.disconnect();
+  },
+  makeImage: () => new Image(),
+  storage: (() => { try { return { read: (k) => localStorage.getItem(k), write: (k, v) => localStorage.setItem(k, v) }; } catch { return null; } })(),
+  // a session: this window's own gives the keyboard back to the terminal, another is its tab (the Git panel's *Jump to its tab*)
+  onSession: (s) => {
+    if (s && s.self) term.focus();
+    else if (s && typeof s.folder === 'string' && window.harness && window.harness.selectFolder) window.harness.selectFolder(s.folder);
+  },
+  // an agent: its card in the Agents panel, with its activity log open (the card's own click path)
+  onAgent: (name) => { selectModule('agents'); openAgentLog(name); },
+};
+// A function, so the probe can swap the panel for one drawn another way (verify/probe-activity-map.js, op 'remount').
+const mapMountPanel = (extra) => window.mapDisplay.mount({ ...mapMountOptions, ...extra });
+let mapPanel = mapRoot ? mapMountPanel({}) : null;
+
+// What the graph is drawn from, assembled from state this page already holds. Absence stays absence (null), never a zero.
+function mapInput() {
+  if (mapFake) return mapFake;
+  const mm = window.mapModel;
+  const cwd = document.getElementById('cwd').textContent;
+  const sessions = mm.sessionsFrom({ tree: lastGitTree, tabs: lastGitTabs, self: cwd ? { folder: cwd, branch: currentBranchName, state: mm.turnState(sessionTurn) } : null });
+  // A claim is this session's own (it belongs to a roster card) only if THIS session launched it; one launched elsewhere, or by another session, is its own node.
+  const mine = new Set();
+  for (const c of occupancy.launched) {
+    if (c && typeof c.agentId === 'string' && !(typeof c.sessionId === 'string' && typeof occupancy.session === 'string' && c.sessionId !== occupancy.session)) mine.add(c.agentId);
+  }
+  const claims = [];
+  const seen = new Set();
+  for (const c of [...occupancy.here, ...occupancy.launched]) {
+    if (c && typeof c.agentId === 'string' && !seen.has(c.agentId)) { seen.add(c.agentId); claims.push({ ...c, own: mine.has(c.agentId) }); }
+  }
+  const agents = [];
+  for (const r of roster.values()) {
+    if (r.agent === ASK_AGENT) continue;
+    const entry = rosterIndexEntry(r.agent);
+    const persona = entry && typeof entry.persona === 'string' && entry.persona && entry.persona.toLowerCase() !== r.agent.toLowerCase() ? entry.persona : null;
+    const st = agentStats.get(r.agent);
+    const claim = claims.find(c => c.agent === r.agent);
+    agents.push({
+      name: r.agent, state: r.state, detail: r.detail,
+      label: persona, role: persona ? r.agent : null,
+      portrait: window.mapDisplay.portraitSpec(r.portrait, persona || r.agent, { imagesEnabled: agentImagesEnabled === true, fileUrl: window.portraitMedia.fileUrl }),
+      model: modelLine(modelEntry(sessionModel && sessionModel.agents, r.agent), sessionModel && sessionModel.errors).text,
+      tokens: st && typeof st.tokens === 'number' ? st.tokens : null,
+      eventsPerMin: mapRates ? mapOwn(mapRates.perMinute, r.agent) : undefined,
+      tool: mapRates ? mapOwn(mapRates.tools, r.agent) : undefined,
+      since: mapSince.has(r.agent) ? mapSince.get(r.agent) : null,
+      worktree: claim ? claim.worktree : null,
+    });
+  }
+  return {
+    project: { name: currentProjectName, path: lastGitTree && typeof lastGitTree.project === 'string' ? lastGitTree.project : null },
+    now: Date.now(),
+    sessions, agents, claims,
+    totalAgents: Math.max(wholeRosterEntries().length, roster.size),
+    lanes: mm.lanesOf(lastGitTree),
+    feed: mapRates ? { events: mapRates.events, uptimeMs: mapRates.uptimeMs } : null,
+  };
+}
+// Every roster, mood, turn and tab message lands here: the panel rebuilds from mapInput() at most once per frame slot (app/map-display.js invalidate).
+function mapRefresh() { if (mapLive && mapPanel && shownModules.has('map') && !leanOn) mapPanel.invalidate(); }
+// shown x focused x lean: all three are this page's to say. `focused` is main's word, and a page the OS says is hidden is not focused.
+function mapView() {
+  if (!mapPanel) return;
+  const focused = windowFocused === null ? null : (windowFocused === true && document.visibilityState === 'visible');
+  mapPanel.setView({ shown: shownModules.has('map'), focused, lean: leanOn });
+  if (shownModules.has('map') && !leanOn) mapRefresh();
+}
+// The polls run only while the map can move: shown, focused, visible, not lean. Each ask is one small message; the Git tree (lanes, the
+// other sessions) is asked for once in ten.
+const MAP_POLL_MS = 3000;
+let mapTicks = 0;
+function mapWanted() { return !!mapPanel && shownModules.has('map') && !leanOn && windowFocused === true && document.visibilityState === 'visible'; }
+function mapAsk() {
+  // ONLY to a host that lists it: an older host would type the frame into the session as JSON
+  if (!hostControls || !hostControls.includes('map') || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify({ type: 'map' })); } catch { /* not attached: the next poll asks again */ }
+}
+function mapPoll() {
+  if (!mapWanted()) return;
+  mapAsk();
+  requestGitTabs();
+  if (mapTicks % 10 === 0) requestGitTree();
+  mapTicks += 1;
+}
+function mapPollNow() { mapTicks = 0; mapPoll(); }
+setInterval(mapPoll, MAP_POLL_MS);
+// Two things the panel can't see by itself when it has stopped: reduced motion turning OFF (the streams may start), and the screen's pixel ratio changing
+// (the window moved to another monitor: the bitmap must be made again). Each asks it to measure and draw once.
+if (window.matchMedia) {
+  window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', () => { if (mapPanel) mapPanel.refresh(); });
+  const mapWatchRatio = () => {
+    const q = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    q.addEventListener('change', () => { if (mapPanel) mapPanel.refresh(); mapWatchRatio(); }, { once: true });
+  };
+  mapWatchRatio();
+}
+// The mood message is where an agent starts or stops working: the only place "since when" can be known.
+function mapNoteMood(m) {
+  const was = roster.get(m.agent);
+  const wasActive = !!was && was.state !== 'sleeping';
+  if (m.state === 'sleeping') mapSince.delete(m.agent);
+  else if (!wasActive) mapSince.set(m.agent, Date.now());
+}
+// A page the OS hides (minimised, another virtual desktop) is not focused for the map's purposes; shown again, it asks at once.
+document.addEventListener('visibilitychange', () => { mapView(); if (document.visibilityState === 'visible') mapPollNow(); });
+function mapOnMap(msg) {
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  mapRates = { events: num(msg.events), perMinute: msg.perMinute && typeof msg.perMinute === 'object' ? msg.perMinute : {}, tools: msg.tools && typeof msg.tools === 'object' ? msg.tools : {}, uptimeMs: num(msg.uptimeMs) };
+  mapRefresh();
+}
+// MAP-END
+
+// --- the Schedules panel (BACKLOG #119 A7) ------------------------------------------------------------------------------------
+// SCHEDULES-BEGIN
+// app/schedules-display.js decides what is drawn; the list is the host's (host/schedules.js buildView): every session's wakeups, loops,
+// bedtime nights and cron jobs, grouped. READ-ONLY in v1: a click on a row selects that session's tab (the Git panel's own jump).
+// var, not let: the first layout can paint the rail badge before this block has run (the Resources panel's resViewingSent is the same).
+var schedState = window.schedulesDisplay.emptyState();
+var schedRoot = document.getElementById('schedules-root');
+var schedLastHtml = null;
+
+// The count of wakeups due in the next hour, on every rail button and tab of the panel (the rail rebuilds its buttons, so this runs after each layout).
+function paintSchedulesBadge() {
+  const n = window.schedulesDisplay.badge(schedState);
+  const text = window.schedulesDisplay.badgeText(n);
+  const base = TABS.find(t => t.id === 'schedules');
+  for (const b of document.querySelectorAll('button[data-module="schedules"]')) {
+    if (text) b.dataset.badge = text; else delete b.dataset.badge;
+    if (base) b.title = text ? base.title + ' (' + n + ' due in the next hour)' : base.title;
+  }
+}
+
+function renderSchedules() {
+  paintSchedulesBadge();
+  if (!schedRoot || !shownModules.has('schedules')) return;
+  const html = window.schedulesDisplay.html(schedState);
+  if (html === schedLastHtml && schedRoot.firstChild) return;      // nothing changed: no flicker, no lost hover or focus
+  // The markup is replaced on a change: keep the keyboard on the same row.
+  const focused = document.activeElement && schedRoot.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused && focused.dataset ? focused.dataset.schedKey : null;
+  schedRoot.innerHTML = html;
+  schedLastHtml = html;
+  if (!keep) return;
+  const again = [...schedRoot.querySelectorAll('[data-sched-key]')].find(el => el.dataset.schedKey === keep);
+  if (again && !again.disabled) again.focus();
+}
+
+// The panel opened: ask for the list as it is now (the hello and every change also carry it).
+// ONLY to a host whose hello lists the type: an older host (they outlive app updates) would type the frame into the session as JSON
+// (the PR #140 rule; PR #200 Dexter 1). The panel says "predates Schedules" for such a host instead.
+function requestSchedules() {
+  const msg = window.schedulesDisplay.requestMsg(hostControls);
+  if (!msg || !ws || ws.readyState !== WebSocket.OPEN) return;
+  try { ws.send(JSON.stringify(msg)); } catch { /* not attached */ }
+}
+
+if (schedRoot) {
+  schedRoot.addEventListener('click', (e) => {
+    const t = window.schedulesDisplay.clickTarget(e.target);
+    if (!t) return;
+    e.preventDefault();
+    if (t.kind === 'select') { jumpToFolder(t.folder); return; }
+    if (t.kind === 'link') {
+      if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(t.url);
+    }
+  });
+}
+// SCHEDULES-END
+
 // --- the Ask panel (BACKLOG #33) ------------------------------------------------------------------------------------------
 // ASK-BEGIN
 // app/ask-display.js builds the panel; its questions go to THIS tab's host over the socket (app/ask-requester.js, the `ask` control), and
@@ -1347,9 +1612,12 @@ function onModuleShown(id) {
   if (id === 'fog') repoBrowser.show();
   if (id === 'git') { usage('git:opened'); requestGitTree(); if (gitView === 'graph') requestGitGraph(); }
   if (id === 'projects') requestProjects();
+  if (id === 'map') mapPollNow();
   if (id === 'wand') requestWandSkills();
   if (id === 'resources') renderResources();
+  if (id === 'schedules') { requestSchedules(); renderSchedules(); }
   if (id === 'canvas') { canvasFetchIfNeeded(); renderCanvas(); }
+  if (id === 'preview') renderPreview();
   // Dexter/Miguel, PR #60, F2/I1: EVERY open asks, not just the first one --
   // the host answers cheaply from a fresh cache, and decides freshness itself.
   if (id === 'models') requestModels(false);
@@ -1498,6 +1766,15 @@ async function resourcesAct(a) {
     let result;
     try { result = await resBridge.stopLeftovers(a.act === 'left-stop' ? { rows: [{ pid: a.pid, start: a.start }] } : a.act === 'left-delete' ? { taskLog: a.key } : { group: a.group }); } catch { result = null; }
     resState = D.leftStopResult(resState, result);
+  }
+  else if (a.act === 'pause' || a.act === 'resume') {
+    // One at a time: the buttons are disabled while a request is in flight. Main re-checks everything; the page only names the process.
+    if (!resBridge || resState.pauseBusy) return;
+    resState = D.beginPause(resState, a);
+    renderResources();
+    let result;
+    try { result = await resBridge[a.act]({ pid: a.pid, startTime: a.start }); } catch { result = null; }
+    resState = D.pauseResult(resState, a, result, a.act);
   }
   else if (a.act === 'confirm-stop') {
     const req = resState.confirm;
@@ -1733,6 +2010,191 @@ if (canvasBridge && canvasRoot) {
 }
 // CANVAS-END
 
+// --- the Preview panel and the Dev servers chip (BACKLOG #119 A4) -------------------------------------------------
+// PREVIEW-BEGIN
+// app/preview-display.js decides everything (the frame, the chip, the menu rows). The page of the dev server is NOT part of this document: it
+// is a native view that main lays over `#preview-slot` at the rectangle measured here (app/preview-views.js), so this page is its trusted
+// controller. It never hands main an address of the page's own: a port or typed text goes in, and main judges it (app/preview-guard.js). Hidden
+// means stopped: the view is destroyed when the module is not on screen, and main remembers the last address of this worktree.
+const previewBridge = window.harness && window.harness.preview;
+let previewState = window.previewDisplay.emptyState();
+const previewRoot = document.getElementById('preview-root');
+const tbDevEl = document.getElementById('tb-devservers');
+const dvPopEl = document.getElementById('dv-popover');
+let previewLive = false;         // main has a native view for this tab
+let previewLastRect = null;
+let previewRectKey = '';
+let previewLastCover = null;
+let devOpen = false;             // the chip's list is open
+
+function previewSlotRect() {
+  const el = previewRoot && previewRoot.querySelector('#preview-slot');
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left, y: r.top, width: r.width, height: r.height };
+}
+
+// Is the slot itself topmost at this point? Whatever else is drawn over it (a float, a menu, the chip's list) must hide the native view,
+// which paints above the whole page: the same hit-test Claude's panel uses (window.canvasDisplay.slotObstructed).
+function previewIsSlotAt(x, y) {
+  const slot = previewRoot && previewRoot.querySelector('#preview-slot');
+  const el = document.elementFromPoint(x, y);
+  return !el || !slot || el === slot || slot.contains(el);
+}
+
+function syncPreviewView() {
+  if (!previewBridge) return;
+  const want = shownModules.has('preview') && document.visibilityState === 'visible';
+  if (!want) {
+    if (previewLive) { previewBridge.hide(); previewLive = false; previewRectKey = ''; previewLastCover = null; }
+    return;
+  }
+  const rect = previewSlotRect();
+  const covered = rect !== null && window.canvasDisplay.slotObstructed(rect, previewIsSlotAt);
+  if (rect) previewLastRect = rect;
+  if (!previewLive) {
+    // Nothing asked for yet: main goes back to the address this worktree had, if it had one.
+    previewLive = true; previewRectKey = JSON.stringify(rect); previewLastCover = covered;
+    previewBridge.show({ rect, covered }).then(previewShown, () => {});
+    return;
+  }
+  if (covered !== previewLastCover) { previewLastCover = covered; previewBridge.cover(covered); }
+  const key = JSON.stringify(rect);
+  if (rect && key !== previewRectKey) { previewRectKey = key; previewBridge.bounds(rect); }
+}
+
+// main's answer to a show: the address the view is on, or why not. A `stale` answer means a hide overtook it, which is not an error.
+function previewShown(res) {
+  if (!res || typeof res !== 'object') return;
+  if (res.stale === true) { previewLive = false; return; }
+  if (res.ok === true && typeof res.url === 'string') {
+    const next = window.previewDisplay.withEvent(previewState, { kind: 'url', url: res.url });
+    if (next !== previewState) { previewState = next; renderPreview(); }
+  }
+}
+
+function renderPreview() {
+  if (!previewRoot) return;
+  if (shownModules.has('preview')) {
+    // The address field keeps what the person is typing: a redraw (a port appeared, a page moved) must not take their words or their caret.
+    const field = previewRoot.querySelector('#preview-url');
+    const keep = field && document.activeElement === field ? { value: field.value, from: field.selectionStart, to: field.selectionEnd } : null;
+    previewRoot.innerHTML = window.previewDisplay.html(window.previewDisplay.view(previewState));
+    if (keep) {
+      const again = previewRoot.querySelector('#preview-url');
+      if (again) { again.value = keep.value; again.focus(); try { again.setSelectionRange(keep.from, keep.to); } catch { /* not a text field right now */ } }
+    }
+  }
+  syncPreviewView();
+}
+
+// A port (the picker, the chip's list) or typed text (the field). main judges it; a refusal arrives as a `blocked` event for the header.
+function previewGo(target) {
+  if (!previewBridge) return;
+  previewLive = true;
+  const rect = previewSlotRect() || previewLastRect;
+  previewRectKey = JSON.stringify(rect);
+  previewBridge.show({ target, rect, covered: false }).then(previewShown, () => {});
+}
+
+if (previewBridge && previewRoot) {
+  previewBridge.onEvent((ev) => {
+    if (ev && ev.kind === 'loading') return;            // not drawn: a redraw per page load would only cost the field its caret
+    const next = window.previewDisplay.withEvent(previewState, ev);
+    if (next === previewState) return;
+    previewState = next;
+    renderPreview();
+  });
+  previewRoot.addEventListener('click', (e) => {
+    const el = e.target && e.target.closest ? e.target.closest('[data-preview-act]') : null;
+    const a = el ? window.previewDisplay.actionOf(el.dataset) : null;
+    if (!a) return;
+    if (a.act === 'go') { const f = previewRoot.querySelector('#preview-url'); if (f) previewGo({ typed: f.value }); }
+    else if (a.act === 'reload') previewBridge.reload();
+    else if (a.act === 'browser') previewBridge.openExternal();
+    else if (a.act === 'devtools') previewBridge.devtools();
+  });
+  previewRoot.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target && e.target.id === 'preview-url') { e.preventDefault(); previewGo({ typed: e.target.value }); }
+  });
+  previewRoot.addEventListener('change', (e) => {
+    if (!e.target || e.target.id !== 'preview-port' || !/^[1-9]\d{0,4}$/.test(e.target.value)) return;
+    previewGo({ port: Number(e.target.value) });
+  });
+  let previewFrame = 0;
+  const previewSchedule = () => {
+    if (previewFrame) return;
+    previewFrame = requestAnimationFrame(() => { previewFrame = 0; syncPreviewView(); });
+  };
+  new ResizeObserver(previewSchedule).observe(previewRoot);
+  document.addEventListener('visibilitychange', syncPreviewView);
+  for (const ev of ['pointerup', 'click', 'keyup', 'contextmenu', 'wheel', 'resize']) window.addEventListener(ev, () => setTimeout(previewSchedule, 0), true);
+  window.addEventListener('pointermove', (e) => { if (e.buttons) previewSchedule(); }, true);
+  setInterval(() => { if (previewLive) previewSchedule(); }, 250);
+}
+
+// The Dev servers chip: this tab's listening ports, from main's sampler (app/dev-servers-service.js).
+let devState = null;
+function renderDevChip() {
+  if (!tbDevEl) return;
+  const v = window.previewDisplay.chipView(devState);
+  tbDevEl.hidden = v.hidden;
+  if (v.hidden) { if (devOpen) closeDevMenu(); return; }
+  tbDevEl.classList.toggle('dv-idle', v.state === 'idle');
+  tbDevEl.classList.toggle('dv-unknown', v.state === 'unknown');
+  tbDevEl.title = v.title;
+  tbDevEl.textContent = '';
+  tbDevEl.insertAdjacentHTML('afterbegin', window.previewDisplay.serverIcon());
+  const n = document.createElement('span');
+  n.textContent = v.text;
+  tbDevEl.appendChild(n);
+  if (devOpen) renderDevMenu();
+}
+function renderDevMenu() {
+  if (!dvPopEl || !tbDevEl) return;
+  dvPopEl.innerHTML = window.previewDisplay.menuHtml(devState);
+  dvPopEl.hidden = false;
+  const pos = window.menuPlacement(tbDevEl.getBoundingClientRect(), { width: dvPopEl.offsetWidth, height: dvPopEl.offsetHeight }, { width: window.innerWidth, height: window.innerHeight });
+  dvPopEl.style.left = `${Math.round(pos.left)}px`;
+  dvPopEl.style.top = `${Math.round(pos.top)}px`;
+}
+function closeDevMenu() {
+  devOpen = false;
+  if (dvPopEl) dvPopEl.hidden = true;
+  if (tbDevEl) tbDevEl.setAttribute('aria-expanded', 'false');
+}
+function onDevServers(state) {
+  devState = state !== null && typeof state === 'object' ? state : null;
+  previewState = window.previewDisplay.withDev(previewState, devState);
+  renderDevChip();
+  if (shownModules.has('preview')) renderPreview();
+}
+if (previewBridge) {
+  previewBridge.onDevServers(onDevServers);
+  previewBridge.devServers().then(onDevServers, () => {});
+  if (tbDevEl && dvPopEl) {
+    tbDevEl.addEventListener('click', () => {
+      if (devOpen) { closeDevMenu(); return; }
+      devOpen = true;
+      tbDevEl.setAttribute('aria-expanded', 'true');
+      renderDevMenu();
+    });
+    dvPopEl.addEventListener('click', (e) => {
+      const el = e.target && e.target.closest ? e.target.closest('[data-dev-act]') : null;
+      const a = el ? window.previewDisplay.devActionOf(el.dataset) : null;
+      if (!a) return;
+      closeDevMenu();
+      if (a.act === 'preview') { previewGo({ port: a.port }); revealModule('preview'); }
+      else previewBridge.openPort(a.port);
+    });
+    window.addEventListener('pointerdown', (e) => {
+      if (devOpen && !dvPopEl.contains(e.target) && !tbDevEl.contains(e.target)) closeDevMenu();
+    }, true);
+    window.addEventListener('keydown', (e) => { if (devOpen && e.key === 'Escape') { closeDevMenu(); tbDevEl.focus(); } }, true);
+  }
+}
+// PREVIEW-END
+
 // Leaving the vault puts every revealed secret back out of sight -- both the
 // listed ones and whatever is half-typed in the field. A value left on screen
 // outlives the moment someone needed it. "Leaving" is anything that stops it
@@ -1765,19 +2227,23 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   lastPlan = plan;
   if (peek && !plan.peek) railEvent({ type: 'gone' });     // its rail went (the window grew, the group was opened): so does the popover
   if (settle) settleDock();
-  window.dockTreeView.applyBoxes(plan, document);
+  window.dockTreeView.applyBoxes(plan, document, leanDisplay.LEAN_KEEPS);
   repoBrowser.layout();             // the reader's strip of the terminal's rectangle, re-taken after every placement
-  // Lean mode unmounts every dock panel: nothing is "shown", so each panel's own hide effects run (the vault's secrets go,
+  // Lean mode unmounts every dock panel except the ones leanDisplay.LEAN_KEEPS names (Schedules: its content is the night itself), so each panel's own hide effects run (the vault's secrets go,
   // the canvas view detaches, the pollers gated on shownModules stop) and coming back shows them as newly shown (refresh).
-  const now = new Set(leanOn ? [] : plan.shown);
+  const now = leanDisplay.leanShown(plan.shown, leanOn);
   const fx = window.dockEffects.renderEffects(shownModules, now, { userAction, quiet });
   shownModules = now;
   gamesView();                      // the games draw, and keep their clock, only while their panel is on screen
   askView();                        // the Ask panel reads the index status (and starts the first index) only once it is on screen
+  mapView();                        // the map draws only while shown, and moves only while the window is focused and not lean
+  changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
   for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
+  syncPreviewView();                // and the Preview panel's, the same way
+  paintSchedulesBadge();            // a rebuilt rail button has lost its count
   if (fx.vaultLeft) onVaultLeft();
   if (fx.focus === 'vault') setTimeout(() => document.getElementById('vault-search').focus(), 0);
   if (fx.focus === 'term') term.focus();
@@ -3607,6 +4073,29 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // text typed into THIS tab's own session, as a keyboard would (PR #93: the probe starts its stand-in
       // CLI box with it). Bounded, and only ever this tab's own socket.
       // the repo browser (verify/probe-repo-browser.js): named sub-actions of the Files tab and the reader
+      // the Changes panel (verify/probe-changes-panel.js): read it, and operate it as a pointer or a key would
+      case 'changesProbe': {
+        if (!changesPanel) return JSON.stringify({ ok: false, error: 'no Changes panel' });
+        if (a.what === 'state') return JSON.stringify(changesPanel.probe());
+        if (a.what === 'refresh') { changesPanel.refresh(); return JSON.stringify({ ok: true }); }
+        if (a.what === 'clickRow') {
+          const row = Array.from(changesRoot.querySelectorAll('.chg-row')).find(r => r.dataset.path === a.path);
+          if (!row) return JSON.stringify({ ok: false, error: `no row for ${a.path}` });
+          row.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.what === 'clickScope') {
+          const b = changesRoot.querySelector(`.chg-scope-btn[data-scope="${a.scope === 'branch' ? 'branch' : 'working'}"]`);
+          if (!b) return JSON.stringify({ ok: false, error: 'no scope button' });
+          b.click();
+          return JSON.stringify({ ok: true });
+        }
+        if (a.what === 'key') {
+          changesRoot.dispatchEvent(new KeyboardEvent('keydown', { key: String(a.key), bubbles: true, cancelable: true }));
+          return JSON.stringify({ ok: true });
+        }
+        return JSON.stringify({ ok: false, error: `unknown changes action ${a.what}` });
+      }
       case 'repoProbe': {
         const r = repoBrowser.probe(a.what, a);
         return r && typeof r.then === 'function' ? r.then(x => JSON.stringify(x)) : JSON.stringify(r);
@@ -3614,6 +4103,36 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'gitTermInput': {
         if (typeof a.data !== 'string' || !a.data || a.data.length > 2000) return JSON.stringify({ ok: false, error: 'gitTermInput needs text' });
         send(JSON.stringify({ type: 'input', data: a.data }));
+        return JSON.stringify({ ok: true });
+      }
+      // BACKLOG #119 A7 (verify/probe-schedules.js): the Schedules panel as drawn, and a click on a row as a pointer makes it.
+      case 'schedulesState': {
+        const root = document.getElementById('schedules-root');
+        const q = (el, sel) => { const n = el.querySelector(sel); return n ? n.textContent : null; };
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.schedulesDisplay === 'object' && typeof window.schedulesDisplay.html === 'function',
+          shown: document.querySelector('.panel[data-panel="schedules"]').classList.contains('on'),
+          heads: [...root.querySelectorAll('.sched-head')].map(h => h.textContent),
+          groups: [...root.querySelectorAll('.sched-group')].map(g => ({
+            id: g.dataset.schedGroup,
+            rows: [...g.querySelectorAll('.sched-btn')].map(b => ({
+              id: b.dataset.schedId, key: b.dataset.schedKey, cwd: b.dataset.schedCwd || null, when: q(b, '.sched-when'), next: q(b, '.sched-next'), kind: q(b, '.sched-chip'),
+              what: q(b, '.sched-what'), session: q(b, '.sched-session'), reason: q(b, '.sched-reason'), detail: q(b, '.sched-detail'),
+              gone: q(b, '.sched-gone'), dimmed: b.parentElement.classList.contains('sched-ended'), title: b.title, disabled: b.disabled,
+            })),
+          })),
+          empty: !!root.querySelector('.sched-empty'),
+          foot: q(root, '.sched-foot'),
+          link: (root.querySelector('[data-sched-link]') || { dataset: {} }).dataset.schedLink || null,
+          badge: [...document.querySelectorAll('button[data-module="schedules"]')].map(b => b.dataset.badge || null),
+          nextHour: window.schedulesDisplay.badge(schedState),
+        });
+      }
+      case 'schedulesClick': {
+        const b = [...document.querySelectorAll('#schedules-root .sched-btn')].find(x => x.dataset.schedId === a.id && (a.key === undefined || x.dataset.schedKey === a.key));
+        if (!b || b.disabled) return JSON.stringify({ ok: false, error: 'no clickable schedule row ' + JSON.stringify(a) });
+        b.click();
         return JSON.stringify({ ok: true });
       }
       // backlog #51 (verify/probe-wand.js): read the wand and operate its controls as a pointer would.
@@ -3674,6 +4193,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         };
         return JSON.stringify({
           scope: typeof window.resourcesDisplay === 'object' && typeof window.resourcesDisplay.view === 'function',
+          pauseScope: typeof window.agentPauseDisplay === 'object' && typeof window.agentPauseDisplay.createAgentPauses === 'function',
           shown: document.querySelector('.panel[data-panel="resources"]').classList.contains('on'),
           chip: chip ? { hidden: chip.hidden, text: chip.getAttribute('aria-label') || chip.textContent, title: chip.title, amber: chip.classList.contains('res-amber'), red: chip.classList.contains('res-red') } : null,
           text: (document.getElementById('resources-root') || {}).textContent || '',
@@ -3683,10 +4203,14 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
             figs: [...r.querySelectorAll('.res-fig')].map(f => f.textContent) })),
           children: q('.res-child').map(c => ({ name: (c.querySelector('.res-cname') || {}).textContent || '', cmd: c.title || '', fit: cellFit(c.querySelector('.res-cname'), false),
             figs: [...c.querySelectorAll('.res-fig')].map(f => f.textContent),
-            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent })),
+            stop: (c.querySelector('[data-res-act="ask-stop"]') || { dataset: {} }).dataset.resPid || null, text: c.textContent,
+            pause: (c.querySelector('[data-res-act="pause"]') || { dataset: {} }).dataset.resPid || null,
+            resume: (c.querySelector('[data-res-act="resume"]') || { dataset: {} }).dataset.resPid || null,
+            paused: c.classList.contains('res-paused-row') })),
           // the Stop button's hit area (its ::after) and where its figures sit, for the layout checks
           stopHit: (() => { const b = q('.res-stop')[0]; if (!b) return null; const a = getComputedStyle(b, '::after'); return { w: parseFloat(a.width), h: parseFloat(a.height), box: b.getBoundingClientRect().width }; })(),
           figX: q('.res-child').map(c => [...c.querySelectorAll('.res-fig')].map(f => Math.round(f.getBoundingClientRect().right))),
+          inBox: (() => { const root = document.getElementById('resources-root'); if (!root) return { rootW: 0, rows: [] }; const r = root.getBoundingClientRect(); const lo = r.left + root.clientLeft, hi = lo + root.clientWidth; return { rootW: Math.round(root.clientWidth), rows: q('.res-child').map(c => [...c.children].every(k => { const b = k.getBoundingClientRect(); return b.width > 0 && b.left >= lo - 0.5 && b.right <= hi + 0.5; })) }; })(),
           confirm: (q('.res-confirm')[0] || {}).textContent || null,
           notes: q('.res-note').map(n => n.textContent),
           hist: (() => {
@@ -3794,6 +4318,83 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         el.click();
         return JSON.stringify({ ok: true });
       }
+      // backlog #119 A4: verify/probe-preview-panel.js reads the Preview panel's frame and the Dev servers chip (the page itself is a
+      // native view main reports on) and operates them as a pointer and a keyboard would
+      case 'previewState': {
+        const root = document.getElementById('preview-root');
+        const slot = root.querySelector('#preview-slot');
+        const sr = slot ? slot.getBoundingClientRect() : null;
+        const panel = document.querySelector('.panel[data-panel="preview"]');
+        const chip = document.getElementById('tb-devservers');
+        const pop = document.getElementById('dv-popover');
+        const pick = root.querySelector('#preview-port');
+        const field = root.querySelector('#preview-url');
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.previewDisplay === 'object' && typeof window.previewDisplay.view === 'function',
+          shown: panel.classList.contains('on'),
+          inShownModules: shownModules.has('preview'),
+          chip: { hidden: chip.hidden, text: chip.textContent, title: chip.title, cls: chip.className, icon: !!chip.querySelector('svg'), expanded: chip.getAttribute('aria-expanded') },
+          menu: { open: !pop.hidden, rows: [...pop.querySelectorAll('.dv-row')].map(r => r.textContent), text: pop.textContent },
+          url: field ? field.value : null,
+          note: (root.querySelector('.pv-note') || {}).textContent || null,
+          options: pick ? [...pick.options].map(o => ({ v: o.value, t: o.textContent, s: o.selected })) : [],
+          slot: sr ? { x: sr.left, y: sr.top, width: sr.width, height: sr.height } : null,
+          empty: !!root.querySelector('.pv-empty'),
+          live: previewLive,
+          visibility: document.visibilityState,
+        });
+      }
+      case 'previewDo': {
+        const root = document.getElementById('preview-root');
+        if (a.op === 'type') {
+          const f = root.querySelector('#preview-url');
+          if (!f) return JSON.stringify({ ok: false, error: 'no address field' });
+          f.value = String(a.text);
+        } else if (a.op === 'goto') {
+          // type and press Go in ONE turn: a redraw between the two (an event from the page) would put the old address back in the field
+          const f = root.querySelector('#preview-url');
+          const b = root.querySelector('[data-preview-act="go"]');
+          if (!f || !b) return JSON.stringify({ ok: false, error: 'no address field or go button' });
+          f.value = String(a.text);
+          b.click();
+        } else if (a.op === 'go') {
+          const b = root.querySelector('[data-preview-act="go"]');
+          if (!b) return JSON.stringify({ ok: false, error: 'no go button' });
+          b.click();
+        } else if (a.op === 'act') {
+          const b = root.querySelector('[data-preview-act="' + String(a.act) + '"]');
+          if (!b) return JSON.stringify({ ok: false, error: 'no control ' + String(a.act) });
+          b.click();
+        } else if (a.op === 'pick') {
+          const s = root.querySelector('#preview-port');
+          if (!s) return JSON.stringify({ ok: false, error: 'no picker' });
+          s.value = String(a.value);
+          s.dispatchEvent(new Event('change', { bubbles: true }));
+        } else if (a.op === 'chip') {
+          document.getElementById('tb-devservers').click();
+        } else if (a.op === 'menu') {
+          const b = document.querySelector('#dv-popover [data-dev-act="' + String(a.act) + '"][data-dev-port="' + String(a.port) + '"]');
+          if (!b) return JSON.stringify({ ok: false, error: 'no menu button ' + JSON.stringify(a) });
+          b.click();
+        } else if (a.op === 'overlay') {
+          // a stand-in for a float / menu crossing the slot: it must hide the native view
+          let box = document.querySelector('.probe-preview-overlay');
+          if (box) box.remove();
+          if (a.on === true) {
+            const slot = root.querySelector('#preview-slot');
+            if (!slot) return JSON.stringify({ ok: false, error: 'no slot' });
+            const r = slot.getBoundingClientRect();
+            box = document.createElement('div');
+            box.className = 'probe-preview-overlay';
+            box.style.cssText = 'position:fixed;z-index:45;background:#c33;left:' + (r.left + r.width * 0.4) + 'px;top:' + (r.top + r.height * 0.25) + 'px;width:' + (r.width * 0.5) + 'px;height:' + (r.height * 0.5) + 'px';
+            document.body.appendChild(box);
+          }
+        } else {
+          return JSON.stringify({ ok: false, error: 'unknown op' });
+        }
+        return JSON.stringify({ ok: true });
+      }
       case 'canvasMcpBox': {
         // #71 question 8: the Style tab's switch for Claude's panel (read it, or press it)
         const box = document.getElementById('style-canvas-mcp');
@@ -3845,6 +4446,55 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           focus: { terminal: !!(term.element && term.element.contains(act)), panel: !!(act && gamesRoot.contains(act)), tag: act ? act.tagName : null },
           accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
         });
+      }
+      // backlog #120 (verify/probe-activity-map.js): read the Map panel, and operate it as a pointer would
+      case 'mapState': {
+        if (!mapPanel) return JSON.stringify({ ok: false, error: 'no map panel' });
+        const cv = document.querySelector('#map-root .map-canvas');
+        const text = (sel) => { const e = document.querySelector('#map-root ' + sel); return e ? e.textContent : null; };
+        // how many sampled pixels differ clearly from the background: a canvas that never drew reads 0. NEVER getImageData on the panel's own
+        // canvas: a few of those and Chromium moves it off the GPU, which would make the probe's cost figures a measurement of the probe.
+        let inked = null;
+        try {
+          const t = document.createElement('canvas');
+          t.width = 40; t.height = 40;
+          const tg = t.getContext('2d', { willReadFrequently: true });
+          tg.drawImage(cv, 0, 0, 40, 40);
+          const px = tg.getImageData(0, 0, 40, 40).data;
+          let n = 0;
+          for (let i = 4; i < px.length; i += 4) if (Math.abs(px[i] - px[0]) + Math.abs(px[i + 1] - px[1]) + Math.abs(px[i + 2] - px[2]) > 40) n += 1;
+          inked = n;
+        } catch { /* unreadable */ }
+        return JSON.stringify({
+          ok: true,
+          scope: typeof window.mapModel === 'object' && typeof window.mapLayout === 'object' && typeof window.mapDisplay === 'object',
+          shown: document.querySelector('.panel[data-panel="map"]').classList.contains('on'),
+          shownModule: shownModules.has('map'), focused: windowFocused, visibility: document.visibilityState, leanOn,
+          state: mapPanel.state(), rafs: mapRafs, fake: !!mapFake, rates: mapRates,
+          strip: { tasks: text('[data-stat="tasks"]'), events: text('[data-stat="events"]'), active: text('[data-stat="active"]'), uptime: text('[data-stat="uptime"]'), zoom: text('.map-zoom') },
+          legend: [...document.querySelectorAll('#map-root .map-key')].map(k => k.textContent),
+          card: { hidden: document.querySelector('#map-root .map-card').hidden, title: text('.map-card-title'), lines: [...document.querySelectorAll('#map-root .map-card-line')].map(l => l.textContent) },
+          canvas: rectOf(cv), bitmap: { w: cv.width, h: cv.height }, dpr: window.devicePixelRatio, colours: inked,
+          accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        });
+      }
+      case 'mapDo': {
+        if (!mapPanel) return JSON.stringify({ ok: false, error: 'no map panel' });
+        const cv = document.querySelector('#map-root .map-canvas');
+        const at = (id) => { const p = mapPanel.screenPos(id); const r = cv.getBoundingClientRect(); return p ? { clientX: r.left + p.x, clientY: r.top + p.y } : null; };
+        if (a.op === 'fake') { mapFake = { project: { name: String(a.project || currentProjectName || 'probe') }, sessions: a.sessions || [], agents: a.agents || [], claims: a.claims || [], totalAgents: a.totalAgents, lanes: a.lanes || null, feed: a.feed || null }; mapRefresh(); }
+        else if (a.op === 'unfake') { mapFake = null; mapRefresh(); }
+        else if (a.op === 'fit') mapPanel.fit();
+        else if (a.op === 'churn') { clearInterval(mapChurn); mapChurn = null; if (Number(a.n) > 0) mapChurn = setInterval(() => { for (let i = 0; i < Number(a.n); i += 1) mapRefresh(); }, 100); }
+        else if (a.op === 'frameMs') mapPanel.setFrameMs(Number(a.ms));
+        else if (a.op === 'remount') { mapPanel.destroy(); mapPanel = mapMountPanel({ desynchronized: a.desynchronized === true, ...(Number.isFinite(Number(a.ms)) && a.ms ? { frameMs: Number(a.ms) } : {}) }); mapView(); mapRefresh(); }
+        else if (a.op === 'hover') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointermove', { ...p, bubbles: true })); }
+        else if (a.op === 'click') { const p = at(String(a.id)); if (!p) return JSON.stringify({ ok: false, error: 'no node ' + a.id }); cv.dispatchEvent(new PointerEvent('pointerdown', { ...p, bubbles: true })); cv.dispatchEvent(new PointerEvent('pointerup', { ...p, bubbles: true })); }
+        else if (a.op === 'wheel') { const r = cv.getBoundingClientRect(); cv.dispatchEvent(new WheelEvent('wheel', { clientX: r.left + (a.x || 100), clientY: r.top + (a.y || 100), deltaY: Number(a.deltaY) || 0, bubbles: true, cancelable: true })); }
+        else if (a.op === 'leave') cv.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true }));
+        else if (a.op === 'edge') { const p = mapPanel.edgePos(String(a.id), 0.5); if (!p) return JSON.stringify({ ok: false, error: 'no edge ' + a.id }); const r = cv.getBoundingClientRect(); cv.dispatchEvent(new PointerEvent('pointermove', { clientX: r.left + p.x, clientY: r.top + p.y, bubbles: true })); }
+        else return JSON.stringify({ ok: false, error: 'unknown op ' + a.op });
+        return JSON.stringify({ ok: true, state: mapPanel.state() });
       }
       // backlog #33 (verify/probe-ask-panel.js): read the Ask panel, and operate it as a pointer or a keyboard would
       case 'askState': {
@@ -4128,7 +4778,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const cs = getComputedStyle(document.documentElement);
         return JSON.stringify({
           ok: true, leanOn, bodyLean: document.body.classList.contains('lean'), shown: [...shownModules],
-          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length, headerVisible: visible(document.querySelector('header')),
+          zonesVisible: [...document.querySelectorAll('.zone')].filter(visible).length,
+          zones: [...document.querySelectorAll('.zone')].filter(visible).map((z) => ({ group: z.dataset.group || null, keep: 'leanKeep' in z.dataset, panels: [...z.querySelectorAll('.zone-panels > .panel.on')].map((p) => p.dataset.panel), rect: rectOf(z) })),
+          headerVisible: visible(document.querySelector('header')),
           barVisible: visible(document.getElementById('terminal-bar')),
           webgl: !!webglAddon, termRect: rectOf(document.getElementById('termwrap')), page: { width: window.innerWidth, height: window.innerHeight },
           buffer: { length: buf.length, baseY: buf.baseY, cols: term.cols, rows: term.rows },
@@ -4216,7 +4868,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         return JSON.stringify({ ok: true });
       }
       // The Style tab's own sends, as the drop zone would make them: a path the host copies in.
-      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}) }); break;
+      case 'bgStyle': sendStyle('background', { action: a.action, ...(a.path ? { path: a.path } : {}), ...(a.look ? { look: a.look } : {}), ...(a.mode ? { mode: a.mode } : {}) }); break;
       // The Match colours button, as a click would press it.
       case 'bgMatch': {
         const b = document.getElementById('style-match');
@@ -5021,6 +5673,31 @@ document.addEventListener('click', (e) => {
   if (b && b.dataset.whereRoot) jumpToFolder(b.dataset.whereRoot).then(() => {}, () => {});
 });
 
+// An agent card's Pause / Resume (BACKLOG #19). The state machine and the markup live in app/agent-pause-display.js; the typing goes through
+// typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
+const agentPauses = window.agentPauseDisplay.createAgentPauses();
+let latestAgentIds = [];      // [{ name, agentId }] of the live runs, from every `processes` frame
+function agentPauseHtml(agent, counts) {
+  return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('.agent-pause-btn');
+  const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
+  if (!act) return;
+  // The run's task id, when the host knows exactly one: named in the line, and what our TaskStop is recognised by (app/agent-pause-display.js).
+  const ids = latestAgentIds.filter(a => a.name === act.agent).map(a => a.agentId);
+  const taskId = ids.length === 1 ? ids[0] : undefined;
+  const command = window.agentPauseDisplay.commandFor(act.act, act.agent, taskId) || window.agentPauseDisplay.commandFor(act.act, act.agent);
+  if (!command || !agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)) return;
+  renderRoster();
+  // A Pause that never took effect is called off after the timeout, so the card must be drawn again then.
+  setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
+  typeCommand(command, (r) => {
+    // typed and not submitted (the gate said wait) is NOT a pause either: nothing was asked of the model
+    if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
+  }, window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false });
+});
+
 function countBadgeHtml(agent, counts) {
   // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
   // concurrent run is news.
@@ -5299,6 +5976,7 @@ document.getElementById('roster-show-hidden').addEventListener('click', () => {
 });
 
 function renderRoster() {
+  mapRefresh();       // the Map reads the same roster (a no-op unless it is on screen and not lean)
   // Lean mode keeps only a strip of the working agents' still portraits; the panel is not drawn (nor its videos churned).
   if (leanOn) { paintLeanFaces(); return; }
   const showBtnEl = document.getElementById('roster-show-hidden');
@@ -5349,6 +6027,7 @@ function renderRoster() {
   // A card waiting on you floats to the top, then base state, then name (app/agent-state-display.js sortRows).
   const rows = window.agentStateDisplay.sortRows([...roster.values(), ...(exRow ? [exRow] : [])]);
   const counts = instanceCounts(latestParty);
+  agentPauses.seen(counts, Date.now(), { turn: sessionTurn });
 
   // BACKLOG #14. Reconciled here as well as on the host, so no frame ordering
   // ever draws a hide flag on an awake agent. The host stays authoritative:
@@ -5393,6 +6072,7 @@ function renderRoster() {
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
       `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +
@@ -6112,6 +6792,8 @@ function renderUsage(usage) {
 // HOW to draw it lives in app/quota-display.js so it can be tested; this only
 // turns that decision into markup.
 const quotaEl = document.getElementById('quota');
+// What kind of host this page is attached to: 'shell' for a plain shell tab (the hello says), else null. Claude-only controls refuse on 'shell'.
+let hostKind = null;
 let lastQuotaPayload = null;
 
 // #90: when a window is used up its meter reads "Claude back in 2h 14m" (a model-scoped one, "Fable back Thu 09:00"), and when
@@ -6161,7 +6843,7 @@ function renderQuota(quota) {
     return;
   }
   // A window still reported used up after its reset passed is drawn unknown, not as the old red 100% (the next poll says).
-  const d = quotaDisplay(quotaSettlePastResets(lastQuotaPayload, nowMs));
+  const d = quotaDisplay(quotaSettlePastResets(lastQuotaPayload, nowMs), nowMs, hostKind);
 
   if (d.state !== 'ready') {
     // No bars. Three tracks sitting at zero would claim the plan is untouched,
@@ -6564,6 +7246,7 @@ function applyLean(payload) {
   leanNight = s.night;
   if (on === leanOn) { if (nightChanged) syncLeanMotion(); return; }
   leanOn = on;
+  mapView();                       // lean stops the map outright; leaving lean draws it again
   if (on) usage('lean:on');
   document.body.classList.toggle('lean', on);
   closeLayoutMenu();
@@ -6926,6 +7609,7 @@ function requestSwitch(kind, raw) {
     current: kind === 'model' ? currentModel() : currentEffort,
     screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
+    hostKind,
   });
   if (!plan.ok) {
     setTopBarNotice(kind, switchNotice({ kind, result: 'refused', notice: plan.notice }));
@@ -6969,6 +7653,8 @@ function requestSwitch(kind, raw) {
 // share one input box, and the top bar's Enter could submit what the other typed (Dexter D8).
 let typingBusy = false;
 function typeAndCheck(enterInsert, command, done) {
+  // The one place every typed command passes (the top bar, the wand, the Git drawer, the reader, Claude's panel): a shell tab gets none.
+  if (hostKind === 'shell') { done({ ok: false, reason: SHELL_TAB_REFUSAL }); return; }
   if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
   typingBusy = true;
   const settle = done;
@@ -7017,6 +7703,52 @@ const SUBMIT_RECHECK_MS = 400;
 const QUEUED_POLL_MS = 150;
 const QUEUED_POLLS = 6;
 
+// The review comments the Changes Compare typed (PR #199 Dexter 1, r2 N1-N3): THE COMPOSER IS NEVER DESTRUCTIVE. A second comment is ADDED at the end of
+// the line this feature typed (`lastCommentLine`), with no clear at all, when the SCREEN says the box still holds exactly that line (any editor mode,
+// app/top-bar-display.js boxIsCommand). MEASURED on the real CLI (verify/probe-ctrl-u-wrapped.js, claude 2.1.x, 150 characters): Ctrl-U on a line wrapped
+// over rows kills only its LAST row (80 columns: 3 rows -> 2 left; 120 columns: 2 -> 1), so a clear-and-retype of a wrapped line is no clear, and
+// Ctrl-E followed by more text appends correctly at both widths. So nothing here ever sends Ctrl-U to a box that may hold a comment of ours: if the
+// read-back after an append is not exactly what was expected, it STOPS and leaves the box as it is. A box that holds none of our line is typed into the
+// ordinary way (a draft is replaced, with the Ctrl+Y note); one that looks like our comment but is not exactly it is refused, never cleared.
+let lastCommentLine = '';
+const APPEND_UNCONFIRMED = "the prompt didn't read back as expected. What is typed stays as it is; Ctrl+Y in that tab restores an older draft. The comments not typed are still queued";
+function typeReviewComment(text, done) {
+  const lines = screenLines();
+  if (vimInsertShown(lines)) vimSeen = true;
+  const plan = planCommentTyping({ lines, last: lastCommentLine, text, vim: vimSeen, termRows: term.rows, connected: !!ws && ws.readyState === WebSocket.OPEN, hostKind });
+  if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
+  if (plan.mode === 'fresh') {
+    typeCommand(plan.command, (r) => {
+      if (!r.ok) { done({ ok: false, reason: r.reason }); return; }
+      lastCommentLine = plan.command;
+      usage('changes:comment-typed');
+      done({ ok: true, appended: false, ...(r.box ? { cleared: r.box } : {}) });
+    }, 'comment');
+    return;
+  }
+  typeAppended(plan.keys, plan.expected, (r) => {
+    if (r.ok) {
+      lastCommentLine = plan.expected;
+      usage('changes:comment-typed');
+    }
+    done(r);
+  });
+}
+
+// The append's own typing (it can't go through typeAndCheck, whose failed read-back clears the box): gated like it, a shell tab first, then the lock;
+// spaced like every other typing, and NO cleanup path of any kind.
+function typeAppended(keys, expected, done) {
+  if (hostKind === 'shell') { done({ ok: false, reason: SHELL_TAB_REFUSAL }); return; }
+  if (typingBusy) { done({ ok: false, reason: 'another command is still being typed' }); return; }
+  typingBusy = true;
+  term.focus();
+  keys.forEach((k, i) => setTimeout(() => send(JSON.stringify({ type: 'input', data: k })), PTY_STEP_MS * i));
+  setTimeout(() => {
+    typingBusy = false;
+    done(boxIsCommand(screenLines(), expected, { termRows: term.rows }) ? { ok: true, appended: true } : { ok: false, reason: APPEND_UNCONFIRMED });
+  }, PTY_STEP_MS * (keys.length + 2));
+}
+
 function typeCommand(command, done, kind, opts) {
   term.focus();
   const lines = screenLines();
@@ -7029,6 +7761,7 @@ function typeCommand(command, done, kind, opts) {
     screen: inputState(lines, { vim: vimSeen }),
     connected: !!ws && ws.readyState === WebSocket.OPEN,
     kind,                       // 'mention' types the reader's `@path#Lx-y` (never Enter, like /merged)
+    hostKind,                   // 'shell': nothing is sent to a plain shell tab, see PR 208 Miguel Y3
   });
   if (!plan.ok) { done({ ok: false, reason: plan.reason }); return; }
   const box = boxText(lines);
@@ -7055,7 +7788,8 @@ function typeCommand(command, done, kind, opts) {
  */
 function submitTyped(command, opts, done) {
   const typeOnly = opts.typeOnly;
-  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly });
+  const gate = submitGate.planSubmit({ turn: sessionTurn, typeOnly, kind: hostKind });
+  if (gate.reason) { done({ ok: false, reason: gate.reason }); return; }
   if (!gate.enter) { done({ ok: true, submitted: false, flash: gate.flash }); return; }
   if (!gate.recheck) { pressEnter(done, command, opts.enterInsert); return; }
   typingBusy = true;
@@ -7633,6 +8367,20 @@ function renderStyleSection(section) {
       `</section>`
     );
   }
+  if (section.id === 'tray' && v) {
+    // Ids written out in full: test/renderer-scope.test.js finds them by text.
+    const state = (on) => `${on === true ? ' checked' : ''}${on === null ? ' disabled' : ''}`;
+    return (
+      `<section class="style-section" data-section="tray">${header}` +
+      `<label class="style-row"><input type="checkbox" id="style-tray-icon"${state(v.trayIcon)}>` +
+      ` Tray icon</label>` +
+      `<div class="style-note">${escapeHtml(v.trayDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-tray-close"${state(v.minimiseOnClose)}>` +
+      ` Minimise to tray on close</label>` +
+      `<div class="style-note">${escapeHtml(v.closeDescription)}</div>` +
+      `</section>`
+    );
+  }
   if (section.id === 'panel' && v) {
     // Id written out in full: test/renderer-scope.test.js finds it by text.
     return (
@@ -7640,6 +8388,9 @@ function renderStyleSection(section) {
       `<label class="style-row"><input type="checkbox" id="style-canvas-mcp"${v.mcp === true ? ' checked' : ''}${v.mcp === null ? ' disabled' : ''}>` +
       ` Let Claude build in its panel (next session)</label>` +
       `<div class="style-note">${escapeHtml(v.mcpDescription)}</div>` +
+      `<label class="style-row"><input type="checkbox" id="style-cc-mod"${v.mod === true ? ' checked' : ''}${v.mod === null ? ' disabled' : ''}>` +
+      ` Feed quota, context and agent states from the CLI (next session)</label>` +
+      `<div class="style-note">${escapeHtml(v.modDescription)}</div>` +
       `</section>`
     );
   }
@@ -7875,6 +8626,24 @@ function bindAvatarSection() {
       window.harness.canvas.settingsSet(canvasMcpBox.checked).then(settledCanvasMcp).catch(() => refreshCanvasMcp());
     });
   }
+  // BACKLOG #119 A2: the claude-custom mod's switch, the same shape: send the desired state, settle on main's answer, re-read on null.
+  const ccModBox = document.getElementById('style-cc-mod');
+  if (ccModBox && window.harness && window.harness.ccMod) {
+    ccModBox.addEventListener('change', () => {
+      window.harness.ccMod.settingsSet(ccModBox.checked).then(settledCcMod).catch(() => refreshCcMod());
+    });
+  }
+  // BACKLOG #119 A8: the tray icon and minimise-on-close. Send the DESIRED state; main answers what it saved, and null (a failed
+  // save) re-reads the truth instead of trusting the click.
+  const tray = window.harness && window.harness.tray;
+  const trayIconBox = document.getElementById('style-tray-icon');
+  if (trayIconBox && tray) {
+    trayIconBox.addEventListener('change', () => { tray.set('trayIcon', trayIconBox.checked).then(settledTray).catch(refreshTraySettings); });
+  }
+  const trayCloseBox = document.getElementById('style-tray-close');
+  if (trayCloseBox && tray) {
+    trayCloseBox.addEventListener('change', () => { tray.set('minimiseOnClose', trayCloseBox.checked).then(settledTray).catch(refreshTraySettings); });
+  }
   const framelessBox = document.getElementById('style-frameless');
   if (framelessBox && chrome) {
     framelessBox.addEventListener('change', () => {
@@ -7914,6 +8683,40 @@ function refreshCanvasMcp(attempt = 0) {
   window.harness.canvas.settingsGet().then((v) => {
     if (typeof v === 'boolean') { canvasMcpLoop = false; settledCanvasMcp(v); } else again();
   }).catch(again);
+}
+// BACKLOG #119 A2: the mod's switch, read the same way as the panel's (one loop, backing off with the same delays, then stopping).
+function settledCcMod(value) {
+  if (typeof value === 'boolean') { styleState = reduceCcMod(styleState, value); renderStylePanel(); } else refreshCcMod();
+}
+let ccModLoop = false;
+function refreshCcMod(attempt = 0) {
+  if (!(window.harness && window.harness.ccMod && window.harness.ccMod.settingsGet)) return;
+  if (attempt === 0) { if (ccModLoop) return; ccModLoop = true; }
+  const again = () => {
+    const wait = canvasMcpRetryDelay(attempt);
+    if (wait === null) { ccModLoop = false; return; }
+    setTimeout(() => refreshCcMod(attempt + 1), wait);
+  };
+  window.harness.ccMod.settingsGet().then((v) => {
+    if (typeof v === 'boolean') { ccModLoop = false; settledCcMod(v); } else again();
+  }).catch(again);
+}
+// BACKLOG #119 A8: main's tray switches. Null (main couldn't read the file) stays unknown and asks again, never a guessed answer.
+function applyTraySettings(settings) {
+  if (!settings || typeof settings !== 'object') return;
+  styleState = reduceTraySettings(styleState, settings);
+  renderStylePanel();
+}
+function settledTray(saved) {
+  if (saved && typeof saved === 'object') applyTraySettings(saved);
+  else refreshTraySettings();
+}
+function refreshTraySettings() {
+  if (!(window.harness && window.harness.tray)) return;
+  window.harness.tray.get().then((s) => {
+    if (s && typeof s === 'object') applyTraySettings(s);
+    else setTimeout(refreshTraySettings, 1000);
+  }).catch(() => setTimeout(refreshTraySettings, 1000));
 }
 function settledChrome(saved) {
   if (saved && typeof saved === 'object') applyChromeSettings(saved);
@@ -8002,7 +8805,9 @@ if (window.harness && window.harness.chrome) {
   window.harness.chrome.onChange(applyChromeSettings);
   refreshChromeSettings();
 }
+refreshTraySettings();             // BACKLOG #119 A8: the tray switches in the Style tab
 refreshCanvasMcp();                // #71 question 8: the panel's switch in the Style tab
+refreshCcMod();                    // #119 A2: the claude-custom mod's switch, next to it
 
 // The hover pencil on a roster face: pick a file, send it as the same
 // `portrait set` a drop sends, for the state the card is showing.
@@ -8067,6 +8872,8 @@ if (window.harness && window.harness.onWindowFocus) {
     document.body.classList.toggle('unfocused', !focused);
     windowFocused = focused === true;
     syncLeanMotion();
+    mapView();                     // the map moves only while the window is focused
+    if (windowFocused) mapPollNow();
   });
 }
 refreshDim();
@@ -8273,8 +9080,43 @@ function requestStyleBackground(files) {
   sendStyle('background', { action: 'set-background', path });
 }
 
+// PR #197 Miguel Y9: why the claude-custom mod is not loaded, in the diagnostics pane's log (Ctrl+Shift+D). Said only for a mod that is
+// off or could not load, and once per reason, so a hello after every reattach does not stack the same line.
+let lastModStatusLogged = null;
+function noteModStatus(status) {
+  if (!status || typeof status !== 'object' || status.state === 'on' || typeof status.reason !== 'string' || status.reason === lastModStatusLogged) return;
+  lastModStatusLogged = status.reason;
+  logLine('claude-custom mod', status.reason);
+}
+
+// PR #201 Miguel S1: which ConPTY the session runs on, in the diagnostics pane's log (Ctrl+Shift+D), once per reason. Said only when it is
+// not the bundled one, since that is what turns the CLI's status protocol off.
+let lastPtyBackendLogged = null;
+function notePtyBackend(info) {
+  if (!info || typeof info !== 'object' || info.backend === 'bundled' || typeof info.reason !== 'string' || info.reason === lastPtyBackendLogged) return;
+  lastPtyBackendLogged = info.reason;
+  logLine('pty backend', 'OS ConPTY: ' + info.reason);
+}
+
+// The kill switch (host/kill-switch.js; documentation/PLAN_SAFETY_NET.md lane 2): which sentinel stopped this session, or the night
+// budget, in the diagnostics pane's log (Ctrl+Shift+D). The tab itself already shows the line the host wrote into the screen. Once
+// per stop, so the hello after every reattach does not stack it.
+let lastKillSwitchLogged = null;
+function noteKillSwitch(stop) {
+  if (!stop || typeof stop !== 'object' || typeof stop.text !== 'string' || stop.text === lastKillSwitchLogged) return;
+  lastKillSwitchLogged = stop.text;
+  logLine('kill switch', stop.text);
+}
+
 function handleControl(msg) {
+  if (msg.type === 'modStatus') { noteModStatus(msg.modStatus); return; }
+  if (msg.type === 'killSwitch') { noteKillSwitch(msg.killSwitch); return; }
   if (msg.type === 'hello') {
+    noteModStatus(msg.modStatus);
+    noteKillSwitch(msg.killSwitch);
+    notePtyBackend(msg.ptyBackend);
+    // Which kind of host this is (a shell tab's says 'shell'); set before anything below can render or type.
+    hostKind = msg.kind === 'shell' ? 'shell' : null;
     // The host sends `hello` immediately before replaying the current screen.
     // Without this reset, reattaching after a detach appends the replay to what
     // is already on screen and the session appears twice.
@@ -8282,12 +9124,15 @@ function handleControl(msg) {
     document.getElementById('cwd').textContent = msg.cwd || '';
     // what this host accepts as control: the Files tab sends nothing to one that doesn't list `repo`
     repoBrowser.setControls(msg.controls);
+    if (changesPanel && shownModules.has('changes')) changesPanel.refresh();      // the socket opens before the hello: a panel showing since load asks now
     // the Ask panel asks nothing of a host that doesn't list `ask` (an older host would type the frame into the session)
     askRequester.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (askPanel && shownModules.has('ask')) askPanel.show();
     askWasDocked = null;       // a (re)attached host knows nothing of this window: say it again
     if (askPanel) askView();
     hostControls = Array.isArray(msg.controls) ? msg.controls : [];
+    // OSC 7501: the CLI's state as the host holds it; an older host has none, which is no program state (never a guessed idle).
+    applyProgramStatus(programStatusDisplay.hostListsProgramStatus(hostControls) && msg.programStatus ? msg.programStatus.root : null, 'hello');
     // a hello with no `controls` is an old host's: an empty list, so the panel says it needs a newer session
     gitGraphAsker.setControls(Array.isArray(msg.controls) ? msg.controls : []);
     if (shownModules.has('git') && gitView === 'graph') requestGitGraph();
@@ -8365,11 +9210,18 @@ function handleControl(msg) {
     rosterIndexPayload = msg.rosterIndex || null;
     wandState = wandDisplay.reduce(wandState, msg);
     renderWand();
+    schedState = window.schedulesDisplay.reduce(schedState, msg);
+    renderSchedules();
     canvasOnFrame(msg.canvas);
     loadoutState = loadoutDisplay.reduce(loadoutState, msg);
     hooksOn = msg.hooks;
     renderAgentStats(msg.agentStats);
+    agentPauses.sessionIs(msg.sessionId);     // seeds the id (a reattach, a reload, a reconnect), so the next different one is seen as a new session
     occupancy.session = sessionIdOf(msg.sessionId);
+    mapLive = true;                // from here on every top-level const the map reads exists
+    mapSince.clear();              // a (re)attach: whatever is already working started before this page saw it
+    mapRates = null;
+    mapView();
     renderRoster();
     if (Array.isArray(msg.seats)) councilSeats = msg.seats;
     if (msg.maxSeats) seatMax = msg.maxSeats;
@@ -8379,6 +9231,7 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'session') {
+    agentPauses.sessionIs(msg.sessionId);     // a different session id (after /clear) forgets every agent pause: its background agents are gone
     occupancy.session = sessionIdOf(msg.sessionId);
     renderRoster();
     return;
@@ -8393,11 +9246,17 @@ function handleControl(msg) {
     renderWand();
     return;
   }
+  if (msg.type === 'schedules') {
+    schedState = window.schedulesDisplay.reduce(schedState, msg);
+    renderSchedules();
+    return;
+  }
   if (msg.type === 'canvas') {
     canvasOnFrame(msg);
     return;
   }
   if (msg.type === 'mood') {
+    mapNoteMood(msg);
     roster.set(msg.agent, msg);
     renderRoster();
     reportTabStatus();
@@ -8468,6 +9327,13 @@ function handleControl(msg) {
     // `mode`, so calling renderMode(undefined) here hid the badge a second after
     // `hello` had correctly set it -- the host was right the whole time.
     renderProcesses(msg.running);
+    latestAgentIds = Array.isArray(msg.agents) ? msg.agents.filter(a => a && typeof a.name === 'string' && typeof a.agentId === 'string') : [];
+    // Our Pause's TaskStop, seen as the CLI's own tool call (app/agent-pause-display.js: "paused" needs it).
+    for (const p of Array.isArray(msg.running) ? msg.running : []) {
+      if (p && p.tool === 'TaskStop' && p.state === 'running' && typeof p.startedAt === 'number') agentPauses.sawTaskStop(p.startedAt, p.taskId);
+      // ...and one that FAILED stopped nothing (PR #158 Dexter R3 N4).
+      if (p && p.tool === 'TaskStop' && p.failed === true && typeof p.startedAt === 'number') agentPauses.stopFailed(p.startedAt, p.taskId);
+    }
     latestParty = msg.party || [];
     renderParty(msg.party);
     // The ×N badge is derived from `party`, which just changed; the roster map
@@ -8517,6 +9383,11 @@ function handleControl(msg) {
     renderStatusFields(msg.fields);
     return;
   }
+  if (msg.type === 'program-status') {
+    // Sent by a host that lists it in its hello; one that doesn't never sends it, and a frame from anywhere else is ignored.
+    if (programStatusDisplay.hostListsProgramStatus(hostControls)) applyProgramStatus(msg.root);
+    return;
+  }
   if (msg.type === 'attention') {
     gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
     // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
@@ -8559,8 +9430,16 @@ function handleControl(msg) {
   }
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
+    agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
+    // ...so the card is drawn again PAUSE_TIMEOUT_MS after it, not only after the click: a quiet idle session sends no other frame (PR #158 Dexter R3 N5).
+    if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
     paintBar();
     reportTabStatus();
+    mapRefresh();
+    return;
+  }
+  if (msg.type === 'map') {
+    mapOnMap(msg);
     return;
   }
   if (msg.type === 'prompt') {
@@ -8583,7 +9462,8 @@ function handleControl(msg) {
     renderCooldowns(msg.cooldowns);
     return;
   }
-  if (msg.type === 'repo') {
+  // `changes` (the Changes panel, #119 A3) shares the browser's requester: left out here, every answer and every `changed` push is dropped
+  if (window.repoBrowser.handles(msg)) {
     repoBrowser.onMessage(msg);
     return;
   }
@@ -8740,7 +9620,9 @@ function handleControl(msg) {
     return;
   }
   if (msg.type === 'exit') {
-    term.write('\r\n\x1b[33m[claude exited]\x1b[0m\r\n');
+    term.write('\r\n\x1b[33m' + shellExitText(hostKind, msg.error) + '\x1b[0m\r\n');
+    // The session is over: nothing it said last (working, blocked) is still true (PR #201 Dexter 1).
+    applyProgramStatus(null);
     return;
   }
 }
@@ -8831,6 +9713,8 @@ function connect() {
     }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
     if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
+    applyProgramStatus(null, 'lost');
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
     if (bar.bedtime !== null) applyBedtime(null, { fromHost: false });
     // Detach is normal, not fatal — the host keeps the session alive, so just

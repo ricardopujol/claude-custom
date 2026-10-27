@@ -21,7 +21,8 @@
  *           launches one host on one folder by port keeps working unchanged.
  */
 
-const { app, BrowserWindow, WebContentsView, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
@@ -43,7 +44,7 @@ const { projectLabel } = require('../host/project-path');
 
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
-const { readIdentity, readTokenFile } = require('../host/host-identity');
+const { readIdentity, readTokenFile, defaultIsAlive } = require('../host/host-identity');
 const { readLook, lookDirState, ensureLookDir } = require('../host/style');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
@@ -65,13 +66,26 @@ const { createStore } = require('../host/store');
 const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
+// BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
+const { isShellKey, shellHostsOf } = require('../host/shell-tab');
 const { sendControl } = require('../host/host-client');
 const { probePort } = require('../host/port-probe');
 const { createOps, scriptsDir } = require('../host/worktree-ops');
+// BACKLOG #119 A6: start a lane from a GitHub issue (the + form's "From an issue" list, the lane's brief, the tab's link).
+const { createIssueService, answerIssuesRequest, issueArg, issueForBranch, resolveIssueUrl } = require('../host/issues');
+const { createLaneBriefWriter } = require('../host/issue-lane');
+const { createIssueLinks, issueLinksFileFor } = require('../host/issue-links');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
+const { guardNavigation } = require('./nav-guard');
 const { createCanvasViews, registerCanvasIpc, HOST_RESOLVER_RULES } = require('./canvas-views');
 const { readMcpSetting, writeMcpSetting } = require('../host/canvas-settings');
+const { createPreviewViews } = require('./preview-views');
+const { createDevServersService } = require('./dev-servers-service');
+const devServersHost = require('../host/dev-servers');
+const { lookup: lookupPortBlock } = require('../host/port-blocks');
+const { worktreeRoot } = require('../host/worktree-env');
+const { readModSetting, writeModSetting } = require('../host/cc-mod-settings');
 const { createStripAccent } = require('./strip-accent');
 const fileLink = require('./file-link');
 const { createRepoActions } = require('./repo-actions');
@@ -110,11 +124,16 @@ const { createSharedPoller, defaultDir: defaultPollerDir } = require('../host/sh
 const pollerPolicy = require('../host/poller-policy');
 const { createPersistentExec } = require('../host/persistent-powershell');
 const { killVerified } = require('../host/resource-kill');
+const { suspendVerified } = require('../host/process-suspend');
+const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
+const { runStopAll, countUnstoppable, describeUnstoppable } = require('../host/kill-switch');
+const { writeFileAtomic } = require('../host/atomic-write');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
 const taskLogsFs = require('../host/task-logs-fs');
 const { claudeConfigDir } = require('../host/claude-config-dir');
+const os = require('os');
 const taskLogsRoot = path.join(require('os').tmpdir(), 'claude');
 const { createResourcesService, parseWarnAt } = require('./resources-service');
 const { createChipStore, watchChip, KEY: CHIP_KEY } = require('../host/chip-store');
@@ -124,6 +143,11 @@ const { listDeps, hostStopDeps } = require('../host/stop-deps');
 const { attachEnv, attachOnlyDecision } = require('../host/launch-target');
 const { menuModel } = require('./background-menu');
 const { menuTemplate, createBackgroundActions, popupUntilClosed, stopAllDetail } = require('./background-actions');
+// The tray icon (BACKLOG #119 A8): the needs-you count, show/hide, start minimised, minimise on close.
+const { createTrayController } = require('./tray-controller');
+const { renderTrayIcon } = require('./tray-icon');
+const { hidesOnClose, startsHidden } = require('./tray-model');
+const { readTraySettings, writeTraySetting, registerTrayHandlers } = require('./tray-settings');
 // The indexing assistant (#66): a field in the strip; Enter appends the note verbatim to the selected project's backlog
 // `## Inbox` (no model). The service is host/indexing-service.js; main's half (channels, the toast and list views over
 // the tabs) is app/indexing-bridge.js.
@@ -180,6 +204,9 @@ const WINDOW_LABEL = projectLabel(PROJECT_ROOT);
 const STRIP_HEIGHT = 34;
 const POLL_MS = 3000;
 const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
+// A probe window is killed by pid, which leaves a ghost icon in the notification area until the mouse passes over it. So only the
+// tray's own probe (verify/probe-tray.js) gets a tray; in every other probe the tray (and starting hidden) is off.
+const TRAY_ON = !PROBE_PORT || process.env.CLAUDE_CUSTOM_TRAY_PROBE === '1';
 // The probe's secret; every driver command must carry it (Miguel, PR #75 M4).
 // handleProbeCommand refuses everything when it's missing or short.
 const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
@@ -277,8 +304,10 @@ async function chooseHostPort(tab) {
   // #81: a branch tab's side session is looked for as a side host, on a port of its own: never the window's explicit one
   // (that is the branch tab's), and the walk never attaches it to the folder's own host.
   const side = tab.side === true;
-  if (!side && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
-  if (!side && EXPLICIT_PORT) {
+  // A5: so is a branch tab's shell: a host of its own, found only as a shell host.
+  const companion = side || tab.shell === true;
+  if (!companion && EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) return null;   // named and refused above
+  if (!companion && EXPLICIT_PORT) {
     // Opened from the ▾ menu: attach to that host or refuse, never spawn one.
     const decision = attachOnlyDecision(decideAttach({
       requestedCwd: tab.cwd,
@@ -293,11 +322,16 @@ async function chooseHostPort(tab) {
     }
     return { port: EXPLICIT_PORT, action: decision.action };
   }
-  return resolvePort({ cwd: tab.cwd, occupantAt, side });
+  return resolvePort({ cwd: tab.cwd, occupantAt, side, kind: tab.shell === true ? 'shell' : undefined });
 }
 
 // This build's identity files, or NULL when they can't be listed: not "no hosts" (a side host may be running), so the shell looks for
 // one under every tab (host/side-session.js sideHostsOf).
+// This build and its sibling worktrees: every install whose identity files STOP ALL checks for hosts too old to watch the file.
+function stopAllInstalls() {
+  try { return installsBeside(INSTALL_DIR); } catch { return [INSTALL_DIR]; }
+}
+
 function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
@@ -321,7 +355,7 @@ function spawnHost(tab, port, token) {
   const child = spawn(process.execPath, [hostPath], {
     detached: true,
     stdio: ['ignore', logFd, logFd],
-    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true }),
+    env: hostEnv(process.env, { cwd: tab.cwd, port, token, project: HOST_PROJECT, side: tab.side === true, shell: tab.shell === true }),
   });
   console.log('[main] host log:', logPath);
   child.unref();
@@ -420,8 +454,50 @@ function markSubmenu(branch) {
   };
 }
 
+/**
+ * A tab's right-click menu, as a template: the strip's popup builds it, and so does the probe driver's tabMenu (a native popup
+ * nobody can click), so the item a probe clicks is the item a person clicks.
+ */
+function tabMenuTemplate(key) {
+  const st = tabShell.menuState(key);
+  // #81: the read-only side session. On a side tab the menu is this item (it reopens one that has stopped) and its close (Ricardo's
+  // look, 2026-10-26: a side tab couldn't be closed).
+  const side = tabShell.sideMenu(key);
+  const sideItem = {
+    label: side.enabled ? side.label : `${side.label} (${side.why})`,
+    enabled: side.enabled,
+    click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
+  };
+  // #119 A5: a plain shell in the tab's folder. On a shell tab the menu is this item (it restarts one whose shell has exited) and
+  // its close (Ricardo's look, 2026-10-26: a shell tab couldn't be closed). Named shellState, not shell: Electron's shell is
+  // imported under that name.
+  const shellState = tabShell.shellMenu(key);
+  const shellItem = {
+    label: shellState.enabled ? shellState.label : `${shellState.label} (${shellState.why})`,
+    enabled: shellState.enabled,
+    click: () => tabShell.openShell(shellState.target).catch(logShellError('open shell')),
+  };
+  const closeShellItem = { label: 'Close shell', enabled: st.close, click: () => closeTabFlow(key) };
+  const closeSideItem = { label: 'Close side session', enabled: st.close, click: () => closeTabFlow(key) };
+  if (isSideKey(key)) return [sideItem, { type: 'separator' }, closeSideItem];
+  if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
+  const issue = tabShell.issueOf(key);
+  return [
+    markSubmenu(tabShell.branchOf(key)),
+    { type: 'separator' },
+    // #119 A6: a lane started from a GitHub issue keeps its link.
+    ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
+    sideItem,
+    shellItem,
+    { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
+    { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
+  ];
+}
+
 let win = null;
 let tabShell = null;
+// BACKLOG #119 A6: `gh issue list/view` for the + form's "From an issue" list, cached 60 s (host/issues.js). Made in whenReady.
+let issueService = null;
 let resHistoryView = null;         // the view the Resources service last re-sent the history to (#63 follow-up)
 let resources = null;              // the Resources panel's service (#63), built once the shell exists
 let resourceSampler = null;
@@ -455,6 +531,7 @@ function layoutView(view) {
   const top = viewTop({ focusMode, frameless: windowFrameless, stripHeight: STRIP_HEIGHT });
   view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) });
   canvasViews.relayout(view.webContents);     // its panel's offset moved with it (focus mode, a frameless toggle)
+  previewViews.relayout(view.webContents);
 }
 
 function setFocusMode(on) {
@@ -470,6 +547,10 @@ function setFocusMode(on) {
 // reload while the cue is up would clear it for good.
 let cueOn = false;
 let focused = false;
+// The tray icon's one controller (created in whenReady), and whether the app is really quitting: a close then goes through
+// even with "Minimise to tray on close" on.
+let trayController = null;
+let quitting = false;
 
 function createWindow() {
   // Layout pass L2 (#28): read once, for THIS window -- a frame can't change on
@@ -477,9 +558,12 @@ function createWindow() {
   ensureStatusDefault(uiStore);   // #67: write the default the relay reads, before anything asks
   const chrome = readChromeSettings(uiStore);
   windowFrameless = chrome.framelessWindow === true;
+  // "Start minimised to tray": the window is made but not shown; the tray icon brings it up. Never without the icon.
+  const startHidden = TRAY_ON && startsHidden(readTraySettings(uiStore));
   win = new BrowserWindow(forProbe({
     width: 1200,
     height: 800,
+    show: !startHidden,
     // Frameless: no OS title bar; the strip drags the window and draws its own
     // minimise and close (app/tab-strip.js windowChrome). The title still
     // feeds alt-tab and the taskbar.
@@ -536,6 +620,13 @@ function createWindow() {
   win.on('blur', () => { focused = false; sendFocus(); });
   win.on('minimize', () => { focused = false; if (resources) resources.setMinimised(true); });
   win.on('restore', () => { focused = win.isFocused(); sendFocus(); if (resources) resources.setMinimised(false); });
+  // Hidden to the tray is minimised as far as the polling and the cue go: nobody is looking.
+  win.on('hide', () => { focused = false; if (resources) resources.setMinimised(true); });
+  win.on('show', () => { if (resources) resources.setMinimised(false); });
+  // The Dev servers sampler follows what the window shows: minimise, restore, and hide/show (the tray) alike (#119 A4).
+  for (const ev of ['minimize', 'restore', 'hide', 'show']) win.on(ev, syncDevServersSampling);
+  // Windows asks to end the session (log off, shut down): a hidden-to-tray window must not stand in its way.
+  win.on('session-end', () => { quitting = true; });
   for (const ev of ['resize', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen']) {
     win.on(ev, () => { forEachView(layoutView); if (indexing) indexing.relayout(); });
   }
@@ -561,6 +652,13 @@ function createWindow() {
   // first: Save / Discard / Cancel (app/reader-unsaved.js guardWindowClose). Once answered, the close goes through.
   let closeGuarded = false;
   win.on('close', (e) => {
+    // "Minimise to tray on close" (off by default): the window hides, the pages and their unsaved text stay alive, and the
+    // tray reaches it again. Only with a tray icon up to reach it from, and never while the app is quitting.
+    if (hidesOnClose({ settings: readTraySettings(uiStore), trayExists: !!trayController && trayController.state().exists, quitting })) {
+      e.preventDefault();
+      win.hide();
+      return;
+    }
     if (closeGuarded || readerUnsaved.all().length === 0) return;
     e.preventDefault();
     if (closeAsking) return;
@@ -576,6 +674,9 @@ function createWindow() {
       },
     }).then((ok) => {
       if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
+      // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
+      // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
+      else quitting = false;
     }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
   });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
@@ -600,7 +701,9 @@ function createWindow() {
 // silently stops meaning anything is worse than no cue, because the next
 // real one says nothing either.
 function setCue(on) {
+  const flash = cueFlash(cueOn, !!on, focused);
   cueOn = !!on;
+  if (flash !== null && win && !win.isDestroyed()) win.flashFrame(flash);   // #117: the border is static, the taskbar button moves
   forEachView((v) => v.webContents.send('attention-cue', cueOn));
 }
 
@@ -627,6 +730,19 @@ function openInBrowser(url, from) {
   console.log(`[main] ${from}: opening ${target.slice(0, 200)} in the default browser`);
   shell.openExternal(target).catch((err) => console.error('[main] openExternal failed:', err && err.message));
   return true;
+}
+
+// A tab's GitHub issue (#119 A6) in the browser: the link the tab has, else the one gh gives. Through openInBrowser, the
+// one gate a link leaves the app by.
+async function openIssue(key) {
+  const issue = tabShell ? tabShell.issueOf(key) : null;
+  if (!issue || !issueService) return false;
+  const url = await resolveIssueUrl(issueService, HOST_PROJECT.dev, issue);
+  if (!url) {
+    console.log(`[main] issue: no link for #${issue.number}`);
+    return false;
+  }
+  return openInBrowser(url, 'issue');
 }
 
 function createTabView(tab) {
@@ -675,6 +791,9 @@ function createTabView(tab) {
     openInBrowser(url, tab.key);
     return { action: 'deny' };
   });
+  // The tab page never navigates: it is loaded once, below. A link that reaches the DOM (PR #204: a Markdown diagram's
+  // <a xlink:href>) must not replace the harness UI with a remote page, so every navigation is refused (app/nav-guard.js).
+  guardNavigation(wc);
 
   wc.loadFile(path.join(__dirname, 'renderer.html'), {
     query: { port: String(tab.port), cwd: tab.cwd,
@@ -730,10 +849,52 @@ const canvasViews = createCanvasViews({
   log: (line) => console.log(line),
 });
 
+// --- The Preview panel and the Dev servers chip (BACKLOG #119 A4) ------------------------------
+// One native view per tab (app/preview-views.js), on its own in-memory session, that shows a page a dev server of THIS worktree serves:
+// loopback http only, no preload, no Node, no new windows, no downloads (app/preview-guard.js). The tab's page is the trusted controller.
+// The worktree a tab's panel belongs to (what its last address is remembered by): the worktree folder, else the tab's own folder.
+const previewKeyOf = (owner) => {
+  const tab = tabShell ? tabShell.tabForSender(owner) : null;
+  return tab ? (worktreeRoot(tab.cwd) || tab.cwd) : null;
+};
+function previewProbeProxy() {
+  if (!PROBE_PORT || !PROBE_TOKEN) return undefined;
+  const rules = process.env.CLAUDE_CUSTOM_PREVIEW_PROXY;
+  if (rules === 'direct') return { mode: 'direct' };
+  return typeof rules === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(rules) ? { mode: 'fixed_servers', proxyRules: rules, proxyBypassRules: require('./preview-views').PREVIEW_BYPASS } : undefined;
+}
+const previewViews = createPreviewViews({
+  WebContentsView, session,
+  addChild: (v) => win.contentView.addChildView(v),
+  removeChild: (v) => win.contentView.removeChildView(v),
+  ownerBounds: (owner) => { for (const v of liveViews) { if (v.webContents === owner) return v.getBounds(); } return null; },
+  isOwnerVisible: (owner) => { const sel = selectedView(); return !!sel && sel.webContents === owner; },
+  keyOf: previewKeyOf,
+  onEvent: (owner, ev) => { if (!owner.isDestroyed()) owner.send('preview:event', ev); },
+  openUrl: (url) => openInBrowser(url, 'Preview'),
+  // The ports of this app that the page may never reach: the probe driver's, and the host's when it was named by CLAUDE_CUSTOM_PORT (besides the session hosts' range, app/preview-guard.js).
+  denyPorts: [PROBE_PORT ? Number(PROBE_PORT) : null, Number.isInteger(EXPLICIT_PORT) ? EXPLICIT_PORT : null].filter(Number.isInteger),
+  // PROBE SEAM, only when the probe driver's port AND token are set: a proxy the probe owns, to count what a session sends to it.
+  proxyConfig: previewProbeProxy(),
+  log: (line) => console.log(line),
+});
+// The listening ports of every tab's worktree, from ONE PowerShell call per sample (host/dev-servers.js SCRIPT) through a persistent shell of its
+// own, every 10 s while a window is in view (app/dev-servers-service.js). The block comes from the file host/port-blocks.js keeps (a read, never an
+// allocation); the session host each tab's join starts from is the one the Resources sampler proved.
+let devServers = null;
+let devServersExec = null;
+// Sampling follows what the window shows (host/dev-servers.js unseen): a window hidden to the tray, minimised, or not made yet samples nothing.
+function syncDevServersSampling() {
+  if (!devServers) return;
+  const gone = !win || win.isDestroyed();
+  devServers.setMinimised(devServersHost.unseen({ visible: gone ? false : win.isVisible(), minimized: gone ? true : win.isMinimized() }));
+}
+
 function destroyTabView(tab) {
   const view = tab.view;
   if (!view) return;
   canvasViews.destroyFor(view.webContents);
+  previewViews.destroyFor(view.webContents);
   liveViews.delete(view);
   // a closed tab's /bedtime night cannot keep the window lean for ever
   // by the id taken when the view was made: a view already destroyed (a teardown, a crash) must still drop its night (PR #140 Miguel M2)
@@ -764,11 +925,16 @@ function pushStripAccent() {
 }
 
 function applySelection(snapshot) {
+  const pickerOpen = !!(snapshot.create && snapshot.create.picker === true);
   for (const tab of snapshot.tabs) {
     if (tab.view && !tab.view.webContents.isDestroyed()) {
-      tab.view.setVisible(tab.key === snapshot.selectedKey);
+      // #119 A6: while the form's issue list is open it is drawn by the strip page over the area under the strip,
+      // and a tab's page is a native view that would cover it: the selected one steps aside until the list closes.
+      const shows = tab.key === snapshot.selectedKey && !pickerOpen;
+      tab.view.setVisible(shows);
       // A tab's panel is its own native view: it must leave with its tab, or it floats over whichever tab is selected.
-      canvasViews.setOwnerVisible(tab.view.webContents, tab.key === snapshot.selectedKey);
+      canvasViews.setOwnerVisible(tab.view.webContents, shows);
+      previewViews.setOwnerVisible(tab.view.webContents, shows);
     }
   }
   // Keyed on the VIEW, not on a changed selection: a view created for the
@@ -790,6 +956,7 @@ function applySelection(snapshot) {
   pushStripAccent();
   // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
   if (resources) resources.refresh();
+  if (devServers) devServers.refresh();      // a tab that came or went changes whose ports are asked about
   // Only the selected page's payload carries the one-hour history, so a page that has just been selected is sent it now,
   // not up to 10 s later (#63 follow-up).
   if (resources && live !== resHistoryView) { resHistoryView = live; resources.resend(); }
@@ -848,6 +1015,7 @@ function onShellChanged(snapshot) {
     mode: snapshot.mode, create: snapshot.create,
   };
   win.webContents.send('strip-model', lastStripPayload);
+  if (trayController) trayController.sync();     // the count and the tooltip follow the cues
 }
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
@@ -875,6 +1043,21 @@ async function askWindowClose(files) {
 }
 
 const probeConfirms = [];   // the probe driver's record of every confirm it was asked
+
+// The kill switch's STOP ALL (documentation/PLAN_SAFETY_NET.md lane 2): the one question before every session on the machine stops.
+// Cancel is the default. The probe driver has nobody to click and never writes the real file: it records the ask and answers no.
+async function confirmStopAll(file) {
+  if (PROBE_PORT) { probeConfirms.push({ label: 'stop-all', reason: '', unsaved: null }); return false; }
+  const r = await dialog.showMessageBox(win, {
+    type: 'warning',
+    buttons: ['Stop every session', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: 'Stop every Claude session on this computer?',
+    detail: `This writes ${file}. Every claude-custom session on this computer stops within a few seconds, and none starts again until that file is deleted.`,
+  });
+  return r.response === 0;
+}
 // `reason` (a Ctrl+click close that wasn't safe, #77) is added to the detail so the person sees why it asked.
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
@@ -971,6 +1154,38 @@ const backgroundActions = createBackgroundActions({
   log: msg => console.log(msg),
 });
 
+// --- the tray icon (BACKLOG #119 A8) ----------------------------------------------------------------------------------
+// One per window process (each project window is its own Electron main). The rules are app/tray-model.js, the pixels
+// app/tray-icon.js, the effects app/tray-controller.js; this hands them the real Electron and the shell.
+function startTray() {
+  if (!TRAY_ON) return;
+  trayController = createTrayController({
+    Tray, Menu, nativeImage, renderIcon: renderTrayIcon,
+    getSettings: () => readTraySettings(uiStore),
+    tabs: () => (tabShell ? tabShell.snapshot().tabs : []),
+    windowLabel: () => WINDOW_LABEL,
+    isHidden: () => !win || win.isDestroyed() || !win.isVisible(),
+    background: backgroundModel,
+    now: () => Date.now(),
+    log: (...a) => console.log(...a),
+    actions: {
+      focusWindow,
+      selectTab: key => tabShell.select(key),
+      openBackground: o => backgroundActions.open(o),
+      // The same Stop as the ▾ menu: it asks first, every time. Its question needs a visible window to sit on.
+      stopBackground: (row) => { focusWindow(); backgroundActions.stop(row).catch(() => {}); },
+      hideAll: () => { if (win && !win.isDestroyed()) win.hide(); },
+      showAll: focusWindow,
+      setStartMinimised: on => { writeTraySetting(uiStore, 'startMinimised', on === true); },
+      // Unsaved reader text asks Save / Discard / Cancel on the window, so the window has to be visible to be answered.
+      quit: () => { if (readerUnsaved.all().length > 0) focusWindow(); app.quit(); },
+    },
+  });
+  trayController.sync();
+  // Started hidden but no icon could be made (no tray area): a window nobody can reach is worse than a visible one.
+  if (!trayController.state().exists && win && !win.isDestroyed() && !win.isVisible()) focusWindow();
+}
+
 async function showBackgroundMenu() {
   const template = menuTemplate(await backgroundModel(), {
     open: o => backgroundActions.open(o),
@@ -993,10 +1208,30 @@ function registerIpc() {
   ipcMain.on('canvas:hosts', (e, hosts) => { if (isTabView(e.sender)) canvasViews.setHosts(e.sender, hosts); });
   ipcMain.on('canvas:set-shelf', (e, items) => { if (isTabView(e.sender)) canvasViews.setShelf(e.sender, items); });
   ipcMain.on('canvas:hide', (e) => { if (isTabView(e.sender)) canvasViews.hide(e.sender); });
+  // The Preview panel and the Dev servers chip (#119 A4). Every channel is the TAB's page, the trusted controller, and is gated on it. The dev
+  // server's page has no channel at all: it gets no preload. What `reload`, `devtools` and `openExternal` act on is the view's own current
+  // address, read here; the page never supplies one. `show` and `openPort` take a port or typed text, which app/preview-guard.js judges.
+  ipcMain.handle('preview:show', (e, req) => (isTabView(e.sender) && req && typeof req === 'object'
+    ? previewViews.show(e.sender, req) : { ok: false, error: 'refused' }));
+  ipcMain.on('preview:bounds', (e, rect) => { if (isTabView(e.sender)) previewViews.setBounds(e.sender, rect); });
+  ipcMain.on('preview:cover', (e, on) => { if (isTabView(e.sender)) previewViews.setCovered(e.sender, on === true); });
+  ipcMain.on('preview:hide', (e) => { if (isTabView(e.sender)) previewViews.hide(e.sender); });
+  ipcMain.on('preview:reload', (e) => { if (isTabView(e.sender)) previewViews.reload(e.sender); });
+  ipcMain.on('preview:devtools', (e) => { if (isTabView(e.sender)) previewViews.toggleDevTools(e.sender); });
+  ipcMain.on('preview:open-external', (e) => { if (isTabView(e.sender)) previewViews.openExternal(e.sender); });
+  ipcMain.on('preview:open-port', (e, port) => { if (isTabView(e.sender)) previewViews.openPort(port); });
+  ipcMain.handle('devservers:get', (e) => {
+    const tab = isTabView(e.sender) ? tabShell.tabForSender(e.sender) : null;
+    return tab && devServers ? devServers.snapshot(tab.key) : null;
+  });
   // The Style tab's switch for the panel's MCP server (#71 question 8): the file the host reads when it builds `claude`'s arguments, so a
   // change takes effect on the next session. null means unknown (a read or write that failed): the page keeps asking, never guesses.
   ipcMain.handle('canvas:settings-get', (e) => (isTabView(e.sender) ? readMcpSetting(uiStore.dir) : null));
   ipcMain.handle('canvas:settings-set', (e, on) => (isTabView(e.sender) && typeof on === 'boolean' ? writeMcpSetting(uiStore.dir, on) : null));
+  // BACKLOG #119 A2: the Style tab's switch for the claude-custom mod, the same shape as the panel's: the file the host reads when it builds `claude`'s
+  // arguments (host/cc-mod-settings.js), so a change takes effect on the next session. null means unknown: the page keeps asking, never guesses.
+  ipcMain.handle('ccmod:settings-get', (e) => (isTabView(e.sender) ? readModSetting(uiStore.dir) : null));
+  ipcMain.handle('ccmod:settings-set', (e, on) => (isTabView(e.sender) && typeof on === 'boolean' ? writeModSetting(uiStore.dir, on) : null));
   ipcMain.on('canvas:host-answer', (e, a) => {
     if (!isTabView(e.sender)) return;
     const pending = a && canvasAsks.get(a.id);
@@ -1029,6 +1264,13 @@ function registerIpc() {
   ipcMain.handle('resources:stop', (e, req) => (isTabView(e.sender) && resources
     ? resources.stop(req)
     : { ok: false, reason: 'refused', text: 'refused' }));
+  // Pause / Resume (#19): the same guard as Stop, re-checked in main (host/resource-pause.js) however the page asks.
+  ipcMain.handle('resources:pause', (e, req) => (isTabView(e.sender) && resources
+    ? resources.pause(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
+  ipcMain.handle('resources:resume', (e, req) => (isTabView(e.sender) && resources
+    ? resources.resume(req)
+    : { ok: false, reason: 'refused', text: 'refused' }));
   ipcMain.handle('resources:stopLeftovers', (e, req) => (isTabView(e.sender) && resources
     ? resources.stopLeftovers(req)
     : { ok: false, text: 'refused' }));
@@ -1044,22 +1286,7 @@ function registerIpc() {
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
-    const st = tabShell.menuState(key);
-    // #81: the read-only side session. On a side tab the menu is just this item; it reopens one that has stopped.
-    const side = tabShell.sideMenu(key);
-    const sideItem = {
-      label: side.enabled ? side.label : `${side.label} (${side.why})`,
-      enabled: side.enabled,
-      click: () => tabShell.openSide(side.target).catch(logShellError('open side session')),
-    };
-    if (isSideKey(key)) { Menu.buildFromTemplate([sideItem]).popup({ window: win }); return; }
-    Menu.buildFromTemplate([
-      markSubmenu(tabShell.branchOf(key)),
-      { type: 'separator' },
-      sideItem,
-      { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
-      { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
-    ]).popup({ window: win });
+    Menu.buildFromTemplate(tabMenuTemplate(key)).popup({ window: win });
   });
   // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
   // by hand in this window, most recent first.
@@ -1078,12 +1305,32 @@ function registerIpc() {
         enabled: m.create.enabled,
         click: () => tabShell.openCreate(),
       },
+      // #119 A5: a plain shell for the selected lane
+      {
+        label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
+        enabled: m.shell.enabled,
+        click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
+      },
       ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
     ]).popup({ window: win });
   });
-  ipcMain.on('strip:create', (e, branch) => {
+  // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so its brief is written.
+  ipcMain.on('strip:create', (e, branch, issue) => {
     if (!fromStrip(e) || typeof branch !== 'string' || branch.length > 200) return;
-    tabShell.createWorktree(branch).catch(logShellError('create'));
+    tabShell.createWorktree(branch, issueArg(issue)).catch(logShellError('create'));
+  });
+  // The form's "From an issue" list: the rows for a query (host/issues.js owns the matching and the naming), and the
+  // list opening and closing (the shell's state, so the selected tab's page is hidden while it shows).
+  ipcMain.handle('strip:issues', (e, req) => (fromStrip(e) && issueService
+    ? answerIssuesRequest(issueService, HOST_PROJECT.dev, req)
+    : { ok: false, text: 'refused' }));
+  ipcMain.on('strip:pickerOpen', (e) => {
+    if (!fromStrip(e)) return;
+    tabShell.openPicker();
+  });
+  ipcMain.on('strip:pickerClose', (e) => {
+    if (!fromStrip(e)) return;
+    tabShell.closePicker();
   });
   ipcMain.on('strip:cancelCreate', (e) => {
     if (!fromStrip(e)) return;
@@ -1108,6 +1355,32 @@ function registerIpc() {
     try { await showBackgroundMenu(); } catch (err) {
       console.log('[main] background menu failed:', err && err.message);
     } finally { backgroundBusy = false; }
+  });
+  // STOP ALL (host/kill-switch.js): one confirm, then ~/.claude/STOP-ALL, the file every host polls. One at a time. The file comes from
+  // the home folder, never the CLI's config dir, so it is the same one every host watches; the probe seam stands in for it.
+  let stopAllBusy = false;
+  ipcMain.handle('strip:stopAll', async (e) => {
+    if (!fromStrip(e) || stopAllBusy) return null;
+    stopAllBusy = true;
+    try {
+      const r = await runStopAll({
+        seam: readSeams(process.env).claudeHome,
+        home: os.homedir(),
+        confirm: confirmStopAll,
+        write: (f, data) => writeFileAtomic(f, data),
+        // Hosts from before the kill switch don't watch the file (Dexter F3): say how many the file can't reach.
+        countUnstoppable: () => countUnstoppable({ installs: stopAllInstalls(), identitiesIn, isAlive: defaultIsAlive }),
+      });
+      console.log(`[main] STOP ALL: ${r.outcome}${r.error ? ` (${r.error})` : ''} -> ${r.file}`);
+      if (r.unstoppable) console.log('[main] STOP ALL: ' + r.unstoppable + ' older-build session(s) cannot be stopped by the file');
+      if (r.outcome === 'failed' && win && !win.isDestroyed()) {
+        dialog.showMessageBox(win, { type: 'error', buttons: ['OK'], message: "Couldn't write the stop file", detail: `${r.file}: ${r.error}. No session was stopped.` }).catch(() => {});
+      }
+      if (r.outcome === 'written' && r.unstoppable > 0 && win && !win.isDestroyed()) {
+        dialog.showMessageBox(win, { type: 'warning', buttons: ['OK'], message: 'Some sessions are not covered', detail: describeUnstoppable(r.unstoppable) }).catch(() => {});
+      }
+      return r.outcome;
+    } finally { stopAllBusy = false; }
   });
 
   // A tab's page talking to main. Every one gated on "one of THIS window's tab
@@ -1338,6 +1611,8 @@ function registerIpc() {
   // Layout pass L2: "status line in the header" (#27; host/status-relay.js
   // reads the same file on every status fire) and "hide the title bar" (#28;
   // read by createWindow for the next window). See window-chrome-bridge.js.
+  // The tray icon's switches (BACKLOG #119 A8), in the same record. Changing one applies at once: the icon appears or goes.
+  registerTrayHandlers({ ipcMain, store: uiStore, isSender: isTabView, onChange: () => { if (trayController) trayController.sync(); } });
   const chromeSync = {};
   registerChromeHandlers({ ipcMain, store: uiStore, sync: chromeSync, isSender: isTabView, send: pushToViews });
   watchChromeSettings({
@@ -1550,6 +1825,17 @@ function startProbeDriver(port) {
     const e = tabShell.model().find((x) => x.label === label);
     return e ? e.key : null;
   };
+  // A real left click in the strip page on the tab labelled `label` (its x when `onX`): its position is read from the DOM and the
+  // click is an input event, so the page's own handler decides what to ask main.
+  const stripClick = async (label, onX, modifiers) => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); const n = t && ${onX ? "t.querySelector('.x')" : 't'}; if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
+    if (!rect) return { ok: false, error: onX ? `no close button on a tab labelled ${label}` : `no tab labelled ${label}` };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1562,7 +1848,7 @@ function startProbeDriver(port) {
       let stripDom = null;
       try {
         stripDom = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
+          "JSON.stringify([...document.querySelectorAll('.tab')].map(t => ({ label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), dim: t.classList.contains('dim'), pulse: ['pulse-needs', 'pulse-done'].find(c => t.classList.contains(c)) || null, anim: getComputedStyle(t).animationName, bg: getComputedStyle(t).backgroundColor, hasClose: !!t.querySelector('.x'), side: t.classList.contains('side'), shell: t.classList.contains('shell'), dots: [...t.querySelectorAll('.dot')].map(d => d.className + '|' + d.title), title: t.title, resWarn: (t.querySelector('.res-warn') || {}).textContent || null, badge: (t.querySelector('.badge') || {}).textContent || null, mark: t.querySelector('.mark') ? { text: t.querySelector('.mark').textContent, title: t.querySelector('.mark').title, beforeLabel: t.querySelector('.mark').nextElementSibling === t.querySelector('.label'), width: Math.round(t.querySelector('.mark').getBoundingClientRect().width) } : null })))"));
       } catch (err) { stripDom = { error: err.message }; }
       // Worktree occupancy (#44 + #47): what the strip painted for each tab -- the hatched edge, its tags and its
       // hover -- read back from the DOM (verify/probe-worktree-occupancy.js); and the night tab (#52: night class,
@@ -1605,6 +1891,8 @@ function startProbeDriver(port) {
       return {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
+        // #119 A6: whether the selected tab's page is showing (it steps aside while the form's issue list is open); null if unreadable.
+        selectedViewVisible: (() => { const v = selectedView(); try { return v && typeof v.getVisible === 'function' ? v.getVisible() : null; } catch { return null; } })(),
         readerUnsaved: snap.selectedKey ? readerUnsaved.pathFor(snap.selectedKey) : null,
       };
     },
@@ -1627,6 +1915,33 @@ function startProbeDriver(port) {
       };
     },
     async cancelCreate() { return { ok: tabShell.cancelCreate() }; },
+    // The + menu's *New branch…* (and Ctrl+Alt+T): opens the strip's branch form, which a probe then drives through its page.
+    async openCreate() { return { ok: tabShell.openCreate() }; },
+    // #119 A6: the form's "From an issue" list, through the strip page's own elements. `action` is one of a fixed set
+    // (tab-shell.js STRIP_ISSUE_ACTIONS) and the data goes in as JSON, never spliced into code. Answers what the page shows.
+    async stripIssues(action, args) {
+      const req = JSON.stringify(JSON.stringify({ action, args }));
+      const out = await win.webContents.executeJavaScript(
+        `(() => { const r = JSON.parse(${req}); const $ = (id) => document.getElementById(id);
+          if (r.action === 'open') $('create-issues').click();
+          else if (r.action === 'pick') { const b = [...$('issues-list').querySelectorAll('.issue-row')][r.args.index]; if (!b) return JSON.stringify({ ok: false, error: 'no such row' }); b.click(); }
+          else if (r.action === 'filter') { const f = $('issues-filter'); f.value = r.args.text; f.dispatchEvent(new Event('input')); }
+          else if (r.action === 'submit') $('create').requestSubmit();
+          const btn = $('create-issues');
+          return JSON.stringify({ ok: true, view: {
+            row: { text: btn.textContent, disabled: btn.disabled, dim: btn.className === 'dim', title: btn.title },
+            panelHidden: $('issues-panel').hidden, filterValue: $('issues-filter').value, branchValue: $('create-branch').value,
+            note: $('issues-note').hidden ? null : $('issues-note').textContent,
+            rows: [...$('issues-list').querySelectorAll('.issue-row')].map(b => ({ num: b.querySelector('.issue-num').textContent, title: b.querySelector('.issue-title').textContent, branch: b.querySelector('.issue-branch').textContent, labels: [...b.querySelectorAll('.issue-label')].map(x => x.textContent) })),
+          } }); })()`);
+      return JSON.parse(out);
+    },
+    // #119 A5: what the tab menu's Open shell here does, by the branch tab's label.
+    async shellOpen(label) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      return tabShell.openShell(key);
+    },
     // #81: what the tab menu's Open side session does, by the branch tab's label.
     async sideOpen(label) {
       const key = labelKey(label);
@@ -1650,14 +1965,22 @@ function startProbeDriver(port) {
     },
     // #77: a real Ctrl+click on a tab in the strip page: its position is read from the DOM, the click is an input
     // event with the control modifier, so the page's own handler decides what to ask main.
-    async ctrlClick(label) {
-      const rect = JSON.parse(await win.webContents.executeJavaScript(
-        `JSON.stringify((() => { const t = [...document.querySelectorAll('#tabs .tab')].find(n => (n.querySelector('.label') || {}).textContent === ${JSON.stringify(label)}); if (!t) return null; const r = t.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())`));
-      if (!rect) return { ok: false, error: `no tab labelled ${label}` };
-      const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: ['control'] };
-      win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
-      win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
-      return { ok: true };
+    async ctrlClick(label) { return stripClick(label, false, ['control']); },
+    // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
+    async xClick(label) { return stripClick(label, true, []); },
+    // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
+    // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
+    async tabMenu(label, item) {
+      const key = labelKey(label);
+      if (!key) return { ok: false, error: `no tab labelled ${label}` };
+      const built = Menu.buildFromTemplate(tabMenuTemplate(key)).items.filter(i => i.type !== 'separator');
+      const items = built.map(i => ({ label: i.label, enabled: i.enabled }));
+      if (item === undefined) return { ok: true, items };
+      const hit = built.find(i => i.label === item);
+      if (!hit) return { ok: false, error: `no item ${item}`, items };
+      if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
+      hit.click();
+      return { ok: true, items };
     },
     // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
     // pointer events decide what is hovered, as for a mouse.
@@ -1684,6 +2007,17 @@ function startProbeDriver(port) {
       if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
       if (action === 'inspect') return { ok: true, ...canvasViews.inspect(sel.webContents) };
       return { ok: canvasViews.click(sel.webContents, args.x, args.y) };
+    },
+    // #119 A4: the selected tab's Preview view, from the outside: where it is, whether it shows, its address and the title its page set.
+    async preview(action, file) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (action === 'shot') {
+        const wc = previewViews.shotTarget(sel.webContents);
+        if (!wc || wc.isDestroyed()) return { ok: false, error: 'no preview view' };
+        return { ok: true, bytes: await capture(wc, file) };
+      }
+      return { ok: true, ...previewViews.inspect(sel.webContents) };
     },
     async screenshot(file) {
       const sel = selectedView();
@@ -1728,10 +2062,50 @@ function startProbeDriver(port) {
         `(() => { const b = document.getElementById(${JSON.stringify(button)}); if (!b || b.hidden || (b.offsetParent === null && !b.getClientRects().length)) return false; b.click(); return true; })()`);
       return { ok: clicked === true, clicked: clicked === true };
     },
-    async quit() {
-      setTimeout(() => app.exit(0), 200);
+    async quit(graceful) {
+      // A probe's hard exit skips will-quit; graceful is the path a closed window takes (verify/probe-pause-panel.js needs it).
+      setTimeout(() => (graceful === true ? app.quit() : app.exit(0)), 200);
       return { ok: true };
     },
+    // BACKLOG #119 A8 (verify/probe-tray.js): the tray's own state, and its click and menu through the same functions the real
+    // Tray events call. Only a window started with CLAUDE_CUSTOM_TRAY_PROBE=1 has a tray.
+    async tray() {
+      if (!trayController) return { ok: false, error: 'no tray in this window' };
+      const snap = tabShell.snapshot();
+      return { ok: true, tray: trayController.state(), visible: win.isVisible(), minimized: win.isMinimized(), selectedKey: snap.selectedKey,
+        tabs: snap.tabs.map(t => ({ key: t.key, branch: t.branch || null, needsInput: !!(t.status && t.status.needsInput), finished: !!(t.status && t.status.finished) })),
+        settings: readTraySettings(uiStore) };
+    },
+    // The Tray's current image as a PNG, so a person can look at what a probe measured (a Tray can't be screenshotted).
+    async trayImage(file) {
+      const img = trayController && trayController.image();
+      if (!img) return { ok: false, error: 'no tray image' };
+      fs.writeFileSync(file, img.toPNG());
+      return { ok: true, bytes: fs.statSync(file).size };
+    },
+    async trayClick() {
+      if (!trayController) return { ok: false, error: 'no tray in this window' };
+      trayController.click();
+      return { ok: true };
+    },
+    async trayMenu(clickLabel) {
+      if (!trayController) return { ok: false, error: 'no tray in this window' };
+      const t = await trayController.template();
+      const rows = t.filter(x => x.type !== 'separator');
+      if (clickLabel) {
+        const row = rows.find(x => x.label === clickLabel);
+        if (!row || !row.click) return { ok: false, error: 'no row ' + clickLabel };
+        row.click({ checked: row.type === 'checkbox' ? !row.checked : undefined });
+      }
+      return { ok: true, rows: rows.map(x => ({ label: x.label, checked: x.checked, sub: x.submenu ? x.submenu.map(y => y.label) : null })) };
+    },
+    async traySetting(key, value) {
+      const saved = writeTraySetting(uiStore, key, value);
+      if (trayController) trayController.sync();
+      return { ok: saved !== null, settings: saved };
+    },
+    // Close the window as the X does (the 'close' handler decides: hide to the tray, or really close).
+    async winClose() { win.close(); return { ok: true, destroyed: win.isDestroyed(), visible: win.isDestroyed() ? false : win.isVisible() }; },
     async background() {
       const m = await backgroundModel();
       const strip = await win.webContents.executeJavaScript(
@@ -1880,6 +2254,13 @@ app.whenReady().then(async () => {
     liveClaims: () => occupancyService.current(),
     log: (...a) => console.log(...a),
   });
+  // The GitHub issues of this project's repo (#119 A6). host/probe-seams.js gives the probe a stand-in for gh.
+  issueService = createIssueService();
+  // Which issue each lane was made from, kept with the project's state so the link outlives a restart and the issue closing.
+  let linksFile = null;
+  try { linksFile = issueLinksFileFor(STATE_ROOT); } catch (err) { console.log('[main] issue links: kept in memory only:', err && err.message); }
+  const issueLinks = createIssueLinks({ file: linksFile });
+  const briefOps = createOps({ dir: scriptsDir(process.env) });
   tabShell = createShell({
     usage: (key) => { try { usageCounters.bump(key); } catch { /* counting never breaks a tab */ } },
     mode: MODE,
@@ -1901,6 +2282,13 @@ app.whenReady().then(async () => {
     // agent-creator's worktree scripts (Contracts A, C, E); the probe points
     // CLAUDE_CUSTOM_WORKTREE_SCRIPTS at stand-ins.
     ops: createOps({ dir: scriptsDir(process.env) }),
+    // #119 A6: a lane started from an issue gets its brief (host/issue-lane.js); a tab keeps its issue (the picked one, else
+    // the one its branch name says when the cached list has it).
+    issues: {
+      brief: createLaneBriefWriter({ cwd: HOST_PROJECT.dev, service: issueService, ops: briefOps }),
+      forBranch: (branch, folder) => issueLinks.get(branch, folder) || issueForBranch(branch, issueService.cached(HOST_PROJECT.dev)),
+      remember: (record) => issueLinks.set(record),
+    },
     hosts: {
       choosePort: chooseHostPort,
       probe: (port) => probePort(port),
@@ -1915,6 +2303,8 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
+      // #119 A5: ... and the shell hosts, the same way
+      shellHosts: () => shellHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.
       identity: ({ install, port }) => readIdentity({ dir: path.join(install, '.harness'), port }),
       readToken: (install, port) => readTokenFile({ dir: path.join(install, '.harness'), port }),
@@ -1952,6 +2342,7 @@ app.whenReady().then(async () => {
     log: (...a) => console.log(...a),
   });
   resourceSampler = createSharedSampler({ poller: resourcePoller, cores: cpuCores, onUpdate: (snap) => { if (resources) resources.onUpdate(snap); }, log: (...a) => console.log(...a) });
+  const ownProcStart = await ownStartTime().then(s => (typeof s === 'string' ? s : null), () => null);
   resources = createResourcesService({
     sampler: resourceSampler,
     tabs: () => tabShell.snapshot().tabs,
@@ -1977,6 +2368,12 @@ app.whenReady().then(async () => {
     // Stop ends exactly the set the guard computed, leaf first, each re-proved by pid and start time through a handle
     // (host/resource-kill.js): never a bare `taskkill /T`, which follows a stale parent link.
     kill: (targets) => killVerified(targets, { exec: createPowerShellExec(20000) }),
+    // Pause / Resume (#19): NtSuspendProcess / NtResumeProcess on a handle that re-proves pid and start time (host/process-suspend.js).
+    suspend: (action, targets) => suspendVerified(action, targets, { exec: createPowerShellExec(20000) }),
+    // What is paused is kept on disk, so a crash can be undone at the next start (host/pause-persist.js).
+    // An owner is a pid AND a start time: 'absent', the running process's start, or null (could not be told).
+    pausePersist: createPausePersist({ dir: path.join(uiStore.dir, 'paused'), ownPid: process.pid, ownStart: ownProcStart,
+      ownerState: async (pid) => { const m = await startTimes([pid]); return !m ? null : (m.has(pid) ? m.get(pid) : 'absent'); }, log: (...a) => console.log(...a) }),
     // Leftovers (#74): the shared pid ledger, and the stop (by the 15-minute clock or a click) of what it proves is ours. A kill is
     // killProvenAsync: the ledger's start is proven again on a held handle at the moment of the kill, off the main thread
     // (host/kill-tree.js); the launcher and the start are re-asked of Get-Process just before (host/leftovers-seams.js).
@@ -2004,14 +2401,34 @@ app.whenReady().then(async () => {
   watchChip({ file: path.join(UI_STATE_DIR, `${CHIP_KEY}.json`), onChange: () => { if (resources) resources.reloadChip(); } });
   resourceSampler.start();
   resources.refresh();       // the sampler starts idle: wake it now, not when a selection happens to follow
+  const sweepPaused = () => resources.wakeLeftover().catch((err) => console.log('[pause] waking the leftovers threw:', err && err.message));   // what a dead run left suspended (#19)
+  sweepPaused();
+  setInterval(sweepPaused, 60_000).unref();      // ...and a sibling window that died after this one started
+
+  // The Dev servers chip (#119 A4): its own persistent PowerShell, sampled like the Resources panel (host/dev-servers.js INTERVAL_MS).
+  devServersExec = createPersistentExec();
+  devServers = createDevServersService({
+    exec: devServersExec,
+    tabs: () => tabShell.snapshot().tabs.filter(t => t.view && !t.view.webContents.isDestroyed()),
+    portBaseOf: (cwd) => { const root = worktreeRoot(cwd); return root ? lookupPortBlock(root) : null; },
+    hostPidOf: (key) => (resources ? resources.hostPidOf(key) : null),
+    send: (key, state) => {
+      const tab = tabShell.snapshot().tabs.find(t => t.key === key);
+      if (tab && tab.view && !tab.view.webContents.isDestroyed()) tab.view.webContents.send('devservers:state', state);
+    },
+    log: (...a) => console.log(...a),
+  });
+  devServers.start();
 
   // No application menu bar, ever (Ricardo, 2026-09-30: every pixel of vertical
   // space). Electron paints its default File/Edit/View/Window/Help bar on
   // Windows only because none was set; null removes it. Set before the window.
   Menu.setApplicationMenu(null);
   createWindow();
+  syncDevServersSampling();       // read AFTER the window exists, and after a start hidden to the tray
   registerIpc();
   startIndexing(seams);
+  startTray();
 
   reloadMarks();
   if (MODE === 'tabs') pruneGoneMarks();
@@ -2033,6 +2450,10 @@ app.whenReady().then(async () => {
     if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
   }
   if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
+  // #119 A6: read the repo's open issues once, a little after the window is up, so a tab whose branch came from an
+  // issue already shows its link. Fire and forget: no gh, no login or no network is one dim line later, never a dialog.
+  // Not under the probe driver, whose fake gh counts its calls.
+  if (MODE === 'tabs' && !PROBE_PORT) setTimeout(() => { issueService.list(HOST_PROJECT.dev).catch(() => {}); }, 20_000).unref();
 
   // Headless verification path.
   if (process.env.CLAUDE_CUSTOM_SCREENSHOT) runScreenshotPath();
@@ -2044,6 +2465,17 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('will-quit', () => { if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
+app.on('will-quit', () => { if (devServers) devServers.stop(); if (devServersExec) devServersExec.close(); });
+// A quit with processes paused from the Resources panel wakes them first (#19): a frozen process with nobody left to resume it stays frozen.
+// The quit is held once, for as long as the resumes take, and then asked for again.
+let pausedWoken = false;
+app.on('will-quit', (e) => {
+  if (!resources || pausedWoken || !resources.hasPaused()) return;
+  pausedWoken = true;
+  e.preventDefault();
+  resources.resumeAll({ deadlineMs: 10000 }).catch(() => {}).finally(() => app.quit());
+});
+app.on('before-quit', () => { quitting = true; });
+app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
 armQuitWatchdog(app);

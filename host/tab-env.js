@@ -18,6 +18,7 @@
  */
 
 const { stateRoot } = require('./project-layout');
+const { SHELL_HOST_ENV } = require('./shell-tab');
 
 const PER_TAB_KEYS = Object.freeze([
   'CLAUDE_CUSTOM_CWD',
@@ -27,13 +28,15 @@ const PER_TAB_KEYS = Object.freeze([
   'CLAUDE_CUSTOM_SIDE_TAB',
   // #81: this host is a tab's read-only side session. Per-tab identity: a side host's flag must never reach the next one.
   'CLAUDE_CUSTOM_SIDE_SESSION',
+  // A5: this host is a tab's plain shell. Per-tab identity too. (CLAUDE_CUSTOM_SHELL, the person's choice of shell, is NOT: the host reads it.)
+  SHELL_HOST_ENV,
   'CLAUDE_CUSTOM_PROJECT_ROOT',
   'CLAUDE_CUSTOM_PROJECT_STATE',
 ]);
 
 const nonEmpty = v => typeof v === 'string' && v.length > 0;
 
-function hostEnv(baseEnv, { cwd, port, token, project, side = false } = {}) {
+function hostEnv(baseEnv, { cwd, port, token, project, side = false, shell = false } = {}) {
   if (!nonEmpty(cwd)) throw new Error('hostEnv: cwd must be a non-empty string');
   if (!nonEmpty(token)) throw new Error('hostEnv: token must be a non-empty string');
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -55,6 +58,7 @@ function hostEnv(baseEnv, { cwd, port, token, project, side = false } = {}) {
   out.CLAUDE_CUSTOM_PROJECT_ROOT = project.root;
   out.CLAUDE_CUSTOM_PROJECT_STATE = state;
   if (side === true) out.CLAUDE_CUSTOM_SIDE_SESSION = '1';
+  if (shell === true) out[SHELL_HOST_ENV] = '1';
   return out;
 }
 

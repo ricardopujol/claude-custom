@@ -28,6 +28,8 @@
  *   createSuspender()        the registry of suspend/resume pairs: every panel, poller or animation registers one;
  *                            `set(true)` suspends all (in registration order), `set(false)` resumes them in reverse.
  *                            One pair throwing never stops the others (its name comes back in `failed`).
+ *   leanShown(shown, lean)   the dock panels that stay mounted: lean unmounts every one EXCEPT LEAN_KEEPS (PR #200, Ricardo 2026-10-21: Schedules is
+ *                            exempt because its content is the night itself, the wakeups running while lean is on). Not lean: the plan as it is.
  *   workingFaces(rows, opts) the portraits-only strip: the agents whose state is exactly 'working', by name, at most
  *                            `limit`, and how many more did not fit
  *
@@ -193,6 +195,15 @@ function createSuspender() {
   return { register, set, isOn: () => on, names: () => [...pairs.keys()] };
 }
 
+// The panels lean keeps mounted: ids as the dock uses them (TABS in app/renderer.js). The ONE place this exemption lives.
+const LEAN_KEEPS = Object.freeze(['schedules']);
+
+function leanShown(shown, lean) {
+  const set = shown instanceof Set ? shown : new Set(Array.isArray(shown) ? shown : []);
+  if (lean !== true) return new Set(set);
+  return new Set([...set].filter((id) => LEAN_KEEPS.includes(id)));
+}
+
 function workingFaces(rows, { limit = FACE_LIMIT } = {}) {
   const working = (Array.isArray(rows) ? rows : [])
     .filter((r) => r && typeof r === 'object' && typeof r.agent === 'string' && r.agent !== '' && r.state === 'working')
@@ -204,7 +215,7 @@ function workingFaces(rows, { limit = FACE_LIMIT } = {}) {
   };
 }
 
-const API = { normalize, chip, holdStill, wantWebgl, mayAnimate, stillNode, paintStill, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, FACE_LIMIT };
+const API = { normalize, chip, holdStill, wantWebgl, mayAnimate, stillNode, paintStill, hostListsLean, stillSize, advanceCooldowns, createSuspender, workingFaces, leanShown, LEAN_KEEPS, FACE_LIMIT };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.leanDisplay = API;

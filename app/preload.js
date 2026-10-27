@@ -220,6 +220,12 @@ contextBridge.exposeInMainWorld('harness', {
         } catch (err) { console.error('[preload] chrome-settings listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('chrome-settings')),
   },
+  // The tray icon's switches (BACKLOG #119 A8) -- see app/tray-settings.js. `get` answers { trayIcon, minimiseOnClose, startMinimised }
+  // or null; `set` takes one of the first two keys and the DESIRED boolean, and answers what main saved (null when it couldn't).
+  tray: {
+    get: () => ipcRenderer.invoke('tray:getSettings'),
+    set: (key, on) => ipcRenderer.invoke('tray:setSetting', key, on),
+  },
   // The background video's play inputs (backlog #34) -- see app/playback-bridge.js. `get` answers
   // { minimised, hidden, onBattery }, each a boolean or null (unknown); `onChange` replaces its
   // one listener and is handed the same shape.
@@ -248,6 +254,9 @@ contextBridge.exposeInMainWorld('harness', {
     // the saved setting, read synchronously so the page decides the chip before its first paint
     chipOn: () => ipcRenderer.sendSync('resources:chipOn') !== false,
     stop: (req) => ipcRenderer.invoke('resources:stop', req),
+    // Pause / Resume of a child row (#19), by pid and start time; main judges it with Stop's own guard.
+    pause: (req) => ipcRenderer.invoke('resources:pause', req),
+    resume: (req) => ipcRenderer.invoke('resources:resume', req),
     // The Leftovers section's Stop: { rows: [{ pid, start }] } or { group }. Main resolves it against its own latest sample.
     stopLeftovers: (req) => ipcRenderer.invoke('resources:stopLeftovers', req),
     onState: (fn) => (ipcRenderer.removeAllListeners('resources:state'), ipcRenderer.on('resources:state',
@@ -260,6 +269,11 @@ contextBridge.exposeInMainWorld('harness', {
   // approved and where it goes ({ html, hosts, rect, covered } -> { ok }); `bounds` / `cover` / `hosts` keep it in step;
   // `hide` destroys it (hidden means stopped); `answerHost` is the person's answer to a host question; `onNeedHost` and
   // `onMessage` are main -> page ({ id, origin } / { kind: 'send', text }), each replacing its one listener.
+  // the Style tab's switch for the claude-custom mod (BACKLOG #119 A2): a boolean, or null when main could not tell (read) / save (write)
+  ccMod: {
+    settingsGet: () => ipcRenderer.invoke('ccmod:settings-get'),
+    settingsSet: (on) => ipcRenderer.invoke('ccmod:settings-set', on),
+  },
   canvas: {
     show: (req) => ipcRenderer.invoke('canvas:show', req),
     bounds: (rect) => ipcRenderer.send('canvas:bounds', rect),
@@ -279,6 +293,31 @@ contextBridge.exposeInMainWorld('harness', {
       (_e, msg) => {
         try { fn(msg); } catch (err) { console.error('[preload] canvas:message listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('canvas:message')),
+  },
+  // The Preview panel and the Dev servers chip (BACKLOG #119 A4). The dev server's page is a native view of its own that main lays over the
+  // dock panel's body (app/preview-views.js); THIS page is its trusted controller. `show` takes { target?: { port } | { typed }, rect, covered }
+  // -> { ok, url }; with no target main resumes the address this worktree had. `bounds` / `cover` / `hide` keep it in step; `reload`,
+  // `devtools` and `openExternal` act on the page's current address (main reads it; this page never supplies one); `openPort` opens a
+  // listening port in the browser. `onEvent` ({ kind: 'url' | 'blocked' | 'failed' | 'loading' }) and `onDevServers` (this tab's
+  // listening ports) are main -> page, each replacing its one listener; `devServers` asks for the last answer.
+  preview: {
+    show: (req) => ipcRenderer.invoke('preview:show', req),
+    bounds: (rect) => ipcRenderer.send('preview:bounds', rect),
+    cover: (on) => ipcRenderer.send('preview:cover', on === true),
+    hide: () => ipcRenderer.send('preview:hide'),
+    reload: () => ipcRenderer.send('preview:reload'),
+    devtools: () => ipcRenderer.send('preview:devtools'),
+    openExternal: () => ipcRenderer.send('preview:open-external'),
+    openPort: (port) => ipcRenderer.send('preview:open-port', port),
+    devServers: () => ipcRenderer.invoke('devservers:get'),
+    onEvent: (fn) => (ipcRenderer.removeAllListeners('preview:event'), ipcRenderer.on('preview:event',
+      (_e, ev) => {
+        try { fn(ev); } catch (err) { console.error('[preload] preview:event listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('preview:event')),
+    onDevServers: (fn) => (ipcRenderer.removeAllListeners('devservers:state'), ipcRenderer.on('devservers:state',
+      (_e, state) => {
+        try { fn(state); } catch (err) { console.error('[preload] devservers:state listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('devservers:state')),
   },
   // Focus mode (layout pass L1, #1): only the terminal shows. Main owns it (the
   // tab view has to cover the strip); the page hides its header and zones when

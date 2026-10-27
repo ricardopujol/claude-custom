@@ -71,15 +71,19 @@ function defaultIsAlive(pid) {
 // `claudePid` is the host's claude, once it has one (Dexter, PR #83 F1): a stop
 // waits for it too, since the host can exit while claude is still closing in
 // the folder -- and a host with no session lock has nowhere else to say it.
-function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false, sessionId } = {}) {
+function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false, sessionId, kind } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
-  const doc = { port, cwd, pid, startedAt: Date.now() };
+  // killSwitch: this host watches the kill switch's sentinels (host/kill-switch.js). A host from before it has no such key, and the
+  // STOP ALL button counts those as sessions the file can't stop (Dexter F3, PR #210).
+  const doc = { port, cwd, pid, startedAt: Date.now(), killSwitch: true };
   if (typeof processStartedAt === 'string' && processStartedAt) doc.processStartedAt = processStartedAt;
   if (Number.isInteger(claudePid) && claudePid > 0) doc.claudePid = claudePid;
   // #81: a tab's read-only side session shares the folder; this keeps the port walk from mistaking it for the folder's own host.
   if (side === true) doc.side = true;
+  // A5: a tab's plain shell shares the folder too, and runs no claude. Only the exact word; an ordinary host's identity is what it always was.
+  if (kind === 'shell') doc.kind = 'shell';
   // A side host's session id, for the producers that read transcripts (host/occupancy-transcripts.js): only a safe id, and only a side host's.
   if (side === true && typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) doc.sessionId = sessionId;
   try {
@@ -118,6 +122,7 @@ function readIdentity({ dir, port, isAlive = defaultIsAlive } = {}) {
   const identity = { port: Number(port), cwd: parsed.cwd, pid: parsed.pid, startedAt: parsed.startedAt };
   // Only a side host's carries the flag: an ordinary host's identity is what it always was.
   if (parsed.side === true) identity.side = true;
+  if (parsed.kind === 'shell') identity.kind = 'shell';
   return identity;
 }
 

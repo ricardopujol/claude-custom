@@ -95,7 +95,7 @@ test('the identity carries the OS start time, from whichever of bind and boot fi
   assert.ok(boot !== -1);
   const after = HOST.slice(boot, boot + 900);
   assert.match(after, /if \(boundPort === PORT && typeof processStartedAt === 'string'\)/);
-  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, side: SIDE, sessionId: SIDE \? sessionId : undefined, processStartedAt, claudePid: term \? term\.pid : undefined \}\)/);
+  assert.match(after, /writeIdentity\(\{ dir: HARNESS_DIR, port: PORT, cwd: CWD, \.\.\.identityFor\(\), processStartedAt, claudePid: term \? term\.pid : undefined \}\)/);
 });
 
 // Dexter, PR #83 F1: a stop waits for the host's claude, so the identity names

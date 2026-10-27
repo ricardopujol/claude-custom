@@ -249,10 +249,10 @@ async function main() {
   check('it sits right after its branch tab, before feat/b',
     JSON.stringify(labelsOf(s)) === JSON.stringify(['develop', 'feat/a', SIDE_A, 'feat/b']), labelsOf(s).join(', '));
   const sideTab = tabOf(s, SIDE_A);
-  check('it is selected, a reader, and not closable', sideTab.selected === true && sideTab.role === 'reader' && sideTab.closable === false, JSON.stringify(sideTab));
+  check('it is selected, a reader, and closable', sideTab.selected === true && sideTab.role === 'reader' && sideTab.closable === true, JSON.stringify(sideTab));
   s = await waitFor(async () => { const x = await state(app); return domOf(x, SIDE_A) ? x : null; }, 15000) || s;
   const dom = domOf(s, SIDE_A);
-  check('the strip PAINTED it as a small side tab with no close button', !!dom && dom.side === true && dom.hasClose === false, JSON.stringify(dom));
+  check('the strip PAINTED it as a small side tab with a close button', !!dom && dom.side === true && dom.hasClose === true, JSON.stringify(dom));
   check('and its hover says what it is', !!dom && /No Bash, PowerShell, Edit, Write or MCP/.test(dom.title || ''), dom && dom.title);
   check('the side tab\'s page rendered and connected (xterm mounted)', !!(await waitFor(async () => {
     const x = await state(app);
@@ -394,8 +394,38 @@ async function main() {
   const r2 = await command(app, { cmd: 'screenshot', file: shot2 });
   check('a screenshot of the reopened side session is a real image', !!r2.ok && pngOk(r2.stripFile), r2.stripFile);
 
+  // ===== closed by hand (Ricardo's look, 2026-10-26: "when opening a side session, this one can't be closed") =====
+  // Each way a person has: a real click on the tab's x, then the tab's own right-click menu (the popup's template, clicked by the
+  // driver). Either ends ONLY the side host and its claude; the branch tab's host stays, and Open side session starts a fresh one.
+  let liveSide = newSide;
+  for (const way of [
+    { name: 'a real click on its x', cmd: { cmd: 'xClick', label: SIDE_A } },
+    { name: 'its menu Close side session', cmd: { cmd: 'tabMenu', label: SIDE_A, item: 'Close side session' } },
+  ]) {
+    if (!liveSide) break;
+    const sideId = identitiesUnder(featA).find(i => i.pid === liveSide.pid);
+    if (way.cmd.cmd === 'tabMenu') {
+      const menu = await command(app, { cmd: 'tabMenu', label: SIDE_A });
+      check('the side tab menu is Go to side session and Close side session, both on',
+        JSON.stringify((menu.items || []).map(i => [i.label, i.enabled])) === JSON.stringify([['Go to side session', true], ['Close side session', true]]), JSON.stringify(menu));
+    }
+    const confirmsBefore = ((await state(app)).confirms || []).length;
+    const r = await command(app, way.cmd);
+    const gone = await waitFor(async () => !alive(liveSide.pid) && !(sideId && sideId.claudePid && alive(sideId.claudePid)), 20000, 300);
+    const x = await waitFor(async () => { const y = await state(app); return y && !tabOf(y, SIDE_A) ? y : null; }, 10000, 300);
+    check(`${way.name} closes the side tab: its host and its claude end, the branch tab's host stays, feat/a shows next, nothing asked`,
+      r.ok === true && !!gone && !!x && alive(aHost.pid) && (tabOf(x, 'feat/a') || {}).selected === true && (x.confirms || []).length === confirmsBefore,
+      `side host ${alive(liveSide.pid) ? 'alive' : 'gone'}, branch host ${alive(aHost.pid) ? 'alive' : 'GONE'}, tabs ${x ? labelsOf(x).join(', ') : '?'}`);
+    const again2 = await command(app, { cmd: 'side-open', label: 'feat/a' }, 60000);
+    s = await waitFor(async () => { const y = await state(app); return tabOf(y, SIDE_A) && tabOf(y, SIDE_A).started && hostOf(y, SIDE_A) && alive(hostOf(y, SIDE_A).pid) ? y : null; }, 40000);
+    remember(s);
+    const fresh = s && hostOf(s, SIDE_A);
+    check(`and Open side session after ${way.name} starts a FRESH host`, again2.ok === true && !!fresh && fresh.pid !== liveSide.pid, JSON.stringify(again2));
+    liveSide = fresh || null;
+  }
+
   // ===== adopt: close the window, reopen =====
-  const before = { side: newSide && newSide.pid, count: identitiesUnder(featA).length };
+  const before = { side: liveSide && liveSide.pid, count: identitiesUnder(featA).length };
   await quit(app);
   check('closing the window leaves the side host running (detach), like every host', !!before.side && alive(before.side));
   app = await launchApp(container);

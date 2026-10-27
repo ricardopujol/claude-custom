@@ -25,7 +25,7 @@
 
 const TIMEOUT_MS = 15000;
 
-const accepts = (controls) => Array.isArray(controls) && controls.includes('repo');
+const accepts = (controls, type = 'repo') => Array.isArray(controls) && controls.includes(type);
 
 const OLDER = "This session's host is older than this window and can't list files. Restart the session (close this tab and open it again) to browse files.";
 
@@ -35,7 +35,8 @@ function hostNote(controls) {
   return controls === undefined ? 'Waiting for the session to connect.' : OLDER;
 }
 
-function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout } = {}) {
+// `type` and `older` let another conversation reuse this (the Changes panel's `changes`, app/changes-display.js): same seq, timeout, hello gate.
+function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clearTimer = clearTimeout, type = 'repo', older = OLDER } = {}) {
   let controls;
   let seq = 0;
   const pending = new Map();
@@ -52,21 +53,21 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
   }
 
   function request(action, body) {
-    const fail = (error) => Promise.resolve({ type: 'repo', action, ok: false, error });
-    if (!accepts(controls)) return fail(hostNote(controls));
+    const fail = (error) => Promise.resolve({ type, action, ok: false, error });
+    if (!accepts(controls, type)) return fail(controls === undefined ? 'Waiting for the session to connect.' : older);
     const id = ++seq;
     return new Promise((resolve) => {
       const entry = { resolve, timer: null };
       pending.set(id, entry);
-      entry.timer = setTimer(() => settle(id, { type: 'repo', action, ok: false, error: 'the host did not answer in time' }), TIMEOUT_MS);
+      entry.timer = setTimer(() => settle(id, { type, action, ok: false, error: 'the host did not answer in time' }), TIMEOUT_MS);
       let sent = false;
-      try { sent = send({ ...(body || {}), type: 'repo', action, seq: id }) !== false; } catch { sent = false; }
-      if (!sent) settle(id, { type: 'repo', action, ok: false, error: 'not connected to the session' });
+      try { sent = send({ ...(body || {}), type, action, seq: id }) !== false; } catch { sent = false; }
+      if (!sent) settle(id, { type, action, ok: false, error: 'not connected to the session' });
     });
   }
 
   function onMessage(msg) {
-    if (!msg || msg.type !== 'repo') return false;
+    if (!msg || msg.type !== type) return false;
     if (msg.action === 'changed' && msg.seq === undefined) {
       for (const fn of changed) { try { fn(); } catch (err) { console.error('[repo] changed listener threw', err); } }
       return true;
@@ -83,7 +84,7 @@ function createRequester({ send, setTimer = (fn, ms) => setTimeout(fn, ms), clea
   // host, an older one that would type a `repo` frame into its pty. Nothing is sent until ITS hello.
   function failAll(reason) {
     controls = undefined;
-    for (const id of [...pending.keys()]) settle(id, { type: 'repo', ok: false, error: String(reason) });
+    for (const id of [...pending.keys()]) settle(id, { type, ok: false, error: String(reason) });
   }
 
   return {

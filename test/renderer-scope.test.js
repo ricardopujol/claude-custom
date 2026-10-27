@@ -37,6 +37,10 @@ const APP = path.join(__dirname, '..', 'app');
 const ALLOWED_GLOBALS = new Set([
   // app/resources-history-display.js (#63 follow-up): one namespace, reached through `window.`.
   'resourcesHistoryDisplay',
+  // app/preview-display.js (BACKLOG #119 A4): the Preview panel and the Dev servers chip, one namespace.
+  'previewDisplay',
+  // app/agent-pause-display.js (#19): an agent card's Pause / Resume, one namespace, reached through `window.`.
+  'agentPauseDisplay',
   // app/side-tabs.js. isPanelToggle is deliberate and load-bearing:
   // renderer.js calls it as a bare global inside the xterm key handler,
   // which is the only place that can stop the terminal eating Ctrl+B.
@@ -98,8 +102,16 @@ const ALLOWED_GLOBALS = new Set([
   'wandDisplay',
   // app/games-rules.js, app/games-round.js, app/games-display.js (BACKLOG #41): the wait games. ONE name leaves each IIFE.
   'gamesRules', 'gamesRound', 'gamesDisplay',
+  // app/changes-compare.js, app/changes-display.js (BACKLOG #119 A3): the Changes panel. ONE name leaves each IIFE.
+  'changesCompare', 'changesDisplay',
+  // app/top-bar-display.js (PR #199 r2): the review comment's non-destructive typing plan
+  'boxIsCommand', 'appendKeys', 'planCommentTyping',
+  // app/map-model.js, app/map-layout.js, app/map-display.js (BACKLOG #120): the Map panel. ONE name leaves each IIFE.
+  'mapModel', 'mapLayout', 'mapDisplay',
   // app/ask-panel-state.js, app/ask-profile.js, app/ask-requester.js, app/ask-display.js (BACKLOG #33): Ask the repo. ONE name leaves each IIFE.
   'askPanelState', 'askProfile', 'askExplainerDisplay', 'askRequester', 'askController', 'askDisplay',
+  // app/schedules-display.js (BACKLOG #119 A7): the Schedules panel. ONE name leaves its IIFE.
+  'schedulesDisplay',
   // app/resources-display.js (BACKLOG #63): the Resources panel and chip. ONE name leaves its IIFE.
   'resourcesDisplay',
   // app/canvas-display.js (BACKLOG #71): Claude's panel. ONE name leaves its IIFE.
@@ -120,7 +132,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/style-display.js, Agent pictures section (BACKLOG C #3, #18)
   'avatarsSectionView', 'reduceAvatars', 'reduceImagesEnabled',
   // app/style-display.js, Window section (layout pass L2, #27/#28)
-  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'panelSectionView', 'reduceCanvasMcp', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
+  'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'traySectionView', 'reduceTraySettings', 'panelSectionView', 'reduceCanvasMcp', 'reduceCcMod', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
   // app/status-fields-display.js (BACKLOG #27)
   'statusFieldsText', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
@@ -133,13 +145,14 @@ const ALLOWED_GLOBALS = new Set([
   'modelMatches', 'effortMatches', 'validModelInput', 'inputState',
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'boxHoldsLine', 'scrollCapRows', 'menuPlacement',
   // PR #93 Dexter F3: the typing plan the top bar and the Git drawer's Type /merged share
-  'planTyping', 'typingKeys', 'boxText',
+  'planTyping', 'SHELL_TAB_REFUSAL', 'shellExitText', 'typingKeys', 'boxText',
   // app/context-fill-display.js (BACKLOG #6)
   'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
   // app/worktree-status-display.js (PR 1b, Extension X1/X4): one namespace object.
   'worktreeStatus',
   // PR 2 (worktree tabs): one namespace object each, IIFE-wrapped.
   'tabModel', 'tabStatus', 'goToSession',
+  'programStatusDisplay',                  // OSC 7501 (BACKLOG #116): app/program-status-display.js
   // app/occupancy-display.js + app/occupancy-confirm.js (backlog #44 + #47): one namespace object each, IIFE-wrapped.
   'occupancyDisplay', 'occupancyConfirm',
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
