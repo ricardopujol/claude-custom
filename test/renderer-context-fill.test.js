@@ -34,7 +34,8 @@ function branch(type) {
 }
 
 test('the circle sits in the top bar beside the model chip', () => {
-  const bar = HTML.slice(HTML.indexOf('<span id="top-bar">'), HTML.indexOf('</span>', HTML.indexOf('<span id="top-bar">') + 20));
+  // The chips are wrapped in spans (chrome grammar A), so the bar ends where the status fields begin, not at the first </span>.
+  const bar = HTML.slice(HTML.indexOf('<span id="top-bar">'), HTML.indexOf('<span id="status-fields"'));
   assert.match(bar, /id="tb-context"/);
   assert.ok(bar.indexOf('id="tb-model"') < bar.indexOf('id="tb-context"'));
   assert.match(bar, /id="tb-context"[^>]*title="context: unknown"/, 'markup starts as unknown, not as a colour');

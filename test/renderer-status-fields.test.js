@@ -57,7 +57,9 @@ test('renderer.html loads the module before renderer.js', () => {
 test('renderStatusFields draws statusFieldsView (the rule is behaviour-tested there, Miguel L2 G1)', () => {
   const body = fnBody('renderStatusFields');
   assert.match(body, /statusFieldsView\(lastStatusFields, chromeSettings\.statusInHeader\)/);
-  assert.match(body, /\.textContent = view\.text/);
+  assert.match(body, /view\.chips\.map\(/, 'one chip per segment (chrome grammar A)');
+  assert.match(body, /chipIcons\.svgFor\(c\.icon\)/);
+  assert.doesNotMatch(body, /costUsd|\$/, 'no cost in the header');
   assert.match(body, /\.hidden = !view\.shown/);
 });
 

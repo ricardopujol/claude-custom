@@ -17,6 +17,9 @@ const { TABS } = require('../app/side-tabs');
 const IDS = TABS.map(t => t.id);
 // Claude's panel (#71) starts hidden, so a default layout draws every module but it.
 const SHOWN = IDS.filter(id => !T.HIDDEN_UNTIL_USED.includes(id));
+// A rail draws its buttons grouped, Work then Repo then Me (app/rail-groups.js), with a separator between the groups; these see the buttons only.
+const GROUPED = require('../app/rail-groups').groupRail(SHOWN).filter(i => !i.sep).map(i => i.id);
+const railButtons = rail => rail.children.filter(b => b.type === 'button');
 const SHOWN_TABS = TABS.filter(t => SHOWN.includes(t.id));
 const NO_SEL = { active: {}, foldAll: false };
 
@@ -280,8 +283,9 @@ test('rails and dividers: made per key, reused, removed when gone; a rail\'s but
   assert.ok(w.dock.children.indexOf(rails()[0]) < w.dock.children.indexOf(w.overlay));
   const rail = rails()[0];
   const buttons = [...rail.children];
-  assert.deepStrictEqual(buttons.map(b => b.dataset.module), SHOWN);
-  assert.ok(buttons.every(b => b.type === 'button'));
+  assert.deepStrictEqual(railButtons(rail).map(b => b.dataset.module), GROUPED);
+  assert.strictEqual(rail.children.filter(c => c.classes.has('rail-sep')).length, 2, 'a separator between the three groups');
+  assert.ok(rail.children.filter(c => c.classes.has('rail-sep')).every(c => c.getAttribute('role') === 'separator'));
   assert.strictEqual(rail.dataset.dir, 'v');
   V.applyBoxes(plan(l, NO_SEL, { width: 430, height: 600 }), w.doc);
   assert.strictEqual(rails()[0], rail, 'the same rail element');
@@ -531,12 +535,12 @@ test('D4: a rail\'s buttons announce a popover, and the open one says so', () =>
   const l = T.defaultLayout(IDS);
   V.applyBoxes(planD4(l, { collapsed: { right: ['agents'] } }), w.doc);
   const rail = w.dock.children.find(e => e.classes.has('drail'));
-  assert.ok(rail.children.length > 1);
-  assert.ok(rail.children.every(b => b.getAttribute('aria-haspopup') === 'true' && b.getAttribute('aria-expanded') === 'false'));
+  assert.ok(railButtons(rail).length > 1);
+  assert.ok(railButtons(rail).every(b => b.getAttribute('aria-haspopup') === 'true' && b.getAttribute('aria-expanded') === 'false'));
   const buttons = [...rail.children];
   V.applyBoxes(planD4(l, { collapsed: { right: ['agents'] } }, { module: 'vault' }), w.doc);
   assert.deepStrictEqual([...rail.children], buttons, 'the same buttons: only the expanded mark moved');
-  assert.deepStrictEqual(rail.children.filter(b => b.getAttribute('aria-expanded') === 'true').map(b => b.dataset.module), ['vault']);
+  assert.deepStrictEqual(railButtons(rail).filter(b => b.getAttribute('aria-expanded') === 'true').map(b => b.dataset.module), ['vault']);
 });
 
 test('D4: a rail\'s popover is one element in the floats layer, holding the panel and its tabs', () => {
@@ -621,10 +625,10 @@ test('#85: the dock rail is one element keyed "dock", marked as the dock\'s, kep
   V.applyBoxes(planD4(l1), w.doc);
   const rail = w.dock.children.find(e => e.classes.has('drail'));
   assert.strictEqual(rail.dataset.rail, 'dock');
-  assert.deepStrictEqual(rail.children.map(b => b.dataset.module), ['git']);
+  assert.deepStrictEqual(railButtons(rail).map(b => b.dataset.module), ['git']);
   V.applyBoxes(planD4(T.unpin(l1, 'vault')), w.doc);
   assert.strictEqual(w.dock.children.find(e => e.classes.has('drail')), rail, 'the same element');
-  assert.deepStrictEqual(rail.children.map(b => b.dataset.module), ['git', 'vault']);
+  assert.deepStrictEqual(railButtons(rail).map(b => b.dataset.module), ['git', 'vault']);
   V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
   assert.ok(!w.dock.children.some(e => e.classes.has('drail')), 'an empty rail is gone');
 });
@@ -764,7 +768,7 @@ test('a rail button is an icon over a name, named for a screen reader by the lab
   const R = require('../app/rail-icons');
   const w = makeDoc();
   V.applyBoxes(planD4(T.defaultLayout(IDS), RAILED), w.doc);
-  for (const b of railOf(w).children) {
+  for (const b of railButtons(railOf(w))) {
     const tab = TABS.find(t => t.id === b.dataset.module);
     const [icon, name] = b.children;
     assert.ok(icon.classes.has('rail-icon-box') && name.classes.has('rail-name'));
@@ -792,7 +796,7 @@ function measuring(w, { widthOf = name => (name.textContent.length > 6 ? 92 : 20
   };
   return log;
 }
-const sizeOf = (rail, id) => rail.children.find(b => b.dataset.module === id).querySelector('.rail-name').style.fontSize;
+const sizeOf = (rail, id) => railButtons(rail).find(b => b.dataset.module === id).querySelector('.rail-name').style.fontSize;
 
 test('a rail beside the terminal shrinks a name that is too wide for it; one that fits keeps 11 px', () => {
   const w = makeDoc();
@@ -839,18 +843,19 @@ test('a rail above or below the terminal whose tabs fit keeps every name at 11 p
   V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 400, height: 600 }), w.doc);
   const rail = railOf(w);
   assert.strictEqual(rail.dataset.dir, 'h');
-  assert.ok(rail.children.every(b => b.querySelector('.rail-name').style.fontSize === ''));
+  assert.ok(railButtons(rail).every(b => b.querySelector('.rail-name').style.fontSize === ''));
 });
 
 test('a rail above or below the terminal whose tabs do not fit shrinks all its names by the same factor, until they do', () => {
   const w = makeDoc();
-  measuring(w, { widthOf: () => 80 });                 // 3 tabs of 80 + 41 = 363 in 300
-  V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 300, height: 600 }), w.doc);
+  measuring(w, { widthOf: () => 80 });                 // 3 tabs of 80 + 41 = 363 + a 11 px separator in 330
+  V.applyBoxes(planD4(footLayout(['agents', 'vault', 'fog']), { collapsed: { foot: ['agents', 'vault', 'fog'] } }, null, { width: 330, height: 600 }), w.doc);
   const rail = railOf(w);
-  const want = `${V.fitRowNameSize([80, 80, 80], 123, 300)}px`;
+  // Agents and Files are Work, Vault is Me: one separator, which takes RAIL_SEP_PX (11) of the row besides the buttons' 123.
+  const want = `${V.fitRowNameSize([80, 80, 80], 123 + 11, 330)}px`;
   assert.ok(parseFloat(want) < 11 && parseFloat(want) > 0);
-  assert.deepStrictEqual(rail.children.map(b => b.querySelector('.rail-name').style.fontSize), [want, want, want]);
-  assert.ok(240 * (parseFloat(want) / 11) + 123 <= 300 + 1e-9, 'and the row fits');
+  assert.deepStrictEqual(railButtons(rail).map(b => b.querySelector('.rail-name').style.fontSize), [want, want, want]);
+  assert.ok(240 * (parseFloat(want) / 11) + 123 + 11 <= 330 + 1e-9, 'and the row fits, separator included');
 });
 
 test('a vertical rail is not affected by the row rule, and a row refits when its length changes', () => {
@@ -858,16 +863,16 @@ test('a vertical rail is not affected by the row rule, and a row refits when its
   const log = measuring(w, { widthOf: () => 80 });
   const l = footLayout(['agents', 'vault', 'fog']);
   const sel = { collapsed: { foot: ['agents', 'vault', 'fog'] } };
-  V.applyBoxes(planD4(l, sel, null, { width: 300, height: 600 }), w.doc);
+  V.applyBoxes(planD4(l, sel, null, { width: 330, height: 600 }), w.doc);
   const rail = railOf(w);
-  const small = rail.children[0].querySelector('.rail-name').style.fontSize;
+  const small = railButtons(rail)[0].querySelector('.rail-name').style.fontSize;
   const reads = log.reads;
-  V.applyBoxes(planD4(l, sel, null, { width: 300, height: 600 }), w.doc);
+  V.applyBoxes(planD4(l, sel, null, { width: 330, height: 600 }), w.doc);
   assert.strictEqual(log.reads, reads, 'same length: no new read');
   V.applyBoxes(planD4(l, sel, null, { width: 600, height: 600 }), w.doc);
   assert.ok(log.reads > reads);
-  assert.notStrictEqual(rail.children[0].querySelector('.rail-name').style.fontSize, small);
-  assert.strictEqual(rail.children[0].querySelector('.rail-name').style.fontSize, '', 'room enough again: 11 px');
+  assert.notStrictEqual(railButtons(rail)[0].querySelector('.rail-name').style.fontSize, small);
+  assert.strictEqual(railButtons(rail)[0].querySelector('.rail-name').style.fontSize, '', 'room enough again: 11 px');
 });
 
 test('a change of the UI font is fitted again: the font is part of the key, and refitRails re-measures the page\'s rails', () => {
@@ -921,7 +926,7 @@ test('a row that would need names under 8 px shows icons only: names hidden, the
   V.applyBoxes(planD4(footLayout(tabs), { collapsed: { foot: tabs } }, null, { width: 180, height: 600 }), w.doc);
   const rail = railOf(w);
   assert.strictEqual(rail.dataset.names, 'off');
-  assert.ok(rail.children.every(b => b.querySelector('.rail-name').style.fontSize === '' && b.getAttribute('aria-label') && b.title));
+  assert.ok(railButtons(rail).every(b => b.querySelector('.rail-name').style.fontSize === '' && b.getAttribute('aria-label') && b.title));
 });
 
 test('a row whose names stay at 8 px or more keeps them, and leaves icons-only when there is room again', () => {
@@ -937,7 +942,7 @@ test('a row whose names stay at 8 px or more keeps them, and leaves icons-only w
   assert.strictEqual(rail.dataset.names, 'off');
   V.applyBoxes(planD4(l, sel, null, { width: 360, height: 600 }), w.doc);       // 11 * 196 / 240 = 8.98: names are back, shrunk
   assert.strictEqual(rail.dataset.names, undefined);
-  assert.ok(parseFloat(rail.children[0].querySelector('.rail-name').style.fontSize) >= 8);
+  assert.ok(parseFloat(railButtons(rail)[0].querySelector('.rail-name').style.fontSize) >= 8);
 });
 
 test('refitRails on a page with no rail does nothing', () => {

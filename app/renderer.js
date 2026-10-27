@@ -70,6 +70,7 @@ function renderLock(lock) {
   b.hidden = !badge;
   b.textContent = badge ? badge.text : '';
   b.title = badge ? badge.title : '';
+  renderWarnings();
   reportTabStatus();
 }
 function renderTerminalSessions(result) {
@@ -80,6 +81,21 @@ function renderTerminalSessions(result) {
   el.dataset.key = banner ? banner.key : '';
   document.getElementById('terminal-banner-text').textContent = show ? banner.text : '';
 }
+// Chrome grammar A: the header's warnings (behind develop, an overridden or missing session lock) are ONE chip with a count; the
+// detail is its hover text. #wt-health and #wt-lock keep being filled, as the data it is made from, and CSS never draws them.
+function renderWarnings() {
+  const chip = document.getElementById('hdr-warn');
+  if (!chip) return;
+  const parts = ['wt-lock', 'wt-health'].map(id => document.getElementById(id)).filter(e => e && !e.hidden && e.textContent)
+    .map(e => ({ text: e.textContent, title: e.title }));
+  const w = chipModel.warningsChip(parts);
+  chip.hidden = !w.shown;
+  document.getElementById('hdr-warn-n').textContent = w.label;
+  chip.title = w.title;
+  chip.setAttribute('aria-label', w.shown ? `${w.count} ${w.count === 1 ? 'warning' : 'warnings'}: ${w.title.split('\n').join('; ')}` : 'warnings');
+}
+// The chips' icons: constant vendored markup (app/chip-icons.js), never user data.
+for (const slot of document.querySelectorAll('[data-chip-icon]')) slot.innerHTML = chipIcons.svgFor(slot.dataset.chipIcon);
 let tabHealth = null;    // the last health message, for the tab status
 function renderBranchHealth(health) {
   tabHealth = health || null;
@@ -89,6 +105,7 @@ function renderBranchHealth(health) {
   el.textContent = m ? m.text : '';
   el.title = m ? m.title : '';
   el.className = m ? `wt-health ${m.cls}` : 'wt-health';
+  renderWarnings();
   reportTabStatus();
 }
 document.getElementById('lock-open-anyway').addEventListener('click', () => {
@@ -6642,23 +6659,21 @@ function renderHealth(h) {
   el.classList.add(HP_STATES.includes(h.state) ? h.state : 'unknown');
   if (h.running) el.classList.add('running');
 
-  const pct = h.fraction === null || h.fraction === undefined
-    ? 0 : Math.round(h.fraction * 100);
-
-  const label = h.running ? 'running…'
-    : h.state === 'unknown'
-      ? (h.runner ? 'no result yet' : 'no test suite')
-      : `${h.passed}/${h.total}`;
+  // Chrome grammar A: a number or a dash, never a sentence. Running is the chip's shimmer, unknown its dashed border; the words
+  // ("no test suite", "no result yet") live in the hover text. The bar is the 28 px micro-bar (app/chip-model.js).
+  const bar = chipModel.microBar(h.fraction);
+  const label = h.running || h.state === 'unknown' ? '—' : `${h.passed}/${h.total}`;
 
   el.innerHTML = `<span>HP</span><span class="track"><span class="fill"></span></span>` +
                  `<span class="num">${escapeHtml(label)}</span>`;
-  el.querySelector('.fill').style.width = pct + '%';
+  el.querySelector('.fill').style.width = bar.px + 'px';
 
-  el.title = h.state === 'unknown' && !h.runner
-    ? 'No recognisable test suite in this project'
-    : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
-      (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
-      '. Click to run the suite.';
+  el.title = h.running ? 'Running the test suite…'
+    : h.state === 'unknown'
+      ? (h.runner ? 'No result yet. Click to run the suite.' : 'No recognisable test suite in this project')
+      : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
+        (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
+        '. Click to run the suite.';
 }
 
 document.addEventListener('click', (e) => {
@@ -6781,10 +6796,10 @@ function renderUsage(usage) {
       `<span class="lbl">project</span>` +
       `<span class="val">${num(spend(project))}</span>` +
     `</span>` +
-    // Said out loud, not only in a tooltip. A status nobody can see is the
-    // defect this whole change exists to fix.
-    (how.note ? `<span class="grp note" title="${how.note}">${how.note}</span>` : '') +
     milestoneHtml(usage.milestone);
+  // Chrome grammar A: a lower bound or an unread figure is SEEN as a dashed chip with the figure's own placeholder; the sentence
+  // (how.note) is in both groups' hover text, never a line in the header.
+  usageEl.classList.toggle('has-note', !!how.note);
 }
 
 // --- plan quota ---------------------------------------------------------------
@@ -6848,12 +6863,16 @@ function renderQuota(quota) {
   if (d.state !== 'ready') {
     // No bars. Three tracks sitting at zero would claim the plan is untouched,
     // which is precisely what we do not know here.
+    // Chrome grammar A: a dash in a dashed chip (a shimmer while it reads); the sentence is the hover text and the label.
     quotaSkeleton = null;
     quotaEl.classList.remove('has-back');
-    quotaEl.innerHTML = `<span class="none" title="${escapeHtml(d.note || '')}">${escapeHtml(d.note || '')}</span>`;
+    quotaEl.classList.add('is-note');
+    quotaEl.classList.toggle('is-loading', d.state === 'reading');
+    quotaEl.innerHTML = `<span class="none" role="img" aria-label="${escapeHtml(d.note || 'plan limits')}" title="${escapeHtml(d.note || '')}">—</span>`;
     return;
   }
 
+  quotaEl.classList.remove('is-note', 'is-loading');
   const meterHtml = (m, text) =>
     `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${cs.texts[m.key] ? ' back' : ''}${cs.texts[m.key] && m.key === cs.bindKey ? ' bind' : ''}" title="${escapeHtml(m.title)}">` +
       `<span class="lbl">${escapeHtml(m.label)}</span>` +
@@ -8292,7 +8311,7 @@ function renderStyleSection(section) {
       `<span class="style-label">Terminal size</span><div class="style-row">` +
       `<input type="range" id="style-font-size" min="${fontsDisplay.MIN_TERMINAL_SIZE}" max="${fontsDisplay.MAX_TERMINAL_SIZE}" step="1" value="${f.size}">` +
       `<span class="style-val" id="style-font-size-val">${f.size} px</span></div>` +
-      fontPickerHtml('Interface font', 'ui', f.uiFont, 'Default (Segoe UI)',
+      fontPickerHtml('Interface font', 'ui', f.uiFont, 'Default (IBM Plex Sans)',
         'id="style-font-ui-search"', 'id="style-font-ui-list"', 'id="style-font-ui-reset"') +
       fontPickerHtml("This project's terminal font", 'project', f.projectFont, 'Same as every window',
         'id="style-font-project-search"', 'id="style-font-project-list"', 'id="style-font-project-reset"') +
@@ -8743,7 +8762,20 @@ function renderStatusFields(fields) {
   lastStatusFields = fields && typeof fields === 'object' ? fields : null;
   if (!statusFieldsEl) return;
   const view = statusFieldsView(lastStatusFields, chromeSettings.statusInHeader);
-  statusFieldsEl.textContent = view.text;
+  statusFieldsEl.title = view.text.replace(/ {2}│ {2}/g, ', ');
+  statusFieldsEl.replaceChildren(...view.chips.map((c) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip sf-chip';
+    chip.dataset.sf = c.key;
+    const ic = document.createElement('span');
+    ic.className = 'chip-ic';
+    ic.innerHTML = chipIcons.svgFor(c.icon);              // constant vendored markup (app/chip-icons.js), never user data
+    const v = document.createElement('span');
+    v.className = 'chip-v';
+    v.textContent = c.text;
+    chip.append(ic, v);
+    return chip;
+  }));
   statusFieldsEl.hidden = !view.shown;
 }
 
