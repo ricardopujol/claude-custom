@@ -27,7 +27,7 @@ const { createTerminalState } = require('./terminal-state');
 const { createProgramStatusHost, windowAttachedAmong } = require('./program-status-host');
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
-const { killTree, killPidTree, killChildTree, trackExit } = require('./kill-tree');
+const { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
@@ -102,6 +102,8 @@ const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
+const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, NIGHT_BUDGET_MS } = require('./kill-switch');
+const { writeFileAtomic } = require('./atomic-write');
 const { createNightStatus } = require('./night-status');
 const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
 const { countNightPrs } = require('./night-prs');
@@ -1465,10 +1467,42 @@ watchDir({
 });
 // ...and a host with rows says it is still alive (a neighbour reads three silent minutes as "session ended"); the clock text moves along.
 setInterval(() => { schedulesControl.beat(); }, 30_000);
+// --- the kill switch and the night budget (documentation/PLAN_SAFETY_NET.md lane 2; host/kill-switch.js) ---------------
+// The stop path that doesn't depend on the agent. ~/.claude/STOP-ALL (every host) or <dev>/.claude-custom/STOP (this project)
+// appearing kills this session's claude tree by the pty's own pid (pty-stop + kill-tree's killChildTree, never by name) and leaves
+// the file; a host that starts while one exists never spawns claude. A /bedtime night is stopped NIGHT_BUDGET_MS after it began.
+// Every closure below reads `term`, `broadcastControl` and `termState` at call time: the first poll is a second after load.
+const KILL_SWITCH_PATHS = sentinelsFor({ claudeHome: stopAllHome({ seam: seams.claudeHome, home: os.homedir() }), stateRoot: STATE_ROOT });
+console.log('[host] kill switch   :', KILL_SWITCH_PATHS.join(' | ') || '(no sentinel path)');
+const killStop = createStopper({
+  term: () => term,
+  stopPty,
+  killChildTree,
+  outcomeOf: killOutcomeOf,
+  log: (line) => console.log(line),
+  notify: (state) => { sayInTab(state.text); broadcastControl({ type: 'killSwitch', killSwitch: state }); },
+});
+const killSwitch = watchKillSwitch({
+  sentinelPaths: KILL_SWITCH_PATHS,
+  onTrip: ({ sentinel, scope }) => killStop.stop({ kind: term ? 'tripped' : 'refused', sentinel, scope }),
+  // A host that was kept from starting starts once the file is gone, even a dev tab no one can close (Dexter F4 / Miguel Y1, PR #210).
+  onClear: () => { if (killStop.clearRefused()) restartAfterRefusal(); },
+});
+// A kill that did not land (the proof timed out under load) is tried again every few seconds, a handful of times.
+setInterval(() => { try { killStop.retry(); } catch { /* the next tick tries again */ } }, 5000).unref();
+const killLinger = createLinger();
+// The first night's start is kept on disk (one per project), so a host replaced mid-night keeps the deadline (Dexter F1, PR #210).
+const NIGHT_ANCHOR_FILE = path.join(STATE_ROOT, '.claude-custom', 'night-anchor.json');
+const nightBudget = createNightBudget({
+  load: () => loadAnchor(NIGHT_ANCHOR_FILE),
+  save: (anchor) => saveAnchor(NIGHT_ANCHOR_FILE, anchor, { write: (f, data) => writeFileAtomic(f, data) }),
+  nightNow: () => night.payload(),
+  onExpire: ({ startedAt }) => killStop.stop({ kind: 'night-budget', startedAt, budgetMs: NIGHT_BUDGET_MS }),
+});
 const night = createNightStatus({
   bedtime: createBedtime(),
   countPrs: (since) => countNightPrs(CWD, since),
-  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); },
+  onChange: (payload) => { noteNight(payload); broadcastControl({ type: 'bedtime', bedtime: payload }); schedulesControl.touch(); nightBudget.update(payload); },
 });
 
 // Worktree occupancy: this host writes a claim file when one of its subagents proves it is working in another
@@ -1837,8 +1871,34 @@ function workOutSessionEnv() {
   }
 }
 
+// The lock was released when the switch refused the start (startSession), so a start after the file is gone takes it again, the
+// way the boot and "Open anyway" do.
+async function restartAfterRefusal() {
+  if (term || lockBusy || !lockOwner) return;
+  lockBusy = true;
+  try {
+    console.log('[host] kill switch cleared: starting the session that was held back');
+    const g = gateFromAcquire(await acquireSessionLock(SESSION_LOCK, lockOwner));
+    if (term) return;
+    setLockState(g.lock);
+    if (g.start) startSession();
+  } catch (err) {
+    console.error('[host] could not start after the kill switch cleared:', err && err.message);
+  } finally {
+    lockBusy = false;
+  }
+}
+
 function startSession() {
   if (term) return;
+  // The kill switch (host/kill-switch.js): asked now, not at the next poll, so a sentinel already there is never raced by the spawn;
+  // and a host it already stopped stays stopped (a fresh tab is a fresh host). The check itself records the refusal and says why.
+  killSwitch.check();
+  if (killStop.state() !== null) {
+    console.log('[host] not starting claude: the kill switch stopped this host');
+    releaseSessionLock(SESSION_LOCK, lockOwner);
+    return;
+  }
   if (sessionEnv === null) {
     sessionEnv = workOutSessionEnv();
     console.log('[host] worktree env  :', JSON.stringify(sessionEnv));
@@ -2082,6 +2142,17 @@ seedRosterIndex()
   .then((rosterIndex) => broadcastControl({ type: 'rosterIndex', rosterIndex }))
   .catch(() => { /* lastRosterIndex already reflects the failure; the next attach retries */ });
 
+// A line from the host itself in the tab (the kill switch's reason): into the headless screen, so a window attaching later gets it in
+// the replay, and to every window open now.
+function sayInTab(text) {
+  const line = `\r\n\x1b[31m[claude-custom] ${text}\x1b[0m\r\n`;
+  termState.write(line);
+  const frame = Buffer.from(line, 'utf8');
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
+  }
+}
+
 // The pty's two event handlers, attached when startSession() spawns it.
 function wireTerm(t) {
   t.onData((data) => {
@@ -2185,6 +2256,12 @@ function setLockState(lock) {
 // window attaching resets the clock, so a reopen never races the exit (F2).
 const idleWatch = createIdleWatch();
 function checkIdle() {
+  // A host the kill switch kept from starting has nothing to run and nothing to show once no window is left (host/kill-switch.js).
+  if (killLinger.update(killStop.state() !== null && term === null, clients.size)) {
+    console.log('[host] stopped by the kill switch, no session and no window: exiting');
+    shutdown();
+    process.exit(0);
+  }
   if (!idleWatch.update(lockState, term !== null, clients.size)) return;
   console.log('[host] blocked, no session and no window: exiting');
   shutdown();
@@ -2487,6 +2564,8 @@ wss.on('connection', (ws, req) => {
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
     prompt: promptKeeper.snapshot(),
     bedtime: night.payload(),
+    // The kill switch's stop (host/kill-switch.js createStopper: kind, sentinel, text), null while it has not stopped this host.
+    killSwitch: killStop.state(),
     // BACKLOG #119 A7: everything scheduled in every session, grouped (host/schedules.js buildView).
     schedules: schedulesControl.payload(),
     // Backlog #39: this session's "where are we" summary (null: none yet) and why there is no fresh one (null: nothing wrong).
@@ -3200,6 +3279,8 @@ wss.on('error', (err) => {
 // unidentifiable -- Finding 1 from the other direction.
 function shutdown({ removeIdentity = true } = {}) {
   stopPty(term, { killChildTree });
+  try { killSwitch.stop(); } catch { /* a plain cancel */ }
+  try { nightBudget.stop(); } catch { /* one stop's throw never skips the other (Miguel S1) */ }
   try { modServer.close(); } catch {}
   try { repoService.close(); } catch {}
   try { changesNotifier.close(); } catch {}

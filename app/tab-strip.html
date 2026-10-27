@@ -96,6 +96,13 @@
       background: transparent; color: var(--dim); cursor: pointer; font-size: 13px; }
     #bg:hover { color: var(--text); background: var(--border); }
     #bg:disabled { cursor: progress; color: var(--accent); }
+    /* The kill switch's STOP ALL (documentation/PLAN_SAFETY_NET.md lane 2): red, on the strip because lean mode, which a /bedtime
+       night turns on, hides every rail. Its wording, look and place are Ricardo's call (the PR's open question); this is the default. */
+    #stop-all { flex: 0 0 auto; align-self: center; margin-right: 6px; height: 20px; border: 1px solid var(--bad); border-radius: 4px;
+      background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); cursor: pointer; font-size: 11px; font-weight: 600;
+      letter-spacing: 0.04em; padding: 0 8px; }
+    #stop-all:hover { background: var(--bad); color: #fff; }
+    #stop-all:disabled { cursor: progress; opacity: 0.6; }
     #strip-alert.info { color: var(--dim); }
     /* Layout pass L2 (#28): a frameless window. The strip is the title bar, so
        it drags the window (and a double-click maximises: Windows does that on a
@@ -243,7 +250,8 @@
       aria-expanded="false" title="Today's notes: Undo, or Copy one that wasn't filed">0 filed</button><button type="button" id="lean-btn"
       title="Lean mode: just the terminal. Panels, pollers and animations stop; the look stays. A /bedtime night turns it on by itself.">☾ Lean</button><span id="lean-faces" hidden></span><span
       id="lean-chip" hidden><span id="lean-chip-label"></span><span id="lean-chip-night" hidden></span><button type="button"
-      id="lean-back" title="Panels and animations come back">Back to normal</button></span><button type="button" id="bg" title="Running sessions">▾</button><button
+      id="lean-back" title="Panels and animations come back">Back to normal</button></span><button type="button" id="stop-all"
+      title="Stop every Claude session on this computer (asks first; writes ~/.claude/STOP-ALL)">STOP ALL</button><button type="button" id="bg" title="Running sessions">▾</button><button
       type="button" id="win-min" class="win-btn" title="Minimise" aria-label="Minimise" hidden>&#x2013;</button><button
       type="button" id="win-close" class="win-btn" title="Close window (sessions keep running)" aria-label="Close window"
       hidden>&#x2715;</button></div>

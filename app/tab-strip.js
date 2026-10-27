@@ -472,6 +472,25 @@ function paintLean(doc, state, bridge) {
   if (back) { back.textContent = chip ? chip.back : ''; back.onclick = () => bridge.leanSet(false); }
 }
 
+/**
+ * The kill switch's STOP ALL (documentation/PLAN_SAFETY_NET.md lane 2): the button only asks main, which confirms once and writes
+ * ~/.claude/STOP-ALL (host/kill-switch.js requestStopAll). Busy, and so deaf to a second press, until main answers, whatever it answers.
+ */
+function paintStopAll(doc, bridge) {
+  const btn = doc && typeof doc.getElementById === 'function' ? doc.getElementById('stop-all') : null;
+  if (!btn || !bridge || typeof bridge.stopAll !== 'function') return;
+  let busy = false;
+  btn.onclick = () => {
+    if (busy) return;
+    busy = true;
+    btn.disabled = true;
+    const done = () => { busy = false; btn.disabled = false; };
+    let asked;
+    try { asked = Promise.resolve(bridge.stopAll()); } catch (err) { asked = Promise.reject(err); }
+    asked.then(done, done);
+  };
+}
+
 const LEAN_FACES_MAX = 6;
 
 /**
@@ -503,7 +522,7 @@ function paintLeanFaces(doc, faces, on) {
   box.replaceChildren(...nodes);
 }
 
-const api = { paneFor, alertFor, resourceWarnOf, issuesView, issueLine, issuePick, paint, paintAccent, paintLean, paintLeanFaces, windowChrome, GLYPHS, LEAN_FACES_MAX };
+const api = { paneFor, alertFor, resourceWarnOf, issuesView, issueLine, issuePick, paint, paintAccent, paintLean, paintLeanFaces, paintStopAll, windowChrome, GLYPHS, LEAN_FACES_MAX };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
@@ -515,6 +534,7 @@ if (typeof module !== 'undefined' && module.exports) {
   if (root.strip && typeof root.strip.onAccent === 'function') {
     root.strip.onAccent((hex) => paintAccent(root.document, hex));
   }
+  if (root.strip && typeof root.strip.stopAll === 'function') paintStopAll(root.document, root.strip);
   if (root.strip && typeof root.strip.onLean === 'function') {
     // the state on load; a push that already arrived is not undone by a slower answer
     let pushed = false;

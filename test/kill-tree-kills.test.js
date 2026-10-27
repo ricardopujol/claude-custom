@@ -6,7 +6,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const EventEmitter = require('node:events');
-const { killTree, killPidTree, killChildTree, trackExit, childExited, killProven, killProvenAsync, parseProvenKill } = require('../host/kill-tree');
+const { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit, childExited, killProven, killProvenAsync, parseProvenKill } = require('../host/kill-tree');
 
 const START = Symbol.for('claude-custom.child.start');
 const NO_START = { startTimes: async () => new Map() };
@@ -165,4 +165,31 @@ test('S20: killTree sends taskkill for the tree with the exact arguments, falls 
   killTree(null, { spawnFn });
   assert.strictEqual(spawned.length, before);
   assert.deepStrictEqual(ended.killed, []);
+});
+
+// PR #210 Dexter F5: the kill's outcome was never read, and a proven kill that did not land could not be retried.
+test('F5: killChildTree remembers what the proven kill answered, and an unknown or failed one may be tried again', async () => {
+  for (const [answer, retry] of [['killed', false], ['gone', false], ['mismatch', false], ['unknown', true], ['failed', true]]) {
+    const it = trackExit(pty(31), { startTimes: async () => new Map([[31, '133000000000000000']]) });
+    await it[Symbol.for('claude-custom.child.startRead')];
+    assert.strictEqual(killOutcomeOf(it), null, 'nothing attempted yet');
+    const seen = [];
+    const opts = { provenKill: (p, s) => { seen.push([p, s]); return answer; }, killFn: () => assert.fail('a proven start is never killed by the raw pid') };
+    assert.strictEqual(killChildTree(it, opts), true);
+    assert.strictEqual(killOutcomeOf(it), answer);
+    assert.strictEqual(killChildTree(it, opts), retry, `${answer}: ${retry ? 'tried again' : 'once'}`);
+    assert.strictEqual(seen.length, retry ? 2 : 1, answer);
+  }
+});
+
+test('F5: a raw-pid kill (start not read yet) is "sent"; an injected kill that says nothing is null', async () => {
+  const early = trackExit(pty(32), NO_START);
+  killChildTree(early, { killFn: () => {} });
+  assert.strictEqual(killOutcomeOf(early), 'sent');
+  const it = trackExit(pty(33), { startTimes: async () => new Map([[33, '133000000000000000']]) });
+  await it[Symbol.for('claude-custom.child.startRead')];
+  killChildTree(it, { provenKill: () => undefined });
+  assert.strictEqual(killOutcomeOf(it), null);
+  assert.strictEqual(killOutcomeOf(null), null);
+  assert.strictEqual(killOutcomeOf({}), null);
 });
