@@ -153,3 +153,12 @@ test('Miguel S3: the dialog does not say it twice when the reason already names 
   const d = closeDetail({ reason: 'You have unsaved edits to a.js in the file reader.', unsaved: 'a.js' });
   assert.strictEqual(d, 'You have unsaved edits to a.js in the file reader.\nThe folder stays.');
 });
+
+test('BACKLOG #132: pathsFor joins the files unsaved under several tabs, and is null when none is', () => {
+  const u = createUnsaved();
+  assert.strictEqual(u.pathsFor('a', 'a|side'), null);
+  u.report('a|side', 'README.md');
+  assert.strictEqual(u.pathsFor('a', 'a|side'), 'README.md');
+  u.report('a', 'x.js');
+  assert.strictEqual(u.pathsFor('a', 'a|side'), 'x.js, README.md');
+});

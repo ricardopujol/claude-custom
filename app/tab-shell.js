@@ -837,10 +837,18 @@ function createShell(deps) {
   /** The file with unsaved edits in the tab's code reader (#50), or null. A hook that throws says nothing. */
   function readerUnsavedOf(tab) {
     if (!safety || typeof safety.readerUnsaved !== 'function') return null;
-    try { return safety.readerUnsaved(tab); } catch (err) {
-      log('[shell] safety.readerUnsaved threw:', err && err.message);
-      return null;
-    }
+    const one = (t) => {
+      try { return safety.readerUnsaved(t); } catch (err) {
+        log('[shell] safety.readerUnsaved threw:', err && err.message);
+        return null;
+      }
+    };
+    const own = one(tab);
+    // A branch tab's close ends its side tab too (BACKLOG #132), so the side reader's unsaved file counts and is named with it.
+    const side = tab && typeof tab.key === 'string' && !isSideKey(tab.key) && !isShellKey(tab.key) ? tabs.get(sideKeyOf(tab.key)) : null;
+    const sideFile = side ? one(side) : null;
+    const names = [own, sideFile].filter(n => typeof n === 'string' && n !== '');
+    return names.length === 0 ? own : names.join(', ');
   }
 
   /**
@@ -1573,7 +1581,8 @@ function createShell(deps) {
     // A start that gave up because this tab closed has already sent the stop to the host it made or found: wait for THAT one and
     // report how it went (Dexter F3, PR #214), rather than saying closed about a stop nobody looked at.
     if (t.closeStop) return await t.closeStop;
-    const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || null);
+    // A start that timed out twice has no `pending` but an `unconfirmed` host that may still bind (BACKLOG #133): it is stopped like a pending one.
+    const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || t.unconfirmed || null);
     if (!target) return null;
     return stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
   }

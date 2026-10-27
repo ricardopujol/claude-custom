@@ -65,7 +65,7 @@ const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
-const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
+const { isSideKey, sideKeyOf, sideHostsOf, readerSessionIds } = require('../host/side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
 const { isShellKey, shellHostsOf } = require('../host/shell-tab');
 const { sendControl } = require('../host/host-client');
@@ -1062,7 +1062,8 @@ async function confirmStopAll(file) {
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
   // to ask (#77), keeping what it was asked so the probe can read the reason back.
-  const unsaved = readerUnsaved.pathFor(tab.key);
+  // A branch tab's end takes its side tab with it (BACKLOG #132): that reader's unsaved file is named too.
+  const unsaved = isSideKey(tab.key) ? readerUnsaved.pathFor(tab.key) : readerUnsaved.pathsFor(tab.key, sideKeyOf(tab.key));
   if (PROBE_PORT) {
     probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason, unsaved });
     return reason === '';

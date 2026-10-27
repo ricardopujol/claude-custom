@@ -25,6 +25,8 @@ function createUnsaved() {
       else byTab.delete(key);
     },
     pathFor: (key) => (byTab.has(key) ? byTab.get(key) : null),
+    // The files unsaved under several tabs, joined for one question (a branch tab and its side tab close together), or null.
+    pathsFor: (...keys) => { const names = keys.filter(k => byTab.has(k)).map(k => byTab.get(k)); return names.length ? names.join(', ') : null; },
     clear: (key) => { byTab.delete(key); },
     all: () => [...byTab].map(([key, path]) => ({ key, path })),
   };
