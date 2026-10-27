@@ -33,7 +33,7 @@ function duration(ms) {
 
 /**
  * The header's chips, in order; [] when there's nothing to say. No cost: on Max there is no extra spend, so a dollar figure was noise
- * (Ricardo, 2026-10-26, chrome grammar). `icon` names a Lucide icon the page draws (app/chrome-icons.js).
+ * (Ricardo, 2026-10-26, chrome grammar). `icon` names a Lucide icon the page draws (app/chip-icons.js).
  */
 function statusFieldsChips(fields) {
   if (!fields || typeof fields !== 'object') return [];
