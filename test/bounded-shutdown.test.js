@@ -10,8 +10,7 @@ const path = require('node:path');
 const fc = require('fast-check');
 const { tmpDir } = require('./tmp-dir');
 
-const { spawn } = require('node:child_process');
-const { runShutdown, armWatchdog, SHUTDOWN_BOUND_MS } = require('../host/bounded-shutdown');
+const { runShutdown, SHUTDOWN_BOUND_MS } = require('../host/bounded-shutdown');
 const { createWatchdog, MAX_PROOF_ATTEMPTS, RETRY_MS } = require('../host/bounded-watchdog');
 const { killProven, KILL_PROVEN_TIMEOUT_MS } = require('../host/kill-tree');
 
@@ -145,17 +144,6 @@ test('watchdog: a reused pid is final even after an earlier unjudged try', () =>
   t = 100; assert.strictEqual(wd.tick(), 'wait');
   t += RETRY_MS; assert.strictEqual(wd.tick(), 'exit');
   assert.strictEqual(calls, 2);
-});
-
-test('disarm kills the watchdog\'s whole tree by its pid, so a killProven already started dies with it (PR #217 round 2 N2)', () => {
-  const guarded = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', windowsHide: true });
-  try {
-    const killed = [];
-    const disarm = armWatchdog({ boundMs: 60000, pid: guarded.pid, killTree: (p) => killed.push(p) });
-    assert.ok(Number.isInteger(disarm.pid));
-    disarm();
-    assert.deepStrictEqual(killed, [disarm.pid]);
-  } finally { guarded.kill(); }   // kill-ok(held-handle): the child this test spawned
 });
 
 test('watchdog: its default clock is monotonic, a wall-clock step of an hour does not cut a healthy stop short (PR #217 Dexter F5)', () => {

@@ -81,3 +81,14 @@ test('a disarmed watchdog ends at once and leaves the process it guarded alone, 
     guarded.kill();   // kill-ok(held-handle): the child this test spawned
   }
 });
+
+test('disarm kills the watchdog\'s whole tree by its pid, so a killProven already started dies with it (PR #217 round 2 N2)', () => {
+  const guarded = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', windowsHide: true });
+  try {
+    const killed = [];
+    const disarm = armWatchdog({ boundMs: 60000, pid: guarded.pid, killTree: (p) => killed.push(p) });
+    assert.ok(Number.isInteger(disarm.pid));
+    disarm();
+    assert.deepStrictEqual(killed, [disarm.pid]);
+  } finally { guarded.kill(); }   // kill-ok(held-handle): the child this test spawned
+});
