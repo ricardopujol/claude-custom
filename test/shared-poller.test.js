@@ -501,6 +501,23 @@ test('a deposed owner whose sample is still running finishes it but neither publ
   assert.strictEqual(b.role(), 'owner');
 }));
 
+test('a deposed owner whose sample ends BEFORE its next control tick publishes nothing over its successor (BACKLOG #126)', () => withWorld(async (w) => {
+  w.execDelay = 11000;
+  const a = w.make(1001);
+  a.setLevel('panel');
+  await a.start();
+  await w.advance(10001);                  // 1001's last tick was at 10000; the next is 12000; its sample ends at 11000
+  w.alive.add(5001); w.starts.set(5001, 'F5001');
+  fs.writeFileSync(path.join(w.dir, 'owner.json'), JSON.stringify({ pid: 5001, start: 'F5001', since: w.now(), beat: w.now() }));
+  w.alive.delete(5001);
+  const b = w.make(1002);
+  b.setLevel('panel');
+  await b.start();
+  assert.strictEqual(w.ownerPid(), 1002);
+  await w.advance(1500);                   // 1001's sample has ended (t=11000); 1002's has not (ends at 21001)
+  assert.strictEqual(fs.existsSync(path.join(w.dir, 'sample.json')), false, 'nothing was published: 1001 is deposed and 1002 is still sampling');
+}));
+
 test('an owner.json that cannot be read is doubt, not "no owner": a live owner with a fresh beat is not taken from, a stale one is (BACKLOG #126)', () => withWorld(async (w) => {
   const a = w.make(1001);
   a.setLevel('chip');
