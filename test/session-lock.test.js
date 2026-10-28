@@ -286,6 +286,17 @@ test('release of a lock that is already gone is quiet', () => {
   assert.strictEqual(release(null, me()), false);
 });
 
+test('release twice in a row is safe: the second is quiet and takes nothing from a successor (PR #217 Miguel 3)', () => {
+  const lock = lockFile();
+  fs.writeFileSync(lock, JSON.stringify(me()));
+  assert.strictEqual(release(lock, me()), true);
+  assert.strictEqual(release(lock, me()), false);
+  const successor = holder(101, '5');
+  fs.writeFileSync(lock, JSON.stringify(successor));
+  assert.strictEqual(release(lock, me()), false);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(lock, 'utf8')), successor);
+});
+
 test('updateOwn adds the claude pid to our lock, atomically, without litter', () => {
   const lock = lockFile();
   fs.writeFileSync(lock, JSON.stringify(me()));
