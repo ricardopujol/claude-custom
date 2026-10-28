@@ -54,6 +54,7 @@ const { planGoTo } = require('./go-to-session');
 const { sideKeyOf, parentKeyOf, isSideKey, sideLabel } = require('../host/side-session');
 // #119 A5: a branch tab's plain shell, a tab of the same kind of its own (host/shell-tab.js).
 const { shellKeyOf, parentKeyOfShell, isShellKey, shellLabel } = require('../host/shell-tab');
+const { joinNames } = require('./reader-unsaved');
 
 // --- pure helpers ------------------------------------------------------------
 
@@ -598,6 +599,8 @@ function createShell(deps) {
           // close still says it may be running (Dexter, PR #75 R2-3).
           if (!(await hosts.wait(port))) {
             tab.unconfirmed = pend;
+            // the branch tab closed during this wait: dropSide found no pending host to stop, so it is stopped here (Dexter F1, PR #216)
+            if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, pend.port, pend.token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
           token = pend.token;
@@ -611,7 +614,7 @@ function createShell(deps) {
           if (!(await hosts.wait(port))) {
             tab.pending = { port, token };
             // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
-            if (tab.closed && isCompanionEntry(tab)) tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
+            if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
@@ -624,7 +627,7 @@ function createShell(deps) {
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
           // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
-          if (spawned || isCompanionEntry(tab)) tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
+          if (spawned || isCompanionEntry(tab)) stopFromStart(tab, port, token);
           return;
         }
         present(tab, port, token);
@@ -845,10 +848,14 @@ function createShell(deps) {
     };
     const own = one(tab);
     // A branch tab's close ends its side tab too (BACKLOG #132), so the side reader's unsaved file counts and is named with it.
-    const side = tab && typeof tab.key === 'string' && !isSideKey(tab.key) && !isShellKey(tab.key) ? tabs.get(sideKeyOf(tab.key)) : null;
-    const sideFile = side ? one(side) : null;
-    const names = [own, sideFile].filter(n => typeof n === 'string' && n !== '');
-    return names.length === 0 ? own : names.join(', ');
+    const side = sideRecordOf(tab);
+    return joinNames(own, side ? one(side) : null);
+  }
+
+  /** The side tab's record of a BRANCH tab (a side or shell tab has none), or null. */
+  function sideRecordOf(tab) {
+    if (!tab || typeof tab.key !== 'string' || isSideKey(tab.key) || isShellKey(tab.key)) return null;
+    return tabs.get(sideKeyOf(tab.key)) || null;
   }
 
   /**
@@ -1429,8 +1436,7 @@ function createShell(deps) {
     if (!t) return;
     t.closed = true;
     if (stop === true) {
-      const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
-      if (target) {
+      for (const target of hostsToStop(t)) {
         hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } })
           .then(r => log(`[shell] stop ${sk}: ${r && r.ok ? 'sent' : (r && r.error)}`), () => {});
       }
@@ -1568,6 +1574,20 @@ function createShell(deps) {
       (err) => (err && err.message) || String(err));
   }
 
+  /** Every host a side or shell record may still have running: the presented one, else the pending and the unconfirmed ones (BACKLOG #133). */
+  function hostsToStop(t) {
+    if (t.started && t.port && t.token) return [{ port: t.port, token: t.token }];
+    const out = [];
+    for (const c of [t.pending, t.unconfirmed]) if (c && !out.some(o => o.port === c.port)) out.push({ port: c.port, token: c.token });
+    return out;
+  }
+
+  /** A start that gave up because its tab closed stops the host it made or found, and records which port that was. */
+  function stopFromStart(tab, port, token) {
+    tab.closeStopPort = port;
+    tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
+  }
+
   /**
    * End a side or shell tab's host and wait for its answer: why it may still be running, or null. Closed first, so a start still in
    * its port walk gives up before it spawns; then the start is let settle, so what it made or found is on the record when it is
@@ -1580,11 +1600,15 @@ function createShell(deps) {
     if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
     // A start that gave up because this tab closed has already sent the stop to the host it made or found: wait for THAT one and
     // report how it went (Dexter F3, PR #214), rather than saying closed about a stop nobody looked at.
-    if (t.closeStop) return await t.closeStop;
-    // A start that timed out twice has no `pending` but an `unconfirmed` host that may still bind (BACKLOG #133): it is stopped like a pending one.
-    const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || t.unconfirmed || null);
-    if (!target) return null;
-    return stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
+    // The host that start stopped is not the only one the record may hold: an earlier, unconfirmed one gets its stop too (Dexter F2, PR #216).
+    let failure = t.closeStop ? await t.closeStop : null;
+    const skip = t.closeStop ? t.closeStopPort : null;
+    const targets = (t.started && t.ended === true ? [] : hostsToStop(t)).filter(x => x.port !== skip);
+    for (const target of targets) {
+      const f = await stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
+      if (failure === null) failure = f;
+    }
+    return failure;
   }
 
   /**

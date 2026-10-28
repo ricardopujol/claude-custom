@@ -572,8 +572,8 @@ test('BACKLOG #132: both files are named when the branch tab and its side tab ea
   assert.match(h.confirms[0].reason, /unsaved edits to a\.js, README\.md/);
 });
 
-test('BACKLOG #133: a side start that timed out twice, then closed, sends the stop to the host it never confirmed', async () => {
-  const h = await opened();
+/** The side start's host wait times out, then the retry's does too: the record ends with `unconfirmed` set and `pending` null. */
+async function timeOutTwice(h) {
   h.waitFails = 1;
   await h.shell.openSide(key('feat-a'));
   assert.ok(h.shell._tabs.get(skey('feat-a')).pending, 'first timeout leaves a pending host');
@@ -584,6 +584,65 @@ test('BACKLOG #133: a side start that timed out twice, then closed, sends the st
   const rec = h.shell._tabs.get(skey('feat-a'));
   assert.strictEqual(rec.pending, null);
   assert.ok(rec.unconfirmed, 'second timeout leaves it unconfirmed');
+  return rec;
+}
+const stopMsgsTo = (h, port) => h.controls.filter(c => c.msg.type === 'stop' && c.port === port);
+
+test('Dexter F1 (PR #216): closing the BRANCH tab after two side-start timeouts stops the unconfirmed side host, by x and by Ctrl+click', async () => {
+  for (const ifSafe of [false, true]) {
+    const h = ifSafe ? await mergedHarness([]) : await opened();
+    const rec = await timeOutTwice(h);
+    h.confirm = !ifSafe;
+    await h.shell.closeTab(key('feat-a'), { ifSafe });
+    await flush();
+    assert.strictEqual(stopMsgsTo(h, 7702).length, 1, `ifSafe=${ifSafe}: one stop to the unconfirmed port`);
+    assert.strictEqual(stopMsgsTo(h, 7702)[0].token, rec.unconfirmed.token);
+  }
+});
+
+test('Dexter F1 (PR #216): the branch tab closing DURING the side\'s second wait, which then times out, still stops that host', async () => {
+  const h = await opened();
+  h.waitFails = 1;
+  await h.shell.openSide(key('feat-a'));
+  delete h.running[7702];
+  const pend = h.shell._tabs.get(skey('feat-a')).pending;
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  h.waitFails = 1;
+  const retry = h.shell.select(skey('feat-a'));
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  release();
+  await retry;
+  await flush();
+  assert.strictEqual(stopMsgsTo(h, 7702).length, 1);
+  assert.strictEqual(stopMsgsTo(h, 7702)[0].token, pend.token);
+});
+
+test('Dexter F2 (PR #216): a third start on a new port closed mid-wait stops BOTH the new host and the earlier unconfirmed one', async () => {
+  const h = await opened();
+  const rec = await timeOutTwice(h);
+  const old = rec.unconfirmed;
+  h.running[7702] = dev(false);              // something else holds 7702 now, so the next walk lands on 7703
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  h.waitFails = 1;
+  const third = h.shell.select(skey('feat-a'));
+  await flush();
+  const closing = h.shell.closeTab(skey('feat-a'));
+  await flush();
+  release();
+  await third;
+  await closing;
+  assert.strictEqual(stopMsgsTo(h, 7703).length, 1, 'the new host');
+  const earlier = stopMsgsTo(h, 7702);
+  assert.strictEqual(earlier.length, 1, 'the earlier unconfirmed host');
+  assert.strictEqual(earlier[0].token, old.token);
+});
+
+test('BACKLOG #133: a side start that timed out twice, then closed, sends the stop to the host it never confirmed', async () => {
+  const h = await opened();
+  const rec = await timeOutTwice(h);
   const r = await h.shell.closeTab(skey('feat-a'));
   assert.strictEqual(r.ok, true);
   const stops = h.controls.filter(c => c.msg.type === 'stop');

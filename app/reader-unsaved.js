@@ -12,7 +12,16 @@
  * offers, so this is the whole tab-close guard; nothing blocks the page's own unload (a vetoed beforeunload pins a
  * tab view with no way to close it).
  */
+const { isSideKey, sideKeyOf } = require('../host/side-session');
+const { isShellKey } = require('../host/shell-tab');
+
 const MAX_PATH = 300;
+
+/** The unsaved file names that are real, in order, as one list for a question; null when there are none. The one join every close question uses. */
+function joinNames(...names) {
+  const real = names.filter(n => typeof n === 'string' && n !== '');
+  return real.length ? real.join(', ') : null;
+}
 
 function createUnsaved() {
   const byTab = new Map();
@@ -26,7 +35,11 @@ function createUnsaved() {
     },
     pathFor: (key) => (byTab.has(key) ? byTab.get(key) : null),
     // The files unsaved under several tabs, joined for one question (a branch tab and its side tab close together), or null.
-    pathsFor: (...keys) => { const names = keys.filter(k => byTab.has(k)).map(k => byTab.get(k)); return names.length ? names.join(', ') : null; },
+    pathsFor: (...keys) => joinNames(...keys.map(k => (byTab.has(k) ? byTab.get(k) : null))),
+    // What ending `key` loses: a branch tab's own file and its side tab's; a side or shell tab only its own.
+    pathsForClose: (key) => (isSideKey(key) || isShellKey(key)
+      ? (byTab.has(key) ? byTab.get(key) : null)
+      : joinNames(byTab.has(key) ? byTab.get(key) : null, byTab.get(sideKeyOf(key)))),
     clear: (key) => { byTab.delete(key); },
     all: () => [...byTab].map(([key, path]) => ({ key, path })),
   };
@@ -59,4 +72,4 @@ async function guardWindowClose({ list, ask, saveAll, waitCleared, notify = () =
   return false;
 }
 
-module.exports = { createUnsaved, closeDetail, guardWindowClose };
+module.exports = { createUnsaved, closeDetail, guardWindowClose, joinNames };
