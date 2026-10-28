@@ -448,7 +448,13 @@ function createSharedPoller({
       if (role === 'owner') schedule();
     },
     level: () => ownLevel,
-    role: () => role,
+    // The folder is the truth, `role` only a belief refreshed every control tick: an owner whose folder now names another
+    // process says follower at once. It only reports; the next tick (or sample) does the demoting. An unreadable record is no proof.
+    role: () => {
+      if (role !== 'owner' || solo) return role;
+      const cur = readOwner();
+      return cur && !stillOwner() ? 'follower' : role;
+    },
     next, cancelWaiters, sampleNow, tick,
     latest: () => latest,
   };

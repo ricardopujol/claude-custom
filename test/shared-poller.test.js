@@ -474,6 +474,20 @@ test('a want file named for pid 0 or a pid beyond the integer range is not a wan
   assert.ok(callsOf(w, 100).length <= 2, `chip cadence only (got ${callsOf(w, 100).length})`);
 }));
 
+test('a deposed owner no longer reports itself the owner, even before its next control tick (fast-check: start, depose, undepose, start)', () => withWorld(async (w) => {
+  const a = w.make(1001);
+  await a.start();
+  assert.strictEqual(a.role(), 'owner');
+  // A foreign process takes the folder, then dies: the next window to start claims it at once.
+  w.alive.add(5001); w.starts.set(5001, 'F5001');
+  fs.writeFileSync(path.join(w.dir, 'owner.json'), JSON.stringify({ pid: 5001, start: 'F5001', since: w.now(), beat: w.now() }));
+  w.alive.delete(5001);
+  const b = w.make(1002);
+  await b.start();
+  assert.strictEqual(b.role(), 'owner');
+  assert.strictEqual(a.role(), 'follower', 'the folder names 1002: 1001 must not still say it owns');
+}));
+
 test('property: any sequence of starts, stops, crashes and time leaves at most one owner, and exactly one once settled', async () => {
   const ops = fc.array(fc.oneof(
     fc.record({ op: fc.constant('start'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),
