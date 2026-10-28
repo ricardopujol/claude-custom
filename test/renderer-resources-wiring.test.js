@@ -60,7 +60,16 @@ test('the chip opens a popover with the graphs (it no longer opens the panel); e
   assert.match(BLOCK, /resPopoverEl\.addEventListener\('mouseleave'/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.popoverStep\(/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.popover\(/);
-  assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.chipFiguresHtml\(/);
+  assert.doesNotMatch(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/, 'round 2: no sparklines in the header chip');
+});
+
+test('round 2: a rest on the chip opens the popover as a peek, and leaving chip and popover closes it, through the state machine', () => {
+  assert.match(BLOCK, /tbResourcesEl\.addEventListener\('mouseenter', resPeekEnter\)/);
+  assert.match(BLOCK, /tbResourcesEl\.addEventListener\('mouseleave', resPeekLeave\)/);
+  assert.match(BLOCK, /resPopoverEl\.addEventListener\('mouseenter', resPeekCancel\)/);
+  assert.match(BLOCK, /resPopStep\(\{ type: 'hover-open' \}\)/);
+  assert.match(BLOCK, /resPopStep\(\{ type: 'hover-close' \}\)/);
 });
 
 test('the popover is closed with the chip (the Window menu toggle), is a labelled region, and the markup and script are in the page', () => {
@@ -140,7 +149,7 @@ test('Leftovers (F2): the stop is the async killProven, the launcher is re-asked
 });
 
 test('#82: the chip is handed the GPU figure, and the Resources tab the GPU graphs from the history display', () => {
-  assert.match(BLOCK, /resourcesHistoryDisplay\.chipHtml\(c\.cpuText, c\.memText, resHistory\(\), resHistoryNow\(\), c\.gpuText\)/);
+  assert.match(BLOCK, /resourcesHistoryDisplay\.chipFiguresHtml\(c\.cpuText, c\.memText, c\.gpuText\)/);
   assert.match(BLOCK, /resourcesDisplay\.html\(window\.resourcesDisplay\.view\(resState\), \{ gpuGraphs: window\.resourcesHistoryDisplay\.gpuGraphs\(resHistory\(\), resHistoryNow\(\)\) \}\)/);
   assert.match(HTML, /aria-label="CPU, memory and GPU over the last hour"/);
   assert.match(HTML, /\.res-gpu \.hg-plot \{ width: 100% !important;/);

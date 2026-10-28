@@ -1668,8 +1668,9 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  // each figure (CPU, memory, and the GPU's when the payload has one) with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
-  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow(), c.gpuText);
+  // the figures alone (CPU, memory, and the GPU's when the payload has one): the graphs show in the hover popover and the panel
+  // (Ricardo, 2026-10-27); the whole chip reads as the plain text to a screen reader
+  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipFiguresHtml(c.cpuText, c.memText, c.gpuText);
   tbResourcesEl.setAttribute('aria-label', c.text);
   tbResourcesEl.title = c.title;
   tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
@@ -1825,6 +1826,16 @@ if (resRoot) {
 // page hiding close it. The chip is a button, so Enter and Space toggle it natively.
 if (tbResourcesEl && resPopoverEl) {
   tbResourcesEl.addEventListener('click', () => { resPopStep({ type: 'chip-click' }); });
+  // Hover: after a short rest on the chip the popover opens as a peek; it closes a moment after the pointer leaves both the chip
+  // and the popover (the grace lets the pointer cross the gap between them). A click pins it (the state machine decides).
+  let resPeekOpen = null; let resPeekClose = null;
+  const resPeekCancel = () => { clearTimeout(resPeekOpen); clearTimeout(resPeekClose); resPeekOpen = resPeekClose = null; };
+  const resPeekEnter = () => { resPeekCancel(); resPeekOpen = setTimeout(() => { resPeekOpen = null; resPopStep({ type: 'hover-open' }); }, 350); };
+  const resPeekLeave = () => { resPeekCancel(); resPeekClose = setTimeout(() => { resPeekClose = null; resPopStep({ type: 'hover-close' }); }, 250); };
+  tbResourcesEl.addEventListener('mouseenter', resPeekEnter);
+  tbResourcesEl.addEventListener('mouseleave', resPeekLeave);
+  resPopoverEl.addEventListener('mouseenter', resPeekCancel);
+  resPopoverEl.addEventListener('mouseleave', resPeekLeave);
   resPopoverEl.addEventListener('mousemove', (e) => {
     const plot = plotUnder(e);
     if (!plot) { resPopStep({ type: 'leave' }); return; }

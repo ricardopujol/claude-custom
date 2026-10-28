@@ -36,9 +36,14 @@ const { probeWindowOptions } = require('../host/probe-window');
 const fs = require('fs');
 
 const OUT_DIR = process.argv[2] || path.join(__dirname, '..', '.harness', 'chrome-grammar');
-const WIDTHS = [1280, 1600, 1920];
+// 640 x 480 is the smallest window main.js allows (minWidth / minHeight); 900 and 1024 are the common small ones.
+const WIDTHS = [640, 900, 1024, 1280, 1600, 1920];
+const COMPACT_BELOW = 1400;     // under this the chips drop their micro-bars and labels (renderer.html, round 2 of Ricardo's look)
+const heightFor = (width) => (width <= 640 ? 480 : 640);
+// Every chip and button the header must keep showing, however narrow: only the CLI session chips (#status-fields) and the folder (it ellipsizes) may give way.
+const MUST_SHOW = ['#hdr-warn', '.chip-hp', '#tb-resources', '.chip-model', '.chip-effort', '.chip-ctx', '#mode', '#usage', '#quota', '#layout-btn', '#focus-btn', '#shortcuts-btn'];
 // The two children built to give way (probe-header-fit.js): the folder ellipsizes, and the CLI status chips (opt-in, #27) shrink first.
-const MAY_CLIP = new Set(['cwd', 'status-fields']);
+const MAY_CLIP = new Set(['title', 'cwd', 'status-fields']);
 // The rail in the dock hides Claude's panel until it is used (app/dock-tree.js HIDDEN_UNTIL_USED), so it is not in the order.
 const WANT_ORDER = 'agents,git,fog,resources,map,schedules|ask,changes,preview|style,vault,wand,games,models,projects,bugvault';
 
@@ -48,7 +53,7 @@ const FIXTURE = `(() => {
   document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));
   set('title', 'claude-custom');
   set('cwd', 'C:/Users/ricar/VibeCode/claude-custom/feat-chrome-grammar');
-  set('tb-resources', 'CPU 23%  5.1G / 31G');
+  document.getElementById('tb-resources').innerHTML = window.resourcesHistoryDisplay.chipFiguresHtml('CPU 23%', '5.1G / 31G');
   set('tb-model', 'claude-sonnet-5-5'); set('tb-effort', 'high');
   if (typeof renderStatusFields === 'function') {
     chromeSettings.statusInHeader = true;
@@ -72,6 +77,9 @@ const FIXTURE = `(() => {
 })()`;
 
 const MEASURE = `(async () => {
+  const must = ${JSON.stringify(MUST_SHOW)}.map((sel) => { const el = document.querySelector('header ' + sel); if (!el) return { sel, missing: true };
+    const r = el.getBoundingClientRect(); return { sel, shown: el.offsetParent !== null && r.width > 0, inView: r.left >= -0.5 && r.right <= window.innerWidth + 0.5, cut: el.scrollWidth > el.clientWidth + 1 }; });
+  const resSvg = document.querySelectorAll('#tb-resources svg').length;
   await document.fonts.ready;
   const vw = window.innerWidth;
   const header = document.querySelector('header');
@@ -100,7 +108,7 @@ const MEASURE = `(async () => {
     loaded: [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family.replace(/"/g, '') + ' ' + f.weight) };
   const warn = document.getElementById('hdr-warn');
   const sfChips = [...document.querySelectorAll('#status-fields .sf-chip')].map(c => c.textContent.trim());
-  return JSON.stringify({ vw, kids, chips, widths, small, bars, fonts,
+  return JSON.stringify({ vw, must, resSvg, kids, chips, widths, small, bars, fonts,
     dollar: header.textContent.includes('$'), sfChips,
     warn: { hidden: warn.hidden, text: document.getElementById('hdr-warn-n').textContent, title: warn.title },
     uiFont: getComputedStyle(document.body).fontFamily, csp: window.__csp });
@@ -108,7 +116,7 @@ const MEASURE = `(async () => {
 
 const RAIL = `(() => {
   const ids = TABS.map(t => t.id);
-  const layout = dockTree.defaultLayout(ids);
+  const layout = dockTree.startLayout(ids);       // what the app opens with: every panel a tab on the dock's own rail
   const plan = dockTreeView.treePlan(layout, { active: {}, foldAll: false }, TABS, { width: 440, height: 600 }, { faceSize: () => 77 });
   dockTreeView.applyBoxes(plan, document);
   const rail = document.querySelector('.drail');
@@ -117,7 +125,7 @@ const RAIL = `(() => {
   const seps = [...rail.children].filter(c => c.classList.contains('rail-sep'));
   return JSON.stringify({ found: true, rect: { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) },
     order: [...rail.children].map(c => c.classList.contains('rail-sep') ? '|' : c.dataset.module),
-    seps: seps.length, sepRoles: seps.every(s => s.getAttribute('role') === 'separator') });
+    overflowY: getComputedStyle(rail).overflowY, railId: rail.dataset.rail || null, seps: seps.length, sepRoles: seps.every(s => s.getAttribute('role') === 'separator') });
 })()`;
 
 const bail = setTimeout(() => { console.error('TIMED OUT'); process.exit(2); }, 240000);
@@ -142,11 +150,11 @@ app.on('ready', async () => {
     fs.mkdirSync(OUT_DIR, { recursive: true });
     for (const width of WIDTHS) {
       const win = await loadWithRetry({
-        open: () => new BrowserWindow(probeWindowOptions({ width, height: 640, show: true, frame: false, useContentSize: true, enableLargerThanScreen: true,
+        open: () => new BrowserWindow(probeWindowOptions({ width, height: heightFor(width), show: true, frame: false, useContentSize: true, enableLargerThanScreen: true,
           webPreferences: { contextIsolation: true, nodeIntegration: false } })),
         load: (w) => w.loadFile(path.join(__dirname, '..', 'app', 'renderer.html')), attempts: 3, timeoutMs: 40000,
       });
-      win.setContentSize(width, 640);              // a window wider than the screen's work area is clamped at creation; this asks again
+      win.setContentSize(width, heightFor(width));              // a window wider than the screen's work area is clamped at creation; this asks again
       for (let i = 0; i < 50; i++) {
         if (await win.webContents.executeJavaScript("typeof renderUsage === 'function' && typeof renderQuota === 'function' && typeof renderWarnings === 'function'")) break;
         await sleep(200);
@@ -160,10 +168,14 @@ app.on('ready', async () => {
       if (clipped.length) console.log('  chip widths: ' + m.widths.join(' '));
       if (clipped.length) console.log('  header children: ' + m.kids.map(k => `${k.name} ${k.left}..${k.right}${k.cut ? ' CUT' : ''}`).join(' | '));
       check(clipped.length === 0, `nothing clips${clipped.length ? ': ' + clipped.map(k => k.name).join(', ') : ''}`);
+      const lost = m.must.filter(k => k.missing || !k.shown || !k.inView || k.cut);
+      check(lost.length === 0, `every header chip and button stays visible and unclipped${lost.length ? ': ' + JSON.stringify(lost) : ''}`);
+      check(m.resSvg === 0, 'the resources chip draws no graphs in the header (figures only)');
       check(!m.dollar, 'no "$" anywhere in the header');
       check(m.sfChips.length === 2 && m.sfChips.every(t => !t.includes('$')), `session chips are lines and time: ${JSON.stringify(m.sfChips)}`);
       check(m.chips.length >= 8 && new Set(m.chips).size === 1 && m.chips[0] === 24, `${m.chips.length} chips, all ${[...new Set(m.chips)].join('/')} px tall`);
-      check(m.bars.length > 0 && m.bars.every(w => w === 28), `micro-bars are 28 px: ${JSON.stringify(m.bars)}`);
+      if (width >= COMPACT_BELOW) check(m.bars.length > 0 && m.bars.every(w => w === 28), `micro-bars are 28 px: ${JSON.stringify(m.bars)}`);
+      else check(m.bars.length === 0, `compact: no micro-bars: ${JSON.stringify(m.bars)}`);
       check(m.small.length === 0, `no header text under 12 px${m.small.length ? ': ' + m.small.join(', ') : ''}`);
       check(m.fonts.loaded.some(f => f.startsWith('IBM Plex Sans')) && m.fonts.loaded.some(f => f.startsWith('JetBrains Mono')), `bundled fonts load: ${m.fonts.loaded.join(', ')}`);
       check(/IBM Plex Sans/.test(m.uiFont), `the page's font is ${m.uiFont.split(',')[0]}`);
@@ -180,10 +192,11 @@ app.on('ready', async () => {
       const rail = JSON.parse(await win.webContents.executeJavaScript(RAIL));
       check(rail.found && rail.seps === 2 && rail.sepRoles, `the rail has two separators: ${rail.found ? rail.order.join(' ') : 'no rail'}`);
       if (rail.found) {
+        check(rail.overflowY === 'auto' || rail.overflowY === 'scroll', `a rail taller than the window scrolls (rail ${rail.railId}, overflow-y ${rail.overflowY}), so every group stays reachable at the 480 px floor`);
         const r = rail.rect;
         check(rail.order.join(',').replace(/,\|,/g, '|') === WANT_ORDER, 'the rail reads Work | Repo | Me in the picked order');
         await sleep(200);
-        await shot(win, { x: Math.max(0, r.x - 4), y: Math.max(0, r.y), width: r.width + 8, height: Math.min(r.height, 640 - r.y) }, path.join(OUT_DIR, `rail-${width}.png`));
+        await shot(win, { x: Math.max(0, r.x - 4), y: Math.max(0, r.y), width: r.width + 8, height: Math.min(r.height, heightFor(width) - r.y) }, path.join(OUT_DIR, `rail-${width}.png`));
       }
       win.destroy();
       measured.push(width);

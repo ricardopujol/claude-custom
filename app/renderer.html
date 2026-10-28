@@ -2280,6 +2280,32 @@
     @media (max-width: 1279px) {
       #quota .meter:not(.active):not(.back) { display: none; }
     }
+    /* Compaction, round 2 (Ricardo, 2026-10-27: in a smaller window every icon and part of the header stays visible). As the window
+       narrows the chips COMPACT instead of disappearing; the full detail is each chip's hover title. Only the CLI's session chips
+       (#status-fields) may hide, and the title and folder, which ellipsize. The same widths are in verify/probe-chrome-grammar.js (COMPACT_BELOW is the first step); the
+       window's own floor is 640 px (app/main.js minWidth).
+         step 1, up to 1399 px: no micro-bars, no labels;
+         step 2, up to 1000 px: icon and a short value (CPU alone, the first characters of the model, the skulls without the mode's name);
+         step 3, up to 759 px: tighter chips, and the model is its icon alone. */
+    @media (max-width: 1399px) {
+      #hp .track, #quota .meter .track, #usage .milestone .track, #usage .lbl, #quota .meter .lbl, #usage .milestone .lbl { display: none; }
+      #usage, #quota { gap: 6px; }
+      header .title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    }
+    @media (max-width: 1000px) {
+      #tb-resources .tbr-n:nth-of-type(n+2) { display: none; }
+      #mode .nm { display: none; }
+      .chip-model > .tb-chip { max-width: 7ch; overflow: hidden; text-overflow: ellipsis; }
+      #quota .meter .pct { max-width: 4.4ch; overflow: hidden; text-overflow: clip; }
+      #usage .grp + .grp, #usage .milestone { display: none; }
+    }
+    @media (max-width: 759px) {
+      header { gap: 4px; padding: 6px 8px; }
+      .chip, #top-bar > .tb-chip, #usage, #quota, #mode { padding: 0 5px; gap: 4px; }
+      #top-bar { gap: 4px; }
+      .chip-model > .tb-chip { display: none; }
+      .hdr-btn { padding-left: 6px; padding-right: 6px; }
+    }
   </style>
 </head>
 <body>
