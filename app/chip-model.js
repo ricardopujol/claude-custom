@@ -29,7 +29,25 @@ function warningsChip(items) {
   };
 }
 
-const API = { BAR_PX, microBar, warningsChip };
+/**
+ * The HP chip: what it says, how full its bar is, and whether it shimmers or is dimmed. `last` is the last KNOWN value
+ * ({ label, fraction } or null), which the caller keeps. While the suite runs the chip keeps that value and bar, dimmed (stale),
+ * and shimmers; an unknown result that is not running is a dash with no bar and no movement. `known` is what to remember next
+ * (null when this call has no new known value).
+ */
+function healthChip(h, last) {
+  const running = !!(h && h.running);
+  const state = h && h.state;
+  const finished = !running && state !== 'unknown' && h && typeof h.passed === 'number' && typeof h.total === 'number';
+  if (finished) {
+    const label = `${h.passed}/${h.total}`;
+    return { label, bar: microBar(h.fraction), running: false, stale: false, known: { label, fraction: h.fraction } };
+  }
+  if (running && last) return { label: last.label, bar: microBar(last.fraction), running: true, stale: true, known: null };
+  return { label: '—', bar: microBar(null), running, stale: false, known: null };
+}
+
+const API = { BAR_PX, microBar, warningsChip, healthChip };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.chipModel = API;

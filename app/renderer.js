@@ -6662,22 +6662,25 @@ function wireModelPanel() {
 // number gets quoted as though it included coverage and lint.
 const HP_STATES = ['healthy', 'hurt', 'critical', 'unknown'];
 
+let lastHealthKnown = null;      // { label, fraction } of the last finished run, shown (dimmed) while the next one runs
 function renderHealth(h) {
   const el = document.getElementById('hp');
   if (!el || !h) return;
   el.classList.add('show');
-  el.classList.remove(...HP_STATES, 'running');
+  el.classList.remove(...HP_STATES, 'running', 'stale');
   el.classList.add(HP_STATES.includes(h.state) ? h.state : 'unknown');
   if (h.running) el.classList.add('running');
 
   // Chrome grammar A: a number or a dash, never a sentence. Running is the chip's shimmer, unknown its dashed border; the words
   // ("no test suite", "no result yet") live in the hover text. The bar is the 28 px micro-bar (app/chip-model.js).
-  const bar = chipModel.microBar(h.fraction);
-  const label = h.running || h.state === 'unknown' ? '—' : `${h.passed}/${h.total}`;
+  // While the suite runs the chip keeps its last known value and bar, dimmed (app/chip-model.js healthChip); a new result replaces it.
+  const view = chipModel.healthChip(h, lastHealthKnown);
+  if (view.known) lastHealthKnown = view.known;
+  el.classList.toggle('stale', view.stale);
 
   el.innerHTML = `<span>HP</span><span class="track"><span class="fill"></span></span>` +
-                 `<span class="num">${escapeHtml(label)}</span>`;
-  el.querySelector('.fill').style.width = bar.px + 'px';
+                 `<span class="num">${escapeHtml(view.label)}</span>`;
+  el.querySelector('.fill').style.width = view.bar.px + 'px';
 
   el.title = h.running ? 'Running the test suite…'
     : h.state === 'unknown'
@@ -6797,6 +6800,10 @@ function renderUsage(usage) {
   const title = base => (how.note ? `${base} - ${how.note}` : base);
   const sessions = `${project.sessions} session${project.sessions === 1 ? '' : 's'}`;
 
+  // The chip's own hover carries both figures: a narrow window hides the project group, and its total must stay reachable.
+  const sessionTitle = title(`This session - ${detail(session)}`);
+  const projectTitle = title(`Every session on this folder (${sessions}) - ${detail(project)}`);
+  usageEl.title = `${sessionTitle}\n${projectTitle}`;
   usageEl.className = 'usage-' + how.state;
   usageEl.innerHTML =
     `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
@@ -8773,7 +8780,7 @@ function renderStatusFields(fields) {
   lastStatusFields = fields && typeof fields === 'object' ? fields : null;
   if (!statusFieldsEl) return;
   const view = statusFieldsView(lastStatusFields, chromeSettings.statusInHeader);
-  statusFieldsEl.title = view.text.replace(/ {2}│ {2}/g, ', ');
+  statusFieldsEl.title = view.chips.map((c) => c.text).join(', ');
   statusFieldsEl.replaceChildren(...view.chips.map((c) => {
     const chip = document.createElement('span');
     chip.className = 'chip sf-chip';

@@ -57,3 +57,48 @@ test('property: label is the count as digits, and shown means count > 0', () => 
     assert.strictEqual(w.label, w.count > 0 ? String(w.count) : '');
   }));
 });
+
+// ---- Miguel, PR #215 round 1, finding 2: while the suite runs the chip keeps its last known value, dimmed ----------------------
+
+const { healthChip } = require('../app/chip-model');
+
+test('healthChip: a finished run shows passed/total and a bar, and hands back what to remember', () => {
+  const c = healthChip({ state: 'healthy', fraction: 0.5, passed: 7, total: 14, running: false }, null);
+  assert.strictEqual(c.label, '7/14');
+  assert.deepStrictEqual(c.bar, { known: true, px: 14 });
+  assert.strictEqual(c.running, false);
+  assert.strictEqual(c.stale, false);
+  assert.deepStrictEqual(c.known, { label: '7/14', fraction: 0.5 });
+});
+
+test('healthChip: while running it keeps the last known value and bar, both stale (dimmed), and remembers nothing new', () => {
+  const last = { label: '7/14', fraction: 0.5 };
+  const c = healthChip({ state: 'unknown', fraction: null, running: true }, last);
+  assert.strictEqual(c.label, '7/14');
+  assert.deepStrictEqual(c.bar, { known: true, px: 14 });
+  assert.strictEqual(c.running, true);
+  assert.strictEqual(c.stale, true);
+  assert.strictEqual(c.known, null);
+});
+
+test('healthChip: running with nothing known yet is a dash and no bar, not stale', () => {
+  const c = healthChip({ state: 'unknown', fraction: null, running: true }, null);
+  assert.strictEqual(c.label, '—');
+  assert.deepStrictEqual(c.bar, { known: false, px: 0 });
+  assert.strictEqual(c.running, true);
+  assert.strictEqual(c.stale, false);
+});
+
+test('healthChip: unknown and not running is a dash, never shimmering, and keeps nothing', () => {
+  const c = healthChip({ state: 'unknown', fraction: null, running: false }, { label: '7/14', fraction: 0.5 });
+  assert.strictEqual(c.label, '—');
+  assert.strictEqual(c.running, false);
+  assert.strictEqual(c.stale, false);
+  assert.strictEqual(c.known, null);
+});
+
+test('healthChip: a run that finishes replaces the old value', () => {
+  const c = healthChip({ state: 'hurt', fraction: 0.9, passed: 9, total: 10, running: false }, { label: '7/14', fraction: 0.5 });
+  assert.strictEqual(c.label, '9/10');
+  assert.deepStrictEqual(c.known, { label: '9/10', fraction: 0.9 });
+});

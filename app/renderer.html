@@ -2242,20 +2242,21 @@
     #hp > span:first-child { display: none; }               /* the heart-pulse icon says it; the title spells it out */
     .chip-hp:has(> #hp:not(.show)) { display: none; }
     #hp { font-size: 12px; gap: 6px; }
-    /* Loading and not-known-yet: a dashed chip with a shimmer. */
+    /* Loading is a shimmer in a dashed chip. Only RUNNING and LOADING states shimmer; an unknown HP is the dashed border and nothing
+       moves. A running HP keeps its last value and bar, dimmed (.stale, app/chip-model.js healthChip). */
     @keyframes chip-shimmer { from { background-position: -64px 0; } to { background-position: 64px 0; } }
-    #usage.has-note, #quota.is-note { border-style: dashed; }
-    #quota.is-loading, .chip-hp:has(> #hp.running), .chip-hp:has(> #hp.unknown), .chip:has(> .tb-chip.pending), #hdr-warn.is-loading {
+    #usage.has-note, #quota.is-note, .chip-hp:has(> #hp.unknown) { border-style: dashed; }
+    #quota.is-loading, .chip-hp:has(> #hp.running), .chip:has(> .tb-chip.pending) {
       border-style: dashed;
       background-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 14%, transparent), transparent);
       background-size: 64px 100%; background-repeat: no-repeat; animation: chip-shimmer 1.3s linear infinite;
     }
     .chip > .tb-chip.pending { animation: none; opacity: .75; }
     #hp.running .track { animation: none; }
+    #hp.stale .track, #hp.stale .num { opacity: .55; }
     .chip:has(> .tb-chip.notice) { border-style: dashed; }
     @media (prefers-reduced-motion: reduce) {
-      #usage.has-note, #quota.is-note { border-style: dashed; }
-    #quota.is-loading, .chip-hp:has(> #hp.running), .chip-hp:has(> #hp.unknown), .chip:has(> .tb-chip.pending), #hdr-warn.is-loading { animation: none; }
+      #quota.is-loading, .chip-hp:has(> #hp.running), .chip:has(> .tb-chip.pending) { animation: none; }
     }
     /* Warnings: one chip with a count. */
     .chip-warn { border-color: var(--accent); color: var(--accent); cursor: default; }

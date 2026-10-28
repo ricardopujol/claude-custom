@@ -108,7 +108,7 @@ const MEASURE = `(async () => {
     loaded: [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family.replace(/"/g, '') + ' ' + f.weight) };
   const warn = document.getElementById('hdr-warn');
   const sfChips = [...document.querySelectorAll('#status-fields .sf-chip')].map(c => c.textContent.trim());
-  return JSON.stringify({ vw, must, resSvg, kids, chips, widths, small, bars, fonts,
+  return JSON.stringify({ vw, must, resSvg, usageTitle: document.getElementById('usage').title, kids, chips, widths, small, bars, fonts,
     dollar: header.textContent.includes('$'), sfChips,
     warn: { hidden: warn.hidden, text: document.getElementById('hdr-warn-n').textContent, title: warn.title },
     uiFont: getComputedStyle(document.body).fontFamily, csp: window.__csp });
@@ -170,6 +170,7 @@ app.on('ready', async () => {
       check(clipped.length === 0, `nothing clips${clipped.length ? ': ' + clipped.map(k => k.name).join(', ') : ''}`);
       const lost = m.must.filter(k => k.missing || !k.shown || !k.inView || k.cut);
       check(lost.length === 0, `every header chip and button stays visible and unclipped${lost.length ? ': ' + JSON.stringify(lost) : ''}`);
+      check(/Every session/.test(m.usageTitle), "the project total is in the usage chip's hover, whichever groups the width hides");
       check(m.resSvg === 0, 'the resources chip draws no graphs in the header (figures only)');
       check(!m.dollar, 'no "$" anywhere in the header');
       check(m.sfChips.length === 2 && m.sfChips.every(t => !t.includes('$')), `session chips are lines and time: ${JSON.stringify(m.sfChips)}`);
@@ -186,8 +187,13 @@ app.on('ready', async () => {
       // Loading and unknown: a dashed chip, never a sentence.
       await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: true }); true`);
       await sleep(200);
-      const hp = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({ text: document.getElementById('hp').textContent.trim(), dashed: getComputedStyle(document.querySelector('.chip-hp')).borderStyle })`));
-      check(hp.dashed === 'dashed' && !/[a-z]{4,}/i.test(hp.text.replace(/^HP/, '')), `loading HP is a dashed chip with no sentence: ${JSON.stringify(hp)}`);
+      const hp = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({ text: document.getElementById('hp').textContent.trim(), dashed: getComputedStyle(document.querySelector('.chip-hp')).borderStyle, shimmer: getComputedStyle(document.querySelector('.chip-hp')).animationName, stale: document.getElementById('hp').classList.contains('stale') })`));
+      check(hp.dashed === 'dashed' && hp.shimmer === 'chip-shimmer' && !/[a-z]{4,}/i.test(hp.text.replace(/^HP/, '')), `running HP is a shimmering dashed chip with no sentence: ${JSON.stringify(hp)}`);
+      check(hp.stale && hp.text.includes('1840/1843'), 'a running HP keeps its last known value, dimmed');
+      await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: false }); true`);
+      const hu = JSON.parse(await win.webContents.executeJavaScript(`JSON.stringify({ dashed: getComputedStyle(document.querySelector('.chip-hp')).borderStyle, shimmer: getComputedStyle(document.querySelector('.chip-hp')).animationName })`));
+      check(hu.dashed === 'dashed' && hu.shimmer === 'none', `an unknown HP is dashed and still: ${JSON.stringify(hu)}`);
+      await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: true }); true`);
       await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-loading-${width}.png`));
       const rail = JSON.parse(await win.webContents.executeJavaScript(RAIL));
       check(rail.found && rail.seps === 2 && rail.sepRoles, `the rail has two separators: ${rail.found ? rail.order.join(' ') : 'no rail'}`);
