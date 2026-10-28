@@ -45,6 +45,15 @@ test('finding 5: RAIL_SEP_PX is the 1 px line plus the margins in the CSS', () =
   assert.strictEqual(px, Number(css[1]) + 2 * Number(css[2]));
 });
 
+test('r2 N1: each visible usage group\'s own hover carries both figures (a group title wins over the chip title)', () => {
+  assert.match(JS, /<span class="grp" title="\$\{escapeHtml\(`\$\{sessionTitle\}\\n\$\{projectTitle\}`\)\}">/);
+  assert.match(JS, /<span class="grp" title="\$\{escapeHtml\(`\$\{sessionTitle\}\\n\$\{projectTitle\}`\)\}">[\s\S]{0,200}<span class="grp" title="\$\{escapeHtml\(`\$\{sessionTitle\}\\n\$\{projectTitle\}`\)\}">/);
+});
+
+test('r2 N2: a pending hover-open does not open the popover once the chip is hidden', () => {
+  assert.match(JS, /resPeekOpen = null; if \(!tbResourcesEl\.hidden\) resPopStep\(\{ type: 'hover-open' \}\)/);
+});
+
 test('finding 6: the project total is in the usage chip\'s own hover, so hiding its group keeps it reachable', () => {
   assert.match(JS, /usageEl\.title = `\$\{sessionTitle\}\\n\$\{projectTitle\}`/);
 });

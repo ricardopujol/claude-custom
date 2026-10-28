@@ -108,7 +108,7 @@ const MEASURE = `(async () => {
     loaded: [...document.fonts].filter(f => f.status === 'loaded').map(f => f.family.replace(/"/g, '') + ' ' + f.weight) };
   const warn = document.getElementById('hdr-warn');
   const sfChips = [...document.querySelectorAll('#status-fields .sf-chip')].map(c => c.textContent.trim());
-  return JSON.stringify({ vw, must, resSvg, usageTitle: document.getElementById('usage').title, kids, chips, widths, small, bars, fonts,
+  return JSON.stringify({ vw, must, resSvg, usageTitle: document.getElementById('usage').title, grpTitles: [...document.querySelectorAll('#usage .grp')].map(g => g.title), kids, chips, widths, small, bars, fonts,
     dollar: header.textContent.includes('$'), sfChips,
     warn: { hidden: warn.hidden, text: document.getElementById('hdr-warn-n').textContent, title: warn.title },
     uiFont: getComputedStyle(document.body).fontFamily, csp: window.__csp });
@@ -171,6 +171,7 @@ app.on('ready', async () => {
       const lost = m.must.filter(k => k.missing || !k.shown || !k.inView || k.cut);
       check(lost.length === 0, `every header chip and button stays visible and unclipped${lost.length ? ': ' + JSON.stringify(lost) : ''}`);
       check(/Every session/.test(m.usageTitle), "the project total is in the usage chip's hover, whichever groups the width hides");
+      check(m.grpTitles.length > 0 && m.grpTitles.every(t => /Every session/.test(t)), "each usage group's own hover carries the project total");
       check(m.resSvg === 0, 'the resources chip draws no graphs in the header (figures only)');
       check(!m.dollar, 'no "$" anywhere in the header');
       check(m.sfChips.length === 2 && m.sfChips.every(t => !t.includes('$')), `session chips are lines and time: ${JSON.stringify(m.sfChips)}`);

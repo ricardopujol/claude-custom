@@ -1830,7 +1830,7 @@ if (tbResourcesEl && resPopoverEl) {
   // and the popover (the grace lets the pointer cross the gap between them). A click pins it (the state machine decides).
   let resPeekOpen = null; let resPeekClose = null;
   const resPeekCancel = () => { clearTimeout(resPeekOpen); clearTimeout(resPeekClose); resPeekOpen = resPeekClose = null; };
-  const resPeekEnter = () => { resPeekCancel(); resPeekOpen = setTimeout(() => { resPeekOpen = null; resPopStep({ type: 'hover-open' }); }, 350); };
+  const resPeekEnter = () => { resPeekCancel(); resPeekOpen = setTimeout(() => { resPeekOpen = null; if (!tbResourcesEl.hidden) resPopStep({ type: 'hover-open' }); }, 350); };
   const resPeekLeave = () => { resPeekCancel(); resPeekClose = setTimeout(() => { resPeekClose = null; resPopStep({ type: 'hover-close' }); }, 250); };
   tbResourcesEl.addEventListener('mouseenter', resPeekEnter);
   tbResourcesEl.addEventListener('mouseleave', resPeekLeave);
@@ -6806,11 +6806,11 @@ function renderUsage(usage) {
   usageEl.title = `${sessionTitle}\n${projectTitle}`;
   usageEl.className = 'usage-' + how.state;
   usageEl.innerHTML =
-    `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
+    `<span class="grp" title="${escapeHtml(`${sessionTitle}\n${projectTitle}`)}">` +
       `<span class="lbl">session</span>` +
       `<span class="val">${num(spend(session))}</span>` +
     `</span>` +
-    `<span class="grp" title="${title(`Every session on this folder (${sessions}) - ${detail(project)}`)}">` +
+    `<span class="grp" title="${escapeHtml(`${sessionTitle}\n${projectTitle}`)}">` +
       `<span class="lbl">project</span>` +
       `<span class="val">${num(spend(project))}</span>` +
     `</span>` +
