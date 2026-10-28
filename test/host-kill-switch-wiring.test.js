@@ -34,7 +34,7 @@ test('the sentinels: STOP-ALL from the home folder (or the probe seam), the proj
 test('the stopper kills the tracked pty through pty-stop and kill-tree\'s killChildTree, never by name', () => {
   const b = block('const killStop = createStopper({', '\n});');
   assert.match(b, /term: \(\) => term,/);
-  assert.match(b, /stopPty,/);
+  assert.match(b, /stopPty: boundedStopPty,/, 'the same pty-stop, under the shutdown watchdog (PR #217 Dexter F4)');
   assert.match(b, /killChildTree,/);
   assert.match(b, /log: \(line\) => console\.log\(line\)/, 'host.log hears it');
   assert.match(b, /sayInTab\(state\.text\)/, 'the tab says it');
