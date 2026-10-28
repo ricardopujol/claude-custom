@@ -56,6 +56,13 @@ const FIXTURE = `(() => {
   window.__res = (cpu, ram, gpu) => { const G = 1024 ** 3; resChipOn = true;
     resPayload = { status: {}, machine: { cpu, mem: ram === null ? null : { usedBytes: ram / 100 * 32 * G, totalBytes: 32 * G }, gpu: { busy: gpu, mem: gpu === null ? null : { usedBytes: 4.2 * G, totalBytes: 8 * G } } } };
     renderResourcesChip(); };
+  // applies a fixture and resolves once the DOM shows ITS values and two frames have painted, so a capture is of this fixture and not the last
+  window.__resPaint = (cpu, ram, gpu) => { window.__res(cpu, ram, gpu);
+    const want = [cpu, ram, gpu].map(v => (v === null ? '—' : v + '%'));
+    return new Promise((done) => { const t0 = Date.now();
+      const poll = () => { const got = [...document.querySelectorAll('#tb-resources .tbr-v')].map(n => n.textContent);
+        if (want.every((w, i) => got[i] === w) || Date.now() - t0 > 3000) requestAnimationFrame(() => requestAnimationFrame(() => done(got.join('|')))); else setTimeout(poll, 20); };
+      poll(); }); };
   window.__res(23, 52, 8);
   set('tb-model', 'claude-sonnet-5-5'); set('tb-effort', 'high');
   if (typeof renderStatusFields === 'function') {
@@ -197,19 +204,19 @@ app.on('ready', async () => {
       check(calm.text === wantText, `resources chip reads "${wantText}": ${JSON.stringify(calm.text)}`);
       check(calm.title.includes('RAM 16.6 of 32.0 GB (52%)') && calm.title.includes('GPU 8% (4.2 of 8.0 GB)') && /^CPU 23%/.test(calm.title), 'the full labelled figures are the chip hover');
       check(new Set(calm.vals).size === 1 && calm.labelShown === (width > 1100), `a calm chip: one number colour, labels ${width > 1100 ? 'shown' : 'dropped'}`);
-      await win.webContents.executeJavaScript('window.__res(80, 52, 8); true');
+      check(await win.webContents.executeJavaScript('window.__resPaint(80, 52, 8)') === '80%|52%|8%', 'the DOM shows the fixture (80, 52, 8) before the capture'); await sleep(150);
       const amber = await resOf();
       check(amber.vals[0] !== amber.vals[1] && amber.vals[1] === calm.vals[1] && amber.label === calm.label && amber.border === calm.border && amber.chipColor === calm.chipColor, `amber: only the CPU number changes colour ${JSON.stringify(amber.vals)}`);
       await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-res-amber-${width}.png`));
-      await win.webContents.executeJavaScript('window.__res(95, 91, 8); true');
+      check(await win.webContents.executeJavaScript('window.__resPaint(95, 91, 8)') === '95%|91%|8%', 'the DOM shows the fixture (95, 91, 8) before the capture'); await sleep(150);
       const red = await resOf();
       check(red.vals[0] === red.vals[1] && red.vals[0] !== amber.vals[0] && red.vals[2] === calm.vals[2] && red.label === calm.label, `red: CPU and RAM numbers turn red, GPU stays ${JSON.stringify(red.vals)}`);
       await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-res-red-${width}.png`));
       const tight = await win.webContents.executeJavaScript(`(() => { const r = document.getElementById('tb-resources').getBoundingClientRect(); return r.right <= window.innerWidth + 0.5 && document.getElementById('tb-resources').scrollWidth <= document.getElementById('tb-resources').clientWidth + 1; })()`);
       check(tight === true, 'the red chip (widest) still fits and is not cut');
-      await win.webContents.executeJavaScript('window.__res(null, null, null); true');
+      check(await win.webContents.executeJavaScript('window.__resPaint(null, null, null)') === '—|—|—', 'the DOM shows the fixture (null, null, null) before the capture'); await sleep(150);
       check((await resOf()).text.replace(/[^—]/g, '') === '———', 'a missing reading is a dash for each metric, never 0');
-      await win.webContents.executeJavaScript('window.__res(23, 52, 8); true');
+      check(await win.webContents.executeJavaScript('window.__resPaint(23, 52, 8)') === '23%|52%|8%', 'the DOM shows the fixture (23, 52, 8) before the capture'); await sleep(150);
       // Loading and unknown: a dashed chip, never a sentence.
       await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: true }); true`);
       await sleep(200);
