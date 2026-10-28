@@ -1,7 +1,7 @@
 'use strict';
 /**
- * BACKLOG #27 -- the tab header's copy of the CLI's status row: cost, lines
- * +/-, duration, ctx>200k (the header already shows project/branch, model,
+ * BACKLOG #27 -- the tab header's copy of the CLI's status row: lines
+ * +/-, duration, ctx>200k (no cost since the chrome grammar) (the header already shows project/branch, model,
  * effort and the context fill). Input: host/hook-session.js readStatusFields,
  * via the host's `statusFields` message.
  *
@@ -17,11 +17,6 @@
 
 const positive = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
 
-function cost(usd) {
-  if (!positive(usd)) return null;
-  return usd < 0.01 ? '<$0.01' : '$' + usd.toFixed(2);
-}
-
 function lines(added, removed) {
   const parts = [positive(added) ? '+' + added : null, positive(removed) ? '-' + removed : null];
   const shown = parts.filter(Boolean);
@@ -36,15 +31,22 @@ function duration(ms) {
   return Math.floor(mins / 60) + 'h' + String(mins % 60).padStart(2, '0');
 }
 
-/** The header's segments, in warpaint's order; [] when there's nothing to say. */
-function statusFieldsText(fields) {
+/**
+ * The header's chips, in order; [] when there's nothing to say. No cost: on Max there is no extra spend, so a dollar figure was noise
+ * (Ricardo, 2026-10-26, chrome grammar). `icon` names a Lucide icon the page draws (app/chip-icons.js).
+ */
+function statusFieldsChips(fields) {
   if (!fields || typeof fields !== 'object') return [];
   return [
-    cost(fields.costUsd),
-    lines(fields.linesAdded, fields.linesRemoved),
-    duration(fields.durationMs),
-    fields.over200k === true ? 'ctx>200k' : null,
-  ].filter(Boolean);
+    { key: 'lines', icon: 'diff', text: lines(fields.linesAdded, fields.linesRemoved) },
+    { key: 'time', icon: 'clock', text: duration(fields.durationMs) },
+    { key: 'ctx', icon: 'gauge', text: fields.over200k === true ? 'ctx>200k' : null },
+  ].filter(c => c.text);
+}
+
+/** The text of each chip, for a plain reader. */
+function statusFieldsText(fields) {
+  return statusFieldsChips(fields).map(c => c.text);
 }
 
 /**
@@ -53,16 +55,17 @@ function statusFieldsText(fields) {
  * be, saying it already) AND there's something to say.
  */
 function statusFieldsView(fields, statusInHeader) {
-  const parts = statusFieldsText(fields);
-  return { text: parts.join('  │  '), shown: statusInHeader === true && parts.length > 0 };
+  const chips = statusFieldsChips(fields);
+  return { text: chips.map(c => c.text).join('  │  '), chips, shown: statusInHeader === true && chips.length > 0 };
 }
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
 // renderer, which has no module system at all.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { statusFieldsText, statusFieldsView };
+  module.exports = { statusFieldsText, statusFieldsChips, statusFieldsView };
 } else {
   root.statusFieldsText = statusFieldsText;
+  root.statusFieldsChips = statusFieldsChips;
   root.statusFieldsView = statusFieldsView;
 }
 

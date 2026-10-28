@@ -289,3 +289,43 @@ test('popover: the panel link closes it (the page then opens the panel)', () => 
   const c = D.popoverInit();
   assert.strictEqual(step(c, { type: 'panel-link' }).state, c);
 });
+
+// ---- round 2 (Ricardo, 2026-10-27): the header chip is figures only; the graphs show on hover ------------------------------
+
+test('chipFiguresHtml: the header chip is the figures alone, no sparkline, escaped, and the GPU only when asked for', () => {
+  const html = D.chipFiguresHtml('CPU 71%', '21.4 GB / 32.0 GB');
+  assert.strictEqual(html, '<span class="tbr-n">CPU 71%</span><span class="tbr-n">21.4 GB / 32.0 GB</span>');
+  assert.ok(!/<svg/.test(D.chipFiguresHtml('a', 'b', 'GPU 12%')));
+  assert.match(D.chipFiguresHtml('a', 'b', 'GPU 12%'), /<span class="tbr-n">GPU 12%<\/span>$/);
+  assert.strictEqual(D.chipFiguresHtml('<b>', '&'), '<span class="tbr-n">&lt;b&gt;</span><span class="tbr-n">&amp;</span>');
+});
+
+test('popover peek: a hover opens it as a peek, leaving the chip closes a peek, and a hover while open changes nothing', () => {
+  const peek = step(D.popoverInit(), { type: 'hover-open' }).state;
+  assert.strictEqual(peek.open, true);
+  assert.strictEqual(peek.peek, true);
+  assert.strictEqual(step(peek, { type: 'hover-close' }).state.open, false);
+  const o = opened();
+  assert.strictEqual(step(o, { type: 'hover-open' }).state, o);
+});
+
+test('popover peek: a click on the chip pins a peek open (a second click closes it); hover-close never closes a pinned one', () => {
+  const peek = step(D.popoverInit(), { type: 'hover-open' }).state;
+  const pinned = step(peek, { type: 'chip-click' }).state;
+  assert.strictEqual(pinned.open, true);
+  assert.ok(!pinned.peek);
+  assert.strictEqual(step(pinned, { type: 'hover-close' }).state, pinned);
+  assert.strictEqual(step(pinned, { type: 'chip-click' }).state.open, false);
+});
+
+test('popover peek: hovering a graph keeps it a peek, and every other closer still closes it', () => {
+  const peek = step(D.popoverInit(), { type: 'hover-open' }).state;
+  const h = step(peek, { type: 'hover', kind: 'cpu', minutes: 5 }).state;
+  assert.strictEqual(h.peek, true);
+  assert.strictEqual(h.hover.cpu, 5);
+  assert.strictEqual(step(h, { type: 'leave' }).state.peek, true);
+  for (const ev of [{ type: 'key', key: 'Escape' }, { type: 'pointerdown', inside: false }, { type: 'blur' }, { type: 'hidden' }, { type: 'chip-off' }, { type: 'panel-link' }]) {
+    assert.strictEqual(step(peek, ev).state.open, false, ev.type);
+  }
+  assert.strictEqual(step(D.popoverInit(), { type: 'hover-close' }).state.open, false);
+});

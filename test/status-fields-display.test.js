@@ -18,19 +18,27 @@ test('null or not an object -> nothing (unknown draws nothing, never "$0")', () 
   assert.deepStrictEqual(statusFieldsText(fields({})), []);
 });
 
-test('warpaint parity: cost, lines, duration, ctx>200k in that order', () => {
+// Chrome grammar (Ricardo, 2026-10-26): on Max there is no extra spend, so the header never shows a dollar figure.
+test('lines, duration, ctx>200k in that order, and no cost', () => {
   assert.deepStrictEqual(
     statusFieldsText(fields({ costUsd: 1.234, durationMs: 3_900_000, linesAdded: 10, linesRemoved: 2, over200k: true })),
-    ['$1.23', '+10/-2', '1h05', 'ctx>200k']);
+    ['+10/-2', '1h05', 'ctx>200k']);
 });
 
-test('warpaint parity: tiny cost, under a minute, zero lines', () => {
+test('a cost alone says nothing; under a minute and zero lines are hidden', () => {
+  assert.deepStrictEqual(statusFieldsText(fields({ costUsd: 0.004 })), []);
   assert.deepStrictEqual(
-    statusFieldsText(fields({ costUsd: 0.004, durationMs: 59_000, linesAdded: 0, linesRemoved: 0, over200k: false })),
-    ['<$0.01']);
+    statusFieldsText(fields({ costUsd: 3, durationMs: 59_000, linesAdded: 0, linesRemoved: 0, over200k: false })),
+    []);
 });
 
-test('warpaint parity: cost 0 hidden, one side of the lines, minutes', () => {
+test('property: no segment ever carries a dollar sign', () => {
+  fc.assert(fc.property(fc.anything(), fc.anything(), fc.anything(), (c, d, a) => {
+    for (const s of statusFieldsText({ costUsd: c, durationMs: d, linesAdded: a, linesRemoved: a, over200k: true })) assert.ok(!s.includes('$'), s);
+  }));
+});
+
+test('one side of the lines, minutes', () => {
   assert.deepStrictEqual(statusFieldsText(fields({ costUsd: 0, durationMs: 600_000, linesRemoved: 5 })), ['-5', '10m']);
   assert.deepStrictEqual(statusFieldsText(fields({ linesAdded: 7 })), ['+7']);
 });
@@ -55,14 +63,14 @@ test('property: junk never throws and never yields an empty or non-string segmen
 // --- Miguel L2 G1: the show/hide rule, as behaviour (not a source regex) -------
 
 const { statusFieldsView } = require('../app/status-fields-display');
-const SOME = { costUsd: 1.5, durationMs: null, linesAdded: null, linesRemoved: null, over200k: null };
+const SOME = { costUsd: 1.5, durationMs: 600_000, linesAdded: null, linesRemoved: null, over200k: null };
 
 test('shown only when the setting is exactly true AND there is something to say', () => {
-  assert.deepStrictEqual(statusFieldsView(SOME, true), { text: '$1.50', shown: true });
-  assert.deepStrictEqual(statusFieldsView(SOME, false), { text: '$1.50', shown: false });
-  assert.deepStrictEqual(statusFieldsView(SOME, null), { text: '$1.50', shown: false }, 'unknown setting: the CLI row may still be showing');
-  assert.deepStrictEqual(statusFieldsView(null, true), { text: '', shown: false }, 'unknown fields draw nothing');
-  assert.deepStrictEqual(statusFieldsView({ ...SOME, costUsd: 0 }, true), { text: '', shown: false });
+  assert.deepStrictEqual(statusFieldsView(SOME, true), { text: '10m', chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: true });
+  assert.deepStrictEqual(statusFieldsView(SOME, false), { text: '10m', chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: false });
+  assert.deepStrictEqual(statusFieldsView(SOME, null), { text: '10m', chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: false }, 'unknown setting: the CLI row may still be showing');
+  assert.deepStrictEqual(statusFieldsView(null, true), { text: '', chips: [], shown: false }, 'unknown fields draw nothing');
+  assert.deepStrictEqual(statusFieldsView({ ...SOME, durationMs: 0 }, true), { text: '', chips: [], shown: false });
 });
 
 test('property: shown implies the setting is true and the text is non-empty', () => {
@@ -72,4 +80,21 @@ test('property: shown implies the setting is true and the text is non-empty', ()
     if (out.shown) assert.ok(setting === true && out.text.length > 0);
     else assert.ok(setting !== true || out.text === '');
   }));
+});
+
+test('chips: one per segment, each with an icon name and its text', () => {
+  const { statusFieldsChips } = require('../app/status-fields-display');
+  assert.deepStrictEqual(
+    statusFieldsChips(fields({ costUsd: 9, durationMs: 3_900_000, linesAdded: 10, linesRemoved: 2, over200k: true })),
+    [{ key: 'lines', icon: 'diff', text: '+10/-2' }, { key: 'time', icon: 'clock', text: '1h05' }, { key: 'ctx', icon: 'gauge', text: 'ctx>200k' }]);
+  assert.deepStrictEqual(statusFieldsChips(null), []);
+});
+
+test('chip icons: every icon status-fields-display names has markup, and an unknown name draws nothing', () => {
+  const icons = require('../app/chip-icons');
+  const all = require('../app/status-fields-display').statusFieldsChips({ linesAdded: 1, durationMs: 120000, over200k: true });
+  assert.strictEqual(all.length, 3);
+  for (const c of all) assert.ok(icons.svgFor(c.icon).startsWith('<svg class="chip-icon"'), c.icon);
+  assert.strictEqual(icons.svgFor('nope'), '');
+  assert.strictEqual(icons.svgFor('__proto__'), '');
 });

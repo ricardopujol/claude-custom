@@ -23,11 +23,14 @@
 
 // Loaded the way app/dock-tree.js loads its own helpers: required under Node, a page global in the window.
 const iconsApi = typeof module !== 'undefined' && module.exports ? require('./rail-icons') : root.railIcons;
+const groupsApi = typeof module !== 'undefined' && module.exports ? require('./rail-groups') : root.railGroups;
 const treeApi = typeof module !== 'undefined' && module.exports ? require('./dock-tree') : root.dockTree;
 const effectsApi = typeof module !== 'undefined' && module.exports ? require('./dock-effects') : root.dockEffects;
 const { fit, hasTerm } = treeApi;
 const { WIDE_FACE_CHROME } = effectsApi;
 
+/** The room a separator takes in a horizontal rail: 1 px line and 5 px margin each side (renderer.html .rail-sep). */
+const RAIL_SEP_PX = 11;
 const isNumber = v => typeof v === 'number' && Number.isFinite(v);
 const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const isSize = v => isNumber(v) && v > 0;
@@ -54,7 +57,8 @@ function fitRailNames(el, doc, force) {
   let sizes;
   if (el.dataset.dir === 'h') {
     const widths = tabs.map(t => t.name.scrollWidth);
-    const chrome = tabs.reduce((sum, t) => sum + (t.btn.scrollWidth - t.name.scrollWidth), 0);
+    const seps = el.querySelectorAll('.rail-sep').length;           // a separator takes RAIL_SEP_PX of the row (renderer.html .rail-sep)
+    const chrome = tabs.reduce((sum, t) => sum + (t.btn.scrollWidth - t.name.scrollWidth), 0) + seps * RAIL_SEP_PX;
     const row = fitRow(widths, chrome, room);
     if (row.iconsOnly) { el.dataset.names = 'off'; return; }  // the CSS hides the names; the row scrolls if the icons still do not fit
     sizes = tabs.map(() => row.size);
@@ -635,7 +639,15 @@ function applyBoxes(plan, doc, leanKeeps) {
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
       el.textContent = '';
-      for (const t of b.tabs) {
+      const byId = new Map(b.tabs.map(t => [t.id, t]));
+      for (const item of groupsApi.groupRail(b.tabs.map(t => t.id))) {
+        if (item.sep) {
+          const sep = mk('span', 'rail-sep');
+          sep.setAttribute('role', 'separator');
+          el.appendChild(sep);
+          continue;
+        }
+        const t = byId.get(item.id);
         const btn = doc.createElement('button');
         btn.type = 'button';
         btn.dataset.module = t.id;
@@ -653,7 +665,7 @@ function applyBoxes(plan, doc, leanKeeps) {
     el.dataset.room = String(b.dir === 'v' ? nameRoom(b.rect.width) : b.rect.width);      // from the rectangle the plan gave, not from the page
     fitRailNames(el, doc);
     // Which button has its panel open over the terminal moves without rebuilding the buttons (focus stays on the one pressed).
-    for (const btn of el.children) btn.setAttribute('aria-expanded', plan.peek && plan.peek.module === btn.dataset.module ? 'true' : 'false');
+    for (const btn of [...el.children].filter(c => c.dataset.module)) btn.setAttribute('aria-expanded', plan.peek && plan.peek.module === btn.dataset.module ? 'true' : 'false');
   }
 
   // A rail's panel opened over the terminal (D4): one element in the floats' layer, last, so it is above them. It is a

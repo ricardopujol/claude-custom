@@ -22,8 +22,9 @@
       /* Backlog #88: the interface font and the monospace UI (code reader, Files tree, ...) follow the Style tab's Fonts
          section; renderer.js sets both. These are the stacks an install that never picked a font has always had, and
          every pick keeps them behind it, so a missing font falls back instead of leaving blank text. */
-      --font-ui: "Segoe UI", system-ui, sans-serif;
+      --font-ui: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
       --font-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+      --font-figures: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
       --bg: #11131a;
       --chrome: #171a23;
       --border: #262b38;
@@ -1080,6 +1081,10 @@
     /* 16 px of icon with the 24 px design's 1 px line would be 0.67 px: the weight scales up so it still reads as 1 px. */
     .drail[data-dir="h"] .rail-icon { width: 16px; height: 16px; stroke-width: 1.5; }
     .drail button:hover { color: var(--text); }
+    /* Chrome grammar: a hairline between the Work, Repo and Me groups (app/rail-groups.js). 1 px + 5 px each side = RAIL_SEP_PX. */
+    .drail .rail-sep { flex: none; background: var(--border); }
+    .drail[data-dir="v"] .rail-sep { height: 1px; margin: 5px 10px; }
+    .drail[data-dir="h"] .rail-sep { width: 1px; margin: 8px 5px; }
     /* Dragging a tab: every zone of the cell under the pointer is lit, the one under it filled. */
     #dock-overlay { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
     #dock-overlay .dz {
@@ -1799,8 +1804,11 @@
     .res-lstop-gap { flex: none; width: 36px; }
     .res-footer { font-size: 10px; color: var(--dim); margin-top: 6px; }
     #tb-resources { font-variant-numeric: tabular-nums; border-color: var(--border); }
-    #tb-resources.res-amber { border-color: #e6c34a; color: #e6c34a; }
-    #tb-resources.res-red { border-color: var(--bad); color: var(--bad); }
+    /* Only the NUMBER takes the level's colour (amber from 75 %, red from 90 %); the label stays grey and the chip keeps its border. */
+    #tb-resources .tbr-l { color: var(--dim); }
+    #tb-resources .tbr-sep { color: var(--dim); margin: 0 1px; }
+    #tb-resources .tbr-v.lv-amber { color: var(--warn); }
+    #tb-resources .tbr-v.lv-red { color: var(--bad); }
     #tb-resources.res-dim { opacity: .55; }
     /* The one-hour history (#63 follow-up, design option B): a sparkline after each figure, and a popover with two larger graphs.
        The accent is claude-custom's share, the neutral colour is everything else (the same two colours as the panel's bars). */
@@ -2193,6 +2201,120 @@
     .xterm-viewport::-webkit-scrollbar-thumb:hover,
     #agents::-webkit-scrollbar-thumb:hover,
     #log::-webkit-scrollbar-thumb:hover { background: var(--dim); background-clip: content-box; }
+
+    /* === Chrome grammar A: instruments (Ricardo's pick, 2026-10-26) ====================================================
+       Every header item is ONE chip shape: icon, value, and a 28 px micro-bar when there is a fill. Warnings are one chip
+       with a count (detail on hover). Loading is a shimmer in a dashed chip, never a sentence. Secondary text is 12 px or
+       more. The fonts are bundled under app/ (SIL OFL, app/THIRD-PARTY-NOTICES-fonts.md): the page's CSP is default-src
+       'self', which already allows them, so no font-src was added. Late in the sheet on purpose: it restyles the rules above. */
+    @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("./ibm-plex-sans-latin-400-normal.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("./ibm-plex-sans-latin-500-normal.woff2") format("woff2"); }
+    @font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("./ibm-plex-sans-latin-600-normal.woff2") format("woff2"); }
+    @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("./jetbrains-mono-latin-400-normal.woff2") format("woff2"); }
+    @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("./jetbrains-mono-latin-500-normal.woff2") format("woff2"); }
+    @font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("./jetbrains-mono-latin-600-normal.woff2") format("woff2"); }
+
+    .chip, #top-bar > .tb-chip, #usage, #quota, #mode, #status-fields .sf-chip {
+      display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; box-sizing: border-box; height: 24px; padding: 0 7px;
+      border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--text) 4%, var(--chrome));
+      color: var(--text); font-size: 12px; line-height: 1; white-space: nowrap; -webkit-app-region: no-drag;
+    }
+    /* Usage and quota are ONE chip each; their groups and meters are the values inside it, not boxes of their own. */
+    #usage, #quota { flex: 0 .001 auto; min-width: 0; overflow: hidden; gap: 10px; }
+    #usage:empty, #quota:empty, #top-bar > .tb-chip[hidden], .chip[hidden] { display: none; }
+    /* A tighter header row for the chips: they carry more than the bare text did. */
+    header { gap: 6px; padding: 8px 10px; }
+    #usage .grp, #usage .milestone, #quota .meter { align-items: center; }
+    .chip-ic { display: inline-flex; color: var(--dim); }
+    .chip-icon { width: 14px; height: 14px; flex: none; }
+    /* Figures are JetBrains Mono, tabular. */
+    .chip-v, .chip .num, #hp .num, #quota .meter .pct, #usage .val, #status-fields .sf-chip .chip-v, #top-bar > .tb-chip .tbr-n {
+      font-family: var(--font-figures); font-variant-numeric: tabular-nums; font-weight: 500; font-size: 12px; }
+    .chip > .tb-chip { font-weight: 500; font-size: 12px; font-variant-numeric: tabular-nums; }
+    #usage .lbl, #quota .meter .lbl { font-size: 12px; text-transform: none; letter-spacing: 0; opacity: .75; }
+    /* A button inside a chip is the chip's value, not a second box. */
+    .chip > .tb-chip { background: transparent; border: 0; border-radius: 0; padding: 0; height: auto; color: inherit; cursor: pointer; line-height: 1; }
+    .chip > .tb-chip:hover { background: transparent; }
+    .chip:has(> .tb-chip:hover), #top-bar > .tb-chip:hover { border-color: var(--model-accent); }
+    .chip-model, .chip-effort { border-color: var(--model-accent); }
+    .chip-model > .tb-chip, .chip-effort > .tb-chip { color: var(--text); }
+    .chip-ctx { padding: 0 7px; }
+    .chip-ctx .tb-ctx { margin-left: 0; width: 12px; height: 12px; }
+    /* The micro-bar: 28 px wide, whatever the meter is called. */
+    #hp .track, #quota .meter .track, #usage .milestone .track { width: 28px; height: 4px; border: 0; border-radius: 2px; flex: none; }
+    #hp > span:first-child { display: none; }               /* the heart-pulse icon says it; the title spells it out */
+    .chip-hp:has(> #hp:not(.show)) { display: none; }
+    #hp { font-size: 12px; gap: 6px; }
+    /* Loading is a shimmer in a dashed chip. Only RUNNING and LOADING states shimmer; an unknown HP is the dashed border and nothing
+       moves. A running HP keeps its last value and bar, dimmed (.stale, app/chip-model.js healthChip). */
+    @keyframes chip-shimmer { from { background-position: -64px 0; } to { background-position: 64px 0; } }
+    #usage.has-note, #quota.is-note, .chip-hp:has(> #hp.unknown) { border-style: dashed; }
+    #quota.is-loading, .chip-hp:has(> #hp.running), .chip:has(> .tb-chip.pending) {
+      border-style: dashed;
+      background-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 14%, transparent), transparent);
+      background-size: 64px 100%; background-repeat: no-repeat; animation: chip-shimmer 1.3s linear infinite;
+    }
+    .chip > .tb-chip.pending { animation: none; opacity: .75; }
+    #hp.running .track { animation: none; }
+    #hp.stale .track, #hp.stale .num { opacity: .55; }
+    .chip:has(> .tb-chip.notice) { border-style: dashed; }
+    @media (prefers-reduced-motion: reduce) {
+      #quota.is-loading, .chip-hp:has(> #hp.running), .chip:has(> .tb-chip.pending) { animation: none; }
+    }
+    /* Warnings: one chip with a count. */
+    .chip-warn { border-color: var(--accent); color: var(--accent); cursor: default; }
+    .chip-warn .chip-ic { color: inherit; }
+    .chip-warn[hidden] { display: none; }
+    .wt-health, .wt-lock { display: none !important; }       /* data for #hdr-warn, never drawn */
+    /* The session chips (lines, time, ctx>200k), cost-free. */
+    #status-fields { display: inline-flex; gap: 6px; margin: 0; color: var(--text); font-size: 12px; overflow: hidden; }
+    #status-fields[hidden] { display: none; }
+    #status-fields .sf-chip .chip-ic { color: var(--dim); }
+    /* Permission mode and the quota meters keep their own contents, in the chip shape. */
+    #mode .nm { font-size: 12px; }
+    #quota .meter .pct, #quota .none, #quota .back-toast { font-size: 12px; }
+    /* The chips carry more than the bare text did, so a narrower window sheds the least decisive part first (measured at 1280, 1600 and
+       1920 by verify/probe-chrome-grammar.js, and at 1200 by verify/probe-header-fit.js). Under 1500 px the usage chip keeps the session
+       figure (the project total is in its hover text) and the quota meters that are not the binding window lose their bars; under
+       1280 px those meters go too. The numbers are all still in the hover text and the Resources panel. */
+    @media (max-width: 1499px) {
+      #usage .grp + .grp { display: none; }
+      #quota .meter:not(.active):not(.back) .track { display: none; }
+    }
+    @media (max-width: 1279px) {
+      #quota .meter:not(.active):not(.back) { display: none; }
+    }
+    /* Compaction, round 2 (Ricardo, 2026-10-27: in a smaller window every icon and part of the header stays visible). As the window
+       narrows the chips COMPACT instead of disappearing; the full detail is each chip's hover title. Only the CLI's session chips
+       (#status-fields) may hide, and the title and folder, which ellipsize. The same widths are in verify/probe-chrome-grammar.js (COMPACT_BELOW is the first step); the
+       window's own floor is 640 px (app/main.js minWidth).
+         step 1, up to 1399 px: no micro-bars, no labels;
+         step 2, up to 1000 px: icon and a short value (the resources chip as `23 · 52 · 8`, the first characters of the model, the skulls without the mode's name);
+         step 3, up to 759 px: tighter chips, and the model is its icon alone. */
+    @media (max-width: 1399px) {
+      #hp .track, #quota .meter .track, #usage .milestone .track, #usage .lbl, #quota .meter .lbl, #usage .milestone .lbl { display: none; }
+      #usage, #quota { gap: 6px; }
+      header .title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    }
+    /* The resources chip as `23 · 52 · 8` (the labelled text is its title). Ricardo asked for this at 1000 px; the labelled chip is 192 px
+       wide and at 1024 it pushed the usage and quota chips out of the header (probe), so it starts at 1100 px (a design default he confirms). */
+    @media (max-width: 1100px) {
+      #tb-resources .tbr-l, #tb-resources .tbr-pc { display: none; }
+    }
+    @media (max-width: 1000px) {
+      #top-bar > #tb-resources { gap: 2px; }
+      #mode .nm { display: none; }
+      .chip-model > .tb-chip { max-width: 7ch; overflow: hidden; text-overflow: ellipsis; }
+      #quota .meter .pct { max-width: 4.4ch; overflow: hidden; text-overflow: clip; }
+      #usage .grp + .grp, #usage .milestone { display: none; }
+    }
+    @media (max-width: 759px) {
+      header { gap: 4px; padding: 6px 8px; }
+      .chip, #top-bar > .tb-chip, #usage, #quota, #mode { padding: 0 5px; gap: 4px; }
+      #top-bar { gap: 4px; }
+      .chip-model > .tb-chip { display: none; }
+      .hdr-btn { padding-left: 6px; padding-right: 6px; }
+    }
   </style>
 </head>
 <body>
@@ -2250,7 +2372,10 @@
       <span id="wt-lock" class="wt-lock" hidden></span>
       <span class="cwd" id="cwd"></span>
       <span class="spacer"></span>
-      <span id="hp" title="Project HP — click to run the test suite"></span>
+      <!-- Chrome grammar A: every warning is ONE chip with a count; the detail is its hover text (app/chip-model.js warningsChip),
+           never a sentence in the header. #wt-health and #wt-lock above stay as the data the chip is made from, and are never drawn. -->
+      <span id="hdr-warn" class="chip chip-warn" hidden role="img" aria-label="warnings"><span class="chip-ic" data-chip-icon="triangle-alert"></span><span class="chip-v" id="hdr-warn-n"></span></span>
+      <span class="chip chip-hp"><span class="chip-ic" data-chip-icon="heart-pulse"></span><span id="hp" title="Project HP — click to run the test suite"></span></span>
       <!-- FF12: model + effort, the two things that change how the NEXT turn
            behaves. Working directory is FF3 (window title); spend/quota are
            status, not controls, and stay in #usage/#quota below. -->
@@ -2260,9 +2385,9 @@
         <button type="button" id="tb-resources" class="tb-chip" aria-controls="res-popover" aria-expanded="false" title="Machine total and the last hour. Click for the graphs.">CPU —  — / —</button>
         <!-- BACKLOG #119 A4: how many dev servers listen in this worktree's block of ports (app/preview-display.js chipView). A click opens the list. -->
         <button type="button" id="tb-devservers" class="tb-chip" aria-controls="dv-popover" aria-expanded="false" hidden title="Dev servers in this worktree"></button>
-        <button type="button" id="tb-model" class="tb-chip" title="model: —"></button>
-        <button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button>
-        <span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span>
+        <span class="chip chip-model"><span class="chip-ic" data-chip-icon="brain"></span><button type="button" id="tb-model" class="tb-chip" title="model: —"></button></span>
+        <span class="chip chip-effort"><span class="chip-ic" data-chip-icon="zap"></span><button type="button" id="tb-effort" class="tb-chip" title="effort: —"></button></span>
+        <span class="chip chip-ctx"><span id="tb-context" class="tb-ctx ctx-unknown" role="img" aria-label="context: unknown" title="context: unknown"></span></span>
       </span>
       <!-- Layout pass L2 (#27): the CLI's status row, moved here when the Window
            setting says so: cost, lines, time, ctx>200k. -->
@@ -2560,6 +2685,9 @@
   <script src="../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
   <script src="./side-tabs.js"></script>
   <script src="./rail-icons.js"></script>
+  <script src="./rail-groups.js"></script>
+  <script src="./chip-icons.js"></script>
+  <script src="./chip-model.js"></script>
   <script src="./dock-migrate.js"></script>
   <script src="./dock-effects.js"></script>
   <script src="./dock-tree.js"></script>

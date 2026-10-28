@@ -228,7 +228,13 @@ function popover(points, nowAt, hover = {}) {
     + '<button type="button" class="hg-link" data-hist-act="open-panel">Open Resources panel →</button>';
 }
 
-/** The chip's inside: the CPU figure and its sparkline, the memory figure and its sparkline, then (when there is one) the GPU's. */
+/** The header chip's inside: the figures alone (CPU, memory, and the GPU's when there is one). The graphs live in the popover and the panel. */
+function chipFiguresHtml(cpuText, memText, gpuText = null) {
+  return `<span class="tbr-n">${esc(cpuText)}</span><span class="tbr-n">${esc(memText)}</span>`
+    + (typeof gpuText === 'string' ? `<span class="tbr-n">${esc(gpuText)}</span>` : '');
+}
+
+/** The chip's inside with sparklines (no longer drawn in the header since round 2): the CPU figure and its sparkline, the memory figure and its sparkline, then (when there is one) the GPU's. */
 function chipHtml(cpuText, memText, points, nowAt, gpuText = null) {
   return `<span class="tbr-n">${esc(cpuText)}</span>${sparkline(points, 'cpu', nowAt)}`
     + `<span class="tbr-n">${esc(memText)}</span>${sparkline(points, 'mem', nowAt)}`
@@ -251,7 +257,14 @@ function popoverStep(state, ev) {
   const same = { state: st, consumed: false };
   const close = () => ({ state: st.open ? popoverInit() : st, consumed: false });
   switch (ev && ev.type) {
-    case 'chip-click': return { state: st.open ? popoverInit() : { open: true, hover: noHover() }, consumed: false };
+    case 'chip-click': {
+      if (st.open && st.peek) return { state: { open: true, hover: st.hover }, consumed: false };   // a click on a hover peek pins it
+      return { state: st.open ? popoverInit() : { open: true, hover: noHover() }, consumed: false };
+    }
+    // The pointer rested on the chip (the caller waits a short delay first): open as a peek. A peek closes when the pointer leaves
+    // the chip and the popover; a click pins it (Ricardo, 2026-10-27: the graphs show on hover, not in the header).
+    case 'hover-open': return st.open ? same : { state: { open: true, hover: noHover(), peek: true }, consumed: false };
+    case 'hover-close': return st.open && st.peek ? { state: popoverInit(), consumed: false } : same;
     case 'key': {
       if (ev.key !== 'Escape' || !st.open) return same;
       return { state: popoverInit(), consumed: true };
@@ -260,11 +273,11 @@ function popoverStep(state, ev) {
     case 'blur': case 'hidden': case 'chip-off': case 'panel-link': return close();
     case 'hover': {
       if (!st.open || !KIND_IDS.includes(ev.kind) || !isNum(ev.minutes)) return same;
-      return { state: { open: true, hover: { ...noHover(), [ev.kind]: ev.minutes } }, consumed: false };
+      return { state: { ...st, hover: { ...noHover(), [ev.kind]: ev.minutes } }, consumed: false };
     }
     case 'leave': {
       if (!st.open || KIND_IDS.every(k => st.hover[k] === null)) return same;
-      return { state: { open: true, hover: noHover() }, consumed: false };
+      return { state: { ...st, hover: noHover() }, consumed: false };
     }
     default: return same;
   }
@@ -280,7 +293,7 @@ function hoverView(points, nowAt, hover) {
   return { cpu: one('cpu'), mem: one('mem'), gpu: one('gpu'), gpumem: one('gpumem') };
 }
 
-const API = { popoverInit, popoverStep, hoverView, describe, chipHtml, gpuGraphs, hasGpu, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
+const API = { popoverInit, popoverStep, hoverView, describe, chipHtml, chipFiguresHtml, gpuGraphs, hasGpu, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesHistoryDisplay = API;
