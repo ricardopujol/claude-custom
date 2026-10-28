@@ -57,3 +57,11 @@ test('r2 N2: a pending hover-open does not open the popover once the chip is hid
 test('finding 6: the project total is in the usage chip\'s own hover, so hiding its group keeps it reachable', () => {
   assert.match(JS, /usageEl\.title = `\$\{sessionTitle\}\\n\$\{projectTitle\}`/);
 });
+
+test('resources chip (pick A): only the number takes the level colour, the label stays grey, narrow drops labels and %', () => {
+  assert.match(HTML, /#tb-resources \.tbr-v\.lv-amber \{ color: var\(--warn\); \}/);
+  assert.match(HTML, /#tb-resources \.tbr-v\.lv-red \{ color: var\(--bad\); \}/);
+  assert.match(HTML, /#tb-resources \.tbr-l \{ color: var\(--dim\); \}/);
+  assert.ok(!HTML.includes('#tb-resources.res-amber') && !HTML.includes('#tb-resources.res-red'), 'the whole chip no longer changes colour');
+  assert.match(HTML, /@media \(max-width: 1100px\) \{[^@]*#tb-resources \.tbr-l, #tb-resources \.tbr-pc \{ display: none; \}/);
+});

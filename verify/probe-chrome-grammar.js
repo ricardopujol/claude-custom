@@ -53,7 +53,10 @@ const FIXTURE = `(() => {
   document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(e.violatedDirective + ' ' + e.blockedURI));
   set('title', 'claude-custom');
   set('cwd', 'C:/Users/ricar/VibeCode/claude-custom/feat-chrome-grammar');
-  document.getElementById('tb-resources').innerHTML = window.resourcesHistoryDisplay.chipFiguresHtml('CPU 23%', '5.1G / 31G');
+  window.__res = (cpu, ram, gpu) => { const G = 1024 ** 3; resChipOn = true;
+    resPayload = { status: {}, machine: { cpu, mem: ram === null ? null : { usedBytes: ram / 100 * 32 * G, totalBytes: 32 * G }, gpu: { busy: gpu, mem: gpu === null ? null : { usedBytes: 4.2 * G, totalBytes: 8 * G } } } };
+    renderResourcesChip(); };
+  window.__res(23, 52, 8);
   set('tb-model', 'claude-sonnet-5-5'); set('tb-effort', 'high');
   if (typeof renderStatusFields === 'function') {
     chromeSettings.statusInHeader = true;
@@ -185,6 +188,28 @@ app.on('ready', async () => {
       check(!m.warn.hidden && m.warn.text === '2' && m.warn.title.split('\n').length === 2, `one warnings chip with a count: "${m.warn.text}", hover has ${m.warn.title.split('\n').length} lines`);
       await sleep(200);
       await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-${width}.png`));
+      // The resources chip (Ricardo's pick A): `CPU 23% · RAM 52% · GPU 8%`, amber from 75 and red from 90 on the number alone, `23 · 52 · 8` up to 1000 px.
+      const resOf = async () => JSON.parse(await win.webContents.executeJavaScript(`(() => { const el = document.getElementById('tb-resources'); const col = (s) => { const n = el.querySelector(s); return n ? getComputedStyle(n).color : null; };
+        return JSON.stringify({ text: el.innerText.replace(/\\s+/g, ' ').trim(), title: el.title, vals: [...el.querySelectorAll('.tbr-v')].map(n => getComputedStyle(n).color), label: col('.tbr-l'), labelShown: el.querySelector('.tbr-l').offsetParent !== null,
+          border: getComputedStyle(el).borderColor, chipColor: getComputedStyle(el).color, kids: el.scrollWidth <= el.clientWidth + 1, inView: el.getBoundingClientRect().right <= window.innerWidth + 0.5 }); })()`));
+      const calm = await resOf();
+      const wantText = width <= 1100 ? '23 · 52 · 8' : 'CPU 23% · RAM 52% · GPU 8%';
+      check(calm.text === wantText, `resources chip reads "${wantText}": ${JSON.stringify(calm.text)}`);
+      check(calm.title.includes('RAM 16.6 of 32.0 GB (52%)') && calm.title.includes('GPU 8% (4.2 of 8.0 GB)') && /^CPU 23%/.test(calm.title), 'the full labelled figures are the chip hover');
+      check(new Set(calm.vals).size === 1 && calm.labelShown === (width > 1100), `a calm chip: one number colour, labels ${width > 1100 ? 'shown' : 'dropped'}`);
+      await win.webContents.executeJavaScript('window.__res(80, 52, 8); true');
+      const amber = await resOf();
+      check(amber.vals[0] !== amber.vals[1] && amber.vals[1] === calm.vals[1] && amber.label === calm.label && amber.border === calm.border && amber.chipColor === calm.chipColor, `amber: only the CPU number changes colour ${JSON.stringify(amber.vals)}`);
+      await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-res-amber-${width}.png`));
+      await win.webContents.executeJavaScript('window.__res(95, 91, 8); true');
+      const red = await resOf();
+      check(red.vals[0] === red.vals[1] && red.vals[0] !== amber.vals[0] && red.vals[2] === calm.vals[2] && red.label === calm.label, `red: CPU and RAM numbers turn red, GPU stays ${JSON.stringify(red.vals)}`);
+      await shot(win, { x: 0, y: 0, width, height: 44 }, path.join(OUT_DIR, `header-res-red-${width}.png`));
+      const tight = await win.webContents.executeJavaScript(`(() => { const r = document.getElementById('tb-resources').getBoundingClientRect(); return r.right <= window.innerWidth + 0.5 && document.getElementById('tb-resources').scrollWidth <= document.getElementById('tb-resources').clientWidth + 1; })()`);
+      check(tight === true, 'the red chip (widest) still fits and is not cut');
+      await win.webContents.executeJavaScript('window.__res(null, null, null); true');
+      check((await resOf()).text.replace(/[^—]/g, '') === '———', 'a missing reading is a dash for each metric, never 0');
+      await win.webContents.executeJavaScript('window.__res(23, 52, 8); true');
       // Loading and unknown: a dashed chip, never a sentence.
       await win.webContents.executeJavaScript(`renderHealth({ state: 'unknown', fraction: null, runner: 'node', running: true }); true`);
       await sleep(200);

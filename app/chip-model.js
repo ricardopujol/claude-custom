@@ -47,7 +47,54 @@ function healthChip(h, last) {
   return { label: '—', bar: microBar(null), running, stale: false, known: null };
 }
 
-const API = { BAR_PX, microBar, warningsChip, healthChip };
+// ---- the resources chip: `CPU 23% · RAM 52% · GPU 8%` (Ricardo's pick, option A, 2026-10-28) -------------------------------------
+const RES_AMBER_PCT = 75;
+const RES_RED_PCT = 90;
+const isNum = v => typeof v === 'number' && Number.isFinite(v);
+const GIB = 1024 ** 3;
+const MIB = 1024 ** 2;
+
+/** A whole percent in 0..100, or null: absence is not zero (strict typeof, never a coercion). */
+const pctOf = v => (isNum(v) ? Math.round(Math.min(100, Math.max(0, v))) : null);
+/** 'amber' from 75, 'red' from 90, on the figure as shown; null for no figure. */
+const levelOfPct = p => (!isNum(p) ? null : p >= RES_RED_PCT ? 'red' : p >= RES_AMBER_PCT ? 'amber' : null);
+const ofText = mem => (mem.totalBytes >= GIB ? `${(mem.usedBytes / GIB).toFixed(1)} of ${(mem.totalBytes / GIB).toFixed(1)} GB` : `${Math.round(mem.usedBytes / MIB)} of ${Math.round(mem.totalBytes / MIB)} MB`);
+const ofTotal = mem => (mem && typeof mem === 'object' && isNum(mem.usedBytes) && isNum(mem.totalBytes) && mem.totalBytes > 0 ? mem : null);
+
+/**
+ * `{ segments, aria, title }` for the header chip. Each segment is `{ key, label, pct, value, short, level }`: `value` is "23%", `short` the
+ * narrow form "23", a missing figure is "—" with no level. RAM is used/total as a percent; GPU is its utilisation (its memory is in the
+ * title). The GPU segment exists when the payload carries a GPU part, even if expired (unknown, not absent: the chip keeps its width).
+ */
+function resourcesChip(payload) {
+  const m = payload && payload.machine && typeof payload.machine === 'object' ? payload.machine : null;
+  const live = !!m && !(payload.status && payload.status.expired === true);
+  const mem = live ? ofTotal(m.mem) : null;
+  const gpu = m && m.gpu && typeof m.gpu === 'object' ? m.gpu : null;
+  const seg = (key, label, pct) => ({ key, label, pct, value: pct === null ? '—' : `${pct}%`, short: pct === null ? '—' : String(pct), level: levelOfPct(pct) });
+  const segments = [
+    seg('cpu', 'CPU', live ? pctOf(m.cpu) : null),
+    seg('ram', 'RAM', mem ? pctOf((mem.usedBytes / mem.totalBytes) * 100) : null),
+  ];
+  if (gpu) segments.push(seg('gpu', 'GPU', live ? pctOf(gpu.busy) : null));
+  const by = Object.fromEntries(segments.map(s => [s.key, s]));
+  const gmem = live && gpu ? ofTotal(gpu.mem) : null;
+  const lines = [`CPU ${by.cpu.value}`,
+    mem ? `RAM ${ofText(mem)} (${by.ram.value})` : 'RAM —'];
+  if (by.gpu) lines.push(`GPU ${by.gpu.value}${gmem ? ` (${ofText(gmem)})` : ''}`);
+  lines.push('Machine total. Click for the graphs of the last hour.');
+  return { segments, aria: segments.map(s => `${s.label} ${s.value}`).join(', '), title: lines.join('\n') };
+}
+
+/** The chip's markup: constants and digits only. The label is grey, the level colours the number alone, "%" and labels drop when narrow. */
+function resourcesChipHtml(chip) {
+  return chip.segments.map(s => {
+    const num = s.pct === null ? '—' : `${s.pct}<span class="tbr-pc">%</span>`;
+    return `<span class="tbr-n"><span class="tbr-l">${s.label}</span> <span class="tbr-v${s.level ? ` lv-${s.level}` : ''}">${num}</span></span>`;
+  }).join('<span class="tbr-sep">·</span>');
+}
+
+const API = { BAR_PX, microBar, warningsChip, healthChip, RES_AMBER_PCT, RES_RED_PCT, levelOfPct, resourcesChip, resourcesChipHtml };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.chipModel = API;

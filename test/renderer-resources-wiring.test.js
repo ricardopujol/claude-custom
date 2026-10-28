@@ -60,7 +60,7 @@ test('the chip opens a popover with the graphs (it no longer opens the panel); e
   assert.match(BLOCK, /resPopoverEl\.addEventListener\('mouseleave'/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.popoverStep\(/);
   assert.match(BLOCK, /resourcesHistoryDisplay\.popover\(/);
-  assert.match(BLOCK, /resourcesHistoryDisplay\.chipFiguresHtml\(/);
+  assert.match(BLOCK, /chipModel\.resourcesChipHtml\(chip\)/);
   assert.doesNotMatch(BLOCK, /resourcesHistoryDisplay\.chipHtml\(/, 'round 2: no sparklines in the header chip');
 });
 
@@ -149,7 +149,9 @@ test('Leftovers (F2): the stop is the async killProven, the launcher is re-asked
 });
 
 test('#82: the chip is handed the GPU figure, and the Resources tab the GPU graphs from the history display', () => {
-  assert.match(BLOCK, /resourcesHistoryDisplay\.chipFiguresHtml\(c\.cpuText, c\.memText, c\.gpuText\)/);
+  // the chip is percentages (CPU, RAM, GPU) from chipModel.resourcesChip since Ricardo's pick A (2026-10-28); the GPU segment comes from the payload's gpu part
+  assert.match(BLOCK, /chipModel\.resourcesChip\(resPayload\)/);
+  assert.match(BLOCK, /tbResourcesEl\.title = chip\.title/);
   assert.match(BLOCK, /resourcesDisplay\.html\(window\.resourcesDisplay\.view\(resState\), \{ gpuGraphs: window\.resourcesHistoryDisplay\.gpuGraphs\(resHistory\(\), resHistoryNow\(\)\) \}\)/);
   assert.match(HTML, /aria-label="CPU, memory and GPU over the last hour"/);
   assert.match(HTML, /\.res-gpu \.hg-plot \{ width: 100% !important;/);

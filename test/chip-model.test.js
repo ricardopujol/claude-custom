@@ -102,3 +102,74 @@ test('healthChip: a run that finishes replaces the old value', () => {
   assert.strictEqual(c.label, '9/10');
   assert.deepStrictEqual(c.known, { label: '9/10', fraction: 0.9 });
 });
+
+// ---- Ricardo's pick (option A) for the resources chip: `CPU 23% · RAM 52% · GPU 8%`, only the number changes colour ---------------
+
+const { resourcesChip, resourcesChipHtml, levelOfPct, RES_AMBER_PCT, RES_RED_PCT } = require('../app/chip-model');
+const GB = 1024 ** 3;
+const machine = (over = {}) => ({ machine: { cpu: 23, mem: { usedBytes: 16.2 * GB, totalBytes: 31.2 * GB }, gpu: { busy: 8, mem: { usedBytes: 4.2 * GB, totalBytes: 8 * GB } }, ...over }, status: {} });
+
+test('levelOfPct: amber from 75, red from 90, on the figure as shown; absence has no level', () => {
+  assert.strictEqual(RES_AMBER_PCT, 75);
+  assert.strictEqual(RES_RED_PCT, 90);
+  assert.strictEqual(levelOfPct(74), null);
+  assert.strictEqual(levelOfPct(75), 'amber');
+  assert.strictEqual(levelOfPct(89), 'amber');
+  assert.strictEqual(levelOfPct(90), 'red');
+  assert.strictEqual(levelOfPct(100), 'red');
+  assert.strictEqual(levelOfPct(null), null);
+  assert.strictEqual(levelOfPct(undefined), null);
+  assert.strictEqual(levelOfPct(NaN), null);
+});
+
+test('resourcesChip: CPU, RAM as used/total %, GPU utilisation; the full figures are in the title', () => {
+  const c = resourcesChip(machine());
+  assert.deepStrictEqual(c.segments.map(s => [s.key, s.label, s.value, s.short, s.level]),
+    [['cpu', 'CPU', '23%', '23', null], ['ram', 'RAM', '52%', '52', null], ['gpu', 'GPU', '8%', '8', null]]);
+  assert.strictEqual(c.aria, 'CPU 23%, RAM 52%, GPU 8%');
+  assert.match(c.title, /RAM 16\.2 of 31\.2 GB \(52%\)/);
+  assert.match(c.title, /GPU 8% \(4\.2 of 8\.0 GB\)/);
+  assert.match(c.title, /^CPU 23%\n/);
+});
+
+test('resourcesChip: each metric has its own level', () => {
+  const c = resourcesChip(machine({ cpu: 80, mem: { usedBytes: 29 * GB, totalBytes: 30 * GB }, gpu: { busy: 74.6, mem: null } }));
+  assert.deepStrictEqual(c.segments.map(s => s.level), ['amber', 'red', 'amber']);   // 74.6 shows as 75, so it is amber
+});
+
+test('resourcesChip: a missing metric is a dash and no level, never 0%', () => {
+  const c = resourcesChip(machine({ cpu: null, mem: null, gpu: { busy: null, mem: null } }));
+  assert.deepStrictEqual(c.segments.map(s => [s.value, s.short, s.level]), [['—', '—', null], ['—', '—', null], ['—', '—', null]]);
+  assert.strictEqual(c.aria, 'CPU —, RAM —, GPU —');
+  const zero = resourcesChip(machine({ cpu: 0 }));
+  assert.strictEqual(zero.segments[0].value, '0%', 'a real zero is a zero');
+  assert.strictEqual(resourcesChip(machine({ mem: { usedBytes: 1, totalBytes: 0 } })).segments[1].value, '—');
+});
+
+test('resourcesChip: no GPU part, no GPU segment; an expired or absent payload is dashes (the GPU segment stays when it existed)', () => {
+  const noGpu = machine(); delete noGpu.machine.gpu;
+  assert.deepStrictEqual(resourcesChip(noGpu).segments.map(s => s.key), ['cpu', 'ram']);
+  const none = resourcesChip(null);
+  assert.deepStrictEqual(none.segments.map(s => [s.key, s.value]), [['cpu', '—'], ['ram', '—']]);
+  const expired = machine(); expired.status = { expired: true };
+  assert.deepStrictEqual(resourcesChip(expired).segments.map(s => [s.key, s.value]), [['cpu', '—'], ['ram', '—'], ['gpu', '—']]);
+});
+
+test('resourcesChipHtml: label, value (the % apart so narrow can drop it), the level on the number only, dots between', () => {
+  const html = resourcesChipHtml(resourcesChip(machine({ cpu: 91 })));
+  assert.match(html, /<span class="tbr-n"><span class="tbr-l">CPU<\/span> <span class="tbr-v lv-red">91<span class="tbr-pc">%<\/span><\/span><\/span>/);
+  assert.match(html, /<span class="tbr-n"><span class="tbr-l">RAM<\/span> <span class="tbr-v">52<span class="tbr-pc">%<\/span><\/span><\/span>/);
+  assert.strictEqual((html.match(/<span class="tbr-sep">·<\/span>/g) || []).length, 2);
+  assert.ok(!/class="tbr-l"[^>]*lv-/.test(html), 'the label never takes the level');
+  assert.match(resourcesChipHtml(resourcesChip(null)), /<span class="tbr-v">—<\/span>/);
+});
+
+test('property: any numbers give whole-percent figures in 0..100 or a dash, and a level only for a figure', () => {
+  fc.assert(fc.property(fc.anything(), fc.anything(), fc.anything(), (cpu, used, busy) => {
+    const c = resourcesChip({ machine: { cpu, mem: { usedBytes: used, totalBytes: 100 }, gpu: { busy } }, status: {} });
+    for (const s of c.segments) {
+      assert.ok(s.value === '—' || /^(\d|[1-9]\d|100)%$/.test(s.value));
+      if (s.value === '—') assert.strictEqual(s.level, null);
+    }
+  }));
+});

@@ -1668,13 +1668,12 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  // the figures alone (CPU, memory, and the GPU's when the payload has one): the graphs show in the hover popover and the panel
-  // (Ricardo, 2026-10-27); the whole chip reads as the plain text to a screen reader
-  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipFiguresHtml(c.cpuText, c.memText, c.gpuText);
-  tbResourcesEl.setAttribute('aria-label', c.text);
-  tbResourcesEl.title = c.title;
-  tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
-  tbResourcesEl.classList.toggle('res-red', c.level === 'red');
+  // `CPU 23% · RAM 52% · GPU 8%`: percentages only, each number amber from 75 and red from 90 (app/chip-model.js resourcesChip; Ricardo's
+  // pick, option A, 2026-10-28). The full figures are the hover; the graphs show in the hover popover and the panel (2026-10-27).
+  const chip = chipModel.resourcesChip(resPayload);
+  tbResourcesEl.innerHTML = chipModel.resourcesChipHtml(chip);
+  tbResourcesEl.setAttribute('aria-label', chip.aria);
+  tbResourcesEl.title = chip.title;
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
   // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
   tbResourcesEl.hidden = !resChipOn;

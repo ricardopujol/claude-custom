@@ -1804,8 +1804,11 @@
     .res-lstop-gap { flex: none; width: 36px; }
     .res-footer { font-size: 10px; color: var(--dim); margin-top: 6px; }
     #tb-resources { font-variant-numeric: tabular-nums; border-color: var(--border); }
-    #tb-resources.res-amber { border-color: #e6c34a; color: #e6c34a; }
-    #tb-resources.res-red { border-color: var(--bad); color: var(--bad); }
+    /* Only the NUMBER takes the level's colour (amber from 75 %, red from 90 %); the label stays grey and the chip keeps its border. */
+    #tb-resources .tbr-l { color: var(--dim); }
+    #tb-resources .tbr-sep { color: var(--dim); margin: 0 1px; }
+    #tb-resources .tbr-v.lv-amber { color: var(--warn); }
+    #tb-resources .tbr-v.lv-red { color: var(--bad); }
     #tb-resources.res-dim { opacity: .55; }
     /* The one-hour history (#63 follow-up, design option B): a sparkline after each figure, and a popover with two larger graphs.
        The accent is claude-custom's share, the neutral colour is everything else (the same two colours as the panel's bars). */
@@ -2286,15 +2289,20 @@
        (#status-fields) may hide, and the title and folder, which ellipsize. The same widths are in verify/probe-chrome-grammar.js (COMPACT_BELOW is the first step); the
        window's own floor is 640 px (app/main.js minWidth).
          step 1, up to 1399 px: no micro-bars, no labels;
-         step 2, up to 1000 px: icon and a short value (CPU alone, the first characters of the model, the skulls without the mode's name);
+         step 2, up to 1000 px: icon and a short value (the resources chip as `23 · 52 · 8`, the first characters of the model, the skulls without the mode's name);
          step 3, up to 759 px: tighter chips, and the model is its icon alone. */
     @media (max-width: 1399px) {
       #hp .track, #quota .meter .track, #usage .milestone .track, #usage .lbl, #quota .meter .lbl, #usage .milestone .lbl { display: none; }
       #usage, #quota { gap: 6px; }
       header .title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     }
+    /* The resources chip as `23 · 52 · 8` (the labelled text is its title). Ricardo asked for this at 1000 px; the labelled chip is 192 px
+       wide and at 1024 it pushed the usage and quota chips out of the header (probe), so it starts at 1100 px (a design default he confirms). */
+    @media (max-width: 1100px) {
+      #tb-resources .tbr-l, #tb-resources .tbr-pc { display: none; }
+    }
     @media (max-width: 1000px) {
-      #tb-resources .tbr-n:nth-of-type(n+2) { display: none; }
+      #top-bar > #tb-resources { gap: 2px; }
       #mode .nm { display: none; }
       .chip-model > .tb-chip { max-width: 7ch; overflow: hidden; text-overflow: ellipsis; }
       #quota .meter .pct { max-width: 4.4ch; overflow: hidden; text-overflow: clip; }
