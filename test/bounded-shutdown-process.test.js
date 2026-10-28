@@ -61,12 +61,12 @@ test('the kill switch stopper\'s kill is bounded too: a blocking stopPty under t
 });
 
 
-test('a disarmed watchdog ends and leaves the process it guarded alone, well past its bound (Miguel 1)', async () => {
+test('a disarmed watchdog ends at once and leaves the process it guarded alone, writing nothing (Miguel 1)', async () => {
   const dir = tmpDir('cc-bounded-');
   const logFile = path.join(dir, 'host.log');
   const guarded = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 12000)'], { stdio: 'ignore', windowsHide: true });
   try {
-    const disarm = armWatchdog({ boundMs: 150, logFile, pid: guarded.pid });
+    const disarm = armWatchdog({ boundMs: 4000, logFile, pid: guarded.pid });
     assert.ok(Number.isInteger(disarm.pid), 'the disarm handle names the watchdog');
     disarm();
     // The watchdog must be GONE (not merely quiet): poll for its exit, well past startup under load.

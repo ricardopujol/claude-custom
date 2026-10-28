@@ -10,8 +10,9 @@ const path = require('node:path');
 const fc = require('fast-check');
 const { tmpDir } = require('./tmp-dir');
 
-const { runShutdown, SHUTDOWN_BOUND_MS } = require('../host/bounded-shutdown');
-const { createWatchdog } = require('../host/bounded-watchdog');
+const { spawn } = require('node:child_process');
+const { runShutdown, armWatchdog, SHUTDOWN_BOUND_MS } = require('../host/bounded-shutdown');
+const { createWatchdog, MAX_PROOF_ATTEMPTS, RETRY_MS } = require('../host/bounded-watchdog');
 const { killProven, KILL_PROVEN_TIMEOUT_MS } = require('../host/kill-tree');
 
 const HOST_SRC = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
@@ -92,15 +93,69 @@ test('watchdog: a reused pid (the proof says mismatch) is never killed, and says
   assert.ok(log.some((l) => /reused\); left alone/.test(l)));
 });
 
-test('watchdog: with no start time, or a proof it could not judge, it kills nothing', () => {
-  for (const [start, outcome] of [[null, 'killed'], ['5', 'unknown'], ['5', 'failed']]) {
-    let t = 0; const log = []; let calls = 0;
-    const wd = createWatchdog({ pid: 7, boundMs: 100, start, now: () => t, alive: () => true, killProven: () => { calls += 1; return outcome; }, log: (l) => log.push(l) });
-    t = 1000;
+test('watchdog: with no start time ever, it kills nothing, tries MAX_PROOF_ATTEMPTS times, then says so and leaves', () => {
+  let t = 0; const log = []; let calls = 0;
+  const wd = createWatchdog({ pid: 7, boundMs: 100, start: null, now: () => t, alive: () => true, killProven: () => { calls += 1; return 'killed'; }, log: (l) => log.push(l) });
+  let ticks = 0; let r;
+  do { t += RETRY_MS; ticks += 1; r = wd.tick(); } while (r === 'wait' && ticks < 50);
+  assert.strictEqual(r, 'exit');
+  assert.strictEqual(calls, 0);
+  assert.strictEqual(ticks, MAX_PROOF_ATTEMPTS);
+  assert.ok(log.some((l) => /could not prove/.test(l)));
+});
+
+test('watchdog: a proof it could not judge (unknown, failed) is retried, not final (PR #217 round 2 N1)', () => {
+  for (const first of ['unknown', 'failed']) {
+    let t = 0; const log = []; const answers = [first, 'killed']; let calls = 0;
+    const wd = createWatchdog({ pid: 7, boundMs: 100, start: '5', now: () => t, alive: () => true, killProven: () => { calls += 1; return answers.shift(); }, log: (l) => log.push(l) });
+    t = 100;
+    assert.strictEqual(wd.tick(), 'wait', `${first}: the first answer is not final`);
+    t = 100 + RETRY_MS - 1;
+    assert.strictEqual(wd.tick(), 'wait', 'not before the retry interval');
+    assert.strictEqual(calls, 1);
+    t = 100 + RETRY_MS;
     assert.strictEqual(wd.tick(), 'exit');
-    if (start === null) assert.strictEqual(calls, 0);
-    assert.ok(log.some((l) => /could not prove/.test(l)), `${start}/${outcome}`);
+    assert.strictEqual(calls, 2);
+    assert.ok(!log.some((l) => /could not prove/.test(l)));
   }
+});
+
+test('watchdog: a proof that never gets judged stops after MAX_PROOF_ATTEMPTS and says so', () => {
+  let t = 0; const log = []; let calls = 0;
+  const wd = createWatchdog({ pid: 7, boundMs: 100, start: '5', now: () => t, alive: () => true, killProven: () => { calls += 1; return 'unknown'; }, log: (l) => log.push(l) });
+  let r; let ticks = 0;
+  do { t += 100 + RETRY_MS * ticks; ticks += 1; r = wd.tick(); } while (r === 'wait' && ticks < 50);
+  assert.strictEqual(r, 'exit');
+  assert.strictEqual(calls, MAX_PROOF_ATTEMPTS);
+  assert.ok(log.some((l) => /could not prove pid 7 .*unknown.* left alone/.test(l)));
+});
+
+test('watchdog: a start time learnt AFTER arming (the host could not read its own) is used at the deadline (PR #217 round 2 N1)', () => {
+  let t = 0; let learnt = null; const proven = [];
+  const wd = createWatchdog({ pid: 7, boundMs: 100, start: () => learnt, now: () => t, alive: () => true, killProven: (...a) => { proven.push(a); return 'killed'; }, log: () => {} });
+  learnt = '99';
+  t = 100;
+  assert.strictEqual(wd.tick(), 'exit');
+  assert.deepStrictEqual(proven, [[7, '99']]);
+});
+
+test('watchdog: a reused pid is final even after an earlier unjudged try', () => {
+  let t = 0; const answers = ['unknown', 'mismatch']; let calls = 0;
+  const wd = createWatchdog({ pid: 7, boundMs: 100, start: '5', now: () => t, alive: () => true, killProven: () => { calls += 1; return answers.shift(); }, log: () => {} });
+  t = 100; assert.strictEqual(wd.tick(), 'wait');
+  t += RETRY_MS; assert.strictEqual(wd.tick(), 'exit');
+  assert.strictEqual(calls, 2);
+});
+
+test('disarm kills the watchdog\'s whole tree by its pid, so a killProven already started dies with it (PR #217 round 2 N2)', () => {
+  const guarded = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], { stdio: 'ignore', windowsHide: true });
+  try {
+    const killed = [];
+    const disarm = armWatchdog({ boundMs: 60000, pid: guarded.pid, killTree: (p) => killed.push(p) });
+    assert.ok(Number.isInteger(disarm.pid));
+    disarm();
+    assert.deepStrictEqual(killed, [disarm.pid]);
+  } finally { guarded.kill(); }   // kill-ok(held-handle): the child this test spawned
 });
 
 test('watchdog: its default clock is monotonic, a wall-clock step of an hour does not cut a healthy stop short (PR #217 Dexter F5)', () => {

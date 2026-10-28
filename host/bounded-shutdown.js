@@ -12,14 +12,14 @@
  */
 const { spawn } = require('child_process');
 const path = require('path');
-const { KILL_PROVEN_TIMEOUT_MS } = require('./kill-tree');
+const { KILL_PROVEN_TIMEOUT_MS, killPidTree } = require('./kill-tree');
 
 // Above every timeout inside the teardown it covers (killProven's, 30 s) plus a margin, so a slow but healthy stop is never cut
 // short and the steps after the pty still run (PR #217 Dexter F3).
 const SHUTDOWN_BOUND_MS = KILL_PROVEN_TIMEOUT_MS + 15000;
 
 /** Starts the watchdog; the returned function disarms it. `start` is the host's start time (FILETIME string) for the kill's proof. */
-function armWatchdog({ boundMs = SHUTDOWN_BOUND_MS, logFile = null, pid = process.pid, start = null } = {}) {
+function armWatchdog({ boundMs = SHUTDOWN_BOUND_MS, logFile = null, pid = process.pid, start = null, killTree = killPidTree } = {}) {
   let child = null;
   try {
     child = spawn(process.execPath, [path.join(__dirname, 'bounded-watchdog.js'), String(pid), String(boundMs), logFile || '', start || ''], {
@@ -28,7 +28,9 @@ function armWatchdog({ boundMs = SHUTDOWN_BOUND_MS, logFile = null, pid = proces
     child.on('error', () => {});
     child.unref();
   } catch { child = null; }
-  const disarm = () => { if (child) { try { child.kill(); } catch { /* already gone */ } } };   // kill-ok(held-handle): the watchdog this call spawned
+  // The watchdog's TREE, not just its node: at the deadline it may already have started a killProven PowerShell, which would
+  // taskkill a host whose stop just finished (PR #217 round 2 N2). kill-ok(held-handle): the watchdog this call spawned.
+  const disarm = () => { if (child) { try { killTree(child.pid); } catch { /* already gone */ } try { child.kill(); } catch { /* already gone */ } } };
   disarm.pid = child ? child.pid : null;
   return disarm;
 }
