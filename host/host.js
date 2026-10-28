@@ -27,6 +27,7 @@ const { createTerminalState } = require('./terminal-state');
 const { createProgramStatusHost, windowAttachedAmong } = require('./program-status-host');
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
+const { runShutdown } = require('./bounded-shutdown');
 const { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit } = require('./kill-tree');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
@@ -1474,9 +1475,12 @@ setInterval(() => { schedulesControl.beat(); }, 30_000);
 // Every closure below reads `term`, `broadcastControl` and `termState` at call time: the first poll is a second after load.
 const KILL_SWITCH_PATHS = sentinelsFor({ claudeHome: stopAllHome({ seam: seams.claudeHome, home: os.homedir() }), stateRoot: STATE_ROOT });
 console.log('[host] kill switch   :', KILL_SWITCH_PATHS.join(' | ') || '(no sentinel path)');
+// The stopper's kill is the same blocking stopPty, so it runs under the same watchdog (PR #217 Dexter F4).
+const ownStartTime = () => (lockOwner && typeof lockOwner.processStartedAt === 'string' ? lockOwner.processStartedAt : null);
+const boundedStopPty = (t, opts) => runShutdown({ logFile: path.join(HARNESS_DIR, 'host.log'), start: ownStartTime(), steps: [() => stopPty(t, opts)] });
 const killStop = createStopper({
   term: () => term,
-  stopPty,
+  stopPty: boundedStopPty,
   killChildTree,
   outcomeOf: killOutcomeOf,
   log: (line) => console.log(line),
@@ -3277,24 +3281,33 @@ wss.on('error', (err) => {
 // case: a bind that failed, where this process never owned the port and the
 // file belongs to whoever did. Deleting it there would make the LIVE host
 // unidentifiable -- Finding 1 from the other direction.
+//
+// BACKLOG #121: the WHOLE shutdown runs under a watchdog process that ends this host after SHUTDOWN_BOUND_MS whatever a step is
+// doing (host/bounded-shutdown.js). The order is the order it always had: the pty is ended FIRST and the session lock and the
+// identity file are released AFTER it, because both mean "a live claude is in this worktree" (PR #217 Dexter F1, F2). The watchdog's
+// kill makes them stale within the bound.
 function shutdown({ removeIdentity = true } = {}) {
-  stopPty(term, { killChildTree });
-  try { killSwitch.stop(); } catch { /* a plain cancel */ }
-  try { nightBudget.stop(); } catch { /* one stop's throw never skips the other (Miguel S1) */ }
-  try { modServer.close(); } catch {}
-  try { repoService.close(); } catch {}
-  try { changesNotifier.close(); } catch {}
-  try { canvasControl.close(); } catch {}
-  try { schedulesControl.end(); } catch {}
-  releaseSessionLock(SESSION_LOCK, lockOwner);
-  killTree(healthChild);
-  if (hookBridge) { hookBridge.close().catch(() => {}); }
-  // Best effort. The reader already treats a leftover file as absent once the
-  // pid is gone, so this is tidiness rather than correctness -- which is why it
-  // is safe to swallow, and why the pid check exists instead of relying on it.
-  if (removeIdentity) {
-    try { fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); } catch {}
-  }
+  runShutdown({
+    logFile: path.join(HARNESS_DIR, 'host.log'),
+    start: ownStartTime(),
+    steps: [
+      () => stopPty(term, { killChildTree }),
+      () => killSwitch.stop(),   // a plain cancel
+      () => nightBudget.stop(),   // one stop's throw never skips the other (Miguel S1)
+      () => modServer.close(),
+      () => repoService.close(),
+      () => changesNotifier.close(),
+      () => canvasControl.close(),
+      () => schedulesControl.end(),
+      () => releaseSessionLock(SESSION_LOCK, lockOwner),
+      () => killTree(healthChild),
+      () => { if (hookBridge) hookBridge.close().catch(() => {}); },
+      // Best effort. The reader already treats a leftover file as absent once the
+      // pid is gone, so this is tidiness rather than correctness -- which is why it
+      // is safe to swallow, and why the pid check exists instead of relying on it.
+      () => { if (removeIdentity) fs.unlinkSync(fileFor(HARNESS_DIR, PORT)); },
+    ],
+  });
 }
 
 // SIGINT is not how this host usually dies: main.js spawns it DETACHED so it

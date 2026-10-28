@@ -163,6 +163,8 @@ function killPidTree(pid, { run = spawnSync, fallback = (p) => process.kill(p, '
  * then taskkill /T while the handle is still held. Outcomes: 'killed', 'gone' (not running, or exited first),
  * 'mismatch' (the pid is another process), 'failed' (taskkill refused), 'unknown' (could not be judged: nothing done).
  */
+// The longest a proven kill may take (spawnSync's timeout). host/bounded-shutdown.js sizes the shutdown watchdog above it (PR #217 Dexter F3).
+const KILL_PROVEN_TIMEOUT_MS = 30000;
 const POWERSHELL = require('path').join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 function parseProvenKill(r) {
@@ -194,7 +196,7 @@ const validProof = (pid, start, tol = 0) => Number.isInteger(pid) && pid > 0 && 
 
 function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL, toleranceTicks = 0 } = {}) {
   if (!validProof(pid, start, toleranceTicks)) return 'unknown';
-  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: 30000 }));
+  return parseProvenKill(run(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: KILL_PROVEN_TIMEOUT_MS }));
 }
 
 /**
@@ -204,7 +206,7 @@ function killProven(pid, start, { run = spawnSync, powershell = POWERSHELL, tole
  * Returns Map<pid, outcome> in item order, outcomes as killProven's; a pid the script did not answer for (a cut-off or failed
  * run) is 'unknown'. Bad items are skipped. At most 200 items.
  */
-function killProvenBatch(items, { run = spawnSync, powershell = POWERSHELL, toleranceTicks = 0, timeoutMs = 30000 } = {}) {
+function killProvenBatch(items, { run = spawnSync, powershell = POWERSHELL, toleranceTicks = 0, timeoutMs = KILL_PROVEN_TIMEOUT_MS } = {}) {
   if (!Number.isSafeInteger(toleranceTicks) || toleranceTicks < 0) throw new Error('killProvenBatch: toleranceTicks must be a non-negative safe integer');
   const valid = (Array.isArray(items) ? items : []).filter((t) => t && validProof(t.pid, t.start, toleranceTicks) && BigInt(t.start) < 2n ** 62n).slice(0, 200);
   const out = new Map(valid.map((t) => [t.pid, 'unknown']));
@@ -253,10 +255,10 @@ const execFileAsync = (exe, args, opts) => new Promise((resolve) => {
 async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershell = POWERSHELL, toleranceTicks = 0 } = {}) {
   if (!validProof(pid, start, toleranceTicks)) return 'unknown';
   try {
-    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    const r = await runAsync(powershell, ['-NoProfile', '-NonInteractive', '-Command', provenScript(pid, start, toleranceTicks)], { encoding: 'utf8', windowsHide: true, timeout: KILL_PROVEN_TIMEOUT_MS });
     // A run that errored AFTER printing its answer (a timeout kill) still printed it; parseProvenKill reads stdout, and refuses a bare error.
     return parseProvenKill(r && r.stdout ? { stdout: r.stdout } : { error: (r && r.error) || new Error('no output') });
   } catch { return 'unknown'; }
 }
 
-module.exports = { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill };
+module.exports = { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill, KILL_PROVEN_TIMEOUT_MS };
