@@ -92,3 +92,15 @@ test('disarm kills the watchdog\'s whole tree by its pid, so a killProven alread
     assert.deepStrictEqual(killed, [disarm.pid]);
   } finally { guarded.kill(); }   // kill-ok(held-handle): the child this test spawned
 });
+
+test('disarm after the watchdog has already exited makes NO tree kill: its pid is no longer provably ours (PR #217 N2 follow-up)', async () => {
+  const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', windowsHide: true });
+  await new Promise((r) => gone.on('exit', r));   // the host it watches is already dead, so the watchdog leaves on its first tick
+  const killed = [];
+  const disarm = armWatchdog({ boundMs: 60000, pid: gone.pid, killTree: (p) => killed.push(p) });
+  const until = Date.now() + 8000;
+  while (disarm.running() && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(disarm.running(), false, 'the watchdog ended by itself');
+  disarm();
+  assert.deepStrictEqual(killed, []);
+});

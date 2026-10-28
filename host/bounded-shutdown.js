@@ -30,7 +30,11 @@ function armWatchdog({ boundMs = SHUTDOWN_BOUND_MS, logFile = null, pid = proces
   } catch { child = null; }
   // The watchdog's TREE, not just its node: at the deadline it may already have started a killProven PowerShell, which would
   // taskkill a host whose stop just finished (PR #217 round 2 N2). kill-ok(held-handle): the watchdog this call spawned.
-  const disarm = () => { if (child) { try { killTree(child.pid); } catch { /* already gone */ } try { child.kill(); } catch { /* already gone */ } } };
+  // Only while the handle says it is still running: once it has exited its pid is free for Windows to hand to a stranger, and
+  // nothing would prove the pid is still ours (the app stops only what it can prove is its own).
+  const running = () => !!child && child.exitCode === null && child.signalCode === null;
+  const disarm = () => { if (running()) { try { killTree(child.pid); } catch { /* already gone */ } try { child.kill(); } catch { /* already gone */ } } };
+  disarm.running = running;
   disarm.pid = child ? child.pid : null;
   return disarm;
 }
