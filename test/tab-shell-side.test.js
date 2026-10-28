@@ -70,7 +70,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
         h.spawns.push({ key: tab.key, port, token, side: tab.side === true, cwd: tab.cwd });
         h.running[port] = { cwd: tab.cwd, side: tab.side === true };
       },
-      wait: async () => { if (h.holdWait) await h.holdWait; return true; },
+      wait: async () => { if (h.holdWait) await h.holdWait; if (h.waitFails > 0) { h.waitFails--; return false; } return true; },
       tokenFor: tokenOf,
       tokenFile: tokenOf,
       newToken: () => `fresh-${++h.tokens}`,
@@ -523,8 +523,8 @@ const writerClaim = (name) => ({ ...readerClaim(name), agentId: 'wr-1', role: un
 const GIT_OK = { branch: 'feat/a', dirtyCount: 0, unpushedCount: 0, headInDevelop: true };
 const AT_REST = { working: false, needsInput: false, lock: 'held', turn: 'idle' };
 
-async function mergedHarness(claims) {
-  const h = await opened({ safety: { facts: async () => GIT_OK }, occupancy: { claims: () => claims, known: () => true } });
+async function mergedHarness(claims, extraSafety = {}) {
+  const h = await opened({ safety: { facts: async () => GIT_OK, ...extraSafety }, occupancy: { claims: () => claims, known: () => true } });
   h.markers[key('feat-a')] = 'feat/a';
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, AT_REST);
   h.clock += 11_000;
@@ -553,6 +553,101 @@ test('Ctrl+click close with a side session OPEN still closes silently, and ends 
   assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(h.confirms, []);
   assert.deepStrictEqual(h.controls.map(c => c.port).sort(), [7701, 7702]);
+});
+
+test('BACKLOG #132: a clean branch tab whose side tab holds an unsaved edit asks on Ctrl+click, naming the side file', async () => {
+  const h = await mergedHarness([], { readerUnsaved: (tab) => (tab.key === skey('feat-a') ? 'README.md' : null) });
+  await h.shell.openSide(key('feat-a'));
+  const r = await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.strictEqual(r.cancelled, true, 'the edit is not taken silently');
+  assert.strictEqual(h.confirms.length, 1);
+  assert.match(h.confirms[0].reason, /unsaved edits to README\.md/);
+  assert.ok(h.running[7702], 'the side host stays');
+});
+
+test('BACKLOG #132: both files are named when the branch tab and its side tab each hold an unsaved edit', async () => {
+  const h = await mergedHarness([], { readerUnsaved: (tab) => ({ [key('feat-a')]: 'a.js', [skey('feat-a')]: 'README.md' }[tab.key] || null) });
+  await h.shell.openSide(key('feat-a'));
+  await h.shell.closeTab(key('feat-a'), { ifSafe: true });
+  assert.match(h.confirms[0].reason, /unsaved edits to a\.js, README\.md/);
+});
+
+/** The side start's host wait times out, then the retry's does too: the record ends with `unconfirmed` set and `pending` null. */
+async function timeOutTwice(h) {
+  h.waitFails = 1;
+  await h.shell.openSide(key('feat-a'));
+  assert.ok(h.shell._tabs.get(skey('feat-a')).pending, 'first timeout leaves a pending host');
+  delete h.running[7702];                    // the host has not bound yet, so a retry walks to the same port
+  h.waitFails = 1;
+  await h.shell.select(skey('feat-a'));
+  await flush();
+  const rec = h.shell._tabs.get(skey('feat-a'));
+  assert.strictEqual(rec.pending, null);
+  assert.ok(rec.unconfirmed, 'second timeout leaves it unconfirmed');
+  return rec;
+}
+const stopMsgsTo = (h, port) => h.controls.filter(c => c.msg.type === 'stop' && c.port === port);
+
+test('Dexter F1 (PR #216): closing the BRANCH tab after two side-start timeouts stops the unconfirmed side host, by x and by Ctrl+click', async () => {
+  for (const ifSafe of [false, true]) {
+    const h = ifSafe ? await mergedHarness([]) : await opened();
+    const rec = await timeOutTwice(h);
+    h.confirm = !ifSafe;
+    await h.shell.closeTab(key('feat-a'), { ifSafe });
+    await flush();
+    assert.strictEqual(stopMsgsTo(h, 7702).length, 1, `ifSafe=${ifSafe}: one stop to the unconfirmed port`);
+    assert.strictEqual(stopMsgsTo(h, 7702)[0].token, rec.unconfirmed.token);
+  }
+});
+
+test('Dexter F1 (PR #216): the branch tab closing DURING the side\'s second wait, which then times out, still stops that host', async () => {
+  const h = await opened();
+  h.waitFails = 1;
+  await h.shell.openSide(key('feat-a'));
+  delete h.running[7702];
+  const pend = h.shell._tabs.get(skey('feat-a')).pending;
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  h.waitFails = 1;
+  const retry = h.shell.select(skey('feat-a'));
+  await flush();
+  await h.shell.closeTab(key('feat-a'));
+  release();
+  await retry;
+  await flush();
+  assert.strictEqual(stopMsgsTo(h, 7702).length, 1);
+  assert.strictEqual(stopMsgsTo(h, 7702)[0].token, pend.token);
+});
+
+test('Dexter F2 (PR #216): a third start on a new port closed mid-wait stops BOTH the new host and the earlier unconfirmed one', async () => {
+  const h = await opened();
+  const rec = await timeOutTwice(h);
+  const old = rec.unconfirmed;
+  h.running[7702] = dev(false);              // something else holds 7702 now, so the next walk lands on 7703
+  let release;
+  h.holdWait = new Promise(r => { release = r; });
+  h.waitFails = 1;
+  const third = h.shell.select(skey('feat-a'));
+  await flush();
+  const closing = h.shell.closeTab(skey('feat-a'));
+  await flush();
+  release();
+  await third;
+  await closing;
+  assert.strictEqual(stopMsgsTo(h, 7703).length, 1, 'the new host');
+  const earlier = stopMsgsTo(h, 7702);
+  assert.strictEqual(earlier.length, 1, 'the earlier unconfirmed host');
+  assert.strictEqual(earlier[0].token, old.token);
+});
+
+test('BACKLOG #133: a side start that timed out twice, then closed, sends the stop to the host it never confirmed', async () => {
+  const h = await opened();
+  const rec = await timeOutTwice(h);
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  const stops = h.controls.filter(c => c.msg.type === 'stop');
+  assert.deepStrictEqual(stops.map(c => c.port), [7702], 'one stop to the unconfirmed host');
+  assert.strictEqual(stops[0].token, rec.unconfirmed.token);
 });
 
 test('the strip\'s occupancy mark for the branch tab says "reading only" for a reader, with no two-writers warning', async () => {

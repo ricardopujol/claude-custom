@@ -1062,7 +1062,8 @@ async function confirmStopAll(file) {
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
   // to ask (#77), keeping what it was asked so the probe can read the reason back.
-  const unsaved = readerUnsaved.pathFor(tab.key);
+  // A branch tab's end takes its side tab with it (BACKLOG #132): that reader's unsaved file is named too.
+  const unsaved = readerUnsaved.pathsForClose(tab.key);
   if (PROBE_PORT) {
     probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason, unsaved });
     return reason === '';
