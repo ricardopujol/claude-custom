@@ -26,11 +26,15 @@ function surfacesFor(msg, { focused = false } = {}) {
   return {
     // An OS toast exists to reach you in ANOTHER app. With the window focused
     // there is nothing for it to do that the in-window cue is not already doing.
-    toast: focused ? null : {
+    //
+    // AND only for what needs you (BACKLOG #78, Ricardo 2026-10-29: "I should only get notifications when an action from me is needed"):
+    // a permission prompt, a question, a held cross-session message. A finished turn raises none; the in-window cue and the tab's
+    // "done" dot still say it. Every toast therefore waits to be clicked, and its click lands on the tab that raised it.
+    toast: focused || !urgent ? null : {
       title: (msg && msg.title) || 'claude-custom',
       body: (msg && msg.body) || '',
-      silent: !urgent,
-      requireInteraction: urgent,
+      silent: false,
+      requireInteraction: true,
     },
     // Flashing an already-focused window is a no-op on Windows, and reserving
     // the flash for urgency is what stops it becoming background noise.

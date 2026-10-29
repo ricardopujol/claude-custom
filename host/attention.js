@@ -6,7 +6,8 @@
  *
  *   Notification -> the session is BLOCKED waiting for input. Urgent: nothing
  *                   progresses until you answer.
- *   Stop         -> the turn finished. Worth knowing, not urgent.
+ *   Stop         -> the turn finished. Worth knowing, not urgent: the window and the tab say it, but no OS toast
+ *                   (app/attention-surface.js: toasts are only for what needs you, BACKLOG #78).
  *
  * Deliberately NOT SubagentStop: subagents stop constantly during one piece of
  * work, and notifying on those would fire dozens of times per task, which
