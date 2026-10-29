@@ -55,7 +55,7 @@ function makeWorld() {
         proveOwner: async (o) => (alive.has(o.pid) ? starts.get(o.pid) === o.start : false),
         script: (mode) => 'script:' + mode,
         makeExec: () => {
-          const e = (script) => { world.calls.push({ pid, script, at: clock }); n++; if (opts.failWith) return Promise.reject(new Error(opts.failWith)); return world.execDelay > 0 ? new Promise((r) => { world.setTimer(() => { if (!world.crashed.has(pid)) r(`doc-${pid}-${n}\nEND`); }, world.execDelay); }) : Promise.resolve(`doc-${pid}-${n}\nEND`); };
+          const e = (script) => { world.calls.push({ pid, script, at: clock, ownerPid: world.ownerPid() }); n++; if (opts.failWith) return Promise.reject(new Error(opts.failWith)); return world.execDelay > 0 ? new Promise((r) => { world.setTimer(() => { if (!world.crashed.has(pid)) r(`doc-${pid}-${n}\nEND`); }, world.execDelay); }) : Promise.resolve(`doc-${pid}-${n}\nEND`); };
           e.close = () => { e.closed = true; };
           return e;
         },
@@ -65,6 +65,8 @@ function makeWorld() {
       world.pollers.set(pid, p);
       return p;
     },
+    /** The pid owner.json names right now (null: absent or unreadable). */
+    ownerPid() { try { return JSON.parse(fs.readFileSync(path.join(dir, 'owner.json'), 'utf8')).pid; } catch { return null; } },
     crash(pid) { alive.delete(pid); world.crashed.add(pid); },
     cleanup() { fs.rmSync(dir, { recursive: true, force: true }); },
   };
@@ -474,6 +476,70 @@ test('a want file named for pid 0 or a pid beyond the integer range is not a wan
   assert.ok(callsOf(w, 100).length <= 2, `chip cadence only (got ${callsOf(w, 100).length})`);
 }));
 
+test('a deposed owner whose sample is still running finishes it but neither publishes it nor starts another (BACKLOG #126)', () => withWorld(async (w) => {
+  w.execDelay = 15000;
+  const a = w.make(1001);
+  a.setLevel('panel');
+  await a.start();
+  await w.advance(10000);
+  assert.strictEqual(callsOf(w, 1001).length, 1, '1001 is mid-sample');
+  // A foreign process takes the folder and dies; the dead record forces 1002 to claim at once. (pid 5001 is that process.)
+  w.alive.add(5001); w.starts.set(5001, 'F5001');
+  fs.writeFileSync(path.join(w.dir, 'owner.json'), JSON.stringify({ pid: 5001, start: 'F5001', since: w.now(), beat: w.now() }));
+  w.alive.delete(5001);
+  const b = w.make(1002);
+  b.setLevel('panel');
+  await b.start();
+  await w.advance(100);
+  assert.strictEqual(callsOf(w, 1002).length, 1, '1002 samples at once');
+  await w.advance(30000);
+  assert.strictEqual(callsOf(w, 1001).length, 1, '1001 started no second sample after it was deposed');
+  assert.ok(w.calls.every(c => c.ownerPid === c.pid), 'every sample started while owner.json named its own process');
+  const head = JSON.parse(fs.readFileSync(path.join(w.dir, 'sample.json'), 'utf8').split('\n')[0]);
+  assert.strictEqual(head.ownerPid, 1002, '1001 late sample did not overwrite 1002');
+  assert.strictEqual(a.role(), 'follower');
+  assert.strictEqual(b.role(), 'owner');
+}));
+
+test('a deposed owner whose sample ends BEFORE its next control tick publishes nothing over its successor (BACKLOG #126)', () => withWorld(async (w) => {
+  w.execDelay = 11000;
+  const a = w.make(1001);
+  a.setLevel('panel');
+  await a.start();
+  await w.advance(10001);                  // 1001's last tick was at 10000; the next is 12000; its sample ends at 11000
+  w.alive.add(5001); w.starts.set(5001, 'F5001');
+  fs.writeFileSync(path.join(w.dir, 'owner.json'), JSON.stringify({ pid: 5001, start: 'F5001', since: w.now(), beat: w.now() }));
+  w.alive.delete(5001);
+  const b = w.make(1002);
+  b.setLevel('panel');
+  await b.start();
+  assert.strictEqual(w.ownerPid(), 1002);
+  await w.advance(1500);                   // 1001's sample has ended (t=11000); 1002's has not (ends at 21001)
+  assert.strictEqual(fs.existsSync(path.join(w.dir, 'sample.json')), false, 'nothing was published: 1001 is deposed and 1002 is still sampling');
+}));
+
+test('an owner.json that cannot be read is doubt, not "no owner": a live owner with a fresh beat is not taken from, a stale one is (BACKLOG #126)', () => withWorld(async (w) => {
+  const a = w.make(1001);
+  a.setLevel('chip');
+  await a.start();
+  assert.strictEqual(a.role(), 'owner');
+  const file = path.join(w.dir, 'owner.json');
+  fs.writeFileSync(file, '{ unreadable');                      // what two failed reads look like to a reader: no record it can parse
+  const stamp = (ms) => { const s = ms / 1000; fs.utimesSync(file, s, s); };
+  stamp(w.now());
+  const b = w.make(1002);
+  b.setLevel('chip');
+  await b.start();
+  await w.advance(SP.CONTROL_MS * 3);
+  assert.strictEqual(b.role(), 'follower', 'B does not claim over a live A on a record it cannot read');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), '{ unreadable', 'and does not write over it');
+  assert.strictEqual(a.role(), 'owner', 'A does not drop its own ownership on a read that failed');
+  stamp(w.now() - policy.STALE_BEAT_MS - 1000);               // left unreadable past the stale age: nobody is renewing it
+  await w.advance(SP.CONTROL_MS * 2);
+  assert.ok([1001, 1002].includes(w.ownerPid()), 'a record that stays unreadable past the stale age is claimed again');
+  assert.strictEqual([a, b].filter(p => p.role() === 'owner').length, 1, 'by exactly one of them');
+}));
+
 test('property: any sequence of starts, stops, crashes and time leaves at most one owner, and exactly one once settled', async () => {
   const ops = fc.array(fc.oneof(
     fc.record({ op: fc.constant('start'), who: fc.integer({ min: 0, max: 3 }), level: fc.constantFrom('hidden', 'chip', 'panel') }),
@@ -496,6 +562,7 @@ test('property: any sequence of starts, stops, crashes and time leaves at most o
       const lastSeq = { v: 0 };
       let lastKey = null;
       let crashedAtLastCheck = new Set();
+      let callsChecked = 0;
       let foreign = 5000;
       let foreignPid = null;               // a live process that is not one of ours and holds owner.json: it is respected
       const checkWriter = () => {
@@ -545,7 +612,10 @@ test('property: any sequence of starts, stops, crashes and time leaves at most o
         } else {
           await w.advance(s.ms);
         }
-        assert.ok(owners().length <= 1, `two owners at once: ${owners()}`);
+        // What the processes DO, not what role() believes between ticks: a sample may only START while owner.json names its
+        // own process (a deposed owner's one in-flight sample may still finish, but it starts no other), and seq never goes back.
+        for (const c of w.calls.slice(callsChecked)) assert.strictEqual(c.ownerPid, c.pid, `${c.pid} started a sample while owner.json named ${c.ownerPid}`);
+        callsChecked = w.calls.length;
         checkSeq();
         checkWriter();
         crashedAtLastCheck = new Set(w.crashed);
@@ -561,7 +631,15 @@ test('property: any sequence of starts, stops, crashes and time leaves at most o
       for (const p of w.pollers.values()) { try { p.stop(); } catch { /* ignore */ } }
       w.cleanup();
     }
-  }), { numRuns: 100 });
+  }), {
+    numRuns: 100,
+    examples: [[[   // fast-check's 2026-10-28 counterexamples, kept as fixed cases
+      { op: 'start', who: 0, level: 'hidden' }, { op: 'depose' }, { op: 'undepose' }, { op: 'start', who: 1, level: 'hidden' },
+    ]], [[
+      { op: 'start', who: 0, level: 'panel' }, { op: 'slow', ms: 15000 }, { op: 'wait', ms: 10000 }, { op: 'depose' }, { op: 'undepose' },
+      { op: 'start', who: 1, level: 'panel' }, { op: 'wait', ms: 100 },
+    ]]],
+  });
 });
 
 test('defaultDir: a probe\'s UI-state folder wins; otherwise a versioned folder under the user\'s local app data', () => {
