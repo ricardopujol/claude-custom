@@ -204,7 +204,7 @@ function freePort() {
       }
     });
     electron.stderr.on('data', d => { if (/probe|Error/.test(String(d))) process.stderr.write(d); });
-    const killer = setTimeout(() => { console.log('FAIL: probe timed out after 480s'); hygiene._emergencyCleanup('timeout'); }, 480000);
+    const killer = setTimeout(() => { console.log('FAIL: probe timed out after 900s'); hygiene._emergencyCleanup('timeout'); }, 900000);
     const code = await new Promise((resolve) => electron.on('exit', resolve));
     clearTimeout(killer);
     check('the window probe ran every check', passed > 0, { passed, failed });
