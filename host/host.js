@@ -646,9 +646,14 @@ const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
 });
 // `detail` is the card's finer state (BACKLOG #55: reading, waiting, stuck ...); its portrait falls back to the
 // nearest of the four (host/portraits.js NEAREST_STATE). `state` stays what every older consumer reads.
+// BACKLOG #155: a card waiting on background work (bgwait / bgwaitlate) has no picture of its own: it wears its base state's, and carries
+// `wait` ({ on, since }) for the "on: ... · N min" line.
+const BG_WAIT_DETAILS = new Set(['bgwait', 'bgwaitlate']);
 const describe = (agent, state, detail) => {
   const d = detail || state;
-  return { agent, state, detail: d, portrait: portraitOf(agent, d, state) };
+  const out = { agent, state, detail: d, portrait: portraitOf(agent, BG_WAIT_DETAILS.has(d) ? state : d, state) };
+  if (BG_WAIT_DETAILS.has(d)) out.wait = mood.waitOf(agent);
+  return out;
 };
 
 // Generated once per project folder and reused by every context window on it.

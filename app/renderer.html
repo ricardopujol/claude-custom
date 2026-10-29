@@ -1380,6 +1380,8 @@
     /* BACKLOG #80 / #55: speech bubbles. A joke over the card, never a status: italic, in quotes, clicks pass through. */
     #bubbles-toggle { cursor: pointer; }
     #bubbles-toggle.off { opacity: .45; }
+    #cue-sound-toggle { cursor: pointer; }
+    #cue-sound-toggle.off { opacity: .45; }
     .agent-bubble {
       position: absolute; bottom: 4px; right: 8px; z-index: 5; max-width: 72%; pointer-events: none;
       padding: 2px 9px; border-radius: 11px; font-size: 11px; font-style: italic; line-height: 1.35;
@@ -2022,6 +2024,12 @@
     .agent[data-detail="stuck"] .state { color: var(--bad); }
     .agent[data-detail="stuck"] .state-badge { border-color: var(--bad); }
     .agent[data-detail="helper"] .state { color: var(--accent); }
+    /* BACKLOG #155: waiting on background work it launched: amber, red from 30 minutes (the host's bgwaitlate) */
+    .agent[data-detail="bgwait"] .state { color: var(--warn); }
+    .agent[data-detail="bgwait"] .state-badge { border-color: var(--warn); }
+    .agent[data-detail="bgwaitlate"] .state, .agent[data-detail="bgwaitlate"] .wait-note[data-late="true"] { color: var(--bad); }
+    .agent[data-detail="bgwaitlate"] .state-badge { border-color: var(--bad); }
+    .agent .wait-note { font-size: 11px; color: var(--warn); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     @keyframes badge-pulse { 50% { box-shadow: 0 0 0 3px rgba(230,195,74,.35); } }
     @media (prefers-reduced-motion: reduce) { .agent[data-detail="waiting"] .state-badge { animation: none; } }
 
@@ -2509,6 +2517,7 @@
             <button type="button" id="roster-search-btn" aria-pressed="false" aria-label="Search the agents in this tab" title="Search the agents in this tab">🔍</button>
             <button type="button" id="images-toggle" aria-label="Show agent images" title="Agent images: reading the setting">🖼</button>
             <button type="button" id="bubbles-toggle" aria-label="Speech bubbles" title="Speech bubbles: reading the setting">💬</button>
+            <button type="button" id="cue-sound-toggle" aria-label="Knock for a held message" aria-pressed="true" title="A held message from another session knocks once. Click to mute.">🔔</button>
           </nav>
           <div id="roster-search-row" hidden>
             <input type="search" id="roster-search" autocomplete="off" spellcheck="false"
@@ -2713,6 +2722,7 @@
   <script src="./agent-card-display.js"></script>
   <script src="./agent-pause-display.js"></script>
   <script src="./agent-state-display.js"></script>
+  <script src="./peer-cue.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
   <script src="./fonts-display.js"></script>

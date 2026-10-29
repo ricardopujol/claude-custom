@@ -167,6 +167,8 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 // health. tab-status.js decides; this only sends it when it changed.
 // What waits for a look (#31): an urgent need, a finished turn. tab-status.js decides the transitions.
 let tabPending = { urgent: false, finished: false };
+// BACKLOG #156: cross-session messages held for approval here and not yet looked at (the tab's envelope count).
+let peerCount = 0;
 // The host's measure of the MAIN session from the CLI's hooks (host/turn-state.js): 'idle' | 'turn' |
 // 'prompt', or null -- not said yet, an older host, or the socket is down. Unknown is not idle (PR #93 F1/F2).
 let sessionTurn = null;
@@ -203,6 +205,7 @@ function reportTabStatus() {
     mainMood: anyWorking ? 'working' : null,
     pendingUrgent: tabPending.urgent,
     pendingFinished: tabPending.finished,
+    pendingMessages: peerCount,
     lock: tabLock,
     health: tabHealth,
     turn: sessionTurn,
@@ -216,6 +219,91 @@ function reportTabStatus() {
   lastReportedTabStatus = status;
   window.harness.tabStatus(status);
 }
+// Raises one attention message on every surface (toast, taskbar flash, the in-window cue). Used for every kind but a held message's first
+// look, which waits a moment to name its sender (peerMessageArrived).
+function raiseAttention(msg) {
+  // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
+  // skipped the toast whenever the window had focus, which silenced the one
+  // case the feature was built for: watching the terminal while a long task
+  // runs and wanting to be told when it ends.
+  const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
+  // An urgent message waits for you until this tab is looked at; so does a finished one, which
+  // also answers an urgent one still pending (#31). Anything else marks nothing.
+  if (msg.urgent === true) { pend('urgent'); reportTabStatus(); }
+  else if (msg.urgent === false) { pend('finished'); reportTabStatus(); }
+
+  if (window.harness && window.harness.attention) {
+    // Preferred path: main raises it, so it needs no page permission and can
+    // flash the taskbar and focus the window on click.
+    window.harness.attention(surfaces);
+  } else if (surfaces.toast) {
+    try {
+      const n = new Notification(surfaces.toast.title, {
+        body: surfaces.toast.body,
+        requireInteraction: surfaces.toast.requireInteraction,
+        silent: surfaces.toast.silent,
+      });
+      n.onclick = () => window.focus();
+    } catch (e) {
+      console.warn('[renderer] notification failed:', e.message);
+    }
+  }
+
+  if (surfaces.cue) flashAttention(msg);
+}
+
+// BACKLOG #156: a cross-session message is held for approval in this tab (host/attention.js read it off the CLI's own hook). A beat
+// later, once the CLI has drawn its dialog, the page reads the dialog to NAME it (sender, first line). A dialog it has already counted
+// (the CLI notified it again) is ignored; a new one goes on the tab's count, knocks once unless you are looking at this tab, and raises
+// the toast. Nothing here answers the message.
+const PEER_TOAST_DELAY_MS = 350;
+const peerHeld = window.peerCue.createHeldSet();
+const peerStorage = () => { try { return localStorage; } catch { return null; } };
+function visibleTerminalLines() {
+  const buf = term.buffer.active;
+  const out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const line = buf.getLine(buf.viewportY + y);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
+}
+// Selected tab in a focused window: only the shell knows both (PR #224, Dexter 4). A page with no shell asks its own focus.
+async function peerLooking() {
+  try {
+    if (window.harness && window.harness.isLooked) return (await window.harness.isLooked()) === true;
+  } catch { /* no shell to ask: fall back */ }
+  return document.hasFocus();
+}
+async function peerMessageArrived(msg) {
+  await new Promise(resolve => setTimeout(resolve, PEER_TOAST_DELAY_MS));
+  let found = null;
+  try { found = window.peerCue.scanHeldMessage(visibleTerminalLines()); } catch { found = null; }
+  if (!peerHeld.admit(found)) return;
+  const looking = await peerLooking();
+  if (!looking) { peerCount = window.peerCue.bumpCount(peerCount); reportTabStatus(); }
+  if (window.peerCue.shouldKnockFrom(peerStorage(), looking)) window.peerCue.knock(window);
+  raiseAttention({ ...msg, ...window.peerCue.toastFor(msg.project, found) });
+}
+function paintPeerMute() {
+  const btn = document.getElementById('cue-sound-toggle');
+  if (!btn) return;
+  const muted = window.peerCue.readMuted(peerStorage());       // read now: another tab's click changes the store under this page
+  btn.classList.toggle('off', muted);
+  btn.setAttribute('aria-pressed', String(!muted));
+  btn.title = muted ? 'The knock for a held message is muted. Click to turn it on.' : 'A held message from another session knocks once. Click to mute.';
+}
+document.addEventListener('DOMContentLoaded', () => {
+  paintPeerMute();
+  const btn = document.getElementById('cue-sound-toggle');
+  if (btn) btn.addEventListener('click', () => {
+    window.peerCue.writeMuted(peerStorage(), !window.peerCue.readMuted(peerStorage()));
+    paintPeerMute();
+  });
+});
+// ...and a switch flipped in another tab repaints this one's bell (the knock itself already reads the store at the moment it decides).
+window.addEventListener('storage', (e) => { if (e.key === null || e.key === window.peerCue.MUTE_KEY) paintPeerMute(); });
+
 // A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
 // of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
 function applyProgramStatus(rootRecord, how) {
@@ -232,7 +320,7 @@ function applyProgramStatus(rootRecord, how) {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); summaryOpenIfIdle(); });
+  window.harness.onTabSelected(() => { pend('looked'); peerCount = 0; peerHeld.clear(); reportTabStatus(); summaryOpenIfIdle(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -1427,6 +1515,7 @@ function mapInput() {
       tool: mapRates ? mapOwn(mapRates.tools, r.agent) : undefined,
       since: mapSince.has(r.agent) ? mapSince.get(r.agent) : null,
       worktree: claim ? claim.worktree : null,
+      wait: r.wait || null,
     });
   }
   return {
@@ -6099,6 +6188,7 @@ function renderRoster() {
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
       `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
       agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
@@ -6108,6 +6198,11 @@ function renderRoster() {
     `</div>`;
   }).join(''));
 }
+
+// BACKLOG #155: a waiting card counts minutes, and the host only speaks when the detail changes: repaint the roster twice a minute while one waits.
+setInterval(() => {
+  for (const r of roster.values()) if (r.detail === 'bgwait' || r.detail === 'bgwaitlate') { renderRoster(); return; }
+}, 30_000);
 
 function renderRosterIndex(rosterIndex) {
   if (!rosterIndex) return;
@@ -9439,34 +9534,8 @@ function handleControl(msg) {
   }
   if (msg.type === 'attention') {
     gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
-    // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
-    // skipped the toast whenever the window had focus, which silenced the one
-    // case the feature was built for: watching the terminal while a long task
-    // runs and wanting to be told when it ends.
-    const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
-    // An urgent message waits for you until this tab is looked at; so does a finished one, which
-    // also answers an urgent one still pending (#31). Anything else marks nothing.
-    if (msg.urgent === true) { pend('urgent'); reportTabStatus(); }
-    else if (msg.urgent === false) { pend('finished'); reportTabStatus(); }
-
-    if (window.harness && window.harness.attention) {
-      // Preferred path: main raises it, so it needs no page permission and can
-      // flash the taskbar and focus the window on click.
-      window.harness.attention(surfaces);
-    } else if (surfaces.toast) {
-      try {
-        const n = new Notification(surfaces.toast.title, {
-          body: surfaces.toast.body,
-          requireInteraction: surfaces.toast.requireInteraction,
-          silent: surfaces.toast.silent,
-        });
-        n.onclick = () => window.focus();
-      } catch (e) {
-        console.warn('[renderer] notification failed:', e.message);
-      }
-    }
-
-    if (surfaces.cue) flashAttention(msg);
+    if (msg.kind === 'peer-message') peerMessageArrived(msg).catch((err) => console.warn('[renderer] held-message cue failed:', err && err.message));
+    else raiseAttention(msg);
     return;
   }
   if (msg.type === 'milestone') {
