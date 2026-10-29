@@ -98,7 +98,8 @@ const { createModServer } = require('./mod-feed');
 const { createContextSource } = require('./context-source');
 const { modEnabled, modPluginDirFor, modOffReason, readCliVersion } = require('./cc-mod-settings');
 const { createModRecordHandler } = require('./mod-records');
-const { planDrop, grantWrites, quote, MAX_DROP_FILES } = require('./drop');
+const { planDrop, MAX_DROP_FILES } = require('./drop');
+const { runDrop, createInputGate, KEY_GAP_MS: GRANT_KEY_GAP_MS } = require('./grant-sequence');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
@@ -903,27 +904,26 @@ function checkQuotaWarning(quota) {
 // whole host rather than one per gesture, and it makes the interleaving
 // impossible. The remaining risk is a slow TUI, which is recorded rather than
 // pretended away.
-const PTY_LINE_GAP_MS = 350;
-const PTY_KEY_GAP_MS = 80;                   // between the Ctrl-U keys and the Enter of a grant: each must be its own write (#136)
-const ptyQueue = [];
-let ptyDraining = false;
-
-function enqueuePty(text, gap = PTY_LINE_GAP_MS) {
-  ptyQueue.push({ text, gap });
-  if (ptyDraining) return;
-  ptyDraining = true;
-  const step = () => {
-    const item = ptyQueue.shift();
-    if (item === undefined) { ptyDraining = false; return; }
-    // A window the session lock blocked has no pty yet: nothing to type into.
-    if (!term) { console.log('[host] no session yet; dropped a queued pty line'); setTimeout(step, 0); return; }
-    try { writeInput(item.text); } catch (err) {
-      console.log('[host] pty write failed:', err && err.message);
-    }
-    setTimeout(step, item.gap);
-  };
-  step();
-}
+//
+// SINCE #136 (PR #223) the pty side is host/grant-sequence.js: read-back gated, one key per write, one drop at a time
+// (dropChain), and the person's own `input` frames held while a grant is typed (inputGate).
+const ptyWrite = (d) => {
+  if (!term) { console.log('[host] no session yet; dropped a pty write'); return; }
+  try { writeInput(d); } catch (err) { console.log('[host] pty write failed:', err && err.message); }
+};
+const inputGate = createInputGate({ write: ptyWrite });
+let dropChain = Promise.resolve();
+const grantEnv = () => ({
+  lines: () => termState.lines(),
+  // resolves once everything received so far is parsed; a 2 s cap so a callback that never comes cannot hang a drop
+  sync: () => new Promise((resolve) => { const t = setTimeout(resolve, 2000); termState.write('', () => { clearTimeout(t); resolve(); }); }),
+  termRows: () => termState.size().rows,
+  write: ptyWrite,
+  sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+  keyGap: GRANT_KEY_GAP_MS,
+  exclusive: (fn) => inputGate.exclusive(fn),
+  log: (line) => console.log(line),
+});
 
 function handleDrop(msg, ws) {
   const entries = Array.isArray(msg.entries) ? msg.entries : [];
@@ -962,50 +962,27 @@ function handleDrop(msg, ws) {
 
   for (const r of plan.refused) console.log('[host] drop refused  :', r.dir, '-', r.why);
 
-  // A SINGLE SERIALISED QUEUE, not a setTimeout chain per drop. Two drops
-  // 100ms apart used to interleave -- drop B's grant landing between drop A's
-  // grant and A's path text -- which is exactly the race the delay was meant to
-  // prevent. One writer, one line at a time, in order.
-  const granted = [];
-  for (const dir of plan.dirsToAdd) {
-    // QUOTED. `/add-dir C:\Users\ricar\Documents Backup` unquoted grants
-    // `...\Documents` -- a strict superset of what was dragged, on a path shape
-    // that is entirely ordinary on Windows. The module already had `quote()`
-    // for the prompt text and the grant path never called it. Dexter, 2026-09-17.
-    //
-    // LINE-CLEARED FIRST (Ctrl+U). Typed blind onto a prompt the user has
-    // already started, `/add-dir ...` does not begin with `/` any more -- so the
-    // CR submits their half-written message to the model and grants nothing.
-    // One write per key and per command (host/drop.js grantWrites, #136): a wrapped draft needs a Ctrl-U per row, and a
-    // key sharing a write with text, or an Enter trailing it, is not reliably taken as one.
-    // The Enter keeps the long gap: the next line must wait for the TUI to act on it.
-    const writes = grantWrites(dir, termState.lines());
-    writes.forEach((w, i) => enqueuePty(w, i === writes.length - 1 ? PTY_LINE_GAP_MS : PTY_KEY_GAP_MS));
-    granted.push(dir);
-  }
-  if (plan.text) enqueuePty(plan.text);
-
-  // Recorded only for what we actually tried to write, and described as
-  // REQUESTED rather than granted: nothing here can confirm the CLI accepted
-  // the command, and telling the user their read scope widened when it did not
-  // corrodes trust exactly as fast as the reverse.
-  for (const dir of granted) {
-    grantedDirs.push(dir);
-    console.log('[host] drop requests :', dir);
-  }
-
+  // ONE DROP AT A TIME (dropChain): two drops 100ms apart used to interleave, drop B's grant landing between drop A's grant and
+  // A's path text. Each grant is QUOTED (an unquoted `/add-dir C:\Users\ricar\Documents Backup` grants `...\Documents`, a strict
+  // superset of what was dragged: Dexter, 2026-09-17), typed on a CLEARED prompt and pressed with Enter only after the screen reads
+  // back as exactly that line (host/grant-sequence.js). A folder is recorded as requested only once ITS Enter went out, described as
+  // REQUESTED rather than granted: nothing here can confirm the CLI accepted it, and saying the read scope widened when it did not
+  // corrodes trust as fast as the reverse. BROADCAST, not sent to one socket: two windows can be attached to one host.
   const note = {
-    requested: granted,
+    requested: [],
     refused: plan.refused,
     truncated: plan.truncated + Math.max(0, entries.length - capped.length),
     unusable: plan.unusable,
   };
-  if (granted.length || plan.refused.length || note.truncated || note.unusable) {
-    // BROADCAST, not sent to one socket. Two windows can be attached to one
-    // host; the other one's user watches the session's read scope widen with no
-    // notice at all.
-    broadcastControl({ type: 'dropped', note });
-  }
+  if (plan.refused.length || note.truncated || note.unusable) broadcastControl({ type: 'dropped', note });
+  const tell = (extra) => broadcastControl({ type: 'dropped', note: { requested: [], refused: [], truncated: 0, unusable: 0, ...extra } });
+  dropChain = dropChain.then(() => runDrop({
+    dirs: plan.dirsToAdd.filter(d => !grantedDirs.includes(d)),
+    text: plan.text,
+    env: grantEnv(),
+    onGranted: (dir) => { grantedDirs.push(dir); console.log('[host] drop requests :', dir); tell({ requested: [dir] }); },
+    onFailed: (dir, why) => tell({ refused: [{ dir, why }] }),
+  })).catch((err) => console.log('[host] drop failed:', err && err.message));
   void ws;
 }
 
@@ -2814,7 +2791,7 @@ wss.on('connection', (ws, req) => {
       // node-pty's deferred write queue and can throw OUTSIDE this function's
       // caller's try/catch if the pty is not yet ready -- an uncaught
       // exception that kills the host and the session with it.
-      if (typeof msg.data === 'string' && term) writeInput(msg.data);
+      if (typeof msg.data === 'string' && term) inputGate.input(msg.data);
       return;
     }
     if (msg.type === 'layout-override') {
