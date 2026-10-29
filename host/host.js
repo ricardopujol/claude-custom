@@ -102,6 +102,8 @@ const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
+const { createChatFeed } = require('./chat-feed');
+const { readTranscript } = require('./chat-transcript');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
 const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, NIGHT_BUDGET_MS } = require('./kill-switch');
 const { writeFileAtomic } = require('./atomic-write');
@@ -623,6 +625,18 @@ attention.on('attention', e => broadcastControl({ type: 'attention', ...e }));
 const turnState = createTurnState();
 // Backlog #49: the main session's latest prompt, for the terminal bar. A reconnecting window gets it in `hello`.
 const promptKeeper = createPromptKeeper();
+// BACKLOG #157: the chat view's conversation (prompts and Claude's replies, never a tool line), from the same hooks. A window gets it in `hello`
+// and on every change; the transcript is read once, for a resumed session's earlier messages, and only as a fallback (host/chat-transcript.js).
+const chatFeed = createChatFeed();
+function noteChat(ev) {
+  if (chatFeed.handle(ev)) broadcastControl({ type: 'chat', chat: chatFeed.snapshot() });
+  if (ev.event !== 'SessionStart') return;
+  const file = chatFeed.pendingHistory();
+  if (file === null) return;
+  readTranscript(file)
+    .then((history) => { if (chatFeed.seedHistory(history)) broadcastControl({ type: 'chat', chat: chatFeed.snapshot() }); })
+    .catch(() => { /* the history is a fallback: the chat just starts from here */ });
+}
 
 // Provider is fixed at spawn: the pty environment cannot change under a running
 // process, so switching backend means a new session rather than a hot swap.
@@ -1563,6 +1577,7 @@ if (helperExists) {
     mapFeed.note(ev);        // the Map panel's event rates (BACKLOG #120): counted for every event, before any early return below
     // The terminal bar (#49 + #52) sees every event too: the main session's own Read keeps a night awake.
     if (promptKeeper.handle(ev)) broadcastControl({ type: 'prompt', prompt: promptKeeper.snapshot() });
+    noteChat(ev);
     night.handle(ev);
     // The Schedules panel (#119 A7) sees every event too: a wake is a UserPromptSubmit, a session's end clears its wakeups.
     schedulesControl.event(ev);
@@ -2567,6 +2582,7 @@ wss.on('connection', (ws, req) => {
     turn: turnState.snapshot(),
     // The terminal bar: the latest main-session prompt (null: none yet) and the bedtime night (null: no night).
     prompt: promptKeeper.snapshot(),
+    chat: chatFeed.snapshot(),
     bedtime: night.payload(),
     // The kill switch's stop (host/kill-switch.js createStopper: kind, sentinel, text), null while it has not stopped this host.
     killSwitch: killStop.state(),
