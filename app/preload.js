@@ -293,6 +293,11 @@ contextBridge.exposeInMainWorld('harness', {
       (_e, msg) => {
         try { fn(msg); } catch (err) { console.error('[preload] canvas:message listener threw', err); }
       }), () => ipcRenderer.removeAllListeners('canvas:message')),
+    // a press inside the panel's native view (which never reaches this page's document)
+    onPressed: (fn) => (ipcRenderer.removeAllListeners('canvas:pressed'), ipcRenderer.on('canvas:pressed',
+      () => {
+        try { fn(); } catch (err) { console.error('[preload] canvas:pressed listener threw', err); }
+      }), () => ipcRenderer.removeAllListeners('canvas:pressed')),
   },
   // The Preview panel and the Dev servers chip (BACKLOG #119 A4). The dev server's page is a native view of its own that main lays over the
   // dock panel's body (app/preview-views.js); THIS page is its trusted controller. `show` takes { target?: { port } | { typed }, rect, covered }

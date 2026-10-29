@@ -2011,6 +2011,8 @@ function canvasSendToSession(text) {
 
 if (canvasBridge && canvasRoot) {
   canvasBridge.onMessage((msg) => { if (msg && msg.kind === 'send') canvasSendToSession(msg.text); });
+  // A press inside Claude's panel is a press outside an open rail popover; its native view never sends this page a pointerdown (#138).
+  canvasBridge.onPressed(() => { if (peek) { railEvent({ type: 'outside' }); renderLayout({ refit: false }); } });
   // The page asked for a host it has not been given: the question covers the panel until it is answered.
   canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });
   canvasRoot.addEventListener('click', (e) => {
@@ -2399,13 +2401,13 @@ function togglePin(id, { justThisTab = false } = {}) {
 }
 
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
-// panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
+// panel is docked, an unpinned one opens from the rail and stays open until closed, a docked one is selected (PR #168 Miguel Y3).
 function revealModule(id) {
   usageGesture();
   const l = placementLayout();
   if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
   else if ((l.rail || []).includes(id)) {
-    if (!(railSt.module === id && railSt.held)) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
+    if (railSt.module !== id) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
   } else selectModule(id);
 }
 
@@ -3239,14 +3241,10 @@ document.addEventListener('focusout', (e) => {
 document.addEventListener('pointerdown', (e) => {
   if (!peek) return;
   const inside = e.target.closest && e.target.closest('.dpeek');
-  if (inside) { railEvent({ type: 'hold' }); return; }        // using the panel holds it open, like a click on its tab, PR #168 Miguel Y2
-  if (e.target.closest && e.target.closest('.drail')) return;
+  if (inside) return;
+  if (e.target.closest && e.target.closest('.drail button[data-module]')) return;      // a press on an icon is the icon's own click; the rail's empty strip is outside, #138
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
-});
-// ...and so does the keyboard being in it (kept: a panel in use stays held whatever opened it).
-document.addEventListener('focusin', (e) => {
-  if (peek && e.target.closest && e.target.closest('.dpeek')) railEvent({ type: 'hold' });
 });
 
 // Double-clicking the empty part of a group's tab bar unpins the group: every tab goes to the rail (a double-click on a tab is
@@ -3693,15 +3691,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: a.byKey === true ? 0 : 1 }));
         return JSON.stringify({ ok: true });
       }
-      // #85 (verify/probe-dock-autohide.js): the pointer moved onto a dock-rail tab (`module`), onto the open panel (`on: 'panel'`) or
-      // onto the terminal (`on: 'terminal'`), as pointerover events a mouse makes; and the Pin / Pinned button pressed.
-      case 'hover': {
-        const el = a.module ? document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.module))}"]`)
-          : a.on === 'panel' ? document.querySelector('.dpeek') : document.getElementById('termwrap');
-        if (!el) return JSON.stringify({ ok: false, error: 'nothing to hover' });
-        el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
-        return JSON.stringify({ ok: true });
+      // Whether the page reports the (real) pointer over a dock-rail icon, so a probe's "hovering opened nothing" has a positive control.
+      case 'isHovered': {
+        const b = document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.id))}"]`);
+        return JSON.stringify({ ok: !!b, hovered: !!b && b.matches(':hover') });
       }
+      // The Pin / Pinned button pressed (`on: 'panel'` for the open popover's, else the docked group's for `module`).
       case 'pinClick': {
         const b = a.on === 'panel' ? document.querySelector('.dpeek .dpin') : document.querySelector(`.dgroup .dpin[data-pin="${CSS.escape(String(a.module))}"]`);
         if (!b) return JSON.stringify({ ok: false, error: 'no Pin button' });

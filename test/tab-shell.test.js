@@ -2471,9 +2471,10 @@ test('the probe may drive the collapse, popover, keyboard and settle actions, by
   for (const a of ['collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
-test('the probe may hover the dock rail and press the Pin button, by name only (#85)', () => {
+test('the probe may press the Pin button, by name only (#85); the dead dock-rail hover action is gone (#138)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['hover', 'pinClick', 'menuCheck', 'railScroll']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  for (const a of ['pinClick', 'isHovered', 'menuCheck', 'railScroll']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  assert.ok(!VIEW_PROBE_ACTIONS.has('hover'));
 });
 
 test('the probe may read and operate the wand, by name only (#51)', () => {

@@ -268,6 +268,22 @@ async function main() {
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-docked.png') });
   void tabView;
 
+  // 2b: side tabs open on click only and close on a press outside (#138): a press INSIDE Claude's panel, a native view that never
+  // sends the page a pointerdown, closes an open rail popover (main tells the tab's page; app/canvas-views.js onPress).
+  await view(app, 'select', { id: 'git' });
+  await view(app, 'pinClick', { module: 'git' });
+  await view(app, 'railClick', { id: 'git' });
+  const popUp = await waitFor(async () => { const v = await view(app, 'state'); return v.popover ? v : null; }, 5000, 100);
+  check('2b: with git unpinned to the rail, a click on its icon opens its popover', !!popUp && popUp.popover.module === 'git', JSON.stringify(popUp && popUp.railState));
+  await command(app, { cmd: 'canvas', action: 'click', x: 20, y: 20 });
+  const popGone = await waitFor(async () => { const v = await view(app, 'state'); return v.popover === null ? v : null; }, 5000, 100);
+  check('2b: ...and a real press inside Claude\'s panel closes it', !!popGone && popGone.railState.module === null, JSON.stringify(popGone && popGone.railState));
+  await view(app, 'railClick', { id: 'git' });
+  await waitFor(async () => (await view(app, 'state')).popover, 5000, 100);
+  await view(app, 'focus', { selector: '.dpeek .dpin' });
+  await view(app, 'pinClick', { on: 'panel' });                        // git goes back beside the terminal, as the rest of the probe expects
+  await waitFor(async () => { const v = await view(app, 'state'); return v.rails.length === 0 && v.popover === null ? v : null; }, 5000, 100);
+
   // 3 -----------------------------------------------------------------------------
   await view(app, 'hide', { id: 'canvas' });
   const gone = await waitFor(async () => { const i = await inspect(); return i.exists === false ? true : null; }, 8000, 150);

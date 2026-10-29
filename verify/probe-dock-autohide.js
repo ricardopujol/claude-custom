@@ -12,13 +12,13 @@
  *   1  a layout stored before the rail existed (no `rail`) draws as it did: no rail, the same groups, a Pinned button on each
  *   2  the Pinned button unpins a panel: its tab is on a rail strip at the right edge, the terminal is narrower by that strip
  *      only, the boxes tile, terminal === fit === pty
- *   3  a real pointer resting on a tab, or sweeping every tab, opens nothing; a click opens the panel and holds it, over the
+ *   3  a real pointer resting on a tab, or sweeping every tab, opens nothing; a click opens the panel, over the
  *      terminal, inside the window, with a Pin button; the terminal's width and the pty did not change and nothing was saved
- *   4  the held panel: the pointer leaving or hovering the other icons changes nothing; clicking another icon switches to it;
- *      clicking the open icon again closes it
+ *   4  the open panel: the pointer leaving or hovering the other icons changes nothing; clicking another icon switches to it;
+ *      clicking the open icon again closes it; 4b a press on the rail's empty strip closes it
  *   5  Pin on the open panel: the tab leaves the rail, the panel is a real one beside the terminal, the terminal is narrower
  *   6  Unpin it again: the rail is back and the terminal grew back to its width with the rail
- *   7  Esc closes it, a press outside closes it; 7b a keyboard activation of the icon opens and holds it
+ *   7  Esc closes it, a press outside closes it; 7b a keyboard activation of the icon opens it
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
  *   12 rail tabs are a one-colour line icon over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
@@ -388,19 +388,21 @@ async function main() {
   // Side tabs open on click only (BACKLOG #138, #106): a REAL pointer resting on a tab, or on every tab in turn, opens nothing.
   const pushes0 = sf.pushes;
   const sentBefore = JSON.stringify(sf.sent);
-  const tab0 = railTab(sf, 'git');
-  await moveTo(app, tab0);
+  // A positive control for every hover: the page itself says the pointer is over the icon (:hover), so "nothing opened" can't be a
+  // pointer that never arrived.
+  const pointerOn = async (id) => { await moveTo(app, railTab(await viewState(app), id)); return !!(await waitFor(async () => (((await view(app, 'isHovered', { id })) || {}).hovered ? true : null), 2000, 20)); };
+  const gitOn = await pointerOn('git');
   await sleep(HOVER_REST_MS);
   const rested = await viewState(app);
-  check('3: a REAL pointer resting on the tab for ' + HOVER_REST_MS + ' ms opens nothing', rested.popover === null && rested.railState.module === null, JSON.stringify(rested.railState));
-  const tabs3 = (await viewState(app)).rails.find(r => r.id === 'dock').tabRects;
-  for (const r of tabs3) await moveTo(app, r);
+  check('3: a REAL pointer resting on the git icon (the page reports it :hover) for ' + HOVER_REST_MS + ' ms opens nothing', gitOn && rested.popover === null && rested.railState.module === null, JSON.stringify([gitOn, rested.railState]));
+  const sweptOn = [];
+  for (const id of railMods(await viewState(app))) sweptOn.push(await pointerOn(id));
   await sleep(HOVER_REST_MS);
   const swept = await viewState(app);
-  check('3: ...and sweeping the pointer over every rail icon opens nothing either', swept.popover === null && swept.railState.module === null, JSON.stringify(swept.railState));
+  check('3: ...and sweeping the pointer over every rail icon (each reported :hover) opens nothing either', sweptOn.length === 2 && sweptOn.every(Boolean) && swept.popover === null && swept.railState.module === null, JSON.stringify([sweptOn, swept.railState]));
   await view(app, 'railClick', { id: 'git' });
   const open = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
-  check('3: a click on the tab opens the panel, and holds it', !!open && open.popover.module === 'git' && open.railState.held === true, JSON.stringify(open && open.railState));
+  check('3: a click on the tab opens the panel', !!open && open.popover.module === 'git' && open.railState.module === 'git', JSON.stringify(open && open.railState));
   if (open) {
     await sleep(250);
     const so = await viewState(app);
@@ -420,32 +422,38 @@ async function main() {
   }
 
   // 4 ---------------------------------------------------------------------------------
-  // The panel is open and held: the pointer leaving it, resting on the terminal, and passing over the rail's tabs change nothing.
+  // The panel is open: the pointer leaving it, resting on the terminal, and passing over the rail's tabs change nothing.
   await hoverTerm(app);
   await sleep(HOVER_REST_MS);
   const away = await viewState(app);
-  check('4: the pointer leaving for ' + HOVER_REST_MS + ' ms does not close the held panel', !!away.popover && away.popover.module === 'git' && away.railState.held === true, JSON.stringify(away.railState));
-  for (const r of (await viewState(app)).rails.find(x => x.id === 'dock').tabRects) await moveTo(app, r);
+  check('4: the pointer leaving for ' + HOVER_REST_MS + ' ms does not close the open panel', !!away.popover && away.popover.module === 'git' && away.railState.module === 'git', JSON.stringify(away.railState));
+  const overOn = [];
+  for (const id of railMods(await viewState(app))) overOn.push(await pointerOn(id));
   await sleep(HOVER_REST_MS);
   const over = await viewState(app);
-  check('4: ...and hovering the other icons does not swap it: git is still the open panel, held', !!over.popover && over.popover.module === 'git' && over.railState.held === true, JSON.stringify(over.railState));
+  check('4: ...and hovering the other icons (each reported :hover) does not swap it: git is still the open panel', overOn.every(Boolean) && !!over.popover && over.popover.module === 'git' && over.railState.module === 'git', JSON.stringify([overOn, over.railState]));
   const other = 'vault';   // the second tab on the rail (see check 2)
   await view(app, 'railClick', { id: other });
   const switched = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.module === other ? v : null; }, 3000, 20);
-  check('4: clicking another icon switches to it, held', !!switched && switched.railState.held === true, JSON.stringify(switched && switched.railState));
+  check('4: clicking another icon switches to it', !!switched && switched.railState.module === other, JSON.stringify(switched && switched.railState));
   await view(app, 'railClick', { id: other });
   const sliding = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.closing ? v : null; }, 3000, 8);
   check('4: clicking the open icon again closes it, sliding out first (the popover is marked closing and still holds its panel)', !!sliding && sliding.popover.panels.join() === other, JSON.stringify(sliding && sliding.popover.panels));
   const gone = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('4: ...and is gone once the slide ran', !!gone && gone.railState.module === null);
-  // Put vault back beside the terminal (check 5 starts from git alone on the rail).
-  await clickTab(app, 'vault');
+
+  // 4b: a press on the rail's empty strip is a press outside: it closes an open panel (the design's "a click outside closes")
+  await view(app, 'railClick', { id: 'git' });
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
-  await view(app, 'focus', { selector: '.dpeek .dpin' });
-  await view(app, 'pinClick', { on: 'panel' });
-  await settled(app);
+  await view(app, 'outsidePress', { selector: '#dock > .drail[data-rail="dock"]' });
+  const stripClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
+  check('4b: a press on the rail\'s empty strip (not on an icon) closes the open panel', !!stripClosed && stripClosed.railState.module === null, JSON.stringify(stripClosed && stripClosed.railState));
 
   // 5 ---------------------------------------------------------------------------------
+  // Its own setup: git alone on the rail, everything else docked, and the float back (checks 3 and 4 left a second tab on the rail).
+  await view(app, 'layout', { layout: T.unpin(T.defaultLayout(IDS), 'git') });
+  await view(app, 'dock', { id: 'fog', target: { float: { x: 840, y: 10, w: 330, h: 2000 } } });
+  await settled(app);
   await clickTab(app, 'git');
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
   await view(app, 'focus', { selector: '.dpeek .dpin' });
@@ -466,7 +474,7 @@ async function main() {
   check('6: ...focus is on the panel\'s tab on the rail, so a second Enter opens it and unpins nothing else (PR #168 Y1, Y5)', heldIs(a6.s, 'git', 'drail') && /unpinned/.test(a6.s.announce), JSON.stringify([a6.s.held, a6.s.announce]));
 
   // 7 ---------------------------------------------------------------------------------
-  // (the click-only checks 3 and 4 above already cover: hover opens nothing, a click holds, another icon switches, the icon again closes)
+  // (the click-only checks 3 and 4 above already cover: hover opens nothing, another icon switches, the icon again closes)
   await view(app, 'railClick', { id: 'git' });
   await sleep(100);
   await view(app, 'key', { key: 'Escape' });
@@ -479,7 +487,7 @@ async function main() {
   // 7b: Enter / Space on a focused rail icon is a click (a button's own key activation reaches the page as a click with detail 0)
   await view(app, 'railClick', { id: 'git', byKey: true });
   const byKey = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
-  check('7b: a keyboard activation of the icon opens and holds the panel', !!byKey && byKey.popover.module === 'git' && byKey.railState.held === true, JSON.stringify(byKey && byKey.railState));
+  check('7b: a keyboard activation of the icon opens the panel', !!byKey && byKey.popover.module === 'git' && byKey.railState.module === 'git', JSON.stringify(byKey && byKey.railState));
   await view(app, 'outsidePress', { selector: '#termwrap' });
   await waitFor(async () => (await viewState(app)).popover === null, 3000, 50);
 
@@ -561,7 +569,7 @@ async function main() {
   await pressOutside(app);
   let sawClosing = false;
   const r11b = await waitFor(async () => { const v = await viewState(app); if (v.popover && v.popover.closing) sawClosing = true; return v.popover === null ? v : null; }, 3000, 8);
-  check('11: ...and closes at once when the grace ends, with no slide-out stage', !!r11b && !sawClosing);
+  check('11: ...and closes at once on a press outside, with no slide-out stage', !!r11b && !sawClosing);
 
   await quitApp(app);
 

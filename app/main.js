@@ -851,6 +851,7 @@ const canvasViews = createCanvasViews({
     owner.send('canvas:need-host', { id, origin });
   }),
   onMessage: (owner, msg) => { if (!owner.isDestroyed()) owner.send('canvas:message', msg); },
+  onPress: (owner) => { if (!owner.isDestroyed()) owner.send('canvas:pressed'); },
   // A shelf address the panel's page asked to open, after main checked it is exactly on the shelf and a real click came with it.
   openUrl: (url) => openInBrowser(url, "Claude's panel"),
   log: (line) => console.log(line),

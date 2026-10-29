@@ -162,7 +162,7 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
     const rb = boxes.find(x => x.kind === 'rail' && x.modules.includes(at.module));
     const from = at.dir === 'v' ? (at.rect.x < rb.rect.x ? 'right' : 'left') : (at.rect.y < rb.rect.y ? 'bottom' : 'top');
     const pin = rb.id === 'dock' && Array.isArray(layout.rail) && layout.rail.includes(at.module);
-    // The popover is the hovered panel alone: the rail is where you switch between panels, and a group's other tabs aren't shown.
+    // The popover is the clicked panel alone: the rail is where you switch between panels, and a group's other tabs aren't shown.
     const tab = named([at.module])[0];
     popover = { ...at, shape, from, pin, tabs: tab ? [{ ...tab, on: true }] : [] };
     if (tab) {
@@ -174,32 +174,27 @@ function treePlan(layout, selection, tabs, viewport, { faceSize, peek } = {}) {
 }
 
 /** The rail's state when nothing is open (see `railAfter`). */
-const RAIL_IDLE = Object.freeze({ module: null, held: false });
+const RAIL_IDLE = Object.freeze({ module: null });
 
 /**
  * The behaviour of the dock's rail tabs (BACKLOG #85, #138, #106), pure: side tabs open on click only, so hovering a tab never
- * opens, swaps or closes a panel and the pointer leaving never closes one.
- * State { module, held }: the open panel; whether a click or the keyboard holds it (a click always does).
- *   click {module}      opens and holds; on a held one closes it; on another tab while one is open, switches to it (held)
- *   hold                a press or the keyboard is inside the open panel: it is held
+ * opens, swaps or closes a panel and the pointer leaving never closes one. A panel a click opened stays until it is closed.
+ * State { module }: the open panel, or null.
+ *   click {module}      opens it; on the open one closes it; on another tab while one is open, switches to it
  *   tab {module}        a tab inside the open panel switches it
  *   escape / outside / drop / gone   closes it
  * Anything else (the pointer entering, leaving, or resting on a tab or the panel), and any junk, changes nothing (a junk state
  * reads as idle).
  */
 function railAfter(state, ev) {
-  const s = isObject(state) && typeof state.module === 'string' && state.module !== ''
-    ? { module: state.module, held: state.held === true }
-    : RAIL_IDLE;
+  const s = isObject(state) && typeof state.module === 'string' && state.module !== '' ? { module: state.module } : RAIL_IDLE;
   const e = isObject(ev) ? ev : {};
   const mod = typeof e.module === 'string' && e.module !== '' ? e.module : null;
   switch (e.type) {
-    case 'hold': return s.module !== null ? { ...s, held: true } : s;
     case 'click':
       if (mod === null) return s;
-      if (s.module === mod && s.held) return RAIL_IDLE;
-      return { module: mod, held: true };
-    case 'tab': return s.module !== null && mod !== null ? { ...s, module: mod } : s;
+      return s.module === mod ? RAIL_IDLE : { module: mod };
+    case 'tab': return s.module !== null && mod !== null ? { module: mod } : s;
     case 'escape': case 'outside': case 'drop': case 'gone': return RAIL_IDLE;
     default: return s;
   }
@@ -710,7 +705,7 @@ function applyBoxes(plan, doc, leanKeeps) {
   // would drop it on the page; it goes to the same module's button when there is one. Anything else that
   // moves focus (the vault opening, the terminal after a click) is the page's own rule and runs after this.
   if (heldModule !== null && held.isConnected === false && heldInPeek && plan.peek && popover) {
-    // The popover shows one tab, so hovering another rail tab rebuilds its bar around another module: the keyboard follows to it.
+    // The popover shows one tab, so clicking another rail tab rebuilds its bar around another module: the keyboard follows to it.
     const bar = popover.querySelector('.zone-tabs');
     const tab = [...bar.querySelectorAll('button[data-module]')].find(b => b.dataset.module === plan.peek.module);
     if (tab) tab.focus();

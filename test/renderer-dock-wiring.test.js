@@ -397,7 +397,7 @@ test('PR #159 Dexter 6: an operation on the placement is built on the layout AFT
   assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
 });
 
-// --- #85: the dock rail's hover, the Pin button ----------------------------------------------------------------
+// --- #85: the dock rail (click only), the Pin button ----------------------------------------------------------------
 
 test('#85, #138: the rail\'s state is fed only through railEvent, which owns no timers: side tabs open on click only', () => {
   assert.doesNotMatch(JS, /RAIL_OPEN_MS|RAIL_CLOSE_MS|railOpenTimer|railCloseTimer/, 'no hover timers');
@@ -409,12 +409,26 @@ test('#85, #138: the rail\'s state is fed only through railEvent, which owns no 
   assert.doesNotMatch(JS, /peekAfter\(/, 'the page uses railAfter');
 });
 
-test('#138: hovering a rail tab does nothing: the page has no pointerover / pointerleave handler that feeds the rail', () => {
-  assert.doesNotMatch(JS, /type: 'enter'|type: 'enter-panel'|type: 'open-timer'|type: 'close-timer'/, 'no hover event is ever sent to railAfter');
-  assert.doesNotMatch(JS, /railEvent\(\{ type: 'leave' \}\)/);
-  assert.doesNotMatch(JS, /document\.addEventListener\('pointerover'/);
-  assert.doesNotMatch(JS, /documentElement\.addEventListener\('pointerleave'/);
+test('#138: the page only ever sends the rail click-only events (no hover event, whatever it is called)', () => {
+  const sent = new Set([...JS.matchAll(/railEvent\(\{ type: '([^']+)'/g)].map(m => m[1]));
+  const allowed = new Set(['click', 'tab', 'escape', 'outside', 'drop', 'gone']);
+  assert.ok(sent.size >= 5, [...sent].join());
+  for (const t of sent) assert.ok(allowed.has(t), `railEvent type '${t}' is not a click-only event`);
+  assert.doesNotMatch(JS, /document\.addEventListener\('(pointerover|pointerenter|mouseover|mouseenter)'/, 'no document-level hover listener');
 });
+
+test('#138: a press outside closes the popover: on the rail\'s empty strip, and inside Claude\'s panel (a native view, told by main)', () => {
+  const at = JS.indexOf("document.addEventListener('pointerdown', (e) => {\n  if (!peek) return;");
+  assert.ok(at !== -1, 'the press handler must be findable');
+  const handler = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(handler, /if \(inside\) return;/);
+  assert.match(handler, /closest\('\.drail button\[data-module\]'\)\) return;/, 'only an icon is the rail\'s own click; its strip is outside');
+  assert.match(handler, /railEvent\(\{ type: 'outside' \}\)/);
+  assert.match(JS, /canvasBridge\.onPressed\(\(\) => \{ if \(peek\) \{ railEvent\(\{ type: 'outside' \}\)/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8'), /onPress: \(owner\) => \{ if \(!owner\.isDestroyed\(\)\) owner\.send\('canvas:pressed'\); \}/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'), /onPressed: \(fn\) =>/);
+});
+
 
 test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
   const pin = fnBody('togglePin');
@@ -422,11 +436,6 @@ test('#85: the Pin button, the menu and the fold all go through the model\'s pin
   assert.match(pin, /const l = settledLayout\(\);/);
   assert.match(JS, /commitPlacement\(DTm\.showOnRail\(l, row\.id\)/, 'ticking a hidden panel in the Window menu brings it back as a rail tab');
   assert.match(JS, /commitPlacement\(DTm\.unpinGroup\(settledLayout\(\), home\.id\)/);
-});
-
-test('#85 Miguel Y2: a press or focus inside the open panel holds it open', () => {
-  assert.match(JS, /if \(inside\) \{ railEvent\(\{ type: 'hold' \}\); return; \}/);
-  assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(peek && e\.target\.closest && e\.target\.closest\('\.dpeek'\)\) railEvent\(\{ type: 'hold' \}\);/);
 });
 
 test('#85 PR #168 Miguel B2: the tab menu Pin, Unpin and Unpin group follow the Just this tab check', () => {
@@ -444,10 +453,10 @@ test('#85 PR #168 Miguel Y1 / Y5: after Pin or Pinned the keyboard follows the p
   assert.match(body, /getElementById\('dock-announce'\)\.textContent = /);
 });
 
-test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the canvas) goes through revealModule, which opens a railed panel held', () => {
+test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the canvas) goes through revealModule, which opens a railed panel', () => {
   const body = fnBody('revealModule');
   assert.match(body, /railEvent\(\{ type: 'click', module: id \}\)/);
-  assert.match(body, /!\(railSt\.module === id && railSt\.held\)/, 'a panel already held open is not closed by asking to show it');
+  assert.match(body, /railSt\.module !== id/, 'a panel already open is not closed by asking to show it');
   assert.match(body, /DTm\.show\(settledLayout\(\), id\)/);
   assert.doesNotMatch(JS.replace(body, ''), /if \(placementLayout\(\)\.hidden\.includes\(/, 'no path decides hidden-or-not by itself');
 });

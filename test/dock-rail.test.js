@@ -1,7 +1,7 @@
 'use strict';
 /**
  * The dock's own rail (BACKLOG #85): a panel is PINNED (a real panel in the layout, the terminal gives it room) or UNPINNED
- * (a tab on the rail at the window's right edge; hovering it slides its panel over the terminal). The layout holds the rail
+ * (a tab on the rail at the window's right edge; clicking it slides its panel over the terminal). The layout holds the rail
  * as `rail: [moduleId...]`, and every module is in exactly one of the tree, a float, the rail or hidden.
  */
 const test = require('node:test');
@@ -168,7 +168,7 @@ test('an empty rail draws nothing and leaves the tree as it was', () => {
   assert.ok(!boxes.some(b => b.kind === 'rail'));
 });
 
-test('the terminal is as wide with the rail open over it as with it closed (hover never resizes it)', () => {
+test('the terminal is as wide with the rail open over it as with it closed (opening it never resizes it)', () => {
   const d = T.unpin(T.defaultLayout(IDS), 'git');
   const { boxes } = T.fit(d, null, { width: 1000, height: 600 });
   const term = boxes.find(b => b.kind === 'term').rect;
