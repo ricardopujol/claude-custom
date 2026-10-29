@@ -17,7 +17,7 @@
  * BEFORE what the hooks already gave, never repeating a line.
  *
  * The text is untrusted model/user text: it is cut to TEXT_MAX here and is never parsed as HTML anywhere
- * (app/chat-markdown.js builds DOM nodes; no innerHTML).
+ * (app/chat-blocks.js builds DOM nodes; no innerHTML).
  */
 
 const TEXT_MAX = 20000;

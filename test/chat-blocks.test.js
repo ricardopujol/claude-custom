@@ -1,13 +1,13 @@
 'use strict';
 /**
- * Claude's reply as safe blocks with their copy targets (app/chat-markdown.js, BACKLOG #157 + #149).
+ * Claude's reply as safe blocks with their copy targets (app/chat-blocks.js, BACKLOG #157 + #149).
  * Pure data, no DOM and no HTML anywhere: the display builds nodes from it with textContent, so model text can't become markup.
  */
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 
-const { parseMarkdown, parseInline, looksLikeCommand, looksLikePath, copyTargets, isSafeHref } = require('../app/chat-markdown');
+const { parseMarkdown, parseInline, looksLikeCommand, looksLikePath, copyTargets, isSafeHref } = require('../app/chat-blocks');
 
 const plain = (inlines) => inlines.map(i => (i.t === 'text' || i.t === 'code' ? i.v : plain(i.c || []))).join('');
 

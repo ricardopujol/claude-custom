@@ -160,6 +160,19 @@ test('an unchanged conversation is not rebuilt; a new message is', () => {
   assert.strictEqual(els.log.querySelectorAll('.chat-msg').length, 2);
 });
 
+test('coming into view starts at the newest message, because a hidden log has no scroll height to stick to', () => {
+  const { view, els } = setup();
+  Object.defineProperty(els.log, 'scrollHeight', { configurable: true, get: () => (els.root.hidden ? 0 : 900) });
+  const many = msgs({ role: 'user', text: 'a' }, { role: 'assistant', text: 'b' });
+  view.update({ messages: many, working: false, view: { show: 'terminal', note: null } });
+  assert.strictEqual(els.log.scrollTop, 0);
+  view.update({ messages: many, working: false, view: show });
+  assert.strictEqual(els.log.scrollTop, 900, 'unchanged messages, newly visible');
+  view.update({ messages: many, working: false, view: { show: 'terminal', note: null } });
+  view.update({ messages: msgs(...many, { role: 'user', text: 'c' }), working: false, view: show });
+  assert.strictEqual(els.log.scrollTop, 900, 'a new message while it was hidden');
+});
+
 test('Enter sends the message and clears the box; Shift+Enter is a new line; empty sends nothing', async () => {
   const { view, els, sent, win } = setup();
   els.input.value = 'do the thing';

@@ -15,12 +15,12 @@ const APP = path.join(__dirname, '..', 'app');
 const read = (f) => fs.readFileSync(path.join(APP, f), 'utf8');
 const HTML = read('renderer.html');
 const RENDERER = read('renderer.js');
-const SCRIPTS = ['paste-action.js', 'chat-markdown.js', 'chat-view-state.js', 'chat-display.js'];
+const SCRIPTS = ['paste-action.js', 'chat-blocks.js', 'chat-view-state.js', 'chat-display.js'];
 
 test('the page loads the chat scripts after paste-action.js and before renderer.js', () => {
   const at = (f) => HTML.indexOf(`<script src="./${f}"></script>`);
   for (const f of SCRIPTS) assert.ok(at(f) !== -1, f);
-  assert.ok(at('paste-action.js') < at('chat-markdown.js') && at('chat-markdown.js') < at('chat-view-state.js') && at('chat-view-state.js') < at('chat-display.js'));
+  assert.ok(at('paste-action.js') < at('chat-blocks.js') && at('chat-blocks.js') < at('chat-view-state.js') && at('chat-view-state.js') < at('chat-display.js'));
   assert.ok(at('chat-display.js') < at('renderer.js'));
 });
 
@@ -31,7 +31,7 @@ test('run together as plain scripts in one global scope, they declare nothing gl
   const before = new Set(Object.getOwnPropertyNames(ctx));
   for (const f of SCRIPTS) vm.runInContext(read(f), ctx, { filename: f });
   const added = Object.getOwnPropertyNames(ctx).filter(k => !before.has(k)).sort();
-  assert.deepStrictEqual(added, ['chatDisplay', 'chatMarkdown', 'chatViewState', 'pasteAction', 'pasteFailureNote', 'pasteFrame', 'copyKeyAction', 'isPasteKey', 'selectionVisible'].sort());
+  assert.deepStrictEqual(added, ['chatDisplay', 'chatBlocks', 'chatViewState', 'pasteAction', 'pasteFailureNote', 'pasteFrame', 'copyKeyAction', 'isPasteKey', 'selectionVisible'].sort());
   // top-level const/let would not show as properties: they would collide in the page, so the files must be wrapped
   for (const f of SCRIPTS.slice(1)) assert.match(read(f).replace(/^(?:\s*\/\/.*\n|\s*\/\*[\s\S]*?\*\/\s*|'use strict';\s*)*/, ''), /^\(function \(root\) \{/, `${f} is an IIFE`);
   // and the view-state module finds paste-action's pasteFrame through that shared scope, as in the page

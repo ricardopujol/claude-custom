@@ -218,6 +218,6 @@ function copyTargets(blocks) {
 
 const api = { parseMarkdown, parseInline, copyTargets, looksLikeCommand, looksLikePath, isSafeHref, plainOf };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
-else root.chatMarkdown = api;
+else root.chatBlocks = api;
 
 })(typeof window !== 'undefined' ? window : globalThis);

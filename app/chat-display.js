@@ -11,9 +11,9 @@
  * `openLink(href)` opens a link in the person's browser, `send(text)` types the message into the CLI (the caller
  * puts it on the pty exactly like typing) and answers { ok }.
  *
- * MODEL TEXT IS UNTRUSTED: every node here is built with createElement and textContent from app/chat-markdown.js's
+ * MODEL TEXT IS UNTRUSTED: every node here is built with createElement and textContent from app/chat-blocks.js's
  * blocks. There is no innerHTML, no insertAdjacentHTML, no outerHTML anywhere in this file (test/chat-display.test.js
- * scans for them), a link only exists if chat-markdown vouched for its address, and it opens through `openLink`,
+ * scans for them), a link only exists if chat-blocks vouched for its address, and it opens through `openLink`,
  * never by navigating this page.
  *
  * Loaded as a plain <script> in renderer.html, so it is wrapped: every file there shares ONE global scope (CLAUDE.md).
@@ -21,7 +21,7 @@
 
 (function (root) {
 
-const markdown = () => (typeof module !== 'undefined' && module.exports ? require('./chat-markdown') : root.chatMarkdown);
+const markdown = () => (typeof module !== 'undefined' && module.exports ? require('./chat-blocks') : root.chatBlocks);
 const COPIED_MS = 1500;
 const STICK_PX = 40;           // within this of the bottom, new messages keep the view at the bottom
 
@@ -152,15 +152,20 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
   function update(state) {
     const view = state && state.view ? state.view : { show: 'terminal', note: null };
     const messages = state && Array.isArray(state.messages) ? state.messages : [];
+    const becameVisible = view.show === 'chat' && els.root.hidden;
     els.root.hidden = view.show !== 'chat';
     els.flip.hidden = !view.note;
     els.flip.textContent = view.note || '';
     els.working.hidden = !(view.show === 'chat' && state && state.working === true);
-    const sig = signature(messages);
-    if (same(sig, shown)) return;
-    shown = sig;
     const log = els.log;
-    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight <= STICK_PX;
+    const sig = signature(messages);
+    if (same(sig, shown)) {
+      // A hidden element has no scroll height: coming into view starts at the newest message, not the top.
+      if (becameVisible) log.scrollTop = log.scrollHeight;
+      return;
+    }
+    shown = sig;
+    const atBottom = becameVisible || log.scrollHeight - log.scrollTop - log.clientHeight <= STICK_PX;
     while (log.firstChild) log.removeChild(log.firstChild);
     if (messages.length === 0) log.append(el('div', 'chat-empty', 'Nothing to show yet. Your prompts and Claude\'s replies will appear here, without the tool lines.'));
     for (const m of messages) log.append(message(m));
