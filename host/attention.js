@@ -103,7 +103,7 @@ const unrefTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t.unref) t.un
 function createAttention({ now = Date.now, project = '', agents = () => [], settleMs = 1500,
                           debounceMs = DEFAULT_DEBOUNCE_MS,
                           shellStartedAt = makeShellStartedAt(),
-                          setTimer = unrefTimer, clearTimer = clearTimeout } = {}) {
+                          setTimer = unrefTimer, clearTimer = clearTimeout, log = (m) => console.log(m) } = {}) {
   const emitter = new EventEmitter();
   // Debounced per KIND, not globally: a request for input must not be swallowed
   // because a turn happened to end a moment earlier.
@@ -123,6 +123,15 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
   // timer can still fire into it: one early "finished", bounded by that turn's own Stop.
   let held = null;
   const ended = new Set();
+  // Notification texts already logged as not recognised (PR #224, Dexter 6): a CLI that rewords the held-message dialog must leave a trace.
+  const unrecognised = new Set();
+  function noteUnrecognised(p) {
+    const text = typeof p.message === 'string' ? p.message.trim() : '';
+    if (text === '' || unrecognised.has(text)) return;
+    unrecognised.add(text);
+    if (unrecognised.size > ENDED_MEMORY) unrecognised.delete(unrecognised.values().next().value);
+    log(`[attention] notification text not recognised as a held message (type ${JSON.stringify(p.notification_type)}): ${JSON.stringify(text.slice(0, 200))}`);
+  }
 
   // OSC 7501 (host/program-status.js) is a second source, and the AUTHORITY for the main session's own cue. Once the CLI has
   // spoken it, the hook-derived raises for the main session stop and `programStatus` decides. Sticky for the host's life: a CLI that
@@ -152,11 +161,12 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
   let settleTimer = null;
   const SETTLE_MS = settleMs;
 
-  function raise(kind, { title, body, urgent }, { fromStatus = false, agentNamed = false } = {}) {
+  function raise(kind, { title, body, urgent }, { fromStatus = false, agentNamed = false, everyOne = false } = {}) {
     if (statusLive && !fromStatus && !agentNamed) return;
     const t = now();
     const previous = lastSent.get(kind);
-    if (previous !== undefined && t - previous < debounceMs) return;
+    // `everyOne`: each arrival is a distinct event (a held message), not a repeat of one (a Stop that fires twice around a turn).
+    if (!everyOne && previous !== undefined && t - previous < debounceMs) return;
     lastSent.set(kind, t);
     emitter.emit('attention', { kind, project, title, body, urgent, at: t });
   }
@@ -314,9 +324,10 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
           title: project ? `${project} has a message for you` : 'A message for you',
           body: HELD_PEER_MESSAGE,
           urgent: true,
-        }, { agentNamed: true });
+        }, { agentNamed: true, everyOne: true });
         return;
       }
+      noteUnrecognised(p);
       if (p.notification_type === 'idle_prompt') {
         if (settled()) { held = null; releaseFinished({}); return; }
         armShellTimer();                                       // quiet now, and the shell is still young: wait for it

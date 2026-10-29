@@ -48,6 +48,11 @@ test('a held cross-session message is a toast like a permission prompt', () => {
   assert.strictEqual(s.flashTaskbar, true);
 });
 
+test('PR #224 Dexter 5: a held message\'s toast is silent (the knock is its one sound); other urgent toasts are not', () => {
+  assert.strictEqual(surfacesFor({ kind: 'peer-message', title: 't', body: 'b', urgent: true }, { focused: false }).toast.silent, true);
+  assert.strictEqual(surfacesFor(needsYou, { focused: false }).toast.silent, false);
+});
+
 test('an urgent toast in an unfocused window sticks until acknowledged', () => {
   const s = surfacesFor(needsYou, { focused: false });
   assert.strictEqual(s.toast.requireInteraction, true);

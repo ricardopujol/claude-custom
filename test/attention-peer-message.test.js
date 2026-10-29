@@ -54,15 +54,34 @@ test('it still raises once the CLI speaks OSC 7501 (the root record does not kno
   assert.deepStrictEqual(h.sent.map(e => e.kind), ['peer-message']);
 });
 
-test('two held messages a moment apart are one toast; a later one is another', () => {
+test('PR #224 Dexter 3: every held message is raised, however close together; telling a re-notified dialog from a new one is the page\'s (it can see the dialog)', () => {
   const h = harness();
   h.fire('Notification', { message: HELD_PEER_MESSAGE });
   h.advance(1000);
   h.fire('Notification', { message: HELD_PEER_MESSAGE });
-  assert.strictEqual(h.sent.length, 1);
-  h.advance(10_000);
   h.fire('Notification', { message: HELD_PEER_MESSAGE });
-  assert.strictEqual(h.sent.length, 2);
+  assert.strictEqual(h.sent.length, 3);
+});
+
+test('PR #224 Dexter 6: a Notification text that is not the held-message words is logged once per distinct text, so a reworded dialog is visible', () => {
+  const lines = [];
+  const h = harness({ log: m => lines.push(m) });
+  h.fire('Notification', { notification_type: 'permission_prompt', message: 'A message from another Claude session needs your approval' });
+  h.fire('Notification', { notification_type: 'permission_prompt', message: 'A message from another Claude session needs your approval' });
+  h.fire('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
+  assert.strictEqual(lines.length, 2);
+  assert.match(lines[0], /not recognised as a held message/);
+  assert.match(lines[0], /another Claude session/);
+  assert.deepStrictEqual(h.sent.map(e => e.kind), ['input-needed'], 'logging changes nothing it raises');
+});
+
+test('PR #224 Dexter 6: the held-message words themselves are not logged, and an empty or missing text is not either', () => {
+  const lines = [];
+  const h = harness({ log: m => lines.push(m) });
+  h.fire('Notification', { message: HELD_PEER_MESSAGE });
+  h.fire('Notification', { notification_type: 'auth_success' });
+  h.fire('Notification', { message: '   ' });
+  assert.deepStrictEqual(lines, []);
 });
 
 test('a held message does not swallow a permission prompt raised just after it', () => {

@@ -33,7 +33,8 @@ function surfacesFor(msg, { focused = false } = {}) {
     toast: focused || !urgent ? null : {
       title: (msg && msg.title) || 'claude-custom',
       body: (msg && msg.body) || '',
-      silent: false,
+      // One sound per held message: the knock (app/peer-cue.js) is it, so its toast makes none and the mute switch silences all of it.
+      silent: !!msg && msg.kind === 'peer-message',
       requireInteraction: true,
     },
     // Flashing an already-focused window is a no-op on Windows, and reserving
