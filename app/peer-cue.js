@@ -147,7 +147,8 @@ function knock(win) {
     if (!Ctor) return 0;
     if (shared && shared.state === 'closed') shared = null;
     if (!shared) shared = new Ctor();
-    if (shared.state === 'suspended' && typeof shared.resume === 'function') swallow(shared.resume());
+    // Unless it is closed, ask it to run: a suspend still pending from the last knock (or one that has just taken hold) must not mute these notes.
+    if (shared.state !== 'closed' && typeof shared.resume === 'function') swallow(shared.resume());
     const played = playKnock(shared);
     const timers = { set: win.setTimeout ? win.setTimeout.bind(win) : setTimeout, clear: win.clearTimeout ? win.clearTimeout.bind(win) : clearTimeout };
     if (idleTimer !== null) timers.clear(idleTimer);

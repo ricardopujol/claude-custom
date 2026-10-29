@@ -9534,7 +9534,7 @@ function handleControl(msg) {
   }
   if (msg.type === 'attention') {
     gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
-    if (msg.kind === 'peer-message') peerMessageArrived(msg);
+    if (msg.kind === 'peer-message') peerMessageArrived(msg).catch((err) => console.warn('[renderer] held-message cue failed:', err && err.message));
     else raiseAttention(msg);
     return;
   }

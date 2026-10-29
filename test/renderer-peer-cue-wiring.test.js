@@ -20,7 +20,7 @@ test('peer-cue.js loads before the renderer, which uses it', () => {
 });
 
 test('a peer-message attention goes to peerMessageArrived; every other kind is raised as it always was', () => {
-  assert.match(js, /if \(msg\.kind === 'peer-message'\) peerMessageArrived\(msg\);\s*else raiseAttention\(msg\);/);
+  assert.match(js, /if \(msg\.kind === 'peer-message'\) peerMessageArrived\(msg\)\.catch\(\(err\) => console\.warn\('\[renderer\] held-message cue failed:', err && err\.message\)\);\s*else raiseAttention\(msg\);/);
 });
 
 test('the count rides the tab status, is not added while you are looking, and a look clears it', () => {

@@ -245,10 +245,54 @@ test('PR #224 Dexter 1: one of two children stopping leaves the wait on the othe
 
   const r2 = rig();
   const q = started(r2);
-  launch(r2, q);
-  r2.ev('PostToolUse', { tool_name: 'TaskStop', tool_use_id: 'ts', tool_input: { task_id: 'x' }, tool_response: { success: true }, agent_id: q.id, agent_type: q.type });
+  bgBash(r2, q, 'npm test', 'task-1');
+  r2.ev('PostToolUse', { tool_name: 'TaskStop', tool_use_id: 'ts', tool_input: { task_id: 'task-1' }, tool_response: { success: true }, agent_id: q.id, agent_type: q.type });
   r2.advance(WAIT_GRACE_MS * 2);
   assert.notStrictEqual(r2.detail('miguel'), BGWAIT);
+});
+
+// A backgrounded Bash with its result, which names its task (sdk-tools.d.ts: backgroundTaskId).
+function bgBash(r, a, command, taskId) {
+  const id = r.pre(a, 'Bash', { command, run_in_background: true });
+  r.ev('PostToolUse', { tool_name: 'Bash', tool_use_id: id, tool_input: { command, run_in_background: true }, tool_response: { backgroundTaskId: taskId }, agent_id: a.id, agent_type: a.type });
+}
+const taskStop = (r, a, input, response = { success: true }) =>
+  r.ev('PostToolUse', { tool_name: 'TaskStop', tool_use_id: 'ts' + Math.random(), tool_input: input, tool_response: response, agent_id: a.id, agent_type: a.type });
+
+test('PR #224 Dexter R2-2: TaskStop ends the hold of the task it stopped and no other', () => {
+  const r = rig();
+  const a = started(r);
+  bgBash(r, a, 'npm test', 'task-1');
+  bgBash(r, a, 'npm run build', 'task-2');
+  taskStop(r, a, { task_id: 'task-1' });
+  r.advance(WAIT_GRACE_MS);
+  assert.strictEqual(r.detail('miguel'), BGWAIT, 'one task is still running');
+  assert.strictEqual(r.m.waitOf('miguel').on, 'npm run build');
+  taskStop(r, a, { shell_id: 'task-2' });       // the deprecated name for the same field
+  r.advance(WAIT_GRACE_MS);
+  assert.notStrictEqual(r.detail('miguel'), BGWAIT);
+});
+
+test('PR #224 Dexter R2-2: a failed TaskStop, one aimed at something else, or one naming nothing clears nothing', () => {
+  const r = rig();
+  const a = started(r);
+  bgBash(r, a, 'npm test', 'task-1');
+  taskStop(r, a, { task_id: 'task-1' }, { success: false });
+  r.ev('PostToolUseFailure', { tool_name: 'TaskStop', tool_use_id: 'tf', tool_input: { task_id: 'task-1' }, agent_id: a.id, agent_type: a.type });
+  taskStop(r, a, { task_id: 'adexter-0000000000000009' });
+  taskStop(r, a, {});
+  taskStop(r, a, { task_id: 42 });
+  r.advance(WAIT_GRACE_MS);
+  assert.strictEqual(r.detail('miguel'), BGWAIT);
+});
+
+test('PR #224 Dexter R2-2: a backgrounded Bash whose result named no task is not ended by any TaskStop (we cannot tell which it was)', () => {
+  const r = rig();
+  const a = started(r);
+  launch(r, a);
+  taskStop(r, a, { task_id: 'task-1' });
+  r.advance(WAIT_GRACE_MS);
+  assert.strictEqual(r.detail('miguel'), BGWAIT);
 });
 
 // Dexter 2: a quiet run held on a prompt used to escape both the age cap and the stall clock.

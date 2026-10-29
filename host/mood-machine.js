@@ -188,6 +188,7 @@ const resultAgentId = r => {
 // teammate's record keeps both identities (an "alias") and is found by any.
 const isTeammateResult = r => !!r && typeof r === 'object'
   && (r.status === 'teammate_spawned' || (typeof r.agent_id === 'string' && r.agent_id.includes('@')));
+const stringId = v => (typeof v === 'string' && v !== '' ? v : null);
 const escapeRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function mateMatches(mate, agentId, agentType) {
   if (agentId === mate.address || agentId === mate.runtimeId) return true;
@@ -294,7 +295,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   function holdFor(inv, what, child = null) {
     const known = child && inv.holds.find(h => h.child === child);
     if (known) { known.what = what; return; }
-    inv.holds.push({ child, what });
+    inv.holds.push({ child, what, taskId: null });
   }
 
   const isOpen = inv => invs.includes(inv);
@@ -808,8 +809,20 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       inv.clearedAt = now();
       if (tool === 'Bash') clearBash(inv, p.tool_use_id);
       else { inv.bash.clear(); inv.tool = null; }
-      // TaskStop is hooked: it names a task the run stopped, so what it waited on in the background is over (a child ends with its own stop).
-      if (tool === 'TaskStop') inv.holds = inv.holds.filter(h => h.child !== null);      // a call whose only hook is its Post (SendMessage, Artifact) is a newer call too
+      // A backgrounded Bash's result names its task (`backgroundTaskId`, sdk-tools.d.ts), so the hold made at its PreToolUse learns it here.
+      const ok = !failureEvent && !isFailure(p.tool_response);
+      if (tool === 'Bash' && ok && p.tool_input && p.tool_input.run_in_background === true) {
+        const id = stringId(p.tool_response && p.tool_response.backgroundTaskId);
+        const open = id && [...inv.holds].reverse().find(h => h.child === null && h.taskId === null);
+        if (open) open.taskId = id;
+      }
+      // TaskStop is hooked: a SUCCESSFUL one that names a task ends the hold of THAT task and no other. A failed one, one aimed at an agent
+      // (a child ends with its own stop), or one naming nothing we know clears nothing (PR #224, Dexter R2-2).
+      if (tool === 'TaskStop' && ok) {
+        const ti = p.tool_input || {};
+        const id = stringId(ti.task_id) || stringId(ti.shell_id);
+        if (id) inv.holds = inv.holds.filter(h => h.child !== null || h.taskId !== id);
+      }      // a call whose only hook is its Post (SendMessage, Artifact) is a newer call too
 
       // The interrupted invocation ends, with its foreground descendants.
       if (interrupted) { cutOff(subtree(inv)); return; }

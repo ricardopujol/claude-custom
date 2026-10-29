@@ -208,6 +208,16 @@ test('Miguel I3: a suspended context is resumed, and a resume that is refused is
   await new Promise(r => setImmediate(r));           // an unhandled rejection would fail the run here
 });
 
+test('Miguel N2: a context that says it is running is still asked to resume (a suspend may be pending); only a closed one is not', () => {
+  P._resetKnock();
+  const { win, made } = fakeWin({ state: 'running' });
+  P.knock(win);
+  assert.strictEqual(made[0].resumed, 1);
+  made[0].state = 'running';
+  P.knock(win);
+  assert.strictEqual(made[0].resumed, 2);
+});
+
 test('Miguel I3: a context that cannot be made is a silent 0, then tried again next time', () => {
   P._resetKnock();
   assert.strictEqual(P.knock(fakeWin({ makeFails: true }).win), 0);
@@ -224,5 +234,5 @@ test('Miguel I3: the context is suspended once the knock is over, so an idle tab
   timers[0].fn();
   assert.strictEqual(made[0].suspended, 1);
   assert.strictEqual(P.knock(win), 2);
-  assert.strictEqual(made[0].resumed, 1);
+  assert.strictEqual(made[0].resumed, 2, 'asked on every knock, the first one included');
 });
