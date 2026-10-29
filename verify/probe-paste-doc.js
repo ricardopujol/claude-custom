@@ -10,7 +10,7 @@
 
    Same safety as probe-paste.js: the clipboard is snapshotted and restored, ELECTRON_RUN_AS_NODE is only set for
    the host child, only the PIDs this probe started are killed. */
-const { spawn } = require('child_process');
+const { spawn, execFileSync } = require('child_process');
 const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const path = require('path');
 
@@ -107,23 +107,32 @@ app.on('ready', async () => {
 
     // `direct` skips Ctrl+V and types the same bracketed bytes straight to the pty: if the CLI behaves the same,
     // the paste path is not ours. `watch` logs the prompt box at 1, 3 and 9 s after the paste.
-    async function pasteCase(name, draft, text, { direct = false, draftFirst = false, pre = null, after = null, settle = 0 } = {}) {
+    async function pasteCase(name, draft, text, { file = null, dropFile = null, direct = false, draftFirst = false, pre = null, after = null, settle = 0 } = {}) {
       await frames();
       if (draft && draftFirst) { await typeRaw(draft); await sleep(800); }
       if (pre) await pre();
       if (draft && !draftFirst) { await typeRaw(draft); await sleep(800); }
       if (settle) await sleep(settle);
-      clipboard.writeText(text);
+      if (file) {
+        // A real file on the clipboard, as Explorer's Copy leaves it (CF_HDROP): no text, no bitmap.
+        execFileSync('powershell.exe', ['-NoProfile', '-Command', `Set-Clipboard -Path '${file}'`], { windowsHide: true });
+        console.log(`   [${name}] clipboard text="${clipboard.readText()}" formats=${JSON.stringify(clipboard.availableFormats())}`);
+      } else clipboard.writeText(text);
       win.focus(); win.webContents.focus();
       await js(`term.focus(); true`);
       const bracketed = await js(`term.modes.bracketedPasteMode`);
-      if (direct) {
+      if (dropFile) {
+        // The renderer's drop handler ends in exactly this frame (userInput of {type:'drop', entries}); a native
+        // drag cannot be driven from here, so this drives the host half, which is where the pty bytes are decided.
+        await typeRaw(JSON.stringify({ type: 'drop', entries: [{ path: dropFile, isDirectory: false }] }));
+        await sleep(2000);
+      } else if (direct) {
         await typeRaw('\x1b[200~' + text.replace(/\r?\n/g, '\r') + '\x1b[201~');
       } else {
         win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
         win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
       }
-      for (const wait of [1000, 2000, 6000]) {
+      for (const wait of [1000, 2000, 5000]) {
         await sleep(wait);
         const l = (await screen()).split('\n').filter(x => x.trim());
         console.log(`   [${name} +${wait}ms] ${JSON.stringify(l.slice(-6, -2))}`);
@@ -146,7 +155,7 @@ app.on('ready', async () => {
       if (after) await after();
       await typeRaw('\x1b'); await sleep(600);          // interrupt, if a turn started
       await typeRaw('\x1b'); await sleep(600);          // and leave a menu
-      await typeRaw('\x7f'.repeat(60)); await sleep(1500);   // clear the draft (a pasted block goes in one backspace)
+      await typeRaw('\x7f'.repeat(400)); await sleep(1500);   // clear the draft (a pasted block goes in one backspace)
       await frames();
     }
 
@@ -167,6 +176,33 @@ app.on('ready', async () => {
         pre: async () => { await typeRaw('/model'); await sleep(600); await typeRaw('\r'); await sleep(2500); } });
       await pasteCase('menu-config', '', doc(5), { settle: 500,
         pre: async () => { await typeRaw('/config'); await sleep(600); await typeRaw('\r'); await sleep(2500); } });
+    }
+    // A document from outside the project (Explorer copy / drag-drop), onto a tab with a draft: BACKLOG #136.
+    if (want('file') || want('drop')) {
+      const dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'paste-doc-'));
+      const docFile = path.join(dir, 'notes.md');
+      fs.writeFileSync(docFile, '# Notes\n\nA document.\n');
+      const longDraft = 'DRAFT-BEFORE ' + 'word '.repeat(70);   // wraps onto three rows
+      const busy = async () => { await typeRaw('Count from 1 to 300, one number per line, no other words.'); await sleep(500); await typeRaw('\r'); await sleep(3500); };
+      if (want('file')) {
+        await pasteCase('file-idle', 'DRAFT-BEFORE', '', { file: docFile });
+        await pasteCase('file-midturn', 'DRAFT-BEFORE', '', { file: docFile, pre: busy, settle: 500 });
+      }
+      if (want('drop')) {
+        await pasteCase('drop-idle-short-draft', 'DRAFT-BEFORE', '', { dropFile: docFile });
+        await pasteCase('drop-idle-wrapped-draft', longDraft, '', { dropFile: docFile });
+        await pasteCase('drop-midturn', 'DRAFT-BEFORE', '', { dropFile: docFile, pre: busy, settle: 500 });
+      }
+    }
+    // A drop from a folder OUTSIDE the project that needs no refusal: the host first types Ctrl-U + `/add-dir <dir>` + CR
+    // (host.js handleDrop). The scratch dir above lives under AppData, which the drop guard refuses, so this one drops the
+    // main checkout's CLAUDE.md, a sibling of this worktree.
+    if (want('grant')) {
+      const outside = path.join(REPO, '..', 'dev', 'CLAUDE.md');
+      const longDraft = 'DRAFT-BEFORE ' + 'word '.repeat(70);
+      if (!fs.existsSync(outside)) throw new Error(`no ${outside} to drop`);
+      await pasteCase('grant-short-draft', 'DRAFT-BEFORE', '', { dropFile: path.resolve(outside) });
+      await pasteCase('grant-wrapped-draft', longDraft, '', { dropFile: path.resolve(outside) });
     }
     if (want('redraw')) {
       await pasteCase('after-resize', 'DRAFT-BEFORE', doc(5), { draftFirst: true,
