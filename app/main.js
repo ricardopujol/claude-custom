@@ -836,7 +836,7 @@ const canvasProbeResolve = CANVAS_PROBE_HOSTS === null ? undefined
   : async (name) => (typeof CANVAS_PROBE_HOSTS[name] === 'string' ? [{ address: CANVAS_PROBE_HOSTS[name], family: 4, trusted: true }] : require('dns').promises.lookup(name, { all: true }));
 // A press inside a native panel view (Claude's panel, the Preview) never reaches the tab page's document: tell the page, which closes an
 // open rail popover on it (#138). One path for both views.
-function tellPressed(owner) { if (!owner.isDestroyed()) owner.send('canvas:pressed'); }
+function tellPressed(owner) { if (!owner.isDestroyed()) owner.send('canvas:pressed'); }   // the channel name is historical: it serves the Preview too
 const canvasViews = createCanvasViews({
   WebContentsView, session,
   resolveHost: canvasProbeResolve,

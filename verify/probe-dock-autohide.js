@@ -395,11 +395,11 @@ async function main() {
   await sleep(HOVER_REST_MS);
   const rested = await viewState(app);
   check('3: a REAL pointer resting on the git icon (the page reports it :hover) for ' + HOVER_REST_MS + ' ms opens nothing', gitOn && rested.popover === null && rested.railState.module === null, JSON.stringify([gitOn, rested.railState]));
-  const sweptOn = [];
-  for (const id of railMods(await viewState(app))) sweptOn.push(await pointerOn(id));
+  const sweptOn = []; const railIds = railMods(await viewState(app));
+  for (const id of railIds) sweptOn.push(await pointerOn(id));
   await sleep(HOVER_REST_MS);
   const swept = await viewState(app);
-  check('3: ...and sweeping the pointer over every rail icon (each reported :hover) opens nothing either', sweptOn.length === 2 && sweptOn.every(Boolean) && swept.popover === null && swept.railState.module === null, JSON.stringify([sweptOn, swept.railState]));
+  check('3: ...and sweeping the pointer over every rail icon (each reported :hover) opens nothing either', sweptOn.length === railIds.length && railIds.length > 1 && sweptOn.every(Boolean) && swept.popover === null && swept.railState.module === null, JSON.stringify([sweptOn, swept.railState]));
   await view(app, 'railClick', { id: 'git' });
   const open = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   check('3: a click on the tab opens the panel', !!open && open.popover.module === 'git' && open.railState.module === 'git', JSON.stringify(open && open.railState));

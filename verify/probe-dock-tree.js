@@ -1235,7 +1235,7 @@ async function main() {
     let p = await stFor(v => v.popover);
     await sleep(400);                                                // it slides in (dpeek-from-right): read its box once it has landed
     p = await st();
-    check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with only the hovered tab at the top (BACKLOG #103) and the Vault panel inside it',
+    check('13: pressing a rail button opens that panel as a popover beside the rail, 280 wide, on top of the terminal, with only the clicked tab at the top (BACKLOG #103) and the Vault panel inside it',
       !!p && p.popover.module === 'vault' && p.popover.on[0] === 'vault' && p.popover.panels[0] === 'vault' && p.popover.tabs.length === 1 && p.popover.tabs[0] === 'vault'
         && p.popover.hit && Math.abs(p.popover.rect.width - 280) <= 1 && p.popover.rect.right <= p.rails[0].rect.left + 1 && p.popover.rect.left >= p.dock.left - 1
         && p.popover.panelRects[0].left >= p.popover.rect.left - 1 && p.popover.panelRects[0].right <= p.popover.rect.right + 1 && p.popover.panelRects[0].height > 100,

@@ -2011,7 +2011,7 @@ function canvasSendToSession(text) {
 
 if (canvasBridge && canvasRoot) {
   canvasBridge.onMessage((msg) => { if (msg && msg.kind === 'send') canvasSendToSession(msg.text); });
-  // A press inside Claude's panel is a press outside an open rail popover; its native view never sends this page a pointerdown (#138).
+  // A press inside Claude's panel or the Preview (the channel is named canvas:pressed for both) is a press outside an open rail popover; its native view never sends this page a pointerdown (#138).
   canvasBridge.onPressed(() => { if (peek) { railEvent({ type: 'outside' }); renderLayout({ refit: false }); } });
   // The page asked for a host it has not been given: the question covers the panel until it is answered.
   canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });

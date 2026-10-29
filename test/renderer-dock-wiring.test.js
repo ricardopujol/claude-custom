@@ -431,7 +431,6 @@ test('#138: a press outside closes the popover: on the rail\'s empty strip, and 
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'), /onPressed: \(fn\) =>/);
 });
 
-
 test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
   const pin = fnBody('togglePin');
   assert.match(pin, /unpinning \? DTm\.unpin\(l, id\) : DTm\.pin\(l, id\)/);
