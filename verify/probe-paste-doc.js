@@ -204,6 +204,16 @@ app.on('ready', async () => {
       await pasteCase('grant-short-draft', 'DRAFT-BEFORE', '', { dropFile: path.resolve(outside) });
       await pasteCase('grant-wrapped-draft', longDraft, '', { dropFile: path.resolve(outside) });
     }
+    // Rows of wrapped draft + a grant-needing drop, one per fresh window (`grant3`, `grant6`): Ctrl-U clears only the last
+    // wrapped row (CLAUDE.md), so the earlier rows are what could be submitted with `/add-dir`. Dumps the whole screen.
+    for (const rows of [3, 6]) {
+      if (!only.includes(`grant${rows}`)) continue;
+      const outside = path.resolve(path.join(REPO, '..', 'dev', 'CLAUDE.md'));
+      const cols = await js('term.cols');
+      const draft = 'DRAFT-BEFORE ' + 'word '.repeat(Math.ceil(((rows - 1) * cols + 20) / 5));
+      await pasteCase(`grant-${rows}-rows`, draft, '', { dropFile: outside });
+      console.log(`[grant-${rows}-rows] cols=${cols} draftLen=${draft.length}\n` + (await screen()).split('\n').filter(l => l.trim()).slice(-24).join('\n'));
+    }
     if (want('redraw')) {
       await pasteCase('after-resize', 'DRAFT-BEFORE', doc(5), { draftFirst: true,
         after: async () => { win.setSize(1200, 760); await sleep(500); },

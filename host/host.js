@@ -98,7 +98,7 @@ const { createModServer } = require('./mod-feed');
 const { createContextSource } = require('./context-source');
 const { modEnabled, modPluginDirFor, modOffReason, readCliVersion } = require('./cc-mod-settings');
 const { createModRecordHandler } = require('./mod-records');
-const { planDrop, quote, MAX_DROP_FILES } = require('./drop');
+const { planDrop, grantWrites, quote, MAX_DROP_FILES } = require('./drop');
 const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
@@ -904,23 +904,23 @@ function checkQuotaWarning(quota) {
 // impossible. The remaining risk is a slow TUI, which is recorded rather than
 // pretended away.
 const PTY_LINE_GAP_MS = 350;
-const CTRL_U = String.fromCharCode(21);      // clear the input line
+const PTY_KEY_GAP_MS = 80;                   // between the Ctrl-U keys and the Enter of a grant: each must be its own write (#136)
 const ptyQueue = [];
 let ptyDraining = false;
 
-function enqueuePty(text) {
-  ptyQueue.push(text);
+function enqueuePty(text, gap = PTY_LINE_GAP_MS) {
+  ptyQueue.push({ text, gap });
   if (ptyDraining) return;
   ptyDraining = true;
   const step = () => {
-    const next = ptyQueue.shift();
-    if (next === undefined) { ptyDraining = false; return; }
+    const item = ptyQueue.shift();
+    if (item === undefined) { ptyDraining = false; return; }
     // A window the session lock blocked has no pty yet: nothing to type into.
     if (!term) { console.log('[host] no session yet; dropped a queued pty line'); setTimeout(step, 0); return; }
-    try { writeInput(next); } catch (err) {
+    try { writeInput(item.text); } catch (err) {
       console.log('[host] pty write failed:', err && err.message);
     }
-    setTimeout(step, PTY_LINE_GAP_MS);
+    setTimeout(step, item.gap);
   };
   step();
 }
@@ -976,7 +976,11 @@ function handleDrop(msg, ws) {
     // LINE-CLEARED FIRST (Ctrl+U). Typed blind onto a prompt the user has
     // already started, `/add-dir ...` does not begin with `/` any more -- so the
     // CR submits their half-written message to the model and grants nothing.
-    enqueuePty(CTRL_U + '/add-dir ' + quote(dir) + '\r');
+    // One write per key and per command (host/drop.js grantWrites, #136): a wrapped draft needs a Ctrl-U per row, and a
+    // key sharing a write with text, or an Enter trailing it, is not reliably taken as one.
+    // The Enter keeps the long gap: the next line must wait for the TUI to act on it.
+    const writes = grantWrites(dir, termState.lines());
+    writes.forEach((w, i) => enqueuePty(w, i === writes.length - 1 ? PTY_LINE_GAP_MS : PTY_KEY_GAP_MS));
     granted.push(dir);
   }
   if (plan.text) enqueuePty(plan.text);

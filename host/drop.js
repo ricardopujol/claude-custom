@@ -195,6 +195,29 @@ function refusalFor(dir, { home, configDir }) {
 // before they reach here.
 const quote = p => (/[\s"]/.test(p) ? '"' + p.replace(/"/g, BACKSLASH + '"') + '"' : p);
 
+// BACKLOG #136. Ctrl-U in the CLI's prompt kills only the LAST wrapped row (verify/probe-ctrl-u-wrapped.js), and a key that
+// shares a write with text may not be taken as a key at all (verify/probe-paste-doc.js grant6: a 6-row draft kept its first
+// rows, `/add-dir` was appended and the Enter sent the lot to the model). So a grant clears one row per Ctrl-U, each its own
+// write, then types the command, then sends Enter alone.
+const CTRL_U = String.fromCharCode(21);
+const MAX_CLEAR_ROWS = 12;
+const RULE_LINE = new RegExp('^' + String.fromCharCode(0x2500) + '{10,}');
+
+// How many rows the prompt box holds: the lines between the last two rules of the screen. 1 when it can't be found.
+function promptRows(lines) {
+  if (!Array.isArray(lines)) return 1;
+  const rules = [];
+  lines.forEach((l, i) => { if (typeof l === 'string' && RULE_LINE.test(l)) rules.push(i); });
+  if (rules.length < 2) return 1;
+  const rows = rules[rules.length - 1] - rules[rules.length - 2] - 1;
+  return Math.min(MAX_CLEAR_ROWS, Math.max(1, rows));
+}
+
+// The pty writes for one `/add-dir`, in order. `lines` is the current screen (termState.lines()).
+function grantWrites(dir, lines) {
+  return [...Array(promptRows(lines)).fill(CTRL_U), '/add-dir ' + quote(dir), '\r'];
+}
+
 /**
  * Decide what a drop should do. PURE: the caller supplies everything.
  *
@@ -278,6 +301,6 @@ function planDrop({ entries = [], cwd, home = null, configDir = null, alreadyGra
 }
 
 module.exports = {
-  planDrop, MAX_DROP_FILES, canon, normSlashes, isInside, isRootish, quote,
+  planDrop, promptRows, grantWrites, CTRL_U, MAX_CLEAR_ROWS, MAX_DROP_FILES, canon, normSlashes, isInside, isRootish, quote,
   TERMINAL_UNSAFE, SENSITIVE_SEGMENTS, SENSITIVE_ROOTS,
 };
