@@ -648,13 +648,14 @@ function createShell(deps) {
   }
 
   /**
-   * A branch tab whose claude exited (its host went with it: the poll saw the port refuse) keeps a dead page that says
-   * "[claude exited]" and nothing could start another session in it (BACKLOG #140). Its page is dropped and its record goes
-   * back to unstarted, so the selection starts it afresh, the way it retries a failed start. Side and shell tabs have their own
-   * reopen (a menu item), so they are left alone.
+   * A branch tab whose claude exited keeps a dead page, and a click on it starts a fresh session (BACKLOG #140): the page is
+   * dropped and the record goes back to unstarted, so select() starts it as it retries a failed start. Side and shell tabs
+   * have their own reopen; a folder being removed or already merged (finishing), or a reader with unsaved edits (#50), is left as it is.
    */
   function resetEnded(tab) {
-    if (!tab.started || tab.starting || tab.ended !== true || isCompanionEntry(tab)) return;
+    if (!tab.started || tab.ended !== true || isCompanionEntry(tab)) return;
+    const phase = phaseOf(tab.key);
+    if (phase === 'removing' || phase === 'finishing' || readerUnsavedOf(tab)) return;
     if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
     tab.view = null;
     tab.started = false;
@@ -663,8 +664,8 @@ function createShell(deps) {
     tab.status = null;
   }
 
-  /** Select a tab, starting it (or retrying a failed start, or restarting an ended session) as needed. */
-  function select(key) {
+  /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
+  function select(key, restart = false) {
     const next = tabModel.select(model(), key);
     if (next === null) return Promise.resolve();
     closeNotice = null;
@@ -672,7 +673,7 @@ function createShell(deps) {
     const tab = tabByKey(next);
     let started = Promise.resolve();
     if (tab) {
-      resetEnded(tab);
+      if (restart) resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
     }
@@ -1435,7 +1436,7 @@ function createShell(deps) {
   // opens, it just doesn't take the selection later.
   function userSelect(key) {
     selectWhenListed = null;
-    return select(key);
+    return select(key, true);
   }
 
   /** view query: which close button the blocked pane offers. */

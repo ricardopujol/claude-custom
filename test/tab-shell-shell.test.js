@@ -393,6 +393,36 @@ test('the menu offers Open shell here, then Go to shell, then Restart shell once
   assert.deepStrictEqual(h.shell.shellMenu(skey('feat-a')), { enabled: true, label: 'Restart shell', target: key('feat-a') });
 });
 
+test('BACKLOG #140: selecting an exited shell tab restarts nothing (its own menu restarts it)', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  delete h.running[7702];
+  await h.shell.poll();
+  const before = h.spawns.length;
+  await h.shell.select(skey('feat-a'));
+  await flush();
+  assert.strictEqual(h.spawns.length, before);
+  assert.ok(!h.viewsGone.includes(skey('feat-a')));
+});
+
+test('BACKLOG #140: closing a showing shell tab whose branch tab’s claude ended does not restart that claude', async () => {
+  const h = await opened();
+  await h.shell.select(key('feat-a'));
+  await flush();
+  await h.shell.openShell(key('feat-a'));
+  await h.shell.select(skey('feat-a'));
+  delete h.running[7701];                             // the branch tab’s claude exits
+  await h.shell.poll();
+  await flush();
+  const own = () => h.spawns.filter(s => s.key === key('feat-a')).length;
+  const before = own();
+  await h.shell.closeTab(skey('feat-a'));
+  await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), 'its branch tab shows');
+  assert.strictEqual(own(), before, 'and stays dead');
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+});
+
 test('an exited shell says so on its tab', async () => {
   const h = await opened();
   await h.shell.openShell(key('feat-a'));
