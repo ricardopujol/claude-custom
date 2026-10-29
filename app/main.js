@@ -22,6 +22,7 @@
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { createToastHolder } = require('./toast-holder');
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
@@ -511,6 +512,12 @@ const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sen
 // finishes loading, or goes away, is handled far from where the handlers are.
 let leanBridge = null;
 const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
+// Holds each OS toast until it's clicked or closed, so its click can't be lost to garbage collection (#145).
+const toasts = createToastHolder({
+  Notification,
+  onClick: (sender) => { if (tabShell) tabShell.attentionClick(sender); },
+  log: (m) => console.log(m),
+});
 const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
 
 // Focus mode (layout pass L1, #1): only the terminal shows. Per window and not
@@ -1500,14 +1507,8 @@ function registerIpc() {
     // two apart is what took two wrong diagnoses to learn.
     if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${focused})`);
     if (surfaces.toast && Notification.isSupported()) {
-      const n = new Notification({
-        title: String(surfaces.toast.title || 'claude-custom'),
-        body: String(surfaces.toast.body || ''),
-        silent: !!surfaces.toast.silent,
-      });
-      // The click goes to the tab that raised it, and to the window.
-      n.on('click', () => { tabShell.attentionClick(event.sender); });
-      n.show();
+      // The click goes to the tab that raised it, and to the window; the holder keeps the toast alive until then.
+      toasts.show(surfaces.toast, event.sender);
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.

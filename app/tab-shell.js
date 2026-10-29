@@ -1227,13 +1227,15 @@ function createShell(deps) {
     return true;
   }
 
-  /** The tab whose view sent an attention message: a click selects it. */
+  /**
+   * The tab whose view sent an attention message: a click selects it. The window comes forward either way: the toast
+   * was this window's, so a click must never fall through to another one because its tab has since closed (#145).
+   */
   function attentionClick(sender) {
     const tab = tabForSender(sender);
-    if (!tab) return false;
-    select(tab.key);
+    if (tab) select(tab.key);
     ui.focusWindow();
-    return true;
+    return !!tab;
   }
 
   /**
