@@ -56,7 +56,7 @@ function statusFieldsText(fields) {
  */
 function statusFieldsView(fields, statusInHeader) {
   const chips = statusFieldsChips(fields);
-  return { text: chips.map(c => c.text).join('  │  '), chips, shown: statusInHeader === true && chips.length > 0 };
+  return { chips, shown: statusInHeader === true && chips.length > 0 };
 }
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the
