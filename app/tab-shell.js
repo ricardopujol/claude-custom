@@ -647,7 +647,23 @@ function createShell(deps) {
     if (tab.view) views.send(tab, 'tab-selected');
   }
 
-  /** Select a tab, starting it (or retrying a failed start) as needed. */
+  /**
+   * A branch tab whose claude exited (its host went with it: the poll saw the port refuse) keeps a dead page that says
+   * "[claude exited]" and nothing could start another session in it (BACKLOG #140). Its page is dropped and its record goes
+   * back to unstarted, so the selection starts it afresh, the way it retries a failed start. Side and shell tabs have their own
+   * reopen (a menu item), so they are left alone.
+   */
+  function resetEnded(tab) {
+    if (!tab.started || tab.starting || tab.ended !== true || isCompanionEntry(tab)) return;
+    if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+    tab.view = null;
+    tab.started = false;
+    tab.port = null;
+    tab.token = null;
+    tab.status = null;
+  }
+
+  /** Select a tab, starting it (or retrying a failed start, or restarting an ended session) as needed. */
   function select(key) {
     const next = tabModel.select(model(), key);
     if (next === null) return Promise.resolve();
@@ -656,6 +672,7 @@ function createShell(deps) {
     const tab = tabByKey(next);
     let started = Promise.resolve();
     if (tab) {
+      resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
     }

@@ -1644,6 +1644,35 @@ test('Dexter F2: a tab started again after its session ended is watched again', 
   assert.strictEqual(removes(h).length, 1);
 });
 
+test('BACKLOG #140: selecting a tab whose claude exited starts a fresh session in it', async () => {
+  const h = await startedA();                       // feat-a on 7701
+  const first = h.shell.tabByKey(key('feat-a'));
+  delete h.running[7701];                           // A's claude exits and its host with it
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(first.ended, true, 'the poll saw the session end');
+  const spawnsBefore = h.spawns.filter(s => s.key === key('feat-a')).length;
+  const viewsBefore = h.viewsMade.length;
+  await h.shell.select(key('feat-a'));              // the click on the tab in the top bar
+  await flush();
+  assert.strictEqual(h.spawns.filter(s => s.key === key('feat-a')).length, spawnsBefore + 1, 'a new host is spawned');
+  assert.ok(h.viewsGone.includes(key('feat-a')), 'the dead page is dropped');
+  assert.strictEqual(h.viewsMade.length, viewsBefore + 1, 'and a new page is made');
+  assert.strictEqual(first.started, true);
+  assert.strictEqual(first.ended, false, 'watched again');
+});
+
+test('BACKLOG #140: selecting a tab whose session is still running starts nothing', async () => {
+  const h = await startedA();
+  const spawnsBefore = h.spawns.length;
+  const viewsBefore = h.viewsMade.length;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(h.spawns.length, spawnsBefore);
+  assert.strictEqual(h.viewsMade.length, viewsBefore);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+});
+
 test('Dexter F3: a setup that fails before git lists the worktree keeps its error for the tab', async () => {
   const h = harness({ running: { 7700: wt('dev') } });
   await h.shell.open();
