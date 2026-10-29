@@ -689,3 +689,9 @@ test('OSC 7501: the strip page has the dot colours from its existing tokens and 
   const b = html.indexOf('<script src="./tab-strip.js"></script>');
   assert.ok(a !== -1 && b !== -1 && a < b, 'program-status-display.js must load before tab-strip.js');
 });
+
+// BACKLOG #156. Read as text here: tab-shell.js and tab-strip.js are mutated modules. The behaviour is in test/peer-cue-tab.test.js and test/tab-shell.test.js.
+test('held messages: the shell cuts a renderer\'s count with cleanCount, and the strip page styles the envelope', () => {
+  assert.match(read('app/tab-shell.js'), /messages: tabStatusLib\.cleanCount\(o\.messages\)/);
+  assert.match(read('app/tab-strip.html'), /\.envelope\s*\{/);
+});

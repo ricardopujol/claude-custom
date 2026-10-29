@@ -226,13 +226,13 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
 });
 
 test('sanitizeStatus keeps eight fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+    { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, messages: 3, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
+    { working: true, needsInput: true, finished: true, messages: 3, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
 });
 
 // Backlog #39: a renderer may say its summary, cut down to the known fields; garbage is none.

@@ -6,8 +6,6 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('fs');
-const path = require('path');
 const { tabStatus, afterSelected, sameStatus } = require('../app/tab-status');
 const { stripModel } = require('../app/tab-model');
 const { paint } = require('../app/tab-strip');
@@ -68,9 +66,3 @@ test('one message reads in the singular', () => {
   assert.match(env.title, /^1 message from another session/);
 });
 
-test('the shell cuts a renderer\'s count down to the same whole number, and the strip page styles the envelope', () => {
-  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8');
-  assert.match(shell, /messages: tabStatusLib\.cleanCount\(o\.messages\)/);
-  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
-  assert.match(html, /\.envelope\s*\{/);
-});

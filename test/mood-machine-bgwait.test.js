@@ -13,7 +13,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { createMoodMachine, WAIT_GRACE_MS, WAIT_RED_MS, QUIET_STALL_MS, BGWAIT, BGWAIT_LATE } = require('../host/mood-machine');
+const { createMoodMachine, STALL_MS, WAIT_GRACE_MS, WAIT_RED_MS, QUIET_STALL_MS, BGWAIT, BGWAIT_LATE } = require('../host/mood-machine');
 
 function rig(opts = {}) {
   let t = 1_000_000;
@@ -211,7 +211,8 @@ test('PROPERTY: a run with a live background task is never asleep inside the qui
       else { r.post(a, 'Bash', r.pre(a, 'Bash', { command: 'true' })); lastEvent = r.now(); }
       const silence = r.now() - lastEvent;
       const d = r.detail('miguel');
-      if (silence >= QUIET_STALL_MS) { gone = true; continue; }
+      // let go: a run that launched nothing is reaped after the ordinary stall, one that waits on background work after the longer limit
+      if (silence >= (quiet ? QUIET_STALL_MS : STALL_MS)) { gone = true; continue; }
       if (quiet && silence < QUIET_STALL_MS) assert.notStrictEqual(r.m.stateOf('miguel'), 'sleeping', 'never asleep while waiting');
       if (d === BGWAIT_LATE) assert.ok(quiet && silence >= WAIT_RED_MS, 'red only at 30 minutes or more');
       if (quiet && silence >= WAIT_RED_MS && silence < QUIET_STALL_MS) assert.strictEqual(d, BGWAIT_LATE);
