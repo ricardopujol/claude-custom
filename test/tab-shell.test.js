@@ -397,8 +397,9 @@ test('the selected tab going away moves the selection to a neighbour, never to n
   h.listText = porcelain([THREE[0], THREE[2]]);
   await h.shell.poll();
   await flush();
-  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
-  assert.ok(h.shell.tabByKey(key('feat-b')).started, 'and the neighbour starts');
+  // 1B (BACKLOG #139): the neighbour is a tab you can see. feat-b has no session, so it is a Lanes row and is not started for you.
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('dev'));
+  assert.ok(!h.shell.tabByKey(key('feat-b')).started, 'feat-b stays a menu row');
 });
 
 test('a git failure is NO observation: every tab stays, and the notice says why', async () => {
@@ -455,6 +456,17 @@ test('hand close: confirm, then stop + close; the tab stays closed while git lis
 
 test('closing the selected tab selects a neighbour', async () => {
   const h = harness();
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));
+  await h.shell.closeTab(key('feat-a'));
+  // 1B (BACKLOG #139): the next tab you can see, not the next lane in the list (feat-b has no session: it is a Lanes row).
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('dev'));
+  assert.ok(!h.shell.tabByKey(key('feat-b')).started);
+});
+
+test('closing the selected tab selects its right-hand neighbour when that one has a tab', async () => {
+  const h = harness({ running: { 7701: wt('feat-b') } });
   await h.shell.open();
   await flush();
   await h.shell.select(key('feat-a'));
@@ -1917,8 +1929,9 @@ test('the override is offered only for a blocked tab, and reaches only that view
   assert.deepStrictEqual(h.shell.menuState('nope'), { key: 'nope', override: false, close: false });
 });
 
-test('next/previous cycle through every tab and wrap, starting what they land on', async () => {
-  const h = harness();
+test('next/previous cycle through every tab you can see and wrap, starting what they land on', async () => {
+  // 1B (BACKLOG #139): only running lanes have a tab, so the other two are running before the cycle starts.
+  const h = harness({ running: { 7701: wt('feat-a'), 7702: wt('feat-b') } });
   await h.shell.open();
   await flush();
   const seen = [];

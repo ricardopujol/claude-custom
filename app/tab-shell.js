@@ -45,6 +45,7 @@ const { parsePorcelain, tabWorktrees } = require('../host/worktree-list');
 const { checkBranch } = require('../host/worktree-ops');
 const { normPath, isInside } = require('../host/project-layout');
 const tabModel = require('./tab-model');
+const tabLanes = require('./tab-lanes');
 const programStatusDisplay = require('./program-status-display');
 const tabStatusLib = require('./tab-status');
 const occupancyDisplay = require('./occupancy-display');
@@ -217,6 +218,23 @@ const INTEGRATION = ['develop', 'main', 'master'];
 
 const errorText = (err) => (err && err.message) || String(err);
 
+/** The strip's kept layout, strictly typed, or an empty one: a missing, throwing or odd layout is "nothing kept". */
+function readLayout(layout, log) {
+  const empty = { order: [], closed: [] };
+  if (!layout || typeof layout.load !== 'function') return empty;
+  try {
+    const l = layout.load();
+    if (!l || typeof l !== 'object') return empty;
+    const closed = (Array.isArray(l.closed) ? l.closed : [])
+      .filter(c => c && typeof c.key === 'string' && c.key !== '' && typeof c.path === 'string' && c.path !== '')
+      .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null }));
+    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed };
+  } catch (err) {
+    log('[shell] layout.load threw:', err && err.message);
+    return empty;
+  }
+}
+
 function createShell(deps) {
   // Usage counters are fire and forget: a throwing counter never aborts a tab's setup or removal.
   const countUse = (key) => { try { if (typeof deps.usage === 'function') deps.usage(key); } catch { /* counting never breaks a tab */ } };
@@ -243,6 +261,9 @@ function createShell(deps) {
     //   brief({ number, branch, worktree }) -> Promise<{ ok, issue, brief, existed } | { ok: false, error, issue }>
     //   forBranch(branch) -> { number, title, url } | null    the issue a branch the + form made came from (the cached list)
     issues = null,
+    // BACKLOG #141: what the strip keeps between runs (host/strip-layout.js): `load()` -> { order, closed } and
+    // `save({ order, closed })`. Optional; either may throw, and neither ever takes the strip down.
+    layout = null,
   } = deps;
   for (const k of HOST_DEPS) {
     if (!hosts || typeof hosts[k] !== 'function') throw new TypeError(`createShell: hosts.${k} is required`);
@@ -254,7 +275,11 @@ function createShell(deps) {
 
   const queue = createQueue();
   const tabs = new Map();        // key -> record
-  let state = lifecycle.initial();
+  // What the strip kept from the last run (a layout that fails to read is an empty one): the drag order of the lanes, and the
+  // lanes closed by hand, which stay closed (the reducer's `dismissed` is seeded from them).
+  const kept = readLayout(layout, log);
+  let state = { ...lifecycle.initial(), dismissed: kept.closed.map(c => c.key) };
+  let order = kept.order;        // lane keys in the person's drag order (app/tab-lanes.js); develop is not in it
   let selectedKey = null;
   let polling = false;
   let lastError = null;
@@ -273,7 +298,7 @@ function createShell(deps) {
   const typing = new Map();
   let typingSeq = 0;
   const typingMerged = new Set();     // the tabs a Type /merged is typing into right now
-  let closedByHand = [];               // [{ key, path, branch }], most recent first
+  let closedByHand = kept.closed;      // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
 
@@ -380,7 +405,7 @@ function createShell(deps) {
   function entriesWithSides() {
     // The side or shell tab showing, if one is (#119 A5: after its branch tab come its side tab, then its shell tab).
     const sideSelected = companionParentOf(selectedKey) !== null && tabs.has(selectedKey) ? selectedKey : null;
-    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf });
+    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf, order });
     const out = [];
     for (const e of base) {
       const mine = tabs.get(e.key);
@@ -436,6 +461,8 @@ function createShell(deps) {
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
+        // Its session's host stopped answering after it ran (the strip keeps such a lane only while it is selected).
+        ended: !!t && t.ended === true,
         badge: tabModel.badgeFor(e),
         phaseText: t && t.ended === true && e.side === true ? SIDE_ENDED_TEXT
           : t && t.ended === true && e.shell === true ? SHELL_ENDED_TEXT : tabModel.phaseText(e),
@@ -447,7 +474,9 @@ function createShell(deps) {
         // #63: the CPU warning chip ({ pct, level } or null).
         resourceWarn: readResourceWarn(e.key),
         // #44 + #47: the hatched edge. The warning is this tab's OWN reported turn, nothing guessed.
-        occupancy: occupancyDisplay.tabOccupancy(claims, e.key, { keyOf, turn: t && t.status ? t.status.turn : null, now: at }),
+        // #151: develop's tab never wears it (an agent of another lane writes into dev\ all day, e.g. its brief under
+        // documentation\). Display only: the claims, the Map and every close check still see that agent.
+        occupancy: e.isDev ? null : occupancyDisplay.tabOccupancy(claims, e.key, { keyOf, turn: t && t.status ? t.status.turn : null, now: at }),
         // Backlog #39: the hover card's lines for this tab's local-model summary ([] when it has none).
         summaryLines: summaryDisplay.hoverLines(e.summary, at, e.summaryNote),
       };
@@ -481,10 +510,73 @@ function createShell(deps) {
   function snapshot() {
     const m = model();
     const sel = m.find(e => e.selected);
+    // 1B (documentation/DESIGN_TAB_STRIP.md): `model` is every lane; `strip` is the ones with a tab (a running session, or
+    // the selected one) and `lanes` the rows of the Lanes menu for the rest. The strip draws `strip`, never `model`.
+    const placed = tabLanes.placeLanes(m, closedRows());
     return {
-      model: m, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode,
+      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode,
       create: create ? { ...create } : null,
     };
+  }
+
+  /** The tabs you can see (1B), in strip order, from a model. Ctrl+Tab and a close's neighbour only ever land here. */
+  const visibleOf = (m) => tabLanes.placeLanes(m, []).strip;
+
+  /** Save the strip's order and its closed lanes. Quiet: a layout that is missing, refuses or throws changes nothing on screen. */
+  function persistLayout() {
+    if (!layout || typeof layout.save !== 'function') return;
+    const closed = closedByHand.filter(c => state.dismissed.includes(c.key));
+    // An order only keeps lanes that still exist or can be reopened.
+    const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key)]);
+    order = order.filter(k => known.has(k));
+    try {
+      const r = layout.save({ order, closed });
+      if (r && r.ok === false) log('[shell] layout.save refused:', r.error);
+    } catch (err) {
+      log('[shell] layout.save threw:', err && err.message);
+    }
+  }
+
+  /**
+   * Drag to reorder (BACKLOG #141): the lane `key` goes just before `beforeKey`, or to the end for null. Develop is
+   * first and never moves, and dropping on it means "first of the others". A side or shell tab moves with its lane, so
+   * only a lane's own key is accepted. Saved.
+   */
+  function reorder(key, beforeKey) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    const m = model();
+    const lanes = m.filter(e => !isCompanionEntry(e) && !e.isDev).map(e => e.key);
+    if (typeof key !== 'string' || !lanes.includes(key)) return { ok: false, error: 'not a lane that can move' };
+    const dev = m.find(e => e.isDev);
+    let before = null;
+    if (typeof beforeKey === 'string') {
+      if (dev && beforeKey === dev.key) before = lanes[0];
+      else if (lanes.includes(beforeKey)) before = beforeKey;
+      else return { ok: false, error: 'not a lane to drop before' };
+    }
+    // every lane in the order it is drawn, then the ones only the saved order knows (a lane closed by hand)
+    const base = [...lanes, ...order.filter(k => !lanes.includes(k))];
+    order = tabLanes.moveKey(base, key, before);
+    persistLayout();
+    publish();
+    return { ok: true };
+  }
+
+  /**
+   * The Lanes menu's rows (app/tab-lanes.js lanesMenuRows): `hiddenKeys` are the tabs the strip page couldn't fit (2A),
+   * checked against what is really on the strip (develop and the selected tab are never hidden). The first lane closed by
+   * hand carries the Ctrl+Shift+T shortcut, which reopens it.
+   */
+  function lanesMenu(hiddenKeys) {
+    const placed = tabLanes.placeLanes(model(), closedRows());
+    const asked = new Set((Array.isArray(hiddenKeys) ? hiddenKeys : []).filter(k => typeof k === 'string'));
+    const hidden = placed.strip.filter(e => asked.has(e.key) && !isCompanionEntry(e) && !e.isDev && !e.selected);
+    let first = true;
+    return tabLanes.lanesMenuRows(placed.menu, hidden).map((r) => {
+      if (r.action !== 'reopen' || !first) return r;
+      first = false;
+      return { ...r, shortcut: 'Ctrl+Shift+T' };
+    });
   }
 
   function publish() {
@@ -724,7 +816,8 @@ function createShell(deps) {
         createdWarnings.delete(key);
         if (key === selectedKey || sideShowing) {
           // The model from before, without the side tab that went with it: it is not a neighbour to land on.
-          selectedKey = tabModel.afterClose(before.filter(e => e.parentKey !== key), key, key);
+          // ... and only a tab you can see (1B): a close must not start a lane that is just a row in the Lanes menu.
+          selectedKey = tabModel.afterClose(visibleOf(before).filter(e => e.parentKey !== key), key, key);
           reselect = true;
         }
       } else if (a.type === 'error') {
@@ -767,6 +860,9 @@ function createShell(deps) {
     const { state: next, actions } = lifecycle.reconcile(state, observation);
     state = next;
     apply(actions, before);
+    // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
+    const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
+    if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
     if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
       const k = selectWhenListed;
       selectWhenListed = null;
@@ -982,6 +1078,7 @@ function createShell(deps) {
     state = next;
     // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first.
     closedByHand = [{ key, path: tab.cwd, branch: tab.branch }, ...closedByHand.filter(c => c.key !== key)];
+    persistLayout();     // closed stays closed after a restart
     // The stop is sent here, where its outcome can be seen, not fire-and-forget.
     apply(actions.filter(a => a.type !== 'stop'), before);
     if (target) {
@@ -1154,22 +1251,27 @@ function createShell(deps) {
     return true;
   }
 
-  /** Tabs closed by hand that git still lists, most recent first. */
-  function reopenable() {
+  /** Lanes closed by hand that git still lists, most recent first: the Lanes menu's "closed" rows. */
+  function closedRows() {
     return closedByHand
       .filter(c => state.dismissed.includes(c.key))
-      .slice(0, REOPEN_MAX)
       .map(c => ({ key: c.key, label: typeof c.branch === 'string' && c.branch ? c.branch : path.basename(c.path) }));
+  }
+
+  /** The first few of them: what the `+` menu's probe answer and a plain Ctrl+Shift+T look at. */
+  function reopenable() {
+    return closedRows().slice(0, REOPEN_MAX);
   }
 
   /** *Reopen* / Ctrl+Shift+T: no key reopens the most recent one. */
   async function reopen(key) {
-    const list = reopenable();
+    const list = closedRows();
     const target = key === undefined ? list[0] : list.find(c => c.key === key);
     if (!target) return { ok: false, error: 'nothing to reopen' };
     const entry = closedByHand.find(c => c.key === target.key);
     state = lifecycle.reopen(state, entry.path).state;
     closedByHand = closedByHand.filter(c => c.key !== target.key);
+    persistLayout();
     selectWhenListed = target.key;
     await poll();
     return { ok: true };
@@ -1425,7 +1527,8 @@ function createShell(deps) {
   }
 
   function step(n) {
-    const m = model();
+    // Over the tabs you can see: Ctrl+Tab must not start every lane that is only a row in the Lanes menu (1B).
+    const m = visibleOf(model());
     const sel = m.find(e => e.selected);
     const next = tabModel.neighbour(m, sel ? sel.key : null, n);
     return next === null ? Promise.resolve() : userSelect(next);
@@ -1670,7 +1773,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reorder, lanesMenu, looked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
