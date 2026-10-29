@@ -75,9 +75,14 @@ function pulseFor(st) {
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
  * matching `selectedKey`, else dev (else the first entry).
  */
-function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
+function stripModel(state, runtime, selectedKey, { keyOf = identity, order = null } = {}) {
   const tabs = state && Array.isArray(state.tabs) ? state.tabs.filter(t => t && isString(t.path)) : [];
-  const devFirst = [...tabs.filter(t => t.isDev === true), ...tabs.filter(t => t.isDev !== true)];
+  // `order`: the person's drag order of the other lanes (keys; app/tab-lanes.js applyOrder). Develop is first whatever it says.
+  const lanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
+  const devFirst = [
+    ...tabs.filter(t => t.isDev === true),
+    ...lanes.applyOrder(tabs.filter(t => t.isDev !== true), order, t => keyOf(t.path)),
+  ];
   const keys = devFirst.map(t => keyOf(t.path));
   let selIdx = keys.indexOf(selectedKey);
   if (selIdx < 0) selIdx = devFirst.findIndex(t => t.isDev === true);
