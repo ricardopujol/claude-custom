@@ -149,12 +149,6 @@ test('property: a null never becomes a point at 0 (the number of drawn points eq
   }));
 });
 
-test('chipHtml: each figure is followed by its own sparkline, and a figure is escaped text', () => {
-  const html = D.chipHtml('CPU 71%', '21.4 GB / 32.0 GB', run(NOW - 60000, 4), NOW);
-  assert.match(html, /^<span class="tbr-n">CPU 71%<\/span><svg class="hs"[\s\S]*<\/svg><span class="tbr-n">21\.4 GB \/ 32\.0 GB<\/span><svg class="hs"/);
-  assert.match(D.chipHtml('<b>', '&', [], NOW), /<span class="tbr-n">&lt;b&gt;<\/span>[\s\S]*<span class="tbr-n">&amp;<\/span>/);
-});
-
 // ---- review fixes (Dexter, PR #114 D1 D2 D5 D6, Miguel S1) -----------------------------------------------------------------
 
 test('D2: where the total is null, "ours" is null too: nothing orange is drawn across a break in the total', () => {
@@ -291,14 +285,6 @@ test('popover: the panel link closes it (the page then opens the panel)', () => 
 });
 
 // ---- round 2 (Ricardo, 2026-10-27): the header chip is figures only; the graphs show on hover ------------------------------
-
-test('chipFiguresHtml: the header chip is the figures alone, no sparkline, escaped, and the GPU only when asked for', () => {
-  const html = D.chipFiguresHtml('CPU 71%', '21.4 GB / 32.0 GB');
-  assert.strictEqual(html, '<span class="tbr-n">CPU 71%</span><span class="tbr-n">21.4 GB / 32.0 GB</span>');
-  assert.ok(!/<svg/.test(D.chipFiguresHtml('a', 'b', 'GPU 12%')));
-  assert.match(D.chipFiguresHtml('a', 'b', 'GPU 12%'), /<span class="tbr-n">GPU 12%<\/span>$/);
-  assert.strictEqual(D.chipFiguresHtml('<b>', '&'), '<span class="tbr-n">&lt;b&gt;</span><span class="tbr-n">&amp;</span>');
-});
 
 test('popover peek: a hover opens it as a peek, leaving the chip closes a peek, and a hover while open changes nothing', () => {
   const peek = step(D.popoverInit(), { type: 'hover-open' }).state;

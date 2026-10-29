@@ -228,19 +228,6 @@ function popover(points, nowAt, hover = {}) {
     + '<button type="button" class="hg-link" data-hist-act="open-panel">Open Resources panel →</button>';
 }
 
-/** The header chip's inside: the figures alone (CPU, memory, and the GPU's when there is one). The graphs live in the popover and the panel. */
-function chipFiguresHtml(cpuText, memText, gpuText = null) {
-  return `<span class="tbr-n">${esc(cpuText)}</span><span class="tbr-n">${esc(memText)}</span>`
-    + (typeof gpuText === 'string' ? `<span class="tbr-n">${esc(gpuText)}</span>` : '');
-}
-
-/** The chip's inside with sparklines (no longer drawn in the header since round 2): the CPU figure and its sparkline, the memory figure and its sparkline, then (when there is one) the GPU's. */
-function chipHtml(cpuText, memText, points, nowAt, gpuText = null) {
-  return `<span class="tbr-n">${esc(cpuText)}</span>${sparkline(points, 'cpu', nowAt)}`
-    + `<span class="tbr-n">${esc(memText)}</span>${sparkline(points, 'mem', nowAt)}`
-    + (typeof gpuText === 'string' ? `<span class="tbr-n">${esc(gpuText)}</span>${sparkline(points, 'gpu', nowAt)}` : '');
-}
-
 // ---- the popover's state machine ------------------------------------------------------------------------------------
 
 /**
@@ -293,7 +280,7 @@ function hoverView(points, nowAt, hover) {
   return { cpu: one('cpu'), mem: one('mem'), gpu: one('gpu'), gpumem: one('gpumem') };
 }
 
-const API = { popoverInit, popoverStep, hoverView, describe, chipHtml, chipFiguresHtml, gpuGraphs, hasGpu, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
+const API = { popoverInit, popoverStep, hoverView, describe, gpuGraphs, hasGpu, esc, figuresOf, fractions, segments, sparkline, minutesAgo, readout, graph, popover };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.resourcesHistoryDisplay = API;
