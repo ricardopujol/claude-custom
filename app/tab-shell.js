@@ -147,6 +147,7 @@ function sanitizeStatus(s) {
     working: o.working === true,
     needsInput: o.needsInput === true,
     finished: o.finished === true,
+    messages: tabStatusLib.cleanCount(o.messages),
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
     turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
@@ -1197,7 +1198,7 @@ function createShell(deps) {
    */
   function looked() {
     const tab = tabByKey(selectedKey);
-    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished)) return false;
+    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished || tab.status.messages > 0)) return false;
     tab.status = tabStatusLib.afterSelected(tab.status);
     if (tab.view) views.send(tab, 'tab-selected');
     publish();
@@ -1209,7 +1210,7 @@ function createShell(deps) {
     const tab = tabForSender(sender);
     if (!tab) return false;
     let next = sanitizeStatus(status);
-    if ((next.needsInput || next.finished) && tab.key === selectedKey && ui.isFocused()) {
+    if ((next.needsInput || next.finished || next.messages > 0) && tab.key === selectedKey && ui.isFocused()) {
       next = tabStatusLib.afterSelected(next);
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }

@@ -1380,6 +1380,8 @@
     /* BACKLOG #80 / #55: speech bubbles. A joke over the card, never a status: italic, in quotes, clicks pass through. */
     #bubbles-toggle { cursor: pointer; }
     #bubbles-toggle.off { opacity: .45; }
+    #cue-sound-toggle { cursor: pointer; }
+    #cue-sound-toggle.off { opacity: .45; }
     .agent-bubble {
       position: absolute; bottom: 4px; right: 8px; z-index: 5; max-width: 72%; pointer-events: none;
       padding: 2px 9px; border-radius: 11px; font-size: 11px; font-style: italic; line-height: 1.35;
@@ -2515,6 +2517,7 @@
             <button type="button" id="roster-search-btn" aria-pressed="false" aria-label="Search the agents in this tab" title="Search the agents in this tab">🔍</button>
             <button type="button" id="images-toggle" aria-label="Show agent images" title="Agent images: reading the setting">🖼</button>
             <button type="button" id="bubbles-toggle" aria-label="Speech bubbles" title="Speech bubbles: reading the setting">💬</button>
+            <button type="button" id="cue-sound-toggle" aria-label="Knock for a held message" aria-pressed="true" title="A held message from another session knocks once. Click to mute.">🔔</button>
           </nav>
           <div id="roster-search-row" hidden>
             <input type="search" id="roster-search" autocomplete="off" spellcheck="false"
@@ -2719,6 +2722,7 @@
   <script src="./agent-card-display.js"></script>
   <script src="./agent-pause-display.js"></script>
   <script src="./agent-state-display.js"></script>
+  <script src="./peer-cue.js"></script>
   <script src="./portrait-media-display.js"></script>
   <script src="./bg-media-display.js"></script>
   <script src="./fonts-display.js"></script>

@@ -73,6 +73,13 @@ function makeShellStartedAt(stat = fs.statSync) {
   };
 }
 
+// A cross-session message HELD FOR APPROVAL (BACKLOG #156). The CLI opens a dialog for it whose own notification text is this
+// (measured in the 2.1.312 bundle's dialog table), and sends that text as a Notification hook. Read off the hook, not off the
+// terminal; matched on the words, not on `notification_type`, which the dialog table doesn't fix. It never approves anything.
+const HELD_PEER_MESSAGE = 'A message from another session needs your approval';
+const isHeldPeerMessage = p => !!p && typeof p.message === 'string' &&
+  p.message.trim().replace(/\.$/, '').toLowerCase() === HELD_PEER_MESSAGE.toLowerCase();
+
 // Events only the MAIN session makes while it works. A subagent's tool events carry agent_id.
 const MAIN_ACTIVITY = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit']);
 
@@ -300,6 +307,15 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
     }
 
     if (event === 'Notification') {
+      if (isHeldPeerMessage(p)) {
+        // agentNamed: with 7501 live the root record says nothing of a message that is waiting to be let in.
+        raise('peer-message', {
+          title: project ? `${project} has a message for you` : 'A message for you',
+          body: HELD_PEER_MESSAGE,
+          urgent: true,
+        }, { agentNamed: true });
+        return;
+      }
       if (p.notification_type === 'idle_prompt') {
         if (settled()) { held = null; releaseFinished({}); return; }
         armShellTimer();                                       // quiet now, and the shell is still young: wait for it
@@ -372,4 +388,4 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
   return emitter;
 }
 
-module.exports = { createAttention, makeShellStartedAt, unrefTimer, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT, SHELL_MAX_AGE_MS };
+module.exports = { createAttention, makeShellStartedAt, unrefTimer, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT, SHELL_MAX_AGE_MS, isHeldPeerMessage, HELD_PEER_MESSAGE };

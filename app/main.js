@@ -758,6 +758,8 @@ function createTabView(tab) {
       contextIsolation: true,
       nodeIntegration: false,
       preload: path.join(__dirname, 'preload.js'),
+      // BACKLOG #156: the knock for a held message (app/peer-cue.js) plays while nobody has touched this page, in a tab that may be hidden.
+      autoplayPolicy: 'no-user-gesture-required',
     },
   });
   win.contentView.addChildView(view);
