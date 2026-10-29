@@ -1653,6 +1653,141 @@ test('Dexter F2: a tab started again after its session ended is watched again', 
   assert.strictEqual(removes(h).length, 1);
 });
 
+test('BACKLOG #140: selecting a tab whose claude exited starts a fresh session in it', async () => {
+  const h = await startedA();                       // feat-a on 7701
+  const first = h.shell.tabByKey(key('feat-a'));
+  delete h.running[7701];                           // A's claude exits and its host with it
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(first.ended, true, 'the poll saw the session end');
+  const spawnsBefore = h.spawns.filter(s => s.key === key('feat-a')).length;
+  const viewsBefore = h.viewsMade.length;
+  await h.shell.select(key('feat-a'));              // the click on the tab in the top bar
+  await flush();
+  assert.strictEqual(h.spawns.filter(s => s.key === key('feat-a')).length, spawnsBefore + 1, 'a new host is spawned');
+  assert.ok(h.viewsGone.includes(key('feat-a')), 'the dead page is dropped');
+  assert.strictEqual(h.viewsMade.length, viewsBefore + 1, 'and a new page is made');
+  assert.strictEqual(first.started, true);
+  assert.strictEqual(first.ended, false, 'watched again');
+});
+
+test('BACKLOG #140: selecting a tab whose session is still running starts nothing', async () => {
+  const h = await startedA();
+  const spawnsBefore = h.spawns.length;
+  const viewsBefore = h.viewsMade.length;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(h.spawns.length, spawnsBefore);
+  assert.strictEqual(h.viewsMade.length, viewsBefore);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+});
+
+// An ended branch tab with its claude gone: feat-a started on 7701, then its host exits and the poll sees it.
+async function endedA(opts = {}) {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, ...opts });
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));
+  await flush();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).ended, true, 'the sequence needs an ended tab');
+  return h;
+}
+const spawnsOfA = (h) => h.spawns.filter(s => s.key === key('feat-a')).length;
+
+test('BACKLOG #140: the restart resets the old session (port, token, status) and the new one gets its own', async () => {
+  const h = await endedA();
+  const a = h.shell.tabByKey(key('feat-a'));
+  const oldToken = a.token;
+  a.status = { stale: true };
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.notStrictEqual(a.token, oldToken, 'a fresh token, not the dead host’s');
+  assert.ok(/^fresh-/.test(a.token));
+  assert.notStrictEqual(a.status && a.status.stale, true, 'the dead session’s status is gone');
+  assert.strictEqual(a.port, 7701);
+});
+
+test('BACKLOG #140: a restart whose host never comes up stays retryable', async () => {
+  const h = await endedA();
+  const before = spawnsOfA(h);
+  h.failWait = true;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  const a = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(spawnsOfA(h), before + 1);
+  assert.strictEqual(a.started, false);
+  assert.ok(a.error, 'the failure is shown on the tab');
+  h.failWait = false;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(a.started, true, 'the next click starts it');
+  assert.strictEqual(a.error, null);
+});
+
+test('BACKLOG #140: only a person’s click restarts: a toast click, or a selection the shell makes, leaves the dead page', async () => {
+  const h = await endedA();
+  const a = h.shell.tabByKey(key('feat-a'));
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-b'));                // away from A (a person's click on B: B starts)
+  await flush();
+  h.shell.attentionClick(a.view);                     // a stale toast of the dead page
+  await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), 'the toast still selects it');
+  assert.strictEqual(spawnsOfA(h), before, 'but starts nothing');
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+  assert.strictEqual(a.started, true);
+});
+
+test('BACKLOG #140: no restart while its folder is being removed', async () => {
+  const h = await startedA();
+  let release;
+  const gate = new Promise(r => { release = r; });
+  h.removeResult = () => gate;
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();                               // merged, host seen
+  await flush();
+  delete h.running[7701];                             // it /exits
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'removing', 'the sequence needs a folder being removed');
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(spawnsOfA(h), before);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, true);
+  release({ ok: true, already: false });
+  await flush();
+});
+
+test('BACKLOG #140: no restart for a merged tab that is finishing (kept for a hand sweep)', async () => {
+  const h = await startedA();
+  delete h.running[7701];                             // A ended before its merge
+  await h.shell.poll();
+  await flush();
+  h.markers[key('feat-a')] = 'feat/a';                // /merged lands
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'finishing');
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(spawnsOfA(h), before);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+});
+
+test('BACKLOG #140: no restart while the dead page’s code reader holds an unsaved edit (#50)', async () => {
+  const h = await endedA({ safety: { readerUnsaved: (t) => (t.key === key('feat-a') ? 'src/x.js' : null) } });
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(spawnsOfA(h), before);
+  assert.ok(!h.viewsGone.includes(key('feat-a')), 'the page and its text stay');
+});
+
 test('Dexter F3: a setup that fails before git lists the worktree keeps its error for the tab', async () => {
   const h = harness({ running: { 7700: wt('dev') } });
   await h.shell.open();

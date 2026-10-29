@@ -647,8 +647,25 @@ function createShell(deps) {
     if (tab.view) views.send(tab, 'tab-selected');
   }
 
-  /** Select a tab, starting it (or retrying a failed start) as needed. */
-  function select(key) {
+  /**
+   * A branch tab whose claude exited keeps a dead page, and a click on it starts a fresh session (BACKLOG #140): the page is
+   * dropped and the record goes back to unstarted, so select() starts it as it retries a failed start. Side and shell tabs
+   * have their own reopen; a folder being removed or already merged (finishing), or a reader with unsaved edits (#50), is left as it is.
+   */
+  function resetEnded(tab) {
+    if (!tab.started || tab.ended !== true || isCompanionEntry(tab)) return;
+    const phase = phaseOf(tab.key);
+    if (phase === 'removing' || phase === 'finishing' || readerUnsavedOf(tab)) return;
+    if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+    tab.view = null;
+    tab.started = false;
+    tab.port = null;
+    tab.token = null;
+    tab.status = null;
+  }
+
+  /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
+  function select(key, restart = false) {
     const next = tabModel.select(model(), key);
     if (next === null) return Promise.resolve();
     closeNotice = null;
@@ -656,6 +673,7 @@ function createShell(deps) {
     const tab = tabByKey(next);
     let started = Promise.resolve();
     if (tab) {
+      if (restart) resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
     }
@@ -1418,7 +1436,7 @@ function createShell(deps) {
   // opens, it just doesn't take the selection later.
   function userSelect(key) {
     selectWhenListed = null;
-    return select(key);
+    return select(key, true);
   }
 
   /** view query: which close button the blocked pane offers. */
