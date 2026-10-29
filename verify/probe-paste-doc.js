@@ -1,12 +1,14 @@
 'use strict';
 /* BACKLOG #136: pasting a document sends what was typed before it. Real window, real `claude`.
 
-     node verify/probe-paste-doc.js
+     node verify/probe-paste-doc.js [long] [midturn] [menu] [file] [drop] [grant] [redraw]     (no argument = all)
 
-   Types a draft ("DRAFT-BEFORE") into the prompt without Enter, pastes a document through the shipped Ctrl+V path,
-   then reads the screen: did the draft stay in the prompt (good), or was it submitted (a "> DRAFT-BEFORE" turn
-   above an empty prompt, or the spinner)? Cases: a short two-line paste and a long document, both with and
-   without a draft. A submit is interrupted with Esc so it spends next to nothing.
+   Types a draft ("DRAFT-BEFORE") into the prompt without Enter, pastes or drops a document, then reads the screen:
+   did the draft stay in the prompt (good), or was it submitted (a "> DRAFT-BEFORE" turn above an empty prompt, or the
+   spinner)? Exits 1 and prints FAILED: <cases> if any case submitted the draft, sent a raw-CR paste, or (grant cases)
+   never reached the CLI's "Add directory" dialog. A submit is interrupted with Esc so it spends next to nothing.
+   `grant` is the #136 regression: a drop from outside the project onto a short, 3-row, 6-row, taller-than-the-box,
+   hard-newline and cursor-mid-draft draft (PR #223, host/grant-sequence.js).
 
    Same safety as probe-paste.js: the clipboard is snapshotted and restored, ELECTRON_RUN_AS_NODE is only set for
    the host child, only the PIDs this probe started are killed. */
@@ -41,16 +43,17 @@ const saved = { text: clipboard.readText() };
 let host = null;
 let hostLog = '';
 const results = {};
-const bail = setTimeout(() => { console.error(`TIMED OUT at ${at()}`); finish(2); }, 240000);
+const failures = [];
+const bail = setTimeout(() => { console.error(`TIMED OUT at ${at()}`); finish(2); }, 900000);
 
 async function finish(code) {
   clearTimeout(bail);
   try { clipboard.clear(); if (saved.text) clipboard.writeText(saved.text); } catch {}
   try { if (host) host.kill(); } catch {}
+  console.log('--- host grant/drop lines ---\n' + hostLog.split('\n').filter(l => /\[host\] (grant|drop)/.test(l)).join('\n'));
   console.log('\n=== RESULTS ===\n' + JSON.stringify(results, null, 2));
   await sleep(1000);
-  process.exitCode = code;
-  app.quit();
+  app.exit(code);   // app.quit() ends with 0 whatever process.exitCode says; a probe with a verdict must exit with it
 }
 
 const doc = n => Array.from({ length: n }, (_, i) => `DOC-LINE-${i + 1} lorem ipsum dolor sit amet consectetur`).join('\n');
@@ -79,7 +82,7 @@ app.on('ready', async () => {
 
     const js = src => Promise.race([
       win.webContents.executeJavaScript(src),
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`page call hung: ${src.slice(0, 60)}`)), 10000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`page call hung: ${src.slice(0, 60)}`)), 45000)),
     ]);
     async function until(pred, ms, step = 250) {
       for (let t = 0; t < ms; t += step) { const v = await pred(); if (v) return v; await sleep(step); }
@@ -107,11 +110,12 @@ app.on('ready', async () => {
 
     // `direct` skips Ctrl+V and types the same bracketed bytes straight to the pty: if the CLI behaves the same,
     // the paste path is not ours. `watch` logs the prompt box at 1, 3 and 9 s after the paste.
-    async function pasteCase(name, draft, text, { file = null, dropFile = null, direct = false, draftFirst = false, pre = null, after = null, settle = 0 } = {}) {
+    async function pasteCase(name, draft, text, { file = null, dropFile = null, direct = false, draftFirst = false, pre = null, after = null, settle = 0, typeDraft = null, expect = null } = {}) {
       await frames();
-      if (draft && draftFirst) { await typeRaw(draft); await sleep(800); }
+      const putDraft = async () => { if (typeDraft) await typeDraft(); else await typeRaw(draft); await sleep(800); };
+      if (draft && draftFirst) await putDraft();
       if (pre) await pre();
-      if (draft && !draftFirst) { await typeRaw(draft); await sleep(800); }
+      if (draft && !draftFirst) await putDraft();
       if (settle) await sleep(settle);
       if (file) {
         // A real file on the clipboard, as Explorer's Copy leaves it (CF_HDROP): no text, no bitmap.
@@ -125,7 +129,8 @@ app.on('ready', async () => {
         // The renderer's drop handler ends in exactly this frame (userInput of {type:'drop', entries}); a native
         // drag cannot be driven from here, so this drives the host half, which is where the pty bytes are decided.
         await typeRaw(JSON.stringify({ type: 'drop', entries: [{ path: dropFile, isDirectory: false }] }));
-        await sleep(2000);
+        // The host clears the box key by key and reads the screen back before the Enter (host/grant-sequence.js): up to ~15 s for a tall draft.
+        for (let t = 0; t < 25000; t += 500) { await sleep(500); if (/Add directory to workspace/.test(await screen())) break; }
       } else if (direct) {
         await typeRaw('\x1b[200~' + text.replace(/\r?\n/g, '\r') + '\x1b[201~');
       } else {
@@ -149,11 +154,18 @@ app.on('ready', async () => {
       const submitted = !!draft && draftOnScreen && !draftInBox;
       // A frame that carries text with a CR but no bracket start is the raw path: an Enter per line.
       const rawCr = f.some(x => { try { const d = JSON.parse(x).data; return /\r/.test(d) && !d.startsWith('\x1b[200~'); } catch { return false; } });
-      results[name] = { bracketedModeWas: bracketed, frameCount: f.length, rawCr, draftInBox,
+      // A verdict, not just a printout: nothing the person typed may have reached the model, and a grant must have got as far as the
+      // CLI's own "Add directory" dialog (the Enter went out on a read-back that matched).
+      const dialogSeen = /Add directory to workspace/.test(scr);
+      const ok = !submitted && !rawCr && (expect !== 'dialog' || dialogSeen);
+      if (!ok) failures.push(name);
+      results[name] = { ok, bracketedModeWas: bracketed, frameCount: f.length, rawCr, draftInBox, dialogSeen,
         frames: f.map(esc), submitted, tail: lines.slice(-14) };
-      console.log(`[${at()}] ${name} bracketed=${bracketed} frames=${f.length} rawCr=${rawCr} draftInBox=${draftInBox} submitted=${submitted}`);
+      console.log(`[${at()}] ${ok ? 'PASS' : 'FAIL'} ${name} bracketed=${bracketed} frames=${f.length} rawCr=${rawCr} draftInBox=${draftInBox} dialog=${dialogSeen} submitted=${submitted}`);
       if (after) await after();
-      await typeRaw('\x1b'); await sleep(600);          // interrupt, if a turn started
+      // A drop's own dialog is answered by this Esc; the host then types the dropped path (its chain waits for the prompt), so give it
+      // the time, or that text lands in the NEXT case's draft.
+      await typeRaw('\x1b'); await sleep(dropFile ? 4000 : 600);          // interrupt, if a turn started
       await typeRaw('\x1b'); await sleep(600);          // and leave a menu
       await typeRaw('\x7f'.repeat(400)); await sleep(1500);   // clear the draft (a pasted block goes in one backspace)
       await frames();
@@ -194,32 +206,41 @@ app.on('ready', async () => {
         await pasteCase('drop-midturn', 'DRAFT-BEFORE', '', { dropFile: docFile, pre: busy, settle: 500 });
       }
     }
-    // A drop from a folder OUTSIDE the project that needs no refusal: the host first types Ctrl-U + `/add-dir <dir>` + CR
-    // (host.js handleDrop). The scratch dir above lives under AppData, which the drop guard refuses, so this one drops the
-    // main checkout's CLAUDE.md, a sibling of this worktree.
-    if (want('grant')) {
-      const outside = path.join(REPO, '..', 'dev', 'CLAUDE.md');
-      const longDraft = 'DRAFT-BEFORE ' + 'word '.repeat(70);
-      if (!fs.existsSync(outside)) throw new Error(`no ${outside} to drop`);
-      await pasteCase('grant-short-draft', 'DRAFT-BEFORE', '', { dropFile: path.resolve(outside) });
-      await pasteCase('grant-wrapped-draft', longDraft, '', { dropFile: path.resolve(outside) });
-    }
-    // Rows of wrapped draft + a grant-needing drop, one per fresh window (`grant3`, `grant6`): Ctrl-U clears only the last
-    // wrapped row (CLAUDE.md), so the earlier rows are what could be submitted with `/add-dir`. Dumps the whole screen.
-    for (const rows of [3, 6]) {
-      if (!only.includes(`grant${rows}`)) continue;
-      const outside = path.resolve(path.join(REPO, '..', 'dev', 'CLAUDE.md'));
+    // A drop from a folder OUTSIDE the project that needs a grant: the host clears the prompt, types `/add-dir <dir>` and presses Enter
+    // only when the screen reads back as exactly that line (BACKLOG #136, PR #223). The scratch dir above lives under AppData, which
+    // the drop guard refuses, so these drop the main checkout's CLAUDE.md, a sibling of this worktree. Each case: nothing the person
+    // typed may reach the model, and the CLI's "Add directory" dialog must open.
+    const gwant = n => want('grant') || only.includes(n);
+    if (want('grant') || only.some(a => a.startsWith('grant-'))) {
+      // One DIFFERENT outside folder per case: the host remembers a folder it already asked for (grantedDirs), so a second drop from
+      // the same folder types only the path and never grants again.
+      const outsideFiles = ['CLAUDE.md', 'host/drop.js', 'app/main.js', 'test/drop.test.js', 'verify/README.md', 'scripts/usage-report.js']
+        .map(f => path.resolve(path.join(REPO, '..', 'dev', f)));
+      for (const f of outsideFiles) if (!fs.existsSync(f)) throw new Error(`no ${f} to drop`);
+      const outsideOf = n => outsideFiles[['grant-short-draft', 'grant-3-rows', 'grant-6-rows', 'grant-taller-than-box', 'grant-newline-draft', 'grant-cursor-mid-draft'].indexOf(n)];
       const cols = await js('term.cols');
-      const draft = 'DRAFT-BEFORE ' + 'word '.repeat(Math.ceil(((rows - 1) * cols + 20) / 5));
-      await pasteCase(`grant-${rows}-rows`, draft, '', { dropFile: outside });
-      console.log(`[grant-${rows}-rows] cols=${cols} draftLen=${draft.length}\n` + (await screen()).split('\n').filter(l => l.trim()).slice(-24).join('\n'));
+      const termRows = await js('term.rows');
+      const cap = Math.max(1, Math.floor(termRows / 2) - 5);
+      const rowsOf = n => 'DRAFT-BEFORE ' + 'word '.repeat(Math.ceil(((n - 1) * cols + 20) / 5));
+      console.log(`   [grant] cols=${cols} termRows=${termRows} box cap=${cap}`);
+      if (gwant('grant-short-draft')) await pasteCase('grant-short-draft', 'DRAFT-BEFORE', '', { dropFile: outsideOf('grant-short-draft'), expect: 'dialog' });
+      if (gwant('grant-3-rows')) await pasteCase('grant-3-rows', rowsOf(3), '', { dropFile: outsideOf('grant-3-rows'), expect: 'dialog' });
+      if (gwant('grant-6-rows')) await pasteCase('grant-6-rows', rowsOf(6), '', { dropFile: outsideOf('grant-6-rows'), expect: 'dialog' });
+      if (gwant('grant-taller-than-box')) await pasteCase('grant-taller-than-box', rowsOf(cap + 10), '', { dropFile: outsideOf('grant-taller-than-box'), expect: 'dialog' });
+      // A real newline in the draft (backslash + Enter), which Ctrl-U does not cross as a wrapped row.
+      if (gwant('grant-newline-draft')) await pasteCase('grant-newline-draft', 'DRAFT-BEFORE', '', { dropFile: outsideOf('grant-newline-draft'), expect: 'dialog',
+        typeDraft: async () => { await typeRaw('DRAFT-BEFORE first line'); await sleep(300); await typeRaw('\\'); await sleep(200); await typeRaw('\r'); await sleep(300); await typeRaw('second line'); } });
+      // The cursor moved back into the draft before the drop.
+      if (gwant('grant-cursor-mid-draft')) await pasteCase('grant-cursor-mid-draft', 'DRAFT-BEFORE', '', { dropFile: outsideOf('grant-cursor-mid-draft'), expect: 'dialog',
+        typeDraft: async () => { await typeRaw('DRAFT-BEFORE the rest of a sentence'); await sleep(300); await typeRaw('\x1b[D'.repeat(12)); } });
     }
     if (want('redraw')) {
       await pasteCase('after-resize', 'DRAFT-BEFORE', doc(5), { draftFirst: true,
         after: async () => { win.setSize(1200, 760); await sleep(500); },
         pre: async () => { win.setSize(900, 600); await sleep(250); } });
     }
-    await finish(0);
+    console.log(failures.length ? 'FAILED: ' + failures.join(', ') : 'ALL CASES PASSED');
+    await finish(failures.length ? 1 : 0);
   } catch (err) {
     console.error('probe failed:', err && err.stack);
     console.error('--- host log tail ---\n' + hostLog.split('\n').slice(-30).join('\n'));
