@@ -107,9 +107,12 @@ app.on('ready', async () => {
 
     // `direct` skips Ctrl+V and types the same bracketed bytes straight to the pty: if the CLI behaves the same,
     // the paste path is not ours. `watch` logs the prompt box at 1, 3 and 9 s after the paste.
-    async function pasteCase(name, draft, text, { direct = false } = {}) {
+    async function pasteCase(name, draft, text, { direct = false, draftFirst = false, pre = null, after = null, settle = 0 } = {}) {
       await frames();
-      if (draft) { await typeRaw(draft); await sleep(800); }
+      if (draft && draftFirst) { await typeRaw(draft); await sleep(800); }
+      if (pre) await pre();
+      if (draft && !draftFirst) { await typeRaw(draft); await sleep(800); }
+      if (settle) await sleep(settle);
       clipboard.writeText(text);
       win.focus(); win.webContents.focus();
       await js(`term.focus(); true`);
@@ -129,18 +132,47 @@ app.on('ready', async () => {
       const scr = await screen();
       const lines = scr.split('\n').filter(l => l.trim());
       // A submitted draft shows as a user turn ("> DRAFT-BEFORE") with the spinner/ a reply following it.
-      const submitted = !!draft && lines.some(l => /^\s*>\s*DRAFT-BEFORE/.test(l)) && !/─{10,}\s*\n?\s*>\s*DRAFT-BEFORE/.test(scr);
-      results[name] = { bracketedModeWas: bracketed, frameCount: f.length,
+      // The prompt box is what follows the last-but-one rule line; a draft above it was sent (or is queued).
+      const rules = lines.map((l, i) => /^─{10,}/.test(l) ? i : -1).filter(i => i >= 0);
+      const box = rules.length >= 2 ? lines.slice(rules[rules.length - 2], rules[rules.length - 1]) : lines.slice(-6);
+      const draftInBox = box.some(l => l.includes('DRAFT-BEFORE'));
+      const draftOnScreen = lines.some(l => l.includes('DRAFT-BEFORE'));
+      const submitted = !!draft && draftOnScreen && !draftInBox;
+      // A frame that carries text with a CR but no bracket start is the raw path: an Enter per line.
+      const rawCr = f.some(x => { try { const d = JSON.parse(x).data; return /\r/.test(d) && !d.startsWith('\x1b[200~'); } catch { return false; } });
+      results[name] = { bracketedModeWas: bracketed, frameCount: f.length, rawCr, draftInBox,
         frames: f.map(esc), submitted, tail: lines.slice(-14) };
-      console.log(`[${at()}] ${name} bracketed=${bracketed} frames=${f.length} submitted=${submitted}`);
+      console.log(`[${at()}] ${name} bracketed=${bracketed} frames=${f.length} rawCr=${rawCr} draftInBox=${draftInBox} submitted=${submitted}`);
+      if (after) await after();
       await typeRaw('\x1b'); await sleep(600);          // interrupt, if a turn started
+      await typeRaw('\x1b'); await sleep(600);          // and leave a menu
       await typeRaw('\x7f'.repeat(60)); await sleep(1500);   // clear the draft (a pasted block goes in one backspace)
       await frames();
     }
 
-    await pasteCase('long-with-draft', 'DRAFT-BEFORE', doc(60));
-    await pasteCase('long-direct', 'DRAFT-BEFORE', doc(60), { direct: true });
-    await pasteCase('huge-with-draft', 'DRAFT-BEFORE', doc(1200));
+    const only = process.argv.slice(2).filter(a => !a.startsWith('--'));
+    const want = n => !only.length || only.includes(n);
+    if (want('long')) {
+      await pasteCase('long-with-draft', 'DRAFT-BEFORE', doc(60));
+      await pasteCase('long-direct', 'DRAFT-BEFORE', doc(60), { direct: true });
+      await pasteCase('huge-with-draft', 'DRAFT-BEFORE', doc(1200));
+    }
+    // Where bracketed mode might be off at paste time (BACKLOG #136): mid-turn, on a menu, right after a redraw.
+    if (want('midturn')) {
+      await pasteCase('mid-turn', 'DRAFT-BEFORE', doc(5), { settle: 500,
+        pre: async () => { await typeRaw('Count from 1 to 300, one number per line, no other words.'); await sleep(500); await typeRaw('\r'); await sleep(3500); } });
+    }
+    if (want('menu')) {
+      await pasteCase('menu-model', '', doc(5), { settle: 500,
+        pre: async () => { await typeRaw('/model'); await sleep(600); await typeRaw('\r'); await sleep(2500); } });
+      await pasteCase('menu-config', '', doc(5), { settle: 500,
+        pre: async () => { await typeRaw('/config'); await sleep(600); await typeRaw('\r'); await sleep(2500); } });
+    }
+    if (want('redraw')) {
+      await pasteCase('after-resize', 'DRAFT-BEFORE', doc(5), { draftFirst: true,
+        after: async () => { win.setSize(1200, 760); await sleep(500); },
+        pre: async () => { win.setSize(900, 600); await sleep(250); } });
+    }
     await finish(0);
   } catch (err) {
     console.error('probe failed:', err && err.stack);
