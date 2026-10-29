@@ -457,9 +457,10 @@ async function main() {
   check('4b: a press in the terminal closes it', !!termClosed && termClosed.railState.module === null, JSON.stringify(termClosed && termClosed.railState));
   await view(app, 'railClick', { id: 'git' });
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
+  const beforeFocus = (await viewState(app)).held;
   await view(app, 'focus', { selector: '#term textarea' });
   const focusClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
-  check('4b: the keyboard going into the terminal closes it (keys never type into it behind an open panel)', !!focusClosed && focusClosed.railState.module === null, JSON.stringify(focusClosed && focusClosed.railState));
+  check('4b: the keyboard going into the terminal closes it (keys never type into it behind an open panel)', !!focusClosed && focusClosed.railState.module === null, JSON.stringify([beforeFocus, focusClosed && focusClosed.railState]));
 
 
   // 5 ---------------------------------------------------------------------------------
