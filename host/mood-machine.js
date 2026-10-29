@@ -40,6 +40,11 @@
  *             nothing in flight and no background work launched
  *   helper    a FOREGROUND child it launched is still running (a background
  *             child leaves its parent free, so it isn't waiting)
+ *   bgwait    (BACKLOG #155) it launched BACKGROUND work (a backgrounded Bash or
+ *             child: `quiet`), has nothing else in flight and has been silent
+ *             for WAIT_GRACE_MS: it waits on a task that emits no hook of its
+ *             own. `bgwaitlate` from WAIT_RED_MS (30 min) of it. Never asleep or
+ *             reaped meanwhile: its own silence limit is QUIET_STALL_MS.
  *   running   a Bash call in flight, PreToolUse .. PostToolUse
  *   writing   Edit | Write | NotebookEdit    (working only; an error shows stressed)
  *   reading   Read | Grep | Glob
@@ -70,6 +75,8 @@ const RUNNING = 'running';
 const WAITING = 'waiting';
 const STUCK = 'stuck';
 const HELPER = 'helper';
+const BGWAIT = 'bgwait';
+const BGWAIT_LATE = 'bgwaitlate';
 
 const READ_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit']);
@@ -83,6 +90,22 @@ const TOOL_LINGER_MS = 5_000;
 // which reaps), and an agent that launched background work is never judged
 // by silence at all.
 const STUCK_MS = 20 * 60_000;
+// A run with background work launched shows "waiting..." after this much silence (a thinking agent is silent a moment too), red
+// after WAIT_RED_MS (Ricardo, 2026-10-29: "after 30 minutes"). What it waits on emits no hook, so its silence limit is longer
+// than a run's STALL_MS: the stall clock would have reaped it at the very minute it turned red.
+const WAIT_GRACE_MS = 30_000;
+const WAIT_RED_MS = 30 * 60_000;
+const QUIET_STALL_MS = 2 * 60 * 60_000;
+const WAIT_ON_MAX = 60;
+// What an agent waits on, for the card: one line, capped. Null when there's nothing to say.
+function waitText(...candidates) {
+  for (const c of candidates) {
+    if (typeof c !== 'string') continue;
+    const line = c.trim().split(/\r?\n/)[0].replace(/\s+/g, ' ');
+    if (line) return line.length > WAIT_ON_MAX ? line.slice(0, WAIT_ON_MAX - 1) + '…' : line;
+  }
+  return null;
+}
 
 // Claude Code's hook payloads are not strongly shaped, so failure detection is
 // deliberately permissive: treating a stringy "1" as success would make the
@@ -183,7 +206,8 @@ function remember(set, value) {
 
 function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_MS,
                             maxInvocationMs = MAX_INVOCATION_MS, flashMs = FLASH_MS,
-                            toolLingerMs = TOOL_LINGER_MS, stuckMs = STUCK_MS } = {}) {
+                            toolLingerMs = TOOL_LINGER_MS, stuckMs = STUCK_MS, waitGraceMs = WAIT_GRACE_MS,
+                            waitRedMs = WAIT_RED_MS, quietStallMs = QUIET_STALL_MS } = {}) {
   const machine = new EventEmitter();
 
   // CARDS, keyed by agent NAME: the face the roster shows.
@@ -262,7 +286,9 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // What an invocation tracks for its detail: Bash calls in flight (id -> when
   // they began), the newest file tool ({kind, at}), and an open prompt.
   // `quiet`: it launched background work, so what it waits on emits no hook of its own.
-  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, modWaitingAt: 0, clearedAt: -Infinity, quiet: false });
+  const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, modWaitingAt: 0, clearedAt: -Infinity, quiet: false, waitOn: null });
+  // It launched background work: what it then waits on emits no hook of its own. `what` is the one-line thing it waits on.
+  function holdFor(inv, what) { inv.quiet = true; inv.waitOn = what; }
 
   const isOpen = inv => invs.includes(inv);
   const running = name => invs.some(i => i.name === name);
@@ -279,7 +305,9 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
 
   // The card's finer name for `state` (see DETAIL, in the header): the best of
   // what its invocations show, or `state` itself.
-  const RANK = { [WAITING]: 6, [STUCK]: 5, [HELPER]: 4, [RUNNING]: 3, [WRITING]: 3, [READING]: 3 };
+  const RANK = { [WAITING]: 6, [STUCK]: 5, [HELPER]: 4, [RUNNING]: 3, [WRITING]: 3, [READING]: 3, [BGWAIT_LATE]: 2.5, [BGWAIT]: 2 };
+  // The wait on its own background work: nothing in flight, no foreground child, silent long enough.
+  const bgWaiting = (inv, t) => inv.quiet && inv.bash.size === 0 && fgChildren(inv).length === 0 && t - inv.lastActivity >= waitGraceMs;
   function refine(agent, a, state) {
     if (state !== WORKING && state !== STRESSED) return state;
     const t = now();
@@ -294,6 +322,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const flying = [...inv.bash.values()].filter(at => t - at <= stallMs);
       if (repeating || (!kids && !inv.quiet && flying.length === 0 && t - inv.lastActivity > stuckMs)) { take(STUCK); continue; }
       if (kids) { take(HELPER); continue; }
+      if (inv.quiet && flying.length === 0 && bgWaiting(inv, t)) take(t - inv.lastActivity >= waitRedMs ? BGWAIT_LATE : BGWAIT);
       if (state !== WORKING) continue;       // an error outranks what the tool is
       let newest = null;
       for (const at of flying) if (!newest || at >= newest.at) newest = { kind: RUNNING, at };
@@ -505,7 +534,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         inv.mate = mate;
       }
       inv.background = true;
-      if (inv.parent) inv.parent.quiet = true;
+      if (inv.parent) holdFor(inv.parent, waitText(inv.description, inv.name));
       return;
     }
     const named = typeof r?.agentId === 'string' && r.agentId ? r.agentId : null;
@@ -514,7 +543,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (!adopt(inv, named)) return;
     }
     if (isCompleted(r)) { finish(inv); return; }
-    if (isAsyncLaunch(r)) { inv.background = true; if (inv.parent) inv.parent.quiet = true; return; }
+    if (isAsyncLaunch(r)) { inv.background = true; if (inv.parent) holdFor(inv.parent, waitText(inv.description, inv.name)); return; }
     // A status we don't know that still names a run: assume it is RUNNING.
     // `completed` is the only status that means done; guessing the other way
     // was the original bug (Miguel, PR #94, #1). Logged, so a renamed status
@@ -522,7 +551,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     if (r && typeof r === 'object' && resultAgentId(r)) {
       console.log(`[mood] unrecognised spawn status ${JSON.stringify(r.status)} naming a run: treated as background`);
       inv.background = true;
-      if (inv.parent) inv.parent.quiet = true;
+      if (inv.parent) holdFor(inv.parent, waitText(inv.description, inv.name));
     }
   }
 
@@ -636,7 +665,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     if (tool === 'Bash') {
       // A background command returns at once; its end is not hooked, so it is never "running" -- and what the run
       // then waits on (TaskOutput) is hooked by nothing, so silence no longer means stuck.
-      if (p.tool_input && p.tool_input.run_in_background === true) { inv.quiet = true; return; }
+      if (p.tool_input && p.tool_input.run_in_background === true) { holdFor(inv, waitText(p.tool_input.description, p.tool_input.command)); return; }
       inv.bash.set(p.tool_use_id ?? `anon:${++serial}`, t);
     } else if (READ_TOOLS.has(tool)) {
       inv.tool = { kind: READING, at: t };
@@ -712,7 +741,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         parent.clearedAt = now();
         parent.bash.clear();
         parent.tool = null;
-        if (inv.background) parent.quiet = true;
+        if (inv.background) holdFor(parent, waitText(input.description, agent));
       }
       setState(agent, a, WORKING);
       return;
@@ -879,9 +908,9 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       // the right question -- the cap reaped a healthy multi-hour run (a
       // mutation gate) at 45 minutes. Only once the CLI labels its calls: an
       // older one has refreshAll() touching everything, so there the cap stays.
-      const capped = !(inv.background && saysWho) && t - inv.startedAt > maxInvocationMs;
+      const capped = !(inv.background && saysWho) && !inv.quiet && t - inv.startedAt > maxInvocationMs;
       // An open prompt is the person's to answer, not a silent run: the stall clock doesn't reap it (the age cap above still does).
-      const stale = capped || (!inv.waiting && !inv.modWaiting && t - inv.lastActivity > stallMs);
+      const stale = capped || (!inv.waiting && !inv.modWaiting && t - inv.lastActivity > (inv.quiet ? quietStallMs : stallMs));
       if (stale && !fgChildren(inv).some(c => !gone.has(c))) gone.add(inv);
     }
     // A reaped run was cut off, so it sleeps at once -- not whenever the idle
@@ -954,6 +983,19 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   machine.watchedEnd = agentId => typeof agentId === 'string' && endedIds.has(agentId);
   // The task line the newest open run of this agent was spawned with (the Agent call's `description`), or undefined. Read-only;
   // the speech bubbles (host/bubbles.js) put it, trimmed, in their prompt.
+  // What the card's "waiting..." says (BACKLOG #155): { on, since } of the longest-waiting run of this agent, while the card shows the
+  // wait; null otherwise. `on` is one line or null; `since` is when the run last said anything (ms).
+  machine.waitOf = agent => {
+    const a = agents.get(agent);
+    if (!a || (a.detail !== BGWAIT && a.detail !== BGWAIT_LATE)) return null;
+    const t = now();
+    let best = null;
+    for (const inv of invs) {
+      if (inv.name !== agent || !inv.quiet || inv.waiting || inv.modWaiting || !bgWaiting(inv, t)) continue;
+      if (best === null || inv.lastActivity < best.lastActivity) best = inv;
+    }
+    return best ? { on: best.waitOn, since: best.lastActivity } : null;
+  };
   machine.taskOf = agent => {
     for (let i = invs.length - 1; i >= 0; i--) {
       if (invs[i].name === agent && typeof invs[i].description === 'string' && invs[i].description) return invs[i].description;
@@ -972,4 +1014,5 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
 module.exports = {
   createMoodMachine, STALL_MS, IDLE_MS, FLASH_MS, REMEMBER_MAX, SLEEPING, WORKING, HAPPY, STRESSED,
   READING, WRITING, RUNNING, WAITING, STUCK, HELPER, TOOL_LINGER_MS, STUCK_MS,
+  BGWAIT, BGWAIT_LATE, WAIT_GRACE_MS, WAIT_RED_MS, QUIET_STALL_MS,
 };

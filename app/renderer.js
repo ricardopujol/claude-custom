@@ -1427,6 +1427,7 @@ function mapInput() {
       tool: mapRates ? mapOwn(mapRates.tools, r.agent) : undefined,
       since: mapSince.has(r.agent) ? mapSince.get(r.agent) : null,
       worktree: claim ? claim.worktree : null,
+      wait: r.wait || null,
     });
   }
   return {
@@ -6099,6 +6100,7 @@ function renderRoster() {
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
       `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
       agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
@@ -6108,6 +6110,11 @@ function renderRoster() {
     `</div>`;
   }).join(''));
 }
+
+// BACKLOG #155: a waiting card counts minutes, and the host only speaks when the detail changes: repaint the roster twice a minute while one waits.
+setInterval(() => {
+  for (const r of roster.values()) if (r.detail === 'bgwait' || r.detail === 'bgwaitlate') { renderRoster(); return; }
+}, 30_000);
 
 function renderRosterIndex(rosterIndex) {
   if (!rosterIndex) return;

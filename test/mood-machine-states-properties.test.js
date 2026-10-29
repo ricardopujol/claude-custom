@@ -27,14 +27,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { createMoodMachine, TOOL_LINGER_MS } = require('../host/mood-machine');
+const { createMoodMachine, TOOL_LINGER_MS, WAIT_GRACE_MS, WAIT_RED_MS } = require('../host/mood-machine');
 
 const MAX_AGENTS = 6;
 const TYPES = ['ta', 'tb', 'tc'];
 const FILE_TOOLS = { Read: 'reading', Grep: 'reading', Glob: 'reading', Edit: 'writing', Write: 'writing', NotebookEdit: 'writing' };
-const FINER = { working: ['working', 'reading', 'writing', 'running', 'waiting', 'stuck', 'helper'],
-  stressed: ['stressed', 'waiting', 'stuck', 'helper'] };
-const RANK = { waiting: 6, stuck: 5, helper: 4, running: 3, reading: 3, writing: 3 };
+const FINER = { working: ['working', 'reading', 'writing', 'running', 'waiting', 'stuck', 'helper', 'bgwait', 'bgwaitlate'],
+  stressed: ['stressed', 'waiting', 'stuck', 'helper', 'bgwait', 'bgwaitlate'] };
+const RANK = { waiting: 6, stuck: 5, helper: 4, running: 3, reading: 3, writing: 3, bgwaitlate: 2.5, bgwait: 2 };
 const STUCK_MS = 30_000;
 
 const opArb = fc.oneof(
@@ -55,7 +55,7 @@ const opArb = fc.oneof(
 
 function simulate(ops, onStep) {
   let t = 1_000_000;
-  const m = createMoodMachine({ now: () => t, stuckMs: STUCK_MS, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12 });
+  const m = createMoodMachine({ now: () => t, stuckMs: STUCK_MS, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12, quietStallMs: 10 ** 12 });
   const changes = [];
   m.on('change', c => changes.push(c));
   const agents = [];          // { id, type, parent, bg, alive, last, waiting, quiet, lastAct }
@@ -194,6 +194,8 @@ function runDetail(a, state, t, loops, fgKids) {
   const silent = !a.quiet && !kids && !bashInFlight && t - a.lastAct > STUCK_MS;
   if ((loops.get(a.type) || { n: 0 }).n >= 3 || silent) return 'stuck';
   if (kids) return 'helper';
+  // BACKLOG #155: background work launched, nothing in flight, silent for the grace: waiting on it (red from 30 minutes)
+  if (a.quiet && !bashInFlight && t - a.lastAct >= WAIT_GRACE_MS) return t - a.lastAct >= WAIT_RED_MS ? 'bgwaitlate' : 'bgwait';
   if (state !== 'working') return state;
   if (bashInFlight) return 'running';
   if (a.last && a.last.kind === 'file' && t - a.last.at <= TOOL_LINGER_MS) return a.last.file;

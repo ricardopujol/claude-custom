@@ -2022,6 +2022,12 @@
     .agent[data-detail="stuck"] .state { color: var(--bad); }
     .agent[data-detail="stuck"] .state-badge { border-color: var(--bad); }
     .agent[data-detail="helper"] .state { color: var(--accent); }
+    /* BACKLOG #155: waiting on background work it launched: amber, red from 30 minutes (the host's bgwaitlate) */
+    .agent[data-detail="bgwait"] .state { color: var(--warn); }
+    .agent[data-detail="bgwait"] .state-badge { border-color: var(--warn); }
+    .agent[data-detail="bgwaitlate"] .state, .agent[data-detail="bgwaitlate"] .wait-note[data-late="true"] { color: var(--bad); }
+    .agent[data-detail="bgwaitlate"] .state-badge { border-color: var(--bad); }
+    .agent .wait-note { font-size: 11px; color: var(--warn); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     @keyframes badge-pulse { 50% { box-shadow: 0 0 0 3px rgba(230,195,74,.35); } }
     @media (prefers-reduced-motion: reduce) { .agent[data-detail="waiting"] .state-badge { animation: none; } }
 
