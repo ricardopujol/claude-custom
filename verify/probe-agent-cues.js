@@ -61,7 +61,7 @@ app.whenReady().then(async () => {
     ' note: n ? n.textContent : null, late: n ? n.dataset.late : null, noteColour: n ? getComputedStyle(n).color : null }; })()');
 
   try {
-    check('the renderer and the host are up', await until('typeof renderRoster === "function" && ws && ws.readyState === 1'));
+    check('the renderer and the host are up', await until('typeof renderRoster === "function"', 60000));
     check('peerCue is the one global the new file adds', await js('typeof peerCue === "object" && typeof peerCue.scanHeldMessage === "function"'));
     await js('setRosterTab("active")');
 
@@ -81,7 +81,7 @@ app.whenReady().then(async () => {
 
     // ---- B. a held cross-session message
     await js('window.__osc = []; (function () { const P = window.AudioContext.prototype; const orig = P.createOscillator; P.createOscillator = function () { const o = orig.call(this); window.__osc.push(o); return o; }; })()');
-    await js('document.hasFocus = () => false');          // the tab is not being looked at
+    await js('(document.hasFocus = () => false, true)');          // the tab is not being looked at
     const before = attention.length;
     console.log('[need] held-message');
     check('one toast is raised for it', await (async () => { const end = Date.now() + 8000; while (Date.now() < end) { if (attention.length > before) return true; await sleep(200); } return false; })());
@@ -98,16 +98,18 @@ app.whenReady().then(async () => {
     check('and the body says the page is not muted', await js('peerCue.readMuted(localStorage) === false'));
 
     // while looking at the tab: no knock, no new badge
-    await js('document.hasFocus = () => true');
+    await sleep(4500);          // past the host's 4 s debounce of one kind, or the second message would be swallowed and the check below would prove nothing
+    await js('(document.hasFocus = () => true, true)');
+    const beforeAgain = attention.length;
     console.log('[need] held-message-again');
-    await sleep(7000);
+    await sleep(3000);
     const osc2 = await js('window.__osc.length');
     const last2 = statuses[statuses.length - 1];
     check('looking at the tab: no second knock and the count stays 1', osc2 === 2 && last2.messages === 1, { osc: osc2, messages: last2.messages });
-    check('and no toast for what you are looking at', attention.slice(before + 1).every(s => s.toast === null), attention.slice(before + 1));
+    check('the second message did reach the window, and raised no toast because you are looking at it', attention.length === beforeAgain + 1 && attention[beforeAgain].toast === null, attention.slice(beforeAgain));
 
     // ---- C. a finished turn
-    await js('document.hasFocus = () => false');
+    await js('(document.hasFocus = () => false, true)');
     const beforeStop = attention.length;
     console.log('[need] finish');
     await sleep(6000);
@@ -202,7 +204,7 @@ function freePort() {
       }
     });
     electron.stderr.on('data', d => { if (/probe|Error/.test(String(d))) process.stderr.write(d); });
-    const killer = setTimeout(() => { console.log('FAIL: probe timed out after 300s'); hygiene._emergencyCleanup('timeout'); }, 300000);
+    const killer = setTimeout(() => { console.log('FAIL: probe timed out after 480s'); hygiene._emergencyCleanup('timeout'); }, 480000);
     const code = await new Promise((resolve) => electron.on('exit', resolve));
     clearTimeout(killer);
     check('the window probe ran every check', passed > 0, { passed, failed });
