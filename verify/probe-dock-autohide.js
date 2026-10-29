@@ -15,10 +15,10 @@
  *   3  a real pointer resting on a tab, or sweeping every tab, opens nothing; a click opens the panel, over the
  *      terminal, inside the window, with a Pin button; the terminal's width and the pty did not change and nothing was saved
  *   4  the open panel: the pointer leaving or hovering the other icons changes nothing; clicking another icon switches to it;
- *      clicking the open icon again closes it; 4b a press on the rail's empty strip closes it
+ *      clicking the open icon again closes it; 4b only a press in the terminal (or focus going into it) closes it: the strip and the header don't
  *   5  Pin on the open panel: the tab leaves the rail, the panel is a real one beside the terminal, the terminal is narrower
  *   6  Unpin it again: the rail is back and the terminal grew back to its width with the rail
- *   7  Esc closes it, a press outside closes it; 7b a keyboard activation of the icon opens it
+ *   7  Esc closes it, a press in the terminal closes it; 7b a keyboard activation of the icon opens it
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
  *   12 rail tabs are a one-colour line icon over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
@@ -311,7 +311,7 @@ const centre = (r) => ({ x: Math.round((r.left + r.right) / 2), y: Math.round((r
 const moveTo = (app, r) => command(app, { cmd: 'mouseMove', ...centre(r) });
 const railTab = (v, id) => { const r = v.rails.find(x => x.id === 'dock'); return r ? r.tabRects[r.modules.indexOf(id)] : null; };
 const hoverTerm = async (app) => moveTo(app, (await viewState(app)).termwrap);
-// A click on a rail icon (the page's own click handler) and a press outside the panel and its rail.
+// A click on a rail icon (the page's own click handler) and a press in the terminal (the only press that closes a panel).
 const clickTab = (app, id) => view(app, 'railClick', { id });
 const pressOutside = (app) => view(app, 'outsidePress', { selector: '#termwrap' });
 const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
@@ -442,12 +442,25 @@ async function main() {
   const gone = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('4: ...and is gone once the slide ran', !!gone && gone.railState.module === null);
 
-  // 4b: a press on the rail's empty strip is a press outside: it closes an open panel (the design's "a click outside closes")
+  // 4b: ONLY a press in the terminal closes an open panel (#138, Ricardo round 2); the rail's empty strip, the header and another
+  // dock panel's body leave it open.
   await view(app, 'railClick', { id: 'git' });
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
-  await view(app, 'outsidePress', { selector: '#dock > .drail[data-rail="dock"]' });
-  const stripClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
-  check('4b: a press on the rail\'s empty strip (not on an icon) closes the open panel', !!stripClosed && stripClosed.railState.module === null, JSON.stringify(stripClosed && stripClosed.railState));
+  for (const [what, selector] of [['the rail\'s empty strip', '#dock > .drail[data-rail="dock"]'], ['the header', 'header']]) {
+    await view(app, 'outsidePress', { selector });
+    await sleep(400);
+    const kept = await viewState(app);
+    check('4b: a press on ' + what + ' leaves the open panel open', !!kept.popover && kept.railState.module === 'git', JSON.stringify(kept.railState));
+  }
+  await view(app, 'outsidePress', { selector: '#termwrap' });
+  const termClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
+  check('4b: a press in the terminal closes it', !!termClosed && termClosed.railState.module === null, JSON.stringify(termClosed && termClosed.railState));
+  await view(app, 'railClick', { id: 'git' });
+  await waitFor(async () => (await viewState(app)).popover, 3000, 20);
+  await view(app, 'focus', { selector: '#term textarea' });
+  const focusClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
+  check('4b: the keyboard going into the terminal closes it (keys never type into it behind an open panel)', !!focusClosed && focusClosed.railState.module === null, JSON.stringify(focusClosed && focusClosed.railState));
+
 
   // 5 ---------------------------------------------------------------------------------
   // Its own setup: git alone on the rail, everything else docked, and the float back (checks 3 and 4 left a second tab on the rail).
@@ -569,7 +582,7 @@ async function main() {
   await pressOutside(app);
   let sawClosing = false;
   const r11b = await waitFor(async () => { const v = await viewState(app); if (v.popover && v.popover.closing) sawClosing = true; return v.popover === null ? v : null; }, 3000, 8);
-  check('11: ...and closes at once on a press outside, with no slide-out stage', !!r11b && !sawClosing);
+  check('11: ...and closes at once on a press in the terminal, with no slide-out stage', !!r11b && !sawClosing);
 
   await quitApp(app);
 

@@ -58,7 +58,7 @@ const cleanShelf = cleanShelfList;          // the ONE validator (host/canvas-sh
 const originList = (list) => [...new Set((Array.isArray(list) ? list : []).map(hostOrigin).filter(Boolean))];
 
 function createCanvasViews({ WebContentsView, session, addChild, removeChild, ownerBounds, preloadPath, ask, onMessage,
-  isOwnerVisible = () => true, onPress = () => {}, openUrl = () => false, fetchImpl, resolveHost, now = Date.now, log = () => {} } = {}) {
+  isOwnerVisible = () => true, openUrl = () => false, fetchImpl, resolveHost, now = Date.now, log = () => {} } = {}) {
   const byOwner = new Map();          // owner contents id -> record
   const byPanel = new Map();          // panel contents id -> record
   // ONE in-memory session per tab, kept across hide/show: Electron never frees a session, so a fresh partition per show leaked a network
@@ -135,8 +135,6 @@ function createCanvasViews({ WebContentsView, session, addChild, removeChild, ow
       pending: new Map(), asked: 0, lastInput: -Infinity, spent: true, attached: false, dead: false, ready: null, shelf: [], shelfKey: '[]' };
     wc.on('input-event', (_e, ev) => {
       if (!ev) return;
-      // A press in the panel never reaches the owner's document, so the owner is told: a rail popover closes on a press outside it (#138).
-      if (ev.type === 'mouseDown') { try { onPress(owner); } catch { /* the owner is going away */ } }
       if (ARMS.has(ev.type)) { rec.lastInput = now(); rec.spent = false; } else if (KEEPS_FRESH.has(ev.type)) rec.lastInput = now();
     });
     wc.on('before-input-event', (_e, input) => {

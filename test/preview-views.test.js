@@ -45,7 +45,7 @@ class FakeView {
 }
 
 function rig(over = {}) {
-  const sessions = {}; const views = []; const children = new Set(); const events = []; const opened = []; const presses = [];
+  const sessions = {}; const views = []; const children = new Set(); const events = []; const opened = [];
   const owner = over.owner || new EventEmitter();
   owner.id = owner.id || 7;
   owner.isDestroyed = owner.isDestroyed || (() => false);
@@ -58,11 +58,10 @@ function rig(over = {}) {
     ownerBounds: () => ({ x: 0, y: 40, width: 1200, height: 800 }),
     keyOf: (o) => keys[o.id] || null,
     onEvent: (o, ev) => events.push(ev),
-    onPress: (o) => presses.push(o.id),
     openUrl: (u) => { opened.push(u); return true; },
     log: () => {},
   });
-  return { m, owner, views, sessions, children, events, opened, presses };
+  return { m, owner, views, sessions, children, events, opened };
 }
 const RECT = { x: 300, y: 100, width: 400, height: 500 };
 const show = (r, target, extra = {}) => r.m.show(r.owner, { ...(target === undefined ? {} : { target }), rect: RECT, ...extra });
@@ -75,17 +74,6 @@ const emitNav = (wc, ev, url, extra = {}) => {
 };
 
 // ---- the view -------------------------------------------------------------------------------------------------------------
-
-test('a press inside the Preview is told to its owner (a rail popover closes on it, #138); moves are not presses', async () => {
-  const r = rig();
-  await show(r, { port: 20003 });
-  const wc = r.views[0].webContents;
-  for (const type of ['mouseMove', 'mouseEnter', 'mouseWheel', 'mouseUp', undefined]) wc.emit('input-event', {}, { type });
-  wc.emit('input-event', {}, null);
-  assert.deepStrictEqual(r.presses, []);
-  wc.emit('input-event', {}, { type: 'mouseDown' });
-  assert.deepStrictEqual(r.presses, [r.owner.id]);
-});
 
 test('the view is sandboxed, isolated, has NO preload and no Node, and sits on a private in-memory session', async () => {
   const r = rig();

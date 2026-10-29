@@ -201,6 +201,14 @@ function railAfter(state, ev) {
 }
 
 /**
+ * Whether an element is inside the active tab's terminal. Only that closes an open side panel (#138, Ricardo round 2): a press in it,
+ * or the keyboard going into it (so keys never type into the terminal behind an open panel). Anything else leaves the panel open.
+ */
+function inTerminal(el) {
+  return isObject(el) && typeof el.closest === 'function' && !!el.closest('#termwrap');
+}
+
+/**
  * Where the keyboard goes after a rail's button was pressed (PR #159 Miguel I1). A mouse press leaves the focus on the button, so
  * the popover that opens takes it ('popover'); when it closes, a press hands it back to the terminal ('terminal'), and Enter on
  * the button keeps it on the button ('rail'), where the person is.
@@ -717,7 +725,7 @@ function applyBoxes(plan, doc, leanKeeps) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, inTerminal, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

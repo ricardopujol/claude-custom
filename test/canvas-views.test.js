@@ -42,7 +42,7 @@ class FakeView {
 }
 
 function rig(over = {}) {
-  const sessions = {}; const views = []; const children = new Set(); const messages = []; const asked = []; const gate = []; const presses = [];
+  const sessions = {}; const views = []; const children = new Set(); const messages = []; const asked = []; const gate = [];
   let clock = 1000;
   const owner = { id: 7, isDestroyed: () => false };
   const m = createCanvasViews({
@@ -54,13 +54,12 @@ function rig(over = {}) {
     preloadPath: 'C:/app/canvas-panel-preload.js',
     ask: async (o, origin) => { asked.push(origin); return over.answer || 'deny'; },
     onMessage: (o, msg) => messages.push(msg),
-    onPress: (o) => presses.push(o.id),
     fetchImpl: over.fetchImpl || (async () => new Response('pong')),
     resolveHost: over.resolveHost || (async () => [{ address: '93.184.216.34', family: 4 }]),
     now: () => clock, log: () => {},
   });
   const release = async () => { while (gate.length) { gate.shift()(); await new Promise((res) => setImmediate(res)); } };
-  return { m, owner, views, sessions, children, messages, asked, gate, presses, release, tick: (ms) => { clock += ms; } };
+  return { m, owner, views, sessions, children, messages, asked, gate, release, tick: (ms) => { clock += ms; } };
 }
 const show = (r, extra = {}) => r.m.show(r.owner, { html: '<p>hi</p>', hosts: { approved: [], denied: [] }, rect: { x: 300, y: 100, width: 400, height: 500 }, ...extra });
 
@@ -327,29 +326,6 @@ test('messageFrom: input goes stale, one message per click, and bad shapes are d
   }
   assert.strictEqual(r.m.messageFrom({ id: 12345 }, { kind: 'send', text: 'x' }), false, 'not a panel');
   assert.deepStrictEqual(r.messages.map(m => m.text), ['a']);
-});
-
-test('a press inside the panel is told to its owner (a rail popover closes on it, #138); moves and keys are not presses', async () => {
-  const r = rig();
-  await show(r);
-  const panel = r.views[0].webContents;
-  for (const type of ['mouseMove', 'mouseEnter', 'mouseWheel', 'mouseUp', 'contextMenu', undefined]) panel.emit('input-event', {}, { type });
-  assert.deepStrictEqual(r.presses, []);
-  panel.emit('input-event', {}, { type: 'mouseDown' });
-  assert.deepStrictEqual(r.presses, [r.owner.id]);
-});
-
-test('a throwing onPress cannot break the panel\'s input handling', async () => {
-  const owner = { id: 8, isDestroyed: () => false };
-  const views = [];
-  const m = createCanvasViews({
-    WebContentsView: class extends FakeView { constructor(o) { super(o); views.push(this); } },
-    session: { fromPartition: (p) => new FakeSession(p) }, addChild() {}, removeChild() {},
-    ownerBounds: () => ({ x: 0, y: 0, width: 100, height: 100 }), preloadPath: 'p.js',
-    ask: async () => 'deny', onMessage() {}, onPress() { throw new Error('boom'); }, now: () => 0, log() {},
-  });
-  await m.show(owner, { html: '', hosts: { approved: [], denied: [] }, rect: { x: 0, y: 0, width: 10, height: 10 } });
-  assert.doesNotThrow(() => views[0].webContents.emit('input-event', {}, { type: 'mouseDown' }));
 });
 
 test('mouse moves and other input are not clicks', async () => {

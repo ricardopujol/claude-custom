@@ -2011,8 +2011,6 @@ function canvasSendToSession(text) {
 
 if (canvasBridge && canvasRoot) {
   canvasBridge.onMessage((msg) => { if (msg && msg.kind === 'send') canvasSendToSession(msg.text); });
-  // A press inside Claude's panel or the Preview (the channel is named canvas:pressed for both) is a press outside an open rail popover; its native view never sends this page a pointerdown (#138).
-  canvasBridge.onPressed(() => { if (peek) { railEvent({ type: 'outside' }); renderLayout({ refit: false }); } });
   // The page asked for a host it has not been given: the question covers the panel until it is answered.
   canvasBridge.onNeedHost((ask) => { canvasState = window.canvasDisplay.withAsk(canvasState, ask); renderCanvas(); });
   canvasRoot.addEventListener('click', (e) => {
@@ -3230,19 +3228,18 @@ window.addEventListener('keydown', (e) => {
   const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
   if (rail) rail.focus();
 }, true);
-// ...and when the keyboard leaves it for something else (Tab out of the popover): otherwise keys would type into the
-// terminal behind an open panel. A focus that goes nowhere (the window blurring, a button replaced) keeps it open.
+// ...and when the keyboard goes into the terminal: otherwise keys would type into the terminal behind an open panel. Focus
+// moving anywhere else (the header, another panel, nowhere at all) keeps it open, #138.
 document.addEventListener('focusout', (e) => {
-  const to = e.relatedTarget;
-  if (!peek || !to || !to.closest || to.closest('.dpeek, .drail')) return;
+  if (!peek || !window.dockTreeView.inTerminal(e.relatedTarget)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
+// Only a press in the terminal closes an open side panel; a press anywhere else (header, tab strip, the rail, another panel, the
+// popover itself) leaves it open (#138, Ricardo round 2).
 document.addEventListener('pointerdown', (e) => {
   if (!peek) return;
-  const inside = e.target.closest && e.target.closest('.dpeek');
-  if (inside) return;
-  if (e.target.closest && e.target.closest('.drail button[data-module]')) return;      // a press on an icon is the icon's own click; the rail's empty strip is outside, #138
+  if (!window.dockTreeView.inTerminal(e.target)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });

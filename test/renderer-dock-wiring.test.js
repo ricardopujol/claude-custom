@@ -346,7 +346,7 @@ test('PR #159 Miguel B1: Escape is the popover\'s only when focus is in it or on
 });
 
 test('PR #159 Miguel I2 / Dexter 4: the popover closes when the keyboard leaves it, and a keyboard move starting from it draws it away', () => {
-  assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+const to = e\.relatedTarget;\s+if \(!peek \|\| !to \|\| !to\.closest \|\| to\.closest\('\.dpeek, \.drail'\)\) return;/);
+  assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+if \(!peek \|\| !window\.dockTreeView\.inTerminal\(e\.relatedTarget\)\) return;/);
   assert.match(JS, /if \(peek\) \{ railEvent\(\{ type: 'drop' \}\); renderLayout\(\{ refit: false \}\); \}/);
 });
 
@@ -417,18 +417,23 @@ test('#138: the page only ever sends the rail click-only events (no hover event,
   assert.doesNotMatch(JS, /document\.addEventListener\('(pointerover|pointerenter|mouseover|mouseenter)'/, 'no document-level hover listener');
 });
 
-test('#138: a press outside closes the popover: on the rail\'s empty strip, and inside Claude\'s panel (a native view, told by main)', () => {
+test('#138 (Ricardo round 2): only the terminal closes an open side panel: a press in it, or the keyboard going into it', () => {
   const at = JS.indexOf("document.addEventListener('pointerdown', (e) => {\n  if (!peek) return;");
   assert.ok(at !== -1, 'the press handler must be findable');
-  const handler = JS.slice(at, JS.indexOf('\n});', at));
-  assert.match(handler, /if \(inside\) return;/);
-  assert.match(handler, /closest\('\.drail button\[data-module\]'\)\) return;/, 'only an icon is the rail\'s own click; its strip is outside');
-  assert.match(handler, /railEvent\(\{ type: 'outside' \}\)/);
-  assert.match(JS, /canvasBridge\.onPressed\(\(\) => \{ if \(peek\) \{ railEvent\(\{ type: 'outside' \}\)/);
-  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
-  assert.match(main, /function tellPressed\(owner\) \{ if \(!owner\.isDestroyed\(\)\) owner\.send\('canvas:pressed'\); \}/);
-  assert.strictEqual([...main.matchAll(/onPress: tellPressed,/g)].length, 2, 'Claude\'s panel and the Preview share the one path');
-  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'), /onPressed: \(fn\) =>/);
+  const press = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(press, /if \(!window\.dockTreeView\.inTerminal\(e\.target\)\) return;/);
+  assert.match(press, /railEvent\(\{ type: 'outside' \}\)/);
+  const fo = JS.indexOf("document.addEventListener('focusout', (e) => {");
+  const focus = JS.slice(fo, JS.indexOf('\n});', fo));
+  assert.match(focus, /if \(!peek \|\| !window\.dockTreeView\.inTerminal\(e\.relatedTarget\)\) return;/);
+  assert.match(focus, /railEvent\(\{ type: 'outside' \}\)/);
+});
+
+test('#138: the press plumbing for native views is gone: nothing tells the page about a press in Claude\'s panel or the Preview', () => {
+  assert.doesNotMatch(JS, /onPressed|canvas:pressed/);
+  for (const f of ['main.js', 'preload.js', 'canvas-views.js', 'preview-views.js']) {
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8'), /canvas:pressed|tellPressed|onPress\b|onPressed/, f);
+  }
 });
 
 test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
