@@ -373,6 +373,11 @@ async function main() {
   check('2: ...the terminal is narrower by about that strip, the boxes tile, terminal === fit === pty', Math.abs((t0 - t1) - 52) <= 2 && tiles(s2).length === 0 && a2.ok,
     `${t0} -> ${t1}; ${tiles(s2).join('; ')}; ${sizeText(s2)}`);
   await command(app, { cmd: 'screenshot', file: path.join(shots, '2-unpinned.png') });
+  // A second tab on the rail (same strip, same terminal width), so the click-only checks have another icon to hover and switch to.
+  await view(app, 'select', { id: 'vault' });
+  await view(app, 'pinClick', { module: 'vault' });
+  const a2b = await settled(app);
+  check('2: a second panel (vault) is unpinned too: the rail holds git and vault, the terminal is no narrower', railMods(a2b.s).length === 2 && termWidth(a2b.s) === t1, JSON.stringify([railMods(a2b.s), termWidth(a2b.s), t1]));
 
   // A float over the place the panel will open: the stacking is measured with one present (PR #168 B1).
   await view(app, 'dock', { id: 'fog', target: { float: { x: 840, y: 10, w: 330, h: 2000 } } });
@@ -424,7 +429,7 @@ async function main() {
   await sleep(HOVER_REST_MS);
   const over = await viewState(app);
   check('4: ...and hovering the other icons does not swap it: git is still the open panel, held', !!over.popover && over.popover.module === 'git' && over.railState.held === true, JSON.stringify(over.railState));
-  const other = over.rails.find(x => x.id === 'dock').modules.find(m => m !== 'git');
+  const other = 'vault';   // the second tab on the rail (see check 2)
   await view(app, 'railClick', { id: other });
   const switched = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.module === other ? v : null; }, 3000, 20);
   check('4: clicking another icon switches to it, held', !!switched && switched.railState.held === true, JSON.stringify(switched && switched.railState));
@@ -433,6 +438,12 @@ async function main() {
   check('4: clicking the open icon again closes it, sliding out first (the popover is marked closing and still holds its panel)', !!sliding && sliding.popover.panels.join() === other, JSON.stringify(sliding && sliding.popover.panels));
   const gone = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('4: ...and is gone once the slide ran', !!gone && gone.railState.module === null);
+  // Put vault back beside the terminal (check 5 starts from git alone on the rail).
+  await clickTab(app, 'vault');
+  await waitFor(async () => (await viewState(app)).popover, 3000, 20);
+  await view(app, 'focus', { selector: '.dpeek .dpin' });
+  await view(app, 'pinClick', { on: 'panel' });
+  await settled(app);
 
   // 5 ---------------------------------------------------------------------------------
   await clickTab(app, 'git');
