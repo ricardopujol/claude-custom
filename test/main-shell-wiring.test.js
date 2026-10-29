@@ -281,7 +281,10 @@ test('the screenshot path captures the SELECTED view and the strip beside it', (
 });
 
 test('the notification click goes to the tab that raised it', () => {
-  assert.match(MAIN, /n\.on\('click', \(\) => \{ tabShell\.attentionClick\(event\.sender\); \}\)/);
+  // ...through the holder (app/toast-holder.js), which keeps the toast alive until clicked (#145).
+  assert.match(MAIN, /onClick: \(sender\) => \{ if \(tabShell\) tabShell\.attentionClick\(sender\); \}/);
+  assert.match(MAIN, /toasts\.show\(surfaces\.toast, event\.sender\)/);
+  assert.doesNotMatch(MAIN, /new Notification\(/);
 });
 
 test('each tab view is shown only when selected and laid out below the strip', () => {
