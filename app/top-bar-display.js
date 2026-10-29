@@ -652,7 +652,7 @@ if (typeof module !== 'undefined' && module.exports) {
     MODEL_CHOICES, EFFORT_LEVELS, PENDING_TIMEOUT_MS, UNKNOWN, mainModelOf,
     modelMatches, effortMatches, validModelInput, inputState, planSwitch, switchNotice,
     vimInsertShown, commandTyped, boxHoldsLine, scrollCapRows, menuPlacement, planTyping, SHELL_TAB_REFUSAL, shellExitText, typingKeys, boxText,
-    boxIsCommand, appendKeys, planCommentTyping,
+    boxIsCommand, appendKeys, planCommentTyping, liveBox,
   };
 } else {
   root.modelFamily = modelFamily;
