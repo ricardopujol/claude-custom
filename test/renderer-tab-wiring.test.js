@@ -124,6 +124,7 @@ test('the shell\'s override menu item clicks the Open anyway button: one switch,
 test('the preload exposes exactly the tab bridge on the tab:* channels, replace-don\'t-accumulate', () => {
   const p = strip(PRELOAD);
   assert.match(p, /tabStatus: \(status\) => ipcRenderer\.send\('tab:status', status\)/);
+  assert.match(p, /isLooked: \(\) => ipcRenderer\.invoke\('tab:is-looked'\)/);
   assert.match(p, /closeTab: \(\) => ipcRenderer\.send\('tab:close'\)/);
   assert.match(p, /goToSession: \(holder\) => ipcRenderer\.invoke\('tab:goTo', holder\)/);
   // the Git panel's *Jump to its tab* (documentation/PLAN_GIT_TREE.md Task 10)
