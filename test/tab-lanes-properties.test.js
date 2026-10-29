@@ -179,3 +179,11 @@ test('P10: moveKey keeps every key once, puts the key just before its target, an
     if (before === null || !base.includes(before)) assert.strictEqual(out[out.length - 1], key === before ? out[out.length - 1] : key);
   }), RUNS);
 });
+
+test('P12: a lane that needs input is never in the Hidden group, at any capacity', () => {
+  fc.assert(fc.property(modelArb, fc.array(fc.boolean(), { maxLength: 30 }), capArb, (entries, needs, cap) => {
+    const marked = entries.map((e, i) => (needs[i] ? { ...e, needsInput: true } : e));
+    const { hidden } = L.splitOverflow(L.placeLanes(marked, []).strip, cap);
+    for (const h of hidden) assert.ok(!L.needsYou(h), `${h.key} needs you and was hidden`);
+  }), RUNS);
+});

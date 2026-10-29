@@ -244,3 +244,17 @@ test('dropBefore: develop, a companion, a stranger, or the tab itself cannot be 
   assert.strictEqual(L.dropBefore(strip, 'a', 'a', true).ok, false);
   assert.strictEqual(L.dropBefore(null, 'a', 'b', true).ok, false);
 });
+
+// --- tabs that need you stay on the strip (team-lead, from PR #224 Miguel I5) ----------------------
+
+test('2A: a tab that needs you is never hidden, like the selected one; the rest still fit from the left', () => {
+  const list = [dev({ selected: true }), lane('a'), lane('b', { needsInput: true }), lane('c'), lane('d', { needsInput: true })];
+  const r = L.splitOverflow(list, 3);
+  assert.deepStrictEqual([keys(r.shown), keys(r.hidden)], [['dev', 'b', 'd'], ['a', 'c']]);
+});
+
+test('needsYou: needsInput is a real true; the messages hook is off until #224 wires it', () => {
+  assert.strictEqual(L.needsYou(lane('a', { needsInput: true })), true);
+  for (const v of ['yes', 1, null, undefined]) assert.strictEqual(L.needsYou(lane('a', { needsInput: v })), false, String(v));
+  assert.strictEqual(L.hasMessages(lane('a', { messages: 3 })), false, 'hook: #224 returns messages > 0 here');
+});

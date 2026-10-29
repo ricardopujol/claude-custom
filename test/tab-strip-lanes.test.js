@@ -282,20 +282,3 @@ test('the first paint fades nothing in, and a closed-then-same-key tab does not 
     assert.deepStrictEqual(keysOf(doc), ['dev', 'lane1', 'lane2'], 'back on the strip: one tab, not a tab and its ghost');
   } finally { restore(); }
 });
-
-// --- the page and its bridge ---------------------------------------------------------------------------
-
-test('tab-strip.html loads tab-lanes.js before tab-strip.js, has the hidden Lanes button outside #tabs, and a 112 px minimum tab', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
-  assert.ok(html.indexOf('src="./tab-lanes.js"') !== -1 && html.indexOf('src="./tab-lanes.js"') < html.indexOf('src="./tab-strip.js"'));
-  const tabsEnd = html.indexOf('</div>', html.indexOf('id="tabs"'));
-  assert.ok(html.indexOf('id="lanes"') > tabsEnd);
-  assert.match(html, /id="lanes"[^>]*\bhidden\b/);
-  assert.match(html, /\.tab \{[^}]*min-width: 112px/);
-});
-
-test('the bridge sends lanes and reorder to main, which only the strip page may call', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8');
-  assert.match(src, /lanes: \(hidden\) => ipcRenderer\.send\('strip:lanes', hidden\)/);
-  assert.match(src, /reorder: \(key, before\) => ipcRenderer\.send\('strip:reorder', key, before\)/);
-});

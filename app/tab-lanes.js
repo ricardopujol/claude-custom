@@ -35,6 +35,14 @@ function isRunning(e) {
   return e.briefing === true;
 }
 
+/** HOOK for the agent-cues PR (#224): a tab with unread messages needs you too. Wire it there as . */
+function hasMessages() { return false; }
+
+/** A tab that needs the person (a real needsInput, or messages): under 2A it stays on the strip like the selected one. */
+function needsYou(e) {
+  return !!e && typeof e === 'object' && (e.needsInput === true || hasMessages(e));
+}
+
 // A lane whose folder is going, or failed to go, has something to say on the strip; it can't slip into a menu quietly.
 const needsEye = e => e.phase === 'removing' || e.badge === 'warn';
 
@@ -98,7 +106,7 @@ function splitOverflow(stripEntries, capacity) {
     units.push(u);
     byLane.set(e.key, u);
   }
-  const must = (u) => u.lane.isDev === true || u.entries.some(x => x.selected === true);
+  const must = (u) => u.lane.isDev === true || u.entries.some(x => x.selected === true || needsYou(x));
   let budget = cap - units.filter(must).reduce((n, u) => n + u.entries.length, 0);
   const shownUnits = new Set(units.filter(must));
   let full = false;
@@ -197,7 +205,7 @@ function lanesMenuRows(menu, hiddenEntries) {
   return out;
 }
 
-const api = { MIN_TAB, isRunning, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, dropBefore, leaving, lanesMenuRows };
+const api = { MIN_TAB, isRunning, needsYou, hasMessages, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, dropBefore, leaving, lanesMenuRows };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
