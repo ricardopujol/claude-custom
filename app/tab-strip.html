@@ -23,8 +23,20 @@
     #strip { height: 34px; box-sizing: border-box; display: flex; align-items: stretch;
       background: var(--chrome); border-bottom: 1px solid var(--border); }
     #tabs { display: flex; align-items: stretch; min-width: 0; overflow: hidden; }
-    .tab { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 10px; max-width: 240px;
-      border-right: 1px solid var(--border); cursor: default; white-space: nowrap; }
+    /* 2A (documentation/DESIGN_TAB_STRIP.md): tabs shrink to 112 px, the label ellipsizing; app/tab-lanes.js MIN_TAB is this number.
+       Past it the page moves the tabs that don't fit into the Lanes menu (+N). */
+    .tab { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 10px; min-width: 112px; max-width: 240px;
+      flex: 0 1 auto; box-sizing: border-box; border-right: 1px solid var(--border); cursor: default; white-space: nowrap; }
+    .tab > * { flex-shrink: 0; }
+    .tab > .label { flex-shrink: 1; min-width: 0; }
+    /* Drag to reorder (#141): a bar on the edge where the dragged tab will land. ::after is the occupancy stripes'. */
+    .tab.drop-before::before, .tab.drop-after::before { content: ''; position: absolute; top: 4px; bottom: 4px; width: 2px;
+      background: var(--accent); pointer-events: none; }
+    .tab.drop-before::before { left: -1px; }
+    .tab.drop-after::before { right: -1px; }
+    /* A tab leaving the strip (merged, ended, closed): a short fade in its place; app/tab-strip.js keeps the ghost ~250 ms. */
+    .tab.leaving { pointer-events: none; overflow: hidden; animation: tab-leave 250ms ease-out forwards; }
+    @keyframes tab-leave { to { opacity: 0; min-width: 0; max-width: 0; padding-left: 0; padding-right: 0; border-right-width: 0; } }
     /* Worktree occupancy (#44 + #47, take B "hatched edge"): the lower edge turns to diagonal stripes while an
        agent is working in this tab's folder, in the warn colour when its own session is writing too. Still,
        always: movement on the strip means "needs you", and this is only "somebody is here". */
@@ -124,6 +136,12 @@
     .badge.warn { color: var(--bad); font-size: 11px; }
     /* PR 3: the + (main pops its menu) and the branch form. Both live outside
        #tabs: a repaint rebuilds #tabs, and must not wipe what is being typed. */
+    /* The Lanes menu (1B) and the +N overflow (2A): one fixed-width button, so the room the tabs get never depends on its text. */
+    #lanes { flex: 0 0 auto; width: 92px; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--dim);
+      cursor: pointer; font: inherit; font-size: 11px; white-space: nowrap; padding: 0 6px; }
+    #lanes:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); }
+    #lanes.overflow { color: var(--accent); }
+    #lanes[hidden] { display: none; }
     #plus { border: 0; background: transparent; color: var(--dim); cursor: pointer; font-size: 17px;
       line-height: 1; padding: 0 12px; flex: 0 0 auto; }
     #plus:hover { color: var(--text); background: color-mix(in srgb, var(--accent) 10%, var(--chrome)); }
@@ -224,6 +242,7 @@
       .tab.pulse-needs, .tab.pulse-done {
         animation: none; background: var(--pulse-hi-bg); box-shadow: inset 0 -2px 0 var(--pulse-hi-line);
       }
+      .tab.leaving { display: none; }
     }
     /* Visible only while the selected tab has no page of its own (starting,
        failed, or no worktrees yet); the tab's view covers it otherwise. */
@@ -238,8 +257,9 @@
   </style>
 </head>
 <body>
-  <div id="strip"><div id="tabs"></div><button type="button" id="plus" hidden
-      title="New branch, or reopen a tab you closed (Ctrl+Shift+T)">+</button><form id="create" hidden><input
+  <div id="strip"><div id="tabs"></div><button type="button" id="lanes" hidden
+      title="Lanes without a tab">Lanes ▾</button><button type="button" id="plus" hidden
+      title="New branch, or a shell tab for this lane">+</button><form id="create" hidden><input
       id="create-branch" placeholder="feat/…" spellcheck="false" autocomplete="off"
       aria-label="New branch name" /><button type="button" id="create-issues"
       title="Pick one of this repo's open GitHub issues">From an issue ▾</button><button type="button" id="create-cancel" title="Cancel (Esc)">✕</button></form><div
@@ -272,6 +292,7 @@
   <script src="./portrait-media-display.js"></script>
   <script src="./lean-display.js"></script>
   <script src="./program-status-display.js"></script>
+  <script src="./tab-lanes.js"></script>
   <script src="./tab-strip.js"></script>
 </body>
 </html>

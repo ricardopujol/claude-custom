@@ -76,6 +76,7 @@ const { createOps, scriptsDir } = require('../host/worktree-ops');
 const { createIssueService, answerIssuesRequest, issueArg, issueForBranch, resolveIssueUrl } = require('../host/issues');
 const { createLaneBriefWriter } = require('../host/issue-lane');
 const { createIssueLinks, issueLinksFileFor } = require('../host/issue-links');
+const { createStripLayout, stripLayoutFileFor } = require('../host/strip-layout');
 const { readMergedMarker } = require('../host/merged-marker');
 const { externalUrl } = require('./external-link');
 const { guardNavigation } = require('./nav-guard');
@@ -1017,8 +1018,9 @@ function registerShortcuts(wc) {
 function onShellChanged(snapshot) {
   if (!win || win.isDestroyed()) return;
   applySelection(snapshot);
+  // `model` is the strip's tabs only (1B: a lane with no running session is a row in `lanes`, the Lanes menu's rows).
   lastStripPayload = {
-    model: snapshot.model, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
+    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
     mode: snapshot.mode, create: snapshot.create,
   };
   win.webContents.send('strip-model', lastStripPayload);
@@ -1296,17 +1298,33 @@ function registerIpc() {
     if (!fromStrip(e) || typeof key !== 'string') return;
     Menu.buildFromTemplate(tabMenuTemplate(key)).popup({ window: win });
   });
-  // PR 3: the + menu -- New branch… (Contract A, then E), then the tabs closed
-  // by hand in this window, most recent first.
+  // The Lanes ▾ menu (BACKLOG #139): the tabs the strip page couldn't fit, then the lanes with no tab (Not started, Merged, and the
+  // ones closed by hand, which Ctrl+Shift+T also reopens). A row selects the lane, which starts its session and gives it a tab.
+  // The shortcut is named in the label, not as an accelerator: main registers none (the key is handled in before-input-event).
+  ipcMain.on('strip:lanes', (e, hidden) => {
+    if (!fromStrip(e)) return;
+    const asked = Array.isArray(hidden) ? hidden.filter(k => typeof k === 'string').slice(0, 200) : [];
+    const rows = tabShell.lanesMenu(asked);
+    const template = rows.length === 0 ? [{ label: 'No other lanes', enabled: false }] : rows.map((r) => {
+      if (r.type === 'header') return { label: r.label, enabled: false };
+      const label = `${menuText(r.label)}${r.state ? `  (${r.state})` : ''}${r.shortcut ? `  (${r.shortcut})` : ''}`;
+      return {
+        label,
+        click: () => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')),
+      };
+    });
+    Menu.buildFromTemplate(template).popup({ window: win });
+  });
+  // Drag to reorder (#141): a lane's tab dropped before another's (null: the end). The shell checks both keys and saves the order.
+  ipcMain.on('strip:reorder', (e, key, before) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    tabShell.reorder(key, typeof before === 'string' ? before : null);
+  });
+  // PR 3: the + menu -- New branch… (Contract A, then E) and a shell tab for the selected lane. The tabs closed by hand
+  // are in the Lanes menu now.
   ipcMain.on('strip:plus', (e) => {
     if (!fromStrip(e)) return;
     const m = tabShell.plusMenu();
-    // The shortcut is named in the label, not as an accelerator: main registers
-    // none (the key is handled in before-input-event).
-    const reopen = m.reopen.map((r, i) => ({
-      label: `Reopen ${menuText(r.label)}${i === 0 ? '  (Ctrl+Shift+T)' : ''}`,
-      click: () => tabShell.reopen(r.key).catch(logShellError('reopen')),
-    }));
     Menu.buildFromTemplate([
       {
         label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
@@ -1319,7 +1337,6 @@ function registerIpc() {
         enabled: m.shell.enabled,
         click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
       },
-      ...(reopen.length ? [{ type: 'separator' }, ...reopen] : []),
     ]).popup({ window: win });
   });
   // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so its brief is written.
@@ -1889,9 +1906,19 @@ function startProbeDriver(port) {
           "JSON.stringify({ frameless: document.body.classList.contains('frameless'), min: !document.getElementById('win-min').hidden, close: !document.getElementById('win-close').hidden, drag: getComputedStyle(document.getElementById('strip')).webkitAppRegion || getComputedStyle(document.getElementById('strip')).getPropertyValue('-webkit-app-region') })"));
       } catch (err) { windowChromeDom = { error: err.message }; }
       const windowFrame = { bounds: win.getBounds(), content: win.getContentBounds(), dom: windowChromeDom };
+      // #139 + #141 (verify/probe-tab-strip-lanes.js): where the strip PAINTED each tab and its Lanes button, so overflow is judged by geometry.
+      let stripLayout = null;
+      try {
+        stripLayout = JSON.parse(await win.webContents.executeJavaScript(
+          "JSON.stringify((() => { const r = (e) => { const b = e.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; }; const tabs = document.getElementById('tabs'); const lanes = document.getElementById('lanes');"
+          + " return { stripWidth: Math.round(document.getElementById('strip').getBoundingClientRect().width), tabs: r(tabs), tabsScroll: tabs.scrollWidth, lanes: { ...r(lanes), text: lanes.textContent, hidden: lanes.hidden, overflow: lanes.classList.contains('overflow'), title: lanes.title },"
+          + " items: [...tabs.querySelectorAll('.tab')].map(t => ({ key: t.dataset.key, label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), leaving: t.classList.contains('leaving'), draggable: t.draggable, dev: t.classList.contains('dev'), occupied: t.classList.contains('occupied'), ...r(t) })) }; })())"));
+      } catch (err) { stripLayout = { error: err.message }; }
       const snap = tabShell.snapshot();
       return {
-        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, viewDom, noMenuBar, windowFrame,
+        mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, stripLayout, viewDom, noMenuBar, windowFrame,
+        // 1B: the keys main says have a tab, and the Lanes menu's rows (Not started / Merged, with the ones closed by hand)
+        stripKeys: snap.strip.map(e => e.key), lanes: snap.lanes,
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
         // #119 A6: whether the selected tab's page is showing (it steps aside while the form's issue list is open); null if unreadable.
         selectedViewVisible: (() => { const v = selectedView(); try { return v && typeof v.getVisible === 'function' ? v.getVisible() : null; } catch { return null; } })(),
@@ -1949,6 +1976,33 @@ function startProbeDriver(port) {
       const key = labelKey(label);
       if (!key) return { ok: false, error: `no tab labelled ${label}` };
       return tabShell.openSide(key);
+    },
+    // #141: a drag of one lane's tab onto another's, run through the strip page's own handlers (dragstart, dragover, drop, dragend)
+    // with real DragEvents. `half` is which half of the target the pointer is over. Labels and the half go in as JSON.
+    async dragTab(label, onLabel, half) {
+      const req = JSON.stringify(JSON.stringify({ label, onLabel, half }));
+      const out = await win.webContents.executeJavaScript(
+        `(() => { const r = JSON.parse(${req});
+          const tab = (l) => [...document.querySelectorAll('#tabs .tab')].find(t => !t.classList.contains('leaving') && (t.querySelector('.label') || {}).textContent === l);
+          const from = tab(r.label); const to = tab(r.onLabel);
+          if (!from || !to) return JSON.stringify({ ok: false, error: 'no such tab' });
+          if (!from.draggable) return JSON.stringify({ ok: false, error: 'not draggable' });
+          const dt = new DataTransfer(); const box = to.getBoundingClientRect();
+          const x = r.half === 'right' ? box.left + box.width * 0.75 : box.left + box.width * 0.25;
+          const fire = (el, type) => el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: box.top + 5, dataTransfer: dt }));
+          fire(from, 'dragstart');
+          const allowed = !fire(to, 'dragover');
+          const indicator = to.classList.contains('drop-before') ? 'before' : (to.classList.contains('drop-after') ? 'after' : null);
+          fire(to, 'drop'); fire(from, 'dragend');
+          return JSON.stringify({ ok: true, allowed, indicator }); })()`);
+      return JSON.parse(out);
+    },
+    // #139: the window's width, for the strip's overflow (the content size, so the strip is exactly this wide).
+    async windowSize(width) {
+      const [, h] = win.getContentSize();
+      win.setContentSize(width, h);
+      await new Promise(r => setTimeout(r, 300));
+      return { ok: true, content: win.getContentSize() };
     },
     // The window's own `focus` handler, run as the OS would.
     async windowFocus() { win.emit('focus'); return { ok: true, osFocused: win.isFocused() }; },
@@ -2262,8 +2316,13 @@ app.whenReady().then(async () => {
   let linksFile = null;
   try { linksFile = issueLinksFileFor(STATE_ROOT); } catch (err) { console.log('[main] issue links: kept in memory only:', err && err.message); }
   const issueLinks = createIssueLinks({ file: linksFile });
+  // The strip's drag order and the lanes closed by hand (BACKLOG #141), kept with the project's state so both survive a restart.
+  let layoutFile = null;
+  try { layoutFile = stripLayoutFileFor(STATE_ROOT); } catch (err) { console.log('[main] tab strip layout: kept in memory only:', err && err.message); }
+  const stripLayout = createStripLayout({ file: layoutFile });
   const briefOps = createOps({ dir: scriptsDir(process.env) });
   tabShell = createShell({
+    layout: stripLayout,
     usage: (key) => { try { usageCounters.bump(key); } catch { /* counting never breaks a tab */ } },
     mode: MODE,
     container: PROJECT ? PROJECT.root : null,

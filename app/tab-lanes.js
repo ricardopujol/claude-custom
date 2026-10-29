@@ -144,6 +144,28 @@ function moveKey(order, key, beforeKey) {
 }
 
 /**
+ * dropBefore(stripEntries, draggedKey, overKey, leftHalf) -> { ok: true, before: key | null } | { ok: false }
+ * Where a dragged lane tab lands when dropped on the tab `overKey`: the left half drops before that lane, the right half
+ * before the lane after it (null: the end). Over a companion counts as over its lane; over develop is "first of the
+ * others" (before: develop's key, which the shell turns into that). Pass the WHOLE strip, hidden lanes included, so
+ * "after the last tab you can see" lands before the first hidden one. Develop, a companion, a stranger, or a drop on the
+ * tab itself is { ok: false }.
+ */
+function dropBefore(stripEntries, draggedKey, overKey, leftHalf) {
+  const list = Array.isArray(stripEntries) ? stripEntries.filter(isEntry) : [];
+  const lanes = list.filter(e => !isCompanion(e));
+  const dragged = lanes.find(e => e.key === draggedKey);
+  if (!dragged || dragged.isDev === true) return { ok: false };
+  const over = list.find(e => e.key === overKey);
+  const lane = over ? (isCompanion(over) ? lanes.find(e => e.key === over.parentKey) : over) : null;
+  if (!lane || lane.key === dragged.key) return { ok: false };
+  if (lane.isDev === true) return { ok: true, before: lane.key };
+  if (leftHalf === true) return { ok: true, before: lane.key };
+  const next = lanes[lanes.indexOf(lane) + 1];
+  return { ok: true, before: next ? next.key : null };
+}
+
+/**
  * The keys that were on the strip and are not now, for the short fade: not the ones overflow merely moved into the
  * menu (`hiddenKeys`), because a window that got narrower is not a lane leaving.
  */
@@ -175,7 +197,7 @@ function lanesMenuRows(menu, hiddenEntries) {
   return out;
 }
 
-const api = { MIN_TAB, isRunning, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, leaving, lanesMenuRows };
+const api = { MIN_TAB, isRunning, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, dropBefore, leaving, lanesMenuRows };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

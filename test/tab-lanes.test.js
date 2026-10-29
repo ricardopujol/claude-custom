@@ -216,3 +216,31 @@ test('lanesMenuRows: nothing to list is an empty menu', () => {
   assert.deepStrictEqual(L.lanesMenuRows({ notStarted: [], merged: [] }, []), []);
   assert.deepStrictEqual(L.lanesMenuRows(null, null), []);
 });
+
+// --- dropBefore: where a dragged tab lands ---------------------------------------------------------
+
+test('dropBefore: the left half of a tab drops before it; the right half before the next lane, or the end', () => {
+  const strip = [dev(), lane('a'), side('a'), lane('b'), lane('c')];
+  assert.deepStrictEqual(L.dropBefore(strip, 'c', 'a', true), { ok: true, before: 'a' });
+  assert.deepStrictEqual(L.dropBefore(strip, 'c', 'a', false), { ok: true, before: 'b' }, 'a lane\'s side tab is not a place to drop between');
+  assert.deepStrictEqual(L.dropBefore(strip, 'a', 'c', false), { ok: true, before: null });
+  assert.deepStrictEqual(L.dropBefore(strip, 'a', 'c', true), { ok: true, before: 'c' });
+});
+
+test('dropBefore: over a companion counts as over its lane; over develop is "first of the others"', () => {
+  const strip = [dev(), lane('a'), side('a'), lane('b')];
+  assert.deepStrictEqual(L.dropBefore(strip, 'b', 'a#side', true), { ok: true, before: 'a' });
+  assert.deepStrictEqual(L.dropBefore(strip, 'b', 'a#side', false), { ok: true, before: 'b' });
+  assert.deepStrictEqual(L.dropBefore(strip, 'b', 'dev', true), { ok: true, before: 'dev' });
+  assert.deepStrictEqual(L.dropBefore(strip, 'b', 'dev', false), { ok: true, before: 'dev' });
+});
+
+test('dropBefore: develop, a companion, a stranger, or the tab itself cannot be dragged or dropped on', () => {
+  const strip = [dev(), lane('a'), side('a'), lane('b')];
+  assert.strictEqual(L.dropBefore(strip, 'dev', 'a', true).ok, false);
+  assert.strictEqual(L.dropBefore(strip, 'a#side', 'b', true).ok, false);
+  assert.strictEqual(L.dropBefore(strip, 'nope', 'b', true).ok, false);
+  assert.strictEqual(L.dropBefore(strip, 'a', 'nope', true).ok, false);
+  assert.strictEqual(L.dropBefore(strip, 'a', 'a', true).ok, false);
+  assert.strictEqual(L.dropBefore(null, 'a', 'b', true).ok, false);
+});

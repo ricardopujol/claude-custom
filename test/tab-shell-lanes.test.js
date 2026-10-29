@@ -288,3 +288,23 @@ test('#151: an agent writing into develop\'s folder draws no stripes on develop,
   assert.strictEqual(m.find(e => e.isDev).occupancy, null);
   assert.notStrictEqual(m.find(e => e.key === key('feat-a')).occupancy, null, 'a branch lane keeps its mark');
 });
+
+// --- the probe driver's two new commands (verify/probe-tab-strip-lanes.js) -------------------------
+
+test('handleProbeCommand: drag-tab needs two labels and a half; window-size needs a sane whole width', async () => {
+  const { handleProbeCommand } = require('../app/tab-shell');
+  const PT = 'probe-token-0123456789abcdef';
+  const run = (o, api) => handleProbeCommand(JSON.stringify({ ...o, token: PT }), api, PT);
+  const seen = [];
+  const api = {
+    dragTab: async (a, b, c) => { seen.push(['drag', a, b, c]); return { ok: true }; },
+    windowSize: async (w) => { seen.push(['size', w]); return { ok: true }; },
+  };
+  assert.deepStrictEqual(await run({ cmd: 'drag-tab', label: 'feat/c', onLabel: 'feat/a', half: 'left' }, api), { ok: true });
+  assert.deepStrictEqual(await run({ cmd: 'window-size', width: 900 }, api), { ok: true });
+  for (const bad of [{ label: '', onLabel: 'a', half: 'left' }, { label: 'a', onLabel: 5, half: 'left' }, { label: 'a', onLabel: 'b', half: 'middle' }, { label: 'a', onLabel: 'b' }]) {
+    assert.strictEqual((await run({ cmd: 'drag-tab', ...bad }, api)).ok, false, JSON.stringify(bad));
+  }
+  for (const w of [299, 8001, 900.5, '900', null, undefined]) assert.strictEqual((await run({ cmd: 'window-size', width: w }, api)).ok, false, String(w));
+  assert.deepStrictEqual(seen, [['drag', 'feat/c', 'feat/a', 'left'], ['size', 900]]);
+});

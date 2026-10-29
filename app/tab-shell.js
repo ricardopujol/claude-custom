@@ -2018,6 +2018,14 @@ async function handleProbeCommand(line, api, expectedToken) {
       case 'shell-open':
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'shell-open needs a label' };
         return await api.shellOpen(cmd.label);
+      // #141: a drag of one lane's tab onto another's through the strip page's own handlers; #139: the window's width.
+      case 'drag-tab':
+        if (typeof cmd.label !== 'string' || cmd.label === '' || typeof cmd.onLabel !== 'string' || cmd.onLabel === '') return { ok: false, error: 'drag-tab needs a label and an onLabel' };
+        if (cmd.half !== 'left' && cmd.half !== 'right') return { ok: false, error: 'drag-tab needs half: left or right' };
+        return await api.dragTab(cmd.label, cmd.onLabel, cmd.half);
+      case 'window-size':
+        if (!(Number.isInteger(cmd.width) && cmd.width >= 300 && cmd.width <= 8000)) return { ok: false, error: 'window-size needs a whole width from 300 to 8000' };
+        return await api.windowSize(cmd.width);
       // #31: what the window's own `focus` event does, without an OS to hand over focus.
       case 'windowFocus': return await api.windowFocus();
       // #62: the window losing focus, as the OS would (Ricardo's lean video rule reads focus).
