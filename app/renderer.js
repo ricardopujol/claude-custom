@@ -1228,11 +1228,7 @@ let flushKeyBurst = null;        // saves a divider's pending arrow-key burst (s
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved. Set only by railEvent
-let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's hover state, BACKLOG #85: peek is what it says is open
-const RAIL_OPEN_MS = 100;
-const RAIL_CLOSE_MS = 100;
-let railOpenTimer = null;
-let railCloseTimer = null;
+let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's state, BACKLOG #85: peek is what it says is open
 let helloSeen = false;           // the host has said whether this tab has its own layout, in the hello; a collapse is forgotten only after that
 let layoutLoaded = false;        // the stored layout has been read: until then the default is only a placeholder, whose groups mean nothing to a saved collapse
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
@@ -2378,23 +2374,12 @@ function toggleGroupCollapse(groupId) {
   commitSelection(DTm.toggleCollapse(selection, placementLayout(), groupId));
 }
 
-// The dock rail's hover (BACKLOG #85). app/dock-tree-display.js railAfter decides; this owns the two timers it asks for: a hover
-// waits RAIL_OPEN_MS before it opens a panel (a pass across the rail opens nothing), and leaving waits RAIL_CLOSE_MS before it
-// closes one (a diagonal move into the panel isn't leaving). Answers whether the open panel changed, so the caller redraws.
+// The dock rail (BACKLOG #85, #138, #106). app/dock-tree-display.js railAfter decides: side tabs open on click only, so there are
+// no hover timers. Answers whether the open panel changed, so the caller redraws.
 function railEvent(ev) {
   const was = railSt;
   railSt = window.dockTreeView.railAfter(railSt, ev);
   peek = railSt.module === null ? null : { module: railSt.module };
-  if (railSt.pending === null) { clearTimeout(railOpenTimer); railOpenTimer = null; }
-  else if (railSt.pending !== was.pending) {
-    clearTimeout(railOpenTimer);
-    const m = railSt.pending;
-    railOpenTimer = setTimeout(() => { railOpenTimer = null; usageGesture(); if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
-  }
-  if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
-  else if (!was.leaving) {
-    railCloseTimer = setTimeout(() => { railCloseTimer = null; if (railEvent({ type: 'close-timer' })) renderLayout({ refit: false }); }, RAIL_CLOSE_MS);
-  }
   return railSt.module !== was.module;
 }
 
@@ -2514,7 +2499,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
       on: { click: () => { closeLayoutMenu(); startKeyboardMove(id); } },
     }));
     layoutMenu.appendChild(node('button', {
-      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you hover it',
+      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you click it',
       on: { click: () => { closeLayoutMenu(); togglePin(id, { justThisTab: check.box.checked }); } },
     }));
   }
@@ -3259,25 +3244,10 @@ document.addEventListener('pointerdown', (e) => {
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
-// ...and so does the keyboard being in it: typing in a field of a hover-opened panel must not lose it to the pointer leaving.
+// ...and so does the keyboard being in it (kept: a panel in use stays held whatever opened it).
 document.addEventListener('focusin', (e) => {
   if (peek && e.target.closest && e.target.closest('.dpeek')) railEvent({ type: 'hold' });
 });
-
-// Hovering a tab of the dock's rail slides its panel open over the terminal (BACKLOG #85); moving off the tab and the panel
-// slides it back after a short grace. The pointer is judged by what it is over now: a rail tab, the panel, or anything else
-// (the rail's empty strip is anything else: it is neither a tab nor the panel, PR #168 Dexter 3). Touch has no hover.
-document.addEventListener('pointerover', (e) => {
-  const t = e.target;
-  if (e.pointerType === 'touch' || !t || !t.closest) return;
-  const tab = t.closest('.drail[data-rail="dock"] button[data-module]');
-  let ev = null;
-  if (tab) ev = { type: 'enter', module: tab.dataset.module };
-  else if (t.closest('.dpeek')) ev = { type: 'enter-panel' };
-  else if (railSt.module !== null || railSt.pending !== null) ev = { type: 'leave' };
-  if (ev && railEvent(ev)) renderLayout({ refit: false });
-});
-document.documentElement.addEventListener('pointerleave', () => { if (railEvent({ type: 'leave' })) renderLayout({ refit: false }); });
 
 // Double-clicking the empty part of a group's tab bar unpins the group: every tab goes to the rail (a double-click on a tab is
 // just a click on it, twice). A group a window folded to a rail before (Ctrl+B, or an older fold) opens again by double-clicking
@@ -3504,7 +3474,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           vaultNode: vaultField ? vaultField.__probeTag : null,
           // D4: a rail's popover, the keyboard move, the settle class, what a screen reader is told, and what holds focus.
           peek: peek ? peek.module : null,
-          railState: railSt,           // #85: the dock rail's hover state
+          railState: railSt,           // #85: the dock rail's state
           popover: (() => {
             const pe = document.querySelector('#dock-floats > .dpeek');
             if (!pe) return null;
