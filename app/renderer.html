@@ -867,6 +867,67 @@
     }
     #terminal-banner-dismiss:hover { color: var(--text); }
 
+    /* The chat view (BACKLOG #157, documentation/DESIGN_CHAT_VIEW.md): a second display of the same session, laid OVER the terminal
+       (the terminal keeps its size and keeps running underneath, so no resize is ever sent). Below the banners and the lock overlay. */
+    #chat-view {
+      position: absolute; inset: 0; z-index: 14; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5;
+    }
+    #chat-view[hidden], #chat-working[hidden], #chat-flip[hidden], #chat-btn[hidden] { display: none; }
+    body.chat-on #terminal-bar { display: none; }
+    #chat-head { flex: 0 0 auto; display: flex; justify-content: flex-end; padding: 6px 10px 0; }
+    #chat-show-tools {
+      cursor: pointer; background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; font: inherit; font-size: 12px; padding: 3px 8px;
+    }
+    #chat-show-tools:hover { color: var(--text); border-color: var(--accent); }
+    #chat-log { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+    .chat-empty, .chat-note, .chat-cut { color: var(--dim); font-size: 12px; }
+    .chat-note { text-align: center; }
+    .chat-msg { max-width: min(860px, 100%); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); overflow-wrap: anywhere; }
+    .chat-msg.chat-note { align-self: center; border: 0; padding: 0; }
+    .chat-user { align-self: flex-end; background: color-mix(in srgb, var(--accent) 14%, var(--chrome)); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+    .chat-claude { align-self: flex-start; background: var(--chrome); }
+    .chat-who { font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--dim); margin-bottom: 2px; }
+    .chat-text, .chat-p { white-space: pre-wrap; margin: 0 0 8px; }
+    .chat-body > :last-child { margin-bottom: 0; }
+    .chat-h { font-weight: 600; margin: 10px 0 4px; }
+    .chat-h1 { font-size: 1.25em; } .chat-h2 { font-size: 1.12em; }
+    .chat-code { font-family: var(--font-mono); font-size: .92em; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+    .chat-inline { white-space: nowrap; }
+    .chat-codeblock { margin: 6px 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); overflow: hidden; }
+    .chat-codebar { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--dim); }
+    .chat-pre { margin: 0; padding: 8px 10px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.45; white-space: pre; }
+    .chat-pre code { font-family: inherit; }
+    .chat-quotebox, .chat-draft { position: relative; margin: 6px 0 10px; padding-right: 64px; }
+    .chat-draft { border-left: 3px solid var(--accent); padding-left: 10px; }
+    .chat-quote { margin: 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--dim); }
+    .chat-quotebox > .chat-copy, .chat-draft > .chat-copy { position: absolute; top: 0; right: 0; }
+    .chat-list { margin: 0 0 8px; padding-left: 22px; }
+    .chat-table { border-collapse: collapse; margin: 6px 0 10px; font-size: 13px; }
+    .chat-table th, .chat-table td { border: 1px solid var(--border); padding: 3px 8px; text-align: left; }
+    .chat-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+    .chat-actions { margin-top: 6px; display: flex; justify-content: flex-end; }
+    .chat-copy {
+      cursor: pointer; background: transparent; color: var(--dim); border: 1px solid var(--border); border-radius: 4px; font: inherit; font-size: 11px; line-height: 1.3; padding: 1px 7px;
+    }
+    .chat-copy:hover, .chat-copy:focus-visible { color: var(--text); border-color: var(--accent); }
+    .chat-copy-ok { color: var(--accent); border-color: var(--accent); }
+    .chat-copy-inline { margin-left: 4px; padding: 0 5px; font-size: 10px; vertical-align: baseline; }
+    #chat-working { flex: 0 0 auto; padding: 0 14px 6px; font-size: 12px; color: var(--dim); }
+    #chat-form { flex: 0 0 auto; display: flex; gap: 8px; align-items: flex-end; padding: 8px 12px 10px; border-top: 1px solid var(--border); background: var(--chrome); }
+    #chat-input {
+      flex: 1 1 auto; min-width: 0; box-sizing: border-box; resize: none; min-height: 36px; max-height: 40vh; padding: 7px 10px; border-radius: 6px;
+      border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit;
+    }
+    #chat-input:focus { outline: none; border-color: var(--accent); }
+    #chat-send { cursor: pointer; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--bg); font: inherit; }
+    #chat-flip {
+      position: absolute; top: 6px; left: 10px; right: 10px; z-index: 17; padding: 5px 10px; border-radius: 5px; font-size: 12px; line-height: 1.4; color: var(--text);
+      background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
+    }
+    #chat-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+    body.focus-mode #chat-flip, body.lean #chat-flip { top: 6px; }
+
     /* The terminal bar (#49 last prompt + #52 bedtime, with #47's occupancy banner folded in as a chip;
        documentation/DESIGN_TERMINAL_BAR.md): ONE row over the terminal, the prompt on the left once it has scrolled
        away, the status chips on the right. Absent when there is nothing to say. It never animates (movement means
@@ -2395,6 +2456,8 @@
       <span id="mode" title="Hazard level — how much runs unsupervised. Shift+Tab cycles."></span>
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
+      <!-- BACKLOG #157: swaps this tab's terminal for a clean chat (your prompts and Claude's replies, no tool lines); pressed again, the terminal. -->
+      <button type="button" id="chat-btn" class="hdr-btn" aria-pressed="false" title="Hide tool lines: show a clean chat (Ctrl+Shift+H)" aria-label="Hide tool lines">💬</button>
       <button type="button" id="layout-btn" class="hdr-btn" title="Layout: where each panel sits">▦</button>
       <button type="button" id="focus-btn" class="hdr-btn" title="Focus: only the terminal (Ctrl+Shift+F)">⛶</button>
       <!-- #42: the two keyboard hints became this one button; it opens the shortcuts sheet (#43), as F1 does. -->
@@ -2409,6 +2472,18 @@
         <!-- fix/terminal-links: where the link under the pointer really goes,
              or that a clicked one wasn't opened. Text only (app/link-click.js). -->
         <div id="link-target" role="status" hidden></div>
+        <!-- BACKLOG #157: the chat view, over the terminal (app/chat-display.js builds the bubbles; model text is never parsed as HTML).
+             #chat-flip is the one-line note over the terminal when the CLI needs you and the chat steps aside. -->
+        <div id="chat-view" role="region" aria-label="Chat view" hidden>
+          <div id="chat-head"><button type="button" id="chat-show-tools" title="Show the terminal with every tool line (Ctrl+Shift+H)">Show tool lines</button></div>
+          <div id="chat-log" role="log" aria-live="polite"></div>
+          <div id="chat-working" role="status" hidden>Claude is working…</div>
+          <form id="chat-form" autocomplete="off">
+            <textarea id="chat-input" rows="1" placeholder="Message Claude (Enter sends, Shift+Enter is a new line)" aria-label="Message Claude"></textarea>
+            <button type="submit" id="chat-send">Send</button>
+          </form>
+        </div>
+        <div id="chat-flip" role="status" hidden></div>
         <!-- Extension X1 (PR 1b). Other live claude sessions in this worktree:
              a warning, never a block. Dismissed until the set of sessions changes. -->
         <div id="terminal-banner" role="status" hidden>
@@ -2768,6 +2843,9 @@
   <script src="./models-refresh.js"></script>
   <script src="./models-catalogue.js"></script>
   <script src="./paste-action.js"></script>
+  <script src="./chat-markdown.js"></script>
+  <script src="./chat-view-state.js"></script>
+  <script src="./chat-display.js"></script>
   <script src="./worktree-status-display.js"></script>
   <script src="./program-status-display.js"></script>
   <script src="./tab-status.js"></script>

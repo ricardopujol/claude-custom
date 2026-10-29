@@ -229,6 +229,7 @@ function applyProgramStatus(rootRecord, how) {
     if (view) { headerDot.classList.add(view.cls); headerDot.title = view.title; } else headerDot.removeAttribute('title');
   }
   reportTabStatus();
+  chatRefreshView();          // BACKLOG #157: a blocked CLI sends the chat view back to the terminal
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
@@ -9239,6 +9240,7 @@ function handleControl(msg) {
     // The terminal bar: the latest prompt (no place in this buffer: it shows) and the bedtime night; both absent
     // from an older host, which is "none", never a stale one.
     applyBarPrompt(msg.prompt, false);
+    chatApply(msg.chat);           // BACKLOG #157: absent from an older host, which is an empty chat, never a stale one
     applyBedtime(msg.bedtime);
     if (leanOn) tellHostLean();      // a (re)attached host does not know this window is lean
     applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
@@ -9484,7 +9486,12 @@ function handleControl(msg) {
     if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
     paintBar();
     reportTabStatus();
+    chatRefreshView();
     mapRefresh();
+    return;
+  }
+  if (msg.type === 'chat') {
+    chatApply(msg.chat);
     return;
   }
   if (msg.type === 'map') {
@@ -9761,7 +9768,7 @@ function connect() {
       renderQuota({ ok: false, state: 'absent', windows: [], error: 'the connection to the session dropped' });
     }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
-    if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); chatRefreshView(); }
     // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
     applyProgramStatus(null, 'lost');
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
@@ -9901,6 +9908,9 @@ function renderDropNote(note) {
 term.attachCustomKeyEventHandler((e) => {
   if (e.type !== 'keydown') return true;
 
+  // The chat view's switch (BACKLOG #157), decided here for the same reason as the panel toggle below.
+  if (chatViewState.isChatKey(e)) { e.preventDefault(); chatToggle(); return false; }
+
   // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
   // textarea always holds focus, so a document-level handler never saw Ctrl+B
   // -- the terminal consumed it and sent \x02 to the pty, which readline reads
@@ -10020,6 +10030,70 @@ async function pasteFromClipboard() {
     userInput(action.data);
   }
 }
+
+// --- chat view (BACKLOG #157, documentation/DESIGN_CHAT_VIEW.md) --------------------------------------------------------
+// A second display of the same session, laid over the terminal (which keeps its size and keeps running). The conversation is the
+// host's (host/chat-feed.js, from the CLI's hooks); what is shown and when is app/chat-view-state.js; the DOM is app/chat-display.js.
+// The type box writes to the pty exactly like typing: the same frames and the same occupancy confirm (userInput).
+const chatStore = (() => { try { return { read: (k) => localStorage.getItem(k), write: (k, v) => localStorage.setItem(k, v) }; } catch { return null; } })();
+let chatWanted = chatViewState.readWanted(chatStore, CWD);
+let chatData = { messages: [], working: false };
+let chatShown = false;
+const chatBtn = document.getElementById('chat-btn');
+const chatUi = chatDisplay.create({
+  doc: document,
+  els: { root: document.getElementById('chat-view'), log: document.getElementById('chat-log'), working: document.getElementById('chat-working'),
+    flip: document.getElementById('chat-flip'), form: document.getElementById('chat-form'), input: document.getElementById('chat-input') },
+  copy: (text) => (window.harness && window.harness.writeClipboard ? window.harness.writeClipboard(text) : { ok: false, error: 'no clipboard bridge' }),
+  openLink: (href) => { if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(href); },
+  send: (text) => chatSend(text),
+});
+
+function chatSend(text) {
+  if (hostKind === 'shell' || !ws || ws.readyState !== WebSocket.OPEN) return { ok: false };
+  const plan = chatViewState.planChatSend(text, { bracketed: term.modes.bracketedPasteMode });
+  if (plan.length === 0) return { ok: false };
+  for (const step of plan) setTimeout(() => userInput(step.frame), step.afterMs);
+  return { ok: true };
+}
+
+// Repaints which display shows. Called by everything that can change it: the switch, the host's turn, the CLI's own blocked report,
+// the conversation, and the host kind (a plain shell tab has no CLI to chat with).
+function chatRefreshView() {
+  const blocked = programRoot !== null && programRoot.state === 'blocked';
+  const shell = hostKind === 'shell';
+  const view = chatViewState.viewFor({ wanted: chatWanted && !shell, turn: sessionTurn, blocked });
+  const was = chatShown;
+  chatShown = view.show === 'chat';
+  chatBtn.hidden = shell;
+  chatBtn.setAttribute('aria-pressed', String(chatWanted));
+  document.body.classList.toggle('chat-on', chatShown);
+  chatUi.update({ messages: chatData.messages, working: chatData.working, view });
+  if (chatShown && !was) chatUi.focusInput();
+  else if (!chatShown && was) term.focus();          // the CLI needs you, or the chat was switched off: the keyboard goes to the terminal
+}
+
+function chatToggle() {
+  chatWanted = !chatWanted;
+  chatViewState.writeWanted(chatStore, CWD, chatWanted);
+  chatRefreshView();
+}
+
+function chatApply(chat) {
+  const ok = chat && typeof chat === 'object' && Array.isArray(chat.messages);
+  chatData = ok ? { messages: chat.messages, working: chat.working === true } : { messages: [], working: false };
+  chatRefreshView();
+}
+
+chatBtn.addEventListener('click', chatToggle);
+document.getElementById('chat-show-tools').addEventListener('click', chatToggle);
+// The terminal's own key handler decides the shortcut while it has focus (xterm consumes keys before a document listener); this is the chat's.
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || !chatViewState.isChatKey(e)) return;
+  e.preventDefault();
+  chatToggle();
+});
+chatRefreshView();
 
 // --- sizing -----------------------------------------------------------------
 // Resize must propagate on window resize AND on font change, or the Ink layout
