@@ -13,7 +13,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { createMoodMachine, STALL_MS, WAIT_GRACE_MS, WAIT_RED_MS, QUIET_STALL_MS, BGWAIT, BGWAIT_LATE } = require('../host/mood-machine');
+const { createMoodMachine, STALL_MS, MAX_INVOCATION_MS, WAIT_GRACE_MS, WAIT_RED_MS, QUIET_STALL_MS, BGWAIT, BGWAIT_LATE } = require('../host/mood-machine');
 
 function rig(opts = {}) {
   let t = 1_000_000;
@@ -190,35 +190,144 @@ test('a stressed agent that waits shows the wait too (the base state stays stres
   assert.strictEqual(r.detail('miguel'), BGWAIT);
 });
 
-test('PROPERTY: a run with a live background task is never asleep inside the quiet limit; red exactly from 30 minutes of silence', () => {
+// Dexter 1 (PR #224): the wait ends with the work it stands for.
+const BG_CHILD = (r, p, id = 'adexter-0000000000000001') => {
+  r.ev('PreToolUse', { tool_name: 'Agent', tool_use_id: 'bg1', tool_input: { subagent_type: 'dexter', run_in_background: true, description: 'Review the diff' }, agent_id: p.id, agent_type: p.type });
+  r.ev('PostToolUse', { tool_name: 'Agent', tool_use_id: 'bg1', tool_input: {}, tool_response: { isAsync: true, status: 'async_launched', agentId: id }, agent_id: p.id, agent_type: p.type });
+  return { id, type: 'dexter' };
+};
+
+test('PR #224 Dexter 1: the background child stops at 60 s, the agent reads at 61 s and composes for 31 s: that is working, not "waiting on" the child', () => {
+  const r = rig();
+  const p = started(r, 'miguel');
+  const kid = BG_CHILD(r, p);
+  r.advance(60_000);
+  r.ev('SubagentStop', { agent_id: kid.id, agent_type: kid.type });
+  r.advance(1_000);
+  r.pre(p, 'Read', { file_path: 'C:/x' });
+  r.advance(WAIT_GRACE_MS + 1_000);
+  assert.notStrictEqual(r.detail('miguel'), BGWAIT);
+  assert.strictEqual(r.m.waitOf('miguel'), null);
+});
+
+test('PR #224 Dexter 1: while the child still runs it waits on it, and its stop ends the wait at once, with no event of the agent\'s own', () => {
+  const r = rig();
+  const p = started(r, 'miguel');
+  const kid = BG_CHILD(r, p);
+  r.advance(WAIT_GRACE_MS);
+  assert.strictEqual(r.detail('miguel'), BGWAIT);
+  r.ev('SubagentStop', { agent_id: kid.id, agent_type: kid.type });
+  assert.notStrictEqual(r.detail('miguel'), BGWAIT);
+  assert.strictEqual(r.m.waitOf('miguel'), null);
+});
+
+test('PR #224 Dexter 1: after the child ends, a real hang goes back to the ordinary clocks: stuck at 20 minutes, reaped at 30', () => {
+  const r = rig();
+  const p = started(r, 'miguel');
+  const kid = BG_CHILD(r, p);
+  r.ev('SubagentStop', { agent_id: kid.id, agent_type: kid.type });
+  r.pre(p, 'Read', { file_path: 'C:/x' });
+  r.advance(21 * 60_000);
+  assert.strictEqual(r.detail('miguel'), 'stuck');
+  r.advance(10 * 60_000);
+  assert.strictEqual(r.m.stack().includes('miguel'), false);
+});
+
+test('PR #224 Dexter 1: one of two children stopping leaves the wait on the other; TaskStop ends a backgrounded Bash\'s', () => {
+  const r = rig();
+  const p = started(r, 'miguel');
+  const k1 = BG_CHILD(r, p);
+  r.ev('PreToolUse', { tool_name: 'Agent', tool_use_id: 'bg2', tool_input: { subagent_type: 'mortimer', run_in_background: true, description: 'Mutate' }, agent_id: p.id, agent_type: p.type });
+  r.ev('PostToolUse', { tool_name: 'Agent', tool_use_id: 'bg2', tool_input: {}, tool_response: { isAsync: true, status: 'async_launched', agentId: 'amortimer-0000000000000002' }, agent_id: p.id, agent_type: p.type });
+  r.ev('SubagentStop', { agent_id: k1.id, agent_type: k1.type });
+  r.advance(WAIT_GRACE_MS);
+  assert.strictEqual(r.m.waitOf('miguel').on, 'Mutate');
+
+  const r2 = rig();
+  const q = started(r2);
+  launch(r2, q);
+  r2.ev('PostToolUse', { tool_name: 'TaskStop', tool_use_id: 'ts', tool_input: { task_id: 'x' }, tool_response: { success: true }, agent_id: q.id, agent_type: q.type });
+  r2.advance(WAIT_GRACE_MS * 2);
+  assert.notStrictEqual(r2.detail('miguel'), BGWAIT);
+});
+
+// Dexter 2: a quiet run held on a prompt used to escape both the age cap and the stall clock.
+test('PR #224 Dexter 2: a quiet foreground run held on a prompt, whose stop was dropped, is still ended by a clock', () => {
+  const r = rig();
+  const b = r.spawn('bee', { input: { run_in_background: true } });
+  r.post(b, 'Bash', r.pre(b, 'Bash', { command: 'true' }));
+  const c = r.spawn('cee', { by: { agent_id: b.id, agent_type: b.type } });
+  r.post(c, 'Bash', r.pre(c, 'Bash', { command: 'true' }));
+  launch(r, c);
+  r.ev('PermissionRequest', { tool_name: 'Edit', tool_input: {}, agent_id: c.id, agent_type: c.type });
+  r.advance(QUIET_STALL_MS + 1);
+  assert.deepStrictEqual(r.m.stack(), []);
+});
+
+test('PR #224 Dexter 2: PROPERTY: whatever the flags, nothing stays open past the longest limit of total silence', () => {
+  const opArb = fc.constantFrom('shell', 'permission', 'child', 'read');
+  fc.assert(fc.property(fc.array(opArb, { minLength: 0, maxLength: 6 }), ops => {
+    const r = rig();
+    const b = r.spawn('bee', { input: { run_in_background: true } });
+    r.post(b, 'Bash', r.pre(b, 'Bash', { command: 'true' }));
+    const c = r.spawn('cee', { by: { agent_id: b.id, agent_type: b.type } });
+    r.post(c, 'Bash', r.pre(c, 'Bash', { command: 'true' }));
+    for (const o of ops) {
+      if (o === 'shell') launch(r, c);
+      else if (o === 'permission') r.ev('PermissionRequest', { tool_name: 'Edit', tool_input: {}, agent_id: c.id, agent_type: c.type });
+      else if (o === 'child') BG_CHILD(r, c, 'akid-' + ops.length + '00000000000000');
+      else r.pre(c, 'Read', { file_path: 'C:/x' });
+    }
+    r.advance(Math.max(QUIET_STALL_MS, MAX_INVOCATION_MS) + STALL_MS + 1);
+    assert.deepStrictEqual(r.m.stack(), []);
+  }), { numRuns: 100 });
+});
+
+// Dexter 7: the label and the wait must agree on what is in flight.
+test('PR #224 Dexter 7: a quiet run whose Bash result was lost shows the wait (red) once that Bash has aged out of "in flight"', () => {
+  const r = rig();
+  const a = started(r);
+  launch(r, a);
+  r.pre(a, 'Bash', { command: 'lost' });          // no result will come
+  r.advance(STALL_MS + 1);
+  assert.strictEqual(r.detail('miguel'), BGWAIT_LATE);
+});
+
+test('PROPERTY: a run with a live background task is never asleep inside the quiet limit; red exactly from 30 minutes of silence; the wait ends with its work', () => {
   const opArb = fc.oneof(
     { weight: 3, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 8 * 60_000 }) }) },
     { weight: 1, arbitrary: fc.constant({ op: 'launch' }) },
+    { weight: 1, arbitrary: fc.constant({ op: 'launchChild' }) },
+    { weight: 1, arbitrary: fc.constant({ op: 'stopChild' }) },
     { weight: 1, arbitrary: fc.constant({ op: 'read' }) },
     { weight: 1, arbitrary: fc.constant({ op: 'bashOk' }) },
   );
   fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 40 }), ops => {
     const r = rig();
     const a = started(r);
-    let quiet = false;
+    let shell = false;          // a backgrounded Bash: no end hook, it lasts
+    let kid = null;             // a live background child
     let lastEvent = r.now();
-    let gone = false;       // let go after the quiet limit: later events name an id nobody holds
+    let gone = false;           // let go: later events name an id nobody holds
+    let n = 0;
     for (const o of ops) {
       if (gone) break;
       if (o.op === 'advance') r.advance(o.ms);
-      else if (o.op === 'launch') { launch(r, a); quiet = true; lastEvent = r.now(); }
+      else if (o.op === 'launch') { launch(r, a); shell = true; lastEvent = r.now(); }
+      else if (o.op === 'launchChild' && kid === null) { kid = BG_CHILD(r, a, 'akid-' + (++n) + '0000000000000'); lastEvent = r.now(); }
+      else if (o.op === 'stopChild' && kid !== null) { r.ev('SubagentStop', { agent_id: kid.id, agent_type: kid.type }); kid = null; }
       else if (o.op === 'read') { r.pre(a, 'Read', { file_path: 'C:/x' }); lastEvent = r.now(); }
-      else { r.post(a, 'Bash', r.pre(a, 'Bash', { command: 'true' })); lastEvent = r.now(); }
+      else if (o.op === 'bashOk') { r.post(a, 'Bash', r.pre(a, 'Bash', { command: 'true' })); lastEvent = r.now(); }
+      const quiet = shell || kid !== null;
       const silence = r.now() - lastEvent;
       const d = r.detail('miguel');
-      // let go: a run that launched nothing is reaped after the ordinary stall, one that waits on background work after the longer limit
       if (silence >= (quiet ? QUIET_STALL_MS : STALL_MS)) { gone = true; continue; }
-      if (quiet && silence < QUIET_STALL_MS) assert.notStrictEqual(r.m.stateOf('miguel'), 'sleeping', 'never asleep while waiting');
+      if (quiet) assert.notStrictEqual(r.m.stateOf('miguel'), 'sleeping', 'never asleep while waiting');
       if (d === BGWAIT_LATE) assert.ok(quiet && silence >= WAIT_RED_MS, 'red only at 30 minutes or more');
-      if (quiet && silence >= WAIT_RED_MS && silence < QUIET_STALL_MS) assert.strictEqual(d, BGWAIT_LATE);
+      if (quiet && silence >= WAIT_RED_MS) assert.strictEqual(d, BGWAIT_LATE);
       if (d === BGWAIT) assert.ok(quiet && silence >= WAIT_GRACE_MS && silence < WAIT_RED_MS);
-      if (!quiet) assert.ok(d !== BGWAIT && d !== BGWAIT_LATE);
+      if (!quiet) assert.ok(d !== BGWAIT && d !== BGWAIT_LATE, 'no work, no wait');
       if (r.m.waitOf('miguel') !== null) assert.ok(d === BGWAIT || d === BGWAIT_LATE, 'a wait is reported only while the card shows it');
     }
-  }), { numRuns: 200 });
+  }), { numRuns: 300 });
 });
