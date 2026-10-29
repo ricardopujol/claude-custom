@@ -12,10 +12,13 @@ const { runDrop, createInputGate, idleBox, boxEmpty, MAX_CLEAR_PASSES, CTRL_E, C
 const RULE = '─'.repeat(60);
 
 // rows: [{ t: text, hard: starts after a real newline }]; the visible box keeps the END, capped like the CLI (termRows/2 - 5).
-function fakeCli({ rows = 24, draft = [''], dialog = null, ctrlUAtCol0 = 'crosses' } = {}) {
+function fakeCli({ rows = 24, draft = [''], dialog = null, ctrlUAtCol0 = 'crosses', dialogDelay = 0, permissionAtRead = 0 } = {}) {
   const cli = {
-    rows, draft: draft.map(t => (typeof t === 'string' ? { t } : t)), dialog, writes: [], submitted: [], dialogOpened: false,
+    rows, draft: draft.map(t => (typeof t === 'string' ? { t } : t)), dialog, writes: [], submitted: [], dialogOpened: false, pending: null, whileDialog: [], permLeft: null,
     lines() {
+      // a dialog whose frame arrives `dialogDelay` reads after the Enter; a permission prompt the CLI draws on its own `permissionAtRead` reads after the command is typed
+      if (cli.pending && cli.pending.reads-- <= 0) { cli.dialog = cli.pending.dialog; cli.pending = null; }
+      if (cli.permLeft !== null && --cli.permLeft <= 0) { cli.dialog = ['Do you want to proceed?', '  ❯ 1. Yes', '    2. No']; cli.permLeft = null; }
       if (cli.dialog) return ['● some output', RULE, ...cli.dialog, RULE, '  footer'];
       const cap = Math.max(1, Math.floor(rows / 2) - 5);
       const shown = cli.draft.slice(-cap).map(r => r.t);
@@ -25,7 +28,9 @@ function fakeCli({ rows = 24, draft = [''], dialog = null, ctrlUAtCol0 = 'crosse
     },
     write(d) {
       cli.writes.push(d);
+      if (cli.pending || cli.dialog) cli.whileDialog.push(d);
       if (cli.dialog) return;
+      if (permissionAtRead && d.startsWith('/add-dir')) cli.permLeft = permissionAtRead;
       const last = cli.draft[cli.draft.length - 1];
       if (d === CTRL_E) return;
       if (d === CTRL_U) {
@@ -36,7 +41,11 @@ function fakeCli({ rows = 24, draft = [''], dialog = null, ctrlUAtCol0 = 'crosse
       if (d === '\r') {
         const text = cli.draft.map(r => r.t).join('\n');
         cli.submitted.push(text);
-        if (/^\/add-dir /.test(text)) { cli.dialog = ['Add directory to workspace', text.slice(9), '  ❯ 1. Yes, for this session', '  Enter to confirm · Esc to cancel']; cli.dialogOpened = true; }
+        if (/^\/add-dir /.test(text)) {
+          const dlg = ['Add directory to workspace', text.slice(9), '  ❯ 1. Yes, for this session', '  Enter to confirm · Esc to cancel'];
+          if (dialogDelay > 0) cli.pending = { dialog: dlg, reads: dialogDelay }; else cli.dialog = dlg;
+          cli.dialogOpened = true;
+        }
         cli.draft = [{ t: '' }];
         return;
       }
@@ -173,6 +182,49 @@ test('Dexter 5: the person\'s keys are held while a grant is typed and written, 
   await gate.exclusive(async () => { gate.input('p'); gate.input('q'); out.push('GRANT'); assert.strictEqual(gate.heldCount(), 2); });
   gate.input('z');
   assert.deepStrictEqual(out, ['a', 'GRANT', 'p', 'q', 'z']);
+});
+
+test('Dexter R2-1: a key typed mid-clear (a raw frame, through the gate) is held and lands after the Enter, not deleted nor glued into /add-dir', async () => {
+  const cli = fakeCli({ draft: Array.from({ length: 6 }, (_, i) => `row ${i}`) });
+  const gate = createInputGate({ write: d => cli.write(d) });
+  let slept = 0;
+  const env = envFor(cli, {
+    exclusive: fn => gate.exclusive(fn),
+    sleep: async () => { if (++slept === 3) { gate.input('p'); gate.input('q'); } },   // typed during the second clear pass
+  });
+  await runDrop({ dirs: ['C:\\outside\\docs'], text: '', env });
+  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\outside\\docs']);
+  assert.deepStrictEqual(cli.writes.slice(-3), ['\r', 'p', 'q'], 'typed keys come out after the Enter, in order');
+  assert.strictEqual(cli.writes.indexOf('p') > cli.writes.indexOf('\r'), true);
+});
+
+test('Dexter R2-1: every pty write in host.js goes through the gate (no raw keystroke path around it)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'host.js'), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const calls = src.match(/\bwriteInput\(/g) || [];
+  assert.strictEqual(calls.length, 2, 'writeInput( appears only in its definition and in ptyWrite, the gate\'s writer');
+  assert.match(src, /handleFrame\(text, dispatchControl, \(t\) => \{ if \(term\) inputGate\.input\(t\); \}\)/);
+  assert.match(src, /if \(term\) inputGate\.input\(raw\.toString\('utf8'\)\)/);
+});
+
+test('Dexter R2-3: a permission prompt the CLI draws between the read-back and the Enter stops the Enter', async () => {
+  const cli = fakeCli({ draft: [{ t: 'a draft' }], permissionAtRead: 2 });   // read 1 = the read-back, read 2 = the last look
+  const r = await grant(cli);
+  assert.ok(!cli.writes.includes('\r'), 'no Enter reached the permission prompt');
+  assert.deepStrictEqual(cli.submitted, []);
+  assert.strictEqual(r.granted.length, 0);
+  assert.strictEqual(r.failed.length, 1);
+});
+
+test('Dexter R2-2: the next folder\'s keys wait until the previous dialog has been DRAWN and then answered', async () => {
+  const cli = fakeCli({ draft: [{ t: 'my draft' }], dialogDelay: 3 });   // the dialog frame shows up 3 reads after the Enter
+  let shown = 0;
+  const env = envFor(cli, { sleep: async () => { if (cli.dialog && ++shown === 4) cli.dialog = null; } });   // answered a moment after it is drawn
+  const granted = [];
+  await runDrop({ dirs: ['C:\\a', 'C:\\b'], text: 'paths ', env, onGranted: d => granted.push(d) });
+  assert.deepStrictEqual(cli.submitted, ['/add-dir C:\\a', '/add-dir C:\\b']);
+  assert.deepStrictEqual(granted, ['C:\\a', 'C:\\b']);
+  assert.deepStrictEqual(cli.whileDialog.filter(d => d !== '\r'), [], 'nothing but the Enters was written while a dialog was pending or open');
 });
 
 test('the gate releases held keys even when the grant throws', async () => {

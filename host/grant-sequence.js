@@ -29,6 +29,8 @@ const MAX_CLEAR_PASSES = 60;
 // processes), verify/probe-paste-doc.js grant, claude 2.1.312: at 120 ms all six cases pass (1 to 6 clear passes each); at 80 ms and no
 // screen sync, 2 of 6 read stale and fail closed (no Enter), which is why every read now syncs first.
 const KEY_GAP_MS = 120;
+const RECHECK_MS = 400;            // the look just before the Enter
+const DIALOG_SEEN_MS = 3000;       // how long a grant's own dialog may take to be drawn after its Enter
 const READBACK_WAIT_MS = 1500;     // how long the typed command may take to show on screen before it counts as a mismatch
 const DIALOG_WAIT_MS = 120000;     // how long a grant's own "Add directory" dialog may stay open before the rest of the drop is dropped
 const POLL_MS = 250;
@@ -98,6 +100,14 @@ async function grantOne(dir, env) {
     await clearBox(env);
     return { ok: false, reason: 'the prompt did not read back as the /add-dir line, so Enter was not pressed' };
   }
+  // The last look (the PR #106 pattern): a permission prompt the CLI drew on its own, mid-turn, can take the Enter as `1. Yes`. The
+  // read-back above is milliseconds old; this one is RECHECK_MS later and must still show the idle prompt holding exactly the command.
+  await env.sleep(RECHECK_MS);
+  const last = await readScreen(env);
+  if (!idleBox(last) || !commandTyped(last, command, { termRows: env.termRows() })) {
+    await clearBox(env);
+    return { ok: false, reason: 'the screen changed before Enter (a dialog or prompt appeared), so Enter was not pressed' };
+  }
   env.log('[host] grant: read back as ' + command + ', pressing Enter');
   env.write('\r');
   await env.sleep(env.keyGap);
@@ -113,6 +123,15 @@ async function waitIdle(env, ms = DIALOG_WAIT_MS) {
   return idleBox((await readScreen(env)));
 }
 
+// True once the prompt has LEFT idle (the dialog is drawn), false if it never does within DIALOG_SEEN_MS.
+async function waitDrawn(env) {
+  for (let t = 0; t < DIALOG_SEEN_MS; t += POLL_MS) {
+    if (!idleBox(await readScreen(env))) return true;
+    await env.sleep(POLL_MS);
+  }
+  return !idleBox(await readScreen(env));
+}
+
 /**
  * One drop, start to end. Grants run one at a time, each with its own read-back; the next waits for the previous one's dialog to be
  * answered. `onGranted(dir)` runs only after that grant's Enter went out, `onFailed(dir, reason)` for every folder that was not
@@ -126,6 +145,9 @@ async function runDrop({ dirs = [], text = '', env, onGranted = () => {}, onFail
     if (!r.ok) { env.log(`[host] grant of ${dir} not requested: ${r.reason}`); onFailed(dir, r.reason); continue; }
     onGranted(dir);
     if (i < dirs.length - 1 || text) {
+      // First see the dialog DRAWN, then wait for it to go: right after the Enter the screen can still read as an idle prompt
+      // (the dialog's frame is on its way), and the next keys would land in it (Dexter R2-2).
+      if (!(await waitDrawn(env))) env.log(`[host] grant: no dialog drawn within ${DIALOG_SEEN_MS} ms of the Enter for ${dir}; carrying on`);
       if (!(await waitIdle(env))) {
         const why = 'the Add-directory dialog was still open, so the rest of the drop was left alone';
         for (const rest of dirs.slice(i + 1)) { env.log(`[host] grant of ${rest} not requested: ${why}`); onFailed(rest, why); }

@@ -3148,7 +3148,7 @@ wss.on('connection', (ws, req) => {
     // Control frames arrive as JSON; everything else is raw keystrokes.
     if (!isBinary) {
       const text = raw.toString();
-      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) writeInput(t); });
+      const { error, msg } = handleFrame(text, dispatchControl, (t) => { if (term) inputGate.input(t); });
       if (error) {
         // A handler that threw is not "not control JSON" -- `handleFrame`
         // guarantees this text was never passed to `term.write`. Log and
@@ -3157,7 +3157,7 @@ wss.on('connection', (ws, req) => {
       }
       return;
     }
-    if (term) writeInput(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
+    if (term) inputGate.input(raw.toString('utf8'));   // keystrokes into a blocked window go nowhere
   });
 
   ws.on('close', () => {
