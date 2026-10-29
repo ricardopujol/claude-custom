@@ -66,19 +66,19 @@ const { statusFieldsView } = require('../app/status-fields-display');
 const SOME = { costUsd: 1.5, durationMs: 600_000, linesAdded: null, linesRemoved: null, over200k: null };
 
 test('shown only when the setting is exactly true AND there is something to say', () => {
-  assert.deepStrictEqual(statusFieldsView(SOME, true), { text: '10m', chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: true });
-  assert.deepStrictEqual(statusFieldsView(SOME, false), { text: '10m', chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: false });
-  assert.deepStrictEqual(statusFieldsView(SOME, null), { text: '10m', chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: false }, 'unknown setting: the CLI row may still be showing');
-  assert.deepStrictEqual(statusFieldsView(null, true), { text: '', chips: [], shown: false }, 'unknown fields draw nothing');
-  assert.deepStrictEqual(statusFieldsView({ ...SOME, durationMs: 0 }, true), { text: '', chips: [], shown: false });
+  assert.deepStrictEqual(statusFieldsView(SOME, true), { chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: true });
+  assert.deepStrictEqual(statusFieldsView(SOME, false), { chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: false });
+  assert.deepStrictEqual(statusFieldsView(SOME, null), { chips: [{ key: 'time', icon: 'clock', text: '10m' }], shown: false }, 'unknown setting: the CLI row may still be showing');
+  assert.deepStrictEqual(statusFieldsView(null, true), { chips: [], shown: false }, 'unknown fields draw nothing');
+  assert.deepStrictEqual(statusFieldsView({ ...SOME, durationMs: 0 }, true), { chips: [], shown: false });
 });
 
-test('property: shown implies the setting is true and the text is non-empty', () => {
+test('property: shown implies the setting is true and there are chips', () => {
   const v = fc.oneof(fc.constant(null), fc.constant(0), fc.double({ min: 0, max: 1e7, noNaN: true }));
   fc.assert(fc.property(v, v, fc.anything(), (c, d, setting) => {
     const out = statusFieldsView({ costUsd: c, durationMs: d, linesAdded: null, linesRemoved: null, over200k: null }, setting);
-    if (out.shown) assert.ok(setting === true && out.text.length > 0);
-    else assert.ok(setting !== true || out.text === '');
+    if (out.shown) assert.ok(setting === true && out.chips.length > 0);
+    else assert.ok(setting !== true || out.chips.length === 0);
   }));
 });
 
