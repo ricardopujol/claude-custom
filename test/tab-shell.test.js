@@ -922,6 +922,15 @@ test('a raise and an attention click select the sender\'s tab and bring the wind
   assert.strictEqual(h.focusCalls, 2);
 });
 
+test('an attention click whose tab has closed still brings this window forward (#145)', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.attentionClick({}), false, 'no tab to select');
+  assert.strictEqual(h.focusCalls, 1, 'the toast was this window\'s: the click still lands here');
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('dev'));
+});
+
 // --- Jump to its tab (the Git panel, documentation/PLAN_GIT_TREE.md Task 10) ---
 
 test('selectFolder: the tab whose worktree is that folder is selected, however the path is spelled', async () => {
