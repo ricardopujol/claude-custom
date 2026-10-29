@@ -4059,6 +4059,46 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // backlog #49 + #52 (verify/probe-terminal-bar.js): the bar as painted and the buffer it reads; a scroll of the
       // terminal (which goes through xterm's own onScroll, as a wheel does); a click on the prompt part or a chip.
       case 'barState': return JSON.stringify({ ok: true, ...barState() });
+      // BACKLOG #157 (verify/probe-chat-view.js): the chat view as drawn, and what a person does to it.
+      case 'chatState': {
+        const root = document.getElementById('chat-view');
+        const log = document.getElementById('chat-log');
+        const flip = document.getElementById('chat-flip');
+        return JSON.stringify({
+          ok: true, wanted: chatWanted, shown: chatShown, rootHidden: root.hidden, bodyChatOn: document.body.classList.contains('chat-on'),
+          flip: { hidden: flip.hidden, text: flip.textContent }, working: !document.getElementById('chat-working').hidden,
+          btn: { pressed: chatBtn.getAttribute('aria-pressed'), hidden: chatBtn.hidden },
+          bubbles: [...log.querySelectorAll('.chat-msg')].map(b => ({ cls: b.className, text: b.textContent })),
+          copyButtons: [...log.querySelectorAll('.chat-copy')].map(b => ({ label: b.getAttribute('aria-label'), text: b.textContent })),
+          logText: log.textContent, term: { cols: term.cols, rows: term.rows }, resizeSends,
+          rootRect: rectOf(root), termRect: rectOf(document.getElementById('term')),
+        });
+      }
+      case 'chatDo': {
+        if (a.what === 'toggle') { chatBtn.click(); return JSON.stringify({ ok: true }); }
+        if (a.what === 'key') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); return JSON.stringify({ ok: true }); }
+        if (a.what === 'type') {
+          if (typeof a.text !== 'string' || !a.text || a.text.length > 2000) return JSON.stringify({ ok: false, error: 'type needs text' });
+          document.getElementById('chat-input').value = a.text;
+          return chatUi.submit().then(() => JSON.stringify({ ok: true, boxAfter: document.getElementById('chat-input').value }));
+        }
+        // Copy through the real bridge, then put the person's own clipboard text back. An image on the clipboard is never touched: no check.
+        if (a.what === 'copy') {
+          const buttons = [...document.querySelectorAll('#chat-log .chat-copy')].filter(b => (b.getAttribute('aria-label') || '').includes(String(a.label)));
+          const b = buttons[Number.isInteger(a.index) ? a.index : 0];
+          if (!b) return JSON.stringify({ ok: false, error: `no copy button labelled ${a.label}` });
+          return (async () => {
+            const was = await window.harness.readClipboard();
+            if (was.hasImage) return JSON.stringify({ ok: true, skipped: 'an image is on the clipboard' });
+            b.click();
+            await new Promise(r => setTimeout(r, 300));
+            const now = await window.harness.readClipboard();
+            if (was.text) await window.harness.writeClipboard(was.text);
+            return JSON.stringify({ ok: true, copied: now.text, label: b.textContent });
+          })();
+        }
+        return JSON.stringify({ ok: false, error: `unknown chat action ${a.what}` });
+      }
       case 'barScroll': {
         if (a.to === 'top') term.scrollToTop();
         else if (a.to === 'bottom') term.scrollToBottom();
