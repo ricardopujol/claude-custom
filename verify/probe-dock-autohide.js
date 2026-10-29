@@ -1,29 +1,31 @@
 'use strict';
 /**
- * Dock tabs that slide open on hover, with a pin (BACKLOG #85), in a REAL window with a REAL host.  (re-runnable)
+ * Dock tabs that slide open on CLICK only (hover never opens one: BACKLOG #138, #106), with a pin (BACKLOG #85), in a REAL window
+ * with a REAL host.  (re-runnable)
  *
  *   node verify/probe-dock-autohide.js     (exit 0 = every check held)
  *
- * The unit tests pin the decisions (test/dock-rail*.test.js). What no unit test can see is the page: whether hovering a rail
- * tab really slides its panel over the terminal, whether the terminal's width really stays put while it does, and whether
- * pinning really makes the terminal narrower and unpinning gives it back.
+ * The unit tests pin the decisions (test/dock-rail*.test.js). What no unit test can see is the page: whether a REAL pointer over
+ * the rail opens nothing, whether clicking a rail tab really slides its panel over the terminal, whether the terminal's width
+ * really stays put while it does, and whether pinning really makes the terminal narrower and unpinning gives it back.
  *
  *   1  a layout stored before the rail existed (no `rail`) draws as it did: no rail, the same groups, a Pinned button on each
  *   2  the Pinned button unpins a panel: its tab is on a rail strip at the right edge, the terminal is narrower by that strip
  *      only, the boxes tile, terminal === fit === pty
- *   3  hovering the tab: nothing at once (a pass opens nothing), the panel is up within RAIL_OPEN_MS + the timer's slack, over the
+ *   3  a real pointer resting on a tab, or sweeping every tab, opens nothing; a click opens the panel and holds it, over the
  *      terminal, inside the window, with a Pin button; the terminal's width and the pty did not change and nothing was saved
- *   4  leaving: the panel stays through the grace, then goes; hovering back inside the grace keeps it
+ *   4  the held panel: the pointer leaving or hovering the other icons changes nothing; clicking another icon switches to it;
+ *      clicking the open icon again closes it
  *   5  Pin on the open panel: the tab leaves the rail, the panel is a real one beside the terminal, the terminal is narrower
  *   6  Unpin it again: the rail is back and the terminal grew back to its width with the rail
- *   7  a click holds the panel open (leaving does not close it), a press outside closes it
+ *   7  Esc closes it, a press outside closes it; 7b a keyboard activation of the icon opens and holds it
  *   8  the Window menu: hiding a rail tab removes it from the rail; ticking it again brings it back as a rail tab
  *   9  double-clicking the empty part of a tab bar unpins every tab of the group
  *   12 rail tabs are a one-colour line icon over a horizontal name (52 px rail, names 11 px at most, shrunk to one line); a folded group's rails too
  *
  * Hover is REAL pointer movement (the host's `mouseMove` command: webContents.sendInputEvent), not a dispatched event, and a
  * float sits where the panel opens, so a stacking fault (PR #168 B1: a missing `;` dropped `z-index: 1000`) fails check 3. Also:
- *   4  the slide-out stage     5/6  where the keyboard is after Pin and Pinned     7b  focus inside a hover-opened panel holds it
+ *   4  the slide-out stage     5/6  where the keyboard is after Pin and Pinned
  *   8c the tab menus: Pin / Hide <name> on a rail tab; Unpin with "Just this tab" leaves the saved layout untouched
  *   10 every tab reachable with all unpinned in a short window     11  reduced motion (the OS setting, emulated): no animation
  *
@@ -40,15 +42,8 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-// The rail's two hover timers, read from the page so this probe follows the constants instead of repeating them.
-const RENDERER_SRC = fs.readFileSync(path.join(ROOT, 'app', 'renderer.js'), 'utf8');
-const railConst = (name) => {
-  const m = new RegExp('const ' + name + ' = (\\d+);').exec(RENDERER_SRC);
-  if (!m) throw new Error('probe-dock-autohide: app/renderer.js has no "const ' + name + ' = <number>;" line, so the hover timers cannot be read');
-  return Number(m[1]);
-};
-const RAIL_OPEN_MS = railConst('RAIL_OPEN_MS');
-const RAIL_CLOSE_MS = railConst('RAIL_CLOSE_MS');
+// How long a pointer rests before the probe reads the page: well past the 100 ms the old hover timers waited.
+const HOVER_REST_MS = 600;
 const HARNESS_DIR = path.join(ROOT, '.harness');
 const STATE_DIR = path.join(HARNESS_DIR, 'state');
 const V1_FILE = path.join(STATE_DIR, 'layout-global.json');
@@ -315,9 +310,10 @@ const termWidth = (v) => Math.round(v.termwrap.width);
 const centre = (r) => ({ x: Math.round((r.left + r.right) / 2), y: Math.round((r.top + r.bottom) / 2) });
 const moveTo = (app, r) => command(app, { cmd: 'mouseMove', ...centre(r) });
 const railTab = (v, id) => { const r = v.rails.find(x => x.id === 'dock'); return r ? r.tabRects[r.modules.indexOf(id)] : null; };
-const hoverTab = async (app, id) => moveTo(app, railTab(await viewState(app), id));
 const hoverTerm = async (app) => moveTo(app, (await viewState(app)).termwrap);
-const hoverPanel = async (app) => moveTo(app, (await viewState(app)).popover.rect);
+// A click on a rail icon (the page's own click handler) and a press outside the panel and its rail.
+const clickTab = (app, id) => view(app, 'railClick', { id });
+const pressOutside = (app) => view(app, 'outsidePress', { selector: '#termwrap' });
 const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 const heldIs = (v, module, parent) => !!v.held && v.held.module === module && String(v.held.parent || '').includes(parent);
 
@@ -345,17 +341,17 @@ async function main() {
   const s1m = (await settled(app)).s;
   check('1: a layout with no rail opens with every panel a rail tab: no group, one rail holding every module',
     s1m.groups.length === 0 && s1m.rails.length === 1 && s1m.rails[0].modules.length === IDS.length - 1, JSON.stringify([s1m.groups.length, s1m.rails.map(r => r.modules.length)]));
-  // 1b: hovering one of those tabs opens only that tab, not the rail's whole list.
+  // 1b: clicking one of those tabs opens only that tab, not the rail's whole list.
   // (Built from unpin alone, so the same probe also draws the before picture on a build without startLayout.)
   await view(app, 'layout', { layout: IDS.filter(id => id !== 'canvas').reduce((l, id) => T.unpin(l, id), T.defaultLayout(IDS)) });
   await settled(app);
-  await hoverTab(app, 'vault');
+  await clickTab(app, 'vault');
   const peek1 = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
-  check('1b: hovering a rail tab opens its panel with that one tab at the top, not the whole rail', !!peek1 && peek1.popover.module === 'vault' && peek1.popover.tabs.join() === 'vault' && peek1.popover.on.join() === 'vault',
+  check('1b: clicking a rail tab opens its panel with that one tab at the top, not the whole rail', !!peek1 && peek1.popover.module === 'vault' && peek1.popover.tabs.join() === 'vault' && peek1.popover.on.join() === 'vault',
     JSON.stringify(peek1 && [peek1.popover.module, peek1.popover.tabs, peek1.popover.on]));
   await sleep(300);
-  await command(app, { cmd: 'screenshot', file: path.join(shots, '1b-hover-one-tab.png') });
-  await hoverTerm(app);
+  await command(app, { cmd: 'screenshot', file: path.join(shots, '1b-click-one-tab.png') });
+  await pressOutside(app);
   await waitFor(async () => (await viewState(app)).popover === null, 3000, 20);
   // The rest of the probe measures pinning from the all-docked layout a person who pinned everything has (an explicit empty rail).
   await view(app, 'layout', { layout: T.defaultLayout(IDS) });
@@ -384,29 +380,22 @@ async function main() {
   check('2: a float is up, over where the rail panel will open', sf.floats.length === 1, JSON.stringify(sf.floats.map(f => [f.id, f.rect.left, f.rect.right])));
 
   // 3 ---------------------------------------------------------------------------------
-  // A pointer move and a state read are each a round trip, and on a loaded machine the two can outlast the hover timer. So the
-  // "nothing is open yet" read only counts when it came back inside RAIL_OPEN_MS of the move; a late read retries from the start.
+  // Side tabs open on click only (BACKLOG #138, #106): a REAL pointer resting on a tab, or on every tab in turn, opens nothing.
   const pushes0 = sf.pushes;
   const sentBefore = JSON.stringify(sf.sent);
   const tab0 = railTab(sf, 'git');
-  let h0, early, earlyMs;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    if (attempt > 0) {
-      await hoverTerm(app);
-      await waitFor(async () => (await viewState(app)).popover === null, 3000, 20);
-    }
-    h0 = Date.now();
-    await moveTo(app, tab0);
-    // the synthetic move reaches the page a beat after the command returns: poll until the page has seen it
-    early = await waitFor(async () => { const v = await viewState(app); return v.railState.pending === 'git' || v.popover ? v : null; }, 1000, 3) || await viewState(app);
-    earlyMs = Date.now() - h0;
-    if (earlyMs < RAIL_OPEN_MS) break;
-  }
-  check('3: a REAL pointer on the tab starts a hover wait (pending git) and nothing is open yet, read ' + earlyMs + ' ms after the move (inside the ' + RAIL_OPEN_MS + ' ms wait)',
-    earlyMs < RAIL_OPEN_MS && early.popover === null && early.railState.pending === 'git', JSON.stringify([earlyMs, early.railState]));
+  await moveTo(app, tab0);
+  await sleep(HOVER_REST_MS);
+  const rested = await viewState(app);
+  check('3: a REAL pointer resting on the tab for ' + HOVER_REST_MS + ' ms opens nothing', rested.popover === null && rested.railState.module === null, JSON.stringify(rested.railState));
+  const tabs3 = (await viewState(app)).rails.find(r => r.id === 'dock').tabRects;
+  for (const r of tabs3) await moveTo(app, r);
+  await sleep(HOVER_REST_MS);
+  const swept = await viewState(app);
+  check('3: ...and sweeping the pointer over every rail icon opens nothing either', swept.popover === null && swept.railState.module === null, JSON.stringify(swept.railState));
+  await view(app, 'railClick', { id: 'git' });
   const open = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
-  const took = Date.now() - h0;
-  check('3: ...then the panel is open, within about RAIL_OPEN_MS plus the timer and a frame', !!open && took >= RAIL_OPEN_MS - 10 && took <= RAIL_OPEN_MS + 500, `${took} ms`);
+  check('3: a click on the tab opens the panel, and holds it', !!open && open.popover.module === 'git' && open.railState.held === true, JSON.stringify(open && open.railState));
   if (open) {
     await sleep(250);
     const so = await viewState(app);
@@ -422,45 +411,31 @@ async function main() {
     check('3: ...the terminal did not move or resize, the pty was told nothing new, and nothing was saved',
       termWidth(so) === t1 && JSON.stringify(so.sent) === sentBefore && so.pushes === pushes0,
       `${termWidth(so)} vs ${t1}; pushes ${so.pushes} vs ${pushes0}`);
-    await command(app, { cmd: 'screenshot', file: path.join(shots, '3-hover-open.png') });
+    await command(app, { cmd: 'screenshot', file: path.join(shots, '3-click-open.png') });
   }
 
   // 4 ---------------------------------------------------------------------------------
-  // Leave and look (or leave and come back) in as few round trips as possible, with the rects fetched beforehand, and count the
-  // sample only if it finished inside RAIL_CLOSE_MS of the leave; a slow one re-opens the panel and tries again.
-  const withinGrace = async (fn) => {
-    let out;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      let v = await viewState(app);
-      if (!v.popover) {
-        await hoverTab(app, 'git');
-        v = await waitFor(async () => { const x = await viewState(app); return x.popover ? x : null; }, 3000, 20);
-      }
-      const termRect = v.termwrap, panelRect = v.popover.rect;
-      const t0 = Date.now();
-      await moveTo(app, termRect);
-      out = await fn(panelRect);
-      if (out.v === undefined) out.v = null;
-      out.ms = Date.now() - t0;
-      if (out.ms < RAIL_CLOSE_MS) break;
-    }
-    return out;
-  };
-  const g1 = await withinGrace(async () => ({ v: await waitFor(async () => { const x = await viewState(app); return x.railState.leaving ? x : null; }, 1000, 3) || await viewState(app) }));
-  check('4: leaving: the panel is still there inside the grace (read ' + g1.ms + ' ms after the leave, grace ' + RAIL_CLOSE_MS + ' ms)',
-    g1.ms < RAIL_CLOSE_MS && !!g1.v.popover && g1.v.railState.leaving === true, JSON.stringify([g1.ms, g1.v.railState]));
-  const g2 = await withinGrace(async (panelRect) => { await moveTo(app, panelRect); return {}; });
-  await sleep(RAIL_CLOSE_MS * 4);
-  const back = await viewState(app);
-  check('4: ...and coming back into the panel inside the grace (' + g2.ms + ' ms) keeps it open past the grace', g2.ms < RAIL_CLOSE_MS && !!back.popover && back.railState.leaving === false, JSON.stringify([g2.ms, back.railState]));
+  // The panel is open and held: the pointer leaving it, resting on the terminal, and passing over the rail's tabs change nothing.
   await hoverTerm(app);
+  await sleep(HOVER_REST_MS);
+  const away = await viewState(app);
+  check('4: the pointer leaving for ' + HOVER_REST_MS + ' ms does not close the held panel', !!away.popover && away.popover.module === 'git' && away.railState.held === true, JSON.stringify(away.railState));
+  for (const r of (await viewState(app)).rails.find(x => x.id === 'dock').tabRects) await moveTo(app, r);
+  await sleep(HOVER_REST_MS);
+  const over = await viewState(app);
+  check('4: ...and hovering the other icons does not swap it: git is still the open panel, held', !!over.popover && over.popover.module === 'git' && over.railState.held === true, JSON.stringify(over.railState));
+  const other = over.rails.find(x => x.id === 'dock').modules.find(m => m !== 'git');
+  await view(app, 'railClick', { id: other });
+  const switched = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.module === other ? v : null; }, 3000, 20);
+  check('4: clicking another icon switches to it, held', !!switched && switched.railState.held === true, JSON.stringify(switched && switched.railState));
+  await view(app, 'railClick', { id: other });
   const sliding = await waitFor(async () => { const v = await viewState(app); return v.popover && v.popover.closing ? v : null; }, 3000, 8);
-  check('4: ...then leaving for good slides it out first (the popover is marked closing and still holds its panel)', !!sliding && sliding.popover.panels.join() === 'git', JSON.stringify(sliding && sliding.popover.panels));
+  check('4: clicking the open icon again closes it, sliding out first (the popover is marked closing and still holds its panel)', !!sliding && sliding.popover.panels.join() === other, JSON.stringify(sliding && sliding.popover.panels));
   const gone = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('4: ...and is gone once the slide ran', !!gone && gone.railState.module === null);
 
   // 5 ---------------------------------------------------------------------------------
-  await hoverTab(app, 'git');
+  await clickTab(app, 'git');
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
   await view(app, 'focus', { selector: '.dpeek .dpin' });
   await view(app, 'pinClick', { on: 'panel' });
@@ -480,28 +455,20 @@ async function main() {
   check('6: ...focus is on the panel\'s tab on the rail, so a second Enter opens it and unpins nothing else (PR #168 Y1, Y5)', heldIs(a6.s, 'git', 'drail') && /unpinned/.test(a6.s.announce), JSON.stringify([a6.s.held, a6.s.announce]));
 
   // 7 ---------------------------------------------------------------------------------
+  // (the click-only checks 3 and 4 above already cover: hover opens nothing, a click holds, another icon switches, the icon again closes)
   await view(app, 'railClick', { id: 'git' });
   await sleep(100);
-  await hoverTerm(app);
-  await sleep(700);
-  const held = await viewState(app);
-  check('7: a click holds the panel open: leaving the panel for 700 ms does not close it', !!held.popover && held.railState.held === true, JSON.stringify(held.railState));
   await view(app, 'key', { key: 'Escape' });
   const esc = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
-  check('7: ...Esc closes it and the keyboard goes back to the tab on the rail', !!esc && heldIs(esc, 'git', 'drail'), JSON.stringify(esc && esc.held));
+  check('7: Esc closes it and the keyboard goes back to the tab on the rail', !!esc && heldIs(esc, 'git', 'drail'), JSON.stringify(esc && esc.held));
   await view(app, 'railClick', { id: 'git' });
   await view(app, 'outsidePress', { selector: '#termwrap' });
   const out = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('7: ...and a press outside closes it', !!out);
-
-  // 7b: a hover-opened panel is held by the keyboard being in it (PR #168 Y2)
-  await hoverTab(app, 'git');
-  await waitFor(async () => (await viewState(app)).popover, 3000, 20);
-  await view(app, 'focus', { selector: '.dpeek .dpin' });
-  await hoverTerm(app);
-  await sleep(800);
-  const typing = await viewState(app);
-  check('7b: focus inside a hover-opened panel holds it: the pointer leaving for 800 ms does not close it', !!typing.popover && typing.railState.held === true, JSON.stringify(typing.railState));
+  // 7b: Enter / Space on a focused rail icon is a click (a button's own key activation reaches the page as a click with detail 0)
+  await view(app, 'railClick', { id: 'git', byKey: true });
+  const byKey = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
+  check('7b: a keyboard activation of the icon opens and holds the panel', !!byKey && byKey.popover.module === 'git' && byKey.railState.held === true, JSON.stringify(byKey && byKey.railState));
   await view(app, 'outsidePress', { selector: '#termwrap' });
   await waitFor(async () => (await viewState(app)).popover === null, 3000, 50);
 
@@ -540,14 +507,14 @@ async function main() {
   checkFaces('12: the dock rail', a9.s.rails.find(r => r.id === 'dock'));
   // The icon follows the tab's colour: dim at rest, the text colour under the pointer, the accent while its panel is open.
   const first12 = railMods(a9.s)[0];
-  await hoverTab(app, first12);
+  await clickTab(app, first12);
   const hov = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   const faceOf = (v, id) => v.rails.find(r => r.id === 'dock').faces.find(f => f.module === id);
   const open12 = hov && faceOf(hov, first12);
   const rest12 = hov && hov.rails.find(r => r.id === 'dock').faces.find(f => f.module !== first12);
   check('12: the open tab\'s icon is a different colour from a resting tab\'s, and each icon is its tab\'s colour', !!open12 && !!rest12 && open12.iconStroke === open12.buttonColor && rest12.iconStroke === rest12.buttonColor && open12.buttonColor !== rest12.buttonColor,
     JSON.stringify([open12 && [open12.iconStroke, open12.buttonColor], rest12 && [rest12.iconStroke, rest12.buttonColor]]));
-  await hoverTerm(app);
+  await pressOutside(app);
   await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 20);
   // A wider Interface font (Dexter F1): the names are measured again, so every one still fits the rail's width.
   const nameWidths = (v) => v.rails.find(r => r.id === 'dock').faces.map(f => [f.module, f.nameScrollWidth, Math.round(f.fontPx * 100) / 100]);
@@ -577,10 +544,10 @@ async function main() {
   // 11: reduced motion: no slide in, none out, and it still closes (PR #168 Y6, G2)
   await command(app, { cmd: 'reduced-motion', on: true });          // the OS setting, emulated: the CSS media query and matchMedia both see it
   const first = railMods((await viewState(app)))[0];
-  await hoverTab(app, first);
+  await clickTab(app, first);
   const r11 = await waitFor(async () => { const v = await viewState(app); return v.popover ? v : null; }, 3000, 20);
   check('11: under reduced motion the panel opens without an animation', !!r11 && r11.popover.animation === 'none', r11 && r11.popover.animation);
-  await hoverTerm(app);
+  await pressOutside(app);
   let sawClosing = false;
   const r11b = await waitFor(async () => { const v = await viewState(app); if (v.popover && v.popover.closing) sawClosing = true; return v.popover === null ? v : null; }, 3000, 8);
   check('11: ...and closes at once when the grace ends, with no slide-out stage', !!r11b && !sawClosing);

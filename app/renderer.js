@@ -2560,7 +2560,7 @@ function openLayoutMenu() {
     box.dataset.module = row.id;
     box.addEventListener('change', () => {
       const l = settledLayout();
-      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab (#85)
+      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab, #85
       else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
       openLayoutMenu();                           // redrawn in place, still open
     });
@@ -3239,7 +3239,7 @@ document.addEventListener('focusout', (e) => {
 document.addEventListener('pointerdown', (e) => {
   if (!peek) return;
   const inside = e.target.closest && e.target.closest('.dpeek');
-  if (inside) { railEvent({ type: 'hold' }); return; }        // using the panel holds it open, like a click on its tab (PR #168 Miguel Y2)
+  if (inside) { railEvent({ type: 'hold' }); return; }        // using the panel holds it open, like a click on its tab, PR #168 Miguel Y2
   if (e.target.closest && e.target.closest('.drail')) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });

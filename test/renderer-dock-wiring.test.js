@@ -399,29 +399,21 @@ test('PR #159 Dexter 6: an operation on the placement is built on the layout AFT
 
 // --- #85: the dock rail's hover, the Pin button ----------------------------------------------------------------
 
-test('#85: the rail\'s state is fed only through railEvent, which owns the two timers (100 ms open, 100 ms grace)', () => {
-  assert.match(JS, /const RAIL_OPEN_MS = 100;/);
-  assert.match(JS, /const RAIL_CLOSE_MS = 100;/);
+test('#85, #138: the rail\'s state is fed only through railEvent, which owns no timers: side tabs open on click only', () => {
+  assert.doesNotMatch(JS, /RAIL_OPEN_MS|RAIL_CLOSE_MS|railOpenTimer|railCloseTimer/, 'no hover timers');
   const body = fnBody('railEvent');
   assert.match(body, /railSt = window\.dockTreeView\.railAfter\(railSt, ev\);/);
   assert.match(body, /peek = railSt\.module === null \? null : \{ module: railSt\.module \};/, 'peek is derived, never set elsewhere');
-  assert.match(body, /railEvent\(\{ type: 'open-timer', module: m \}\)[^\n]*RAIL_OPEN_MS/);
-  assert.match(body, /railEvent\(\{ type: 'close-timer' \}\)[^\n]*RAIL_CLOSE_MS/);
+  assert.doesNotMatch(body, /setTimeout/);
   assert.strictEqual([...JS.matchAll(/^\s+peek = /gm)].length, 1, 'one assignment: in railEvent');
   assert.doesNotMatch(JS, /peekAfter\(/, 'the page uses railAfter');
 });
 
-test('#85: hovering a dock-rail tab enters it, the panel or the strip keeps it, anything else leaves; touch has no hover', () => {
-  const at = JS.indexOf("document.addEventListener('pointerover', (e) => {");
-  assert.ok(at !== -1, 'the hover handler must be findable');
-  const handler = JS.slice(at, JS.indexOf('\n});', at));
-  assert.match(handler, /e\.pointerType === 'touch'/);
-  assert.match(handler, /t\.closest\('\.drail\[data-rail="dock"\] button\[data-module\]'\)/, 'only the dock\'s own rail hovers: a folded group\'s rail stays click-only');
-  assert.match(handler, /\{ type: 'enter', module: tab\.dataset\.module \}/);
-  assert.match(handler, /t\.closest\('\.dpeek'\)\) ev = \{ type: 'enter-panel' \}/, 'the rail strip is not the panel (Dexter 3)');
-  assert.match(handler, /ev = \{ type: 'leave' \}/);
-  assert.match(handler, /if \(ev && railEvent\(ev\)\) renderLayout\(\{ refit: false \}\);/, 'a hover never changes the terminal\'s rectangle');
-  assert.match(JS, /document\.documentElement\.addEventListener\('pointerleave', \(\) => \{ if \(railEvent\(\{ type: 'leave' \}\)\)/);
+test('#138: hovering a rail tab does nothing: the page has no pointerover / pointerleave handler that feeds the rail', () => {
+  assert.doesNotMatch(JS, /type: 'enter'|type: 'enter-panel'|type: 'open-timer'|type: 'close-timer'/, 'no hover event is ever sent to railAfter');
+  assert.doesNotMatch(JS, /railEvent\(\{ type: 'leave' \}\)/);
+  assert.doesNotMatch(JS, /document\.addEventListener\('pointerover'/);
+  assert.doesNotMatch(JS, /documentElement\.addEventListener\('pointerleave'/);
 });
 
 test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
