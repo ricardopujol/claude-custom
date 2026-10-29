@@ -98,7 +98,7 @@ test('only an URGENT attention message marks the tab as needing input', () => {
 });
 
 test('being selected is a look: the pending flags clear and the page re-reports', () => {
-  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ pend\('looked'\); peerCount = 0; reportTabStatus\(\); summaryOpenIfIdle\(\); \}\)/);
+  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ pend\('looked'\); peerCount = 0; peerHeld\.clear\(\); reportTabStatus\(\); summaryOpenIfIdle\(\); \}\)/);
 });
 
 test('#31: only urgent === true / === false attention marks the tab; a finished turn answers an urgent one', () => {

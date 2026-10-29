@@ -252,11 +252,13 @@ function raiseAttention(msg) {
   if (surfaces.cue) flashAttention(msg);
 }
 
-// BACKLOG #156: a cross-session message is held for approval in this tab (host/attention.js read it off the CLI's own hook). The count
-// goes on the tab at once; the knock sounds once unless you are looking at this tab; the toast waits a beat so the CLI has drawn its
-// dialog, and then names the sender and the first line when the screen shows them. Nothing here answers the message.
+// BACKLOG #156: a cross-session message is held for approval in this tab (host/attention.js read it off the CLI's own hook). A beat
+// later, once the CLI has drawn its dialog, the page reads the dialog to NAME it (sender, first line). A dialog it has already counted
+// (the CLI notified it again) is ignored; a new one goes on the tab's count, knocks once unless you are looking at this tab, and raises
+// the toast. Nothing here answers the message.
 const PEER_TOAST_DELAY_MS = 350;
-let peerMuted = window.peerCue.readMuted((() => { try { return localStorage; } catch { return null; } })());
+const peerHeld = window.peerCue.createHeldSet();
+const peerStorage = () => { try { return localStorage; } catch { return null; } };
 function visibleTerminalLines() {
   const buf = term.buffer.active;
   const out = [];
@@ -266,32 +268,41 @@ function visibleTerminalLines() {
   }
   return out;
 }
-function peerMessageArrived(msg) {
-  const looking = document.hasFocus();
+// Selected tab in a focused window: only the shell knows both (PR #224, Dexter 4). A page with no shell asks its own focus.
+async function peerLooking() {
+  try {
+    if (window.harness && window.harness.isLooked) return (await window.harness.isLooked()) === true;
+  } catch { /* no shell to ask: fall back */ }
+  return document.hasFocus();
+}
+async function peerMessageArrived(msg) {
+  await new Promise(resolve => setTimeout(resolve, PEER_TOAST_DELAY_MS));
+  let found = null;
+  try { found = window.peerCue.scanHeldMessage(visibleTerminalLines()); } catch { found = null; }
+  if (!peerHeld.admit(found)) return;
+  const looking = await peerLooking();
   if (!looking) { peerCount = window.peerCue.bumpCount(peerCount); reportTabStatus(); }
-  if (window.peerCue.shouldKnock({ looking, muted: peerMuted })) window.peerCue.knock(window);
-  setTimeout(() => {
-    let found = null;
-    try { found = window.peerCue.scanHeldMessage(visibleTerminalLines()); } catch { found = null; }
-    raiseAttention({ ...msg, ...window.peerCue.toastFor(msg.project, found) });
-  }, PEER_TOAST_DELAY_MS);
+  if (window.peerCue.shouldKnockFrom(peerStorage(), looking)) window.peerCue.knock(window);
+  raiseAttention({ ...msg, ...window.peerCue.toastFor(msg.project, found) });
 }
 function paintPeerMute() {
   const btn = document.getElementById('cue-sound-toggle');
   if (!btn) return;
-  btn.classList.toggle('off', peerMuted === true);
-  btn.setAttribute('aria-pressed', String(peerMuted !== true));
-  btn.title = peerMuted === true ? 'The knock for a held message is muted. Click to turn it on.' : 'A held message from another session knocks once. Click to mute.';
+  const muted = window.peerCue.readMuted(peerStorage());       // read now: another tab's click changes the store under this page
+  btn.classList.toggle('off', muted);
+  btn.setAttribute('aria-pressed', String(!muted));
+  btn.title = muted ? 'The knock for a held message is muted. Click to turn it on.' : 'A held message from another session knocks once. Click to mute.';
 }
 document.addEventListener('DOMContentLoaded', () => {
   paintPeerMute();
   const btn = document.getElementById('cue-sound-toggle');
   if (btn) btn.addEventListener('click', () => {
-    peerMuted = !peerMuted;
-    window.peerCue.writeMuted((() => { try { return localStorage; } catch { return null; } })(), peerMuted);
+    window.peerCue.writeMuted(peerStorage(), !window.peerCue.readMuted(peerStorage()));
     paintPeerMute();
   });
 });
+// ...and a switch flipped in another tab repaints this one's bell (the knock itself already reads the store at the moment it decides).
+window.addEventListener('storage', (e) => { if (e.key === null || e.key === window.peerCue.MUTE_KEY) paintPeerMute(); });
 
 // A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
 // of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
@@ -309,7 +320,7 @@ function applyProgramStatus(rootRecord, how) {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { pend('looked'); peerCount = 0; reportTabStatus(); summaryOpenIfIdle(); });
+  window.harness.onTabSelected(() => { pend('looked'); peerCount = 0; peerHeld.clear(); reportTabStatus(); summaryOpenIfIdle(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.

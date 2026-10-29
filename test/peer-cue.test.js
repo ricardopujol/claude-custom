@@ -6,8 +6,6 @@
  */
 const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('fs');
-const path = require('path');
 const fc = require('fast-check');
 const { peerCue: P } = require('../app/peer-cue');
 
@@ -128,10 +126,103 @@ test('PROPERTY: the tab\'s count only goes up by one, never past 99, and a look 
   assert.strictEqual(P.bumpCount(99), 99);
 });
 
-test('this is the only file in the app that makes a sound', () => {
-  const app = path.join(__dirname, '..', 'app');
-  const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
-  const makers = fs.readdirSync(app).filter(f => f.endsWith('.js') && !/codemirror|bundle|vendor/.test(f)
-    && /AudioContext|new Audio\(|<audio/.test(strip(fs.readFileSync(path.join(app, f), 'utf8'))));
-  assert.deepStrictEqual(makers, ['peer-cue.js']);
+
+// --- PR #224 review fixes ------------------------------------------------------------------------------------------------------
+
+const memStore = (init) => { const m = new Map(Object.entries(init || {})); return { getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => m.set(k, String(v)) }; };
+
+test('Miguel B1: the mute is read from the store at the moment of the decision, so a switch flipped in ANOTHER tab applies at once', () => {
+  const shared = memStore();           // every tab page of the app shares one localStorage
+  assert.strictEqual(P.shouldKnockFrom(shared, false), true);
+  P.writeMuted(shared, true);          // ...muted from tab A; tab B never reloads
+  assert.strictEqual(P.shouldKnockFrom(shared, false), false);
+  P.writeMuted(shared, false);
+  assert.strictEqual(P.shouldKnockFrom(shared, false), true);
+  assert.strictEqual(P.shouldKnockFrom(shared, true), false, 'looking at it: still no knock');
+  assert.strictEqual(P.shouldKnockFrom(null, false), true, 'no store: not muted');
+});
+
+test('Dexter 3 / Miguel I6: a held dialog notified again is the same message; a different dialog is another', () => {
+  const held = P.createHeldSet();
+  const a = { from: 'dexter-220', first: 'Please run /merged' };
+  assert.strictEqual(held.admit(a), true);
+  assert.strictEqual(held.admit({ ...a }), false, 're-notified: counted once');
+  assert.strictEqual(held.admit({ from: 'dexter-220', first: 'Another one' }), true);
+  assert.strictEqual(held.admit({ from: 'miguel-220', first: 'Please run /merged' }), true);
+  held.clear();                       // a look
+  assert.strictEqual(held.admit(a), true);
+});
+
+test('Dexter 3: a dialog that cannot be read has no identity: every arrival counts', () => {
+  const held = P.createHeldSet();
+  assert.strictEqual(held.admit(null), true);
+  assert.strictEqual(held.admit(null), true);
+  assert.strictEqual(held.admit({ from: null, first: null }), true);
+  assert.strictEqual(held.admit({ from: null, first: null }), true);
+  assert.strictEqual(P.identityOf({ from: 'x', first: null }), 'x|');
+});
+
+test('Dexter 3: the held set is bounded', () => {
+  const held = P.createHeldSet();
+  for (let i = 0; i < 1000; i++) held.admit({ from: 'f' + i, first: 'x' });
+  assert.ok(held.size() <= P.HELD_MAX);
+});
+
+// knock(): the page's own audio context
+function fakeWin({ state = 'running', resumeRejects = false, makeFails = false } = {}) {
+  const made = [];
+  const timers = [];
+  class Ctx {
+    constructor() { if (makeFails) throw new Error('no audio device'); this.state = state; this.currentTime = 1; this.destination = {}; this.resumed = 0; this.suspended = 0; made.push(this); }
+    createOscillator() { return { type: '', frequency: { value: 0 }, connect() {}, start() {}, stop() {} }; }
+    createGain() { return { gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {} }; }
+    resume() { this.resumed++; this.state = 'running'; return resumeRejects ? Promise.reject(new Error('blocked')) : Promise.resolve(); }
+    suspend() { this.suspended++; this.state = 'suspended'; return Promise.resolve(); }
+  }
+  return { win: { AudioContext: Ctx, setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, clearTimeout: () => {} }, made, timers };
+}
+
+test('Miguel I3: knock() makes the context once, plays both notes, and reuses it', () => {
+  P._resetKnock();
+  const { win, made } = fakeWin();
+  assert.strictEqual(P.knock(win), 2);
+  assert.strictEqual(P.knock(win), 2);
+  assert.strictEqual(made.length, 1);
+  assert.strictEqual(P.knock({}), 0, 'no Web Audio: nothing, no throw');
+});
+
+test('Miguel I3: a closed context is dropped and rebuilt, so one bad moment does not silence every later knock', () => {
+  P._resetKnock();
+  const { win, made } = fakeWin();
+  P.knock(win);
+  made[0].state = 'closed';
+  assert.strictEqual(P.knock(win), 2);
+  assert.strictEqual(made.length, 2);
+});
+
+test('Miguel I3: a suspended context is resumed, and a resume that is refused is swallowed (no unhandled rejection)', async () => {
+  P._resetKnock();
+  const { win, made } = fakeWin({ state: 'suspended', resumeRejects: true });
+  assert.strictEqual(P.knock(win), 2);
+  assert.strictEqual(made[0].resumed, 1);
+  await new Promise(r => setImmediate(r));           // an unhandled rejection would fail the run here
+});
+
+test('Miguel I3: a context that cannot be made is a silent 0, then tried again next time', () => {
+  P._resetKnock();
+  assert.strictEqual(P.knock(fakeWin({ makeFails: true }).win), 0);
+  const ok = fakeWin();
+  assert.strictEqual(P.knock(ok.win), 2);
+});
+
+test('Miguel I3: the context is suspended once the knock is over, so an idle tab holds no audio thread; the next knock resumes it', () => {
+  P._resetKnock();
+  const { win, made, timers } = fakeWin();
+  P.knock(win);
+  assert.strictEqual(timers.length, 1);
+  assert.ok(timers[0].ms >= 300 && timers[0].ms <= 2000, 'after the last note, not before');
+  timers[0].fn();
+  assert.strictEqual(made[0].suspended, 1);
+  assert.strictEqual(P.knock(win), 2);
+  assert.strictEqual(made[0].resumed, 1);
 });

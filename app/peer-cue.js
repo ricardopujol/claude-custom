@@ -81,6 +81,34 @@ function shouldKnock({ looking, muted } = {}) {
   return looking !== true && muted !== true;
 }
 
+/**
+ * The same, with the mute read from the store NOW. Every tab is its own page and a hidden one is what knocks, so a switch flipped in
+ * another tab has to apply here without a reload: never a value cached at load (PR #224, Miguel B1).
+ */
+function shouldKnockFrom(storage, looking) {
+  return shouldKnock({ looking, muted: readMuted(storage) });
+}
+
+// A held dialog can be notified again while it is still open: the page counts MESSAGES, so it names a dialog by its sender and first
+// line and counts each once until a look. A dialog it cannot read has no identity and every arrival counts.
+const HELD_MAX = 100;
+const identityOf = (found) => (found && (found.from || found.first) ? `${found.from || ''}|${found.first || ''}` : null);
+function createHeldSet() {
+  const seen = new Set();
+  return {
+    admit(found) {
+      const id = identityOf(found);
+      if (id === null) return true;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      if (seen.size > HELD_MAX) seen.delete(seen.values().next().value);
+      return true;
+    },
+    clear() { seen.clear(); },
+    size: () => seen.size,
+  };
+}
+
 /** Schedules the two notes on `ctx` (a Web Audio context); returns how many it scheduled. Never throws. */
 function playKnock(ctx) {
   if (!ctx || typeof ctx.createOscillator !== 'function') return 0;
@@ -107,19 +135,32 @@ function playKnock(ctx) {
   }
 }
 
+const IDLE_SUSPEND_MS = 700;      // after the last note (it ends ~0.23 s in), a context that sits running keeps an audio thread up
 let shared = null;
-/** The knock on the page's own audio context, made on first use (Electron's autoplay policy is set in main). 0 when it can't play. */
+let idleTimer = null;
+const swallow = (p) => { if (p && typeof p.catch === 'function') p.catch(() => {}); };
+/** The knock on the page's own audio context. Made on first use, rebuilt if it was closed, resumed if it was suspended, suspended again
+ *  when idle. 0 when it can't play. Never throws and never leaves a rejected promise behind. */
 function knock(win) {
   try {
     const Ctor = win && (win.AudioContext || win.webkitAudioContext);
     if (!Ctor) return 0;
+    if (shared && shared.state === 'closed') shared = null;
     if (!shared) shared = new Ctor();
-    if (shared.state === 'suspended' && typeof shared.resume === 'function') shared.resume();
-    return playKnock(shared);
+    if (shared.state === 'suspended' && typeof shared.resume === 'function') swallow(shared.resume());
+    const played = playKnock(shared);
+    const timers = { set: win.setTimeout ? win.setTimeout.bind(win) : setTimeout, clear: win.clearTimeout ? win.clearTimeout.bind(win) : clearTimeout };
+    if (idleTimer !== null) timers.clear(idleTimer);
+    idleTimer = timers.set(() => {
+      idleTimer = null;
+      try { if (shared && shared.state === 'running' && typeof shared.suspend === 'function') swallow(shared.suspend()); } catch { /* gone */ }
+    }, IDLE_SUSPEND_MS);
+    return played;
   } catch {
     return 0;
   }
 }
+function _resetKnock() { shared = null; idleTimer = null; }
 
 function readMuted(storage) {
   try { return !!storage && storage.getItem(MUTE_KEY) === 'true'; } catch { return false; }
@@ -133,8 +174,8 @@ function bumpCount(n) {
   return typeof n === 'number' && Number.isInteger(n) && n >= 0 ? Math.min(COUNT_MAX, n + 1) : 1;
 }
 
-const peerCue = { scanHeldMessage, toastFor, shouldKnock, playKnock, knock, readMuted, writeMuted, bumpCount,
-  KNOCK, MUTE_KEY, FROM_MAX, FIRST_MAX, COUNT_MAX };
+const peerCue = { scanHeldMessage, toastFor, shouldKnock, shouldKnockFrom, playKnock, knock, readMuted, writeMuted, bumpCount,
+  identityOf, createHeldSet, _resetKnock, KNOCK, MUTE_KEY, FROM_MAX, FIRST_MAX, COUNT_MAX, HELD_MAX };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module system.
 if (typeof module !== 'undefined' && module.exports) {

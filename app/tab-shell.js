@@ -1205,6 +1205,12 @@ function createShell(deps) {
     return true;
   }
 
+  /** Is the tab of this view being looked at: selected, in a focused window (PR #224, Dexter 4: the page can't tell, so it asks). */
+  function isLooked(sender) {
+    const tab = tabForSender(sender);
+    return !!tab && tab.key === selectedKey && ui.isFocused() === true;
+  }
+
   /** A renderer's own status. Kept as-is except: you're looking at it. */
   function report(sender, status) {
     const tab = tabForSender(sender);
@@ -1671,7 +1677,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).

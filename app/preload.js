@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('harness', {
   //   raise       a host said `raise`: select this tab, bring the window forward
   //   onTabSelected / onLockOverride: main -> page, replace-don't-accumulate
   tabStatus: (status) => ipcRenderer.send('tab:status', status),
+  isLooked: () => ipcRenderer.invoke('tab:is-looked'),
   closeTab: () => ipcRenderer.send('tab:close'),
   goToSession: (holder) => ipcRenderer.invoke('tab:goTo', holder),
   //   selectFolder a worktree folder -> { kind, text? }: the Git panel's *Jump to its tab*

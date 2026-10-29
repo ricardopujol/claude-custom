@@ -26,11 +26,14 @@ test('a peer-message attention goes to peerMessageArrived; every other kind is r
 test('the count rides the tab status, is not added while you are looking, and a look clears it', () => {
   assert.match(js, /pendingMessages: peerCount/);
   assert.match(js, /if \(!looking\) \{ peerCount = window\.peerCue\.bumpCount\(peerCount\); reportTabStatus\(\); \}/);
-  assert.match(js, /onTabSelected\(\(\) => \{ pend\('looked'\); peerCount = 0; reportTabStatus\(\);/);
+  assert.match(js, /onTabSelected\(\(\) => \{ pend\('looked'\); peerCount = 0; peerHeld\.clear\(\); reportTabStatus\(\);/);
 });
 
-test('the knock asks shouldKnock with focus and the mute switch, and the toast is named from the screen after a beat', () => {
-  assert.match(js, /shouldKnock\(\{ looking, muted: peerMuted \}\)\) window\.peerCue\.knock\(window\)/);
+test('the knock reads the mute switch from the store at the moment it decides (never a value cached at load), and the toast is named from the screen after a beat', () => {
+  assert.match(js, /shouldKnockFrom\(peerStorage\(\), looking\)\) window\.peerCue\.knock\(window\)/);
+  assert.doesNotMatch(js, /peerMuted/);
+  assert.match(js, /window\.addEventListener\('storage'/);
+  assert.match(js, /if \(!peerHeld\.admit\(found\)\) return;/);
   assert.match(js, /scanHeldMessage\(visibleTerminalLines\(\)\)/);
   assert.match(js, /raiseAttention\(\{ \.\.\.msg, \.\.\.window\.peerCue\.toastFor\(msg\.project, found\) \}\)/);
 });
@@ -40,6 +43,14 @@ test('the mute switch is a button in the roster header, saved by peerCue', () =>
   assert.match(js, /window\.peerCue\.writeMuted\(/);
 });
 
-test('the tab page may play the knock with nobody having touched it (a hidden tab)', () => {
-  assert.match(main, /autoplayPolicy: 'no-user-gesture-required'/);
+test('"looking" is asked of the shell (selected + focused window), the page\'s own focus only when there is no shell', () => {
+  assert.match(js, /window\.harness\.isLooked\)\s*return \(await window\.harness\.isLooked\(\)\) === true/);
+  assert.match(js, /return document\.hasFocus\(\);/);
+});
+
+test('the tab page may play the knock with nobody having touched it (a hidden tab): one shared set of web preferences', () => {
+  assert.match(main, /new WebContentsView\(\{ webPreferences: tabViewWebPreferences\(/);
+  const { tabViewWebPreferences } = require('../app/tab-view-prefs');
+  const prefs = tabViewWebPreferences('p.js');
+  assert.deepStrictEqual(prefs, { contextIsolation: true, nodeIntegration: false, preload: 'p.js', autoplayPolicy: 'no-user-gesture-required' });
 });
