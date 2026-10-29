@@ -48,7 +48,7 @@ const plain = (s, n) => String(s).replace(CONTROL, ' ').replace(/\s+/g, ' ').tri
 
 function createPreviewViews({
   WebContentsView, session, addChild, removeChild, ownerBounds, keyOf = () => null, onEvent = () => {},
-  isOwnerVisible = () => true, openUrl = () => false, log = () => {}, denyPorts = [],
+  isOwnerVisible = () => true, onPress = () => {}, openUrl = () => false, log = () => {}, denyPorts = [],
   // PROBE SEAM only (app/main.js passes it when the probe driver is on): another proxy config, to count what reaches a proxy the probe owns.
   proxyConfig = DEAD_PROXY,
 } = {}) {
@@ -174,6 +174,8 @@ function createPreviewViews({
     const rec = { owner, view, wc, ses: st.ses, rect: null, covered: false, ownerVisible: !!isOwnerVisible(owner), url: null, attached: false, dead: false, ready: null, st };
     st.rec = rec;
     lockContents(rec);
+    // A press in the page never reaches the owner's document, so the owner is told: a rail popover closes on a press outside it (#138).
+    wc.on('input-event', (_e, ev) => { if (ev && ev.type === 'mouseDown') { try { onPress(owner); } catch { /* the owner is going away */ } } });
     byOwner.set(owner.id, rec);
     if (typeof owner.once === 'function' && !watched.has(owner.id)) {
       watched.add(owner.id);

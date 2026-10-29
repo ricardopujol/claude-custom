@@ -425,7 +425,9 @@ test('#138: a press outside closes the popover: on the rail\'s empty strip, and 
   assert.match(handler, /closest\('\.drail button\[data-module\]'\)\) return;/, 'only an icon is the rail\'s own click; its strip is outside');
   assert.match(handler, /railEvent\(\{ type: 'outside' \}\)/);
   assert.match(JS, /canvasBridge\.onPressed\(\(\) => \{ if \(peek\) \{ railEvent\(\{ type: 'outside' \}\)/);
-  assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8'), /onPress: \(owner\) => \{ if \(!owner\.isDestroyed\(\)\) owner\.send\('canvas:pressed'\); \}/);
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  assert.match(main, /function tellPressed\(owner\) \{ if \(!owner\.isDestroyed\(\)\) owner\.send\('canvas:pressed'\); \}/);
+  assert.strictEqual([...main.matchAll(/onPress: tellPressed,/g)].length, 2, 'Claude\'s panel and the Preview share the one path');
   assert.match(fs.readFileSync(path.join(__dirname, '..', 'app', 'preload.js'), 'utf8'), /onPressed: \(fn\) =>/);
 });
 

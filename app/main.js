@@ -834,6 +834,9 @@ const CANVAS_PROBE_HOSTS = (() => {
 })();
 const canvasProbeResolve = CANVAS_PROBE_HOSTS === null ? undefined
   : async (name) => (typeof CANVAS_PROBE_HOSTS[name] === 'string' ? [{ address: CANVAS_PROBE_HOSTS[name], family: 4, trusted: true }] : require('dns').promises.lookup(name, { all: true }));
+// A press inside a native panel view (Claude's panel, the Preview) never reaches the tab page's document: tell the page, which closes an
+// open rail popover on it (#138). One path for both views.
+function tellPressed(owner) { if (!owner.isDestroyed()) owner.send('canvas:pressed'); }
 const canvasViews = createCanvasViews({
   WebContentsView, session,
   resolveHost: canvasProbeResolve,
@@ -851,7 +854,7 @@ const canvasViews = createCanvasViews({
     owner.send('canvas:need-host', { id, origin });
   }),
   onMessage: (owner, msg) => { if (!owner.isDestroyed()) owner.send('canvas:message', msg); },
-  onPress: (owner) => { if (!owner.isDestroyed()) owner.send('canvas:pressed'); },
+  onPress: tellPressed,
   // A shelf address the panel's page asked to open, after main checked it is exactly on the shelf and a real click came with it.
   openUrl: (url) => openInBrowser(url, "Claude's panel"),
   log: (line) => console.log(line),
@@ -879,6 +882,7 @@ const previewViews = createPreviewViews({
   isOwnerVisible: (owner) => { const sel = selectedView(); return !!sel && sel.webContents === owner; },
   keyOf: previewKeyOf,
   onEvent: (owner, ev) => { if (!owner.isDestroyed()) owner.send('preview:event', ev); },
+  onPress: tellPressed,
   openUrl: (url) => openInBrowser(url, 'Preview'),
   // The ports of this app that the page may never reach: the probe driver's, and the host's when it was named by CLAUDE_CUSTOM_PORT (besides the session hosts' range, app/preview-guard.js).
   denyPorts: [PROBE_PORT ? Number(PROBE_PORT) : null, Number.isInteger(EXPLICIT_PORT) ? EXPLICIT_PORT : null].filter(Number.isInteger),
