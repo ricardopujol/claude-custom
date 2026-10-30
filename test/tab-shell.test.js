@@ -2176,6 +2176,16 @@ test('handleProbeCommand: mouseMove reaches the driver with whole-number coordin
   assert.deepStrictEqual(seen, [[10, 20]]);
 });
 
+test('handleProbeCommand: mouseClick reaches the driver with whole-number coordinates (PR #225 Miguel I2); anything else is refused', async () => {
+  const seen = [];
+  const api = { mouseClick: async (x, y) => { seen.push([x, y]); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseClick', x: 10, y: 20 }), api), { ok: true });
+  for (const bad of [{}, { x: 1 }, { x: 1.5, y: 2 }, { x: -1, y: 0 }, { x: '1', y: 2 }, { x: 10001, y: 0 }]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseClick', ...bad }), api), { ok: false, error: 'mouseClick needs whole-number x and y' });
+  }
+  assert.deepStrictEqual(seen, [[10, 20]]);
+});
+
 test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
   const seen = [];
   const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };

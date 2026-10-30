@@ -3411,6 +3411,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const groupInfo = el => ({
           id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
           tabs: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => b.dataset.module),
+          tabRects: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => rectOf(b)),
           on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
           panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
           panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
@@ -3748,9 +3749,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       case 'focusInto': {
         const el = document.querySelector(String(a.selector));
         if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const prev = document.activeElement;
         el.focus();
-        const real = document.hasFocus();
-        if (!real) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        // `fromNowhere` is a window regaining focus: a focusin with no relatedTarget, always made by hand.
+        const real = document.hasFocus() && a.fromNowhere !== true;
+        if (a.fromNowhere === true) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: null }));
+        else if (!real) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: prev }));
         return JSON.stringify({ ok: true, real });
       }
       case 'dblclick': {

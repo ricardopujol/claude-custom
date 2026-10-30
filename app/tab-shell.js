@@ -1875,6 +1875,11 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseMove needs whole-number x and y' };
         return await api.mouseMove(cmd.x, cmd.y);
       }
+      case 'mouseClick': {
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseClick needs whole-number x and y' };
+        return await api.mouseClick(cmd.x, cmd.y);
+      }
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };

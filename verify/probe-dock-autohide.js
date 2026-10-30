@@ -460,9 +460,40 @@ async function main() {
   await view(app, 'focus', { selector: '.drail button[data-module="git"]' });   // the terminal may already hold focus (a synthetic click moves none): put it on the rail first so going into the terminal is a real move
   await sleep(100);
   check('4b: focus on the rail button leaves the open panel open', !!(await viewState(app)).popover);
-  await view(app, 'focusInto', { selector: '#term textarea' });
+  const fi = await view(app, 'focusInto', { selector: '#term textarea' });
+  if (!fi.real) console.log('NOTE  4b: the focus path below was SYNTHETIC (the probe window has no OS focus; focusin was dispatched by hand from the rail button)');
   const focusClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
   check('4b: the keyboard going into the terminal closes it (keys never type into it behind an open panel)', !!focusClosed && focusClosed.railState.module === null, JSON.stringify(focusClosed && focusClosed.railState));
+
+  // 4c (PR #225 Miguel B1, I1, I3): the app's own focus on the terminal is not a person tabbing out of the panel.
+  // A window regaining focus is a focusin on the terminal with nothing before it (hand-made: no OS focus to take away).
+  await view(app, 'railClick', { id: 'git' });
+  await waitFor(async () => (await viewState(app)).popover, 3000, 20);
+  await view(app, 'focus', { selector: 'header' });
+  await view(app, 'focusInto', { selector: '#term textarea', fromNowhere: true });
+  await sleep(400);
+  check('4c: a window regaining focus (focusin on the terminal from nowhere; SYNTHETIC) leaves the open panel open', !!(await viewState(app)).popover);
+  // The app's own focus on the terminal: choosing another dock group's tab runs selectModule -> renderLayout -> term.focus(), which
+  // must not close the panel. (The dock group sits under the popover here, so its tab can't be clicked by a real pointer: the
+  // choice goes through the page's own `select`, and a REAL click on the header first gives the window real OS focus, so the
+  // focusin that term.focus() raises is a real one.)
+  const pre = await viewState(app);
+  const rr = pre.rails.find(x => x.id === 'dock').rect;   // the rail's empty bottom end: a press there leaves the panel open (4b) and gives the window real focus
+  await command(app, { cmd: 'mouseClick', x: Math.round((rr.left + rr.right) / 2), y: Math.round(rr.bottom) - 6 });
+  await sleep(200);
+  const probeFocus = await view(app, 'focusInto', { selector: 'header' });
+  console.log(probeFocus.real ? 'NOTE  4c: the window has OS focus, so the focus events below are REAL' : 'NOTE  4c: the window has NO OS focus: the focus events below are SYNTHETIC or absent');
+  const otherTab = pre.groups.flatMap(g => g.tabs.filter(m => !g.on.includes(m)))[0];
+  check('4c: there is an unselected tab in a dock group to choose', !!otherTab, JSON.stringify(pre.groups.map(g => [g.tabs.length, g.on])));
+  if (otherTab) {
+    await view(app, 'select', { id: otherTab });
+    const sel = await waitFor(async () => { const v = await viewState(app); return v.groups.some(g => g.on.includes(otherTab)) ? v : null; }, 3000, 30);
+    await sleep(400);
+    const after = await viewState(app);
+    check('4c: choosing a tab of a dock group (' + otherTab + ') runs the app own term.focus() and leaves the open panel open', !!sel && !!after.popover && after.railState.module === 'git', JSON.stringify([!!sel, after.railState]));
+  }
+  await view(app, 'railClick', { id: 'git' });   // leave the panel as check 5 expects: closed (a second click on its icon)
+  await sleep(500);
 
 
   // 5 ---------------------------------------------------------------------------------
