@@ -23,6 +23,7 @@
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
 const { createToastHolder } = require('./toast-holder');
+const { tabViewWebPreferences } = require('./tab-view-prefs');
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
@@ -754,13 +755,7 @@ async function openIssue(key) {
 }
 
 function createTabView(tab) {
-  const view = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  });
+  const view = new WebContentsView({ webPreferences: tabViewWebPreferences(path.join(__dirname, 'preload.js')) });
   win.contentView.addChildView(view);
   if (indexing) indexing.raise();    // #66: the toast and the list stay over every tab view
   layoutView(view);
@@ -1419,6 +1414,8 @@ function registerIpc() {
     if (!isTabView(e.sender) || typeof on !== 'boolean') return;
     setFocusMode(on);
   });
+  // Is this tab being looked at (selected, window focused)? The page asks before a held message knocks (PR #224, Dexter 4).
+  ipcMain.handle('tab:is-looked', (e) => isTabView(e.sender) && tabShell.isLooked(e.sender));
   ipcMain.on('tab:status', (e, status) => {
     if (!isTabView(e.sender)) return;
     tabShell.report(e.sender, status);

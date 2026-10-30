@@ -148,6 +148,7 @@ function sanitizeStatus(s) {
     working: o.working === true,
     needsInput: o.needsInput === true,
     finished: o.finished === true,
+    messages: tabStatusLib.cleanCount(o.messages),
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
     turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
@@ -1299,11 +1300,17 @@ function createShell(deps) {
    */
   function looked() {
     const tab = tabByKey(selectedKey);
-    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished)) return false;
+    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished || tab.status.messages > 0)) return false;
     tab.status = tabStatusLib.afterSelected(tab.status);
     if (tab.view) views.send(tab, 'tab-selected');
     publish();
     return true;
+  }
+
+  /** Is the tab of this view being looked at: selected, in a focused window (PR #224, Dexter 4: the page can't tell, so it asks). */
+  function isLooked(sender) {
+    const tab = tabForSender(sender);
+    return !!tab && tab.key === selectedKey && ui.isFocused() === true;
   }
 
   /** A renderer's own status. Kept as-is except: you're looking at it. */
@@ -1311,7 +1318,7 @@ function createShell(deps) {
     const tab = tabForSender(sender);
     if (!tab) return false;
     let next = sanitizeStatus(status);
-    if ((next.needsInput || next.finished) && tab.key === selectedKey && ui.isFocused()) {
+    if ((next.needsInput || next.finished || next.messages > 0) && tab.key === selectedKey && ui.isFocused()) {
       next = tabStatusLib.afterSelected(next);
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
@@ -1773,7 +1780,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reorder, lanesMenu, looked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).

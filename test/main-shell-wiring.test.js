@@ -301,9 +301,12 @@ test('each tab view is shown only when selected and laid out below the strip', (
 test('every tab view is created with context isolation on and node integration off', () => {
   const at = MAIN.indexOf('function createTabView(');
   const body = topLevelBody(at);
-  assert.match(body, /contextIsolation: true/);
-  assert.match(body, /nodeIntegration: false/);
-  assert.match(body, /preload: path\.join\(__dirname, 'preload\.js'\)/);
+  // the preferences live in app/tab-view-prefs.js, shared with the probes that stand a tab page up (PR #224, Miguel I4)
+  assert.match(body, /tabViewWebPreferences\(path\.join\(__dirname, 'preload\.js'\)\)/);
+  const prefs = require('../app/tab-view-prefs').tabViewWebPreferences('x.js');
+  assert.strictEqual(prefs.contextIsolation, true);
+  assert.strictEqual(prefs.nodeIntegration, false);
+  assert.strictEqual(prefs.preload, 'x.js');
   const win = MAIN.slice(MAIN.indexOf('function createWindow('), MAIN.indexOf('function createWindow(') + 900);
   assert.match(win, /preload: path\.join\(__dirname, 'preload-strip\.js'\)/);
   assert.match(win, /contextIsolation: true/);

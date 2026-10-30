@@ -706,3 +706,19 @@ test('the bridge sends lanes and reorder to main, which only the strip page may 
   assert.match(src, /lanes: \(hidden\) => ipcRenderer\.send\('strip:lanes', hidden\)/);
   assert.match(src, /reorder: \(key, before\) => ipcRenderer\.send\('strip:reorder', key, before\)/);
 });
+
+// BACKLOG #156. Read as text here: tab-shell.js and tab-strip.js are mutated modules. The behaviour is in test/peer-cue-tab.test.js and test/tab-shell.test.js.
+test('held messages: the shell cuts a renderer\'s count with cleanCount, and the strip page styles the envelope', () => {
+  assert.match(read('app/tab-shell.js'), /messages: tabStatusLib\.cleanCount\(o\.messages\)/);
+  assert.match(read('app/tab-strip.html'), /\.envelope\s*\{/);
+});
+
+// BACKLOG #156. Read as text here, not in peer-cue.test.js: app/peer-cue.js is a mutated module.
+test('app/peer-cue.js is the only file in the app that makes a sound', () => {
+  const fs2 = require('fs');
+  const dir = path.join(__dirname, '..', 'app');
+  const strip = s => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
+  const makers = fs2.readdirSync(dir).filter(f => f.endsWith('.js') && !/codemirror|bundle|vendor/.test(f)
+    && /AudioContext|new Audio\(|<audio/.test(strip(fs2.readFileSync(path.join(dir, f), 'utf8'))));
+  assert.deepStrictEqual(makers, ['peer-cue.js']);
+});
