@@ -175,3 +175,43 @@ test('property: seeding never repeats a line the hooks already gave', () => {
     return after.slice(after.length - before.length).join('|') === before.join('|');
   }));
 });
+
+test('another process\'s session start does not wipe this conversation or add to it (PR #226 Miguel I6)', () => {
+  const f = run([ev('SessionStart', { source: 'startup', session_id: 'main' }), ev('UserPromptSubmit', { session_id: 'main', prompt: 'mine' }),
+    ev('Stop', { session_id: 'main', last_assistant_message: 'reply' })]);
+  assert.strictEqual(f.handle(ev('SessionStart', { source: 'startup', session_id: 'other' })), false);
+  assert.strictEqual(f.handle(ev('UserPromptSubmit', { session_id: 'other', prompt: 'not mine' })), false);
+  assert.strictEqual(f.handle(ev('Stop', { session_id: 'other', last_assistant_message: 'not mine either' })), false);
+  assert.deepStrictEqual(texts(f), ['user:mine', 'assistant:reply']);
+  // /clear and a resume are the same process under a new id: adopted, and the new id is then the one
+  f.handle(ev('SessionStart', { source: 'clear', session_id: 'next' }));
+  assert.deepStrictEqual(texts(f), []);
+  f.handle(ev('UserPromptSubmit', { session_id: 'next', prompt: 'after clear' }));
+  assert.deepStrictEqual(texts(f), ['user:after clear']);
+  f.handle(ev('SessionStart', { source: 'resume', session_id: 'resumed', transcript_path: 'C:/x/r.jsonl' }));
+  assert.deepStrictEqual(texts(f), []);
+  // after this session's own end, the next startup is adopted
+  f.handle(ev('SessionEnd', { session_id: 'resumed' }));
+  f.handle(ev('SessionStart', { source: 'startup', session_id: 'fresh' }));
+  f.handle(ev('UserPromptSubmit', { session_id: 'fresh', prompt: 'hello' }));
+  assert.deepStrictEqual(texts(f), ['user:hello']);
+});
+
+test('a background task\'s or a teammate\'s notice starts a turn but is not a "You" line (PR #226 Dexter 7)', () => {
+  const f = run([START]);
+  assert.strictEqual(f.handle(ev('UserPromptSubmit', { prompt: '<task-notification>\n<task-id>b1</task-id>' })), true);
+  assert.strictEqual(f.handle(ev('UserPromptSubmit', { prompt: '<teammate-message teammate_id="x">hi</teammate-message>' })), true);
+  assert.deepStrictEqual(texts(f), []);
+  assert.strictEqual(f.snapshot().working, true, 'but Claude is working on it');
+});
+
+test('history: the duplicate of the hooks\' first line is the LAST match, and a read for another transcript is dropped (PR #226 Dexter 11)', () => {
+  const f = run([ev('SessionStart', { source: 'resume', transcript_path: 'C:/x/s1.jsonl' }), ev('UserPromptSubmit', { prompt: 'yes' })]);
+  assert.strictEqual(f.pendingHistory(), 'C:/x/s1.jsonl');
+  f.handle(ev('SessionStart', { source: 'resume', transcript_path: 'C:/x/s2.jsonl' }));
+  f.handle(ev('UserPromptSubmit', { prompt: 'yes' }));
+  assert.strictEqual(f.seedHistory([{ role: 'user', text: 'from s1' }], 'C:/x/s1.jsonl'), false, 'the first read resolved after the second resume');
+  assert.deepStrictEqual(texts(f), ['user:yes']);
+  assert.strictEqual(f.seedHistory([{ role: 'user', text: 'yes' }, { role: 'assistant', text: 'A' }, { role: 'user', text: 'yes' }], 'C:/x/s2.jsonl'), true);
+  assert.deepStrictEqual(texts(f), ['user:yes', 'assistant:A', 'user:yes']);
+});

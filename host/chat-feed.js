@@ -23,6 +23,7 @@
 const TEXT_MAX = 20000;
 const MESSAGE_CAP = 200;
 const CROSS_SESSION = /^\s*<cross-session-message\b/;
+const HARNESS_PROMPT = /^\s*<(?:task-notification|teammate-message)\b/;
 const NOTE_TEXT = 'A message from another session arrived';
 
 const isMain = (p) => !(typeof p.agent_id === 'string' && p.agent_id !== '');
@@ -35,6 +36,7 @@ function createChatFeed({ now = Date.now } = {}) {
   let seq = 0;
   let transcriptPath = null;
   let wantHistory = false;
+  let mainId = null;
 
   function push(role, raw) {
     const { text, truncated } = cut(raw);
@@ -50,7 +52,15 @@ function createChatFeed({ now = Date.now } = {}) {
   }
 
   function apply(event, p) {
+    // Whose conversation this is: the session id of the first start. Another `claude` whose hooks reach this pipe (a `claude -p` a skill
+    // spawns) carries its own id and must neither wipe this chat nor add to it. /clear and a resume are new ids on the SAME process, so
+    // they are adopted; a plain startup with a different id while one is live is foreign (PR #226 Miguel I6).
+    const sid = typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
+    if (event === 'SessionStart' && sid !== null && mainId !== null && sid !== mainId && p.source !== 'resume' && p.source !== 'clear') return false;
+    if (event !== 'SessionStart' && sid !== null && mainId !== null && sid !== mainId) return false;
     if (event === 'SessionStart') {
+      if (sid !== null && p.source !== 'compact') mainId = sid;
+      else if (sid !== null && mainId === null) mainId = sid;
       if (typeof p.transcript_path === 'string' && p.transcript_path !== '') transcriptPath = p.transcript_path;
       if (p.source === 'compact') return false;
       wantHistory = p.source === 'resume' && transcriptPath !== null;
@@ -62,6 +72,7 @@ function createChatFeed({ now = Date.now } = {}) {
         working = true;
         if (typeof p.prompt !== 'string' || p.prompt.trim() === '') return true;
         if (CROSS_SESSION.test(p.prompt)) push('note', NOTE_TEXT);
+        else if (HARNESS_PROMPT.test(p.prompt)) return true;     // a background task's or a teammate's notice starts a turn but isn't the person's words
         else push('user', p.prompt);
         return true;
       }
@@ -87,6 +98,7 @@ function createChatFeed({ now = Date.now } = {}) {
       case 'SessionEnd': {
         const was = working;
         working = false;
+        if (event === 'SessionEnd' && sid !== null && sid === mainId) mainId = null;
         return was;
       }
       default:
@@ -101,15 +113,19 @@ function createChatFeed({ now = Date.now } = {}) {
 
   const key = (m) => `${m.role}\u0000${m.text}`;
 
-  function seedHistory(history) {
+  // `file` is the transcript the history was read from: a read that resolves after the conversation moved on to another one's
+  // transcript (a second /resume) belongs to the old one and is dropped, leaving the new read to seed (PR #226 Dexter 11).
+  function seedHistory(history, file) {
     if (!wantHistory) return false;
+    if (typeof file === 'string' && file !== transcriptPath) return false;
     wantHistory = false;
     if (!Array.isArray(history)) return false;
     const old = history.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim() !== '');
     // The hooks' first line may already be in the transcript (it was written while we read): stop before it.
     let upTo = old.length;
     if (messages.length) {
-      const at = old.findIndex(m => key(m) === key(messages[0]));
+      // the LAST match: the transcript is in order and the hooks' line is its newest, so an earlier identical "yes" is not it
+      const at = old.findLastIndex(m => key(m) === key(messages[0]));
       if (at >= 0) upTo = at;
     }
     const prefix = old.slice(0, upTo);

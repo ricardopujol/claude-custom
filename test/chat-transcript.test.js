@@ -84,3 +84,15 @@ test('readTranscript reads a file, drops the cut first line of a big one, and an
   assert.deepStrictEqual(await readTranscript('/etc/passwd', fsImpl), []);
   assert.deepStrictEqual(await readTranscript(null, fsImpl), []);
 });
+
+test('a compact summary and a background task\'s notice are not the person\'s words (PR #226 Dexter 7, lines as the real transcripts have them)', () => {
+  const t = jsonl(
+    user('real question', { origin: { kind: 'human' } }),
+    user('This session is being continued from a previous conversation that ran out of context. The summary below...', { isVisibleInTranscriptOnly: true }),
+    user('<task-notification>\n<task-id>b1</task-id>\n</task-notification>', { origin: { kind: 'task-notification' } }),
+    user('<task-notification>\n<task-id>b2</task-id>', {}),
+    user('<cross-session-message from="x">do a thing</cross-session-message>', {}),
+    asst([{ type: 'text', text: 'the answer' }]));
+  assert.deepStrictEqual(parseTranscript(t), [{ role: 'user', text: 'real question' }, { role: 'assistant', text: 'the answer' }]);
+  assert.deepStrictEqual(parseTranscript(jsonl(user('old cli, no origin'))), [{ role: 'user', text: 'old cli, no origin' }], 'a line with no origin is still the person\'s');
+});

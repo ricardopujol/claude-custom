@@ -16,6 +16,8 @@ const fsp = require('fs/promises');
 
 const TAIL_BYTES = 2 * 1024 * 1024;
 const PLUMBING = /^\s*<(?:command-|local-command-)/;
+// Lines that are the CLI's or another session's, whatever their marker says (an older CLI has no `origin`).
+const NOT_THE_PERSON = /^\s*(?:<(?:task-notification|teammate-message|cross-session-message)\b|This session is being continued from a previous conversation)/;
 
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
@@ -38,8 +40,11 @@ function parseTranscript(text) {
     try { o = JSON.parse(raw); } catch { continue; }
     if (!isObj(o) || !isObj(o.message) || o.isMeta === true || o.isSidechain === true) continue;
     if (o.type === 'user') {
+      // Only the person's own words: the CLI marks them `origin.kind: "human"` (a background task's notice is "task-notification"), and a
+      // compact summary is `isVisibleInTranscriptOnly` / `isCompactSummary` with no isMeta (PR #226 Dexter 7).
+      if (o.isVisibleInTranscriptOnly === true || o.isCompactSummary === true || (isObj(o.origin) && typeof o.origin.kind === 'string' && o.origin.kind !== 'human')) continue;
       const said = textOf(o.message.content, true);
-      if (said.trim() === '' || PLUMBING.test(said)) continue;
+      if (said.trim() === '' || PLUMBING.test(said) || NOT_THE_PERSON.test(said)) continue;
       flush();
       out.push({ role: 'user', text: said });
     } else if (o.type === 'assistant') {

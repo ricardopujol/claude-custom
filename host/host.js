@@ -635,7 +635,7 @@ function noteChat(ev) {
   const file = chatFeed.pendingHistory();
   if (file === null) return;
   readTranscript(file)
-    .then((history) => { if (chatFeed.seedHistory(history)) broadcastControl({ type: 'chat', chat: chatFeed.snapshot() }); })
+    .then((history) => { if (chatFeed.seedHistory(history, file))broadcastControl({ type: 'chat', chat: chatFeed.snapshot() }); })
     .catch(() => { /* the history is a fallback: the chat just starts from here */ });
 }
 
