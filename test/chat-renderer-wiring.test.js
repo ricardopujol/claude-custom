@@ -31,7 +31,14 @@ test('run together as plain scripts in one global scope, they declare nothing gl
   const before = new Set(Object.getOwnPropertyNames(ctx));
   for (const f of SCRIPTS) vm.runInContext(read(f), ctx, { filename: f });
   const added = Object.getOwnPropertyNames(ctx).filter(k => !before.has(k)).sort();
-  assert.deepStrictEqual(added, ['chatDisplay', 'chatBlocks', 'chatViewState', 'pasteAction', 'pasteFailureNote', 'pasteFrame', 'copyKeyAction', 'isPasteKey', 'selectionVisible'].sort());
+  // what paste-action.js defines on its own is not this feature's business: a new export there must not fail this test (PR #226 Miguel S6)
+  const alone = vm.createContext({});
+  alone.window = alone;
+  alone.globalThis = alone;
+  const aloneBefore = new Set(Object.getOwnPropertyNames(alone));
+  vm.runInContext(read('paste-action.js'), alone, { filename: 'paste-action.js' });
+  const pasteOwn = Object.getOwnPropertyNames(alone).filter(k => !aloneBefore.has(k));
+  assert.deepStrictEqual(added.filter(k => !pasteOwn.includes(k)), ['chatBlocks', 'chatDisplay', 'chatViewState']);
   // top-level const/let would not show as properties: they would collide in the page, so the files must be wrapped
   for (const f of SCRIPTS.slice(1)) assert.match(read(f).replace(/^(?:\s*\/\/.*\n|\s*\/\*[\s\S]*?\*\/\s*|'use strict';\s*)*/, ''), /^\(function \(root\) \{/, `${f} is an IIFE`);
   // and the view-state module finds paste-action's pasteFrame through that shared scope, as in the page
