@@ -308,3 +308,45 @@ test('handleProbeCommand: drag-tab needs two labels and a half; window-size need
   for (const w of [299, 8001, 900.5, '900', null, undefined]) assert.strictEqual((await run({ cmd: 'window-size', width: w }, api)).ok, false, String(w));
   assert.deepStrictEqual(seen, [['drag', 'feat/c', 'feat/a', 'left'], ['size', 900]]);
 });
+
+// --- PR #227 Dexter 1 + 6: the saved order is the person's data ------------------------------------
+
+test('Dexter 1: order [b, a, c], close a, reopen a: a keeps its slot, on screen and on disk', async () => {
+  const layout = memoryLayout({ order: [key('feat-b'), key('feat-a'), key('feat-c')], closed: [] });
+  const h = await opened({ layout, running: { 7701: wt('feat-a'), 7702: wt('feat-b'), 7703: wt('feat-c') } });
+  assert.deepStrictEqual(stripKeys(h), [key('dev'), key('feat-b'), key('feat-a'), key('feat-c')]);
+  await h.shell.select(key('feat-a'));
+  await h.shell.closeTab(key('feat-a'));
+  await flush();
+  assert.deepStrictEqual(layout.saved[layout.saved.length - 1].order, [key('feat-b'), key('feat-a'), key('feat-c')], 'closing keeps its place');
+  await h.shell.reopen(key('feat-a'));
+  await flush();
+  assert.deepStrictEqual(layout.saved[layout.saved.length - 1].order, [key('feat-b'), key('feat-a'), key('feat-c')], 'reopening keeps it too');
+  assert.deepStrictEqual(h.shell.model().map(e => e.key), [key('dev'), key('feat-b'), key('feat-a'), key('feat-c')]);
+});
+
+test('Dexter 1: a reopen before the first poll keeps the whole saved order', async () => {
+  const layout = memoryLayout({
+    order: [key('feat-b'), key('feat-a'), key('feat-c')],
+    closed: [{ key: key('feat-d'), path: wt('feat-d'), branch: 'feat/d' }],
+  });
+  const h = harness({ layout });          // not opened: state.tabs is empty, as before the first git answer
+  await h.shell.reopen(key('feat-d'));
+  assert.ok(layout.saved.length > 0, 'the reopen was saved');
+  assert.deepStrictEqual(layout.saved[layout.saved.length - 1].order, [key('feat-b'), key('feat-a'), key('feat-c')]);
+  assert.deepStrictEqual(layout.saved[layout.saved.length - 1].closed, []);
+});
+
+test('Dexter 1: a lane that is really gone is still pruned from the saved order once git has answered', async () => {
+  const layout = memoryLayout({ order: [key('feat-gone'), key('feat-b')], closed: [{ key: key('feat-x'), path: wt('feat-x'), branch: 'feat/x' }] });
+  const h = await opened({ layout, running: { 7702: wt('feat-b') } });
+  assert.deepStrictEqual(layout.saved[layout.saved.length - 1].order, [key('feat-b')]);
+  assert.ok(h);
+});
+
+test('Dexter 6: a drag while a lane is closed moves only the dragged lane; the closed one keeps its slot', async () => {
+  const layout = memoryLayout({ order: [key('feat-a'), key('feat-b'), key('feat-c')], closed: [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a' }] });
+  const h = await opened({ layout, running: { 7702: wt('feat-b'), 7703: wt('feat-c') } });
+  assert.deepStrictEqual(h.shell.reorder(key('feat-c'), key('feat-b')), { ok: true });
+  assert.deepStrictEqual(layout.saved[layout.saved.length - 1].order, [key('feat-a'), key('feat-c'), key('feat-b')]);
+});

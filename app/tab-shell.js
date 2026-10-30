@@ -524,12 +524,15 @@ function createShell(deps) {
   const visibleOf = (m) => tabLanes.placeLanes(m, []).strip;
 
   /** Save the strip's order and its closed lanes. Quiet: a layout that is missing, refuses or throws changes nothing on screen. */
-  function persistLayout() {
+  function persistLayout({ prune = true } = {}) {
     if (!layout || typeof layout.save !== 'function') return;
     const closed = closedByHand.filter(c => state.dismissed.includes(c.key));
-    // An order only keeps lanes that still exist or can be reopened.
-    const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key)]);
-    order = order.filter(k => known.has(k));
+    // An order only keeps lanes that still exist or can be reopened. It is pruned against git's list as the reducer holds it,
+    // which is empty before the first poll and lags a reopen by one poll: neither may cost the person their order (PR #227 Dexter 1).
+    if (prune && state.tabs.length > 0) {
+      const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key)]);
+      order = order.filter(k => known.has(k));
+    }
     try {
       const r = layout.save({ order, closed });
       if (r && r.ok === false) log('[shell] layout.save refused:', r.error);
@@ -555,8 +558,8 @@ function createShell(deps) {
       else if (lanes.includes(beforeKey)) before = beforeKey;
       else return { ok: false, error: 'not a lane to drop before' };
     }
-    // every lane in the order it is drawn, then the ones only the saved order knows (a lane closed by hand)
-    const base = [...lanes, ...order.filter(k => !lanes.includes(k))];
+    // the saved order as it stands (a lane closed by hand keeps its slot, PR #227 Dexter 6), then the lanes it doesn't name, as drawn
+    const base = [...order, ...lanes.filter(k => !order.includes(k))];
     order = tabLanes.moveKey(base, key, before);
     persistLayout();
     publish();
@@ -1272,7 +1275,7 @@ function createShell(deps) {
     const entry = closedByHand.find(c => c.key === target.key);
     state = lifecycle.reopen(state, entry.path).state;
     closedByHand = closedByHand.filter(c => c.key !== target.key);
-    persistLayout();
+    persistLayout({ prune: false });   // the reopened lane isn't in state.tabs until the poll below lists it
     selectWhenListed = target.key;
     await poll();
     return { ok: true };
