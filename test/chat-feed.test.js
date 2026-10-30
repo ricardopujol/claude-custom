@@ -28,6 +28,17 @@ test('a prompt becomes a you bubble and the turn is working until Stop brings Cl
   assert.strictEqual(f.snapshot().working, false);
 });
 
+test('Esc fires no Stop: Claude Code\'s idle_prompt ends "working" (PR #226 Dexter 3, Miguel B1)', () => {
+  const f = run([START, ev('UserPromptSubmit', { prompt: 'refactor x' })]);
+  assert.strictEqual(f.snapshot().working, true);
+  assert.strictEqual(f.handle(ev('Notification', { notification_type: 'permission_prompt' })), false, 'a dialog is not the end of the turn');
+  assert.strictEqual(f.snapshot().working, true);
+  assert.strictEqual(f.handle(ev('Notification', { notification_type: 'idle_prompt' })), true);
+  assert.strictEqual(f.snapshot().working, false);
+  assert.deepStrictEqual(texts(f), ['user:refactor x'], 'and it adds no line');
+  assert.strictEqual(f.handle(ev('Notification', { notification_type: 'idle_prompt' })), false, 'an idle reminder over an idle chat changes nothing');
+});
+
 test('handle answers whether the snapshot changed', () => {
   const f = createChatFeed();
   assert.strictEqual(f.handle(START), false);

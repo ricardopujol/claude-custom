@@ -40,8 +40,9 @@ test('a main-session tool call opens the turn even if its UserPromptSubmit was l
 test('Dexter F2: an open dialog is "prompt", and nothing but the session moving on clears it', () => {
   const asked = [START, ev('UserPromptSubmit'), ev('Notification', { notification_type: 'permission_prompt' })];
   assert.strictEqual(run(asked), 'prompt');
-  // Claude Code's own idle reminder doesn't answer a dialog
-  assert.strictEqual(run([...asked, ev('Notification', { notification_type: 'idle_prompt' })]), 'prompt');
+  // Claude Code's idle_prompt means it is back at the prompt: a rejected or Esc-ed dialog fires no Stop and no tool event, so this
+  // is the only thing that ends it (PR #226 Dexter 2)
+  assert.strictEqual(run([...asked, ev('Notification', { notification_type: 'idle_prompt' })]), 'idle');
   // answered: the tool ran (still in the turn), then the turn ended
   assert.strictEqual(run([...asked, ev('PostToolUse', { tool_name: 'Bash' })]), 'turn');
   assert.strictEqual(run([...asked, ev('Stop')]), 'idle');

@@ -61,6 +61,20 @@ test('property: after ANY hook sequence ending in a NEEDS_INPUT Notification the
   }));
 });
 
+test('a rejected or Esc-ed permission prompt fires no Stop: Claude Code\'s idle_prompt brings the chat back (PR #226 Dexter 2)', () => {
+  const idle = { event: 'Notification', payload: { notification_type: 'idle_prompt' } };
+  const ask = { event: 'Notification', payload: { notification_type: 'permission_prompt' } };
+  const START = { event: 'SessionStart', payload: { source: 'startup' } };
+  const prompt = { event: 'UserPromptSubmit', payload: { prompt: 'edit it' } };
+  for (const seq of [[START, ask, idle], [START, prompt, ask, idle]]) {
+    const t = createTurnState();
+    for (const e of seq.slice(0, -1)) t.handle(e);
+    assert.strictEqual(viewFor({ wanted: true, turn: t.snapshot(), blocked: false }).show, 'terminal');
+    t.handle(seq[seq.length - 1]);
+    assert.strictEqual(viewFor({ wanted: true, turn: t.snapshot(), blocked: false }).show, 'chat', JSON.stringify(seq.map(e => e.event)));
+  }
+});
+
 test('the shortcut is Ctrl+Shift+H on keydown only, with no other modifier', () => {
   const k = (o) => ({ type: 'keydown', ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, code: 'KeyH', key: 'H', ...o });
   assert.ok(isChatKey(k()));

@@ -76,6 +76,13 @@ function createChatFeed({ now = Date.now } = {}) {
         push('assistant', said);
         return true;
       }
+      // Esc interrupts a turn and fires no Stop; Claude Code's idle_prompt is the only word that it is back at the prompt (host/turn-state.js)
+      case 'Notification': {
+        if (p.notification_type !== 'idle_prompt') return false;
+        const was = working;
+        working = false;
+        return was;
+      }
       case 'StopFailure':
       case 'SessionEnd': {
         const was = working;
