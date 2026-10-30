@@ -14,6 +14,9 @@
  */
 (function (root) {
 
+// The strip's lane placement and overflow maths (app/tab-lanes.js): a plain <script> before this one in the page.
+const tabLanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
+
 const GLYPHS = {
   open: String.fromCodePoint(0x1f513),      // open padlock: a second session, on purpose
   warn: String.fromCodePoint(0x26a0),       // warning sign: no lock could be taken
@@ -126,7 +129,7 @@ function issueLine(i) {
   return nonEmpty(i.title) ? `#${i.number} ${i.title}` : `#${i.number}`;
 }
 
-function paintTab(doc, entry, bridge) {
+function paintTab(doc, entry, bridge, all) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
   if (!entry.started) cls.push('dim');
@@ -212,7 +215,160 @@ function paintTab(doc, entry, bridge) {
     else bridge.select(entry.key);
   });
   tab.addEventListener('contextmenu', (ev) => { ev.preventDefault(); bridge.contextMenu(entry.key); });
+  wireDrag(tab, entry, bridge, all);
   return tab;
+}
+
+// --- BACKLOG #141: drag a lane's tab to a new place ---------------------------------------------
+// Main decides and saves (app/tab-shell.js reorder); this only reports "this one, before that one". Every poll repaints the
+// whole strip, and a tab pulled out of the DOM mid-drag ends the drag, so a repaint waits until the drag is over.
+const dragState = { key: null, over: null, held: null };
+
+function clearDrop() {
+  if (dragState.over && dragState.over.classList) {
+    dragState.over.classList.remove('drop-before');
+    dragState.over.classList.remove('drop-after');
+  }
+  dragState.over = null;
+}
+
+function leftHalf(ev, tab) {
+  const r = typeof tab.getBoundingClientRect === 'function' ? tab.getBoundingClientRect() : null;
+  return !r || !(ev && typeof ev.clientX === 'number') || ev.clientX < r.left + r.width / 2;
+}
+
+function endDrag() {
+  clearDrop();
+  dragState.key = null;
+  const held = dragState.held;
+  dragState.held = null;
+  if (held) paint(held.doc, held.payload, held.bridge);
+}
+
+function wireDrag(tab, entry, bridge, all) {
+  if (!bridge || typeof bridge.reorder !== 'function') return;
+  if (entry.isDev !== true && entry.side !== true && entry.shell !== true) {
+    tab.draggable = true;
+    tab.addEventListener('dragstart', (ev) => {
+      dragState.key = entry.key;
+      if (ev && ev.dataTransfer) {
+        ev.dataTransfer.effectAllowed = 'move';
+        // A private type: text/plain would let the path drop into the Inbox field beside the tabs as text (PR #227 Miguel S1).
+        ev.dataTransfer.setData(LANE_MIME, entry.key);
+      }
+    });
+    tab.addEventListener('dragend', () => endDrag());
+  }
+  tab.addEventListener('dragover', (ev) => {
+    if (dragState.key === null) return;
+    const half = leftHalf(ev, tab);
+    if (!tabLanes.dropBefore(all, dragState.key, entry.key, half).ok) { clearDrop(); return; }
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    if (dragState.over !== tab) clearDrop();
+    dragState.over = tab;
+    tab.classList.remove(half ? 'drop-after' : 'drop-before');
+    tab.classList.add(half ? 'drop-before' : 'drop-after');
+  });
+  tab.addEventListener('dragleave', () => { if (dragState.over === tab) clearDrop(); });
+  tab.addEventListener('drop', (ev) => {
+    if (dragState.key === null) return;
+    const r = tabLanes.dropBefore(all, dragState.key, entry.key, leftHalf(ev, tab));
+    if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+    clearDrop();
+    if (r.ok) bridge.reorder(dragState.key, r.before);
+    endDrag();     // the drop ends the drag here too: a dragend that never comes must not freeze the strip
+  });
+}
+
+// --- the fade: a tab that leaves the strip (BACKLOG #139; documentation/DESIGN_TAB_STRIP.md, open question 2) ---
+// A leaving tab stays in its place as a still, unclickable ghost for ~250 ms while it fades (CSS .tab.leaving), through any
+// repaint in that time, then goes. Not under prefers-reduced-motion, and not for a tab that only moved into the +N menu
+// (a narrower window is not a lane leaving).
+const FADE_MS = 250;
+const LANE_MIME = 'application/x-claude-custom-lane';
+const fadeState = { repaintWhenClear: null, doc: null, prevKeys: [], prevLabels: new Map(), ghosts: [], schedule: (fn, ms) => setTimeout(fn, ms) };
+const fade = {
+  MS: FADE_MS,
+  /** A test's seam: swap the timer. Returns the function that puts everything back. */
+  use(over) {
+    const was = fadeState.schedule;
+    if (over && typeof over.schedule === 'function') fadeState.schedule = over.schedule;
+    fadeState.doc = null; fadeState.prevKeys = []; fadeState.prevLabels = new Map(); fadeState.ghosts = []; fadeState.repaintWhenClear = null;
+    return () => { fadeState.schedule = was; fadeState.doc = null; fadeState.prevKeys = []; fadeState.ghosts = []; fadeState.repaintWhenClear = null; };
+  },
+};
+
+function reducedMotion(doc) {
+  const w = doc && doc.defaultView;
+  try { return !!(w && typeof w.matchMedia === 'function' && w.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch { return false; }
+}
+
+function dropGhost(g) {
+  fadeState.ghosts = fadeState.ghosts.filter(x => x !== g);
+  const n = g.node;
+  if (n && n.parentNode) {
+    if (typeof n.remove === 'function') n.remove();
+    else n.parentNode.replaceChildren(...n.parentNode.children.filter(c => c !== n));
+  }
+  // While a ghost stood, the overflow check was skipped (it still took the room of a tab that had left): redo it now it is gone
+  // (PR #227 Dexter 5, Miguel Y3).
+  const again = fadeState.repaintWhenClear;
+  if (again && fadeState.ghosts.length === 0 && fadeState.doc === again.doc) {
+    fadeState.repaintWhenClear = null;
+    paint(again.doc, again.payload, again.bridge);
+  }
+}
+
+/** The tab nodes with any ghosts of tabs that just left put back where they were; updates what the next paint compares to. */
+function withGhosts(doc, nodes, shown, hiddenKeys) {
+  if (fadeState.doc !== doc) { fadeState.doc = doc; fadeState.prevKeys = []; fadeState.prevLabels = new Map(); fadeState.ghosts = []; }
+  const shownKeys = shown.map(e => e.key);
+  const calm = reducedMotion(doc);
+  for (const key of tabLanes.leaving(fadeState.prevKeys, shownKeys, hiddenKeys)) {
+    if (calm || fadeState.ghosts.some(g => g.key === key)) continue;
+    const ghost = el(doc, 'div', 'tab leaving');
+    ghost.dataset.key = key;
+    ghost.appendChild(el(doc, 'span', 'label', fadeState.prevLabels.get(key) || ''));
+    const g = { key, index: fadeState.prevKeys.indexOf(key), node: ghost };
+    fadeState.ghosts.push(g);
+    fadeState.schedule(() => dropGhost(g), FADE_MS);
+  }
+  fadeState.ghosts = fadeState.ghosts.filter(g => !shownKeys.includes(g.key));
+  const out = [...nodes];
+  for (const g of [...fadeState.ghosts].sort((a, b) => a.index - b.index)) out.splice(Math.min(Math.max(g.index, 0), out.length), 0, g.node);
+  fadeState.prevKeys = shownKeys;
+  fadeState.prevLabels = new Map(shown.map(e => [e.key, e.label]));
+  return out;
+}
+
+// --- 2A: shrink, then +N ----------------------------------------------------------------------------
+// The page measures its own room (main can't), shows the tabs that fit at their 112 px minimum, and tells main which it hid
+// when the Lanes menu is opened. Everything else in the strip keeps its width; the index field gives up all but its minimum
+// and the alert line all of it, because that is how they shrink (tab-strip.html).
+const ROOM_SAFETY = 24;
+
+function pxOf(v) { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; }
+
+/** The px the tabs may use, or null when the strip isn't laid out (a test page, a window not shown yet): then no limit. */
+function stripRoom(doc) {
+  const bar = doc && typeof doc.getElementById === 'function' ? doc.getElementById('strip') : null;
+  if (!bar || typeof bar.clientWidth !== 'number' || !(bar.clientWidth > 0)) return null;
+  const tabsEl = doc.getElementById('tabs');
+  const style = (c) => {
+    try { return doc.defaultView && typeof doc.defaultView.getComputedStyle === 'function' ? doc.defaultView.getComputedStyle(c) : null; } catch { return null; }
+  };
+  let others = 0;
+  for (const c of Array.from(bar.children || [])) {
+    if (c === tabsEl || c.hidden === true || c.id === 'strip-alert') continue;
+    const cs = style(c);
+    // #index and #bg carry `margin-left: auto`, which getComputedStyle reports as the free space left over (not a fixed margin): skip it.
+    const autoLeft = c.id === 'index' || c.id === 'bg';
+    const margins = cs ? (autoLeft ? 0 : pxOf(cs.marginLeft)) + pxOf(cs.marginRight) : 0;
+    const own = c.id === 'index' && cs && pxOf(cs.minWidth) > 0 ? pxOf(cs.minWidth) : (typeof c.offsetWidth === 'number' ? c.offsetWidth : 0);
+    others += own + margins;
+  }
+  return Math.max(0, bar.clientWidth - others - ROOM_SAFETY);
 }
 
 // The one piece of state here: whether the ▾ menu is open, so a repaint while
@@ -220,11 +376,17 @@ function paintTab(doc, entry, bridge) {
 let backgroundBusy = false;
 
 /** Paint `payload` into the page. Everything is rebuilt: the strip is small. */
-function paint(doc, payload, bridge) {
+function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
+  if (dragState.key !== null) { dragState.held = { doc, payload, bridge }; return; }
   const tabs = doc.getElementById('tabs');
   const pane = doc.getElementById('pane');
+  // `model` is the tabs main says have a place on the strip (1B); which of them FIT is this page's to say (2A).
   const model = payload && Array.isArray(payload.model) ? payload.model : [];
-  tabs.replaceChildren(...model.map(e => paintTab(doc, e, bridge)));
+  const room = stripRoom(doc);
+  const { shown, hidden } = tabLanes.splitOverflow(model, room === null ? undefined : capacity !== null ? capacity : tabLanes.capacityFor(room));
+  const shownKeys = new Set(shown.map(e => e.key));
+  const hiddenKeys = model.filter(e => e && !shownKeys.has(e.key)).map(e => e.key);
+  tabs.replaceChildren(...withGhosts(doc, shown.map(e => paintTab(doc, e, bridge, model)), shown, hiddenKeys));
   const info = paneFor(payload);
   pane.hidden = info === null;
   const text = doc.getElementById('pane-text');
@@ -258,6 +420,35 @@ function paint(doc, payload, bridge) {
     alertEl.hidden = !a;
   }
   paintPlus(doc, payload, bridge);
+  paintLanes(doc, payload, hidden, bridge);
+  // The room was measured before this paint: something beside the tabs (Stop all, the index count) can have grown since, or the
+  // window shrank. If the tabs now overflow their box, hide one more and paint again (each pass hides one, so it ends).
+  // A leaving tab's ghost still takes its 112 px for the first moments of the fade, so while one stands the check would cut a tab
+  // that fits: skip it, and redo it when the last ghost is dropped. A pass that hid nothing more than the one before it means the
+  // rest (develop, the selected tab, tabs that need you) can't give way: stop.
+  if (room !== null && shown.length > 1 && tabs.scrollWidth > tabs.clientWidth + 1) {
+    if (fadeState.ghosts.length > 0) fadeState.repaintWhenClear = { doc, payload, bridge };
+    else if (hidden.length !== prevHidden) paint(doc, payload, bridge, Math.min(capacity !== null ? capacity : Infinity, shown.length) - 1, hidden.length);
+  }
+}
+
+// The Lanes ▾ button (1B + 2A): one native menu (main builds it) of the lanes with no tab and the tabs this page hid, with
+// "+N" in front when it hid some. Always drawn in a project window so it never moves and the room it takes is a constant.
+function paintLanes(doc, payload, hidden, bridge) {
+  const btn = doc.getElementById('lanes');
+  if (!btn) return;
+  const p = objectOr(payload, {});
+  const lanes = objectOr(p.lanes, {});
+  const count = (l) => (Array.isArray(l) ? l.length : 0);
+  const rows = count(lanes.notStarted) + count(lanes.merged);
+  const n = hidden.length;
+  btn.hidden = p.mode !== 'tabs';
+  btn.textContent = `${n > 0 ? `+${n} ` : ''}Lanes ▾`;
+  btn.className = n > 0 ? 'overflow' : '';
+  btn.title = `${rows} lane${rows === 1 ? '' : 's'} without a tab${n > 0 ? `, ${n} tab${n === 1 ? '' : 's'} that didn't fit` : ''}. Click to open one, or to reopen one you closed (Ctrl+Shift+T).`;
+  btn.onclick = () => {
+    if (typeof bridge.lanes === 'function') bridge.lanes(hidden.map(e => e.key));
+  };
 }
 
 // PR 3: the + (main pops its menu) and the branch form. The form is STATIC in
@@ -529,7 +720,7 @@ function paintLeanFaces(doc, faces, on) {
   box.replaceChildren(...nodes);
 }
 
-const api = { paneFor, alertFor, resourceWarnOf, issuesView, issueLine, issuePick, paint, paintAccent, paintLean, paintLeanFaces, paintStopAll, windowChrome, GLYPHS, LEAN_FACES_MAX };
+const api = { paneFor, alertFor, resourceWarnOf, issuesView, issueLine, issuePick, paint, fade, paintAccent, paintLean, paintLeanFaces, paintStopAll, windowChrome, GLYPHS, LEAN_FACES_MAX };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;
@@ -561,7 +752,15 @@ if (typeof module !== 'undefined' && module.exports) {
     }
   }
   if (root.strip && typeof root.strip.onModel === 'function') {
-    root.strip.onModel((payload) => paint(root.document, payload, root.strip));
+    let lastPayload = null;
+    root.strip.onModel((payload) => { lastPayload = payload; paint(root.document, payload, root.strip); });
+    // A resize changes the room the tabs have; the next poll would catch it, this does it now.
+    // Watch the strip itself: the window's resize event can fire before the strip has its new width.
+    const barEl = root.document && root.document.getElementById('strip');
+    if (barEl && typeof root.ResizeObserver === 'function') {
+      let lastW = barEl.clientWidth;
+      new root.ResizeObserver(() => { if (barEl.clientWidth !== lastW) { lastW = barEl.clientWidth; if (lastPayload) paint(root.document, lastPayload, root.strip); } }).observe(barEl);
+    }
   }
 }
 

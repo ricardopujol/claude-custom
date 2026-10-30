@@ -273,13 +273,16 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-six members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-eight members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus', 'create', 'cancelCreate',
+    ['select', 'close', 'contextMenu', 'plus',
+      // #139 + #141, the Lanes menu and drag to reorder (main answers them; app/tab-shell.js lanesMenu / reorder)
+      'lanes', 'reorder',
+      'create', 'cancelCreate',
       // #119 A6, the form's "From an issue" list (main answers them; host/issues.js has the rules)
       'issues', 'pickerOpen', 'pickerClose',
       'background', 'onModel', 'onAccent', 'winMinimize', 'winClose',

@@ -220,7 +220,8 @@ test('initialSelection: equal, containing (deepest), else dev', () => {
 // --- properties ------------------------------------------------------------
 
 const stateArb = fc.tuple(
-  fc.uniqueArray(fc.stringMatching(/^[a-z]{1,6}$/), { minLength: 0, maxLength: 6 }),
+  // never "dev": that is DEV's own folder, and a lane on it would share its key (a flaky counterexample seen 2026-10-29)
+  fc.uniqueArray(fc.stringMatching(/^[a-z]{1,6}$/).filter(n => n !== 'dev'), { minLength: 0, maxLength: 6 }),
   fc.boolean(),
 ).map(([names, devFirst]) => {
   const tabs = names.map(n => ({ path: `C:\\p\\${n}`, branch: n, isDev: false, phase: 'live', hostSeen: true }));
@@ -301,4 +302,34 @@ test('program (OSC 7501) follows the status: the cleaned record, null for none',
   assert.deepStrictEqual(on.program, { state: 'blocked', kind: 'permission', msg: 'Allow?', progress: null });
   assert.strictEqual(strip([DEV], {})[0].program, null);
   assert.strictEqual(strip([DEV], { [k]: { started: true, status: { program: 'blocked' } } })[0].program, null);
+});
+
+// --- drag to reorder (BACKLOG #141): the saved order ---------------------------------------------
+
+const C = { path: 'C:\\p\\feat-c', branch: 'feat/c', isDev: false, phase: 'live', hostSeen: true };
+const orderedStrip = (tabs, order) => m.stripModel({ tabs }, {}, keyOf(DEV.path), { keyOf, order }).map(e => e.label);
+
+test('a saved order puts the lanes where the person dragged them; develop stays first', () => {
+  assert.deepStrictEqual(orderedStrip([DEV, A, B, C], [keyOf(C.path), keyOf(A.path)]), ['develop', 'feat/c', 'feat/a', 'feat/b']);
+});
+
+test('a lane the saved order does not know comes after the ones it does, and develop in the order cannot move', () => {
+  assert.deepStrictEqual(orderedStrip([DEV, A, B, C], [keyOf(B.path)]), ['develop', 'feat/b', 'feat/a', 'feat/c']);
+  assert.deepStrictEqual(orderedStrip([DEV, A, B], [keyOf(B.path), keyOf(DEV.path), keyOf(A.path)]), ['develop', 'feat/b', 'feat/a']);
+});
+
+test('no order, or junk for one, is the order the reducer gave', () => {
+  for (const o of [undefined, null, 'x', 7, {}, []]) assert.deepStrictEqual(orderedStrip([DEV, A, B], o), ['develop', 'feat/a', 'feat/b'], String(o));
+});
+
+test('property: any saved order leaves develop first and every tab exactly once', () => {
+  const pool = [DEV, A, B, C];
+  fc.assert(fc.property(
+    fc.array(fc.constantFrom(...pool.map(t => keyOf(t.path)), 'ghost', 3, null), { maxLength: 10 }),
+    (order) => {
+      const labels = orderedStrip(pool, order);
+      assert.strictEqual(labels[0], 'develop');
+      assert.deepStrictEqual([...labels].sort(), ['develop', 'feat/a', 'feat/b', 'feat/c']);
+    },
+  ), { numRuns: 200 });
 });
