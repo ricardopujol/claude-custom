@@ -223,7 +223,7 @@ async function main() {
   const started = [];
   for (const name of LANES.slice(0, 9)) {
     const r = await command(app, { cmd: 'select', label: labelOfLane(name) }, 90000);
-    if (r.ok && r.started) started.push(labelOfLane(name));
+    if (r.ok && r.started) started.push(labelOfLane(name)); else console.log('select did not start', name, JSON.stringify(r));
   }
   await command(app, { cmd: 'select', label: 'develop' }, 30000);
   s = await waitFor(async () => { const x = await state(app); return x.stripKeys.length === 10 && paintedLabels(x).length === 10 ? x : null; }, 20000) || await state(app);
@@ -291,7 +291,8 @@ async function main() {
   const tokenOf = (port) => fs.readFileSync(path.join(HARNESS_DIR, 'hosts', `${port}.token`), 'utf8').trim();
   const stop = h3 ? await sendControl({ port: h3.port, token: tokenOf(h3.port), msg: { type: 'stop' } }) : { ok: false };
   s = await waitFor(async () => { const x = await state(app); return !x.stripKeys.some(k => k === (x.tabs.find(t => t.label === 'feat/03') || {}).key) ? x : null; }, 20000, 400);
-  check('1B: a lane whose session ended (develop is selected) leaves the strip', !!stop.ok && !!s, JSON.stringify(stop));
+  // A host that exits on 'stop' may not get its reply out inside the control timeout (the worktree-tabs probe accepts that too): the lane leaving is the proof.
+  check('1B: a lane whose session ended (develop is selected) leaves the strip', (!!stop.ok || /timed out/.test(stop.error || '')) && !!s, JSON.stringify(stop));
   if (s) {
     await sleep(700);     // the fade
     s = await state(app);
