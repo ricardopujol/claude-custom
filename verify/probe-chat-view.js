@@ -53,6 +53,8 @@ const container = path.join(tmp, 'proj');
 const dev = path.join(container, 'dev');
 const userData = path.join(tmp, 'user-data');
 const shots = process.env.CHAT_VIEW_PROBE_SHOTS || path.join(tmp, 'shots');
+const boxCtl = path.join(tmp, 'box-ctl.json');
+const boxLog = path.join(tmp, 'box-submitted.log');
 fs.mkdirSync(shots, { recursive: true });
 
 let failures = 0;
@@ -206,6 +208,14 @@ async function main() {
     && first.btn.pressed === 'false' && first.btn.hidden === false, JSON.stringify(first && { w: first.wanted, h: first.rootHidden, b: first.btn }));
   hook(pid, 'SessionStart', { source: 'startup', transcript_path: path.join(tmp, 'none.jsonl') });
 
+  // The session is a cmd.exe shell; a stand-in for the CLI's input box (verify/lib/fake-claude-box.js: a `❯` line between two rules, a
+  // permission-style dialog on request, every Enter logged) runs in it, so the page has a real box to read, type into and read back.
+  await view(app, 'gitTermInput', { data: `node "${path.join(ROOT, 'verify', 'lib', 'fake-claude-box.js')}" "${boxCtl}" "${boxLog}"\r` });
+  const boxUp = await waitFor(async () => (await screenOf(app)).includes('fake claude box') ? true : null, 20000);
+  check('A: the stand-in CLI box is on screen (the page reads a `❯` box between two rules)', !!boxUp);
+  const submitted = () => { try { return fs.readFileSync(boxLog, 'utf8').split('\n').filter(Boolean).map(x => JSON.parse(x)); } catch { return []; } };
+  const setBox = (c) => fs.writeFileSync(boxCtl, JSON.stringify(c));
+
   // B -----------------------------------------------------------------------------
   hook(pid, 'UserPromptSubmit', { prompt: PROMPT });
   hook(pid, 'PreToolUse', { tool_name: 'Bash', tool_use_id: 't1', tool_input: { command: `echo ${TOOL_MARK}` } });
@@ -248,8 +258,23 @@ async function main() {
   // D -----------------------------------------------------------------------------
   const typed = await doChat(app, 'type', { text: 'echo chat-typed-ok' });
   check('D: the type box accepted the message and cleared itself', !!typed.ok && typed.boxAfter === '', JSON.stringify(typed));
-  const ran = await waitFor(async () => (await screenOf(app)).split('\n').some(l => l.trim() === 'chat-typed-ok') ? true : null, 15000);
-  check('D: ...and it reached the pty like typing: the command RAN in the terminal underneath', !!ran);
+  const ran = await waitFor(async () => submitted().includes('echo chat-typed-ok') ? true : null, 15000);
+  check('D: ...and it reached the pty like typing: the stand-in CLI box SUBMITTED exactly that line, once', !!ran && submitted().filter(x => x === 'echo chat-typed-ok').length === 1, JSON.stringify(submitted()));
+
+  // D1 (PR #226 Dexter 1): a dialog has the keyboard although the hooks say idle. The chat's send must refuse before a key: no text, no Enter.
+  setBox({ dialog: true });
+  const dialogUp = await waitFor(async () => (await screenOf(app)).includes('Do you want to run this command?') ? true : null, 10000);
+  const logBefore = submitted().length;
+  const refused = await doChat(app, 'type', { text: 'thanks, approve it' });
+  await sleep(1500);
+  const afterRefusal = await chat(app);
+  check('D1: a dialog is on screen (the hooks still say idle)', !!dialogUp);
+  check('D1: the chat\'s send is refused: the box keeps the text and says why', !!refused.ok && refused.boxAfter === 'thanks, approve it' && !!afterRefusal && /needs you in the terminal/.test(afterRefusal.sendNote), JSON.stringify({ r: refused, note: afterRefusal && afterRefusal.sendNote }));
+  check('D1: ...and NO Enter reached the dialog (the stand-in logs every Enter, a dialog\'s included)', submitted().length === logBefore, `${logBefore} -> ${submitted().length}`);
+  check('D1: ...the chat stepped aside for the dialog it could see on screen (no hook announced it)', !!afterRefusal && afterRefusal.rootHidden === true && !afterRefusal.flip.hidden);
+  setBox({ dialog: false });
+  await waitFor(async () => { const c = await chat(app); return c && !c.rootHidden ? c : null; }, 10000);
+  await doChat(app, 'clearInput');
 
   // F ------------------------------------------------------------------------------
   hook(pid, 'UserPromptSubmit', { prompt: 'second question' });
@@ -279,6 +304,15 @@ async function main() {
   const back = await waitFor(async () => { const c = await chat(app); return c && !c.rootHidden && c.flip.hidden ? c : null; }, 10000);
   check('E: the turn resuming (the answer: a main-session tool event) brings the chat back, the note gone', !!back);
   hook(pid, 'Stop', { last_assistant_message: 'Written.' });
+
+  // E2 (PR #226 Dexter 2 + 3): a REJECTED permission prompt fires no Stop and no tool event; only Claude Code's idle_prompt says it is back.
+  hook(pid, 'UserPromptSubmit', { prompt: 'run the risky thing' });
+  hook(pid, 'Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission to use Bash' });
+  const flipped2 = await waitFor(async () => { const c = await chat(app); return c && c.rootHidden && !c.flip.hidden ? c : null; }, 10000);
+  check('E2: the permission prompt sends the tab to the terminal', !!flipped2);
+  hook(pid, 'Notification', { notification_type: 'idle_prompt' });
+  const back2 = await waitFor(async () => { const c = await chat(app); return c && !c.rootHidden && c.flip.hidden && !c.working ? c : null; }, 10000);
+  check('E2: permission_prompt then idle_prompt (rejected, no Stop): the chat is back, the note gone, no "working" line', !!back2, JSON.stringify(await chat(app).then(c => c && { h: c.rootHidden, f: c.flip.hidden, w: c.working })));
 
   // G ------------------------------------------------------------------------------
   const count = (await chat(app)).bubbles.length;

@@ -4157,7 +4157,8 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const flip = document.getElementById('chat-flip');
         return JSON.stringify({
           ok: true, wanted: chatWanted, shown: chatShown, rootHidden: root.hidden, bodyChatOn: document.body.classList.contains('chat-on'),
-          flip: { hidden: flip.hidden, text: flip.textContent }, working: !document.getElementById('chat-working').hidden,
+          flip: { hidden: flip.hidden, text: flip.textContent }, sendNote: document.getElementById('chat-sendnote').textContent,
+          inputValue: document.getElementById('chat-input').value, working: !document.getElementById('chat-working').hidden,
           btn: { pressed: chatBtn.getAttribute('aria-pressed'), hidden: chatBtn.hidden },
           bubbles: [...log.querySelectorAll('.chat-msg')].map(b => ({ cls: b.className, text: b.textContent })),
           copyButtons: [...log.querySelectorAll('.chat-copy')].map(b => ({ label: b.getAttribute('aria-label'), text: b.textContent })),
@@ -4167,6 +4168,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       }
       case 'chatDo': {
         if (a.what === 'toggle') { chatBtn.click(); return JSON.stringify({ ok: true }); }
+        if (a.what === 'clearInput') { document.getElementById('chat-input').value = ''; return JSON.stringify({ ok: true }); }
         if (a.what === 'key') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); return JSON.stringify({ ok: true }); }
         if (a.what === 'type') {
           if (typeof a.text !== 'string' || !a.text || a.text.length > 2000) return JSON.stringify({ ok: false, error: 'type needs text' });
