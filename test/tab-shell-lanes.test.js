@@ -36,7 +36,7 @@ function memoryLayout(seed = { order: [], closed: [] }) {
   return l;
 }
 
-function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, markers = {} } = {}) {
+function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, markers = {}, laneHosts } = {}) {
   const h = {
     running: { ...running }, spawns: [], controls: [], looks: [], logs: [], listText: list, markers: { ...markers }, clock: 1_000_000_000, layout, confirm: true,
   };
@@ -74,6 +74,7 @@ function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, mark
     ui: { confirmClose: async () => h.confirm, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
     now: () => h.clock,
   };
+  if (laneHosts) deps.hosts.laneHosts = laneHosts;
   if (layout) deps.layout = layout;
   if (occupancy) deps.occupancy = occupancy;
   h.shell = createShell(deps);
@@ -379,4 +380,22 @@ test('Miguel S4: a layout file that cannot be read says so in the log, once, ins
   const layout = { load: () => ({ order: [], closed: [], error: "can't read F: busy" }), save: () => ({ ok: false, error: 'busy' }) };
   const h = await opened({ layout });
   assert.ok(h.logs.some(l => /layout: can't read F: busy/.test(l)), h.logs.join(' | '));
+});
+
+test('Dexter 4: with the identity files read, only a folder one of them names is looked for again', async () => {
+  const none = await opened({ laneHosts: () => [] });
+  const before = none.looks.length;
+  for (let i = 0; i < 5; i++) { await none.shell.poll(); await flush(); }
+  assert.strictEqual(none.looks.length, before, 'no identity file names a lane: no port walk on the polls');
+
+  const h = harness({ running: { 7701: wt('feat-a') }, laneHosts: () => [{ port: 7701, cwd: wt('feat-a') }] });
+  h.blind = true;
+  await h.shell.open();
+  await flush();
+  h.looks.length = 0;
+  h.blind = false;
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual([...new Set(h.looks)], [key('feat-a')], 'only the folder an identity file names was walked');
+  assert.ok(stripKeys(h).includes(key('feat-a')));
 });

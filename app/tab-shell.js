@@ -184,6 +184,8 @@ function sanitizeStatus(s) {
  *   hosts.newToken()       -> string
  *   hosts.control({ port, token, msg })    -> Promise<{ ok, reply? , error? }>
  *   hosts.identity({ install, port }), hosts.readToken(install, port)  (planGoTo's)
+ *   hosts.laneHosts()  -> [{ port, cwd }] | null   the branch hosts the identity files list (optional; PR #227: a lane whose first look
+ *                                               missed its host is looked for again only where one serves its folder)
  *   hosts.sideHosts() / hosts.shellHosts()  -> [{ port, cwd }] | null   the side / shell hosts the identity files list (optional;
  *                                               without one each tab is looked for the slow way, by a port walk)
  *   views.create(tab)      -> view          shows the tab's renderer
@@ -668,7 +670,12 @@ function createShell(deps) {
 
   /** Each poll: look again for the host of a lane that still has none, up to ATTACH_LOOKS looks in all. */
   function lookAgainForHosts() {
+    // The identity files say which folders have a host: look only under those (a walk is a probe of many ports and shares the
+    // start queue). A list that can't be had means every lane is looked for.
+    const known = listHosts('laneHosts');
+    const serving = known === null ? null : new Set(known.map(h => keyOf(h.cwd)));
     for (const t of tabs.values()) {
+      if (serving !== null && !serving.has(t.key)) continue;
       if (t.started || t.starting || t.closed || t.ended || t.attachBusy || t.side || t.shell) continue;
       if ((t.attachLooks || 0) >= ATTACH_LOOKS) continue;
       attachIfRunning(t);

@@ -67,7 +67,7 @@ const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
 const { createUsageCounters } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
-const { isSideKey, sideHostsOf, readerSessionIds } = require('../host/side-session');
+const { isSideKey, sideHostsOf, laneHostsOf, readerSessionIds } = require('../host/side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
 const { isShellKey, shellHostsOf } = require('../host/shell-tab');
 const { sendControl } = require('../host/host-client');
@@ -2361,6 +2361,8 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
+      // PR #227 Dexter 4: the branch hosts the identity files say are running, so a lane whose first look missed its host is looked for again only where one serves it
+      laneHosts: () => laneHostsOf(ownIdentities()),
       // #119 A5: ... and the shell hosts, the same way
       shellHosts: () => shellHostsOf(ownIdentities()),
       // planGoTo's readers: another install's identity file and token, by its dir.

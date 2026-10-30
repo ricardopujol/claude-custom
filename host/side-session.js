@@ -112,6 +112,20 @@ function sideHostsOf(identities) {
   return out;
 }
 
+/**
+ * The BRANCH hosts the identity files list ([{ port, cwd }]): the ones that serve a lane's folder, not a side or shell session's.
+ * Null when that can't be told (no list, or a file that couldn't be read): the shell then looks under every lane (PR #227 Dexter 4).
+ */
+function laneHostsOf(identities) {
+  if (!Array.isArray(identities) || identities.some(e => e && e.unreadable === true)) return null;
+  const out = [];
+  for (const e of identities) {
+    const p = e && typeof e === 'object' ? e.parsed : null;
+    if (p && p.side !== true && p.kind !== 'shell' && nonEmpty(p.cwd) && posInt(e.port)) out.push({ port: e.port, cwd: p.cwd });
+  }
+  return out;
+}
+
 /** The session ids the side hosts among `identities` published: the sessions whose agents are readers (host/occupancy-transcripts.js). */
 function readerSessionIds(identities) {
   const out = [];
@@ -124,5 +138,5 @@ function readerSessionIds(identities) {
 
 module.exports = {
   SIDE_SUFFIX, SIDE_ENV, SIDE_ALLOWED_TOOLS, SIDE_DENIED_TOOLS, SIDE_REVIEWED_TOOLS, isSideKey, sideKeyOf, parentKeyOf, sideLabel, isSideEnv,
-  siblingSessions, sideHostsOf, readerSessionIds,
+  siblingSessions, sideHostsOf, laneHostsOf, readerSessionIds,
 };
