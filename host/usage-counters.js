@@ -23,7 +23,7 @@
  *   - At most RATE_PER_SEC bumps a second per process (`rate`), and the lock is waited for at most LOCK_WAIT_MS (`busy`): a
  *     counter loses a count before it costs the pty host or Electron main a frame.
  *   - What panel counts MEAN: a panel shown after the layout loaded, by a user gesture (a tab, the rail, the Window menu). Startup,
- *     layout loads and leaving lean mode are not counted. A rail hover-peek counts as a show.
+ *     layout loads and leaving lean mode are not counted. A rail panel opened by a click counts as a show.
  */
 
 const fs = require('node:fs');

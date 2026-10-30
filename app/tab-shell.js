@@ -1785,9 +1785,9 @@ const VIEW_PROBE_ACTIONS = new Set(['previewState', 'previewDo', 'animState', 's
   // dockable panels D2: floating panels
   'floatDrag', 'floatPress', 'secretField', 'floatSecret',
   // dockable panels D4: collapse, a rail's popover, the keyboard, the settle motion
-  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
-  // BACKLOG #85: the dock rail's hover and the Pin button
-  'hover', 'pinClick', 'menuCheck', 'railScroll',
+  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'focusInto', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
+  // BACKLOG #85: the Pin button; #138: whether a real pointer is over a rail icon
+  'pinClick', 'isHovered', 'menuCheck', 'railScroll',
   // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
   'uiFont', 'leanClass', 'focusMode',
   // layout pass L3: verify/probe-git-tree.js
@@ -1881,6 +1881,11 @@ async function handleProbeCommand(line, api, expectedToken) {
         const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
         if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseMove needs whole-number x and y' };
         return await api.mouseMove(cmd.x, cmd.y);
+      }
+      case 'mouseClick': {
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseClick needs whole-number x and y' };
+        return await api.mouseClick(cmd.x, cmd.y);
       }
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.

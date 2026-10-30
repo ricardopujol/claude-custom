@@ -1057,7 +1057,7 @@
       #dock.settling > .dgroup, #dock.settling > .drail, #dock.settling > .dgutter { transition: none; }
     }
     #dock-announce, #quota-announce { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-    /* A folded cell: a rail of its modules' line icons with their names, the icon over the name beside the terminal (52 px wide) and in front of it above or below (34 tall). The icon is currentColor: dim at rest, bright on hover, the accent on the open tab. */
+    /* A folded cell: a rail of its modules' line icons with their names, the icon over the name beside the terminal (52 px wide) and in front of it above or below (34 tall). The icon is currentColor: dim at rest, bright on hover (the click affordance, as a hover opens nothing), the accent on the open tab. */
     .drail { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; background: var(--chrome); -webkit-app-region: no-drag; }
     .drail[data-dir="v"] { flex-direction: column; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
     .drail[data-dir="h"] { flex-direction: row; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }

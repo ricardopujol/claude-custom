@@ -346,7 +346,7 @@ test('PR #159 Miguel B1: Escape is the popover\'s only when focus is in it or on
 });
 
 test('PR #159 Miguel I2 / Dexter 4: the popover closes when the keyboard leaves it, and a keyboard move starting from it draws it away', () => {
-  assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+const to = e\.relatedTarget;\s+if \(!peek \|\| !to \|\| !to\.closest \|\| to\.closest\('\.dpeek, \.drail'\)\) return;/);
+  assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(!peek \|\| !window\.dockTreeView\.focusClosesPeek\(e\.target, e\.relatedTarget\)\) return;/);
   assert.match(JS, /if \(peek\) \{ railEvent\(\{ type: 'drop' \}\); renderLayout\(\{ refit: false \}\); \}/);
 });
 
@@ -397,31 +397,44 @@ test('PR #159 Dexter 6: an operation on the placement is built on the layout AFT
   assert.match(JS, /box\.addEventListener\('change', \(\) => \{\n\s+const l = settledLayout\(\);/, 'the layout menu\'s ticks too');
 });
 
-// --- #85: the dock rail's hover, the Pin button ----------------------------------------------------------------
+// --- #85: the dock rail (click only), the Pin button ----------------------------------------------------------------
 
-test('#85: the rail\'s state is fed only through railEvent, which owns the two timers (100 ms open, 100 ms grace)', () => {
-  assert.match(JS, /const RAIL_OPEN_MS = 100;/);
-  assert.match(JS, /const RAIL_CLOSE_MS = 100;/);
+test('#85, #138: the rail\'s state is fed only through railEvent, which owns no timers: side tabs open on click only', () => {
+  assert.doesNotMatch(JS, /RAIL_OPEN_MS|RAIL_CLOSE_MS|railOpenTimer|railCloseTimer/, 'no hover timers');
   const body = fnBody('railEvent');
   assert.match(body, /railSt = window\.dockTreeView\.railAfter\(railSt, ev\);/);
   assert.match(body, /peek = railSt\.module === null \? null : \{ module: railSt\.module \};/, 'peek is derived, never set elsewhere');
-  assert.match(body, /railEvent\(\{ type: 'open-timer', module: m \}\)[^\n]*RAIL_OPEN_MS/);
-  assert.match(body, /railEvent\(\{ type: 'close-timer' \}\)[^\n]*RAIL_CLOSE_MS/);
+  assert.doesNotMatch(body, /setTimeout/);
   assert.strictEqual([...JS.matchAll(/^\s+peek = /gm)].length, 1, 'one assignment: in railEvent');
   assert.doesNotMatch(JS, /peekAfter\(/, 'the page uses railAfter');
 });
 
-test('#85: hovering a dock-rail tab enters it, the panel or the strip keeps it, anything else leaves; touch has no hover', () => {
-  const at = JS.indexOf("document.addEventListener('pointerover', (e) => {");
-  assert.ok(at !== -1, 'the hover handler must be findable');
-  const handler = JS.slice(at, JS.indexOf('\n});', at));
-  assert.match(handler, /e\.pointerType === 'touch'/);
-  assert.match(handler, /t\.closest\('\.drail\[data-rail="dock"\] button\[data-module\]'\)/, 'only the dock\'s own rail hovers: a folded group\'s rail stays click-only');
-  assert.match(handler, /\{ type: 'enter', module: tab\.dataset\.module \}/);
-  assert.match(handler, /t\.closest\('\.dpeek'\)\) ev = \{ type: 'enter-panel' \}/, 'the rail strip is not the panel (Dexter 3)');
-  assert.match(handler, /ev = \{ type: 'leave' \}/);
-  assert.match(handler, /if \(ev && railEvent\(ev\)\) renderLayout\(\{ refit: false \}\);/, 'a hover never changes the terminal\'s rectangle');
-  assert.match(JS, /document\.documentElement\.addEventListener\('pointerleave', \(\) => \{ if \(railEvent\(\{ type: 'leave' \}\)\)/);
+test('#138: the page only ever sends the rail click-only events (no hover event, whatever it is called)', () => {
+  const sent = new Set([...JS.matchAll(/railEvent\(\{ type: '([^']+)'/g)].map(m => m[1]));
+  const allowed = new Set(['click', 'tab', 'escape', 'outside', 'drop', 'gone']);
+  assert.ok(sent.size >= 5, [...sent].join());
+  for (const t of sent) assert.ok(allowed.has(t), `railEvent type '${t}' is not a click-only event`);
+  assert.doesNotMatch(JS, /document\.addEventListener\('(pointerover|pointerenter|mouseover|mouseenter)'/, 'no document-level hover listener');
+});
+
+test('#138 (Ricardo round 2): only the terminal closes an open side panel: a press in it, or the keyboard going into it', () => {
+  const at = JS.indexOf("document.addEventListener('pointerdown', (e) => {\n  if (!peek) return;");
+  assert.ok(at !== -1, 'the press handler must be findable');
+  const press = JS.slice(at, JS.indexOf('\n});', at));
+  assert.match(press, /if \(!window\.dockTreeView\.inTerminal\(e\.target\)\) return;/);
+  assert.match(press, /railEvent\(\{ type: 'outside' \}\)/);
+  const fo = JS.indexOf("document.addEventListener('focusin', (e) => {");
+  const focus = JS.slice(fo, JS.indexOf('\n});', fo));
+  assert.match(focus, /focusClosesPeek\(e\.target, e\.relatedTarget\)/, 'the decision must see where focus CAME FROM (Miguel B1/I1: the app\'s own term.focus() and a window refocus have none)');
+  assert.doesNotMatch(focus, /inTerminal\(e\.target\)\) return;/, 'a bare inTerminal(target) check closes the panel on the app\'s own term.focus()');
+  assert.match(focus, /railEvent\(\{ type: 'outside' \}\)/);
+});
+
+test('#138: the press plumbing for native views is gone: nothing tells the page about a press in Claude\'s panel or the Preview', () => {
+  assert.doesNotMatch(JS, /onPressed|canvas:pressed/);
+  for (const f of ['main.js', 'preload.js', 'canvas-views.js', 'preview-views.js']) {
+    assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', 'app', f), 'utf8'), /canvas:pressed|tellPressed|onPress\b|onPressed/, f);
+  }
 });
 
 test('#85: the Pin button, the menu and the fold all go through the model\'s pin / unpin / showOnRail / unpinGroup', () => {
@@ -430,11 +443,6 @@ test('#85: the Pin button, the menu and the fold all go through the model\'s pin
   assert.match(pin, /const l = settledLayout\(\);/);
   assert.match(JS, /commitPlacement\(DTm\.showOnRail\(l, row\.id\)/, 'ticking a hidden panel in the Window menu brings it back as a rail tab');
   assert.match(JS, /commitPlacement\(DTm\.unpinGroup\(settledLayout\(\), home\.id\)/);
-});
-
-test('#85 Miguel Y2: a press or focus inside the open panel holds it open', () => {
-  assert.match(JS, /if \(inside\) \{ railEvent\(\{ type: 'hold' \}\); return; \}/);
-  assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(peek && e\.target\.closest && e\.target\.closest\('\.dpeek'\)\) railEvent\(\{ type: 'hold' \}\);/);
 });
 
 test('#85 PR #168 Miguel B2: the tab menu Pin, Unpin and Unpin group follow the Just this tab check', () => {
@@ -452,10 +460,10 @@ test('#85 PR #168 Miguel Y1 / Y5: after Pin or Pinned the keyboard follows the p
   assert.match(body, /getElementById\('dock-announce'\)\.textContent = /);
 });
 
-test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the canvas) goes through revealModule, which opens a railed panel held', () => {
+test('#85 PR #168 Miguel Y3: every show-this-panel path (the Resources link, the canvas) goes through revealModule, which opens a railed panel', () => {
   const body = fnBody('revealModule');
   assert.match(body, /railEvent\(\{ type: 'click', module: id \}\)/);
-  assert.match(body, /!\(railSt\.module === id && railSt\.held\)/, 'a panel already held open is not closed by asking to show it');
+  assert.match(body, /railSt\.module !== id/, 'a panel already open is not closed by asking to show it');
   assert.match(body, /DTm\.show\(settledLayout\(\), id\)/);
   assert.doesNotMatch(JS.replace(body, ''), /if \(placementLayout\(\)\.hidden\.includes\(/, 'no path decides hidden-or-not by itself');
 });
