@@ -74,12 +74,15 @@ test('the switch is remembered per tab folder and hidden on a plain shell tab', 
   assert.match(RENDERER, /wanted: chatWanted && !shell/);
 });
 
-test('the type box writes through userInput, the same path as a paste, with the CLI\'s own bracketed-paste mode', () => {
+test('the type box is runChatSend: text through userInput (the occupancy confirm), with the CLI\'s own bracketed-paste mode, read back before Enter', () => {
   const fn = RENDERER.slice(RENDERER.indexOf('function chatSend('), RENDERER.indexOf('// Repaints which display shows.'));
-  assert.match(fn, /planChatSend\(text, \{ bracketed: term\.modes\.bracketedPasteMode \}\)/);
-  assert.match(fn, /userInput\(step\.frame\)/);
-  assert.doesNotMatch(fn, /\bsend\(/, 'no side channel to the socket');
+  assert.match(fn, /chatViewState\.runChatSend\(text, \{/);
+  assert.match(fn, /bracketed: \(\) => term\.modes\.bracketedPasteMode/);
+  assert.match(fn, /type: \(frame\) => userInput\(frame\)/);
+  assert.match(fn, /sync: \(\) => new Promise\(\(resolve\) => term\.write\(''/, 'every read waits for the screen to be parsed');
+  assert.match(fn, /inputState, commandTyped, boxText, boxHoldsLine/);
   assert.match(fn, /hostKind === 'shell'/);
+  assert.doesNotMatch(fn, /\\r|'\\x0d'/, 'the page never writes an Enter itself: the sequence does, after the read-back');
 });
 
 test('Ctrl+Shift+H is decided in the terminal\'s key handler AND a document listener, and is in the shortcuts table', () => {

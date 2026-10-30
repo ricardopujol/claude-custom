@@ -615,7 +615,9 @@ function applyBedtime(payload, { fromHost = true } = {}) {
 // The person's own typing: through the confirm when there is one. A raw `send` stays for everything the program
 // types itself (the top bar, Type /merged, resize), which is never the person becoming a second writer.
 function userInput(data) {
-  if (occupancy.confirm) occupancy.confirm.input(data); else send(data);
+  if (occupancy.confirm) return occupancy.confirm.input(data);
+  send(data);
+  return 'sent';
 }
 
 if (window.occupancyConfirm) {
@@ -10152,18 +10154,35 @@ const chatBtn = document.getElementById('chat-btn');
 const chatUi = chatDisplay.create({
   doc: document,
   els: { root: document.getElementById('chat-view'), log: document.getElementById('chat-log'), working: document.getElementById('chat-working'),
-    flip: document.getElementById('chat-flip'), form: document.getElementById('chat-form'), input: document.getElementById('chat-input') },
+    flip: document.getElementById('chat-flip'), sendNote: document.getElementById('chat-sendnote'), form: document.getElementById('chat-form'), input: document.getElementById('chat-input') },
   copy: (text) => (window.harness && window.harness.writeClipboard ? window.harness.writeClipboard(text) : { ok: false, error: 'no clipboard bridge' }),
   openLink: (href) => { if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(href); },
   send: (text) => chatSend(text),
 });
 
+// The send is app/chat-view-state.js runChatSend: it reads the live screen, types, reads it back, looks once more and only then presses
+// Enter, the way host/grant-sequence.js does for a drop (PR #226 Dexter 1). This is only the page's side of it.
 function chatSend(text) {
-  if (hostKind === 'shell' || !ws || ws.readyState !== WebSocket.OPEN) return { ok: false };
-  const plan = chatViewState.planChatSend(text, { bracketed: term.modes.bracketedPasteMode });
-  if (plan.length === 0) return { ok: false };
-  for (const step of plan) setTimeout(() => userInput(step.frame), step.afterMs);
-  return { ok: true };
+  if (hostKind === 'shell') return { ok: false };
+  return chatViewState.runChatSend(text, {
+    turn: () => sessionTurn,
+    blocked: () => programRoot !== null && programRoot.state === 'blocked',
+    holds: () => false,
+    lines: () => { const l = screenLines(); if (vimInsertShown(l)) vimSeen = true; return l; },
+    sync: () => new Promise((resolve) => term.write('', resolve)),
+    termRows: () => term.rows,
+    vim: () => vimSeen,
+    connected: () => !!ws && ws.readyState === WebSocket.OPEN,
+    busy: () => typingBusy,
+    lock: (on) => { typingBusy = on; },
+    bracketed: () => term.modes.bracketedPasteMode,
+    type: (frame) => userInput(frame),
+    cancelHold: () => { if (occupancy.confirm) occupancy.confirm.wait(); },
+    send: (frame) => send(frame),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    keyGap: PTY_STEP_MS,
+    inputState, commandTyped, boxText, boxHoldsLine,
+  });
 }
 
 // Repaints which display shows. Called by everything that can change it: the switch, the host's turn, the CLI's own blocked report,

@@ -177,10 +177,18 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
     if (text.trim() === '') return;
     let r;
     try { r = await send(text); } catch { r = { ok: false }; }
-    if (!r || r.ok !== false) { els.input.value = ''; els.input.style.height = ''; }
+    // The box is cleared only when the send says it went: a refusal keeps the person's text and says why in one line.
+    const sent = !!r && r.ok === true;
+    if (sent) { els.input.value = ''; els.input.style.height = ''; }
+    if (els.sendNote) {
+      const note = !sent && r && typeof r.note === 'string' ? r.note : '';
+      els.sendNote.textContent = note;
+      els.sendNote.hidden = note === '';
+    }
   }
 
   els.form.addEventListener('submit', (ev) => { ev.preventDefault(); submit(); });
+  els.input.addEventListener('input', () => { if (els.sendNote) { els.sendNote.textContent = ''; els.sendNote.hidden = true; } });
   els.input.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing) return;
     ev.preventDefault();

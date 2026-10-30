@@ -66,6 +66,109 @@ function planChatSend(raw, opts) {
   return [{ frame: first, afterMs: 0 }, { frame: frame('\r'), afterMs: ENTER_DELAY_MS }];
 }
 
+// --- the type box's send: nothing goes to the pty that could answer a dialog (PR #226 Dexter 1, Miguel I2) --------------------------------
+// The sequence is the one host/grant-sequence.js runs for a drop (PR #223): READ the live screen, type, READ it back, look once more,
+// and only then press Enter. Every read-back is the page's own xterm (sync waits for what the host sent to be parsed).
+const READBACK_WAIT_MS = 1500;       // how long the typed text may take to show on screen before it counts as a mismatch
+const RECHECK_MS = 400;              // the look just before the Enter (the PR #106 pattern: a dialog can open mid-send)
+const AFTER_POLL_MS = 150;           // after the Enter: is the text still in the box (the CLI swallowed the key)?
+const AFTER_POLLS = 6;
+const CLEAR_PASSES = 20;
+const CTRL_E = String.fromCharCode(5);
+const CTRL_U = String.fromCharCode(21);
+
+const NOTE = {
+  dialog: 'Claude needs you in the terminal first, so nothing was sent. Your message is still here.',
+  holds: 'An agent is writing in this folder, so nothing was sent. Switch to the terminal to answer its question. Your message is still here.',
+  notReady: 'The terminal isn\'t at its prompt right now, so nothing was sent. Your message is still here.',
+  draft: 'The terminal\'s input box already holds text, so nothing was sent. Send or clear it there first. Your message is still here.',
+  bang: 'A message starting with ! runs as a shell command in the CLI, so it wasn\'t sent. Your message is still here.',
+  backslash: 'A message ending with a backslash makes a new line in the CLI instead of sending, so it wasn\'t sent. Your message is still here.',
+  noReadback: 'The terminal didn\'t show your message as typed, so Enter was not pressed. Your message is still here.',
+  changed: 'The screen changed before Enter (a dialog may have opened), so Enter was not pressed. Your message is still here.',
+  swallowed: 'The terminal didn\'t take the Enter (a suggestion list or a line ending in a backslash?), so nothing was sent. Your message is still here.',
+  offline: 'Not connected to the session, so nothing was sent. Your message is still here.',
+  busy: 'Another command is still being typed in this tab, so nothing was sent. Your message is still here.',
+};
+
+const emptyBox = (box) => box === '' || /^Try "/.test(box);
+
+/** Why this message must not be typed now, or null. Pure. `screen` is top-bar-display's inputState, `box` its boxText. */
+function sendBlocker({ text, turn, blocked, screen, box, holds }) {
+  if (turn === 'prompt' || blocked === true) return NOTE.dialog;
+  if (holds === true) return NOTE.holds;
+  if (screen === 'multiline') return NOTE.draft;
+  if (screen !== 'ready') return screen === 'dialog' ? NOTE.dialog : NOTE.notReady;
+  if (typeof box !== 'string' || !emptyBox(box)) return NOTE.draft;
+  if (typeof text === 'string' && text.startsWith('!')) return NOTE.bang;
+  if (typeof text === 'string' && text.endsWith('\\')) return NOTE.backslash;
+  return null;
+}
+
+/**
+ * env: { turn(), blocked(), holds(), lines(), sync(), termRows(), vim(), connected(), busy(), lock(on), bracketed(),
+ *        type(frame) -> 'sent' | 'held', cancelHold(), send(frame), sleep(ms), inputState, commandTyped, boxText, boxHoldsLine }
+ * -> { ok: true } once the Enter went out and the box let go of the text, else { ok: false, note } with the text still the caller's.
+ */
+async function runChatSend(raw, env) {
+  const text = sanitizeInput(raw);
+  const plan = planChatSend(raw, { bracketed: env.bracketed() });
+  if (plan.length === 0) return { ok: false };
+  if (!env.connected()) return { ok: false, note: NOTE.offline };
+  if (env.busy()) return { ok: false, note: NOTE.busy };
+  const screenNow = async () => { if (typeof env.sync === 'function') await env.sync(); return env.lines(); };
+  const opts = () => ({ vim: env.vim(), termRows: env.termRows() });
+  const frame = (data) => JSON.stringify({ type: 'input', data });
+
+  env.lock(true);
+  try {
+    const first = await screenNow();
+    const why = sendBlocker({ text, turn: env.turn(), blocked: env.blocked(), holds: env.holds(),
+      screen: env.inputState(first, { vim: env.vim() }), box: env.boxText(first) });
+    if (why) return { ok: false, note: why };
+
+    // Empties what a failed attempt typed. Never a key into a dialog: a screen with no input box ends it.
+    const clear = async () => {
+      for (let pass = 0; pass < CLEAR_PASSES; pass++) {
+        const lines = await screenNow();
+        const state = env.inputState(lines, { vim: env.vim() });
+        if (state === 'dialog' || state === 'unknown') return;
+        if (state === 'ready' && emptyBox(env.boxText(lines) || '')) return;
+        env.send(frame(CTRL_E));
+        await env.sleep(env.keyGap || 120);
+        env.send(frame(CTRL_U));
+        await env.sleep(env.keyGap || 120);
+      }
+    };
+
+    if (env.type(plan[0].frame) === 'held') { env.cancelHold(); return { ok: false, note: NOTE.holds }; }
+    let typed = false;
+    for (let waited = 0; waited <= READBACK_WAIT_MS; waited += env.keyGap || 120) {
+      await env.sleep(env.keyGap || 120);
+      if (env.commandTyped(await screenNow(), text, opts())) { typed = true; break; }
+    }
+    if (!typed) { await clear(); return { ok: false, note: NOTE.noReadback }; }
+
+    await env.sleep(RECHECK_MS);
+    const last = await screenNow();
+    const state = env.inputState(last, { vim: env.vim() });
+    if ((state !== 'ready' && state !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true || !env.commandTyped(last, text, opts())) {
+      await clear();
+      return { ok: false, note: NOTE.changed };
+    }
+
+    env.send(plan[1].frame);
+    for (let i = 0; i < AFTER_POLLS; i++) {
+      await env.sleep(AFTER_POLL_MS);
+      if (!env.boxHoldsLine(await screenNow(), text)) return { ok: true };
+    }
+    await clear();
+    return { ok: false, note: NOTE.swallowed };
+  } finally {
+    env.lock(false);
+  }
+}
+
 // The switch is remembered per tab, by its folder (localStorage is shared by the tab views of one window).
 const keyFor = (cwd) => STORAGE_PREFIX + String(cwd);
 function readWanted(storage, cwd) {
@@ -75,7 +178,7 @@ function writeWanted(storage, cwd, wanted) {
   try { if (storage) storage.write(keyFor(cwd), wanted === true ? '1' : '0'); } catch { /* a full or blocked store: the switch just isn't remembered */ }
 }
 
-const api = { viewFor, isChatKey, sanitizeInput, planChatSend, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS };
+const api = { viewFor, isChatKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.chatViewState = api;
 

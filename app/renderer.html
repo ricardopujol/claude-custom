@@ -873,7 +873,8 @@
       position: absolute; inset: 0; z-index: 14; display: flex; flex-direction: column;
       background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5;
     }
-    #chat-view[hidden], #chat-working[hidden], #chat-flip[hidden], #chat-btn[hidden] { display: none; }
+    #chat-view[hidden], #chat-working[hidden], #chat-sendnote[hidden], #chat-flip[hidden], #chat-btn[hidden] { display: none; }
+    #chat-sendnote { flex: 0 0 auto; padding: 4px 14px; font-size: 12px; color: var(--text); background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); }
     body.chat-on #terminal-bar { display: none; }
     #chat-head { flex: 0 0 auto; display: flex; justify-content: flex-end; padding: 6px 10px 0; }
     #chat-show-tools {
@@ -2486,6 +2487,7 @@
           <div id="chat-head"><button type="button" id="chat-show-tools" title="Show the terminal with every tool line (Ctrl+Shift+H)">Show tool lines</button></div>
           <div id="chat-log" role="log" aria-live="polite"></div>
           <div id="chat-working" role="status" hidden>Claude is working…</div>
+          <div id="chat-sendnote" role="status" hidden></div>
           <form id="chat-form" autocomplete="off">
             <textarea id="chat-input" rows="1" placeholder="Message Claude (Enter sends, Shift+Enter is a new line)" aria-label="Message Claude"></textarea>
             <button type="submit" id="chat-send">Send</button>
