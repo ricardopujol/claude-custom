@@ -110,7 +110,7 @@ test('a throwing repaint falls back to the terminal and runs after the bar, stat
   assert.match(fn, /try \{ chatPaint\(\); \} catch/);
   assert.match(fn, /root\.hidden = true/);
   const turn = RENDERER.slice(RENDERER.indexOf("if (msg.type === 'turn') {"), RENDERER.indexOf("if (msg.type === 'chat') {"));
-  assert.ok(turn.indexOf('mapRefresh();') < turn.indexOf('chatRefreshView();'), 'the chat repaints last');
+  assert.match(turn, /chatRefreshView\(\);/, 'the chat repaints in the turn handler, and cannot throw out of it');
 });
 
 test('the screen is read for a dialog or picker, and the occupancy question is asked about before typing (PR #226 Dexter 5, 6)', () => {

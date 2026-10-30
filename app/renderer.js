@@ -9597,10 +9597,10 @@ function handleControl(msg) {
     agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
     // ...so the card is drawn again PAUSE_TIMEOUT_MS after it, not only after the click: a quiet idle session sends no other frame (PR #158 Dexter R3 N5).
     if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
+    chatRefreshView();            // BACKLOG #157: a dialog sends the chat back to the terminal; the turn resuming brings it again. Never throws (it falls back to the terminal)
     paintBar();
     reportTabStatus();
     mapRefresh();
-    chatRefreshView();            // BACKLOG #157: a dialog sends the chat back to the terminal; the turn resuming brings it again. After the rest: nothing waits on it
     return;
   }
   if (msg.type === 'chat') {
