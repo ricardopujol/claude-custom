@@ -68,8 +68,8 @@ test('without an injected healthMarker, health is null rather than a throw', () 
 });
 
 test('no inputs at all is a quiet status', () => {
-  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
-  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+  assert.deepStrictEqual(ts(undefined), { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+  assert.deepStrictEqual(ts({}), { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
 });
 
 // Backlog #52: the host's word that a /bedtime night is on (host/bedtime-state.js), for the strip's night tab.
