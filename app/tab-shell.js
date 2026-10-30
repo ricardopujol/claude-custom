@@ -1827,7 +1827,9 @@ const VIEW_PROBE_ACTIONS = new Set(['previewState', 'previewDo', 'animState', 's
   // backlog #42 + #43: verify/probe-shortcuts-page.js reads the shortcuts sheet and drives the bits a real key can't
   'shortcutsState', 'shortcutsDo',
   // backlog #62: verify/probe-lean.js reads lean mode as the page has it
-  'leanState']);
+  'leanState',
+  // backlog #157: verify/probe-chat-view.js reads the chat view and operates it
+  'chatState', 'chatDo']);
 
 function sameSecret(a, b) {
   const x = Buffer.from(String(a));

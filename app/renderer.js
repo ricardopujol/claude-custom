@@ -317,6 +317,7 @@ function applyProgramStatus(rootRecord, how) {
     if (view) { headerDot.classList.add(view.cls); headerDot.title = view.title; } else headerDot.removeAttribute('title');
   }
   reportTabStatus();
+  chatRefreshView();          // BACKLOG #157: a blocked CLI sends the chat view back to the terminal
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
@@ -614,7 +615,9 @@ function applyBedtime(payload, { fromHost = true } = {}) {
 // The person's own typing: through the confirm when there is one. A raw `send` stays for everything the program
 // types itself (the top bar, Type /merged, resize), which is never the person becoming a second writer.
 function userInput(data) {
-  if (occupancy.confirm) occupancy.confirm.input(data); else send(data);
+  if (occupancy.confirm) return occupancy.confirm.input(data);
+  send(data);
+  return 'sent';
 }
 
 if (window.occupancyConfirm) {
@@ -4147,6 +4150,48 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
       // backlog #49 + #52 (verify/probe-terminal-bar.js): the bar as painted and the buffer it reads; a scroll of the
       // terminal (which goes through xterm's own onScroll, as a wheel does); a click on the prompt part or a chip.
       case 'barState': return JSON.stringify({ ok: true, ...barState() });
+      // BACKLOG #157 (verify/probe-chat-view.js): the chat view as drawn, and what a person does to it.
+      case 'chatState': {
+        const root = document.getElementById('chat-view');
+        const log = document.getElementById('chat-log');
+        const flip = document.getElementById('chat-flip');
+        return JSON.stringify({
+          ok: true, wanted: chatWanted, shown: chatShown, rootHidden: root.hidden, bodyChatOn: document.body.classList.contains('chat-on'),
+          flip: { hidden: flip.hidden, text: flip.textContent }, sendNote: document.getElementById('chat-sendnote').textContent,
+          inputValue: document.getElementById('chat-input').value, working: !document.getElementById('chat-working').hidden,
+          btn: { pressed: chatBtn.getAttribute('aria-pressed'), hidden: chatBtn.hidden },
+          bubbles: [...log.querySelectorAll('.chat-msg')].map(b => ({ cls: b.className, text: b.textContent })),
+          copyButtons: [...log.querySelectorAll('.chat-copy')].map(b => ({ label: b.getAttribute('aria-label'), text: b.textContent })),
+          logText: log.textContent, term: { cols: term.cols, rows: term.rows }, resizeSends,
+          rootRect: rectOf(root), termRect: rectOf(document.getElementById('term')),
+        });
+      }
+      case 'chatDo': {
+        if (a.what === 'toggle') { chatBtn.click(); return JSON.stringify({ ok: true }); }
+        if (a.what === 'clearInput') { document.getElementById('chat-input').value = ''; return JSON.stringify({ ok: true }); }
+        if (a.what === 'key') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); return JSON.stringify({ ok: true }); }
+        if (a.what === 'type') {
+          if (typeof a.text !== 'string' || !a.text || a.text.length > 2000) return JSON.stringify({ ok: false, error: 'type needs text' });
+          document.getElementById('chat-input').value = a.text;
+          return chatUi.submit().then(() => JSON.stringify({ ok: true, boxAfter: document.getElementById('chat-input').value }));
+        }
+        // Copy through the real bridge, then put the person's own clipboard text back. An image on the clipboard is never touched: no check.
+        if (a.what === 'copy') {
+          const buttons = [...document.querySelectorAll('#chat-log .chat-copy')].filter(b => (b.getAttribute('aria-label') || '').includes(String(a.label)));
+          const b = buttons[Number.isInteger(a.index) ? a.index : 0];
+          if (!b) return JSON.stringify({ ok: false, error: `no copy button labelled ${a.label}` });
+          return (async () => {
+            const was = await window.harness.readClipboard();
+            if (was.hasImage) return JSON.stringify({ ok: true, skipped: 'an image is on the clipboard' });
+            b.click();
+            await new Promise(r => setTimeout(r, 300));
+            const now = await window.harness.readClipboard();
+            if (was.text) await window.harness.writeClipboard(was.text);
+            return JSON.stringify({ ok: true, copied: now.text, label: b.textContent });
+          })();
+        }
+        return JSON.stringify({ ok: false, error: `unknown chat action ${a.what}` });
+      }
       case 'barScroll': {
         if (a.to === 'top') term.scrollToTop();
         else if (a.to === 'bottom') term.scrollToBottom();
@@ -9334,6 +9379,7 @@ function handleControl(msg) {
     // The terminal bar: the latest prompt (no place in this buffer: it shows) and the bedtime night; both absent
     // from an older host, which is "none", never a stale one.
     applyBarPrompt(msg.prompt, false);
+    chatApply(msg.chat);           // BACKLOG #157: absent from an older host, which is an empty chat, never a stale one
     applyBedtime(msg.bedtime);
     if (leanOn) tellHostLean();      // a (re)attached host does not know this window is lean
     applySummary({ summary: msg.summary, off: msg.summaryOff }, true);
@@ -9551,9 +9597,14 @@ function handleControl(msg) {
     agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
     // ...so the card is drawn again PAUSE_TIMEOUT_MS after it, not only after the click: a quiet idle session sends no other frame (PR #158 Dexter R3 N5).
     if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
+    chatRefreshView();            // BACKLOG #157: a dialog sends the chat back to the terminal; the turn resuming brings it again. Never throws (it falls back to the terminal)
     paintBar();
     reportTabStatus();
     mapRefresh();
+    return;
+  }
+  if (msg.type === 'chat') {
+    chatApply(msg.chat);
     return;
   }
   if (msg.type === 'map') {
@@ -9830,7 +9881,7 @@ function connect() {
       renderQuota({ ok: false, state: 'absent', windows: [], error: 'the connection to the session dropped' });
     }
     // Nobody is telling us what the session is doing now: unknown, not the last thing it said.
-    if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); }
+    if (sessionTurn !== null) { sessionTurn = null; paintBar(); reportTabStatus(); chatRefreshView(); }
     // ...and the same for what the CLI reported about itself (OSC 7501): no program state, no header dot class (PR #201 Dexter 1).
     applyProgramStatus(null, 'lost');
     // The night is the host's word and nobody is telling us now: unknown (no night tab, no moon), not the last word.
@@ -9970,6 +10021,9 @@ function renderDropNote(note) {
 term.attachCustomKeyEventHandler((e) => {
   if (e.type !== 'keydown') return true;
 
+  // The chat view's switch (BACKLOG #157), decided here for the same reason as the panel toggle below.
+  if (chatViewState.isChatKey(e)) { e.preventDefault(); if (!e.repeat) chatToggle(); return false; }
+
   // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
   // textarea always holds focus, so a document-level handler never saw Ctrl+B
   // -- the terminal consumed it and sent \x02 to the pty, which readline reads
@@ -10089,6 +10143,110 @@ async function pasteFromClipboard() {
     userInput(action.data);
   }
 }
+
+// --- chat view (BACKLOG #157, documentation/DESIGN_CHAT_VIEW.md) --------------------------------------------------------
+// A second display of the same session, laid over the terminal (which keeps its size and keeps running). The conversation is the
+// host's (host/chat-feed.js, from the CLI's hooks); what is shown and when is app/chat-view-state.js; the DOM is app/chat-display.js.
+// The type box writes to the pty exactly like typing: the same frames and the same occupancy confirm (userInput).
+const chatStore = (() => { try { return { read: (k) => localStorage.getItem(k), write: (k, v) => localStorage.setItem(k, v) }; } catch { return null; } })();
+let chatWanted = chatViewState.readWanted(chatStore, CWD);
+let chatData = { messages: [], working: false };
+let chatShown = false;
+const chatBtn = document.getElementById('chat-btn');
+const chatUi = chatDisplay.create({
+  doc: document,
+  els: { root: document.getElementById('chat-view'), log: document.getElementById('chat-log'), working: document.getElementById('chat-working'),
+    flip: document.getElementById('chat-flip'), sendNote: document.getElementById('chat-sendnote'), form: document.getElementById('chat-form'), input: document.getElementById('chat-input') },
+  copy: (text) => (window.harness && window.harness.writeClipboard ? window.harness.writeClipboard(text) : { ok: false, error: 'no clipboard bridge' }),
+  openLink: (href) => { if (window.harness && typeof window.harness.openExternal === 'function') window.harness.openExternal(href); },
+  send: (text) => chatSend(text),
+});
+
+// The send is app/chat-view-state.js runChatSend: it reads the live screen, types, reads it back, looks once more and only then presses
+// Enter, the way host/grant-sequence.js does for a drop (PR #226 Dexter 1). This is only the page's side of it.
+function chatSend(text) {
+  if (hostKind === 'shell') return { ok: false };
+  return chatViewState.runChatSend(text, {
+    turn: () => sessionTurn,
+    blocked: () => programRoot !== null && programRoot.state === 'blocked',
+    holds: () => !!occupancy.confirm && occupancy.confirm.wouldHold(),
+    lines: () => { const l = screenLines(); if (vimInsertShown(l)) vimSeen = true; return l; },
+    sync: () => new Promise((resolve) => term.write('', resolve)),
+    termRows: () => term.rows,
+    vim: () => vimSeen,
+    connected: () => !!ws && ws.readyState === WebSocket.OPEN,
+    busy: () => typingBusy,
+    lock: (on) => { typingBusy = on; },
+    bracketed: () => term.modes.bracketedPasteMode,
+    type: (frame) => userInput(frame),
+    cancelHold: () => { if (occupancy.confirm) occupancy.confirm.wait(); },
+    send: (frame) => send(frame),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    keyGap: PTY_STEP_MS,
+    inputState, commandTyped, boxText, boxHoldsLine,
+  });
+}
+
+// Repaints which display shows. Called by everything that can change it: the switch, the host's turn, the CLI's own blocked report,
+// the conversation, and the host kind (a plain shell tab has no CLI to chat with).
+// A repaint that throws must not take the bar, the status and the Map with it (the turn handler calls this), nor leave a chat over a
+// terminal that cannot be reached: it falls back to the terminal (PR #226 Miguel I7).
+function chatRefreshView() {
+  try { chatPaint(); } catch (err) {
+    console.warn('[chat] repaint failed, showing the terminal:', err);
+    chatShown = false;
+    document.body.classList.remove('chat-on');
+    const root = document.getElementById('chat-view');
+    if (root) root.hidden = true;
+  }
+}
+
+function chatPaint() {
+  const blocked = programRoot !== null && programRoot.state === 'blocked';
+  const shell = hostKind === 'shell';
+  // The CLI's own pickers (/model, /resume, a trust or MCP dialog) fire no hook: the screen is what shows one (PR #226 Dexter 6).
+  const screen = chatWanted && !shell ? inputState(screenLines(), { vim: vimSeen }) : null;
+  const view = chatViewState.viewFor({ wanted: chatWanted && !shell, turn: sessionTurn, blocked, screen });
+  const was = chatShown;
+  chatShown = view.show === 'chat';
+  chatBtn.hidden = shell;
+  chatBtn.setAttribute('aria-pressed', String(chatWanted));
+  document.body.classList.toggle('chat-on', chatShown);
+  chatUi.update({ messages: chatData.messages, working: chatData.working, view });
+  if (chatShown && !was) chatUi.focusInput();
+  else if (!chatShown && was) term.focus();          // the CLI needs you, or the chat was switched off: the keyboard goes to the terminal
+}
+
+function chatToggle() {
+  chatWanted = !chatWanted;
+  chatViewState.writeWanted(chatStore, CWD, chatWanted);
+  chatRefreshView();
+}
+
+function chatApply(chat) {
+  const ok = chat && typeof chat === 'object' && Array.isArray(chat.messages);
+  chatData = ok ? { messages: chat.messages, working: chat.working === true } : { messages: [], working: false };
+  chatRefreshView();
+}
+
+// The screen changes without a hook (a picker opens, a dialog closes): looked at again shortly after the terminal parsed something.
+let chatScreenTimer = null;
+term.onWriteParsed(() => {
+  if (!chatWanted || chatScreenTimer !== null) return;
+  chatScreenTimer = setTimeout(() => { chatScreenTimer = null; if (chatWanted) chatRefreshView(); }, 150);
+});
+// Program typing (the wand, Run /merged) focuses the terminal; while the chat covers it the keys must stay with the chat box.
+if (term.textarea) term.textarea.addEventListener('focus', () => { if (chatShown) chatUi.focusInput(); });
+
+chatBtn.addEventListener('click', chatToggle);
+document.getElementById('chat-show-tools').addEventListener('click', chatToggle);
+// The terminal's own key handler decides the shortcut while it has focus (xterm consumes keys before a document listener); this is the chat's.
+document.addEventListener('keydown', (e) => {
+  if (e.defaultPrevented || !chatViewState.isChatKey(e)) return;
+  e.preventDefault();
+  if (!e.repeat) chatToggle();
+});
+chatRefreshView();
 
 // --- sizing -----------------------------------------------------------------
 // Resize must propagate on window resize AND on font change, or the Ink layout

@@ -2085,6 +2085,13 @@ test('handleProbeCommand: leanState is one of the named view actions (#62)', asy
   assert.deepStrictEqual(seen, ['leanState']);
 });
 
+test('handleProbeCommand: chatState and chatDo are named view actions (#157)', async () => {
+  const seen = [];
+  const api = { view: async (a) => { seen.push(a); return { ok: true }; } };
+  for (const action of ['chatState', 'chatDo']) assert.deepStrictEqual(await probeCmd(line({ cmd: 'view', action }), api), { ok: true });
+  assert.deepStrictEqual(seen, ['chatState', 'chatDo']);
+});
+
 test('handleProbeCommand: key is dispatched with its name, and needs one', async () => {
   const seen = [];
   const api = { key: async (k, m) => { seen.push([k, m]); return { ok: true }; } };

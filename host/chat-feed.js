@@ -1,0 +1,178 @@
+'use strict';
+/**
+ * The conversation the chat view shows (BACKLOG #157, documentation/DESIGN_CHAT_VIEW.md).
+ *
+ *   createChatFeed({ now }) -> { handle(event) -> changed, snapshot() -> { messages, working },
+ *                                pendingHistory() -> path | null, seedHistory(messages) -> changed }
+ *
+ * Built from the CLI's own hooks and from nothing else, the way host/prompt-keeper.js is:
+ *   UserPromptSubmit.prompt         -> a "you" message
+ *   Stop.last_assistant_message     -> a Claude message (the CLI's recommended source, over parsing the transcript)
+ * A tool call, its result, a dialog and everything a subagent says never reach it: the chat is Ricardo <-> Claude.
+ * A prompt that is another session's message (`<cross-session-message ...>`) is a one-line note and its content is
+ * dropped. `working` is true from a prompt until the turn's Stop (or StopFailure / SessionEnd).
+ *
+ * Earlier messages come from the transcript, which is internal to the CLI and "can break on any release": a resume
+ * asks for it ONCE (pendingHistory), host/chat-transcript.js parses it tolerantly, and seedHistory puts what it found
+ * BEFORE what the hooks already gave, never repeating a line.
+ *
+ * The text is untrusted model/user text: it is cut to TEXT_MAX here and is never parsed as HTML anywhere
+ * (app/chat-blocks.js builds DOM nodes; no innerHTML).
+ */
+
+const TEXT_MAX = 20000;
+const MESSAGE_CAP = 200;
+const CROSS_SESSION = /^\s*<cross-session-message\b/;
+const HARNESS_PROMPT = /^\s*<(?:task-notification|teammate-message)\b/;
+const NOTE_TEXT = 'A message from another session arrived';
+
+const isMain = (p) => !(typeof p.agent_id === 'string' && p.agent_id !== '');
+const cut = (text) => (text.length <= TEXT_MAX ? { text, truncated: false }
+  : { text: text.slice(0, TEXT_MAX).replace(/[\uD800-\uDBFF]$/, ''), truncated: true });
+
+function createChatFeed({ now = Date.now } = {}) {
+  let messages = [];
+  let working = false;
+  let seq = 0;
+  let transcriptPath = null;
+  let wantHistory = false;
+  let mainId = null;
+  let lastClosing = null;      // the Stop hook's closing text of the newest reply (the message itself may later be expanded to the whole turn)
+  let lastReply = null;        // the id of that reply
+
+  function push(role, raw) {
+    const { text, truncated } = cut(raw);
+    messages.push({ id: ++seq, role, text, truncated, at: now() });
+    if (messages.length > MESSAGE_CAP) messages = messages.slice(messages.length - MESSAGE_CAP);
+  }
+
+  function reset() {
+    const changed = messages.length > 0 || working;
+    messages = [];
+    working = false;
+    return changed;
+  }
+
+  function apply(event, p) {
+    // Whose conversation this is: the session id of the first start. Another `claude` whose hooks reach this pipe (a `claude -p` a skill
+    // spawns) carries its own id and must neither wipe this chat nor add to it. /clear and a resume are new ids on the SAME process, so
+    // they are adopted; a plain startup with a different id while one is live is foreign (PR #226 Miguel I6).
+    const sid = typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
+    if (event === 'SessionStart' && sid !== null && mainId !== null && sid !== mainId && p.source !== 'resume' && p.source !== 'clear') return false;
+    if (event !== 'SessionStart' && sid !== null && mainId !== null && sid !== mainId) return false;
+    if (event === 'SessionStart') {
+      if (sid !== null && p.source !== 'compact') mainId = sid;
+      else if (sid !== null && mainId === null) mainId = sid;
+      if (typeof p.transcript_path === 'string' && p.transcript_path !== '') transcriptPath = p.transcript_path;
+      if (p.source === 'compact') return false;
+      wantHistory = p.source === 'resume' && transcriptPath !== null;
+      return reset();
+    }
+    if (!isMain(p)) return false;
+    switch (event) {
+      case 'UserPromptSubmit': {
+        working = true;
+        if (typeof p.prompt !== 'string' || p.prompt.trim() === '') return true;
+        if (CROSS_SESSION.test(p.prompt)) push('note', NOTE_TEXT);
+        else if (HARNESS_PROMPT.test(p.prompt)) return true;     // a background task's or a teammate's notice starts a turn but isn't the person's words
+        else push('user', p.prompt);
+        return true;
+      }
+      case 'Stop': {
+        const was = working;
+        working = false;
+        const said = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+        if (said.trim() === '') return was;
+        const last = messages[messages.length - 1];
+        // Stop can fire more than once around one turn ending: a second identical reply with no prompt between is the same reply.
+        if (last && last.role === 'assistant' && lastClosing === cut(said).text) return was;
+        push('assistant', said);
+        lastClosing = cut(said).text;
+        lastReply = seq;
+        return true;
+      }
+      // Esc interrupts a turn and fires no Stop; Claude Code's idle_prompt is the only word that it is back at the prompt (host/turn-state.js)
+      case 'Notification': {
+        if (p.notification_type !== 'idle_prompt') return false;
+        const was = working;
+        working = false;
+        return was;
+      }
+      case 'StopFailure':
+      case 'SessionEnd': {
+        const was = working;
+        working = false;
+        if (event === 'SessionEnd' && sid !== null && sid === mainId) mainId = null;
+        return was;
+      }
+      default:
+        return false;
+    }
+  }
+
+  function handle(ev) {
+    if (!ev || typeof ev !== 'object' || typeof ev.event !== 'string') return false;
+    return apply(ev.event, ev.payload && typeof ev.payload === 'object' ? ev.payload : {});
+  }
+
+  const key = (m) => `${m.role}\u0000${m.text}`;
+
+  // `file` is the transcript the history was read from: a read that resolves after the conversation moved on to another one's
+  // transcript (a second /resume) belongs to the old one and is dropped, leaving the new read to seed (PR #226 Dexter 11).
+  function seedHistory(history, file) {
+    if (!wantHistory) return false;
+    if (typeof file === 'string' && file !== transcriptPath) return false;
+    wantHistory = false;
+    if (!Array.isArray(history)) return false;
+    const old = history.filter(m => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string' && m.text.trim() !== '');
+    // The hooks' first line may already be in the transcript (it was written while we read): stop before it.
+    let upTo = old.length;
+    if (messages.length) {
+      // the LAST match: the transcript is in order and the hooks' line is its newest, so an earlier identical "yes" is not it
+      const at = old.findLastIndex(m => key(m) === key(messages[0]));
+      if (at >= 0) upTo = at;
+    }
+    const prefix = old.slice(0, upTo);
+    if (prefix.length === 0) return false;
+    lastReply = null;                      // ids are re-issued below
+    const keep = messages;
+    messages = [];
+    for (const m of prefix) push(m.role, m.text);
+    // Re-id what the hooks gave so ids still only grow.
+    for (const m of keep) messages.push({ ...m, id: ++seq });
+    if (messages.length > MESSAGE_CAP) messages = messages.slice(messages.length - MESSAGE_CAP);
+    return true;
+  }
+
+  /**
+   * Stop.last_assistant_message is only the turn's LAST text block. host/chat-transcript.js lastTurnTexts reads every text block of the turn
+   * from the transcript; this swaps the reply `id` (lastReplyId() at the Stop) for them, joined in order into one bubble. The hook's closing
+   * text is always the final block: the Stop can fire before the transcript's last line is flushed, and the closing block must not be lost.
+   * Nothing readable (no blocks) leaves the reply as the hook gave it. -> changed
+   */
+  function expandReply(id, blocks) {
+    const i = messages.findIndex(m => m.id === id && m.role === 'assistant');
+    if (i < 0 || !Array.isArray(blocks)) return false;
+    const parts = blocks.filter(b => typeof b === 'string' && b.trim() !== '');
+    if (parts.length === 0) return false;
+    const closing = id === lastReply && lastClosing !== null ? lastClosing : messages[i].text;   // not the current text: it may already be expanded
+    if (cut(parts[parts.length - 1]).text.trim() !== closing.trim()) parts.push(closing);
+    else parts[parts.length - 1] = closing;
+    const { text, truncated } = cut(parts.join('\n\n'));
+    if (text === messages[i].text) return false;
+    messages[i] = { ...messages[i], text, truncated: truncated || messages[i].truncated };
+    return true;
+  }
+
+  return {
+    handle,
+    expandReply,
+    lastReplyId: () => lastReply,
+    transcriptPath: () => transcriptPath,
+    snapshot: () => ({ messages: messages.map(m => ({ ...m })), working }),
+    pendingHistory: () => (wantHistory ? transcriptPath : null),
+    seedHistory,
+  };
+}
+
+module.exports = { createChatFeed, TEXT_MAX, MESSAGE_CAP };
