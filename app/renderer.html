@@ -2467,7 +2467,7 @@
       <span id="usage" title="Tokens read from Claude Code's own transcripts"></span>
       <span id="quota" title="How much of the Max plan is left, and when it resets"></span>
       <!-- BACKLOG #157: swaps this tab's terminal for a clean chat (your prompts and Claude's replies, no tool lines); pressed again, the terminal. -->
-      <button type="button" id="chat-btn" class="hdr-btn" aria-pressed="false" title="Hide tool lines: show a clean chat (Ctrl+Shift+H)" aria-label="Hide tool lines">💬</button>
+      <button type="button" id="chat-btn" class="hdr-btn" aria-pressed="false" title="Hide tool lines (Ctrl+Shift+H)" aria-label="Hide tool lines">💬</button>
       <button type="button" id="layout-btn" class="hdr-btn" title="Layout: where each panel sits">▦</button>
       <button type="button" id="focus-btn" class="hdr-btn" title="Focus: only the terminal (Ctrl+Shift+F)">⛶</button>
       <!-- #42: the two keyboard hints became this one button; it opens the shortcuts sheet (#43), as F1 does. -->
@@ -2485,7 +2485,7 @@
         <!-- BACKLOG #157: the chat view, over the terminal (app/chat-display.js builds the bubbles; model text is never parsed as HTML).
              #chat-flip is the one-line note over the terminal when the CLI needs you and the chat steps aside. -->
         <div id="chat-view" role="region" aria-label="Chat view" hidden>
-          <div id="chat-head"><button type="button" id="chat-show-tools" title="Show the terminal with every tool line (Ctrl+Shift+H)">Show tool lines</button></div>
+          <div id="chat-head"><button type="button" id="chat-show-tools" title="Show tool lines (Ctrl+Shift+H)">Show tool lines</button></div>
           <div id="chat-log" role="log" aria-live="polite"></div>
           <div id="chat-working" role="status" hidden>Claude is working…</div>
           <div id="chat-sendnote" role="status" hidden></div>

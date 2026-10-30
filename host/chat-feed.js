@@ -37,6 +37,8 @@ function createChatFeed({ now = Date.now } = {}) {
   let transcriptPath = null;
   let wantHistory = false;
   let mainId = null;
+  let lastClosing = null;      // the Stop hook's closing text of the newest reply (the message itself may later be expanded to the whole turn)
+  let lastReply = null;        // the id of that reply
 
   function push(role, raw) {
     const { text, truncated } = cut(raw);
@@ -83,8 +85,10 @@ function createChatFeed({ now = Date.now } = {}) {
         if (said.trim() === '') return was;
         const last = messages[messages.length - 1];
         // Stop can fire more than once around one turn ending: a second identical reply with no prompt between is the same reply.
-        if (last && last.role === 'assistant' && last.text === cut(said).text) return was;
+        if (last && last.role === 'assistant' && lastClosing === cut(said).text) return was;
         push('assistant', said);
+        lastClosing = cut(said).text;
+        lastReply = seq;
         return true;
       }
       // Esc interrupts a turn and fires no Stop; Claude Code's idle_prompt is the only word that it is back at the prompt (host/turn-state.js)
@@ -130,6 +134,7 @@ function createChatFeed({ now = Date.now } = {}) {
     }
     const prefix = old.slice(0, upTo);
     if (prefix.length === 0) return false;
+    lastReply = null;                      // ids are re-issued below
     const keep = messages;
     messages = [];
     for (const m of prefix) push(m.role, m.text);
@@ -139,8 +144,31 @@ function createChatFeed({ now = Date.now } = {}) {
     return true;
   }
 
+  /**
+   * Stop.last_assistant_message is only the turn's LAST text block. host/chat-transcript.js lastTurnTexts reads every text block of the turn
+   * from the transcript; this swaps the reply `id` (lastReplyId() at the Stop) for them, joined in order into one bubble. The hook's closing
+   * text is always the final block: the Stop can fire before the transcript's last line is flushed, and the closing block must not be lost.
+   * Nothing readable (no blocks) leaves the reply as the hook gave it. -> changed
+   */
+  function expandReply(id, blocks) {
+    const i = messages.findIndex(m => m.id === id && m.role === 'assistant');
+    if (i < 0 || !Array.isArray(blocks)) return false;
+    const parts = blocks.filter(b => typeof b === 'string' && b.trim() !== '');
+    if (parts.length === 0) return false;
+    const closing = id === lastReply && lastClosing !== null ? lastClosing : messages[i].text;   // not the current text: it may already be expanded
+    if (cut(parts[parts.length - 1]).text.trim() !== closing.trim()) parts.push(closing);
+    else parts[parts.length - 1] = closing;
+    const { text, truncated } = cut(parts.join('\n\n'));
+    if (text === messages[i].text) return false;
+    messages[i] = { ...messages[i], text, truncated: truncated || messages[i].truncated };
+    return true;
+  }
+
   return {
     handle,
+    expandReply,
+    lastReplyId: () => lastReply,
+    transcriptPath: () => transcriptPath,
     snapshot: () => ({ messages: messages.map(m => ({ ...m })), working }),
     pendingHistory: () => (wantHistory ? transcriptPath : null),
     seedHistory,

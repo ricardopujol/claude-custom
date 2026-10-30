@@ -104,7 +104,7 @@ const { createAttention } = require('./attention');
 const { createTurnState } = require('./turn-state');
 const { createPromptKeeper } = require('./prompt-keeper');
 const { createChatFeed } = require('./chat-feed');
-const { readTranscript } = require('./chat-transcript');
+const { readTranscript, readLastTurnTexts } = require('./chat-transcript');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
 const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, NIGHT_BUDGET_MS } = require('./kill-switch');
 const { writeFileAtomic } = require('./atomic-write');
@@ -630,7 +630,19 @@ const promptKeeper = createPromptKeeper();
 // and on every change; the transcript is read once, for a resumed session's earlier messages, and only as a fallback (host/chat-transcript.js).
 const chatFeed = createChatFeed();
 function noteChat(ev) {
-  if (chatFeed.handle(ev)) broadcastControl({ type: 'chat', chat: chatFeed.snapshot() });
+  const changed = chatFeed.handle(ev);
+  if (changed) broadcastControl({ type: 'chat', chat: chatFeed.snapshot() });
+  if (ev.event === 'Stop' && changed) {
+    // Stop.last_assistant_message is only the turn's LAST text block: the rest of what Claude wrote this turn is in the transcript.
+    const id = chatFeed.lastReplyId();
+    const payload = ev.payload && typeof ev.payload === 'object' ? ev.payload : {};
+    const from = typeof payload.transcript_path === 'string' && payload.transcript_path !== '' ? payload.transcript_path : chatFeed.transcriptPath();
+    if (id !== null && from) {
+      readLastTurnTexts(from)
+        .then((blocks) => { if (chatFeed.expandReply(id, blocks)) broadcastControl({ type: 'chat', chat: chatFeed.snapshot() }); })
+        .catch(() => { /* the closing message is already shown */ });
+    }
+  }
   if (ev.event !== 'SessionStart') return;
   const file = chatFeed.pendingHistory();
   if (file === null) return;

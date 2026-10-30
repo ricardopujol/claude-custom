@@ -56,6 +56,44 @@ function parseTranscript(text) {
   return out;
 }
 
+/**
+ * Every assistant TEXT block of the transcript's last turn, in order: from the newest user entry (a tool result is not one) to the end. A
+ * tool_use, a tool_result and thinking are never text; a sidechain (a subagent's own talk) is skipped, so a turn with sub-agents gives only
+ * the main session's words. The Stop hook carries just the last block (PR #226, Ricardo's live verdict); this is the rest.
+ */
+function lastTurnTexts(text) {
+  if (typeof text !== 'string') return [];
+  let texts = [];
+  for (const raw of text.split('\n')) {
+    if (raw.trim() === '') continue;
+    let o;
+    try { o = JSON.parse(raw); } catch { continue; }
+    if (!isObj(o) || !isObj(o.message) || o.isSidechain === true) continue;
+    if (o.type === 'user') {
+      if (o.isMeta === true || textOf(o.message.content, true).trim() === '') continue;
+      texts = [];
+    } else if (o.type === 'assistant' && Array.isArray(o.message.content)) {
+      for (const b of o.message.content) {
+        if (isObj(b) && b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== '' && texts[texts.length - 1] !== b.text) texts.push(b.text);
+      }
+    }
+  }
+  return texts;
+}
+
+async function readLastTurnTexts(file, fsImpl = realFs) {
+  if (typeof file !== 'string' || !file.endsWith('.jsonl')) return [];
+  try {
+    const { size } = await fsImpl.stat(file);
+    const from = Math.max(0, size - TAIL_BYTES);
+    let body = await fsImpl.readTail(file, from);
+    if (from > 0) { const nl = body.indexOf('\n'); body = nl < 0 ? '' : body.slice(nl + 1); }
+    return lastTurnTexts(body);
+  } catch {
+    return [];
+  }
+}
+
 const realFs = {
   stat: (f) => fsp.stat(f),
   async readTail(f, from) {
@@ -84,4 +122,4 @@ async function readTranscript(file, fsImpl = realFs) {
   }
 }
 
-module.exports = { parseTranscript, readTranscript, TAIL_BYTES };
+module.exports = { parseTranscript, readTranscript, lastTurnTexts, readLastTurnTexts, TAIL_BYTES };

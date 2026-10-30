@@ -96,3 +96,32 @@ test('a compact summary and a background task\'s notice are not the person\'s wo
   assert.deepStrictEqual(parseTranscript(t), [{ role: 'user', text: 'real question' }, { role: 'assistant', text: 'the answer' }]);
   assert.deepStrictEqual(parseTranscript(jsonl(user('old cli, no origin'))), [{ role: 'user', text: 'old cli, no origin' }], 'a line with no origin is still the person\'s');
 });
+
+const { lastTurnTexts, readLastTurnTexts } = require('../host/chat-transcript');
+
+test('lastTurnTexts: every assistant text block of the last turn, in order, and nothing else (Ricardo, live: the chat showed only the closing line)', () => {
+  const t = jsonl(
+    user('earlier question'), asst([{ type: 'text', text: 'earlier answer' }]),
+    user('the question'),
+    asst([{ type: 'thinking', thinking: 'hmm' }, { type: 'text', text: 'A: the long answer' }]),
+    asst([{ type: 'tool_use', name: 'Write', input: { file_path: 'm.md' } }]),
+    user([{ type: 'tool_result', tool_use_id: 't1', content: 'saved' }]),
+    asst([{ type: 'text', text: 'B: saved a memory' }]));
+  assert.deepStrictEqual(lastTurnTexts(t), ['A: the long answer', 'B: saved a memory']);
+});
+
+test('lastTurnTexts: a subagent\'s sidechain talk is not the main session\'s, a repeated block is one, junk is skipped', () => {
+  const t = jsonl(user('q'), asst([{ type: 'text', text: 'main A' }]),
+    asst([{ type: 'text', text: 'agent words' }], { isSidechain: true }),
+    asst([{ type: 'text', text: 'main A' }]), 'not json', asst('a plain string content is not a block'), asst([{ type: 'text', text: 'main B' }]));
+  assert.deepStrictEqual(lastTurnTexts(t), ['main A', 'main B']);
+  assert.deepStrictEqual(lastTurnTexts(jsonl(user('q'))), []);
+  assert.deepStrictEqual(lastTurnTexts(null), []);
+});
+
+test('readLastTurnTexts: a missing or unreadable transcript is [] (the caller keeps the hook\'s closing text)', async () => {
+  assert.deepStrictEqual(await readLastTurnTexts('C:/no/such/file.jsonl'), []);
+  assert.deepStrictEqual(await readLastTurnTexts(undefined), []);
+  const fake = { stat: async () => ({ size: 10 }), readTail: async () => jsonl(user('q'), asst([{ type: 'text', text: 'x' }])) };
+  assert.deepStrictEqual(await readLastTurnTexts('a.jsonl', fake), ['x']);
+});

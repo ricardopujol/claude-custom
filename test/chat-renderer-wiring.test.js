@@ -127,3 +127,8 @@ test('a long path in inline code wraps inside its bubble instead of overflowing 
   assert.match(HTML, /\.chat-code \{ overflow-wrap: anywhere; \}/);
   assert.doesNotMatch(HTML, /\.chat-inline \{ white-space: nowrap; \}/);
 });
+
+test('both buttons name the shortcut in their tooltips (Ricardo, live)', () => {
+  assert.match(HTML, /id="chat-btn"[^>]*title="Hide tool lines \(Ctrl\+Shift\+H\)"/);
+  assert.match(HTML, /id="chat-show-tools" title="Show tool lines \(Ctrl\+Shift\+H\)"/);
+});

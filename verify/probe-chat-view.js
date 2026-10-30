@@ -314,6 +314,28 @@ async function main() {
   const back2 = await waitFor(async () => { const c = await chat(app); return c && !c.rootHidden && c.flip.hidden && !c.working ? c : null; }, 10000);
   check('E2: permission_prompt then idle_prompt (rejected, no Stop): the chat is back, the note gone, no "working" line', !!back2, JSON.stringify(await chat(app).then(c => c && { h: c.rootHidden, f: c.flip.hidden, w: c.working })));
 
+  // H: the whole turn, not just the closing line (Ricardo, live): text A, a tool call and its result, then text B. The Stop hook carries only B.
+  const turnFile = path.join(tmp, 'turn.jsonl');
+  const jl = (o) => JSON.stringify(o);
+  fs.writeFileSync(turnFile, [
+    jl({ type: 'user', message: { role: 'user', content: 'explain it' } }),
+    jl({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'A: the long answer, in full' }] } }),
+    jl({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Write', input: { file_path: 'memory.md', content: TOOL_MARK } }] } }),
+    jl({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'w1', content: 'saved' }] } }),
+    jl({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'B: saved a memory' }] } }),
+  ].join('\n') + '\n');
+  hook(pid, 'UserPromptSubmit', { prompt: 'explain it' });
+  hook(pid, 'Stop', { transcript_path: turnFile, last_assistant_message: 'B: saved a memory' });
+  const whole = await waitFor(async () => {
+    const c = await chat(app);
+    const last = c && c.bubbles[c.bubbles.length - 1];
+    return last && last.text.includes('A: the long answer, in full') && last.text.includes('B: saved a memory') ? c : null;
+  }, 10000);
+  check('H: the turn\'s Claude reply holds text A AND text B, in order, and no tool line', !!whole && !whole.logText.includes(TOOL_MARK)
+    && whole.bubbles[whole.bubbles.length - 1].text.indexOf('A: the long') < whole.bubbles[whole.bubbles.length - 1].text.indexOf('B: saved'));
+  const copyAll = await doChat(app, 'copy', { label: 'whole reply', index: (await chat(app)).copyButtons.filter(b => (b.label || '').includes('whole reply')).length - 1 });
+  check('H: Copy reply copies all of it', copyAll.ok && (copyAll.skipped || (copyAll.copied.includes('A: the long answer, in full') && copyAll.copied.includes('B: saved a memory'))), JSON.stringify(copyAll && copyAll.copied));
+
   // G ------------------------------------------------------------------------------
   const count = (await chat(app)).bubbles.length;
   await view(app, 'reconnect', { blur: true });

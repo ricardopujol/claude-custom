@@ -215,3 +215,43 @@ test('history: the duplicate of the hooks\' first line is the LAST match, and a 
   assert.strictEqual(f.seedHistory([{ role: 'user', text: 'yes' }, { role: 'assistant', text: 'A' }, { role: 'user', text: 'yes' }], 'C:/x/s2.jsonl'), true);
   assert.deepStrictEqual(texts(f), ['user:yes', 'assistant:A', 'user:yes']);
 });
+
+// --- the whole turn, not just the closing message (Ricardo's live verdict on PR #226) ------------------------------------------------
+const turnFeed = () => {
+  const f = run([START, ev('UserPromptSubmit', { prompt: 'q' }), ev('Stop', { last_assistant_message: 'B: the closing line' })]);
+  return { f, id: f.lastReplyId() };
+};
+
+test('expandReply: a turn [text A, tool_use, tool_result, text B] shows A and B in one Claude bubble', () => {
+  const { f, id } = turnFeed();
+  assert.strictEqual(f.expandReply(id, ['A: the long answer', 'B: the closing line']), true);
+  assert.deepStrictEqual(texts(f), ['user:q', 'assistant:A: the long answer\n\nB: the closing line']);
+});
+
+test('expandReply: no transcript (nothing read) leaves B alone', () => {
+  const { f, id } = turnFeed();
+  assert.strictEqual(f.expandReply(id, []), false);
+  assert.strictEqual(f.expandReply(id, null), false);
+  assert.deepStrictEqual(texts(f), ['user:q', 'assistant:B: the closing line']);
+});
+
+test('expandReply: flush lag (the transcript lacks the closing block) still ends with B, and a complete transcript does not double it', () => {
+  const lag = turnFeed();
+  lag.f.expandReply(lag.id, ['A: the long answer']);
+  assert.deepStrictEqual(texts(lag.f), ['user:q', 'assistant:A: the long answer\n\nB: the closing line']);
+  const full = turnFeed();
+  full.f.expandReply(full.id, ['A: the long answer', 'B: the closing line']);
+  assert.strictEqual(texts(full.f)[1].split('B: the closing line').length, 2, 'B once');
+  assert.strictEqual(full.f.expandReply(full.id, ['A: the long answer', 'B: the closing line']), false, 'the same read again changes nothing');
+});
+
+test('expandReply: only the reply it was asked about, and a repeated Stop afterwards still adds nothing', () => {
+  const { f, id } = turnFeed();
+  assert.strictEqual(f.expandReply(id + 99, ['x']), false);
+  f.expandReply(id, ['A', 'B: the closing line']);
+  f.handle(ev('Stop', { last_assistant_message: 'B: the closing line' }));
+  assert.strictEqual(f.snapshot().messages.length, 2);
+  f.handle(ev('UserPromptSubmit', { prompt: 'next' }));
+  f.handle(ev('Stop', { last_assistant_message: 'C' }));
+  assert.notStrictEqual(f.lastReplyId(), id);
+});
