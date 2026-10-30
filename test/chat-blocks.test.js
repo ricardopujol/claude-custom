@@ -43,12 +43,76 @@ test('a blockquote is one copy target with the markers stripped', () => {
   assert.ok(copyTargets(b).some(t => t.kind === 'quote' && t.text === b[0].text));
 });
 
-test('lists, ordered and not, with their depth', () => {
+test('lists, ordered and not, with their nesting', () => {
   const b = parseMarkdown('- one\n- two\n  - nested\n\n1. a\n2) b');
   assert.strictEqual(b[0].type, 'list');
-  assert.deepStrictEqual(b[0].items.map(i => [plain(i.inlines), i.depth]), [['one', 0], ['two', 0], ['nested', 1]]);
+  assert.deepStrictEqual(b[0].items.map(i => plain(i.inlines)), ['one', 'two']);
+  const nested = b[0].items[1].blocks[0];
+  assert.strictEqual(nested.type, 'list');
+  assert.deepStrictEqual(nested.items.map(i => plain(i.inlines)), ['nested']);
   assert.strictEqual(b[0].ordered, false);
   assert.strictEqual(b[1].ordered, true);
+});
+
+// The rendered number of item k of an ordered list is start + k: the display sets <ol start>, so this is what the person reads.
+const numbers = (b) => b.items.map((_, k) => b.start + k);
+
+test('ordered lists keep their numbers across blank lines, wrapped lines, sub-bullets and a fence (PR #226 Miguel B2, Dexter 8)', () => {
+  const loose = parseMarkdown('1. a\n\n2. b\n\n3. c');
+  assert.strictEqual(loose.length, 1);
+  assert.deepStrictEqual(numbers(loose[0]), [1, 2, 3]);
+
+  const fenced = parseMarkdown('1. Install:\n\n```bash\nnpm i\n```\n\n2. Run the tests');
+  assert.deepStrictEqual(fenced.map(x => x.type), ['list', 'code', 'list'], 'a fence at column 0 does end the list: the next list must then count on');
+  assert.strictEqual(fenced[2].start, 2, 'and it is numbered 2, not 1');
+});
+
+test('an indented fence is part of its item, so the next item is still the next number', () => {
+  const b = parseMarkdown('1. Install:\n   ```bash\n   npm i\n   ```\n2. Run the tests\n3. Done');
+  assert.strictEqual(b.length, 1);
+  assert.deepStrictEqual(numbers(b[0]), [1, 2, 3]);
+  assert.strictEqual(b[0].items[0].blocks[0].type, 'code');
+  assert.strictEqual(b[0].items[0].blocks[0].text, 'npm i');
+  assert.ok(copyTargets(b).some(t => t.kind === 'code' && t.text === 'npm i'));
+});
+
+test('a wrapped line and a sub-bullet belong to their item; an ordered list keeps counting past them', () => {
+  const wrapped = parseMarkdown('1. one\n   more of one\n2. two');
+  assert.strictEqual(wrapped.length, 1);
+  assert.strictEqual(plain(wrapped[0].items[0].inlines), 'one\nmore of one');
+  const sub = parseMarkdown('1. one\n   - x\n   - y\n2. two\n3. three');
+  assert.strictEqual(sub.length, 1);
+  assert.strictEqual(sub[0].items[0].blocks[0].ordered, false);
+  assert.deepStrictEqual(numbers(sub[0]), [1, 2, 3]);
+  const lazy = parseMarkdown('1. one\nlazy\n2. two');
+  assert.strictEqual(lazy.length, 1);
+  assert.strictEqual(plain(lazy[0].items[0].inlines), 'one\nlazy');
+});
+
+test('the first number is honoured: a list starting at 5 starts at 5', () => {
+  const b = parseMarkdown('5. five\n6. six');
+  assert.strictEqual(b[0].start, 5);
+  assert.deepStrictEqual(numbers(b[0]), [5, 6]);
+  assert.strictEqual(parseMarkdown('- a')[0].start, undefined, 'a bullet list has no start');
+});
+
+test('a fence indented 1-4 spaces is a code block and its indent is not in the copied code (PR #226 Dexter 9)', () => {
+  const two = parseMarkdown('10. Run:\n    ```bash\n    npm test\n    ```');
+  assert.strictEqual(two[0].items[0].blocks[0].text, 'npm test');
+  const py = parseMarkdown('1. x\n   ```py\n   def f():\n       return 1\n   ```');
+  assert.strictEqual(py[0].items[0].blocks[0].text, 'def f():\n    return 1');
+  const nested = parseMarkdown('- a\n  - b\n    ```\n    ls\n    ```');
+  assert.strictEqual(nested[0].items[0].blocks[0].items[0].blocks[0].text, 'ls');
+  const loose = parseMarkdown('  ```sh\n  one\n    two\n  ```');
+  assert.strictEqual(loose[0].text, 'one\n  two', 'outside a list the opener\'s own indent is stripped too');
+});
+
+test('property: an ordered list of n items, separated by any mix of blank lines, is one list counting 1..n', () => {
+  fc.assert(fc.property(fc.integer({ min: 1, max: 9 }), fc.array(fc.boolean(), { minLength: 9, maxLength: 9 }), fc.integer({ min: 1, max: 50 }), (n, gaps, start) => {
+    const src = Array.from({ length: n }, (_, k) => `${start + k}. item ${k}`).map((l, k) => (k > 0 && gaps[k] ? '\n' + l : l)).join('\n');
+    const b = parseMarkdown(src);
+    return b.length === 1 && b[0].type === 'list' && b[0].start === start && b[0].items.length === n;
+  }));
 });
 
 test('a table is rows of cells', () => {
@@ -138,7 +202,7 @@ test('property: every link href that comes out is http, https or mailto and has 
   const blocks = (bs, out) => {
     for (const b of bs) {
       if (b.inlines) walk(b.inlines, out);
-      if (b.items) b.items.forEach(i => walk(i.inlines, out));
+      if (b.items) b.items.forEach(i => { walk(i.inlines, out); blocks(i.blocks, out); });
       if (b.blocks) blocks(b.blocks, out);
       if (b.head) b.head.forEach(c => walk(c, out));
       if (b.rows) b.rows.forEach(r => r.forEach(c => walk(c, out)));

@@ -216,3 +216,13 @@ test('property: whatever the text, the log holds only the allowed elements and n
     return true;
   }), { numRuns: 100 });
 });
+
+test('an ordered list is drawn with its first number, and a code block inside an item is drawn with its Copy (PR #226 Miguel B2)', () => {
+  const { view, els } = setup();
+  view.update({ messages: msgs({ role: 'assistant', text: '5. five\n   ```sh\n   ls\n   ```\n6. six' }), working: false, view: show });
+  const ol = els.log.querySelector('ol');
+  assert.strictEqual(ol.start, 5);
+  assert.strictEqual(ol.querySelectorAll(':scope > li').length, 2);
+  assert.strictEqual(ol.querySelector('li pre code').textContent, 'ls');
+  assert.ok([...ol.querySelectorAll('.chat-copy')].some(b => b.getAttribute('aria-label') === 'Copy this code'));
+});

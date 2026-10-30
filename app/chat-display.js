@@ -108,10 +108,11 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
         parent.append(box);
       } else if (b.type === 'list') {
         const l = el(b.ordered ? 'ol' : 'ul', 'chat-list');
+        if (b.ordered && Number.isInteger(b.start) && b.start !== 1) l.start = b.start;
         for (const it of b.items) {
           const li = el('li', 'chat-li');
-          if (it.depth > 0) li.style.marginLeft = `${it.depth * 16}px`;
           inlines(it.inlines, li);
+          blocks(it.blocks, li);
           l.append(li);
         }
         parent.append(l);

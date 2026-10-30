@@ -125,10 +125,56 @@ const cells = (line) => {
   return t.split('|').map(x => x.trim());
 };
 
+const startsBlock = (l) => FENCE_OPEN.test(l) || HEADING.test(l) || HR.test(l) || QUOTE.test(l) || LIST_ITEM.test(l);
+const indentOf = (l) => /^ */.exec(l)[0].length;
+const expandTabs = (l) => l.replace(/^\t+/, (t) => '    '.repeat(t.length));
+
+/**
+ * One list, from its first item. An item owns every following line that is indented past its marker (a loose list's blank lines, a wrapped
+ * line, a code fence, a nested list) and a lazy continuation line; those lines, de-indented, are parsed as blocks of their own, so a fence
+ * in step 1 does not end the list and step 2 is still 2 (PR #226 Miguel B2, Dexter 8). The next item continues the list across blank
+ * lines. `start` is the first marker's number: the others are counted from it, as CommonMark does.
+ */
+function parseList(lines, from, depth) {
+  const first = LIST_ITEM.exec(expandTabs(lines[from]));
+  const base = first[1].length;
+  const ordered = /\d/.test(first[2][0]);
+  const items = [];
+  let i = from;
+  while (i < lines.length) {
+    const m = LIST_ITEM.exec(expandTabs(lines[i]));
+    if (!m || m[1].length > base || /\d/.test(m[2][0]) !== ordered) break;
+    const offset = m[1].length + m[2].length + 1;
+    const content = [m[3]];
+    let j = i + 1;
+    let blanks = 0;
+    let fenced = FENCE_OPEN.test(m[3]);
+    while (j < lines.length) {
+      const l = expandTabs(lines[j]);
+      if (l.trim() === '') { blanks++; j++; continue; }
+      const ind = indentOf(l);
+      if (ind > m[1].length) {
+        for (; blanks > 0; blanks--) content.push('');
+        content.push(l.slice(Math.min(ind, offset)));
+      } else if (blanks === 0 && !fenced && !startsBlock(l)) {
+        content.push(l.trim());                          // a lazy continuation of the item's paragraph
+      } else break;
+      if (/^ {0,3}(`{3,}|~{3,})/.test(content[content.length - 1])) fenced = !fenced;
+      j++;
+    }
+    const sub = depth >= MAX_DEPTH ? [{ type: 'paragraph', inlines: [text(content.join('\n'))], raw: content.join('\n') }] : parseBlocks(content, depth + 1);
+    const head = sub.length > 0 && sub[0].type === 'paragraph' ? sub[0] : null;
+    items.push({ inlines: head ? head.inlines : [], blocks: head ? sub.slice(1) : sub });
+    i = j;
+  }
+  const block = { type: 'list', ordered, items };
+  if (ordered) block.start = Math.min(parseInt(first[2], 10), 999999999);
+  return { block, next: i };
+}
+
 function parseBlocks(lines, depth) {
   const blocks = [];
   let i = 0;
-  const startsBlock = (l) => FENCE_OPEN.test(l) || HEADING.test(l) || HR.test(l) || QUOTE.test(l) || LIST_ITEM.test(l);
   while (i < lines.length) {
     const line = lines[i];
     if (line.trim() === '') { i++; continue; }
@@ -137,11 +183,12 @@ function parseBlocks(lines, depth) {
     if (f) {
       const mark = f[1];
       const body = [];
+      const indent = /^ */.exec(line)[0].length;          // an indented opener: that much indent is the fence's, not the code's
       i++;
       while (i < lines.length) {
         const m = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(lines[i]);
         if (m && m[1][0] === mark[0] && m[1].length >= mark.length) { i++; break; }
-        body.push(lines[i]);
+        body.push(lines[i].replace(new RegExp(`^ {0,${indent}}`), ''));
         i++;
       }
       blocks.push({ type: 'code', lang: f[2] || '', text: body.join('\n') });
@@ -160,15 +207,9 @@ function parseBlocks(lines, depth) {
     }
     const li = LIST_ITEM.exec(line);
     if (li) {
-      const ordered = /\d/.test(li[2][0]);
-      const items = [];
-      while (i < lines.length) {
-        const m = LIST_ITEM.exec(lines[i]);
-        if (!m || /\d/.test(m[2][0]) !== ordered) break;
-        items.push({ depth: Math.min(4, Math.floor(m[1].replace(/\t/g, '  ').length / 2)), inlines: parseInline(m[3]) });
-        i++;
-      }
-      blocks.push({ type: 'list', ordered, items });
+      const r = parseList(lines, i, depth);
+      blocks.push(r.block);
+      i = r.next;
       continue;
     }
     if (line.includes('|') && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]) && lines[i + 1].includes('-')) {
@@ -208,7 +249,7 @@ function copyTargets(blocks) {
       else if (b.type === 'quote') out.push({ kind: 'quote', text: b.text });
       else if (b.type === 'paragraph') { if (b.draft === true) out.push({ kind: 'draft', text: b.raw }); inlines(b.inlines); }
       else if (b.type === 'heading') inlines(b.inlines);
-      else if (b.type === 'list') b.items.forEach(it => inlines(it.inlines));
+      else if (b.type === 'list') b.items.forEach(it => { inlines(it.inlines); walk(it.blocks); });
       else if (b.type === 'table') { b.head.forEach(inlines); b.rows.forEach(r => r.forEach(inlines)); }
     }
   };
