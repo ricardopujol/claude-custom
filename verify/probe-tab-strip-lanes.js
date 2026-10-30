@@ -257,8 +257,13 @@ async function main() {
 
   await command(app, { cmd: 'window-size', width: 2600 });
   s = await waitFor(async () => { const x = await state(app); return paintedLabels(x).length === 10 ? x : null; }, 10000) || await state(app);
-  check('2A: widen the window and nothing is hidden: ten tabs, the button back to "Lanes ▾"', paintedLabels(s).length === 10 && s.stripLayout.lanes.text === 'Lanes ▾',
-    `${paintedLabels(s).length} tabs, ${s.stripLayout.lanes.text}`);
+  // The window is clamped to the screen, so "wide" is only as wide as this display allows: ten tabs at 112 px plus the rest of
+  // the strip need about 1.9k CSS px. Judge by what the room allows: more tabs than at 900 px, and the button says +N for the rest.
+  const wideShown = paintedLabels(s).length;
+  const wideFits = s.stripLayout.stripWidth >= 1900;
+  check('2A: widen the window and the strip shows more tabs, and the button says +N for exactly the rest (all ten and "Lanes ▾" when the screen is wide enough)',
+    wideShown > shown.length && (wideFits ? wideShown === 10 && s.stripLayout.lanes.text === 'Lanes ▾' : s.stripLayout.lanes.text === `+${10 - wideShown} Lanes ▾`),
+    `${wideShown} tabs, ${s.stripLayout.lanes.text}, strip ${s.stripLayout.stripWidth} px, tabs box ${JSON.stringify(s.stripLayout.tabs)} scroll ${s.stripLayout.tabsScroll}, ${JSON.stringify(painted(s).map(i => [i.label, i.width]))}`);
 
   // ===== #141: drag =====
   const before = paintedLabels(s);
@@ -268,7 +273,9 @@ async function main() {
   check('#141: feat/05 dragged onto the left half of feat/01 lands just before it, right after develop',
     drag.ok === true && drag.allowed === true && drag.indicator === 'before' && JSON.stringify(after.slice(0, 3)) === JSON.stringify(['develop', 'feat/05', 'feat/01']),
     `${JSON.stringify(drag)} ${after.join(', ')}`);
-  check('#141: nothing else changed place', JSON.stringify(after.filter(l => l !== 'feat/05')) === JSON.stringify(before.filter(l => l !== 'feat/05')));
+  // Moving a tab up can bring one in from the Lanes menu and push the last one out, so compare the tabs both lists show.
+  const common = (a, b) => a.filter(l => l !== 'feat/05' && b.includes(l));
+  check('#141: nothing else changed place', JSON.stringify(common(after, before)) === JSON.stringify(common(before, after)), `${before.join(', ')} -> ${after.join(', ')}`);
   check('#141: the model (what Ctrl+Tab walks) has the same order', JSON.stringify(modelLabels(s).slice(0, 3)) === JSON.stringify(['develop', 'feat/05', 'feat/01']), modelLabels(s).slice(0, 4).join(', '));
   const toDev = await command(app, { cmd: 'drag-tab', label: 'feat/05', onLabel: 'develop', half: 'left' });
   check('#141: nothing can be dropped on develop\'s left to move before it: develop stays first', (await state(app)).stripLayout.items[0].label === 'develop' && toDev.ok === true);

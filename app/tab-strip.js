@@ -352,7 +352,9 @@ function stripRoom(doc) {
   for (const c of Array.from(bar.children || [])) {
     if (c === tabsEl || c.hidden === true || c.id === 'strip-alert') continue;
     const cs = style(c);
-    const margins = cs ? pxOf(cs.marginLeft) + pxOf(cs.marginRight) : 0;
+    // #index and #bg carry `margin-left: auto`, which getComputedStyle reports as the free space left over (not a fixed margin): skip it.
+    const autoLeft = c.id === 'index' || c.id === 'bg';
+    const margins = cs ? (autoLeft ? 0 : pxOf(cs.marginLeft)) + pxOf(cs.marginRight) : 0;
     const own = c.id === 'index' && cs && pxOf(cs.minWidth) > 0 ? pxOf(cs.minWidth) : (typeof c.offsetWidth === 'number' ? c.offsetWidth : 0);
     others += own + margins;
   }
@@ -364,14 +366,14 @@ function stripRoom(doc) {
 let backgroundBusy = false;
 
 /** Paint `payload` into the page. Everything is rebuilt: the strip is small. */
-function paint(doc, payload, bridge) {
+function paint(doc, payload, bridge, cut = 0) {
   if (dragState.key !== null) { dragState.held = { doc, payload, bridge }; return; }
   const tabs = doc.getElementById('tabs');
   const pane = doc.getElementById('pane');
   // `model` is the tabs main says have a place on the strip (1B); which of them FIT is this page's to say (2A).
   const model = payload && Array.isArray(payload.model) ? payload.model : [];
   const room = stripRoom(doc);
-  const { shown, hidden } = tabLanes.splitOverflow(model, room === null ? undefined : tabLanes.capacityFor(room));
+  const { shown, hidden } = tabLanes.splitOverflow(model, room === null ? undefined : tabLanes.capacityFor(room) - cut);
   const shownKeys = new Set(shown.map(e => e.key));
   const hiddenKeys = model.filter(e => e && !shownKeys.has(e.key)).map(e => e.key);
   tabs.replaceChildren(...withGhosts(doc, shown.map(e => paintTab(doc, e, bridge, model)), shown, hiddenKeys));
@@ -409,6 +411,9 @@ function paint(doc, payload, bridge) {
   }
   paintPlus(doc, payload, bridge);
   paintLanes(doc, payload, hidden, bridge);
+  // The room was measured before this paint: something beside the tabs (Stop all, the index count) can have grown since, or the
+  // window shrank. If the tabs now overflow their box, hide one more and paint again (each pass hides one, so it ends).
+  if (room !== null && shown.length > 1 && tabs.scrollWidth > tabs.clientWidth + 1 && cut < model.length) paint(doc, payload, bridge, cut + 1);
 }
 
 // The Lanes ▾ button (1B + 2A): one native menu (main builds it) of the lanes with no tab and the tabs this page hid, with
@@ -731,7 +736,15 @@ if (typeof module !== 'undefined' && module.exports) {
     }
   }
   if (root.strip && typeof root.strip.onModel === 'function') {
-    root.strip.onModel((payload) => paint(root.document, payload, root.strip));
+    let lastPayload = null;
+    root.strip.onModel((payload) => { lastPayload = payload; paint(root.document, payload, root.strip); });
+    // A resize changes the room the tabs have; the next poll would catch it, this does it now.
+    // Watch the strip itself: the window's resize event can fire before the strip has its new width.
+    const barEl = root.document && root.document.getElementById('strip');
+    if (barEl && typeof root.ResizeObserver === 'function') {
+      let lastW = barEl.clientWidth;
+      new root.ResizeObserver(() => { if (barEl.clientWidth !== lastW) { lastW = barEl.clientWidth; if (lastPayload) paint(root.document, lastPayload, root.strip); } }).observe(barEl);
+    }
   }
 }
 

@@ -282,3 +282,31 @@ test('the first paint fades nothing in, and a closed-then-same-key tab does not 
     assert.deepStrictEqual(keysOf(doc), ['dev', 'lane1', 'lane2'], 'back on the strip: one tab, not a tab and its ghost');
   } finally { restore(); }
 });
+
+// --- found by the real-window probe (the unit fakes could not see either) -----------------------------
+
+test('a margin-left: auto on #index / #bg is free space, not a margin: it does not eat the tabs\' room', () => {
+  const doc = fakeDoc({ room: 112 * 10 + 200 });
+  const index = node('div'); index.id = 'index'; index.offsetWidth = 150;
+  doc.byId.index = index;
+  doc.byId.strip.children = [doc.byId.tabs, doc.byId.lanes, index];
+  // what Chrome reports for `margin-left: auto`: the whole leftover width
+  doc.defaultView.getComputedStyle = (c) => ({ minWidth: c === index ? '150px' : '0px', marginLeft: c === index ? '5000px' : '0px', marginRight: '0px' });
+  paint(doc, { model: model(10), mode: 'tabs' }, bridgeSpy());
+  assert.strictEqual(keysOf(doc).length, 10);
+});
+
+test('tabs that overflow their box after the first measure are cut one at a time until they fit, and develop stays', () => {
+  const doc = fakeDoc({ room: 112 * 10 + 200 });
+  // something beside the tabs grew after the room was measured: the box only holds three tabs
+  Object.defineProperty(doc.byId.tabs, 'scrollWidth', { get: () => doc.byId.tabs.children.length * 112 });
+  Object.defineProperty(doc.byId.tabs, 'clientWidth', { get: () => 112 * 3 });
+  paint(doc, { model: model(10), mode: 'tabs' }, bridgeSpy());
+  assert.deepStrictEqual(keysOf(doc), ['dev', 'lane1', 'lane2']);
+  assert.strictEqual(doc.byId.lanes.textContent, '+7 Lanes ▾');
+});
+
+test('tab-strip.html: the index field shrinks before the tabs do (its shrink factor outweighs theirs), so the measured room is the real one', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.match(html, /#index \{[^}]*flex: 0 1000 340px/);
+});

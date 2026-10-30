@@ -388,11 +388,12 @@ async function main() {
     remember(s);
     check('reopened: the closed tab stays closed (#141 closed stays closed: it is kept per project) and is a closed Lanes row',
       !!s && !tabOf(s, 'feat/a') && labelsOf(s).length === 3 && s.lanes.notStarted.some(r => r.label === 'feat/a' && r.closed === true), s && labelsOf(s).join(', '));
-    const back = await command(app, { cmd: 'reopen' });
-    s = await waitFor(async () => { const x = await state(app); return tabOf(x, 'feat/a') ? x : null; }, 15000);
-    check('Reopen brings it back, not started (its host was ended)', back.ok === true && !!s && !tabOf(s, 'feat/a').started);
+    // Judged before the Reopen: since #139 a Reopen selects the lane it brings back (a Lanes row is a click), so feat/a is selected after it.
     check('launched from feat-b\'s folder: THAT tab is selected', !!s && (tabOf(s, 'feat/b') || {}).selected === true,
       s && s.tabs.filter(t => t.selected).map(t => t.label).join(','));
+    const back = await command(app, { cmd: 'reopen' });
+    s = await waitFor(async () => { const x = await state(app); return tabOf(x, 'feat/a') ? x : null; }, 15000);
+    check('Reopen brings it back, and selects it (a Lanes row is a click)', back.ok === true && !!s && (tabOf(s, 'feat/a') || {}).selected === true);
     const bUp = await waitFor(async () => { const x = await state(app); return tabOf(x, 'feat/b') && tabOf(x, 'feat/b').started ? x : null; }, 40000);
     remember(bUp);
     check('and the selected tab started', !!bUp);
@@ -453,7 +454,7 @@ async function main() {
         remember(s);
         check('reopened: the stepped tab is still ATTACHED to its own host, pid unchanged, nothing spawned',
           !!s && hostOf(s, second) && hostOf(s, second).pid === h2.pid && hostsUnder(coll).length === count,
-          s && `${second}: ${hostOf(s, second) && hostOf(s, second).pid}/${h2.pid}, hosts ${hostsUnder(coll).length}/${count}`);
+          s ? `${second}: ${hostOf(s, second) && hostOf(s, second).pid}/${h2.pid}, hosts ${hostsUnder(coll).length}/${count}` : JSON.stringify(await state(app)).slice(0, 1500));
         await quit(app);
       }
     }
