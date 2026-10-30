@@ -51,6 +51,8 @@
     .tab.night:hover { background: color-mix(in srgb, var(--night) 82%, white); }
     .tab.night .label { color: color-mix(in srgb, var(--text) 85%, var(--night-edge)); }
     .moon { font-size: 11px; line-height: 1; }
+    /* #156: cross-session messages held for approval in this tab; a still pill, the tab's own pulse says "look" */
+    .envelope { font-size: 11px; line-height: 1; padding: 1px 5px; border-radius: 8px; color: var(--chrome); background: var(--warn, #e6c34a); }
     /* Lean mode (#62): the button and the chip. The chip is a still pill; Back to normal is the way out. */
     #lean-btn { flex: 0 0 auto; align-self: center; margin-right: 4px; height: 20px; border: 1px solid var(--border);
       background: transparent; color: var(--dim); border-radius: 4px; cursor: pointer; font-size: 11px; padding: 0 8px; }

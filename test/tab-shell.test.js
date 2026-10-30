@@ -226,13 +226,13 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
 });
 
 test('sanitizeStatus keeps eight fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+    { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, messages: 3, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
+    { working: true, needsInput: true, finished: true, messages: 3, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
 });
 
 // Backlog #39: a renderer may say its summary, cut down to the known fields; garbage is none.
@@ -904,6 +904,60 @@ test('#31: looked() touches only the selected tab, and says false when there was
   h.shell.report(h.shell.tabByKey(key('feat-a')).view, { finished: true });
   assert.strictEqual(h.shell.looked(), false, 'dev is the selected one and has nothing pending');
   assert.strictEqual(h.shell.model().find(x => x.label === 'feat/a').pulse, 'done', 'the unselected tab keeps its pulse');
+});
+
+// BACKLOG #156 (PR #224, Miguel I1): the envelope count is cleared by a look exactly like the urgent dot, and it alone (no needsInput, no finished) is enough.
+test('held messages: the count shows on an unselected tab and a SELECT clears it, the page is told', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const countOf = () => h.shell.model().find(x => x.label === 'feat/a').messages;
+  h.shell.report(aView, { messages: 2 });
+  assert.strictEqual(countOf(), 2);
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(countOf(), 0);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).status.messages, 0, 'the shell forgets it, so deselecting does not bring it back');
+});
+
+test('held messages: a count reported by the tab you are looking at (selected + window focused) is cleared at once and the page told', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const sentBefore = h.sent.filter(([, ch]) => ch === 'tab-selected').length;
+  h.shell.report(h.shell.tabByKey(key('dev')).view, { messages: 1 });
+  assert.strictEqual(h.shell.model().find(x => x.isDev).messages, 0);
+  assert.ok(h.sent.filter(([, ch]) => ch === 'tab-selected').length > sentBefore, 'the page is told, so it clears its own count');
+  const h2 = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h2.shell.open();
+  await flush();
+  h2.shell.report(h2.shell.tabByKey(key('dev')).view, { messages: 1 });
+  assert.strictEqual(h2.shell.model().find(x => x.isDev).messages, 1, 'window in the background: it is not being looked at');
+});
+
+test('held messages: the window coming back to the front looks at the selected tab, and a count alone is enough for looked() to say so', async () => {
+  const h = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h.shell.open();
+  await flush();
+  h.shell.report(h.shell.tabByKey(key('dev')).view, { messages: 3 });
+  h.focused = true;
+  assert.strictEqual(h.shell.looked(), true);
+  assert.strictEqual(h.shell.model().find(x => x.isDev).messages, 0);
+  assert.strictEqual(h.shell.looked(), false, 'nothing left to clear');
+});
+
+// PR #224 Dexter 4: "looking" is decided here, where both facts are known.
+test('isLooked: only the SELECTED tab of a FOCUSED window is being looked at; a stranger is nobody', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  assert.strictEqual(h.shell.isLooked(devView), true);
+  assert.strictEqual(h.shell.isLooked(aView), false, 'not selected');
+  assert.strictEqual(h.shell.isLooked({}), false);
+  h.focused = false;
+  assert.strictEqual(h.shell.isLooked(devView), false, 'window in the background');
 });
 
 test('a raise and an attention click select the sender\'s tab and bring the window forward', async () => {
