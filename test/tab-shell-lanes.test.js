@@ -38,7 +38,7 @@ function memoryLayout(seed = { order: [], closed: [] }) {
 
 function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, markers = {} } = {}) {
   const h = {
-    running: { ...running }, spawns: [], controls: [], listText: list, markers: { ...markers }, clock: 1_000_000_000, layout, confirm: true,
+    running: { ...running }, spawns: [], controls: [], looks: [], listText: list, markers: { ...markers }, clock: 1_000_000_000, layout, confirm: true,
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -51,6 +51,8 @@ function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, mark
     ops: NO_OPS,
     hosts: {
       choosePort: async (tab) => {
+        h.looks.push(tab.key);
+        if (h.blind) return { port: base + 49, action: 'spawn' };   // a walk that saw nothing
         let free = null;
         for (let p = base; p < base + 50; p++) {
           const occ = h.running[p];
@@ -349,4 +351,26 @@ test('Dexter 6: a drag while a lane is closed moves only the dragged lane; the c
   const h = await opened({ layout, running: { 7702: wt('feat-b'), 7703: wt('feat-c') } });
   assert.deepStrictEqual(h.shell.reorder(key('feat-c'), key('feat-b')), { ok: true });
   assert.deepStrictEqual(layout.saved[layout.saved.length - 1].order, [key('feat-a'), key('feat-c'), key('feat-b')]);
+});
+
+// --- PR #227 Dexter 4: a miss at open is not final ---------------------------------------------------
+
+test('Dexter 4: a lane whose host the first look missed gets its tab on a later poll', async () => {
+  const h = harness({ running: { 7701: wt('feat-a') } });
+  h.blind = true;                       // the port walk times out under load: it sees no host
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(stripKeys(h), [key('dev')], 'the first look missed it');
+  h.blind = false;
+  await h.shell.poll();
+  await flush();
+  assert.ok(stripKeys(h).includes(key('feat-a')), 'the next poll looked again, found the host and gave the lane its tab');
+});
+
+test('Dexter 4: the looks are bounded: a lane with no host is not walked on every poll for ever', async () => {
+  const h = await opened({});
+  for (let i = 0; i < 12; i++) { await h.shell.poll(); await flush(); }
+  const looksAtFeatA = h.looks.filter(k => k === key('feat-a')).length;
+  assert.ok(looksAtFeatA >= 2, 'it was looked for again at least once: ' + looksAtFeatA);
+  assert.ok(looksAtFeatA <= 4, 'and a handful of times at most: ' + looksAtFeatA);
 });

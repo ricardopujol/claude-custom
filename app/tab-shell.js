@@ -646,7 +646,13 @@ function createShell(deps) {
   // At open: a tab whose session is ALREADY running gets its view now (its
   // markers should show). One that isn't records nothing and starts nothing.
   // The promise is kept so a hand close can wait for it (Dexter, PR #75 R2-3).
+  // A lane whose host the first look missed (the walk's probe timed out under load, a token not readable yet) is looked for again
+  // on the next polls, a few times and no more: 1B puts a lane on the strip because its session runs, so a miss mustn't be final
+  // (PR #227 Dexter 4). Each look is a port walk, hence the small bound.
+  const ATTACH_LOOKS = 4;
   function attachIfRunning(tab) {
+    tab.attachLooks = (tab.attachLooks || 0) + 1;
+    tab.attachBusy = true;
     tab.attachPromise = queue.run(async () => {
       if (tab.closed || tab.started || tab.starting || destroyed) return;
       let chosen = null;
@@ -655,8 +661,17 @@ function createShell(deps) {
       const token = hosts.tokenFor(chosen.port);
       if (!token) { log(`[shell] ${tab.key}: a host is on ${chosen.port} but its token can't be read`); return; }
       present(tab, chosen.port, token);
-    }).then(publish, publish);
+    }).then(() => { tab.attachBusy = false; publish(); }, () => { tab.attachBusy = false; publish(); });
     return tab.attachPromise;
+  }
+
+  /** Each poll: look again for the host of a lane that still has none, up to ATTACH_LOOKS looks in all. */
+  function lookAgainForHosts() {
+    for (const t of tabs.values()) {
+      if (t.started || t.starting || t.closed || t.ended || t.attachBusy || t.side || t.shell) continue;
+      if ((t.attachLooks || 0) >= ATTACH_LOOKS) continue;
+      attachIfRunning(t);
+    }
   }
 
   // First selection: choose the port NOW, spawn if nobody serves this folder,
@@ -901,6 +916,7 @@ function createShell(deps) {
       }
       if (seen) reconcileWith({ ...seen, listening });
       else publish();
+      lookAgainForHosts();
     } finally {
       polling = false;
     }
