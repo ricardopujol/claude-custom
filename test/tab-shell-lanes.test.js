@@ -38,12 +38,12 @@ function memoryLayout(seed = { order: [], closed: [] }) {
 
 function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, markers = {} } = {}) {
   const h = {
-    running: { ...running }, spawns: [], controls: [], looks: [], listText: list, markers: { ...markers }, clock: 1_000_000_000, layout, confirm: true,
+    running: { ...running }, spawns: [], controls: [], looks: [], logs: [], listText: list, markers: { ...markers }, clock: 1_000_000_000, layout, confirm: true,
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
   const deps = {
-    mode: 'tabs', container: ROOT, cwd: wt('dev'), launchedFrom: null, log: () => {},
+    mode: 'tabs', container: ROOT, cwd: wt('dev'), launchedFrom: null, log: (...a) => h.logs.push(a.join(' ')),
     git: {
       list: async () => { await settle(); return h.listText; },
       marker: (p, branch) => (h.markers[normPath(p)] === branch ? { branch, pr: 1, mergedAt: '2026-10-29T00:00:00Z' } : null),
@@ -373,4 +373,10 @@ test('Dexter 4: the looks are bounded: a lane with no host is not walked on ever
   const looksAtFeatA = h.looks.filter(k => k === key('feat-a')).length;
   assert.ok(looksAtFeatA >= 2, 'it was looked for again at least once: ' + looksAtFeatA);
   assert.ok(looksAtFeatA <= 4, 'and a handful of times at most: ' + looksAtFeatA);
+});
+
+test('Miguel S4: a layout file that cannot be read says so in the log, once, instead of every save quietly refusing', async () => {
+  const layout = { load: () => ({ order: [], closed: [], error: "can't read F: busy" }), save: () => ({ ok: false, error: 'busy' }) };
+  const h = await opened({ layout });
+  assert.ok(h.logs.some(l => /layout: can't read F: busy/.test(l)), h.logs.join(' | '));
 });

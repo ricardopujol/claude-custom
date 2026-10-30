@@ -306,7 +306,7 @@ test('program (OSC 7501) follows the status: the cleaned record, null for none',
 
 // --- drag to reorder (BACKLOG #141): the saved order ---------------------------------------------
 
-const C = { path: 'C:\p\feat-c', branch: 'feat/c', isDev: false, phase: 'live', hostSeen: true };
+const C = { path: 'C:\\p\\feat-c', branch: 'feat/c', isDev: false, phase: 'live', hostSeen: true };
 const orderedStrip = (tabs, order) => m.stripModel({ tabs }, {}, keyOf(DEV.path), { keyOf, order }).map(e => e.label);
 
 test('a saved order puts the lanes where the person dragged them; develop stays first', () => {

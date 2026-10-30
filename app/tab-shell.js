@@ -226,6 +226,7 @@ function readLayout(layout, log) {
   try {
     const l = layout.load();
     if (!l || typeof l !== 'object') return empty;
+    if (typeof l.error === 'string' && l.error !== '') log('[shell] layout:', l.error);   // saves will be refused: say why once (PR #227 Miguel S4)
     const closed = (Array.isArray(l.closed) ? l.closed : [])
       .filter(c => c && typeof c.key === 'string' && c.key !== '' && typeof c.path === 'string' && c.path !== '')
       .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null }));
