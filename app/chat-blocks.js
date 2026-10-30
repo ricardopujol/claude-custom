@@ -102,9 +102,9 @@ function parseInline(src, depth = 0) {
       const mark = dbl ? c + c : c;
       const from = i + mark.length;
       const prev = i > 0 ? s[i - 1] : ' ';
-      const okOpen = s[from] !== undefined && !/\s/.test(s[from]) && (c === '*' || !/[A-Za-z0-9]/.test(prev));
+      const okOpen = s[from] !== undefined && !/\s/.test(s[from]) && (c === '*' || (prev !== '_' && !/[A-Za-z0-9]/.test(prev)));
       const end = okOpen ? s.indexOf(mark, from + 1) : -1;
-      if (end > 0 && !/\s/.test(s[end - 1]) && (c === '*' || !/[A-Za-z0-9]/.test(s[end + mark.length] || ' '))) {
+      if (end > 0 && !/\s/.test(s[end - 1]) && (c === '*' || (s[end + mark.length] !== '_' && !/[A-Za-z0-9]/.test(s[end + mark.length] || ' ')))) {
         flush();
         out.push({ t: dbl ? 'strong' : 'em', c: parseInline(s.slice(from, end), depth + 1) });
         i = end + mark.length;

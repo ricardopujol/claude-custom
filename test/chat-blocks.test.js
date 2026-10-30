@@ -96,6 +96,16 @@ test('bold, italic and links; HTML stays text', () => {
   assert.ok(plain(i).includes('<b>raw</b> <script>alert(1)</script>'));
 });
 
+test('a double underscore inside code-ish text is not emphasis: window.__pwned and x.__y keep every character', () => {
+  for (const s of ['window.__pwned = 1 and x.__y', 'a __b c _d', 'snake_case and __dunder__x']) {
+    const out = parseInline(s);
+    assert.ok(out.every(i => i.t === 'text'), s);
+    assert.strictEqual(plain(out), s);
+  }
+  assert.strictEqual(parseInline('__init__ is special')[0].t, 'strong');
+  assert.strictEqual(parseInline('_a_ ok')[0].t, 'em');
+});
+
 test('only http, https and mailto links are links', () => {
   assert.ok(isSafeHref('https://a.b/c'));
   assert.ok(isSafeHref('http://a.b'));
