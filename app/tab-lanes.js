@@ -35,8 +35,8 @@ function isRunning(e) {
   return e.briefing === true;
 }
 
-/** HOOK for the agent-cues PR (#224): a tab with unread messages needs you too. Wire it there as . */
-function hasMessages() { return false; }
+/** A tab holding cross-session messages for approval (#156, tab-model's `messages`: a whole number) needs you too. Strict: no coercion. */
+function hasMessages(e) { return !!e && typeof e === 'object' && Number.isInteger(e.messages) && e.messages > 0; }
 
 /** A tab that needs the person (a real needsInput, or messages): under 2A it stays on the strip like the selected one. */
 function needsYou(e) {

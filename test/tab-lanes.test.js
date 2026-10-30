@@ -253,8 +253,16 @@ test('2A: a tab that needs you is never hidden, like the selected one; the rest 
   assert.deepStrictEqual([keys(r.shown), keys(r.hidden)], [['dev', 'b', 'd'], ['a', 'c']]);
 });
 
-test('needsYou: needsInput is a real true; the messages hook is off until #224 wires it', () => {
+test('needsYou: needsInput is a real true; held messages (#156) are a real whole number above zero', () => {
   assert.strictEqual(L.needsYou(lane('a', { needsInput: true })), true);
   for (const v of ['yes', 1, null, undefined]) assert.strictEqual(L.needsYou(lane('a', { needsInput: v })), false, String(v));
-  assert.strictEqual(L.hasMessages(lane('a', { messages: 3 })), false, 'hook: #224 returns messages > 0 here');
+  assert.strictEqual(L.hasMessages(lane('a', { messages: 3 })), true);
+  assert.strictEqual(L.needsYou(lane('a', { messages: 1 })), true);
+  for (const v of [0, -1, 1.5, '2', null, undefined, NaN, true]) assert.strictEqual(L.hasMessages(lane('a', { messages: v })), false, String(v));
+});
+
+test('2A (PR #227 Dexter 3): a tab holding messages is never pushed into +N, the roomier ones go instead', () => {
+  const list = [dev({ selected: true }), lane('a'), lane('b'), lane('c', { messages: 2 })];
+  const r = L.splitOverflow(list, 3);
+  assert.deepStrictEqual([keys(r.shown), keys(r.hidden)], [['dev', 'a', 'c'], ['b']]);
 });
