@@ -457,10 +457,12 @@ async function main() {
   check('4b: a press in the terminal closes it', !!termClosed && termClosed.railState.module === null, JSON.stringify(termClosed && termClosed.railState));
   await view(app, 'railClick', { id: 'git' });
   await waitFor(async () => (await viewState(app)).popover, 3000, 20);
-  const beforeFocus = (await viewState(app)).held;
-  await view(app, 'focus', { selector: '#term textarea' });
+  await view(app, 'focus', { selector: '.drail button[data-module="git"]' });   // the terminal may already hold focus (a synthetic click moves none): put it on the rail first so going into the terminal is a real move
+  await sleep(100);
+  check('4b: focus on the rail button leaves the open panel open', !!(await viewState(app)).popover);
+  await view(app, 'focusInto', { selector: '#term textarea' });
   const focusClosed = await waitFor(async () => { const v = await viewState(app); return v.popover === null ? v : null; }, 3000, 50);
-  check('4b: the keyboard going into the terminal closes it (keys never type into it behind an open panel)', !!focusClosed && focusClosed.railState.module === null, JSON.stringify([beforeFocus, focusClosed && focusClosed.railState]));
+  check('4b: the keyboard going into the terminal closes it (keys never type into it behind an open panel)', !!focusClosed && focusClosed.railState.module === null, JSON.stringify(focusClosed && focusClosed.railState));
 
 
   // 5 ---------------------------------------------------------------------------------

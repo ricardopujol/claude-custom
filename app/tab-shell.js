@@ -1778,7 +1778,7 @@ const VIEW_PROBE_ACTIONS = new Set(['previewState', 'previewDo', 'animState', 's
   // dockable panels D2: floating panels
   'floatDrag', 'floatPress', 'secretField', 'floatSecret',
   // dockable panels D4: collapse, a rail's popover, the keyboard, the settle motion
-  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
+  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'focusInto', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
   // BACKLOG #85: the Pin button; #138: whether a real pointer is over a rail icon
   'pinClick', 'isHovered', 'menuCheck', 'railScroll',
   // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit

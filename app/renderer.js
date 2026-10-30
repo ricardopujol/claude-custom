@@ -3230,8 +3230,8 @@ window.addEventListener('keydown', (e) => {
 }, true);
 // ...and when the keyboard goes into the terminal: otherwise keys would type into the terminal behind an open panel. Focus
 // moving anywhere else (the header, another panel, nowhere at all) keeps it open, #138.
-document.addEventListener('focusout', (e) => {
-  if (!peek || !window.dockTreeView.inTerminal(e.relatedTarget)) return;
+document.addEventListener('focusin', (e) => {
+  if (!peek || !window.dockTreeView.inTerminal(e.target)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
@@ -3742,6 +3742,16 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
         el.focus();
         return JSON.stringify({ ok: true });
+      }
+      // Focus moved INTO an element the way the keyboard does it. A probe window that never got OS focus fires no focus events for
+      // el.focus(), so then the event the page would have seen is dispatched by hand.
+      case 'focusInto': {
+        const el = document.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        el.focus();
+        const real = document.hasFocus();
+        if (!real) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+        return JSON.stringify({ ok: true, real });
       }
       case 'dblclick': {
         const el = document.querySelector(String(a.selector));

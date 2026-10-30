@@ -346,7 +346,7 @@ test('PR #159 Miguel B1: Escape is the popover\'s only when focus is in it or on
 });
 
 test('PR #159 Miguel I2 / Dexter 4: the popover closes when the keyboard leaves it, and a keyboard move starting from it draws it away', () => {
-  assert.match(JS, /document\.addEventListener\('focusout', \(e\) => \{\s+if \(!peek \|\| !window\.dockTreeView\.inTerminal\(e\.relatedTarget\)\) return;/);
+  assert.match(JS, /document\.addEventListener\('focusin', \(e\) => \{\s+if \(!peek \|\| !window\.dockTreeView\.inTerminal\(e\.target\)\) return;/);
   assert.match(JS, /if \(peek\) \{ railEvent\(\{ type: 'drop' \}\); renderLayout\(\{ refit: false \}\); \}/);
 });
 
@@ -423,9 +423,9 @@ test('#138 (Ricardo round 2): only the terminal closes an open side panel: a pre
   const press = JS.slice(at, JS.indexOf('\n});', at));
   assert.match(press, /if \(!window\.dockTreeView\.inTerminal\(e\.target\)\) return;/);
   assert.match(press, /railEvent\(\{ type: 'outside' \}\)/);
-  const fo = JS.indexOf("document.addEventListener('focusout', (e) => {");
+  const fo = JS.indexOf("document.addEventListener('focusin', (e) => {");
   const focus = JS.slice(fo, JS.indexOf('\n});', fo));
-  assert.match(focus, /if \(!peek \|\| !window\.dockTreeView\.inTerminal\(e\.relatedTarget\)\) return;/);
+  assert.match(focus, /if \(!peek \|\| !window\.dockTreeView\.inTerminal\(e\.target\)\) return;/);
   assert.match(focus, /railEvent\(\{ type: 'outside' \}\)/);
 });
 
