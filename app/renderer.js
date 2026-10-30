@@ -2409,7 +2409,7 @@ function revealModule(id) {
   } else selectModule(id);
 }
 
-// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
+// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press in the terminal) closes it. It changes no
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
@@ -3214,7 +3214,7 @@ document.addEventListener('click', (e) => {
   selectModule(id);
 });
 
-// A rail's popover closes on Esc and on a press outside it and its rail (a press on the rail is the rail's own click).
+// A rail's popover closes on Esc and on a press in the terminal (a press on the rail is the rail's own click).
 // Esc is the popover's only when the person is IN it (or on its rail button): everywhere else it is the terminal's own
 // interrupt, which is never taken (PR #99 Miguel G3; PR #159 Miguel B1).
 window.addEventListener('keydown', (e) => {
@@ -3228,10 +3228,10 @@ window.addEventListener('keydown', (e) => {
   const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
   if (rail) rail.focus();
 }, true);
-// ...and when the keyboard goes into the terminal: otherwise keys would type into the terminal behind an open panel. Focus
+// ...and when the keyboard goes into the terminal FROM the panel or its rail: otherwise keys would type into the terminal behind it. Focus
 // moving anywhere else (the header, another panel, nowhere at all) keeps it open, #138.
 document.addEventListener('focusin', (e) => {
-  if (!peek || !window.dockTreeView.inTerminal(e.target)) return;
+  if (!peek || !window.dockTreeView.focusClosesPeek(e.target, e.relatedTarget)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });

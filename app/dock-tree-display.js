@@ -209,6 +209,16 @@ function inTerminal(el) {
 }
 
 /**
+ * Whether focus moving from `from` to `to` closes an open side panel: only the keyboard going INTO the terminal FROM the popover or
+ * its rail (Tab out of the panel), so keys never type into it behind an open panel. The app's own term.focus() (a click on another
+ * group's tab, a typed command, a session change) arrives from elsewhere, and a window regaining OS focus has no `from` at all:
+ * both leave the panel open (PR #225 Miguel B1, I1, I3).
+ */
+function focusClosesPeek(to, from) {
+  return inTerminal(to) && isObject(from) && typeof from.closest === 'function' && !!from.closest('.dpeek, .drail');
+}
+
+/**
  * Where the keyboard goes after a rail's button was pressed (PR #159 Miguel I1). A mouse press leaves the focus on the button, so
  * the popover that opens takes it ('popover'); when it closes, a press hands it back to the terminal ('terminal'), and Enter on
  * the button keeps it on the button ('rail'), where the person is.
@@ -725,7 +735,7 @@ function applyBoxes(plan, doc, leanKeeps) {
   if (plan.face !== null) rootStyle.setProperty('--face', `${plan.face}px`);
 }
 
-const API = { treePlan, railAfter, RAIL_IDLE, inTerminal, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
+const API = { treePlan, railAfter, RAIL_IDLE, inTerminal, focusClosesPeek, peekFocus, dividerStep, dividerKey, dividerKeySizes, settleMs, SETTLE_MS, SLIDE_MS: PEEK_SLIDE_MS, dragSizes, sizesAfterDrag, rebaseDrag, floatDragResult, layoutSaved, menuRows, afterTreeGet, applyBoxes, shapeOf, faceForWide, fitNameSize, fitRowNameSize, fitRow, ICONS_ONLY_BELOW, nameRoom, refitRails, NAME_MAX, NAME_PAD, WIDE_FACE_CHROME };
 
 // One namespace on the page (`window.dockTreeView`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
