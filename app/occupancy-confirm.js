@@ -139,7 +139,11 @@ function createConfirm({ send, onChange = () => {} } = {}) {
     confirmed.delete(id);
   }
 
-  return { setClaims, forget, input, type, wait, state: () => ({ asking: asking() }) };
+  // Would a keystroke be held right now (a question is open, or one would open)? The chat's type box asks this BEFORE typing, so its
+  // text and its Enter are never split by the question (PR #226 Dexter 5).
+  const wouldHold = () => present.size > 0 && (asking() || unconfirmed());
+
+  return { setClaims, forget, input, type, wait, wouldHold, state: () => ({ asking: asking() }) };
 }
 
 const api = { createConfirm, isKeystroke, HOLD_MAX };

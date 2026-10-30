@@ -87,7 +87,7 @@ test('the type box is runChatSend: text through userInput (the occupancy confirm
 
 test('Ctrl+Shift+H is decided in the terminal\'s key handler AND a document listener, and is in the shortcuts table', () => {
   const handler = RENDERER.slice(RENDERER.indexOf('term.attachCustomKeyEventHandler('), RENDERER.indexOf('term.attachCustomKeyEventHandler(') + 800);
-  assert.match(handler, /chatViewState\.isChatKey\(e\)\) \{ e\.preventDefault\(\); chatToggle\(\); return false; \}/);
+  assert.match(handler, /chatViewState\.isChatKey\(e\)\) \{ e\.preventDefault\(\); if \(!e\.repeat\) chatToggle\(\); return false; \}/);
   assert.match(RENDERER, /document\.addEventListener\('keydown', \(e\) => \{\s+if \(e\.defaultPrevented \|\| !chatViewState\.isChatKey\(e\)\) return;/);
   const table = read('shortcut-table.js');
   assert.match(table, /'Hide tool lines[^']*', \['Ctrl', 'Shift', 'H'\], 'isChatKey\(e\)'/);
@@ -96,4 +96,21 @@ test('Ctrl+Shift+H is decided in the terminal\'s key handler AND a document list
 test('links and copies go through the bridge the page already has', () => {
   assert.match(RENDERER, /copy: \(text\) => \(window\.harness && window\.harness\.writeClipboard \? window\.harness\.writeClipboard\(text\)/);
   assert.match(RENDERER, /window\.harness\.openExternal\(href\)/);
+});
+
+test('a throwing repaint falls back to the terminal and runs after the bar, status and Map (PR #226 Miguel I7)', () => {
+  const fn = RENDERER.slice(RENDERER.indexOf('function chatRefreshView()'), RENDERER.indexOf('function chatPaint()'));
+  assert.match(fn, /try \{ chatPaint\(\); \} catch/);
+  assert.match(fn, /root\.hidden = true/);
+  const turn = RENDERER.slice(RENDERER.indexOf("if (msg.type === 'turn') {"), RENDERER.indexOf("if (msg.type === 'chat') {"));
+  assert.ok(turn.indexOf('mapRefresh();') < turn.indexOf('chatRefreshView();'), 'the chat repaints last');
+});
+
+test('the screen is read for a dialog or picker, and the occupancy question is asked about before typing (PR #226 Dexter 5, 6)', () => {
+  const paint = RENDERER.slice(RENDERER.indexOf('function chatPaint()'), RENDERER.indexOf('function chatToggle()'));
+  assert.match(paint, /inputState\(screenLines\(\), \{ vim: vimSeen \}\)/);
+  assert.match(paint, /viewFor\(\{ wanted: chatWanted && !shell, turn: sessionTurn, blocked, screen \}\)/);
+  assert.match(RENDERER, /term\.onWriteParsed\(\(\) => \{\s+if \(!chatWanted \|\| chatScreenTimer !== null\) return;/);
+  assert.match(RENDERER, /holds: \(\) => !!occupancy\.confirm && occupancy\.confirm\.wouldHold\(\)/);
+  assert.match(RENDERER, /term\.textarea\.addEventListener\('focus', \(\) => \{ if \(chatShown\) chatUi\.focusInput\(\); \}\)/, 'program typing cannot leave the keys in the hidden terminal');
 });

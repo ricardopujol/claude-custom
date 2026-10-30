@@ -20,8 +20,18 @@ test('the terminal is shown unless the chat was asked for', () => {
   }
 });
 
-test('asked for and nothing needs the person: the chat, whatever the turn', () => {
-  for (const turn of [null, 'idle', 'turn']) assert.deepStrictEqual(viewFor({ wanted: true, turn, blocked: false }), { show: 'chat', note: null });
+test('asked for and the session is known to be at its prompt or in a turn: the chat', () => {
+  for (const turn of ['idle', 'turn']) assert.deepStrictEqual(viewFor({ wanted: true, turn, blocked: false }), { show: 'chat', note: null });
+});
+
+test('an unknown session is not at the prompt: the terminal, no note (a trust dialog, an MCP approval, a resume picker fire no hook) (PR #226 Miguel I1)', () => {
+  for (const turn of [null, undefined, 'something-else']) assert.deepStrictEqual(viewFor({ wanted: true, turn, blocked: false }), { show: 'terminal', note: null });
+});
+
+test('a dialog or picker the SCREEN shows flips to the terminal although the hooks say idle (/model, /resume) (PR #226 Dexter 6)', () => {
+  assert.deepStrictEqual(viewFor({ wanted: true, turn: 'idle', blocked: false, screen: 'dialog' }), { show: 'terminal', note: FLIP_NOTE });
+  assert.strictEqual(viewFor({ wanted: true, turn: 'idle', blocked: false, screen: 'ready' }).show, 'chat');
+  assert.strictEqual(viewFor({ wanted: true, turn: 'turn', blocked: false, screen: 'multiline' }).show, 'chat');
 });
 
 test('a dialog or a blocked program flips to the terminal with a one-line note', () => {
@@ -40,6 +50,7 @@ test('property: the terminal shows whenever the CLI needs the person', () => {
   fc.assert(fc.property(fc.boolean(), fc.constantFrom(...TURNS), fc.boolean(), (wanted, turn, blocked) => {
     const v = viewFor({ wanted, turn, blocked });
     if (turn === 'prompt' || blocked) return v.show === 'terminal';
+    if (turn === null) return v.show === 'terminal';
     return v.show === (wanted ? 'chat' : 'terminal');
   }));
 });

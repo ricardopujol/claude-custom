@@ -29,11 +29,16 @@ const STORAGE_PREFIX = 'chatView:';
 function viewFor(s) {
   const wanted = !!s && s.wanted === true;
   if (!wanted) return { show: 'terminal', note: null };
-  if (s.turn === 'prompt' || s.blocked === true) return { show: 'terminal', note: FLIP_NOTE };
+  // A dialog the hooks announced, the CLI's own blocked report, or a dialog / picker the SCREEN shows (/model, /resume, trust, MCP approval:
+  // none fire a hook): the person is needed in the terminal.
+  if (s.turn === 'prompt' || s.blocked === true || s.screen === 'dialog') return { show: 'terminal', note: FLIP_NOTE };
+  // Unknown is not at the prompt: before the session's first start the CLI may be showing a trust dialog or a resume picker, and the host
+  // being gone says nothing either (PR #226 Miguel I1, Dexter 6).
+  if (s.turn !== 'idle' && s.turn !== 'turn') return { show: 'terminal', note: null };
   return { show: 'chat', note: null };
 }
 
-// Ctrl+Shift+H, on keydown only. The CLI sees no Ctrl+Shift combination (a pty can't carry one), so it can't clash with it.
+// Ctrl+Shift+H, on keydown only. A held key repeats: the caller swallows the repeat too but toggles once (e.repeat). The CLI sees no Ctrl+Shift combination (a pty can't carry one), so it can't clash with it.
 function isChatKey(e) {
   return !!e && e.type === 'keydown' && e.ctrlKey === true && e.shiftKey === true && !e.altKey && !e.metaKey && e.code === 'KeyH';
 }

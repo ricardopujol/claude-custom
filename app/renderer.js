@@ -9595,10 +9595,10 @@ function handleControl(msg) {
     agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting
     // ...so the card is drawn again PAUSE_TIMEOUT_MS after it, not only after the click: a quiet idle session sends no other frame (PR #158 Dexter R3 N5).
     if (sessionTurn === 'idle' && agentPauses.waiting()) setTimeout(renderRoster, window.agentPauseDisplay.PAUSE_TIMEOUT_MS + 500);
-    chatRefreshView();            // BACKLOG #157: a dialog sends the chat back to the terminal; the turn resuming brings it again
     paintBar();
     reportTabStatus();
     mapRefresh();
+    chatRefreshView();            // BACKLOG #157: a dialog sends the chat back to the terminal; the turn resuming brings it again. After the rest: nothing waits on it
     return;
   }
   if (msg.type === 'chat') {
@@ -10020,7 +10020,7 @@ term.attachCustomKeyEventHandler((e) => {
   if (e.type !== 'keydown') return true;
 
   // The chat view's switch (BACKLOG #157), decided here for the same reason as the panel toggle below.
-  if (chatViewState.isChatKey(e)) { e.preventDefault(); chatToggle(); return false; }
+  if (chatViewState.isChatKey(e)) { e.preventDefault(); if (!e.repeat) chatToggle(); return false; }
 
   // THE PANEL TOGGLE MUST BE DECIDED HERE, not in a document listener. xterm's
   // textarea always holds focus, so a document-level handler never saw Ctrl+B
@@ -10167,7 +10167,7 @@ function chatSend(text) {
   return chatViewState.runChatSend(text, {
     turn: () => sessionTurn,
     blocked: () => programRoot !== null && programRoot.state === 'blocked',
-    holds: () => false,
+    holds: () => !!occupancy.confirm && occupancy.confirm.wouldHold(),
     lines: () => { const l = screenLines(); if (vimInsertShown(l)) vimSeen = true; return l; },
     sync: () => new Promise((resolve) => term.write('', resolve)),
     termRows: () => term.rows,
@@ -10187,10 +10187,24 @@ function chatSend(text) {
 
 // Repaints which display shows. Called by everything that can change it: the switch, the host's turn, the CLI's own blocked report,
 // the conversation, and the host kind (a plain shell tab has no CLI to chat with).
+// A repaint that throws must not take the bar, the status and the Map with it (the turn handler calls this), nor leave a chat over a
+// terminal that cannot be reached: it falls back to the terminal (PR #226 Miguel I7).
 function chatRefreshView() {
+  try { chatPaint(); } catch (err) {
+    console.warn('[chat] repaint failed, showing the terminal:', err);
+    chatShown = false;
+    document.body.classList.remove('chat-on');
+    const root = document.getElementById('chat-view');
+    if (root) root.hidden = true;
+  }
+}
+
+function chatPaint() {
   const blocked = programRoot !== null && programRoot.state === 'blocked';
   const shell = hostKind === 'shell';
-  const view = chatViewState.viewFor({ wanted: chatWanted && !shell, turn: sessionTurn, blocked });
+  // The CLI's own pickers (/model, /resume, a trust or MCP dialog) fire no hook: the screen is what shows one (PR #226 Dexter 6).
+  const screen = chatWanted && !shell ? inputState(screenLines(), { vim: vimSeen }) : null;
+  const view = chatViewState.viewFor({ wanted: chatWanted && !shell, turn: sessionTurn, blocked, screen });
   const was = chatShown;
   chatShown = view.show === 'chat';
   chatBtn.hidden = shell;
@@ -10213,13 +10227,22 @@ function chatApply(chat) {
   chatRefreshView();
 }
 
+// The screen changes without a hook (a picker opens, a dialog closes): looked at again shortly after the terminal parsed something.
+let chatScreenTimer = null;
+term.onWriteParsed(() => {
+  if (!chatWanted || chatScreenTimer !== null) return;
+  chatScreenTimer = setTimeout(() => { chatScreenTimer = null; if (chatWanted) chatRefreshView(); }, 150);
+});
+// Program typing (the wand, Run /merged) focuses the terminal; while the chat covers it the keys must stay with the chat box.
+if (term.textarea) term.textarea.addEventListener('focus', () => { if (chatShown) chatUi.focusInput(); });
+
 chatBtn.addEventListener('click', chatToggle);
 document.getElementById('chat-show-tools').addEventListener('click', chatToggle);
 // The terminal's own key handler decides the shortcut while it has focus (xterm consumes keys before a document listener); this is the chat's.
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented || !chatViewState.isChatKey(e)) return;
   e.preventDefault();
-  chatToggle();
+  if (!e.repeat) chatToggle();
 });
 chatRefreshView();
 
