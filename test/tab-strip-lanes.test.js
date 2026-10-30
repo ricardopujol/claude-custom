@@ -157,7 +157,8 @@ test('dragging a tab onto the left half of another drops it before that one', ()
   const [, one, , three] = doc.byId.tabs.children;
   const start = dragEv();
   three.listeners.dragstart(start);
-  assert.strictEqual(start.dataTransfer.data['text/plain'], 'lane3');
+  assert.strictEqual(start.dataTransfer.data['application/x-claude-custom-lane'], 'lane3');
+  assert.strictEqual(start.dataTransfer.data['text/plain'], undefined, 'no plain text: the path must not drop into the Inbox field (PR #227 Miguel S1)');
   const over = dragEv({ clientX: 20 });
   one.listeners.dragover(over);
   assert.strictEqual(over.prevented, true, 'a drop is allowed here');
@@ -309,4 +310,42 @@ test('tabs that overflow their box after the first measure are cut one at a time
 test('tab-strip.html: the index field shrinks before the tabs do (its shrink factor outweighs theirs), so the measured room is the real one', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
   assert.match(html, /#index \{[^}]*flex: 0 1000 340px/);
+});
+
+// --- PR #227 Dexter 5 + Miguel Y3: the refit and the ghosts --------------------------------------------
+
+/** A strip whose tabs box holds `fit` tabs of 112 px, whatever the room measure said. */
+function fitDoc(room, fit) {
+  const doc = fakeDoc({ room });
+  Object.defineProperty(doc.byId.tabs, 'scrollWidth', { get: () => doc.byId.tabs.children.length * 112 });
+  Object.defineProperty(doc.byId.tabs, 'clientWidth', { get: () => 112 * fit });
+  return doc;
+}
+
+test('Dexter 5: the ghost of a closed tab does not push another tab into +N; when the fade ends the strip is checked again', () => {
+  const timers = [];
+  const restore = strip.fade.use({ schedule: (fn, ms) => timers.push([fn, ms]) });
+  try {
+    const doc = fitDoc(112 * 5 + 24, 5);
+    const full = model(6);
+    paint(doc, { model: full, mode: 'tabs' }, bridgeSpy());
+    assert.strictEqual(doc.byId.tabs.children.length, 5);
+    assert.strictEqual(doc.byId.lanes.textContent, '+1 Lanes ▾');
+    paint(doc, { model: full.filter(e => e.key !== 'lane1'), mode: 'tabs' }, bridgeSpy());   // lane1 closes: five left, five fit
+    assert.strictEqual(doc.byId.tabs.children.length, 6, 'the four live tabs and lane5, plus the fading ghost');
+    assert.strictEqual(doc.byId.lanes.textContent, 'Lanes ▾', 'nothing was cut for the ghost');
+    for (const [fn] of timers.splice(0)) fn();
+    assert.deepStrictEqual(keysOf(doc), ['dev', 'lane2', 'lane3', 'lane4', 'lane5']);
+    assert.strictEqual(doc.byId.lanes.textContent, 'Lanes ▾');
+  } finally { restore(); }
+});
+
+test('Miguel Y3: tabs that cannot give way (develop, the selected one) are repainted a bounded number of times, not once per tab', () => {
+  const doc = fitDoc(112 * 10 + 24, 1);
+  let rebuilds = 0;
+  const was = doc.byId.tabs.replaceChildren;
+  doc.byId.tabs.replaceChildren = (...cs) => { rebuilds++; return was(...cs); };
+  paint(doc, { model: model(3, 1), mode: 'tabs' }, bridgeSpy());
+  assert.deepStrictEqual(keysOf(doc), ['dev', 'lane1'], 'develop and the selected tab stay; the one that could go went');
+  assert.strictEqual(rebuilds, 3, 'one paint, one cut, one pass that hid nothing more');
 });

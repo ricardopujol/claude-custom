@@ -253,7 +253,8 @@ function wireDrag(tab, entry, bridge, all) {
       dragState.key = entry.key;
       if (ev && ev.dataTransfer) {
         ev.dataTransfer.effectAllowed = 'move';
-        ev.dataTransfer.setData('text/plain', entry.key);
+        // A private type: text/plain would let the path drop into the Inbox field beside the tabs as text (PR #227 Miguel S1).
+        ev.dataTransfer.setData(LANE_MIME, entry.key);
       }
     });
     tab.addEventListener('dragend', () => endDrag());
@@ -285,15 +286,16 @@ function wireDrag(tab, entry, bridge, all) {
 // repaint in that time, then goes. Not under prefers-reduced-motion, and not for a tab that only moved into the +N menu
 // (a narrower window is not a lane leaving).
 const FADE_MS = 250;
-const fadeState = { doc: null, prevKeys: [], prevLabels: new Map(), ghosts: [], schedule: (fn, ms) => setTimeout(fn, ms) };
+const LANE_MIME = 'application/x-claude-custom-lane';
+const fadeState = { repaintWhenClear: null, doc: null, prevKeys: [], prevLabels: new Map(), ghosts: [], schedule: (fn, ms) => setTimeout(fn, ms) };
 const fade = {
   MS: FADE_MS,
   /** A test's seam: swap the timer. Returns the function that puts everything back. */
   use(over) {
     const was = fadeState.schedule;
     if (over && typeof over.schedule === 'function') fadeState.schedule = over.schedule;
-    fadeState.doc = null; fadeState.prevKeys = []; fadeState.prevLabels = new Map(); fadeState.ghosts = [];
-    return () => { fadeState.schedule = was; fadeState.doc = null; fadeState.prevKeys = []; fadeState.ghosts = []; };
+    fadeState.doc = null; fadeState.prevKeys = []; fadeState.prevLabels = new Map(); fadeState.ghosts = []; fadeState.repaintWhenClear = null;
+    return () => { fadeState.schedule = was; fadeState.doc = null; fadeState.prevKeys = []; fadeState.ghosts = []; fadeState.repaintWhenClear = null; };
   },
 };
 
@@ -305,9 +307,17 @@ function reducedMotion(doc) {
 function dropGhost(g) {
   fadeState.ghosts = fadeState.ghosts.filter(x => x !== g);
   const n = g.node;
-  if (!n || !n.parentNode) return;
-  if (typeof n.remove === 'function') n.remove();
-  else n.parentNode.replaceChildren(...n.parentNode.children.filter(c => c !== n));
+  if (n && n.parentNode) {
+    if (typeof n.remove === 'function') n.remove();
+    else n.parentNode.replaceChildren(...n.parentNode.children.filter(c => c !== n));
+  }
+  // While a ghost stood, the overflow check was skipped (it still took the room of a tab that had left): redo it now it is gone
+  // (PR #227 Dexter 5, Miguel Y3).
+  const again = fadeState.repaintWhenClear;
+  if (again && fadeState.ghosts.length === 0 && fadeState.doc === again.doc) {
+    fadeState.repaintWhenClear = null;
+    paint(again.doc, again.payload, again.bridge);
+  }
 }
 
 /** The tab nodes with any ghosts of tabs that just left put back where they were; updates what the next paint compares to. */
@@ -366,14 +376,14 @@ function stripRoom(doc) {
 let backgroundBusy = false;
 
 /** Paint `payload` into the page. Everything is rebuilt: the strip is small. */
-function paint(doc, payload, bridge, cut = 0) {
+function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
   if (dragState.key !== null) { dragState.held = { doc, payload, bridge }; return; }
   const tabs = doc.getElementById('tabs');
   const pane = doc.getElementById('pane');
   // `model` is the tabs main says have a place on the strip (1B); which of them FIT is this page's to say (2A).
   const model = payload && Array.isArray(payload.model) ? payload.model : [];
   const room = stripRoom(doc);
-  const { shown, hidden } = tabLanes.splitOverflow(model, room === null ? undefined : tabLanes.capacityFor(room) - cut);
+  const { shown, hidden } = tabLanes.splitOverflow(model, room === null ? undefined : capacity !== null ? capacity : tabLanes.capacityFor(room));
   const shownKeys = new Set(shown.map(e => e.key));
   const hiddenKeys = model.filter(e => e && !shownKeys.has(e.key)).map(e => e.key);
   tabs.replaceChildren(...withGhosts(doc, shown.map(e => paintTab(doc, e, bridge, model)), shown, hiddenKeys));
@@ -413,7 +423,13 @@ function paint(doc, payload, bridge, cut = 0) {
   paintLanes(doc, payload, hidden, bridge);
   // The room was measured before this paint: something beside the tabs (Stop all, the index count) can have grown since, or the
   // window shrank. If the tabs now overflow their box, hide one more and paint again (each pass hides one, so it ends).
-  if (room !== null && shown.length > 1 && tabs.scrollWidth > tabs.clientWidth + 1 && cut < model.length) paint(doc, payload, bridge, cut + 1);
+  // A leaving tab's ghost still takes its 112 px for the first moments of the fade, so while one stands the check would cut a tab
+  // that fits: skip it, and redo it when the last ghost is dropped. A pass that hid nothing more than the one before it means the
+  // rest (develop, the selected tab, tabs that need you) can't give way: stop.
+  if (room !== null && shown.length > 1 && tabs.scrollWidth > tabs.clientWidth + 1) {
+    if (fadeState.ghosts.length > 0) fadeState.repaintWhenClear = { doc, payload, bridge };
+    else if (hidden.length !== prevHidden) paint(doc, payload, bridge, Math.min(capacity !== null ? capacity : Infinity, shown.length) - 1, hidden.length);
+  }
 }
 
 // The Lanes ▾ button (1B + 2A): one native menu (main builds it) of the lanes with no tab and the tabs this page hid, with
