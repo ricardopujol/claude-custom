@@ -6,11 +6,12 @@
  *
  * PURE DATA, and the reason it is not a library: model text is untrusted, so nothing here ever produces HTML. The
  * display (app/chat-display.js) builds elements from these blocks with textContent; raw HTML in a reply stays literal
- * text, and a link survives only if its address is http, https or mailto (isSafeHref). A small subset is enough for a
+ * text, and a link survives only if its address is http or https (isSafeHref; a mailto link would do nothing, the app opens only http(s)). A small subset is enough for a
  * chat: headings, paragraphs, fenced code, blockquotes, lists, tables, a rule; bold, italic, inline code, links.
  *
  * Copy targets (the design's open question, built as recommended): a fenced block, a blockquote, inline code that looks
- * like a command or a path, and a paragraph right after a line ending in "paste:" / "send:" / "draft:" (`draft: true`).
+ * like a command or a path, and the run of paragraphs right after a lead-in ending in "paste:" / "send:" / "draft:" (or a "Draft" heading):
+ * one `draft` block that Copy takes whole.
  * "Copy reply" on the whole message is the display's catch-all.
  *
  * Loaded as a plain <script> in renderer.html, so it is wrapped: every file there shares ONE global scope (CLAUDE.md).
@@ -20,7 +21,7 @@
 
 const MAX_DEPTH = 4;
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)[^`]*$/;
-const HEADING = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+const HEADING = /^ {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/;      // a closing run of # needs a space before it: "## Using C#" keeps its #
 const HR = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/;
 const QUOTE = /^ {0,3}>/;
 const LIST_ITEM = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/;
@@ -47,7 +48,7 @@ function looksLikePath(s) {
 }
 
 function isSafeHref(h) {
-  return typeof h === 'string' && /^(?:https?:\/\/|mailto:)[^\s\u0000-\u001f\u007f]+$/i.test(h);
+  return typeof h === 'string' && /^(?:https?:\/\/)[^\s\u0000-\u001f\u007f]+$/i.test(h);
 }
 
 const text = (v) => ({ t: 'text', v });
@@ -69,7 +70,9 @@ function parseInline(src, depth = 0) {
         flush();
         let v = s.slice(i + n, end);
         if (v.length > 2 && v.startsWith(' ') && v.endsWith(' ')) v = v.slice(1, -1);
-        out.push({ t: 'code', v, copy: looksLikeCommand(v) || looksLikePath(v) });
+        const copy = looksLikeCommand(v) || looksLikePath(v);
+        // What is pasted is the command, not the prompt sign shown before it: `$ npm test` copies "npm test" (PR #226 Dexter 14)
+        out.push({ t: 'code', v, copy, ...(copy ? { copyText: v.replace(/^[$>]\s+/, '') } : {}) });
         i = end + n;
         continue;
       }
@@ -223,13 +226,33 @@ function parseBlocks(lines, depth) {
 
     const para = [line];
     i++;
-    while (i < lines.length && lines[i].trim() !== '' && !startsBlock(lines[i])) { para.push(lines[i]); i++; }
-    const prev = blocks[blocks.length - 1];
-    const block = { type: 'paragraph', inlines: parseInline(para.join('\n')), raw: para.join('\n') };
-    if (prev && prev.type === 'paragraph' && DRAFT_CUE.test(prev.raw.split('\n').pop())) block.draft = true;
-    blocks.push(block);
+    // a table may interrupt a paragraph ("Results:" straight above its header row)
+    while (i < lines.length && lines[i].trim() !== '' && !startsBlock(lines[i]) && !tableStarts(lines, i)) { para.push(lines[i]); i++; }
+    blocks.push({ type: 'paragraph', inlines: parseInline(para.join('\n')), raw: para.join('\n') });
   }
-  return blocks;
+  return groupDrafts(blocks);
+}
+
+const tableStarts = (lines, i) => lines[i].includes('|') && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]) && lines[i + 1].includes('-');
+
+const leadsDraft = (b) => (b.type === 'paragraph' && DRAFT_CUE.test(b.raw.split('\n').pop()))
+  || (b.type === 'heading' && (DRAFT_CUE.test(plainOf(b.inlines)) || /^\W*draft\W*$/i.test(plainOf(b.inlines))));
+
+/**
+ * A draft is the run of paragraphs right after a lead-in ("Here's the email to send:", "## Draft:"), up to the next block of another kind or the
+ * next lead-in: an email is several paragraphs, and Copy takes all of them (PR #226 Dexter 10). One block, `{ type: 'draft', blocks, text }`.
+ */
+function groupDrafts(blocks) {
+  const out = [];
+  for (let i = 0; i < blocks.length; i++) {
+    out.push(blocks[i]);
+    if (!leadsDraft(blocks[i]) || !blocks[i + 1] || blocks[i + 1].type !== 'paragraph') continue;
+    const run = [];
+    for (let j = i + 1; j < blocks.length && blocks[j].type === 'paragraph' && (j === i + 1 || !leadsDraft(blocks[j])); j++) run.push(blocks[j]);
+    out.push({ type: 'draft', blocks: run, text: run.map(p => p.raw).join('\n\n') });
+    i += run.length;
+  }
+  return out;
 }
 
 function parseMarkdown(src) {
@@ -242,12 +265,13 @@ const plainOf = (inlines) => inlines.map(n => (n.t === 'text' || n.t === 'code' 
 /** Every Copy button the blocks earn, in reading order. */
 function copyTargets(blocks) {
   const out = [];
-  const inlines = (list) => { for (const n of list) { if (n.t === 'code' && n.copy) out.push({ kind: 'inline', text: n.v }); if (n.c) inlines(n.c); } };
+  const inlines = (list) => { for (const n of list) { if (n.t === 'code' && n.copy) out.push({ kind: 'inline', text: n.copyText }); if (n.c) inlines(n.c); } };
   const walk = (bs) => {
     for (const b of bs) {
       if (b.type === 'code') out.push({ kind: 'code', text: b.text });
       else if (b.type === 'quote') out.push({ kind: 'quote', text: b.text });
-      else if (b.type === 'paragraph') { if (b.draft === true) out.push({ kind: 'draft', text: b.raw }); inlines(b.inlines); }
+      else if (b.type === 'paragraph') inlines(b.inlines);
+      else if (b.type === 'draft') { out.push({ kind: 'draft', text: b.text }); walk(b.blocks); }
       else if (b.type === 'heading') inlines(b.inlines);
       else if (b.type === 'list') b.items.forEach(it => { inlines(it.inlines); walk(it.blocks); });
       else if (b.type === 'table') { b.head.forEach(inlines); b.rows.forEach(r => r.forEach(inlines)); }

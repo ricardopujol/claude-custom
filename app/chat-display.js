@@ -28,6 +28,8 @@ const STICK_PX = 40;           // within this of the bottom, new messages keep t
 function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout(fn, ms) }) {
   const md = markdown();
   let shown = null;            // the message signature last painted: ids and text lengths (null: nothing painted yet)
+  const nodes = [];            // the painted message nodes, in order (the first `shown.length` of the log's children)
+  let empty = null;            // the "nothing yet" line while there is no message
 
   const el = (tag, cls, txt) => {
     const e = doc.createElement(tag);
@@ -58,7 +60,7 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
       else if (n.t === 'code') {
         const wrap = el('span', 'chat-inline');
         wrap.append(el('code', 'chat-code', n.v));
-        if (n.copy) wrap.append(copyButton('Copy this command or path', () => n.v, 'chat-copy-inline'));
+        if (n.copy) wrap.append(copyButton('Copy this command or path', () => n.copyText, 'chat-copy-inline'));
         parent.append(wrap);
       } else if (n.t === 'strong' || n.t === 'em') {
         const e = el(n.t === 'strong' ? 'strong' : 'em');
@@ -87,11 +89,12 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
       } else if (b.type === 'paragraph') {
         const p = el('p', 'chat-p');
         inlines(b.inlines, p);
-        if (b.draft === true) {
-          const wrap = el('div', 'chat-draft');
-          wrap.append(p, copyButton('Copy this draft', () => b.raw));
-          parent.append(wrap);
-        } else parent.append(p);
+        parent.append(p);
+      } else if (b.type === 'draft') {
+        const wrap = el('div', 'chat-draft');
+        blocks(b.blocks, wrap);
+        wrap.append(copyButton('Copy this draft', () => b.text));
+        parent.append(wrap);
       } else if (b.type === 'code') {
         const box = el('div', 'chat-codeblock');
         const bar = el('div', 'chat-codebar');
@@ -165,11 +168,21 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
       if (becameVisible) log.scrollTop = log.scrollHeight;
       return;
     }
+    // Only what changed is touched (PR #226 Miguel I3): ids only grow, so the messages that were already painted and still lead the list keep
+    // their nodes (a screen reader reads only the addition to this log, a selection or a focused Copy button survives), and only the tail
+    // from the first difference is rebuilt.
+    const prev = shown || [];
+    let keep = 0;
+    while (keep < prev.length && keep < sig.length && prev[keep] === sig[keep]) keep++;
     shown = sig;
     const atBottom = becameVisible || log.scrollHeight - log.scrollTop - log.clientHeight <= STICK_PX;
-    while (log.firstChild) log.removeChild(log.firstChild);
-    if (messages.length === 0) log.append(el('div', 'chat-empty', 'Nothing to show yet. Your prompts and Claude\'s replies will appear here, without the tool lines.'));
-    for (const m of messages) log.append(message(m));
+    if (empty && (messages.length > 0 || keep === 0)) { empty.remove(); empty = null; }
+    for (const n of nodes.splice(keep)) n.remove();
+    if (messages.length === 0) {
+      empty = el('div', 'chat-empty', 'Nothing to show yet. Your prompts and Claude\'s replies will appear here, without the tool lines.');
+      log.append(empty);
+    }
+    for (const m of messages.slice(keep)) { const n = message(m); nodes.push(n); log.append(n); }
     if (atBottom) log.scrollTop = log.scrollHeight;
   }
 

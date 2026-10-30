@@ -122,18 +122,45 @@ test('a table is rows of cells', () => {
   assert.deepStrictEqual(b[0].rows[0].map(plain), ['1', 'x']);
 });
 
-test('draft cue: a paragraph right after a line ending in paste:, send: or draft: is a copy target', () => {
+test('draft cue: the paragraphs right after a line ending in paste:, send: or draft: are ONE copy target (PR #226 Dexter 10)', () => {
   for (const cue of ['Here is the reply to paste:', 'Draft:', '**Send:**', 'the email to send:  ']) {
-    const b = parseMarkdown(`${cue}\n\nHi Sam, thanks.\nSee you Monday.\n\nUnrelated.`);
-    assert.strictEqual(b[1].draft, true, cue);
+    const b = parseMarkdown(`${cue}\n\nHi Sam, thanks.\nSee you Monday.\n\n---\n\nUnrelated.`);
+    assert.deepStrictEqual(b.map(x => x.type), ['paragraph', 'draft', 'hr', 'paragraph'], cue);
     assert.ok(copyTargets(b).some(t => t.kind === 'draft' && t.text === 'Hi Sam, thanks.\nSee you Monday.'), cue);
-    assert.notStrictEqual(b[2].draft, true);
   }
+});
+
+test('an email of several paragraphs copies whole, and a heading cue counts too', () => {
+  const email = parseMarkdown("Here's the email to send:\n\nHi Ana,\n\nThe build is green. I'll merge it today.\n\nBest,\nRicardo");
+  assert.deepStrictEqual(email.map(x => x.type), ['paragraph', 'draft']);
+  assert.strictEqual(email[1].text, "Hi Ana,\n\nThe build is green. I'll merge it today.\n\nBest,\nRicardo");
+  for (const h of ['## Draft:', '## Draft', '### Reply to send:']) {
+    const b = parseMarkdown(`${h}\n\nHi Sam.\n\nThanks.`);
+    assert.deepStrictEqual(b.map(x => x.type), ['heading', 'draft'], h);
+  }
+  const two = parseMarkdown('Draft:\n\nOne.\n\nAlso send:\n\nTwo.');
+  assert.deepStrictEqual(two.map(x => x.type), ['paragraph', 'draft', 'paragraph', 'draft'], 'a second lead-in starts a second draft');
+});
+
+test('a heading keeps a trailing # that is part of its text; a closing run needs a space (PR #226 Dexter 12)', () => {
+  assert.strictEqual(plain(parseMarkdown('## Using C#')[0].inlines), 'Using C#');
+  assert.strictEqual(plain(parseMarkdown('# F#')[0].inlines), 'F#');
+  assert.strictEqual(plain(parseMarkdown('## Title ##')[0].inlines), 'Title');
+});
+
+test('a table may interrupt a paragraph: "Results:" straight above its rows (PR #226 Dexter 13)', () => {
+  const b = parseMarkdown('Results:\n| a | b |\n|---|---|\n| 1 | 2 |');
+  assert.deepStrictEqual(b.map(x => x.type), ['paragraph', 'table']);
+});
+
+test('inline `$ npm test` copies the command without the prompt sign (PR #226 Dexter 14)', () => {
+  const t = copyTargets(parseMarkdown('Run `$ npm test` then `> git status`.'));
+  assert.deepStrictEqual(t.map(x => x.text), ['npm test', 'git status']);
 });
 
 test('no draft cue, no draft: an ordinary paragraph after an ordinary one', () => {
   const b = parseMarkdown('I looked at it.\n\nIt works.');
-  assert.ok(b.every(x => x.draft !== true));
+  assert.ok(b.every(x => x.type !== 'draft'));
   assert.deepStrictEqual(copyTargets(b), []);
 });
 
@@ -173,7 +200,7 @@ test('a double underscore inside code-ish text is not emphasis: window.__pwned a
 test('only http, https and mailto links are links', () => {
   assert.ok(isSafeHref('https://a.b/c'));
   assert.ok(isSafeHref('http://a.b'));
-  assert.ok(isSafeHref('mailto:a@b.c'));
+  assert.ok(!isSafeHref('mailto:a@b.c'), 'a mailto link would do nothing when clicked');
   for (const bad of ['javascript:alert(1)', 'JaVaScRiPt:alert(1)', 'data:text/html,x', 'file:///C:/x', ' javascript:x', 'vbscript:x', '//evil.com', '/rel', '', 'https://a b', 'https://x\u0000.y']) assert.ok(!isSafeHref(bad), bad);
   const i = parseInline('[x](javascript:alert(1))');
   assert.ok(!i.some(n => n.t === 'link'));
@@ -211,7 +238,7 @@ test('property: every link href that comes out is http, https or mailto and has 
   };
   fc.assert(fc.property(fc.string({ maxLength: 120 }), fc.string({ maxLength: 40 }), (label, href) => {
     const hrefs = blocks(parseMarkdown(`[${label}](${href}) and ${label}`), []);
-    return hrefs.every(h => /^(https?:\/\/|mailto:)[^\s\u0000-\u001f]+$/i.test(h));
+    return hrefs.every(h => /^(https?:\/\/)[^\s\u0000-\u001f]+$/i.test(h));
   }));
 });
 
@@ -223,10 +250,11 @@ test('property: a fenced block\'s text round-trips whatever is inside it (no fen
   }));
 });
 
-test('property: a draft is only ever the block right after a paragraph that ends in a cue', () => {
+test('property: a draft is only ever a run of paragraphs right after a lead-in paragraph or heading', () => {
   const CUE = /(paste|send|draft):\**_*\s*$/i;
-  fc.assert(fc.property(fc.array(fc.constantFrom('Hello there', 'Draft:', 'paste:', '> quote', '```\ncode\n```', '- item', 'Send:', 'ok'), { maxLength: 8 }), (parts) => {
+  fc.assert(fc.property(fc.array(fc.constantFrom('Hello there', 'Draft:', 'paste:', '> quote', '```\ncode\n```', '- item', 'Send:', 'ok', '## Draft:'), { maxLength: 8 }), (parts) => {
     const b = parseMarkdown(parts.join('\n\n'));
-    return b.every((x, i) => x.draft !== true || (i > 0 && b[i - 1].type === 'paragraph' && CUE.test(plain(b[i - 1].inlines).split('\n').pop())));
+    return b.every((x, i) => x.type !== 'draft' || (i > 0 && x.blocks.length > 0 && x.blocks.every(p => p.type === 'paragraph')
+      && (b[i - 1].type === 'heading' || (b[i - 1].type === 'paragraph' && CUE.test(plain(b[i - 1].inlines).split('\n').pop())))));
   }));
 });

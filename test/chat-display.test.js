@@ -127,7 +127,7 @@ test('hostile model text is text, never an element', () => {
   assert.strictEqual(win.__x, undefined);
   for (const e of els.log.querySelectorAll('*')) {
     for (const a of e.attributes) assert.ok(!/^on/i.test(a.name), `${e.tagName} has ${a.name}`);
-    if (e.tagName === 'A') assert.match(e.getAttribute('href'), /^(https?:|mailto:)/i);
+    if (e.tagName === 'A') assert.match(e.getAttribute('href'), /^https?:/i);
   }
   assert.ok(els.log.textContent.includes('<script>window.__x = 1</script>'));
 });
@@ -225,4 +225,38 @@ test('an ordered list is drawn with its first number, and a code block inside an
   assert.strictEqual(ol.querySelectorAll(':scope > li').length, 2);
   assert.strictEqual(ol.querySelector('li pre code').textContent, 'ls');
   assert.ok([...ol.querySelectorAll('.chat-copy')].some(b => b.getAttribute('aria-label') === 'Copy this code'));
+});
+
+test('a new message is appended and the older nodes are the same objects; a cleared chat shows the empty line again (PR #226 Miguel I3)', () => {
+  const { view, els } = setup();
+  view.update({ messages: msgs({ role: 'user', text: 'one' }, { role: 'assistant', text: 'two' }), working: false, view: show });
+  const [a, b] = [...els.log.querySelectorAll('.chat-msg')];
+  view.update({ messages: msgs({ role: 'user', text: 'one' }, { role: 'assistant', text: 'two' }, { role: 'user', text: 'three' }), working: false, view: show });
+  const all = [...els.log.querySelectorAll('.chat-msg')];
+  assert.strictEqual(all.length, 3);
+  assert.strictEqual(all[0], a);
+  assert.strictEqual(all[1], b);
+  // a message whose text grew is rebuilt, and so is everything after it; everything before it keeps its node
+  view.update({ messages: msgs({ role: 'user', text: 'one' }, { role: 'assistant', text: 'two, longer' }), working: false, view: show });
+  const after = [...els.log.querySelectorAll('.chat-msg')];
+  assert.strictEqual(after.length, 2);
+  assert.strictEqual(after[0], a);
+  assert.notStrictEqual(after[1], b);
+  view.update({ messages: [], working: false, view: show });
+  assert.strictEqual(els.log.querySelectorAll('.chat-msg').length, 0);
+  assert.strictEqual(els.log.querySelectorAll('.chat-empty').length, 1);
+  view.update({ messages: msgs({ role: 'user', text: 'again' }), working: false, view: show });
+  assert.strictEqual(els.log.querySelectorAll('.chat-empty').length, 0);
+  assert.strictEqual(els.log.children.length, 1);
+});
+
+test('a draft of several paragraphs has ONE Copy that copies all of them (PR #226 Dexter 10)', async () => {
+  const { view, els, copied } = setup();
+  view.update({ messages: msgs({ role: 'assistant', text: 'Email to send:\n\nHi Ana,\n\nAll green.\n\nBest,\nRicardo' }), working: false, view: show });
+  const buttons = els.log.querySelectorAll('.chat-draft .chat-copy');
+  assert.strictEqual(buttons.length, 1);
+  assert.strictEqual(els.log.querySelectorAll('.chat-draft .chat-p').length, 3);
+  buttons[0].click();
+  await tick();
+  assert.deepStrictEqual(copied, ['Hi Ana,\n\nAll green.\n\nBest,\nRicardo']);
 });

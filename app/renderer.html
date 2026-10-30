@@ -894,7 +894,9 @@
     .chat-h { font-weight: 600; margin: 10px 0 4px; }
     .chat-h1 { font-size: 1.25em; } .chat-h2 { font-size: 1.12em; }
     .chat-code { font-family: var(--font-mono); font-size: .92em; background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
-    .chat-inline { white-space: nowrap; }
+    .chat-inline { white-space: normal; }
+    .chat-code { overflow-wrap: anywhere; }
+    .chat-copy-inline { white-space: nowrap; }
     .chat-codeblock { margin: 6px 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); overflow: hidden; }
     .chat-codebar { display: flex; justify-content: space-between; align-items: center; padding: 3px 8px; border-bottom: 1px solid var(--border); font-size: 11px; color: var(--dim); }
     .chat-pre { margin: 0; padding: 8px 10px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.45; white-space: pre; }
@@ -927,7 +929,6 @@
       background: color-mix(in srgb, var(--accent) 16%, var(--chrome)); border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border));
     }
     #chat-btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
-    body.focus-mode #chat-flip, body.lean #chat-flip { top: 6px; }
 
     /* The terminal bar (#49 last prompt + #52 bedtime, with #47's occupancy banner folded in as a chip;
        documentation/DESIGN_TERMINAL_BAR.md): ONE row over the terminal, the prompt on the left once it has scrolled

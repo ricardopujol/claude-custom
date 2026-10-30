@@ -114,3 +114,9 @@ test('the screen is read for a dialog or picker, and the occupancy question is a
   assert.match(RENDERER, /holds: \(\) => !!occupancy\.confirm && occupancy\.confirm\.wouldHold\(\)/);
   assert.match(RENDERER, /term\.textarea\.addEventListener\('focus', \(\) => \{ if \(chatShown\) chatUi\.focusInput\(\); \}\)/, 'program typing cannot leave the keys in the hidden terminal');
 });
+
+test('a long path in inline code wraps inside its bubble instead of overflowing it (PR #226 Miguel I4)', () => {
+  assert.match(HTML, /\.chat-inline \{ white-space: normal; \}/);
+  assert.match(HTML, /\.chat-code \{ overflow-wrap: anywhere; \}/);
+  assert.doesNotMatch(HTML, /\.chat-inline \{ white-space: nowrap; \}/);
+});
