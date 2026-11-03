@@ -144,6 +144,17 @@ test('P7: shown stays in strip order, and more room never hides more', () => {
   }), RUNS);
 });
 
+test('P7b: one entry less room hides at least one more lane while a lane that could give way is shown (the refit loop ends)', () => {
+  fc.assert(fc.property(modelArb, fc.integer({ min: 1, max: 16 }), (entries, cap) => {
+    const strip = L.placeLanes(entries, []).strip;
+    const now = L.splitOverflow(strip, cap);
+    const mustOnly = L.splitOverflow(strip, 0);          // no room beyond develop, the selected tab and tabs that need you
+    if (now.shown.length === mustOnly.shown.length) return;   // only tabs that cannot give way are shown: nothing to cut
+    const less = L.splitOverflow(strip, now.shown.length - 1);
+    assert.ok(less.hidden.length > now.hidden.length, `${less.hidden.length} hidden with one less, ${now.hidden.length} before`);
+  }), RUNS);
+});
+
 test('P8: with room for everything nothing is hidden', () => {
   fc.assert(fc.property(modelArb, (entries) => {
     const strip = L.placeLanes(entries, []).strip;
