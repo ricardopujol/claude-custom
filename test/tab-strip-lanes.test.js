@@ -392,14 +392,43 @@ test('Miguel r2 N1: a push held for a drag that began inside the fade is not ove
   } finally { g.restore(); }
 });
 
-test('Ricardo live look: at the narrowest window the note field gives up its room so develop and the selected tab both fit (they are never cut)', () => {
-  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
-  const m = html.match(/@media \(max-width: (\d+)px\) \{ #index \{ min-width: (\d+)px; \} \}/);
-  assert.ok(m, 'a narrow-window rule for #index');
-  assert.ok(Number(m[1]) >= 700, 'it applies from the window minimum (640) up to at least 700');
-  const base = Number(html.match(/#index \{[^}]*min-width: (\d+)px/)[1]);
-  // chrome beside the tabs at the minimum width (probe-tab-strip-lanes): everything but the note field, in a 658 px strip
-  const others = 92 + 34 + 56 + 52 + 75 + 34 + 24;
-  assert.ok(658 - others - Number(m[2]) >= 2 * 112, `develop and one more tab fit: ${658 - others - Number(m[2])} px for the tabs`);
-  assert.ok(658 - others - base < 2 * 112, 'and without the rule they did not');
+// --- PR #227 live look + Miguel's visual review: the note form gives the tabs exactly the room two of them need -----------------
+
+/** The widths beside the tabs, as the probe measures them (verify/probe-tab-strip-lanes.js `beside`); the note form is the only one that gives. */
+const BESIDE = { lanes: 92, plus: 34, count: 56, lean: 52, stopAll: 75, bg: 34 };
+const BESIDE_MARGINS = 20;      // index 4 + count 6 + lean button 4 + Stop all 6, which stripRoom counts
+const ROOM_SAFETY_PX = 24;      // tab-strip.js ROOM_SAFETY
+const FRAMELESS_BUTTONS = 88;   // #win-min + #win-close
+const NARROW_HTML = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+
+/** The px the CSS gives the note form at a viewport width, from the clamp() rule that applies. */
+function indexMinWidth(vw, frameless) {
+  const rule = frameless ? /body\.frameless #index \{ min-width: clamp\((\d+)px, calc\(100vw - (\d+)px\), (\d+)px\); \}/ : /\n\s*#index \{ min-width: clamp\((\d+)px, calc\(100vw - (\d+)px\), (\d+)px\); \}/;
+  const m = NARROW_HTML.match(rule);
+  assert.ok(m, `a clamp() rule for #index (${frameless ? 'frameless' : 'framed'})`);
+  return Math.min(Math.max(vw - Number(m[2]), Number(m[1])), Number(m[3]));
+}
+const tabsRoom = (vw, frameless, extraCount = 0) => vw - Object.values(BESIDE).reduce((a, b) => a + b, 0) - BESIDE_MARGINS - ROOM_SAFETY_PX
+  - (frameless ? FRAMELESS_BUTTONS : 0) - extraCount - indexMinWidth(vw, frameless);
+
+test('narrow strip: develop and the selected tab (2 x 112) fit from the framed minimum up, also with a 3-digit "N filed", and the field only gives what is needed', () => {
+  for (const vw of [658, 700, 740, 760, 761, 790, 800, 801, 900, 1200]) {
+    assert.ok(tabsRoom(vw, false, 12) >= 2 * 112, `${vw} px: ${tabsRoom(vw, false, 12)} px for the tabs with a 3-digit count`);
+  }
+  assert.ok(tabsRoom(658, false) >= 2 * 112 + 20, `real slack at the minimum is ${tabsRoom(658, false) - 224} px`);
+  assert.strictEqual(indexMinWidth(900, false), 150, 'where there is room the field keeps its full 150 px floor');
+  assert.strictEqual(indexMinWidth(801, false), 150, 'and it does so from 791 px, not only past 800');
+  assert.ok(indexMinWidth(760, false) > 24 && indexMinWidth(760, false) < 150, 'in between it gives up only part');
+});
+
+test('narrow strip: a frameless window (88 px of window buttons) fits two tabs from 800 px up, with a 3-digit count', () => {
+  for (const vw of [800, 801, 900, 1200]) assert.ok(tabsRoom(vw, true, 12) >= 2 * 112, `${vw} px frameless: ${tabsRoom(vw, true, 12)}`);
+  assert.strictEqual(indexMinWidth(1200, true), 150);
+});
+
+test('narrow strip: the clamp rules come after the base #index rule, so they are not overridden by it', () => {
+  const base = NARROW_HTML.indexOf('#index { margin-left: auto;');
+  const framed = NARROW_HTML.search(/\n\s*#index \{ min-width: clamp\(/);
+  const frameless = NARROW_HTML.indexOf('body.frameless #index { min-width: clamp(');
+  assert.ok(base !== -1 && framed > base && frameless > framed);
 });

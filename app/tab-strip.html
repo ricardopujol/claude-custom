@@ -192,9 +192,14 @@
       margin-right: 4px; height: 24px; box-sizing: border-box; padding: 0 3px 0 8px; border-radius: 6px;
       background: var(--bg); border: 1px solid var(--border); }
     #index:focus-within { border-color: var(--accent); }
-    /* At the window's narrowest the chrome beside the tabs (Lanes, +, Stop all, the lean chip, ▾) leaves about 145 px: less than develop
-       and the selected tab need (2 x 112), so the selected tab sat half under the strip's edge. The note field gives that room up. */
-    @media (max-width: 800px) { #index { min-width: 40px; } }
+    /* The note form (#index: the field AND the project chip) gives up exactly the room develop and the selected tab need (2 x 112 px),
+       no more: the rest of the strip beside the tabs is Lanes 92 + "+" 34 + "N filed" 56 + Lean 52 + Stop all 75 + ▾ 34 = 343 px, its margins
+       20, the room measure's safety 24, and 30 of slack for a longer "N filed" (a 3-digit count is 12 px wider). 343+20+24+224+30 = 641.
+       Below the floor the form is nearly gone (PR #227 live look: at the 640 px minimum the selected tab sat half under the strip's edge).
+       A frameless window also carries #win-min and #win-close (88 px), so its rule starts 88 px later. The room measure (tab-strip.js
+       stripRoom) reads this computed min-width, so the refit agrees. These rules must stay AFTER the base rule above. */
+    #index { min-width: clamp(24px, calc(100vw - 641px), 150px); }
+    body.frameless #index { min-width: clamp(24px, calc(100vw - 729px), 150px); }
     #index-note { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; outline: none; background: transparent;
       color: var(--text); font: inherit; font-size: 12px; padding: 0; user-select: text; }
     #index-note::placeholder { color: var(--dim); }

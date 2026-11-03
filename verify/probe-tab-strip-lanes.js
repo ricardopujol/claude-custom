@@ -92,6 +92,16 @@ function makeContainer() {
   fs.writeFileSync(path.join(gitDir, 'claude-merged.json'), JSON.stringify({ branch: 'feat/11', pr: 11, mergedAt: '2026-10-29T00:00:00Z' }));
 }
 
+// The frameless pass writes this worktree's own chrome setting (never the install's): set aside first, put back at the end.
+const CHROME_FILE = path.join(HARNESS_DIR, 'state', 'chrome-global.json');
+const CHROME_BACKUP = CHROME_FILE + '.strip-probe-backup';
+let chromeMovedAside = false;
+function restoreChrome() {
+  try { fs.unlinkSync(CHROME_FILE); } catch { /* gone */ }
+  if (chromeMovedAside) { try { fs.renameSync(CHROME_BACKUP, CHROME_FILE); chromeMovedAside = false; } catch (e) { console.log(`(could not restore ${CHROME_FILE}: ${e.message})`); } }
+}
+hygiene.addCleanup(restoreChrome);
+
 let windowNo = 0;
 async function launchApp(cwd) {
   windowNo++;
@@ -253,7 +263,7 @@ async function main() {
   const items = painted(s);
   const overlaps = items.filter((it, i) => i > 0 && it.left < items[i - 1].right - 1);
   check('2A at the minimum width: the tabs sit side by side, each at least 112 px, none overlapping the one before',
-    narrow.ok === true && items.length >= 2 && overlaps.length === 0 && items.every(i => i.width >= 111), JSON.stringify({ strip: s.stripLayout.stripWidth, items: items.map(i => [i.label, i.left, i.right, i.width]) }));
+    narrow.ok === true && s.stripLayout.stripWidth <= 700 && items.length >= 2 && overlaps.length === 0 && items.every(i => i.width >= 111), JSON.stringify({ strip: s.stripLayout.stripWidth, beside: s.stripLayout.beside, items: items.map(i => [i.label, i.left, i.right, i.width]) }));
   check('2A at the minimum width: the first tab after develop starts where develop ends, and the box is not scrolled',
     items.length >= 2 && items[0].label === 'develop' && Math.abs(items[1].left - items[0].right) <= 1 && items[0].left >= s.stripLayout.tabs.left - 1 && s.stripLayout.tabsScrollLeft === 0,
     JSON.stringify({ tabs: s.stripLayout.tabs, scrollLeft: s.stripLayout.tabsScrollLeft, items: items.map(i => [i.label, i.left, i.right]) }));
@@ -269,6 +279,15 @@ async function main() {
       && picked.every(i => i.left >= s.stripLayout.tabs.left - 1 && i.right <= s.stripLayout.tabs.right + 1) && s.stripLayout.tabsScrollLeft === 0,
     JSON.stringify({ tabs: s.stripLayout.tabs, scrollLeft: s.stripLayout.tabsScrollLeft, scroll: s.stripLayout.tabsScroll, beside: s.stripLayout.beside, items: picked.map(i => [i.label, i.left, i.right, i.width]) }));
   await command(app, { cmd: 'select', label: 'develop' }, 30000);
+  // just past the old 800 px breakpoint: the rule is continuous, so the field has its room back by 791 px and the strip still fits two tabs
+  await command(app, { cmd: 'window-size', width: 801 });
+  s = await waitFor(async () => { const x = await state(app); return x.stripLayout && x.stripLayout.stripWidth >= 790 && x.stripLayout.stripWidth <= 830 ? x : null; }, 10000) || await state(app);
+  await sleep(600);
+  s = await state(app);
+  const indexAt801 = ((s.stripLayout.beside || []).find(b => b[0] === 'index') || [null, 0])[1];
+  check('2A at 801 px: the note field has its full width again and the strip still shows two whole tabs',
+    s.stripLayout.stripWidth >= 790 && indexAt801 >= 150 && painted(s).length >= 2 && clipped(s).length === 0,
+    JSON.stringify({ strip: s.stripLayout.stripWidth, index: indexAt801, items: painted(s).map(i => [i.label, i.left, i.right]) }));
   await command(app, { cmd: 'window-size', width: 900 });
   s = await waitFor(async () => { const x = await state(app); return x.stripLayout && x.stripLayout.stripWidth >= 850 ? x : null; }, 10000) || await state(app);
 
@@ -339,6 +358,7 @@ async function main() {
   if (!s) { check('the window reopened', false, app.out.split('\n').slice(-15).join('\n')); return; }
   s = await waitFor(async () => { const x = await state(app); return modelLabels(x).length >= 11 && paintedLabels(x).length >= 2 ? x : null; }, 40000);
   remember(s);
+  if (!s) { const late = await state(app); console.log('(after the restart, last state: model', modelLabels(late).join(', '), '| painted', paintedLabels(late).join(', '), '| strip', late.stripLayout && late.stripLayout.stripWidth, ')'); }
   check('reopened: feat/04 is still closed (no tab, a closed row)', !!s && !modelLabels(s).includes('feat/04') && (rowOf(s, 'feat/04') || {}).closed === true, s && modelLabels(s).join(', '));
   const reopenedOrder = s ? modelLabels(s).filter(l => orderNow.includes(l)) : [];
   check('reopened: the dragged order survived (feat/05 still right after develop)', !!s && modelLabels(s)[0] === 'develop' && modelLabels(s)[1] === 'feat/05', s && modelLabels(s).slice(0, 4).join(', '));
@@ -348,6 +368,27 @@ async function main() {
   const back = await command(app, { cmd: 'reopen' }, 30000);
   s = await waitFor(async () => { const x = await state(app); return modelLabels(x).includes('feat/04') ? x : null; }, 15000);
   check('Reopen brings it back (Ctrl+Shift+T / the Lanes row)', back.ok === true && !!s, JSON.stringify(back));
+  await quit(app);
+
+  // ===== a frameless window: its two window buttons (88 px) take room too =====
+  fs.mkdirSync(path.dirname(CHROME_FILE), { recursive: true });
+  if (fs.existsSync(CHROME_FILE)) { fs.renameSync(CHROME_FILE, CHROME_BACKUP); chromeMovedAside = true; }
+  fs.writeFileSync(CHROME_FILE, JSON.stringify({ framelessWindow: true }));
+  app = await launchApp(container);
+  s = await driverUp(app);
+  if (!s) { check('the frameless window came up', false, app.out.split('\n').slice(-15).join('\n')); return; }
+  s = await waitFor(async () => { const x = await state(app); return paintedLabels(x).length >= 2 ? x : null; }, 40000);
+  remember(s);
+  await command(app, { cmd: 'window-size', width: 800 });
+  s = await waitFor(async () => { const x = await state(app); return x.stripLayout && x.stripLayout.stripWidth <= 830 ? x : null; }, 10000) || await state(app);
+  await sleep(600);
+  s = await state(app);
+  const fl = painted(s);
+  const hasWinButtons = ((s.stripLayout.beside || []).map(b => b[0])).includes('win-min');
+  check('frameless at 800 px: the window buttons are there, and develop plus a second tab sit whole and side by side',
+    hasWinButtons && s.stripLayout.stripWidth <= 830 && fl.length >= 2 && fl[0].label === 'develop' && clipped(s).length === 0 && fl.every(i => i.width >= 111)
+      && fl.every((it, i) => i === 0 || it.left >= fl[i - 1].right - 1),
+    JSON.stringify({ strip: s.stripLayout.stripWidth, beside: s.stripLayout.beside, items: fl.map(i => [i.label, i.left, i.right, i.width]) }));
   await quit(app);
 }
 
@@ -359,6 +400,7 @@ async function main() {
     failures++;
   } finally {
     hygiene._emergencyCleanup('done');
+    restoreChrome();
     await sleep(800);
     removeTemp();
   }
