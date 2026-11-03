@@ -26,6 +26,7 @@ const ROWS = [
 
   own('Panels', 'Show or hide every panel', ['Ctrl', 'B'], 'isPanelToggle(e)'),
   main('Panels', 'Focus mode: only the terminal', ['Ctrl', 'Shift', 'F'], 'focus-mode', { key: 'F', control: true, shift: true }),
+  own('Panels', 'Hide tool lines: the chat view (press again for the terminal)', ['Ctrl', 'Shift', 'H'], 'isChatKey(e)'),
   own('Panels', 'Diagnostics', ['Ctrl', 'Shift', 'D'], "e.code === 'KeyD'"),
   main('Panels', 'Note for the indexing assistant', ['Ctrl', 'Alt', 'N'], 'index-note', { key: 'n', control: true, alt: true }),
   main('Panels', 'Developer tools', ['F12'], 'devtools', { key: 'F12' }),

@@ -18,7 +18,7 @@
  *                         results start the next turn on their own, so it stays open until a later Stop,
  *                         or Claude Code's idle_prompt once every agent it waited on has stopped
  *   idle_prompt           Claude Code says it's waiting at the prompt: the turn is over (an interrupted
- *                         turn fires no Stop). It never closes a dialog
+ *                         turn fires no Stop) and so is any dialog (a rejected or Esc-ed one fires nothing else)
  *   SessionEnd            unknown again
  *
  * snapshot() is 'idle' | 'turn' | 'prompt', or null when this host hasn't seen the session start.
@@ -62,6 +62,9 @@ function createTurnState() {
     }
     if (event === 'Notification') {
       if (p.notification_type === 'idle_prompt') {
+        // Waiting at the prompt means no dialog is open either: a rejected or Esc-interrupted permission prompt fires no
+        // Stop and no tool event, and without this the session stayed 'prompt' until the person typed (PR #226 Dexter 2)
+        dialog = false;
         if (held === null || (held.ids.size === 0 && held.unnamed === 0)) { turn = false; held = null; }
         return;
       }
