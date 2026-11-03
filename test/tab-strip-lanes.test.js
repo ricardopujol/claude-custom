@@ -391,3 +391,15 @@ test('Miguel r2 N1: a push held for a drag that began inside the fade is not ove
     assert.deepStrictEqual(g.selectedKeys(), ['lane4'], 'the drag ends on the newest push, not the older one');
   } finally { g.restore(); }
 });
+
+test('Ricardo live look: at the narrowest window the note field gives up its room so develop and the selected tab both fit (they are never cut)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  const m = html.match(/@media \(max-width: (\d+)px\) \{ #index \{ min-width: (\d+)px; \} \}/);
+  assert.ok(m, 'a narrow-window rule for #index');
+  assert.ok(Number(m[1]) >= 700, 'it applies from the window minimum (640) up to at least 700');
+  const base = Number(html.match(/#index \{[^}]*min-width: (\d+)px/)[1]);
+  // chrome beside the tabs at the minimum width (probe-tab-strip-lanes): everything but the note field, in a 658 px strip
+  const others = 92 + 34 + 56 + 52 + 75 + 34 + 24;
+  assert.ok(658 - others - Number(m[2]) >= 2 * 112, `develop and one more tab fit: ${658 - others - Number(m[2])} px for the tabs`);
+  assert.ok(658 - others - base < 2 * 112, 'and without the rule they did not');
+});

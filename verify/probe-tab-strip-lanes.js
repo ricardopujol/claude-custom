@@ -245,6 +245,33 @@ async function main() {
     `${s.stripLayout.lanes.text}, ${hiddenN} expected`);
   check('2A: the Lanes button itself is inside the strip', s.stripLayout.lanes.right <= s.stripLayout.stripWidth + 1, JSON.stringify(s.stripLayout.lanes));
 
+  // ===== 2A at the window's minimum width: no tab is covered, pushed under its neighbour or scrolled out of the box =====
+  const narrow = await command(app, { cmd: 'window-size', width: 640 });
+  s = await waitFor(async () => { const x = await state(app); return x.stripLayout && x.stripLayout.stripWidth <= 700 ? x : null; }, 10000) || await state(app);
+  await sleep(600);
+  s = await state(app);
+  const items = painted(s);
+  const overlaps = items.filter((it, i) => i > 0 && it.left < items[i - 1].right - 1);
+  check('2A at the minimum width: the tabs sit side by side, each at least 112 px, none overlapping the one before',
+    narrow.ok === true && items.length >= 2 && overlaps.length === 0 && items.every(i => i.width >= 111), JSON.stringify({ strip: s.stripLayout.stripWidth, items: items.map(i => [i.label, i.left, i.right, i.width]) }));
+  check('2A at the minimum width: the first tab after develop starts where develop ends, and the box is not scrolled',
+    items.length >= 2 && items[0].label === 'develop' && Math.abs(items[1].left - items[0].right) <= 1 && items[0].left >= s.stripLayout.tabs.left - 1 && s.stripLayout.tabsScrollLeft === 0,
+    JSON.stringify({ tabs: s.stripLayout.tabs, scrollLeft: s.stripLayout.tabsScrollLeft, items: items.map(i => [i.label, i.left, i.right]) }));
+  check('2A at the minimum width: every tab is inside the box and the rest is counted in +N',
+    clipped(s).length === 0 && s.stripLayout.lanes.text === `+${10 - items.length} Lanes ▾`, `${s.stripLayout.lanes.text}, ${items.length} painted`);
+  // the same with a lane selected: develop and that lane both stay, side by side, and neither is under the other
+  await command(app, { cmd: 'select', label: labelOfLane(LANES[2]) }, 30000);
+  await sleep(600);
+  s = await state(app);
+  const picked = painted(s);
+  check('2A at the minimum width, a lane selected: develop and the lane are both painted, side by side, neither under the other',
+    picked.length >= 2 && picked[0].label === 'develop' && picked.some(i => i.label === labelOfLane(LANES[2]) && i.selected) && picked.every((it, i) => i === 0 || it.left >= picked[i - 1].right - 1)
+      && picked.every(i => i.left >= s.stripLayout.tabs.left - 1 && i.right <= s.stripLayout.tabs.right + 1) && s.stripLayout.tabsScrollLeft === 0,
+    JSON.stringify({ tabs: s.stripLayout.tabs, scrollLeft: s.stripLayout.tabsScrollLeft, scroll: s.stripLayout.tabsScroll, beside: s.stripLayout.beside, items: picked.map(i => [i.label, i.left, i.right, i.width]) }));
+  await command(app, { cmd: 'select', label: 'develop' }, 30000);
+  await command(app, { cmd: 'window-size', width: 900 });
+  s = await waitFor(async () => { const x = await state(app); return x.stripLayout && x.stripLayout.stripWidth >= 850 ? x : null; }, 10000) || await state(app);
+
   // selecting a hidden lane brings it onto the strip
   const lastLabel = labelOfLane(LANES[8]);
   const wasHidden = !shown.includes(lastLabel);

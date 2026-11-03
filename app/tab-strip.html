@@ -192,6 +192,9 @@
       margin-right: 4px; height: 24px; box-sizing: border-box; padding: 0 3px 0 8px; border-radius: 6px;
       background: var(--bg); border: 1px solid var(--border); }
     #index:focus-within { border-color: var(--accent); }
+    /* At the window's narrowest the chrome beside the tabs (Lanes, +, Stop all, the lean chip, ▾) leaves about 145 px: less than develop
+       and the selected tab need (2 x 112), so the selected tab sat half under the strip's edge. The note field gives that room up. */
+    @media (max-width: 800px) { #index { min-width: 40px; } }
     #index-note { flex: 1 1 auto; min-width: 0; height: 100%; border: 0; outline: none; background: transparent;
       color: var(--text); font: inherit; font-size: 12px; padding: 0; user-select: text; }
     #index-note::placeholder { color: var(--dim); }

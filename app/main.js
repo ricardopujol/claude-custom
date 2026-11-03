@@ -1908,7 +1908,7 @@ function startProbeDriver(port) {
       try {
         stripLayout = JSON.parse(await win.webContents.executeJavaScript(
           "JSON.stringify((() => { const r = (e) => { const b = e.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; }; const tabs = document.getElementById('tabs'); const lanes = document.getElementById('lanes');"
-          + " return { stripWidth: Math.round(document.getElementById('strip').getBoundingClientRect().width), tabs: r(tabs), tabsScroll: tabs.scrollWidth, lanes: { ...r(lanes), text: lanes.textContent, hidden: lanes.hidden, overflow: lanes.classList.contains('overflow'), title: lanes.title },"
+          + " return { stripWidth: Math.round(document.getElementById('strip').getBoundingClientRect().width), tabs: r(tabs), tabsScroll: tabs.scrollWidth, tabsScrollLeft: tabs.scrollLeft, beside: [...document.getElementById('strip').children].filter(c => c !== tabs && c.getBoundingClientRect().width > 0).map(c => [c.id || c.className, Math.round(c.getBoundingClientRect().width)]), lanes: { ...r(lanes), text: lanes.textContent, hidden: lanes.hidden, overflow: lanes.classList.contains('overflow'), title: lanes.title },"
           + " items: [...tabs.querySelectorAll('.tab')].map(t => ({ key: t.dataset.key, label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), leaving: t.classList.contains('leaving'), draggable: t.draggable, dev: t.classList.contains('dev'), occupied: t.classList.contains('occupied'), ...r(t) })) }; })())"));
       } catch (err) { stripLayout = { error: err.message }; }
       const snap = tabShell.snapshot();
