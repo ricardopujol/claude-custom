@@ -191,3 +191,26 @@ test('Dexter 7: a file of another version is an unknown store: load says so and 
   assert.doesNotThrow(() => parseLayout(JSON.stringify({ version: 1 })));
   assert.doesNotThrow(() => parseLayout(JSON.stringify({})), 'a file with no version is a v1 file');
 });
+
+test('Dexter r2 B: a window that only pruned a merged-away lane from its order does not write over the other window\'s drag', () => {
+  const [g, b, c, x] = ['g', 'b', 'c', 'x'].map(n => entry(n));
+  const w = twoWindows();
+  w.a.save({ order: [g.key, b.key, c.key], closed: [] });
+  w.a.load(); w.b.load();                                   // both start from [g, b, c]
+  w.b.save({ order: [c.key, b.key], closed: [] });          // g merged away; b drags c before b (and prunes g)
+  w.a.save({ order: [b.key, c.key], closed: [x] });          // a closes x; its prune of g is not a drag
+  const r = parseLayout(w.box.text);
+  assert.deepStrictEqual(r.order, [c.key, b.key], 'the drag is kept');
+  assert.deepStrictEqual(r.closed, [x], 'and the close too');
+});
+
+test('Dexter r2 B: a real drag in a window that also pruned still wins, and a new key counts as a change', () => {
+  const [g, b, c, d] = ['g', 'b', 'c', 'd'].map(n => entry(n));
+  const w = twoWindows();
+  w.a.save({ order: [g.key, b.key, c.key], closed: [] });
+  w.a.load();
+  w.a.save({ order: [c.key, b.key], closed: [] });          // pruned g and dragged c first
+  assert.deepStrictEqual(parseLayout(w.box.text).order, [c.key, b.key]);
+  w.a.save({ order: [c.key, b.key, d.key], closed: [] });   // d joins the order
+  assert.deepStrictEqual(parseLayout(w.box.text).order, [c.key, b.key, d.key]);
+});

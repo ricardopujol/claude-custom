@@ -110,7 +110,11 @@ function createStripLayout({
       }
       const reopened = new Set(last.closed.filter(c => !mine.closed.some(m => m.key === c.key)).map(c => c.key));
       const closed = cleanClosed([...mine.closed, ...onDisk.closed.filter(c => !reopened.has(c.key))]);
-      const orderChanged = JSON.stringify(mine.order) !== JSON.stringify(last.order);
+      // A prune (the shell drops a lane git no longer lists) is not a drag: only keys added, or the keys both lists share in
+      // a different order, count as this window changing the order (PR #227 Dexter r2 B).
+      const lastKeys = new Set(last.order);
+      const shared = mine.order.filter(k => lastKeys.has(k));
+      const orderChanged = mine.order.some(k => !lastKeys.has(k)) || JSON.stringify(shared) !== JSON.stringify(last.order.filter(k => mine.order.includes(k)));
       const merged = { order: orderChanged ? mine.order : onDisk.order, closed };
       mkdir(path.dirname(file));
       writeText(file, JSON.stringify({ version: VERSION, ...merged }, null, 2) + '\n');
