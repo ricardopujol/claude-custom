@@ -63,7 +63,7 @@ function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, mark
       },
       probe: async (port) => (h.running[port] !== undefined ? 'listening' : 'refused'),
       spawn: ({ tab, port }) => { h.spawns.push(tab.key); h.running[port] = tab.cwd; },
-      wait: async () => true,
+      wait: async () => { if (h.waitFails > 0) { h.waitFails--; return false; } return true; },
       tokenFor: tokenOf, tokenFile: tokenOf, newToken: () => 'fresh',
       control: async (c) => { h.controls.push(c); return { ok: true, reply: null }; },
       identity: () => null, readToken: () => null,
@@ -398,4 +398,28 @@ test('Dexter 4: with the identity files read, only a folder one of them names is
   await flush();
   assert.deepStrictEqual([...new Set(h.looks)], [key('feat-a')], 'only the folder an identity file names was walked');
   assert.ok(stripKeys(h).includes(key('feat-a')));
+});
+
+// --- PR #227 Dexter r2 D: the retry attach leaves no half-finished start behind --------------------------------
+
+test('Dexter r2 D: a host that came up after a timed-out spawn is attached clean: no stale error, and the next restart spawns', async () => {
+  const h = await opened();
+  h.waitFails = 1;                                       // the first spawn's wait times out; the host binds a moment later
+  await h.shell.select(key('feat-a'), true);
+  await flush();
+  const spawnsOfA = () => h.spawns.filter(k => k === key('feat-a')).length;
+  assert.strictEqual(spawnsOfA(), 1);
+  const entryOf = () => h.shell.snapshot().model.find(e => e.key === key('feat-a'));
+  assert.match(entryOf().startError || '', /did not come up/, 'the timed-out start says so');
+  await h.shell.poll();                                  // the retry look finds the host and attaches it
+  await flush();
+  assert.strictEqual(entryOf().started, true, 'attached');
+  assert.strictEqual(entryOf().startError, null, 'no stale error on a running tab');
+  h.endSession('feat-a');
+  await h.shell.poll();
+  await flush();
+  await h.shell.select(key('feat-a'), true);             // a click on the ended tab restarts it
+  await flush();
+  assert.strictEqual(spawnsOfA(), 2, 'the restart spawned (a stale pending record would have waited and spawned nothing)');
+  assert.strictEqual(entryOf().startError, null);
 });

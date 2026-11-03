@@ -663,6 +663,10 @@ function createShell(deps) {
       if (!chosen || chosen.action !== 'attach' || tab.closed || tab.started || tab.starting) return;
       const token = hosts.tokenFor(chosen.port);
       if (!token) { log(`[shell] ${tab.key}: a host is on ${chosen.port} but its token can't be read`); return; }
+      // A retry after a start whose spawn timed out: the host it waited for is up, so the start's leftovers go (a stale `pending`
+      // would make the next restart wait on this port and spawn nothing; the error would stay on a running tab) (PR #227 Dexter r2 D).
+      tab.pending = null;
+      tab.error = null;
       present(tab, chosen.port, token);
     }).then(() => { tab.attachBusy = false; publish(); }, () => { tab.attachBusy = false; publish(); });
     return tab.attachPromise;
