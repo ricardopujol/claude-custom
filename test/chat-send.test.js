@@ -13,18 +13,23 @@ const { inputState, commandTyped, boxText, boxHoldsLine } = require('../app/top-
 
 const RULE = '─'.repeat(40);
 const PASTE_THRESHOLD = 200;
+const PASTE_LINES = 4;
+const EIGHT_LINES = Array.from({ length: 8 }, (_, k) => `line ${k + 1} of the message, about seventy-five characters long, give or take`).join('\n');
 
 function makeCli(opts = {}) {
   const cli = {
     box: opts.box || '', dialog: !!opts.dialog, submitted: [], keys: [], confirmedDialog: 0, sleeps: 0,
-    cancelled: 0, locked: [], turn: opts.turn || 'idle', blocked: false, pastes: 0,
+    cancelled: 0, locked: [], turn: opts.turn || 'idle', blocked: false, pastes: 0, pasteTexts: {},
   };
   const press = (data) => {
     cli.keys.push(data);
     if (data === '\r') {
       if (cli.dialog) { cli.confirmedDialog++; cli.dialog = false; return; }
       if (opts.swallowEnter) return;
-      if (cli.box !== '') { cli.submitted.push(cli.box); cli.box = ''; }
+      if (cli.box !== '') {
+        cli.submitted.push(cli.box.replace(/\[Pasted text #(\d+)(?: \+\d+ lines)?\]/g, (m, n) => cli.pasteTexts[n] || m));
+        cli.box = '';
+      }
       return;
     }
     if (data === '\x05') return;
@@ -32,8 +37,17 @@ function makeCli(opts = {}) {
     if (cli.dialog) return;                      // keys typed into a dialog are not text
     if (opts.dropText) return;
     const text = data.replace(/\x1b\[20[01]~/g, '').replace(/\r/g, ' ');
-    // The real CLI takes ONE write over its paste threshold for a paste and shows "[Pasted text #N]" (measured: app/top-bar-display.js
-    // COMMAND_CHUNK; the threshold itself is somewhere between 200 and 1,999 characters, 200 is the largest write the app makes elsewhere).
+    // The real CLI takes a big write for a paste and shows "[Pasted text #N]" (verify/probe-chat-send-real.js --measure: from about 1,000
+    // characters, unpredictably; the fake uses 200, the largest write the app makes elsewhere, to stay conservative).
+    // A BRACKETED paste of several lines collapses to "[Pasted text #N +K lines]" (measured: 3 lines stay, 4 and more collapse, as here).
+    // Enter then submits the real text, as the CLI does.
+    const bracketed = data.startsWith('\x1b[200~');
+    const rows = bracketed ? data.replace(/\x1b\[20[01]~/g, '').split('\r').length : 1;
+    if (bracketed && rows >= PASTE_LINES) {
+      cli.pasteTexts[++cli.pastes] = data.replace(/\x1b\[20[01]~/g, '').replace(/\r/g, '\n');
+      cli.box += `[Pasted text #${cli.pastes} +${rows - 1} lines]`;
+      return;
+    }
     if (Array.from(text).length > PASTE_THRESHOLD) { cli.box += `[Pasted text #${++cli.pastes}]`; return; }
     cli.box += text;
   };
@@ -88,6 +102,48 @@ test('property: a single-line message of any length over the chunk size is submi
     assert.strictEqual(r.ok, true);
     assert.deepStrictEqual(cli.submitted, [text]);
   }), { numRuns: 40 });
+});
+
+test('a multi-line message the CLI collapses to [Pasted text #N +K lines] is a valid read-back: it is submitted whole (PR #226, measured on the real CLI)', async () => {
+  const cli = makeCli();
+  const r = await state.runChatSend(EIGHT_LINES, cli.env);
+  assert.deepStrictEqual(r, { ok: true });
+  assert.strictEqual(cli.pastes, 1, 'it did go as one collapsed paste');
+  assert.deepStrictEqual(cli.submitted, [EIGHT_LINES.replace(/\n/g, '\n')]);
+  assert.strictEqual(cli.confirmedDialog, 0);
+});
+
+test('property: wherever a dialog opens while a collapsed paste is being sent, no Enter reaches it', async () => {
+  await fc.assert(fc.asyncProperty(fc.integer({ min: 1, max: 14 }), async (at) => {
+    const cli = makeCli({ dialogAtSleep: at });
+    await state.runChatSend(EIGHT_LINES, cli.env);
+    assert.strictEqual(cli.confirmedDialog, 0, `a dialog opened at sleep ${at} took an Enter`);
+  }), { numRuns: 40 });
+});
+
+test('a collapsed paste whose Enter the CLI swallowed is not a send: the placeholder still in the box counts as unsent, and is cleared', async () => {
+  const cli = makeCli({ swallowEnter: true });
+  const r = await state.runChatSend(EIGHT_LINES, cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.note, /didn't take the Enter/);
+  assert.strictEqual(cli.box, '');
+});
+
+test('a placeholder already in the box is a draft, not ours: refused before a key', async () => {
+  const cli = makeCli({ box: '[Pasted text #1 +5 lines]' });
+  const r = await state.runChatSend(EIGHT_LINES, cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.note, /already holds text/);
+  assert.deepStrictEqual(cli.keys, []);
+});
+
+test('a placeholder is a read-back only for a bracketed paste: a plain-joined multi-line message that shows one is refused', async () => {
+  const cli = makeCli({ dropText: true });
+  cli.env.bracketed = () => false;
+  cli.env.lines = () => ['x', RULE, '❯ [Pasted text #1 +7 lines]', RULE, ' ? for shortcuts'];
+  const r = await state.runChatSend(EIGHT_LINES, cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(cli.keys.includes('\r'), false);
 });
 
 test('a dialog that opens between two chunks of a long message gets none of the remaining text and no Enter', async () => {

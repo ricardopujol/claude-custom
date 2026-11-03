@@ -105,6 +105,12 @@ const NOTE = {
 
 const emptyBox = (box) => box === '' || /^Try "/.test(box);
 
+// The CLI shows a bracketed paste of several lines as ONE placeholder, "[Pasted text #5 +7 lines]" (measured on the real CLI:
+// verify/probe-chat-send-real.js --measure; 3 lines show whole, 8 collapse), and Enter submits the real text. The send began on a box it
+// saw EMPTY, so a box holding nothing but one placeholder holds our paste. Only a bracketed paste is read back this way.
+const PLACEHOLDER = /^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/;
+const onlyPlaceholder = (box) => typeof box === 'string' && PLACEHOLDER.test(box.trim());
+
 /** Why this message must not be typed now, or null. Pure. `screen` is top-bar-display's inputState, `box` its boxText. */
 function sendBlocker({ text, turn, blocked, screen, box, holds }) {
   if (turn === 'prompt' || blocked === true) return NOTE.dialog;
@@ -130,6 +136,9 @@ async function runChatSend(raw, env) {
   if (env.busy()) return { ok: false, note: NOTE.busy };
   const screenNow = async () => { if (typeof env.sync === 'function') await env.sync(); return env.lines(); };
   const opts = () => ({ vim: env.vim(), termRows: env.termRows() });
+  const asPaste = text.includes('\n') && env.bracketed() === true;
+  // Is our message in the box: shown as typed, or (a bracketed paste) as the CLI's lone paste placeholder.
+  const inBox = (lines) => env.commandTyped(lines, text, opts()) || (asPaste && onlyPlaceholder(env.boxText(lines)));
   const frame = (data) => JSON.stringify({ type: 'input', data });
 
   env.lock(true);
@@ -166,14 +175,14 @@ async function runChatSend(raw, env) {
     let typed = false;
     for (let waited = 0; waited <= READBACK_WAIT_MS; waited += env.keyGap || 120) {
       await env.sleep(env.keyGap || 120);
-      if (env.commandTyped(await screenNow(), text, opts())) { typed = true; break; }
+      if (inBox(await screenNow())) { typed = true; break; }
     }
     if (!typed) { await clear(); return { ok: false, note: NOTE.noReadback }; }
 
     await env.sleep(RECHECK_MS);
     const last = await screenNow();
     const state = env.inputState(last, { vim: env.vim() });
-    if ((state !== 'ready' && state !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true || !env.commandTyped(last, text, opts())) {
+    if ((state !== 'ready' && state !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true || !inBox(last)) {
       await clear();
       return { ok: false, note: NOTE.changed };
     }
@@ -181,7 +190,8 @@ async function runChatSend(raw, env) {
     env.send(enter.frame);
     for (let i = 0; i < AFTER_POLLS; i++) {
       await env.sleep(AFTER_POLL_MS);
-      if (!env.boxHoldsLine(await screenNow(), text)) return { ok: true };
+      const now = await screenNow();
+      if (!env.boxHoldsLine(now, text) && !(asPaste && onlyPlaceholder(env.boxText(now)))) return { ok: true };
     }
     await clear();
     return { ok: false, note: NOTE.swallowed };
