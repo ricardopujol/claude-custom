@@ -79,6 +79,7 @@ const REPO_SCANNING = new Set([
   // #119 A3 Changes panel wiring: renderer.js / renderer.html / repo-browser.js source text. It requires usage-counters only for isValidKey, which
   // usage-counters.test.js pins itself. (changes-service.test.js runs the real git on throwaway repos and requires only host/changes-service.js, which is not mutated.)
   'renderer-changes-wiring.test.js',
+  'bounded-shutdown-process.test.js',   // #121 (PR #217): real children with a blocked event loop and a real watchdog; the pure tests are in bounded-shutdown.test.js, which IS in the command
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
 ]);
 

@@ -70,6 +70,7 @@ function renderLock(lock) {
   b.hidden = !badge;
   b.textContent = badge ? badge.text : '';
   b.title = badge ? badge.title : '';
+  renderWarnings();
   reportTabStatus();
 }
 function renderTerminalSessions(result) {
@@ -80,6 +81,21 @@ function renderTerminalSessions(result) {
   el.dataset.key = banner ? banner.key : '';
   document.getElementById('terminal-banner-text').textContent = show ? banner.text : '';
 }
+// Chrome grammar A: the header's warnings (behind develop, an overridden or missing session lock) are ONE chip with a count; the
+// detail is its hover text. #wt-health and #wt-lock keep being filled, as the data it is made from, and CSS never draws them.
+function renderWarnings() {
+  const chip = document.getElementById('hdr-warn');
+  if (!chip) return;
+  const parts = ['wt-lock', 'wt-health'].map(id => document.getElementById(id)).filter(e => e && !e.hidden && e.textContent)
+    .map(e => ({ text: e.textContent, title: e.title }));
+  const w = chipModel.warningsChip(parts);
+  chip.hidden = !w.shown;
+  document.getElementById('hdr-warn-n').textContent = w.label;
+  chip.title = w.title;
+  chip.setAttribute('aria-label', w.shown ? `${w.count} ${w.count === 1 ? 'warning' : 'warnings'}: ${w.title.split('\n').join('; ')}` : 'warnings');
+}
+// The chips' icons: constant vendored markup (app/chip-icons.js), never user data.
+for (const slot of document.querySelectorAll('[data-chip-icon]')) slot.innerHTML = chipIcons.svgFor(slot.dataset.chipIcon);
 let tabHealth = null;    // the last health message, for the tab status
 function renderBranchHealth(health) {
   tabHealth = health || null;
@@ -89,6 +105,7 @@ function renderBranchHealth(health) {
   el.textContent = m ? m.text : '';
   el.title = m ? m.title : '';
   el.className = m ? `wt-health ${m.cls}` : 'wt-health';
+  renderWarnings();
   reportTabStatus();
 }
 document.getElementById('lock-open-anyway').addEventListener('click', () => {
@@ -150,6 +167,8 @@ document.getElementById('lock-go-to').addEventListener('click', async () => {
 // health. tab-status.js decides; this only sends it when it changed.
 // What waits for a look (#31): an urgent need, a finished turn. tab-status.js decides the transitions.
 let tabPending = { urgent: false, finished: false };
+// BACKLOG #156: cross-session messages held for approval here and not yet looked at (the tab's envelope count).
+let peerCount = 0;
 // The host's measure of the MAIN session from the CLI's hooks (host/turn-state.js): 'idle' | 'turn' |
 // 'prompt', or null -- not said yet, an older host, or the socket is down. Unknown is not idle (PR #93 F1/F2).
 let sessionTurn = null;
@@ -186,6 +205,7 @@ function reportTabStatus() {
     mainMood: anyWorking ? 'working' : null,
     pendingUrgent: tabPending.urgent,
     pendingFinished: tabPending.finished,
+    pendingMessages: peerCount,
     lock: tabLock,
     health: tabHealth,
     turn: sessionTurn,
@@ -199,6 +219,91 @@ function reportTabStatus() {
   lastReportedTabStatus = status;
   window.harness.tabStatus(status);
 }
+// Raises one attention message on every surface (toast, taskbar flash, the in-window cue). Used for every kind but a held message's first
+// look, which waits a moment to name its sender (peerMessageArrived).
+function raiseAttention(msg) {
+  // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
+  // skipped the toast whenever the window had focus, which silenced the one
+  // case the feature was built for: watching the terminal while a long task
+  // runs and wanting to be told when it ends.
+  const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
+  // An urgent message waits for you until this tab is looked at; so does a finished one, which
+  // also answers an urgent one still pending (#31). Anything else marks nothing.
+  if (msg.urgent === true) { pend('urgent'); reportTabStatus(); }
+  else if (msg.urgent === false) { pend('finished'); reportTabStatus(); }
+
+  if (window.harness && window.harness.attention) {
+    // Preferred path: main raises it, so it needs no page permission and can
+    // flash the taskbar and focus the window on click.
+    window.harness.attention(surfaces);
+  } else if (surfaces.toast) {
+    try {
+      const n = new Notification(surfaces.toast.title, {
+        body: surfaces.toast.body,
+        requireInteraction: surfaces.toast.requireInteraction,
+        silent: surfaces.toast.silent,
+      });
+      n.onclick = () => window.focus();
+    } catch (e) {
+      console.warn('[renderer] notification failed:', e.message);
+    }
+  }
+
+  if (surfaces.cue) flashAttention(msg);
+}
+
+// BACKLOG #156: a cross-session message is held for approval in this tab (host/attention.js read it off the CLI's own hook). A beat
+// later, once the CLI has drawn its dialog, the page reads the dialog to NAME it (sender, first line). A dialog it has already counted
+// (the CLI notified it again) is ignored; a new one goes on the tab's count, knocks once unless you are looking at this tab, and raises
+// the toast. Nothing here answers the message.
+const PEER_TOAST_DELAY_MS = 350;
+const peerHeld = window.peerCue.createHeldSet();
+const peerStorage = () => { try { return localStorage; } catch { return null; } };
+function visibleTerminalLines() {
+  const buf = term.buffer.active;
+  const out = [];
+  for (let y = 0; y < term.rows; y++) {
+    const line = buf.getLine(buf.viewportY + y);
+    out.push(line ? line.translateToString(true) : '');
+  }
+  return out;
+}
+// Selected tab in a focused window: only the shell knows both (PR #224, Dexter 4). A page with no shell asks its own focus.
+async function peerLooking() {
+  try {
+    if (window.harness && window.harness.isLooked) return (await window.harness.isLooked()) === true;
+  } catch { /* no shell to ask: fall back */ }
+  return document.hasFocus();
+}
+async function peerMessageArrived(msg) {
+  await new Promise(resolve => setTimeout(resolve, PEER_TOAST_DELAY_MS));
+  let found = null;
+  try { found = window.peerCue.scanHeldMessage(visibleTerminalLines()); } catch { found = null; }
+  if (!peerHeld.admit(found)) return;
+  const looking = await peerLooking();
+  if (!looking) { peerCount = window.peerCue.bumpCount(peerCount); reportTabStatus(); }
+  if (window.peerCue.shouldKnockFrom(peerStorage(), looking)) window.peerCue.knock(window);
+  raiseAttention({ ...msg, ...window.peerCue.toastFor(msg.project, found) });
+}
+function paintPeerMute() {
+  const btn = document.getElementById('cue-sound-toggle');
+  if (!btn) return;
+  const muted = window.peerCue.readMuted(peerStorage());       // read now: another tab's click changes the store under this page
+  btn.classList.toggle('off', muted);
+  btn.setAttribute('aria-pressed', String(!muted));
+  btn.title = muted ? 'The knock for a held message is muted. Click to turn it on.' : 'A held message from another session knocks once. Click to mute.';
+}
+document.addEventListener('DOMContentLoaded', () => {
+  paintPeerMute();
+  const btn = document.getElementById('cue-sound-toggle');
+  if (btn) btn.addEventListener('click', () => {
+    window.peerCue.writeMuted(peerStorage(), !window.peerCue.readMuted(peerStorage()));
+    paintPeerMute();
+  });
+});
+// ...and a switch flipped in another tab repaints this one's bell (the knock itself already reads the store at the moment it decides).
+window.addEventListener('storage', (e) => { if (e.key === null || e.key === window.peerCue.MUTE_KEY) paintPeerMute(); });
+
 // A new root record from the host (the hello, or a `program-status` frame). The header dot and the tab's dots show it; a start
 // of work clears a finished cue, and leaving blocked or error without finishing clears the need (the same flags attention uses).
 function applyProgramStatus(rootRecord, how) {
@@ -215,7 +320,7 @@ function applyProgramStatus(rootRecord, how) {
 }
 if (window.harness && window.harness.onTabSelected) {
   // Looked at: whatever was waiting for you has been seen.
-  window.harness.onTabSelected(() => { pend('looked'); reportTabStatus(); summaryOpenIfIdle(); });
+  window.harness.onTabSelected(() => { pend('looked'); peerCount = 0; peerHeld.clear(); reportTabStatus(); summaryOpenIfIdle(); });
 }
 if (window.harness && window.harness.onLockOverride) {
   // The shell's menu item is the same switch as the button, not a second one.
@@ -1211,11 +1316,7 @@ let flushKeyBurst = null;        // saves a divider's pending arrow-key burst (s
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved. Set only by railEvent
-let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's hover state, BACKLOG #85: peek is what it says is open
-const RAIL_OPEN_MS = 100;
-const RAIL_CLOSE_MS = 100;
-let railOpenTimer = null;
-let railCloseTimer = null;
+let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's state, BACKLOG #85: peek is what it says is open
 let helloSeen = false;           // the host has said whether this tab has its own layout, in the hello; a collapse is forgotten only after that
 let layoutLoaded = false;        // the stored layout has been read: until then the default is only a placeholder, whose groups mean nothing to a saved collapse
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
@@ -1410,6 +1511,7 @@ function mapInput() {
       tool: mapRates ? mapOwn(mapRates.tools, r.agent) : undefined,
       since: mapSince.has(r.agent) ? mapSince.get(r.agent) : null,
       worktree: claim ? claim.worktree : null,
+      wait: r.wait || null,
     });
   }
   return {
@@ -1651,12 +1753,12 @@ function resourceChipRow() {
 function renderResourcesChip() {
   if (!tbResourcesEl) return;
   const c = window.resourcesDisplay.chipView(resPayload);
-  // each figure (CPU, memory, and the GPU's when the payload has one) with its one-hour sparkline after it; the whole chip reads as the plain text to a screen reader
-  tbResourcesEl.innerHTML = window.resourcesHistoryDisplay.chipHtml(c.cpuText, c.memText, resHistory(), resHistoryNow(), c.gpuText);
-  tbResourcesEl.setAttribute('aria-label', c.text);
-  tbResourcesEl.title = c.title;
-  tbResourcesEl.classList.toggle('res-amber', c.level === 'amber');
-  tbResourcesEl.classList.toggle('res-red', c.level === 'red');
+  // `CPU 23% · RAM 52% · GPU 8%`: percentages only, each number amber from 75 and red from 90 (app/chip-model.js resourcesChip; Ricardo's
+  // pick, option A, 2026-10-28). The full figures are the hover; the graphs show in the hover popover and the panel (2026-10-27).
+  const chip = chipModel.resourcesChip(resPayload);
+  tbResourcesEl.innerHTML = chipModel.resourcesChipHtml(chip);
+  tbResourcesEl.setAttribute('aria-label', chip.aria);
+  tbResourcesEl.title = chip.title;
   tbResourcesEl.classList.toggle('res-dim', c.dim === true);
   // Q2: the Window menu's "Show CPU and memory in the top bar"; on until a payload says it is off
   tbResourcesEl.hidden = !resChipOn;
@@ -1808,6 +1910,16 @@ if (resRoot) {
 // page hiding close it. The chip is a button, so Enter and Space toggle it natively.
 if (tbResourcesEl && resPopoverEl) {
   tbResourcesEl.addEventListener('click', () => { resPopStep({ type: 'chip-click' }); });
+  // Hover: after a short rest on the chip the popover opens as a peek; it closes a moment after the pointer leaves both the chip
+  // and the popover (the grace lets the pointer cross the gap between them). A click pins it (the state machine decides).
+  let resPeekOpen = null; let resPeekClose = null;
+  const resPeekCancel = () => { clearTimeout(resPeekOpen); clearTimeout(resPeekClose); resPeekOpen = resPeekClose = null; };
+  const resPeekEnter = () => { resPeekCancel(); resPeekOpen = setTimeout(() => { resPeekOpen = null; if (!tbResourcesEl.hidden) resPopStep({ type: 'hover-open' }); }, 350); };
+  const resPeekLeave = () => { resPeekCancel(); resPeekClose = setTimeout(() => { resPeekClose = null; resPopStep({ type: 'hover-close' }); }, 250); };
+  tbResourcesEl.addEventListener('mouseenter', resPeekEnter);
+  tbResourcesEl.addEventListener('mouseleave', resPeekLeave);
+  resPopoverEl.addEventListener('mouseenter', resPeekCancel);
+  resPopoverEl.addEventListener('mouseleave', resPeekLeave);
   resPopoverEl.addEventListener('mousemove', (e) => {
     const plot = plotUnder(e);
     if (!plot) { resPopStep({ type: 'leave' }); return; }
@@ -2351,23 +2463,12 @@ function toggleGroupCollapse(groupId) {
   commitSelection(DTm.toggleCollapse(selection, placementLayout(), groupId));
 }
 
-// The dock rail's hover (BACKLOG #85). app/dock-tree-display.js railAfter decides; this owns the two timers it asks for: a hover
-// waits RAIL_OPEN_MS before it opens a panel (a pass across the rail opens nothing), and leaving waits RAIL_CLOSE_MS before it
-// closes one (a diagonal move into the panel isn't leaving). Answers whether the open panel changed, so the caller redraws.
+// The dock rail (BACKLOG #85, #138, #106). app/dock-tree-display.js railAfter decides: side tabs open on click only, so there are
+// no hover timers. Answers whether the open panel changed, so the caller redraws.
 function railEvent(ev) {
   const was = railSt;
   railSt = window.dockTreeView.railAfter(railSt, ev);
   peek = railSt.module === null ? null : { module: railSt.module };
-  if (railSt.pending === null) { clearTimeout(railOpenTimer); railOpenTimer = null; }
-  else if (railSt.pending !== was.pending) {
-    clearTimeout(railOpenTimer);
-    const m = railSt.pending;
-    railOpenTimer = setTimeout(() => { railOpenTimer = null; usageGesture(); if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
-  }
-  if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
-  else if (!was.leaving) {
-    railCloseTimer = setTimeout(() => { railCloseTimer = null; if (railEvent({ type: 'close-timer' })) renderLayout({ refit: false }); }, RAIL_CLOSE_MS);
-  }
   return railSt.module !== was.module;
 }
 
@@ -2387,17 +2488,17 @@ function togglePin(id, { justThisTab = false } = {}) {
 }
 
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
-// panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
+// panel is docked, an unpinned one opens from the rail and stays open until closed, a docked one is selected (PR #168 Miguel Y3).
 function revealModule(id) {
   usageGesture();
   const l = placementLayout();
   if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
   else if ((l.rail || []).includes(id)) {
-    if (!(railSt.module === id && railSt.held)) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
+    if (railSt.module !== id) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
   } else selectModule(id);
 }
 
-// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
+// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press in the terminal) closes it. It changes no
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
@@ -2487,7 +2588,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
       on: { click: () => { closeLayoutMenu(); startKeyboardMove(id); } },
     }));
     layoutMenu.appendChild(node('button', {
-      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you hover it',
+      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you click it',
       on: { click: () => { closeLayoutMenu(); togglePin(id, { justThisTab: check.box.checked }); } },
     }));
   }
@@ -2548,7 +2649,7 @@ function openLayoutMenu() {
     box.dataset.module = row.id;
     box.addEventListener('change', () => {
       const l = settledLayout();
-      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab (#85)
+      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab, #85
       else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
       openLayoutMenu();                           // redrawn in place, still open
     });
@@ -3202,7 +3303,7 @@ document.addEventListener('click', (e) => {
   selectModule(id);
 });
 
-// A rail's popover closes on Esc and on a press outside it and its rail (a press on the rail is the rail's own click).
+// A rail's popover closes on Esc and on a press in the terminal (a press on the rail is the rail's own click).
 // Esc is the popover's only when the person is IN it (or on its rail button): everywhere else it is the terminal's own
 // interrupt, which is never taken (PR #99 Miguel G3; PR #159 Miguel B1).
 window.addEventListener('keydown', (e) => {
@@ -3216,41 +3317,21 @@ window.addEventListener('keydown', (e) => {
   const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
   if (rail) rail.focus();
 }, true);
-// ...and when the keyboard leaves it for something else (Tab out of the popover): otherwise keys would type into the
-// terminal behind an open panel. A focus that goes nowhere (the window blurring, a button replaced) keeps it open.
-document.addEventListener('focusout', (e) => {
-  const to = e.relatedTarget;
-  if (!peek || !to || !to.closest || to.closest('.dpeek, .drail')) return;
+// ...and when the keyboard goes into the terminal FROM the panel or its rail: otherwise keys would type into the terminal behind it. Focus
+// moving anywhere else (the header, another panel, nowhere at all) keeps it open, #138.
+document.addEventListener('focusin', (e) => {
+  if (!peek || !window.dockTreeView.focusClosesPeek(e.target, e.relatedTarget)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
+// Only a press in the terminal closes an open side panel; a press anywhere else (header, tab strip, the rail, another panel, the
+// popover itself) leaves it open (#138, Ricardo round 2).
 document.addEventListener('pointerdown', (e) => {
   if (!peek) return;
-  const inside = e.target.closest && e.target.closest('.dpeek');
-  if (inside) { railEvent({ type: 'hold' }); return; }        // using the panel holds it open, like a click on its tab (PR #168 Miguel Y2)
-  if (e.target.closest && e.target.closest('.drail')) return;
+  if (!window.dockTreeView.inTerminal(e.target)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
-// ...and so does the keyboard being in it: typing in a field of a hover-opened panel must not lose it to the pointer leaving.
-document.addEventListener('focusin', (e) => {
-  if (peek && e.target.closest && e.target.closest('.dpeek')) railEvent({ type: 'hold' });
-});
-
-// Hovering a tab of the dock's rail slides its panel open over the terminal (BACKLOG #85); moving off the tab and the panel
-// slides it back after a short grace. The pointer is judged by what it is over now: a rail tab, the panel, or anything else
-// (the rail's empty strip is anything else: it is neither a tab nor the panel, PR #168 Dexter 3). Touch has no hover.
-document.addEventListener('pointerover', (e) => {
-  const t = e.target;
-  if (e.pointerType === 'touch' || !t || !t.closest) return;
-  const tab = t.closest('.drail[data-rail="dock"] button[data-module]');
-  let ev = null;
-  if (tab) ev = { type: 'enter', module: tab.dataset.module };
-  else if (t.closest('.dpeek')) ev = { type: 'enter-panel' };
-  else if (railSt.module !== null || railSt.pending !== null) ev = { type: 'leave' };
-  if (ev && railEvent(ev)) renderLayout({ refit: false });
-});
-document.documentElement.addEventListener('pointerleave', () => { if (railEvent({ type: 'leave' })) renderLayout({ refit: false }); });
 
 // Double-clicking the empty part of a group's tab bar unpins the group: every tab goes to the rail (a double-click on a tab is
 // just a click on it, twice). A group a window folded to a rail before (Ctrl+B, or an older fold) opens again by double-clicking
@@ -3419,6 +3500,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const groupInfo = el => ({
           id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
           tabs: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => b.dataset.module),
+          tabRects: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => rectOf(b)),
           on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
           panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
           panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
@@ -3477,7 +3559,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           vaultNode: vaultField ? vaultField.__probeTag : null,
           // D4: a rail's popover, the keyboard move, the settle class, what a screen reader is told, and what holds focus.
           peek: peek ? peek.module : null,
-          railState: railSt,           // #85: the dock rail's hover state
+          railState: railSt,           // #85: the dock rail's state
           popover: (() => {
             const pe = document.querySelector('#dock-floats > .dpeek');
             if (!pe) return null;
@@ -3696,15 +3778,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: a.byKey === true ? 0 : 1 }));
         return JSON.stringify({ ok: true });
       }
-      // #85 (verify/probe-dock-autohide.js): the pointer moved onto a dock-rail tab (`module`), onto the open panel (`on: 'panel'`) or
-      // onto the terminal (`on: 'terminal'`), as pointerover events a mouse makes; and the Pin / Pinned button pressed.
-      case 'hover': {
-        const el = a.module ? document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.module))}"]`)
-          : a.on === 'panel' ? document.querySelector('.dpeek') : document.getElementById('termwrap');
-        if (!el) return JSON.stringify({ ok: false, error: 'nothing to hover' });
-        el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
-        return JSON.stringify({ ok: true });
+      // Whether the page reports the (real) pointer over a dock-rail icon, so a probe's "hovering opened nothing" has a positive control.
+      case 'isHovered': {
+        const b = document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.id))}"]`);
+        return JSON.stringify({ ok: !!b, hovered: !!b && b.matches(':hover') });
       }
+      // The Pin / Pinned button pressed (`on: 'panel'` for the open popover's, else the docked group's for `module`).
       case 'pinClick': {
         const b = a.on === 'panel' ? document.querySelector('.dpeek .dpin') : document.querySelector(`.dgroup .dpin[data-pin="${CSS.escape(String(a.module))}"]`);
         if (!b) return JSON.stringify({ ok: false, error: 'no Pin button' });
@@ -3753,6 +3832,19 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
         el.focus();
         return JSON.stringify({ ok: true });
+      }
+      // Focus moved INTO an element the way the keyboard does it. A probe window that never got OS focus fires no focus events for
+      // el.focus(), so then the event the page would have seen is dispatched by hand.
+      case 'focusInto': {
+        const el = document.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const prev = document.activeElement;
+        el.focus();
+        // `fromNowhere` is a window regaining focus: a focusin with no relatedTarget, always made by hand.
+        const real = document.hasFocus() && a.fromNowhere !== true;
+        if (a.fromNowhere === true) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: null }));
+        else if (!real) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: prev }));
+        return JSON.stringify({ ok: true, real });
       }
       case 'dblclick': {
         const el = document.querySelector(String(a.selector));
@@ -6072,6 +6164,7 @@ function renderRoster() {
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
       `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
       agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
@@ -6081,6 +6174,11 @@ function renderRoster() {
     `</div>`;
   }).join(''));
 }
+
+// BACKLOG #155: a waiting card counts minutes, and the host only speaks when the detail changes: repaint the roster twice a minute while one waits.
+setInterval(() => {
+  for (const r of roster.values()) if (r.detail === 'bgwait' || r.detail === 'bgwaitlate') { renderRoster(); return; }
+}, 30_000);
 
 function renderRosterIndex(rosterIndex) {
   if (!rosterIndex) return;
@@ -6634,31 +6732,32 @@ function wireModelPanel() {
 // number gets quoted as though it included coverage and lint.
 const HP_STATES = ['healthy', 'hurt', 'critical', 'unknown'];
 
+let lastHealthKnown = null;      // { label, fraction } of the last finished run, shown (dimmed) while the next one runs
 function renderHealth(h) {
   const el = document.getElementById('hp');
   if (!el || !h) return;
   el.classList.add('show');
-  el.classList.remove(...HP_STATES, 'running');
+  el.classList.remove(...HP_STATES, 'running', 'stale');
   el.classList.add(HP_STATES.includes(h.state) ? h.state : 'unknown');
   if (h.running) el.classList.add('running');
 
-  const pct = h.fraction === null || h.fraction === undefined
-    ? 0 : Math.round(h.fraction * 100);
-
-  const label = h.running ? 'running…'
-    : h.state === 'unknown'
-      ? (h.runner ? 'no result yet' : 'no test suite')
-      : `${h.passed}/${h.total}`;
+  // Chrome grammar A: a number or a dash, never a sentence. Running is the chip's shimmer, unknown its dashed border; the words
+  // ("no test suite", "no result yet") live in the hover text. The bar is the 28 px micro-bar (app/chip-model.js).
+  // While the suite runs the chip keeps its last known value and bar, dimmed (app/chip-model.js healthChip); a new result replaces it.
+  const view = chipModel.healthChip(h, lastHealthKnown);
+  if (view.known) lastHealthKnown = view.known;
+  el.classList.toggle('stale', view.stale);
 
   el.innerHTML = `<span>HP</span><span class="track"><span class="fill"></span></span>` +
-                 `<span class="num">${escapeHtml(label)}</span>`;
-  el.querySelector('.fill').style.width = pct + '%';
+                 `<span class="num">${escapeHtml(view.label)}</span>`;
+  el.querySelector('.fill').style.width = view.bar.px + 'px';
 
-  el.title = h.state === 'unknown' && !h.runner
-    ? 'No recognisable test suite in this project'
-    : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
-      (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
-      '. Click to run the suite.';
+  el.title = h.running ? 'Running the test suite…'
+    : h.state === 'unknown'
+      ? (h.runner ? 'No result yet. Click to run the suite.' : 'No recognisable test suite in this project')
+      : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
+        (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
+        '. Click to run the suite.';
 }
 
 document.addEventListener('click', (e) => {
@@ -6771,20 +6870,24 @@ function renderUsage(usage) {
   const title = base => (how.note ? `${base} - ${how.note}` : base);
   const sessions = `${project.sessions} session${project.sessions === 1 ? '' : 's'}`;
 
+  // The chip's own hover carries both figures: a narrow window hides the project group, and its total must stay reachable.
+  const sessionTitle = title(`This session - ${detail(session)}`);
+  const projectTitle = title(`Every session on this folder (${sessions}) - ${detail(project)}`);
+  usageEl.title = `${sessionTitle}\n${projectTitle}`;
   usageEl.className = 'usage-' + how.state;
   usageEl.innerHTML =
-    `<span class="grp" title="${title(`This session - ${detail(session)}`)}">` +
+    `<span class="grp" title="${escapeHtml(`${sessionTitle}\n${projectTitle}`)}">` +
       `<span class="lbl">session</span>` +
       `<span class="val">${num(spend(session))}</span>` +
     `</span>` +
-    `<span class="grp" title="${title(`Every session on this folder (${sessions}) - ${detail(project)}`)}">` +
+    `<span class="grp" title="${escapeHtml(`${sessionTitle}\n${projectTitle}`)}">` +
       `<span class="lbl">project</span>` +
       `<span class="val">${num(spend(project))}</span>` +
     `</span>` +
-    // Said out loud, not only in a tooltip. A status nobody can see is the
-    // defect this whole change exists to fix.
-    (how.note ? `<span class="grp note" title="${how.note}">${how.note}</span>` : '') +
     milestoneHtml(usage.milestone);
+  // Chrome grammar A: a lower bound or an unread figure is SEEN as a dashed chip with the figure's own placeholder; the sentence
+  // (how.note) is in both groups' hover text, never a line in the header.
+  usageEl.classList.toggle('has-note', !!how.note);
 }
 
 // --- plan quota ---------------------------------------------------------------
@@ -6848,12 +6951,16 @@ function renderQuota(quota) {
   if (d.state !== 'ready') {
     // No bars. Three tracks sitting at zero would claim the plan is untouched,
     // which is precisely what we do not know here.
+    // Chrome grammar A: a dash in a dashed chip (a shimmer while it reads); the sentence is the hover text and the label.
     quotaSkeleton = null;
     quotaEl.classList.remove('has-back');
-    quotaEl.innerHTML = `<span class="none" title="${escapeHtml(d.note || '')}">${escapeHtml(d.note || '')}</span>`;
+    quotaEl.classList.add('is-note');
+    quotaEl.classList.toggle('is-loading', d.state === 'reading');
+    quotaEl.innerHTML = `<span class="none" role="img" aria-label="${escapeHtml(d.note || 'plan limits')}" title="${escapeHtml(d.note || '')}">—</span>`;
     return;
   }
 
+  quotaEl.classList.remove('is-note', 'is-loading');
   const meterHtml = (m, text) =>
     `<span class="meter tone-${m.tone}${m.isActive ? ' active' : ''}${cs.texts[m.key] ? ' back' : ''}${cs.texts[m.key] && m.key === cs.bindKey ? ' bind' : ''}" title="${escapeHtml(m.title)}">` +
       `<span class="lbl">${escapeHtml(m.label)}</span>` +
@@ -8292,7 +8399,7 @@ function renderStyleSection(section) {
       `<span class="style-label">Terminal size</span><div class="style-row">` +
       `<input type="range" id="style-font-size" min="${fontsDisplay.MIN_TERMINAL_SIZE}" max="${fontsDisplay.MAX_TERMINAL_SIZE}" step="1" value="${f.size}">` +
       `<span class="style-val" id="style-font-size-val">${f.size} px</span></div>` +
-      fontPickerHtml('Interface font', 'ui', f.uiFont, 'Default (Segoe UI)',
+      fontPickerHtml('Interface font', 'ui', f.uiFont, 'Default (IBM Plex Sans)',
         'id="style-font-ui-search"', 'id="style-font-ui-list"', 'id="style-font-ui-reset"') +
       fontPickerHtml("This project's terminal font", 'project', f.projectFont, 'Same as every window',
         'id="style-font-project-search"', 'id="style-font-project-list"', 'id="style-font-project-reset"') +
@@ -8743,7 +8850,20 @@ function renderStatusFields(fields) {
   lastStatusFields = fields && typeof fields === 'object' ? fields : null;
   if (!statusFieldsEl) return;
   const view = statusFieldsView(lastStatusFields, chromeSettings.statusInHeader);
-  statusFieldsEl.textContent = view.text;
+  statusFieldsEl.title = view.chips.map((c) => c.text).join(', ');
+  statusFieldsEl.replaceChildren(...view.chips.map((c) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip sf-chip';
+    chip.dataset.sf = c.key;
+    const ic = document.createElement('span');
+    ic.className = 'chip-ic';
+    ic.innerHTML = chipIcons.svgFor(c.icon);              // constant vendored markup (app/chip-icons.js), never user data
+    const v = document.createElement('span');
+    v.className = 'chip-v';
+    v.textContent = c.text;
+    chip.append(ic, v);
+    return chip;
+  }));
   statusFieldsEl.hidden = !view.shown;
 }
 
@@ -9390,34 +9510,8 @@ function handleControl(msg) {
   }
   if (msg.type === 'attention') {
     gamesHandBack();                // #41: Claude needs Ricardo, or finished: a wait game pauses and the keyboard goes to the terminal
-    // Delivery is unconditional; only INSISTENCE depends on focus. The old rule
-    // skipped the toast whenever the window had focus, which silenced the one
-    // case the feature was built for: watching the terminal while a long task
-    // runs and wanting to be told when it ends.
-    const surfaces = window.surfacesFor(msg, { focused: document.hasFocus() });
-    // An urgent message waits for you until this tab is looked at; so does a finished one, which
-    // also answers an urgent one still pending (#31). Anything else marks nothing.
-    if (msg.urgent === true) { pend('urgent'); reportTabStatus(); }
-    else if (msg.urgent === false) { pend('finished'); reportTabStatus(); }
-
-    if (window.harness && window.harness.attention) {
-      // Preferred path: main raises it, so it needs no page permission and can
-      // flash the taskbar and focus the window on click.
-      window.harness.attention(surfaces);
-    } else if (surfaces.toast) {
-      try {
-        const n = new Notification(surfaces.toast.title, {
-          body: surfaces.toast.body,
-          requireInteraction: surfaces.toast.requireInteraction,
-          silent: surfaces.toast.silent,
-        });
-        n.onclick = () => window.focus();
-      } catch (e) {
-        console.warn('[renderer] notification failed:', e.message);
-      }
-    }
-
-    if (surfaces.cue) flashAttention(msg);
+    if (msg.kind === 'peer-message') peerMessageArrived(msg).catch((err) => console.warn('[renderer] held-message cue failed:', err && err.message));
+    else raiseAttention(msg);
     return;
   }
   if (msg.type === 'milestone') {

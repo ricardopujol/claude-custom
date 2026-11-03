@@ -149,12 +149,6 @@ test('property: a null never becomes a point at 0 (the number of drawn points eq
   }));
 });
 
-test('chipHtml: each figure is followed by its own sparkline, and a figure is escaped text', () => {
-  const html = D.chipHtml('CPU 71%', '21.4 GB / 32.0 GB', run(NOW - 60000, 4), NOW);
-  assert.match(html, /^<span class="tbr-n">CPU 71%<\/span><svg class="hs"[\s\S]*<\/svg><span class="tbr-n">21\.4 GB \/ 32\.0 GB<\/span><svg class="hs"/);
-  assert.match(D.chipHtml('<b>', '&', [], NOW), /<span class="tbr-n">&lt;b&gt;<\/span>[\s\S]*<span class="tbr-n">&amp;<\/span>/);
-});
-
 // ---- review fixes (Dexter, PR #114 D1 D2 D5 D6, Miguel S1) -----------------------------------------------------------------
 
 test('D2: where the total is null, "ours" is null too: nothing orange is drawn across a break in the total', () => {
@@ -288,4 +282,36 @@ test('popover: the panel link closes it (the page then opens the panel)', () => 
   assert.strictEqual(step(opened(), { type: 'panel-link' }).state.open, false);
   const c = D.popoverInit();
   assert.strictEqual(step(c, { type: 'panel-link' }).state, c);
+});
+
+// ---- round 2 (Ricardo, 2026-10-27): the header chip is figures only; the graphs show on hover ------------------------------
+
+test('popover peek: a hover opens it as a peek, leaving the chip closes a peek, and a hover while open changes nothing', () => {
+  const peek = step(D.popoverInit(), { type: 'hover-open' }).state;
+  assert.strictEqual(peek.open, true);
+  assert.strictEqual(peek.peek, true);
+  assert.strictEqual(step(peek, { type: 'hover-close' }).state.open, false);
+  const o = opened();
+  assert.strictEqual(step(o, { type: 'hover-open' }).state, o);
+});
+
+test('popover peek: a click on the chip pins a peek open (a second click closes it); hover-close never closes a pinned one', () => {
+  const peek = step(D.popoverInit(), { type: 'hover-open' }).state;
+  const pinned = step(peek, { type: 'chip-click' }).state;
+  assert.strictEqual(pinned.open, true);
+  assert.ok(!pinned.peek);
+  assert.strictEqual(step(pinned, { type: 'hover-close' }).state, pinned);
+  assert.strictEqual(step(pinned, { type: 'chip-click' }).state.open, false);
+});
+
+test('popover peek: hovering a graph keeps it a peek, and every other closer still closes it', () => {
+  const peek = step(D.popoverInit(), { type: 'hover-open' }).state;
+  const h = step(peek, { type: 'hover', kind: 'cpu', minutes: 5 }).state;
+  assert.strictEqual(h.peek, true);
+  assert.strictEqual(h.hover.cpu, 5);
+  assert.strictEqual(step(h, { type: 'leave' }).state.peek, true);
+  for (const ev of [{ type: 'key', key: 'Escape' }, { type: 'pointerdown', inside: false }, { type: 'blur' }, { type: 'hidden' }, { type: 'chip-off' }, { type: 'panel-link' }]) {
+    assert.strictEqual(step(peek, ev).state.open, false, ev.type);
+  }
+  assert.strictEqual(step(D.popoverInit(), { type: 'hover-close' }).state.open, false);
 });

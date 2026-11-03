@@ -100,16 +100,6 @@ test('the GPU graph draws one neutral area and no "ours" (claude-custom has no G
   assert.doesNotMatch(gpu, /hg-ours/);
 });
 
-test('chipHtml: a GPU figure and its sparkline follow the memory one, only when asked for', () => {
-  const pts = run(NOW - 60000, 4);
-  const html = D.chipHtml('CPU 71%', '21.4 GB / 32.0 GB', pts, NOW, 'GPU 12%');
-  assert.deepStrictEqual([...html.matchAll(/<span class="tbr-n">([^<]*)<\/span>/g)].map(m => m[1]), ['CPU 71%', '21.4 GB / 32.0 GB', 'GPU 12%']);
-  assert.strictEqual((html.match(/<svg/g) || []).length, 3);
-  assert.strictEqual((D.chipHtml('a', 'b', pts, NOW).match(/<svg/g) || []).length, 2);
-  assert.strictEqual((D.chipHtml('a', 'b', pts, NOW, null).match(/<svg/g) || []).length, 2);
-  assert.match(D.chipHtml('a', 'b', [], NOW, '<i>'), /&lt;i&gt;/);
-});
-
 test('hover: any of the four graphs can be hovered, one at a time, and the view has all four', () => {
   let s = D.popoverStep(D.popoverInit(), { type: 'chip-click' }).state;
   for (const kind of ['cpu', 'mem', 'gpu', 'gpumem']) {

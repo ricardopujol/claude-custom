@@ -27,14 +27,14 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { createMoodMachine, TOOL_LINGER_MS } = require('../host/mood-machine');
+const { createMoodMachine, TOOL_LINGER_MS, WAIT_GRACE_MS, WAIT_RED_MS } = require('../host/mood-machine');
 
 const MAX_AGENTS = 6;
 const TYPES = ['ta', 'tb', 'tc'];
 const FILE_TOOLS = { Read: 'reading', Grep: 'reading', Glob: 'reading', Edit: 'writing', Write: 'writing', NotebookEdit: 'writing' };
-const FINER = { working: ['working', 'reading', 'writing', 'running', 'waiting', 'stuck', 'helper'],
-  stressed: ['stressed', 'waiting', 'stuck', 'helper'] };
-const RANK = { waiting: 6, stuck: 5, helper: 4, running: 3, reading: 3, writing: 3 };
+const FINER = { working: ['working', 'reading', 'writing', 'running', 'waiting', 'stuck', 'helper', 'bgwait', 'bgwaitlate'],
+  stressed: ['stressed', 'waiting', 'stuck', 'helper', 'bgwait', 'bgwaitlate'] };
+const RANK = { waiting: 6, stuck: 5, helper: 4, running: 3, reading: 3, writing: 3, bgwaitlate: 2.5, bgwait: 2 };
 const STUCK_MS = 30_000;
 
 const opArb = fc.oneof(
@@ -55,10 +55,10 @@ const opArb = fc.oneof(
 
 function simulate(ops, onStep) {
   let t = 1_000_000;
-  const m = createMoodMachine({ now: () => t, stuckMs: STUCK_MS, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12 });
+  const m = createMoodMachine({ now: () => t, stuckMs: STUCK_MS, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12, quietStallMs: 10 ** 12 });
   const changes = [];
   m.on('change', c => changes.push(c));
-  const agents = [];          // { id, type, parent, bg, alive, last, waiting, quiet, lastAct }
+  const agents = [];          // { id, type, parent, bg, alive, last, waiting, shell, lastAct }
   const loops = new Map();    // name -> { sig, n }: the retry loop is the NAME's
   let n = 0;
   const alive = () => agents.filter(a => a.alive);
@@ -69,6 +69,8 @@ function simulate(ops, onStep) {
   const by = a => ({ agent_id: a.id, agent_type: a.type });
   // a hooked event of the run: it is alive, and so is the chain above it, up to a background run
   const refresh = a => { for (let i = a; i; i = i.parent) { i.lastAct = t; if (i.bg) break; } };
+  // QUIET (PR #224, Dexter 1): a backgrounded Bash it launched (no end hook: it lasts), or a background child of it that is still alive.
+  const quietOf = a => a.shell || agents.some(c => c.alive && c.parent === a && c.bg);
   const loopOf = name => { if (!loops.has(name)) loops.set(name, { sig: null, n: 0 }); return loops.get(name); };
 
   for (const o of ops) {
@@ -84,9 +86,9 @@ function simulate(ops, onStep) {
         send('PreToolUse', { tool_name: 'Agent', tool_use_id: key,
           tool_input: { subagent_type: type, run_in_background: o.bg }, ...(parent ? by(parent) : {}) });
         if (!live.some(x => x.type === type)) loops.set(type, { sig: null, n: 0 });      // a fresh run starts its loop clean
-        if (parent) { refresh(parent); parent.waiting = false; parent.last = { kind: 'other' }; if (o.bg) parent.quiet = true; }
+        if (parent) { refresh(parent); parent.waiting = false; parent.last = { kind: 'other' }; }
         const a = { id: 'a' + type + '-' + String(++n).padStart(16, '0'), type, parent, bg: o.bg, alive: true,
-          last: null, waiting: false, quiet: false, lastAct: t };
+          last: null, waiting: false, shell: false, lastAct: t };
         agents.push(a);
         // the run speaks at once, so the machine knows its id
         send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: {}, ...by(a) });
@@ -100,7 +102,7 @@ function simulate(ops, onStep) {
         send('PreToolUse', { tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'c' + n, ...(o.bg ? { run_in_background: true } : {}) }, ...by(a) });
         refresh(a);
         a.waiting = false;
-        if (o.bg) { a.quiet = true; a.last = { kind: 'other' }; } else a.last = { kind: 'bash', id, open: true };
+        if (o.bg) { a.shell = true; a.last = { kind: 'other' }; } else a.last = { kind: 'bash', id, open: true };
         break;
       }
       case 'bashPost': {
@@ -182,18 +184,20 @@ function simulate(ops, onStep) {
         break;
       default: throw new Error(o.op);
     }
-    onStep({ m, agents, changes, t, o, loops, fgKids });
+    onStep({ m, agents, changes, t, o, loops, fgKids, quietOf });
   }
 }
 
 // What the contract says one live run shows, given the card's base state.
-function runDetail(a, state, t, loops, fgKids) {
+function runDetail(a, state, t, loops, fgKids, quietOf) {
   if (a.waiting) return 'waiting';
   const kids = fgKids(a).length > 0;
   const bashInFlight = !!a.last && a.last.kind === 'bash' && a.last.open;
-  const silent = !a.quiet && !kids && !bashInFlight && t - a.lastAct > STUCK_MS;
+  const silent = !quietOf(a) && !kids && !bashInFlight && t - a.lastAct > STUCK_MS;
   if ((loops.get(a.type) || { n: 0 }).n >= 3 || silent) return 'stuck';
   if (kids) return 'helper';
+  // BACKLOG #155: background work launched, nothing in flight, silent for the grace: waiting on it (red from 30 minutes)
+  if (quietOf(a) && !bashInFlight && t - a.lastAct >= WAIT_GRACE_MS) return t - a.lastAct >= WAIT_RED_MS ? 'bgwaitlate' : 'bgwait';
   if (state !== 'working') return state;
   if (bashInFlight) return 'running';
   if (a.last && a.last.kind === 'file' && t - a.last.at <= TOOL_LINGER_MS) return a.last.file;
@@ -202,7 +206,7 @@ function runDetail(a, state, t, loops, fgKids) {
 
 test('property: a card shows exactly the finest name its live signals support, highest priority first', () => {
   fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 70 }), (ops) => {
-    simulate(ops, ({ m, agents, changes, t, loops, fgKids }) => {
+    simulate(ops, ({ m, agents, changes, t, loops, fgKids, quietOf }) => {
       for (const r of m.roster()) {
         // 1. shape
         if (r.state === 'working' || r.state === 'stressed') assert.ok(FINER[r.state].includes(r.detail), `${r.agent}: ${r.state}/${r.detail}`);
@@ -215,7 +219,7 @@ test('property: a card shows exactly the finest name its live signals support, h
         // 2 + 3. the best of what its live runs support
         let want = r.state;
         for (const a of runs) {
-          const d = runDetail(a, r.state, t, loops, fgKids);
+          const d = runDetail(a, r.state, t, loops, fgKids, quietOf);
           if ((RANK[d] || 0) > (RANK[want] || 0)) want = d;
         }
         assert.strictEqual(r.detail, want, `${r.agent}: state ${r.state}, ${runs.length} live run(s)`);

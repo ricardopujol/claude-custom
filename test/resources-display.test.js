@@ -52,40 +52,11 @@ test('fmtBytes: null is a dash, MB below a GB, GB with one decimal above', () =>
   assert.strictEqual(D.fmtBytes(32 * GB), '32.0 GB');
 });
 
-test('chipView: the machine total, amber from 40%, red from 75%', () => {
-  const c = D.chipView(payload());
-  assert.strictEqual(c.text, 'CPU 71%  21.4 GB / 32.0 GB');
-  assert.strictEqual(c.level, 'amber');
-  assert.strictEqual(D.chipView(payload({ machine: { cpu: 75, mem: null } })).level, 'red');
-  assert.strictEqual(D.chipView(payload({ machine: { cpu: 74.9, mem: null } })).level, 'amber');
-  assert.strictEqual(D.chipView(payload({ machine: { cpu: 39.9, mem: null } })).level, null);
-  assert.strictEqual(D.chipView(payload({ machine: { cpu: 40, mem: null } })).level, 'amber');
-  assert.match(D.chipView(payload()).title, /Machine total and the last hour\. Click for the graphs\./);
-});
-
-test('chipView: the two figures come apart (a sparkline sits after each), and an unmeasured one is a dash', () => {
-  const c = D.chipView(payload());
-  assert.strictEqual(c.cpuText, 'CPU 71%');
-  assert.strictEqual(c.memText, '21.4 GB / 32.0 GB');
-  assert.strictEqual(D.chipView(null).cpuText, 'CPU —');
-  assert.strictEqual(D.chipView(null).memText, '— / —');
-  assert.strictEqual(D.chipView(payload({ machine: { cpu: null, mem: { usedBytes: 4 * GB, totalBytes: 8 * GB } } })).cpuText, 'CPU —');
-});
-
-test('chipView: before anything is measured, and with a missing part, the chip says so with dashes, never 0', () => {
-  assert.strictEqual(D.chipView(null).text, 'CPU —  — / —');
-  assert.strictEqual(D.chipView(null).level, null);
-  assert.strictEqual(D.chipView(payload({ machine: { cpu: null, mem: { usedBytes: 4 * GB, totalBytes: 8 * GB } } })).text, 'CPU —  4.0 GB / 8.0 GB');
-  assert.strictEqual(D.chipView(payload({ machine: null })).text, 'CPU —  — / —');
-});
-
-test('chipView: dimmed while a sample is overdue, a dash for everything once three have failed', () => {
-  const stale = D.chipView(payload({ status: { stale: true, expired: false, ageMs: 20000 } }));
-  assert.strictEqual(stale.dim, true);
-  assert.strictEqual(stale.text, 'CPU 71%  21.4 GB / 32.0 GB', 'the last good figures stay');
-  const dead = D.chipView(payload({ status: { stale: true, expired: true, ageMs: 40000 } }));
-  assert.strictEqual(dead.text, 'CPU —  — / —');
-  assert.strictEqual(dead.level, null);
+test('chipView: dimmed while a sample is overdue, and only then', () => {
+  assert.strictEqual(D.chipView(payload()).dim, false);
+  assert.strictEqual(D.chipView(null).dim, false);
+  assert.strictEqual(D.chipView(payload({ status: { stale: true, expired: false, ageMs: 20000 } })).dim, true);
+  assert.strictEqual(D.chipView(payload({ status: { stale: true, expired: true, ageMs: 40000 } })).dim, true);
 });
 
 test('the panel: machine bars, this project with a row per tab and claude-custom itself, other windows, the footer', () => {
@@ -260,7 +231,6 @@ test('property: no view ever prints NaN, undefined or null, whatever the payload
     const s = D.toggle(D.toggle(stateWith(p), 's:k-main'), 'self');
     const h = D.html(D.view(s));
     assert.doesNotMatch(h, /NaN|undefined|\bnull\b|Infinity/);
-    assert.doesNotMatch(D.chipView(p).text, /NaN|undefined|null/);
   }));
 });
 

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * BACKLOG #103: panels start as rail tabs (unpinned) unless the user pinned them, and a rail peek shows only the hovered tab.
+ * BACKLOG #103: panels start as rail tabs (unpinned) unless the user pinned them, and a rail peek shows only the clicked tab.
  * `defaultLayout` stays the all-pinned layout (many fixtures build on it); `startLayout` is what a person meets.
  */
 const test = require('node:test');
@@ -70,7 +70,7 @@ test('a layout that HAS a rail array keeps what the person pinned', () => {
   assert.equal(T.groups(all).length, 1);
 });
 
-test('a rail peek shows only the hovered tab, not the rail\'s whole list', () => {
+test('a rail peek shows only the clicked tab, not the rail\'s whole list', () => {
   const ids = TABS.map(t => t.id);
   const layout = T.startLayout(ids);
   const p = V.treePlan(layout, {}, TABS, { width: 1200, height: 800 }, { faceSize: () => 77, peek: { module: 'vault' } });

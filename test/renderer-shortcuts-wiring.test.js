@@ -38,8 +38,10 @@ test('#42: the removed #side-hint is not looked up any more (a null.addEventList
 test('#42: usage reads "62M tok" and quota "41% · 18:00" in the header, the long form stays in the tooltips', () => {
   const usage = JS.slice(JS.indexOf('function renderUsage('), JS.indexOf('// --- plan quota'));
   assert.match(usage, /tokText\(/);
-  assert.match(usage, /title="\$\{title\(`This session/);
-  assert.match(usage, /title="\$\{title\(`Every session on this folder/);
+  // The long forms are built once (sessionTitle, projectTitle) and both groups' hovers carry both (Miguel r2 N1).
+  assert.match(usage, /const sessionTitle = title\(`This session/);
+  assert.match(usage, /const projectTitle = title\(`Every session on this folder/);
+  assert.match(usage, /title="\$\{escapeHtml\(`\$\{sessionTitle\}\\n\$\{projectTitle\}`\)\}"/);
   const quota = JS.slice(JS.indexOf('function renderQuota('), JS.indexOf('// The countdown in every tooltip'));
   assert.match(quota, /m\.short/);
   assert.match(quota, /title="\$\{escapeHtml\(m\.title\)\}"/);

@@ -35,7 +35,8 @@ test('the waiting badge pulses, and not under prefers-reduced-motion', () => {
 
 test('the host sends the detail with every mood message, and the file tools reach the mood engine', () => {
   const host = read('host/host.js');
-  assert.match(host, /return \{ agent, state, detail: d, portrait: portraitOf\(agent, d, state\) \}/);
+  assert.match(host, /const out = \{ agent, state, detail: d, portrait: portraitOf\(agent, BG_WAIT_DETAILS\.has\(d\) \? state : d, state\) \}/);
+  assert.match(host, /out\.wait = mood\.waitOf\(agent\)/);
   assert.match(host, /mood\.on\('change', \(\{ agent, state, detail \}\) =>/);
   assert.match(host, /if \(isOccupancyOnly\(ev\)\) \{ mood\.handle\(ev\); return; \}/);
 });

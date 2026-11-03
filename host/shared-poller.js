@@ -131,7 +131,26 @@ function createSharedPoller({
   const warn = (what, err) => log(`[resources] shared poller: ${what}:`, (err && err.message) || err);
 
   // ---- the shared files -------------------------------------------------------------------------------------------
-  const readOwner = () => (solo ? null : parseOwner(readJson(files.owner())));
+  /**
+   * owner.json as three states, because "absent" and "could not read it" are not the same fact. { kind: 'record', owner } (owner is
+   * null for JSON that is not an owner record: claimable, as before) | { kind: 'absent' } | { kind: 'unreadable' }: a read error
+   * other than "no such file", or text that does not parse. An unreadable record is doubt: it is kept, not claimed, until it has
+   * sat unreadable past the stale age (by the file's mtime), when nobody is renewing it.
+   */
+  function readOwnerFile() {
+    if (solo) return { kind: 'absent', owner: null };
+    let raw;
+    try { raw = fs.readFileSync(files.owner(), 'utf8'); } catch (e) { return e && e.code === 'ENOENT' ? { kind: 'absent', owner: null } : { kind: 'unreadable', owner: null }; }
+    let o;
+    try { o = JSON.parse(raw); } catch { return { kind: 'unreadable', owner: null }; }
+    return { kind: 'record', owner: parseOwner(o && typeof o === 'object' && !Array.isArray(o) ? o : null) };
+  }
+  const readOwner = () => readOwnerFile().owner;
+  function unreadableIsStale() {
+    try { return now() - fs.statSync(files.owner()).mtimeMs > policy.STALE_BEAT_MS; } catch { return false; }
+  }
+  /** True when the folder's record cannot be read and has not yet sat unreadable long enough to be taken. */
+  const ownerInDoubt = (r) => r.kind === 'unreadable' && !unreadableIsStale();
   function writeOwner(o) { writeFileAtomic(files.owner(), JSON.stringify(o)); }
   function writeWant() {
     if (solo) { lastWantAt = now(); return; }
@@ -199,10 +218,13 @@ function createSharedPoller({
   function claim(proved) {
     let won = false;
     let locked = false;
+    let doubt = false;
     try {
       withFileLock(files.lock(), () => {
         locked = true;
-        const cur = readOwner();
+        const r = readOwnerFile();
+        if (ownerInDoubt(r)) { doubt = true; return; }
+        const cur = r.owner;
         const sameProof = cur && proved && proved.pid === cur.pid && proved.start === cur.start;
         const v = judge(cur, sameProof ? proved.match : undefined);
         if (v === 'claim') { const t = now(); writeOwner({ pid: self.pid, start: me().start, since: t, beat: t }); won = true; }
@@ -210,6 +232,7 @@ function createSharedPoller({
       }, { deadlineMs: CLAIM_DEADLINE_MS });
     } catch (err) { warn('could not take the sampling', err); }
     if (won) becomeOwner();
+    else if (doubt) { if (role !== 'owner') role = 'follower'; }      // could not read the record: nothing proves a change of owner
     else if (!locked) { if (role !== 'owner') role = 'follower'; }   // the lock failed: nobody else was seen to claim, so nothing is lost by waiting a tick
     else if (role === 'owner') demote('another instance claimed it');
     else role = 'follower';
@@ -226,7 +249,9 @@ function createSharedPoller({
     if (solo) { becomeOwner(); return; }
     // No claim without a start time of our own: a record that carries none cannot be told from a reused pid later.
     if (typeof me().start !== 'string') { if (role !== 'owner') role = 'follower'; return; }
-    const owner = readOwner();
+    const r = readOwnerFile();
+    if (ownerInDoubt(r)) { if (role !== 'owner') role = 'follower'; return; }
+    const owner = r.owner;
     let v = judge(owner, undefined);
     let proved = null;
     if (v === 'verify') {
@@ -251,7 +276,9 @@ function createSharedPoller({
 
   const stillOwner = () => {
     if (solo) return true;
-    const cur = readOwner();
+    const r = readOwnerFile();
+    if (r.kind === 'unreadable') return true;      // a read that failed is no proof the folder names another owner
+    const cur = r.owner;
     const mine = me();
     return !!cur && cur.pid === mine.pid && cur.start === mine.start;
   };

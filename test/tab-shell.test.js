@@ -226,13 +226,13 @@ test('observeWorktrees: no text is NO observation; markers are read with the bra
 });
 
 test('sanitizeStatus keeps eight fields and never invents a value', () => {
-  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+  assert.deepStrictEqual(sanitizeStatus(null), { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
     sanitizeStatus({ working: 'yes', needsInput: 1, finished: 'true', lock: '', health: '', turn: 'busy', night: 'yes', extra: 1 }),
-    { working: false, needsInput: false, finished: false, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
+    { working: false, needsInput: false, finished: false, messages: 0, lock: null, health: null, turn: null, night: false, summary: null, summaryNote: null, program: null });
   assert.deepStrictEqual(
-    sanitizeStatus({ working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
-    { working: true, needsInput: true, finished: true, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
+    sanitizeStatus({ working: true, needsInput: true, finished: true, messages: 3, lock: 'blocked', health: '↓3', turn: 'prompt', night: true }),
+    { working: true, needsInput: true, finished: true, messages: 3, lock: 'blocked', health: '↓3', turn: 'prompt', night: true, summary: null, summaryNote: null, program: null });
 });
 
 // Backlog #39: a renderer may say its summary, cut down to the known fields; garbage is none.
@@ -906,6 +906,60 @@ test('#31: looked() touches only the selected tab, and says false when there was
   assert.strictEqual(h.shell.model().find(x => x.label === 'feat/a').pulse, 'done', 'the unselected tab keeps its pulse');
 });
 
+// BACKLOG #156 (PR #224, Miguel I1): the envelope count is cleared by a look exactly like the urgent dot, and it alone (no needsInput, no finished) is enough.
+test('held messages: the count shows on an unselected tab and a SELECT clears it, the page is told', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  const countOf = () => h.shell.model().find(x => x.label === 'feat/a').messages;
+  h.shell.report(aView, { messages: 2 });
+  assert.strictEqual(countOf(), 2);
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(countOf(), 0);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).status.messages, 0, 'the shell forgets it, so deselecting does not bring it back');
+});
+
+test('held messages: a count reported by the tab you are looking at (selected + window focused) is cleared at once and the page told', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const sentBefore = h.sent.filter(([, ch]) => ch === 'tab-selected').length;
+  h.shell.report(h.shell.tabByKey(key('dev')).view, { messages: 1 });
+  assert.strictEqual(h.shell.model().find(x => x.isDev).messages, 0);
+  assert.ok(h.sent.filter(([, ch]) => ch === 'tab-selected').length > sentBefore, 'the page is told, so it clears its own count');
+  const h2 = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h2.shell.open();
+  await flush();
+  h2.shell.report(h2.shell.tabByKey(key('dev')).view, { messages: 1 });
+  assert.strictEqual(h2.shell.model().find(x => x.isDev).messages, 1, 'window in the background: it is not being looked at');
+});
+
+test('held messages: the window coming back to the front looks at the selected tab, and a count alone is enough for looked() to say so', async () => {
+  const h = harness({ running: { 7700: wt('dev') }, focused: false });
+  await h.shell.open();
+  await flush();
+  h.shell.report(h.shell.tabByKey(key('dev')).view, { messages: 3 });
+  h.focused = true;
+  assert.strictEqual(h.shell.looked(), true);
+  assert.strictEqual(h.shell.model().find(x => x.isDev).messages, 0);
+  assert.strictEqual(h.shell.looked(), false, 'nothing left to clear');
+});
+
+// PR #224 Dexter 4: "looking" is decided here, where both facts are known.
+test('isLooked: only the SELECTED tab of a FOCUSED window is being looked at; a stranger is nobody', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  const devView = h.shell.tabByKey(key('dev')).view;
+  const aView = h.shell.tabByKey(key('feat-a')).view;
+  assert.strictEqual(h.shell.isLooked(devView), true);
+  assert.strictEqual(h.shell.isLooked(aView), false, 'not selected');
+  assert.strictEqual(h.shell.isLooked({}), false);
+  h.focused = false;
+  assert.strictEqual(h.shell.isLooked(devView), false, 'window in the background');
+});
+
 test('a raise and an attention click select the sender\'s tab and bring the window forward', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
@@ -920,6 +974,15 @@ test('a raise and an attention click select the sender\'s tab and bring the wind
   assert.strictEqual(h.shell.attentionClick(aView), true);
   assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
   assert.strictEqual(h.focusCalls, 2);
+});
+
+test('an attention click whose tab has closed still brings this window forward (#145)', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.attentionClick({}), false, 'no tab to select');
+  assert.strictEqual(h.focusCalls, 1, 'the toast was this window\'s: the click still lands here');
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('dev'));
 });
 
 // --- Jump to its tab (the Git panel, documentation/PLAN_GIT_TREE.md Task 10) ---
@@ -1644,6 +1707,141 @@ test('Dexter F2: a tab started again after its session ended is watched again', 
   assert.strictEqual(removes(h).length, 1);
 });
 
+test('BACKLOG #140: selecting a tab whose claude exited starts a fresh session in it', async () => {
+  const h = await startedA();                       // feat-a on 7701
+  const first = h.shell.tabByKey(key('feat-a'));
+  delete h.running[7701];                           // A's claude exits and its host with it
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(first.ended, true, 'the poll saw the session end');
+  const spawnsBefore = h.spawns.filter(s => s.key === key('feat-a')).length;
+  const viewsBefore = h.viewsMade.length;
+  await h.shell.select(key('feat-a'));              // the click on the tab in the top bar
+  await flush();
+  assert.strictEqual(h.spawns.filter(s => s.key === key('feat-a')).length, spawnsBefore + 1, 'a new host is spawned');
+  assert.ok(h.viewsGone.includes(key('feat-a')), 'the dead page is dropped');
+  assert.strictEqual(h.viewsMade.length, viewsBefore + 1, 'and a new page is made');
+  assert.strictEqual(first.started, true);
+  assert.strictEqual(first.ended, false, 'watched again');
+});
+
+test('BACKLOG #140: selecting a tab whose session is still running starts nothing', async () => {
+  const h = await startedA();
+  const spawnsBefore = h.spawns.length;
+  const viewsBefore = h.viewsMade.length;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(h.spawns.length, spawnsBefore);
+  assert.strictEqual(h.viewsMade.length, viewsBefore);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+});
+
+// An ended branch tab with its claude gone: feat-a started on 7701, then its host exits and the poll sees it.
+async function endedA(opts = {}) {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, ...opts });
+  await h.shell.open();
+  await flush();
+  await h.shell.select(key('feat-a'));
+  await flush();
+  delete h.running[7701];
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).ended, true, 'the sequence needs an ended tab');
+  return h;
+}
+const spawnsOfA = (h) => h.spawns.filter(s => s.key === key('feat-a')).length;
+
+test('BACKLOG #140: the restart resets the old session (port, token, status) and the new one gets its own', async () => {
+  const h = await endedA();
+  const a = h.shell.tabByKey(key('feat-a'));
+  const oldToken = a.token;
+  a.status = { stale: true };
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.notStrictEqual(a.token, oldToken, 'a fresh token, not the dead host’s');
+  assert.ok(/^fresh-/.test(a.token));
+  assert.notStrictEqual(a.status && a.status.stale, true, 'the dead session’s status is gone');
+  assert.strictEqual(a.port, 7701);
+});
+
+test('BACKLOG #140: a restart whose host never comes up stays retryable', async () => {
+  const h = await endedA();
+  const before = spawnsOfA(h);
+  h.failWait = true;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  const a = h.shell.tabByKey(key('feat-a'));
+  assert.strictEqual(spawnsOfA(h), before + 1);
+  assert.strictEqual(a.started, false);
+  assert.ok(a.error, 'the failure is shown on the tab');
+  h.failWait = false;
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(a.started, true, 'the next click starts it');
+  assert.strictEqual(a.error, null);
+});
+
+test('BACKLOG #140: only a person’s click restarts: a toast click, or a selection the shell makes, leaves the dead page', async () => {
+  const h = await endedA();
+  const a = h.shell.tabByKey(key('feat-a'));
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-b'));                // away from A (a person's click on B: B starts)
+  await flush();
+  h.shell.attentionClick(a.view);                     // a stale toast of the dead page
+  await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), 'the toast still selects it');
+  assert.strictEqual(spawnsOfA(h), before, 'but starts nothing');
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+  assert.strictEqual(a.started, true);
+});
+
+test('BACKLOG #140: no restart while its folder is being removed', async () => {
+  const h = await startedA();
+  let release;
+  const gate = new Promise(r => { release = r; });
+  h.removeResult = () => gate;
+  h.markers[key('feat-a')] = 'feat/a';
+  await h.shell.poll();                               // merged, host seen
+  await flush();
+  delete h.running[7701];                             // it /exits
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'removing', 'the sequence needs a folder being removed');
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(spawnsOfA(h), before);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, true);
+  release({ ok: true, already: false });
+  await flush();
+});
+
+test('BACKLOG #140: no restart for a merged tab that is finishing (kept for a hand sweep)', async () => {
+  const h = await startedA();
+  delete h.running[7701];                             // A ended before its merge
+  await h.shell.poll();
+  await flush();
+  h.markers[key('feat-a')] = 'feat/a';                // /merged lands
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(phaseOf(h, 'feat-a'), 'finishing');
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(spawnsOfA(h), before);
+  assert.ok(!h.viewsGone.includes(key('feat-a')));
+});
+
+test('BACKLOG #140: no restart while the dead page’s code reader holds an unsaved edit (#50)', async () => {
+  const h = await endedA({ safety: { readerUnsaved: (t) => (t.key === key('feat-a') ? 'src/x.js' : null) } });
+  const before = spawnsOfA(h);
+  await h.shell.select(key('feat-a'));
+  await flush();
+  assert.strictEqual(spawnsOfA(h), before);
+  assert.ok(!h.viewsGone.includes(key('feat-a')), 'the page and its text stay');
+});
+
 test('Dexter F3: a setup that fails before git lists the worktree keeps its error for the tab', async () => {
   const h = harness({ running: { 7700: wt('dev') } });
   await h.shell.open();
@@ -2032,6 +2230,16 @@ test('handleProbeCommand: mouseMove reaches the driver with whole-number coordin
   assert.deepStrictEqual(seen, [[10, 20]]);
 });
 
+test('handleProbeCommand: mouseClick reaches the driver with whole-number coordinates (PR #225 Miguel I2); anything else is refused', async () => {
+  const seen = [];
+  const api = { mouseClick: async (x, y) => { seen.push([x, y]); return { ok: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseClick', x: 10, y: 20 }), api), { ok: true });
+  for (const bad of [{}, { x: 1 }, { x: 1.5, y: 2 }, { x: -1, y: 0 }, { x: '1', y: 2 }, { x: 10001, y: 0 }]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseClick', ...bad }), api), { ok: false, error: 'mouseClick needs whole-number x and y' });
+  }
+  assert.deepStrictEqual(seen, [[10, 20]]);
+});
+
 test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
   const seen = [];
   const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };
@@ -2327,9 +2535,10 @@ test('the probe may drive the collapse, popover, keyboard and settle actions, by
   for (const a of ['collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
 });
 
-test('the probe may hover the dock rail and press the Pin button, by name only (#85)', () => {
+test('the probe may press the Pin button, by name only (#85); the dead dock-rail hover action is gone (#138)', () => {
   const { VIEW_PROBE_ACTIONS } = require('../app/tab-shell');
-  for (const a of ['hover', 'pinClick', 'menuCheck', 'railScroll']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  for (const a of ['pinClick', 'isHovered', 'menuCheck', 'railScroll']) assert.ok(VIEW_PROBE_ACTIONS.has(a), a);
+  assert.ok(!VIEW_PROBE_ACTIONS.has('hover'));
 });
 
 test('the probe may read and operate the wand, by name only (#51)', () => {

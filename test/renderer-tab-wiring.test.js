@@ -85,23 +85,24 @@ test('the status goes through tab-status.js and is deduplicated with sameStatus'
 
 test('every input of the status reports it: mood, attention, the lock and the health', () => {
   assert.match(branch('mood'), /reportTabStatus\(\)/);
-  assert.match(branch('attention'), /pend\('urgent'\)/);
-  assert.match(branch('attention'), /reportTabStatus\(\)/);
+  // the attention branch hands every message to raiseAttention (BACKLOG #156 split it out so a held message can name its sender first)
+  assert.match(fnBody('raiseAttention'), /pend\('urgent'\)/);
+  assert.match(fnBody('raiseAttention'), /reportTabStatus\(\)/);
   assert.match(fnBody('renderLock'), /reportTabStatus\(\)/);
   assert.match(fnBody('renderBranchHealth'), /reportTabStatus\(\)/);
   assert.match(branch('hello'), /reportTabStatus\(\)/);
 });
 
 test('only an URGENT attention message marks the tab as needing input', () => {
-  assert.match(branch('attention'), /msg\.urgent === true/);
+  assert.match(fnBody('raiseAttention'), /msg\.urgent === true/);
 });
 
 test('being selected is a look: the pending flags clear and the page re-reports', () => {
-  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ pend\('looked'\); reportTabStatus\(\); summaryOpenIfIdle\(\); \}\)/);
+  assert.match(JS, /window\.harness\.onTabSelected\(\(\) => \{ pend\('looked'\); peerCount = 0; peerHeld\.clear\(\); reportTabStatus\(\); summaryOpenIfIdle\(\); \}\)/);
 });
 
 test('#31: only urgent === true / === false attention marks the tab; a finished turn answers an urgent one', () => {
-  const b = branch('attention');
+  const b = fnBody('raiseAttention');
   assert.match(b, /if \(msg\.urgent === true\) \{ pend\('urgent'\); reportTabStatus\(\); \}/);
   assert.match(b, /else if \(msg\.urgent === false\) \{ pend\('finished'\); reportTabStatus\(\); \}/);
   assert.match(fnBody('reportTabStatus'), /pendingUrgent: tabPending\.urgent/);
@@ -123,6 +124,7 @@ test('the shell\'s override menu item clicks the Open anyway button: one switch,
 test('the preload exposes exactly the tab bridge on the tab:* channels, replace-don\'t-accumulate', () => {
   const p = strip(PRELOAD);
   assert.match(p, /tabStatus: \(status\) => ipcRenderer\.send\('tab:status', status\)/);
+  assert.match(p, /isLooked: \(\) => ipcRenderer\.invoke\('tab:is-looked'\)/);
   assert.match(p, /closeTab: \(\) => ipcRenderer\.send\('tab:close'\)/);
   assert.match(p, /goToSession: \(holder\) => ipcRenderer\.invoke\('tab:goTo', holder\)/);
   // the Git panel's *Jump to its tab* (documentation/PLAN_GIT_TREE.md Task 10)

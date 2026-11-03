@@ -513,55 +513,6 @@ const K_IDS = ['a', 'b', 'c', 'd'];
 const kv2 = (root, extra = {}) => T.normalize({ version: 2, root, floats: [], hidden: [], seat: {}, rail: [], ...extra }, K_IDS);
 const KVP = { width: 1200, height: 600 };
 
-test('M13: railAfter: a junk or empty-named state reads as idle, whatever the event', () => {
-  const ev = { type: 'enter', module: 'a' };
-  const idle = V.railAfter(null, ev);
-  assert.deepStrictEqual(idle, { module: null, held: false, pending: 'a', leaving: false });
-  for (const junk of [{ module: '' }, { module: 5 }, { module: null }, [], 'x', undefined, { module: '', held: true, leaving: true }]) {
-    assert.deepStrictEqual(V.railAfter(junk, ev), idle, JSON.stringify(junk));
-  }
-  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'b' }, { type: 'enter-panel' }), { module: null, held: false, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter({ module: null, pending: '' }, { type: 'leave' }), { module: null, held: false, pending: null, leaving: false }, 'a blank wait is no wait');
-  assert.deepStrictEqual(V.railAfter({ module: null, pending: 7 }, { type: 'open-timer', module: 'x' }), { module: null, held: false, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'x' }, { type: 'open-timer', module: 'x' }), { module: 'x', held: false, pending: null, leaving: false });
-});
-
-test('M13: railAfter: a held panel is never marked leaving, and only an exact true holds', () => {
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: true, leaving: true }, { type: 'leave' }), { module: 'a', held: true, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: 'yes', leaving: true }, { type: 'leave' }), { module: 'a', held: false, pending: null, leaving: true });
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: 'yes' }, { type: 'leave' }), { module: 'a', held: false, pending: null, leaving: true });
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: 1 }, { type: 'hold' }), { module: 'a', held: true, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: true }, { type: 'close-timer' }), V.RAIL_IDLE);
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: true, leaving: true }, { type: 'close-timer' }), { module: 'a', held: true, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter({ module: 'a', held: false, leaving: false }, { type: 'close-timer' }), { module: 'a', held: false, pending: null, leaving: false });
-});
-
-test('M13: railAfter: the events in turn', () => {
-  const open = { module: 'a', held: false, pending: null, leaving: false };
-  const held = { ...open, held: true };
-  assert.deepStrictEqual(V.railAfter(open, { type: 'enter', module: 'b' }), { module: 'b', held: false, pending: null, leaving: false }, 'a swap by hover');
-  assert.deepStrictEqual(V.railAfter(held, { type: 'enter', module: 'b' }), { module: 'b', held: false, pending: null, leaving: false }, 'the hold stays with the click that made it');
-  assert.deepStrictEqual(V.railAfter(held, { type: 'enter', module: 'a' }), held, 'the same tab changes nothing but the grace');
-  assert.deepStrictEqual(V.railAfter({ ...open, leaving: true }, { type: 'enter', module: 'a' }), open);
-  assert.deepStrictEqual(V.railAfter(open, { type: 'enter' }), open);
-  assert.deepStrictEqual(V.railAfter(open, { type: 'enter', module: '' }), open);
-  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'leave' }), V.RAIL_IDLE);
-  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'hold' }), V.RAIL_IDLE);
-  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'tab', module: 'a' }), V.RAIL_IDLE);
-  assert.deepStrictEqual(V.railAfter(open, { type: 'tab', module: 'b' }), { module: 'b', held: false, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter(open, { type: 'tab' }), open);
-  assert.deepStrictEqual(V.railAfter(V.RAIL_IDLE, { type: 'click', module: 'a' }), { module: 'a', held: true, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter(open, { type: 'click', module: 'a' }), { module: 'a', held: true, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter(held, { type: 'click', module: 'a' }), V.RAIL_IDLE, 'a click on the held one closes it');
-  assert.deepStrictEqual(V.railAfter(held, { type: 'click', module: 'b' }), { module: 'b', held: true, pending: null, leaving: false });
-  assert.deepStrictEqual(V.railAfter(open, { type: 'click' }), open);
-  for (const type of ['escape', 'outside', 'drop', 'gone']) assert.deepStrictEqual(V.railAfter(held, { type }), V.RAIL_IDLE, type);
-  assert.deepStrictEqual(V.railAfter(open, { type: 'nonsense' }), open);
-  assert.deepStrictEqual(V.railAfter(open, null), open);
-  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'a' }, { type: 'open-timer', module: 'b' }), { module: null, held: false, pending: 'a', leaving: false }, 'another tab is not the one waiting');
-  assert.deepStrictEqual(V.railAfter(open, { type: 'open-timer', module: 'a' }), open);
-});
-
 test('M13: dragSizes: neighbours trade pixels inside their minimums; a squeezed neighbour, junk, or no move gives null; a kid exactly at its minimum can still grow', () => {
   assert.deepStrictEqual(V.dragSizes([100, 200], [100, 100], 1, 50), [150, 150], 'the kid at its minimum may still take');
   assert.deepStrictEqual(V.dragSizes([100, 200], [100, 100], 1, -50), [100, 200], 'but it cannot give');
@@ -724,12 +675,6 @@ test('M13: the small helpers: settleMs, peekFocus and layoutSaved', () => {
   assert.strictEqual(V.layoutSaved({}), true);
   assert.strictEqual(V.layoutSaved({ root: 1 }), true);
   for (const v of [null, undefined, [], 'x', 0, true]) assert.strictEqual(V.layoutSaved(v), false, String(v));
-});
-
-test('M13: railAfter: a blank pending wait is dropped by any event that keeps the state', () => {
-  const idleNoWait = { module: null, held: false, pending: null, leaving: false };
-  for (const type of ['hold', 'tab', 'enter', 'nonsense', 'close-timer']) assert.deepStrictEqual(V.railAfter({ module: null, pending: '' }, { type }), idleNoWait, type);
-  assert.deepStrictEqual(V.railAfter({ module: null, pending: 'b' }, { type: 'hold' }), { module: null, held: false, pending: 'b', leaving: false }, 'a real wait is kept');
 });
 
 test('M13: dividerStep: a split of no known direction takes no key at all', () => {

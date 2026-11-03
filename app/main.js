@@ -22,6 +22,8 @@
  */
 
 const { app, BrowserWindow, WebContentsView, Menu, Notification, Tray, clipboard, dialog, ipcMain, nativeImage, safeStorage, session, shell, powerMonitor } = require('electron');
+const { createToastHolder } = require('./toast-holder');
+const { tabViewWebPreferences } = require('./tab-view-prefs');
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createVault } = require('./secret-vault');
@@ -511,6 +513,12 @@ const fromStrip = (event) => !!win && !win.isDestroyed() && !!event && event.sen
 // finishes loading, or goes away, is handled far from where the handlers are.
 let leanBridge = null;
 const isTabView = (sender) => !!tabShell && tabShell.isTabView(sender);
+// Holds each OS toast until it's clicked or closed, so its click can't be lost to garbage collection (#145).
+const toasts = createToastHolder({
+  Notification,
+  onClick: (sender) => { if (tabShell) tabShell.attentionClick(sender); },
+  log: (m) => console.log(m),
+});
 const forEachView = (fn) => { for (const v of liveViews) { if (!v.webContents.isDestroyed()) fn(v); } };
 
 // Focus mode (layout pass L1, #1): only the terminal shows. Per window and not
@@ -746,13 +754,7 @@ async function openIssue(key) {
 }
 
 function createTabView(tab) {
-  const view = new WebContentsView({
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: path.join(__dirname, 'preload.js'),
-    },
-  });
+  const view = new WebContentsView({ webPreferences: tabViewWebPreferences(path.join(__dirname, 'preload.js')) });
   win.contentView.addChildView(view);
   if (indexing) indexing.raise();    // #66: the toast and the list stay over every tab view
   layoutView(view);
@@ -1062,7 +1064,8 @@ async function confirmStopAll(file) {
 async function confirmClose(tab, { reason = '' } = {}) {
   // The probe driver has nobody to click. It answers yes to a plain close, and no to a Ctrl+click close that had
   // to ask (#77), keeping what it was asked so the probe can read the reason back.
-  const unsaved = readerUnsaved.pathFor(tab.key);
+  // A branch tab's end takes its side tab with it (BACKLOG #132): that reader's unsaved file is named too.
+  const unsaved = readerUnsaved.pathsForClose(tab.key);
   if (PROBE_PORT) {
     probeConfirms.push({ label: tab.branch || projectLabel(tab.cwd), reason, unsaved });
     return reason === '';
@@ -1394,6 +1397,8 @@ function registerIpc() {
     if (!isTabView(e.sender) || typeof on !== 'boolean') return;
     setFocusMode(on);
   });
+  // Is this tab being looked at (selected, window focused)? The page asks before a held message knocks (PR #224, Dexter 4).
+  ipcMain.handle('tab:is-looked', (e) => isTabView(e.sender) && tabShell.isLooked(e.sender));
   ipcMain.on('tab:status', (e, status) => {
     if (!isTabView(e.sender)) return;
     tabShell.report(e.sender, status);
@@ -1499,14 +1504,8 @@ function registerIpc() {
     // two apart is what took two wrong diagnoses to learn.
     if (!surfaces.toast) console.log(`[main] attention: suppressed (focused=${focused})`);
     if (surfaces.toast && Notification.isSupported()) {
-      const n = new Notification({
-        title: String(surfaces.toast.title || 'claude-custom'),
-        body: String(surfaces.toast.body || ''),
-        silent: !!surfaces.toast.silent,
-      });
-      // The click goes to the tab that raised it, and to the window.
-      n.on('click', () => { tabShell.attentionClick(event.sender); });
-      n.show();
+      // The click goes to the tab that raised it, and to the window; the holder keeps the toast alive until then.
+      toasts.show(surfaces.toast, event.sender);
     }
     // Survives the toast: on Windows the taskbar button keeps flashing until
     // the window is looked at, which is the whole point for a blocked session.
@@ -1988,6 +1987,19 @@ function startProbeDriver(port) {
       const sel = selectedView();
       if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
       sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      return { ok: true };
+    },
+    // A real left click in the selected tab's view (x, y in the view's own pixels): the press moves focus the way a mouse does, so
+    // focus events and the page's own handlers run for real. The view is focused first (an unfocused probe window fires none).
+    async mouseClick(x, y) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (win && !win.isDestroyed()) win.focus();
+      sel.webContents.focus();
+      const base = { x, y, button: 'left', clickCount: 1 };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      sel.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+      sel.webContents.sendInputEvent({ type: 'mouseUp', ...base });
       return { ok: true };
     },
     // Layout pass L1: a named action in the selected view (renderer.js

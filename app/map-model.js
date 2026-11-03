@@ -54,6 +54,8 @@ function agentLook(mood) {
   const state = mood && typeof mood === 'object' ? mood.state : null;
   const detail = mood && typeof mood === 'object' ? mood.detail : null;
   const asks = detail === 'waiting' || detail === 'stuck';
+  // BACKLOG #155: waiting on background work it launched; red from 30 minutes. Never hidden as asleep, and it streams nothing.
+  if ((state === 'working' || state === 'stressed') && (detail === 'bgwait' || detail === 'bgwaitlate')) return { state: detail === 'bgwait' ? 'waiting' : 'late', active: true };
   if (state === 'working') return { state: asks ? 'needs' : 'working', active: true };
   if (state === 'stressed') return { state: asks ? 'needs' : 'error', active: true };
   if (state === 'happy') return { state: 'done', active: true };
@@ -134,7 +136,7 @@ function sessionsFrom({ tree, tabs, self } = {}) {
 
 // --- the graph ------------------------------------------------------------------------------------------------------------
 
-const RANK = { working: 0, needs: 1, error: 2, done: 3, unknown: 4, idle: 5 };
+const RANK = { working: 0, needs: 1, late: 1.5, error: 2, waiting: 2.5, done: 3, unknown: 4, idle: 5 };
 
 function buildGraph(input) {
   const inp = input && typeof input === 'object' ? input : {};

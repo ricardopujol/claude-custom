@@ -153,3 +153,29 @@ test('Miguel S3: the dialog does not say it twice when the reason already names 
   const d = closeDetail({ reason: 'You have unsaved edits to a.js in the file reader.', unsaved: 'a.js' });
   assert.strictEqual(d, 'You have unsaved edits to a.js in the file reader.\nThe folder stays.');
 });
+
+test('BACKLOG #132: pathsFor joins the files unsaved under several tabs, and is null when none is', () => {
+  const u = createUnsaved();
+  assert.strictEqual(u.pathsFor('a', 'a|side'), null);
+  u.report('a|side', 'README.md');
+  assert.strictEqual(u.pathsFor('a', 'a|side'), 'README.md');
+  u.report('a', 'x.js');
+  assert.strictEqual(u.pathsFor('a', 'a|side'), 'x.js, README.md');
+});
+
+test('Miguel 2 (PR #216): pathsForClose names a branch tab\'s own file and its side tab\'s, and a side or shell key only its own', () => {
+  const u = createUnsaved();
+  u.report('/p/a|side', 'README.md');
+  assert.strictEqual(u.pathsForClose('/p/a'), 'README.md');
+  u.report('/p/a', 'x.js');
+  assert.strictEqual(u.pathsForClose('/p/a'), 'x.js, README.md');
+  assert.strictEqual(u.pathsForClose('/p/a|side'), 'README.md');
+  assert.strictEqual(u.pathsForClose('/p/b'), null);
+});
+
+test('Miguel 2 (PR #216): the dialog in main.js reads the names through pathsForClose', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8');
+  assert.match(main, /const unsaved = readerUnsaved\.pathsForClose\(tab\.key\);/);
+});

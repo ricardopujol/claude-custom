@@ -98,6 +98,8 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity } = {}) {
       closable: t.isDev !== true && !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
+      // #156: held cross-session messages in this tab (already cut down by the shell); 0 for none or unknown.
+      messages: st && Number.isInteger(st.messages) && st.messages > 0 && st.messages <= 99 ? st.messages : 0,
       // OSC 7501 (BACKLOG #116): what the CLI says it is doing, already cleaned by the shell (app/tab-shell.js sanitizeStatus); null for none.
       program: st && st.program && typeof st.program === 'object' && !Array.isArray(st.program) ? st.program : null,
       // Backlog #52: the session is in a /bedtime night (a real true only).

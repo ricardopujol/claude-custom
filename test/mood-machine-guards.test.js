@@ -689,7 +689,8 @@ test('a child\'s calls keep its WHOLE foreground chain alive up to the main sess
 });
 
 test('a background run\'s own calls do not keep its spawner alive', () => {
-  const r = rig({ stallMs: 10 * MIN, maxInvocationMs: 100 * MIN });
+  // quietStallMs: a spawner that launched background work has its own, longer silence limit (BACKLOG #155); here it is the stall's
+  const r = rig({ stallMs: 10 * MIN, maxInvocationMs: 100 * MIN, quietStallMs: 10 * MIN });
   r.spawn('P');
   r.call('P1', 'P');
   const kb = r.spawn('B', { by: 'P1', agentType: 'P', input: { run_in_background: true } });

@@ -35,6 +35,10 @@ const TURNS = ['idle', 'turn', 'prompt'];
 const SUMMARY_TEXT_MAX = 2000;
 const SUMMARY_NOTE_MAX = 300;
 
+const COUNT_MAX = 99;
+/** A held-message count (BACKLOG #156): a whole number 0..99, else 0. Absence is never a number, so nothing drawn. */
+const cleanCount = (n) => (typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= COUNT_MAX ? n : 0);
+
 const str = (s, max) => (typeof s === 'string' && s !== '' && s.length <= max ? s : null);
 
 /** { text, model, at, stale, note } or null; every field checked, the rest dropped (a status comes from a renderer). */
@@ -67,6 +71,8 @@ function tabStatus(inputs, { healthMarker, cleanProgram } = {}) {
     needsInput: i.pendingUrgent === true,
     // #31: the session finished (a non-urgent attention message) and nobody has looked yet.
     finished: i.pendingFinished === true,
+    // #156: cross-session messages held for approval in this tab, not yet looked at.
+    messages: cleanCount(i.pendingMessages),
     lock: LOCK_STATES.includes(lockState) ? lockState : null,
     health,
     turn: TURNS.includes(i.turn) ? i.turn : null,
@@ -80,7 +86,7 @@ function tabStatus(inputs, { healthMarker, cleanProgram } = {}) {
 
 /** The same status with the urgent and finished flags cleared (the tab was just selected). */
 function afterSelected(status) {
-  return { ...status, needsInput: false, finished: false };
+  return { ...status, needsInput: false, finished: false, messages: 0 };
 }
 
 /**
@@ -114,6 +120,7 @@ function sameStatus(a, b) {
   return a.working === b.working &&
     a.needsInput === b.needsInput &&
     a.finished === b.finished &&
+    cleanCount(a.messages) === cleanCount(b.messages) &&
     a.lock === b.lock &&
     a.health === b.health &&
     a.turn === b.turn &&
@@ -123,7 +130,7 @@ function sameStatus(a, b) {
     (a.summaryNote === undefined ? null : a.summaryNote) === (b.summaryNote === undefined ? null : b.summaryNote);
 }
 
-const api = { tabStatus, afterSelected, sameStatus, pendingAfter, cleanSummary, TURNS };
+const api = { tabStatus, afterSelected, sameStatus, pendingAfter, cleanSummary, cleanCount, TURNS };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

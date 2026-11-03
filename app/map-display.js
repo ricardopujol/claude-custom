@@ -60,7 +60,7 @@ const FLUSH_MS = 100;               // how long a change waits for company when 
 const TOKENS_TTL_MS = 400;
 const IMAGES_MAX = 120;
 const LABEL_MIN_ZOOM = 0.55;
-const WORDS = { working: 'working', needs: 'needs you', done: 'done', error: 'error', idle: 'idle', unknown: 'not reported' };
+const WORDS = { working: 'working', needs: 'needs you', waiting: 'waiting…', late: 'waiting…', done: 'done', error: 'error', idle: 'idle', unknown: 'not reported' };
 const LEGEND = [['working', 'running'], ['needs', 'needs you'], ['done', 'done'], ['idle', 'idle']];
 
 const isNum = n => typeof n === 'number' && Number.isFinite(n);
@@ -98,6 +98,7 @@ function cardFor(item, wall) {
     `tokens: ${isNum(d.tokens) ? model.compact(d.tokens) + ' in this project' : '—'}`,
     `tool: ${isStr(d.tool) ? d.tool : '—'}`,
   ];
+  if (d.wait && isStr(d.wait.on)) lines.push(`waiting on: ${d.wait.on}`);
   if (isNum(d.since)) lines.push(`elapsed: ${ago(d.since, wall)}`);
   if (isStr(d.worktree)) lines.push(`worktree: ${model.baseOfPath(d.worktree) || d.worktree}`);
   return { title: isStr(d.role) ? `${d.role} · ${item.label}` : item.label, lines };
@@ -211,6 +212,8 @@ function mount(opts) {
     switch (state) {
       case 'working': return tok('--accent') || '#d08c4a';
       case 'needs': return tok('--cue') || tok('--warn') || '#e6c34a';
+      case 'waiting': return tok('--warn') || '#e6c34a';
+      case 'late': return tok('--bad') || '#cc5f5f';
       case 'done': return tok('--ok') || '#5fb07a';
       case 'error': return tok('--bad') || '#cc5f5f';
       default: return tok('--dim') || '#6d7689';

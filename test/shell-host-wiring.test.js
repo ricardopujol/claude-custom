@@ -100,8 +100,14 @@ test('host.js: a stop ends the shell host the way it ends any host: the pty tree
   const stop = HOST.slice(HOST.indexOf("if (msg.type === 'stop') {"), HOST.indexOf("if (msg.type === 'raise') {"));
   assert.match(stop, /shutdown\(\);\s*process\.exit\(0\);/);
   const down = HOST.slice(HOST.indexOf('function shutdown({ removeIdentity = true } = {}) {'), HOST.indexOf("process.on('SIGINT'"));
-  assert.ok(down.includes('stopPty(term, { killChildTree });'), 'host/kill-tree.js by pid, proven by start time');
-  assert.match(down, /if \(removeIdentity\) \{\s*try \{ fs\.unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\); \} catch \{\}/);
+  assert.ok(down.includes('stopPty(term, { killChildTree })'), 'host/kill-tree.js by pid, proven by start time');
+  assert.match(down, /if \(removeIdentity\) fs\.unlinkSync\(fileFor\(HARNESS_DIR, PORT\)\)/);
+  // #121 (PR #217 Dexter F1, F2): the pty is ended FIRST; the session lock and the identity file (both mean "a live claude is here") go after it.
+  const pty = down.indexOf("stopPty(term, { killChildTree })");
+  assert.ok(pty > 0 && pty < down.indexOf("releaseSessionLock("), "the lock outlives the pty");
+  assert.ok(pty < down.indexOf("fs.unlinkSync(fileFor("), "the identity file outlives the pty");
+  assert.ok(down.includes("steps: [") && !down.includes("release: ["), "one ordered list under the watchdog");
+  assert.doesNotMatch(down, /hostQuota.release/, "the lease is released by the exit handler alone, once");
   assert.doesNotMatch(down, /SHELL/, 'nothing in the teardown is skipped for a shell host');
   assert.ok(HOST.includes('trackExit(term);'), 'the pty is tracked at spawn, so its tree can be killed by pid');
 });

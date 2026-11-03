@@ -301,7 +301,7 @@ test('an agent that launched background work is never stuck by silence', () => {
   const a = started(r);
   r.pre(a, 'Bash', { command: 'npm test', run_in_background: true });
   r.advance(STUCK_MS + 5000);
-  assert.strictEqual(r.detail('miguel'), 'working', 'it is waiting on TaskOutput, which no hook sees');
+  assert.strictEqual(r.detail('miguel'), 'bgwait', 'it is waiting on TaskOutput, which no hook sees: waiting, never stuck (BACKLOG #155)');
 
   const r2 = rig();
   const p = started(r2, 'paris');

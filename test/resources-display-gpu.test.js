@@ -26,27 +26,6 @@ const payload = (over = {}, g = gpu()) => ({
 });
 const viewOf = p => D.view(D.withPayload(D.emptyState(), p));
 
-test('chipView: GPU busy follows the memory figure; the text carries it; it never lights the chip', () => {
-  const c = D.chipView(payload());
-  assert.strictEqual(c.gpuText, 'GPU 37%');
-  assert.strictEqual(c.text, 'CPU 71%  21.4 GB / 32.0 GB  GPU 37%');
-  assert.strictEqual(c.level, 'amber', 'the CPU alone decides the colour');
-  const idle = D.chipView(payload({ machine: { cpu: 5, mem: null, gpu: gpu({ busy: 99 }) } }));
-  assert.strictEqual(idle.level, null);
-});
-
-test('chipView: an unread GPU is "GPU —", a payload with no GPU part has none, and a real 0 is 0%', () => {
-  assert.strictEqual(D.chipView(payload({}, gpu({ busy: null }))).gpuText, 'GPU —');
-  assert.strictEqual(D.chipView(payload({}, gpu({ busy: 0 }))).gpuText, 'GPU 0%');
-  const without = D.chipView(payload({}, NONE));
-  assert.strictEqual(without.gpuText, null);
-  assert.strictEqual(without.text, 'CPU 71%  21.4 GB / 32.0 GB');
-  assert.strictEqual(D.chipView(null).gpuText, null);
-  assert.strictEqual(D.chipView(payload({ status: { expired: true } })).gpuText, 'GPU —', 'expired: unknown, not absent (PR #152 D5)');
-  assert.strictEqual(D.chipView(payload({ status: { expired: true } })).text, 'CPU —  — / —  GPU —');
-  assert.strictEqual(D.chipView(payload({ status: { expired: true } }, NONE)).gpuText, null, 'expired with no GPU part stays without one');
-});
-
 test('view: the GPU section has busy %, memory used of total as bars, and the processes with their figures', () => {
   const g = viewOf(payload()).gpu;
   assert.strictEqual(g.busyFig, '37%');
@@ -126,6 +105,5 @@ test('property: an unmeasured GPU figure is never drawn as a number', () => {
     assert.strictEqual(v.gpu.busyBar, null);
     assert.strictEqual(v.gpu.memFig, '—');
     assert.strictEqual(v.gpu.memBar, null);
-    assert.strictEqual(D.chipView(payload({}, { busy, mem: null })).gpuText, 'GPU —');
   }), { numRuns: 100 });
 });

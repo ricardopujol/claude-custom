@@ -170,6 +170,13 @@ function paintTab(doc, entry, bridge) {
     tab.appendChild(el(doc, 'span', 'mark', mark.emoji)).title = nonEmpty(mark.meaning) ? mark.meaning : '';
   }
   tab.appendChild(el(doc, 'span', 'label', entry.label));
+  // #156: cross-session messages held for approval in this tab. A real whole number only; the page clears it when the tab is opened.
+  if (Number.isInteger(entry.messages) && entry.messages > 0) {
+    const n = entry.messages;
+    tab.appendChild(el(doc, 'span', 'envelope', `\u2709 ${n}`)).title = n === 1
+      ? '1 message from another session is waiting for your approval in this tab'
+      : `${n} messages from other sessions are waiting for your approval in this tab`;
+  }
   if (occ) {
     const tags = tab.appendChild(el(doc, 'span', 'agent-tags'));
     for (const t of occ.tags) tags.appendChild(el(doc, 'span', 'agent-tag', t));

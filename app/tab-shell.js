@@ -54,6 +54,7 @@ const { planGoTo } = require('./go-to-session');
 const { sideKeyOf, parentKeyOf, isSideKey, sideLabel } = require('../host/side-session');
 // #119 A5: a branch tab's plain shell, a tab of the same kind of its own (host/shell-tab.js).
 const { shellKeyOf, parentKeyOfShell, isShellKey, shellLabel } = require('../host/shell-tab');
+const { joinNames } = require('./reader-unsaved');
 
 // --- pure helpers ------------------------------------------------------------
 
@@ -146,6 +147,7 @@ function sanitizeStatus(s) {
     working: o.working === true,
     needsInput: o.needsInput === true,
     finished: o.finished === true,
+    messages: tabStatusLib.cleanCount(o.messages),
     lock: cleanLock(o.lock),
     health: typeof o.health === 'string' && o.health !== '' ? o.health : null,
     turn: tabStatusLib.TURNS.includes(o.turn) ? o.turn : null,
@@ -598,6 +600,8 @@ function createShell(deps) {
           // close still says it may be running (Dexter, PR #75 R2-3).
           if (!(await hosts.wait(port))) {
             tab.unconfirmed = pend;
+            // the branch tab closed during this wait: dropSide found no pending host to stop, so it is stopped here (Dexter F1, PR #216)
+            if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, pend.port, pend.token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
           token = pend.token;
@@ -611,7 +615,7 @@ function createShell(deps) {
           if (!(await hosts.wait(port))) {
             tab.pending = { port, token };
             // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
-            if (tab.closed && isCompanionEntry(tab)) tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
+            if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
           }
         }
@@ -624,7 +628,7 @@ function createShell(deps) {
         if (tab.closed || destroyed) {
           // Closed while starting: don't leave the host we just made behind. A side tab's host is its own even when it was
           // FOUND (attached): nobody else will end it once its branch tab is gone (PR #149 Dexter 4).
-          if (spawned || isCompanionEntry(tab)) tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
+          if (spawned || isCompanionEntry(tab)) stopFromStart(tab, port, token);
           return;
         }
         present(tab, port, token);
@@ -644,8 +648,25 @@ function createShell(deps) {
     if (tab.view) views.send(tab, 'tab-selected');
   }
 
-  /** Select a tab, starting it (or retrying a failed start) as needed. */
-  function select(key) {
+  /**
+   * A branch tab whose claude exited keeps a dead page, and a click on it starts a fresh session (BACKLOG #140): the page is
+   * dropped and the record goes back to unstarted, so select() starts it as it retries a failed start. Side and shell tabs
+   * have their own reopen; a folder being removed or already merged (finishing), or a reader with unsaved edits (#50), is left as it is.
+   */
+  function resetEnded(tab) {
+    if (!tab.started || tab.ended !== true || isCompanionEntry(tab)) return;
+    const phase = phaseOf(tab.key);
+    if (phase === 'removing' || phase === 'finishing' || readerUnsavedOf(tab)) return;
+    if (tab.view) { try { views.destroy(tab); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+    tab.view = null;
+    tab.started = false;
+    tab.port = null;
+    tab.token = null;
+    tab.status = null;
+  }
+
+  /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
+  function select(key, restart = false) {
     const next = tabModel.select(model(), key);
     if (next === null) return Promise.resolve();
     closeNotice = null;
@@ -653,6 +674,7 @@ function createShell(deps) {
     const tab = tabByKey(next);
     let started = Promise.resolve();
     if (tab) {
+      if (restart) resetEnded(tab);
       sendSelected(tab);
       if (!tab.started && !tab.starting) started = start(tab);
     }
@@ -837,10 +859,22 @@ function createShell(deps) {
   /** The file with unsaved edits in the tab's code reader (#50), or null. A hook that throws says nothing. */
   function readerUnsavedOf(tab) {
     if (!safety || typeof safety.readerUnsaved !== 'function') return null;
-    try { return safety.readerUnsaved(tab); } catch (err) {
-      log('[shell] safety.readerUnsaved threw:', err && err.message);
-      return null;
-    }
+    const one = (t) => {
+      try { return safety.readerUnsaved(t); } catch (err) {
+        log('[shell] safety.readerUnsaved threw:', err && err.message);
+        return null;
+      }
+    };
+    const own = one(tab);
+    // A branch tab's close ends its side tab too (BACKLOG #132), so the side reader's unsaved file counts and is named with it.
+    const side = sideRecordOf(tab);
+    return joinNames(own, side ? one(side) : null);
+  }
+
+  /** The side tab's record of a BRANCH tab (a side or shell tab has none), or null. */
+  function sideRecordOf(tab) {
+    if (!tab || typeof tab.key !== 'string' || isSideKey(tab.key) || isShellKey(tab.key)) return null;
+    return tabs.get(sideKeyOf(tab.key)) || null;
   }
 
   /**
@@ -1164,11 +1198,17 @@ function createShell(deps) {
    */
   function looked() {
     const tab = tabByKey(selectedKey);
-    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished)) return false;
+    if (!tab || !tab.status || !(tab.status.needsInput || tab.status.finished || tab.status.messages > 0)) return false;
     tab.status = tabStatusLib.afterSelected(tab.status);
     if (tab.view) views.send(tab, 'tab-selected');
     publish();
     return true;
+  }
+
+  /** Is the tab of this view being looked at: selected, in a focused window (PR #224, Dexter 4: the page can't tell, so it asks). */
+  function isLooked(sender) {
+    const tab = tabForSender(sender);
+    return !!tab && tab.key === selectedKey && ui.isFocused() === true;
   }
 
   /** A renderer's own status. Kept as-is except: you're looking at it. */
@@ -1176,7 +1216,7 @@ function createShell(deps) {
     const tab = tabForSender(sender);
     if (!tab) return false;
     let next = sanitizeStatus(status);
-    if ((next.needsInput || next.finished) && tab.key === selectedKey && ui.isFocused()) {
+    if ((next.needsInput || next.finished || next.messages > 0) && tab.key === selectedKey && ui.isFocused()) {
       next = tabStatusLib.afterSelected(next);
       views.send(tab, 'tab-selected');     // the page clears its own pending flag
     }
@@ -1195,13 +1235,15 @@ function createShell(deps) {
     return true;
   }
 
-  /** The tab whose view sent an attention message: a click selects it. */
+  /**
+   * The tab whose view sent an attention message: a click selects it. The window comes forward either way: the toast
+   * was this window's, so a click must never fall through to another one because its tab has since closed (#145).
+   */
   function attentionClick(sender) {
     const tab = tabForSender(sender);
-    if (!tab) return false;
-    select(tab.key);
+    if (tab) select(tab.key);
     ui.focusWindow();
-    return true;
+    return !!tab;
   }
 
   /**
@@ -1401,7 +1443,7 @@ function createShell(deps) {
   // opens, it just doesn't take the selection later.
   function userSelect(key) {
     selectWhenListed = null;
-    return select(key);
+    return select(key, true);
   }
 
   /** view query: which close button the blocked pane offers. */
@@ -1421,8 +1463,7 @@ function createShell(deps) {
     if (!t) return;
     t.closed = true;
     if (stop === true) {
-      const target = t.started && t.port && t.token ? { port: t.port, token: t.token } : (t.pending || null);
-      if (target) {
+      for (const target of hostsToStop(t)) {
         hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } })
           .then(r => log(`[shell] stop ${sk}: ${r && r.ok ? 'sent' : (r && r.error)}`), () => {});
       }
@@ -1560,6 +1601,20 @@ function createShell(deps) {
       (err) => (err && err.message) || String(err));
   }
 
+  /** Every host a side or shell record may still have running: the presented one, else the pending and the unconfirmed ones (BACKLOG #133). */
+  function hostsToStop(t) {
+    if (t.started && t.port && t.token) return [{ port: t.port, token: t.token }];
+    const out = [];
+    for (const c of [t.pending, t.unconfirmed]) if (c && !out.some(o => o.port === c.port)) out.push({ port: c.port, token: c.token });
+    return out;
+  }
+
+  /** A start that gave up because its tab closed stops the host it made or found, and records which port that was. */
+  function stopFromStart(tab, port, token) {
+    tab.closeStopPort = port;
+    tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
+  }
+
   /**
    * End a side or shell tab's host and wait for its answer: why it may still be running, or null. Closed first, so a start still in
    * its port walk gives up before it spawns; then the start is let settle, so what it made or found is on the record when it is
@@ -1572,10 +1627,15 @@ function createShell(deps) {
     if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
     // A start that gave up because this tab closed has already sent the stop to the host it made or found: wait for THAT one and
     // report how it went (Dexter F3, PR #214), rather than saying closed about a stop nobody looked at.
-    if (t.closeStop) return await t.closeStop;
-    const target = t.started && t.port && t.token ? (t.ended === true ? null : { port: t.port, token: t.token }) : (t.pending || null);
-    if (!target) return null;
-    return stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
+    // The host that start stopped is not the only one the record may hold: an earlier, unconfirmed one gets its stop too (Dexter F2, PR #216).
+    let failure = t.closeStop ? await t.closeStop : null;
+    const skip = t.closeStop ? t.closeStopPort : null;
+    const targets = (t.started && t.ended === true ? [] : hostsToStop(t)).filter(x => x.port !== skip);
+    for (const target of targets) {
+      const f = await stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
+      if (failure === null) failure = f;
+    }
+    return failure;
   }
 
   /**
@@ -1617,7 +1677,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
     // #40: something the model reads changed outside the shell (a tab's mark).
@@ -1725,9 +1785,9 @@ const VIEW_PROBE_ACTIONS = new Set(['previewState', 'previewDo', 'animState', 's
   // dockable panels D2: floating panels
   'floatDrag', 'floatPress', 'secretField', 'floatSecret',
   // dockable panels D4: collapse, a rail's popover, the keyboard, the settle motion
-  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
-  // BACKLOG #85: the dock rail's hover and the Pin button
-  'hover', 'pinClick', 'menuCheck', 'railScroll',
+  'collapse', 'railClick', 'settleProbe', 'dblclick', 'focus', 'focusInto', 'key', 'outsidePress', 'reducedMotion', 'tabMenu',
+  // BACKLOG #85: the Pin button; #138: whether a real pointer is over a rail icon
+  'pinClick', 'isHovered', 'menuCheck', 'railScroll',
   // BACKLOG #85 follow-up: verify/probe-dock-autohide.js puts a wider Interface font on the page (not saved) to check the rail names refit
   'uiFont', 'leanClass', 'focusMode',
   // layout pass L3: verify/probe-git-tree.js
@@ -1821,6 +1881,11 @@ async function handleProbeCommand(line, api, expectedToken) {
         const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
         if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseMove needs whole-number x and y' };
         return await api.mouseMove(cmd.x, cmd.y);
+      }
+      case 'mouseClick': {
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseClick needs whole-number x and y' };
+        return await api.mouseClick(cmd.x, cmd.y);
       }
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.

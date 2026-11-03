@@ -47,6 +47,10 @@ const ALLOWED_GLOBALS = new Set([
   'nextTab', 'TABS', 'DEFAULT_TAB', 'isKnownTab', 'isPanelToggle',
   // app/rail-icons.js (#85 follow-up): the rail tabs' vendored line icons, one namespace.
   'railIcons',
+  // app/rail-groups.js (chrome grammar): the rail's Work / Repo / Me grouping, one namespace.
+  'railGroups',
+  // app/chip-icons.js, app/chip-model.js (chrome grammar A): the header chips' icons and decisions, one namespace each.
+  'chipIcons', 'chipModel',
   // app/dock-migrate.js, app/dock-effects.js (L1's survivors, dockable panels D4): one
   // namespace each, reached through `window.`.
   'dockMigrate', 'dockEffects',
@@ -96,6 +100,8 @@ const ALLOWED_GLOBALS = new Set([
   'instanceCounts', 'modelLine', 'modelEntry',
   // app/agent-state-display.js (BACKLOG #55): ONE name leaves its IIFE.
   'agentStateDisplay',
+  // app/peer-cue.js (BACKLOG #156): the held-message cue. ONE name leaves its IIFE.
+  'peerCue',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
   'loadoutDisplay',
   // app/wand-display.js (BACKLOG #51): the wand. ONE name leaves its IIFE.
@@ -134,7 +140,7 @@ const ALLOWED_GLOBALS = new Set([
   // app/style-display.js, Window section (layout pass L2, #27/#28)
   'windowSectionView', 'reduceChromeSettings', 'reduceVideoError', 'traySectionView', 'reduceTraySettings', 'panelSectionView', 'reduceCanvasMcp', 'reduceCcMod', 'canvasMcpRetryDelay', 'CANVAS_MCP_MAX_TRIES',
   // app/status-fields-display.js (BACKLOG #27)
-  'statusFieldsText', 'statusFieldsView',
+  'statusFieldsText', 'statusFieldsChips', 'statusFieldsView',
   // app/agent-log-display.js (BACKLOG #10): one namespaced object, no leaks.
   'agentLogDisplay',
   // app/medals-display.js, app/bubble-display.js (BACKLOG #80): one namespace each, reached through `window.`.

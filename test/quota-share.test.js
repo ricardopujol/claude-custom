@@ -269,6 +269,16 @@ test('releasePoller by a non-owner leaves the lease, by the owner removes it', (
   assert.strictEqual(fs.existsSync(leasePath(d, CFG)), false);
 });
 
+test('releasePoller twice is safe: the second throws nothing and leaves a successor\'s lease (PR #217 Miguel 3)', () => {
+  const d = dir();
+  claimPoller({ dir: d, configDir: CFG, owner: 'A', pid: 1, now: () => T0, isAlive: alive });
+  releasePoller({ dir: d, configDir: CFG, owner: 'A' });
+  assert.doesNotThrow(() => releasePoller({ dir: d, configDir: CFG, owner: 'A' }));
+  claimPoller({ dir: d, configDir: CFG, owner: 'B', pid: 2, now: () => T0, isAlive: alive });
+  releasePoller({ dir: d, configDir: CFG, owner: 'A' });
+  assert.strictEqual(fs.existsSync(leasePath(d, CFG)), true);
+});
+
 function deadPid() {
   const r = spawnSync(process.execPath, ['-e', '']);
   assert.strictEqual(r.status, 0);

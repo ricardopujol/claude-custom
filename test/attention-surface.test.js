@@ -24,16 +24,45 @@ test('an urgent request is also silent while focused', () => {
   assert.strictEqual(surfacesFor(needsYou, { focused: true }).toast, null);
 });
 
-test('an unfocused window does get a toast', () => {
-  const s = surfacesFor(finished, { focused: false });
+test('an unfocused window gets a toast for what needs you', () => {
+  const s = surfacesFor(needsYou, { focused: false });
   assert.ok(s.toast, 'no toast raised for an unfocused window');
-  assert.strictEqual(s.toast.silent, true);
+});
+
+test('a finished turn raises NO toast, focused or not: only what needs you does (BACKLOG #78, Ricardo 2026-10-29)', () => {
+  // "I should only get notifications when an action from me is needed." The in-window cue and the tab's "done" dot still say it.
+  for (const focused of [true, false]) {
+    const s = surfacesFor(finished, { focused });
+    assert.strictEqual(s.toast, null, `focused=${focused}`);
+    assert.strictEqual(s.cue, true);
+    assert.strictEqual(s.badge, 'done');
+    assert.strictEqual(s.flashTaskbar, false);
+  }
+});
+
+test('a held cross-session message is a toast like a permission prompt', () => {
+  const held = { kind: 'peer-message', title: 'p: message from dexter', body: 'run /merged', urgent: true };
+  const s = surfacesFor(held, { focused: false });
+  assert.strictEqual(s.toast.title, held.title);
+  assert.strictEqual(s.toast.requireInteraction, true);
+  assert.strictEqual(s.flashTaskbar, true);
+});
+
+test('PR #224 Dexter 5: a held message\'s toast is silent (the knock is its one sound); other urgent toasts are not', () => {
+  assert.strictEqual(surfacesFor({ kind: 'peer-message', title: 't', body: 'b', urgent: true }, { focused: false }).toast.silent, true);
+  assert.strictEqual(surfacesFor(needsYou, { focused: false }).toast.silent, false);
 });
 
 test('an urgent toast in an unfocused window sticks until acknowledged', () => {
   const s = surfacesFor(needsYou, { focused: false });
   assert.strictEqual(s.toast.requireInteraction, true);
   assert.strictEqual(s.toast.silent, false);
+});
+
+test('every toast waits to be clicked (it is always one that needs you)', () => {
+  const s = surfacesFor(needsYou, { focused: false });
+  assert.strictEqual(s.toast.silent, false);
+  assert.strictEqual(s.toast.requireInteraction, true);
 });
 
 test('the taskbar flashes only when the window is not focused', () => {
@@ -70,12 +99,12 @@ test('the toast carries the title and body verbatim', () => {
   assert.strictEqual(s.toast.body, needsYou.body);
 });
 
-test('an unknown kind still gets through rather than vanishing', () => {
-  // Failing open matters here: a new kind added to the host must not be
-  // silently dropped by an older renderer.
-  const s = surfacesFor({ kind: 'whatever', title: 't', body: 'b' }, { focused: false });
-  assert.ok(s.toast);
-  assert.strictEqual(s.cue, true);
+test('an unknown kind still gets through rather than vanishing: its cue, and its toast when it says it needs you', () => {
+  // A new kind added to the host must not be silently dropped by an older renderer. Without `urgent` it needs nobody, so it is a cue only.
+  const calm = surfacesFor({ kind: 'whatever', title: 't', body: 'b' }, { focused: false });
+  assert.strictEqual(calm.toast, null);
+  assert.strictEqual(calm.cue, true);
+  assert.ok(surfacesFor({ kind: 'whatever', title: 't', body: 'b', urgent: true }, { focused: false }).toast);
 });
 
 test('a missing options object is treated as unfocused', () => {

@@ -6,7 +6,8 @@
  *
  *   Notification -> the session is BLOCKED waiting for input. Urgent: nothing
  *                   progresses until you answer.
- *   Stop         -> the turn finished. Worth knowing, not urgent.
+ *   Stop         -> the turn finished. Worth knowing, not urgent: the window and the tab say it, but no OS toast
+ *                   (app/attention-surface.js: toasts are only for what needs you, BACKLOG #78).
  *
  * Deliberately NOT SubagentStop: subagents stop constantly during one piece of
  * work, and notifying on those would fire dozens of times per task, which
@@ -73,6 +74,13 @@ function makeShellStartedAt(stat = fs.statSync) {
   };
 }
 
+// A cross-session message HELD FOR APPROVAL (BACKLOG #156). The CLI opens a dialog for it whose own notification text is this
+// (measured in the 2.1.312 bundle's dialog table), and sends that text as a Notification hook. Read off the hook, not off the
+// terminal; matched on the words, not on `notification_type`, which the dialog table doesn't fix. It never approves anything.
+const HELD_PEER_MESSAGE = 'A message from another session needs your approval';
+const isHeldPeerMessage = p => !!p && typeof p.message === 'string' &&
+  p.message.trim().replace(/\.$/, '').toLowerCase() === HELD_PEER_MESSAGE.toLowerCase();
+
 // Events only the MAIN session makes while it works. A subagent's tool events carry agent_id.
 const MAIN_ACTIVITY = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit']);
 
@@ -95,7 +103,7 @@ const unrefTimer = (fn, ms) => { const t = setTimeout(fn, ms); if (t.unref) t.un
 function createAttention({ now = Date.now, project = '', agents = () => [], settleMs = 1500,
                           debounceMs = DEFAULT_DEBOUNCE_MS,
                           shellStartedAt = makeShellStartedAt(),
-                          setTimer = unrefTimer, clearTimer = clearTimeout } = {}) {
+                          setTimer = unrefTimer, clearTimer = clearTimeout, log = (m) => console.log(m) } = {}) {
   const emitter = new EventEmitter();
   // Debounced per KIND, not globally: a request for input must not be swallowed
   // because a turn happened to end a moment earlier.
@@ -115,6 +123,15 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
   // timer can still fire into it: one early "finished", bounded by that turn's own Stop.
   let held = null;
   const ended = new Set();
+  // Notification texts already logged as not recognised (PR #224, Dexter 6): a CLI that rewords the held-message dialog must leave a trace.
+  const unrecognised = new Set();
+  function noteUnrecognised(p) {
+    const text = typeof p.message === 'string' ? p.message.trim() : '';
+    if (text === '' || unrecognised.has(text)) return;
+    unrecognised.add(text);
+    if (unrecognised.size > ENDED_MEMORY) unrecognised.delete(unrecognised.values().next().value);
+    log(`[attention] notification text not recognised as a held message (type ${JSON.stringify(p.notification_type)}): ${JSON.stringify(text.slice(0, 200))}`);
+  }
 
   // OSC 7501 (host/program-status.js) is a second source, and the AUTHORITY for the main session's own cue. Once the CLI has
   // spoken it, the hook-derived raises for the main session stop and `programStatus` decides. Sticky for the host's life: a CLI that
@@ -144,11 +161,12 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
   let settleTimer = null;
   const SETTLE_MS = settleMs;
 
-  function raise(kind, { title, body, urgent }, { fromStatus = false, agentNamed = false } = {}) {
+  function raise(kind, { title, body, urgent }, { fromStatus = false, agentNamed = false, everyOne = false } = {}) {
     if (statusLive && !fromStatus && !agentNamed) return;
     const t = now();
     const previous = lastSent.get(kind);
-    if (previous !== undefined && t - previous < debounceMs) return;
+    // `everyOne`: each arrival is a distinct event (a held message), not a repeat of one (a Stop that fires twice around a turn).
+    if (!everyOne && previous !== undefined && t - previous < debounceMs) return;
     lastSent.set(kind, t);
     emitter.emit('attention', { kind, project, title, body, urgent, at: t });
   }
@@ -300,6 +318,16 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
     }
 
     if (event === 'Notification') {
+      if (isHeldPeerMessage(p)) {
+        // agentNamed: with 7501 live the root record says nothing of a message that is waiting to be let in.
+        raise('peer-message', {
+          title: project ? `${project} has a message for you` : 'A message for you',
+          body: HELD_PEER_MESSAGE,
+          urgent: true,
+        }, { agentNamed: true, everyOne: true });
+        return;
+      }
+      noteUnrecognised(p);
       if (p.notification_type === 'idle_prompt') {
         if (settled()) { held = null; releaseFinished({}); return; }
         armShellTimer();                                       // quiet now, and the shell is still young: wait for it
@@ -372,4 +400,4 @@ function createAttention({ now = Date.now, project = '', agents = () => [], sett
   return emitter;
 }
 
-module.exports = { createAttention, makeShellStartedAt, unrefTimer, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT, SHELL_MAX_AGE_MS };
+module.exports = { createAttention, makeShellStartedAt, unrefTimer, DEFAULT_DEBOUNCE_MS, NEEDS_INPUT, SHELL_MAX_AGE_MS, isHeldPeerMessage, HELD_PEER_MESSAGE };
