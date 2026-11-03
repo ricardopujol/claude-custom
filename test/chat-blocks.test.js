@@ -96,7 +96,66 @@ test('the first number is honoured: a list starting at 5 starts at 5', () => {
   assert.strictEqual(parseMarkdown('- a')[0].start, undefined, 'a bullet list has no start');
 });
 
-test('a fence indented 1-4 spaces is a code block and its indent is not in the copied code (PR #226 Dexter 9)', () => {
+test('a rule after a list and a blank line is a rule, not a bullet with a nested bullet (PR #226 Miguel I1)', () => {
+  for (const rule of ['- - -', '* * *', '---', '***', '_ _ _']) {
+    const b = parseMarkdown(`- a\n- b\n\n${rule}\n\nAfter`);
+    assert.deepStrictEqual(b.map(x => x.type), ['list', 'hr', 'paragraph'], rule);
+    assert.strictEqual(b[0].items.length, 2, rule);
+  }
+  assert.deepStrictEqual(parseMarkdown('1. a\n\n2. b\n\n- - -\n\nc').map(x => x.type), ['list', 'hr', 'paragraph']);
+});
+
+test('a closing paragraph after a list and a blank line is not swallowed into the last item (PR #226 Miguel I2)', () => {
+  const b = parseMarkdown('- a\n- b\n\nClosing paragraph.');
+  assert.deepStrictEqual(b.map(x => x.type), ['list', 'paragraph']);
+  assert.deepStrictEqual(b[0].items.map(i => i.blocks.length), [0, 0]);
+  assert.strictEqual(plain(b[1].inlines), 'Closing paragraph.');
+});
+
+test('a blank line inside an item\'s second paragraph or code block is kept (PR #226 Miguel I2)', () => {
+  const two = parseMarkdown('1. x\n\n   more\n\n2. y');
+  assert.strictEqual(two.length, 1);
+  assert.strictEqual(plain(two[0].items[0].inlines), 'x');
+  assert.deepStrictEqual(two[0].items[0].blocks.map(x => x.type), ['paragraph'], 'a second paragraph, not one merged line');
+  assert.strictEqual(plain(two[0].items[0].blocks[0].inlines), 'more');
+  const code = parseMarkdown('1. run\n   ```\n   a\n\n   b\n   ```\n2. z');
+  assert.strictEqual(code[0].items[0].blocks[0].text, 'a\n\nb');
+  assert.deepStrictEqual(numbers(code[0]), [1, 2]);
+});
+
+test('an open fence in an item takes an unindented line as code only inside the fence: once it is closed, or the line breaks out, the item ends or goes on (PR #226 Miguel S1)', () => {
+  // an unindented line right after an OPEN fence closes the item (CommonMark does too): it is not part of the code
+  const open = parseMarkdown('- ```\n  code\nafter\n  ```');
+  assert.deepStrictEqual(open.map(x => x.type), ['list', 'paragraph', 'code']);
+  assert.strictEqual(open[0].items[0].blocks[0].text, 'code');
+  // once the fence is CLOSED the item is back to normal: a lazy line goes on with the item
+  const closed = parseMarkdown('- ```\n  a\n  ```\nlazy');
+  assert.deepStrictEqual(closed.map(x => x.type), ['list']);
+  assert.deepStrictEqual(closed[0].items[0].blocks.map(x => x.type), ['code', 'paragraph']);
+});
+
+test('a tab indents like four spaces: a tab-indented sub-bullet is nested (PR #226 Miguel S4)', () => {
+  const b = parseMarkdown('- a\n\t- b\n\t\t- c');
+  assert.strictEqual(b.length, 1);
+  const sub = b[0].items[0].blocks[0];
+  assert.strictEqual(sub.type, 'list');
+  assert.strictEqual(plain(sub.items[0].inlines), 'b');
+  assert.strictEqual(sub.items[0].blocks[0].type, 'list');
+});
+
+test('list depth is bounded: the levels past the limit stay as literal text, none of it lost (PR #226 Miguel S4)', () => {
+  const src = Array.from({ length: 9 }, (_, k) => ' '.repeat(2 * k) + '- L' + k).join('\n');
+  const listDepth = (blocks) => Math.max(0, ...blocks.map(x => (x.type === 'list' ? 1 + Math.max(0, ...x.items.map(i => listDepth(i.blocks))) : 0)));
+  const b = parseMarkdown(src);
+  assert.strictEqual(listDepth(b), 5);
+  let list = b[0];
+  for (let k = 0; k < 4; k++) list = list.items[0].blocks[0];
+  const text = plain(list.items[0].inlines);
+  for (let k = 4; k < 9; k++) assert.ok(text.includes('L' + k), `L${k} is still in the text`);
+  assert.ok(text.includes('- L5'), 'its marker is kept as typed');
+});
+
+test('a fence indented inside a list item or up to 3 spaces outside one is a code block and its indent is not in the copied code (PR #226 Dexter 9)', () => {
   const two = parseMarkdown('10. Run:\n    ```bash\n    npm test\n    ```');
   assert.strictEqual(two[0].items[0].blocks[0].text, 'npm test');
   const py = parseMarkdown('1. x\n   ```py\n   def f():\n       return 1\n   ```');

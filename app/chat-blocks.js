@@ -140,13 +140,14 @@ const expandTabs = (l) => l.replace(/^\t+/, (t) => '    '.repeat(t.length));
  */
 function parseList(lines, from, depth) {
   const first = LIST_ITEM.exec(expandTabs(lines[from]));
-  const base = first[1].length;
   const ordered = /\d/.test(first[2][0]);
   const items = [];
   let i = from;
   while (i < lines.length) {
     const m = LIST_ITEM.exec(expandTabs(lines[i]));
-    if (!m || m[1].length > base || /\d/.test(m[2][0]) !== ordered) break;
+    // A rule ("- - -", "* * *") is not an item, even right after a blank line the list would otherwise continue across (PR #226 Miguel I1).
+    // No indent guard is needed here: a line indented past the previous item's marker was already taken as that item's own line.
+    if (!m || HR.test(lines[i]) || /\d/.test(m[2][0]) !== ordered) break;
     const offset = m[1].length + m[2].length + 1;
     const content = [m[3]];
     let j = i + 1;
