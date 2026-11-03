@@ -559,7 +559,7 @@ test('D4: a rail\'s popover is one element in the floats layer, holding the pane
   assert.strictEqual(w.panels.vault.parentNode, el.querySelector('.zone-panels'), 'the vault panel was moved in, not rebuilt');
   assert.ok(w.panels.vault.classes.has('on'));
   const tabs = el.querySelector('.zone-tabs').children;
-  assert.strictEqual(tabs.length, 1, 'only the hovered tab (#103), not the rail whole list');
+  assert.strictEqual(tabs.length, 1, 'only the clicked tab (#103), not the rail whole list');
   assert.deepStrictEqual(tabs.filter(b => b.classes.has('on')).map(b => b.dataset.module), ['vault']);
   assert.ok(el.parentNode === w.layer && w.layer.children.indexOf(el) === w.layer.children.length - 1, 'last in the layer: above the floats');
 });
@@ -950,7 +950,7 @@ test('refitRails on a page with no rail does nothing', () => {
   assert.doesNotThrow(() => V.refitRails(w.doc));
 });
 
-test('PR #189 Dexter 3: hovering another rail tab while the popover tab has focus moves focus to the new one-tab bar', () => {
+test('PR #189 Dexter 3: clicking another rail tab while the popover tab has focus moves focus to the new one-tab bar', () => {
   const w = makeDoc();
   const l = T.startLayout(IDS);
   V.applyBoxes(planD4(l, NO_SEL, { module: 'git' }), w.doc);

@@ -230,7 +230,7 @@ test('the tab strip never uses innerHTML: a branch name is text, not markup', ()
 
 test('tab-strip.html loads only its own scripts: the indexing field\'s (#66), lean mode\'s helper (#62) and the strip\'s', () => {
   const html = read('app/tab-strip.html');
-  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './portrait-media-display.js', './lean-display.js', './program-status-display.js', './tab-strip.js']);
+  assert.deepStrictEqual([...html.matchAll(/<script\s+src="([^"]+)"/g)].map(m => m[1]), ['./indexing-display.js', './portrait-media-display.js', './lean-display.js', './program-status-display.js', './tab-lanes.js', './tab-strip.js']);
 });
 
 test('the indexing overlay loads only its display script, and neither page uses innerHTML: a note is text (#66)', () => {
@@ -688,6 +688,23 @@ test('OSC 7501: the strip page has the dot colours from its existing tokens and 
   const a = html.indexOf('<script src="./program-status-display.js"></script>');
   const b = html.indexOf('<script src="./tab-strip.js"></script>');
   assert.ok(a !== -1 && b !== -1 && a < b, 'program-status-display.js must load before tab-strip.js');
+});
+
+// --- the Lanes menu (BACKLOG #139, #141; moved here from tab-strip-lanes.test.js: it reads tab-strip.html / preload text) ---
+
+test('tab-strip.html loads tab-lanes.js before tab-strip.js, has the hidden Lanes button outside #tabs, and a 112 px minimum tab', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-strip.html'), 'utf8');
+  assert.ok(html.indexOf('src="./tab-lanes.js"') !== -1 && html.indexOf('src="./tab-lanes.js"') < html.indexOf('src="./tab-strip.js"'));
+  const tabsEnd = html.indexOf('</div>', html.indexOf('id="tabs"'));
+  assert.ok(html.indexOf('id="lanes"') > tabsEnd);
+  assert.match(html, /id="lanes"[^>]*\bhidden\b/);
+  assert.match(html, /\.tab \{[^}]*min-width: 112px/);
+});
+
+test('the bridge sends lanes and reorder to main, which only the strip page may call', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8');
+  assert.match(src, /lanes: \(hidden\) => ipcRenderer\.send\('strip:lanes', hidden\)/);
+  assert.match(src, /reorder: \(key, before\) => ipcRenderer\.send\('strip:reorder', key, before\)/);
 });
 
 // BACKLOG #156. Read as text here: tab-shell.js and tab-strip.js are mutated modules. The behaviour is in test/peer-cue-tab.test.js and test/tab-shell.test.js.

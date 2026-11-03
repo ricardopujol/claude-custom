@@ -3,7 +3,7 @@
  * The tab strip page's bridge (PR 2, worktree tabs). The strip is the window's
  * OWN page; the tabs' pages are separate views with app/preload.js.
  *
- * Twenty-six members and no more (lean mode, #62, added four; the issue picker, #119, three; the kill switch's STOP ALL one): nine ways to ask main for something and two ways
+ * Twenty-eight members and no more (lean mode, #62, added four; the issue picker, #119, three; the kill switch's STOP ALL one; the Lanes menu and drag order, #139 + #141, two): nine ways to ask main for something and two ways
  * to hear what main pushes (the model, and the accent colour: a #rrggbb, or
  * null when the selected tab hasn't reported one), plus the indexing field's
  * five asks and two pushes (#66). Layout pass L2: minimise and
@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('strip', {
   close: (key, ifSafe) => ipcRenderer.send('strip:close', key, ifSafe === true),
   contextMenu: (key) => ipcRenderer.send('strip:contextMenu', key),
   plus: () => ipcRenderer.send('strip:plus'),
+  // The Lanes ▾ menu (BACKLOG #139): `hidden` are the tab keys this page couldn't fit, which main lists first. Drag to reorder (#141):
+  // this lane's tab goes before `before` (a key, or null for the end).
+  lanes: (hidden) => ipcRenderer.send('strip:lanes', hidden),
+  reorder: (key, before) => ipcRenderer.send('strip:reorder', key, before),
   // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so main writes its brief.
   create: (branch, issue) => ipcRenderer.send('strip:create', branch, issue),
   cancelCreate: () => ipcRenderer.send('strip:cancelCreate'),

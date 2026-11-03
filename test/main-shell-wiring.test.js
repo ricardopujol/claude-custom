@@ -395,8 +395,38 @@ test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so no
   }
 });
 
-test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText', () => {
-  assert.match(MAIN, /`Reopen \$\{menuText\(r\.label\)\}/);
+test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText (the Lanes menu, since #139)', () => {
+  const c = channels.find(x => x.name === 'strip:lanes');
+  assert.match(callText(MAIN, c.at), /menuText\(r\.label\)/);
+});
+
+test('#139 + #141: the Lanes and reorder channels are the strip page\'s alone, and check what they were sent', () => {
+  for (const name of ['strip:lanes', 'strip:reorder']) {
+    const c = channels.find(x => x.name === name);
+    assert.ok(c, `${name} is registered`);
+    assert.match(callText(MAIN, c.at), /fromStrip\(e\)/, name);
+  }
+  const lanes = callText(MAIN, channels.find(x => x.name === 'strip:lanes').at);
+  assert.match(lanes, /Array\.isArray\(hidden\)/);
+  assert.match(lanes, /typeof k === 'string'/, 'only strings are looked up');
+  assert.match(lanes, /tabShell\.lanesMenu\(/);
+  assert.match(lanes, /r\.action === 'reopen' \? tabShell\.reopen\(r\.key\) : tabShell\.select\(r\.key\)/);
+  const reorder = callText(MAIN, channels.find(x => x.name === 'strip:reorder').at);
+  assert.match(reorder, /typeof key !== 'string'/);
+  assert.match(reorder, /tabShell\.reorder\(key, typeof before === 'string' \? before : null\)/);
+});
+
+test('#139: the + menu no longer lists the tabs closed by hand; the strip gets only the tabs with a place (snapshot.strip) and the Lanes rows', () => {
+  const plus = callText(MAIN, channels.find(x => x.name === 'strip:plus').at);
+  assert.doesNotMatch(plus, /Reopen|m\.reopen/);
+  assert.match(MAIN, /model: snapshot\.strip, lanes: snapshot\.lanes,/);
+});
+
+test('#141: the shell is given the strip layout store, which main builds from the project\'s look folder', () => {
+  assert.match(MAIN, /createStripLayout\(\{ file: layoutFile \}\)/);
+  assert.match(MAIN, /layoutFile = stripLayoutFileFor\(STATE_ROOT\)/);
+  const call = MAIN.slice(MAIN.indexOf('tabShell = createShell({'), MAIN.indexOf('\n  });', MAIN.indexOf('tabShell = createShell({')));
+  assert.match(call, /layout: stripLayout,/);
 });
 
 test('PR #80 Miguel G5: strip:create refuses a non-string or a branch longer than 200 characters', () => {
