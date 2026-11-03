@@ -1989,6 +1989,19 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
       return { ok: true };
     },
+    // A real left click in the selected tab's view (x, y in the view's own pixels): the press moves focus the way a mouse does, so
+    // focus events and the page's own handlers run for real. The view is focused first (an unfocused probe window fires none).
+    async mouseClick(x, y) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      if (win && !win.isDestroyed()) win.focus();
+      sel.webContents.focus();
+      const base = { x, y, button: 'left', clickCount: 1 };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      sel.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+      sel.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+      return { ok: true };
+    },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
     // request is passed as JSON data, never spliced in as code.
