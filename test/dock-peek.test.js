@@ -103,7 +103,7 @@ test('treePlan draws the popover of a rail with its tabs, the chosen one on, and
   assert.equal(p.peek.module, 'vault');
   assert.equal(p.peek.rect.width, 280);
   assert.deepEqual(p.peek.tabs.filter(t => t.on).map(t => t.id), ['vault']);
-  assert.equal(p.peek.tabs.length, 1, 'only the hovered tab (#103)');
+  assert.equal(p.peek.tabs.length, 1, 'only the clicked tab (#103)');
   assert.ok(p.shown.includes('vault'), 'the vault rule needs to see it on screen');
   assert.equal(p.peek.tabs.find(t => t.id === 'vault').label, TABS.find(t => t.id === 'vault').label);
 });

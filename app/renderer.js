@@ -1316,11 +1316,7 @@ let flushKeyBurst = null;        // saves a divider's pending arrow-key burst (s
 let selection = DTm.cleanSelection(null);
 let lastPlan = null;             // the plan on screen: the tab drag and the dividers read its boxes and splits
 let peek = null;                 // { module }: a rail's panel open over the terminal (D4). This window's, never saved. Set only by railEvent
-let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's hover state, BACKLOG #85: peek is what it says is open
-const RAIL_OPEN_MS = 100;
-const RAIL_CLOSE_MS = 100;
-let railOpenTimer = null;
-let railCloseTimer = null;
+let railSt = window.dockTreeView.RAIL_IDLE;   // the rail's state, BACKLOG #85: peek is what it says is open
 let helloSeen = false;           // the host has said whether this tab has its own layout, in the hello; a collapse is forgotten only after that
 let layoutLoaded = false;        // the stored layout has been read: until then the default is only a placeholder, whose groups mean nothing to a saved collapse
 let kbMove = null;               // { id, target }: a panel being moved with the keyboard (D4)
@@ -2467,23 +2463,12 @@ function toggleGroupCollapse(groupId) {
   commitSelection(DTm.toggleCollapse(selection, placementLayout(), groupId));
 }
 
-// The dock rail's hover (BACKLOG #85). app/dock-tree-display.js railAfter decides; this owns the two timers it asks for: a hover
-// waits RAIL_OPEN_MS before it opens a panel (a pass across the rail opens nothing), and leaving waits RAIL_CLOSE_MS before it
-// closes one (a diagonal move into the panel isn't leaving). Answers whether the open panel changed, so the caller redraws.
+// The dock rail (BACKLOG #85, #138, #106). app/dock-tree-display.js railAfter decides: side tabs open on click only, so there are
+// no hover timers. Answers whether the open panel changed, so the caller redraws.
 function railEvent(ev) {
   const was = railSt;
   railSt = window.dockTreeView.railAfter(railSt, ev);
   peek = railSt.module === null ? null : { module: railSt.module };
-  if (railSt.pending === null) { clearTimeout(railOpenTimer); railOpenTimer = null; }
-  else if (railSt.pending !== was.pending) {
-    clearTimeout(railOpenTimer);
-    const m = railSt.pending;
-    railOpenTimer = setTimeout(() => { railOpenTimer = null; usageGesture(); if (railEvent({ type: 'open-timer', module: m })) renderLayout({ refit: false }); }, RAIL_OPEN_MS);
-  }
-  if (!railSt.leaving) { clearTimeout(railCloseTimer); railCloseTimer = null; }
-  else if (!was.leaving) {
-    railCloseTimer = setTimeout(() => { railCloseTimer = null; if (railEvent({ type: 'close-timer' })) renderLayout({ refit: false }); }, RAIL_CLOSE_MS);
-  }
   return railSt.module !== was.module;
 }
 
@@ -2503,17 +2488,17 @@ function togglePin(id, { justThisTab = false } = {}) {
 }
 
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
-// panel is docked, an unpinned one opens from the rail and is held, a docked one is selected (PR #168 Miguel Y3).
+// panel is docked, an unpinned one opens from the rail and stays open until closed, a docked one is selected (PR #168 Miguel Y3).
 function revealModule(id) {
   usageGesture();
   const l = placementLayout();
   if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
   else if ((l.rail || []).includes(id)) {
-    if (!(railSt.module === id && railSt.held)) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
+    if (railSt.module !== id) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
   } else selectModule(id);
 }
 
-// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press elsewhere) closes it. It changes no
+// A rail's button: its panel opens over the terminal, a second press (or Esc, or a press in the terminal) closes it. It changes no
 // placement and no selection, so nothing is saved and the pty isn't told. The focus follows peekFocus: an open popover has it (a
 // mouse press left it on the button), a popover a press closed gives it back to the terminal, and Enter keeps it on the button.
 function openPeek(id, byKeyboard) {
@@ -2603,7 +2588,7 @@ function openMoveMenu(id, x, y, byKeyboard = false) {
       on: { click: () => { closeLayoutMenu(); startKeyboardMove(id); } },
     }));
     layoutMenu.appendChild(node('button', {
-      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you hover it',
+      type: 'button', text: 'Unpin', title: 'Send this panel to the rail on the right edge: it slides open over the terminal when you click it',
       on: { click: () => { closeLayoutMenu(); togglePin(id, { justThisTab: check.box.checked }); } },
     }));
   }
@@ -2664,7 +2649,7 @@ function openLayoutMenu() {
     box.dataset.module = row.id;
     box.addEventListener('change', () => {
       const l = settledLayout();
-      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab (#85)
+      if (box.checked) commitPlacement(DTm.showOnRail(l, row.id), { justThisTab: check.box.checked, select: row.id });   // back as a rail tab, #85
       else commitPlacement(DTm.hide(l, row.id), { justThisTab: check.box.checked });
       openLayoutMenu();                           // redrawn in place, still open
     });
@@ -3318,7 +3303,7 @@ document.addEventListener('click', (e) => {
   selectModule(id);
 });
 
-// A rail's popover closes on Esc and on a press outside it and its rail (a press on the rail is the rail's own click).
+// A rail's popover closes on Esc and on a press in the terminal (a press on the rail is the rail's own click).
 // Esc is the popover's only when the person is IN it (or on its rail button): everywhere else it is the terminal's own
 // interrupt, which is never taken (PR #99 Miguel G3; PR #159 Miguel B1).
 window.addEventListener('keydown', (e) => {
@@ -3332,41 +3317,21 @@ window.addEventListener('keydown', (e) => {
   const rail = document.querySelector(`.drail button[data-module="${CSS.escape(was)}"]`);
   if (rail) rail.focus();
 }, true);
-// ...and when the keyboard leaves it for something else (Tab out of the popover): otherwise keys would type into the
-// terminal behind an open panel. A focus that goes nowhere (the window blurring, a button replaced) keeps it open.
-document.addEventListener('focusout', (e) => {
-  const to = e.relatedTarget;
-  if (!peek || !to || !to.closest || to.closest('.dpeek, .drail')) return;
+// ...and when the keyboard goes into the terminal FROM the panel or its rail: otherwise keys would type into the terminal behind it. Focus
+// moving anywhere else (the header, another panel, nowhere at all) keeps it open, #138.
+document.addEventListener('focusin', (e) => {
+  if (!peek || !window.dockTreeView.focusClosesPeek(e.target, e.relatedTarget)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
+// Only a press in the terminal closes an open side panel; a press anywhere else (header, tab strip, the rail, another panel, the
+// popover itself) leaves it open (#138, Ricardo round 2).
 document.addEventListener('pointerdown', (e) => {
   if (!peek) return;
-  const inside = e.target.closest && e.target.closest('.dpeek');
-  if (inside) { railEvent({ type: 'hold' }); return; }        // using the panel holds it open, like a click on its tab (PR #168 Miguel Y2)
-  if (e.target.closest && e.target.closest('.drail')) return;
+  if (!window.dockTreeView.inTerminal(e.target)) return;
   railEvent({ type: 'outside' });
   renderLayout({ refit: false });
 });
-// ...and so does the keyboard being in it: typing in a field of a hover-opened panel must not lose it to the pointer leaving.
-document.addEventListener('focusin', (e) => {
-  if (peek && e.target.closest && e.target.closest('.dpeek')) railEvent({ type: 'hold' });
-});
-
-// Hovering a tab of the dock's rail slides its panel open over the terminal (BACKLOG #85); moving off the tab and the panel
-// slides it back after a short grace. The pointer is judged by what it is over now: a rail tab, the panel, or anything else
-// (the rail's empty strip is anything else: it is neither a tab nor the panel, PR #168 Dexter 3). Touch has no hover.
-document.addEventListener('pointerover', (e) => {
-  const t = e.target;
-  if (e.pointerType === 'touch' || !t || !t.closest) return;
-  const tab = t.closest('.drail[data-rail="dock"] button[data-module]');
-  let ev = null;
-  if (tab) ev = { type: 'enter', module: tab.dataset.module };
-  else if (t.closest('.dpeek')) ev = { type: 'enter-panel' };
-  else if (railSt.module !== null || railSt.pending !== null) ev = { type: 'leave' };
-  if (ev && railEvent(ev)) renderLayout({ refit: false });
-});
-document.documentElement.addEventListener('pointerleave', () => { if (railEvent({ type: 'leave' })) renderLayout({ refit: false }); });
 
 // Double-clicking the empty part of a group's tab bar unpins the group: every tab goes to the rail (a double-click on a tab is
 // just a click on it, twice). A group a window folded to a rail before (Ctrl+B, or an older fold) opens again by double-clicking
@@ -3535,6 +3500,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         const groupInfo = el => ({
           id: el.dataset.group, shape: el.dataset.shape, rect: rectOf(el),
           tabs: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => b.dataset.module),
+          tabRects: [...el.querySelectorAll('.zone-tabs button[data-module]')].map(b => rectOf(b)),
           on: [...el.querySelectorAll('.zone-tabs button.on')].map(b => b.dataset.module),
           panels: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => p.dataset.panel),
           panelRects: [...el.querySelectorAll('.zone-panels > .panel.on')].map(p => rectOf(p)),
@@ -3593,7 +3559,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           vaultNode: vaultField ? vaultField.__probeTag : null,
           // D4: a rail's popover, the keyboard move, the settle class, what a screen reader is told, and what holds focus.
           peek: peek ? peek.module : null,
-          railState: railSt,           // #85: the dock rail's hover state
+          railState: railSt,           // #85: the dock rail's state
           popover: (() => {
             const pe = document.querySelector('#dock-floats > .dpeek');
             if (!pe) return null;
@@ -3812,15 +3778,12 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         b.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: a.byKey === true ? 0 : 1 }));
         return JSON.stringify({ ok: true });
       }
-      // #85 (verify/probe-dock-autohide.js): the pointer moved onto a dock-rail tab (`module`), onto the open panel (`on: 'panel'`) or
-      // onto the terminal (`on: 'terminal'`), as pointerover events a mouse makes; and the Pin / Pinned button pressed.
-      case 'hover': {
-        const el = a.module ? document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.module))}"]`)
-          : a.on === 'panel' ? document.querySelector('.dpeek') : document.getElementById('termwrap');
-        if (!el) return JSON.stringify({ ok: false, error: 'nothing to hover' });
-        el.dispatchEvent(new PointerEvent('pointerover', { bubbles: true, cancelable: true, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
-        return JSON.stringify({ ok: true });
+      // Whether the page reports the (real) pointer over a dock-rail icon, so a probe's "hovering opened nothing" has a positive control.
+      case 'isHovered': {
+        const b = document.querySelector(`.drail[data-rail="dock"] button[data-module="${CSS.escape(String(a.id))}"]`);
+        return JSON.stringify({ ok: !!b, hovered: !!b && b.matches(':hover') });
       }
+      // The Pin / Pinned button pressed (`on: 'panel'` for the open popover's, else the docked group's for `module`).
       case 'pinClick': {
         const b = a.on === 'panel' ? document.querySelector('.dpeek .dpin') : document.querySelector(`.dgroup .dpin[data-pin="${CSS.escape(String(a.module))}"]`);
         if (!b) return JSON.stringify({ ok: false, error: 'no Pin button' });
@@ -3869,6 +3832,19 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
         el.focus();
         return JSON.stringify({ ok: true });
+      }
+      // Focus moved INTO an element the way the keyboard does it. A probe window that never got OS focus fires no focus events for
+      // el.focus(), so then the event the page would have seen is dispatched by hand.
+      case 'focusInto': {
+        const el = document.querySelector(String(a.selector));
+        if (!el) return JSON.stringify({ ok: false, error: 'no such element' });
+        const prev = document.activeElement;
+        el.focus();
+        // `fromNowhere` is a window regaining focus: a focusin with no relatedTarget, always made by hand.
+        const real = document.hasFocus() && a.fromNowhere !== true;
+        if (a.fromNowhere === true) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: null }));
+        else if (!real) el.dispatchEvent(new FocusEvent('focusin', { bubbles: true, relatedTarget: prev }));
+        return JSON.stringify({ ok: true, real });
       }
       case 'dblclick': {
         const el = document.querySelector(String(a.selector));
