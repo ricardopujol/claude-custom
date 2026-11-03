@@ -19,6 +19,11 @@
  *   C  Copy on a fenced block, on a command and Copy reply put exactly that text on the clipboard (the person's own
  *      clipboard text is put back; an image on it skips the check, never touched)
  *   D  the type box writes to the pty like typing: a command typed there runs in the terminal
+ *   D2 a 2,000-character one-line message and D3 an 8-line message (~600 characters) through the type box are SUBMITTED, not refused. The
+ *      stand-in box (verify/lib/fake-claude-box.js) behaves as the real CLI was MEASURED to (2026-11-03, verify/probe-chat-send-real.js
+ *      --measure, which drives the real CLI against a local fake endpoint): a bracketed paste of 2-3 lines shows whole, 4 or more lines
+ *      collapse to "[Pasted text #N +K lines]" (the line count decides, not the length); ONE plain write collapses unpredictably from about
+ *      1,000 characters (1,000 and 2,000 did, 1,200 and 1,500 did not; it depends on how the pty splits the read); writes of 200 never did.
  *   E  a permission prompt (Notification) flips the tab to the terminal with the one-line note; a main-session tool
  *      event (the answer) brings the chat back; a dialog still open when Ctrl+Shift+H is pressed keeps the terminal
  *   F  "Claude is working..." from a prompt to its Stop; a reply with hostile text shows as text, no element made of it
@@ -166,6 +171,7 @@ const doChat = (app, what, args = {}) => view(app, 'chatDo', { what, ...args });
 const screenOf = async (app) => { const r = await view(app, 'gitScreen'); return r && r.ok ? String(r.text) : ''; };
 const shoot = (app, name) => command(app, { cmd: 'screenshot', file: path.join(shots, `${name}.png`) });
 
+const filler = (n) => { let s = ''; let i = 0; while (s.length < n) s += `word${i++} `; return s.slice(0, n).trim(); };
 const PROMPT = 'please run the tests and tell me what failed';
 const TOOL_MARK = 'TOOLLINE-should-never-show';
 const REPLY = [
@@ -260,6 +266,25 @@ async function main() {
   check('D: the type box accepted the message and cleared itself', !!typed.ok && typed.boxAfter === '', JSON.stringify(typed));
   const ran = await waitFor(async () => submitted().includes('echo chat-typed-ok') ? true : null, 15000);
   check('D: ...and it reached the pty like typing: the stand-in CLI box SUBMITTED exactly that line, once', !!ran && submitted().filter(x => x === 'echo chat-typed-ok').length === 1, JSON.stringify(submitted()));
+
+  // D2 (PR #226 Dexter R2-1): a 2,000-character one-line message. One big write is taken for a paste and shows "[Pasted text #1]", which the
+  // read-back never matches; the type box writes it in 200-character chunks, so the stand-in (which collapses a big single write, as the
+  // real CLI does: verify/probe-chat-send-real.js --measure) shows it whole and SUBMITS it.
+  const longLine = filler(2000);
+  const longTyped = await doChat(app, 'type', { text: longLine });
+  const longNote = await chat(app);
+  check('D2: a 2,000-character one-line message is accepted by the type box (no refusal note, the box cleared)', !!longTyped.ok && longTyped.boxAfter === '' && !!longNote && longNote.sendNote === '', JSON.stringify({ ok: longTyped.ok, after: (longTyped.boxAfter || '').length, note: longNote && longNote.sendNote }));
+  const longRan = await waitFor(async () => submitted().includes(longLine) ? true : null, 15000);
+  check('D2: ...and the stand-in CLI box SUBMITTED all 2,000 characters, once, as written', !!longRan && submitted().filter(x => x === longLine).length === 1, `${submitted().map(x => x.length)}`);
+
+  // D3: an 8-line message (about 600 characters) is ONE bracketed paste, and the CLI shows 4 or more lines as "[Pasted text #N +K lines]".
+  // That placeholder, alone in the box, is the read-back; Enter then submits the real text.
+  const eight = Array.from({ length: 8 }, (_, k) => `line ${k + 1} of the message: ${filler(55)}`).join('\n');
+  const eightTyped = await doChat(app, 'type', { text: eight });
+  const eightNote = await chat(app);
+  check('D3: an 8-line message (about 600 characters) is accepted by the type box (no refusal note, the box cleared)', !!eightTyped.ok && eightTyped.boxAfter === '' && !!eightNote && eightNote.sendNote === '', JSON.stringify({ ok: eightTyped.ok, after: (eightTyped.boxAfter || '').length, note: eightNote && eightNote.sendNote, chars: eight.length }));
+  const eightRan = await waitFor(async () => submitted().includes(eight) ? true : null, 15000);
+  check('D3: ...and the stand-in CLI box SUBMITTED the 8 lines whole, once, with their line ends', !!eightRan && submitted().filter(x => x === eight).length === 1, `${submitted().map(x => x.length)}`);
 
   // D1 (PR #226 Dexter 1): a dialog has the keyboard although the hooks say idle. The chat's send must refuse before a key: no text, no Enter.
   setBox({ dialog: true });

@@ -42,22 +42,60 @@ function draw() {
   if (log) fs.writeFileSync(`${log}.line`, JSON.stringify(line));
 }
 
+// Pastes, as the REAL CLI treats them (verify/probe-chat-send-real.js --measure, 2026-11-03): it turns bracketed-paste mode on; a bracketed
+// paste of 4 or more lines shows as "[Pasted text #N +K lines]", a plain write of more than 1,000 characters in one read as "[Pasted text #N]",
+// and Enter submits the REAL text. Shorter pastes show as typed, their line ends as spaces.
+const PASTE_LINES = 4;
+const BIG_WRITE = 1000;
+const pasted = {};
+let pasteCount = 0;
+let inPaste = false;
+let pasteBuf = '';
+const placeholder = (text, lines) => {
+  pasted[++pasteCount] = text;
+  return lines > 1 ? `[Pasted text #${pasteCount} +${lines - 1} lines]` : `[Pasted text #${pasteCount}]`;
+};
+const real = (s) => s.replace(/\[Pasted text #(\d+)(?: \+\d+ lines)?\]/g, (m, n) => (pasted[n] !== undefined ? pasted[n] : m));
+
 if (process.stdin.isTTY && process.stdin.setRawMode) process.stdin.setRawMode(true);
+process.stdout.write('\x1b[?2004h');
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => {
-  for (const ch of chunk) {
-    if (ch === '\r' || ch === '\n') {
-      if (log) fs.appendFileSync(log, `${JSON.stringify(line)}\n`);
-      history.push(`> ${line}`);
-      line = '';
-      if (queueMode) queued = true;
-    } else if (ch === '\x15') {
-      line = '';
-    } else if (ch === '\x03') {
-      process.exit(0);
-    } else if (ch >= ' ' && ch !== '\x7f') {
-      line += ch;
+  if (!inPaste && !chunk.includes('\x1b[200~') && chunk.length > BIG_WRITE) { line += placeholder(chunk, 1); draw(); return; }
+  let rest = chunk;
+  while (rest.length) {
+    if (inPaste) {
+      const end = rest.indexOf('\x1b[201~');
+      if (end < 0) { pasteBuf += rest; rest = ''; break; }
+      pasteBuf += rest.slice(0, end);
+      rest = rest.slice(end + 6);
+      inPaste = false;
+      const text = pasteBuf.replace(/\r\n?/g, '\n');
+      const rows = text.split('\n').length;
+      line += rows >= PASTE_LINES ? placeholder(text, rows) : text.replace(/\n/g, ' ');
+      pasteBuf = '';
+      continue;
     }
+    const start = rest.indexOf('\x1b[200~');
+    const plain = start < 0 ? rest : rest.slice(0, start);
+    for (const ch of plain) {
+      if (ch === '\r' || ch === '\n') {
+        const sent = real(line);
+        if (log) fs.appendFileSync(log, `${JSON.stringify(sent)}\n`);
+        history.push(`> ${sent.replace(/\n/g, ' ').slice(0, 100)}`);       // one short row: a 2,000-character echo would push the box off the screen
+        line = '';
+        if (queueMode) queued = true;
+      } else if (ch === '\x15') {
+        line = '';
+      } else if (ch === '\x03') {
+        process.exit(0);
+      } else if (ch >= ' ' && ch !== '\x7f') {
+        line += ch;
+      }
+    }
+    if (start < 0) break;
+    rest = rest.slice(start + 6);
+    inPaste = true;
   }
   draw();
 });
