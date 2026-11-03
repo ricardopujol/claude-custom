@@ -377,6 +377,9 @@ let backgroundBusy = false;
 
 /** Paint `payload` into the page. Everything is rebuilt: the strip is small. */
 function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
+  // A redo kept for the ghost belongs to the payload that asked for it: any newer paint (even one held for a drag) replaces it,
+  // and asks again below only if it still needs one (PR #227 Miguel r2 N1).
+  fadeState.repaintWhenClear = null;
   if (dragState.key !== null) { dragState.held = { doc, payload, bridge }; return; }
   const tabs = doc.getElementById('tabs');
   const pane = doc.getElementById('pane');

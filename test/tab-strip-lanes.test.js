@@ -349,3 +349,45 @@ test('Miguel Y3: tabs that cannot give way (develop, the selected one) are repai
   assert.deepStrictEqual(keysOf(doc), ['dev', 'lane1'], 'develop and the selected tab stay; the one that could go went');
   assert.strictEqual(rebuilds, 3, 'one paint, one cut, one pass that hid nothing more');
 });
+
+// --- PR #227 Miguel r2 N1: the ghost's redo never brings back an older payload ----------------------------
+
+/** Paints a full strip, then lane1 closing (a ghost stands, the box holds 5 of 6), and returns what the next push needs. */
+function ghostStanding() {
+  const timers = [];
+  const restore = strip.fade.use({ schedule: (fn, ms) => timers.push([fn, ms]) });
+  const state = { fit: 5 };
+  const doc = fakeDoc({ room: 112 * 6 + 24 });
+  Object.defineProperty(doc.byId.tabs, 'scrollWidth', { get: () => doc.byId.tabs.children.length * 112 });
+  Object.defineProperty(doc.byId.tabs, 'clientWidth', { get: () => 112 * state.fit });
+  const b = bridgeSpy();
+  paint(doc, { model: model(6), mode: 'tabs' }, b);
+  paint(doc, { model: model(6).filter(e => e.key !== 'lane1'), mode: 'tabs' }, b);     // the ghost stands and the strip is full: a redo is kept
+  const selectedKeys = () => doc.byId.tabs.children.filter(t => /\bselected\b/.test(t.className)).map(t => t.dataset.key);
+  const runTimers = () => { for (const [fn] of timers.splice(0)) fn(); };
+  return { doc, b, state, restore, selectedKeys, runTimers };
+}
+const selecting = (key) => ({ model: model(6).filter(e => e.key !== 'lane1').map(e => ({ ...e, selected: e.key === key })), mode: 'tabs' });
+
+test('Miguel r2 N1: a newer paint that no longer needs the redo cancels it, so the ghost timer cannot repaint the older payload', () => {
+  const g = ghostStanding();
+  try {
+    g.state.fit = 6;                                    // the box grew: the newer paint needs no redo
+    paint(g.doc, selecting('lane4'), g.b);
+    assert.deepStrictEqual(g.selectedKeys(), ['lane4']);
+    g.runTimers();
+    assert.deepStrictEqual(g.selectedKeys(), ['lane4'], 'still the newest selection after the ghost is gone');
+  } finally { g.restore(); }
+});
+
+test('Miguel r2 N1: a push held for a drag that began inside the fade is not overwritten by the older redo', () => {
+  const g = ghostStanding();
+  try {
+    const lane2 = g.doc.byId.tabs.children.find(t => t.dataset.key === 'lane2');
+    lane2.listeners.dragstart(dragEv());
+    paint(g.doc, selecting('lane4'), g.b);               // held for the drag
+    g.runTimers();                                       // the ghost goes; its redo must not replace the held push
+    lane2.listeners.dragend(dragEv());
+    assert.deepStrictEqual(g.selectedKeys(), ['lane4'], 'the drag ends on the newest push, not the older one');
+  } finally { g.restore(); }
+});
