@@ -25,6 +25,8 @@ const MESSAGE_CAP = 200;
 const CROSS_SESSION = /^\s*<cross-session-message\b/;
 const HARNESS_PROMPT = /^\s*<(?:task-notification|teammate-message)\b/;
 const NOTE_TEXT = 'A message from another session arrived';
+const CUT_EARLIER = '[Part of this turn\'s earlier text was cut here. The whole of it is in the terminal.]';
+const closingPart = (parts) => parts[parts.length - 1];
 
 const isMain = (p) => !(typeof p.agent_id === 'string' && p.agent_id !== '');
 const cut = (text) => (text.length <= TEXT_MAX ? { text, truncated: false }
@@ -39,6 +41,7 @@ function createChatFeed({ now = Date.now } = {}) {
   let mainId = null;
   let lastClosing = null;      // the Stop hook's closing text of the newest reply (the message itself may later be expanded to the whole turn)
   let lastReply = null;        // the id of that reply
+  let stopReply = null;        // the id of the reply the LATEST Stop pushed, else null: a Stop that adds no reply must not expand an older one (PR #226 Dexter R2-3)
 
   function push(role, raw) {
     const { text, truncated } = cut(raw);
@@ -50,6 +53,7 @@ function createChatFeed({ now = Date.now } = {}) {
     const changed = messages.length > 0 || working;
     messages = [];
     working = false;
+    stopReply = null;
     return changed;
   }
 
@@ -81,7 +85,8 @@ function createChatFeed({ now = Date.now } = {}) {
       case 'Stop': {
         const was = working;
         working = false;
-        const said = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+        stopReply = null;
+        const said =typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
         if (said.trim() === '') return was;
         const last = messages[messages.length - 1];
         // Stop can fire more than once around one turn ending: a second identical reply with no prompt between is the same reply.
@@ -89,6 +94,7 @@ function createChatFeed({ now = Date.now } = {}) {
         push('assistant', said);
         lastClosing = cut(said).text;
         lastReply = seq;
+        stopReply = seq;
         return true;
       }
       // Esc interrupts a turn and fires no Stop; Claude Code's idle_prompt is the only word that it is back at the prompt (host/turn-state.js)
@@ -135,6 +141,7 @@ function createChatFeed({ now = Date.now } = {}) {
     const prefix = old.slice(0, upTo);
     if (prefix.length === 0) return false;
     lastReply = null;                      // ids are re-issued below
+    stopReply = null;
     const keep = messages;
     messages = [];
     for (const m of prefix) push(m.role, m.text);
@@ -158,7 +165,18 @@ function createChatFeed({ now = Date.now } = {}) {
     const closing = id === lastReply && lastClosing !== null ? lastClosing : messages[i].text;   // not the current text: it may already be expanded
     if (cut(parts[parts.length - 1]).text.trim() !== closing.trim()) parts.push(closing);
     else parts[parts.length - 1] = closing;
-    const { text, truncated } = cut(parts.join('\n\n'));
+    let text;
+    let truncated = false;
+    const joined = parts.join('\n\n');
+    if (joined.length <= TEXT_MAX) text = joined;
+    else {
+      // Over the cap: the CLOSING message is the answer and stays whole; the cut comes out of the earlier text, whose head is kept, with a
+      // note in the text where it was cut (PR #226 Dexter R2-2). No room left for even that (a closing message near the cap) keeps the closing alone.
+      const tail = `\n\n${CUT_EARLIER}\n\n${closingPart(parts)}`;
+      const room = TEXT_MAX - tail.length;
+      if (room > 0) text = parts.slice(0, -1).join('\n\n').slice(0, room).replace(/[\uD800-\uDBFF]$/, '') + tail;
+      else ({ text, truncated } = cut(closingPart(parts)));
+    }
     if (text === messages[i].text) return false;
     messages[i] = { ...messages[i], text, truncated: truncated || messages[i].truncated };
     return true;
@@ -167,7 +185,7 @@ function createChatFeed({ now = Date.now } = {}) {
   return {
     handle,
     expandReply,
-    lastReplyId: () => lastReply,
+    lastReplyId: () => stopReply,
     transcriptPath: () => transcriptPath,
     snapshot: () => ({ messages: messages.map(m => ({ ...m })), working }),
     pendingHistory: () => (wantHistory ? transcriptPath : null),

@@ -42,6 +42,7 @@ test('a Stop reads the turn\'s whole text from the transcript and swaps it into 
   assert.match(fn, /payload\.transcript_path/);
   assert.match(fn, /readLastTurnTexts\(from\)/);
   assert.match(fn, /chatFeed\.expandReply\(id, blocks\)/);
+  assert.match(fn, /id !== null && from/, 'only a reply this Stop pushed is expanded (PR #226 Dexter R2-3)');
 });
 
 test('a change is pushed as { type: chat }, and the transcript is read only after a SessionStart', () => {

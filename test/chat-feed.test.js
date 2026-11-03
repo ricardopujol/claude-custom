@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
 
-const { createChatFeed, MESSAGE_CAP } = require('../host/chat-feed');
+const { createChatFeed, MESSAGE_CAP, TEXT_MAX } =require('../host/chat-feed');
 
 const ev = (event, payload = {}) => ({ event, payload });
 const START = ev('SessionStart', { source: 'startup', session_id: 's1', transcript_path: 'C:/x/s1.jsonl' });
@@ -243,6 +243,52 @@ test('expandReply: flush lag (the transcript lacks the closing block) still ends
   full.f.expandReply(full.id, ['A: the long answer', 'B: the closing line']);
   assert.strictEqual(texts(full.f)[1].split('B: the closing line').length, 2, 'B once');
   assert.strictEqual(full.f.expandReply(full.id, ['A: the long answer', 'B: the closing line']), false, 'the same read again changes nothing');
+});
+
+test('expandReply: a turn over the cap keeps the closing message whole and says the earlier text was cut (PR #226 Dexter R2-2)', () => {
+  const closing = 'B: Merged PR #226; 3 follow-ups are in the backlog.';
+  const f = run([START, ev('UserPromptSubmit', { prompt: 'q' }), ev('Stop', { last_assistant_message: closing })]);
+  const id = f.lastReplyId();
+  assert.strictEqual(f.expandReply(id, ['x'.repeat(19990), closing]), true);
+  const m = f.snapshot().messages[1];
+  assert.ok(m.text.endsWith(closing), 'the answer is the last thing in the bubble');
+  assert.ok(m.text.length <= TEXT_MAX, 'still within the cap');
+  assert.match(m.text, /earlier text was cut here/);
+  assert.ok(m.text.startsWith('xxxx'), 'the head of the earlier text is kept');
+  assert.strictEqual(f.expandReply(id, ['x'.repeat(19990), closing]), false, 'the same read again changes nothing');
+});
+
+test('property: however long the turn, the bubble stays within the cap and ends with the closing message', () => {
+  fc.assert(fc.property(fc.array(fc.string({ minLength: 1, maxLength: 9000 }), { minLength: 1, maxLength: 6 }), fc.string({ minLength: 1, maxLength: 3000 }).filter(s => s.trim() !== ''), (earlier, closing) => {
+    const f = run([START, ev('UserPromptSubmit', { prompt: 'q' }), ev('Stop', { last_assistant_message: closing })]);
+    f.expandReply(f.lastReplyId(), ['y'.repeat(18000), ...earlier, closing]);       // the filler makes most runs cross the cap
+    const m = f.snapshot().messages[1];
+    assert.ok(m.text.length <= TEXT_MAX);
+    assert.ok(m.text.endsWith(closing.trim()) || m.text.endsWith(closing));
+  }), { numRuns: 100 });
+});
+
+test('a Stop that pushes no reply (empty last_assistant_message) has no reply to expand, so the earlier reply keeps its own turn (PR #226 Dexter R2-3)', () => {
+  const { f, id } = turnFeed();
+  assert.strictEqual(f.lastReplyId(), id);
+  f.expandReply(id, ['A: turn one text', 'B: the closing line']);
+  f.handle(ev('UserPromptSubmit', { prompt: 'again' }));
+  f.handle(ev('Stop', { last_assistant_message: '' }));
+  assert.strictEqual(f.lastReplyId(), null, 'the host expands only a reply this Stop pushed');
+});
+
+test('a teammate-started turn that closes with the same line adds no reply and leaves the earlier reply\'s text alone (PR #226 Dexter R2-3)', () => {
+  const { f, id } = turnFeed();
+  f.expandReply(id, ['A: turn one text', 'B: the closing line']);
+  f.handle(ev('UserPromptSubmit', { prompt: '<teammate-message teammate_id="x">hi</teammate-message>' }));
+  assert.strictEqual(f.handle(ev('Stop', { last_assistant_message: 'B: the closing line' })), true, 'the working state changed');
+  assert.strictEqual(f.lastReplyId(), null);
+  assert.strictEqual(f.expandReply(f.lastReplyId(), ['A: turn two text', 'B: the closing line']), false);
+  assert.deepStrictEqual(texts(f), ['user:q', 'assistant:A: turn one text\n\nB: the closing line']);
+  // a real new reply gets its id back
+  f.handle(ev('UserPromptSubmit', { prompt: 'next' }));
+  f.handle(ev('Stop', { last_assistant_message: 'C' }));
+  assert.notStrictEqual(f.lastReplyId(), null);
 });
 
 test('expandReply: only the reply it was asked about, and a repeated Stop afterwards still adds nothing', () => {
