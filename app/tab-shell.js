@@ -526,6 +526,9 @@ function createShell(deps) {
   /** The tabs you can see (1B), in strip order, from a model. Ctrl+Tab and a close's neighbour only ever land here. */
   const visibleOf = (m) => tabLanes.placeLanes(m, []).strip;
 
+  // Lanes reopened since git last listed the worktrees: state.tabs lags them, so a prune must not take their slot (PR #227 Dexter r2 A).
+  const reopenedUnlisted = new Set();
+
   /** Save the strip's order and its closed lanes. Quiet: a layout that is missing, refuses or throws changes nothing on screen. */
   function persistLayout({ prune = true } = {}) {
     if (!layout || typeof layout.save !== 'function') return;
@@ -533,7 +536,7 @@ function createShell(deps) {
     // An order only keeps lanes that still exist or can be reopened. It is pruned against git's list as the reducer holds it,
     // which is empty before the first poll and lags a reopen by one poll: neither may cost the person their order (PR #227 Dexter 1).
     if (prune && state.tabs.length > 0) {
-      const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key)]);
+      const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key), ...reopenedUnlisted]);
       order = order.filter(k => known.has(k));
     }
     try {
@@ -890,6 +893,7 @@ function createShell(deps) {
     const before = model();
     const { state: next, actions } = lifecycle.reconcile(state, observation);
     state = next;
+    reopenedUnlisted.clear();     // git has answered: state.tabs is the truth again
     apply(actions, before);
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
@@ -1303,6 +1307,7 @@ function createShell(deps) {
     const entry = closedByHand.find(c => c.key === target.key);
     state = lifecycle.reopen(state, entry.path).state;
     closedByHand = closedByHand.filter(c => c.key !== target.key);
+    reopenedUnlisted.add(target.key);
     persistLayout({ prune: false });   // the reopened lane isn't in state.tabs until the poll below lists it
     selectWhenListed = target.key;
     await poll();

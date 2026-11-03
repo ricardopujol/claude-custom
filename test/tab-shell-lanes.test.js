@@ -45,7 +45,7 @@ function harness({ list = porcelain(FOUR), running = {}, layout, occupancy, mark
   const deps = {
     mode: 'tabs', container: ROOT, cwd: wt('dev'), launchedFrom: null, log: (...a) => h.logs.push(a.join(' ')),
     git: {
-      list: async () => { await settle(); return h.listText; },
+      list: async () => { await settle(); if (h.failList) throw new Error('git is busy'); return h.listText; },
       marker: (p, branch) => (h.markers[normPath(p)] === branch ? { branch, pr: 1, mergedAt: '2026-10-29T00:00:00Z' } : null),
     },
     ops: NO_OPS,
@@ -422,4 +422,18 @@ test('Dexter r2 D: a host that came up after a timed-out spawn is attached clean
   await flush();
   assert.strictEqual(spawnsOfA(), 2, 'the restart spawned (a stale pending record would have waited and spawned nothing)');
   assert.strictEqual(entryOf().startError, null);
+});
+
+test('Dexter r2 A: a lane reopened while git cannot list keeps its slot through a drag made before the next good poll', async () => {
+  const FIVE = [...FOUR, ['feat-d', 'feat/d']];
+  const closedA = { key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a' };
+  const layout = memoryLayout({ order: [key('feat-b'), key('feat-a'), key('feat-c'), key('feat-d')], closed: [closedA] });
+  const h = await opened({ list: porcelain(FIVE), layout });
+  h.failList = true;                                     // git cannot list on the reopen's poll
+  await h.shell.reopen(key('feat-a'));
+  h.shell.reorder(key('feat-d'), key('feat-b'));
+  h.failList = false;
+  await h.shell.poll();
+  await flush();
+  assert.deepStrictEqual(layout.saved.at(-1).order, [key('feat-d'), key('feat-b'), key('feat-a'), key('feat-c')], 'the reopened lane kept its slot on disk');
 });
