@@ -12,11 +12,12 @@ const state = require('../app/chat-view-state');
 const { inputState, commandTyped, boxText, boxHoldsLine } = require('../app/top-bar-display');
 
 const RULE = '─'.repeat(40);
+const PASTE_THRESHOLD = 200;
 
 function makeCli(opts = {}) {
   const cli = {
     box: opts.box || '', dialog: !!opts.dialog, submitted: [], keys: [], confirmedDialog: 0, sleeps: 0,
-    cancelled: 0, locked: [], turn: opts.turn || 'idle', blocked: false,
+    cancelled: 0, locked: [], turn: opts.turn || 'idle', blocked: false, pastes: 0,
   };
   const press = (data) => {
     cli.keys.push(data);
@@ -30,7 +31,11 @@ function makeCli(opts = {}) {
     if (data === '\x15') { if (!cli.dialog) cli.box = ''; return; }
     if (cli.dialog) return;                      // keys typed into a dialog are not text
     if (opts.dropText) return;
-    cli.box += data.replace(/\x1b\[20[01]~/g, '').replace(/\r/g, ' ');
+    const text = data.replace(/\x1b\[20[01]~/g, '').replace(/\r/g, ' ');
+    // The real CLI takes ONE write over its paste threshold for a paste and shows "[Pasted text #N]" (measured: app/top-bar-display.js
+    // COMMAND_CHUNK; the threshold itself is somewhere between 200 and 1,999 characters, 200 is the largest write the app makes elsewhere).
+    if (Array.from(text).length > PASTE_THRESHOLD) { cli.box += `[Pasted text #${++cli.pastes}]`; return; }
+    cli.box += text;
   };
   cli.env = {
     turn: () => cli.turn,
@@ -63,6 +68,34 @@ test('an idle prompt: the text is typed, read back, and Enter submits it', async
   assert.deepStrictEqual(cli.submitted, ['hello there']);
   assert.strictEqual(cli.confirmedDialog, 0);
   assert.deepStrictEqual(cli.locked, [true, false], 'the typing lock is taken and always given back');
+});
+
+test('a long message is typed in chunks the CLI does not take for a paste: it reads back and is submitted whole (PR #226 Dexter R2-1)', async () => {
+  for (const n of [201, 400, 2000]) {
+    const text = 'x'.repeat(n);
+    const cli = makeCli();
+    const r = await state.runChatSend(text, cli.env);
+    assert.deepStrictEqual(r, { ok: true }, `${n} characters`);
+    assert.deepStrictEqual(cli.submitted, [text], `${n} characters`);
+    assert.strictEqual(cli.pastes, 0, 'no write was big enough to be collapsed');
+  }
+});
+
+test('property: a single-line message of any length over the chunk size is submitted exactly as written', async () => {
+  await fc.assert(fc.asyncProperty(fc.array(fc.constantFrom(...'abcdefg é'), { minLength: 201, maxLength: 1200 }).map(a => a.join('').replace(/ +/g, ' ').trim() + 'z').filter(s => s.length > 1), async (text) => {
+    const cli = makeCli();
+    const r = await state.runChatSend(text, cli.env);
+    assert.strictEqual(r.ok, true);
+    assert.deepStrictEqual(cli.submitted, [text]);
+  }), { numRuns: 40 });
+});
+
+test('a dialog that opens between two chunks of a long message gets none of the remaining text and no Enter', async () => {
+  const cli = makeCli({ dialogAtSleep: 1 });
+  const r = await state.runChatSend('y'.repeat(600), cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(cli.keys.length, 1, 'only the first chunk went; the dialog saw nothing');
+  assert.strictEqual(cli.confirmedDialog, 0);
 });
 
 test('a dialog is on screen although the hooks say idle: nothing at all is sent, no Enter', async () => {

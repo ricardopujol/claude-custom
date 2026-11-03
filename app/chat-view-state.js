@@ -59,16 +59,23 @@ function sanitizeInput(text) {
 }
 
 const pasteFrameFn = () => (typeof module !== 'undefined' && module.exports ? require('./paste-action').pasteFrame : root.pasteFrame);
+const typingKeysFn = () => (typeof module !== 'undefined' && module.exports ? require('./top-bar-display').typingKeys : root.typingKeys);
+
+// A one-line message goes in 200-character writes (app/top-bar-display.js typingKeys, the one chunker every typed command uses): the CLI takes
+// ONE big write for a paste and shows "[Pasted text #1]", which the read-back would never match (PR #226 Dexter R2-1). typingKeys leads with
+// Ctrl-E and Ctrl-U, which the send doesn't want (it only types into a box it has just seen empty): they are dropped, the chunks are its own.
+const textChunks = (text) => typingKeysFn()(text, false).slice(2);
 
 function planChatSend(raw, opts) {
   const text = sanitizeInput(raw);
   if (text === '') return [];
   const frame = (data) => JSON.stringify({ type: 'input', data });
-  let first;
-  if (!text.includes('\n')) first = frame(text);
-  else if (opts && opts.bracketed === true) first = pasteFrameFn()(text, true);
-  else first = frame(text.split('\n').join('\x1b\r'));
-  return [{ frame: first, afterMs: 0 }, { frame: frame('\r'), afterMs: ENTER_DELAY_MS }];
+  let texts;
+  if (!text.includes('\n')) texts = textChunks(text).map(frame);
+  else if (opts && opts.bracketed === true) texts = [pasteFrameFn()(text, true)];
+  else texts = [frame(text.split('\n').join('\x1b\r'))];
+  // The text frames, then Enter as the LAST entry: runChatSend spaces the text frames by the key gap.
+  return [...texts.map(f => ({ frame: f, afterMs: 0 })), { frame: frame('\r'), afterMs: ENTER_DELAY_MS }];
 }
 
 // --- the type box's send: nothing goes to the pty that could answer a dialog (PR #226 Dexter 1, Miguel I2) --------------------------------
@@ -146,7 +153,16 @@ async function runChatSend(raw, env) {
       }
     };
 
+    const enter = plan[plan.length - 1];
     if (env.type(plan[0].frame) === 'held') { env.cancelHold(); return { ok: false, note: NOTE.holds }; }
+    // The rest of a long message, one chunk per key gap: written together they would be one paste again.
+    // A dialog that opens between two chunks must not get the rest of the text as keys.
+    for (let k = 1; k < plan.length - 1; k++) {
+      await env.sleep(env.keyGap || 120);
+      const now = env.inputState(await screenNow(), { vim: env.vim() });
+      if ((now !== 'ready' && now !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true) { await clear(); return { ok: false, note: NOTE.changed }; }
+      env.send(plan[k].frame);
+    }
     let typed = false;
     for (let waited = 0; waited <= READBACK_WAIT_MS; waited += env.keyGap || 120) {
       await env.sleep(env.keyGap || 120);
@@ -162,7 +178,7 @@ async function runChatSend(raw, env) {
       return { ok: false, note: NOTE.changed };
     }
 
-    env.send(plan[1].frame);
+    env.send(enter.frame);
     for (let i = 0; i < AFTER_POLLS; i++) {
       await env.sleep(AFTER_POLL_MS);
       if (!env.boxHoldsLine(await screenNow(), text)) return { ok: true };
