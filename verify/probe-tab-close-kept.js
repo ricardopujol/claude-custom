@@ -162,7 +162,10 @@ function killEverything() {
   }
   seenPids.endAll();
   // The files the probe wrote for its stand-ins, with the pids gone: nothing may name a stand-in's port afterwards.
+  // A real host may have bound a freed stand-in port since (PR #231 Miguel R6): its files stay unless they name the probe's folder.
   for (const s of standIns) {
+    const id = readIdentity({ dir: HARNESS_DIR, port: s.port });
+    if (id && !(typeof id.cwd === 'string' && path.resolve(id.cwd).toLowerCase().startsWith(inside))) continue;
     for (const f of [fileFor(HARNESS_DIR, s.port), path.join(HARNESS_DIR, 'hosts', `${s.port}.token`)]) {
       try { fs.unlinkSync(f); } catch { /* already gone */ }
     }
