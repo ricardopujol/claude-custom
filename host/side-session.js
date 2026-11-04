@@ -33,6 +33,8 @@ const SIDE_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'WebFetch', 'W
 // The second wall (never the only one): tools that run a command or write a file or a git ref, by name.
 const SIDE_DENIED_TOOLS = Object.freeze([
   'Edit', 'Write', 'NotebookEdit', 'MultiEdit', 'Bash', 'PowerShell', 'Monitor', 'EnterWorktree', 'ExitWorktree', 'Task', 'Agent', 'Workflow', 'Skill',
+  // The CLI's REPL tool (its config alias is Eval) runs a script that can call other tools: it can do anything its callees can, so it is denied by name.
+  'REPL', 'Eval',
 ]);
 // Every tool name the CLI (2.1.318) declared or showed when this was reviewed. A name the installed CLI declares that is not in this list
 // fails test/side-session-r2.test.js: read what the tool does, then either add it to SIDE_ALLOWED_TOOLS or leave it off, and list it here.
@@ -46,6 +48,9 @@ const SIDE_REVIEWED_TOOLS = Object.freeze([
   // and ToolSearch ("Fetches full schema definitions for deferred tools so they can be called": a schema lookup, it runs and writes nothing; left OFF
   // the allow-list because the side session has no deferred tools to look up).
   'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'ToolSearch',
+  // SendUserMessage (the CLI's Brief tool: "Send a message the user will read", with optional file attachments the session can already read): it writes
+  // nothing to the worktree, but a side session talks in its own transcript, so it stays OFF the allow-list.
+  'SendUserMessage',
 ]);
 
 const { samePath } = require('./project-layout');
