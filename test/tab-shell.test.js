@@ -3577,6 +3577,37 @@ test('Dexter M1: selecting the kept tab withdraws the Stop offer, so a later Sto
   assert.strictEqual(r.ok, true);
 });
 
+// --- PR #231 round 2, Miguel R1: the long stop ends, and the key now names a NEW tab record --------------------------------
+
+test('Miguel R1: a close whose long stop fails after its tab was removed and made again keeps and blames nothing on the NEW tab', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  let release;
+  h.pidReply = () => new Promise((resolve) => { release = () => resolve('failed'); });
+  const listed = h.listText;
+  const closing = h.shell.closeTab(key('feat-a'));
+  await settle();
+  const old = h.shell.tabByKey(key('feat-a'));
+  h.listText = porcelain([['dev', 'develop'], ['feat-b', 'feat/b']]);      // git stops listing feat-a during the stop...
+  await h.shell.poll();
+  h.listText = listed;                                                       // ...and lists it again: a new record under the same key
+  await h.shell.poll();
+  const fresh = h.shell.tabByKey(key('feat-a'));
+  assert.ok(fresh && fresh !== old, 'a new tab record');
+  release();
+  const r = await closing;
+  assert.strictEqual(r.ok, true, 'the old tab is gone: nothing to keep');
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'no Stop offer for the new tab');
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), fresh, 'and the new tab is left alone');
+  h.controlReply = null;
+  h.pidReply = null;
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'a Stop click on the new tab asks: it never failed anything');
+});
+
 // --- PR #231 Dexter 4 / Miguel G3: while a host is being ended its tab is in a closing state ---------------------------------
 
 test('Dexter 4: during the stop and the retry the tab is greyed and says so, can\'t be selected, and nothing is started or attached for it', async () => {

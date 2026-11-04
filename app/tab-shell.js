@@ -1166,8 +1166,8 @@ function createShell(deps) {
         if (failure === null) failure = f;
       }
     } finally { ending.delete(key); }
-    if (!tabs.has(key)) return { ok: true };     // gone during the stop (its folder was removed)
-    if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure);
+    if (tabs.get(key) !== tab) return { ok: true };     // gone during the stop (its folder was removed), or the key names a NEWER tab now (PR #231 Miguel R1)
+    if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure, tab);
     clearStuck(key);     // the line about it goes with it
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
@@ -1250,9 +1250,9 @@ function createShell(deps) {
   }
 
   /** #129: a close whose host would not end keeps its tab, says so in the strip, and offers Stop (a second close, without the question). */
-  function keepStuck(key, notice, failure) {
+  function keepStuck(key, notice, failure, tab) {
     closeNotice = notice;
-    closeStuck.set(key, { text: notice, tab: tabs.get(key) });
+    closeStuck.set(key, { text: notice, tab });
     log(`[shell] ${key}: ${notice}`);
     publish();
     return { ok: false, kept: true, stopError: failure };
@@ -1948,7 +1948,7 @@ function createShell(deps) {
       t.closed = false;       // not closed after all: a start that gave up for it may begin again, and a second stop is sent afresh
       t.closeStop = null;
       t.closeStopPort = null;
-      return keepStuck(key, `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`, failure);
+      return keepStuck(key, `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`, failure, t);
     }
     clearStuck(key);     // the line about it goes with it
     const showing = selectedKey === key;
