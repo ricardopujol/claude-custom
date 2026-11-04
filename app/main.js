@@ -341,7 +341,7 @@ function ownIdentities() {
 }
 
 // #129: end a tab's host by pid when its stop message failed (host/stop-by-pid.js).
-const stopHostByPid = createStopByPid({ identities: () => ownIdentities(), kill: (pid, start) => killProvenAsync(pid, start) });
+const stopHostByPid = createStopByPid({ identities: () => ownIdentities(), kill: (pid, start) => killProvenAsync(pid, start), ownPids: [process.pid, process.ppid] });
 
 function spawnHost(tab, port, token) {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
@@ -2389,7 +2389,7 @@ app.whenReady().then(async () => {
       control: (c) => sendControl(c),
       // #129: the retry of a stop that failed, by pid: the identity file names the host's pid and its OS start time, and the kill
       // proves both on a held handle (host/kill-tree.js). No file (or no start time) for the port: the host is gone, or can't be proved.
-      stopByPid: (port) => stopHostByPid(port),
+      stopByPid: (port, who) => stopHostByPid(port, who),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
       // PR #227 Dexter 4: the branch hosts the identity files say are running, so a lane whose first look missed its host is looked for again only where one serves it

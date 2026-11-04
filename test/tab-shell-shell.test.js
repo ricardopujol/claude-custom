@@ -41,7 +41,7 @@ function harness({ mode = 'tabs', running = {}, listShellHosts = true } = {}) {
   const h = {
     running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
     confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
-    order: [], holdShell: null, shellWalks: 0, shellHostReads: 0, controlOk: true, removeHold: null, pidStops: [], pidOutcome: 'killed',
+    order: [], holdShell: null, shellWalks: 0, shellHostReads: 0, controlOk: true, removeHold: null, pidStops: [], pidWho: [], pidOutcome: 'killed', controlError: null,
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -78,14 +78,14 @@ function harness({ mode = 'tabs', running = {}, listShellHosts = true } = {}) {
       control: async (c) => {
         h.controls.push(c);
         if (c.msg.type === 'stop') { h.order.push(`stop:${c.port}`); if (h.controlOk) delete h.running[c.port]; }
-        return h.controlOk ? { ok: true, reply: null } : { ok: false, error: 'no answer' };
+        return h.controlOk ? { ok: true, reply: null } : { ok: false, error: h.controlError || 'no answer' };
       },
       sideHosts: () => Object.entries(h.running).filter(([, o]) => o.side === true).map(([p, o]) => ({ port: Number(p), cwd: o.cwd })),
       shellHosts: () => {
         h.shellHostReads++;
         return Object.entries(h.running).filter(([, o]) => o.shell === true).map(([p, o]) => ({ port: Number(p), cwd: o.cwd }));
       },
-      stopByPid: async (port) => { h.pidStops.push(port); if (h.pidOutcome === 'killed') delete h.running[port]; return h.pidOutcome; },
+      stopByPid: async (port, who) => { h.pidStops.push(port); h.pidWho.push(who); if (h.pidOutcome === 'killed') delete h.running[port]; return h.pidOutcome; },
       identity: () => null,
       readToken: () => null,
     },
@@ -676,4 +676,50 @@ test('the probe driver can click a tab\'s x and its menu\'s items by label (Rica
   }
   assert.strictEqual((await probe({ cmd: 'tabMenu', label: SHELL_A, item: 5 }, api)).ok, false, 'an item is a label');
   assert.strictEqual(seen.length, 3);
+});
+
+// --- PR #231 review: the same proof for a shell tab's host ---------------------------------------------------------------------
+
+test('Dexter 1: a shell host that refuses this tab token: a stranger host, no retry by pid, and the tab goes', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  h.controlOk = false;
+  h.controlError = 'handshake refused (HTTP 403)';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, []);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 1: the pid retry for a shell tab asks for ITS kind of host in its folder, and a stranger answer drops the tab', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'stranger';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, [7702]);
+  assert.deepStrictEqual(h.pidWho, [{ cwd: h.shell.tabByKey(key('feat-a')).cwd, side: false, shell: true }]);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+});
+
+test('Dexter 6: a shell host whose file is stale (a mismatch) is dead: the tab goes with no notice', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'mismatch';
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 7: a shell host whose stop timed out is given its shutdown bound, and is never killed if it goes quiet', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  h.controlOk = false;
+  h.controlError = 'timed out after 3000ms';
+  delete h.running[7702];                      // it goes quiet while the shell waits
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, []);
 });
