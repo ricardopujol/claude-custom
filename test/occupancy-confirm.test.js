@@ -370,3 +370,38 @@ test('F4: only a real true is persistent', () => {
     assert.strictEqual(r.c.input('b'), 'held', String(persist));
   }
 });
+
+test('wouldHold: true exactly when the next keystroke would be held (a claim not yet confirmed, or a question open) (PR #226 Dexter 5)', () => {
+  const r = rig();
+  assert.strictEqual(r.c.wouldHold(), false, 'no claim');
+  r.c.setClaims(here('a1'));
+  assert.strictEqual(r.c.wouldHold(), true, 'a live claim nobody said Type to');
+  r.c.input('x');
+  assert.strictEqual(r.c.wouldHold(), true, 'the question is open');
+  r.c.type();
+  assert.strictEqual(r.c.wouldHold(), false, 'confirmed for this run');
+  r.c.setClaims(here('a1', 'a2'));
+  assert.strictEqual(r.c.wouldHold(), true, 'a second agent has not been confirmed');
+  r.c.setClaims([]);
+  assert.strictEqual(r.c.wouldHold(), false);
+});
+
+test('property: wouldHold agrees with what input does with a plain keystroke', () => {
+  fc.assert(fc.property(fc.array(fc.constantFrom('claim', 'noclaim', 'type', 'wait', 'key'), { maxLength: 10 }), (ops) => {
+    const r = rig();
+    for (const op of ops) {
+      if (op === 'claim') r.c.setClaims(here('a1'));
+      else if (op === 'noclaim') r.c.setClaims([]);
+      else if (op === 'type') r.c.type();
+      else if (op === 'wait') r.c.wait();
+      else r.c.input('k');
+      const predicted = r.c.wouldHold();
+      const before = r.sent.length;
+      const res = r.c.input('z');
+      if (predicted === (res === 'sent')) return false;
+      if (!predicted && r.sent.length !== before + 1) return false;
+      if (predicted) r.c.wait();
+    }
+    return true;
+  }));
+});

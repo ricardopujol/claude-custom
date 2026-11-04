@@ -200,8 +200,10 @@ test('Ctrl+Tab walks through the side tab in strip order', async () => {
   await h.shell.select(key('feat-a'));
   await h.shell.next();
   assert.strictEqual(h.shell.model().find(e => e.selected).key, skey('feat-a'));
+  // 1B (BACKLOG #139): feat-b has no running session, so it is a Lanes row, not a tab to land on: the strip wraps to develop.
   await h.shell.next();
-  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('feat-b'));
+  assert.strictEqual(h.shell.model().find(e => e.selected).key, key('dev'));
+  assert.ok(!h.spawns.some(s => s.key === key('feat-b')), 'Ctrl+Tab did not start feat-b');
 });
 
 // --- closing it by hand (Ricardo's look, 2026-10-26: "when opening a side session, this one can't be closed") -----------

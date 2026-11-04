@@ -192,6 +192,8 @@ const CONTRACT = {
     // Stop fires while a background agent is still running
     // (test/hooks-real-subagent-failure.fixture.jsonl). attention.js holds
     // "finished" back while one of them runs.
+    // Also read, optional: last_assistant_message, the turn's closing text. host/chat-feed.js makes Claude's chat
+    // bubble of it (BACKLOG #157); absent or blank, the turn adds no bubble.
   },
   UserPromptSubmit: {
     // The event itself opens the MAIN session's turn (host/turn-state.js, which the Git drawer's Type /merged

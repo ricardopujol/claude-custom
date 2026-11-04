@@ -261,19 +261,19 @@ async function main() {
     check('only dev\'s host runs until another tab is selected (X5)',
       running.length === 1 && path.resolve(running[0].cwd).toLowerCase() === path.resolve(dev).toLowerCase(),
       running.map(r => path.basename(r.cwd)).join(', '));
-    check('the other tabs are drawn as not started',
-      !tabOf(s, 'feat/a').started && !tabOf(s, 'feat/b').started);
+    check('the other lanes are not started (and, since #139, are Lanes menu rows rather than tabs)',
+      !tabOf(s, 'feat/a').started && !tabOf(s, 'feat/b').started && s.lanes.notStarted.length === 2);
 
     // Criterion 6 (strip) and the render check: what the strip PAGE painted.
-    s = await waitFor(async () => { const x = await state(app); return x.stripDom && x.stripDom.length === 3 ? x : null; }, 15000) || s;
+    s = await waitFor(async () => { const x = await state(app); return x.stripDom && x.stripDom.length === 1 ? x : null; }, 15000) || s;
     const dom = s.stripDom;
-    check('the strip PAINTED the three labels (the page rendered)',
-      Array.isArray(dom) && JSON.stringify(dom.map(d => d.label)) === JSON.stringify(['develop', 'feat/a', 'feat/b']),
+    check('the strip PAINTED dev alone (1B: the lanes nobody started are menu rows) (the page rendered)',
+      Array.isArray(dom) && JSON.stringify(dom.map(d => d.label)) === JSON.stringify(['develop']),
       JSON.stringify(dom));
-    check('the painted strip marks dev selected and the rest dim',
-      Array.isArray(dom) && dom.length === 3 && dom[0].selected && !dom[0].dim && dom[1].dim && dom[2].dim);
-    check('dev has no close button in the strip, the others do (criterion 6)',
-      Array.isArray(dom) && dom.length === 3 && dom[0].hasClose === false && dom[1].hasClose === true && dom[2].hasClose === true);
+    check('the painted strip marks dev selected',
+      Array.isArray(dom) && dom.length === 1 && dom[0].selected && !dom[0].dim);
+    check('dev has no close button in the strip (criterion 6)',
+      Array.isArray(dom) && dom.length === 1 && dom[0].hasClose === false);
 
     // The selected view: xterm mounted (renderer.js ran to the end: a duplicate
     // top-level name in the shared script scope would have aborted a file), and
@@ -384,13 +384,16 @@ async function main() {
     app = await launchApp(path.join(container, 'feat-b'));
     s = await driverUp(app);
     if (!s) { check('the window reopened from a sibling', false, app.out.split('\n').slice(-15).join('\n')); return; }
-    s = await waitFor(async () => { const x = await state(app); return labelsOf(x).length >= 4 ? x : null; }, 30000);
+    s = await waitFor(async () => { const x = await state(app); return labelsOf(x).length >= 3 ? x : null; }, 30000);
     remember(s);
-    check('reopened: the closed tab is back (the dismissed set dies with the window) (criterion 5)',
-      !!s && !!tabOf(s, 'feat/a') && labelsOf(s).length === 4, s && labelsOf(s).join(', '));
-    check('and it is not started (its host was ended)', !!s && !tabOf(s, 'feat/a').started);
+    check('reopened: the closed tab stays closed (#141 closed stays closed: it is kept per project) and is a closed Lanes row',
+      !!s && !tabOf(s, 'feat/a') && labelsOf(s).length === 3 && s.lanes.notStarted.some(r => r.label === 'feat/a' && r.closed === true), s && labelsOf(s).join(', '));
+    // Judged before the Reopen: since #139 a Reopen selects the lane it brings back (a Lanes row is a click), so feat/a is selected after it.
     check('launched from feat-b\'s folder: THAT tab is selected', !!s && (tabOf(s, 'feat/b') || {}).selected === true,
       s && s.tabs.filter(t => t.selected).map(t => t.label).join(','));
+    const back = await command(app, { cmd: 'reopen' });
+    s = await waitFor(async () => { const x = await state(app); return tabOf(x, 'feat/a') ? x : null; }, 15000);
+    check('Reopen brings it back, and selects it (a Lanes row is a click)', back.ok === true && !!s && (tabOf(s, 'feat/a') || {}).selected === true);
     const bUp = await waitFor(async () => { const x = await state(app); return tabOf(x, 'feat/b') && tabOf(x, 'feat/b').started ? x : null; }, 40000);
     remember(bUp);
     check('and the selected tab started', !!bUp);
@@ -451,7 +454,7 @@ async function main() {
         remember(s);
         check('reopened: the stepped tab is still ATTACHED to its own host, pid unchanged, nothing spawned',
           !!s && hostOf(s, second) && hostOf(s, second).pid === h2.pid && hostsUnder(coll).length === count,
-          s && `${second}: ${hostOf(s, second) && hostOf(s, second).pid}/${h2.pid}, hosts ${hostsUnder(coll).length}/${count}`);
+          s ? `${second}: ${hostOf(s, second) && hostOf(s, second).pid}/${h2.pid}, hosts ${hostsUnder(coll).length}/${count}` : JSON.stringify(await state(app)).slice(0, 1500));
         await quit(app);
       }
     }

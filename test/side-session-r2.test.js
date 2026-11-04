@@ -93,3 +93,16 @@ test('main.js: a listing that throws is unknown (null) for the side-host lookup,
   assert.match(body, /catch \{ return null; \}/);
   assert.match(MAIN, /readerSessions: \(\) => readerSessionIds\(ownIdentities\(\) \|\| \[\]\)/);
 });
+
+test('laneHostsOf: the branch hosts only (not a side or shell session), and null when the identity files cannot be told', () => {
+  const ids = [
+    { port: 7701, parsed: { cwd: 'C:' + String.fromCharCode(92) + 'w' + String.fromCharCode(92) + 'a' } },
+    { port: 7702, parsed: { cwd: 'C:x', side: true } },
+    { port: 7703, parsed: { cwd: 'C:y', kind: 'shell' } },
+    { port: 0, parsed: { cwd: 'C:z' } },
+    { port: 7704, parsed: null },
+  ];
+  assert.deepStrictEqual(side.laneHostsOf(ids), [{ port: 7701, cwd: 'C:' + String.fromCharCode(92) + 'w' + String.fromCharCode(92) + 'a' }]);
+  assert.strictEqual(side.laneHostsOf([{ port: 7701, parsed: null, unreadable: true }]), null);
+  assert.strictEqual(side.laneHostsOf(null), null);
+});
