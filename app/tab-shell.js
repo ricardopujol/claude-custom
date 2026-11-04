@@ -288,6 +288,7 @@ function createShell(deps) {
   let polling = false;
   let lastError = null;
   let closeNotice = null;        // a hand close whose stop failed; cleared by the next selection
+  let closeStuck = null;         // #129: { key, text } the tab a hand close kept because its host wouldn't end; the strip offers Stop on it
   let destroyed = false;
   // PR 3. `create` is the strip's branch form: null, or { phase: 'input' } /
   // { phase: 'running', branch } / { phase: 'failed', branch, error }.
@@ -518,7 +519,7 @@ function createShell(deps) {
     // the selected one) and `lanes` the rows of the Lanes menu for the rest. The strip draws `strip`, never `model`.
     const placed = tabLanes.placeLanes(m, closedRows());
     return {
-      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode,
+      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, closeStuck: closeStuck !== null && tabs.has(closeStuck.key) ? { ...closeStuck } : null, mode,
       create: create ? { ...create } : null,
     };
   }
@@ -1055,11 +1056,13 @@ function createShell(deps) {
     let reason = '';
     let silent = false;
     let gitFacts = null;
-    if (ifSafe === true) {
+    if (closeStuck !== null && closeStuck.key === key) {
+      yes = true;     // #129: the Stop offer on a kept tab. It was asked once; the question isn't asked again.
+    } else if (ifSafe === true) {
       gitFacts = await gitFactsOf(tab);
       reason = closeReason(closeFactsOf(tab, gitFacts));
     }
-    if (ifSafe === true && reason === '') { yes = true; silent = true; } else {
+    if (yes) { /* already answered */ } else if (ifSafe === true && reason === '') { yes = true; silent = true; } else {
       try { yes = (await ui.confirmClose(tab, ifSafe === true ? { reason } : undefined)) === true; } catch { yes = false; }
     }
     if (!yes) return { ok: false, cancelled: true };
@@ -1079,6 +1082,7 @@ function createShell(deps) {
     const label = (model().find(e => e.key === key) || {}).label || tab.branch || tab.cwd;
     let target = null;
     let failure = null;
+    const retryPorts = [];     // #129: the hosts a failed stop is retried on, by pid
     if (tab.started && tab.port && tab.token) target = { port: tab.port, token: tab.token };
     else if (tab.pending) target = { port: tab.pending.port, token: tab.pending.token };
     else {
@@ -1090,9 +1094,10 @@ function createShell(deps) {
       if (found && found.action === 'attach') {
         const token = hosts.tokenFile(found.port) || hosts.tokenFor(found.port);
         if (token) target = { port: found.port, token };
-        else failure = `a host is on port ${found.port} but its token can't be read`;
+        else { failure = `a host is on port ${found.port} but its token can't be read`; retryPorts.push(found.port); }
       } else if (tab.unconfirmed) {
         failure = `its host on port ${tab.unconfirmed.port} never answered`;
+        retryPorts.push(tab.unconfirmed.port);
       }
     }
     // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
@@ -1109,15 +1114,10 @@ function createShell(deps) {
         if (!tabs.has(key)) return { ok: true };
       }
     }
-    const before = model();
-    const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
-    state = next;
-    // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first.
-    closedByHand = [{ key, path: tab.cwd, branch: tab.branch }, ...closedByHand.filter(c => c.key !== key)];
-    persistLayout();     // closed stays closed after a restart
-    // The stop is sent here, where its outcome can be seen, not fire-and-forget.
-    apply(actions.filter(a => a.type !== 'stop'), before);
+    // #129: the stop is sent FIRST, where its outcome can be seen, and the tab is dropped only once its host is known to be ended.
+    // A refused or unanswered stop is retried once by pid; if that fails too the tab stays, with a Stop offer in the strip.
     if (target) {
+      retryPorts.push(target.port);
       try {
         const r = await hosts.control({ ...target, msg: { type: 'stop' } });
         if (!r || r.ok !== true) failure = (r && r.error) || 'no answer';
@@ -1125,14 +1125,43 @@ function createShell(deps) {
         failure = (err && err.message) || String(err);
       }
     }
-    if (failure !== null) {
-      closeNotice = `Couldn't end the session in ${label}: ${failure}. It may still be running.`;
-      log(`[shell] ${key}: ${closeNotice}`);
-      publish();
-      return { ok: true, stopError: failure };
-    }
+    if (failure !== null && (await endByPid(retryPorts)) === null) failure = null;
+    if (!tabs.has(key)) return { ok: true };     // gone during the stop (its folder was removed)
+    if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure);
+    if (closeStuck !== null && closeStuck.key === key) closeStuck = null;
+    const before = model();
+    const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
+    state = next;
+    // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first.
+    closedByHand = [{ key, path: tab.cwd, branch: tab.branch }, ...closedByHand.filter(c => c.key !== key)];
+    persistLayout();     // closed stays closed after a restart
+    apply(actions.filter(a => a.type !== 'stop'), before);
     if (target) log(`[shell] stop ${key}: sent`);
     return { ok: true };
+  }
+
+  /**
+   * #129: the retry of a stop that failed, by pid: the host's identity file names the pid and its start time, and the kill proves
+   * both on a held handle (hosts.stopByPid -> host/kill-tree.js killProvenAsync). null: every host is ended ('killed' or 'gone').
+   * Otherwise why not. Never rejects. A shell with no such seam, or no port to retry on, can't prove anything: it is a failure.
+   */
+  async function endByPid(ports) {
+    if (typeof hosts.stopByPid !== 'function' || ports.length === 0) return 'no way to end it by pid';
+    for (const port of [...new Set(ports)]) {
+      let outcome;
+      try { outcome = await hosts.stopByPid(port); } catch (err) { outcome = (err && err.message) || String(err); }
+      if (outcome !== 'killed' && outcome !== 'gone') return `its host on port ${port} was not ended (${outcome})`;
+    }
+    return null;
+  }
+
+  /** #129: a close whose host would not end keeps its tab, says so in the strip, and offers Stop (a second close, without the question). */
+  function keepStuck(key, notice, failure) {
+    closeNotice = notice;
+    closeStuck = { key, text: notice };
+    log(`[shell] ${key}: ${notice}`);
+    publish();
+    return { ok: false, kept: true, stopError: failure };
   }
 
   // --- `+`: a new worktree (Contract A, then E), and reopening a closed tab ---
@@ -1795,19 +1824,26 @@ function createShell(deps) {
       if (!yes) return { ok: false, cancelled: true };
       if (tabs.get(key) !== t) return { ok: true };     // gone while the dialog was up
     }
-    const failure = await stopCompanion(t);
+    let failure = await stopCompanion(t);
     if (tabs.get(key) !== t) return { ok: true };     // gone meanwhile (its branch tab closed, or its folder was removed), or the key is a newer tab's now (Dexter F4)
+    // #129: a stop that failed is retried once by pid, on every host the record may hold; if that fails too the tab stays (Stop offered).
+    if (failure !== null) {
+      const ports = [t.closeStopPort, ...hostsToStop(t).map(x => x.port)].filter(p => Number.isInteger(p));
+      if ((await endByPid(ports)) === null) failure = null;
+      if (tabs.get(key) !== t) return { ok: true };
+    }
+    if (failure !== null) {
+      t.closed = false;       // not closed after all: a start that gave up for it may begin again, and a second stop is sent afresh
+      t.closeStop = null;
+      t.closeStopPort = null;
+      return keepStuck(key, `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`, failure);
+    }
+    if (closeStuck !== null && closeStuck.key === key) closeStuck = null;
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
     const parentKey = companionParentOf(key);
     if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
     else publish();
-    if (failure !== null) {
-      closeNotice = `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`;
-      log(`[shell] ${key}: ${closeNotice}`);
-      publish();
-      return { ok: true, stopError: failure };
-    }
     log(`[shell] closed ${key}`);
     return { ok: true };
   }

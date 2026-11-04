@@ -42,6 +42,7 @@ const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources, safety } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
+    pidStops: [], pidReply: null,
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
     confirm: true, confirms: [], resolveCalls: [], tokens: 0, failWait: false, spawnRegisters: true, gitInFlight: 0, gitMax: 0,
     // port -> the token file the host that BOUND that port wrote (host.js writes
@@ -134,6 +135,8 @@ function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, 
       tokenFile: fileToken,
       newToken: () => `fresh-${++h.tokens}`,
       control: async (c) => { h.controls.push(c); return h.controlReply ? h.controlReply(c) : { ok: true, reply: null }; },
+      // #129: the retry by pid. 'killed' | 'gone' end it; anything else (or a throw) means the host is still there.
+      stopByPid: async (port) => { h.pidStops.push(port); return h.pidReply ? h.pidReply(port) : 'killed'; },
       identity: () => null,
       readToken: () => null,
     },
@@ -648,28 +651,95 @@ test('F3: closing a tab that is still attaching stops the session it ends up pre
     [{ port: 7702, token: 'tok-7702', msg: { type: 'stop' } }], 'the attached session was stopped');
 });
 
-test('F3: a stop that is refused still closes the tab, and the strip notice names the branch and the error', async () => {
+test('F3: a stop that is refused and cannot be ended by pid keeps the tab, and the strip notice names the branch and the error (#129)', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
   h.controlReply = () => ({ ok: false, error: 'handshake refused (HTTP 403)' });
+  h.pidReply = () => 'failed';
   const r = await h.shell.closeTab(key('feat-a'));
-  assert.strictEqual(r.ok, true);
-  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'the tab is closed either way');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.kept, true);
+  assert.strictEqual(r.stopError, 'handshake refused (HTTP 403)');
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'the tab is NOT dropped: its host may still be running');
+  assert.deepStrictEqual(h.pidStops, [7701], 'the stop was retried once, by pid');
   const notice = h.shell.snapshot().closeNotice;
   assert.strictEqual(notice, "Couldn't end the session in feat/a: handshake refused (HTTP 403). It may still be running.");
-  // ...and it is cleared by the next selection rather than sitting there forever.
+  // The notice is cleared by the next selection; the Stop offer on the kept tab is not.
   await h.shell.select(key('dev'));
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
 });
 
-test('F3: a stop that throws is reported the same way', async () => {
+test('F3: a stop that throws is reported the same way, and keeps the tab', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
   h.controlReply = () => { throw new Error('socket gone'); };
+  h.pidReply = () => { throw new Error('powershell gone'); };
   await h.shell.closeTab(key('feat-a'));
   assert.match(h.shell.snapshot().closeNotice, /feat\/a: socket gone\. It may still be running\./);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+});
+
+test('#129: a refused stop that the pid retry ends closes the tab with no notice', async () => {
+  for (const outcome of ['killed', 'gone']) {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    h.controlReply = () => ({ ok: false, error: 'no answer' });
+    h.pidReply = () => outcome;
+    const r = await h.shell.closeTab(key('feat-a'));
+    assert.strictEqual(r.ok, true, outcome);
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, outcome);
+    assert.deepStrictEqual(h.pidStops, [7701], outcome);
+    assert.strictEqual(h.shell.snapshot().closeNotice, null, outcome);
+    assert.strictEqual(h.shell.snapshot().closeStuck, null, outcome);
+  }
+});
+
+test('#129: a kept tab is not offered back by Reopen, and Stop on it ends it without asking again', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, [], 'it never closed, so there is nothing to reopen');
+  assert.strictEqual(h.confirms.length, 1);
+  // Stop: the host answers this time.
+  h.controlReply = null;
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.confirms.length, 1, 'the question was answered the first time');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+});
+
+test('#129: Stop that fails again leaves the tab kept, with the offer still up', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  const again = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(again.ok, false);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  assert.deepStrictEqual(h.pidStops, [7701, 7701]);
+});
+
+test('#129: a kept tab is not written as closed in the layout file', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  h.pidReply = () => 'failed';
+  const before = h.shell.snapshot().lanes;
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.shell.snapshot().lanes, before, 'the lane is where it was');
+  assert.ok(h.shell.snapshot().strip.some(e => e.key === key('feat-a')), 'still on the strip');
 });
 
 test('F3: a clean stop leaves no notice', async () => {
@@ -710,9 +780,10 @@ test('R2-3: closing a tab whose spawned host never answered twice says it may st
   h.failWait = true;
   await h.shell.select(key('feat-a'));
   await h.shell.select(key('feat-a'));               // second wait fails: no pending host any more
+  h.pidReply = () => 'unknown';                      // and the pid retry cannot prove it either (#129: the tab is kept)
   const r = await h.shell.closeTab(key('feat-a'));
-  assert.strictEqual(r.ok, true);
-  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(r.ok, false);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
   assert.match(h.shell.snapshot().closeNotice, /feat\/a/);
   assert.match(h.shell.snapshot().closeNotice, /may still be running/);
 });

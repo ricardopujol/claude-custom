@@ -131,6 +131,7 @@ const { suspendVerified } = require('../host/process-suspend');
 const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
+const { createStopByPid } = require('../host/stop-by-pid');
 const { runStopAll, countUnstoppable, describeUnstoppable } = require('../host/kill-switch');
 const { writeFileAtomic } = require('../host/atomic-write');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -338,6 +339,9 @@ function stopAllInstalls() {
 function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
+
+// #129: end a tab's host by pid when its stop message failed (host/stop-by-pid.js).
+const stopHostByPid = createStopByPid({ identities: () => ownIdentities(), kill: (pid, start) => killProvenAsync(pid, start) });
 
 function spawnHost(tab, port, token) {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
@@ -1015,7 +1019,7 @@ function onShellChanged(snapshot) {
   applySelection(snapshot);
   // `model` is the strip's tabs only (1B: a lane with no running session is a row in `lanes`, the Lanes menu's rows).
   lastStripPayload = {
-    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
+    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, closeStuck: snapshot.closeStuck,
     mode: snapshot.mode, create: snapshot.create,
   };
   win.webContents.send('strip-model', lastStripPayload);
@@ -2372,6 +2376,9 @@ app.whenReady().then(async () => {
       newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
         || require('crypto').randomBytes(24).toString('hex'),
       control: (c) => sendControl(c),
+      // #129: the retry of a stop that failed, by pid: the identity file names the host's pid and its OS start time, and the kill
+      // proves both on a held handle (host/kill-tree.js). No file (or no start time) for the port: the host is gone, or can't be proved.
+      stopByPid: (port) => stopHostByPid(port),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
       // PR #227 Dexter 4: the branch hosts the identity files say are running, so a lane whose first look missed its host is looked for again only where one serves it

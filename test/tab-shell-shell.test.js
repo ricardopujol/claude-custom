@@ -41,7 +41,7 @@ function harness({ mode = 'tabs', running = {}, listShellHosts = true } = {}) {
   const h = {
     running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
     confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
-    order: [], holdShell: null, shellWalks: 0, shellHostReads: 0, controlOk: true, removeHold: null,
+    order: [], holdShell: null, shellWalks: 0, shellHostReads: 0, controlOk: true, removeHold: null, pidStops: [], pidOutcome: 'killed',
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -85,6 +85,7 @@ function harness({ mode = 'tabs', running = {}, listShellHosts = true } = {}) {
         h.shellHostReads++;
         return Object.entries(h.running).filter(([, o]) => o.shell === true).map(([p, o]) => ({ port: Number(p), cwd: o.cwd }));
       },
+      stopByPid: async (port) => { h.pidStops.push(port); if (h.pidOutcome === 'killed') delete h.running[port]; return h.pidOutcome; },
       identity: () => null,
       readToken: () => null,
     },
@@ -272,15 +273,38 @@ test('the tab menu offers the close on a shell tab and on a side tab', async () 
   assert.strictEqual((await h.shell.closeTab(sidekey('feat-a'))).ok, true);
 });
 
-test('a shell host that does not answer its stop: the tab still goes, and the strip says it may still be running', async () => {
+test('a shell host that does not answer its stop nor the pid retry: the tab is kept, and the strip says it may still be running (#129)', async () => {
+  const h = await opened();
+  await h.shell.openShell(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'failed';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.kept, true);
+  assert.strictEqual(r.stopError, 'no answer');
+  assert.deepStrictEqual(h.pidStops, [7702]);
+  assert.ok(h.shell.tabByKey(skey('feat-a')), 'the shell tab stays');
+  assert.ok(!h.viewsGone.includes(skey('feat-a')), 'its page is not destroyed');
+  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the shell in feat\/a · shell: no answer\. It may still be running\./);
+  assert.strictEqual(h.changes[h.changes.length - 1].closeStuck.key, skey('feat-a'));
+  // Stop: the host answers now.
+  h.controlOk = true;
+  const again = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(again.ok, true);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+});
+
+test('a shell host that does not answer its stop but dies to the pid retry: the tab goes with no notice (#129)', async () => {
   const h = await opened();
   await h.shell.openShell(key('feat-a'));
   h.controlOk = false;
   const r = await h.shell.closeTab(skey('feat-a'));
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(r.stopError, 'no answer');
-  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
-  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the shell in feat\/a · shell: no answer\. It may still be running\./);
+  assert.strictEqual(r.stopError, undefined);
+  assert.deepStrictEqual(h.pidStops, [7702]);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
 });
 
 test('an exited shell closes with no stop sent: its port may be another host\'s by now', async () => {

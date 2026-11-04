@@ -365,6 +365,37 @@ test('F3 (Dexter, PR #75): a failed stop is drawn IN the strip, as text, and cle
   assert.strictEqual(doc.byId['strip-alert'].textContent, '');
 });
 
+test('#129: a tab kept because its host would not end shows its notice with a Stop button that closes it again, and loses both when gone', () => {
+  const doc = fakeDoc();
+  doc.byId['strip-alert'] = node('div');
+  const model = [entry({ selected: true })];
+  const stuck = { key: 'k', text: "Couldn't end the session in feat/a: no answer. It may still be running." };
+  const bridge = bridgeSpy();
+  // The notice itself is cleared by a selection, the offer is not: closeStuck alone still draws.
+  paint(doc, { model, closeNotice: null, closeStuck: stuck }, bridge);
+  const alertEl = doc.byId['strip-alert'];
+  assert.strictEqual(alertEl.hidden, false);
+  assert.match(alertEl.textContent, /feat\/a.*no answer.*may still be running/);
+  const stop = alertEl.children.find(c => c.tag === 'button');
+  assert.ok(stop, 'a Stop button');
+  assert.strictEqual(stop.textContent, 'Stop');
+  stop.listeners.click({ stopPropagation() {} });
+  assert.deepStrictEqual(bridge.calls, [['close', 'k']]);
+  // A repaint does not stack a second button.
+  paint(doc, { model, closeNotice: null, closeStuck: stuck }, bridge);
+  assert.strictEqual(alertEl.children.filter(c => c.tag === 'button').length, 1);
+  paint(doc, { model, closeNotice: null, closeStuck: null }, bridge);
+  assert.strictEqual(alertEl.hidden, true);
+  assert.strictEqual(alertEl.children.length, 0);
+});
+
+test('#129: alertFor puts a kept tab ahead of the creation and the selected tab, and names the key to stop', () => {
+  const sel = entry({ selected: true, phaseText: 'x', badge: 'merged' });
+  assert.deepStrictEqual(alertFor({ model: [sel], closeStuck: { key: 'k', text: 'stuck' }, create: { phase: 'failed', error: 'bad' } }),
+    { text: 'stuck', kind: 'bad', stop: 'k' });
+  assert.deepStrictEqual(alertFor({ model: [sel], closeStuck: { key: '', text: 'stuck' } }), { text: 'x', kind: 'info' }, 'a malformed offer is ignored');
+});
+
 // --- PR 3: the + button, the branch form, phase badges and the alert line -----------
 
 function fullDoc() {

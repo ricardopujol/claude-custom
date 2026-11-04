@@ -118,6 +118,10 @@
     #stop-all:hover { background: var(--bad); color: #fff; }
     #stop-all:disabled { cursor: progress; opacity: 0.6; }
     #strip-alert.info { color: var(--dim); }
+    /* #129: the Stop offer on a tab kept because its host wouldn't end. Same red-outline look as STOP ALL; Ricardo's to judge live. */
+    #strip-alert .stop { margin-left: 8px; height: 18px; border: 1px solid var(--bad); border-radius: 4px; background: transparent;
+      color: var(--bad); cursor: pointer; font-size: 11px; font-weight: 600; padding: 0 8px; }
+    #strip-alert .stop:hover { background: var(--bad); color: #fff; }
     /* Layout pass L2 (#28): a frameless window. The strip is the title bar, so
        it drags the window (and a double-click maximises: Windows does that on a
        drag region); everything you click in it opts out. */

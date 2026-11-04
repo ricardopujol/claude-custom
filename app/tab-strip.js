@@ -73,6 +73,9 @@ function paneFor(payload) {
  */
 function alertFor(payload) {
   const p = objectOr(payload, {});
+  // #129: a tab kept because its host wouldn't end offers Stop; it outlives the notice (a selection clears that).
+  const stuck = objectOr(p.closeStuck, null);
+  if (stuck && nonEmpty(stuck.key) && nonEmpty(stuck.text)) return { text: stuck.text, kind: 'bad', stop: stuck.key };
   if (nonEmpty(p.closeNotice)) return { text: p.closeNotice, kind: 'bad' };
   const create = objectOr(p.create, null);
   if (create && create.phase === 'failed' && nonEmpty(create.error)) return { text: create.error, kind: 'bad' };
@@ -417,7 +420,14 @@ function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
   const alertEl = doc.getElementById('strip-alert');
   if (alertEl) {
     const a = alertFor(payload);
+    alertEl.replaceChildren();     // before the text: a real element's textContent would otherwise be wiped by it
     alertEl.textContent = a ? a.text : '';
+    if (a && a.stop) {
+      const stop = alertEl.appendChild(el(doc, 'button', 'stop', 'Stop'));
+      stop.type = 'button';
+      stop.title = 'Try again to end this session';
+      stop.addEventListener('click', (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); bridge.close(a.stop); });
+    }
     alertEl.title = a ? a.text : '';
     alertEl.className = a ? a.kind : '';
     alertEl.hidden = !a;
