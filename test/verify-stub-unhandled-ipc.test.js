@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
+const { tmpDir } = require('./tmp-dir');
 const path = require('path');
 const { channelsIn, stubUnhandledIpc } = require('../verify/lib/stub-unhandled-ipc');
 
@@ -34,7 +34,7 @@ test('channelsIn: invoke and sendSync channels, each once; send and on are not c
 });
 
 function withPreload(fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-stubipc-'));
+  const dir = tmpDir('cc-stubipc-');
   const file = path.join(dir, 'preload.js');
   fs.writeFileSync(file, PRELOAD);
   try { return fn(file); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
