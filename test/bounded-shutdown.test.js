@@ -158,5 +158,5 @@ test('watchdog: its default clock is monotonic, a wall-clock step of an hour doe
 test('host.js: the kill switch stopper gets the bounded stopPty, not the bare one', () => {
   const stopper = HOST_SRC.slice(HOST_SRC.indexOf('const killStop = createStopper({'), HOST_SRC.indexOf('const killSwitch = watchKillSwitch'));
   assert.match(stopper, /stopPty: boundedStopPty,/);
-  assert.match(HOST_SRC, /const boundedStopPty = \(t, opts\) => runShutdown\(\{[^\n]*steps: \[\(\) => stopPty\(t, opts\)\]/);
+  assert.match(HOST_SRC, /const boundedStopPty = \(t, opts\) => runShutdown\(\{[^\n]*steps: \[\(\) => stopPty\(t, opts\), \(\) => jobGuard\.kill\(\)\]/, 'the job is ended after the tree kill, under the same watchdog (#127)');
 });

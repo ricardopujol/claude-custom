@@ -43,7 +43,7 @@ test('the stopper kills the tracked pty through pty-stop and kill-tree\'s killCh
 });
 
 test('the stopper reads the kill outcome from kill-tree, and an unproven kill is retried on a timer', () => {
-  assert.match(HOST, /const \{ killTree, killPidTree, killChildTree, killOutcomeOf, trackExit \} = require\('\.\/kill-tree'\);/);
+  assert.match(HOST, /const \{ killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, childExited, trackExit \} = require\('\.\/kill-tree'\);/);
   const b = block('const killStop = createStopper({', '\n});');
   assert.match(b, /outcomeOf: killOutcomeOf,/);
   assert.match(HOST, /setInterval\(\(\) => \{ try \{ killStop\.retry\(\); \} catch \{[^}]*\} \}, 5000\)\.unref\(\);/);
@@ -76,6 +76,19 @@ test('startSession refuses to spawn claude while a sentinel exists or after this
   assert.match(refusal, /releaseSessionLock\(SESSION_LOCK, lockOwner\)/, 'a host that runs nothing holds no worktree');
   assert.match(refusal, /return;/);
   assert.strictEqual(HOST.split('pty.spawn(').length - 1, 1, 'one spawn path in host.js, so none can slip past the refusal');
+});
+
+test('#127: the session\'s pty is put in a job at spawn, so a trip ends processes whose parent already exited', () => {
+  assert.match(HOST, /const \{ createJobGuard \} = require\('\.\/job-guard'\);/);
+  assert.match(HOST, /const jobGuard = createJobGuard\(\{ log: \(line\) => console\.log\(line\) \}\);/);
+  assert.ok(HOST.indexOf('const jobGuard = createJobGuard(') < HOST.indexOf('const boundedStopPty ='), 'built before the stop that uses it');
+  const spawnAt = HOST.indexOf('trackExit(term);');
+  assert.ok(spawnAt !== -1);
+  const after = HOST.slice(spawnAt, HOST.indexOf('wireTerm(term);', spawnAt));
+  assert.match(after, /jobGuard\.attach\(\{ pid: term\.pid, startOf: \(\) => trackedStart\(term\), exited: \(\) => childExited\(term\) \}\)/, 'attached right after the spawn is tracked');
+  assert.match(after, /\.catch\(/, 'a rejected attach never breaks the session');
+  const stop = block('const boundedStopPty = ', '\n');
+  assert.match(stop, /\(\) => jobGuard\.kill\(\)/);
 });
 
 test('the night budget follows the night\'s payload and stops the session at its deadline', () => {

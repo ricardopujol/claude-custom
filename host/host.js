@@ -28,7 +28,8 @@ const { createProgramStatusHost, windowAttachedAmong } = require('./program-stat
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
 const { runShutdown } = require('./bounded-shutdown');
-const { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit } = require('./kill-tree');
+const { killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, childExited, trackExit } = require('./kill-tree');
+const { createJobGuard } = require('./job-guard');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
@@ -1489,7 +1490,10 @@ const KILL_SWITCH_PATHS = sentinelsFor({ claudeHome: stopAllHome({ seam: seams.c
 console.log('[host] kill switch   :', KILL_SWITCH_PATHS.join(' | ') || '(no sentinel path)');
 // The stopper's kill is the same blocking stopPty, so it runs under the same watchdog (PR #217 Dexter F4).
 const ownStartTime = () => (lockOwner && typeof lockOwner.processStartedAt === 'string' ? lockOwner.processStartedAt : null);
-const boundedStopPty = (t, opts) => runShutdown({ logFile: path.join(HARNESS_DIR, 'host.log'), start: ownStartTime(), steps: [() => stopPty(t, opts)] });
+// After the tree kill, the session's job is ended too: it holds what the tree kill cannot reach, processes whose parent already exited
+// (BACKLOG #127, host/job-guard.js). The same watchdog covers it.
+const jobGuard = createJobGuard({ log: (line) => console.log(line) });
+const boundedStopPty = (t, opts) => runShutdown({ logFile: path.join(HARNESS_DIR, 'host.log'), start: ownStartTime(), steps: [() => stopPty(t, opts), () => jobGuard.kill()] });
 const killStop = createStopper({
   term: () => term,
   stopPty: boundedStopPty,
@@ -1962,6 +1966,10 @@ function startSession() {
     term = spawnPty();
   }
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
+  // And every process it starts joins a job the kill switch can end, parent links or not (BACKLOG #127). Never throws; a session
+  // the guard could not arm is exactly the session it was before.
+  jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), exited: () => childExited(term) })
+    .catch((err) => console.log('[job-guard] attach failed:', err && err.message));
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.
   if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
