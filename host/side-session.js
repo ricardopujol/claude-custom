@@ -34,7 +34,7 @@ const SIDE_ALLOWED_TOOLS = Object.freeze(['Read', 'Grep', 'Glob', 'WebFetch', 'W
 const SIDE_DENIED_TOOLS = Object.freeze([
   'Edit', 'Write', 'NotebookEdit', 'MultiEdit', 'Bash', 'PowerShell', 'Monitor', 'EnterWorktree', 'ExitWorktree', 'Task', 'Agent', 'Workflow', 'Skill',
 ]);
-// Every tool name the CLI (2.1.296) declared or showed when this was reviewed. A name the installed CLI declares that is not in this list
+// Every tool name the CLI (2.1.318) declared or showed when this was reviewed. A name the installed CLI declares that is not in this list
 // fails test/side-session-r2.test.js: read what the tool does, then either add it to SIDE_ALLOWED_TOOLS or leave it off, and list it here.
 const SIDE_REVIEWED_TOOLS = Object.freeze([
   ...SIDE_ALLOWED_TOOLS, ...SIDE_DENIED_TOOLS,
@@ -42,6 +42,10 @@ const SIDE_REVIEWED_TOOLS = Object.freeze([
   'AskUserQuestion', 'SendFeedback', 'ClaudeDesign', 'Projects', 'EnterPlanMode', 'TaskCreate', 'TaskGet', 'TaskUpdate', 'TaskList',
   'CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup', 'RemoteTrigger', 'ShowOnboardingRolePicker', 'OfferChromeSetup',
   'ReadNotifications', 'DesignSync', 'ProposeSkills', 'ProposeGoal', 'Artifact', 'PushNotification', 'ListAgents', 'SendMessage', 'LS', 'NotebookRead',
+  // The names a running CLI (2.1.318) reports for the MCP resource tools (sdk-tools.d.ts calls them ListMcpResources, ReadMcpResource, ReadMcpResourceDir),
+  // and ToolSearch ("Fetches full schema definitions for deferred tools so they can be called": a schema lookup, it runs and writes nothing; left OFF
+  // the allow-list because the side session has no deferred tools to look up).
+  'ListMcpResourcesTool', 'ReadMcpResourceTool', 'ReadMcpResourceDirTool', 'ToolSearch',
 ]);
 
 const { samePath } = require('./project-layout');

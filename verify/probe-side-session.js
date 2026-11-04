@@ -346,8 +346,12 @@ async function main() {
       && !real.tools.some(t => ['Bash', 'PowerShell', 'Monitor', 'Edit', 'Write', 'NotebookEdit'].includes(t)) && real.mcp.length === 0 && real.mode === 'plan',
       JSON.stringify(real));
     const open = await initTools([]);
-    check('and every tool an UNRESTRICTED session of the installed CLI offers has been reviewed (a new one fails here until it is classified)',
-      !!open.tools && open.tools.every(t => sideSession.SIDE_REVIEWED_TOOLS.includes(t)), JSON.stringify(open.tools || open));
+    // mcp__<server>__<tool> names are whatever connectors the signed-in account has (they differ per machine and per day), not the CLI's
+    // built-ins. They are fenced by --strict-mcp-config, which the check above measures on the real CLI (mcp: [] in a side session).
+    const builtIn = (open.tools || []).filter(t => !t.startsWith('mcp__'));
+    check('and every built-in tool an UNRESTRICTED session of the installed CLI offers has been reviewed (a new one fails here until it is classified)',
+      !!open.tools && builtIn.length > 20 && builtIn.every(t => sideSession.SIDE_REVIEWED_TOOLS.includes(t)),
+      JSON.stringify(open.tools ? builtIn.filter(t => !sideSession.SIDE_REVIEWED_TOOLS.includes(t)) : open));
   }
 
   // The session lock lives in the worktree's git dir: the branch tab's host holds it, the side host does not.
