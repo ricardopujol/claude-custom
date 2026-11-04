@@ -317,3 +317,51 @@ test('property: a draft is only ever a run of paragraphs right after a lead-in p
       && (b[i - 1].type === 'heading' || (b[i - 1].type === 'paragraph' && CUE.test(plain(b[i - 1].inlines).split('\n').pop())))));
   }));
 });
+
+// --- PR #226 Miguel S4: the nesting guard and the tab expansion, each pinned by its own mutant ---------------------------------
+
+/** A tree of what parseMarkdown made of nested lists and quotes: list items' text with their children, quotes' children, other blocks' text. */
+function shapeOf(blocks) {
+  return blocks.map(b => (b.type === 'list' ? { list: b.items.map(it => ({ text: plain(it.inlines), kids: shapeOf(it.blocks) })) }
+    : b.type === 'quote' ? { quote: shapeOf(b.blocks) }
+      : { [b.type]: b.inlines ? plain(b.inlines) : '' }));
+}
+
+test('MAX_DEPTH: lists nest five deep (levels 0..4) and the sixth level is plain text, not a list', () => {
+  const src = Array.from({ length: 7 }, (_, i) => `${'  '.repeat(i)}- L${i}`).join('\n');
+  const l4 = { text: 'L4\n- L5\n  - L6', kids: [] };      // the deepest parsed item keeps the rest of its lines as literal text
+  const l3 = { text: 'L3', kids: [{ list: [l4] }] };
+  const l2 = { text: 'L2', kids: [{ list: [l3] }] };
+  const l1 = { text: 'L1', kids: [{ list: [l2] }] };
+  assert.deepStrictEqual(shapeOf(parseMarkdown(src)), [{ list: [{ text: 'L0', kids: [{ list: [l1] }] }] }]);
+});
+
+test('MAX_DEPTH: quotes nest five deep and the sixth is plain text, not a quote', () => {
+  assert.deepStrictEqual(shapeOf(parseMarkdown('> '.repeat(7) + 'deep')),
+    [{ quote: [{ quote: [{ quote: [{ quote: [{ quote: [{ paragraph: '> > deep' }] }] }] }] }] }]);
+});
+
+test('MAX_DEPTH: a deep nest costs bounded work and never throws, whatever its depth', () => {
+  for (const n of [10, 200, 2000]) {
+    assert.doesNotThrow(() => parseMarkdown(Array.from({ length: n }, (_, i) => `${'  '.repeat(Math.min(i, 40))}- x`).join('\n')));
+    assert.doesNotThrow(() => parseMarkdown('> '.repeat(n) + 'x'));
+  }
+});
+
+test('expandTabs: a tab indents a nested list item exactly as four spaces do, at every level', () => {
+  const nested = [{ list: [{ text: 'a', kids: [{ list: [{ text: 'b', kids: [{ list: [{ text: 'c', kids: [] }] }] }] }] }] }];
+  assert.deepStrictEqual(shapeOf(parseMarkdown('- a\n\t- b\n\t\t- c')), nested);
+  assert.deepStrictEqual(shapeOf(parseMarkdown('- a\n    - b\n        - c')), nested, 'the same as spaces');
+});
+
+test('expandTabs: a tab-indented first item, and a tab-indented continuation of an item, are read as the spaces they stand for', () => {
+  assert.deepStrictEqual(shapeOf(parseMarkdown('\t- a\n\t\t- b\n\t- c')),
+    [{ list: [{ text: 'a', kids: [{ list: [{ text: 'b', kids: [] }] }] }, { text: 'c', kids: [] }] }]);
+  const b = parseMarkdown('1. step\n\t```\n\tcode\n\t```\n2. next');
+  assert.strictEqual(b[0].items.length, 2, 'a tab-indented fence belongs to step 1; step 2 is still 2');
+  assert.deepStrictEqual(b[0].items[0].blocks.map(x => [x.type, x.text]), [['code', 'code']]);
+});
+
+test('expandTabs: only LEADING tabs are expanded; a tab inside the text is left alone', () => {
+  assert.strictEqual(plain(parseMarkdown('- a\tb')[0].items[0].inlines), 'a\tb');
+});
