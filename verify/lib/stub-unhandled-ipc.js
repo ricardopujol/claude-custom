@@ -24,13 +24,24 @@ function channelsIn(source) {
   return { invoke: namesOf(source, INVOKE), sync: namesOf(source, SYNC) };
 }
 
+/** How many invoke / sendSync calls the source makes at all, whatever the channel argument looks like. */
+const callsIn = (source) => (String(source).match(/ipcRenderer\.(?:invoke|sendSync)\(/g) || []).length;
+const literalCallsIn = (source) => [...String(source).matchAll(INVOKE)].length + [...String(source).matchAll(SYNC)].length;
+
 /**
  * @param {object} ipcMain   Electron's ipcMain (or anything with handle / on / listenerCount)
  * @param {string} preloadFile  absolute path of the preload the page uses
+ * @param {{ mustBeReal?: RegExp[] }} [opts]  channels the probe's OWN subject depends on (the avatar bridge): if one of them would have to
+ *   be stubbed, the stand-in forgot to register its real handler and a null answer would hide that, so this throws instead.
  * @returns {{ invoke: string[], sync: string[] }} the channels it stubbed (the ones nobody had answered)
  */
-function stubUnhandledIpc(ipcMain, preloadFile) {
-  const { invoke, sync } = channelsIn(fs.readFileSync(preloadFile, 'utf8'));
+function stubUnhandledIpc(ipcMain, preloadFile, { mustBeReal = [] } = {}) {
+  const source = fs.readFileSync(preloadFile, 'utf8');
+  // A call whose channel is a variable or a template is not read by the regexes: it would be left unanswered (a sendSync blocks the page ~30 s).
+  if (callsIn(source) !== literalCallsIn(source)) {
+    throw new Error(`stubUnhandledIpc: ${callsIn(source) - literalCallsIn(source)} invoke/sendSync call(s) in ${preloadFile} do not name their channel with a single-quoted literal; they cannot be stubbed`);
+  }
+  const { invoke, sync } = channelsIn(source);
   const stubbed = { invoke: [], sync: [] };
   for (const ch of invoke) {
     try { ipcMain.handle(ch, () => null); stubbed.invoke.push(ch); } catch { /* already answered by a real handler */ }
@@ -40,6 +51,8 @@ function stubUnhandledIpc(ipcMain, preloadFile) {
     ipcMain.on(ch, (e) => { e.returnValue = null; });
     stubbed.sync.push(ch);
   }
+  const hidden = [...stubbed.invoke, ...stubbed.sync].filter(ch => mustBeReal.some(re => re.test(ch)));
+  if (hidden.length > 0) throw new Error(`stubUnhandledIpc: the stand-in has no real handler for ${hidden.join(', ')}; a null answer would hide that`);
   return stubbed;
 }
 

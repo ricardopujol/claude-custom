@@ -73,13 +73,16 @@ app.whenReady().then(async () => {
   const win = new BrowserWindow(probeWindowOptions({ width: 1000, height: 700, show: true, webPreferences: {
     contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js'),
     backgroundThrottling: true } }));   // as the real tab view has it: with throttling off a hidden window still reports visible, and the hidden checks below could never pass
-  registerAvatarHandlers({ ipcMain, store: createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} }), win, dialog });
+  const store = createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} });
+  registerAvatarHandlers({ ipcMain, store, win, dialog });
   // The dock layout is the REAL bridge on the probe's own store: an answer of null is read as "the layout is unreadable" and the dock
   // draws only its rail, so the Agents panel would have no size (BACKLOG #75). A fresh store answers 'missing', as on a first run.
-  const layoutStore = createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} });
-  for (const names of [undefined, TREE_NAMES, PRESET_NAMES]) registerLayoutHandlers({ ipcMain, store: layoutStore, names, sync: {}, isSender: () => true, send: () => {} });
+  for (const names of [undefined, TREE_NAMES, PRESET_NAMES]) registerLayoutHandlers({ ipcMain, store, names, sync: {}, isSender: () => true, send: () => {} });
   // Every other channel the real preload can call is answered null; one left unanswered (resources:chipOn, a sendSync) blocks the page ~30 s (BACKLOG #75).
-  require(path.join(ROOT, 'verify', 'lib', 'stub-unhandled-ipc')).stubUnhandledIpc(ipcMain, path.join(ROOT, 'app', 'preload.js'));
+  // The avatar channels are this probe's subject: they must be the real handlers above, so one that is missing throws here (the probe fails)
+  // instead of being answered null. What WAS stubbed is printed, so a new channel that degrades the page shows up in the output.
+  const stubbed = require(path.join(ROOT, 'verify', 'lib', 'stub-unhandled-ipc')).stubUnhandledIpc(ipcMain, path.join(ROOT, 'app', 'preload.js'), { mustBeReal: [/^avatar:/] });
+  console.log('NOTE stubbed with null (' + (stubbed.invoke.length + stubbed.sync.length) + '): ' + [...stubbed.invoke, ...stubbed.sync].join(', '));
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: {
     probe: '1', port: ${JSON.stringify(port)}, cwd: ${JSON.stringify(tmp)}, project: 'probe', token: 'probe-token' } });
   win.webContents.on('console-message', (_e, level, message, line, src) => { if (level >= 2) console.log('[page]', message, src + ':' + line); });

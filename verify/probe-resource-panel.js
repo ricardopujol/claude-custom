@@ -220,7 +220,7 @@ async function main() {
   const poolDir = require(path.join(ROOT, 'host', 'shared-poller')).defaultDir({ uiStateDir: STATE_DIR });
   check('the shared sampler pool is private to this probe (not the real LOCALAPPDATA one)',
     !!(await waitFor(() => (fs.existsSync(poolDir) && fs.readdirSync(poolDir).length > 0 ? true : null), 20000)), poolDir);
-  const st0 =await command(app, { cmd: 'state' });
+  const st0 = await command(app, { cmd: 'state' });
   const tabKey = st0.selectedKey;
   const sessionKey = `s:${tabKey}`;
   const hostPid = (st0.hosts.find(h => h.key === tabKey) || {}).pid;
