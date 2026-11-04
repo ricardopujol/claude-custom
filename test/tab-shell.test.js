@@ -3483,6 +3483,17 @@ test('Dexter 7: a host still listening after its whole shutdown bound is ended b
   assert.deepStrictEqual(ok.slept, []);
 });
 
+test('Miguel R5: a window closed during the wait for a host to go quiet stops waiting, and kills nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('timed out after 3000ms');
+  h.probeOverride = (port) => { if (h.slept.length >= 2) h.shell.destroy(); return 'listening'; };
+  await h.shell.closeTab(key('feat-a'));
+  assert.ok(h.slept.length <= 3, `it stopped waiting (${h.slept.length} steps of 500 ms)`);
+  assert.deepStrictEqual(h.pidStops, [], 'a host still ending is not killed by a window that is gone');
+});
+
 test('Dexter 7: any other failure goes to the pid retry at once, with no wait', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();

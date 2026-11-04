@@ -1196,6 +1196,7 @@ function createShell(deps) {
   /** Does the port stop listening within the host's own shutdown bound? */
   async function goesQuiet(port) {
     for (let waited = 0; waited < SHUTDOWN_BOUND_MS; waited += WAIT_STEP_MS) {
+      if (destroyed) return false;     // the window is gone: no timers kept alive for it (PR #231 Miguel R5)
       let answer = 'unknown';
       try { answer = await hosts.probe(port); } catch { answer = 'unknown'; }
       if (answer === 'refused') return true;
@@ -1225,6 +1226,7 @@ function createShell(deps) {
       return null;
     }
     if (TIMED_OUT.test(failure) && await goesQuiet(h.port)) return null;     // it took the stop and went
+    if (destroyed) return failure;     // the wait was cut short: the host may be mid-shutdown, so no kill from a window that is gone
     let outcome;
     try { outcome = typeof hosts.stopByPid === 'function' ? await hosts.stopByPid(h.port, who) : 'unknown'; } catch (err) { outcome = 'unknown'; }
     if (outcome === 'killed' || outcome === 'gone' || outcome === 'mismatch') return null;     // a mismatch: the file is stale, the pid is another process now, so that host is dead (PR #231 Dexter 6)
