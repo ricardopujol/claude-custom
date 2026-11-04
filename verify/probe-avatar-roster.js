@@ -61,6 +61,7 @@ const path = require('path'); const fs = require('fs');
 const ROOT = ${JSON.stringify(ROOT)};
 const { probeWindowOptions } = require(path.join(ROOT, 'host', 'probe-window'));
 const { registerAvatarHandlers } = require(path.join(ROOT, 'app', 'avatar-bridge'));
+const { registerLayoutHandlers, TREE_NAMES, PRESET_NAMES } = require(path.join(ROOT, 'app', 'layout-bridge'));
 const { createStore } = require(path.join(ROOT, 'host', 'store'));
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion'); // an occluded probe window would report hidden and pause every video
 app.setPath('userData', ${JSON.stringify(path.join(tmp, 'userData'))});
@@ -70,10 +71,17 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 app.whenReady().then(async () => {
   const win = new BrowserWindow(probeWindowOptions({ width: 1000, height: 700, show: true, webPreferences: {
-    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js') } }));
+    contextIsolation: true, nodeIntegration: false, preload: path.join(ROOT, 'app', 'preload.js'),
+    backgroundThrottling: true } }));   // as the real tab view has it: with throttling off a hidden window still reports visible, and the hidden checks below could never pass
   registerAvatarHandlers({ ipcMain, store: createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} }), win, dialog });
+  // The dock layout is the REAL bridge on the probe's own store: an answer of null is read as "the layout is unreadable" and the dock
+  // draws only its rail, so the Agents panel would have no size (BACKLOG #75). A fresh store answers 'missing', as on a first run.
+  const layoutStore = createStore({ dir: ${JSON.stringify(path.join(tmp, 'state'))} });
+  for (const names of [undefined, TREE_NAMES, PRESET_NAMES]) registerLayoutHandlers({ ipcMain, store: layoutStore, names, sync: {}, isSender: () => true, send: () => {} });
+  // Every other channel the real preload can call is answered null; one left unanswered (resources:chipOn, a sendSync) blocks the page ~30 s (BACKLOG #75).
+  require(path.join(ROOT, 'verify', 'lib', 'stub-unhandled-ipc')).stubUnhandledIpc(ipcMain, path.join(ROOT, 'app', 'preload.js'));
   win.loadFile(path.join(ROOT, 'app', 'renderer.html'), { query: {
-    port: ${JSON.stringify(port)}, cwd: ${JSON.stringify(tmp)}, project: 'probe', token: 'probe-token' } });
+    probe: '1', port: ${JSON.stringify(port)}, cwd: ${JSON.stringify(tmp)}, project: 'probe', token: 'probe-token' } });
   win.webContents.on('console-message', (_e, level, message, line, src) => { if (level >= 2) console.log('[page]', message, src + ':' + line); });
   const js = (code) => win.webContents.executeJavaScript(code);
   const until = async (code, ms = 30000) => {
@@ -88,6 +96,17 @@ app.whenReady().then(async () => {
   try {
     check('the roster script loaded and the host answered',
       await until('typeof setRosterTab === "function" && ws && ws.readyState === 1'));
+    // A fresh install keeps every panel on the dock rail, and a panel opens on a click (a peek over the page; PR #225), so
+    // #agents has no size until a person opens it: the faces are never "on screen" to the IntersectionObserver and no video plays.
+    // Do what they do: click the rail tab, then Pin the peek so it stays docked beside the terminal (the dock probe hook, probe=1).
+    const dockDo = async (action, args) => JSON.parse(await js('window.__dockProbe(' + JSON.stringify({ action, args }) + ')'));
+    const clicked = await dockDo('railClick', { id: 'agents' });
+    await sleep(400);
+    const pinned = await dockDo('pinClick', { on: 'panel' });
+    check('the Agents panel is opened the way a person opens it (rail click, then Pin), and has a size',
+      clicked.ok === true && pinned.ok === true
+      && !!(await until('(() => { const r = document.getElementById("agents").getBoundingClientRect(); return r.width > 50 && r.height > 50; })()')),
+      { clicked, pinned });
     await js('setRosterTab("inactive")');
     check('the Inactive tab lists agents', await until('document.querySelectorAll("#agents .agent[data-agent]").length > 2', 60000));
     check('main answered the images toggle (on by default)', await until('agentImagesEnabled === true'));
@@ -176,8 +195,10 @@ app.whenReady().then(async () => {
   const port = String(await freePort());
   const portraitsDir = path.join(tmp, 'forge');
   fs.mkdirSync(portraitsDir, { recursive: true });
+  // Not the session's CLAUDE_CUSTOM_* (a probe run from a claude-custom tab inherits CLAUDE_CUSTOM_PROJECT_STATE, and the host then served
+  // Ricardo's real dev/.claude-custom/background.mp4 into the page: a <video> that was not the probe's own). Only what is set below.
   const env = {
-    ...process.env,
+    ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CLAUDE_CUSTOM_'))),
     CLAUDE_CUSTOM_BIN: process.platform === 'win32' ? 'C:\\Windows\\System32\\cmd.exe' : '/bin/sh',
     CLAUDE_CUSTOM_CWD: tmp, CLAUDE_CUSTOM_PORT: port, CLAUDE_CUSTOM_TOKEN: 'probe-token',
     CLAUDE_CUSTOM_PORTRAITS: portraitsDir,

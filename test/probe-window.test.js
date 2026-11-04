@@ -63,3 +63,9 @@ test('the real app window takes probe options only when the probe port is set', 
   assert.match(main, /const forProbe = \(opts\) => \(PROBE_PORT \? require\('\.\.\/host\/probe-window'\)\.probeWindowOptions\(opts\) : opts\);/);
   assert.match(main, /win = new BrowserWindow\(forProbe\(\{/);
 });
+
+test('probeWindowOptions: a probe that asks for backgroundThrottling: true keeps it (a hidden page then reports hidden)', () => {
+  const o = probeWindowOptions({ webPreferences: { backgroundThrottling: true } }, {});
+  assert.strictEqual(o.webPreferences.backgroundThrottling, true);
+  assert.strictEqual(o.x, OFFSCREEN, 'still off screen');
+});
