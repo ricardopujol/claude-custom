@@ -61,19 +61,40 @@ function parseLayout(body) {
   return { order: cleanOrder(raw.order), closed: cleanClosed(raw.closed) };
 }
 
+const stamp = (n) => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : 0);
+
+/**
+ * When each lane was last closed, and when each was last reopened, from a file's text (PR #227 Dexter r2 C). The newer action on a
+ * lane wins whichever window made it, so a close carries `at` and a reopen leaves a tombstone `{ key, at }` in `reopened`. They live
+ * beside parseLayout's clean `{ order, closed }`, never in it: a file written before this has none, and reads as stamp 0.
+ */
+function parseStamps(body) {
+  const closedAt = new Map();
+  const reopenedAt = new Map();
+  try {
+    const raw = JSON.parse(body);
+    for (const c of Array.isArray(raw.closed) ? raw.closed : []) if (c && text(c.key)) closedAt.set(c.key, Math.max(stamp(c.at), closedAt.get(c.key) || 0));
+    for (const r of Array.isArray(raw.reopened) ? raw.reopened : []) if (r && text(r.key)) reopenedAt.set(r.key, Math.max(stamp(r.at), reopenedAt.get(r.key) || 0));
+  } catch { /* parseLayout has already judged the text */ }
+  return { closedAt, reopenedAt };
+}
+
 function createStripLayout({
   file = null,
   readText = (f) => fs.readFileSync(f, 'utf8'),
   writeText = (f, body) => writeFileAtomic(f, body),
   mkdir = (dir) => fs.mkdirSync(dir, { recursive: true }),
+  now = () => Date.now(),
 } = {}) {
   let unknown = null;     // why the file can't be written over, once load has seen it
   let last = { order: [], closed: [] };   // what THIS window last loaded or saved: the base a save is merged against
+  let lastAt = new Map();                 // key -> when the lane in `last.closed` was closed (what this window holds it closed since)
 
   /** `{ order, closed, error }`: read from disk each time it's asked (the shell asks once, at its start). */
   function load() {
     unknown = null;
     last = { order: [], closed: [] };
+    lastAt = new Map();
     if (!file) return { order: [], closed: [], error: null };
     let body;
     try { body = readText(file); } catch (err) {
@@ -84,6 +105,7 @@ function createStripLayout({
     try {
       const l = parseLayout(body);
       last = { order: l.order, closed: l.closed };
+      lastAt = parseStamps(body).closedAt;
       return { ...l, error: null };
     } catch {
       unknown = `${file} isn't a tab strip file; left alone`;
@@ -102,14 +124,38 @@ function createStripLayout({
       // replacing it (PR #227 Dexter 2). A lane THIS window reopened (it was closed when it loaded or last saved) is removed;
       // a lane another window closed stays closed; the order is this window's only if this window changed it.
       let onDisk = { order: [], closed: [] };
-      try { onDisk = parseLayout(readText(file)); } catch (err) {
+      let diskStamps = { closedAt: new Map(), reopenedAt: new Map() };
+      try {
+        const body = readText(file);
+        onDisk = parseLayout(body);
+        diskStamps = parseStamps(body);
+      } catch (err) {
         if (!(err && err.code === 'ENOENT')) {
           // not sticky: a scan holding the file now may let go by the next save
           return { ok: false, error: `can't merge into ${file}: ${(err && err.message) || String(err)}` };
         }
       }
+      const t = now();
       const reopened = new Set(last.closed.filter(c => !mine.closed.some(m => m.key === c.key)).map(c => c.key));
-      const closed = cleanClosed([...mine.closed, ...onDisk.closed.filter(c => !reopened.has(c.key))]);
+      // The newer action on a lane wins (PR #227 Dexter r2 C). A lane this window closed since its last save is closed NOW. A lane it
+      // only still holds closed (it never heard of another window's reopen) keeps the time it was closed at, and gives way to a reopen
+      // recorded since. A lane this window reopened leaves a tombstone for the windows that still hold it.
+      const candidates = [];      // { c, at }, this window's first, then the disk's
+      for (const c of mine.closed) candidates.push({ c, at: lastAt.has(c.key) ? lastAt.get(c.key) : t });
+      for (const c of onDisk.closed) if (!reopened.has(c.key)) candidates.push({ c, at: diskStamps.closedAt.get(c.key) || 0 });
+      const tombs = new Map(diskStamps.reopenedAt);
+      for (const k of reopened) tombs.set(k, Math.max(t, tombs.get(k) || 0));
+      const best = new Map();     // key -> the newest close of it that no reopen is newer than
+      for (const cand of candidates) {
+        if ((tombs.get(cand.c.key) ?? -1) >= cand.at) continue;
+        const have = best.get(cand.c.key);
+        if (!have || cand.at > have.at) best.set(cand.c.key, cand);
+      }
+      const kept = cleanClosed(candidates.filter(cand => best.get(cand.c.key) === cand).map(cand => cand.c));
+      for (const c of kept) tombs.delete(c.key);      // a close newer than its tombstone supersedes it
+      const closed = kept;
+      const keptAt = new Map(kept.map(c => [c.key, best.get(c.key).at]));
+      const tombList = [...tombs].map(([key, at]) => ({ key, at })).sort((a, b) => b.at - a.at).slice(0, MAX_CLOSED);
       // A prune (the shell drops a lane git no longer lists) is not a drag: only keys added, or the keys both lists share in
       // a different order, count as this window changing the order (PR #227 Dexter r2 B).
       const lastKeys = new Set(last.order);
@@ -117,7 +163,10 @@ function createStripLayout({
       const orderChanged = mine.order.some(k => !lastKeys.has(k)) || JSON.stringify(shared) !== JSON.stringify(last.order.filter(k => mine.order.includes(k)));
       const merged = { order: orderChanged ? mine.order : onDisk.order, closed };
       mkdir(path.dirname(file));
-      writeText(file, JSON.stringify({ version: VERSION, ...merged }, null, 2) + '\n');
+      const stamped = { order: merged.order, closed: merged.closed.map(c => ({ ...c, at: keptAt.get(c.key) })), reopened: tombList };
+      writeText(file, JSON.stringify({ version: VERSION, ...stamped }, null, 2) + '\n');
+      // What this window holds closed is what it was given, at the time it is held since: a stale hold the file dropped is still held.
+      lastAt = new Map(mine.closed.map(c => [c.key, keptAt.has(c.key) ? keptAt.get(c.key) : (lastAt.has(c.key) ? lastAt.get(c.key) : t)]));
       last = mine;
     } catch (err) {
       return { ok: false, error: (err && err.message) || String(err) };

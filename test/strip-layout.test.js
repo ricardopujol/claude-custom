@@ -129,13 +129,15 @@ test('property: whatever is saved, what loads is clean (strings, no repeats) and
 /** Two windows of one project: two stores over ONE file. */
 function twoWindows() {
   const box = { text: undefined };
+  const clock = { t: 1000 };     // the clock both windows read: a test moves it between actions
   const make = () => createStripLayout({
     file: 'F',
     readText: () => { if (box.text === undefined) { const e = new Error('nope'); e.code = 'ENOENT'; throw e; } return box.text; },
     writeText: (f, t) => { box.text = t; },
     mkdir: () => {},
+    now: () => clock.t,
   });
-  return { box, a: make(), b: make() };
+  return { box, clock, a: make(), b: make() };
 }
 
 test('Dexter 2: two windows each save from their own memory; a lane one closed stays closed when the other saves', () => {
@@ -160,6 +162,100 @@ test('Dexter 2: a lane this window reopened is removed from the file; one anothe
   w.a.save({ order: [], closed: [entry('x'), entry('q')] });   // a closes q too
   w.b.save({ order: [], closed: [] });                      // b reopens x (and has never heard of q)
   assert.deepStrictEqual(parseLayout(w.box.text).closed.map(c => c.key), [entry('q').key]);
+});
+
+// --- PR #227 Dexter r2 C: the newer action on a lane wins, whichever window made it ---------------------------------
+
+/** Both windows have loaded a file that says x is closed. */
+function bothHoldingClosed(x = entry('x')) {
+  const w = twoWindows();
+  w.a.save({ order: [], closed: [x] });
+  w.clock.t = 2000;
+  w.a.load(); w.b.load();
+  return w;
+}
+
+test('Dexter r2 C: window A reopens a lane, then window B (still holding it closed) saves a drag: after a restart the lane is open', () => {
+  const x = entry('x');
+  const w = bothHoldingClosed(x);
+  w.clock.t = 3000;
+  w.a.save({ order: [], closed: [] });                                   // A reopens x
+  assert.deepStrictEqual(parseLayout(w.box.text).closed, []);
+  w.clock.t = 4000;
+  w.b.save({ order: [entry('y').key, entry('z').key], closed: [x] });     // B drags; it never heard of the reopen
+  const r = parseLayout(w.box.text);
+  assert.deepStrictEqual(r.closed, [], 'the reopen is the newer action on x, so it stands');
+  assert.deepStrictEqual(r.order, [entry('y').key, entry('z').key], 'and B\'s drag is kept');
+  // ...and a window starting now (a restart) sees it open.
+  assert.deepStrictEqual(w.a.load().closed, []);
+});
+
+test('Dexter r2 C: the same in the other order -- B saves first, then A reopens -- ends open too', () => {
+  const x = entry('x');
+  const w = bothHoldingClosed(x);
+  w.clock.t = 3000;
+  w.b.save({ order: [entry('y').key], closed: [x] });
+  w.clock.t = 4000;
+  w.a.save({ order: [], closed: [] });
+  assert.deepStrictEqual(parseLayout(w.box.text).closed, []);
+});
+
+test('Dexter r2 C: a close made AFTER the reopen is newer and wins; closing again later in the stale window does not undo a later reopen', () => {
+  const x = entry('x');
+  const w = bothHoldingClosed(x);
+  w.clock.t = 3000;
+  w.a.save({ order: [], closed: [] });                                   // A reopens x
+  w.clock.t = 4000;
+  w.a.save({ order: [], closed: [x] });                                   // A closes it again, newer than its own reopen
+  w.clock.t = 5000;
+  w.b.save({ order: [entry('y').key], closed: [x] });                     // B's stale hold is older than A's close
+  assert.deepStrictEqual(parseLayout(w.box.text).closed, [x]);
+  w.clock.t = 6000;
+  w.a.save({ order: [], closed: [] });                                   // A reopens for good
+  w.clock.t = 7000;
+  w.b.save({ order: [entry('y').key, entry('z').key], closed: [x] });
+  assert.deepStrictEqual(parseLayout(w.box.text).closed, [], 'the later reopen outlasts B\'s every later save');
+});
+
+test('Dexter r2 C: a lane that window B itself closes after A\'s reopen is closed (B\'s close is the newer action)', () => {
+  const x = entry('x');
+  const w = twoWindows();
+  w.b.load();
+  w.clock.t = 2000;
+  w.a.save({ order: [], closed: [x] });
+  w.a.load();
+  w.clock.t = 3000;
+  w.a.save({ order: [], closed: [] });                                   // A reopens
+  w.clock.t = 4000;
+  w.b.save({ order: [], closed: [x] });                                   // B never held x; it closes it now
+  assert.deepStrictEqual(parseLayout(w.box.text).closed, [x]);
+});
+
+test('Dexter r2 C: a file with no timestamps (written before this) loads and merges as before, and a reopen still beats its stale hold', () => {
+  const x = entry('x');
+  const w = twoWindows();
+  w.box.text = JSON.stringify({ version: 1, order: [], closed: [x] });
+  w.a.load(); w.b.load();
+  w.clock.t = 3000;
+  w.a.save({ order: [], closed: [] });
+  w.b.save({ order: [entry('y').key], closed: [x] });
+  assert.deepStrictEqual(parseLayout(w.box.text).closed, []);
+});
+
+test('Dexter r2 C: the stamps stay out of what load hands the shell, and the tombstones are bounded', () => {
+  const w = twoWindows();
+  w.a.save({ order: [], closed: [entry('x')] });
+  assert.deepStrictEqual(w.a.load().closed, [entry('x')], 'entries are { key, path, branch } and nothing else');
+  const batch = (tag) => Array.from({ length: 100 }, (_, i) => entry(`${tag}${i}`));
+  for (const tag of ['p', 'q', 'r']) {      // close 100 lanes, reopen them all: 100 tombstones a round
+    w.clock.t += 10;
+    w.a.save({ order: [], closed: batch(tag) });
+    w.clock.t += 10;
+    w.a.save({ order: [], closed: [] });
+  }
+  const reopened = JSON.parse(w.box.text).reopened;
+  assert.strictEqual(reopened.length, 100);
+  assert.ok(reopened.every(r => r.key.startsWith('c:\\p\\r')), 'the newest are the ones kept');
 });
 
 test('Dexter 2: a file that cannot be read at save time is an error answer, and the next save may still go through', () => {
