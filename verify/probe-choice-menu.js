@@ -52,6 +52,7 @@
 
    PROBE_MOUSE_COMMIT=1 re-runs the click step. It COMMITS a /model choice into
    the user's real settings, so it is opt-in; the default run is read-only. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');

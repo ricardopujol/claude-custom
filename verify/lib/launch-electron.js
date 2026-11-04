@@ -30,7 +30,6 @@ const { killPidTree } = require('../../host/kill-tree');
 const { startTimes: realStartTimes, createSelfStartTime } = require('../../host/proc-start');
 const ledger = require('../../host/pid-ledger');
 const { VISIBLE_VAR } = require('../../host/probe-window');
-const probeMark = require('../../host/probe-mark');
 const path = require('path');
 const { createProcessLock, HeavyLockError } = require('../../host/heavy-lock');
 
@@ -106,10 +105,10 @@ function takeLock(lock, exit = (c) => process.exit(c), say = console.error) {
   }
 }
 if (probeName()) takeLock(defaultHeavyLock);
-// BACKLOG #169: every process tree a probe starts carries this probe's mark, so verify/sweep-orphans.js can prove an orphaned host is a
-// probe's. Set in process.env itself, so the Electron, the hosts it starts and a host a probe spawns by hand (all built from it) inherit it;
-// the name has no CLAUDE_CUSTOM_ prefix, so no env stripping above removes it. Only in a probe: the unit tests start no marked host.
-if (probeName()) probeMark.markEnv(process.env);
+// BACKLOG #169: every process tree a probe starts carries this probe's mark (verify/lib/mark-probe.js, which a probe that spawns a host
+// by hand without this launcher requires too). Set in process.env itself, so the Electron, the hosts it starts and a host a probe spawns
+// by hand (all built from it) inherit it; the name has no CLAUDE_CUSTOM_ prefix, so no env stripping above removes it.
+require('./mark-probe');
 const live = new Set();            // handles not yet stopped, for the exit / signal sweep
 let sweepInstalled = false;
 

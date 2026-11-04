@@ -12,6 +12,7 @@
    gatekeeper, and checks the answers. It makes ONE network call, to a PUBLIC
    endpoint, and spends nothing. */
 
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');

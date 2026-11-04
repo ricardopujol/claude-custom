@@ -4,6 +4,7 @@
    Every check so far proved it fires for Bash, and the roster was driven by
    hand-fired Task hooks. Those are different code paths in Claude Code, and
    the roster staying empty in real sessions says so. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');
