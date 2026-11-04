@@ -123,6 +123,7 @@ function observeWorktrees(porcelain, container, readMarker) {
 const NO_PORT_ERROR = 'no usable port for this folder';
 
 // #81: what a side tab says once its claude has ended.
+const ENDING_TEXT = 'Ending its session…';     // #129: a tab whose host is being ended
 const SIDE_ENDED_TEXT = "This side session has ended. Reopen it from this tab's menu.";
 // #119 A5: ... and a shell tab once its shell has exited.
 const SHELL_ENDED_TEXT = "This shell has exited. Restart it from this tab's menu.";
@@ -293,6 +294,9 @@ function createShell(deps) {
   // is the offer for THAT tab record only (PR #231 Dexter 3 / Miguel Y1): a tab that left or ended, or a new tab under the same key,
   // is not it, so a later x is a plain close and asks.
   const closeStuck = new Map();
+  // #129 (PR #231 Dexter 4 / Miguel G3): the tabs whose host is being ended right now (the stop, the wait for it, the retry by pid: up to
+  // a minute). Such a tab is in a closing state: not selectable, nothing is started or attached for it, the strip greys it and says so.
+  const ending = new Set();
   const stuckValid = (key, e) => !!e && tabs.get(key) === e.tab && e.tab.ended !== true && e.tab.closed !== true
     && (state.tabs.find(t => keyOf(t.path) === key) || {}).phase !== 'removing';
   const stuckFor = (key) => {
@@ -488,8 +492,11 @@ function createShell(deps) {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
         // Its session's host stopped answering after it ran (the strip keeps such a lane only while it is selected).
         ended: !!t && t.ended === true,
+        // #129: its host is being ended (the strip greys it and says so; it can't be selected meanwhile).
+        ending: ending.has(e.key),
         badge: tabModel.badgeFor(e),
-        phaseText: t && t.ended === true && e.side === true ? SIDE_ENDED_TEXT
+        phaseText: ending.has(e.key) ? ENDING_TEXT
+          : t && t.ended === true && e.side === true ? SIDE_ENDED_TEXT
           : t && t.ended === true && e.shell === true ? SHELL_ENDED_TEXT : tabModel.phaseText(e),
         mark: readMark(branchOf(e.key)),
         // #119 A6: the GitHub issue this lane was started from ({ number, title, url } or null).
@@ -704,7 +711,7 @@ function createShell(deps) {
     const serving = known === null ? null : new Set(known.map(h => keyOf(h.cwd)));
     for (const t of tabs.values()) {
       if (serving !== null && !serving.has(t.key)) continue;
-      if (t.started || t.starting || t.closed || t.ended || t.attachBusy || t.side || t.shell) continue;
+      if (t.started || t.starting || t.closed || t.ended || t.attachBusy || t.side || t.shell || ending.has(t.key)) continue;
       if ((t.attachLooks || 0) >= ATTACH_LOOKS) continue;
       attachIfRunning(t);
     }
@@ -713,6 +720,7 @@ function createShell(deps) {
   // First selection: choose the port NOW, spawn if nobody serves this folder,
   // wait for it, then draw. One chain, so two tabs can't take one port.
   function start(tab) {
+    if (ending.has(tab.key)) return Promise.resolve();     // its host is being ended: a start now would be dropped with it, unstopped
     if (tab.started) return Promise.resolve();
     if (tab.starting) return tab.startPromise;
     // Started when its setup ends (createWorktree), not before.
@@ -814,7 +822,7 @@ function createShell(deps) {
   /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
   function select(key, restart = false) {
     const next = tabModel.select(model(), key);
-    if (next === null) return Promise.resolve();
+    if (next === null || ending.has(next)) return Promise.resolve();
     closeNotice = null;
     selectedKey = next;
     const tab = tabByKey(next);
@@ -1138,10 +1146,14 @@ function createShell(deps) {
     // A refused or unanswered stop is retried once by pid; if that fails too the tab stays, with a Stop offer in the strip.
     let failure = null;
     const who = whoOf(tab);
-    for (const h of targets) {
-      const f = await endHost(h, who);
-      if (failure === null) failure = f;
-    }
+    ending.add(key);
+    publish();
+    try {
+      for (const h of targets) {
+        const f = await endHost(h, who);
+        if (failure === null) failure = f;
+      }
+    } finally { ending.delete(key); }
     if (!tabs.has(key)) return { ok: true };     // gone during the stop (its folder was removed)
     if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure);
     clearStuck(key);     // the line about it goes with it
@@ -1901,16 +1913,21 @@ function createShell(deps) {
       if (!yes) return { ok: false, cancelled: true };
       if (tabs.get(key) !== t) return { ok: true };     // gone while the dialog was up
     }
-    const failed = await stopCompanionHosts(t);
-    if (tabs.get(key) !== t) return { ok: true };     // gone meanwhile (its branch tab closed, or its folder was removed), or the key is a newer tab's now (Dexter F4)
+    ending.add(key);
+    publish();
+    let failed;
+    try { failed = await stopCompanionHosts(t); } catch (err) { ending.delete(key); throw err; }
+    if (tabs.get(key) !== t) { ending.delete(key); return { ok: true }; }     // gone meanwhile (its branch tab closed, or its folder was removed), or the key is a newer tab's now (Dexter F4)
     // #129: a stop that failed is looked at for every host that didn't take it (a refused token is a stranger's host, a timeout is given
     // the host's own shutdown bound, then the pid, proved to be THIS tab's); if one still may be running the tab stays (Stop offered).
     let failure = null;
     const who = whoOf(t);
-    for (const h of failed) {
-      const f = await afterFailedStop(h, h.failure, who);
-      if (failure === null && f !== null) failure = f;
-    }
+    try {
+      for (const h of failed) {
+        const f = await afterFailedStop(h, h.failure, who);
+        if (failure === null && f !== null) failure = f;
+      }
+    } finally { ending.delete(key); }
     if (tabs.get(key) !== t) return { ok: true };
     if (failure !== null) {
       t.closed = false;       // not closed after all: a start that gave up for it may begin again, and a second stop is sent afresh

@@ -72,6 +72,14 @@ test('paint: one .tab per entry, in order, selected and dim classes from the mod
   assert.deepStrictEqual(tabs.map(t => child(t, 'label').textContent), ['develop', 'feat/b']);
 });
 
+test('#129 (PR #231 Dexter 4): a tab whose host is being ended is greyed like one that is not started, and says why on hover', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ key: 'a', label: 'feat/a', ending: true, phaseText: 'Ending its session…' }), entry({ key: 'b', label: 'feat/b', ending: false })] }, bridgeSpy());
+  const tabs = doc.byId.tabs.children;
+  assert.match(tabs[0].className, /\bdim\b/);
+  assert.doesNotMatch(tabs[1].className, /\bdim\b/);
+});
+
 test('paint: dots, glyph and health appear only when the model says so', () => {
   const doc = fakeDoc();
   paint(doc, { model: [

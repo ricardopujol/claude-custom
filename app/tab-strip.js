@@ -135,7 +135,7 @@ function issueLine(i) {
 function paintTab(doc, entry, bridge, all) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
-  if (!entry.started) cls.push('dim');
+  if (!entry.started || entry.ending === true) cls.push('dim');
   if (entry.isDev) cls.push('dev');
   // #31: the model decides who pulses (never the selected tab); this only names the look.
   if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);

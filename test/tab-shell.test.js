@@ -3527,3 +3527,53 @@ test('Dexter 3: a second kept tab does not take the first one\'s offer away', as
   assert.strictEqual((await h.shell.closeTab(key('feat-a'), { stop: true })).ok, true);
   assert.strictEqual(h.confirms.length, 2, 'each asked once');
 });
+
+// --- PR #231 Dexter 4 / Miguel G3: while a host is being ended its tab is in a closing state ---------------------------------
+
+test('Dexter 4: during the stop and the retry the tab is greyed and says so, can\'t be selected, and nothing is started or attached for it', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  h.tokenFiles[7701] = null;                              // not started: the attach couldn't read its token
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, false);
+  let release;
+  h.pidReply = () => new Promise((resolve) => { release = () => resolve('killed'); });
+  const closing = h.shell.closeTab(key('feat-a'));
+  await settle();
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.strictEqual(e.ending, true, 'the model says its host is being ended');
+  assert.match(e.phaseText, /Ending its session/);
+  const selectedBefore = h.shell.snapshot().selectedKey;
+  const spawnsBefore = h.spawns.length;
+  const walksBefore = h.resolveCalls.filter(k => k === key('feat-a')).length;
+  await h.shell.select(key('feat-a'));                    // a click on the tab being closed
+  await h.shell.poll();                                    // and the poll's look for a host of a lane that has none
+  assert.strictEqual(h.shell.snapshot().selectedKey, selectedBefore, 'not selectable');
+  assert.strictEqual(h.spawns.length, spawnsBefore, 'no host spawned for a tab being closed');
+  assert.strictEqual(h.resolveCalls.filter(k => k === key('feat-a')).length, walksBefore, 'no walk for a port on its behalf');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).starting, false, 'nothing started');
+  release();
+  const r = await closing;
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.spawns.length, spawnsBefore, 'and no host was left running with no tab');
+  assert.strictEqual(h.shell.model().some(x => x.ending), false, 'the state ends with the close');
+});
+
+test('Dexter 4: the closing state also ends when the tab is kept, and when the close throws or is cancelled', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === key('feat-a')).ending, false, 'kept: selectable again');
+  h.pidReply = () => { throw new Error('boom'); };
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === key('feat-a')).ending, false);
+  h.confirm = false;
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === key('feat-a')).ending, false);
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), 'and it can be selected');
+});
