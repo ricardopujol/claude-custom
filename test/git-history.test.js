@@ -236,6 +236,32 @@ test('Dexter F2: a merged name whose ref moved on again is listed as a lane, wit
   assert.deepStrictEqual(h.lanes.map(u => [u.name, u.ahead, u.first]), [['feat/a', 1, 'feat(a): round two']]);
 });
 
+// ---------- newWork: real commits past a lane's own merged head (PR #230 Dexter 2 and 4) ----------
+const withLane = (tip, rows) => ({ ...base,
+  [`for-each-ref ${REF_FORMAT} refs/heads refs/remotes`]: `refs/heads/develop\x1f2026-10-01\x1fd2\nrefs/heads/feat/a\x1f2026-10-02\x1f${tip}\n`,
+  [`log --all ${GRAPH_FORMAT}`]: rowsToGraph([...rows, ['d2', 'm1', 5, 'd two'],
+    ['m1', 'a x1', 3, 'Merge pull request #3 from o/feat/a'], ['x1', 'a', 2, 'x one'], ['a', '', 1, 'root']]) });
+const newWorkOf = async t => (await readHistory('C:/p/dev', { run: fakeRun(t) })).lanes.find(u => u.name === 'feat/a').newWork;
+
+test('PR #230 Dexter 2: a reused name cut from develop does not descend from the old merge\'s second parent: newWork null', async () => {
+  assert.strictEqual(await newWorkOf(withLane('a2', [['a2', 'd2', 8, 'feat(a): fresh']])), null);
+});
+
+test('PR #230 Dexter 4: the old head plus a merge of develop is no new work (0); a fast-forward to it (0 ahead) is not new work either', async () => {
+  assert.strictEqual(await newWorkOf(withLane('l1', [['l1', 'x1 d2', 8, "Merge branch 'develop' into feat/a"]])), 0);
+  assert.ok(!((await newWorkOf(withLane('x1', []))) > 0));
+});
+
+test('PR #230 Dexter 4: the old head plus one real commit is 1 new commit; the develop merge on top still adds none', async () => {
+  assert.strictEqual(await newWorkOf(withLane('l2', [['l2', 'x1', 8, 'fix(a): again']])), 1);
+  assert.strictEqual(await newWorkOf(withLane('l3', [['l3', 'l2 d2', 9, 'Merge develop'], ['l2', 'x1', 8, 'fix(a): again']])), 1);
+});
+
+test('PR #230: a lane that never merged has newWork null', async () => {
+  const h = await readHistory('C:/p/dev', { run: fakeRun(base) });
+  assert.strictEqual(h.lanes.find(u => u.name === 'feat/open').newWork, null);
+});
+
 // ---------- origin's URL (Enhancement #46: Open PR) ----------
 const { readOrigin } = require('../host/git-history');
 
