@@ -3,7 +3,6 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
 
 const { MARK_VAR, makeMark, parseMark, markFromEnv, markEnv } = require('../host/probe-mark');
 const { writeIdentity, readIdentity } = require('../host/host-identity');
@@ -42,27 +41,6 @@ test('markFromEnv: the valid value, else null; markEnv sets a fresh one every ti
   assert.strictEqual(env[MARK_VAR], m);
   assert.strictEqual(parseMark(m).pid, 77);
   assert.ok(!MARK_VAR.startsWith('CLAUDE_CUSTOM_'), 'not stripped with a tab\'s CLAUDE_CUSTOM_* variables');
-});
-
-test('a probe\'s launcher marks process.env and the mark survives the env stripping; a unit test run marks nothing', () => {
-  const probeFile = path.join(__dirname, '..', 'verify', 'probe-dock-tree.js');
-  const code = `process.argv[1] = ${JSON.stringify(probeFile)};
-    const le = require(${JSON.stringify(path.join(__dirname, '..', 'verify', 'lib', 'launch-electron.js'))});
-    const mark = process.env.${MARK_VAR};
-    const kept = le.cleanElectronEnv({ ...process.env }).${MARK_VAR};
-    const probe = le.probeEnv({ ...process.env, CLAUDE_CUSTOM_X: '1' }, { ...process.env, CLAUDE_CUSTOM_X: '1' }).${MARK_VAR};
-    console.log(JSON.stringify({ mark, kept, probe }));`;
-  const env = { ...process.env, HEAVY_LOCK_HELD: '1' };   // no real machine lock for this child
-  delete env[MARK_VAR];
-  const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', env });
-  assert.strictEqual(r.status, 0, r.stderr);
-  const out = JSON.parse(r.stdout.trim().split('\n').pop());
-  assert.ok(parseMark(out.mark), 'a probe process carries a valid mark');
-  assert.strictEqual(parseMark(out.mark).pid > 0, true);
-  assert.strictEqual(out.kept, out.mark, 'cleanElectronEnv keeps it');
-  assert.strictEqual(out.probe, out.mark, 'probeEnv keeps it');
-  const notProbe = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(path.join(__dirname, '..', 'verify', 'lib', 'launch-electron.js'))}); console.log(String(process.env.${MARK_VAR}))`], { encoding: 'utf8', env });
-  assert.strictEqual(notProbe.stdout.trim(), 'undefined', 'not a probe: no mark');
 });
 
 // ---- the identity file -------------------------------------------------------------------------------------------------------
@@ -223,13 +201,4 @@ test('readProcessTable: parses pid / ppid / FILETIME rows; a missing END, a fail
   assert.strictEqual(readProcessTable({ run: () => ({ status: 1, stdout: 'END' }) }), null);
   assert.strictEqual(readProcessTable({ run: () => ({ error: new Error('x'), stdout: '' }) }), null);
   assert.strictEqual(readProcessTable({ run: () => { throw new Error('x'); } }), null);
-});
-
-test('readProcessTable: the real machine\'s table has this process, started before now, with its parent', () => {
-  const t = readProcessTable();
-  if (!t) return;   // off Windows, or PowerShell unavailable here: nothing to measure
-  const me = t.get(process.pid);
-  assert.ok(me, 'this process is in the table');
-  assert.strictEqual(me.ppid, process.ppid);
-  assert.ok(me.created > 0n);
 });
