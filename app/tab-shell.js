@@ -824,6 +824,9 @@ function createShell(deps) {
     const next = tabModel.select(model(), key);
     if (next === null || ending.has(next)) return Promise.resolve();
     closeNotice = null;
+    // A tab that is looked at and worked in again is no longer the one that was asked to stop: the Stop offer goes (PR #231 Dexter M1),
+    // so a later Stop is a plain close and asks (an edit made since would be lost otherwise).
+    closeStuck.delete(next);
     selectedKey = next;
     const tab = tabByKey(next);
     let started = Promise.resolve();

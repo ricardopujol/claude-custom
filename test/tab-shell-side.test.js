@@ -981,3 +981,19 @@ test('Dexter 3: a side tab with an unsaved reader edit asks on a plain x even wh
   assert.strictEqual((await h.shell.closeTab(skey('feat-a'), { stop: true })).ok, true);
   assert.strictEqual(h.confirms.length, 2, 'the Stop click does not');
 });
+
+test('Dexter M1: selecting a kept side tab withdraws its Stop offer, so a later Stop asks about an unsaved reader edit', async () => {
+  let unsaved = null;
+  const h = await opened({ safety: { readerUnsaved: () => unsaved } });
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'failed';
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, false);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, skey('feat-a'));
+  await h.shell.select(skey('feat-a'));
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the offer is withdrawn');
+  unsaved = 'README.md';
+  h.controlOk = true;
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'), { stop: true })).ok, true);
+  assert.strictEqual(h.confirms.length, 1, 'asked');
+});

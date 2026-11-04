@@ -3528,6 +3528,28 @@ test('Dexter 3: a second kept tab does not take the first one\'s offer away', as
   assert.strictEqual(h.confirms.length, 2, 'each asked once');
 });
 
+// --- PR #231 round 2, Dexter M1: a selection of the kept tab withdraws the Stop offer ---------------------------------------
+
+test('Dexter M1: selecting the kept tab withdraws the Stop offer, so a later Stop is a new close and asks (an unsaved reader edit is not lost)', async () => {
+  let unsaved = null;
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, safety: { readerUnsaved: () => unsaved } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.confirms.length, 1);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  await h.shell.select(key('feat-a'));                      // Ricardo goes back to the tab and works in it
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the offer is withdrawn');
+  unsaved = 'src/x.js';                                     // ...and leaves an edit in its reader
+  h.controlReply = null;
+  h.pidReply = null;
+  const r = await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'asked: the Stop click no longer licenses a close without the question');
+  assert.strictEqual(r.ok, true);
+});
+
 // --- PR #231 Dexter 4 / Miguel G3: while a host is being ended its tab is in a closing state ---------------------------------
 
 test('Dexter 4: during the stop and the retry the tab is greyed and says so, can\'t be selected, and nothing is started or attached for it', async () => {
