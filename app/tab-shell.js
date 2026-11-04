@@ -1255,6 +1255,7 @@ function createShell(deps) {
   /** #129: a close whose host would not end keeps its tab, says so in the strip, and offers Stop (a second close, without the question). */
   function keepStuck(key, notice, failure, tab) {
     closeNotice = notice;
+    closeStuck.delete(key);     // a Map keeps the place of a key set again: delete first, so the newest failure is the last (PR #231 Miguel R4)
     closeStuck.set(key, { text: notice, tab });
     log(`[shell] ${key}: ${notice}`);
     publish();

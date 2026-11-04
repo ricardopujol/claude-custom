@@ -3602,6 +3602,19 @@ test('Dexter M1: selecting the kept tab withdraws the Stop offer, so a later Sto
   assert.strictEqual(r.ok, true);
 });
 
+test('Miguel R4: a kept tab that fails again becomes the newest offer (it moves to the end of the Map), not behind an older one', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a'), 7702: wt('feat-b') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.closeTab(key('feat-b'));
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-b'));
+  await h.shell.closeTab(key('feat-a'));                    // a again, and it fails again
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'), 'the strip shows the latest failure');
+});
+
 // --- PR #231 round 2, Miguel R1: the long stop ends, and the key now names a NEW tab record --------------------------------
 
 test('Miguel R1: a close whose long stop fails after its tab was removed and made again keeps and blames nothing on the NEW tab', async () => {
