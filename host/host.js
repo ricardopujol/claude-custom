@@ -106,7 +106,7 @@ const { createPromptKeeper } = require('./prompt-keeper');
 const { createChatFeed } = require('./chat-feed');
 const { readTranscript, readLastTurnTexts } = require('./chat-transcript');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
-const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, NIGHT_BUDGET_MS } = require('./kill-switch');
+const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS } = require('./kill-switch');
 const { writeFileAtomic } = require('./atomic-write');
 const { createNightStatus } = require('./night-status');
 const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
@@ -1507,8 +1507,9 @@ const killSwitch = watchKillSwitch({
 // A kill that did not land (the proof timed out under load) is tried again every few seconds, a handful of times.
 setInterval(() => { try { killStop.retry(); } catch { /* the next tick tries again */ } }, 5000).unref();
 const killLinger = createLinger();
-// The first night's start is kept on disk (one per project), so a host replaced mid-night keeps the deadline (Dexter F1, PR #210).
-const NIGHT_ANCHOR_FILE = path.join(STATE_ROOT, '.claude-custom', 'night-anchor.json');
+// The first night's start is kept on disk (one per WORKTREE, #128), so a host replaced mid-night keeps the deadline (Dexter F1, PR #210)
+// and two lanes' /bedtime loops each have their own.
+const NIGHT_ANCHOR_FILE = anchorFileFor({ stateRoot: STATE_ROOT, worktree: CWD });
 const nightBudget = createNightBudget({
   load: () => loadAnchor(NIGHT_ANCHOR_FILE),
   save: (anchor) => saveAnchor(NIGHT_ANCHOR_FILE, anchor, { write: (f, data) => writeFileAtomic(f, data) }),

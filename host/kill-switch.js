@@ -166,6 +166,16 @@ function loadAnchor(file, { read = (f) => fs.readFileSync(f, 'utf8') } = {}) {
   } catch { return null; }
 }
 
+// One anchor file PER WORKTREE (BACKLOG #128): the state root is the project's `dev` folder for every lane, so a file named only
+// `night-anchor.json` made two /bedtime loops in two lanes share one deadline. The worktree's absolute path (lower-cased, slashes
+// and trailing separators normalised, as Windows treats them) is hashed into the name; the same worktree always finds its own.
+function anchorFileFor({ stateRoot, worktree } = {}) {
+  if (!nonEmpty(stateRoot) || !nonEmpty(worktree)) return '';
+  const key = worktree.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const id = require('crypto').createHash('sha1').update(key).digest('hex').slice(0, 16);
+  return path.join(stateRoot, '.claude-custom', `night-anchor-${id}.json`);
+}
+
 function saveAnchor(file, anchor, { write, mkdir = (d) => fs.mkdirSync(d, { recursive: true }) } = {}) {
   if (!nonEmpty(file)) throw new Error('no anchor path');
   mkdir(path.dirname(file));
@@ -327,5 +337,5 @@ function describeUnstoppable(n) {
 module.exports = {
   runStopAll, countUnstoppable, describeUnstoppable,
   stopAllHome, sentinelsFor, scopeOf, watch, createNightBudget, describeStop, createStopper, createLinger, requestStopAll,
-  loadAnchor, saveAnchor, NIGHT_BUDGET_MS, NIGHT_FRESH_AFTER_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
+  loadAnchor, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS, NIGHT_FRESH_AFTER_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
 };

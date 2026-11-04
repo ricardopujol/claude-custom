@@ -22,7 +22,7 @@ function block(startMarker, endMarker) {
 }
 
 test('the kill switch module is required by name', () => {
-  assert.match(HOST, /const \{ stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, NIGHT_BUDGET_MS \} = require\('\.\/kill-switch'\);/);
+  assert.match(HOST, /const \{ stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS \} = require\('\.\/kill-switch'\);/);
 });
 
 test('the sentinels: STOP-ALL from the home folder (or the probe seam), the project STOP from STATE_ROOT, never a hard-coded user', () => {
@@ -83,7 +83,7 @@ test('the night budget follows the night\'s payload and stops the session at its
   assert.match(b, /nightNow: \(\) => night\.payload\(\)/, 'asked again at the deadline');
   assert.match(b, /load: \(\) => loadAnchor\(NIGHT_ANCHOR_FILE\)/, 'a replaced host keeps the first night deadline');
   assert.match(b, /save: \(anchor\) => saveAnchor\(NIGHT_ANCHOR_FILE, anchor, \{ write: \(f, data\) => writeFileAtomic\(f, data\) \}\)/, 'written atomically');
-  assert.match(HOST, /const NIGHT_ANCHOR_FILE = path\.join\(STATE_ROOT, '\.claude-custom', 'night-anchor\.json'\);/);
+  assert.match(HOST, /const NIGHT_ANCHOR_FILE = anchorFileFor\(\{ stateRoot: STATE_ROOT, worktree: CWD \}\);/, 'keyed by this tab\'s worktree, not the shared state root (#128)');
   assert.match(b, /killStop\.stop\(\{ kind: 'night-budget', startedAt, budgetMs: NIGHT_BUDGET_MS \}\)/);
   const n = block('const night = createNightStatus({', '\n});');
   assert.match(n, /nightBudget\.update\(payload\)/);

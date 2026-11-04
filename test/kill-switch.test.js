@@ -810,3 +810,46 @@ test('F3: describeUnstoppable is a plain count, singular and plural, and empty f
   assert.strictEqual(ks.describeUnstoppable(NaN), '');
 });
 
+
+// --- one anchor per worktree (BACKLOG #128) ------------------------------------------------------------------------
+
+test('anchorFileFor: two worktrees of one project get two anchor files, one worktree always gets the same one', () => {
+  const stateRoot = path.join('P', 'dev');
+  const a = ks.anchorFileFor({ stateRoot, worktree: path.join('P', 'feat-a') });
+  const b = ks.anchorFileFor({ stateRoot, worktree: path.join('P', 'feat-b') });
+  assert.notStrictEqual(a, b, 'two lanes must not share a deadline');
+  assert.strictEqual(a, ks.anchorFileFor({ stateRoot, worktree: path.join('P', 'feat-a') }), 'a replaced host finds its own');
+  assert.strictEqual(path.dirname(a), path.join(stateRoot, '.claude-custom'));
+  assert.match(path.basename(a), /^night-anchor-[0-9a-f]{16}\.json$/);
+});
+
+test('anchorFileFor: case and a trailing slash do not split one worktree (Windows paths)', () => {
+  const stateRoot = path.join('P', 'dev');
+  assert.strictEqual(
+    ks.anchorFileFor({ stateRoot, worktree: 'C:\\Proj\\Lane' }),
+    ks.anchorFileFor({ stateRoot, worktree: 'c:\\proj\\lane\\' }),
+  );
+});
+
+test('anchorFileFor: no state root or no worktree is no file', () => {
+  assert.strictEqual(ks.anchorFileFor({ stateRoot: '', worktree: 'x' }), '');
+  assert.strictEqual(ks.anchorFileFor({ stateRoot: 'x', worktree: '' }), '');
+  assert.strictEqual(ks.anchorFileFor(), '');
+});
+
+test('two worktrees of one project keep two anchors on disk; a replaced host in the same worktree finds its own', () => {
+  const files = new Map();
+  const io = {
+    read: (f) => { if (!files.has(f)) throw new Error('ENOENT'); return files.get(f); },
+    write: (f, data) => files.set(f, data),
+    mkdir: () => {},
+  };
+  const stateRoot = path.join('P', 'dev');
+  const fa = ks.anchorFileFor({ stateRoot, worktree: path.join('P', 'feat-a') });
+  const fb = ks.anchorFileFor({ stateRoot, worktree: path.join('P', 'feat-b') });
+  ks.saveAnchor(fa, 1000, io);
+  assert.strictEqual(ks.loadAnchor(fb, io), null, 'lane B sees no anchor of lane A');
+  ks.saveAnchor(fb, 2000, io);
+  assert.strictEqual(ks.loadAnchor(fa, io), 1000);
+  assert.strictEqual(ks.loadAnchor(fb, io), 2000);
+});
