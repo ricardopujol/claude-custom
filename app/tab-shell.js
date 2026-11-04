@@ -1234,7 +1234,12 @@ function createShell(deps) {
       log(`[shell] port ${h.port}: its host is not this tab's (another folder's), nothing to stop`);
       return null;
     }
-    if (outcome === 'nofile' && !h.booting) return null;     // a host that was listening and has no file now has gone
+    if (outcome === 'nofile' && !h.booting) {
+      // A host that was listening and has no file now has gone. It could also be one that could not publish its identity (PR #231
+      // Dexter L4), so the tab goes with a line in the log saying why, not silently.
+      log(`[shell] port ${h.port}: the stop failed (${failure}) and the host has no identity file, so it is taken as gone`);
+      return null;
+    }
     if (outcome === 'nofile') {
       // Its start is not over: the host may not have bound its port yet, and has no file until it has. Wait for it, as long as the
       // start itself would (hosts.wait), then stop it; never drop the tab and leave a host that binds a moment later with no tab.

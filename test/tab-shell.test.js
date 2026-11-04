@@ -3408,6 +3408,19 @@ test('Dexter 2: a host that WAS listening and has no file now (nothing starting)
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
 });
 
+test('Dexter L4: a started tab dropped because its host has no identity file is logged, with the stop failure that led there', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'nofile';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  const line = h.logs.map(a => a.join(' ')).find(l => /7701/.test(l) && /no identity file/.test(l));
+  assert.ok(line, `a line names the port and the missing file: ${JSON.stringify(h.logs)}`);
+  assert.match(line, /closed before reply/);
+});
+
 test('Dexter 5: a tab with BOTH a pending and an unconfirmed host stops and retries both, not only the pending one', async () => {
   const h = harness({ running: { 7700: wt('dev') } });
   await h.shell.open();
