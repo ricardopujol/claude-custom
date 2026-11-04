@@ -286,10 +286,19 @@ async function main() {
   };
 
   // 1 -----------------------------------------------------------------------------
-  // Dockable panels D1: the page reports groups of a split tree; the default layout has one, `right`.
-  const home = (ready.groups || []).find(g => g.tabs.includes('wand'));
+  // A fresh start keeps every panel on the dock rail, in no group (BACKLOG #103; a click on a rail tab only peeks, PR #225). So the
+  // first thing to hold is that, and then the module is docked on the right the way a person pins it, which gives a group there.
+  const onRail = (ready.rails || []).some(r => r.modules.includes('wand'));
+  const inGroupAtStart = (ready.groups || []).some(g => g.tabs.includes('wand'));
+  check('1: a fresh start keeps the Wand module on the dock rail, in no group yet', onRail && !inGroupAtStart, JSON.stringify({ onRail, inGroupAtStart }));
+  await view(app, 'dock', { id: 'wand', target: { edge: 'right' } });
+  const docked = await waitFor(async () => { const s = await view(app, 'state'); return s && (s.groups || []).find(g => g.tabs.includes('wand')) ? s : null; }, 10000);
+  const home = docked && docked.groups.find(g => g.tabs.includes('wand'));
   const where = home ? home.id : null;
-  check('1: the Wand module is in the dock (new modules land on the right)', where === 'right', String(where));
+  // The group's id is generated now (g1), so "on the right" is measured: the group sits beside the terminal, to its right.
+  check('1: docked on the right edge, the Wand module is in a group to the right of the terminal',
+    !!home && !!docked.termwrap && home.rect.left >= docked.termwrap.right - 1 && home.rect.width > 100,
+    JSON.stringify({ id: where, group: home && home.rect, termwrap: docked && docked.termwrap }));
   await view(app, 'select', { id: 'wand' });
   const first = await waitFor(async () => { const s = await ws(); return s && s.ok && s.shown && s.buttons.length === 4 ? s : null; }, 20000);
   check('1: wand-display.js loaded in the shared plain-script scope, and the module shows', !!first && first.scope, JSON.stringify(first).slice(0, 300));
