@@ -94,6 +94,7 @@
     "host/project-path.js",
     "host/handshake.js",
     "host/host-identity.js",
+    "host/probe-mark.js",
     "host/port-for-project.js",
     "host/launch-target.js",
     "host/project-picker.js",
