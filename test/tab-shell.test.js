@@ -3145,6 +3145,31 @@ test('ctrl-close F3: a tab that leaves during the git re-read is not stopped aga
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
 });
 
+// PR #231 round 2, Dexter L3: the closing state starts before the targets are read, not after the silent close's second check.
+test('ctrl-close L3: during the git re-read the tab is already closing: a poll attaches no host to it, so none is presented after the targets were read', async () => {
+  let reads = 0;
+  let startedDuring = null;
+  let h = null;
+  h = await mergedHarness({ safety: { facts: async (cwd) => {
+    if (cwd === wt('feat-b')) {
+      reads += 1;
+      if (reads === 2) {                                      // the re-read: a host for feat-b appears and a poll looks again
+        h.running[7702] = wt('feat-b');
+        await h.shell.poll();
+        await flush();
+        startedDuring = h.shell.tabByKey(key('feat-b')).started;
+      }
+    }
+    return { branch: 'feat/b', dirtyCount: 0, unpushedCount: 0, headInDevelop: true };
+  } } });
+  h.markers[key('feat-b')] = 'feat/b';
+  assert.strictEqual(h.shell.tabByKey(key('feat-b')).started, false, 'feat-b has no host yet');
+  const r = await ctrlClose(h, 'feat-b');
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(reads, 2, 'the close was silent and re-read once');
+  assert.strictEqual(startedDuring, false, 'nothing was attached to a tab that is closing');
+});
+
 // Dexter F4 (PR #139): one rule for doubt and count -- a folder an agent touched earlier (`also`) blocks a silent close.
 test('ctrl-close F4: a live claim whose `also` names the tab\'s folder asks, like the unprovable one', async () => {
   const claim = claimIn('feat-b', { also: [wt('feat-a')] });

@@ -1120,47 +1120,50 @@ function createShell(deps) {
       if (!tabs.has(key)) return { ok: true };
     }
     const label = (model().find(e => e.key === key) || {}).label || tab.branch || tab.cwd;
-    // Every host this record may hold (#129; PR #231 Dexter 5): the presented one, else the pending AND the unconfirmed ones, else
-    // whatever serves the folder when asked once more. `booting`: it may not have bound its port yet, so no file and a refusal prove nothing.
+    // The closing state starts BEFORE the targets are read (PR #231 Dexter L3): a click or the poll's look-again during the awaits below
+    // (the targets' walk, the silent close's second git read) would otherwise present a host after the targets were read, and the close
+    // would drop the tab without stopping it. Every way out of this block ends the state. It is published when the stop starts.
+    ending.add(key);
     const targets = [];
-    if (tab.started && tab.ended === true) {
-      // Its host ended after it ran, and its port may be another host's by now (PR #80 Dexter F2; PR #231 Dexter 1): nothing is sent
-      // to it and nothing is killed. The close just closes, as stopCompanion does for an ended companion.
-    } else if (tab.started && tab.port && tab.token) targets.push({ port: tab.port, token: tab.token, booting: false });
-    else {
-      for (const c of [tab.pending, tab.unconfirmed]) if (c && !targets.some(x => x.port === c.port)) targets.push({ port: c.port, token: c.token, booting: true, rec: c });
-      if (targets.length === 0) {
-        // Nothing presented and nothing pending: ask once more whether a host
-        // serves this folder (an attach that couldn't read the token, a host that
-        // bound after the shell gave up on it). Through the queue, like a start.
-        let found = null;
-        try { found = await queue.run(() => hosts.choosePort(tab)); } catch { found = null; }
-        if (found && found.action === 'attach') {
-          targets.push({ port: found.port, token: hosts.tokenFile(found.port) || hosts.tokenFor(found.port) || null, booting: false });
+    let failure = null;
+    try {
+      // Every host this record may hold (#129; PR #231 Dexter 5): the presented one, else the pending AND the unconfirmed ones, else
+      // whatever serves the folder when asked once more. `booting`: it may not have bound its port yet, so no file and a refusal prove nothing.
+      if (tab.started && tab.ended === true) {
+        // Its host ended after it ran, and its port may be another host's by now (PR #80 Dexter F2; PR #231 Dexter 1): nothing is sent
+        // to it and nothing is killed. The close just closes, as stopCompanion does for an ended companion.
+      } else if (tab.started && tab.port && tab.token) targets.push({ port: tab.port, token: tab.token, booting: false });
+      else {
+        for (const c of [tab.pending, tab.unconfirmed]) if (c && !targets.some(x => x.port === c.port)) targets.push({ port: c.port, token: c.token, booting: true, rec: c });
+        if (targets.length === 0) {
+          // Nothing presented and nothing pending: ask once more whether a host
+          // serves this folder (an attach that couldn't read the token, a host that
+          // bound after the shell gave up on it). Through the queue, like a start.
+          let found = null;
+          try { found = await queue.run(() => hosts.choosePort(tab)); } catch { found = null; }
+          if (found && found.action === 'attach') {
+            targets.push({ port: found.port, token: hosts.tokenFile(found.port) || hosts.tokenFor(found.port) || null, booting: false });
+          }
         }
       }
-    }
-    // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
-    // session) right before the stop; if any of it changed, ask after all.
-    if (silent) {
-      // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
-      const gitAgain = await gitFactsOf(tab);
-      if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
-      const again = closeReason(closeFactsOf(tab, gitAgain));
-      if (again !== '') {
-        let ok = false;
-        try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
-        if (!ok) return { ok: false, cancelled: true };
-        if (!tabs.has(key)) return { ok: true };
+      // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
+      // session) right before the stop; if any of it changed, ask after all.
+      if (silent) {
+        // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
+        const gitAgain = await gitFactsOf(tab);
+        if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
+        const again = closeReason(closeFactsOf(tab, gitAgain));
+        if (again !== '') {
+          let ok = false;
+          try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
+          if (!ok) return { ok: false, cancelled: true };
+          if (!tabs.has(key)) return { ok: true };
+        }
       }
-    }
-    // #129: the stop is sent FIRST, where its outcome can be seen, and the tab is dropped only once its host is known to be ended.
-    // A refused or unanswered stop is retried once by pid; if that fails too the tab stays, with a Stop offer in the strip.
-    let failure = null;
-    const who = whoOf(tab);
-    ending.add(key);
-    publish();
-    try {
+      // #129: the stop is sent FIRST, where its outcome can be seen, and the tab is dropped only once its host is known to be ended.
+      // A refused or unanswered stop is retried once by pid; if that fails too the tab stays, with a Stop offer in the strip.
+      const who = whoOf(tab);
+      publish();
       for (const h of targets) {
         const f = await endHost(h, who);
         if (failure === null) failure = f;
