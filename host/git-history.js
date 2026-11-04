@@ -210,6 +210,32 @@ function laneFacts(g, integrationTip, laneTip, base = null) {
   return { ahead: own.length, first: first ? g.get(first).subject.trim() || null : null };
 }
 
+/**
+ * Real new work on a lane since its own latest merge: the non-merge commits it has that the
+ * integration branch doesn't, but only when the merged head (the merge's second parent) is on the
+ * lane's own first-parent line. A fresh branch cut from develop that reuses the name reaches that head
+ * only through develop, so it is another lineage: null. A merge of develop into the lane, or a
+ * fast-forward, adds no non-merge commit outside the integration branch: 0 (PR #230 Dexter 2 and 4).
+ */
+function newWorkSince(g, base, laneTip, mergedHead) {
+  if (!mergedHead || !base || !g.has(laneTip)) return null;
+  let own = false;
+  for (const h of firstParentChain(g, laneTip)) if (h === mergedHead) { own = true; break; }
+  if (!own) return null;
+  let n = 0;
+  const seen = new Set();
+  const stack = [laneTip];
+  while (stack.length) {
+    const h = stack.pop();
+    if (seen.has(h) || base.has(h) || !g.has(h)) continue;
+    seen.add(h);
+    const { parents } = g.get(h);
+    if (parents.length < 2) n += 1;
+    for (const p of parents) stack.push(p);
+  }
+  return n;
+}
+
 function firstParentMerges(g, tip) {
   return firstParentChain(g, tip).filter(h => g.get(h).parents.length > 1).length;
 }
@@ -263,6 +289,8 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
   const base = g.has(integrationTip) ? new Set(claim(g, integrationTip, new Set())) : null;
   const listed = new Set();
   const lanes = [];
+  const latestMerge = new Map(); // merges are oldest first, so the last one per name wins
+  for (const m of merges) if (m.branch) latestMerge.set(m.branch, m);
   // EVERY ref is a lane, merged ones too: a merged name can be reused, and the model joins a lane
   // with its merges by name (PR #84 Dexter F2). for-each-ref sorts by refname, so refs/heads/*
   // come before refs/remotes/*: a local branch wins over its remote twin, which is skipped.
@@ -273,7 +301,9 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
     listed.add(r.name);
     const { ahead, first } = r.tip && base ? laneFacts(g, integrationTip, r.tip, base) : { ahead: null, first: null };
     const wt = worktrees.find(w => w.branch === r.name);
-    lanes.push({ name: r.name, remote: r.remote, date: r.date, ahead, first, worktree: wt ? wt.path : null });
+    const merge = latestMerge.get(r.name);
+    const newWork = r.tip && merge && ahead !== 0 ? newWorkSince(g, base, r.tip, merge.parents[1]) : null;
+    lanes.push({ name: r.name, remote: r.remote, date: r.date, ahead, first, worktree: wt ? wt.path : null, newWork });
   }
 
   const mainTip = integration !== 'main' ? tipOf('main') : null;
