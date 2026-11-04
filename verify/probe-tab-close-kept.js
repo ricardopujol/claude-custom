@@ -9,20 +9,27 @@
  * shell and strip page in a real window, the real host-client `stop` frame, the real host/stop-by-pid.js reading a real
  * identity file, and the real host/kill-tree.js killProvenAsync proving a pid by its OS start time.
  *
- * The host is a stand-in (verify/lib/stubborn-host.js): a real process with a real pid that says hello, takes the stop frame
- * and never answers or exits. The probe writes its identity file itself, so it chooses the start time the file names:
+ * The host is a stand-in (verify/lib/stubborn-host.js): a real process with a real pid that never ends on its own. 'older' says hello
+ * without the stop control, so the shell's stop fails at once; 'silent' takes the stop frame and never answers, so it times out and
+ * the shell gives the host its shutdown bound before anything is done to it by pid. The probe writes each identity file itself, so it
+ * chooses the start time the file names. The invariant: never a kill without proof that the process is THIS tab's host, and never a
+ * dropped tab while its host may be live.
  *
- *   feat/a  the file names a WRONG start time: the stop times out, the retry by pid is refused as another process
- *           -> the tab is KEPT, the notice and the Stop button are in the strip's alert line, the stand-in is alive,
+ *   feat/a  (the lane name is long, on purpose) the file names NO start time: the stop fails and nothing can be proved
+ *           -> the tab is KEPT, the long notice is clipped but the Stop button is inside the line, the stand-in is alive,
  *              and the strip is saved as a PNG;
- *           then the file is corrected, Stop is clicked (a real click on the button)
- *           -> the real stop-by-pid path proves the pid and ends the stand-in, and the tab goes.
- *   feat/b  the file names a wrong start time and stays wrong: a close, and a Stop after it, each keep the tab
- *           and kill nothing (the negative: a live pid whose start doesn't match is not ours to end).
+ *           then the file is corrected and Stop is clicked (a real click on the button)
+ *           -> the real stop-by-pid path proves the pid by its start time and ends the stand-in, and the tab goes.
+ *   feat/b  the file names a start that is not that pid's (stale): that host is judged ended, the tab goes, and the live pid is
+ *           NOT killed.
+ *   feat/c  its host ends and ANOTHER folder's host binds its port, with a perfectly valid identity file (PR #231's Critical): closing
+ *           feat/c sends nothing and kills nothing, and the stranger lives.
+ *   feat/e  a host that takes the stop and never answers: while the shell waits the tab is in its closing state (greyed, 'Ending its
+ *           session...'); after the bound it is kept with its Stop button, and the stand-in lives. (About a minute.)
  *
  * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN); CLAUDE_CUSTOM_WORKTREE_SCRIPTS points at an empty folder; the
  * project is a temp folder; the only processes stopped are the window it started, hosts whose folder is inside the temp folder
- * and the two stand-ins it started, all by PID with a start time proven. A normal window, never offscreen (capturePage hangs).
+ * and the stand-ins it started, all by PID with a start time proven. A normal window, never offscreen (capturePage hangs).
  */
 
 const { execFileSync, spawn } = require('child_process');
@@ -49,6 +56,8 @@ const origin = path.join(tmp, 'origin.git');
 const userData = path.join(tmp, 'user-data');
 const scripts = path.join(tmp, 'no-scripts');
 const shots = path.join(tmp, 'shots');
+// A long lane name on purpose: the notice repeats it, and a long notice is what used to clip the Stop button off the end of the line (PR #231 Miguel Y2).
+const A_BRANCH = 'feat/a-lane-with-a-deliberately-long-name-so-the-notice-is-long';
 const PNG = process.env.TAB_KEPT_PROBE_PNG || 'C:\\Users\\ricar\\AppData\\Local\\Temp\\cc-try\\pr231-stop-offer.png';
 fs.mkdirSync(shots, { recursive: true });
 fs.mkdirSync(scripts, { recursive: true });
@@ -177,14 +186,19 @@ const isAlive = (s) => { try { process.kill(s.pid, 0); return true; } catch (e) 
 async function aliveAsItself(s) {
   if (!isAlive(s)) return false;
   const m = await startTimes([s.pid]);
-  return !!m && m.get(s.pid) === s.start;
+  if (m === null) return true;       // the query itself failed (a loaded machine): the pid is alive and nothing says it changed; never a false 'it died'
+  return m.has(s.pid) && m.get(s.pid) === s.start;
 }
 
-/** Start a stubborn stand-in for `label`'s folder and write the identity + token files that make the shell attach to it. */
-async function startStandIn(label, dirName, taken) {
-  const port = await hostRangePort(taken);
+/**
+ * Start a stand-in for `label`'s folder and write the token file that makes the shell attach to it. `mode`: 'older' answers hello
+ * without the stop control (a host of older code: the stop fails at once), 'silent' takes the stop frame and never answers
+ * (it times out, and the shell then gives the host its shutdown bound before anything is done to it by pid).
+ */
+async function startStandIn(label, dirName, taken, { port: forcePort, mode = 'older' } = {}) {
+  const port = forcePort || await hostRangePort(taken);
   const token = require('crypto').randomBytes(16).toString('hex');
-  const child = spawn(process.execPath, [path.join(__dirname, 'lib', 'stubborn-host.js'), String(port)], { stdio: 'ignore', windowsHide: true });
+  const child = spawn(process.execPath, [path.join(__dirname, 'lib', 'stubborn-host.js'), String(port), mode], { stdio: 'ignore', windowsHide: true });
   noteChild(child);
   const s = { label, port, token, child, pid: child.pid, start: null, cwd: path.join(container, dirName) };
   standIns.push(s);
@@ -204,6 +218,7 @@ async function startStandIn(label, dirName, taken) {
 
 // A start that is NOT this process's: an hour later, in FILETIME ticks (100 ns).
 const wrongStart = (start) => String(BigInt(start) + 36000000000n);
+// processStartedAt undefined: a file with no start time, which proves nothing ('unknown': nothing is killed and the tab is kept).
 const writeIdentityFor = (s, processStartedAt) => writeIdentity({ dir: HARNESS_DIR, port: s.port, cwd: s.cwd, pid: s.pid, processStartedAt });
 
 async function main() {
@@ -213,45 +228,49 @@ async function main() {
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
   git(dev, 'remote', 'add', 'origin', origin);
   git(dev, 'push', '-q', 'origin', 'develop');
-  for (const [dir, branch] of [['feat-a', 'feat/a'], ['feat-b', 'feat/b']]) {
+  for (const [dir, branch] of [['feat-a', A_BRANCH], ['feat-b', 'feat/b'], ['feat-c', 'feat/c'], ['feat-e', 'feat/e']]) {
     git(dev, 'worktree', 'add', '-q', path.join(container, dir), '-b', branch);
   }
 
   // The stand-ins first: the window attaches to a host that is already there.
-  const a = await startStandIn('feat/a', 'feat-a', []);
+  const a = await startStandIn(A_BRANCH, 'feat-a', []);
   const b = await startStandIn('feat/b', 'feat-b', [a.port]);
-  writeIdentityFor(a, wrongStart(a.start));
-  writeIdentityFor(b, wrongStart(b.start));
-  check('0: two stand-in hosts are running, each a real pid with a start time, and each identity file names a WRONG start',
-    (await aliveAsItself(a)) && (await aliveAsItself(b)), `a=${a.pid}@${a.port} b=${b.pid}@${b.port}`);
+  const c = await startStandIn('feat/c', 'feat-c', [a.port, b.port]);
+  const e = await startStandIn('feat/e', 'feat-e', [a.port, b.port, c.port], { mode: 'silent' });
+  writeIdentityFor(a, undefined);                   // no start time: nothing can be proved about it
+  writeIdentityFor(b, wrongStart(b.start));         // a start that is not this process's: the file is stale
+  writeIdentityFor(c, c.start);
+  writeIdentityFor(e, undefined);
+  check('0: four stand-in hosts are running, each a real pid with a start time; the files name no start (a, e), a wrong one (b), the right one (c)',
+    (await Promise.all([a, b, c, e].map(aliveAsItself))).every(Boolean), `a=${a.pid}@${a.port} b=${b.pid}@${b.port} c=${c.pid}@${c.port} e=${e.pid}@${e.port}`);
 
   const app = await launchApp(container);
   const up = await waitFor(async () => {
     const st = await stateOf(app);
     const h = (st && st.hosts) || [];
     const att = (l, s) => h.some(x => x.label === l && x.started === true && x.port === s.port);
-    return st && tabLabels(st).length === 3 && att('feat/a', a) && att('feat/b', b) ? st : null;
+    return st && tabLabels(st).length === 5 && att(A_BRANCH, a) && att('feat/b', b) && att('feat/c', c) && att('feat/e', e) ? st : null;
   }, 60000);
-  check('1: the window is up and feat/a and feat/b are attached to the stand-ins', !!up, up ? '' : `exited=${app.exited} out=${app.out.slice(-600)}`);
+  check('1: the window is up and feat/a, b, c and e are attached to the stand-ins', !!up, up ? '' : `exited=${app.exited} out=${app.out.slice(-600)}`);
   if (!up) return;
   await sleep(1500);
 
-  // --- feat/a: a close whose stop is never answered and whose pid can't be proved ---------------------------------------
+  // --- feat/a: a stop that fails and a pid that can't be proved ----------------------------------------------------------------
   // A stand-in reports nothing a strip counts as "running", so the lane would sit in the Lanes menu: select it, as a person
   // looking at the tab they are about to close has.
-  await command(app, { cmd: 'select', label: 'feat/a' });
+  await command(app, { cmd: 'select', label: A_BRANCH });
   await sleep(800);
-  const x = await command(app, { cmd: 'xClick', label: 'feat/a' });
+  const x = await command(app, { cmd: 'xClick', label: A_BRANCH });
   check('2: a real click on feat/a\'s x', x.ok === true, JSON.stringify(x));
   const kept = await waitFor(async () => { const s = await stateOf(app); return hasStop(s) ? s : null; }, 30000, 500);
-  check('3: the strip shows the Stop button (the stop timed out and the pid retry was refused)', !!kept, kept ? '' : JSON.stringify((await stateOf(app)).stripChrome));
+  check('3: the strip shows the Stop button (the stop failed and the file proves nothing)', !!kept, kept ? '' : JSON.stringify((await stateOf(app)).stripChrome));
   if (!kept) return;
-  check('3: ...the tab is still there', tabLabels(kept).includes('feat/a'), JSON.stringify(tabLabels(kept)));
-  check('3: ...with the notice naming feat/a and saying it may still be running',
-    /Couldn't end the session in feat\/a: .*It may still be running\./.test(alertOf(kept) || ''), alertOf(kept));
+  check('3: ...the tab is still there', tabLabels(kept).includes(A_BRANCH), JSON.stringify(tabLabels(kept)));
+  check('3: ...with the (long) notice naming the lane and saying it may still be running',
+    alertOf(kept) !== null && alertOf(kept).startsWith(`Couldn't end the session in ${A_BRANCH}: `) && /It may still be running\./.test(alertOf(kept)), alertOf(kept));
   check('3: ...on the strip itself, not hidden in the Lanes menu', (kept.stripKeys || []).some(k => /feat-a$/i.test(k)), JSON.stringify(kept.stripKeys));
-  check('3: ...and the Stop button is drawn inside the alert line, not clipped off its end', kept.stripChrome.stopInView === true, JSON.stringify(kept.stripChrome.stopInView));
-  check('3: ...and the stand-in was not killed by the wrong start time', await aliveAsItself(a));
+  check('3: ...and the Stop button is drawn inside the alert line, not clipped off its end, although the notice is too long to show whole', kept.stripChrome.stopInView === true && kept.stripChrome.textClipped === true, JSON.stringify({ inView: kept.stripChrome.stopInView, clipped: kept.stripChrome.textClipped }));
+  check('3: ...and the stand-in was not killed', await aliveAsItself(a));
   check('3: ...nor offered back by Reopen, since it never closed', !(kept.reopenable || []).some(r => /feat\/a|feat-a/i.test(JSON.stringify(r))), JSON.stringify(kept.reopenable));
   check('3: ...and the question was asked once', (kept.confirms || []).length === 1, JSON.stringify(kept.confirms));
   await sleep(500);
@@ -261,34 +280,60 @@ async function main() {
   if (stripFile && fs.existsSync(stripFile)) fs.copyFileSync(stripFile, PNG);
   check('4: ...and saved at the requested path', fs.existsSync(PNG) && fs.statSync(PNG).size > 1000, PNG);
 
-  // The identity file now tells the truth about the stand-in, as a host's own would. Stop: the REAL stop-by-pid path.
+  // The identity file now says what a host's own would. Stop: the REAL stop-by-pid path, which proves the pid by its start time.
   writeIdentityFor(a, a.start);
   const click = await command(app, { cmd: 'stopClick' });
   check('5: a real click on the Stop button', click.ok === true, JSON.stringify(click));
-  const gone = await waitFor(async () => { const s = await stateOf(app); return !tabLabels(s).includes('feat/a') ? s : null; }, 30000, 500);
+  const gone = await waitFor(async () => { const s = await stateOf(app); return !tabLabels(s).includes(A_BRANCH) ? s : null; }, 30000, 500);
   check('5: the tab goes', !!gone, JSON.stringify(tabLabels(await stateOf(app))));
   const dead = await waitFor(async () => (await aliveAsItself(a)) ? null : true, 15000, 300);
   check('5: ...and the stand-in was ended through the proven pid (it is no longer the process that started then)', !!dead);
   const after = await stateOf(app);
   check('5: ...the Stop button and the notice are gone, and nothing asked a second time',
     !hasStop(after) && alertOf(after) === null && (after.confirms || []).length === 1, JSON.stringify({ stop: after.stripChrome && after.stripChrome.stop, alert: alertOf(after), confirms: after.confirms }));
-  check('5: ...feat/b is untouched', tabLabels(after).includes('feat/b') && await aliveAsItself(b));
+  check('5: ...the other stand-ins are untouched', await aliveAsItself(b) && await aliveAsItself(c) && await aliveAsItself(e));
 
-  // --- feat/b: the negative. A live pid whose start doesn't match is not ours to end ----------------------------------------
+  // --- feat/b: a stale file. A live pid whose start doesn't match is not the host, and not ours to end ------------------------
   // feat/a's tab fades out first; the strip repaints around feat/b meanwhile, so its x may not be there on the first try.
   await command(app, { cmd: 'select', label: 'feat/b' });
   await sleep(800);
   let xb = { ok: false };
   await waitFor(async () => { xb = await command(app, { cmd: 'xClick', label: 'feat/b' }); return xb.ok === true; }, 15000, 500);
   check('6: a real click on feat/b\'s x', xb.ok === true, xb.ok === true ? '' : JSON.stringify({ xb, dom: (await stateOf(app)).stripDom, tabs: (await stateOf(app)).tabs }));
-  const keptB = await waitFor(async () => { const s = await stateOf(app); return hasStop(s) ? s : null; }, 30000, 500);
-  check('6: the tab is kept with its notice and Stop button', !!keptB && tabLabels(keptB).includes('feat/b') && /feat\/b/.test(alertOf(keptB) || ''), keptB ? alertOf(keptB) : 'no Stop button');
-  check('6: ...and the stand-in is alive: a pid whose start time does not match is killed by nothing', await aliveAsItself(b));
-  const clickB = await command(app, { cmd: 'stopClick' });
-  await sleep(6000);        // the stop frame times out (3 s) and the pid retry is refused again
-  const stillB = await stateOf(app);
-  check('6: Stop on it, with the file still wrong, keeps the tab again and kills nothing',
-    clickB.ok === true && tabLabels(stillB).includes('feat/b') && hasStop(stillB) && await aliveAsItself(b), JSON.stringify({ click: clickB, labels: tabLabels(stillB), stop: hasStop(stillB) }));
+  const goneB = await waitFor(async () => { const s = await stateOf(app); return !tabLabels(s).includes('feat/b') ? s : null; }, 30000, 500);
+  check('6: the file names a start that is not that pid\'s: the host is judged ended, the tab goes with no notice and no Stop button',
+    !!goneB && alertOf(goneB) === null && !hasStop(goneB), goneB ? JSON.stringify({ alert: alertOf(goneB) }) : JSON.stringify(tabLabels(await stateOf(app))));
+  check('6: ...and nothing was killed: the stand-in is alive', await aliveAsItself(b));
+
+  // --- feat/c: its host ends, and another folder's host binds its port --------------------------------------------------------
+  c.child.kill();                                   // its own process, by the handle this probe holds
+  await waitFor(async () => !(await aliveAsItself(c)), 15000, 300);
+  try { fs.unlinkSync(fileFor(HARNESS_DIR, c.port)); } catch { /* a host removes its own file on the way out */ }
+  const ended = await waitFor(async () => { const s = await stateOf(app); return (s.tabs || []).some(t => t.label === 'feat/c' && t.ended === true) ? s : null; }, 30000, 500);
+  check('7: the poll sees feat/c\'s host end', !!ended);
+  const d = await startStandIn('feat/d', 'feat-d', [], { port: c.port });      // a host of ANOTHER folder takes the freed port, with a valid file
+  writeIdentityFor(d, d.start);
+  check('7: another folder\'s host holds feat/c\'s old port, and its identity file is valid', d.port === c.port && await aliveAsItself(d) && readIdentity({ dir: HARNESS_DIR, port: d.port }).cwd === d.cwd);
+  await command(app, { cmd: 'select', label: 'feat/c' });
+  const xc = await command(app, { cmd: 'xClick', label: 'feat/c' });
+  const goneC = await waitFor(async () => { const s = await stateOf(app); return !tabLabels(s).includes('feat/c') ? s : null; }, 30000, 500);
+  check('7: closing the dead tab closes it, with no notice and no Stop button', xc.ok === true && !!goneC && alertOf(goneC) === null && !hasStop(goneC), JSON.stringify({ xc, alert: goneC && alertOf(goneC) }));
+  await sleep(1500);
+  check('7: ...and the other folder\'s live host was NOT killed', await aliveAsItself(d));
+
+  // --- feat/e: a host that takes the stop and never answers: the tab is in a closing state while the shell waits ------------------
+  await command(app, { cmd: 'select', label: 'feat/e' });
+  await sleep(800);
+  const xe = await command(app, { cmd: 'xClick', label: 'feat/e' });
+  check('8: a real click on feat/e\'s x', xe.ok === true, JSON.stringify(xe));
+  const closingE = await waitFor(async () => { const s = await stateOf(app); return (s.tabs || []).some(t => t.label === 'feat/e' && t.ending === true) ? s : null; }, 15000, 250);
+  check('8: while the stop is waited on, the tab is in its closing state and the strip says so', !!closingE && alertOf(closingE) === 'Ending its session…', closingE ? alertOf(closingE) : 'never ending');
+  check('8: ...greyed in the strip', !!closingE && (closingE.stripDom || []).some(t => t.label === 'feat/e' && t.dim === true));
+  const keptE = await waitFor(async () => { const s = await stateOf(app); return hasStop(s) ? s : null; }, 120000, 1000);
+  check('8: after the host\'s shutdown bound the tab is kept with its Stop button (the file proves nothing)', !!keptE && tabLabels(keptE).includes('feat/e') && /feat\/e/.test(alertOf(keptE) || ''), keptE ? alertOf(keptE) : 'no Stop button');
+  const eAlive = await aliveAsItself(e);
+  const stillEnding = !!keptE && (keptE.tabs || []).filter(t => t.ending === true).map(t => t.label);
+  check('8: ...the closing state is over, and the stand-in was not killed', !!keptE && stillEnding.length === 0 && eAlive, JSON.stringify({ stillEnding, eAlive }));
 
   await command(app, { cmd: 'quit' });
 }
