@@ -10,6 +10,8 @@
  *   place  worktree | had-worktree | dev     -- where it was worked on (the tip's shape)
  *   spend  tokens spent, or NULL when nothing was recorded: unknown, never 0
  *   why    what it was for, 15 words at most, or null
+ *   mergedOnce  only on a live (open/unmerged) branch that had merged before and has new commits since:
+ *          { pr, when } of its latest merge. Absent otherwise.
  *
  * and for the tree: { hub: { spend, people }, totalSpend, prsKnown }. totalSpend is EXACTLY every
  * token that's ours (all spend inside the project, plus loose spend on lanes git knows), or null
@@ -157,6 +159,8 @@ function buildTree({ history, totals = {}, openPrs = null, projectRoot, current 
     branches.push(entry(name, {
       state: open ? 'open' : 'unmerged', pr: open ? open.pr : null, remote: u.remote,
       why: purpose(open && open.title) || purpose(u.first), when, commits: u.ahead,
+      // merged once, then reopened with new commits: `state` is the current truth, this keeps the history
+      ...(m ? { mergedOnce: { pr: m.pr, when: m.date } } : {}),
     }));
   }
 

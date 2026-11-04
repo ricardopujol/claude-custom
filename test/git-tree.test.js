@@ -52,6 +52,25 @@ test('ahead of develop with no PR is unmerged, why from its first commit; 0 ahea
   assert.strictEqual(byName(t, 'rebase/d').pr, null);
 });
 
+test('a merged lane that got new commits stays unmerged/open now, but remembers it merged once', () => {
+  const lane = { name: 'feat/a', remote: true, date: '2026-09-30', ahead: 2, first: 'fix: more', worktree: null };
+  const un = byName(build(history({ lanes: [lane] })), 'feat/a');
+  assert.strictEqual(un.state, 'unmerged');
+  assert.deepStrictEqual(un.mergedOnce, { pr: 3, when: '2026-09-20' });
+  assert.strictEqual(un.commits, 2);
+  const op = byName(build(history({ lanes: [lane] }), {}, new Map([['feat/a', { pr: 12, title: 'feat(a): again' }]])), 'feat/a');
+  assert.strictEqual(op.state, 'open');
+  assert.strictEqual(op.pr, 12);
+  assert.deepStrictEqual(op.mergedOnce, { pr: 3, when: '2026-09-20' });
+});
+
+test('a lane that never merged, and a plain merged lane, carry no mergedOnce', () => {
+  const h = history({ lanes: [{ name: 'spike/c', remote: false, date: '2026-09-15', ahead: 2, first: 'x', worktree: null }] });
+  const t = build(h);
+  assert.strictEqual('mergedOnce' in byName(t, 'spike/c'), false);
+  assert.strictEqual('mergedOnce' in byName(t, 'feat/a'), false);
+});
+
 test('open PRs unknown (gh failed) leaves an ahead branch unmerged, not open', () => {
   const h = history({ lanes: [{ name: 'feat/b', remote: false, date: '2026-09-30', ahead: 2, first: 'x', worktree: null }] });
   assert.strictEqual(byName(build(h, {}, null), 'feat/b').state, 'unmerged');
