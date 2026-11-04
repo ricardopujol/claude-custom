@@ -124,11 +124,13 @@ function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, 
         if (spawnFails) throw new Error('spawn exploded');
         h.spawns.push({ key: tab.key, port, token });
         if (h.onSpawn) h.onSpawn({ key: tab.key, port, token });
+        const child = h.spawnChild ? h.spawnChild() : undefined;     // main.js's spawnHost returns the ChildProcess
         // A registering spawn binds -- unless something else bound the port first.
         if (h.spawnRegisters && h.running[port] === undefined) {
           h.running[port] = tab.cwd;
           h.tokenFiles[port] = token;
         }
+        return child;
       },
       wait: async () => !h.failWait,
       tokenFor: fileToken,
@@ -3342,6 +3344,31 @@ test('Dexter 2: no identity file is NOT proof of death for a host still starting
   assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(h.controls.map(c => [c.port, c.token]), [[pending.port, pending.token], [pending.port, pending.token]], 'the stop is sent again once it is up');
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('Dexter M2: a pending host whose spawned child has EXITED is dead: the tab closes, nothing is sent or killed; one still alive keeps the tab', async () => {
+  const { EventEmitter } = require('node:events');
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.spawnRegisters = false;
+  const child = new EventEmitter();
+  h.spawnChild = () => child;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;                                   // the wait always fails: the host never bound its port
+  await h.shell.select(key('feat-a'));
+  assert.ok(h.shell.tabByKey(key('feat-a')).pending, 'a pending host');
+  h.pidReply = () => 'nofile';
+  h.controlReply = refuse('connection refused');
+  const alive = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(alive.ok, false, 'its process may still be starting: kept');
+  child.emit('exit', 1, null);                         // the host crashed while starting
+  h.controls.length = 0;
+  h.pidStops.length = 0;
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true, 'the window spawned it and saw it die: nothing is left to stop');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.deepStrictEqual(h.controls, [], 'no stop sent to a port a stranger may hold now');
+  assert.deepStrictEqual(h.pidStops, []);
 });
 
 test('Dexter 2: a host that WAS listening and has no file now (nothing starting) is gone: the tab goes', async () => {

@@ -178,7 +178,7 @@ function sanitizeStatus(s) {
  *   ops.remove({ path })              -> Promise<{ ok, already } | { ok: false, kept, reason } | { ok: false, error }>  (C)
  *   hosts.choosePort(tab)  -> Promise<{ port, action: 'spawn'|'attach' } | null>
  *   hosts.probe(port)      -> Promise<'listening'|'refused'|'unknown'>  (host/port-probe.js)
- *   hosts.spawn({ tab, port, token })      starts a detached host (may throw)
+ *   hosts.spawn({ tab, port, token })      starts a detached host (may throw); may return its child process, whose exit proves the host dead
  *   hosts.wait(port)       -> Promise<boolean>  the host came up
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
  *   hosts.tokenFile(port)  -> string | null     ONLY `hosts/<port>.token`: written by
@@ -297,6 +297,7 @@ function createShell(deps) {
   // #129 (PR #231 Dexter 4 / Miguel G3): the tabs whose host is being ended right now (the stop, the wait for it, the retry by pid: up to
   // a minute). Such a tab is in a closing state: not selectable, nothing is started or attached for it, the strip greys it and says so.
   const ending = new Set();
+  const exitedHosts = new WeakSet();     // the `pending` records whose spawned child has exited: those hosts are dead (PR #231 Dexter M2)
   const stuckValid = (key, e) => !!e && tabs.get(key) === e.tab && e.tab.ended !== true && e.tab.closed !== true
     && (state.tabs.find(t => keyOf(t.path) === key) || {}).phase !== 'removing';
   const stuckFor = (key) => {
@@ -764,10 +765,18 @@ function createShell(deps) {
           if (!token) throw new Error(`a host is on port ${port} but its token can't be read`);
         } else {
           token = hosts.newToken();
-          hosts.spawn({ tab, port, token });
+          const rec = { port, token };
+          const child = hosts.spawn({ tab, port, token });
+          // The window spawned it, so the child's exit is proof the host is dead (PR #231 Dexter M2): a host that crashed while
+          // starting leaves no file and no listener, and a close must not wait on it for ever.
+          if (child && typeof child.once === 'function') {
+            const died = () => { exitedHosts.add(rec); };
+            child.once('exit', died);
+            child.once('error', died);
+          }
           spawned = true;
           if (!(await hosts.wait(port))) {
-            tab.pending = { port, token };
+            tab.pending = rec;
             // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
             if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
@@ -1119,7 +1128,7 @@ function createShell(deps) {
       // to it and nothing is killed. The close just closes, as stopCompanion does for an ended companion.
     } else if (tab.started && tab.port && tab.token) targets.push({ port: tab.port, token: tab.token, booting: false });
     else {
-      for (const c of [tab.pending, tab.unconfirmed]) if (c && !targets.some(x => x.port === c.port)) targets.push({ port: c.port, token: c.token, booting: true });
+      for (const c of [tab.pending, tab.unconfirmed]) if (c && !targets.some(x => x.port === c.port)) targets.push({ port: c.port, token: c.token, booting: true, rec: c });
       if (targets.length === 0) {
         // Nothing presented and nothing pending: ask once more whether a host
         // serves this folder (an attach that couldn't read the token, a host that
@@ -1197,6 +1206,7 @@ function createShell(deps) {
    * why it may still be running. Never rejects. `h` is { port, token, booting }; `who` says which host is this tab's.
    */
   async function endHost(h, who) {
+    if (h.rec && exitedHosts.has(h.rec)) return null;     // its spawned child exited: dead, and its port may be a stranger's now (PR #231 Dexter M2)
     const failure = h.token
       ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } }))
       : `a host is on port ${h.port} but its token can't be read`;
@@ -1206,6 +1216,7 @@ function createShell(deps) {
 
   /** What a stop that failed leads to. The invariant: nothing is killed unless the file proves the process is THIS tab's host. */
   async function afterFailedStop(h, failure, who) {
+    if (h.rec && exitedHosts.has(h.rec)) return null;     // it died while the stop was going out (PR #231 Dexter M2)
     if (REFUSED_TOKEN.test(failure)) {
       log(`[shell] port ${h.port} refused this tab's token: another tab's host holds it, nothing to stop`);
       return null;
@@ -1856,7 +1867,7 @@ function createShell(deps) {
   function hostsToStop(t) {
     if (t.started && t.port && t.token) return [{ port: t.port, token: t.token }];
     const out = [];
-    for (const c of [t.pending, t.unconfirmed]) if (c && !out.some(o => o.port === c.port)) out.push({ port: c.port, token: c.token });
+    for (const c of [t.pending, t.unconfirmed]) if (c && !out.some(o => o.port === c.port)) out.push({ port: c.port, token: c.token, rec: c });
     return out;
   }
 
@@ -1892,8 +1903,9 @@ function createShell(deps) {
     if (fromStart !== null) failed.push({ port: t.closeStopPort, token: t.closeStopToken || null, booting: true, failure: fromStart });
     const targets = (t.started && t.ended === true ? [] : hostsToStop(t)).filter(x => x.port !== skip);
     for (const target of targets) {
+      if (target.rec && exitedHosts.has(target.rec)) continue;     // its spawned child exited: dead (PR #231 Dexter M2)
       const f = await stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
-      if (f !== null) failed.push({ port: target.port, token: target.token, booting: !(t.started && t.port === target.port), failure: f });
+      if (f !== null) failed.push({ port: target.port, token: target.token, rec: target.rec, booting: !(t.started && t.port === target.port), failure: f });
     }
     return failed;
   }

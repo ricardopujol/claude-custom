@@ -69,6 +69,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
       spawn: ({ tab, port, token }) => {
         h.spawns.push({ key: tab.key, port, token, side: tab.side === true, cwd: tab.cwd });
         h.running[port] = { cwd: tab.cwd, side: tab.side === true };
+        return h.spawnChild ? h.spawnChild() : undefined;
       },
       wait: async () => { if (h.holdWait) await h.holdWait; if (h.waitFails > 0) { h.waitFails--; return false; } return true; },
       tokenFor: tokenOf,
@@ -613,6 +614,26 @@ async function timeOutTwice(h) {
   return rec;
 }
 const stopMsgsTo = (h, port) => h.controls.filter(c => c.msg.type === 'stop' && c.port === port);
+
+test('Dexter M2: a side host whose spawned child exited before it bound is dead: its tab closes, with no stop sent to its port', async () => {
+  const { EventEmitter } = require('node:events');
+  const h = await opened();
+  const child = new EventEmitter();
+  h.spawnChild = () => child;
+  h.waitFails = 1;
+  await h.shell.openSide(key('feat-a'));
+  assert.ok(h.shell._tabs.get(skey('feat-a')).pending, 'a pending host');
+  delete h.running[7702];                    // nothing binds that port
+  h.controlOk = false;
+  h.pidOutcome = 'nofile';
+  child.emit('exit', 1, null);
+  h.controls.length = 0;
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell._tabs.has(skey('feat-a')), false);
+  assert.deepStrictEqual(h.controls, []);
+  assert.deepStrictEqual(h.pidStops, []);
+});
 
 test('Dexter F1 (PR #216): closing the BRANCH tab after two side-start timeouts stops the unconfirmed side host, by x and by Ctrl+click', async () => {
   for (const ifSafe of [false, true]) {
