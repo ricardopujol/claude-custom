@@ -28,9 +28,9 @@
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and no prompt is ever sent;
  * ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; the project is a temp
- * git repo, registry, portraits, uploads and user data are temp folders. Two files of THIS checkout are touched
- * because host.js hardcodes its state dir (.harness/state/layout-global.json and layout-tree.json): both are
- * snapshotted and put back on every exit path. Only PIDs this probe started are killed: the burner and the
+ * git repo, registry, portraits, uploads, user data and the UI-state folder (CLAUDE_CUSTOM_UI_STATE_DIR: layout, chip
+ * record AND the shared sampler's pool, BACKLOG #114 F2) are temp folders, so nothing of this checkout's .harness/state
+ * is touched and the probe never joins the real, machine-wide resource pool. Only PIDs this probe started are killed: the burner and the
  * bystander end themselves (the burner after ~100 s at the latest), and the Electron tree this probe spawned is
  * killed by PID at exit (verify/lib/process-hygiene.js). Nothing is ever stopped by name.
  */
@@ -43,9 +43,7 @@ const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const STATE_DIR = path.join(ROOT, '.harness', 'state');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
-const { snapshotFile } = require('./lib/file-snapshot');
 const { isLiveHost } = require('./lib/live-host');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
@@ -55,6 +53,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-res-'));
 const dev = path.join(tmp, 'proj', 'dev');
 const userData = path.join(tmp, 'user-data');
+// main's install-wide UI records AND the shared resource sampler's pool folder (resource-poller-v1) live here (host/probe-seams.js).
+const STATE_DIR = path.join(tmp, 'ui-state');
+fs.mkdirSync(STATE_DIR, { recursive: true });
 const shots = process.env.RES_PROBE_SHOTS || path.join(ROOT, '.harness', 'probe-resource-panel');
 fs.mkdirSync(shots, { recursive: true });
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', ...args],
@@ -83,13 +84,7 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-const LAYOUT_FILE = path.join(STATE_DIR, 'layout-global.json');
-const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const CHIP_FILE = path.join(STATE_DIR, 'resource-chip.json');
-const layoutSnap = snapshotFile(LAYOUT_FILE);
-const treeSnap = snapshotFile(TREE_FILE);
-const chipSnap = snapshotFile(CHIP_FILE);
-hygiene.addCleanup(() => { layoutSnap.restore(); treeSnap.restore(); chipSnap.restore(); });
 hygiene.install();
 
 async function launchApp(cwd) {
@@ -105,12 +100,13 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    CLAUDE_CUSTOM_UI_STATE_DIR: STATE_DIR,
     // the warning's threshold, lowered so a busy machine still shows the chip (default 40; see app/main.js)
     CLAUDE_CUSTOM_RESOURCE_WARN_AT: process.env.RES_PROBE_WARN_AT || '15',
   };
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_RESOURCE_WARN_AT', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_RESOURCE_WARN_AT', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_UI_STATE_DIR'] });
   hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
@@ -205,7 +201,6 @@ async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
-  for (const f of [LAYOUT_FILE, TREE_FILE, CHIP_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
   const burnJs = path.join(tmp, 'burn.js');
   const byJs = path.join(tmp, 'bystander.js');
   const burnPidFile = path.join(tmp, 'burn.pid');
@@ -221,7 +216,11 @@ async function main() {
   const ready = await viewReady(app);
   check('the window came up with a session', !!ready, ready ? '' : app.out.slice(-600));
   if (!ready) return;
-  const st0 = await command(app, { cmd: 'state' });
+  // BACKLOG #114 F2: the machine-wide sampler pool is this probe's own folder, never the real one under LOCALAPPDATA.
+  const poolDir = require(path.join(ROOT, 'host', 'shared-poller')).defaultDir({ uiStateDir: STATE_DIR });
+  check('the shared sampler pool is private to this probe (not the real LOCALAPPDATA one)',
+    !!(await waitFor(() => (fs.existsSync(poolDir) && fs.readdirSync(poolDir).length > 0 ? true : null), 20000)), poolDir);
+  const st0 =await command(app, { cmd: 'state' });
   const tabKey = st0.selectedKey;
   const sessionKey = `s:${tabKey}`;
   const hostPid = (st0.hosts.find(h => h.key === tabKey) || {}).pid;
@@ -527,9 +526,6 @@ main()
   .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
   .finally(() => {
     killEverything();
-    layoutSnap.restore();
-    treeSnap.restore();
-    chipSnap.restore();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);
