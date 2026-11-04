@@ -96,6 +96,13 @@ test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x wi
   assert.match(drv, /win\.webContents\.sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\);/, 'a real input event, so the page\'s own handler runs');
 });
 
+test('main.js: the probe driver clicks the strip alert\'s Stop button with a real input event, and the state says whether it is drawn (#129)', () => {
+  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
+  assert.match(drv, /async stopClick\(\) \{ return stripStopClick\(\); \}/);
+  assert.match(drv, /const stripStopClick = async \(\) => \{[\s\S]*?querySelector\('#strip-alert \.stop'\)[\s\S]*?sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\)/);
+  assert.match(drv, /stop: !!document\.querySelector\('#strip-alert \.stop'\)/, 'stripChrome says if the offer is drawn');
+});
+
 test('host.js: a stop ends the shell host the way it ends any host: the pty tree by pid, then its identity file', () => {
   const stop = HOST.slice(HOST.indexOf("if (msg.type === 'stop') {"), HOST.indexOf("if (msg.type === 'raise') {"));
   assert.match(stop, /shutdown\(\);\s*process\.exit\(0\);/);

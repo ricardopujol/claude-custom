@@ -714,6 +714,7 @@ test('#129: a kept tab is not offered back by Reopen, and Stop on it ends it wit
   assert.strictEqual(h.confirms.length, 1, 'the question was answered the first time');
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
   assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null, 'the "may still be running" line goes with the tab it was about (found by verify/probe-tab-close-kept.js)');
 });
 
 test('#129: Stop that fails again leaves the tab kept, with the offer still up', async () => {

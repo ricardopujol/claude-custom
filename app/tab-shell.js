@@ -1128,7 +1128,7 @@ function createShell(deps) {
     if (failure !== null && (await endByPid(retryPorts)) === null) failure = null;
     if (!tabs.has(key)) return { ok: true };     // gone during the stop (its folder was removed)
     if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure);
-    if (closeStuck !== null && closeStuck.key === key) closeStuck = null;
+    if (closeStuck !== null && closeStuck.key === key) { if (closeNotice === closeStuck.text) closeNotice = null; closeStuck = null; }     // the line about it goes with it
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
@@ -1838,7 +1838,7 @@ function createShell(deps) {
       t.closeStopPort = null;
       return keepStuck(key, `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`, failure);
     }
-    if (closeStuck !== null && closeStuck.key === key) closeStuck = null;
+    if (closeStuck !== null && closeStuck.key === key) { if (closeNotice === closeStuck.text) closeNotice = null; closeStuck = null; }     // the line about it goes with it
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
     const parentKey = companionParentOf(key);
@@ -2048,6 +2048,9 @@ async function handleProbeCommand(line, api, expectedToken) {
         // Ricardo's look, 2026-10-26: a real plain click on the tab's own x.
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'xClick needs a label' };
         return await api.xClick(cmd.label);
+      case 'stopClick':
+        // #129: a real click on the Stop button the strip's alert line offers on a tab kept because its host wouldn't end.
+        return await api.stopClick();
       case 'tabMenu':
         // The tab's right-click menu as built, and one item's own click: a native popup nobody can click.
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'tabMenu needs a label' };

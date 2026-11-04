@@ -119,7 +119,9 @@
     #stop-all:disabled { cursor: progress; opacity: 0.6; }
     #strip-alert.info { color: var(--dim); }
     /* #129: the Stop offer on a tab kept because its host wouldn't end. Same red-outline look as STOP ALL; Ricardo's to judge live. */
-    #strip-alert .stop { margin-left: 8px; height: 18px; border: 1px solid var(--bad); border-radius: 4px; background: transparent;
+    #strip-alert:has(.stop) { display: flex; align-items: center; }
+    #strip-alert .alert-text { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #strip-alert .stop { flex: none; margin-left: 8px; height: 18px; border: 1px solid var(--bad); border-radius: 4px; background: transparent;
       color: var(--bad); cursor: pointer; font-size: 11px; font-weight: 600; padding: 0 8px; }
     #strip-alert .stop:hover { background: var(--bad); color: #fff; }
     /* Layout pass L2 (#28): a frameless window. The strip is the title bar, so

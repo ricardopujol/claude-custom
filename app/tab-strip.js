@@ -423,10 +423,14 @@ function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
     alertEl.replaceChildren();     // before the text: a real element's textContent would otherwise be wiped by it
     alertEl.textContent = a ? a.text : '';
     if (a && a.stop) {
-      const stop = alertEl.appendChild(el(doc, 'button', 'stop', 'Stop'));
+      // The text gets its own element so it can shrink with an ellipsis while the button keeps its room: in one line of text the
+      // button was clipped off the end of a long notice (seen in a real window, verify/probe-tab-close-kept.js).
+      const label = el(doc, 'span', 'alert-text', a.text);
+      const stop = el(doc, 'button', 'stop', 'Stop');
       stop.type = 'button';
       stop.title = 'Try again to end this session';
       stop.addEventListener('click', (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); bridge.close(a.stop); });
+      alertEl.replaceChildren(label, stop);
     }
     alertEl.title = a ? a.text : '';
     alertEl.className = a ? a.kind : '';

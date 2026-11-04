@@ -1856,6 +1856,16 @@ function startProbeDriver(port) {
     win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
     return { ok: true };
   };
+  // #129: a real click on the Stop button in the strip's alert line (a tab kept because its host wouldn't end), read from the DOM.
+  const stripStopClick = async () => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      "JSON.stringify((() => { const n = document.querySelector('#strip-alert .stop'); if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())"));
+    if (!rect) return { ok: false, error: 'no Stop button in the strip' };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: [] };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1882,7 +1892,7 @@ function startProbeDriver(port) {
       let stripChrome = null;
       try {
         stripChrome = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, stop: !!document.querySelector('#strip-alert .stop'), stopInView: (() => { const b = document.querySelector('#strip-alert .stop'); if (!b) return null; const r = b.getBoundingClientRect(); const a = document.getElementById('strip-alert').getBoundingClientRect(); return r.width > 0 && r.left >= a.left - 1 && r.right <= a.right + 1; })(), pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
           // #62: the lean button and chip as painted
           + "lean: { bodyLean: document.body.classList.contains('lean'), btnHidden: document.getElementById('lean-btn').hidden, chipHidden: document.getElementById('lean-chip').hidden, label: document.getElementById('lean-chip-label').textContent, night: document.getElementById('lean-chip-night').hidden ? null : document.getElementById('lean-chip-night').textContent, back: document.getElementById('lean-back').textContent, dotAnim: (() => { const d = document.querySelector('.dot.working'); return d ? getComputedStyle(d).animationName : null; })(), "
           + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, drawn: b.querySelectorAll('canvas[data-still-drawn]').length, failed: b.querySelectorAll('canvas[data-still-failed]').length, imgs: b.querySelectorAll('img').length, imgsLoaded: [...b.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth > 0).length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
@@ -2025,6 +2035,7 @@ function startProbeDriver(port) {
     async ctrlClick(label) { return stripClick(label, false, ['control']); },
     // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
     async xClick(label) { return stripClick(label, true, []); },
+    async stopClick() { return stripStopClick(); },
     // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
     // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
     async tabMenu(label, item) {

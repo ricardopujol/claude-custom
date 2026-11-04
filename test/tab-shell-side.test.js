@@ -292,6 +292,7 @@ test('a side host that does not answer its stop nor the pid retry: the tab is ke
   assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
   assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
   assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null, 'the notice goes with the tab it was about');
 });
 
 test('a side host that does not answer its stop but dies to the pid retry: the tab goes with no notice (#129)', async () => {

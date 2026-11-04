@@ -376,6 +376,8 @@ test('#129: a tab kept because its host would not end shows its notice with a St
   const alertEl = doc.byId['strip-alert'];
   assert.strictEqual(alertEl.hidden, false);
   assert.match(alertEl.textContent, /feat\/a.*no answer.*may still be running/);
+  const label = alertEl.children.find(c => c.tag === 'span');
+  assert.ok(label && /feat\/a.*no answer/.test(label.textContent), 'the text in its own element, so it can shrink while the button keeps its room');
   const stop = alertEl.children.find(c => c.tag === 'button');
   assert.ok(stop, 'a Stop button');
   assert.strictEqual(stop.textContent, 'Stop');

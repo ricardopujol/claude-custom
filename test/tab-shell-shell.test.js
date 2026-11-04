@@ -293,6 +293,7 @@ test('a shell host that does not answer its stop nor the pid retry: the tab is k
   assert.strictEqual(again.ok, true);
   assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
   assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null, 'the notice goes with the tab it was about');
 });
 
 test('a shell host that does not answer its stop but dies to the pid retry: the tab goes with no notice (#129)', async () => {
@@ -646,6 +647,16 @@ test('the probe driver can open a shell by label, and refuses it without one', a
   for (const bad of [{}, { label: '' }, { label: 5 }]) {
     assert.strictEqual((await probe({ cmd: 'shell-open', ...bad }, api)).ok, false, JSON.stringify(bad));
   }
+  assert.strictEqual(seen.length, 1);
+});
+
+test('the probe driver can click the strip alert\'s Stop button (#129), takes no argument, and stays shut without a token', async () => {
+  const seen = [];
+  const api = { stopClick: async () => { seen.push('stop'); return { ok: true }; } };
+  assert.deepStrictEqual(await probe({ cmd: 'stopClick' }, api), { ok: true });
+  assert.deepStrictEqual(seen, ['stop']);
+  const noToken = await handleProbeCommand(JSON.stringify({ cmd: 'stopClick' }), api, 'x'.repeat(16));
+  assert.strictEqual(noToken.ok, false);
   assert.strictEqual(seen.length, 1);
 });
 
