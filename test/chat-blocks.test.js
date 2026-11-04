@@ -365,3 +365,11 @@ test('expandTabs: a tab-indented first item, and a tab-indented continuation of 
 test('expandTabs: only LEADING tabs are expanded; a tab inside the text is left alone', () => {
   assert.strictEqual(plain(parseMarkdown('- a\tb')[0].items[0].inlines), 'a\tb');
 });
+
+test('expandTabs: a tab is FOUR columns: it lines up with four spaces, so a tab-indented item and a 4-space one are siblings (PR #231 Miguel G4)', () => {
+  // at two columns the 4-space line would be nested UNDER the tab-indented one
+  assert.deepStrictEqual(shapeOf(parseMarkdown('- a\n\t- b\n    - c')),
+    [{ list: [{ text: 'a', kids: [{ list: [{ text: 'b', kids: [] }, { text: 'c', kids: [] }] }] }] }]);
+  assert.deepStrictEqual(shapeOf(parseMarkdown('- a\n    - b\n\t- c')),
+    [{ list: [{ text: 'a', kids: [{ list: [{ text: 'b', kids: [] }, { text: 'c', kids: [] }] }] }] }]);
+});
