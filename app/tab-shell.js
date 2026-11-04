@@ -289,7 +289,26 @@ function createShell(deps) {
   let polling = false;
   let lastError = null;
   let closeNotice = null;        // a hand close whose stop failed; cleared by the next selection
-  let closeStuck = null;         // #129: { key, text } the tab a hand close kept because its host wouldn't end; the strip offers Stop on it
+  // #129: the tabs a hand close kept because their host wouldn't end: key -> { text, tab }. The strip offers Stop on the newest. An entry
+  // is the offer for THAT tab record only (PR #231 Dexter 3 / Miguel Y1): a tab that left or ended, or a new tab under the same key,
+  // is not it, so a later x is a plain close and asks.
+  const closeStuck = new Map();
+  const stuckValid = (key, e) => !!e && tabs.get(key) === e.tab && e.tab.ended !== true && e.tab.closed !== true
+    && (state.tabs.find(t => keyOf(t.path) === key) || {}).phase !== 'removing';
+  const stuckFor = (key) => {
+    const e = closeStuck.get(key);
+    if (e && !stuckValid(key, e)) { closeStuck.delete(key); return null; }
+    return e || null;
+  };
+  /** The offer the strip draws: the newest kept tab that is still that tab. */
+  function stuckNow() {
+    let out = null;
+    for (const [key, e] of [...closeStuck]) {
+      if (!stuckValid(key, e)) { closeStuck.delete(key); continue; }
+      out = { key, text: e.text };
+    }
+    return out;
+  }
   let destroyed = false;
   // PR 3. `create` is the strip's branch form: null, or { phase: 'input' } /
   // { phase: 'running', branch } / { phase: 'failed', branch, error }.
@@ -520,7 +539,7 @@ function createShell(deps) {
     // the selected one) and `lanes` the rows of the Lanes menu for the rest. The strip draws `strip`, never `model`.
     const placed = tabLanes.placeLanes(m, closedRows());
     return {
-      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, closeStuck: closeStuck !== null && tabs.has(closeStuck.key) ? { ...closeStuck } : null, mode,
+      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, closeStuck: stuckNow(), mode,
       create: create ? { ...create } : null,
     };
   }
@@ -1042,13 +1061,13 @@ function createShell(deps) {
     // A side or shell tab closes without a question (closeCompanionOnce); it also ends with its branch tab (#81).
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
-    try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
+    try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key, opts) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
   }
   /**
    * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
    * skips the confirm when unsafeReason is empty; otherwise the confirm is told why.
    */
-  async function closeTabOnce(key, { ifSafe = false } = {}) {
+  async function closeTabOnce(key, { ifSafe = false, stop = false } = {}) {
     const tab = tabByKey(key);
     if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
@@ -1057,8 +1076,8 @@ function createShell(deps) {
     let reason = '';
     let silent = false;
     let gitFacts = null;
-    if (closeStuck !== null && closeStuck.key === key) {
-      yes = true;     // #129: the Stop offer on a kept tab. It was asked once; the question isn't asked again.
+    if (stop === true && stuckFor(key) !== null) {
+      yes = true;     // #129: the Stop button on a kept tab. It was asked once; the question isn't asked again. A plain x is a new close.
     } else if (ifSafe === true) {
       gitFacts = await gitFactsOf(tab);
       reason = closeReason(closeFactsOf(tab, gitFacts));
@@ -1125,7 +1144,7 @@ function createShell(deps) {
     }
     if (!tabs.has(key)) return { ok: true };     // gone during the stop (its folder was removed)
     if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure);
-    if (closeStuck !== null && closeStuck.key === key) { if (closeNotice === closeStuck.text) closeNotice = null; closeStuck = null; }     // the line about it goes with it
+    clearStuck(key);     // the line about it goes with it
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
@@ -1198,10 +1217,16 @@ function createShell(deps) {
     return failure;
   }
 
+  function clearStuck(key) {
+    const e = closeStuck.get(key);
+    if (e && closeNotice === e.text) closeNotice = null;
+    closeStuck.delete(key);
+  }
+
   /** #129: a close whose host would not end keeps its tab, says so in the strip, and offers Stop (a second close, without the question). */
   function keepStuck(key, notice, failure) {
     closeNotice = notice;
-    closeStuck = { key, text: notice };
+    closeStuck.set(key, { text: notice, tab: tabs.get(key) });
     log(`[shell] ${key}: ${notice}`);
     publish();
     return { ok: false, kept: true, stopError: failure };
@@ -1864,13 +1889,13 @@ function createShell(deps) {
    * (the work is in the branch tab), and the folder stays. Only this tab's own host is stopped, never its branch tab's. Reopen
    * doesn't offer it back (Open shell here / Open side session starts a fresh one). If it was showing, its own branch tab shows next.
    */
-  async function closeCompanionOnce(key) {
+  async function closeCompanionOnce(key, { stop = false } = {}) {
     const t = tabs.get(key);
     const noun = companionNounOf(key);
     if (!t || noun === null || mode !== 'tabs') return { ok: false, error: 'not closable' };
     // A side tab's code reader is a full editor (Dexter F1, PR #214): an unsaved edit in it asks, exactly as a branch tab's close
     // does (the question names the file). Nothing unsaved, nothing asked. A shell has no reader.
-    if (isSideKey(key) && readerUnsavedOf(t)) {
+    if (isSideKey(key) && readerUnsavedOf(t) && !(stop === true && stuckFor(key) !== null)) {
       let yes = false;
       try { yes = (await ui.confirmClose(t)) === true; } catch { yes = false; }
       if (!yes) return { ok: false, cancelled: true };
@@ -1893,7 +1918,7 @@ function createShell(deps) {
       t.closeStopPort = null;
       return keepStuck(key, `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`, failure);
     }
-    if (closeStuck !== null && closeStuck.key === key) { if (closeNotice === closeStuck.text) closeNotice = null; closeStuck = null; }     // the line about it goes with it
+    clearStuck(key);     // the line about it goes with it
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
     const parentKey = companionParentOf(key);

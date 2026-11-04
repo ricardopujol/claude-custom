@@ -429,7 +429,7 @@ function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
       const stop = el(doc, 'button', 'stop', 'Stop');
       stop.type = 'button';
       stop.title = 'Try again to end this session';
-      stop.addEventListener('click', (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); bridge.close(a.stop); });
+      stop.addEventListener('click', (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); bridge.stop(a.stop); });
       alertEl.replaceChildren(label, stop);
     }
     alertEl.title = a ? a.text : '';

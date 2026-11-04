@@ -81,7 +81,7 @@ test('the gate check reads each handler alone: an ungated handler right before a
 
 test('the scan finds the channels this file registers', () => {
   const names = channels.map(c => c.name);
-  for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo', 'tab:selectFolder',
+  for (const n of ['strip:select', 'strip:close', 'strip:stop', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo', 'tab:selectFolder',
     'tab:raise', 'attention', 'secrets:list', 'secrets:melt', 'look:setDim',
     // the Git drawer (Enhancement #46)
     'tab:states', 'tab:typeMerged', 'tab:typed']) {
@@ -220,8 +220,9 @@ test('a hand close asks first, every time', () => {
 
 test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
   assert.match(MAIN, /ipcMain\.on\('strip:close', \(e, key, ifSafe\)/);
+  assert.match(MAIN, /ipcMain\.on\('strip:stop', \(e, key\) => \{\s*if \(!fromStrip\(e\) \|\| typeof key !== 'string'\) return;\s*closeTabFlow\(key, \{ stop: true \}\);/, 'Stop is its own gated channel');
   assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
-  assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
+  assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe, stop \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
   assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\), readerUnsaved: \(tab\) => readerUnsaved\.pathFor\(tab\.key\) \}/);
   assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/,

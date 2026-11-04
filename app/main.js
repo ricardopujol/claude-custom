@@ -1028,9 +1028,9 @@ function onShellChanged(snapshot) {
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
 // close. Nothing on disk is touched.
-async function closeTabFlow(key, { ifSafe = false } = {}) {
+async function closeTabFlow(key, { ifSafe = false, stop = false } = {}) {
   if (!key || !tabShell) return null;
-  return tabShell.closeTab(key, { ifSafe });
+  return tabShell.closeTab(key, { ifSafe, stop });
 }
 
 let closeAsking = false;     // the window-close question is up: a second close gesture doesn't stack another
@@ -1292,6 +1292,10 @@ function registerIpc() {
   ipcMain.on('strip:close', (e, key, ifSafe) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     closeTabFlow(key, { ifSafe: ifSafe === true });
+  });
+  ipcMain.on('strip:stop', (e, key) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    closeTabFlow(key, { stop: true });
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;

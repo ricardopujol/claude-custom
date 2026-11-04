@@ -967,3 +967,17 @@ test('Dexter 7: a side host whose stop timed out is given its shutdown bound, an
   assert.strictEqual(r.ok, true);
   assert.deepStrictEqual(h.pidStops, []);
 });
+
+test('Dexter 3: a side tab with an unsaved reader edit asks on a plain x even when it was kept; only the Stop click skips the question', async () => {
+  const h = await opened({ safety: { readerUnsaved: () => 'README.md' } });
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'failed';
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, false);
+  assert.strictEqual(h.confirms.length, 1);
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, false);
+  assert.strictEqual(h.confirms.length, 2, 'a plain x asks again');
+  h.controlOk = true;
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'), { stop: true })).ok, true);
+  assert.strictEqual(h.confirms.length, 2, 'the Stop click does not');
+});

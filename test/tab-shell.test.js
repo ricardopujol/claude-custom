@@ -709,7 +709,7 @@ test('#129: a kept tab is not offered back by Reopen, and Stop on it ends it wit
   assert.strictEqual(h.confirms.length, 1);
   // Stop: the host answers this time.
   h.controlReply = null;
-  const r = await h.shell.closeTab(key('feat-a'));
+  const r = await h.shell.closeTab(key('feat-a'), { stop: true });     // the strip's Stop button
   assert.strictEqual(r.ok, true);
   assert.strictEqual(h.confirms.length, 1, 'the question was answered the first time');
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
@@ -3439,4 +3439,91 @@ test('Dexter 7: any other failure goes to the pid retry at once, with no wait', 
   await h.shell.closeTab(key('feat-a'));
   assert.deepStrictEqual(h.pidStops, [7701]);
   assert.deepStrictEqual(h.slept, []);
+});
+
+// --- PR #231 Dexter 3 / Miguel Y1: the Stop license is for THAT kept tab's Stop button, and nothing else ----------------------------
+
+async function keptFeatA() {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.confirms.length, 1);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  return h;
+}
+
+test('Dexter 3: a plain x on a kept tab is a NEW close: it asks again, whatever happened to the Stop offer', async () => {
+  const h = await keptFeatA();
+  const r = await h.shell.closeTab(key('feat-a'));          // the tab's own x, not the strip's Stop button
+  assert.strictEqual(h.confirms.length, 2, 'asked again');
+  assert.strictEqual(r.ok, false);
+  h.confirm = false;                                        // ...and "no" cancels it
+  const no = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(no.cancelled, true);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+});
+
+test('Dexter 3: the Stop button\'s own click (stop: true) is the only close that skips the question', async () => {
+  const h = await keptFeatA();
+  h.controlReply = null;
+  h.pidReply = null;
+  const r = await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.confirms.length, 1, 'not asked a second time');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('Dexter 3: stop: true on a tab that was never kept is an ordinary close and asks', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 1);
+});
+
+test('Dexter 3 / Miguel Y1: a kept tab that leaves, and a NEW tab under the same key, inherit nothing', async () => {
+  const h = await keptFeatA();
+  const listed = h.listText;
+  h.listText = porcelain([['dev', 'develop'], ['feat-b', 'feat/b']]);     // git stops listing feat-a: its folder was removed
+  await h.shell.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  // (nothing reads the shell between the removal and the new tab: the offer must be judged by the tab RECORD, not by its key)
+  h.listText = listed;                                                      // the lane is made again under the same name
+  await h.shell.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'a new tab with the same key');
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the new tab did not fail anything');
+  h.controlReply = null;
+  h.pidReply = null;
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'its first close asks, even from a Stop click');
+});
+
+test('Dexter 3: a kept tab whose host then ends has no Stop offer any more', async () => {
+  const h = await keptFeatA();
+  delete h.running[7701];
+  await h.shell.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).ended, true);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'a stale offer licenses nothing');
+});
+
+test('Dexter 3: a second kept tab does not take the first one\'s offer away', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a'), 7702: wt('feat-b') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.closeTab(key('feat-b'));
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-b'), 'the strip shows the newest');
+  h.controlReply = null;
+  h.pidReply = null;
+  assert.strictEqual((await h.shell.closeTab(key('feat-b'), { stop: true })).ok, true);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'), 'and the older one is still offered');
+  assert.strictEqual((await h.shell.closeTab(key('feat-a'), { stop: true })).ok, true);
+  assert.strictEqual(h.confirms.length, 2, 'each asked once');
 });

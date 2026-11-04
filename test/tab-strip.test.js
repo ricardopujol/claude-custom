@@ -38,7 +38,7 @@ const entry = (o) => ({
 });
 const bridgeSpy = () => {
   const calls = [];
-  return { calls, select: (k) => calls.push(['select', k]), close: (k, ifSafe) => calls.push(ifSafe === undefined ? ['close', k] : ['close', k, ifSafe]), contextMenu: (k) => calls.push(['menu', k]) };
+  return { calls, select: (k) => calls.push(['select', k]), close: (k, ifSafe) => calls.push(ifSafe === undefined ? ['close', k] : ['close', k, ifSafe]), contextMenu: (k) => calls.push(['menu', k]), stop: (k) => calls.push(['stop', k]) };
 };
 const child = (tab, cls) => tab.children.find(c => c.className.split(' ').includes(cls));
 
@@ -273,13 +273,13 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-eight members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-nine members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus',
+    ['select', 'close', 'stop', 'contextMenu', 'plus',
       // #139 + #141, the Lanes menu and drag to reorder (main answers them; app/tab-shell.js lanesMenu / reorder)
       'lanes', 'reorder',
       'create', 'cancelCreate',
@@ -296,6 +296,7 @@ test('the strip bridge exposes its twenty-eight members -- and nothing else', ()
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
   assert.match(src, /'strip:close'/);
+  assert.match(src, /'strip:stop'/);
   assert.match(src, /'strip:contextMenu'/);
   assert.match(src, /'strip:plus'/);
   assert.match(src, /'strip:create'/);
@@ -382,7 +383,7 @@ test('#129: a tab kept because its host would not end shows its notice with a St
   assert.ok(stop, 'a Stop button');
   assert.strictEqual(stop.textContent, 'Stop');
   stop.listeners.click({ stopPropagation() {} });
-  assert.deepStrictEqual(bridge.calls, [['close', 'k']]);
+  assert.deepStrictEqual(bridge.calls, [['stop', 'k']], 'its own channel: a plain close asks, this one was asked already (PR #231 Dexter 3)');
   // A repaint does not stack a second button.
   paint(doc, { model, closeNotice: null, closeStuck: stuck }, bridge);
   assert.strictEqual(alertEl.children.filter(c => c.tag === 'button').length, 1);
