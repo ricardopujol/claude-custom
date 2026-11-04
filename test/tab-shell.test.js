@@ -3553,8 +3553,9 @@ test('Dexter 3 / Miguel Y1: a kept tab that leaves, and a NEW tab under the same
   h.listText = porcelain([['dev', 'develop'], ['feat-b', 'feat/b']]);     // git stops listing feat-a: its folder was removed
   await h.shell.poll();
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
-  // (nothing reads the shell between the removal and the new tab: the offer must be judged by the tab RECORD, not by its key)
-  h.listText = listed;                                                      // the lane is made again under the same name
+  // (the poll that removed it published, and the snapshot purged the offer right there; the record comparison in stuckValid is a second
+  // line of defence that no sequence through the public API can reach alone: PR #231 Miguel R2)
+  h.listText = listed;                                                    // the lane is made again under the same name
   await h.shell.poll();
   assert.ok(h.shell.tabByKey(key('feat-a')), 'a new tab with the same key');
   assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the new tab did not fail anything');
