@@ -233,7 +233,7 @@ function readLayout(layout, log) {
     if (typeof l.error === 'string' && l.error !== '') log('[shell] layout:', l.error);   // saves will be refused: say why once (PR #227 Miguel S4)
     const closed = (Array.isArray(l.closed) ? l.closed : [])
       .filter(c => c && typeof c.key === 'string' && c.key !== '' && typeof c.path === 'string' && c.path !== '')
-      .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null }));
+      .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null, ...(c.merged === true ? { merged: true } : {}) }));
     return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed };
   } catch (err) {
     log('[shell] layout.load threw:', err && err.message);
@@ -328,7 +328,19 @@ function createShell(deps) {
   const typing = new Map();
   let typingSeq = 0;
   const typingMerged = new Set();     // the tabs a Type /merged is typing into right now
-  let closedByHand = kept.closed;      // [{ key, path, branch }], most recent first
+  let closedByHand = kept.closed;      // [{ key, path, branch, merged? }], most recent first
+  // BACKLOG #139, a merged tab closes by itself. `mergedLive`: lanes whose merge this window saw while they were open (a later poll's
+  // mark-merged), the ones whose close gets the strip's notice; a lane merged before the window first listed it gets a log line.
+  // `spared`: lanes the person brought back after the merge (an Undo, or a merged lane started from its row), never closed by
+  // this path again in this window. `mergedTried`: tab records whose merged close failed to end the host: kept with the Stop
+  // offer, never tried again by this path (the bound on retries: one per record). `mergedBusy`: a merged close in flight.
+  const mergedLive = new Set();
+  const spared = new Set();
+  const mergedTried = new WeakSet();
+  const mergedBusy = new Set();
+  const mergedWhy = new Map();         // key -> the last reason a merged tab was kept, so the log says it once, not every poll
+  let mergedNotice = null;             // "Closed <lane> (merged)": the strip's notice line; cleared by the next selection
+  let lastMergedPass = Promise.resolve();
 
   const keyOf = normPath;
   // The develop worktree's key (host/worktree-list.js: `<container>\dev` is the anchor), known before git answers, so a develop
@@ -556,6 +568,7 @@ function createShell(deps) {
       model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, closeStuck: stuckNow(), mode,
       create: create ? { ...create } : null,
       devClosed: devClosed(),     // #160: the pane says how to bring it back when nothing is selected
+      mergedNotice,               // #139: "Closed <lane> (merged)", an info line
     };
   }
 
@@ -841,6 +854,7 @@ function createShell(deps) {
     const next = tabModel.select(model(), key);
     if (next === null || ending.has(next)) return Promise.resolve();
     closeNotice = null;
+    mergedNotice = null;
     // A tab that is looked at and worked in again is no longer the one that was asked to stop: the Stop offer goes (PR #231 Dexter M1),
     // so a later Stop is a plain close and asks (an edit made since would be lost otherwise).
     closeStuck.delete(next);
@@ -862,9 +876,11 @@ function createShell(deps) {
     let reselect = false;
     let sideList;           // the side hosts the identity files list, read at most once per batch of actions (Miguel Y2)
     let shellList;          // ... and the shell hosts (#119 A5), the same way
+    const openedNow = new Set();     // #139: a lane opened and marked merged in one batch was merged before this window saw it
     for (const a of actions) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
+        openedNow.add(key);
         if (tabs.has(key)) continue;
         const entry = state.tabs.find(t => keyOf(t.path) === key) || { path: a.path, branch: a.branch, isDev: false };
         const tab = newRecord(entry);
@@ -907,8 +923,9 @@ function createShell(deps) {
         const t = tabByKey(key);
         if (t) t.error = a.error;
       } else if (a.type === 'mark-merged') {
-        // The strip draws it from state.tabs; the session keeps running (W4).
+        // The strip draws it from state.tabs; the session keeps running (W4) until the merged close finds it safe (#139).
         log(`[shell] ${key}: merged (${a.branch})`);
+        if (openedNow.has(key)) mergedLive.delete(key); else mergedLive.add(key);
       } else if (a.type === 'remove') {
         runRemove(a.path);
       }
@@ -965,7 +982,15 @@ function createShell(deps) {
   function firstSelection() {
     const first = tabModel.initialSelection(state.tabs, launchedFrom, { keyOf, isInside });
     if (first === null || !tabs.has(first)) return null;
-    if (first === devKey || !devClosed()) return first;
+    if (first === devKey) return first;
+    const fallback = devClosed() || !tabs.has(devKey) ? null : devKey;
+    // #139 (Ricardo's notes of 2026-10-28/29: a window must not open on a lane that was already merged): a merged lane whose
+    // session isn't running is never selected by the window itself, since selecting starts a claude in a folder on its way out.
+    if (['finishing', 'kept', 'removing', 'remove-failed'].includes(phaseOf(first)) && !tabs.get(first).started) {
+      if (mergedWhy.get(first) !== 'opened on') { mergedWhy.set(first, 'opened on'); log(`[shell] ${first}: merged; the window doesn't open on it`); }
+      return fallback;
+    }
+    if (!devClosed()) return first;
     const named = typeof launchedFrom === 'string' && launchedFrom !== '' && (keyOf(launchedFrom) === first || isInside(launchedFrom, tabs.get(first).cwd));
     return named ? first : null;
   }
@@ -994,10 +1019,87 @@ function createShell(deps) {
       }
       if (seen) reconcileWith({ ...seen, listening });
       else publish();
+      // #139: THIS poll's markers. A poll that couldn't list worktrees has none, and closes nothing.
+      if (seen) closeMergedPass(seen.merged);
       lookAgainForHosts();
     } finally {
       polling = false;
     }
+  }
+
+  /**
+   * BACKLOG #139 (Ricardo, 2026-11-05: "they should close when merge automatically"): each poll, a branch tab whose marker THIS
+   * poll read as merged, whose reducer phase is `finishing` and whose session is running is offered to closeTabOnce's `auto`
+   * mode, which closes it only if it is safe now (#77's rule, plus an idle host and an empty CLI box) and otherwise keeps it with
+   * nothing asked; the next poll looks again (no timer of its own). Not started here: develop (never merged), a side or shell tab
+   * (they go with their lane), a lane the person brought back after its merge, a close already in flight, and a record whose
+   * merged close already failed to end its host (kept with the Stop offer: at most one try per tab record, ever).
+   */
+  function closeMergedPass(merged) {
+    const runs = [];
+    for (const t of [...tabs.values()]) {
+      if (t.isDev || isCompanionEntry(t) || t.key === devKey) continue;
+      if (!merged || merged[t.key] !== true || phaseOf(t.key) !== 'finishing') continue;
+      if (spared.has(t.key) || mergedTried.has(t) || mergedBusy.has(t.key) || closing.has(t.key) || ending.has(t.key)) continue;
+      if (stuckFor(t.key) !== null) continue;     // a close already failed to end its host: the Stop offer is the person's to press
+      if (!t.started || t.starting || t.ended === true) continue;     // no session: 1B gives it no tab, there is nothing to close
+      mergedBusy.add(t.key);
+      runs.push(closeTab(t.key, { auto: true }).then((r) => {
+        if (r && r.kept === true) mergedTried.add(t);
+        if (r && typeof r.notSafe === 'string' && mergedWhy.get(t.key) !== r.notSafe) {
+          mergedWhy.set(t.key, r.notSafe);
+          log(`[shell] ${t.key}: merged, kept open: ${r.notSafe}`);
+        }
+      }, (err) => log(`[shell] ${t.key}: merged close threw: ${errorText(err)}`)).finally(() => mergedBusy.delete(t.key)));
+    }
+    lastMergedPass = Promise.all(runs);
+  }
+
+  // #139: the page's own answer to "is your CLI box at rest?", by id, as Type /merged's `typed` answers are.
+  const BOX_ANSWER_MS = 2000;
+  const boxAsks = new Map();
+  let boxSeq = 0;
+
+  /** true when the tab's page says its box is at its prompt and empty, false when it says not, null when it didn't answer in time. */
+  function askBox(tab) {
+    if (!tab.view) return Promise.resolve(null);
+    const id = ++boxSeq;
+    const reply = new Promise(resolve => boxAsks.set(id, { key: tab.key, resolve }));
+    try { views.send(tab, 'box-state', { id }); } catch (err) { boxAsks.delete(id); log('[shell] box-state send threw:', err && err.message); return Promise.resolve(null); }
+    return Promise.race([reply, sleep(BOX_ANSWER_MS).then(() => null)]).then((r) => { boxAsks.delete(id); return r; });
+  }
+
+  /** main.js `tab:boxState`: only the page that was asked, for a question still waiting, counts. */
+  function boxAnswered(sender, reply) {
+    const tab = tabForSender(sender);
+    if (!tab || !reply || typeof reply !== 'object') return false;
+    const w = boxAsks.get(reply.id);
+    if (!w || w.key !== tab.key) return false;
+    boxAsks.delete(reply.id);
+    w.resolve(reply.clear === true);
+    return true;
+  }
+
+  /**
+   * Why a merged tab must not be closed by itself right now, or '' when it may: #77's rule (closeReason: the marker and HEAD on
+   * origin/develop, nothing uncommitted or unpushed, no agent here, no unsaved reader edit) plus an idle host (sessionBusyWhy: the
+   * lock held, no turn, nothing asking) and a CLI box at rest (the page's own reading). Anything that can't be read keeps it.
+   */
+  async function mergedCloseBlocker(tab) {
+    if (!tab.started || tab.starting || tab.ended === true) return 'its session is not running';
+    const idle = () => (tab.status ? busyWhy(tab.status) : "hasn't reported what it's doing");
+    let why = idle();
+    if (why) return `its session ${why}`;
+    const unsaved = readerUnsavedOf(tab);
+    if (unsaved) return `the file reader has unsaved edits to ${unsaved}`;
+    const agents = agentsHereOf(tab);
+    if (agents !== 0) return agents === null ? "couldn't check for agents" : 'an agent is working here';
+    const box = await askBox(tab);
+    if (box !== true) return box === false ? 'its input box holds text, or a dialog is open' : "its page didn't say what its input box holds";
+    const reason = closeReason(closeFactsOf(tab, await gitFactsOf(tab)));
+    if (reason) return reason;
+    why = idle();     // the awaits above took a moment: a turn may have started
+    return why ? `its session ${why}` : '';
   }
 
   /** The window opened: build the tabs and start the selected one. */
@@ -1108,18 +1210,26 @@ function createShell(deps) {
    * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
    * skips the confirm when unsafeReason is empty; otherwise the confirm is told why.
    */
-  async function closeTabOnce(key, { ifSafe = false, stop = false } = {}) {
+  async function closeTabOnce(key, { ifSafe = false, stop = false, auto = false } = {}) {
     const tab = tabByKey(key);
     if (!tab || mode !== 'tabs') return { ok: false, error: 'not closable' };
-    // Develop closes like a lane (#160), but never as the window's one worktree (the model's `closable`: never a lone tab).
-    if (tab.isDev && state.tabs.length <= 1) return { ok: false, error: 'not closable' };
+    // Develop closes like a lane (#160), but never as the window's one worktree (the model's `closable`: never a lone tab), and
+    // never by the merged close (#139): it is never merged.
+    if (tab.isDev && (auto === true || state.tabs.length <= 1)) return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
     if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
     let reason = '';
     let silent = false;
     let gitFacts = null;
-    if (stop === true && stuckFor(key) !== null) {
+    if (auto === true) {
+      // #139: the merged close. Nothing is asked: not safe now means kept, and the next poll looks again.
+      if (phaseNow !== 'finishing') return { ok: false, notSafe: 'not merged' };
+      const why = await mergedCloseBlocker(tab);
+      if (why !== '') return { ok: false, notSafe: why };
+      yes = true;
+      silent = true;
+    } else if (stop === true && stuckFor(key) !== null) {
       yes = true;     // #129: the Stop button on a kept tab. It was asked once; the question isn't asked again. A plain x is a new close.
     } else if (ifSafe === true) {
       gitFacts = await gitFactsOf(tab);
@@ -1172,7 +1282,12 @@ function createShell(deps) {
       }
       // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
       // session) right before the stop; if any of it changed, ask after all.
-      if (silent) {
+      if (silent && auto === true) {
+        // #139: the same re-read for the merged close, which never asks: anything changed (a turn began, a draft was typed) keeps it.
+        const again = await mergedCloseBlocker(tab);
+        if (!tabs.has(key)) return { ok: true };
+        if (again !== '') return { ok: false, notSafe: again };
+      } else if (silent) {
         // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
         const gitAgain = await gitFactsOf(tab);
         if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
@@ -1199,13 +1314,27 @@ function createShell(deps) {
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
-    // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first.
-    closedByHand = [{ key, path: tab.cwd, branch: tab.branch }, ...closedByHand.filter(c => c.key !== key)];
+    // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first. A merged close (#139) is marked so: its row is the Undo.
+    closedByHand = [{ key, path: tab.cwd, branch: tab.branch, ...(auto === true ? { merged: true } : {}) }, ...closedByHand.filter(c => c.key !== key)];
     persistLayout();     // closed stays closed after a restart
     apply(actions.filter(a => a.type !== 'stop'), before);
     if (targets.length > 0) log(`[shell] stop ${key}: sent`);
     if (dead.length > 0) deadPortNotice(label);     // after apply: a selection it makes would clear it
+    else if (auto === true) mergedClosed(key, label);
     return { ok: true };
+  }
+
+  /** #139: the line a merged close leaves. A lane merged before this window first listed it closes with a log line only. */
+  function mergedClosed(key, label) {
+    mergedWhy.delete(key);
+    if (!mergedLive.has(key)) {
+      log(`[shell] ${key}: merged before this window listed it; closed with no notice`);
+      return;
+    }
+    mergedLive.delete(key);
+    mergedNotice = `Closed ${label} (merged)`;
+    log(`[shell] ${key}: ${mergedNotice}`);
+    publish();
   }
 
   /** Who a host must be for this tab to end it by pid: its folder and its kind (host/stop-by-pid.js). */
@@ -1468,7 +1597,7 @@ function createShell(deps) {
   function closedRows() {
     return closedByHand
       .filter(c => state.dismissed.includes(c.key))
-      .map(c => ({ key: c.key, label: typeof c.branch === 'string' && c.branch ? c.branch : path.basename(c.path), isDev: c.key === devKey }));
+      .map(c => ({ key: c.key, label: typeof c.branch === 'string' && c.branch ? c.branch : path.basename(c.path), isDev: c.key === devKey, merged: c.merged === true }));
   }
 
   /** The first few of them: what the `+` menu's probe answer and a plain Ctrl+Shift+T look at. */
@@ -1482,6 +1611,8 @@ function createShell(deps) {
     const target = key === undefined ? list[0] : list.find(c => c.key === key);
     if (!target) return { ok: false, error: 'nothing to reopen' };
     const entry = closedByHand.find(c => c.key === target.key);
+    // #139: the Undo of a merged close. The person wants it open, so the merged close leaves it alone from now on in this window.
+    if (entry.merged === true) spared.add(entry.key);
     state = lifecycle.reopen(state, entry.path).state;
     closedByHand = closedByHand.filter(c => c.key !== target.key);
     reopenedUnlisted.add(target.key);
@@ -1762,6 +1893,9 @@ function createShell(deps) {
   // opens, it just doesn't take the selection later.
   function userSelect(key) {
     selectWhenListed = null;
+    // #139: starting a merged lane from its Lanes row is asking for it: the merged close leaves it alone in this window.
+    const t = tabByKey(key);
+    if (t && !t.started && !t.starting && ['finishing', 'kept'].includes(phaseOf(key))) spared.add(key);
     return select(key, true);
   }
 
@@ -2025,7 +2159,9 @@ function createShell(deps) {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
     createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
-    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor,
+    isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor, boxAnswered,
+    // #139: the merged closes the last poll started (a test awaits them; main never needs to).
+    _mergedPass: () => lastMergedPass,
     // #40: something the model reads changed outside the shell (a tab's mark).
     refresh: publish,
     // Exposed for tests and the probe driver.

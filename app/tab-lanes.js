@@ -51,7 +51,8 @@ const rowOf = (e, state) => ({ key: e.key, label: isString(e.label) && e.label !
 /**
  * placeLanes(entries, closedRows) -> { strip: entries[], menu: { develop: row | null, notStarted: row[], merged: row[] } }
  * `closedRows` are the lanes closed by hand (`{ key, label, isDev? }`), which are not entries at all. A row is
- * `{ key, label, state: 'not started' | 'ended' | 'merged' | 'closed', closed }`. Every entry is in `strip` or is a
+ * `{ key, label, state: 'not started' | 'ended' | 'merged' | 'closed' | 'closed · Undo', closed, undo? }` (the last: a lane the
+ * merged close closed, BACKLOG #139, listed under Merged). Every entry is in `strip` or is a
  * menu row, exactly once; a closed row never repeats a lane that has an entry. A closed develop (BACKLOG #160) is
  * `menu.develop`, never a Not started row: the menus list it first.
  */
@@ -81,7 +82,10 @@ function placeLanes(entries, closedRows) {
     if (!c || typeof c !== 'object' || !isString(c.key) || c.key === '' || known.has(c.key)) continue;
     known.add(c.key);
     const row = { key: c.key, label: isString(c.label) && c.label !== '' ? c.label : c.key, state: 'closed', closed: true };
-    if (c.isDev === true) develop = row; else notStarted.push(row);
+    // #139: a lane the merged close closed is a Merged row whose click is the Undo (it reopens it).
+    if (c.isDev === true) develop = row;
+    else if (c.merged === true) merged.push({ ...row, state: 'closed · Undo', undo: true });
+    else notStarted.push(row);
   }
   return { strip, menu: { develop, notStarted, merged } };
 }

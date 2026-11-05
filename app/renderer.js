@@ -8006,6 +8006,20 @@ if (window.harness && window.harness.onTypeCommand) {
   });
 }
 
+// BACKLOG #139: before main closes a merged tab by itself it asks whether this tab's CLI box is at rest (at its prompt, nothing
+// typed, nothing being typed by this page). Read off the screen as the chat view's send reads it; a screen that can't be read is "no".
+if (window.harness && window.harness.onBoxState) {
+  window.harness.onBoxState((ask) => {
+    const id = ask && ask.id;
+    let clear = false;
+    try {
+      const lines = screenLines();
+      clear = chatViewState.boxAtRest({ screen: inputState(lines, { vim: vimSeen }), box: boxText(lines), typing: typingBusy });
+    } catch { clear = false; }
+    window.harness.boxState({ id, clear: clear === true });
+  });
+}
+
 // WAND-BEGIN
 // The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
 // shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES

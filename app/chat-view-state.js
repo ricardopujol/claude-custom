@@ -111,6 +111,15 @@ const emptyBox = (box) => box === '' || /^Try "/.test(box);
 const PLACEHOLDER = /^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/;
 const onlyPlaceholder = (box) => typeof box === 'string' && PLACEHOLDER.test(box.trim());
 
+/**
+ * BACKLOG #139: is the CLI's box at rest -- at its prompt, holding nothing anyone typed, with nothing being typed into it by this
+ * page? Main asks before it closes a merged tab by itself; anything else (a draft, a dialog, a multi-line box, a screen it can't
+ * read) is "no". Pure; the same reading of the box as sendBlocker's.
+ */
+function boxAtRest({ screen, box, typing } = {}) {
+  return typing !== true && screen === 'ready' && typeof box === 'string' && emptyBox(box);
+}
+
 /** Why this message must not be typed now, or null. Pure. `screen` is top-bar-display's inputState, `box` its boxText. */
 function sendBlocker({ text, turn, blocked, screen, box, holds }) {
   if (turn === 'prompt' || blocked === true) return NOTE.dialog;
@@ -209,7 +218,7 @@ function writeWanted(storage, cwd, wanted) {
   try { if (storage) storage.write(keyFor(cwd), wanted === true ? '1' : '0'); } catch { /* a full or blocked store: the switch just isn't remembered */ }
 }
 
-const api = { viewFor, isChatKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
+const api = { viewFor, isChatKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, boxAtRest, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.chatViewState = api;
 

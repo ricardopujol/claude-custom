@@ -1020,7 +1020,7 @@ function onShellChanged(snapshot) {
   // `model` is the strip's tabs only (1B: a lane with no running session is a row in `lanes`, the Lanes menu's rows).
   lastStripPayload = {
     model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, closeStuck: snapshot.closeStuck,
-    mode: snapshot.mode, create: snapshot.create, devClosed: snapshot.devClosed === true,
+    mode: snapshot.mode, create: snapshot.create, devClosed: snapshot.devClosed === true, mergedNotice: snapshot.mergedNotice || null,
   };
   win.webContents.send('strip-model', lastStripPayload);
   if (trayController) trayController.sync();     // the count and the tooltip follow the cues
@@ -1444,6 +1444,11 @@ function registerIpc() {
   ipcMain.on('tab:typed', (e, reply) => {
     if (!isTabView(e.sender)) return;
     tabShell.typed(e.sender, reply);
+  });
+  // BACKLOG #139: the page's answer to `box-state` (is its CLI box at rest?), asked before a merged tab closes by itself.
+  ipcMain.on('tab:boxState', (e, reply) => {
+    if (!isTabView(e.sender)) return;
+    tabShell.boxAnswered(e.sender, reply);
   });
   // A link clicked in a tab's terminal (fix/terminal-links): straight to the
   // default browser, no prompt -- only what openInBrowser accepts.

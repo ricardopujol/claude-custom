@@ -4,7 +4,7 @@
  * the order the person dragged the lanes into, and the lanes they closed by hand, so a closed tab stays closed after a restart
  * (it is a row in the Lanes menu until they reopen it).
  *
- *   <project>\.claude-custom\tab-strip.json   { version: 1, order: [laneKey], closed: [{ key, path, branch, at }], reopened: [{ key, at }] }
+ *   <project>\.claude-custom\tab-strip.json   { version: 1, order: [laneKey], closed: [{ key, path, branch, at, merged? }], reopened: [{ key, at }] }
  *
  * `at` is when the lane was closed and `reopened` holds a tombstone for each lane reopened, both in ms and both taken when the person
  * ACTED, not when the file was written: with two windows open, the newer action on a lane wins whichever window made it (PR #227
@@ -54,7 +54,9 @@ function cleanClosed(list) {
     if (!key || !p || out.some(x => x.key === key)) continue;
     // Reopen finds a lane by `key` and un-closes it by `path`; a pair that disagrees would leave it closed for good (PR #227 Dexter 7).
     if (normPath(p) !== key) continue;
-    out.push({ key, path: p, branch: text(c.branch) });
+    // `merged: true` (BACKLOG #139): the merged close closed it, so its Lanes row is the Undo. Additive: an older reader drops it,
+    // and the lane reads as an ordinary closed one there.
+    out.push({ key, path: p, branch: text(c.branch), ...(c.merged === true ? { merged: true } : {}) });
   }
   return out.slice(0, MAX_CLOSED);
 }
