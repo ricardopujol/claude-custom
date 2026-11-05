@@ -208,7 +208,27 @@ async function dumpTree(hostPid) {
     return descendants(s.procs, hostPid).map(p => `${p.pid}<-${p.ppid} ${p.name} ${(p.cmd || '').slice(0, 60)}`).join(' | ');
   } catch (e) { return `dump failed: ${e.message}`; }
 }
-const fmtState = (s) => JSON.stringify({ chip: s.chip.text, rows: s.rows.filter(r => r.open || /^s:/.test(r.key || '')).map(r => [r.name, r.open]), children: s.children.map(c => [c.name, c.cmd.slice(0, 50), c.figs, c.stop]) }).slice(0, 900);
+// The sampler's clock as the page sees it (BACKLOG #114 F3/F4). Every rs() call notes when the payload's machine figures change: each
+// sample brings new ones, so the count is the samples that reached the page. Two samples with identical figures count once, so the
+// count can only run slow, which makes a wait on it longer, never shorter.
+const samples = { n: 0, key: null, at: null };
+function noteSample(s) {
+  if (s && s.machine) {
+    const k = JSON.stringify(s.machine);
+    if (k !== samples.key) { samples.key = k; samples.n++; samples.at = Date.now(); }
+  }
+  return s;
+}
+// What the page shows of the sampler's health: "last updated N s ago" is its stale status (app/resources-display.js), a chip of dashes
+// is an expired sample (app/chip-model.js), and the probe's own count says whether samples were arriving at all. (The payload's
+// status object itself isn't on the probe surface: renderer.js's resourcesState doesn't return it.)
+const samplerState = (s) => ({
+  stale: ((/last updated \d+ s ago/.exec((s && s.text) || '')) || [null])[0],
+  expired: !!(s && s.chip && /^CPU —, RAM —/.test(s.chip.text)),
+  samplesSeen: samples.n,
+  sinceLastSampleMs: samples.at === null ? null : Date.now() - samples.at,
+});
+const fmtState = (s) => JSON.stringify({ sampler: samplerState(s), chip: s.chip.text, rows: s.rows.filter(r => r.open || /^s:/.test(r.key || '')).map(r => [r.name, r.open]), children: s.children.map(c => [c.name, c.cmd.slice(0, 50), c.figs, c.stop]) }).slice(0, 900);
 
 const BURN = `'use strict';
 const { Worker, isMainThread, workerData } = require('worker_threads');
@@ -256,7 +276,22 @@ async function main() {
   const tabKey = st0.selectedKey;
   const sessionKey = `s:${tabKey}`;
   const hostPid = (st0.hosts.find(h => h.key === tabKey) || {}).pid;
-  const rs = () => view(app, 'resourcesState');
+  const rs = async () => noteSample(await view(app, 'resourcesState'));
+  // Wait for `fn`, counted in samples rather than seconds (BACKLOG #114 F3): it fails once `advances` samples reached the page after
+  // the wait began and none showed it (the sampler did its part), and a sampler that delivers fewer than that before `ceilingMs` is
+  // reported as starved, still a FAIL, but one that names its cause instead of looking like a missing row.
+  async function waitSamples(fn, advances, ceilingMs) {
+    const from = samples.n;
+    const t0 = Date.now();
+    for (;;) {
+      const v = await fn();
+      const got = samples.n - from;
+      if (v) return { v, why: `after ${got} sample(s), ${Date.now() - t0} ms` };
+      if (got >= advances) return { v: null, why: `${got} samples reached the page in ${Date.now() - t0} ms and none showed it` };
+      if (Date.now() - t0 > ceilingMs) return { v: null, why: `the sampler starved: only ${got} sample(s) in ${Date.now() - t0} ms` };
+      await sleep(500);
+    }
+  }
   const strip = async () => ((await command(app, { cmd: 'state' })).stripDom || []);
 
   // 1 -----------------------------------------------------------------------------
@@ -349,12 +384,17 @@ async function main() {
   if (!burnPid) return;
   // the burner is NOT tracked for the final kill: it ends itself after 100 s, and Stop ends it in this probe
 
-  const named = await waitFor(async () => {
+  // A sample already in flight when the burner started can't hold it; the next one names it, and its CPU figure is a delta that needs
+  // one more: 3 samples, plus 1 spare = 4. The
+  // 180 s ceiling only bounds a starved sampler (the panel samples every 10 s), it is never what the check waits for.
+  const namedWait = await waitSamples(async () => {
     const s = await rs();
     const row = s.children.find(c => /burn\.js/.test(c.cmd));
     return row && /^(\d+(\.\d)?|<1)%$/.test(row.figs[0]) && /(MB|GB)$/.test(row.figs[1]) ? s : null;
-  }, 60000, 500);
-  check('3: the burner is named in the session\'s top children, with a real CPU figure and its memory', !!named, named ? '' : `${fmtState(await rs())} TREE: ${await dumpTree(hostPid)}`);
+  }, 4, 180000);
+  const named = namedWait.v;
+  check('3: the burner is named in the session\'s top children, with a real CPU figure and its memory, within 4 samples', !!named,
+    named ? namedWait.why : `${namedWait.why}; ${fmtState(await rs())} TREE: ${await dumpTree(hostPid)}`);
   if (named) {
     const row = named.children.find(c => /burn\.js/.test(c.cmd));
     check('3: its row shows what it runs (the script), the command is not the executable path', row.name === 'burn.js' && !/Program Files/i.test(row.cmd), JSON.stringify([row.name, row.cmd]));
