@@ -73,6 +73,9 @@ function paneFor(payload) {
  */
 function alertFor(payload) {
   const p = objectOr(payload, {});
+  // #129: a tab kept because its host wouldn't end offers Stop; it outlives the notice (a selection clears that).
+  const stuck = objectOr(p.closeStuck, null);
+  if (stuck && nonEmpty(stuck.key) && nonEmpty(stuck.text)) return { text: stuck.text, kind: 'bad', stop: stuck.key };
   if (nonEmpty(p.closeNotice)) return { text: p.closeNotice, kind: 'bad' };
   const create = objectOr(p.create, null);
   if (create && create.phase === 'failed' && nonEmpty(create.error)) return { text: create.error, kind: 'bad' };
@@ -132,7 +135,7 @@ function issueLine(i) {
 function paintTab(doc, entry, bridge, all) {
   const cls = ['tab'];
   if (entry.selected) cls.push('selected');
-  if (!entry.started) cls.push('dim');
+  if (!entry.started || entry.ending === true) cls.push('dim');
   if (entry.isDev) cls.push('dev');
   // #31: the model decides who pulses (never the selected tab); this only names the look.
   if (entry.pulse === 'needs' || entry.pulse === 'done') cls.push(`pulse-${entry.pulse}`);
@@ -417,7 +420,18 @@ function paint(doc, payload, bridge, capacity = null, prevHidden = -1) {
   const alertEl = doc.getElementById('strip-alert');
   if (alertEl) {
     const a = alertFor(payload);
+    alertEl.replaceChildren();     // before the text: a real element's textContent would otherwise be wiped by it
     alertEl.textContent = a ? a.text : '';
+    if (a && a.stop) {
+      // The text gets its own element so it can shrink with an ellipsis while the button keeps its room: in one line of text the
+      // button was clipped off the end of a long notice (seen in a real window, verify/probe-tab-close-kept.js).
+      const label = el(doc, 'span', 'alert-text', a.text);
+      const stop = el(doc, 'button', 'stop', 'Stop');
+      stop.type = 'button';
+      stop.title = 'Try again to end this session';
+      stop.addEventListener('click', (ev) => { if (ev && ev.stopPropagation) ev.stopPropagation(); bridge.stop(a.stop); });
+      alertEl.replaceChildren(label, stop);
+    }
     alertEl.title = a ? a.text : '';
     alertEl.className = a ? a.kind : '';
     alertEl.hidden = !a;

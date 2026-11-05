@@ -38,7 +38,7 @@ const entry = (o) => ({
 });
 const bridgeSpy = () => {
   const calls = [];
-  return { calls, select: (k) => calls.push(['select', k]), close: (k, ifSafe) => calls.push(ifSafe === undefined ? ['close', k] : ['close', k, ifSafe]), contextMenu: (k) => calls.push(['menu', k]) };
+  return { calls, select: (k) => calls.push(['select', k]), close: (k, ifSafe) => calls.push(ifSafe === undefined ? ['close', k] : ['close', k, ifSafe]), contextMenu: (k) => calls.push(['menu', k]), stop: (k) => calls.push(['stop', k]) };
 };
 const child = (tab, cls) => tab.children.find(c => c.className.split(' ').includes(cls));
 
@@ -70,6 +70,14 @@ test('paint: one .tab per entry, in order, selected and dim classes from the mod
   assert.doesNotMatch(tabs[0].className, /\bdim\b/);
   assert.match(tabs[1].className, /\bdim\b/, 'not started: dimmed');
   assert.deepStrictEqual(tabs.map(t => child(t, 'label').textContent), ['develop', 'feat/b']);
+});
+
+test('#129 (PR #231 Dexter 4): a tab whose host is being ended is greyed like one that is not started, and says why on hover', () => {
+  const doc = fakeDoc();
+  paint(doc, { model: [entry({ key: 'a', label: 'feat/a', ending: true, phaseText: 'Ending its session…' }), entry({ key: 'b', label: 'feat/b', ending: false })] }, bridgeSpy());
+  const tabs = doc.byId.tabs.children;
+  assert.match(tabs[0].className, /\bdim\b/);
+  assert.doesNotMatch(tabs[1].className, /\bdim\b/);
 });
 
 test('paint: dots, glyph and health appear only when the model says so', () => {
@@ -273,13 +281,13 @@ test('paintAccent: sets the strip\'s --accent from a hex, and refuses anything e
   assert.strictEqual(paintAccent(null, '#00ff88'), false);
 });
 
-test('the strip bridge exposes its twenty-eight members -- and nothing else', () => {
+test('the strip bridge exposes its twenty-nine members -- and nothing else', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'app', 'preload-strip.js'), 'utf8')
     .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
   const block = src.slice(src.indexOf("exposeInMainWorld('strip', {"));
   const members = [...block.matchAll(/^  ([A-Za-z]+):/gm)].map(m => m[1]);
   assert.deepStrictEqual(members,
-    ['select', 'close', 'contextMenu', 'plus',
+    ['select', 'close', 'stop', 'contextMenu', 'plus',
       // #139 + #141, the Lanes menu and drag to reorder (main answers them; app/tab-shell.js lanesMenu / reorder)
       'lanes', 'reorder',
       'create', 'cancelCreate',
@@ -296,6 +304,7 @@ test('the strip bridge exposes its twenty-eight members -- and nothing else', ()
   assert.match(src, /'strip:winClose'/);
   assert.match(src, /'strip:select'/);
   assert.match(src, /'strip:close'/);
+  assert.match(src, /'strip:stop'/);
   assert.match(src, /'strip:contextMenu'/);
   assert.match(src, /'strip:plus'/);
   assert.match(src, /'strip:create'/);
@@ -363,6 +372,39 @@ test('F3 (Dexter, PR #75): a failed stop is drawn IN the strip, as text, and cle
   paint(doc, { model, closeNotice: null }, bridgeSpy());
   assert.strictEqual(doc.byId['strip-alert'].hidden, true);
   assert.strictEqual(doc.byId['strip-alert'].textContent, '');
+});
+
+test('#129: a tab kept because its host would not end shows its notice with a Stop button that closes it again, and loses both when gone', () => {
+  const doc = fakeDoc();
+  doc.byId['strip-alert'] = node('div');
+  const model = [entry({ selected: true })];
+  const stuck = { key: 'k', text: "Couldn't end the session in feat/a: no answer. It may still be running." };
+  const bridge = bridgeSpy();
+  // The notice itself is cleared by a selection, the offer is not: closeStuck alone still draws.
+  paint(doc, { model, closeNotice: null, closeStuck: stuck }, bridge);
+  const alertEl = doc.byId['strip-alert'];
+  assert.strictEqual(alertEl.hidden, false);
+  assert.match(alertEl.textContent, /feat\/a.*no answer.*may still be running/);
+  const label = alertEl.children.find(c => c.tag === 'span');
+  assert.ok(label && /feat\/a.*no answer/.test(label.textContent), 'the text in its own element, so it can shrink while the button keeps its room');
+  const stop = alertEl.children.find(c => c.tag === 'button');
+  assert.ok(stop, 'a Stop button');
+  assert.strictEqual(stop.textContent, 'Stop');
+  stop.listeners.click({ stopPropagation() {} });
+  assert.deepStrictEqual(bridge.calls, [['stop', 'k']], 'its own channel: a plain close asks, this one was asked already (PR #231 Dexter 3)');
+  // A repaint does not stack a second button.
+  paint(doc, { model, closeNotice: null, closeStuck: stuck }, bridge);
+  assert.strictEqual(alertEl.children.filter(c => c.tag === 'button').length, 1);
+  paint(doc, { model, closeNotice: null, closeStuck: null }, bridge);
+  assert.strictEqual(alertEl.hidden, true);
+  assert.strictEqual(alertEl.children.length, 0);
+});
+
+test('#129: alertFor puts a kept tab ahead of the creation and the selected tab, and names the key to stop', () => {
+  const sel = entry({ selected: true, phaseText: 'x', badge: 'merged' });
+  assert.deepStrictEqual(alertFor({ model: [sel], closeStuck: { key: 'k', text: 'stuck' }, create: { phase: 'failed', error: 'bad' } }),
+    { text: 'stuck', kind: 'bad', stop: 'k' });
+  assert.deepStrictEqual(alertFor({ model: [sel], closeStuck: { key: '', text: 'stuck' } }), { text: 'x', kind: 'info' }, 'a malformed offer is ignored');
 });
 
 // --- PR 3: the + button, the branch form, phase badges and the alert line -----------

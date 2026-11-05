@@ -56,6 +56,7 @@ const { sideKeyOf, parentKeyOf, isSideKey, sideLabel } = require('../host/side-s
 // #119 A5: a branch tab's plain shell, a tab of the same kind of its own (host/shell-tab.js).
 const { shellKeyOf, parentKeyOfShell, isShellKey, shellLabel } = require('../host/shell-tab');
 const { joinNames } = require('./reader-unsaved');
+const { SHUTDOWN_BOUND_MS } = require('../host/bounded-shutdown');
 
 // --- pure helpers ------------------------------------------------------------
 
@@ -122,6 +123,7 @@ function observeWorktrees(porcelain, container, readMarker) {
 const NO_PORT_ERROR = 'no usable port for this folder';
 
 // #81: what a side tab says once its claude has ended.
+const ENDING_TEXT = 'Ending its session…';     // #129: a tab whose host is being ended
 const SIDE_ENDED_TEXT = "This side session has ended. Reopen it from this tab's menu.";
 // #119 A5: ... and a shell tab once its shell has exited.
 const SHELL_ENDED_TEXT = "This shell has exited. Restart it from this tab's menu.";
@@ -176,7 +178,7 @@ function sanitizeStatus(s) {
  *   ops.remove({ path })              -> Promise<{ ok, already } | { ok: false, kept, reason } | { ok: false, error }>  (C)
  *   hosts.choosePort(tab)  -> Promise<{ port, action: 'spawn'|'attach' } | null>
  *   hosts.probe(port)      -> Promise<'listening'|'refused'|'unknown'>  (host/port-probe.js)
- *   hosts.spawn({ tab, port, token })      starts a detached host (may throw)
+ *   hosts.spawn({ tab, port, token })      starts a detached host (may throw); may return its child process, whose exit proves the host dead
  *   hosts.wait(port)       -> Promise<boolean>  the host came up
  *   hosts.tokenFor(port)   -> string | null     a RUNNING host's token
  *   hosts.tokenFile(port)  -> string | null     ONLY `hosts/<port>.token`: written by
@@ -288,6 +290,30 @@ function createShell(deps) {
   let polling = false;
   let lastError = null;
   let closeNotice = null;        // a hand close whose stop failed; cleared by the next selection
+  // #129: the tabs a hand close kept because their host wouldn't end: key -> { text, tab }. The strip offers Stop on the newest. An entry
+  // is the offer for THAT tab record only (PR #231 Dexter 3 / Miguel Y1): a tab that left or ended, or a new tab under the same key,
+  // is not it, so a later x is a plain close and asks.
+  const closeStuck = new Map();
+  // #129 (PR #231 Dexter 4 / Miguel G3): the tabs whose host is being ended right now (the stop, the wait for it, the retry by pid: up to
+  // a minute). Such a tab is in a closing state: not selectable, nothing is started or attached for it, the strip greys it and says so.
+  const ending = new Set();
+  const exitedHosts = new WeakSet();     // the `pending` records whose spawned child has exited: those hosts are dead (PR #231 Dexter M2)
+  const stuckValid = (key, e) => !!e && tabs.get(key) === e.tab && e.tab.ended !== true && e.tab.closed !== true
+    && (state.tabs.find(t => keyOf(t.path) === key) || {}).phase !== 'removing';
+  const stuckFor = (key) => {
+    const e = closeStuck.get(key);
+    if (e && !stuckValid(key, e)) { closeStuck.delete(key); return null; }
+    return e || null;
+  };
+  /** The offer the strip draws: the newest kept tab that is still that tab. */
+  function stuckNow() {
+    let out = null;
+    for (const [key, e] of [...closeStuck]) {
+      if (!stuckValid(key, e)) { closeStuck.delete(key); continue; }
+      out = { key, text: e.text };
+    }
+    return out;
+  }
   let destroyed = false;
   // PR 3. `create` is the strip's branch form: null, or { phase: 'input' } /
   // { phase: 'running', branch } / { phase: 'failed', branch, error }.
@@ -467,8 +493,11 @@ function createShell(deps) {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
         // Its session's host stopped answering after it ran (the strip keeps such a lane only while it is selected).
         ended: !!t && t.ended === true,
+        // #129: its host is being ended (the strip greys it and says so; it can't be selected meanwhile).
+        ending: ending.has(e.key),
         badge: tabModel.badgeFor(e),
-        phaseText: t && t.ended === true && e.side === true ? SIDE_ENDED_TEXT
+        phaseText: ending.has(e.key) ? ENDING_TEXT
+          : t && t.ended === true && e.side === true ? SIDE_ENDED_TEXT
           : t && t.ended === true && e.shell === true ? SHELL_ENDED_TEXT : tabModel.phaseText(e),
         mark: readMark(branchOf(e.key)),
         // #119 A6: the GitHub issue this lane was started from ({ number, title, url } or null).
@@ -518,7 +547,7 @@ function createShell(deps) {
     // the selected one) and `lanes` the rows of the Lanes menu for the rest. The strip draws `strip`, never `model`.
     const placed = tabLanes.placeLanes(m, closedRows());
     return {
-      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, mode,
+      model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, closeStuck: stuckNow(), mode,
       create: create ? { ...create } : null,
     };
   }
@@ -683,7 +712,7 @@ function createShell(deps) {
     const serving = known === null ? null : new Set(known.map(h => keyOf(h.cwd)));
     for (const t of tabs.values()) {
       if (serving !== null && !serving.has(t.key)) continue;
-      if (t.started || t.starting || t.closed || t.ended || t.attachBusy || t.side || t.shell) continue;
+      if (t.started || t.starting || t.closed || t.ended || t.attachBusy || t.side || t.shell || ending.has(t.key)) continue;
       if ((t.attachLooks || 0) >= ATTACH_LOOKS) continue;
       attachIfRunning(t);
     }
@@ -692,6 +721,7 @@ function createShell(deps) {
   // First selection: choose the port NOW, spawn if nobody serves this folder,
   // wait for it, then draw. One chain, so two tabs can't take one port.
   function start(tab) {
+    if (ending.has(tab.key)) return Promise.resolve();     // its host is being ended: a start now would be dropped with it, unstopped
     if (tab.started) return Promise.resolve();
     if (tab.starting) return tab.startPromise;
     // Started when its setup ends (createWorktree), not before.
@@ -735,10 +765,18 @@ function createShell(deps) {
           if (!token) throw new Error(`a host is on port ${port} but its token can't be read`);
         } else {
           token = hosts.newToken();
-          hosts.spawn({ tab, port, token });
+          const rec = { port, token };
+          const child = hosts.spawn({ tab, port, token });
+          // The window spawned it, so the child's exit is proof the host is dead (PR #231 Dexter M2): a host that crashed while
+          // starting leaves no file and no listener, and a close must not wait on it for ever.
+          if (child && typeof child.once === 'function') {
+            const died = () => { exitedHosts.add(rec); };
+            child.once('exit', died);
+            child.once('error', died);
+          }
           spawned = true;
           if (!(await hosts.wait(port))) {
-            tab.pending = { port, token };
+            tab.pending = rec;
             // a side tab closed meanwhile: dropSide ran before this host was recorded, so it is stopped here (Dexter 4)
             if (tab.closed && isCompanionEntry(tab)) stopFromStart(tab, port, token);
             throw new Error(`the host did not come up on port ${port} in time`);
@@ -793,8 +831,11 @@ function createShell(deps) {
   /** Select a tab, starting it (or retrying a failed start) as needed; `restart`: a person's click also restarts an ended session. */
   function select(key, restart = false) {
     const next = tabModel.select(model(), key);
-    if (next === null) return Promise.resolve();
+    if (next === null || ending.has(next)) return Promise.resolve();
     closeNotice = null;
+    // A tab that is looked at and worked in again is no longer the one that was asked to stop: the Stop offer goes (PR #231 Dexter M1),
+    // so a later Stop is a plain close and asks (an edit made since would be lost otherwise).
+    closeStuck.delete(next);
     selectedKey = next;
     const tab = tabByKey(next);
     let started = Promise.resolve();
@@ -1040,13 +1081,13 @@ function createShell(deps) {
     // A side or shell tab closes without a question (closeCompanionOnce); it also ends with its branch tab (#81).
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
-    try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
+    try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key, opts) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
   }
   /**
    * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
    * skips the confirm when unsafeReason is empty; otherwise the confirm is told why.
    */
-  async function closeTabOnce(key, { ifSafe = false } = {}) {
+  async function closeTabOnce(key, { ifSafe = false, stop = false } = {}) {
     const tab = tabByKey(key);
     if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
@@ -1055,11 +1096,13 @@ function createShell(deps) {
     let reason = '';
     let silent = false;
     let gitFacts = null;
-    if (ifSafe === true) {
+    if (stop === true && stuckFor(key) !== null) {
+      yes = true;     // #129: the Stop button on a kept tab. It was asked once; the question isn't asked again. A plain x is a new close.
+    } else if (ifSafe === true) {
       gitFacts = await gitFactsOf(tab);
       reason = closeReason(closeFactsOf(tab, gitFacts));
     }
-    if (ifSafe === true && reason === '') { yes = true; silent = true; } else {
+    if (yes) { /* already answered */ } else if (ifSafe === true && reason === '') { yes = true; silent = true; } else {
       try { yes = (await ui.confirmClose(tab, ifSafe === true ? { reason } : undefined)) === true; } catch { yes = false; }
     }
     if (!yes) return { ok: false, cancelled: true };
@@ -1077,62 +1120,173 @@ function createShell(deps) {
       if (!tabs.has(key)) return { ok: true };
     }
     const label = (model().find(e => e.key === key) || {}).label || tab.branch || tab.cwd;
-    let target = null;
+    // The closing state starts BEFORE the targets are read (PR #231 Dexter L3): a click or the poll's look-again during the awaits below
+    // (the targets' walk, the silent close's second git read) would otherwise present a host after the targets were read, and the close
+    // would drop the tab without stopping it. Every way out of this block ends the state. It is published when the stop starts.
+    ending.add(key);
+    const targets = [];
+    const dead = [];     // hosts taken as ended because their port refuses and their file proves nothing (PR #231 Miguel R3)
     let failure = null;
-    if (tab.started && tab.port && tab.token) target = { port: tab.port, token: tab.token };
-    else if (tab.pending) target = { port: tab.pending.port, token: tab.pending.token };
-    else {
-      // Nothing presented and nothing pending: ask once more whether a host
-      // serves this folder (an attach that couldn't read the token, a host that
-      // bound after the shell gave up on it). Through the queue, like a start.
-      let found = null;
-      try { found = await queue.run(() => hosts.choosePort(tab)); } catch { found = null; }
-      if (found && found.action === 'attach') {
-        const token = hosts.tokenFile(found.port) || hosts.tokenFor(found.port);
-        if (token) target = { port: found.port, token };
-        else failure = `a host is on port ${found.port} but its token can't be read`;
-      } else if (tab.unconfirmed) {
-        failure = `its host on port ${tab.unconfirmed.port} never answered`;
+    try {
+      // Every host this record may hold (#129; PR #231 Dexter 5): the presented one, else the pending AND the unconfirmed ones, else
+      // whatever serves the folder when asked once more. `booting`: it may not have bound its port yet, so no file and a refusal prove nothing.
+      if (tab.started && tab.ended === true) {
+        // Its host ended after it ran, and its port may be another host's by now (PR #80 Dexter F2; PR #231 Dexter 1): nothing is sent
+        // to it and nothing is killed. The close just closes, as stopCompanion does for an ended companion.
+      } else if (tab.started && tab.port && tab.token) targets.push({ port: tab.port, token: tab.token, booting: false });
+      else {
+        for (const c of [tab.pending, tab.unconfirmed]) if (c && !targets.some(x => x.port === c.port)) targets.push({ port: c.port, token: c.token, booting: true, rec: c });
+        if (targets.length === 0) {
+          // Nothing presented and nothing pending: ask once more whether a host
+          // serves this folder (an attach that couldn't read the token, a host that
+          // bound after the shell gave up on it). Through the queue, like a start.
+          let found = null;
+          try { found = await queue.run(() => hosts.choosePort(tab)); } catch { found = null; }
+          if (found && found.action === 'attach') {
+            targets.push({ port: found.port, token: hosts.tokenFile(found.port) || hosts.tokenFor(found.port) || null, booting: false });
+          }
+        }
       }
-    }
-    // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
-    // session) right before the stop; if any of it changed, ask after all.
-    if (silent) {
-      // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
-      const gitAgain = await gitFactsOf(tab);
-      if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
-      const again = closeReason(closeFactsOf(tab, gitAgain));
-      if (again !== '') {
-        let ok = false;
-        try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
-        if (!ok) return { ok: false, cancelled: true };
-        if (!tabs.has(key)) return { ok: true };
+      // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
+      // session) right before the stop; if any of it changed, ask after all.
+      if (silent) {
+        // The git facts too (Dexter R4): a commit made while the first reads ran. A read that fails asks.
+        const gitAgain = await gitFactsOf(tab);
+        if (!tabs.has(key)) return { ok: true };     // gone during the read (its folder removed): nothing left to stop (Dexter F3)
+        const again = closeReason(closeFactsOf(tab, gitAgain));
+        if (again !== '') {
+          let ok = false;
+          try { ok = (await ui.confirmClose(tab, { reason: again })) === true; } catch { ok = false; }
+          if (!ok) return { ok: false, cancelled: true };
+          if (!tabs.has(key)) return { ok: true };
+        }
       }
-    }
+      // #129: the stop is sent FIRST, where its outcome can be seen, and the tab is dropped only once its host is known to be ended.
+      // A refused or unanswered stop is retried once by pid; if that fails too the tab stays, with a Stop offer in the strip.
+      const who = whoOf(tab);
+      publish();
+      for (const h of targets) {
+        const f = await endHost(h, who, dead);
+        if (failure === null) failure = f;
+      }
+    } finally { ending.delete(key); }
+    if (tabs.get(key) !== tab) return { ok: true };     // gone during the stop (its folder was removed), or the key names a NEWER tab now (PR #231 Miguel R1)
+    if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure, tab);
+    clearStuck(key);     // the line about it goes with it
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
     // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first.
     closedByHand = [{ key, path: tab.cwd, branch: tab.branch }, ...closedByHand.filter(c => c.key !== key)];
     persistLayout();     // closed stays closed after a restart
-    // The stop is sent here, where its outcome can be seen, not fire-and-forget.
     apply(actions.filter(a => a.type !== 'stop'), before);
-    if (target) {
-      try {
-        const r = await hosts.control({ ...target, msg: { type: 'stop' } });
-        if (!r || r.ok !== true) failure = (r && r.error) || 'no answer';
-      } catch (err) {
-        failure = (err && err.message) || String(err);
+    if (targets.length > 0) log(`[shell] stop ${key}: sent`);
+    if (dead.length > 0) deadPortNotice(label);     // after apply: a selection it makes would clear it
+    return { ok: true };
+  }
+
+  /** Who a host must be for this tab to end it by pid: its folder and its kind (host/stop-by-pid.js). */
+  const whoOf = (t) => ({ cwd: t.cwd, side: t.side === true, shell: t.shell === true });
+
+  // A stop the host took but didn't answer inside the control's 3 s is a host that is ending: given the host's own shutdown bound
+  // (host/bounded-shutdown.js) to go before anything is done to it by pid (PR #231 Dexter 7).
+  const TIMED_OUT = /^timed out after/;
+  // A token refused at the handshake: whatever listens on that port is NOT this tab's host (PR #231 Dexter 1).
+  const REFUSED_TOKEN = /handshake refused \(HTTP 403\)/;
+  const WAIT_STEP_MS = 500;
+
+  /** Does the port stop listening within the host's own shutdown bound? */
+  async function goesQuiet(port) {
+    for (let waited = 0; waited < SHUTDOWN_BOUND_MS; waited += WAIT_STEP_MS) {
+      if (destroyed) return false;     // the window is gone: no timers kept alive for it (PR #231 Miguel R5)
+      let answer = 'unknown';
+      try { answer = await hosts.probe(port); } catch { answer = 'unknown'; }
+      if (answer === 'refused') return true;
+      await sleep(WAIT_STEP_MS);
+    }
+    return false;
+  }
+
+  /**
+   * End ONE host of a tab (#129): send the stop and look at how it went. null: the host is ended, or was never this tab's. Otherwise
+   * why it may still be running. Never rejects. `h` is { port, token, booting }; `who` says which host is this tab's.
+   */
+  async function endHost(h, who, dead) {
+    if (h.rec && exitedHosts.has(h.rec)) return null;     // its spawned child exited: dead, and its port may be a stranger's now (PR #231 Dexter M2)
+    const failure = h.token
+      ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } }))
+      : `a host is on port ${h.port} but its token can't be read`;
+    if (failure === null) return null;     // it took the stop: never a kill after that (PR #231 Dexter 7)
+    return afterFailedStop(h, failure, who, dead);
+  }
+
+  /** What a stop that failed leads to. The invariant: nothing is killed unless the file proves the process is THIS tab's host. */
+  async function afterFailedStop(h, failure, who, dead) {     // dead: an array that collects the ports taken as ended on a refusal
+    if (h.rec && exitedHosts.has(h.rec)) return null;     // it died while the stop was going out (PR #231 Dexter M2)
+    if (REFUSED_TOKEN.test(failure)) {
+      log(`[shell] port ${h.port} refused this tab's token: another tab's host holds it, nothing to stop`);
+      return null;
+    }
+    if (TIMED_OUT.test(failure) && await goesQuiet(h.port)) return null;     // it took the stop and went
+    if (destroyed) return failure;     // the wait was cut short: the host may be mid-shutdown, so no kill from a window that is gone
+    let outcome;
+    try { outcome = typeof hosts.stopByPid === 'function' ? await hosts.stopByPid(h.port, who) : 'unknown'; } catch (err) { outcome = 'unknown'; }
+    if (outcome === 'killed' || outcome === 'gone' || outcome === 'mismatch') return null;     // a mismatch: the file is stale, the pid is another process now, so that host is dead (PR #231 Dexter 6)
+    if (outcome === 'stranger') {
+      log(`[shell] port ${h.port}: its host is not this tab's (another folder's), nothing to stop`);
+      return null;
+    }
+    if (outcome === 'nofile' && !h.booting) {
+      // A host that was listening and has no file now has gone. It could also be one that could not publish its identity (PR #231
+      // Dexter L4), so the tab goes with a line in the log saying why, not silently.
+      log(`[shell] port ${h.port}: the stop failed (${failure}) and the host has no identity file, so it is taken as gone`);
+      return null;
+    }
+    if (outcome === 'nofile') {
+      // Its start is not over: the host may not have bound its port yet, and has no file until it has. Wait for it, as long as the
+      // start itself would (hosts.wait), then stop it; never drop the tab and leave a host that binds a moment later with no tab.
+      let up = false;
+      try { up = (await hosts.wait(h.port)) === true; } catch { up = false; }
+      if (!up) return `its host on port ${h.port} hasn't come up yet, so it can't be stopped yet`;
+      const again = h.token ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } })) : failure;
+      if (again === null) return null;
+      return afterFailedStop({ ...h, booting: false }, again, who, dead);
+    }
+    if (!h.booting && !destroyed) {
+      // The file proves nothing ('unknown' or 'failed'), so nothing is killed. But a host that WAS listening and now refuses a fresh
+      // probe is ended, whatever its file says (PR #231 Miguel R3; Ricardo, 2026-11-05: "Q2: A"); keeping the tab would retry the same
+      // dead end for ever. Only a real refusal counts: 'unknown' (a timeout) proves nothing (host/port-probe.js).
+      let answer = 'unknown';
+      try { answer = await hosts.probe(h.port); } catch { answer = 'unknown'; }
+      if (answer === 'refused' && !destroyed) {
+        log(`[shell] port ${h.port}: the stop failed (${failure}), the pid retry said ${outcome}, and nothing listens on the port, so the host is taken as ended`);
+        if (Array.isArray(dead)) dead.push(h.port);
+        return null;
       }
     }
-    if (failure !== null) {
-      closeNotice = `Couldn't end the session in ${label}: ${failure}. It may still be running.`;
-      log(`[shell] ${key}: ${closeNotice}`);
-      publish();
-      return { ok: true, stopError: failure };
-    }
-    if (target) log(`[shell] stop ${key}: sent`);
-    return { ok: true };
+    return failure;
+  }
+
+  /** The strip's line for a tab closed on a dead port whose process its file couldn't confirm ended (PR #231 Miguel R3). */
+  function deadPortNotice(name) {
+    closeNotice = `Closed ${name}: its host no longer listens on its port, and its process couldn't be confirmed ended.`;
+    publish();
+  }
+
+  function clearStuck(key) {
+    const e = closeStuck.get(key);
+    if (e && closeNotice === e.text) closeNotice = null;
+    closeStuck.delete(key);
+  }
+
+  /** #129: a close whose host would not end keeps its tab, says so in the strip, and offers Stop (a second close, without the question). */
+  function keepStuck(key, notice, failure, tab) {
+    closeNotice = notice;
+    closeStuck.delete(key);     // a Map keeps the place of a key set again: delete first, so the newest failure is the last (PR #231 Miguel R4)
+    closeStuck.set(key, { text: notice, tab });
+    log(`[shell] ${key}: ${notice}`);
+    publish();
+    return { ok: false, kept: true, stopError: failure };
   }
 
   // --- `+`: a new worktree (Contract A, then E), and reopening a closed tab ---
@@ -1744,13 +1898,14 @@ function createShell(deps) {
   function hostsToStop(t) {
     if (t.started && t.port && t.token) return [{ port: t.port, token: t.token }];
     const out = [];
-    for (const c of [t.pending, t.unconfirmed]) if (c && !out.some(o => o.port === c.port)) out.push({ port: c.port, token: c.token });
+    for (const c of [t.pending, t.unconfirmed]) if (c && !out.some(o => o.port === c.port)) out.push({ port: c.port, token: c.token, rec: c });
     return out;
   }
 
   /** A start that gave up because its tab closed stops the host it made or found, and records which port that was. */
   function stopFromStart(tab, port, token) {
     tab.closeStopPort = port;
+    tab.closeStopToken = token;
     tab.closeStop = stopOutcome(hosts.control({ port, token, msg: { type: 'stop' } }));
   }
 
@@ -1762,19 +1917,28 @@ function createShell(deps) {
    * host is gone, and its port may be another host's by now.
    */
   async function stopCompanion(t) {
+    const failed = await stopCompanionHosts(t);
+    return failed.length > 0 ? failed[0].failure : null;
+  }
+
+  /** The hosts of a companion that did not take its stop: [{ port, token, booting, failure }]. See stopCompanion. */
+  async function stopCompanionHosts(t) {
     t.closed = true;
     if (t.starting && t.startPromise) { try { await t.startPromise; } catch { /* start() reports its own errors */ } }
     // A start that gave up because this tab closed has already sent the stop to the host it made or found: wait for THAT one and
     // report how it went (Dexter F3, PR #214), rather than saying closed about a stop nobody looked at.
     // The host that start stopped is not the only one the record may hold: an earlier, unconfirmed one gets its stop too (Dexter F2, PR #216).
-    let failure = t.closeStop ? await t.closeStop : null;
+    const failed = [];
+    const fromStart = t.closeStop ? await t.closeStop : null;
     const skip = t.closeStop ? t.closeStopPort : null;
+    if (fromStart !== null) failed.push({ port: t.closeStopPort, token: t.closeStopToken || null, booting: true, failure: fromStart });
     const targets = (t.started && t.ended === true ? [] : hostsToStop(t)).filter(x => x.port !== skip);
     for (const target of targets) {
+      if (target.rec && exitedHosts.has(target.rec)) continue;     // its spawned child exited: dead (PR #231 Dexter M2)
       const f = await stopOutcome(hosts.control({ port: target.port, token: target.token, msg: { type: 'stop' } }));
-      if (failure === null) failure = f;
+      if (f !== null) failed.push({ port: target.port, token: target.token, rec: target.rec, booting: !(t.started && t.port === target.port), failure: f });
     }
-    return failure;
+    return failed;
   }
 
   /**
@@ -1783,32 +1947,49 @@ function createShell(deps) {
    * (the work is in the branch tab), and the folder stays. Only this tab's own host is stopped, never its branch tab's. Reopen
    * doesn't offer it back (Open shell here / Open side session starts a fresh one). If it was showing, its own branch tab shows next.
    */
-  async function closeCompanionOnce(key) {
+  async function closeCompanionOnce(key, { stop = false } = {}) {
     const t = tabs.get(key);
     const noun = companionNounOf(key);
     if (!t || noun === null || mode !== 'tabs') return { ok: false, error: 'not closable' };
     // A side tab's code reader is a full editor (Dexter F1, PR #214): an unsaved edit in it asks, exactly as a branch tab's close
     // does (the question names the file). Nothing unsaved, nothing asked. A shell has no reader.
-    if (isSideKey(key) && readerUnsavedOf(t)) {
+    if (isSideKey(key) && readerUnsavedOf(t) && !(stop === true && stuckFor(key) !== null)) {
       let yes = false;
       try { yes = (await ui.confirmClose(t)) === true; } catch { yes = false; }
       if (!yes) return { ok: false, cancelled: true };
       if (tabs.get(key) !== t) return { ok: true };     // gone while the dialog was up
     }
-    const failure = await stopCompanion(t);
-    if (tabs.get(key) !== t) return { ok: true };     // gone meanwhile (its branch tab closed, or its folder was removed), or the key is a newer tab's now (Dexter F4)
+    ending.add(key);
+    publish();
+    let failed;
+    try { failed = await stopCompanionHosts(t); } catch (err) { ending.delete(key); throw err; }
+    if (tabs.get(key) !== t) { ending.delete(key); return { ok: true }; }     // gone meanwhile (its branch tab closed, or its folder was removed), or the key is a newer tab's now (Dexter F4)
+    // #129: a stop that failed is looked at for every host that didn't take it (a refused token is a stranger's host, a timeout is given
+    // the host's own shutdown bound, then the pid, proved to be THIS tab's); if one still may be running the tab stays (Stop offered).
+    let failure = null;
+    const who = whoOf(t);
+    const dead = [];     // PR #231 Miguel R3, as in closeTabOnce
+    try {
+      for (const h of failed) {
+        const f = await afterFailedStop(h, h.failure, who, dead);
+        if (failure === null && f !== null) failure = f;
+      }
+    } finally { ending.delete(key); }
+    if (tabs.get(key) !== t) return { ok: true };
+    if (failure !== null) {
+      t.closed = false;       // not closed after all: a start that gave up for it may begin again, and a second stop is sent afresh
+      t.closeStop = null;
+      t.closeStopPort = null;
+      return keepStuck(key, `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`, failure, t);
+    }
+    clearStuck(key);     // the line about it goes with it
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
     const parentKey = companionParentOf(key);
     if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
     else publish();
-    if (failure !== null) {
-      closeNotice = `Couldn't end the ${noun} in ${t.branch}: ${failure}. It may still be running.`;
-      log(`[shell] ${key}: ${closeNotice}`);
-      publish();
-      return { ok: true, stopError: failure };
-    }
     log(`[shell] closed ${key}`);
+    if (dead.length > 0) deadPortNotice(`the ${noun} in ${t.branch}`);     // after the select, which clears notices
     return { ok: true };
   }
 
@@ -2012,6 +2193,9 @@ async function handleProbeCommand(line, api, expectedToken) {
         // Ricardo's look, 2026-10-26: a real plain click on the tab's own x.
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'xClick needs a label' };
         return await api.xClick(cmd.label);
+      case 'stopClick':
+        // #129: a real click on the Stop button the strip's alert line offers on a tab kept because its host wouldn't end.
+        return await api.stopClick();
       case 'tabMenu':
         // The tab's right-click menu as built, and one item's own click: a native popup nobody can click.
         if (typeof cmd.label !== 'string' || cmd.label === '') return { ok: false, error: 'tabMenu needs a label' };
