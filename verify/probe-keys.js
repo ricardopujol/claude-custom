@@ -2,6 +2,7 @@
 /* Drives the live TUI through the real host path and observes state changes.
    Answers: does Shift+Tab cycle permission modes? does Shift+Enter insert a
    newline instead of submitting? */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');

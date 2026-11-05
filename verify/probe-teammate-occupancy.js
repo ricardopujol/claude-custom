@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { killChildTree } = require('../host/kill-tree');
 /* What does a TEAMMATE send, and does its claim survive while it idles?   (re-runnable, real CLI, bills the plan)
 

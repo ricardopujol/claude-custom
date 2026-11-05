@@ -8,6 +8,7 @@
    synchronous it would drop every hook event for its whole duration.
 
    This measures the loop while a real `npm test` runs in the background. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');

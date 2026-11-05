@@ -21,6 +21,7 @@
  *
  * Run: node verify/probe-host-boot.js           (exit 0 = booted and ticked)
  */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
