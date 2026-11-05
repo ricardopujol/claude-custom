@@ -447,8 +447,27 @@ async function main() {
   const plain = await doChat(app, 'wheel', { deltaY: -100, ctrl: false });
   const z1 = await chat(app);
   check('J: a wheel without Ctrl only scrolls: no zoom, not cancelled', plain.ok && plain.cancelled === false && z1.chatZoom === 100, JSON.stringify({ plain, z: z1.chatZoom }));
+  // F10: a touchpad pinch is a burst of small deltas: 15 of -4 px (60 px of travel) is less than one step
+  for (let i = 0; i < 15; i++) await doChat(app, 'wheel', { deltaY: -4, ctrl: true });
+  const zb = await chat(app);
+  check('J: a touchpad-like burst of 15 Ctrl+wheel events of -4 px (60 px) does not move the zoom (one step per 100 px of travel)', zb.chatZoom === 100, String(zb.chatZoom));
+  await sleep(400);                                            // the gesture goes quiet: the 60 px are forgotten
+  // F11: at the bottom of the conversation before the zoom; still there after it; and the next reply is followed
+  await doChat(app, 'scrollBottom');
+  const before11 = (await chat(app)).logScroll;
   const ups = [];
   for (let i = 0; i < 5; i++) ups.push(await doChat(app, 'wheel', { deltaY: -100, ctrl: true }));
+  await sleep(200);
+  const after11 = (await chat(app)).logScroll;
+  console.log(`MEASURE F11 scroll before the zoom ${JSON.stringify(before11)} after five steps ${JSON.stringify(after11)}`);
+  check('J (F11): a reader at the bottom of the conversation is still at the bottom after zooming in', before11.atBottom && after11.atBottom, JSON.stringify({ before11, after11 }));
+  hook(pid, 'UserPromptSubmit', { prompt: 'one more question after the zoom' });
+  hook(pid, 'Stop', { last_assistant_message: 'FOLLOWED-AFTER-ZOOM reply' });
+  const followed = await waitFor(async () => { const c = await chat(app); return c && c.logText.includes('FOLLOWED-AFTER-ZOOM') ? c : null; }, 10000);
+  await sleep(300);
+  const after11b = (await chat(app)).logScroll;
+  console.log(`MEASURE F11 scroll after the next reply ${JSON.stringify(after11b)}`);
+  check('J (F11): ...and the next reply arrives in view (the log followed it)', !!followed && after11b.atBottom, JSON.stringify(after11b));
   const z2 = await chat(app);
   check('J: five Ctrl+wheel ups make the conversation 150 % (zoom 1.5), each wheel cancelled so the page never zooms',
     ups.every(u => u.ok && u.cancelled === true) && z2.chatZoom === 150 && Number(z2.logZoom) === 1.5, JSON.stringify({ c: ups.map(u => u.cancelled), z: z2.chatZoom, css: z2.logZoom }));
@@ -464,12 +483,32 @@ async function main() {
   for (let i = 0; i < 30; i++) await doChat(app, 'wheel', { deltaY: 100, ctrl: true });
   const bottom = await chat(app);
   check('J: ...and at 70 %', bottom.chatZoom === 70 && Number(bottom.logZoom) === 0.7, JSON.stringify({ z: bottom.chatZoom, css: bottom.logZoom }));
-  // Ctrl+0 as a real keypress into the window (the chat's type box has the keyboard while the chat shows)
+  // F13: Ctrl+0 does nothing while the terminal is the display shown
+  await doChat(app, 'toggle');
+  await waitFor(async () => { const c = await chat(app); return c && !c.shown ? c : null; }, 5000);
+  await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
+  await sleep(400);
+  const offZoom = (await chat(app)).chatZoom;
+  check('J (F13): Ctrl+0 while the terminal is shown leaves the chat zoom alone', offZoom === 70, String(offZoom));
+  await doChat(app, 'toggle');
+  await waitFor(async () => { const c = await chat(app); return c && c.shown ? c : null; }, 5000);
+  // F13: Ctrl+0 as a real keypress with the keyboard NOT in the chat's type box (as after clicking the conversation's text)
+  const blurred = await doChat(app, 'blur');
   const keyed = await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
   const reset = await waitFor(async () => { const c = await chat(app); return c && c.chatZoom === 100 ? c : null; }, 3000);
-  check('J: Ctrl+0 with the keyboard in the chat puts it back to 100 %', !!keyed.ok && !!reset, JSON.stringify({ keyed, z: (await chat(app)).chatZoom, focus: (await chat(app)).focusInChat }));
+  check('J (F13): Ctrl+0 with the chat shown puts it back to 100 %, though the keyboard is not in the type box', !!keyed.ok && !!reset && (await chat(app)).focusInChat === false,
+    JSON.stringify({ blurred, keyed, z: (await chat(app)).chatZoom, focus: (await chat(app)).focusInChat }));
   const savedReset = await waitFor(async () => { const s = await fontsRec(); return s && s.chatZoom === 100 ? s : null; }, 5000);
   check('J: ...and the record follows (chatZoom 100)', !!savedReset, JSON.stringify(await fontsRec()));
+  // F14: a REAL wheel event with Ctrl held over the chat (webContents.sendInputEvent): the page itself never zooms, the chat does
+  const rr = (await chat(app)).rootRect;
+  const real = await command(app, { cmd: 'mouseWheel', x: Math.round(rr.left + rr.width / 2), y: Math.round(rr.top + rr.height / 2), deltaY: 120, ctrl: true });
+  await sleep(300);
+  const zReal = (await chat(app)).chatZoom;
+  check('J (F14): a real Ctrl+wheel over the chat moves the chat zoom and leaves the PAGE zoom factor at 1', !!real.ok && real.zoomFactor === 1 && zReal !== 100,
+    JSON.stringify({ real, chatZoom: zReal }));
+  await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
+  await waitFor(async () => { const c = await chat(app); return c && c.chatZoom === 100 ? c : null; }, 3000);
   await view(app, 'fontsSet', { settings: { chatZoom: null } });      // the app under test's own UI-state folder: put the field back to unset
 
   // G ------------------------------------------------------------------------------

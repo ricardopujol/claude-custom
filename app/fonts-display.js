@@ -61,12 +61,71 @@ function sanitizeChatZoom(v) {
   return clampZoom(Math.round(v / CHAT_ZOOM_STEP) * CHAT_ZOOM_STEP);
 }
 
-/** The zoom after one wheel event: up (a negative deltaY) one step bigger, down one smaller, whatever the delta's size, clamped. */
-function nextChatZoom(current, deltaY) {
+/** The zoom after `steps` whole steps (+1 = 10 % bigger), clamped. Anything but a whole number is no step. */
+function nextChatZoom(current, steps) {
   const now = sanitizeChatZoom(current);
   const from = now === null ? CHAT_ZOOM_DEFAULT : now;
-  if (typeof deltaY !== 'number' || !Number.isFinite(deltaY) || deltaY === 0) return from;
-  return clampZoom(from + (deltaY < 0 ? CHAT_ZOOM_STEP : -CHAT_ZOOM_STEP));
+  if (!Number.isInteger(steps) || steps === 0) return from;
+  return clampZoom(from + steps * CHAT_ZOOM_STEP);
+}
+
+// PR #233 F10 (Dexter 4, Miguel M2): one step per 100 px of wheel TRAVEL. A mouse notch is 100 px (one step); a touchpad pinch is a burst of
+// small deltas at frame rate, which one-step-per-event raced from 100 % to 200 % in a quarter of a second. The travel restarts when the
+// direction changes and when the wheel has been quiet for WHEEL_QUIET_MS (a new gesture). deltaMode 1 is lines (a notch is 3), 2 pages.
+const WHEEL_STEP_PX = 100;
+const WHEEL_QUIET_MS = 250;
+const WHEEL_MODE_PX = [1, WHEEL_STEP_PX / 3, 8 * WHEEL_STEP_PX];
+
+/**
+ * (acc, deltaY, deltaMode, now) -> { acc: { sum, at }, steps }. Pure. `acc` is what the last call returned (null at first); `steps` is the
+ * number of whole 100 px crossed by this event, positive for up (a negative deltaY), the remainder carried. A zero or non-finite delta is no
+ * step and leaves `acc` as it was.
+ */
+function wheelZoomSteps(acc, deltaY, deltaMode, now) {
+  const prev = acc && typeof acc === 'object' && Number.isFinite(acc.sum) && Number.isFinite(acc.at) ? acc : null;
+  if (typeof deltaY !== 'number' || !Number.isFinite(deltaY) || deltaY === 0) return { acc: prev, steps: 0 };
+  const px = deltaY * (WHEEL_MODE_PX[deltaMode] || 1);
+  const t = Number.isFinite(now) ? now : 0;
+  const carry = prev && t - prev.at <= WHEEL_QUIET_MS && Math.sign(prev.sum) !== -Math.sign(px) ? prev.sum : 0;
+  const sum = carry + px;
+  const whole = Math.trunc(sum / WHEEL_STEP_PX);
+  return { acc: { sum: sum - whole * WHEEL_STEP_PX, at: t }, steps: whole === 0 ? 0 : -whole };
+}
+
+/**
+ * The chat zoom's save (PR #233 F12, Dexter 5, Miguel L5), driven by the page: `zoomed(z)` on each step, `record(storedZoom)` whenever the
+ * fonts record arrives (this window's answer or another window's push) -> the zoom to show, `flush()` when the page goes away, `current()`.
+ * A run is saved once, SAVE_DELAY_MS after its last step; until then (and until the record has loaded at all, when there is nothing to patch)
+ * it is newer than any record, so a record arriving meanwhile does not undo it, and the first record to load triggers the save.
+ * save(z) is the fonts:set patch; schedule(fn, ms) -> handle and cancel(handle) are the page's timers.
+ */
+const CHAT_ZOOM_SAVE_DELAY_MS = 400;
+function createChatZoomSaver({ save, schedule, cancel, delayMs = CHAT_ZOOM_SAVE_DELAY_MS }) {
+  let shown = CHAT_ZOOM_DEFAULT;
+  let dirty = false;        // a zoom the person made that main has not stored yet
+  let timer = null;         // the run has not settled yet
+  let known = false;        // the record has loaded: there is something to patch
+  const fire = () => { timer = null; if (!known) return; dirty = false; save(shown); };
+  return {
+    current: () => shown,
+    zoomed(z) {
+      shown = z;
+      dirty = true;
+      if (timer !== null) cancel(timer);
+      timer = schedule(fire, delayMs);
+    },
+    record(stored) {
+      known = true;
+      if (timer === null && !dirty) shown = sanitizeChatZoom(stored) === null ? CHAT_ZOOM_DEFAULT : sanitizeChatZoom(stored);
+      else if (timer === null && dirty) fire();
+      return shown;
+    },
+    flush() {
+      if (timer === null) return;
+      cancel(timer);
+      fire();
+    },
+  };
 }
 
 function sanitizeSettings(raw) {
@@ -191,7 +250,7 @@ function sectionView(settings, projectFont, themeSize) {
 const API = {
   sanitizeFamily, sanitizeSize, sanitizeSettings, stackFor, stackForChain, shouldAskForList, effectiveTerminal, isFixedWidth, parseFamilyList, filterFonts, sectionView,
   MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE, DEFAULT_TERMINAL_SIZE, FALLBACK_MONO, FALLBACK_UI,
-  sanitizeChatZoom, nextChatZoom, CHAT_ZOOM_MIN, CHAT_ZOOM_MAX, CHAT_ZOOM_STEP, CHAT_ZOOM_DEFAULT,
+  sanitizeChatZoom, nextChatZoom, wheelZoomSteps, createChatZoomSaver, WHEEL_STEP_PX, WHEEL_QUIET_MS, CHAT_ZOOM_SAVE_DELAY_MS, CHAT_ZOOM_MIN, CHAT_ZOOM_MAX, CHAT_ZOOM_STEP, CHAT_ZOOM_DEFAULT,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

@@ -78,17 +78,23 @@ test('Ctrl+wheel over the chat zooms its conversation, never the page or the ter
   // the wheel: on the chat view only, Ctrl only, cancelled so Chromium never zooms the page, not passive (or preventDefault is ignored)
   assert.match(block, /chatViewEl\.addEventListener\('wheel', \(e\) => \{\s+if \(!e\.ctrlKey\) return;\s+e\.preventDefault\(\);/);
   assert.match(block, /\}, \{ passive: false \}\);/);
-  assert.match(block, /fontsDisplay\.nextChatZoom\(chatZoom, e\.deltaY\)/);
-  // Ctrl+0 while the keyboard is in the chat
-  assert.match(block, /chatViewEl\.addEventListener\('keydown', \(e\) => \{\s+if \(!chatViewState\.isChatZoomResetKey\(e\)\) return;\s+e\.preventDefault\(\);/);
-  // remembered through the fonts record, as a patch of its one field, after the wheel settles
-  assert.match(block, /setFontSettings\(\{ chatZoom: /);
+  // F10: one step per 100 px of travel (fonts-display wheelZoomSteps), not per event
+  assert.match(block, /fontsDisplay\.wheelZoomSteps\(chatWheel, e\.deltaY, e\.deltaMode, e\.timeStamp\)/);
+  assert.match(block, /fontsDisplay\.nextChatZoom\(chatZoomSaver\.current\(\), r\.steps\)/);
+  // F13: Ctrl+0 resets wherever the keyboard is in the page, but only while the chat is the display shown
+  assert.match(block, /document\.addEventListener\('keydown', \(e\) => \{\s+if \(!chatShown \|\| !chatViewState\.isChatZoomResetKey\(e\)\) return;\s+e\.preventDefault\(\);/);
+  assert.doesNotMatch(block, /chatViewEl\.addEventListener\('keydown'/);
+  // F12: saved through the saver (a run saved once it settles, kept until the record loads), flushed when the page goes away
+  assert.match(RENDERER, /const chatZoomSaver = fontsDisplay\.createChatZoomSaver\(\{ save: \(z\) => setFontSettings\(\{ chatZoom: z \}\)/);
+  assert.match(block, /window\.addEventListener\('pagehide', \(\) => chatZoomSaver\.flush\(\)\)/);
+  // F11: a zoom step keeps a reader who was at the bottom there
+  assert.match(block, /chatUi\.keepBottom\(/);
   // it never reaches the terminal's font or geometry
   assert.doesNotMatch(block, /term\.options|fit\.fit|sendResize/);
-  // the zoom is the CSS variable the conversation reads, and a saved record (this window's or another's) applies it
+  // the zoom is the CSS variable the conversation reads, and a saved record (this window's or another's) goes through the saver
   assert.match(HTML, /#chat-log \{[^}]*zoom: var\(--chat-zoom, 1\);/);
   const take = RENDERER.slice(RENDERER.indexOf('function takeFontSettings('), RENDERER.indexOf('function refreshFontSettings('));
-  assert.match(take, /applyChatZoom\(/);
+  assert.match(take, /applyChatZoom\(chatZoomSaver\.record\(fontSettings\.chatZoom\)\)/);
 });
 
 test('the host\'s conversation reaches the page in hello and on every change', () => {

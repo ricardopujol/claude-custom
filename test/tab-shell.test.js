@@ -2260,6 +2260,20 @@ test('handleProbeCommand: mouseClick reaches the driver with whole-number coordi
   assert.deepStrictEqual(seen, [[10, 20]]);
 });
 
+test('handleProbeCommand: mouseWheel (PR #233 F14) reaches the driver with whole-number coordinates and delta, Ctrl only when asked; anything else is refused', async () => {
+  const seen = [];
+  const api = { mouseWheel: async (x, y, dy, ctrl) => { seen.push([x, y, dy, ctrl]); return { ok: true, zoomFactor: 1 }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', x: 10, y: 20, deltaY: -100, ctrl: true }), api), { ok: true, zoomFactor: 1 });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', x: 10, y: 20, deltaY: 100, ctrl: 'yes' }), api), { ok: true, zoomFactor: 1 });
+  for (const bad of [{ deltaY: 1 }, { x: 1.5, y: 2, deltaY: 1 }, { x: -1, y: 0, deltaY: 1 }]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', ...bad }), api), { ok: false, error: 'mouseWheel needs whole-number x and y' });
+  }
+  for (const dy of [undefined, 1.5, '100', 5000]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', x: 1, y: 1, deltaY: dy }), api), { ok: false, error: 'mouseWheel needs a whole-number deltaY' });
+  }
+  assert.deepStrictEqual(seen, [[10, 20, -100, true], [10, 20, 100, false]]);
+});
+
 test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
   const seen = [];
   const api = { mark: async (b, id) => { seen.push([b, id]); return { ok: true }; } };
