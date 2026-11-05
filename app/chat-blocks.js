@@ -133,6 +133,33 @@ const indentOf = (l) => /^ */.exec(l)[0].length;
 const expandTabs = (l) => l.replace(/^\t+/, (t) => '    '.repeat(t.length));
 
 /**
+ * The lines one list item owns, from the item at `lines[i]` (`m` is its LIST_ITEM match): its own text, then every following line
+ * indented past its marker (blank lines between them kept, trailing ones not), a code fence's lines whole, and a lazy continuation
+ * line. De-indented, ready to parse as blocks. `next` is the first line that is not the item's.
+ */
+function collectItemLines(lines, i, m) {
+  const offset = m[1].length + m[2].length + 1;
+  const content = [m[3]];
+  let j = i + 1;
+  let blanks = 0;
+  let fenced = FENCE_OPEN.test(m[3]);
+  while (j < lines.length) {
+    const l = expandTabs(lines[j]);
+    if (l.trim() === '') { blanks++; j++; continue; }
+    const ind = indentOf(l);
+    if (ind > m[1].length) {
+      for (; blanks > 0; blanks--) content.push('');
+      content.push(l.slice(Math.min(ind, offset)));
+    } else if (blanks === 0 && !fenced && !startsBlock(l)) {
+      content.push(l.trim());                          // a lazy continuation of the item's paragraph
+    } else break;
+    if (/^ {0,3}(`{3,}|~{3,})/.test(content[content.length - 1])) fenced = !fenced;
+    j++;
+  }
+  return { content, next: j };
+}
+
+/**
  * One list, from its first item. An item owns every following line that is indented past its marker (a loose list's blank lines, a wrapped
  * line, a code fence, a nested list) and a lazy continuation line; those lines, de-indented, are parsed as blocks of their own, so a fence
  * in step 1 does not end the list and step 2 is still 2 (PR #226 Miguel B2, Dexter 8). The next item continues the list across blank
@@ -148,24 +175,7 @@ function parseList(lines, from, depth) {
     // A rule ("- - -", "* * *") is not an item, even right after a blank line the list would otherwise continue across (PR #226 Miguel I1).
     // No indent guard is needed here: a line indented past the previous item's marker was already taken as that item's own line.
     if (!m || HR.test(lines[i]) || /\d/.test(m[2][0]) !== ordered) break;
-    const offset = m[1].length + m[2].length + 1;
-    const content = [m[3]];
-    let j = i + 1;
-    let blanks = 0;
-    let fenced = FENCE_OPEN.test(m[3]);
-    while (j < lines.length) {
-      const l = expandTabs(lines[j]);
-      if (l.trim() === '') { blanks++; j++; continue; }
-      const ind = indentOf(l);
-      if (ind > m[1].length) {
-        for (; blanks > 0; blanks--) content.push('');
-        content.push(l.slice(Math.min(ind, offset)));
-      } else if (blanks === 0 && !fenced && !startsBlock(l)) {
-        content.push(l.trim());                          // a lazy continuation of the item's paragraph
-      } else break;
-      if (/^ {0,3}(`{3,}|~{3,})/.test(content[content.length - 1])) fenced = !fenced;
-      j++;
-    }
+    const { content, next: j } = collectItemLines(lines, i, m);
     const sub = depth >= MAX_DEPTH ? [{ type: 'paragraph', inlines: [text(content.join('\n'))], raw: content.join('\n') }] : parseBlocks(content, depth + 1);
     const head = sub.length > 0 && sub[0].type === 'paragraph' ? sub[0] : null;
     items.push({ inlines: head ? head.inlines : [], blocks: head ? sub.slice(1) : sub });

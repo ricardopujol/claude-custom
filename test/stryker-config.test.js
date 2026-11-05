@@ -493,3 +493,9 @@ test('the real-process halves of status-relay, probe-hygiene and settings-writer
     assert.ok(!SPAWN.test(fs.readFileSync(path.join(ROOT, 'test', name + '.test.js'), 'utf8')), name + '.test.js must not spawn real processes');
   }
 });
+
+test('the pid-retry decision module is mutated, and its tests are in the run (PR #231 Miguel Y3)', () => {
+  // It decides whether a process is ours to kill: a wrong verdict ends somebody's session. Not listing it is silent: no mutant, no number.
+  for (const module of ['host/stop-by-pid.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
+  assert.ok(conf.commandRunner.command.split(/\s+/).includes('test/stop-by-pid.test.js'), 'its test file is in the command');
+});
