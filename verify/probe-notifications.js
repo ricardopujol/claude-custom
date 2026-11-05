@@ -26,6 +26,7 @@
    Two columns: window unfocused / focused (the one input surfacesFor has).
 
    Run:  node verify/probe-notifications.js        (exit 0 always; it prints the table and a summary line)  */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { createAttention } = require('../host/attention');
 const { surfacesFor } = require('../app/attention-surface');
 

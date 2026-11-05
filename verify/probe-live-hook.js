@@ -5,6 +5,7 @@
    Every other check fires the helper by hand, which proves the bridge, the mood
    machine and the roster all work -- and proves nothing about whether Claude
    Code ever calls them. This drives the real CLI with a real prompt. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');

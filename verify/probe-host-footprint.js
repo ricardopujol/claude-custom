@@ -26,6 +26,7 @@
    FLOOR of the series (the minimum of each time window): a floor that keeps rising is a leak, a high
    swing around a flat floor is churn. CPU is reported as the delta over the run scaled to an hour, not
    the lifetime total. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');

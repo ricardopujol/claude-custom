@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { killChildTree } = require('../host/kill-tree');
 /**
  * Does *Stop that session* work between REAL hosts? (host/stop-holder.js)

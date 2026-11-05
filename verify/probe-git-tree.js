@@ -247,10 +247,19 @@ async function main() {
   if (!ready) return;
 
   // 1 -----------------------------------------------------------------------------
-  // Dockable panels D1: the page reports the groups of a split tree; the default layout has one, `right`.
-  const home = (ready.groups || []).find(g => g.tabs.includes('git'));
+  // A fresh start keeps every panel on the dock rail, in no group (BACKLOG #103; a click on a rail tab only peeks, PR #225). So the
+  // first thing to hold is that, and then the module is docked on the right the way a person pins it, which gives the `right` group.
+  const onRail = (ready.rails || []).some(r => r.modules.includes('git'));
+  const inGroupAtStart = (ready.groups || []).some(g => g.tabs.includes('git'));
+  check('1: a fresh start keeps the Git module on the dock rail, in no group yet', onRail && !inGroupAtStart, JSON.stringify({ onRail, inGroupAtStart }));
+  await view(app, 'dock', { id: 'git', target: { edge: 'right' } });
+  const docked = await waitFor(async () => { const s = await view(app, 'state'); return s && (s.groups || []).find(g => g.tabs.includes('git')) ? s : null; }, 10000);
+  const home = docked && docked.groups.find(g => g.tabs.includes('git'));
   const where = home ? home.id : null;
-  check('1: the Git module is in the dock (new modules land on the right)', where === 'right', String(where));
+  // The group's id is generated now (g1), so "on the right" is measured: the group sits beside the terminal, to its right.
+  check('1: docked on the right edge, the Git module is in a group to the right of the terminal',
+    !!home && !!docked.termwrap && home.rect.left >= docked.termwrap.right - 1 && home.rect.width > 100,
+    JSON.stringify({ id: where, group: home && home.rect, termwrap: docked && docked.termwrap }));
   await view(app, 'select', { id: 'git' });
   const st = await waitFor(async () => {
     const s = await view(app, 'gitState');

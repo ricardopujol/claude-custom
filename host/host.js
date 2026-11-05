@@ -141,6 +141,7 @@ const { createModels: createAskModels } = require('./ask-models');
 const { allowConnection, newToken } = require('./gatekeeper');
 const { portForCwd } = require('./port-for-project');
 const { writeIdentity, fileFor, readIdentity, readTokenFile } = require('./host-identity');
+const { markFromEnv } = require('./probe-mark');
 const { pickerPayload, createProjectsReader } = require('./project-picker');
 const { resolveLaunchTarget, pickShell, shellEnv } = require('./launch-target');
 const { samePath } = require('./project-path');
@@ -755,7 +756,8 @@ let ARGS = buildClaudeArgs(ARGS_OPTIONS);
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
 // What every writeIdentity call says about this host's role (host/shell-tab.js identityFields): one place, so a fourth call can't forget it.
-const identityFor = () => identityFields({ side: SIDE, shell: SHELL, sessionId });
+// `probeMark`: set only in a host a verify/ probe started (host/probe-mark.js), so the orphan sweep can prove whose it is (BACKLOG #169).
+const identityFor = () => ({ ...identityFields({ side: SIDE, shell: SHELL, sessionId }), probeMark: markFromEnv(process.env) });
 
 // The project's own look -- colours, darkness and an optional background copy
 // in <CWD>/.claude-custom/ (host/style.js). Resolved fresh on every read, so a
