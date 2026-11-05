@@ -4,7 +4,7 @@
  * with a REAL host. (re-runnable)
  *
  *   env -u ELECTRON_RUN_AS_NODE node verify/probe-chat-view.js        (exit 0 = every check held)
- *   CHAT_VIEW_PROBE_SHOTS=<dir>                                       also keep the screenshots there
+ *   CHAT_VIEW_PROBE_SHOTS=<dir>  or  --shots=<dir>                    also keep the screenshots there
  *
  * The unit tests pin the decisions and the DOM (jsdom). No unit test can see the chat laid over a real xterm without
  * resizing it, a real hook event travel native helper -> pipe -> host -> websocket -> page, the plain-<script> global
@@ -27,6 +27,10 @@
  *   E  a permission prompt (Notification) flips the tab to the terminal with the one-line note; a main-session tool
  *      event (the answer) brings the chat back; a dialog still open when Ctrl+Shift+H is pressed keeps the terminal
  *   F  "Claude is working..." from a prompt to its Stop; a reply with hostile text shows as text, no element made of it
+ *   I  (#171) the chat shows the project's background: see-through over a picture, a video and a plain colour (in a dark and a light
+ *      look, and lean), so #bg and its darkness veil show as they do behind the terminal; the live terminal's pixels are hidden while
+ *      the chat is shown (opacity 0, so no resize) and back when it isn't. Screenshots chat-bg-*.png (ffmpeg makes the picture and
+ *      the video locally; without it I is skipped)
  *   G  Ctrl+Shift+H toggles; a re-attached window (hello) is handed the conversation; off shows the terminal again
  *
  * SAFE. The session's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills: this is NOT a real claude run, because that
@@ -57,7 +61,8 @@ const tmp = tmpDir('cc-probe-chat-');
 const container = path.join(tmp, 'proj');
 const dev = path.join(container, 'dev');
 const userData = path.join(tmp, 'user-data');
-const shots = process.env.CHAT_VIEW_PROBE_SHOTS || path.join(tmp, 'shots');
+const shotsArg = process.argv.find(a => a.startsWith('--shots='));
+const shots = shotsArg ? shotsArg.slice('--shots='.length) : (process.env.CHAT_VIEW_PROBE_SHOTS || path.join(tmp, 'shots'));
 const boxCtl = path.join(tmp, 'box-ctl.json');
 const boxLog = path.join(tmp, 'box-submitted.log');
 fs.mkdirSync(shots, { recursive: true });
@@ -361,6 +366,78 @@ async function main() {
   const copyAll = await doChat(app, 'copy', { label: 'whole reply', index: (await chat(app)).copyButtons.filter(b => (b.label || '').includes('whole reply')).length - 1 });
   check('H: Copy reply copies all of it', copyAll.ok && (copyAll.skipped || (copyAll.copied.includes('A: the long answer, in full') && copyAll.copied.includes('B: saved a memory'))), JSON.stringify(copyAll && copyAll.copied));
 
+  // I (#171) ------------------------------------------------------------------------
+  const CLEAR = 'rgba(0, 0, 0, 0)';
+  const shown = await waitFor(async () => { const c = await chat(app); return c && c.shown && !c.rootHidden ? c : null; }, 10000);
+  check('I: while the chat is shown the live terminal\'s pixels are hidden (opacity 0), and it is still its own size',
+    !!shown && shown.termOpacity === '0' && shown.term.cols === before.term.cols && shown.term.rows === before.term.rows, JSON.stringify(shown && { o: shown.termOpacity, t: shown.term }));
+  check('I: ...the chat\'s fill follows the background: see-through over one, the terminal\'s own fill without',
+    !!shown && (shown.hasBg ? shown.rootBg === CLEAR : shown.rootBg !== CLEAR), JSON.stringify(shown && { hasBg: shown.hasBg, bg: shown.rootBg }));
+  const media = path.join(tmp, 'media');
+  fs.mkdirSync(media, { recursive: true });
+  const png = path.join(media, 'background.png');
+  const webm = path.join(media, 'background.webm');
+  const ff = (args) => spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { windowsHide: true, encoding: 'utf8' }).status === 0;
+  const madeMedia = ff(['-f', 'lavfi', '-i', 'testsrc2=size=1280x720', '-frames:v', '1', png])
+    && ff(['-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=15:duration=3', '-c:v', 'libvpx-vp9', '-b:v', '400k', '-pix_fmt', 'yuv420p', webm]);
+  if (!madeMedia) console.log('SKIP  I: ffmpeg could not make the test picture and video');
+  else {
+    const bgState = async () => { const r = await view(app, 'bgState'); return r && r.ok ? r : null; };
+    const fonts = async () => { const r = await view(app, 'fontsState'); return r && r.ok ? r : null; };
+    const seeThrough = (label, c) => check(`I: ${label}: the chat is see-through over it and the terminal's pixels are hidden`,
+      !!c && c.shown && c.hasBg && c.rootBg === CLEAR && c.termOpacity === '0', JSON.stringify(c && { s: c.shown, hasBg: c.hasBg, bg: c.rootBg, o: c.termOpacity }));
+
+    await view(app, 'bgStyle', { action: 'set-background', path: png });
+    const pic = await waitFor(async () => { const b = await bgState(); return b && b.hasCustomBg && b.bgImage.includes('background.png') ? b : null; }, 15000);
+    check('I: a picture is the project\'s background', !!pic, JSON.stringify(pic && { custom: pic.hasCustomBg, img: pic.bgImage }));
+    seeThrough('a picture', await chat(app));
+    check('I: ...under the same darkness veil the terminal gets (the veil is #bg\'s own, shared by both views)', !!pic && pic.veil > 0, pic && String(pic.veil));
+    await sleep(400);
+    await shoot(app, 'chat-bg-image');
+
+    await doChat(app, 'toggle');
+    const termView = await waitFor(async () => { const c = await chat(app); return c && c.rootHidden && !c.shown ? c : null; }, 5000);
+    check('I: with the chat off the terminal\'s pixels are back (opacity 1)', !!termView && termView.termOpacity === '1', JSON.stringify(termView && termView.termOpacity));
+    await sleep(300);
+    await shoot(app, 'chat-bg-image-terminal');
+    await doChat(app, 'toggle');
+    await waitFor(async () => { const c = await chat(app); return c && c.shown ? c : null; }, 5000);
+
+    await view(app, 'leanClass', { on: true });
+    await sleep(600);
+    seeThrough('a picture, in lean', await chat(app));
+    await shoot(app, 'chat-bg-lean');
+    await view(app, 'leanClass', { on: false });
+    await sleep(400);
+
+    await view(app, 'bgStyle', { action: 'set-background', path: webm });
+    const vid = await waitFor(async () => { const b = await bgState(); return b && b.video && b.video.readyState >= 2 ? b : null; }, 15000);
+    check('I: a video is the project\'s background, and it plays under the chat', !!vid && vid.video.paused === false, JSON.stringify(vid && vid.video));
+    seeThrough('a video', await chat(app));
+    await sleep(400);
+    await shoot(app, 'chat-bg-video');
+
+    await view(app, 'bgStyle', { action: 'set-look', look: { backgroundMode: 'colour' } });
+    const plainBg = await waitFor(async () => { const f = await fonts(); return f && f.bg.plainColour && f.bg.hasPlainClass ? f : null; }, 10000);
+    check('I: Plain colour is the project\'s background', !!plainBg, JSON.stringify(plainBg && plainBg.bg));
+    seeThrough('a plain colour', await chat(app));
+    await sleep(400);
+    await shoot(app, 'chat-bg-plain');
+    await view(app, 'bgStyle', { action: 'set-look', look: { backgroundMode: null } });
+    await waitFor(async () => { const f = await fonts(); return f && !f.bg.plainColour ? f : null; }, 10000);
+
+    await view(app, 'bgStyle', { action: 'set-background', path: png });
+    await waitFor(async () => { const b = await bgState(); return b && b.bgImage.includes('background.png') && !b.video ? b : null; }, 15000);
+    await view(app, 'bgStyle', { action: 'set-mode', mode: 'light' });
+    const light = await waitFor(async () => { const c = await chat(app); return c && c.lookMode === 'light' ? c : null; }, 15000);
+    check('I: a light look is on', !!light, JSON.stringify(await chat(app).then(c => c && c.lookMode)));
+    seeThrough('a picture, in a light look', light);
+    await sleep(600);
+    await shoot(app, 'chat-bg-light');
+    await view(app, 'bgStyle', { action: 'set-mode', mode: 'dark' });
+    await waitFor(async () => { const c = await chat(app); return c && c.lookMode !== 'light' ? c : null; }, 15000);
+  }
+
   // G ------------------------------------------------------------------------------
   const count = (await chat(app)).bubbles.length;
   await view(app, 'reconnect', { blur: true });
@@ -369,6 +446,7 @@ async function main() {
   await doChat(app, 'toggle');
   const terminalBack = await waitFor(async () => { const c = await chat(app); return c && c.rootHidden && c.wanted === false && c.btn.pressed === 'false' ? c : null; }, 5000);
   check('G: the button again shows the terminal', !!terminalBack);
+  check('G: ...with its pixels back (#171: opacity 1 once the chat is off)', !!terminalBack && terminalBack.termOpacity === '1', JSON.stringify(terminalBack && terminalBack.termOpacity));
   check('G: ...which is the real terminal: the earlier typed command\'s output is still on its screen', (await screenOf(app)).includes('chat-typed-ok'));
   await shoot(app, '4-terminal-again');
 

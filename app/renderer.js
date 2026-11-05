@@ -4140,6 +4140,9 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           copyButtons: [...log.querySelectorAll('.chat-copy')].map(b => ({ label: b.getAttribute('aria-label'), text: b.textContent })),
           logText: log.textContent, term: { cols: term.cols, rows: term.rows }, resizeSends,
           rootRect: rectOf(root), termRect: rectOf(document.getElementById('term')),
+          // #171: what the chat paints over the background, and whether the live terminal's pixels are seen
+          rootBg: getComputedStyle(root).backgroundColor, termOpacity: getComputedStyle(document.getElementById('term')).opacity,
+          hasBg: document.body.classList.contains('has-bg'), lookMode: document.documentElement.getAttribute('data-look-mode'),
         });
       }
       case 'chatDo': {

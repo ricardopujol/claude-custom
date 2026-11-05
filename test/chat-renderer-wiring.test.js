@@ -61,6 +61,16 @@ test('the chat sits over the terminal, below the banners and the lock overlay, a
   assert.doesNotMatch(RENDERER.slice(RENDERER.indexOf('function chatRefreshView()'), RENDERER.indexOf('function chatToggle()')), /fit\.fit|sendResize|display = 'none'/);
 });
 
+test('the chat view shows the project\'s own background, and the terminal under it is not seen (#171)', () => {
+  // Over a picture, a video or a plain colour the chat is see-through, like the terminal (body.has-bg #termwrap), so #bg and its darkness
+  // veil show the same in both views. With no background at all it keeps the terminal's own fill.
+  assert.match(HTML, /body\.has-bg #chat-view \{ background: transparent; \}/);
+  // The terminal keeps running, keeps its size and keeps the keyboard's focus path (the send's read-back reads xterm's buffer, never its pixels):
+  // only its pixels go, and only while the chat is the one shown.
+  assert.match(HTML, /body\.chat-on #term \{ opacity: 0; \}/);
+  assert.doesNotMatch(HTML, /body\.chat-on #term \{[^}]*(display|visibility|width|height)/, 'no rule that would resize, detach or unfocus it');
+});
+
 test('the host\'s conversation reaches the page in hello and on every change', () => {
   assert.match(RENDERER, /chatApply\(msg\.chat\);\s+\/\/ BACKLOG #157/);
   assert.match(RENDERER, /if \(msg\.type === 'chat'\) \{\s+chatApply\(msg\.chat\);\s+return;\s+\}/);
