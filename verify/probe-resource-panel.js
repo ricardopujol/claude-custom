@@ -87,6 +87,38 @@ const freePort = () => new Promise((resolve, reject) => {
 const CHIP_FILE = path.join(STATE_DIR, 'resource-chip.json');
 hygiene.install();
 
+// The top-bar chip (BACKLOG #168: the chip is CPU, RAM and GPU, Ricardo's design). Its aria-label, the text the probe reads:
+// `CPU 23%, RAM 52%, GPU 8%`; CPU is "—" before the first CPU delta exists (strictCpu false allows that); the GPU part is there when the
+// sample carries a GPU object, "—" when its counters couldn't be read.
+const CHIP_RE = (strictCpu) => new RegExp(`^CPU ${strictCpu ? '\\d+%' : '(\\d+%|—)'}, RAM \\d+%(, GPU (\\d+%|—))?$`);
+// Its hover text: the full figures, one per line, then what it is.
+const OF = '(\\d+(\\.\\d)? of \\d+(\\.\\d)? GB|\\d+ of \\d+ MB)';
+const TITLE_RE = new RegExp(`^CPU (\\d+%|—)\\nRAM ${OF} \\(\\d+%\\)(\\nGPU (\\d+%|—)( \\(${OF}\\))?)?\\nMachine total\\. Click for the graphs of the last hour\\.$`);
+const chipParts = (text) => {
+  const m = /^CPU (\S+), RAM (\S+?)(?:, GPU (\S+))?$/.exec(text || '');
+  return m ? { cpu: m[1], ram: m[2], gpu: m[3] === undefined ? null : m[3] } : null;
+};
+// What the chip must say for the machine figures in the SAME payload (resourcesState reads both in one turn): whole percents of the
+// payload's own numbers, "—" for none. A chip that drew a stale, a coerced (Number(null) is 0) or another figure fails here.
+const pctText = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${Math.round(Math.min(100, Math.max(0, v)))}%` : '—');
+function chipAgrees(s) {
+  const p = chipParts(s.chip && s.chip.text);
+  const m = s.machine;
+  if (!p || !m || !m.mem || !(m.mem.totalBytes > 0)) return false;
+  const gpu = m.gpu && typeof m.gpu === 'object' ? pctText(m.gpu.busy) : null;
+  return p.cpu === pctText(m.cpu) && p.ram === pctText((m.mem.usedBytes / m.mem.totalBytes) * 100) && p.gpu === gpu;
+}
+// The hover text names the same three figures as the chip.
+function titleAgrees(s) {
+  const p = chipParts(s.chip && s.chip.text);
+  const t = s.chip && s.chip.title;
+  if (!p || typeof t !== 'string') return false;
+  const cpu = (/^CPU (\S+)$/m.exec(t) || [])[1];
+  const ram = (/^RAM .* \((\d+%)\)$/m.exec(t) || [])[1];
+  const gpu = (/^GPU (\S+)/m.exec(t) || [])[1] || null;
+  return cpu === p.cpu && ram === p.ram && gpu === p.gpu;
+}
+
 async function launchApp(cwd) {
   const port = await freePort();
   const token = require('crypto').randomBytes(16).toString('hex');
@@ -228,10 +260,14 @@ async function main() {
   const strip = async () => ((await command(app, { cmd: 'state' })).stripDom || []);
 
   // 1 -----------------------------------------------------------------------------
-  const chip0 = await waitFor(async () => { const s = await rs(); return s && s.ok !== false && s.hasPayload && s.chip && /^CPU .* GB \/ .* GB( {2}GPU .*)?$/.test(s.chip.text) ? s : null; }, 40000, 300);
-  check('1: the chip shows the machine total from the machine sample, with the panel never opened',
-    !!chip0 && /^CPU (\d+(\.\d)?%|—)  \d+(\.\d)? GB \/ \d+(\.\d)? GB( {2}GPU (\d+(\.\d)?%|<1%|—))?$/.test(chip0.chip.text), JSON.stringify(chip0 && chip0.chip));
-  check('1: the chip says what it is on hover', !!chip0 && /Machine total and the last hour\. Click for the graphs\./.test(chip0.chip.title));
+  // The chip is `CPU 23% · RAM 52% · GPU 8%` (chrome grammar #215, option A, Ricardo 2026-10-28; confirmed 2026-11-05, BACKLOG #168 Q3):
+  // whole percents, "—" for a figure it doesn't have. chip.text is its aria-label, `CPU 23%, RAM 52%, GPU 8%`, built from the same segments
+  // as the markup (app/chip-model.js). The full figures are its hover text.
+  const chip0 = await waitFor(async () => { const s = await rs(); return s && s.ok !== false && s.hasPayload && s.machine && s.chip && /^CPU \S+, RAM \d+%/.test(s.chip.text) ? s : null; }, 40000, 300);
+  check('1: the chip shows the machine total from the machine sample, with the panel never opened (RAM a real percent; CPU may be "—" until a second sample)',
+    !!chip0 && CHIP_RE(false).test(chip0.chip.text) && chipAgrees(chip0), JSON.stringify(chip0 && [chip0.chip, chip0.machine]));
+  check('1: the chip says what it is on hover: the full figures, then "Machine total. Click for the graphs of the last hour."',
+    !!chip0 && TITLE_RE.test(chip0.chip.title) && titleAgrees(chip0), JSON.stringify(chip0 && chip0.chip.title));
   // Q1 (Ricardo): the process tree is sampled with the panel CLOSED, so the tab warning works with it closed.
   const closedFull = await waitFor(async () => { const s = await rs(); return s.payloadHasModel ? s : null; }, 40000, 500);
   check('1: the process tree is sampled with the panel never opened (the full model arrives)', !!closedFull && closedFull.shown === false, JSON.stringify(closedFull && closedFull.shown));
@@ -252,14 +288,18 @@ async function main() {
   check('2: the footer says how often it samples and that it pauses while minimised', /Every 10 s · paused while minimised/.test(full.text));
   const second = await waitFor(async () => { const s = await rs(); return s && s.payloadHasModel && !/measuring…/.test(s.text) ? s : null; }, 40000, 500);
   check('2: after the second sample every CPU figure is real: no "measuring…", and nothing prints a bare NaN or undefined', !!second && !/NaN|undefined|null/.test(second.text), JSON.stringify(second && second.text.slice(0, 160)));
-  check('2: the chip reads `CPU n%  x GB / y GB`', !!second && /^CPU \d+(\.\d)?%  \d+(\.\d)? GB \/ \d+(\.\d)? GB( {2}GPU (\d+(\.\d)?%|<1%|—))?$/.test(second.chip.text), JSON.stringify(second && second.chip));
+  check('2: the chip reads `CPU n%, RAM n%[, GPU n%]`, each the whole percent of the payload\'s own machine figure', !!second && CHIP_RE(true).test(second.chip.text) && chipAgrees(second) && titleAgrees(second),
+    JSON.stringify(second && [second.chip, second.machine]));
   check('2: the legend gives claude-custom and everything else', !!second && /claude-custom [^·]+· everything else/.test(second.text));
   await view(app, 'resourcesClick', { act: 'toggle', key: sessionKey });
 
   // 8 -----------------------------------------------------------------------------
   // The one-hour history. By now there are several samples, so the sparklines have lines in them.
-  const withHist = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.points >= 3 && s.hist.spark.length >= 2 && s.hist.spark.slice(0, 2).every(k => k.polylines >= 1) ? s : null; }, 60000, 500);
-  check('8: the chip has a sparkline after the CPU and after the memory figure, each with a line in it', !!withHist, JSON.stringify(withHist ? withHist.hist.spark : (await rs()).hist));
+  // Since #215 the chip is the figures only: the history's graphs are the popover's (the hover peek or a click), not sparklines in the
+  // top bar. So: the history has points to draw, and the chip itself carries no sparkline.
+  const withHist = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.points >= 3 ? s : null; }, 60000, 500);
+  check('8: the one-hour history has 3 or more points, and the chip is the figures only (no sparkline in the top bar since #215)',
+    !!withHist && withHist.hist.spark.length === 0 && CHIP_RE(true).test(withHist.chip.text), JSON.stringify(withHist ? [withHist.hist.points, withHist.hist.spark, withHist.chip.text] : (await rs()).hist));
   const bigBefore = (await rs()).hist;
   check('8: the chip still fits the top bar at this window width (nothing clips)', bigBefore.chipClipped === false && bigBefore.barClipped === false && bigBefore.chipRect && bigBefore.chipRect.x >= 0 && bigBefore.chipRect.x + bigBefore.chipRect.w <= bigBefore.winW,
     JSON.stringify({ chip: bigBefore.chipRect, win: bigBefore.winW, clipped: [bigBefore.chipClipped, bigBefore.barClipped], spark: bigBefore.spark }));
@@ -472,7 +512,7 @@ async function main() {
   let seen6 = 0; let lastText6 = null;
   const noModel = await waitFor(async () => { const s = await rs(); if (s.payloadHasModel && s.machine && JSON.stringify(s.machine) !== lastText6) { lastText6 = JSON.stringify(s.machine); seen6++; } return seen6 >= 2 && s.payloadHasModel ? s : null; }, 40000, 500);
   check('6: hiding the panel does NOT stop the process-tree sample: the model keeps arriving', !!noModel, String(Date.now() - before6));
-  check('6: the chip keeps its machine figures', !!noModel && /^CPU .* GB \/ .* GB( {2}GPU .*)?$/.test(noModel.chip.text) && !/NaN|undefined/.test(noModel.chip.text), JSON.stringify(noModel && noModel.chip));
+  check('6: the chip keeps its machine figures (real percents, the payload\'s own)', !!noModel && CHIP_RE(true).test(noModel.chip.text) && chipAgrees(noModel), JSON.stringify(noModel && [noModel.chip, noModel.machine]));
 
   // 7 (Q2) the Window menu's chip toggle -----------------------------------------------
   const untick = await view(app, 'resourcesChipMenu');
@@ -490,19 +530,24 @@ async function main() {
 
 
   // 8 (gap) a minimised stretch is a break in the line ----------------------------------
-  // Main marks a break the moment the window is minimised, so a short minimise proves it. The MEMORY sparkline is counted
-  // (its first sample after the restore already has a value; the CPU one needs two): runs = lines + lone dots, and exactly one
-  // more is expected.
-  const runsNow = async () => { const s = await rs(); return s.hist.spark[1] ? s.hist.spark[1].polylines + s.hist.spark[1].dots : 0; };
-  const runsBefore = await runsNow();
+  // Main marks a break the moment the window is minimised, so a short minimise proves it. The chip has no sparkline since #215, so the
+  // runs are counted in the popover's MEMORY graph (its first sample after the restore already has a value; the CPU one needs two):
+  // runs = filled areas + lone dots, read with the popover open (minimising closes it), and exactly one more is expected.
+  const memGraph = (s) => (s && s.hist && s.hist.open ? s.hist.graphs.find(g => g.kind === 'mem') : null);
+  const runsOf = (g) => (g ? g.rest + g.dots : null);
+  await view(app, 'resourcesClick', { chip: true });
+  const popBefore = await waitFor(async () => { const s = await rs(); return memGraph(s) ? s : null; }, 5000, 150);
+  const runsBefore = runsOf(memGraph(popBefore));
+  await view(app, 'resourcesHistoryDo', { op: 'esc' });
+  await waitFor(async () => ((await rs()).hist.open === false ? true : null), 5000, 150);
   await command(app, { cmd: 'window-state', state: 'minimize' });
   await sleep(8000);
   await command(app, { cmd: 'window-state', state: 'restore' });
-  const afterGap = await waitFor(async () => (await runsNow()) >= runsBefore + 1 ? true : null, 60000, 500);
-  const runsAfter = await runsNow();
-  check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0', !!afterGap && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
   await view(app, 'resourcesClick', { chip: true });
-  const gapPop = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length >= 2 ? s : null; }, 5000, 150);
+  const gapPop = await waitFor(async () => { const s = await rs(); const r = runsOf(memGraph(s)); return r !== null && runsBefore !== null && r >= runsBefore + 1 ? s : null; }, 60000, 500);
+  const runsAfter = runsOf(memGraph(gapPop || await rs()));
+  check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0',
+    runsBefore !== null && runsBefore >= 1 && !!gapPop && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
   check('8: the popover draws the break too (two or more marks in the memory graph: areas and dots)', !!gapPop && gapPop.hist.graphs[1].rest + gapPop.hist.graphs[1].dots >= 2, JSON.stringify(gapPop && gapPop.hist.graphs[1]));
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'resource-history-gap.png') });
   await view(app, 'resourcesHistoryDo', { op: 'esc' });
