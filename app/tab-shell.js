@@ -992,7 +992,10 @@ function createShell(deps) {
     }
     if (!devClosed()) return first;
     const named = typeof launchedFrom === 'string' && launchedFrom !== '' && (keyOf(launchedFrom) === first || isInside(launchedFrom, tabs.get(first).cwd));
-    return named ? first : null;
+    if (named) return first;
+    // Otherwise the first tab whose session already runs (a restart finds them): selecting it starts nothing. None: nothing selected.
+    const running = visibleOf(model()).find(e => !isCompanionEntry(e) && e.started === true && e.ended !== true);
+    return running ? running.key : null;
   }
 
   /** One poll. One at a time: a tick that finds one running does nothing. */

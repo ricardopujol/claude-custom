@@ -218,6 +218,17 @@ test('#160: a restart with develop closed keeps it closed, lists its row first, 
   assert.strictEqual(cold.shell.snapshot().lanes.develop.key, key('dev'), 'already there: the saved close seeds the reducer');
 });
 
+test('#160: a restart with develop closed and a lane still running selects that lane once its host is found, and spawns nothing', async () => {
+  const layout = memoryLayout({ order: [], closed: [{ key: key('dev'), path: wt('dev'), branch: 'develop' }] });
+  const h = await opened({ layout, running: { 7702: wt('feat-b') } });
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
+  assert.deepStrictEqual(stripKeys(h), [key('feat-b')]);
+  assert.deepStrictEqual(h.spawns, []);
+  assert.strictEqual(rows(h)[0].key, key('dev'), 'and develop is still the first row');
+});
+
 test('#160: a restart with develop closed, opened from a lane\'s folder, selects that lane', async () => {
   const layout = memoryLayout({ order: [], closed: [{ key: key('dev'), path: wt('dev'), branch: 'develop' }] });
   const h = await opened({ layout, launchedFrom: wt('feat-b') });
