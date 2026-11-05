@@ -308,6 +308,35 @@ test('a side host that does not answer its stop but dies to the pid retry: the t
   assert.strictEqual(h.changes[h.changes.length - 1].closeNotice, null);
 });
 
+test('PR #231 Miguel R3: a started side host whose stop fails, whose pid retry proves nothing, and whose port refuses closes with a notice', async () => {
+  for (const outcome of ['unknown', 'failed']) {
+    const h = await opened();
+    await h.shell.openSide(key('feat-a'));     // showing: the close selects its branch tab, which must not wipe the notice
+    h.controlOk = false;
+    h.controlError = 'connection refused';
+    h.pidOutcome = outcome;
+    delete h.running[7702];                    // nothing listens on the side host's port any more
+    const r = await h.shell.closeTab(skey('feat-a'));
+    assert.strictEqual(r.ok, true, outcome);
+    assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null, outcome);
+    assert.deepStrictEqual(h.pidStops, [7702], outcome);
+    const snap = h.shell.snapshot();
+    assert.strictEqual(snap.closeNotice, "Closed the side session in feat/a · side: its host no longer listens on its port, and its process couldn't be confirmed ended.", outcome);
+    assert.strictEqual(snap.closeStuck, null, outcome);
+  }
+});
+
+test('PR #231 Miguel R3: the same side host with its port still listening is kept, as before', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'unknown';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.ok(h.shell.tabByKey(skey('feat-a')));
+  assert.match(h.shell.snapshot().closeNotice, /^Couldn't end the side session/);
+});
+
 test('an ended side session closes with no stop sent: its port may be another host\'s by now', async () => {
   const h = await opened();
   await h.shell.openSide(key('feat-a'));

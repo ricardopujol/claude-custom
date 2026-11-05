@@ -1125,6 +1125,7 @@ function createShell(deps) {
     // would drop the tab without stopping it. Every way out of this block ends the state. It is published when the stop starts.
     ending.add(key);
     const targets = [];
+    const dead = [];     // hosts taken as ended because their port refuses and their file proves nothing (PR #231 Miguel R3)
     let failure = null;
     try {
       // Every host this record may hold (#129; PR #231 Dexter 5): the presented one, else the pending AND the unconfirmed ones, else
@@ -1165,7 +1166,7 @@ function createShell(deps) {
       const who = whoOf(tab);
       publish();
       for (const h of targets) {
-        const f = await endHost(h, who);
+        const f = await endHost(h, who, dead);
         if (failure === null) failure = f;
       }
     } finally { ending.delete(key); }
@@ -1180,6 +1181,7 @@ function createShell(deps) {
     persistLayout();     // closed stays closed after a restart
     apply(actions.filter(a => a.type !== 'stop'), before);
     if (targets.length > 0) log(`[shell] stop ${key}: sent`);
+    if (dead.length > 0) deadPortNotice(label);     // after apply: a selection it makes would clear it
     return { ok: true };
   }
 
@@ -1209,17 +1211,17 @@ function createShell(deps) {
    * End ONE host of a tab (#129): send the stop and look at how it went. null: the host is ended, or was never this tab's. Otherwise
    * why it may still be running. Never rejects. `h` is { port, token, booting }; `who` says which host is this tab's.
    */
-  async function endHost(h, who) {
+  async function endHost(h, who, dead) {
     if (h.rec && exitedHosts.has(h.rec)) return null;     // its spawned child exited: dead, and its port may be a stranger's now (PR #231 Dexter M2)
     const failure = h.token
       ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } }))
       : `a host is on port ${h.port} but its token can't be read`;
     if (failure === null) return null;     // it took the stop: never a kill after that (PR #231 Dexter 7)
-    return afterFailedStop(h, failure, who);
+    return afterFailedStop(h, failure, who, dead);
   }
 
   /** What a stop that failed leads to. The invariant: nothing is killed unless the file proves the process is THIS tab's host. */
-  async function afterFailedStop(h, failure, who) {
+  async function afterFailedStop(h, failure, who, dead) {     // dead: an array that collects the ports taken as ended on a refusal
     if (h.rec && exitedHosts.has(h.rec)) return null;     // it died while the stop was going out (PR #231 Dexter M2)
     if (REFUSED_TOKEN.test(failure)) {
       log(`[shell] port ${h.port} refused this tab's token: another tab's host holds it, nothing to stop`);
@@ -1248,9 +1250,27 @@ function createShell(deps) {
       if (!up) return `its host on port ${h.port} hasn't come up yet, so it can't be stopped yet`;
       const again = h.token ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } })) : failure;
       if (again === null) return null;
-      return afterFailedStop({ ...h, booting: false }, again, who);
+      return afterFailedStop({ ...h, booting: false }, again, who, dead);
+    }
+    if (!h.booting && !destroyed) {
+      // The file proves nothing ('unknown' or 'failed'), so nothing is killed. But a host that WAS listening and now refuses a fresh
+      // probe is ended, whatever its file says (PR #231 Miguel R3; Ricardo, 2026-11-05: "Q2: A"); keeping the tab would retry the same
+      // dead end for ever. Only a real refusal counts: 'unknown' (a timeout) proves nothing (host/port-probe.js).
+      let answer = 'unknown';
+      try { answer = await hosts.probe(h.port); } catch { answer = 'unknown'; }
+      if (answer === 'refused' && !destroyed) {
+        log(`[shell] port ${h.port}: the stop failed (${failure}), the pid retry said ${outcome}, and nothing listens on the port, so the host is taken as ended`);
+        if (Array.isArray(dead)) dead.push(h.port);
+        return null;
+      }
     }
     return failure;
+  }
+
+  /** The strip's line for a tab closed on a dead port whose process its file couldn't confirm ended (PR #231 Miguel R3). */
+  function deadPortNotice(name) {
+    closeNotice = `Closed ${name}: its host no longer listens on its port, and its process couldn't be confirmed ended.`;
+    publish();
   }
 
   function clearStuck(key) {
@@ -1948,9 +1968,10 @@ function createShell(deps) {
     // the host's own shutdown bound, then the pid, proved to be THIS tab's); if one still may be running the tab stays (Stop offered).
     let failure = null;
     const who = whoOf(t);
+    const dead = [];     // PR #231 Miguel R3, as in closeTabOnce
     try {
       for (const h of failed) {
-        const f = await afterFailedStop(h, h.failure, who);
+        const f = await afterFailedStop(h, h.failure, who, dead);
         if (failure === null && f !== null) failure = f;
       }
     } finally { ending.delete(key); }
@@ -1968,6 +1989,7 @@ function createShell(deps) {
     if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
     else publish();
     log(`[shell] closed ${key}`);
+    if (dead.length > 0) deadPortNotice(`the ${noun} in ${t.branch}`);     // after the select, which clears notices
     return { ok: true };
   }
 

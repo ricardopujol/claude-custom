@@ -3517,6 +3517,88 @@ test('Dexter 7: any other failure goes to the pid retry at once, with no wait', 
   assert.deepStrictEqual(h.slept, []);
 });
 
+// --- PR #231 Miguel R3 (Ricardo, 2026-11-05: "Q2: A"): a dead port plus a file that proves nothing is an ended host ----------------
+
+const DEAD_PORT_NOTICE = "Closed feat/a: its host no longer listens on its port, and its process couldn't be confirmed ended.";
+
+for (const outcome of ['unknown', 'failed']) {
+  test(`Miguel R3: a started tab whose stop is refused, whose pid retry says ${outcome}, and whose port refuses a fresh probe closes with a notice, killing nothing`, async () => {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    h.controlReply = refuse('connection refused');
+    const probed = [];
+    h.pidReply = () => { delete h.running[7701]; return outcome; };     // nothing listens on 7701 any more; the file proves nothing
+    h.probeOverride = (port) => { probed.push(port); return h.running[port] !== undefined ? 'listening' : 'refused'; };
+    const r = await h.shell.closeTab(key('feat-a'));
+    assert.strictEqual(r.ok, true, 'the tab closes');
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+    assert.deepStrictEqual(h.pidStops, [7701], 'one pid retry, which killed nothing (its outcome is not a kill)');
+    assert.ok(probed.includes(7701), 'the refusal is a fresh probe of the port, not read from the error text');
+    const snap = h.shell.snapshot();
+    assert.strictEqual(snap.closeNotice, DEAD_PORT_NOTICE);
+    assert.strictEqual(snap.closeStuck, null, 'no Stop offer is left behind: the tab is gone');
+    const line = h.logs.map(a => a.join(' ')).find(l => /^\[shell\]/.test(l) && /7701/.test(l) && /connection refused/.test(l) && l.includes(outcome));
+    assert.ok(line, `one [shell] line names the port, the failure and the outcome: ${JSON.stringify(h.logs)}`);
+    // It clears the way the other notices do: the next selection.
+    await h.shell.select(key('dev'));
+    assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  });
+}
+
+for (const answer of ['unknown', 'listening']) {
+  test(`Miguel R3: a probe that answers ${answer} after a non-kill outcome is no proof: the tab is kept with its Stop offer, as before`, async () => {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    h.controlReply = refuse('connection refused');
+    h.pidReply = () => 'unknown';
+    h.probeOverride = (port) => (port === 7701 ? answer : 'listening');
+    const r = await h.shell.closeTab(key('feat-a'));
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.kept, true);
+    assert.ok(h.shell.tabByKey(key('feat-a')));
+    assert.strictEqual(h.shell.snapshot().closeNotice, "Couldn't end the session in feat/a: connection refused. It may still be running.");
+    assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  });
+}
+
+test('Miguel R3: a BOOTING host whose port refuses is unchanged: a refusal proves nothing while it may still bind, so the tab is kept', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const tab = h.shell.tabByKey(key('feat-a'));
+  tab.pending = { port: 7761, token: 'pending-tok' };      // a host still starting: nothing listens on 7761 yet
+  h.controlReply = refuse('connection refused');
+  h.pidReply = () => 'unknown';
+  const probed = [];
+  h.probeOverride = (port) => { probed.push(port); return 'refused'; };
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.kept, true);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(h.pidStops, [7761]);
+  assert.ok(!probed.includes(7761), 'a booting host\'s port is not probed for this rule');
+  assert.strictEqual(h.shell.snapshot().closeNotice, "Couldn't end the session in feat/a: connection refused. It may still be running.");
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+});
+
+test('Miguel R3: a window destroyed before the probe closes nothing and waits on nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('connection refused');
+  h.pidReply = () => { delete h.running[7701]; h.shell.destroy(); return 'unknown'; };
+  const probed = [];
+  h.probeOverride = (port) => { probed.push(port); return 'refused'; };
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false, 'no close from a window that is gone');
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(probed, [], 'no probe after the window went');
+  assert.deepStrictEqual(h.slept, [], 'no timer');
+  assert.notStrictEqual(h.shell.snapshot().closeNotice, DEAD_PORT_NOTICE);
+});
+
 // --- PR #231 Dexter 3 / Miguel Y1: the Stop license is for THAT kept tab's Stop button, and nothing else ----------------------------
 
 async function keptFeatA() {
