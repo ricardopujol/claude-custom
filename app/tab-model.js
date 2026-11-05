@@ -27,6 +27,10 @@
  */
 (function (root) {
 
+// The drag order (app/tab-lanes.js applyOrder), read once at load (BACKLOG #170 S6: it was required inside stripModel, on every
+// call). No page loads this file today; one that does must load tab-lanes.js before it, as tab-strip.html does for its own use.
+const tabLanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
+
 const isString = s => typeof s === 'string';
 const identity = p => p;
 
@@ -81,10 +85,9 @@ function pulseFor(st) {
 function stripModel(state, runtime, selectedKey, { keyOf = identity, order = null, pickAny = true } = {}) {
   const tabs = state && Array.isArray(state.tabs) ? state.tabs.filter(t => t && isString(t.path)) : [];
   // `order`: the person's drag order of the other lanes (keys; app/tab-lanes.js applyOrder). Develop is first whatever it says.
-  const lanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
   const devFirst = [
     ...tabs.filter(t => t.isDev === true),
-    ...lanes.applyOrder(tabs.filter(t => t.isDev !== true), order, t => keyOf(t.path)),
+    ...tabLanes.applyOrder(tabs.filter(t => t.isDev !== true), order, t => keyOf(t.path)),
   ];
   const keys = devFirst.map(t => keyOf(t.path));
   let selIdx = keys.indexOf(selectedKey);
