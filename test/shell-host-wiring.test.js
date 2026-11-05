@@ -39,7 +39,8 @@ test('host.js: every identity the host writes says whether it is a shell host, a
   const writes = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
   assert.ok(writes.length >= 3, `found ${writes.length} writeIdentity calls`);
   for (const w of writes) assert.match(w, /\.\.\.identityFor\(\)/, w);
-  assert.match(HOST, /const identityFor = \(\) => identityFields\(\{ side: SIDE, shell: SHELL, sessionId \}\);/);
+  // The probe mark (BACKLOG #169) rides along on the same helper's result; the role fields still come from identityFields, unchanged.
+  assert.match(HOST, /const identityFor = \(\) => \(\{ \.\.\.identityFields\(\{ side: SIDE, shell: SHELL, sessionId \}\), probeMark: markFromEnv\(process\.env\) \}\);/);
 });
 
 test('host.js: a shell that fails to spawn ENDS the host through the same exit path as an exited shell (Dexter 1)', () => {

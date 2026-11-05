@@ -13,6 +13,7 @@
  * Grading here is by FILE (the line numbers of a moving codebase drift), printed with the model's own words so a person can
  * judge the rest: the measurement report is test-time evidence, not a pass/fail gate.
  */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const os = require('os');
 const path = require('path');
 const { createIndex } = require('../host/ask-index');

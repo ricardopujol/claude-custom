@@ -4,6 +4,7 @@
    hook-driven mood broadcast, and replay-on-reattach after a detach.
 
    The GUI is a pure view, so everything it depends on is observable here. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn, spawnSync } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');

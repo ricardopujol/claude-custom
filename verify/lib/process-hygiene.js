@@ -29,6 +29,7 @@
  * failure), for a resumeFn that does throw.
  */
 const { killPidTree, killChildTree, trackExit } = require('../../host/kill-tree');
+require('./mark-probe');   // BACKLOG #169: a probe that reaches its children through the hygiene registry marks them too
 
 // A registry is a small piece of mutable state one probe process owns for
 // its own lifetime -- not shared across probes, not persisted. A factory

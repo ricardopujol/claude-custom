@@ -26,6 +26,7 @@
  *   npx electron verify/probe-atomic-sleep.js
  */
 
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { app } = require('electron');
 const path = require('path');
 const { sleepSync, renameWithRetry } =

@@ -11,6 +11,7 @@
    correctly, and then never reached a client that attached before the first
    read landed -- because the boot broadcast fires with no clients and the
    refresh is gated on a change that had already happened. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const fs = require('fs'); const path = require('path');
 const WebSocket = require('ws');

@@ -6,6 +6,7 @@
    does to the command on the way: the pipe name starts with two backslashes,
    and a shell that treats backslash as an escape inside double quotes eats one
    of them, leaving a name that cannot connect to anything. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
