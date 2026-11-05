@@ -4,6 +4,8 @@
  *
  *   env -u ELECTRON_RUN_AS_NODE node verify/probe-repo-browser.js     (exit 0 = every check held)
  *   REPO_PROBE_SHOTS=<dir>                                            also keep the screenshots there
+ *   node verify/probe-repo-browser.js --width=857                     the window's content width for checks 5-13 (BACKLOG #168:
+ *                                                                     PR #226's gate failed 13 at a 620 px terminal box, about 857)
  *
  * The unit tests pin what the tree SAYS (test/repo-tree-display*.test.js), what the host ANSWERS
  * (test/repo-service.test.js) and what the guard REFUSES (test/repo-guard*.test.js). None of them can see the
@@ -364,6 +366,12 @@ async function main() {
   check('4: switched off, the whole tree is back', rowsOf(await rp(app, 'state')).some(r => r.path === 'data'));
 
   // 5 + 6 --------------------------------------------------------------------------
+  const widthArg = (process.argv.find(a => /^--width=\d+$/.test(a)) || '').slice(8);
+  if (widthArg) {
+    const sized = await command(app, { cmd: 'window-size', width: Number(widthArg) });
+    const settled = await waitFor(async () => { const t = await view(app, 'state'); return t.fit && t.term.cols === t.fit.cols && JSON.stringify(t.sent) === JSON.stringify(t.term) ? t : null; }, 8000);
+    console.log(`NOTE  --width=${widthArg}: window content ${JSON.stringify(sized && sized.content)}, terminal box ${settled ? settled.termwrap.width : '?'} px, ${settled ? settled.term.cols : '?'} cols`);
+  }
   const termBefore = await view(app, 'state');
   const before = await rp(app, 'reader.state');
   check('5: before the first open: no reader, and CodeMirror is NOT loaded (lazy)', before.ok && !before.open && !before.cmLoaded && !before.splitShown, JSON.stringify(before));
@@ -539,9 +547,21 @@ async function main() {
     JSON.stringify({ w0, dragged, stored }));
   await rp(app, 'reader.escape');
   const closed = await rp(app, 'reader.state');
-  const termRestored = await waitFor(async () => { const t = await view(app, 'state'); return t.term.cols === termBefore.term.cols ? t : null; }, 8000);
+  // "Full width back" is the terminal's BOX back at its old width, and the terminal FITTED to that box and the pty told. An exact
+  // `cols === before` was a knife-edge (BACKLOG #168, PR #226's gate: 72 -> 71 at an unchanged 620 px wrap): xterm's FitAddon takes
+  // floor(parseInt(computed width) / cell width), so a sub-pixel difference in the box (619.9 vs 620.0) can cost exactly one column.
+  // Tolerances: 1 px on the box (sub-pixel layout; a reader or divider left behind is >= 120 px here), and so at most 1 column, since a
+  // cell is wider than 1 px. A terminal that wasn't re-fitted fails `cols === fit.cols`; one that kept the reader's width fails the box.
+  const restoredOk = (t) => !!t && Math.abs(t.termwrap.width - termBefore.termwrap.width) <= 1 && !!t.fit && t.term.cols === t.fit.cols
+    && t.term.cols <= termBefore.term.cols && termBefore.term.cols - t.term.cols <= 1 && (!termAfter || t.term.cols > termAfter.term.cols)
+    && JSON.stringify(t.sent) === JSON.stringify(t.term);
+  const termRestored = await waitFor(async () => { const t = await view(app, 'state'); return restoredOk(t) ? t : null; }, 8000);
+  const termNow = termRestored || await view(app, 'state');
   check('13: Esc closes the reader and the terminal has its full width (and columns) back', !closed.open && !closed.splitShown && !!termRestored,
-    `open ${closed.open}; cols ${termBefore.term.cols} -> ${termRestored ? termRestored.term.cols : (await view(app, 'state')).term.cols}`);
+    `open ${closed.open}; termwrap ${termBefore.termwrap.width}px -> ${termNow.termwrap.width}px; cols ${termBefore.term.cols} -> ${termNow.term.cols} (fit ${JSON.stringify(termNow.fit)}, while open ${termAfter ? termAfter.term.cols : '?'}); sent ${JSON.stringify(termNow.sent)}`);
+  // The raw numbers, every run (BACKLOG #168): does the box come back exactly and only the floor flips, or is it left a sub-pixel narrower?
+  const m13 = (t) => t && { termwrapW: t.termwrap.width, left: t.termwrap.left, right: t.termwrap.right, cols: t.term.cols, fit: t.fit, sent: t.sent };
+  console.log(`NOTE  13: terminal box before the reader ${JSON.stringify(m13(termBefore))}; while open ${JSON.stringify(m13(termAfter))}; after Esc ${JSON.stringify(m13(termNow))}`);
   await rp(app, 'click', { path: 'README.md' });
   const reopened = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.open && s.path === 'README.md' ? s : null; }, 8000);
   check('13: opened again, the reader comes back at the width it was dragged to', !!reopened && Math.abs(reopened.width - Math.round(dragged.width)) <= 2, `${reopened && reopened.width} vs ${dragged.width}`);
