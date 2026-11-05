@@ -31,6 +31,8 @@
  *      look, and lean), so #bg and its darkness veil show as they do behind the terminal; the live terminal's pixels are hidden while
  *      the chat is shown (opacity 0, so no resize) and back when it isn't. Screenshots chat-bg-*.png (ffmpeg makes the picture and
  *      the video locally; without it I is skipped)
+ *   J  (#172) Ctrl+wheel over the conversation zooms it in 10 % steps, 70 % to 200 %, each wheel cancelled (no page zoom), the terminal's
+ *      font and size untouched; the zoom lands in the app-wide fonts record; a real Ctrl+0 keypress resets it. Screenshot chat-zoom-150.png
  *   G  Ctrl+Shift+H toggles; a re-attached window (hello) is handed the conversation; off shows the terminal again
  *
  * SAFE. The session's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills: this is NOT a real claude run, because that
@@ -437,6 +439,38 @@ async function main() {
     await view(app, 'bgStyle', { action: 'set-mode', mode: 'dark' });
     await waitFor(async () => { const c = await chat(app); return c && c.lookMode !== 'light' ? c : null; }, 15000);
   }
+
+  // J (#172) ------------------------------------------------------------------------
+  const fontsRec = async () => { const r = await view(app, 'fontsState'); return r && r.ok ? r.settings : null; };
+  const z0 = await waitFor(async () => { const c = await chat(app); return c && c.shown ? c : null; }, 5000);
+  check('J: the chat starts at 100 % (zoom 1)', !!z0 && z0.chatZoom === 100 && Number(z0.logZoom) === 1, JSON.stringify(z0 && { z: z0.chatZoom, css: z0.logZoom }));
+  const plain = await doChat(app, 'wheel', { deltaY: -100, ctrl: false });
+  const z1 = await chat(app);
+  check('J: a wheel without Ctrl only scrolls: no zoom, not cancelled', plain.ok && plain.cancelled === false && z1.chatZoom === 100, JSON.stringify({ plain, z: z1.chatZoom }));
+  const ups = [];
+  for (let i = 0; i < 5; i++) ups.push(await doChat(app, 'wheel', { deltaY: -100, ctrl: true }));
+  const z2 = await chat(app);
+  check('J: five Ctrl+wheel ups make the conversation 150 % (zoom 1.5), each wheel cancelled so the page never zooms',
+    ups.every(u => u.ok && u.cancelled === true) && z2.chatZoom === 150 && Number(z2.logZoom) === 1.5, JSON.stringify({ c: ups.map(u => u.cancelled), z: z2.chatZoom, css: z2.logZoom }));
+  check('J: ...the terminal\'s font and size did not move, and no resize was sent', z2.termFontSize === z0.termFontSize && z2.term.cols === before.term.cols
+    && z2.term.rows === before.term.rows && z2.resizeSends === z0.resizeSends, JSON.stringify({ f: [z0.termFontSize, z2.termFontSize], t: z2.term, s: [z0.resizeSends, z2.resizeSends] }));
+  const saved = await waitFor(async () => { const s = await fontsRec(); return s && s.chatZoom === 150 ? s : null; }, 5000);
+  check('J: ...and it is remembered app-wide: the fonts record holds chatZoom 150 once the wheel settles', !!saved, JSON.stringify(await fontsRec()));
+  await sleep(300);
+  await shoot(app, 'chat-zoom-150');
+  for (let i = 0; i < 20; i++) await doChat(app, 'wheel', { deltaY: -100, ctrl: true });
+  const top = await chat(app);
+  check('J: it stops at 200 %', top.chatZoom === 200, String(top.chatZoom));
+  for (let i = 0; i < 30; i++) await doChat(app, 'wheel', { deltaY: 100, ctrl: true });
+  const bottom = await chat(app);
+  check('J: ...and at 70 %', bottom.chatZoom === 70 && Number(bottom.logZoom) === 0.7, JSON.stringify({ z: bottom.chatZoom, css: bottom.logZoom }));
+  // Ctrl+0 as a real keypress into the window (the chat's type box has the keyboard while the chat shows)
+  const keyed = await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
+  const reset = await waitFor(async () => { const c = await chat(app); return c && c.chatZoom === 100 ? c : null; }, 3000);
+  check('J: Ctrl+0 with the keyboard in the chat puts it back to 100 %', !!keyed.ok && !!reset, JSON.stringify({ keyed, z: (await chat(app)).chatZoom, focus: (await chat(app)).focusInChat }));
+  const savedReset = await waitFor(async () => { const s = await fontsRec(); return s && s.chatZoom === 100 ? s : null; }, 5000);
+  check('J: ...and the record follows (chatZoom 100)', !!savedReset, JSON.stringify(await fontsRec()));
+  await view(app, 'fontsSet', { settings: { chatZoom: null } });      // the app under test's own UI-state folder: put the field back to unset
 
   // G ------------------------------------------------------------------------------
   const count = (await chat(app)).bubbles.length;

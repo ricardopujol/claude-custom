@@ -711,7 +711,9 @@ if (window.harness && window.harness.occupancy) {
 
 // --- fonts and plain colour (BACKLOG #88, #92) ---------------------------------
 // Declared before the terminal because applyTheme (called from many places) reads them. `null` = not yet known.
-let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont }
+let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont, chatZoom }
+let chatZoom = 100;                 // BACKLOG #172: the chat view's text size in %, as shown now (fontsDisplay.CHAT_ZOOM_DEFAULT until the record says)
+let chatZoomSaveTimer = null;       // a wheel run not yet saved: a record arriving meanwhile must not undo it
 let projectTerminalFont = null;     // this project's look.terminalFont: the override over the app-wide one
 let plainColourOn = false;          // this project's look.backgroundMode === 'colour': no media, the app colour is the background
 let fontFamilies = null;            // every installed family main listed (null = not listed yet)
@@ -4143,12 +4145,22 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           // #171: what the chat paints over the background, and whether the live terminal's pixels are seen
           rootBg: getComputedStyle(root).backgroundColor, termOpacity: getComputedStyle(document.getElementById('term')).opacity,
           hasBg: document.body.classList.contains('has-bg'), lookMode: document.documentElement.getAttribute('data-look-mode'),
+          // #172: the conversation's zoom as painted, the value the page holds, and the terminal's font (which must never move with it)
+          logZoom: getComputedStyle(log).zoom, chatZoom, termFontSize: term.options.fontSize,
+          focusInChat: !!(document.activeElement && root.contains(document.activeElement)),
         });
       }
       case 'chatDo': {
         if (a.what === 'toggle') { chatBtn.click(); return JSON.stringify({ ok: true }); }
         if (a.what === 'clearInput') { document.getElementById('chat-input').value = ''; return JSON.stringify({ ok: true }); }
         if (a.what === 'key') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); return JSON.stringify({ ok: true }); }
+        // #172: a wheel over the conversation, as a mouse sends it; `cancelled` is whether the page's handler stopped Chromium's own zoom
+        if (a.what === 'wheel') {
+          const target = document.getElementById('chat-log');
+          const r = target.getBoundingClientRect();
+          const ev = new WheelEvent('wheel', { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, deltaY: Number(a.deltaY) || 0, ctrlKey: a.ctrl === true, bubbles: true, cancelable: true });
+          return JSON.stringify({ ok: true, cancelled: !target.dispatchEvent(ev) });
+        }
         if (a.what === 'type') {
           if (typeof a.text !== 'string' || !a.text || a.text.length > 2000) return JSON.stringify({ ok: false, error: 'type needs text' });
           document.getElementById('chat-input').value = a.text;
@@ -9080,6 +9092,8 @@ if (document.fonts && document.fonts.addEventListener) document.fonts.addEventLi
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);
+  // #172: the chat's zoom, this window's save or another window's; a wheel run still waiting to be saved is newer than any record.
+  if (chatZoomSaveTimer === null) applyChatZoom(fontSettings.chatZoom === null ? fontsDisplay.CHAT_ZOOM_DEFAULT : fontSettings.chatZoom);
   applyFonts();
   renderStylePanel();
 }
@@ -10219,6 +10233,33 @@ if (term.textarea) term.textarea.addEventListener('focus', () => { if (chatShown
 
 chatBtn.addEventListener('click', chatToggle);
 document.getElementById('chat-show-tools').addEventListener('click', chatToggle);
+
+// #172: Ctrl+wheel over the chat zooms its conversation in 10 % steps (70 % to 200 %, app/fonts-display.js nextChatZoom), Ctrl+0 puts it
+// back to 100 %. The wheel is cancelled, so Chromium never zooms the page, and the terminal's font and size are never touched. Remembered
+// app-wide in the fonts record (main's fonts-global), saved once the wheel settles: one write per run, not per tick.
+const chatViewEl = document.getElementById('chat-view');
+function applyChatZoom(z) {
+  chatZoom = z;
+  const el = document.getElementById('chat-view');
+  if (el) el.style.setProperty('--chat-zoom', String(z / 100));
+}
+function zoomChat(next) {
+  if (next === chatZoom) return;
+  applyChatZoom(next);
+  clearTimeout(chatZoomSaveTimer);
+  chatZoomSaveTimer = setTimeout(() => { chatZoomSaveTimer = null; setFontSettings({ chatZoom: chatZoom }); }, 400);
+}
+chatViewEl.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  zoomChat(fontsDisplay.nextChatZoom(chatZoom, e.deltaY));
+}, { passive: false });
+chatViewEl.addEventListener('keydown', (e) => {
+  if (!chatViewState.isChatZoomResetKey(e)) return;
+  e.preventDefault();
+  zoomChat(fontsDisplay.CHAT_ZOOM_DEFAULT);
+});
+// #172 end
 // The terminal's own key handler decides the shortcut while it has focus (xterm consumes keys before a document listener); this is the chat's.
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented || !chatViewState.isChatKey(e)) return;

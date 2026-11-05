@@ -47,9 +47,32 @@ function sanitizeSize(v) {
   return Math.min(MAX_TERMINAL_SIZE, Math.max(MIN_TERMINAL_SIZE, Math.round(v)));
 }
 
+// BACKLOG #172: the chat view's text size, a percentage. Ctrl+wheel over the chat moves it one step per wheel event; it lives in this
+// app-wide record with the fonts (main's fonts-global), so every window and the next start show the same size. null = never zoomed.
+const CHAT_ZOOM_MIN = 70;
+const CHAT_ZOOM_MAX = 200;
+const CHAT_ZOOM_STEP = 10;
+const CHAT_ZOOM_DEFAULT = 100;
+const clampZoom = (z) => Math.min(CHAT_ZOOM_MAX, Math.max(CHAT_ZOOM_MIN, z));
+
+// Strict, like sanitizeSize: a real, finite number, put on a 10 % step inside 70..200; anything else is unset (never a confident 0).
+function sanitizeChatZoom(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return clampZoom(Math.round(v / CHAT_ZOOM_STEP) * CHAT_ZOOM_STEP);
+}
+
+/** The zoom after one wheel event: up (a negative deltaY) one step bigger, down one smaller, whatever the delta's size, clamped. */
+function nextChatZoom(current, deltaY) {
+  const now = sanitizeChatZoom(current);
+  const from = now === null ? CHAT_ZOOM_DEFAULT : now;
+  if (typeof deltaY !== 'number' || !Number.isFinite(deltaY) || deltaY === 0) return from;
+  return clampZoom(from + (deltaY < 0 ? CHAT_ZOOM_STEP : -CHAT_ZOOM_STEP));
+}
+
 function sanitizeSettings(raw) {
   const r = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  return { terminalFont: sanitizeFamily(r.terminalFont), terminalSize: sanitizeSize(r.terminalSize), uiFont: sanitizeFamily(r.uiFont) };
+  return { terminalFont: sanitizeFamily(r.terminalFont), terminalSize: sanitizeSize(r.terminalSize), uiFont: sanitizeFamily(r.uiFont),
+    chatZoom: sanitizeChatZoom(r.chatZoom) };
 }
 
 /** 'mono' or 'ui'. A null or unsafe family gives the bare fallback stack. */
@@ -168,6 +191,7 @@ function sectionView(settings, projectFont, themeSize) {
 const API = {
   sanitizeFamily, sanitizeSize, sanitizeSettings, stackFor, stackForChain, shouldAskForList, effectiveTerminal, isFixedWidth, parseFamilyList, filterFonts, sectionView,
   MIN_TERMINAL_SIZE, MAX_TERMINAL_SIZE, DEFAULT_TERMINAL_SIZE, FALLBACK_MONO, FALLBACK_UI,
+  sanitizeChatZoom, nextChatZoom, CHAT_ZOOM_MIN, CHAT_ZOOM_MAX, CHAT_ZOOM_STEP, CHAT_ZOOM_DEFAULT,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

@@ -43,6 +43,11 @@ function isChatKey(e) {
   return !!e && e.type === 'keydown' && e.ctrlKey === true && e.shiftKey === true && !e.altKey && !e.metaKey && e.code === 'KeyH';
 }
 
+// BACKLOG #172: Ctrl+0 while the keyboard is in the chat puts its text zoom back to 100 % (the digit row or the keypad), keydown only.
+function isChatZoomResetKey(e) {
+  return !!e && e.type === 'keydown' && e.ctrlKey === true && !e.shiftKey && !e.altKey && !e.metaKey && (e.code === 'Digit0' || e.code === 'Numpad0');
+}
+
 // Every C0 control but newline (tab is turned into spaces first), DEL, the C1 block and the two Unicode line separators.
 // Built from code points so no control character ever sits in this source file.
 const CONTROL = new RegExp('[' + [[0, 9], [11, 31], [127, 159], [8232, 8233]]
@@ -236,7 +241,7 @@ function writeWanted(storage, cwd, wanted) {
   try { if (storage) storage.write(keyFor(cwd), wanted === true ? '1' : '0'); } catch { /* a full or blocked store: the switch just isn't remembered */ }
 }
 
-const api = { viewFor, isChatKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
+const api = { viewFor, isChatKey, isChatZoomResetKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.chatViewState = api;
 

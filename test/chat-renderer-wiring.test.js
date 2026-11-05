@@ -71,6 +71,26 @@ test('the chat view shows the project\'s own background, and the terminal under 
   assert.doesNotMatch(HTML, /body\.chat-on #term \{[^}]*(display|visibility|width|height)/, 'no rule that would resize, detach or unfocus it');
 });
 
+test('Ctrl+wheel over the chat zooms its conversation, never the page or the terminal; Ctrl+0 resets; the zoom is the fonts record\'s (#172)', () => {
+  const at = RENDERER.indexOf('// #172: Ctrl+wheel');
+  assert.ok(at !== -1, 'the chat zoom block exists');
+  const block = RENDERER.slice(at, RENDERER.indexOf('// #172 end'));
+  // the wheel: on the chat view only, Ctrl only, cancelled so Chromium never zooms the page, not passive (or preventDefault is ignored)
+  assert.match(block, /chatViewEl\.addEventListener\('wheel', \(e\) => \{\s+if \(!e\.ctrlKey\) return;\s+e\.preventDefault\(\);/);
+  assert.match(block, /\}, \{ passive: false \}\);/);
+  assert.match(block, /fontsDisplay\.nextChatZoom\(chatZoom, e\.deltaY\)/);
+  // Ctrl+0 while the keyboard is in the chat
+  assert.match(block, /chatViewEl\.addEventListener\('keydown', \(e\) => \{\s+if \(!chatViewState\.isChatZoomResetKey\(e\)\) return;\s+e\.preventDefault\(\);/);
+  // remembered through the fonts record, as a patch of its one field, after the wheel settles
+  assert.match(block, /setFontSettings\(\{ chatZoom: /);
+  // it never reaches the terminal's font or geometry
+  assert.doesNotMatch(block, /term\.options|fit\.fit|sendResize/);
+  // the zoom is the CSS variable the conversation reads, and a saved record (this window's or another's) applies it
+  assert.match(HTML, /#chat-log \{[^}]*zoom: var\(--chat-zoom, 1\);/);
+  const take = RENDERER.slice(RENDERER.indexOf('function takeFontSettings('), RENDERER.indexOf('function refreshFontSettings('));
+  assert.match(take, /applyChatZoom\(/);
+});
+
 test('the host\'s conversation reaches the page in hello and on every change', () => {
   assert.match(RENDERER, /chatApply\(msg\.chat\);\s+\/\/ BACKLOG #157/);
   assert.match(RENDERER, /if \(msg\.type === 'chat'\) \{\s+chatApply\(msg\.chat\);\s+return;\s+\}/);

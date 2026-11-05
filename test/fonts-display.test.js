@@ -20,13 +20,51 @@ test('sanitizeSize rounds into 10..24 and treats a non-number as unset (never a 
 });
 
 test('sanitizeSettings defaults every field and drops unknown keys', () => {
-  assert.deepStrictEqual(fd.sanitizeSettings(undefined), { terminalFont: null, terminalSize: null, uiFont: null });
-  assert.deepStrictEqual(fd.sanitizeSettings('x'), { terminalFont: null, terminalSize: null, uiFont: null });
+  assert.deepStrictEqual(fd.sanitizeSettings(undefined), { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null });
+  assert.deepStrictEqual(fd.sanitizeSettings('x'), { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null });
   assert.deepStrictEqual(
-    fd.sanitizeSettings({ terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI', extra: 1 }),
-    { terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI' });
-  assert.deepStrictEqual(fd.sanitizeSettings({ terminalFont: 'a;b', terminalSize: '16', uiFont: 3 }),
-    { terminalFont: null, terminalSize: null, uiFont: null });
+    fd.sanitizeSettings({ terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI', chatZoom: 130, extra: 1 }),
+    { terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI', chatZoom: 130 });
+  assert.deepStrictEqual(fd.sanitizeSettings({ terminalFont: 'a;b', terminalSize: '16', uiFont: 3, chatZoom: '130' }),
+    { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null });
+});
+
+// --- #172: Ctrl+wheel over the chat view zooms its text, in steps of 10 %, 70 % to 200 %, remembered app-wide with the fonts ---------------
+
+test('sanitizeChatZoom: a real number, clamped into 70..200 and rounded to a 10 % step; anything else is unset, never a confident 0', () => {
+  assert.strictEqual(fd.sanitizeChatZoom(100), 100);
+  assert.strictEqual(fd.sanitizeChatZoom(134), 130);
+  assert.strictEqual(fd.sanitizeChatZoom(135), 140);
+  assert.strictEqual(fd.sanitizeChatZoom(10), 70);
+  assert.strictEqual(fd.sanitizeChatZoom(500), 200);
+  for (const bad of [null, undefined, '130', NaN, Infinity, -Infinity, {}, true, []]) assert.strictEqual(fd.sanitizeChatZoom(bad), null, String(bad));
+});
+
+test('nextChatZoom: wheel up (a negative deltaY) is one step bigger, wheel down one step smaller, clamped at both ends', () => {
+  assert.strictEqual(fd.nextChatZoom(100, -100), 110);
+  assert.strictEqual(fd.nextChatZoom(100, 100), 90);
+  assert.strictEqual(fd.nextChatZoom(100, -3), 110, 'a trackpad\'s small delta is still one step');
+  assert.strictEqual(fd.nextChatZoom(200, -100), 200);
+  assert.strictEqual(fd.nextChatZoom(70, 100), 70);
+  assert.strictEqual(fd.nextChatZoom(null, -100), 110, 'unset starts from 100 %');
+  for (const none of [0, NaN, undefined, '1']) assert.strictEqual(fd.nextChatZoom(120, none), 120, `no step for ${String(none)}`);
+  assert.strictEqual(fd.CHAT_ZOOM_DEFAULT, 100);
+});
+
+test('property: from any start, any run of wheel ticks stays a 10 % step inside 70..200, and each tick moves at most one step', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.oneof(fc.constant(null), fc.double({ noNaN: false })), fc.array(fc.double({ min: -1000, max: 1000, noNaN: true }), { maxLength: 60 }), (start, deltas) => {
+    let z = fd.nextChatZoom(start, 0);
+    assert.strictEqual(z, fd.sanitizeChatZoom(start) === null ? 100 : fd.sanitizeChatZoom(start));
+    for (const d of deltas) {
+      const n = fd.nextChatZoom(z, d);
+      assert.ok(n >= 70 && n <= 200 && n % 10 === 0, `${z} -> ${n}`);
+      assert.ok(Math.abs(n - z) <= 10);
+      if (d < 0 && z < 200) assert.strictEqual(n, z + 10);
+      if (d > 0 && z > 70) assert.strictEqual(n, z - 10);
+      z = n;
+    }
+  }), { numRuns: 300 });
 });
 
 test('stackFor puts the pick first and always keeps the fallback stack behind it', () => {

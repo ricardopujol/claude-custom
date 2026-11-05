@@ -24,7 +24,7 @@ const isSender = (s) => s === view;
 test('get answers the stored settings, sanitized, to a view and nothing to a stranger', async () => {
   const ipc = fakeIpc();
   registerFontHandlers({ ipcMain: ipc, store: fakeStore({ terminalFont: 'Fira Code', terminalSize: 99, uiFont: 'a;b' }), isSender, send() {}, lister: { list: async () => [] } });
-  assert.deepStrictEqual(ipc.call(GET_CHANNEL, { sender: view }), { status: 'ok', settings: { terminalFont: 'Fira Code', terminalSize: 24, uiFont: null } });
+  assert.deepStrictEqual(ipc.call(GET_CHANNEL, { sender: view }), { status: 'ok', settings: { terminalFont: 'Fira Code', terminalSize: 24, uiFont: null, chatZoom: null } });
   assert.strictEqual(ipc.call(GET_CHANNEL, { sender: {} }), null);
 });
 
@@ -32,7 +32,7 @@ test('get on a missing record answers the unset defaults', () => {
   const ipc = fakeIpc();
   registerFontHandlers({ ipcMain: ipc, store: fakeStore(undefined), isSender, send() {}, lister: { list: async () => [] } });
   assert.deepStrictEqual(ipc.call(GET_CHANNEL, { sender: view }),
-    { status: 'missing', settings: { terminalFont: null, terminalSize: null, uiFont: null } });
+    { status: 'missing', settings: { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null } });
 });
 
 test('set sanitizes before it saves, pushes to every view and remembers what it told them', () => {
@@ -42,7 +42,7 @@ test('set sanitizes before it saves, pushes to every view and remembers what it 
   const sync = {};
   registerFontHandlers({ ipcMain: ipc, store, sync, isSender, send: (ch, v) => sent.push([ch, v]), lister: { list: async () => [] } });
   const saved = ipc.call(SET_CHANNEL, { sender: view }, { terminalFont: 'Fira Code', terminalSize: 3, uiFont: 'x"y', junk: 1 });
-  assert.deepStrictEqual(saved, { terminalFont: 'Fira Code', terminalSize: 10, uiFont: null });
+  assert.deepStrictEqual(saved, { terminalFont: 'Fira Code', terminalSize: 10, uiFont: null, chatZoom: null });
   assert.deepStrictEqual(store.value, saved);
   assert.deepStrictEqual(sent, [[PUSH_CHANNEL, saved]]);
   assert.strictEqual(sync.last, JSON.stringify(saved));
@@ -153,12 +153,25 @@ test('Dexter 3: set is a patch merged into the record as it is now, so another w
   const store = fakeStore({ terminalFont: null, terminalSize: null, uiFont: 'Inter' });
   registerFontHandlers({ ipcMain: ipc, store, isSender, send() {}, lister: { list: async () => [] } });
   const saved = ipc.call(SET_CHANNEL, { sender: view }, { terminalSize: 16 });
-  assert.deepStrictEqual(saved, { terminalFont: null, terminalSize: 16, uiFont: 'Inter' });
+  assert.deepStrictEqual(saved, { terminalFont: null, terminalSize: 16, uiFont: 'Inter', chatZoom: null });
   assert.deepStrictEqual(store.value, saved);
   const cleared = ipc.call(SET_CHANNEL, { sender: view }, { uiFont: null });
-  assert.deepStrictEqual(cleared, { terminalFont: null, terminalSize: 16, uiFont: null }, 'a named null clears that field only');
+  assert.deepStrictEqual(cleared, { terminalFont: null, terminalSize: 16, uiFont: null, chatZoom: null }, 'a named null clears that field only');
   const junk = ipc.call(SET_CHANNEL, { sender: view }, { terminalFont: 'a;b', other: 1 });
-  assert.deepStrictEqual(junk, { terminalFont: null, terminalSize: 16, uiFont: null }, 'an unsafe value is stored as unset; unknown keys ignored');
+  assert.deepStrictEqual(junk, { terminalFont: null, terminalSize: 16, uiFont: null, chatZoom: null }, 'an unsafe value is stored as unset; unknown keys ignored');
+});
+
+test('#172: the chat zoom is a patch field of the same record: saved sanitized, without touching the fonts, and a string is refused', () => {
+  const ipc = fakeIpc();
+  const store = fakeStore({ terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Inter' });
+  registerFontHandlers({ ipcMain: ipc, store, isSender, send() {}, lister: { list: async () => [] } });
+  const zoomed = ipc.call(SET_CHANNEL, { sender: view }, { chatZoom: 134 });
+  assert.deepStrictEqual(zoomed, { terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Inter', chatZoom: 130 });
+  assert.deepStrictEqual(store.value, zoomed);
+  const font = ipc.call(SET_CHANNEL, { sender: view }, { terminalSize: 18 });
+  assert.strictEqual(font.chatZoom, 130, 'a font pick keeps the zoom');
+  const bad = ipc.call(SET_CHANNEL, { sender: view }, { chatZoom: '150' });
+  assert.strictEqual(bad.chatZoom, null, 'a string is stored as unset, never coerced');
 });
 
 test('Dexter 5: fc-list escapes are removed and an escaped comma does not split a family (from a recorded sample)', () => {
