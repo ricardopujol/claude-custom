@@ -1,39 +1,69 @@
 'use strict';
-/* Does the claude session survive with no viewer attached, and is it still
-   responsive on reattach? Also enumerates the full shift+tab mode cycle. */
-require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
-const { spawn } = require('child_process');
+/**
+ * PROBE: does a session survive with no viewer attached, and is it intact and responsive on reattach? (re-runnable)
+ *
+ *   node verify/probe-detach.js        (exit 0 = every check held; exit 1 = a check failed or the host died)
+ *
+ * The host is spawned detached by the app on purpose: it must outlive its window so a Remote Control session survives
+ * closing the GUI (verify/probe-multi-project.js). This is the one probe that measures the detached stretch itself: a
+ * client types a draft WITHOUT Enter, closes its socket, the probe waits with no viewer, and a brand-new client attaches.
+ * The draft must still be in the replayed screen before the new client sends a single key, and the session must still
+ * take input. (probe-protocol.js checks that a reattach replays the screen at all; this checks that the session's
+ * state, a half-typed line, is the same one.)
+ *
+ * Rewritten 2026-11-05 (BACKLOG #168): the 2026-09-11 spike hard-coded the pre-worktree repo path, so its host died at
+ * start, and it printed readings instead of checking them, so it still exited 0. Its Shift+Tab mode cycle was a reading
+ * of the real CLI; that question is verify/probe-keys.js's and is not repeated here.
+ *
+ * SAFE. The session's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; nothing is ever submitted (no Enter is
+ * sent). The project is a temp git repo; the registry, portraits and uploads are temp folders; every CLAUDE_CUSTOM_* of an
+ * enclosing tab and ELECTRON_RUN_AS_NODE are stripped. The host gets a free port and its own token (CLAUDE_CUSTOM_TOKEN),
+ * so it never touches a real host's. The only process killed is the host this probe spawned, with its tree, by the pid
+ * this probe holds (verify/lib/process-hygiene.js), never by name.
+ */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host, so its children carry the probe mark
+const { spawn, execFileSync } = require('child_process');
+const crypto = require('crypto');
+const fs = require('fs');
+const net = require('net');
+const os = require('os');
 const path = require('path');
 const WebSocket = require('ws');
 const { Terminal } = require('@xterm/headless');
+const { createHygieneRegistry } = require('./lib/process-hygiene');
 
-// The host refuses any connection without the session token -- see
-// host/gatekeeper.js. A local tool reads it from the file the host writes,
-// which is precisely what a web page cannot do.
-function sessionToken() {
-  try {
-    return require('fs').readFileSync(
-      require('path').join(__dirname, '..', '.harness', 'session-token'), 'utf8').trim();
-  } catch {
-    return '';
-  }
-}
-const withToken = (url) => url + '?token=' + encodeURIComponent(sessionToken());
-
-
-const PORT = 7703, COLS = 100, ROWS = 30;
-const REPO = 'C:/Users/ricar/VibeCode/claude-custom';
+const ROOT = path.join(__dirname, '..');
+const COLS = 100, ROWS = 30;
+const MARKER = 'MARKER-BEFORE-DETACH';
+const DETACHED_MS = 4000;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], {
-  env: { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT), CLAUDE_CUSTOM_CWD: REPO },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-let hostLog = '';
-host.stdout.on('data', d => { hostLog += d; });
-host.stderr.on('data', d => { hostLog += d; });
+const hygiene = createHygieneRegistry();
+hygiene.install();
 
-let ptyPid = null;
+let failures = 0;
+const check = (label, ok, detail = '') => {
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}${detail !== '' ? `  -- ${detail}` : ''}`);
+  if (!ok) failures++;
+};
+
+async function waitFor(fn, ms = 15000, step = 200) {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    let v;
+    try { v = await fn(); } catch { v = null; }
+    if (v) return v;
+    if (Date.now() > deadline) return null;
+    await sleep(step);
+  }
+}
+const freePort = () => new Promise((resolve, reject) => {
+  const srv = net.createServer();
+  srv.once('error', reject);
+  srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+});
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
 function newTerm() {
   const t = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
   const { Unicode11Addon } = require('@xterm/addon-unicode11');
@@ -41,61 +71,98 @@ function newTerm() {
   t.unicode.activeVersion = '11';
   return t;
 }
-const rows = t => {
+// xterm-headless applies writes asynchronously: read the screen only after the queued writes are parsed.
+const flush = t => new Promise(r => t.write('', r));
+async function screenText(t) {
+  await flush(t);
   const b = t.buffer.active, out = [];
-  for (let y = 0; y < ROWS; y++) { const l = b.getLine(y); if (l) out.push(l.translateToString(true).replace(/\s+$/, '')); }
-  return out.filter(s => s !== '');
-};
-const statusOf = t => rows(t).find(s => /⏵⏵|⏸|plan mode|accept edits|bypass/i.test(s)) || '(no mode indicator)';
+  for (let y = 0; y < b.length; y++) { const l = b.getLine(y); if (l) out.push(l.translateToString(true).replace(/\s+$/, '')); }
+  return out.filter(s => s !== '').join('\n');
+}
 
-async function attach(t) {
-  let ws;
-  for (let i = 0; i < 40; i++) {
-    ws = new WebSocket(withToken(`ws://127.0.0.1:${PORT}`));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-detach-'));
+const dev = path.join(tmp, 'proj', 'dev');
+let host = null;
+let hostLog = '';
+let hostExit = null;   // { code, signal } once the host is gone
+
+async function attach(port, token, t) {
+  for (let i = 0; i < 60; i++) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`);
     const ok = await new Promise(r => { ws.once('open', () => r(true)); ws.once('error', () => r(false)); });
-    if (ok) break;
+    if (ok) {
+      ws.on('message', (d, isBinary) => { if (isBinary) t.write(Buffer.from(d).toString('utf8')); });
+      ws.send(JSON.stringify({ type: 'resize', cols: COLS, rows: ROWS }));
+      return { ws, send: d => ws.send(JSON.stringify({ type: 'input', data: d })) };
+    }
+    if (hostExit) return null;
     await sleep(250);
   }
-  ws.on('message', d => t.write(d.toString('utf8')));
-  ws.send(JSON.stringify({ type: 'resize', cols: COLS, rows: ROWS }));
-  return { ws, send: d => ws.send(JSON.stringify({ type: 'input', data: d })) };
+  return null;
 }
-const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-(async () => {
+async function main() {
+  fs.mkdirSync(dev, { recursive: true });
+  execFileSync('git', ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', 'init', '-q', '-b', 'develop'], { cwd: dev, stdio: 'pipe', windowsHide: true });
+  const port = await freePort();
+  const token = crypto.randomBytes(16).toString('hex');
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CLAUDE_CUSTOM_')));
+  delete env.ELECTRON_RUN_AS_NODE;
+  Object.assign(env, {
+    CLAUDE_CUSTOM_BIN: 'C:\\Windows\\System32\\cmd.exe',
+    CLAUDE_CUSTOM_CWD: dev,
+    CLAUDE_CUSTOM_PORT: String(port),
+    CLAUDE_CUSTOM_TOKEN: token,
+    CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
+    CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
+    CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+  });
+  fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
+
+  host = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  hygiene.registerChild(host);
+  host.stdout.on('data', d => { hostLog += d; });
+  host.stderr.on('data', d => { hostLog += d; });
+  host.on('exit', (code, signal) => { hostExit = { code, signal }; });
+  const tail = () => hostLog.trim().split('\n').slice(-6).join(' | ');
+
+  // 1 the session comes up -----------------------------------------------------------
   const t1 = newTerm();
-  const a = await attach(t1);
-  await sleep(9000);
-  ptyPid = (hostLog.match(/pty pid\s*:\s*(\d+)/) || [])[1];
-  console.log('pty pid            :', ptyPid, '| alive:', alive(Number(ptyPid)));
+  const a = await attach(port, token, t1);
+  check('1: a client attaches to the host', !!a, a ? '' : `host ${hostExit ? `exited ${JSON.stringify(hostExit)}` : 'never accepted'}: ${tail()}`);
+  if (!a) return;
+  const prompt = await waitFor(async () => (/[A-Z]:\\[^\n]*>\s*$/m.test(await screenText(t1)) ? true : null), 20000);
+  check('1: the session draws its prompt (cmd.exe stand-in for claude)', !!prompt, JSON.stringify((await screenText(t1)).slice(-200)));
+  const ptyPid = Number((hostLog.match(/pty pid\s*:\s*(\d+)/) || [])[1]);
+  check('1: the host names its pty pid, and it is running', Number.isInteger(ptyPid) && ptyPid > 0 && alive(ptyPid), String(ptyPid));
 
-  console.log('\n--- FULL SHIFT+TAB CYCLE ---');
-  console.log('0 :', statusOf(t1));
-  for (let i = 1; i <= 4; i++) { a.send('\x1b[Z'); await sleep(900); console.log(i, ':', statusOf(t1)); }
-
-  console.log('\n--- DETACH ---');
-  a.send('MARKER-BEFORE-DETACH');
-  await sleep(800);
-  console.log('typed marker, input shows:', JSON.stringify(rows(t1).find(s => s.startsWith('❯'))));
+  // 2 a draft typed, then nobody watching --------------------------------------------
+  a.send(MARKER);   // no Enter: a half-typed line is the state that must survive
+  const typed = await waitFor(async () => ((await screenText(t1)).includes(MARKER) ? true : null), 8000);
+  check('2: the draft shows on the first client\'s screen', !!typed);
   a.ws.close();
-  await sleep(4000);
-  console.log('host proc alive    :', !host.killed && host.exitCode === null);
-  console.log('pty alive detached :', alive(Number(ptyPid)));
-  console.log('host log tail      :', hostLog.trim().split('\n').slice(-2).join(' | '));
+  await sleep(DETACHED_MS);
+  check(`2: with no viewer for ${DETACHED_MS / 1000} s the host is still running`, hostExit === null && alive(host.pid), hostExit ? `exited ${JSON.stringify(hostExit)}: ${tail()}` : '');
+  check(`2: ...and so is the session's pty`, Number.isInteger(ptyPid) && alive(ptyPid), String(ptyPid));
 
-  console.log('\n--- REATTACH (fresh client, no replay buffer in spike) ---');
+  // 3 a fresh client --------------------------------------------------------------------
   const t2 = newTerm();
-  const b = await attach(t2);
-  await sleep(1500);
-  console.log('fresh client rows before input:', rows(t2).length);
-  b.send('X');                 // any keystroke forces a redraw
-  await sleep(2000);
-  const line = rows(t2).find(s => s.startsWith('❯'));
-  console.log('after keystroke, input line   :', JSON.stringify(line));
-  console.log('state preserved across detach :', !!(line && line.includes('MARKER-BEFORE-DETACH')));
+  const b = await attach(port, token, t2);
+  check('3: a fresh client attaches after the detach', !!b, b ? '' : tail());
+  if (!b) return;
+  const replayed = await waitFor(async () => ((await screenText(t2)).includes(MARKER) ? true : null), 8000);
+  check('3: before it sends a key, its replayed screen holds the draft typed before the detach', !!replayed, JSON.stringify((await screenText(t2)).slice(-200)));
+  b.send('-AFTER');
+  const responsive = await waitFor(async () => ((await screenText(t2)).includes(`${MARKER}-AFTER`) ? true : null), 8000);
+  check('3: the session still takes input: the new client\'s keys land on the same line', !!responsive, JSON.stringify((await screenText(t2)).slice(-200)));
+  b.ws.close();
+}
 
-  b.send('\x1b'); await sleep(300); b.send('\x1b'); await sleep(400);
-  try { b.ws.close(); } catch {}
-  try { host.kill(); } catch {}
-  process.exit(0);
-})();
+main()
+  .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
+  .finally(() => {
+    hygiene._emergencyCleanup('done');   // the host this probe spawned, its tree, by the pid it holds
+    try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
+    console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
+    process.exit(failures ? 1 : 0);
+  });
