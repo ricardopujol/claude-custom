@@ -3,7 +3,7 @@ const { killChildTree, trackExit } = require('../host/kill-tree');
 /* What does the chat view's type box (app/chat-view-state.js runChatSend) do against the REAL `claude` CLI? (PR #226 Dexter R2-1.
    Re-runnable. Zero spend, zero network: the fake-endpoint technique of verify/probe-panel-line-input.js.)
 
-     node verify/probe-chat-send-real.js [--dump] [--only=<case,...>] [--measure]
+     node verify/probe-chat-send-real.js [--dump] [--only=<case,...>] [--measure] [--measure-clear]
 
    The interactive CLI runs in a node-pty at ANTHROPIC_BASE_URL (a local server speaking just enough of POST /v1/messages) with a fake
    token, in a throwaway config dir and folder. The page's own send runs against that CLI's screen (an @xterm/headless terminal fed by
@@ -18,6 +18,15 @@ const { killChildTree, trackExit } = require('../host/kill-tree');
 
    MEASURED (2026-11-05, Claude Code v2.1.318): both draft cases PASS. The three-line draft read as 'multiline' and the read-before-every-key
    Ctrl+E / Ctrl+U clear emptied it; the CLI then shows "Ctrl+Y to paste deleted text".
+     draft-12 / draft-cursor-up (PR #233 F2)  a 12-line draft is cleared and the text sent; a draft with the cursor moved up to line 1 is
+                                    REFUSED with the one-sentence "couldn't be fully cleared and part of it is gone" note, no request at all
+
+   --measure-clear (PR #233 F2) prints the live box after every single key, a fresh CLI per scenario, nothing submitted. MEASURED 2026-11-05:
+     Ctrl+U empties the cursor's line; on an empty line it deletes the line break before it (the cursor goes to the end of the line above);
+     Ctrl+E only goes to the end of the cursor's line. A cursor at the end: 12 lines took 23 Ctrl+U (two per line but the first).
+     The cursor moved up to line 1 (Up twice): Ctrl+U empties line 1, and every later key changes nothing.
+     Ctrl+End and Meta+> do NOT reach the end of the whole input (Ctrl+U after them still emptied line 1 only); End gave an inconsistent
+     result (it emptied line 2), so no key is used to get there.
 
    --measure also writes one raw block of each size (a single write, then a bracketed paste of N lines), each into a fresh CLI, and
    prints what the box shows. Prints RESULT lines; exit 1 when a case FAILs.
@@ -80,7 +89,15 @@ const CASES = [
   // text alone. The multi-line draft is typed with Shift+Enter's bytes, the way the app joins lines; it also measures whether the real
   // CLI's Ctrl+U empties several lines (a draft it can't empty must end in the "couldn't be cleared" note, never a send).
   { name: 'draft-line', draft: ['OLDDRAFT fix the build'], text: 'the chat text, sent alone' },
-  { name: 'draft-multi', draft: ['OLDDRAFT first line', '\x1b\r', 'OLDDRAFT second line', '\x1b\r', 'OLDDRAFT third'], text: 'the chat text after a multi-line draft' },
+  { name: 'draft-multi', draft: ['OLDDRAFT first line', '\x1b\r', 'OLDDRAFT second line', '\x1b\r', 'OLDDRAFT third'], text: 'the chat text after a multi-line draft',
+    rowsAtLeast: 3 },
+  // PR #233 F2: 12 lines, more than the old 40-key bound could empty; the bound now grows with the rows read
+  { name: 'draft-12', draft: Array.from({ length: 12 }, (_, k) => `OLDDRAFT line ${k + 1}`).flatMap((l, i) => (i ? ['\x1b\r', l] : [l])), text: 'the chat text after a 12-line draft',
+    rowsAtLeast: 12 },
+  // PR #233 F2: the cursor moved up to line 1 (Up twice): line 1 empties, then no progress; the send must REFUSE with the one-sentence note,
+  // send nothing at all, and leave the rest of the draft
+  { name: 'draft-cursor-up', draft: ['OLDDRAFT first line', '\x1b\r', 'OLDDRAFT second line', '\x1b\r', 'OLDDRAFT third', '\x1b[A', '\x1b[A'],
+    text: 'must not be sent', rowsAtLeast: 3, expect: 'refused' },
 ];
 
 // One CLI session: fn({ p, screen, live, requests, term }) -> result.
@@ -159,7 +176,8 @@ async function runSend(claudeBin, c, dump) {
       for (const part of c.draft) { p.write(part); await sleep(150); }
       await sleep(600);
       const l = await screen();
-      draftShown = { state: inputState(l, {}), box: boxText(l) };
+      const live = require(path.join(ROOT, 'app', 'top-bar-display')).liveBox(l);
+      draftShown = { state: inputState(l, {}), box: boxText(l), rows: live && live.box ? live.box.length : 0 };
     }
     let cur = await screen();
     const write = (frame) => p.write(JSON.parse(frame).data);
@@ -179,9 +197,11 @@ async function runSend(claudeBin, c, dump) {
     const reached = !!ask && ask.last.includes(c.text.slice(0, 12)) && ask.last.includes(tail);
     if (dump) console.log(`--- ${c.name}\n${(await screen()).join('\n')}`);
     const draftLeaked = requests.some(r => r.last.includes('OLDDRAFT'));
+    const after = await screen();
+    const leftLive = require(path.join(ROOT, 'app', 'top-bar-display')).liveBox(after);
     return { name: c.name, chars: c.text.length, lines: c.text.split('\n').length, bracketed: term.modes.bracketedPasteMode === true,
       sendOk: !!result.ok, note: result.note || null, requestCarriedWholeText: reached, requests: requests.filter(r => r.main).length,
-      ...(c.draft ? { draftShown, draftLeaked } : {}) };
+      ...(c.draft ? { draftShown, draftLeaked, boxAfter: leftLive && leftLive.box ? leftLive.box : null } : {}) };
   });
 }
 
@@ -206,7 +226,47 @@ async function measure(claudeBin) {
   return out;
 }
 
+// --measure-clear (PR #233 F2): what Ctrl+E / Ctrl+U and the end-of-input candidates do to a multi-line draft, ONE key at a time, with the
+// live box's rows read after each key. A fresh CLI per scenario. Nothing is ever submitted (no Enter is sent).
+const SHIFT_ENTER = '\x1b\r';
+const UP = '\x1b[A';
+const KEYS = { E: '\x05', U: '\x15', CtrlEnd: '\x1b[1;5F', End: '\x1b[F', MetaGt: '\x1b>', Up: UP };
+const draftOf = (n) => Array.from({ length: n }, (_, k) => `L${k + 1}draft`);
+const CLEAR_SCENARIOS = [
+  { name: 'cursor-last-3', lines: 3, before: [], keys: 'E U E U E U E U E U E U'.split(' ') },
+  { name: 'cursor-first-3', lines: 3, before: ['Up', 'Up'], keys: 'E U E U E U E U'.split(' ') },
+  { name: 'cursor-first-3-ctrlend', lines: 3, before: ['Up', 'Up', 'CtrlEnd'], keys: 'U U U U U U'.split(' ') },
+  { name: 'cursor-first-3-metagt', lines: 3, before: ['Up', 'Up', 'MetaGt'], keys: 'U U U U U U'.split(' ') },
+  { name: 'cursor-first-3-end', lines: 3, before: ['Up', 'Up', 'End'], keys: 'U U U U'.split(' ') },
+  { name: 'cursor-last-12', lines: 12, before: [], keys: Array.from({ length: 48 }, (_, i) => (i % 2 ? 'U' : 'E')) },
+  { name: 'cursor-last-12-U-only', lines: 12, before: [], keys: Array.from({ length: 26 }, () => 'U') },
+];
+
+async function measureClear(claudeBin) {
+  const { liveBox } = require(path.join(ROOT, 'app', 'top-bar-display'));
+  const out = [];
+  for (const sc of CLEAR_SCENARIOS) {
+    out.push(await withCli(claudeBin, async ({ p, screen }) => {
+      const parts = draftOf(sc.lines);
+      for (let i = 0; i < parts.length; i++) { if (i) { p.write(SHIFT_ENTER); await sleep(120); } p.write(parts[i]); await sleep(120); }
+      for (const k of sc.before) { p.write(KEYS[k]); await sleep(200); }
+      await sleep(500);
+      const rows = async () => { const l = await screen(); const b = liveBox(l); return { state: inputState(l, {}), rows: b && b.box ? b.box : null }; };
+      const steps = [{ key: 'start', ...(await rows()) }];
+      for (const k of sc.keys) { p.write(KEYS[k]); await sleep(200); steps.push({ key: k, ...(await rows()) }); }
+      return { scenario: sc.name, steps: steps.map(s => `${s.key}:${s.state}:${JSON.stringify(s.rows)}`) };
+    }));
+  }
+  return out;
+}
+
 (async () => {
+  if (process.argv.includes('--measure-clear')) {
+    const bin = findClaude();
+    if (!bin) { console.log('FAIL claude not found under npm root -g'); process.exit(1); }
+    for (const r of await measureClear(bin)) { console.log(`SCENARIO ${r.scenario}`); for (const s of r.steps) console.log('  ' + s); }
+    process.exit(0);
+  }
   const claudeBin = findClaude();
   if (!claudeBin) { console.log('FAIL claude not found under npm root -g'); process.exit(1); }
   const only = process.argv.find(a => a.startsWith('--only='));
@@ -215,9 +275,14 @@ async function measure(claudeBin) {
     if (only && !only.slice(7).split(',').includes(c.name)) continue;
     let r;
     try { r = await runSend(claudeBin, c, process.argv.includes('--dump')); } catch (e) { r = { name: c.name, error: e.message }; }
-    // A draft case passes when the draft really was in the box, the send went, and no request carried any of the draft.
-    const draftOk = !c.draft || (!!r.draftShown && r.draftShown.box !== '' && r.draftLeaked === false);
-    const pass = !r.error && r.sendOk && r.requestCarriedWholeText && draftOk;
+    // A draft case passes when the draft really was in the box (over the rows it was typed on: a multi-line case must READ as 'multiline',
+    // PR #233 F9), the send went, and no request carried any of the draft. An `expect: 'refused'` case passes when the send refused with the
+    // one-sentence partly-cleared note and no request was made at all.
+    const shownOk = !c.draft || (!!r.draftShown && r.draftShown.box !== '' && (!c.rowsAtLeast || (r.draftShown.state === 'multiline' && r.draftShown.rows >= c.rowsAtLeast)));
+    const draftOk = !c.draft || (shownOk && r.draftLeaked === false);
+    const pass = !r.error && (c.expect === 'refused'
+      ? r.sendOk === false && r.requests === 0 && shownOk && state.SEND_NOTES.draftPartly === r.note
+      : r.sendOk && r.requestCarriedWholeText && draftOk);
     if (!pass) failed = true;
     console.log(`${pass ? 'PASS' : 'FAIL'} ${JSON.stringify(r)}`);
   }
