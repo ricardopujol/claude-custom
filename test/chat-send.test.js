@@ -20,9 +20,15 @@ function makeCli(opts = {}) {
   const cli = {
     box: opts.box || '', dialog: !!opts.dialog, submitted: [], keys: [], confirmedDialog: 0, sleeps: 0,
     cancelled: 0, locked: [], turn: opts.turn || 'idle', blocked: false, pastes: 0, pasteTexts: {},
+    holds: !!opts.holds, readSinceSleep: false, unsafeWrites: [],
   };
   const press = (data) => {
     cli.keys.push(data);
+    // The send's invariant (#174): a byte reaches the pty only when the screen was read since the last wait AND showed the input box, with no
+    // prompt turn, no blocked report and no hold. The fake changes state only inside a wait, so a write after a read sees what that read saw.
+    if (!cli.readSinceSleep || cli.dialog || cli.turn === 'prompt' || cli.blocked || cli.holds) {
+      cli.unsafeWrites.push({ data, read: cli.readSinceSleep, dialog: cli.dialog, turn: cli.turn, blocked: cli.blocked, holds: cli.holds });
+    }
     if (data === '\r') {
       if (cli.dialog) { cli.confirmedDialog++; cli.dialog = false; return; }
       if (opts.swallowEnter) return;
@@ -33,7 +39,17 @@ function makeCli(opts = {}) {
       return;
     }
     if (data === '\x05') return;
-    if (data === '\x15') { if (!cli.dialog) cli.box = ''; return; }
+    if (data === '\x15') {
+      if (cli.dialog || opts.stuckBox) return;   // stuckBox: a draft Ctrl+U doesn't reach (a placeholder that stays, an editor mode)
+      const nl = cli.box.lastIndexOf('\n');
+      if (nl < 0) { cli.box = ''; return; }
+      // Several lines: Ctrl+U clears the cursor's line (the last, after Ctrl+E). On an emptied line 'joins' takes the line break with it;
+      // 'stuck' leaves it, so the draft can never be emptied.
+      const lastLine = cli.box.slice(nl + 1);
+      if (lastLine !== '') cli.box = cli.box.slice(0, nl + 1);
+      else if (opts.multiU !== 'stuck') cli.box = cli.box.slice(0, nl);
+      return;
+    }
     if (cli.dialog) return;                      // keys typed into a dialog are not text
     if (opts.dropText) return;
     const text = data.replace(/\x1b\[20[01]~/g, '').replace(/\r/g, ' ');
@@ -54,10 +70,13 @@ function makeCli(opts = {}) {
   cli.env = {
     turn: () => cli.turn,
     blocked: () => cli.blocked,
-    holds: () => !!opts.holds,
-    lines: () => (cli.dialog
-      ? ['Claude wants to run: rm -rf build', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel']
-      : ['some conversation', RULE, '❯ ' + cli.box, RULE, ' ? for shortcuts']),
+    holds: () => cli.holds,
+    lines: () => {
+      cli.readSinceSleep = true;
+      if (cli.dialog) return ['Claude wants to run: rm -rf build', 'Do you want to proceed?', '❯ 1. Yes', '  2. No', 'Esc to cancel'];
+      const rows = cli.box.split('\n');
+      return ['some conversation', RULE, '❯ ' + rows[0], ...rows.slice(1).map(r => '  ' + r), RULE, ' ? for shortcuts'];
+    },
     sync: async () => {},
     termRows: () => 40,
     vim: () => false,
@@ -68,7 +87,14 @@ function makeCli(opts = {}) {
     type: (frame) => { if (opts.hold) return 'held'; press(JSON.parse(frame).data); return 'sent'; },
     cancelHold: () => { cli.cancelled++; },
     send: (frame) => press(JSON.parse(frame).data),
-    sleep: async () => { cli.sleeps++; if (opts.dialogAtSleep === cli.sleeps) cli.dialog = true; },
+    sleep: async () => {
+      cli.sleeps++;
+      cli.readSinceSleep = false;
+      if (opts.dialogAtSleep === cli.sleeps) cli.dialog = true;
+      if (opts.promptAtSleep === cli.sleeps) cli.turn = 'prompt';
+      if (opts.blockedAtSleep === cli.sleeps) cli.blocked = true;
+      if (opts.holdsAtSleep === cli.sleeps) cli.holds = true;
+    },
     keyGap: 120,
     inputState, commandTyped, boxText, boxHoldsLine,
   };
@@ -129,12 +155,23 @@ test('a collapsed paste whose Enter the CLI swallowed is not a send: the placeho
   assert.strictEqual(cli.box, '');
 });
 
-test('a placeholder already in the box is a draft, not ours: refused before a key', async () => {
+test('a placeholder already in the box is a draft, not ours: it is cleared first, and only our paste is submitted (#174)', async () => {
   const cli = makeCli({ box: '[Pasted text #1 +5 lines]' });
+  cli.pastes = 1;
+  cli.pasteTexts[1] = 'the old pasted draft';
+  const r = await state.runChatSend(EIGHT_LINES, cli.env);
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(cli.submitted, [EIGHT_LINES], 'the old placeholder went with the clear, not with the Enter');
+  assert.deepStrictEqual(cli.unsafeWrites, []);
+});
+
+test('a placeholder that Ctrl+U does not clear is not ours either: nothing is typed, the note says the draft could not be cleared (#174)', async () => {
+  const cli = makeCli({ box: '[Pasted text #1 +5 lines]', stuckBox: true });
   const r = await state.runChatSend(EIGHT_LINES, cli.env);
   assert.strictEqual(r.ok, false);
-  assert.match(r.note, /already holds text/);
-  assert.deepStrictEqual(cli.keys, []);
+  assert.match(r.note, /couldn't be cleared/);
+  assert.ok(cli.keys.every(k => k === '\x05' || k === '\x15'), 'only the clearing keys went, never text or Enter');
+  assert.strictEqual(cli.box, '[Pasted text #1 +5 lines]');
 });
 
 test('a placeholder is a read-back only for a bracketed paste: a plain-joined multi-line message that shows one is refused', async () => {
@@ -191,13 +228,149 @@ test('a dialog that opens between the read-back and the Enter (the 400 ms look) 
   assert.strictEqual(cli.keys.includes('\r'), false);
 });
 
-test('the terminal box already holds a draft: refused, nothing typed, the draft untouched', async () => {
+// --- #174: a draft in the CLI box no longer blocks the chat's send; the send empties it with the CLI's own keys, proves it empty, then sends.
+
+test('a draft in the terminal box and a ready prompt: the draft is cleared, the chat text typed and sent alone (#174)', async () => {
   const cli = makeCli({ box: 'fix the' });
   const r = await state.runChatSend('hello', cli.env);
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(cli.submitted, ['hello'], 'the transcript gets the chat text alone');
+  const firstText = cli.keys.findIndex(k => k !== '\x05' && k !== '\x15');
+  assert.ok(firstText > 0, 'the clearing keys went first');
+  assert.ok(cli.keys.slice(0, firstText).includes('\x15'), 'Ctrl+U is among them');
+  assert.deepStrictEqual(cli.unsafeWrites, []);
+  assert.deepStrictEqual(cli.locked, [true, false]);
+});
+
+test('a multi-line draft Ctrl+U empties a line at a time: it is cleared in full, then the chat text is sent alone (#174)', async () => {
+  const cli = makeCli({ box: 'first line of a draft\nsecond line\nthird' });
+  const r = await state.runChatSend('hello', cli.env);
+  assert.deepStrictEqual(r, { ok: true });
+  assert.deepStrictEqual(cli.submitted, ['hello']);
+  assert.deepStrictEqual(cli.unsafeWrites, []);
+});
+
+test('a multi-line draft Ctrl+U cannot empty: nothing is typed, no Enter, the note says the draft could not be cleared (#174)', async () => {
+  const cli = makeCli({ box: 'first line\nsecond line', multiU: 'stuck' });
+  const r = await state.runChatSend('hello', cli.env);
   assert.strictEqual(r.ok, false);
-  assert.match(r.note, /already holds text/);
+  assert.match(r.note, /couldn't be cleared/);
+  assert.match(r.note, /Your message is still here/);
+  assert.ok(cli.keys.every(k => k === '\x05' || k === '\x15'), 'only clearing keys, never text or Enter');
+  assert.ok(cli.keys.length <= 40, 'the clear is bounded');
+  assert.deepStrictEqual(cli.submitted, []);
+});
+
+test('a draft in the box while a dialog is open is still a dialog: nothing is cleared, nothing sent (#174)', async () => {
+  for (const o of [{ dialog: true }, { turn: 'prompt' }]) {
+    const cli = makeCli({ box: 'fix the', ...o });
+    const r = await state.runChatSend('hello', cli.env);
+    assert.strictEqual(r.ok, false, JSON.stringify(o));
+    assert.match(r.note, /needs you in the terminal/);
+    assert.deepStrictEqual(cli.keys, [], JSON.stringify(o));
+  }
+  const cli = makeCli({ box: 'fix the' });
+  cli.blocked = true;
+  const r = await state.runChatSend('hello', cli.env);
+  assert.match(r.note, /needs you in the terminal/);
   assert.deepStrictEqual(cli.keys, []);
   assert.strictEqual(cli.box, 'fix the');
+});
+
+test('every other refusal still wins over a draft: holds, offline, busy, a leading ! or a trailing backslash leave the draft untouched (#174)', async () => {
+  const cases = [
+    [{ holds: true }, 'hi', /agent is writing/],
+    [{ connected: false }, 'hi', /Not connected/],
+    [{ busy: true }, 'hi', /still being typed/],
+    [{}, '! rm x', /shell command/],
+    [{}, 'C:\\temp\\', /backslash/],
+  ];
+  for (const [o, text, note] of cases) {
+    for (const box of ['fix the', 'two\nlines']) {
+      const cli = makeCli({ box, ...o });
+      const r = await state.runChatSend(text, cli.env);
+      assert.strictEqual(r.ok, false, `${JSON.stringify(o)} ${text}`);
+      assert.match(r.note, note, `${JSON.stringify(o)} ${text}`);
+      assert.deepStrictEqual(cli.keys, [], `${JSON.stringify(o)} ${text} ${JSON.stringify(box)}`);
+      assert.strictEqual(cli.box, box);
+    }
+  }
+});
+
+test('a vim NORMAL box with a draft is not ready: refused as before, nothing cleared (#174)', async () => {
+  const cli = makeCli({ box: 'fix the' });
+  cli.env.vim = () => true;                                    // vim seen, no -- INSERT -- under the box: NORMAL
+  const r = await state.runChatSend('hello', cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.note, /isn't at its prompt/);
+  assert.deepStrictEqual(cli.keys, []);
+});
+
+test('a dialog that opens while the draft is being cleared: the clear stops before its next key, nothing is typed (#174)', async () => {
+  for (const at of [1, 2, 3]) {
+    const cli = makeCli({ box: 'a\nb\nc\nd', dialogAtSleep: at });
+    const r = await state.runChatSend('hello', cli.env);
+    assert.strictEqual(r.ok, false, `dialog at sleep ${at}`);
+    assert.match(r.note, /needs you in the terminal/);
+    assert.match(r.note, /draft may have been partly cleared/);
+    assert.deepStrictEqual(cli.unsafeWrites, [], `dialog at sleep ${at}`);
+    assert.strictEqual(cli.confirmedDialog, 0);
+    assert.ok(cli.keys.every(k => k === '\x05' || k === '\x15'));
+  }
+});
+
+test('an agent that starts holding the folder mid-clear stops the clear before its next key (#174)', async () => {
+  const cli = makeCli({ box: 'a\nb\nc\nd', holdsAtSleep: 1 });
+  const r = await state.runChatSend('hello', cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.note, /agent is writing/);
+  assert.deepStrictEqual(cli.unsafeWrites, []);
+  assert.ok(cli.keys.every(k => k === '\x05' || k === '\x15'));
+});
+
+test('the draft is cleared, then a dialog opens mid-send: no Enter, and the note says the terminal\'s draft was cleared (#174)', async () => {
+  // 'fix the' clears in: Ctrl+E, wait 1, Ctrl+U, wait 2, read: empty. Then the text is typed; wait 3 is the first read-back wait, wait 4 the
+  // look before the Enter (wait 5 already follows the Enter).
+  for (const at of [3, 4]) {
+    const cli = makeCli({ box: 'fix the', dialogAtSleep: at });
+    const r = await state.runChatSend('hello', cli.env);
+    assert.strictEqual(r.ok, false, `dialog at sleep ${at}`);
+    assert.strictEqual(cli.keys.includes('\r'), false);
+    assert.strictEqual(cli.confirmedDialog, 0);
+    assert.match(r.note, /The terminal's draft was cleared\./, `dialog at sleep ${at}: ${r.note}`);
+    assert.deepStrictEqual(cli.unsafeWrites, []);
+  }
+});
+
+test('the draft is cleared, then the text never reads back: no Enter, and the note says the draft was cleared (#174)', async () => {
+  const cli = makeCli({ box: 'fix the', dropText: true });
+  const r = await state.runChatSend('hello', cli.env);
+  assert.strictEqual(r.ok, false);
+  assert.match(r.note, /didn't show your message as typed/);
+  assert.match(r.note, /The terminal's draft was cleared\./);
+  assert.strictEqual(cli.keys.includes('\r'), false);
+});
+
+test('an empty box gets no clearing keys and no draft note: the send is as it was (#174)', async () => {
+  const cli = makeCli({ dropText: true });
+  const r = await state.runChatSend('hello', cli.env);
+  assert.doesNotMatch(r.note, /draft/);
+  assert.strictEqual(cli.keys[0], 'hello', 'the first key is the text');
+});
+
+test('property: no byte reaches the pty unless the last screen read showed the box, with no dialog, prompt turn or blocked report (#174)', async () => {
+  const draft = fc.constantFrom('', 'fix the', 'a\nb', 'one\ntwo\nthree\nfour', '[Pasted text #1 +5 lines]');
+  const text = fc.constantFrom('hello', 'y'.repeat(450), EIGHT_LINES);
+  const event = fc.record({ kind: fc.constantFrom('dialogAtSleep', 'promptAtSleep', 'blockedAtSleep'), at: fc.integer({ min: 1, max: 24 }) });
+  await fc.assert(fc.asyncProperty(draft, text, event, fc.boolean(), async (box, msg, ev, swallow) => {
+    const cli = makeCli({ box, [ev.kind]: ev.at, swallowEnter: swallow, multiU: box.includes('\n') && box.length % 2 ? 'stuck' : 'joins' });
+    const r = await state.runChatSend(msg, cli.env);
+    assert.deepStrictEqual(cli.unsafeWrites, [], `box ${JSON.stringify(box)}, ${ev.kind} ${ev.at}`);
+    assert.strictEqual(cli.confirmedDialog, 0);
+    // (A swallowed Enter followed by a dialog reads as a send, since the box is gone: the after-Enter check predates #174 and is not this property.)
+    if (r.ok && !swallow) assert.deepStrictEqual(cli.submitted, [msg], 'a send that went carries the chat text alone');
+    if (!r.ok) assert.strictEqual(typeof r.note, 'string');
+  }), { numRuns: 300 });
 });
 
 test('a leading ! and a trailing backslash are refused: they would run a shell command / make a new line', async () => {
@@ -246,4 +419,20 @@ test('sendBlocker: the placeholder is an empty box; vim NORMAL, multi-line draft
   const ok = { text: 'hi', turn: 'idle', blocked: false, screen: 'ready', box: 'Try "edit <filepath> to..."', holds: false };
   assert.strictEqual(state.sendBlocker(ok), null);
   for (const screen of ['multiline', 'vim-normal', 'dialog', 'unknown']) assert.notStrictEqual(state.sendBlocker({ ...ok, screen }), null, screen);
+});
+
+test('sendBlocker: a draft is the LAST check, so the clear can only follow a send every other check let through (#174)', () => {
+  const ok = { text: 'hi', turn: 'idle', blocked: false, screen: 'ready', box: 'a draft', holds: false };
+  const N = state.SEND_NOTES;
+  assert.strictEqual(state.sendBlocker(ok), N.draft);
+  assert.strictEqual(state.sendBlocker({ ...ok, screen: 'multiline' }), N.draft);
+  for (const screen of ['ready', 'multiline']) {
+    assert.strictEqual(state.sendBlocker({ ...ok, screen, turn: 'prompt' }), N.dialog, screen);
+    assert.strictEqual(state.sendBlocker({ ...ok, screen, blocked: true }), N.dialog, screen);
+    assert.strictEqual(state.sendBlocker({ ...ok, screen, holds: true }), N.holds, screen);
+    assert.strictEqual(state.sendBlocker({ ...ok, screen, text: '! ls' }), N.bang, screen);
+    assert.strictEqual(state.sendBlocker({ ...ok, screen, text: 'a\\' }), N.backslash, screen);
+  }
+  assert.strictEqual(state.sendBlocker({ ...ok, screen: 'vim-normal' }), N.notReady);
+  assert.strictEqual(state.sendBlocker({ ...ok, screen: 'dialog' }), N.dialog);
 });

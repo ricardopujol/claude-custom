@@ -94,6 +94,7 @@ const NOTE = {
   holds: 'An agent is writing in this folder, so nothing was sent. Switch to the terminal to answer its question. Your message is still here.',
   notReady: 'The terminal isn\'t at its prompt right now, so nothing was sent. Your message is still here.',
   draft: 'The terminal\'s input box already holds text, so nothing was sent. Send or clear it there first. Your message is still here.',
+  draftStuck: 'The terminal\'s draft couldn\'t be cleared, so nothing was sent. Clear it there first. Your message is still here.',
   bang: 'A message starting with ! runs as a shell command in the CLI, so it wasn\'t sent. Your message is still here.',
   backslash: 'A message ending with a backslash makes a new line in the CLI instead of sending, so it wasn\'t sent. Your message is still here.',
   noReadback: 'The terminal didn\'t show your message as typed, so Enter was not pressed. Your message is still here.',
@@ -111,15 +112,24 @@ const emptyBox = (box) => box === '' || /^Try "/.test(box);
 const PLACEHOLDER = /^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/;
 const onlyPlaceholder = (box) => typeof box === 'string' && PLACEHOLDER.test(box.trim());
 
-/** Why this message must not be typed now, or null. Pure. `screen` is top-bar-display's inputState, `box` its boxText. */
+// Appended to a failure that came after the CLI's draft was cleared (#174): the person's draft is gone (the CLI's Ctrl+Y brings back a
+// single line), and the note must not read as if nothing had happened.
+const CLEARED = ' The terminal\'s draft was cleared.';
+const PARTLY_CLEARED = ' The terminal\'s draft may have been partly cleared.';
+
+/**
+ * Why this message must not be typed now, or null. Pure. `screen` is top-bar-display's inputState, `box` its boxText.
+ * NOTE.draft is the LAST check and the only one runChatSend acts on (#174: it clears the CLI's draft, then sends): every other refusal
+ * (a dialog, a prompt turn, the blocked report, a hold, a screen that isn't the box, a `!`, a trailing backslash) comes first, so the clear
+ * can never start in one of those states.
+ */
 function sendBlocker({ text, turn, blocked, screen, box, holds }) {
   if (turn === 'prompt' || blocked === true) return NOTE.dialog;
   if (holds === true) return NOTE.holds;
-  if (screen === 'multiline') return NOTE.draft;
-  if (screen !== 'ready') return screen === 'dialog' ? NOTE.dialog : NOTE.notReady;
-  if (typeof box !== 'string' || !emptyBox(box)) return NOTE.draft;
+  if (screen !== 'ready' && screen !== 'multiline') return screen === 'dialog' ? NOTE.dialog : NOTE.notReady;
   if (typeof text === 'string' && text.startsWith('!')) return NOTE.bang;
   if (typeof text === 'string' && text.endsWith('\\')) return NOTE.backslash;
+  if (screen === 'multiline' || typeof box !== 'string' || !emptyBox(box)) return NOTE.draft;
   return null;
 }
 
@@ -143,33 +153,50 @@ async function runChatSend(raw, env) {
 
   env.lock(true);
   try {
+    // Empties the box with the CLI's own keys (Ctrl+E to the line's end, Ctrl+U back to its start), the screen READ before every key:
+    // a key goes only while the screen shows the box (one line or several) and nothing says a dialog, a prompt turn, the blocked report or
+    // a hold. -> { empty } once a read shows the ready box empty, else { empty: false, keys, stop } where stop is the refusal that ended it
+    // (null: the box still held text after CLEAR_PASSES of both keys). Used for a draft before the send (#174) and after a failed attempt.
+    const clear = async () => {
+      let keys = 0;
+      for (let k = 0; k <= 2 * CLEAR_PASSES; k++) {
+        const lines = await screenNow();
+        const state = env.inputState(lines, { vim: env.vim() });
+        if (env.turn() === 'prompt' || env.blocked() === true || state === 'dialog') return { empty: false, keys, stop: NOTE.dialog };
+        if (env.holds() === true) return { empty: false, keys, stop: NOTE.holds };
+        if (state !== 'ready' && state !== 'multiline') return { empty: false, keys, stop: NOTE.notReady };
+        if (state === 'ready' && emptyBox(env.boxText(lines) || '')) return { empty: true, keys };
+        if (k === 2 * CLEAR_PASSES) break;
+        env.send(frame(k % 2 === 0 ? CTRL_E : CTRL_U));
+        keys++;
+        await env.sleep(env.keyGap || 120);
+      }
+      return { empty: false, keys, stop: null };
+    };
+
     const first = await screenNow();
     const why = sendBlocker({ text, turn: env.turn(), blocked: env.blocked(), holds: env.holds(),
       screen: env.inputState(first, { vim: env.vim() }), box: env.boxText(first) });
-    if (why) return { ok: false, note: why };
-
-    // Empties what a failed attempt typed. Never a key into a dialog: a screen with no input box ends it.
-    const clear = async () => {
-      for (let pass = 0; pass < CLEAR_PASSES; pass++) {
-        const lines = await screenNow();
-        const state = env.inputState(lines, { vim: env.vim() });
-        if (state === 'dialog' || state === 'unknown') return;
-        if (state === 'ready' && emptyBox(env.boxText(lines) || '')) return;
-        env.send(frame(CTRL_E));
-        await env.sleep(env.keyGap || 120);
-        env.send(frame(CTRL_U));
-        await env.sleep(env.keyGap || 120);
+    // A draft in the CLI's box is thrown away on purpose (#174, Ricardo: the chat's send overwrites it), and only once every other check
+    // passed. Nothing is typed until a read shows the box empty; that read is the last one before the text goes.
+    let cleared = false;
+    if (why === NOTE.draft) {
+      const c = await clear();
+      if (!c.empty) {
+        return { ok: false, note: (c.stop === null ? NOTE.draftStuck : c.stop) + (c.keys > 0 ? PARTLY_CLEARED : '') };
       }
-    };
+      cleared = true;
+    } else if (why) return { ok: false, note: why };
+    const fail = (note) => ({ ok: false, note: cleared ? note + CLEARED : note });
 
     const enter = plan[plan.length - 1];
-    if (env.type(plan[0].frame) === 'held') { env.cancelHold(); return { ok: false, note: NOTE.holds }; }
+    if (env.type(plan[0].frame) === 'held') { env.cancelHold(); return fail(NOTE.holds); }
     // The rest of a long message, one chunk per key gap: written together they would be one paste again.
     // A dialog that opens between two chunks must not get the rest of the text as keys.
     for (let k = 1; k < plan.length - 1; k++) {
       await env.sleep(env.keyGap || 120);
       const now = env.inputState(await screenNow(), { vim: env.vim() });
-      if ((now !== 'ready' && now !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true) { await clear(); return { ok: false, note: NOTE.changed }; }
+      if ((now !== 'ready' && now !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true) { await clear(); return fail(NOTE.changed); }
       env.send(plan[k].frame);
     }
     let typed = false;
@@ -177,14 +204,14 @@ async function runChatSend(raw, env) {
       await env.sleep(env.keyGap || 120);
       if (inBox(await screenNow())) { typed = true; break; }
     }
-    if (!typed) { await clear(); return { ok: false, note: NOTE.noReadback }; }
+    if (!typed) { await clear(); return fail(NOTE.noReadback); }
 
     await env.sleep(RECHECK_MS);
     const last = await screenNow();
     const state = env.inputState(last, { vim: env.vim() });
     if ((state !== 'ready' && state !== 'multiline') || env.turn() === 'prompt' || env.blocked() === true || !inBox(last)) {
       await clear();
-      return { ok: false, note: NOTE.changed };
+      return fail(NOTE.changed);
     }
 
     env.send(enter.frame);
@@ -194,7 +221,7 @@ async function runChatSend(raw, env) {
       if (!env.boxHoldsLine(now, text) && !(asPaste && onlyPlaceholder(env.boxText(now)))) return { ok: true };
     }
     await clear();
-    return { ok: false, note: NOTE.swallowed };
+    return fail(NOTE.swallowed);
   } finally {
     env.lock(false);
   }

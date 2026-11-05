@@ -13,6 +13,11 @@ const { killChildTree, trackExit } = require('../host/kill-tree');
      one-line-250 / one-line-2000   a long one-line message: chunked at 200 characters, so the CLI never sees a paste
      multi-3 / multi-8              a multi-line message (8 lines, ~600 characters): ONE bracketed paste, which the CLI may collapse to
                                     "[Pasted text #N +M lines]"
+     draft-line / draft-multi       a draft typed in the terminal first (one line; three lines joined with Shift+Enter's bytes): the send
+                                    clears it (#174) and passes only when no request carried any of the draft
+
+   MEASURED (2026-11-05, Claude Code v2.1.318): both draft cases PASS. The three-line draft read as 'multiline' and the read-before-every-key
+   Ctrl+E / Ctrl+U clear emptied it; the CLI then shows "Ctrl+Y to paste deleted text".
 
    --measure also writes one raw block of each size (a single write, then a bracketed paste of N lines), each into a fresh CLI, and
    prints what the box shows. Prints RESULT lines; exit 1 when a case FAILs.
@@ -71,6 +76,11 @@ const CASES = [
   { name: 'one-line-2000', text: filler(2000) },
   { name: 'multi-3', text: lines(3, 40) },
   { name: 'multi-8', text: lines(8, 75) },
+  // #174: a draft typed in the terminal first; the chat's send clears it (Ctrl+E / Ctrl+U, read back empty) and the request carries the chat
+  // text alone. The multi-line draft is typed with Shift+Enter's bytes, the way the app joins lines; it also measures whether the real
+  // CLI's Ctrl+U empties several lines (a draft it can't empty must end in the "couldn't be cleared" note, never a send).
+  { name: 'draft-line', draft: ['OLDDRAFT fix the build'], text: 'the chat text, sent alone' },
+  { name: 'draft-multi', draft: ['OLDDRAFT first line', '\x1b\r', 'OLDDRAFT second line', '\x1b\r', 'OLDDRAFT third'], text: 'the chat text after a multi-line draft' },
 ];
 
 // One CLI session: fn({ p, screen, live, requests, term }) -> result.
@@ -144,6 +154,13 @@ async function withCli(claudeBin, fn) {
 
 async function runSend(claudeBin, c, dump) {
   return withCli(claudeBin, async ({ p, screen, requests, term }) => {
+    let draftShown = null;
+    if (c.draft) {
+      for (const part of c.draft) { p.write(part); await sleep(150); }
+      await sleep(600);
+      const l = await screen();
+      draftShown = { state: inputState(l, {}), box: boxText(l) };
+    }
     let cur = await screen();
     const write = (frame) => p.write(JSON.parse(frame).data);
     const result = await state.runChatSend(c.text, {
@@ -161,8 +178,10 @@ async function runSend(claudeBin, c, dump) {
     const tail = c.text.slice(-12).replace(/\n/g, '\\n');
     const reached = !!ask && ask.last.includes(c.text.slice(0, 12)) && ask.last.includes(tail);
     if (dump) console.log(`--- ${c.name}\n${(await screen()).join('\n')}`);
+    const draftLeaked = requests.some(r => r.last.includes('OLDDRAFT'));
     return { name: c.name, chars: c.text.length, lines: c.text.split('\n').length, bracketed: term.modes.bracketedPasteMode === true,
-      sendOk: !!result.ok, note: result.note || null, requestCarriedWholeText: reached, requests: requests.filter(r => r.main).length };
+      sendOk: !!result.ok, note: result.note || null, requestCarriedWholeText: reached, requests: requests.filter(r => r.main).length,
+      ...(c.draft ? { draftShown, draftLeaked } : {}) };
   });
 }
 
@@ -196,7 +215,9 @@ async function measure(claudeBin) {
     if (only && !only.slice(7).split(',').includes(c.name)) continue;
     let r;
     try { r = await runSend(claudeBin, c, process.argv.includes('--dump')); } catch (e) { r = { name: c.name, error: e.message }; }
-    const pass = !r.error && r.sendOk && r.requestCarriedWholeText;
+    // A draft case passes when the draft really was in the box, the send went, and no request carried any of the draft.
+    const draftOk = !c.draft || (!!r.draftShown && r.draftShown.box !== '' && r.draftLeaked === false);
+    const pass = !r.error && r.sendOk && r.requestCarriedWholeText && draftOk;
     if (!pass) failed = true;
     console.log(`${pass ? 'PASS' : 'FAIL'} ${JSON.stringify(r)}`);
   }
