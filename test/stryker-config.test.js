@@ -81,6 +81,7 @@ const REPO_SCANNING = new Set([
   'renderer-changes-wiring.test.js',
   'bounded-shutdown-process.test.js',   // #121 (PR #217): real children with a blocked event loop and a real watchdog; the pure tests are in bounded-shutdown.test.js, which IS in the command
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
+  'job-guard-process.test.js',     // #127: a real Job Object (real PowerShell, real sleepers, seconds per case); the pure tests are in job-guard.test.js
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
