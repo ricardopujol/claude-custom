@@ -73,9 +73,12 @@ function pulseFor(st) {
  *   [{ key, label, isDev, selected, started, closable, working, needsInput, night, summary, pulse,
  *      lockGlyph, health, phase, error, note, setup, createdWarning }]
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
- * matching `selectedKey`, else dev (else the first entry).
+ * matching `selectedKey`, else dev (else the first entry). With `pickAny: false`
+ * there is no "first entry" fallback: a window whose develop tab was closed and
+ * whose selection is null selects nothing (BACKLOG #160), rather than a lane
+ * nobody chose.
  */
-function stripModel(state, runtime, selectedKey, { keyOf = identity, order = null } = {}) {
+function stripModel(state, runtime, selectedKey, { keyOf = identity, order = null, pickAny = true } = {}) {
   const tabs = state && Array.isArray(state.tabs) ? state.tabs.filter(t => t && isString(t.path)) : [];
   // `order`: the person's drag order of the other lanes (keys; app/tab-lanes.js applyOrder). Develop is first whatever it says.
   const lanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
@@ -86,7 +89,7 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity, order = nul
   const keys = devFirst.map(t => keyOf(t.path));
   let selIdx = keys.indexOf(selectedKey);
   if (selIdx < 0) selIdx = devFirst.findIndex(t => t.isDev === true);
-  if (selIdx < 0 && devFirst.length) selIdx = 0;
+  if (selIdx < 0 && devFirst.length && pickAny !== false) selIdx = 0;
   const single = devFirst.length <= 1;
   return devFirst.map((t, i) => {
     const key = keys[i];
@@ -100,7 +103,8 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity, order = nul
       started: !!rt && rt.started === true,
       // Not while its folder is being removed: a reopen could spawn a host
       // into a folder `git worktree remove` is deleting (PR #80 Dexter F4).
-      closable: t.isDev !== true && !single && t.phase !== 'removing',
+      // Develop closes too (BACKLOG #160): the Lanes and + menus bring it back. A lone tab never does.
+      closable: !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
       // #156: held cross-session messages in this tab (already cut down by the shell); 0 for none or unknown.

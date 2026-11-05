@@ -150,10 +150,11 @@ function reconcile(state, observation) {
 
 // Closing by hand keeps the folder, merged or not (`/merged --sweep` cleans
 // it), and keeps the tab closed while this window lives and git still lists
-// that worktree.
+// that worktree. Develop closes the same way (BACKLOG #160, Ricardo 2026-11-05):
+// git always lists it, so it stays closed until it is reopened.
 function closeByHand(state, p) {
   const tab = state.tabs.find(t => samePath(t.path, p));
-  if (!tab || tab.isDev) return unchanged(state);
+  if (!tab) return unchanged(state);
   return {
     state: { tabs: state.tabs.filter(t => t !== tab), dismissed: dismiss(state.dismissed, tab.path) },
     actions: [{ type: 'stop', path: tab.path }, { type: 'close', path: tab.path }],

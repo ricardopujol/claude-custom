@@ -441,11 +441,11 @@ test('only one poll runs at a time: a tick that finds one running does nothing',
 
 // --- hand close: criterion 5 -------------------------------------------------
 
-test('hand close: confirm, then stop + close; the tab stays closed while git lists it, and dev cannot', async () => {
+test('hand close: confirm, then stop + close; the tab stays closed while git lists it', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
-  assert.strictEqual((await h.shell.closeTab(key('dev'))).ok, false, 'dev has no close (criterion 6)');
+  // (criterion 6, "dev has no close", was replaced by BACKLOG #160: test/tab-shell-develop.test.js)
   h.confirm = false;
   assert.strictEqual((await h.shell.closeTab(key('feat-a'))).cancelled, true);
   assert.deepStrictEqual(h.controls, []);
@@ -2056,7 +2056,7 @@ test('the override is offered only for a blocked tab, and reaches only that view
   assert.strictEqual(h.shell.menuState(key('feat-a')).override, true);
   assert.strictEqual(h.shell.override(key('feat-a')), true);
   assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'lock-override'), [[key('feat-a'), 'lock-override', undefined]]);
-  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: false }, 'dev has no close');
+  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: true }, 'dev closes too (#160)');
   assert.deepStrictEqual(h.shell.menuState('nope'), { key: 'nope', override: false, close: false });
 });
 
@@ -2757,9 +2757,13 @@ test('ctrl-close: a plain close (no ifSafe) still asks once, with no reason, eve
   assert.deepStrictEqual(h.confirms, [null]);
 });
 
-test('ctrl-close: dev still has no close', async () => {
+test('ctrl-close on dev (#160): it is never merged, so it asks why before it closes', async () => {
   const h = await mergedHarness();
-  assert.strictEqual((await h.shell.closeTab(key('dev'), { ifSafe: true })).ok, false);
+  h.facts = { ...GIT_OK, branch: 'develop' };
+  const r = await ctrlClose(h, 'dev');
+  assert.strictEqual(r.cancelled, true, 'asked, and the answer was no');
+  assert.deepStrictEqual(asked(h), [said("This one isn't merged.")]);
+  assert.ok(h.shell.tabByKey(key('dev')), 'still open');
 });
 
 // Ricardo, 2026-10-09 (design round 2): the tab's OWN session no longer asks. Ctrl+click closes a merged, saved,

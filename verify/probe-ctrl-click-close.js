@@ -14,7 +14,7 @@
  *   feat/b  merged marker, one untracked file        -> asks, "... This one has 1 uncommitted file."
  *   feat/c  no marker                                -> asks, "... This one isn't merged."
  *   feat/d  merged marker, clean, but a commit AFTER the merge -> asks, "... This one isn't merged."
- *   dev     Ctrl+click only selects (it has no close)
+ *   dev     never merged: Ctrl+click asks, "... This one isn't merged." (#160: develop has a close now)
  *   plain close of feat/c                            -> asks with no reason (the old single confirm)
  *
  * The probe driver answers a confirm with yes only when it carries no reason, so an unsafe Ctrl+click leaves the
@@ -179,33 +179,34 @@ async function main() {
   await sleep(1500);
   await shoot(app, '1-before');
 
-  // dev: Ctrl+click only selects
+  // dev (#160: it has a close now): develop is never merged, so a Ctrl+click asks why, and the driver's "no" keeps it
   await command(app, { cmd: 'ctrlClick', label: 'develop' });
-  await sleep(700);
+  await waitFor(async () => (await labelsOf(app)).confirms.length >= 1, 15000);
   let st = await labelsOf(app);
-  check('1: Ctrl+click on develop closes nothing and asks nothing', tabLabels(st).includes('develop') && st.confirms.length === 0, JSON.stringify(st.confirms));
+  check('1: Ctrl+click on develop asks (it is never merged) and the no keeps it', tabLabels(st).includes('develop') && st.confirms.length === 1
+    && st.confirms[0].label === 'develop' && st.confirms[0].reason.startsWith(`${RULE} This one isn't merged.`), JSON.stringify(st.confirms));
 
   // feat/b: merged, but one file uncommitted
   await command(app, { cmd: 'ctrlClick', label: 'feat/b' });
-  await waitFor(async () => (await labelsOf(app)).confirms.length >= 1, 15000);
+  await waitFor(async () => (await labelsOf(app)).confirms.length >= 2, 15000);
   st = await labelsOf(app);
-  check('2: a merged tab with an uncommitted file asks, and says why', st.confirms.length === 1 && st.confirms[0].label === 'feat/b'
-    && st.confirms[0].reason === `${RULE} This one has 1 uncommitted file.`, JSON.stringify(st.confirms));
+  check('2: a merged tab with an uncommitted file asks, and says why', st.confirms.length === 2 && st.confirms[1].label === 'feat/b'
+    && st.confirms[1].reason === `${RULE} This one has 1 uncommitted file.`, JSON.stringify(st.confirms));
   check('2: ...and stays open', tabLabels(st).includes('feat/b'));
 
   // feat/c: no marker
   await command(app, { cmd: 'ctrlClick', label: 'feat/c' });
-  await waitFor(async () => (await labelsOf(app)).confirms.length >= 2, 15000);
+  await waitFor(async () => (await labelsOf(app)).confirms.length >= 3, 15000);
   st = await labelsOf(app);
-  check('3: an unmerged tab asks, and says it is not merged', st.confirms.length === 2 && st.confirms[1].label === 'feat/c'
-    && st.confirms[1].reason === `${RULE} This one isn't merged.`, JSON.stringify(st.confirms));
+  check('3: an unmerged tab asks, and says it is not merged', st.confirms.length === 3 && st.confirms[2].label === 'feat/c'
+    && st.confirms[2].reason === `${RULE} This one isn't merged.`, JSON.stringify(st.confirms));
   await shoot(app, '2-unsafe-asked');
 
   // feat/d: marker, but HEAD has a commit that is not on origin/develop (git's exit 1, read for real)
   await command(app, { cmd: 'ctrlClick', label: 'feat/d' });
-  await waitFor(async () => (await labelsOf(app)).confirms.length >= 3, 15000);
+  await waitFor(async () => (await labelsOf(app)).confirms.length >= 4, 15000);
   st = await labelsOf(app);
-  const dAsk = st.confirms[2] || {};
+  const dAsk = st.confirms[3] || {};
   check('3b: a commit after the merge is "not merged", and also unpushed', dAsk.label === 'feat/d' && dAsk.reason.startsWith(`${RULE} This one isn't merged.`), JSON.stringify(st.confirms));
 
   // feat/a: merged, clean, pushed -> closes with no confirm
@@ -216,7 +217,7 @@ async function main() {
   }, 15000);
   check('4: a merged, clean, pushed tab closes on Ctrl+click', !!closed, JSON.stringify(tabLabels(await labelsOf(app))));
   st = await labelsOf(app);
-  check('4: ...with NO confirm', st.confirms.length === 3, JSON.stringify(st.confirms));
+  check('4: ...with NO confirm', st.confirms.length === 4, JSON.stringify(st.confirms));
   check('4: ...and the others stay', ['develop', 'feat/b', 'feat/c', 'feat/d'].every(l => tabLabels(st).includes(l)), JSON.stringify(tabLabels(st)));
   check('4: ...the closed tab is offered back by the + menu', Array.isArray(st.reopenable) && st.reopenable.some(r => /feat\/a|feat-a/i.test(JSON.stringify(r))), JSON.stringify(st.reopenable));
   await sleep(500);
@@ -225,7 +226,7 @@ async function main() {
   // a plain close still asks once, with no reason
   const r = await command(app, { cmd: 'close', label: 'feat/c' });
   st = await labelsOf(app);
-  check('5: a plain close of feat/c asks once, with no reason', r.ok === true && st.confirms.length === 4 && st.confirms[3].reason === '', JSON.stringify(st.confirms));
+  check('5: a plain close of feat/c asks once, with no reason', r.ok === true && st.confirms.length === 5 && st.confirms[4].reason === '', JSON.stringify(st.confirms));
 
   await command(app, { cmd: 'quit' });
 }

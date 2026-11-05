@@ -46,7 +46,12 @@ function paneFor(payload) {
   const p = objectOr(payload, {});
   const model = Array.isArray(p.model) ? p.model : [];
   const sel = model.find(e => e && e.selected);
-  if (!sel) return { text: nonEmpty(p.notice) ? p.notice : 'No worktrees yet.', retry: null };
+  if (!sel) {
+    if (nonEmpty(p.notice)) return { text: p.notice, retry: null };
+    // #160: develop was closed and nothing else is open. Both menus list it first.
+    if (p.devClosed === true) return { text: 'No tab is open. Open develop or a lane from Lanes ▾ or +.', retry: null };
+    return { text: 'No worktrees yet.', retry: null };
+  }
   if (sel.started) return null;
   if (sel.starting) return { text: `Starting ${sel.label}…`, retry: null };
   // PR 3: a tab the + made waits for its setup (Contract E) before its session.
@@ -457,7 +462,7 @@ function paintLanes(doc, payload, hidden, bridge) {
   const p = objectOr(payload, {});
   const lanes = objectOr(p.lanes, {});
   const count = (l) => (Array.isArray(l) ? l.length : 0);
-  const rows = count(lanes.notStarted) + count(lanes.merged);
+  const rows = count(lanes.notStarted) + count(lanes.merged) + (lanes.develop && typeof lanes.develop === 'object' ? 1 : 0);
   const n = hidden.length;
   btn.hidden = p.mode !== 'tabs';
   btn.textContent = `${n > 0 ? `+${n} ` : ''}Lanes ▾`;

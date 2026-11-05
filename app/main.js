@@ -37,7 +37,7 @@ const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchCh
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
 const { createLean, unionDismissed } = require('./lean-state');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR, lanesMenuTemplate, plusMenuTemplate } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -1020,7 +1020,7 @@ function onShellChanged(snapshot) {
   // `model` is the strip's tabs only (1B: a lane with no running session is a row in `lanes`, the Lanes menu's rows).
   lastStripPayload = {
     model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, closeStuck: snapshot.closeStuck,
-    mode: snapshot.mode, create: snapshot.create,
+    mode: snapshot.mode, create: snapshot.create, devClosed: snapshot.devClosed === true,
   };
   win.webContents.send('strip-model', lastStripPayload);
   if (trayController) trayController.sync();     // the count and the tooltip follow the cues
@@ -1307,15 +1307,8 @@ function registerIpc() {
   ipcMain.on('strip:lanes', (e, hidden) => {
     if (!fromStrip(e)) return;
     const asked = Array.isArray(hidden) ? hidden.filter(k => typeof k === 'string').slice(0, 200) : [];
-    const rows = tabShell.lanesMenu(asked);
-    const template = rows.length === 0 ? [{ label: 'No other lanes', enabled: false }] : rows.map((r) => {
-      if (r.type === 'header') return { label: r.label, enabled: false };
-      const label = `${menuText(r.label)}${r.state ? `  (${r.state})` : ''}${r.shortcut ? `  (${r.shortcut})` : ''}`;
-      return {
-        label,
-        click: () => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')),
-      };
-    });
+    const template = lanesMenuTemplate(tabShell.lanesMenu(asked),
+      (r) => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')));
     Menu.buildFromTemplate(template).popup({ window: win });
   });
   // Drag to reorder (#141): a lane's tab dropped before another's (null: the end). The shell checks both keys and saves the order.
@@ -1327,20 +1320,11 @@ function registerIpc() {
   // are in the Lanes menu now.
   ipcMain.on('strip:plus', (e) => {
     if (!fromStrip(e)) return;
-    const m = tabShell.plusMenu();
-    Menu.buildFromTemplate([
-      {
-        label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
-        enabled: m.create.enabled,
-        click: () => tabShell.openCreate(),
-      },
-      // #119 A5: a plain shell for the selected lane
-      {
-        label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
-        enabled: m.shell.enabled,
-        click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
-      },
-    ]).popup({ window: win });
+    Menu.buildFromTemplate(plusMenuTemplate(tabShell.plusMenu(), {
+      reopen: (key) => tabShell.reopen(key).catch(logShellError('reopen')),     // #160: a closed develop is the first row
+      openCreate: () => tabShell.openCreate(),
+      openShell: (target) => tabShell.openShell(target).catch(logShellError('open shell')),
+    })).popup({ window: win });
   });
   // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so its brief is written.
   ipcMain.on('strip:create', (e, branch, issue) => {

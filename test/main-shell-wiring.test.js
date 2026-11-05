@@ -397,8 +397,11 @@ test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so no
 });
 
 test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText (the Lanes menu, since #139)', () => {
+  // #170 S8: the template is app/tab-shell.js lanesMenuTemplate now, whose rows go through menuText (test/tab-shell-develop.test.js
+  // pins `feat/r&d` -> `feat/r&&d`); main must build the menu with it, not by hand.
   const c = channels.find(x => x.name === 'strip:lanes');
-  assert.match(callText(MAIN, c.at), /menuText\(r\.label\)/);
+  assert.match(callText(MAIN, c.at), /lanesMenuTemplate\(tabShell\.lanesMenu\(asked\)/);
+  assert.doesNotMatch(callText(MAIN, c.at), /label: `\$\{/, 'no hand-built row labels left in main');
 });
 
 test('#139 + #141: the Lanes and reorder channels are the strip page\'s alone, and check what they were sent', () => {

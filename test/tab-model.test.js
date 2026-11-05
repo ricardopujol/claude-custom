@@ -23,13 +23,22 @@ test('a null or non-string branch labels with the folder name', () => {
 });
 
 test('Dexter F4 (PR #80): a tab whose folder is being removed is not closable', () => {
-  assert.deepStrictEqual(strip([DEV, { ...A, phase: 'removing' }, B]).map(e => e.closable), [false, false, true]);
+  assert.deepStrictEqual(strip([DEV, { ...A, phase: 'removing' }, B]).map(e => e.closable), [true, false, true]);
 });
 
-test('closable: never dev, never a lone tab', () => {
-  assert.deepStrictEqual(strip([DEV, A, B]).map(e => e.closable), [false, true, true]);
+// BACKLOG #160 (Ricardo, 2026-11-05): develop closes like a lane; it replaces "never dev".
+test('#160 closable: dev too, but never a lone tab', () => {
+  assert.deepStrictEqual(strip([DEV, A, B]).map(e => e.closable), [true, true, true]);
   assert.deepStrictEqual(strip([DEV]).map(e => e.closable), [false]);
   assert.deepStrictEqual(strip([A]).map(e => e.closable), [false]);
+});
+
+test('#160 pickAny: false selects nothing when the key matches nothing and there is no dev; dev is still the fallback', () => {
+  const none = m.stripModel({ tabs: [A, B] }, {}, null, { keyOf, pickAny: false });
+  assert.deepStrictEqual(none.map(e => e.selected), [false, false]);
+  assert.deepStrictEqual(m.stripModel({ tabs: [A, B] }, {}, null, { keyOf }).map(e => e.selected), [true, false], 'the default is unchanged');
+  assert.deepStrictEqual(m.stripModel({ tabs: [DEV, A] }, {}, null, { keyOf, pickAny: false }).map(e => e.selected), [true, false]);
+  assert.deepStrictEqual(m.stripModel({ tabs: [A, B] }, {}, keyOf(B.path), { keyOf, pickAny: false }).map(e => e.selected), [false, true]);
 });
 
 test('lock glyphs', () => {
@@ -228,13 +237,13 @@ const stateArb = fc.tuple(
   return devFirst ? [{ ...DEV }, ...tabs] : [...tabs, { ...DEV }];
 });
 
-test('PROPERTY: dev is first and unique; exactly one selected; dev never closable', () => {
+test('PROPERTY: dev is first and unique; exactly one selected; any tab but a lone one is closable (#160)', () => {
   fc.assert(fc.property(stateArb, fc.string(), (tabs, sel) => {
     const model = strip(tabs, {}, sel);
     assert.strictEqual(model[0].isDev, true);
     assert.strictEqual(model.filter(e => e.isDev).length, 1);
     assert.strictEqual(model.filter(e => e.selected).length, 1);
-    assert.ok(model.every(e => !(e.isDev && e.closable)));
+    assert.ok(model.every(e => e.closable === (model.length > 1)));
     assert.ok(model.some(e => e.key === m.select(model, sel)));
   }));
 });

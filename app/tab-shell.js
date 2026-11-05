@@ -331,6 +331,11 @@ function createShell(deps) {
   let closedByHand = kept.closed;      // [{ key, path, branch }], most recent first
 
   const keyOf = normPath;
+  // The develop worktree's key (host/worktree-list.js: `<container>\dev` is the anchor), known before git answers, so a develop
+  // closed in an earlier run is the menus' first row from the first paint (BACKLOG #160).
+  const devKey = mode === 'tabs' && typeof container === 'string' && container !== '' ? keyOf(path.join(container, 'dev')) : null;
+  /** Develop is closed: git lists it (the reducer keeps it dismissed) and it has no tab. */
+  const devClosed = () => devKey !== null && state.dismissed.includes(devKey) && !tabs.has(devKey);
 
   function runtime() {
     const rt = new Map();
@@ -435,7 +440,8 @@ function createShell(deps) {
   function entriesWithSides() {
     // The side or shell tab showing, if one is (#119 A5: after its branch tab come its side tab, then its shell tab).
     const sideSelected = companionParentOf(selectedKey) !== null && tabs.has(selectedKey) ? selectedKey : null;
-    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf, order });
+    // pickAny: false -- with develop closed and nothing chosen, nothing is selected (#160), never a lane nobody picked.
+    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf, order, pickAny: false });
     const out = [];
     for (const e of base) {
       const mine = tabs.get(e.key);
@@ -457,8 +463,8 @@ function createShell(deps) {
     const st = rec.status;
     return {
       key: rec.key, label: shellLabel(parent.label), isDev: false, selected, started: rec.started === true,
-      // A close of its own (Ricardo's look, 2026-10-26): it is a terminal, not a reader of its lane. A develop tab never closes, so
-      // ending only with its branch tab left that lane's shell no way to end at all.
+      // A close of its own (Ricardo's look, 2026-10-26): it is a terminal, not a reader of its lane. Ending only with its branch
+      // tab left develop's shell no way to end at all (develop had no close then; since #160 it has, and its shell goes with it).
       closable: true,
       working: !!st && st.working === true, needsInput: !!st && st.needsInput === true, night: false,
       summary: null, summaryNote: null, pulse: selected ? null : tabModel.pulseFor(st),
@@ -549,6 +555,7 @@ function createShell(deps) {
     return {
       model: m, strip: placed.strip, lanes: placed.menu, selectedKey: sel ? sel.key : null, tabs: [...tabs.values()], notice: lastError, closeNotice, closeStuck: stuckNow(), mode,
       create: create ? { ...create } : null,
+      devClosed: devClosed(),     // #160: the pane says how to bring it back when nothing is selected
     };
   }
 
@@ -610,13 +617,14 @@ function createShell(deps) {
     const placed = tabLanes.placeLanes(model(), closedRows());
     const asked = new Set((Array.isArray(hiddenKeys) ? hiddenKeys : []).filter(k => typeof k === 'string'));
     const hidden = placed.strip.filter(e => asked.has(e.key) && !isCompanionEntry(e) && !e.isDev && !e.selected);
-    let first = true;
-    return tabLanes.lanesMenuRows(placed.menu, hidden).map((r) => {
-      if (r.action !== 'reopen' || !first) return r;
-      first = false;
-      return { ...r, shortcut: 'Ctrl+Shift+T' };
-    });
+    // The shortcut goes on the row it really reopens, the most recent close: develop is listed first whenever it is closed (#160).
+    const next = reopenTarget();
+    return tabLanes.lanesMenuRows(placed.menu, hidden).map((r) => (r.action === 'reopen' && next !== null && r.key === next
+      ? { ...r, shortcut: 'Ctrl+Shift+T' } : r));
   }
+
+  /** The key a plain Ctrl+Shift+T reopens (the most recent hand close), or null. */
+  const reopenTarget = () => { const c = closedRows()[0]; return c ? c.key : null; };
 
   function publish() {
     if (destroyed) return;
@@ -944,9 +952,22 @@ function createShell(deps) {
       selectWhenListed = null;
       select(k);
     } else if (selectedKey === null || !tabs.has(selectedKey)) {
-      const first = tabModel.initialSelection(state.tabs, launchedFrom, { keyOf, isInside });
-      if (first !== null && tabs.has(first)) select(first);
+      const first = firstSelection();
+      if (first !== null) select(first);
     }
+  }
+
+  /**
+   * The tab a window (or a selection that lost its tab) lands on: tabModel.initialSelection, which is the lane the window was
+   * opened from, else develop. With develop closed (#160) its fallback would be the first lane, and selecting it STARTS it: only a
+   * lane the window was opened from is taken then; otherwise nothing is selected and the pane says how to open one.
+   */
+  function firstSelection() {
+    const first = tabModel.initialSelection(state.tabs, launchedFrom, { keyOf, isInside });
+    if (first === null || !tabs.has(first)) return null;
+    if (first === devKey || !devClosed()) return first;
+    const named = typeof launchedFrom === 'string' && launchedFrom !== '' && (keyOf(launchedFrom) === first || isInside(launchedFrom, tabs.get(first).cwd));
+    return named ? first : null;
   }
 
   /** One poll. One at a time: a tick that finds one running does nothing. */
@@ -1089,7 +1110,9 @@ function createShell(deps) {
    */
   async function closeTabOnce(key, { ifSafe = false, stop = false } = {}) {
     const tab = tabByKey(key);
-    if (!tab || tab.isDev || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    if (!tab || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    // Develop closes like a lane (#160), but never as the window's one worktree (the model's `closable`: never a lone tab).
+    if (tab.isDev && state.tabs.length <= 1) return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
     if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
@@ -1445,12 +1468,12 @@ function createShell(deps) {
   function closedRows() {
     return closedByHand
       .filter(c => state.dismissed.includes(c.key))
-      .map(c => ({ key: c.key, label: typeof c.branch === 'string' && c.branch ? c.branch : path.basename(c.path) }));
+      .map(c => ({ key: c.key, label: typeof c.branch === 'string' && c.branch ? c.branch : path.basename(c.path), isDev: c.key === devKey }));
   }
 
   /** The first few of them: what the `+` menu's probe answer and a plain Ctrl+Shift+T look at. */
   function reopenable() {
-    return closedRows().slice(0, REOPEN_MAX);
+    return closedRows().slice(0, REOPEN_MAX).map(({ key: k, label }) => ({ key: k, label }));
   }
 
   /** *Reopen* / Ctrl+Shift+T: no key reopens the most recent one. */
@@ -1480,7 +1503,10 @@ function createShell(deps) {
     const lane = companionParentOf(selectedKey) || selectedKey;
     const sm = shellMenu(lane);
     const shell = sm.label === 'Open shell here' ? { ...sm, label: 'Shell tab' } : sm;
-    return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [], shell };
+    // #160: a closed develop is the + menu's first row too, one click from coming back.
+    const dev = devClosed() ? closedRows().find(c => c.key === devKey) || null : null;
+    const develop = dev ? { key: dev.key, label: dev.label, shortcut: reopenTarget() === dev.key ? 'Ctrl+Shift+T' : null } : null;
+    return { create: { enabled: why === null, why }, reopen: mode === 'tabs' ? reopenable() : [], shell, develop };
   }
 
   /**
@@ -2018,6 +2044,46 @@ function menuText(s) {
   return typeof s === 'string' ? s.replace(/&/g, '&&') : '';
 }
 
+/** A menu row's text: the label, then its state and its shortcut in brackets, each only when there is one. */
+const rowText = (r) => `${menuText(r.label)}${r.state ? `  (${r.state})` : ''}${r.shortcut ? `  (${r.shortcut})` : ''}`;
+
+/**
+ * The Lanes ▾ menu's Electron template from the shell's rows (lanesMenu; BACKLOG #170 S8: pure, so it is tested without
+ * Electron). A header is a disabled label, a separator a separator, a row a click that calls `act(row)`; no rows is one
+ * disabled line. Main pops it.
+ */
+function lanesMenuTemplate(rows, act) {
+  const list = Array.isArray(rows) ? rows.filter(r => r && typeof r === 'object') : [];
+  if (list.length === 0) return [{ label: 'No other lanes', enabled: false }];
+  return list.map((r) => {
+    if (r.type === 'header') return { label: r.label, enabled: false };
+    if (r.type === 'separator') return { type: 'separator' };
+    return { label: rowText(r), click: () => act(r) };
+  });
+}
+
+/**
+ * The + menu's template from plusMenu(): a closed develop first (#160), then New branch… and the shell tab. `acts` is
+ * { reopen(key), openCreate(), openShell(target) }.
+ */
+function plusMenuTemplate(m, acts) {
+  const dev = m && m.develop && typeof m.develop.key === 'string' ? m.develop : null;
+  return [
+    ...(dev ? [{ label: rowText({ label: dev.label, state: 'closed', shortcut: dev.shortcut }), click: () => acts.reopen(dev.key) }, { type: 'separator' }] : []),
+    {
+      label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
+      enabled: m.create.enabled,
+      click: () => acts.openCreate(),
+    },
+    // #119 A5: a plain shell for the selected lane
+    {
+      label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
+      enabled: m.shell.enabled,
+      click: () => acts.openShell(m.shell.target),
+    },
+  ];
+}
+
 // --- keyboard focus ----------------------------------------------------------------
 
 /**
@@ -2356,4 +2422,5 @@ function probeLineReader(maxBytes) {
 module.exports = {
   createShell, createQueue, captureListening, observeWorktrees, sanitizeStatus,
   handleProbeCommand, VIEW_PROBE_ACTIONS, probeLineReader, noWindowText, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR,
+  lanesMenuTemplate, plusMenuTemplate,
 };

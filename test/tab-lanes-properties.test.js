@@ -45,7 +45,11 @@ const modelArb = fc.tuple(
   return entries;
 });
 
-const closedArb = fc.array(fc.integer({ min: 0, max: 20 }).map(i => ({ key: `lane${i}`, label: `lane${i}` })), { maxLength: 6 });
+// A closed develop (#160) is a closed row like a lane's, flagged isDev.
+const closedArb = fc.array(fc.oneof(
+  fc.integer({ min: 0, max: 20 }).map(i => ({ key: `lane${i}`, label: `lane${i}` })),
+  fc.constant({ key: 'dev', label: 'develop', isDev: true }),
+), { maxLength: 6 });
 const keysOf = (list) => list.map(e => e.key);
 
 // --- placeLanes ----------------------------------------------------------------------------
@@ -59,9 +63,12 @@ test('P1: every lane is reachable exactly once, on the strip or as a menu row', 
       ...r.menu.notStarted.map(x => x.key), ...r.menu.merged.map(x => x.key),
     ];
     for (const k of lanes) assert.strictEqual(placed.filter(p => p === k).length, 1, `${k} placed ${placed.filter(p => p === k).length} times`);
-    // a closed row is for a lane with no entry, and appears once
-    const all = [...r.menu.notStarted, ...r.menu.merged].map(x => x.key);
+    // a closed row is for a lane with no entry, and appears once; a closed develop is menu.develop, never a Not started row
+    const all = [...(r.menu.develop ? [r.menu.develop] : []), ...r.menu.notStarted, ...r.menu.merged].map(x => x.key);
     assert.strictEqual(new Set(all).size, all.length, 'no menu row repeats');
+    const devClosed = closed.some(c => c.isDev) && !entries.some(e => e.key === 'dev');
+    assert.strictEqual(r.menu.develop !== null, devClosed, 'menu.develop exactly when develop is closed and has no entry');
+    if (r.menu.develop) assert.strictEqual(L.lanesMenuRows(r.menu, [])[0].key, 'dev', 'and it is the first row');
   }), RUNS);
 });
 

@@ -90,7 +90,7 @@ test('closed-by-hand lanes are menu rows after the others, marked closed, and ne
 });
 
 test('junk in, no throw: non-array entries, null entries, closed rows without keys', () => {
-  assert.deepStrictEqual(L.placeLanes(null, null), { strip: [], menu: { notStarted: [], merged: [] } });
+  assert.deepStrictEqual(L.placeLanes(null, null), { strip: [], menu: { develop: null, notStarted: [], merged: [] } });
   const r = L.placeLanes([null, 3, dev({ selected: true })], [null, { label: 'x' }, { key: 5 }]);
   assert.deepStrictEqual(keys(r.strip), ['dev']);
   assert.deepStrictEqual(r.menu.notStarted, []);
