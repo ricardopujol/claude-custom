@@ -2075,6 +2075,16 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'mouseUp', ...base });
       return { ok: true };
     },
+    // PR #233 F14: a real mouse wheel over the selected tab's view (x, y in its own pixels), with Ctrl held if asked. Answers the view's PAGE
+    // zoom factor after it, which the chat's Ctrl+wheel must leave at 1.
+    async mouseWheel(x, y, deltaY, ctrl) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      sel.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: 0, deltaY, canScroll: true, modifiers: ctrl ? ['control'] : [] });
+      await new Promise((r) => setTimeout(r, 250));
+      return { ok: true, zoomFactor: sel.webContents.getZoomFactor() };
+    },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
     // request is passed as JSON data, never spliced in as code.

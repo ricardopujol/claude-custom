@@ -2,7 +2,7 @@
 /**
  * Main's half of the fonts (BACKLOG #88):
  *
- *   fonts:get / fonts:set   the install-wide terminal font, terminal size and interface font. Electron main owns them as it owns
+ *   fonts:get / fonts:set   the install-wide terminal font, terminal size, interface font and the chat view's text zoom (#172). Electron main owns them as it owns
  *                           `look-global` and the dock layout (app/layout-bridge.js has the reasoning): a personal UI preference
  *                           with no per-project meaning, so it never round-trips through a host. Its own key,
  *                           `.harness/state/fonts-global.json`. Everything is sanitized HERE (app/fonts-display.js) before it is
@@ -123,7 +123,7 @@ function registerFontHandlers({ ipcMain, store, sync = {}, isSender, send, liste
     const own = (k) => Object.prototype.hasOwnProperty.call(value, k);
     const patch = {};
     const cleanPatch = sanitizeSettings(value);
-    for (const key of ['terminalFont', 'terminalSize', 'uiFont']) if (own(key)) patch[key] = cleanPatch[key];
+    for (const key of ['terminalFont', 'terminalSize', 'uiFont', 'chatZoom']) if (own(key)) patch[key] = cleanPatch[key];
     let clean;
     try {
       store.update(FONTS_KEY, null, (prev) => { clean = { ...sanitizeSettings(prev), ...patch }; return clean; });

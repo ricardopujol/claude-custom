@@ -4,7 +4,7 @@
  * button on every code block, command or path, quote and draft plus "Copy reply" on each of Claude's messages, a
  * "Claude is working..." line, the one-line flip note, and the type box.
  *
- *   create({ doc, els, copy, openLink, send, later }) -> { update(state), focusInput(), submit() }
+ *   create({ doc, els, copy, openLink, send, later }) -> { update(state), focusInput(), submit(), keepBottom(change) }
  *
  * `els` are the elements app/renderer.html already holds: { root, log, working, flip, form, input }.
  * `update({ messages, working, view: { show, note } })` repaints; `copy(text)` goes through the clipboard bridge,
@@ -209,7 +209,16 @@ function create({ doc, els, copy, openLink, send, later = (fn, ms) => setTimeout
     submit();
   });
 
-  return { update, submit, focusInput: () => els.input.focus() };
+  // PR #233 F11 (Miguel M1): a change that grows the log (a zoom step) under a reader at the bottom keeps them there, by the same STICK_PX rule
+  // update() follows new messages with, so the next reply is still followed. A reader scrolled up is left where they were.
+  function keepBottom(change) {
+    const log = els.log;
+    const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight <= STICK_PX;
+    change();
+    if (atBottom) log.scrollTop = log.scrollHeight;
+  }
+
+  return { update, submit, keepBottom, focusInput: () => els.input.focus() };
 }
 
 const api = { create, COPIED_MS };
