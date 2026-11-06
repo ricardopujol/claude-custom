@@ -31,7 +31,7 @@ const { startTimes: realStartTimes, createSelfStartTime } = require('../../host/
 const ledger = require('../../host/pid-ledger');
 const { VISIBLE_VAR } = require('../../host/probe-window');
 const path = require('path');
-const { createProcessLock, HeavyLockError } = require('../../host/heavy-lock');
+const { createProcessLock, HeavyLockError, notRunLine, NOT_RUN_EXIT } = require('../../host/heavy-lock');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -96,11 +96,16 @@ const noteChild = (child, heavyLock) => {
 };
 const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 
-// Busy / too loaded is one clear line and exit 1, not a stack trace; anything else is thrown as it was.
+// Busy / too loaded is the reason, then the NOT RUN line, and exit 75 (NOT_RUN_EXIT, never a probe's own failure codes),
+// not a stack trace; anything else is thrown as it was.
 function takeLock(lock, exit = (c) => process.exit(c), say = console.error) {
   if (!lock) return;
   try { lock.ensure(); } catch (err) {
-    if (err instanceof HeavyLockError) { say(`[heavy-lock] ${probeName() || 'probe'} did not run: ${err.message}`); exit(1); }
+    if (err instanceof HeavyLockError) {
+      say(`[heavy-lock] ${probeName() || 'probe'} did not run: ${err.message}`);
+      say(notRunLine(err));
+      exit(NOT_RUN_EXIT);
+    }
     throw err;
   }
 }

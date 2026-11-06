@@ -11,7 +11,7 @@ const EventEmitter = require('node:events');
 const { tmpDir } = require('./tmp-dir');
 const {
   acquire, release, createProcessLock, HeavyLockError, ENV_VAR, WAIT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES,
-  ownerFor, parseOwner, defaultRun, queryStarts, createWorkStore,
+  ownerFor, parseOwner, defaultRun, queryStarts, createWorkStore, STATUS_TIMEOUT_MS, NOT_RUN_EXIT, notRunLine, startWatcher, WATCH_SCRIPT,
 } = require('../host/heavy-lock');
 
 // A stateful stand-in for heavy-lock.ps1. `holder` is what owner.txt would say; `alive` maps pid -> start time.
@@ -142,16 +142,16 @@ test('any other exit (or no exit status) throws too: it never runs anyway', () =
   }
 });
 
-test('Dexter 1: wait defaults to 7 minutes, under the Bash tool\'s 10-minute cap, and HEAVY_LOCK_WAIT_MINUTES changes it', () => {
-  assert.strictEqual(DEFAULT_WAIT_MINUTES, 7);
-  assert.ok(DEFAULT_WAIT_MINUTES < 10);
+test('BACKLOG #178 b: wait defaults to 20 minutes (two ~8-minute suites ahead plus the load gate), and HEAVY_LOCK_WAIT_MINUTES changes it', () => {
+  assert.strictEqual(DEFAULT_WAIT_MINUTES, 20);
+  assert.ok(DEFAULT_WAIT_MINUTES >= 2 * 8 + 2, 'two full suites ahead, with margin');
   const a = rig(); acquire({ label: 'x', pid: 7, ...a.deps() });
-  assert.strictEqual(flagValue(of(a, '-Acquire')[0], '-WaitMinutes'), '7');
+  assert.strictEqual(flagValue(of(a, '-Acquire')[0], '-WaitMinutes'), '20');
   const b = rig(); b.env[WAIT_VAR] = '3'; acquire({ label: 'x', pid: 7, ...b.deps() });
   assert.strictEqual(flagValue(of(b, '-Acquire')[0], '-WaitMinutes'), '3');
   for (const bad of ['0', '-2', 'abc', '1.5', '']) {
     const c = rig(); c.env[WAIT_VAR] = bad; acquire({ label: 'x', pid: 7, ...c.deps() });
-    assert.strictEqual(flagValue(of(c, '-Acquire')[0], '-WaitMinutes'), '7', bad);
+    assert.strictEqual(flagValue(of(c, '-Acquire')[0], '-WaitMinutes'), '20', bad);
   }
   const d = rig(); acquire({ label: 'x', pid: 7, waitMinutes: 5, ...d.deps() });
   assert.strictEqual(flagValue(of(d, '-Acquire')[0], '-WaitMinutes'), '5');
@@ -275,12 +275,16 @@ test('acquire with the real runner and an injected spawn: the failure to start r
     (e) => e.code === 'error' && /ENOENT/.test(e.message));
 });
 
-test('Miguel r2 N3: acquire\'s spawn timeout is the wait plus one minute (its own deadline, then a margin)', () => {
-  const opts = [];
-  const spawnFn = (cmd, args, o) => { opts.push(o.timeout); return { status: 0, stdout: 'free' }; };
-  acquire({ label: 'x', pid: 7, waitMinutes: 3, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map() });
-  assert.ok(opts.length >= 1);
-  assert.ok(opts.every(t => t === 4 * 60000), JSON.stringify(opts));
+test('Miguel r2 N3 / #112 Dexter 2: -Acquire is killed at the wait plus one minute; status and release get their own 1-minute leash', () => {
+  const seen = [];
+  const spawnFn = (cmd, args, o) => { seen.push({ kind: args.includes('-Acquire') ? 'acquire' : args.includes('-Release') ? 'release' : 'status', t: o.timeout }); return { status: 0, stdout: 'free' }; };
+  const lock = acquire({ label: 'x', pid: 7, waitMinutes: 3, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map(), work: createWorkStore(path.join(tmpDir('hl-n3-'), 'w.json')) });
+  lock.release();
+  assert.deepStrictEqual(seen.map(s => s.kind), ['status', 'acquire', 'release']);
+  assert.strictEqual(seen[1].t, 4 * 60000);
+  assert.strictEqual(seen[0].t, STATUS_TIMEOUT_MS, 'a status call no longer inherits the long acquire timeout');
+  assert.strictEqual(seen[2].t, STATUS_TIMEOUT_MS);
+  assert.strictEqual(STATUS_TIMEOUT_MS, 60000);
 });
 
 test('queryStarts: absolute powershell, parses pid and start, a pid that is not listed is absent', () => {
@@ -481,7 +485,7 @@ test('Dexter r2 2: the retry after a reclaim waits only what is left of the budg
       }
       return r.run(args);
     };
-    assert.strictEqual(acquire({ label: 'x', pid: 7, ...deps }).state, 'held');
+    assert.strictEqual(acquire({ label: 'x', pid: 7, waitMinutes: 7, ...deps }).state, 'held');
     const acq = of(r, '-Acquire');
     assert.strictEqual(flagValue(acq[0], '-WaitMinutes'), '7');
     assert.strictEqual(flagValue(acq[1], '-WaitMinutes'), expected, `spent ${spent}`);
@@ -546,4 +550,156 @@ test('BACKLOG #112: a provisional record (start unknown) keeps the holder while 
   assert.deepStrictEqual(st.read('o (pid 1 start 2)'), [{ pid: 11, start: '7' }, { pid: 10, start: '5' }], 'one entry per pid');
   const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '123' }, work: { owner: WORK.owner, work: [{ pid: 6000, start: null }] } });
   assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'busy', 'a live provisional child holds the slot');
+});
+
+// ---- BACKLOG #178 b: a give-up that can't be misread, and a wait that shows ----
+test('#178 b: a busy give-up carries who held the slot and how long this asker waited', () => {
+  const r = rig({ holder: 'npm test (pid 5000 start 777) (since 09:00:00)', alive: { 5000: '777' } });
+  const deps = r.deps();
+  const run = deps.run;
+  deps.run = (args, o) => { if (args.includes('-Acquire')) r.clock.t += 20 * 60000 + 15000; return run(args, o); };
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...deps }), (e) => {
+    assert.strictEqual(e.code, 'busy');
+    assert.strictEqual(e.holder, 'npm test (pid 5000 start 777) (since 09:00:00)');
+    assert.strictEqual(e.waitedMs, 20 * 60000 + 15000);
+    return true;
+  });
+});
+
+test('#178 b: busy because of the queue has no holder, and says how many are ahead; too loaded carries the load', () => {
+  const q = rig({ acquireOverride: { status: 2, stdout: 'busy: 2 ahead in the queue' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...q.deps() }), (e) => e.code === 'busy' && e.holder === null && e.detail === '2 ahead in the queue');
+  const l = rig({ acquireOverride: { status: 3, stdout: 'machine too loaded: 4 GB free, 90% CPU' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...l.deps() }), (e) => e.code === 'loaded' && e.detail === '4 GB free, 90% CPU');
+});
+
+test('#178 b: notRunLine is the one last line, in words a builder cannot misread, and NOT_RUN_EXIT is 75 (never a failing suite\'s 1)', () => {
+  assert.strictEqual(NOT_RUN_EXIT, 75);
+  assert.strictEqual(notRunLine(new HeavyLockError('busy', 'm', { holder: 'npm test (pid 5 start 6) (since 10:00:00)', waitedMs: 20 * 60000 + 15000 })),
+    '[heavy-lock] lock busy for 20 min, held by npm test (pid 5 start 6) (since 10:00:00): NOT RUN');
+  assert.strictEqual(notRunLine(new HeavyLockError('busy', 'm', { detail: '2 ahead in the queue', waitedMs: 19.6 * 60000 })),
+    '[heavy-lock] lock busy for 20 min, held by nobody now (2 ahead in the queue): NOT RUN');
+  assert.strictEqual(notRunLine(new HeavyLockError('loaded', 'm', { detail: '4 GB free, 90% CPU', waitedMs: 20 * 60000 })),
+    '[heavy-lock] machine too loaded for 20 min (4 GB free, 90% CPU): NOT RUN');
+  assert.match(notRunLine(new HeavyLockError('error', 'heavy-lock.ps1 failed (exit 1): boom')), /^\[heavy-lock\] the lock could not be taken \(heavy-lock\.ps1 failed \(exit 1\): boom\): NOT RUN$/);
+  assert.match(notRunLine(new Error('x')), /: NOT RUN$/);
+  assert.match(notRunLine(null), /: NOT RUN$/);
+});
+
+test('#178 b: the watcher runs exactly around the wait, with the asker and its start, and is stopped whether the acquire holds or gives up', () => {
+  for (const holder of [null, 'hub: probes (since 10:00:00)']) {
+    const r = rig({ holder });
+    const events = [];
+    const deps = r.deps();
+    const run = deps.run;
+    deps.run = (args, o) => { if (args.includes('-Acquire')) events.push('acquire'); return run(args, o); };
+    const watch = (cfg) => { events.push(['watch', cfg.parentPid, cfg.parentStart, cfg.waitMinutes, typeof cfg.startedAt]); return { stop: () => events.push('stop') }; };
+    try { acquire({ label: 'x', pid: 7, waitMinutes: 20, watch, ...deps }); } catch (e) { assert.strictEqual(e.code, 'busy'); }
+    assert.deepStrictEqual(events, [['watch', 7, '100', 20, 'number'], 'acquire', 'stop'], String(holder));
+  }
+});
+
+test('#178 b: no watcher when nothing is waited for (re-entrant, script missing), and one that cannot start never stops the acquire', () => {
+  let started = 0;
+  const watch = () => { started++; return { stop() {} }; };
+  const a = rig(); a.env[ENV_VAR] = '1'; a.holder = 'npm test (pid 1 start 100) (since 10:00:00)';
+  acquire({ label: 'x', pid: 7, watch, ...a.deps() });
+  const b = rig({ exists: false }); acquire({ label: 'x', pid: 7, watch, ...b.deps() });
+  assert.strictEqual(started, 0);
+  const c = rig();
+  assert.strictEqual(acquire({ label: 'x', pid: 7, watch: () => { throw new Error('no node'); }, ...c.deps() }).state, 'held');
+  const d = rig();
+  assert.strictEqual(acquire({ label: 'x', pid: 7, watch: () => ({ stop() { throw new Error('gone'); } }), ...d.deps() }).state, 'held');
+});
+
+test('#178 b: startWatcher starts node on host/heavy-lock-watch.js with its config, its lines on stderr, without the re-entrancy flag', () => {
+  const seen = [];
+  const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.unref = () => seen.push('unref');
+  child.kill = () => seen.push('kill');
+  const spawnFn = (cmd, args, opts) => { seen.push({ cmd, args, opts }); return child; };
+  const w = startWatcher({ scriptPath: 'S.ps1', workFile: 'W.json', parentPid: 7, parentStart: '100', startedAt: 5, waitMinutes: 20, everyMs: 1000, spawnFn, execPath: 'NODE', env: { A: 'a', [ENV_VAR]: '1' } });
+  const call = seen[0];
+  assert.strictEqual(call.cmd, 'NODE');
+  assert.strictEqual(call.args[0], WATCH_SCRIPT);
+  assert.match(WATCH_SCRIPT.replace(/\\/g, '/'), /\/host\/heavy-lock-watch\.js$/);
+  assert.deepStrictEqual(JSON.parse(call.args[1]), { scriptPath: 'S.ps1', workFile: 'W.json', parentPid: 7, parentStart: '100', startedAt: 5, everyMs: 1000, maxMs: 22 * 60000 });
+  assert.deepStrictEqual(call.opts.stdio, ['ignore', 'ignore', 'inherit']);
+  assert.strictEqual(call.opts.windowsHide, true);
+  assert.strictEqual(call.opts.env.A, 'a');
+  assert.strictEqual(call.opts.env[ENV_VAR], undefined);
+  assert.ok(seen.includes('unref'), 'the watcher never keeps its asker alive');
+  w.stop();
+  assert.ok(seen.includes('kill'));
+  child.exitCode = 0; seen.length = 0;
+  w.stop();
+  assert.deepStrictEqual(seen, [], 'an exited watcher is not killed (its pid may be reused)');
+  assert.doesNotThrow(() => startWatcher({ waitMinutes: 1, spawnFn: () => { throw new Error('EPERM'); } }).stop());
+});
+
+test('#178 b: the default watcher starts only on the real machine path: an injected run or spawn never starts a process', () => {
+  // Both of these would spawn a real node if the default watcher ran; each finishes with no child left, and the fake spawn
+  // sees only powershell calls.
+  const cmds = [];
+  const spawnFn = (cmd) => { cmds.push(cmd); return { status: 0, stdout: 'free' }; };
+  acquire({ label: 'x', pid: 7, waitMinutes: 1, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map(), work: createWorkStore(path.join(tmpDir('hl-nw-'), 'w.json')) });
+  assert.ok(cmds.length > 0 && cmds.every(c => /powershell\.exe$/i.test(c)), JSON.stringify(cmds));
+});
+
+// ---- the watcher's one step (host/heavy-lock-watch.js) ----
+const { watchTick } = require('../host/heavy-lock-watch');
+function tickRig(over = {}) {
+  const r = rig(over);
+  const d = r.deps();
+  return { r, d, tick: (extra = {}) => watchTick({ run: d.run, startsOf: d.startsOf, work: d.work, log: d.log, parentPid: 7, parentStart: '100', startedAt: 0, now: () => 3 * 60000 + 5000, ...extra }) };
+}
+
+test('#178 b watch: says how long the asker has waited and who holds the slot', () => {
+  const { r, tick } = tickRig({ holder: 'hub: probes (since 10:00:00)' });
+  assert.strictEqual(tick(), 'waiting');
+  assert.deepStrictEqual(r.log, ['[heavy-lock] waited 3 min so far for the lock, held by hub: probes (since 10:00:00)']);
+  assert.strictEqual(of(r, '-Release').length, 0, 'a manual holder is never touched');
+});
+
+test('#178 b watch: a holder that died during the wait is freed by the dead-holder rules; a live one is not', () => {
+  const dead = tickRig({ holder: `${DEAD} (since 09:00:00)` });
+  dead.tick();
+  assert.strictEqual(of(dead.r, '-Release').length, 1);
+  assert.strictEqual(dead.r.holder, null);
+  assert.ok(dead.r.log.some(m => /freed the slot of a dead holder/.test(m)));
+  const live = tickRig({ holder: `${DEAD} (since 09:00:00)`, alive: { 5000: '777' } });
+  live.tick();
+  assert.strictEqual(of(live.r, '-Release').length, 0);
+  const orphan = tickRig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '900' }, work: WORK });
+  orphan.tick();
+  assert.strictEqual(of(orphan.r, '-Release').length, 0, 'its recorded work still runs');
+});
+
+test('#178 b watch: the asker gone (or its pid reused) ends the watcher before it reads or frees anything; "cannot tell" carries on', () => {
+  for (const alive of [{ 7: undefined }, { 7: '999' }]) {
+    const { r, tick } = tickRig({ holder: `${DEAD} (since 09:00:00)` });
+    Object.assign(r.alive, alive);
+    if (alive[7] === undefined) delete r.alive[7];
+    assert.strictEqual(tick(), 'asker-gone');
+    assert.strictEqual(r.calls.length, 0);
+  }
+  const t = tickRig({ holder: 'hub: probes (since 10:00:00)', startsFail: true });
+  assert.strictEqual(t.tick(), 'waiting');
+});
+
+test('#178 b watch: a free slot and an unreadable status are said as such', () => {
+  const free = tickRig();
+  free.tick();
+  assert.match(free.r.log[0], /waited 3 min so far for the lock: the slot is free/);
+  // The script's status with the asker alone in the queue: the load gate is what holds it, and the line says the load.
+  const gated = tickRig();
+  gated.tick({ run: () => ({ status: 0, stdout: 'free\nqueue 1: npm test (pid 7 start 100) (asked 10:00:00)\nload: 31.5 GB free RAM, 72% CPU' }) });
+  assert.strictEqual(gated.r.log[0], '[heavy-lock] waited 3 min so far for the lock: the slot is free; 1 waiting, this one included (the load gate: it needs 8 GB free RAM and under 70% CPU; now 31.5 GB free RAM, 72% CPU)');
+  const behind = tickRig();
+  behind.tick({ run: () => ({ status: 0, stdout: 'free\nqueue 1: a\nqueue 2: b\nload: 20 GB free RAM, 10% CPU' }) });
+  assert.match(behind.r.log[0], /2 waiting, this one included \(an earlier ticket goes first, or the load gate; now 20 GB free RAM, 10% CPU\)$/);
+  const broken = tickRig();
+  broken.tick({ run: () => ({ status: null, stdout: '' }) });
+  assert.match(broken.r.log[0], /its status could not be read/);
+  const thrown = tickRig();
+  assert.strictEqual(thrown.tick({ run: () => { throw new Error('x'); } }), 'waiting');
 });

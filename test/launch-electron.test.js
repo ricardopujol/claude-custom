@@ -360,14 +360,15 @@ test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other e
   const { takeLock } = require('../verify/lib/launch-electron');
   const { HeavyLockError } = require('../host/heavy-lock');
   const said = []; const exits = [];
-  const busy = { ensure: () => { throw new HeavyLockError('busy', 'busy: hub. Wait and retry'); } };
+  const busy = { ensure: () => { throw new HeavyLockError('busy', 'busy: hub. Wait and retry', { holder: 'hub (since 10:00:00)', waitedMs: 20 * 60000 }); } };
   assert.throws(() => takeLock(busy, (c) => exits.push(c), (m) => said.push(m)), HeavyLockError);   // the fake exit returns, so it rethrows
-  assert.deepStrictEqual(exits, [1]);
-  assert.strictEqual(said.length, 1);
+  assert.deepStrictEqual(exits, [75], '#178 b: NOT RUN is 75, never a probe\'s own failure code');
+  assert.strictEqual(said.length, 2);
   assert.match(said[0], /did not run: busy: hub/);
+  assert.strictEqual(said[1], '[heavy-lock] lock busy for 20 min, held by hub (since 10:00:00): NOT RUN', 'the NOT RUN line comes last');
   const other = { ensure: () => { throw new TypeError('x'); } };
   assert.throws(() => takeLock(other, (c) => exits.push(c), (m) => said.push(m)), TypeError);
-  assert.deepStrictEqual(exits, [1], 'no exit for an unexpected error');
+  assert.deepStrictEqual(exits, [75], 'no exit for an unexpected error');
   assert.doesNotThrow(() => takeLock(null));
 });
 

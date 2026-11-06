@@ -21,11 +21,25 @@
  *   heavy-lock.ps1 -Release -Owner "<lane>: <what>"
  *   Remove-Item Env:HEAVY_LOCK_HELD   # Git Bash: unset HEAVY_LOCK_HELD. Forget this and the shell stays exempt.
  *
- * WAIT. A busy slot is waited for 7 minutes in total; HEAVY_LOCK_WAIT_MINUTES changes it. The total is bounded: the retry
- * after a reclaim gets only what is left of that budget (at least 1 minute), and each script call is killed 1 minute after
- * its own deadline. Worst case with the default is about 7 + 1 minutes plus the status calls, under the Bash tool's
- * 10-minute cap. A timed-out call leaves its queue ticket behind, but the script keys a ticket to its waiter's pid and
- * start time and drops a dead one the next time anyone reads the queue (Miguel r2 N4, read from heavy-lock.ps1).
+ * WAIT. A busy slot is waited for 20 minutes in total; HEAVY_LOCK_WAIT_MINUTES changes it (BACKLOG #178 b). Why 20: one
+ * full `npm test` holds the slot about 8 minutes, and the script's load gate (8 GB free, under 70% CPU) adds about a
+ * minute between holders when lanes are busy (measured 2026-11-05). Waiting 7, the second lane in a queue always gave up
+ * before the first finished. 20 covers one suite ahead with room, and two suites ahead (the common case on a busy day,
+ * about 18 minutes) with a little; a third ahead gives up, and says so (below). It's also the script's own default.
+ * The total stays bounded: the retry after a reclaim gets only what is left of that budget (at least 1 minute), each
+ * -Acquire call is killed 1 minute after its own deadline, and every status and release call has its own 1-minute leash
+ * (STATUS_TIMEOUT_MS, #112 Dexter 2: they used to inherit the acquire's long timeout). A wait this long is longer than the
+ * Bash tool's 10-minute cap: a call that's moved to the background keeps waiting, and its output file shows the wait.
+ * A timed-out call leaves its queue ticket behind, but the script keys a ticket to its waiter's pid and start time and
+ * drops a dead one the next time anyone reads the queue (Miguel r2 N4, read from heavy-lock.ps1).
+ * WHILE IT WAITS. The -Acquire call is one synchronous spawn that prints nothing, so a small side process
+ * (host/heavy-lock-watch.js) runs alongside it: once a minute it prints who holds the slot and how long this asker has
+ * waited, and frees a holder that DIED during the wait by the same dead-holder rules as below, so the waiter's own ticket
+ * (its place in the queue) then gets the slot. A longer wait never means a dead holder costs the whole wait. The side
+ * process is stopped by its handle when the acquire returns, and ends on its own if its asker is gone or the wait is over.
+ * GIVING UP. A busy slot after the whole wait is a HeavyLockError carrying who held it and how long it waited; notRunLine()
+ * turns it into the last line a caller prints, `[heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN`, and the
+ * caller exits NOT_RUN_EXIT (75, EX_TEMPFAIL: "try again later"), never 1, which is what a failing suite exits.
  * QUEUE POSITION. The script owns the tickets, so a retry after a reclaim is a NEW ticket, behind anyone who asked
  * after the first call did (Dexter r2 #2). Node can't keep the place; the fix would be the script reclaiming a dead
  * holder inside its own wait loop (see the Open question in the lane brief). What this module guarantees is the bound.
@@ -61,7 +75,7 @@
  * Every dependency (the script runner, spawn, the existence check, the env, the process) is injectable, so tests never
  * touch the real lock.
  */
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -70,15 +84,34 @@ const { POWERSHELL } = require('./proc-start');
 const ENV_VAR = 'HEAVY_LOCK_HELD';
 const WAIT_VAR = 'HEAVY_LOCK_WAIT_MINUTES';
 const DEFAULT_SCRIPT = path.join(os.homedir(), '.claude', 'scripts', 'heavy-lock.ps1');
-const DEFAULT_WAIT_MINUTES = 7;
+const DEFAULT_WAIT_MINUTES = 20;
+const STATUS_TIMEOUT_MS = 60000;
+const WATCH_EVERY_MS = 60000;
+const NOT_RUN_EXIT = 75;
+const WATCH_SCRIPT = path.join(__dirname, 'heavy-lock-watch.js');
 const WORK_FILE = path.join(os.tmpdir(), 'claude-custom-heavy.work.json');
 const HINT = 'Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1 (see host/heavy-lock.js).';
 
 const waitFromEnv = (env) => { const n = Number(env && env[WAIT_VAR]); return Number.isInteger(n) && n > 0 ? n : DEFAULT_WAIT_MINUTES; };
 const isHeld = (env) => !!env && env[ENV_VAR] === '1';
 
+// `holder`: who held the slot when the wait ended (null: nobody, or unknown); `waitedMs`: how long this asker waited.
 class HeavyLockError extends Error {
-  constructor(code, message) { super(message); this.name = 'HeavyLockError'; this.code = code; }
+  constructor(code, message, { holder = null, waitedMs = null, detail = null } = {}) {
+    super(message); this.name = 'HeavyLockError'; this.code = code; this.holder = holder; this.waitedMs = waitedMs; this.detail = detail;
+  }
+}
+
+// The one last line a caller prints when its work did not run, so it can't be misread as a failing run. Any error works:
+// a HeavyLockError says why in its own words, anything else is "the lock failed".
+function notRunLine(err) {
+  const mins = (err && typeof err.waitedMs === 'number') ? `${Math.round(err.waitedMs / 60000)} min` : 'the whole wait';
+  if (err && err.code === 'busy') {
+    const by = err.holder ? `held by ${err.holder}` : `held by nobody now${err.detail ? ` (${err.detail})` : ''}`;
+    return `[heavy-lock] lock busy for ${mins}, ${by}: NOT RUN`;
+  }
+  if (err && err.code === 'loaded') return `[heavy-lock] machine too loaded for ${mins}${err.detail ? ` (${err.detail})` : ''}: NOT RUN`;
+  return `[heavy-lock] the lock could not be taken (${(err && err.message) || 'unknown error'}): NOT RUN`;
 }
 
 // Closed with a paren so that "(pid 1 ...)" is never a prefix of "(pid 12 ...)": the script releases by StartsWith(owner).
@@ -128,7 +161,7 @@ function defaultRun(scriptPath, { spawnFn = spawnSync, timeoutMs = (DEFAULT_WAIT
 
 function release({ owner, scriptPath = DEFAULT_SCRIPT, run = defaultRun(scriptPath), log = console.log } = {}) {
   let r;
-  try { r = run(['-Release', '-Owner', owner]); } catch (err) { r = { status: null, stdout: err && err.message }; }
+  try { r = run(['-Release', '-Owner', owner], { timeoutMs: STATUS_TIMEOUT_MS }); } catch (err) { r = { status: null, stdout: err && err.message }; }
   if (r && r.status === 0) return true;
   log(`[heavy-lock] could not release "${owner}": ${(r && r.stdout) || 'no answer from the script'}`);
   return false;
@@ -143,6 +176,7 @@ function createWorkStore(file = WORK_FILE, fsx = fs) {
   };
   const mine = (d, holder) => d && typeof d.owner === 'string' && String(holder).startsWith(d.owner);
   return {
+    file,
     read(holder) { const d = readAll(); return mine(d, holder) && Array.isArray(d.work) ? d.work : []; },
     add(owner, pid, start) {
       let d; try { d = readAll(); } catch { d = {}; }
@@ -169,7 +203,7 @@ const isGone = (starts, pid, start) => {
 // by its exact owner string.
 function reclaimDead({ run, startsOf, log, work }) {
   let st;
-  try { st = run([]); } catch { return false; }
+  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
   const m = /^held: (.*)$/m.exec((st && st.stdout) || '');
   if (!m) return false;
   const holder = m[1].trim();
@@ -187,21 +221,48 @@ function reclaimDead({ run, startsOf, log, work }) {
     return false;
   }
   let r;
-  try { r = run(['-Release', '-Owner', holder]); } catch { return false; }
+  try { r = run(['-Release', '-Owner', holder], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
   if (!r || r.status !== 0) return false;
   try { work.clear(holder); } catch { /* the next holder overwrites it */ }
   log(`[heavy-lock] freed the slot of a dead holder: ${holder}`);
   return true;
 }
 
+/**
+ * The side process that speaks for a waiting acquire (see WHILE IT WAITS). Returns { stop() }; a watcher that can't start
+ * is no watcher (the wait itself goes on, silent as before). Its lines go to this process's stderr.
+ */
+function startWatcher({ scriptPath, workFile, parentPid, parentStart, startedAt, waitMinutes, everyMs = WATCH_EVERY_MS, spawnFn = spawn, execPath = process.execPath, env = process.env } = {}) {
+  const cfg = { scriptPath, workFile, parentPid, parentStart, startedAt, everyMs, maxMs: (waitMinutes + 2) * 60000 };
+  const childEnv = { ...env };
+  delete childEnv[ENV_VAR];
+  if (process.versions && process.versions.electron) childEnv.ELECTRON_RUN_AS_NODE = '1';   // a plain node, even from an Electron main
+  let c = null;
+  try { c = spawnFn(execPath, [WATCH_SCRIPT, JSON.stringify(cfg)], { stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true, env: childEnv }); } catch { return { stop() {} }; }
+  if (c && typeof c.on === 'function') c.on('error', () => { /* no watcher: the wait goes on */ });
+  if (c && typeof c.unref === 'function') c.unref();
+  return {
+    // Its own handle, held since the spawn: stopped only while it hasn't exited.
+    stop() { try { if (c && c.exitCode === null && c.signalCode === null) c.kill(); } catch { /* gone */ } },
+  };
+}
+
 /** Blocks (a synchronous script call) until the lock is held. Returns { state, release() }; throws HeavyLockError. */
 function acquire({
   label = 'claude-custom', pid = process.pid, env = process.env, waitMinutes = waitFromEnv(env),
-  scriptPath = DEFAULT_SCRIPT, spawnFn = spawnSync,
-  run = defaultRun(scriptPath, { spawnFn, timeoutMs: (waitMinutes + 1) * 60000 }),
-  exists = fs.existsSync, log = console.log, startsOf = (pids) => queryStarts(pids, spawnFn),
+  scriptPath = DEFAULT_SCRIPT, spawnFn,
+  run,
+  exists = fs.existsSync, log = console.log, startsOf,
   work = createWorkStore(), now = Date.now,
+  // The side process that prints the wait and frees a holder that dies during it. Started only on the real machine path
+  // (no injected run or spawn), so a test never starts one unless it hands one in.
+  watch,
 } = {}) {
+  const injected = run !== undefined || spawnFn !== undefined;
+  if (watch === undefined) watch = injected ? null : startWatcher;
+  if (spawnFn === undefined) spawnFn = spawnSync;
+  if (run === undefined) run = defaultRun(scriptPath, { spawnFn, timeoutMs: (waitMinutes + 1) * 60000 });
+  if (startsOf === undefined) startsOf = (pids) => queryStarts(pids, spawnFn);
   if (isHeld(env)) {
     log(`[heavy-lock] ${ENV_VAR}=1 is set: not taking the lock (an outer holder, or a hand-taken lock you must unset after)`);
     return { state: 'reentrant', release: () => false, addWork: () => false };
@@ -215,23 +276,40 @@ function acquire({
   const owner = ownerFor(label, pid, ownStart);
   reclaimDead({ run, startsOf, log, work });
   const startedAt = now();
+  let watcher = null;
+  if (typeof watch === 'function') {
+    try { watcher = watch({ scriptPath, workFile: work.file || WORK_FILE, parentPid: pid, parentStart: ownStart, startedAt, waitMinutes }); } catch { watcher = null; }
+  }
   let r;
-  let wait = waitMinutes;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try { r = run(['-Acquire', '-Owner', owner, '-WaitMinutes', String(wait)], { timeoutMs: (wait + 1) * 60000 }); } catch (err) { r = { status: null, stdout: err && err.message }; }
-    // Busy because of a holder (not "n ahead in the queue"): a dead one is freed and the acquire tried once more, with
-    // only what is left of the wait budget (at least 1 minute), so the whole acquire stays bounded.
-    if (r && r.status === 2 && /^busy: (?!\d+ ahead)/.test(r.stdout || '') && reclaimDead({ run, startsOf, log, work })) {
-      wait = Math.max(1, Math.min(waitMinutes, Math.floor((waitMinutes * 60000 - (now() - startedAt)) / 60000)));
-      continue;
+  try {
+    let wait = waitMinutes;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { r = run(['-Acquire', '-Owner', owner, '-WaitMinutes', String(wait)], { timeoutMs: (wait + 1) * 60000 }); } catch (err) { r = { status: null, stdout: err && err.message }; }
+      // Busy because of a holder (not "n ahead in the queue"): a dead one is freed and the acquire tried once more, with
+      // only what is left of the wait budget (at least 1 minute), so the whole acquire stays bounded.
+      if (r && r.status === 2 && /^busy: (?!\d+ ahead)/.test(r.stdout || '') && reclaimDead({ run, startsOf, log, work })) {
+        wait = Math.max(1, Math.min(waitMinutes, Math.floor((waitMinutes * 60000 - (now() - startedAt)) / 60000)));
+        continue;
+      }
+      break;
     }
-    break;
+  } finally {
+    if (watcher && typeof watcher.stop === 'function') { try { watcher.stop(); } catch { /* gone */ } }
   }
   const said = (r && r.stdout) || '';
   if (!r || r.status !== 0) {
-    if (r && r.status === 2) throw new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`);
-    if (r && r.status === 3) throw new HeavyLockError('loaded', `${said || 'machine too loaded'}. ${HINT}`);
-    throw new HeavyLockError('error', `heavy-lock.ps1 failed (exit ${r && r.status}): ${said}`);
+    const waitedMs = now() - startedAt;
+    if (r && r.status === 2) {
+      const m = /^busy: (.*)$/m.exec(said);
+      const what = m ? m[1].trim() : '';
+      const queued = /^\d+ ahead in the queue$/.test(what);
+      throw new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs });
+    }
+    if (r && r.status === 3) {
+      const m = /^machine too loaded: (.*)$/m.exec(said);
+      throw new HeavyLockError('loaded', `${said || 'machine too loaded'}. ${HINT}`, { detail: m ? m[1].trim() : null, waitedMs });
+    }
+    throw new HeavyLockError('error', `heavy-lock.ps1 failed (exit ${r && r.status}): ${said}`, { waitedMs });
   }
   env[ENV_VAR] = '1';
   let done = false;
@@ -298,6 +376,7 @@ function createProcessLock({ proc = process, label = 'probe', beforeRelease = nu
 }
 
 module.exports = {
-  ENV_VAR, WAIT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, HeavyLockError, ownerFor, parseOwner, queryStarts, defaultRun, createWorkStore, WORK_FILE,
-  acquire, release, createProcessLock,
+  ENV_VAR, WAIT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, STATUS_TIMEOUT_MS, WATCH_EVERY_MS, NOT_RUN_EXIT, WATCH_SCRIPT,
+  HeavyLockError, notRunLine, ownerFor, parseOwner, queryStarts, defaultRun, createWorkStore, WORK_FILE, isGone, reclaimDead,
+  startWatcher, acquire, release, createProcessLock,
 };

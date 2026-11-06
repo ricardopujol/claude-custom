@@ -9,6 +9,22 @@ All probes render the pty stream into `@xterm/headless` with `Unicode11Addon`
 active, which is the same terminal state the host will serialize for
 detach/reattach — so the probes exercise the real component, not a mock.
 
+## The heavy lock
+
+`npm test` (through `scripts/with-heavy-lock.js`) and every probe that requires
+`lib/launch-electron.js` take the machine-wide heavy-work lock first (the rules
+are in `host/heavy-lock.js`'s header). A busy lock is waited for **20 minutes**
+(`HEAVY_LOCK_WAIT_MINUTES` changes it): one full suite is about 8, so that covers
+one or two suites queued ahead. About once a minute the waiting run prints who
+holds the lock and how long it has waited.
+
+If the wait runs out the work does **not** run. The last line says so, and the
+exit code is **75**, never 1 (1 is a failing suite or probe):
+
+    [heavy-lock] lock busy for 20 min, held by npm test (pid 123 start 456) (since 10:00:00): NOT RUN
+
+Exit 75 means "not run, retry", not "failed".
+
 | Probe | Question | Result (2026-09-11, v2.1.268) |
 |---|---|---|
 | `probe-render.js` | Does the Ink TUI render faithfully through the host? | Yes — banner, box rules, prompt all correct |

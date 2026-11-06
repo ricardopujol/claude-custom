@@ -6,8 +6,18 @@
  *
  * Takes the lock (host/heavy-lock.js; waits its turn behind other lanes), runs the command with HEAVY_LOCK_HELD=1 in its
  * environment, and releases on every way out: the command ending (any code), failing to start, SIGINT/SIGTERM/SIGHUP (the
- * command's tree is killed by its pid first), or this process exiting. If the lock stays busy the command does not run:
- * it says who holds it and exits 1. If the lock script isn't on this machine it warns once and runs anyway.
+ * command's tree is killed by its pid first), or this process exiting. If the lock script isn't on this machine it warns
+ * once and runs anyway.
+ *
+ * WAITING. A busy lock is waited for (20 minutes by default, HEAVY_LOCK_WAIT_MINUTES; why 20: host/heavy-lock.js WAIT),
+ * with a line about once a minute saying who holds it and how long this run has waited.
+ *
+ * NOT RUN: EXIT 75. If the lock stays busy (or the machine too loaded, or the lock script fails) the command does NOT
+ * run. The reason comes first, and the LAST line is always
+ *   [heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN
+ * (or "machine too loaded for <n> min ...: NOT RUN", "the lock could not be taken (...): NOT RUN"), and the exit code is
+ * 75 (EX_TEMPFAIL, "try again later"; host/heavy-lock.js NOT_RUN_EXIT). Never 1: 1 is what a failing suite exits, and a
+ * suite that never ran is not a failing one. Retry it. Documented in verify/README.md too.
  *
  * Already under the lock (HEAVY_LOCK_HELD is set, by an outer wrapper or by someone who took the lock by hand with
  * heavy-lock.ps1 -Acquire): runs the command at once and takes nothing. How to set it by hand: see host/heavy-lock.js.
@@ -23,7 +33,8 @@ async function main(argv, {
   let lock;
   try { lock = acquire({ label: 'npm test', env, log }); } catch (err) {
     log(`[heavy-lock] not running: ${err && err.message}`);
-    return 1;
+    log(heavy.notRunLine(err));   // the last line, in words that can't be read as a failing suite
+    return heavy.NOT_RUN_EXIT;
   }
   let signalled = 0;
   let child = null;
