@@ -750,11 +750,27 @@ test('#139 strip-layout: a closed lane keeps `merged: true` through the file (so
 
 test('#139: after a restart, a lane the merged close closed is still a Merged row with its Undo', async () => {
   const layout = { load: () => ({ order: [], closed: [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', merged: true }], error: null }), save: () => ({ ok: true }) };
-  const h = harness({ running: { 7700: wt('dev') }, layout });
+  const h = harness({ running: { 7700: wt('dev') }, layout, markers: { [key('feat-a')]: 'feat/a' } });
   await h.shell.open();
   await flush();
   assert.deepStrictEqual(mergedRows(h).map(r => [r.key, r.state, r.undo]), [[key('feat-a'), 'closed · Undo', true]]);
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('#139 P12: a saved merged row whose folder now holds a new lane (no marker) is a plain closed row, and the file says so', async () => {
+  const saved = [];
+  const layout = {
+    load: () => ({ order: [], closed: [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', merged: true }], error: null }),
+    save: (v) => { saved.push(JSON.parse(JSON.stringify(v))); return { ok: true }; },
+  };
+  const h = harness({ running: { 7700: wt('dev') }, layout });     // git lists feat-a again, and no marker is there
+  await h.shell.open();
+  await flush();
+  assert.deepStrictEqual(mergedRows(h).filter(r => r.key === key('feat-a')), [], 'not labelled merged');
+  const row = h.shell.lanesMenu([]).find(r => r.key === key('feat-a'));
+  assert.deepStrictEqual({ state: row.state, action: row.action }, { state: 'closed', action: 'reopen' }, 'a closed row, as any hand close');
+  const last = saved[saved.length - 1];
+  assert.ok(last && last.closed.some(c => c.key === key('feat-a') && c.merged === undefined), 'the saved entry lost its merged flag');
 });
 
 // --- the invariant --------------------------------------------------------------------------------

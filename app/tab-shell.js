@@ -969,7 +969,12 @@ function createShell(deps) {
     apply(actions, before);
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
-    if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
+    // A saved `merged: true` is believed only while THIS poll's marker says so (PR #236 Dexter 13): a folder removed and made again at
+    // the same path (a new lane, no marker) is a plain closed row, never "Merged · closed · Undo".
+    const markers = observation && observation.merged ? observation.merged : {};
+    const truthful = stillClosed.map(c => (c.merged === true && markers[c.key] !== true ? (({ merged, ...rest }) => rest)(c) : c));
+    const dropped = truthful.some((c, i) => c !== stillClosed[i]);
+    if (stillClosed.length !== closedByHand.length || dropped) { closedByHand = truthful; persistLayout(); }
     if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
       const k = selectWhenListed;
       selectWhenListed = null;
