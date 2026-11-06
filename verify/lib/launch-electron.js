@@ -78,6 +78,9 @@ function probeName(argv1 = process.argv[1]) {
   return (path.dirname(abs) + path.sep).toLowerCase().startsWith((VERIFY_DIR + path.sep).toLowerCase()) ? path.basename(abs) : null;
 }
 const defaultHeavyLock = createProcessLock({ label: probeName() || 'probe', beforeRelease: () => sweepLive() });
+// The lock a launch records into: the one handed in, else this probe's own (a non-probe process has none). Declared before its
+// users (#112 M5).
+const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 // A probe's Electron root is work the lock's holder started: recorded, so a dead probe with a live Electron isn't a dead holder.
 const noteWork = (heavyLock, handle) => {
   const lock = lockFor(heavyLock);
@@ -96,7 +99,6 @@ const noteChild = (child, heavyLock) => {
   }
   return child;
 };
-const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 
 // Busy / too loaded is the reason, then the NOT RUN line, and exit 75 (NOT_RUN_EXIT, never a probe's own failure codes),
 // not a stack trace; anything else is thrown as it was.

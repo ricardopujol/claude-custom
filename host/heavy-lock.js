@@ -61,7 +61,8 @@
  * THE WORK COUNTS TOO (Dexter r2 #1). The owner's pid is the asker (the wrapper, the probe). Stopping only that pid leaves
  * its `node --test` or Electron running. So the holder also records its heavy children (lock.addWork(pid): the suite's
  * node, a probe's Electron root) with their start times in a side file next to the lock, and a holder is dead only when
- * the asker AND every recorded child are gone. A side file that can't be read is "can't tell", never "dead".
+ * the asker AND every recorded child are gone. A side file that can't be read is "can't tell", never "dead": the slot then
+ * stays held until the script's 60-minute takeover, and a line says why (#112 M2).
  * WHAT IS RECORDED, AND WHAT IS NOT (BACKLOG #112). Recorded: the asker (in the owner string), and every heavy child the holder
  * starts and tells the lock about, each with its start time and under the owner that started it. Those are the suite's
  * `node --test` (scripts/with-heavy-lock.js), a probe's Electron root (launch-electron's noteWork) and a host.js or claude
@@ -226,7 +227,14 @@ function holderIsDead(holder, { startsOf, work, log = () => {} }) {
   const p = parseOwner(holder);
   if (!p) return false;                                   // a manual holder, or one with no proof: never dead
   let children;
-  try { children = work.read(holder); } catch { return false; }   // can't read what it started: not "dead"
+  // Can't read what it started: not "dead" (#112 M2, decided 2026-11-05: kept on the safe side, now said). Only this module
+  // writes the record, by temp file and rename, so an unreadable one is damage, not a half-write, and it may list a suite
+  // that still runs. The slot then stays until the script's 60-minute takeover, and that next holder's first write heals it.
+  try { children = work.read(holder); } catch (err) {
+    log(`[heavy-lock] the work record of ${holder} can't be read (${(err && (err.code || err.message)) || 'unreadable'}): `
+      + 'whether its work still runs can\'t be told, so the slot stays held (heavy-lock.ps1 frees a hold after 60 minutes)');
+    return false;
+  }
   let starts = null;
   try { starts = startsOf([p.pid, ...children.map(c => c.pid)]); } catch { /* could not ask */ }
   if (!starts) return false;                              // could not ask: not "dead"

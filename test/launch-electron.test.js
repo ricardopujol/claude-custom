@@ -401,3 +401,11 @@ test('BACKLOG #112: noteChild records a hand-started child twice (unknown start 
   assert.doesNotThrow(() => noteChild(child, null), 'no lock, nothing to record');
   assert.doesNotThrow(() => noteChild(child, { addWork: () => { throw new Error('disk'); } }), 'a failing record never stops the probe');
 });
+
+test('#112 M5: lockFor is declared before noteWork and noteChild, its users', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'lib', 'launch-electron.js'), 'utf8');
+  const at = (re) => { const m = re.exec(src); assert.ok(m, String(re)); return m.index; };
+  const decl = at(/^const lockFor = /m);
+  assert.ok(decl < at(/^const noteWork = /m), 'lockFor before noteWork');
+  assert.ok(decl < at(/^const noteChild = /m), 'lockFor before noteChild');
+});

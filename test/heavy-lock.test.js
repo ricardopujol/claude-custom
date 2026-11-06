@@ -815,3 +815,19 @@ test('#113 Dexter 1: the side file\'s remove drops one pid of its own owner only
   st.remove('o (pid 1 start 2)', 10);
   assert.deepStrictEqual(st.read('o (pid 1 start 2)'), [{ pid: 11, start: '5' }]);
 });
+
+// ---- #112 M2: a corrupt work record, decided: the safe side, said ----
+test('#112 M2: a corrupt work record on disk keeps a dead holder\'s slot (never freed on "can\'t tell"), and a line says why', () => {
+  const fs = require('fs');
+  const file = path.join(tmpDir('hl-corrupt-'), 'w.json');
+  fs.writeFileSync(file, '{"owner":"npm test (pid 5000 start 777)","work":[{"pid":60');   // damaged
+  const r = rig({ holder: `${DEAD} (since 09:00:00)` });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps(), work: createWorkStore(file) }), (e) => e.code === 'busy');
+  assert.strictEqual(of(r, '-Release').length, 0, 'the dead asker\'s slot is not freed: its record may list a suite that still runs');
+  const said = r.log.filter(m => /work record of npm test \(pid 5000 start 777\) \(since 09:00:00\) can't be read/.test(m));
+  assert.ok(said.length >= 1, JSON.stringify(r.log));
+  assert.match(said[0], /the slot stays held \(heavy-lock\.ps1 frees a hold after 60 minutes\)/);
+  // After the script's takeover, the next holder's first record heals the file.
+  createWorkStore(file).add('y (pid 8 start 1)', 9, '2');
+  assert.deepStrictEqual(createWorkStore(file).read('y (pid 8 start 1)'), [{ pid: 9, start: '2' }]);
+});
