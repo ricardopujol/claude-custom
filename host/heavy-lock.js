@@ -200,6 +200,15 @@ function createWorkStore(file = WORK_FILE, fsx = fs) {
       fsx.writeFileSync(tmp, JSON.stringify(d));
       fsx.renameSync(tmp, file);
     },
+    // Drop one child of this owner's record (#113 Dexter 1: a child that has exited must not keep a reused pid in the slot).
+    remove(owner, pid) {
+      const d = readAll();
+      if (!d || d.owner !== owner || !Array.isArray(d.work) || !d.work.some(w => w.pid === pid)) return;
+      d.work = d.work.filter(w => w.pid !== pid);
+      const tmp = `${file}.${process.pid}.tmp`;
+      fsx.writeFileSync(tmp, JSON.stringify(d));
+      fsx.renameSync(tmp, file);
+    },
     clear(holder) { try { if (mine(readAll(), holder)) fsx.unlinkSync(file); } catch { /* nothing to clear, or not ours to read */ } },
   };
 }
@@ -354,10 +363,23 @@ function acquire({
   return {
     state: 'held', owner,
     // Record a heavy child (the suite's node, a probe's Electron root) so a dead asker with a live child isn't "dead".
+    // No start given: it's read here, SYNCHRONOUSLY (one powershell query, 0.5-1.5 s). The caller still holds the child's
+    // handle, so a query that answers without its pid means it HAS exited (Windows doesn't reuse a pid while a handle is
+    // open): its entry is dropped, not kept with an unknown start, which a stranger reusing the pid later would keep alive
+    // (#113 Dexter 1). A query that fails is "can't tell": the entry stays, start unknown.
     addWork(childPid, childStart) {
       if (done || !Number.isInteger(childPid) || childPid <= 0) return false;
       let start = childStart;
-      if (start === undefined) { try { const v = (startsOf([childPid]) || new Map()).get(childPid); start = typeof v === 'string' ? v : null; } catch { start = null; } }
+      if (start === undefined) {
+        let starts = null;
+        try { starts = startsOf([childPid]); } catch { starts = null; }
+        if (starts instanceof Map && !starts.has(childPid)) {
+          try { work.remove(owner, childPid); } catch (err) { log(`[heavy-lock] could not drop exited pid ${childPid} from the work record: ${err && err.message}`); }
+          return false;
+        }
+        const v = starts instanceof Map ? starts.get(childPid) : null;
+        start = typeof v === 'string' ? v : null;
+      }
       try { work.add(owner, childPid, start); return true; } catch (err) { log(`[heavy-lock] could not record pid ${childPid} as work: ${err && err.message}`); return false; }
     },
     release() {

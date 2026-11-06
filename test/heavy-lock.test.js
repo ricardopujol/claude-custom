@@ -39,7 +39,8 @@ function rig({ holder = null, alive = {}, acquireOverride = null, releaseStatus 
   r.work = work;
   r.workStore = {
     read: (h) => { if (workFails) throw new Error('unreadable'); return r.work && h.startsWith(r.work.owner) ? r.work.work : []; },
-    add: (owner, pid, start) => { if (!r.work || r.work.owner !== owner) r.work = { owner, work: [] }; r.work.work.push({ pid, start }); },
+    add: (owner, pid, start) => { if (!r.work || r.work.owner !== owner) r.work = { owner, work: [] }; r.work.work = r.work.work.filter(w => w.pid !== pid); r.work.work.push({ pid, start }); },
+    remove: (owner, pid) => { if (r.work && r.work.owner === owner) r.work.work = r.work.work.filter(w => w.pid !== pid); },
     clear: (h) => { if (r.work && h.startsWith(r.work.owner)) r.work = null; },
   };
   r.clock = { t: 0 };
@@ -767,4 +768,50 @@ test('#178 b watch: a free slot and an unreadable status are said as such', () =
   assert.match(broken.r.log[0], /its status could not be read/);
   const thrown = tickRig();
   assert.strictEqual(thrown.tick({ run: () => { throw new Error('x'); } }), 'waiting');
+});
+
+// ---- #113 Dexter 1: a child the start query can't list has exited, and leaves the record ----
+test('#113 Dexter 1: a provisional entry whose child the query no longer lists is DROPPED, not kept with an unknown start', () => {
+  const r = rig();
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.addWork(9000, null), true, 'the provisional write');
+  assert.deepStrictEqual(r.work.work, [{ pid: 9000, start: null }]);
+  assert.strictEqual(lock.addWork(9000), false, 'the query answered without 9000: it exited inside the query');
+  assert.deepStrictEqual(r.work.work, [], 'a stranger reusing pid 9000 later can not hold the slot');
+});
+
+test('#113 Dexter 1: a query that FAILS is "can\'t tell": the entry stays with an unknown start', () => {
+  for (const failing of [() => null, () => { throw new Error('wmi'); }]) {
+    const r = rig();
+    let fail = false;
+    const deps = r.deps();
+    // The owner's own start is read normally; from the child's query on, the query fails.
+    const lock = acquire({ label: 'x', pid: 7, ...deps, startsOf: (p) => (fail ? failing(p) : deps.startsOf(p)) });
+    lock.addWork(9000, null);
+    fail = true;
+    assert.strictEqual(lock.addWork(9000), true);
+    assert.deepStrictEqual(r.work.work, [{ pid: 9000, start: null }]);
+  }
+});
+
+test('#113 Dexter 1: a listed child is upgraded to its start time, as before', () => {
+  const r = rig({ alive: { 9000: '555' } });
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  lock.addWork(9000, null);
+  assert.strictEqual(lock.addWork(9000), true);
+  assert.deepStrictEqual(r.work.work, [{ pid: 9000, start: '555' }]);
+});
+
+test('#113 Dexter 1: the side file\'s remove drops one pid of its own owner only, and leaves a missing file alone', () => {
+  const fs = require('fs');
+  const file = path.join(tmpDir('hl-rm-'), 'w.json');
+  const st = createWorkStore(file);
+  assert.doesNotThrow(() => st.remove('o (pid 1 start 2)', 10));
+  assert.strictEqual(fs.existsSync(file), false);
+  st.add('o (pid 1 start 2)', 10, null);
+  st.add('o (pid 1 start 2)', 11, '5');
+  st.remove('p (pid 3 start 4)', 10);
+  assert.strictEqual(st.read('o (pid 1 start 2)').length, 2, 'not someone else\'s to drop');
+  st.remove('o (pid 1 start 2)', 10);
+  assert.deepStrictEqual(st.read('o (pid 1 start 2)'), [{ pid: 11, start: '5' }]);
 });

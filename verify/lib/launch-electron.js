@@ -84,8 +84,10 @@ const noteWork = (heavyLock, handle) => {
   if (lock && typeof lock.addWork === 'function' && typeof handle.start === 'string') { try { lock.addWork(handle.pid, handle.start); } catch { /* a safety net */ } }
 };
 // A host.js / claude a probe starts by hand with a plain spawn: the same work record. Written at once with an unknown start
-// (a hard kill during the 0.5-1.5 s start query still leaves it listed), then again with the start time. Nothing if the
-// lock isn't held, or the child never got a pid. Returns the child.
+// (a hard kill during the 0.5-1.5 s start query still leaves it listed), then again with the start time. The second
+// addWork RUNS THAT START QUERY SYNCHRONOUSLY (one powershell, 0.5-1.5 s) and blocks this probe's event loop meanwhile, so
+// call it right after a spawn, never in a hot path (#113 M4); a child it can't list has exited and is dropped from the record
+// (#113 Dexter 1). Nothing if the lock isn't held, or the child never got a pid. Returns the child.
 const noteChild = (child, heavyLock) => {
   const lock = lockFor(heavyLock);
   const pid = child && child.pid;

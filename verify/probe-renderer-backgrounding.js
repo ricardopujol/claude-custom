@@ -13,7 +13,8 @@
  *
  * --load makes the starved case itself instead of waiting for it: one spinning node per E-core (the last four logical
  * CPUs), each BelowNormal + EcoQoS, which Windows keeps on the E-cores and ranks above an Idle renderer. Stopped by PID
- * when the run ends. The P-cores stay free, so the rest of the machine is unaffected.
+ * when the run ends, recorded in the heavy lock's work record, and each ends itself if this probe dies first
+ * (verify/lib/spinner.js). The P-cores stay free, so the rest of the machine is unaffected.
  *
  * .harness/host.log IS SHARED by every host on this install, and `client attached` names no port. The probe finds its
  * own host by the `cwd` line, then takes the first `client attached` after that host's own `listening on` line.
@@ -26,7 +27,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { launchElectron } = require('./lib/launch-electron');
+const { launchElectron, noteChild } = require('./lib/launch-electron');
+const { spinnerSource } = require('./lib/spinner');
 const { killProvenAsync } = require('../host/kill-tree');
 
 const ROOT = path.join(__dirname, '..');
@@ -77,9 +79,12 @@ function ourHost(text, dev) {
 
 // One spinner per E-core, each switched to BelowNormal + EcoQoS (ProcessPowerThrottling, execution speed) by PowerShell.
 // `kids` is the caller's list, filled before the PowerShell step, so a refusal there still leaves them for its finally.
+// Each spinner is recorded as the heavy lock's work (noteChild), and ends itself when this probe is gone or its time is up
+// (verify/lib/spinner.js, BACKLOG #113 M1): a probe killed hard no longer leaves four cores spinning forever.
 function startLoad(kids) {
   const { spawn } = require('child_process');
-  for (let i = 0; i < E_CORES; i++) kids.push(spawn(process.execPath, ['-e', 'for(;;){}'], { stdio: 'ignore', windowsHide: true }));
+  const src = spinnerSource(process.pid, (LIMIT_S + 120) * 1000);
+  for (let i = 0; i < E_CORES; i++) kids.push(noteChild(spawn(process.execPath, ['-e', src], { stdio: 'ignore', windowsHide: true })));
   const pids = kids.map((k) => k.pid).join(',');
   execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
 Add-Type @"
