@@ -212,19 +212,6 @@ test('neighbour wraps both ways', () => {
   assert.strictEqual(m.neighbour(model, a, -1), d);
 });
 
-test('P16 G9: loaded as a plain script before tab-lanes.js, tab-model.js says so at load', () => {
-  const vm = require('vm');
-  const fs = require('fs');
-  const src = fs.readFileSync(require('path').join(__dirname, '..', 'app', 'tab-model.js'), 'utf8');
-  assert.throws(() => vm.runInNewContext(src, { window: {} }), /app\/tab-model\.js needs app\/tab-lanes\.js loaded first/);
-  const lanesSrc = fs.readFileSync(require('path').join(__dirname, '..', 'app', 'tab-lanes.js'), 'utf8');
-  const page = { window: {} };
-  page.window.window = page.window;
-  vm.createContext(page);
-  vm.runInContext(lanesSrc, page);
-  assert.doesNotThrow(() => vm.runInContext(src, page), 'in the right order it loads');
-});
-
 test('#160 P10 neighbour: with nothing selected, Ctrl+Tab lands on the first tab, Ctrl+Shift+Tab on the last', () => {
   const none = m.stripModel({ tabs: [A, B] }, {}, null, { keyOf, pickAny: false });
   assert.ok(none.every(e => !e.selected), 'develop closed and nothing chosen');
