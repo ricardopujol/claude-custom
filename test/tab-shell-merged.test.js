@@ -485,15 +485,41 @@ test('#139: develop is never closed by this path', async () => {
   assert.ok(!h.stops().some(c => c.port === 7700));
 });
 
-test('#139: two polls in a row close it once', async () => {
+test('#139 P9: a second real poll while the first one\'s close is in flight starts no second close', async () => {
   const h = await liveThenMerged();
-  await Promise.all([h.shell.poll(), h.shell.poll()]);
-  await h.shell.poll();
-  await h.pass();
+  // The stop is held open, so the first poll's close is still in flight when the second poll runs all the way through.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  h.controlReply = async (c) => { if (c.msg.type === 'stop') { await held; delete h.running[c.port]; } return { ok: true, reply: null }; };
+  await h.shell.poll();                     // poll 1 returns; its merged close waits on the stop
+  await flush();
+  assert.strictEqual(h.stops().length, 1, 'the first close sent its stop');
+  const firstPass = h.pass();
+  await h.shell.poll();                     // poll 2: a real one, not one that returned at once on `polling`
+  await flush();
+  assert.ok((h.factReads || 0) <= 2, 'poll 2 read nothing for it (one close at a time)');
+  assert.strictEqual(h.stops().length, 1, 'and sent no second stop');
+  release();
+  await firstPass;
   await flush();
   await h.poll();
   assert.strictEqual(h.stops().length, 1);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
   assert.strictEqual(h.shell.lanesMenu([]).filter(r => r.key === key('feat-a')).length, 1, 'one closed row');
+});
+
+test('#139 P9: a failed merged close is tried once per record, even after a selection takes its Stop offer away', async () => {
+  const h = await liveThenMerged();
+  h.controlReply = () => ({ ok: false, error: 'refused' });
+  h.pidReply = () => 'unknown';
+  await h.poll();
+  assert.ok(h.shell.snapshot().closeStuck, 'kept with the Stop offer');
+  await h.shell.select(key('feat-a'));      // looked at again: the Stop offer goes (PR #231 Dexter M1), so only mergedTried holds it
+  await flush();
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  for (let i = 0; i < 4; i++) await h.poll();
+  assert.strictEqual(h.stops().length, 1, 'no second try by this path');
+  assert.ok(h.shell.tabByKey(key('feat-a')));
 });
 
 // --- the edges around it --------------------------------------------------------------------------
@@ -699,15 +725,24 @@ test('#139: after a restart, a lane the merged close closed is still a Merged ro
  * had the marker and every safe fact. And the other way round: a poll with all of them closes a running, merged tab.
  */
 test('#139 PROPERTY: a merged close happens only on a poll whose marker read merged and whose safe check passed, and on the first such poll', async () => {
-  const pollArb = fc.record({
+  // A fact that flips WHILE one of the poll's git reads runs (PR #236 Dexter 14, Miguel G8): read 1 is the decision's, read 2 the
+  // re-check's right before the stop. Whatever flips, that poll must not stop the host.
+  const flipArb = fc.option(fc.record({ read: fc.constantFrom(1, 2), what: fc.constantFrom('box', 'turn', 'reader', 'agent', 'side') }), { nil: null });
+  const anyPollArb = fc.record({
     merged: fc.boolean(), dirty: fc.constantFrom(0, 0, 1, null), unpushed: fc.constantFrom(0, 0, 1), inDevelop: fc.constantFrom(true, true, false, null),
     working: fc.boolean(), needs: fc.constantFrom(false, false, true), box: fc.constantFrom(true, true, false, undefined),
-    unsaved: fc.constantFrom(null, null, 'x.js'), agents: fc.constantFrom(0, 0, 1),
+    unsaved: fc.constantFrom(null, null, 'x.js'), agents: fc.constantFrom(0, 0, 1), flip: flipArb,
   });
-  await fc.assert(fc.asyncProperty(fc.array(pollArb, { minLength: 1, maxLength: 6 }), async (polls) => {
+  // Half the polls start from every fact safe (drawn freely, under 1% of polls would be), so the flips and the liveness are reached.
+  const safePollArb = flipArb.map(flip => ({
+    merged: true, dirty: 0, unpushed: 0, inDevelop: true, working: false, needs: false, box: true, unsaved: null, agents: 0, flip,
+  }));
+  const pollArb = fc.oneof(anyPollArb, safePollArb);
+  await fc.assert(fc.asyncProperty(fc.boolean(), fc.array(pollArb, { minLength: 1, maxLength: 6 }), async (withSide, polls) => {
     const h = harness();
     await h.shell.open();
     await flush();
+    if (withSide) { await h.shell.openSide(key('feat-a')); await flush(); }     // a companion the close would end too
     let closedOn = -1;
     let everMerged = false;
     let gitBackedOff = false;     // a poll ended in a refusal of git's: later polls may skip git's reads (P7)
@@ -719,13 +754,24 @@ test('#139 PROPERTY: a merged close happens only on a poll whose marker read mer
       h.agents = p.agents;
       h.boxClear = p.box;
       h.report('feat-a', { ...AT_REST, working: p.working, turn: p.working ? 'turn' : (p.needs ? 'prompt' : 'idle'), needsInput: p.needs });
-      const before = h.stops().length;
+      if (withSide && h.shell.tabByKey(SIDE_KEY())) reportSide(h, { ...AT_REST, lock: 'unlocked' });
       const readsBefore = h.factReads || 0;
+      const flips = p.flip !== null && (p.flip.what !== 'side' || withSide);
+      h.onFacts = (n) => {
+        if (!flips || n - readsBefore !== p.flip.read) return;
+        if (p.flip.what === 'box') h.boxClear = false;
+        else if (p.flip.what === 'turn') h.report('feat-a', { ...AT_REST, working: true, turn: 'turn' });
+        else if (p.flip.what === 'reader') h.unsaved = 'y.js';
+        else if (p.flip.what === 'agent') h.agents = 1;
+        else reportSide(h, { ...AT_REST, lock: 'unlocked', working: true, turn: 'turn' });
+      };
+      const before = h.stops().length;
       await h.poll();
       everMerged = everMerged || p.merged;
       const cheapOk = !p.working && !p.needs && p.unsaved === null && p.agents === 0;
       const gitOk = p.dirty === 0 && p.unpushed === 0 && p.inDevelop === true;
-      const safe = p.merged && gitOk && cheapOk && p.box === true;
+      // a safe poll's check reads git twice (decision, re-check), so its flip always lands, and makes the poll unsafe
+      const safe = p.merged && gitOk && cheapOk && p.box === true && !flips;
       if (h.stops().length > before) {
         assert.strictEqual(closedOn, -1, 'closed twice');
         assert.ok(safe, `stopped on poll ${i} with ${JSON.stringify(p)}`);
