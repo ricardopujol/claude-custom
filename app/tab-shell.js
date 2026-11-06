@@ -329,12 +329,12 @@ function createShell(deps) {
   let typingSeq = 0;
   const typingMerged = new Set();     // the tabs a Type /merged is typing into right now
   let closedByHand = kept.closed;      // [{ key, path, branch, merged? }], most recent first
-  // BACKLOG #139, a merged tab closes by itself. `mergedLive`: lanes whose merge this window saw while they were open (a later poll's
-  // mark-merged), the ones whose close gets the strip's notice; a lane merged before the window first listed it gets a log line.
+  // BACKLOG #139, a merged tab closes by itself. Every close it makes gets the strip's notice: it only closes a tab whose session
+  // runs, and such a tab is drawn (on the strip, or a running row of the Lanes menu); a lane that never had a tab in this window
+  // (merged at open, no session) is never closed by it, only left without a tab, with a log line (PR #236 Dexter 5).
   // `spared`: lanes the person brought back after the merge (any reopen of a closed row, or a merged lane started from its row), never closed by
   // this path again in this window. `mergedTried`: tab records whose merged close failed to end the host: kept with the Stop
   // offer, never tried again by this path (the bound on retries: one per record). `mergedBusy`: a merged close in flight.
-  const mergedLive = new Set();
   const spared = new Set();
   const reopening = new Set();         // lanes the person reopened that no poll has listed since: their first listing decides `spared`
   const mergedTried = new WeakSet();
@@ -880,7 +880,7 @@ function createShell(deps) {
     let reselect = false;
     let sideList;           // the side hosts the identity files list, read at most once per batch of actions (Miguel Y2)
     let shellList;          // ... and the shell hosts (#119 A5), the same way
-    const openedNow = new Set();     // #139: a lane opened and marked merged in one batch was merged before this window saw it
+    const openedNow = new Set();     // #139: a lane opened and marked merged in one batch came back (or was first seen) merged
     for (const a of actions) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
@@ -929,7 +929,6 @@ function createShell(deps) {
       } else if (a.type === 'mark-merged') {
         // The strip draws it from state.tabs; the session keeps running (W4) until the merged close finds it safe (#139).
         log(`[shell] ${key}: merged (${a.branch})`);
-        if (openedNow.has(key)) mergedLive.delete(key); else mergedLive.add(key);
         if (openedNow.has(key) && reopening.has(key)) spared.add(key);     // reopened by the person, merged already (Dexter 3)
       } else if (a.type === 'remove') {
         runRemove(a.path);
@@ -1362,14 +1361,9 @@ function createShell(deps) {
     return { ok: true };
   }
 
-  /** #139: the line a merged close leaves. A lane merged before this window first listed it closes with a log line only. */
+  /** #139: the line a merged close leaves, every time: the tab it closed was on screen in this window (PR #236 Dexter 5). */
   function mergedClosed(key, label) {
     mergedWhy.delete(key);
-    if (!mergedLive.has(key)) {
-      log(`[shell] ${key}: merged before this window listed it; closed with no notice`);
-      return;
-    }
-    mergedLive.delete(key);
     mergedNotice = `Closed ${label} (merged)`;
     log(`[shell] ${key}: ${mergedNotice}`);
     publish();

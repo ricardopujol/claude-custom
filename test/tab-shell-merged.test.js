@@ -455,15 +455,15 @@ test('#139: a merged lane the person starts from its Merged row is not closed by
   assert.deepStrictEqual(h.stops(), []);
 });
 
-test('#139 startup: a lane merged before the window opened, its host still running, closes when safe with a log line and no notice', async () => {
+test('#139 startup (P5): a lane merged before the window opened, its host still running, is drawn, so its close when safe gets the notice', async () => {
   const h = harness({ markers: { [key('feat-a')]: 'feat/a' } });
   await h.shell.open();
   await flush();
+  assert.ok(strip(h).includes(key('feat-a')), 'its session runs: it is drawn on the strip (1B)');
   h.report('feat-a', AT_REST);
   await h.poll();
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
-  assert.strictEqual(h.shell.snapshot().mergedNotice, null, 'no notice: it never had a tab in this window before');
-  assert.ok(h.logs.some(l => /merged before this window listed it; closed with no notice/.test(l)));
+  assert.strictEqual(h.shell.snapshot().mergedNotice, 'Closed feat/a (merged)', 'it had a tab in this window: the notice');
   assert.deepStrictEqual(mergedRows(h).map(r => [r.key, r.state]), [[key('feat-a'), 'closed · Undo']], 'still reachable');
 });
 
@@ -475,6 +475,8 @@ test('#139 startup: a window opened from a merged lane with no session opens on 
   assert.strictEqual(h.shell.snapshot().selectedKey, key('dev'));
   assert.deepStrictEqual(h.spawns, []);
   assert.deepStrictEqual(strip(h), [key('dev')], 'no tab for it');
+  assert.strictEqual(h.shell.snapshot().mergedNotice, null, 'it never had a tab here: no notice (the default built), a log line only');
+  assert.ok(h.logs.some(l => /merged; the window doesn't open on it/.test(l)));
   assert.deepStrictEqual(mergedRows(h).map(r => r.key), [key('feat-a')], 'a Merged row, as before');
 });
 
