@@ -28,8 +28,8 @@ const { createProgramStatusHost, windowAttachedAmong } = require('./program-stat
 const { choosePtyBackend } = require('./conpty-choice');
 const { stopPty } = require('./pty-stop');
 const { runShutdown } = require('./bounded-shutdown');
-const { killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, childExited, trackExit } = require('./kill-tree');
-const { createJobGuard } = require('./job-guard');
+const { killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, trackExit } = require('./kill-tree');
+const { createJobGuard, KILL_ANSWER_MS } = require('./job-guard');
 const { createMoodMachine } = require('./mood-machine');
 const { resolveTheme } = require('./themes');
 const { portraitFor, globalPortrait } = require('./portraits');
@@ -107,7 +107,7 @@ const { createPromptKeeper } = require('./prompt-keeper');
 const { createChatFeed } = require('./chat-feed');
 const { readTranscript, readLastTurnTexts } = require('./chat-transcript');
 const { createBedtime, isBedtimeOnly } = require('./bedtime-state');
-const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS } = require('./kill-switch');
+const { stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchorWithLegacy, legacyAnchorFile, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS } = require('./kill-switch');
 const { writeFileAtomic } = require('./atomic-write');
 const { createNightStatus } = require('./night-status');
 const { createSchedulesControl, isSchedulesOnly, normalizeFolder } = require('./schedules-control');
@@ -1492,15 +1492,19 @@ const KILL_SWITCH_PATHS = sentinelsFor({ claudeHome: stopAllHome({ seam: seams.c
 console.log('[host] kill switch   :', KILL_SWITCH_PATHS.join(' | ') || '(no sentinel path)');
 // The stopper's kill is the same blocking stopPty, so it runs under the same watchdog (PR #217 Dexter F4).
 const ownStartTime = () => (lockOwner && typeof lockOwner.processStartedAt === 'string' ? lockOwner.processStartedAt : null);
-// After the tree kill, the session's job is ended too: it holds what the tree kill cannot reach, processes whose parent already exited
-// (BACKLOG #127, host/job-guard.js). The same watchdog covers it.
-const jobGuard = createJobGuard({ log: (line) => console.log(line) });
-const boundedStopPty = (t, opts) => runShutdown({ logFile: path.join(HARNESS_DIR, 'host.log'), start: ownStartTime(), steps: [() => stopPty(t, opts), () => jobGuard.kill()] });
+// The session's job holds what the tree kill cannot reach, processes whose parent already exited (BACKLOG #127, host/job-guard.js).
+// The stopper ends it after the tree kill, for the stops kill-switch.js jobEndsFor() names; its later answer comes back here.
+const jobGuard = createJobGuard({
+  log: (line) => console.log(line),
+  onOutcome: (outcome) => { try { killStop.noteJob(outcome); } catch { /* the stopper is not built yet, or no stop has asked */ } },
+});
+const boundedStopPty = (t, opts) => runShutdown({ logFile: path.join(HARNESS_DIR, 'host.log'), start: ownStartTime(), steps: [() => stopPty(t, opts)] });
 const killStop = createStopper({
   term: () => term,
   stopPty: boundedStopPty,
   killChildTree,
   outcomeOf: killOutcomeOf,
+  endJob: () => jobGuard.kill(),
   log: (line) => console.log(line),
   notify: (state) => { sayInTab(state.text); broadcastControl({ type: 'killSwitch', killSwitch: state }); },
 });
@@ -1517,7 +1521,8 @@ const killLinger = createLinger();
 // and two lanes' /bedtime loops each have their own.
 const NIGHT_ANCHOR_FILE = anchorFileFor({ stateRoot: STATE_ROOT, worktree: CWD });
 const nightBudget = createNightBudget({
-  load: () => loadAnchor(NIGHT_ANCHOR_FILE),
+  // A host upgraded mid-night starts from the anchor every lane shared before #128; only the worktree's own file is ever written.
+  load: () => loadAnchorWithLegacy(NIGHT_ANCHOR_FILE, legacyAnchorFile(STATE_ROOT)),
   save: (anchor) => saveAnchor(NIGHT_ANCHOR_FILE, anchor, { write: (f, data) => writeFileAtomic(f, data) }),
   nightNow: () => night.payload(),
   onExpire: ({ startedAt }) => killStop.stop({ kind: 'night-budget', startedAt, budgetMs: NIGHT_BUDGET_MS }),
@@ -1970,7 +1975,7 @@ function startSession() {
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   // And every process it starts joins a job the kill switch can end, parent links or not (BACKLOG #127). Never throws; a session
   // the guard could not arm is exactly the session it was before.
-  jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), exited: () => childExited(term) })
+  jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term) })
     .catch((err) => console.log('[job-guard] attach failed:', err && err.message));
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.
@@ -2207,7 +2212,9 @@ function endHost(exitCode, signal, extra = {}, lingerMs = 0) {
     if (ws.readyState === ws.OPEN) ws.send(endedFrame);
   }
   if (lingerMs > 0) { setTimeout(() => process.exit(exitCode ?? 0), lingerMs); return; }
-  process.exit(exitCode ?? 0);
+  // A stop's KILL is answered by the job helper, which dies with this host (libuv's kill-on-close job): a host that exited at once
+  // lost it (measured, PR #235 K4). So the host waits for the answer, at most KILL_ANSWER_MS; with no stop waiting, it exits at once.
+  jobGuard.settled(KILL_ANSWER_MS).then(() => process.exit(exitCode ?? 0), () => process.exit(exitCode ?? 0));
 }
 
 // The machine is deliberately passive: it schedules nothing itself, so the host

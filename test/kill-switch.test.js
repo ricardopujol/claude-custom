@@ -853,3 +853,105 @@ test('two worktrees of one project keep two anchors on disk; a replaced host in 
   assert.strictEqual(ks.loadAnchor(fa, io), 1000);
   assert.strictEqual(ks.loadAnchor(fb, io), 2000);
 });
+
+// --- PR #235: the session's job (BACKLOG #127) and the legacy anchor (#128) -----------------------------------------------------
+
+test('jobEndsFor: the one place that decides which stops end the job; as built, every stop that kills does (PR #235 Dexter 2)', () => {
+  assert.strictEqual(ks.jobEndsFor({ kind: 'tripped', scope: 'all' }), true, 'STOP-ALL');
+  assert.strictEqual(ks.jobEndsFor({ kind: 'tripped', scope: 'project' }), true, 'the project STOP');
+  assert.strictEqual(ks.jobEndsFor({ kind: 'night-budget' }), true, 'the night budget');
+  assert.strictEqual(ks.jobEndsFor({ kind: 'refused' }), false, 'a refusal has no session');
+  assert.strictEqual(ks.jobEndsFor(null), false);
+});
+
+function jobStopper(extra = {}) {
+  const lines = [];
+  const notified = [];
+  const order = [];
+  let asked = 0;
+  const term = { pid: 321 };
+  const s = ks.createStopper({
+    term: () => term,
+    stopPty: () => order.push('stopPty'),
+    killChildTree: () => {},
+    outcomeOf: () => 'killed',
+    endJob: () => { asked++; order.push('endJob'); return 'sent'; },
+    log: (l) => lines.push(l),
+    notify: (st) => notified.push({ ...st }),
+    ...extra,
+  });
+  return { s, lines, notified, order, asked: () => asked };
+}
+
+test('createStopper: a trip ends the job after the tree kill, once; its answer reaches the state and host.log (PR #235 Dexter 4, Miguel S6)', () => {
+  const { s, lines, notified, order, asked } = jobStopper();
+  assert.strictEqual(s.noteJob('armed'), false, 'before any stop the guard\'s own changes are ignored');
+  s.stop({ kind: 'tripped', sentinel: 'STOP-ALL', scope: 'all' });
+  assert.deepStrictEqual(order, ['stopPty', 'endJob'], 'the job after the tree kill');
+  assert.strictEqual(s.state().job, 'sent', 'asked, not yet answered: it does not claim the job was ended');
+  assert.ok(lines.includes('[kill-switch] job of pid 321: sent'), lines.join(' | '));
+  assert.strictEqual(s.noteJob('killed'), true);
+  assert.strictEqual(s.state().job, 'killed');
+  assert.ok(lines.includes('[kill-switch] job: killed'));
+  assert.strictEqual(notified[notified.length - 1].job, 'killed', 'the windows are told the real outcome');
+  assert.strictEqual(s.noteJob('killed'), false, 'the same answer twice is one line');
+  s.stop({ kind: 'night-budget' });
+  assert.strictEqual(asked(), 1, 'a second stop does not ask again');
+});
+
+test('createStopper: a held or dropped job says so; an endJob that throws or answers nothing leaves the stop standing', () => {
+  const held = jobStopper({ endJob: () => 'held' });
+  held.s.stop({ kind: 'tripped', scope: 'all' });
+  assert.strictEqual(held.s.state().job, 'held');
+  held.s.noteJob('dropped: unproven-start');
+  assert.strictEqual(held.s.state().job, 'dropped: unproven-start');
+  assert.ok(held.lines.includes('[kill-switch] job: dropped: unproven-start'));
+
+  const throws = jobStopper({ endJob: () => { throw new Error('x'); } });
+  assert.strictEqual(throws.s.stop({ kind: 'tripped', scope: 'project' }), true);
+  assert.strictEqual(throws.s.state().job, 'not-armed');
+  assert.strictEqual(throws.s.state().kill, 'killed', 'the tree kill is reported as before');
+});
+
+test('createStopper: a refusal (no pty) never asks for the job', () => {
+  let asked = 0;
+  const s = ks.createStopper({ term: () => null, stopPty: () => assert.fail('no pty'), killChildTree: () => {}, endJob: () => { asked++; return 'sent'; } });
+  s.stop({ kind: 'refused', sentinel: 'STOP-ALL', scope: 'all' });
+  assert.strictEqual(asked, 0);
+  assert.strictEqual(s.noteJob('killed'), false);
+});
+
+test('loadAnchorWithLegacy: the worktree\'s own anchor wins; with none, the legacy shared one is the starting value, read only (PR #235 Dexter 9, Miguel S5)', () => {
+  const files = new Map();
+  const reads = [];
+  const io = { read: (f) => { reads.push(f); if (!files.has(f)) throw new Error('ENOENT'); return files.get(f); } };
+  const stateRoot = path.join('P', 'dev');
+  const own = ks.anchorFileFor({ stateRoot, worktree: path.join('P', 'feat-a') });
+  const legacy = ks.legacyAnchorFile(stateRoot);
+  assert.strictEqual(legacy, path.join(stateRoot, '.claude-custom', 'night-anchor.json'), 'the path every lane shared before #128');
+  assert.strictEqual(ks.loadAnchorWithLegacy(own, legacy, io), null, 'neither: no anchor');
+  files.set(legacy, JSON.stringify({ anchor: 500 }));
+  assert.strictEqual(ks.loadAnchorWithLegacy(own, legacy, io), 500, 'upgraded mid-night: the old anchor stands');
+  files.set(own, JSON.stringify({ anchor: 900 }));
+  assert.strictEqual(ks.loadAnchorWithLegacy(own, legacy, io), 900, 'once it has its own, the legacy one is ignored');
+  assert.strictEqual(ks.legacyAnchorFile(''), '');
+});
+
+test('the upgrade mid-night: a night that began at 23:00 on the old build is still stopped at 07:30, not 8 h 30 min after the restart', () => {
+  const night = Date.UTC(2026, 10, 5, 23, 0);
+  const files = new Map([[path.join('P', 'dev', '.claude-custom', 'night-anchor.json'), JSON.stringify({ anchor: night })]]);
+  const io = { read: (f) => { if (!files.has(f)) throw new Error('ENOENT'); return files.get(f); } };
+  const own = ks.anchorFileFor({ stateRoot: path.join('P', 'dev'), worktree: path.join('P', 'feat-a') });
+  const restart = night + 2 * 3600_000;   // the new build's host takes over at 01:00
+  const b = budget(restart, {
+    budgetMs: ks.NIGHT_BUDGET_MS,
+    freshAfterMs: ks.NIGHT_FRESH_AFTER_MS,
+    load: () => ks.loadAnchorWithLegacy(own, ks.legacyAnchorFile(path.join('P', 'dev')), io),
+  });
+  b.setNight({ startedAt: restart });     // the loop's first wake on the new build
+  assert.deepStrictEqual(b.saved, [], 'the legacy anchor stands: nothing new is written over it');
+  b.go(ks.NIGHT_BUDGET_MS - 2 * 3600_000 - 1000);
+  assert.deepStrictEqual(b.fired, [], 'not before 07:30');
+  b.go(1000);
+  assert.deepStrictEqual(b.fired, [{ startedAt: night, deadline: night + ks.NIGHT_BUDGET_MS }], '07:30 stays 07:30');
+});

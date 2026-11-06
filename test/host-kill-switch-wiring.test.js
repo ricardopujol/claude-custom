@@ -22,7 +22,7 @@ function block(startMarker, endMarker) {
 }
 
 test('the kill switch module is required by name', () => {
-  assert.match(HOST, /const \{ stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchor, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS \} = require\('\.\/kill-switch'\);/);
+  assert.match(HOST, /const \{ stopAllHome, sentinelsFor, watch: watchKillSwitch, createNightBudget, createStopper, createLinger, loadAnchorWithLegacy, legacyAnchorFile, saveAnchor, anchorFileFor, NIGHT_BUDGET_MS \} = require\('\.\/kill-switch'\);/);
 });
 
 test('the sentinels: STOP-ALL from the home folder (or the probe seam), the project STOP from STATE_ROOT, never a hard-coded user', () => {
@@ -43,7 +43,7 @@ test('the stopper kills the tracked pty through pty-stop and kill-tree\'s killCh
 });
 
 test('the stopper reads the kill outcome from kill-tree, and an unproven kill is retried on a timer', () => {
-  assert.match(HOST, /const \{ killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, childExited, trackExit \} = require\('\.\/kill-tree'\);/);
+  assert.match(HOST, /const \{ killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, trackExit \} = require\('\.\/kill-tree'\);/);
   const b = block('const killStop = createStopper({', '\n});');
   assert.match(b, /outcomeOf: killOutcomeOf,/);
   assert.match(HOST, /setInterval\(\(\) => \{ try \{ killStop\.retry\(\); \} catch \{[^}]*\} \}, 5000\)\.unref\(\);/);
@@ -79,22 +79,31 @@ test('startSession refuses to spawn claude while a sentinel exists or after this
 });
 
 test('#127: the session\'s pty is put in a job at spawn, so a trip ends processes whose parent already exited', () => {
-  assert.match(HOST, /const \{ createJobGuard \} = require\('\.\/job-guard'\);/);
-  assert.match(HOST, /const jobGuard = createJobGuard\(\{ log: \(line\) => console\.log\(line\) \}\);/);
-  assert.ok(HOST.indexOf('const jobGuard = createJobGuard(') < HOST.indexOf('const boundedStopPty ='), 'built before the stop that uses it');
+  assert.match(HOST, /const \{ createJobGuard, KILL_ANSWER_MS \} = require\('\.\/job-guard'\);/);
+  const guard = block('const jobGuard = createJobGuard({', '\n});');
+  assert.match(guard, /log: \(line\) => console\.log\(line\),/);
+  assert.match(guard, /onOutcome: \(outcome\) => \{ try \{ killStop\.noteJob\(outcome\); \} catch \{/, 'the job\'s answer reaches the stop (PR #235 Miguel S6)');
+  assert.ok(HOST.indexOf('const jobGuard = createJobGuard(') < HOST.indexOf('const killStop = createStopper('), 'built before the stopper that ends it');
   const spawnAt = HOST.indexOf('trackExit(term);');
   assert.ok(spawnAt !== -1);
   const after = HOST.slice(spawnAt, HOST.indexOf('wireTerm(term);', spawnAt));
-  assert.match(after, /jobGuard\.attach\(\{ pid: term\.pid, startOf: \(\) => trackedStart\(term\), exited: \(\) => childExited\(term\) \}\)/, 'attached right after the spawn is tracked');
+  assert.match(after, /jobGuard\.attach\(\{ pid: term\.pid, startOf: \(\) => trackedStart\(term\) \}\)/, 'attached right after the spawn is tracked, with the pty\'s proven start');
   assert.match(after, /\.catch\(/, 'a rejected attach never breaks the session');
+});
+
+test('#127: the stopper ends the job (for the stops jobEndsFor names), not the bounded tree kill; the host waits for its answer before it exits (PR #235 Dexter 2, 4)', () => {
+  const stopper = block('const killStop = createStopper({', '\n});');
+  assert.match(stopper, /endJob: \(\) => jobGuard\.kill\(\),/);
   const stop = block('const boundedStopPty = ', '\n');
-  assert.match(stop, /\(\) => jobGuard\.kill\(\)/);
+  assert.doesNotMatch(stop, /jobGuard/, 'one place asks for the job: the stopper');
+  const end = block('function endHost(', '\n}\n');
+  assert.match(end, /jobGuard\.settled\(KILL_ANSWER_MS\)\.then\(\(\) => process\.exit\(exitCode \?\? 0\), \(\) => process\.exit\(exitCode \?\? 0\)\);/, 'a KILL in flight is answered before the helper dies with the host');
 });
 
 test('the night budget follows the night\'s payload and stops the session at its deadline', () => {
   const b = block('const nightBudget = createNightBudget({', '\n});');
   assert.match(b, /nightNow: \(\) => night\.payload\(\)/, 'asked again at the deadline');
-  assert.match(b, /load: \(\) => loadAnchor\(NIGHT_ANCHOR_FILE\)/, 'a replaced host keeps the first night deadline');
+  assert.match(b, /load: \(\) => loadAnchorWithLegacy\(NIGHT_ANCHOR_FILE, legacyAnchorFile\(STATE_ROOT\)\)/, 'a replaced host keeps the first night deadline, an upgraded one too (PR #235 Dexter 9)');
   assert.match(b, /save: \(anchor\) => saveAnchor\(NIGHT_ANCHOR_FILE, anchor, \{ write: \(f, data\) => writeFileAtomic\(f, data\) \}\)/, 'written atomically');
   assert.match(HOST, /const NIGHT_ANCHOR_FILE = anchorFileFor\(\{ stateRoot: STATE_ROOT, worktree: CWD \}\);/, 'keyed by this tab\'s worktree, not the shared state root (#128)');
   assert.match(b, /killStop\.stop\(\{ kind: 'night-budget', startedAt, budgetMs: NIGHT_BUDGET_MS \}\)/);
