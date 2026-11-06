@@ -115,6 +115,17 @@ test('#160: develop closes like a lane: asked once, its host stopped, nothing on
   assert.ok(saved.dismissed.includes(key('dev')));
 });
 
+test('#160 P8: with develop closed and one lane left, that lane keeps its x, its Close tab and its close (one rule: the last tab closes)', async () => {
+  const h = await opened({ list: porcelain([['dev', 'develop'], ['feat-a', 'feat/a']]), running: { 7701: wt('feat-a') } });
+  await h.shell.closeTab(key('dev'));
+  assert.deepStrictEqual(h.shell._state().tabs.map(t => normPath(t.path)), [key('feat-a')], 'the reducer holds only the lane');
+  const lane = h.shell.model().find(e => e.key === key('feat-a'));
+  assert.strictEqual(lane.closable, true, 'its x is drawn');
+  assert.strictEqual(h.shell.menuState(key('feat-a')).close, true, 'its Close tab is enabled');
+  assert.deepStrictEqual(await h.shell.closeTab(key('feat-a')), { ok: true });
+  assert.deepStrictEqual(stripKeys(h), [], 'nothing left open; both rows are in the menus');
+});
+
 test('#160: a "no" leaves develop exactly as it was', async () => {
   const h = await opened();
   h.confirm = false;

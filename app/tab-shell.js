@@ -454,12 +454,12 @@ function createShell(deps) {
     // The side or shell tab showing, if one is (#119 A5: after its branch tab come its side tab, then its shell tab).
     const sideSelected = companionParentOf(selectedKey) !== null && tabs.has(selectedKey) ? selectedKey : null;
     // pickAny: false -- with develop closed and nothing chosen, nothing is selected (#160), never a lane nobody picked.
-    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf, order, pickAny: false });
+    // lastClosable: in a project window every tab closes, the last one too (the Lanes and + menus bring it back); the model owns
+    // the rule (PR #236 Dexter 8, Miguel Y5). A single-folder window's one tab never closes.
+    const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey,
+      { keyOf, order, pickAny: false, lastClosable: mode === 'tabs' });
     const out = [];
-    for (const raw of base) {
-      // #160: in a project window develop has a close even as the last tab (the reducer may hold nothing else once every lane is
-      // closed by hand): the Lanes and + menus bring it back. The model's "never a lone tab" still holds for a single-folder window.
-      const e = raw.isDev && mode === 'tabs' ? { ...raw, closable: true } : raw;
+    for (const e of base) {
       const mine = tabs.get(e.key);
       // While its side tab is the one showing, the branch tab is not selected, so it can call for a look again.
       out.push(sideSelected !== null && e.selected

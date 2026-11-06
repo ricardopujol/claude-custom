@@ -33,6 +33,14 @@ test('#160 closable: dev too, but never a lone tab', () => {
   assert.deepStrictEqual(strip([A]).map(e => e.closable), [false]);
 });
 
+test('#160 P8 lastClosable (a project window): every tab closes, the last one too, develop or a lane; never one being removed', () => {
+  const pw = (tabs) => m.stripModel({ tabs }, {}, null, { keyOf, lastClosable: true }).map(e => e.closable);
+  assert.deepStrictEqual(pw([DEV]), [true]);
+  assert.deepStrictEqual(pw([A]), [true], 'develop closed, one lane left (PR #236 Dexter 8)');
+  assert.deepStrictEqual(pw([DEV, A]), [true, true]);
+  assert.deepStrictEqual(pw([{ ...A, phase: 'removing' }]), [false]);
+});
+
 test('#160 pickAny: false selects nothing when the key matches nothing and there is no dev; dev is still the fallback', () => {
   const none = m.stripModel({ tabs: [A, B] }, {}, null, { keyOf, pickAny: false });
   assert.deepStrictEqual(none.map(e => e.selected), [false, false]);
