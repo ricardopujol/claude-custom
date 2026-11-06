@@ -225,8 +225,8 @@ function describeStop(stop) {
 /**
  * WHICH STOPS END THE SESSION'S JOB (BACKLOG #127, host/job-guard.js): the one place this is decided (PR #235 Dexter 2). As built,
  * every stop that kills does: a trip of either sentinel (STOP-ALL, scope 'all'; the project's STOP, scope 'project') and the night
- * budget. A refusal has no session to end. Narrowing it (to STOP-ALL only, say) is this function and its test, nothing else; it's
- * Ricardo's call (an open design question on PR #235).
+ * budget. A refusal has no session to end. Ricardo's answer (2026-11-05, PR #235): "Every stop", as built. Narrowing it later (to
+ * STOP-ALL only, say) is this function and its test, nothing else.
  */
 function jobEndsFor(stop) {
   return !!stop && (stop.kind === 'tripped' || stop.kind === 'night-budget');

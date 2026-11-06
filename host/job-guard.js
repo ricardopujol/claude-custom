@@ -36,8 +36,10 @@
  *       not (PR #235 M1, verify/probe-kill-switch-electron.js, 2026-11-06): its sandboxed renderer, GPU, utility and crashpad start
  *       inside the job, a real app probe passes from there, and a stop ends the whole tree.
  *
- * WHICH STOPS END THE JOB: decided in ONE place, host/kill-switch.js jobEndsFor(). As built, every stop of the kill switch does
- * (STOP-ALL, the project's STOP, the night budget); an ordinary end (claude exits, the window closes, the host is killed) never does.
+ * WHICH STOPS END THE JOB: decided in ONE place, host/kill-switch.js jobEndsFor(). Every stop of the kill switch does (STOP-ALL, the
+ * project's STOP, the night budget); an ordinary end (claude exits, the window closes, the host is killed) never does. WHAT IT ENDS:
+ * everything in the job, windowed and shared apps the session launched included (a browser, VS Code, an Ollama it started first, a
+ * test window), since nothing may break away. Both are Ricardo's answers (2026-11-05, PR #235): "Every stop", and "Yes, close them".
  *
  * WHAT STILL ESCAPES (stated on purpose, pinned by test/job-guard-process.test.js). The pty joins the job only once the helper has
  * assigned it. Measured spawn -> armed (verify/README.md): 627 / 701 / 1506 ms min / median / max of 10 at light load (CPU 17-43%,
