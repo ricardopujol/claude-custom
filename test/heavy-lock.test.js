@@ -93,14 +93,18 @@ test('release is idempotent: the second call does not run the script again', () 
   assert.strictEqual(of(r, '-Release').length, 1);
 });
 
-test('re-entrant: the flag is exactly "1", so nothing is asked of the script and release is a no-op', () => {
-  const r = rig();
+// A live outer holder, as the wrapper's own owner looks in the script's status.
+const OUTER = 'npm test (pid 1 start 100) (since 10:00:00)';
+
+test('re-entrant: the flag is exactly "1" and a live holder has the slot, so only its status is read and release is a no-op', () => {
+  const r = rig({ holder: OUTER });
   r.env[ENV_VAR] = '1';
   const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
   assert.strictEqual(lock.state, 'reentrant');
-  assert.strictEqual(r.calls.length, 0);
+  assert.deepStrictEqual(r.calls, [[]], 'one status read, no acquire, no release');
   assert.strictEqual(lock.release(), false);
   assert.strictEqual(r.env[ENV_VAR], '1', 'a lock we did not take is not cleared');
+  assert.strictEqual(r.holder, OUTER);
 });
 
 test('Dexter 4: "0", "false", "" and "true" are not "held": the lock is taken', () => {
@@ -370,7 +374,7 @@ test('process lock: busy throws from ensure() and installs no hooks, and a later
 });
 
 test('process lock: re-entrant and missing install no hooks', () => {
-  const a = procRig(); a.r.env[ENV_VAR] = '1'; a.lock.ensure();
+  const a = procRig({ holder: OUTER }); a.r.env[ENV_VAR] = '1'; a.lock.ensure();
   assert.strictEqual(a.proc.listenerCount('exit'), 0);
   const b = procRig({ exists: false }); b.lock.ensure(); b.lock.ensure();
   assert.strictEqual(b.proc.listenerCount('exit'), 0);
@@ -431,7 +435,7 @@ test('Dexter r2 1: a held lock records its children with their start times; rele
 });
 
 test('Dexter r2 1: reentrant and missing locks record nothing', () => {
-  const a = rig(); a.env[ENV_VAR] = '1';
+  const a = rig({ holder: OUTER }); a.env[ENV_VAR] = '1';
   assert.strictEqual(acquire({ label: 'x', pid: 7, ...a.deps() }).addWork(5, '1'), false);
   const b = rig({ exists: false });
   assert.strictEqual(acquire({ label: 'x', pid: 7, ...b.deps() }).addWork(5, '1'), false);
@@ -523,12 +527,73 @@ test('Dexter r2 4: several late exit listeners all run first, and the slot is fr
 });
 
 // ---- Dexter r2 #5: an exempted run says so ----
-test('Dexter r2 5: HEAVY_LOCK_HELD=1 prints one line saying the lock is not being taken', () => {
-  const r = rig();
+test('Dexter r2 5 / 2026-11-05: HEAVY_LOCK_HELD=1 under a live holder prints ONE line, naming that holder', () => {
+  const r = rig({ holder: OUTER });
   r.env[ENV_VAR] = '1';
   acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.deepStrictEqual(r.log, [`[heavy-lock] HEAVY_LOCK_HELD=1 is set and the slot is held by ${OUTER}: not taking the lock (re-entrant, under that holder)`]);
+});
+
+test('2026-11-05: the flag set + a manual holder (cannot be proven dead) skips, named', () => {
+  const r = rig({ holder: 'hub: probes (since 10:00:00)' });
+  r.env[ENV_VAR] = '1';
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.state, 'reentrant');
+  assert.strictEqual(lock.holder, 'hub: probes (since 10:00:00)');
+  assert.match(r.log[0], /held by hub: probes \(since 10:00:00\): not taking the lock/);
+});
+
+test('2026-11-05: the flag set + NOBODY holding the slot is a stale variable: one loud warning, and the lock is taken for real', () => {
+  const r = rig();
+  r.env[ENV_VAR] = '1';
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.state, 'held');
+  assert.strictEqual(of(r, '-Acquire').length, 1);
+  assert.match(r.holder, /^x \(pid 7 start 100\)/);
   assert.strictEqual(r.log.length, 1);
-  assert.match(r.log[0], /HEAVY_LOCK_HELD=1 is set: not taking the lock/);
+  assert.match(r.log[0], /^\[heavy-lock\] WARNING: HEAVY_LOCK_HELD=1 is set but nobody holds the lock: a STALE variable in this shell\. Taking the lock for real; unset HEAVY_LOCK_HELD/);
+  assert.strictEqual(lock.release(), true);
+  assert.strictEqual(r.holder, null);
+});
+
+test('2026-11-05: the flag set + a provably dead holder is stale too: warned, the dead holder freed, the lock taken', () => {
+  const r = rig({ holder: `${DEAD} (since 09:00:00)` });
+  r.env[ENV_VAR] = '1';
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.state, 'held');
+  assert.match(r.log[0], /WARNING: HEAVY_LOCK_HELD=1 is set but the slot's holder is gone \(npm test \(pid 5000 start 777\) \(since 09:00:00\)\): a STALE variable/);
+  assert.ok(r.log.some(m => /freed the slot of a dead holder/.test(m)));
+});
+
+test('2026-11-05: the flag set + a dead asker whose recorded work still runs is a LIVE holder: skip, named', () => {
+  const r = rig({ holder: `${DEAD} (since 09:00:00)`, alive: { 6000: '900' }, work: WORK });
+  r.env[ENV_VAR] = '1';
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...r.deps() }).state, 'reentrant');
+  assert.strictEqual(of(r, '-Acquire').length + of(r, '-Release').length, 0);
+});
+
+test('2026-11-05: the flag set + a status that cannot be read, or no script: can\'t tell, so the flag is trusted, and the line says so', () => {
+  const a = rig();
+  a.env[ENV_VAR] = '1';
+  const lock = acquire({ label: 'x', pid: 7, ...a.deps(), run: (args) => { a.calls.push(args); return { status: null, stdout: '[ETIMEDOUT]' }; } });
+  assert.strictEqual(lock.state, 'reentrant');
+  assert.match(a.log[0], /who holds the slot could not be read: not taking the lock/);
+  const b = rig({ exists: false });
+  b.env[ENV_VAR] = '1';
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...b.deps() }).state, 'reentrant');
+  assert.strictEqual(b.calls.length, 0, 'no script, nothing run');
+});
+
+test('2026-11-05: HEAVY_LOCK_SCRIPT points the module at another script; a relative one is ignored', () => {
+  const { SCRIPT_VAR } = require('../host/heavy-lock');
+  assert.strictEqual(SCRIPT_VAR, 'HEAVY_LOCK_SCRIPT');
+  const seen = [];
+  const exists = (p) => { seen.push(p); return false; };
+  const abs = path.join(tmpDir('hl-sv-'), 'nope.ps1');
+  assert.strictEqual(acquire({ label: 'x', pid: 7, env: { [SCRIPT_VAR]: abs }, exists, log: () => {}, startsOf: () => new Map(), run: () => ({ status: 0 }) }).state, 'missing');
+  assert.strictEqual(seen[0], abs);
+  acquire({ label: 'x', pid: 7, env: { [SCRIPT_VAR]: 'rel\\x.ps1' }, exists, log: () => {}, startsOf: () => new Map(), run: () => ({ status: 0 }) });
+  assert.strictEqual(seen[1], DEFAULT_SCRIPT);
 });
 
 // ---- BACKLOG #112: the record covers every heavy child, and a provisional entry is replaced, not duplicated ----

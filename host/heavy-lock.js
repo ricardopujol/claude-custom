@@ -13,7 +13,15 @@
  *
  * RE-ENTRANCY. Whoever holds the lock sets the environment variable HEAVY_LOCK_HELD=1 for everything it starts, and
  * anything that finds it set to exactly "1" does not try to take the lock again (the second asker would wait on its own
- * parent). A person who took the lock by hand does the same, and unsets it after:
+ * parent). But a variable can outlive its holder (a shell that exported it and forgot, a background shell that inherited
+ * it), so the flag alone is not trusted (2026-11-05): the slot's holder is read from the script's status first.
+ *   - a live holder (a "(pid N start T)" owner whose asker or recorded work still runs, or a manual owner, which can't be
+ *     proven dead): the lock is not taken, and the line NAMES that holder, so a skip is never mistaken for a missing lock;
+ *   - nobody holds it, or the holder is provably dead: a STALE variable. A loud warning, and the lock is taken for real
+ *     (a dead holder is freed first by the usual rules). On release the flag goes, like any flag this module sets;
+ *   - the status can't be read (or the script is missing): can't tell, so the flag is trusted, and the line says so.
+ * This is not an ancestry check: a stale flag in a shell while another lane really holds the slot still skips, but the
+ * line then names that other lane's holder. A person who took the lock by hand sets the flag, and unsets it after:
  *
  *   powershell -File ~\.claude\scripts\heavy-lock.ps1 -Acquire -Owner "<lane>: <what>"
  *   $env:HEAVY_LOCK_HELD = '1'        # PowerShell;  Git Bash: export HEAVY_LOCK_HELD=1
@@ -66,9 +74,11 @@
  * query and so read as gone. Holders are same-user node processes, so it is theoretical today.
  *
  * THE THREE WAYS NOT TO HOLD IT
- *   - 'reentrant': the flag was already set. Nothing is acquired, and release() does nothing (never clears a flag it
- *     didn't set, never releases a lock it didn't take).
+ *   - 'reentrant': the flag was set and the slot has a live holder (or who holds it can't be read). Nothing is acquired,
+ *     and release() does nothing (never clears a flag it didn't set, never releases a lock it didn't take).
  *   - 'missing': the script isn't on this machine. One warning line, and the work runs without the lock.
+ *     HEAVY_LOCK_SCRIPT=<absolute path> points this module at another script (a test's fake, or a path that doesn't
+ *     exist, which is how a test child runs a probe's code with no lock at all); a relative path is ignored.
  *   - busy / too loaded / any other failure: HeavyLockError. The work does NOT run anyway; the message names the holder
  *     and says what to do next.
  *
@@ -92,6 +102,8 @@ const WATCH_SCRIPT = path.join(__dirname, 'heavy-lock-watch.js');
 const WORK_FILE = path.join(os.tmpdir(), 'claude-custom-heavy.work.json');
 const HINT = 'Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1 (see host/heavy-lock.js).';
 
+const SCRIPT_VAR = 'HEAVY_LOCK_SCRIPT';
+const scriptFromEnv = (env) => { const p = env && env[SCRIPT_VAR]; return typeof p === 'string' && path.isAbsolute(p) ? p : DEFAULT_SCRIPT; };
 const waitFromEnv = (env) => { const n = Number(env && env[WAIT_VAR]); return Number.isInteger(n) && n > 0 ? n : DEFAULT_WAIT_MINUTES; };
 const isHeld = (env) => !!env && env[ENV_VAR] === '1';
 
@@ -199,16 +211,11 @@ const isGone = (starts, pid, start) => {
   return typeof now === 'string' && typeof start === 'string' && now !== start;
 };
 
-// If the slot's holder wears the "(pid N start T)" shape and that process AND everything it recorded are gone, release it
-// by its exact owner string.
-function reclaimDead({ run, startsOf, log, work }) {
-  let st;
-  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
-  const m = /^held: (.*)$/m.exec((st && st.stdout) || '');
-  if (!m) return false;
-  const holder = m[1].trim();
+// Is this holder provably dead? true only when it wears the "(pid N start T)" shape and that process AND everything it
+// recorded are gone. false for a live one, a manual one, and every "can't tell". `log` hears why a dead asker still holds.
+function holderIsDead(holder, { startsOf, work, log = () => {} }) {
   const p = parseOwner(holder);
-  if (!p) return false;                                   // a manual holder, or one with no proof: never touched
+  if (!p) return false;                                   // a manual holder, or one with no proof: never dead
   let children;
   try { children = work.read(holder); } catch { return false; }   // can't read what it started: not "dead"
   let starts = null;
@@ -220,6 +227,29 @@ function reclaimDead({ run, startsOf, log, work }) {
     log(`[heavy-lock] ${holder} is gone but its work (pid ${orphan.pid}) is still running; the slot stays held`);
     return false;
   }
+  return true;
+}
+
+// The slot's holder from the script's status: { holder, live } where live is true (someone holds it and isn't provably
+// dead), false (free, or the holder is provably dead), or null (the status could not be read).
+function readHolder({ run, startsOf, work }) {
+  let st = null;
+  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { st = null; }
+  const text = (st && st.stdout) || '';
+  const m = /^held: (.*)$/m.exec(text);
+  if (!m) return /^free$/m.test(text) ? { holder: null, live: false } : { holder: null, live: null };
+  const holder = m[1].trim();
+  return { holder: holder || null, live: !holderIsDead(holder, { startsOf, work }) };
+}
+
+// If the slot's holder is provably dead (holderIsDead), release it by its exact owner string.
+function reclaimDead({ run, startsOf, log, work }) {
+  let st;
+  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
+  const m = /^held: (.*)$/m.exec((st && st.stdout) || '');
+  if (!m) return false;
+  const holder = m[1].trim();
+  if (!holderIsDead(holder, { startsOf, work, log })) return false;
   let r;
   try { r = run(['-Release', '-Owner', holder], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
   if (!r || r.status !== 0) return false;
@@ -250,7 +280,7 @@ function startWatcher({ scriptPath, workFile, parentPid, parentStart, startedAt,
 /** Blocks (a synchronous script call) until the lock is held. Returns { state, release() }; throws HeavyLockError. */
 function acquire({
   label = 'claude-custom', pid = process.pid, env = process.env, waitMinutes = waitFromEnv(env),
-  scriptPath = DEFAULT_SCRIPT, spawnFn,
+  scriptPath = scriptFromEnv(env), spawnFn,
   run,
   exists = fs.existsSync, log = console.log, startsOf,
   work = createWorkStore(), now = Date.now,
@@ -264,8 +294,16 @@ function acquire({
   if (run === undefined) run = defaultRun(scriptPath, { spawnFn, timeoutMs: (waitMinutes + 1) * 60000 });
   if (startsOf === undefined) startsOf = (pids) => queryStarts(pids, spawnFn);
   if (isHeld(env)) {
-    log(`[heavy-lock] ${ENV_VAR}=1 is set: not taking the lock (an outer holder, or a hand-taken lock you must unset after)`);
-    return { state: 'reentrant', release: () => false, addWork: () => false };
+    // The flag is trusted only while someone really holds the slot (RE-ENTRANCY above): the skip names who.
+    const outer = exists(scriptPath) ? readHolder({ run, startsOf, work }) : { holder: null, live: null };
+    if (outer.live !== false) {
+      log(outer.holder
+        ? `[heavy-lock] ${ENV_VAR}=1 is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
+        : `[heavy-lock] ${ENV_VAR}=1 is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
+      return { state: 'reentrant', holder: outer.holder, release: () => false, addWork: () => false };
+    }
+    log(`[heavy-lock] WARNING: ${ENV_VAR}=1 is set but ${outer.holder ? `the slot's holder is gone (${outer.holder})` : 'nobody holds the lock'}: `
+      + `a STALE variable in this shell. Taking the lock for real; unset ${ENV_VAR} (see host/heavy-lock.js).`);
   }
   if (!exists(scriptPath)) {
     log(`[heavy-lock] ${scriptPath} not found; running without the heavy-work lock`);
@@ -376,7 +414,7 @@ function createProcessLock({ proc = process, label = 'probe', beforeRelease = nu
 }
 
 module.exports = {
-  ENV_VAR, WAIT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, STATUS_TIMEOUT_MS, WATCH_EVERY_MS, NOT_RUN_EXIT, WATCH_SCRIPT,
+  ENV_VAR, WAIT_VAR, SCRIPT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, STATUS_TIMEOUT_MS, WATCH_EVERY_MS, NOT_RUN_EXIT, WATCH_SCRIPT,
   HeavyLockError, notRunLine, ownerFor, parseOwner, queryStarts, defaultRun, createWorkStore, WORK_FILE, isGone, reclaimDead,
   startWatcher, acquire, release, createProcessLock,
 };

@@ -20,7 +20,9 @@
  * suite that never ran is not a failing one. Retry it. Documented in verify/README.md too.
  *
  * Already under the lock (HEAVY_LOCK_HELD is set, by an outer wrapper or by someone who took the lock by hand with
- * heavy-lock.ps1 -Acquire): runs the command at once and takes nothing. How to set it by hand: see host/heavy-lock.js.
+ * heavy-lock.ps1 -Acquire) AND the slot really has a live holder: runs the command at once, takes nothing, and the line
+ * names that holder. Set with nobody holding the slot, it's a stale variable: a warning, and the lock is taken for real.
+ * How to set it by hand: see host/heavy-lock.js.
  */
 const { spawn } = require('child_process');
 const heavy = require('../host/heavy-lock');

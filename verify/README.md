@@ -25,6 +25,16 @@ exit code is **75**, never 1 (1 is a failing suite or probe):
 
 Exit 75 means "not run, retry", not "failed".
 
+`HEAVY_LOCK_HELD=1` (set by whoever holds the lock, for what it starts) skips the
+lock only while someone really holds it, and the line names that holder:
+
+    [heavy-lock] HEAVY_LOCK_HELD=1 is set and the slot is held by npm test (pid 123 start 456) (since 10:00:00): not taking the lock (re-entrant, under that holder)
+
+With nobody holding it the variable is stale (a shell that forgot to unset it):
+the run prints a `WARNING: ... a STALE variable` line and takes the lock for real.
+To run a probe's code with no lock at all (a test child), point
+`HEAVY_LOCK_SCRIPT` at an absolute path that doesn't exist.
+
 | Probe | Question | Result (2026-09-11, v2.1.268) |
 |---|---|---|
 | `probe-render.js` | Does the Ink TUI render faithfully through the host? | Yes — banner, box rules, prompt all correct |
