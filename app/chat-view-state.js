@@ -130,9 +130,12 @@ const onlyPlaceholder = (box) => typeof box === 'string' && PLACEHOLDER.test(box
 /**
  * BACKLOG #139: is the CLI's box at rest -- at its prompt, holding nothing anyone typed, with nothing being typed into it by this
  * page? Main asks before it closes a merged tab by itself; anything else (a draft, a dialog, a multi-line box, a screen it can't
- * read) is "no". Pure; the same reading of the box as sendBlocker's.
+ * read) is "no". Pure; the same reading of the box as sendBlocker's. `drafts` (PR #236 Dexter 2): the values of the page's other unsent
+ * inputs (the chat view's #chat-input, which lives in the DOM only, and the half-filled forms); any one holding text is "no", and a
+ * `drafts` that isn't a list can't be read, so it is "no" too. Left out, there are none.
  */
-function boxAtRest({ screen, box, typing } = {}) {
+function boxAtRest({ screen, box, typing, drafts } = {}) {
+  if (drafts !== undefined && !(Array.isArray(drafts) && drafts.every(d => typeof d !== 'string' || d.trim() === ''))) return false;
   return typing !== true && screen === 'ready' && typeof box === 'string' && emptyBox(box);
 }
 

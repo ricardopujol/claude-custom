@@ -8030,13 +8030,23 @@ if (window.harness && window.harness.onTypeCommand) {
 
 // BACKLOG #139: before main closes a merged tab by itself it asks whether this tab's CLI box is at rest (at its prompt, nothing
 // typed, nothing being typed by this page). Read off the screen as the chat view's send reads it; a screen that can't be read is "no".
+// The page's other unsent input counts too (PR #236 Dexter 2): the chat view's draft, which lives in the DOM only, and the vault and
+// bug-vault forms half filled in (each empties itself on a save). Only the answer leaves the page, never a value. A search box is a
+// filter, not something unsent; the model chip's id field keeps its last value by design, so it is not read either. Each id is
+// written out, so test/renderer-scope.test.js checks it against renderer.html.
+const unsentDrafts = () => [
+  document.getElementById('chat-input'), document.getElementById('vault-label'), document.getElementById('vault-secret'),
+  document.getElementById('bugvault-category'), document.getElementById('bugvault-summary-input'), document.getElementById('bugvault-where'),
+  document.getElementById('bugvault-detected'), document.getElementById('bugvault-survived'), document.getElementById('bugvault-caught'),
+].map(el => (el ? el.value : null));
 if (window.harness && window.harness.onBoxState) {
   window.harness.onBoxState((ask) => {
     const id = ask && ask.id;
     let clear = false;
     try {
       const lines = screenLines();
-      clear = chatViewState.boxAtRest({ screen: inputState(lines, { vim: vimSeen }), box: boxText(lines), typing: typingBusy });
+      const drafts = unsentDrafts();
+      clear = chatViewState.boxAtRest({ screen: inputState(lines, { vim: vimSeen }), box: boxText(lines), typing: typingBusy, drafts });
     } catch { clear = false; }
     window.harness.boxState({ id, clear: clear === true });
   });

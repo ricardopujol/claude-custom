@@ -429,12 +429,36 @@ test('#139 wiring: the box-state question goes main -> that tab page -> main, ga
   const MAIN = read('main.js');
   assert.match(PRELOAD, /onBoxState: \(fn\) => \(ipcRenderer\.removeAllListeners\('box-state'\), ipcRenderer\.on\('box-state'/);
   assert.match(PRELOAD, /boxState: \(reply\) => ipcRenderer\.send\('tab:boxState', reply\)/);
-  const handler = JS.slice(JS.indexOf('window.harness.onBoxState('), JS.indexOf('window.harness.onBoxState(') + 600);
-  assert.match(handler, /chatViewState\.boxAtRest\(\{ screen: inputState\(lines, \{ vim: vimSeen \}\), box: boxText\(lines\), typing: typingBusy \}\)/);
+  const handler = JS.slice(JS.indexOf('window.harness.onBoxState('), JS.indexOf('window.harness.onBoxState(') + 900);
+  assert.match(handler, /chatViewState\.boxAtRest\(\{ screen: inputState\(lines, \{ vim: vimSeen \}\), box: boxText\(lines\), typing: typingBusy, drafts \}\)/);
+  assert.match(handler, /const drafts = unsentDrafts\(\);/);
   assert.match(handler, /window\.harness\.boxState\(\{ id, clear: clear === true \}\)/);
   const on = MAIN.slice(MAIN.indexOf("ipcMain.on('tab:boxState'"), MAIN.indexOf("ipcMain.on('tab:boxState'") + 200);
   assert.match(on, /if \(!isTabView\(e\.sender\)\) return;/);
   assert.match(on, /tabShell\.boxAnswered\(e\.sender, reply\)/);
+});
+
+test('#139 P2 boxAtRest: text in any of the page\'s other unsent inputs (the chat view\'s draft first) is "no"; a list it can\'t read is "no"', () => {
+  const at = chatViewState.boxAtRest;
+  const rest = { screen: 'ready', box: '' };
+  assert.strictEqual(at({ ...rest, drafts: ['a long message, not sent yet', null] }), false, "the chat view's draft");
+  assert.strictEqual(at({ ...rest, drafts: [null, '', 'github token'] }), false, 'a half-filled form');
+  assert.strictEqual(at({ ...rest, drafts: ['', '   \n', null] }), true, 'blank fields and missing ones are nothing typed');
+  assert.strictEqual(at({ ...rest, drafts: [] }), true);
+  assert.strictEqual(at({ ...rest, drafts: 'oops' }), false, "a list that isn't a list can't be read");
+  assert.strictEqual(at({ ...rest, box: 'draft', drafts: [] }), false, 'the CLI box still counts');
+});
+
+test('#139 P2 wiring: the page reads #chat-input and the vault and bug-vault fields, each a real field of the tab page', () => {
+  const fs = require('fs');
+  const JS = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  const HTML = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const m = /const unsentDrafts = \(\) => \[([^\]]*)\]\.map\(el => \(el \? el\.value : null\)\);/.exec(JS);
+  assert.ok(m, 'the list is declared');
+  const ids = [...m[1].matchAll(/document\.getElementById\('([^']+)'\)/g)].map(x => x[1]);
+  assert.strictEqual(ids[0], 'chat-input');
+  for (const id of ['vault-label', 'vault-secret', 'bugvault-category', 'bugvault-summary-input']) assert.ok(ids.includes(id), id);
+  for (const id of ids) assert.match(HTML, new RegExp(`<(?:input|textarea)[^>]*id="${id}"`), `${id} is an input of renderer.html`);
 });
 
 test('#139 boxAnswered: only the page that was asked, for a question still waiting, counts', async () => {
