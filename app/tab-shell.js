@@ -1053,7 +1053,7 @@ function createShell(deps) {
       if (!t.started || t.starting || t.ended === true) continue;     // no session: 1B gives it no tab, there is nothing to close
       mergedBusy.add(t.key);
       runs.push(closeTab(t.key, { auto: true }).then((r) => {
-        if (r && r.kept === true) mergedTried.add(t);
+        if (r && (r.kept === true || r.hostEnded === true)) mergedTried.add(t);     // one try per record: a stop that failed, or one that ended the host
         if (r && typeof r.notSafe === 'string' && mergedWhy.get(t.key) !== r.notSafe) {
           mergedWhy.set(t.key, r.notSafe);
           log(`[shell] ${t.key}: merged, kept open: ${r.notSafe}`);
@@ -1068,14 +1068,20 @@ function createShell(deps) {
   const boxAsks = new Map();
   let boxSeq = 0;
 
-  /** true when the tab's page says its box is at its prompt and empty, false when it says not, null when it didn't answer in time. */
-  function askBox(tab) {
+  /**
+   * The tab's page's answer, or null when it didn't answer in time: `clear` (its CLI box at its prompt and empty, and nothing else
+   * unsent) and `unsent` (text typed in the page outside the CLI's box: true / false, null when the page couldn't read it).
+   */
+  function askPage(tab) {
     if (!tab.view) return Promise.resolve(null);
     const id = ++boxSeq;
     const reply = new Promise(resolve => boxAsks.set(id, { key: tab.key, resolve }));
     try { views.send(tab, 'box-state', { id }); } catch (err) { boxAsks.delete(id); log('[shell] box-state send threw:', err && err.message); return Promise.resolve(null); }
     return Promise.race([reply, sleep(BOX_ANSWER_MS).then(() => null)]).then((r) => { boxAsks.delete(id); return r; });
   }
+
+  /** true when the tab's page says its box is at rest, false when it says not, null when it didn't answer in time. */
+  const askBox = (tab) => askPage(tab).then(r => (r === null ? null : r.clear));
 
   /** main.js `tab:boxState`: only the page that was asked, for a question still waiting, counts. */
   function boxAnswered(sender, reply) {
@@ -1084,7 +1090,7 @@ function createShell(deps) {
     const w = boxAsks.get(reply.id);
     if (!w || w.key !== tab.key) return false;
     boxAsks.delete(reply.id);
-    w.resolve(reply.clear === true);
+    w.resolve({ clear: reply.clear === true, unsent: typeof reply.unsent === 'boolean' ? reply.unsent : null });
     return true;
   }
 
@@ -1096,12 +1102,12 @@ function createShell(deps) {
    */
   async function mergedCloseBlocker(tab) {
     if (!tab.started || tab.starting || tab.ended === true) return 'its session is not running';
-    let why = laneRestBlocker(tab);
+    let why = cheapBlocker(tab, null);
     if (why) return why;
-    const unsaved = readerUnsavedOf(tab);
-    if (unsaved) return `the file reader has unsaved edits to ${unsaved}`;
-    const agents = agentsHereOf(tab);
-    if (agents !== 0) return agents === null ? "couldn't check for agents" : 'an agent is working here';
+    const g = await gitFactsOf(tab);
+    why = cheapBlocker(tab, g);
+    if (why) return why;
+    // The pages are asked LAST (PR #236 Dexter 6 A): a box read before git's slow reads could be typed into before the stop.
     const box = await askBox(tab);
     if (box !== true) return box === false ? 'its input box holds text, or a dialog is open' : "its page didn't say what its input box holds";
     const side = sideRecordOf(tab);
@@ -1109,9 +1115,49 @@ function createShell(deps) {
       const sideBox = await askBox(side);
       if (sideBox !== true) return sideBox === false ? "its side session's input box holds text, or a dialog is open" : "its side session's page didn't say what its input box holds";
     }
-    const reason = closeReason(closeFactsOf(tab, await gitFactsOf(tab)));
-    if (reason) return reason;
-    return laneRestBlocker(tab);     // the awaits above took a moment: a turn may have started, a shell been opened
+    return cheapBlocker(tab, g);     // the asks took a moment: a turn may have started, a shell been opened, an edit made
+  }
+
+  /** Everything the merged close judges that needs no await: the lane at rest, the reader, the agents and, given git's facts, #77's rule. */
+  function cheapBlocker(tab, g) {
+    const why = laneRestBlocker(tab);
+    if (why) return why;
+    const unsaved = readerUnsavedOf(tab);
+    if (unsaved) return `the file reader has unsaved edits to ${unsaved}`;
+    const agents = agentsHereOf(tab);
+    if (agents !== 0) return agents === null ? "couldn't check for agents" : 'an agent is working here';
+    return g === null ? '' : closeReason(closeFactsOf(tab, g));
+  }
+
+  /**
+   * After the merged close's stop (PR #236 Dexter 6 B): its session has ended, but the view is still there until the close drops it,
+   * and the stop can take a while (goesQuiet waits out the host's shutdown bound). What would be lost with the view is read again:
+   * an unsaved reader edit, a side session that started working, a shell opened meanwhile, and, after a wait, text typed in the
+   * page (the CLI's box is gone with the CLI, so only the page's own unsent text is asked about). '' when nothing would be lost.
+   */
+  async function afterStopBlocker(tab, waited) {
+    const cheap = () => {
+      const unsaved = readerUnsavedOf(tab);
+      if (unsaved) return `the file reader has unsaved edits to ${unsaved}`;
+      if (tabs.has(shellKeyOf(tab.key))) return "its shell tab is open (a shell can't be shown to be idle)";
+      const side = sideRecordOf(tab);
+      if (side && sideHolds(side)) {
+        const s = side.started && !side.starting ? sessionRestWhy(side.status) : "hasn't come up yet";
+        if (s) return `its side session ${s}`;
+      }
+      return '';
+    };
+    let why = cheap();
+    if (why || !waited) return why;
+    const page = await askPage(tab);
+    if (!page || page.unsent !== false) return page ? (page.unsent === true ? 'its page holds text not sent' : "its page couldn't say whether it holds text not sent") : "its page didn't say whether it holds text not sent";
+    const side = sideRecordOf(tab);
+    if (side && side.started && side.ended !== true) {
+      const sideBox = await askBox(side);
+      if (sideBox !== true) return "its side session's input box holds text, or a dialog is open";
+    }
+    why = cheap();
+    return why;
   }
 
   /**
@@ -1293,6 +1339,7 @@ function createShell(deps) {
     ending.add(key);
     const targets = [];
     const dead = [];     // hosts taken as ended because their port refuses and their file proves nothing (PR #231 Miguel R3)
+    const seen = { waited: false };     // the stop had to wait for its host (afterFailedStop)
     let failure = null;
     try {
       // Every host this record may hold (#129; PR #231 Dexter 5): the presented one, else the pending AND the unconfirmed ones, else
@@ -1338,7 +1385,7 @@ function createShell(deps) {
       const who = whoOf(tab);
       publish();
       for (const h of targets) {
-        const f = await endHost(h, who, dead);
+        const f = await endHost(h, who, dead, seen);
         if (failure === null) failure = f;
       }
     } finally { ending.delete(key); }
@@ -1347,6 +1394,19 @@ function createShell(deps) {
     // now, and its removeResult closes it. A closed row here would offer to reopen a folder being deleted (PR #236 Miguel R1, Dexter 7).
     if (phaseOf(key) === 'removing') return { ok: true, removing: true };
     if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure, tab);
+    if (auto === true) {
+      // PR #236 Dexter 6 B: what the view would take with it, read again now the stop is over. Its session has ended either way; a
+      // tab kept here stays as an ended tab with its page, as a hand close with an unsaved edit keeps it until the person says, and
+      // this path doesn't try it again (the record is in mergedTried).
+      const after = await afterStopBlocker(tab, seen.waited);
+      if (tabs.get(key) !== tab) return { ok: true };
+      if (phaseOf(key) === 'removing') return { ok: true, removing: true };
+      if (after !== '') {
+        log(`[shell] ${key}: merged, its session ended, tab kept: ${after}`);
+        publish();
+        return { ok: false, notSafe: after, hostEnded: true };
+      }
+    }
     clearStuck(key);     // the line about it goes with it
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
@@ -1395,23 +1455,30 @@ function createShell(deps) {
    * End ONE host of a tab (#129): send the stop and look at how it went. null: the host is ended, or was never this tab's. Otherwise
    * why it may still be running. Never rejects. `h` is { port, token, booting }; `who` says which host is this tab's.
    */
-  async function endHost(h, who, dead) {
+  async function endHost(h, who, dead, seen) {
     if (h.rec && exitedHosts.has(h.rec)) return null;     // its spawned child exited: dead, and its port may be a stranger's now (PR #231 Dexter M2)
     const failure = h.token
       ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } }))
       : `a host is on port ${h.port} but its token can't be read`;
     if (failure === null) return null;     // it took the stop: never a kill after that (PR #231 Dexter 7)
-    return afterFailedStop(h, failure, who, dead);
+    return afterFailedStop(h, failure, who, dead, seen);
   }
 
-  /** What a stop that failed leads to. The invariant: nothing is killed unless the file proves the process is THIS tab's host. */
-  async function afterFailedStop(h, failure, who, dead) {     // dead: an array that collects the ports taken as ended on a refusal
+  /**
+   * What a stop that failed leads to. The invariant: nothing is killed unless the file proves the process is THIS tab's host.
+   * `dead`: an array that collects the ports taken as ended on a refusal. `seen` (optional): `seen.waited` is set when the stop had to
+   * wait for the host (its shutdown bound, or its start), the time in which a person may have done something the close must re-read.
+   */
+  async function afterFailedStop(h, failure, who, dead, seen) {
     if (h.rec && exitedHosts.has(h.rec)) return null;     // it died while the stop was going out (PR #231 Dexter M2)
     if (REFUSED_TOKEN.test(failure)) {
       log(`[shell] port ${h.port} refused this tab's token: another tab's host holds it, nothing to stop`);
       return null;
     }
-    if (TIMED_OUT.test(failure) && await goesQuiet(h.port)) return null;     // it took the stop and went
+    if (TIMED_OUT.test(failure)) {
+      if (seen) seen.waited = true;
+      if (await goesQuiet(h.port)) return null;     // it took the stop and went
+    }
     if (destroyed) return failure;     // the wait was cut short: the host may be mid-shutdown, so no kill from a window that is gone
     let outcome;
     try { outcome = typeof hosts.stopByPid === 'function' ? await hosts.stopByPid(h.port, who) : 'unknown'; } catch (err) { outcome = 'unknown'; }
@@ -1429,12 +1496,13 @@ function createShell(deps) {
     if (outcome === 'nofile') {
       // Its start is not over: the host may not have bound its port yet, and has no file until it has. Wait for it, as long as the
       // start itself would (hosts.wait), then stop it; never drop the tab and leave a host that binds a moment later with no tab.
+      if (seen) seen.waited = true;
       let up = false;
       try { up = (await hosts.wait(h.port)) === true; } catch { up = false; }
       if (!up) return `its host on port ${h.port} hasn't come up yet, so it can't be stopped yet`;
       const again = h.token ? await stopOutcome(hosts.control({ port: h.port, token: h.token, msg: { type: 'stop' } })) : failure;
       if (again === null) return null;
-      return afterFailedStop({ ...h, booting: false }, again, who, dead);
+      return afterFailedStop({ ...h, booting: false }, again, who, dead, seen);
     }
     if (!h.booting && !destroyed) {
       // The file proves nothing ('unknown' or 'failed'), so nothing is killed. But a host that WAS listening and now refuses a fresh

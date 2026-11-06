@@ -135,8 +135,17 @@ const onlyPlaceholder = (box) => typeof box === 'string' && PLACEHOLDER.test(box
  * `drafts` that isn't a list can't be read, so it is "no" too. Left out, there are none.
  */
 function boxAtRest({ screen, box, typing, drafts } = {}) {
-  if (drafts !== undefined && !(Array.isArray(drafts) && drafts.every(d => typeof d !== 'string' || d.trim() === ''))) return false;
+  if (drafts !== undefined && hasUnsent(drafts)) return false;
   return typing !== true && screen === 'ready' && typeof box === 'string' && emptyBox(box);
+}
+
+/**
+ * Does the page hold text the person typed and hasn't sent, outside the CLI's box (PR #236 Dexter 6)? `drafts` is boxAtRest's list;
+ * one that isn't a list can't be read, so it is "yes". Asked on its own after a merged close's stop had to wait: the CLI has gone by
+ * then, so its box says nothing, but a draft in the page still dies with the view.
+ */
+function hasUnsent(drafts) {
+  return !(Array.isArray(drafts) && drafts.every(d => typeof d !== 'string' || d.trim() === ''));
 }
 
 // Appended to a failure that came after the CLI's draft was cleared (#174): the person's draft is gone (the CLI's Ctrl+Y brings back a
@@ -331,7 +340,7 @@ function writeWanted(storage, cwd, wanted) {
   try { if (storage) storage.write(keyFor(cwd), wanted === true ? '1' : '0'); } catch { /* a full or blocked store: the switch just isn't remembered */ }
 }
 
-const api = { viewFor, isChatKey, isChatZoomResetKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, boxAtRest, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
+const api = { viewFor, isChatKey, isChatZoomResetKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, boxAtRest, hasUnsent, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.chatViewState = api;
 

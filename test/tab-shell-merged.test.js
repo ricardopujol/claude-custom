@@ -36,7 +36,7 @@ const AT_REST = { working: false, needsInput: false, lock: 'held', turn: 'idle' 
 
 function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = {}, launchedFrom = null, layout = null } = {}) {
   const h = {
-    running: { ...running }, markers: { ...markers }, spawns: [], controls: [], confirms: [], removes: [], logs: [],
+    running: { ...running }, markers: { ...markers }, spawns: [], controls: [], confirms: [], removes: [], logs: [], destroyed: [],
     listText: porcelain(THREE), facts: { ...GIT_OK }, unsaved: null, agents: 0, boxClear: true, boxAsks: 0,
     controlReply: null, pidReply: null, keepListening: false,
   };
@@ -83,14 +83,15 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
       identity: () => null, readToken: () => null,
     },
     views: {
-      create: (tab) => ({ tab: tab.key }), destroy: () => {}, owns: (tab, sender) => tab.view === sender,
+      create: (tab) => ({ tab: tab.key }), destroy: (tab) => { h.destroyed.push(tab.key); }, owns: (tab, sender) => tab.view === sender,
       // The page's own answer to "is your CLI box at rest?": true / false, or (undefined) no answer at all.
       send: (tab, channel, payload) => {
         if (channel !== 'box-state') return;
         h.boxAsks++;
         // `boxFor(view)`: a page-by-page answer (a side page's box apart from its branch page's); else every page says `boxClear`
         const clear = typeof h.boxFor === 'function' ? h.boxFor(tab.view) : h.boxClear;
-        if (clear !== undefined) h.shell.boxAnswered(tab.view, { id: payload.id, clear });
+        // `pageUnsent`: text typed in the page outside the CLI's box (the chat view's draft): false unless a test says otherwise
+        if (clear !== undefined) h.shell.boxAnswered(tab.view, { id: payload.id, clear, unsent: h.pageUnsent === undefined ? false : h.pageUnsent });
       },
     },
     ui: {
@@ -197,6 +198,65 @@ test('#139: a turn that starts while the safe check reads git keeps it (the chec
   assert.strictEqual(h.factReads, 2, 'read once to decide, once more right before the stop');
   assert.ok(h.shell.tabByKey(key('feat-a')), 'kept');
   assert.deepStrictEqual(h.stops(), []);
+});
+
+test('#139 P6 A: the box is asked AFTER git\'s reads: a draft typed while git is read keeps it', async () => {
+  const h = await liveThenMerged();
+  // The second git read is the re-check right before the stop; the person starts typing while it runs.
+  h.onFacts = (n) => { if (n === 2) h.boxClear = false; };
+  await h.poll();
+  assert.strictEqual(h.factReads, 2);
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept');
+  assert.deepStrictEqual(h.stops(), []);
+});
+
+/** feat-a merged and safe; its stop's reply is lost, so the close waits (goesQuiet) while `during()` happens; the host then goes. */
+async function stopThatWaits(during) {
+  const h = await liveThenMerged();
+  h.controlReply = (c) => (c.msg.type === 'stop' ? { ok: false, error: 'timed out after 3000 ms' } : { ok: true, reply: null });
+  let looks = 0;
+  h.onProbe = async (port) => {
+    if (port !== 7701 || h.stops().length === 0) return undefined;     // only goesQuiet's looks, after the stop went
+    looks++;
+    if (looks !== 1) return undefined;
+    during(h);
+    delete h.running[7701];     // the host goes; goesQuiet's next look sees it refuse
+    return 'listening';
+  };
+  await h.poll();
+  await flush();
+  return h;
+}
+
+test('#139 P6 B: a reader edit made while the stop waits keeps the tab and its view (its session has ended); never tried again', async () => {
+  const h = await stopThatWaits((g) => { g.unsaved = 'app/x.js'; });
+  assert.strictEqual(h.stops().length, 1, 'the stop went');
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept');
+  assert.ok(!h.destroyed.includes(key('feat-a')), 'its view, and the edit in its reader, are still there');
+  assert.ok(!h.shell.lanesMenu([]).some(r => r.key === key('feat-a') && r.action === 'reopen'), 'no closed row');
+  assert.strictEqual(h.shell.snapshot().mergedNotice, null);
+  assert.ok(h.logs.some(l => /merged, its session ended, tab kept: the file reader has unsaved edits to app\/x\.js/.test(l)));
+  h.unsaved = null;
+  for (let i = 0; i < 3; i++) await h.poll();
+  assert.strictEqual(h.stops().length, 1, 'no second try by this path');
+});
+
+test('#139 P6 B: text typed in the page (the chat view) while the stop waits keeps the tab and its view', async () => {
+  const h = await stopThatWaits((g) => { g.pageUnsent = true; });
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.ok(!h.destroyed.includes(key('feat-a')));
+  assert.ok(h.logs.some(l => /tab kept: its page holds text not sent/.test(l)));
+});
+
+test('#139 P6 B: a page that cannot say what it holds after the wait keeps the tab too; one that says nothing is unsent lets it close', async () => {
+  for (const odd of [null, 'yes']) {     // boxAnswered passes on only true / false; anything else is "can't tell"
+    const h = await stopThatWaits((g) => { g.pageUnsent = odd; });
+    assert.ok(h.shell.tabByKey(key('feat-a')), `${odd}: can't tell, kept`);
+    assert.ok(h.logs.some(l => /tab kept: its page couldn't say whether it holds text not sent/.test(l)), String(odd));
+  }
+  const ok = await stopThatWaits(() => {});
+  assert.strictEqual(ok.shell.tabByKey(key('feat-a')), null, 'nothing changed during the wait: closed');
+  assert.strictEqual(ok.shell.snapshot().mergedNotice, 'Closed feat/a (merged)');
 });
 
 test('#139: merged but the CLI box holds a draft, or the page does not answer -> kept', async () => {
@@ -510,9 +570,9 @@ test('#139 wiring: the box-state question goes main -> that tab page -> main, ga
   assert.match(PRELOAD, /onBoxState: \(fn\) => \(ipcRenderer\.removeAllListeners\('box-state'\), ipcRenderer\.on\('box-state'/);
   assert.match(PRELOAD, /boxState: \(reply\) => ipcRenderer\.send\('tab:boxState', reply\)/);
   const handler = JS.slice(JS.indexOf('window.harness.onBoxState('), JS.indexOf('window.harness.onBoxState(') + 900);
-  assert.match(handler, /chatViewState\.boxAtRest\(\{ screen: inputState\(lines, \{ vim: vimSeen \}\), box: boxText\(lines\), typing: typingBusy, drafts \}\)/);
-  assert.match(handler, /const drafts = unsentDrafts\(\);/);
-  assert.match(handler, /window\.harness\.boxState\(\{ id, clear: clear === true \}\)/);
+  assert.match(handler, /clear = unsent === false && chatViewState\.boxAtRest\(\{ screen: inputState\(lines, \{ vim: vimSeen \}\), box: boxText\(lines\), typing: typingBusy, drafts \}\)/);
+  assert.match(handler, /try \{ drafts = unsentDrafts\(\); unsent = chatViewState\.hasUnsent\(drafts\); \} catch \{ unsent = null; \}/);
+  assert.match(handler, /window\.harness\.boxState\(\{ id, clear: clear === true, unsent \}\)/);
   const on = MAIN.slice(MAIN.indexOf("ipcMain.on('tab:boxState'"), MAIN.indexOf("ipcMain.on('tab:boxState'") + 200);
   assert.match(on, /if \(!isTabView\(e\.sender\)\) return;/);
   assert.match(on, /tabShell\.boxAnswered\(e\.sender, reply\)/);
@@ -527,6 +587,14 @@ test('#139 P2 boxAtRest: text in any of the page\'s other unsent inputs (the cha
   assert.strictEqual(at({ ...rest, drafts: [] }), true);
   assert.strictEqual(at({ ...rest, drafts: 'oops' }), false, "a list that isn't a list can't be read");
   assert.strictEqual(at({ ...rest, box: 'draft', drafts: [] }), false, 'the CLI box still counts');
+});
+
+test('#139 P6 hasUnsent: the page\'s own unsent text, asked apart from the CLI\'s box once the CLI has gone', () => {
+  const has = chatViewState.hasUnsent;
+  assert.strictEqual(has(['a draft']), true);
+  assert.strictEqual(has(['', null, '  ']), false);
+  assert.strictEqual(has([]), false);
+  assert.strictEqual(has(undefined), true, "can't be read: yes");
 });
 
 test('#139 P2 wiring: the page reads #chat-input and the vault and bug-vault fields, each a real field of the tab page', () => {
