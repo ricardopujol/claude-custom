@@ -1344,6 +1344,9 @@ function createShell(deps) {
       }
     } finally { ending.delete(key); }
     if (tabs.get(key) !== tab) return { ok: true };     // gone during the stop (its folder was removed), or the key names a NEWER tab now (PR #231 Miguel R1)
+    // A poll during the stop's wait saw the host refuse and moved the tab to `removing` (Contract C runs): the removal owns the tab
+    // now, and its removeResult closes it. A closed row here would offer to reopen a folder being deleted (PR #236 Miguel R1, Dexter 7).
+    if (phaseOf(key) === 'removing') return { ok: true, removing: true };
     if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure, tab);
     clearStuck(key);     // the line about it goes with it
     const before = model();

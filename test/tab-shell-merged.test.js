@@ -51,7 +51,8 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
     ops: {
       available: () => ({ create: false, setup: false, remove: true }),
       create: async () => ({ ok: false, error: 'no' }), setup: async () => ({ ok: false, error: 'no' }),
-      remove: async ({ path: p }) => { h.removes.push(normPath(p)); return { ok: true }; },
+      // `removeWait`: a promise that holds Contract C open, as a real `git worktree remove` takes seconds
+      remove: async ({ path: p }) => { h.removes.push(normPath(p)); if (h.removeWait) await h.removeWait; return { ok: true }; },
     },
     hosts: {
       choosePort: async (tab) => {
@@ -63,7 +64,12 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
         }
         return free === null ? null : { port: free, action: 'spawn' };
       },
-      probe: async (port) => (h.running[port] !== undefined ? 'listening' : 'refused'),
+      // `onProbe(port)`: a test's hook into a probe (a poll fired during a stop's wait); an answer it gives wins
+      probe: async (port) => {
+        const hooked = typeof h.onProbe === 'function' ? await h.onProbe(port) : undefined;
+        if (hooked !== undefined) return hooked;
+        return h.running[port] !== undefined ? 'listening' : 'refused';
+      },
       spawn: ({ tab, port }) => { h.spawns.push(tab.key); h.running[port] = tab.cwd; },
       wait: async () => true,
       tokenFor: tokenOf, tokenFile: tokenOf, newToken: () => 'fresh',
@@ -316,6 +322,37 @@ test('#139: merged, the stop fails -> kept with the Stop offer; later polls neve
   // the person's Stop still works
   h.controlReply = null;
   assert.deepStrictEqual(await h.shell.closeTab(key('feat-a'), { stop: true }), { ok: true });
+});
+
+test('#139 P4: a poll during the stop\'s wait that moves the tab to removing owns it: Contract C runs, and the close writes no closed row', async () => {
+  const g = await liveThenMerged();
+  // The stop goes in but its reply is lost (the 3 s control timeout), so the close waits in goesQuiet; the host exits meanwhile.
+  g.controlReply = (c) => (c.msg.type === 'stop' ? { ok: false, error: 'timed out after 3000 ms' } : { ok: true, reply: null });
+  let waits = 0;
+  g.onProbe = async (port) => {
+    if (port !== 7701 || g.inPoll || g.stops().length === 0) return undefined;     // only goesQuiet's looks, after the stop went
+    waits++;
+    if (waits !== 1) return undefined;
+    // goesQuiet's first look: the host has just exited, and the 3 s poll lands before goesQuiet looks again
+    delete g.running[7701];
+    g.inPoll = true;
+    await g.shell.poll();
+    g.inPoll = false;
+    return 'listening';     // goesQuiet saw it a moment before it went
+  };
+  let release;
+  g.removeWait = new Promise((r) => { release = r; });
+  await g.poll();
+  await flush();
+  assert.deepStrictEqual(g.removes, [key('feat-a')], 'the poll moved it to removing: Contract C runs');
+  // While the folder is being removed: no closed row (no Undo, no Ctrl+Shift+T target) and no Stop offer
+  assert.deepStrictEqual(mergedRows(g).filter(r => r.key === key('feat-a') && r.closed), [], 'no closed row for a folder being removed');
+  assert.ok(!g.shell.lanesMenu([]).some(r => r.key === key('feat-a') && r.action === 'reopen'), 'nothing to reopen');
+  assert.strictEqual(g.shell.snapshot().closeStuck, null, 'no Stop offer either');
+  release();
+  await flush();
+  assert.strictEqual(g.shell.tabByKey(key('feat-a')), null, 'removeResult closed it');
+  assert.ok(!g.shell.lanesMenu([]).some(r => r.key === key('feat-a') && r.action === 'reopen'), 'and still nothing to reopen');
 });
 
 test('#139: not merged -> never closed by this path, however many polls', async () => {
