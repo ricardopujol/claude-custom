@@ -212,6 +212,15 @@ test('neighbour wraps both ways', () => {
   assert.strictEqual(m.neighbour(model, a, -1), d);
 });
 
+test('#160 P10 neighbour: with nothing selected, Ctrl+Tab lands on the first tab, Ctrl+Shift+Tab on the last', () => {
+  const none = m.stripModel({ tabs: [A, B] }, {}, null, { keyOf, pickAny: false });
+  assert.ok(none.every(e => !e.selected), 'develop closed and nothing chosen');
+  const [a, b] = none.map(e => e.key);
+  assert.strictEqual(m.neighbour(none, null, 1), a, 'not the second one');
+  assert.strictEqual(m.neighbour(none, null, -1), b);
+  assert.strictEqual(m.neighbour([none[0]], null, 1), a, 'a lone tab');
+});
+
 test('afterClose: unselected close keeps selection; selected goes right, else left', () => {
   const model = strip([DEV, A, B]);
   const [d, a, b] = model.map(e => e.key);

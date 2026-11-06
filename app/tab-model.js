@@ -180,12 +180,16 @@ function select(model, key) {
   return model.some(e => e.key === key) ? key : selectedKeyOf(model);
 }
 
-/** Ctrl+Tab (+1) / Ctrl+Shift+Tab (-1), wrapping. An unknown key steps from the selection. */
+/**
+ * Ctrl+Tab (+1) / Ctrl+Shift+Tab (-1), wrapping. An unknown key steps from the selection. With nothing selected either (develop
+ * closed and nothing chosen, BACKLOG #160), Ctrl+Tab lands on the first tab and Ctrl+Shift+Tab on the last (PR #236 Dexter 10).
+ */
 function neighbour(model, key, step) {
   if (model.length === 0) return null;
-  let i = model.findIndex(e => e.key === key);
-  if (i < 0) i = Math.max(0, model.findIndex(e => e.selected));
   const n = model.length;
+  let i = model.findIndex(e => e.key === key);
+  if (i < 0) i = model.findIndex(e => e.selected);
+  if (i < 0) return step >= 0 ? model[0].key : model[n - 1].key;
   return model[(((i + step) % n) + n) % n].key;
 }
 
