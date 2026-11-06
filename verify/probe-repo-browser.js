@@ -4,6 +4,8 @@
  *
  *   env -u ELECTRON_RUN_AS_NODE node verify/probe-repo-browser.js     (exit 0 = every check held)
  *   REPO_PROBE_SHOTS=<dir>                                            also keep the screenshots there
+ *   node verify/probe-repo-browser.js --width=857                     the window's content width for checks 5-13 (BACKLOG #168:
+ *                                                                     PR #226's gate failed 13 at a 620 px terminal box, about 857)
  *
  * The unit tests pin what the tree SAYS (test/repo-tree-display*.test.js), what the host ANSWERS
  * (test/repo-service.test.js) and what the guard REFUSES (test/repo-guard*.test.js). None of them can see the
@@ -364,6 +366,29 @@ async function main() {
   check('4: switched off, the whole tree is back', rowsOf(await rp(app, 'state')).some(r => r.path === 'data'));
 
   // 5 + 6 --------------------------------------------------------------------------
+  const widthArg = (process.argv.find(a => /^--width=\d+$/.test(a)) || '').slice(8);
+  if (widthArg) {
+    // PR #234 Miguel Y2: a refused or slow resize must not quietly run 5-13 at the default width. The resize must be accepted, the
+    // PAGE must measure the width main reports (window.innerWidth === the content width), that width must be the asked one, and the
+    // terminal must be fitted at it. Measured on this machine: main's getContentSize reads 18 px over what setContentSize was given
+    // (839 -> 857, 857 -> 875, 1001 -> 1019), so "the asked one" is main's own report back, compared within that frame allowance.
+    const asked = Number(widthArg);
+    const pre = await view(app, 'state');
+    const sized = await command(app, { cmd: 'window-size', width: asked });
+    const got = sized && sized.ok && Array.isArray(sized.content) ? sized.content[0] : null;
+    const settled = got === null ? null : await waitFor(async () => {
+      const r = await view(app, 'resourcesState');
+      const t = await view(app, 'state');
+      const pageW = r && r.hist ? r.hist.winW : null;
+      return pageW === got && t.fit && t.term.cols === t.fit.cols && JSON.stringify(t.sent) === JSON.stringify(t.term) ? { t, pageW } : null;
+    }, 10000);
+    const FRAME_ALLOWANCE_PX = 18;   // the measured getContentSize overshoot above; a wider gap is a width nobody asked for
+    const tookIt = got !== null && got >= asked && got - asked <= FRAME_ALLOWANCE_PX && !!settled;
+    console.log(`NOTE  --width=${widthArg}: reply ${JSON.stringify(sized)}, page ${settled ? settled.pageW : '?'} px, terminal box ${settled ? settled.t.termwrap.width : '?'} px, ${settled ? settled.t.term.cols : '?'} cols (before: box ${pre.termwrap.width} px, ${pre.term.cols} cols)`);
+    check(`--width=${widthArg}: the window took the asked width (accepted, the page measures it, the terminal is fitted at it)`, tookIt,
+      JSON.stringify({ sized, settledPage: settled && settled.pageW }));
+    if (!tookIt) return;   // checks 5-13 would run at a width nobody asked for
+  }
   const termBefore = await view(app, 'state');
   const before = await rp(app, 'reader.state');
   check('5: before the first open: no reader, and CodeMirror is NOT loaded (lazy)', before.ok && !before.open && !before.cmLoaded && !before.splitShown, JSON.stringify(before));
@@ -539,9 +564,21 @@ async function main() {
     JSON.stringify({ w0, dragged, stored }));
   await rp(app, 'reader.escape');
   const closed = await rp(app, 'reader.state');
-  const termRestored = await waitFor(async () => { const t = await view(app, 'state'); return t.term.cols === termBefore.term.cols ? t : null; }, 8000);
+  // "Full width back" is the terminal's BOX back at its old width, and the terminal FITTED to that box and the pty told. An exact
+  // `cols === before` was a knife-edge (BACKLOG #168, PR #226's gate: 72 -> 71 at an unchanged 620 px wrap): xterm's FitAddon takes
+  // floor(parseInt(computed width) / cell width), so a sub-pixel difference in the box (619.9 vs 620.0) can cost or gain one column.
+  // Tolerances: 1 px on the box either way (sub-pixel layout; a reader or divider left behind is >= 120 px here), and so at most 1 column
+  // either way, since a cell is wider than 1 px (PR #234 Miguel Y3: the column bound is as symmetric as the box's). A terminal that wasn't re-fitted fails `cols === fit.cols`; one that kept the reader's width fails the box.
+  const restoredOk = (t) => !!t && Math.abs(t.termwrap.width - termBefore.termwrap.width) <= 1 && !!t.fit && t.term.cols === t.fit.cols
+    && Math.abs(t.term.cols - termBefore.term.cols) <= 1 && (!termAfter || t.term.cols > termAfter.term.cols)
+    && JSON.stringify(t.sent) === JSON.stringify(t.term);
+  const termRestored = await waitFor(async () => { const t = await view(app, 'state'); return restoredOk(t) ? t : null; }, 8000);
+  const termNow = termRestored || await view(app, 'state');
   check('13: Esc closes the reader and the terminal has its full width (and columns) back', !closed.open && !closed.splitShown && !!termRestored,
-    `open ${closed.open}; cols ${termBefore.term.cols} -> ${termRestored ? termRestored.term.cols : (await view(app, 'state')).term.cols}`);
+    `open ${closed.open}; termwrap ${termBefore.termwrap.width}px -> ${termNow.termwrap.width}px; cols ${termBefore.term.cols} -> ${termNow.term.cols} (fit ${JSON.stringify(termNow.fit)}, while open ${termAfter ? termAfter.term.cols : '?'}); sent ${JSON.stringify(termNow.sent)}`);
+  // The raw numbers, every run (BACKLOG #168): does the box come back exactly and only the floor flips, or is it left a sub-pixel narrower?
+  const m13 = (t) => t && { termwrapW: t.termwrap.width, left: t.termwrap.left, right: t.termwrap.right, cols: t.term.cols, fit: t.fit, sent: t.sent };
+  console.log(`NOTE  13: terminal box before the reader ${JSON.stringify(m13(termBefore))}; while open ${JSON.stringify(m13(termAfter))}; after Esc ${JSON.stringify(m13(termNow))}`);
   await rp(app, 'click', { path: 'README.md' });
   const reopened = await waitFor(async () => { const s = await rp(app, 'reader.state'); return s.open && s.path === 'README.md' ? s : null; }, 8000);
   check('13: opened again, the reader comes back at the width it was dragged to', !!reopened && Math.abs(reopened.width - Math.round(dragged.width)) <= 2, `${reopened && reopened.width} vs ${dragged.width}`);

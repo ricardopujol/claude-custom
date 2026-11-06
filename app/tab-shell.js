@@ -2420,6 +2420,13 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseClick needs whole-number x and y' };
         return await api.mouseClick(cmd.x, cmd.y);
       }
+      case 'mouseWheel': {
+        // PR #233 F14: a real wheel event (Ctrl held if asked) over the selected view, so Chromium's own handling of it is what is measured
+        const whole = (v) => Number.isInteger(v) && v >= 0 && v <= 10000;
+        if (!whole(cmd.x) || !whole(cmd.y)) return { ok: false, error: 'mouseWheel needs whole-number x and y' };
+        if (!Number.isInteger(cmd.deltaY) || Math.abs(cmd.deltaY) > 2000) return { ok: false, error: 'mouseWheel needs a whole-number deltaY' };
+        return await api.mouseWheel(cmd.x, cmd.y, cmd.deltaY, cmd.ctrl === true);
+      }
       case 'key': {
         // A synthetic key sent to the SELECTED view: proves before-input-event is wired.
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };

@@ -676,6 +676,7 @@ if (typeof module !== 'undefined' && module.exports) {
   root.commandTyped = commandTyped;
   root.boxHoldsLine = boxHoldsLine;
   root.scrollCapRows = scrollCapRows;
+  root.liveBox = liveBox;              // the chat's clear compares the box's rows before and after a pass (PR #233 F2)
   root.menuPlacement = menuPlacement;
   root.planTyping = planTyping;
   root.SHELL_TAB_REFUSAL = SHELL_TAB_REFUSAL;

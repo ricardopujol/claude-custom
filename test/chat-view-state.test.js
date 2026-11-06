@@ -94,6 +94,17 @@ test('the shortcut is Ctrl+Shift+H on keydown only, with no other modifier', () 
   assert.ok(!isChatKey(null));
 });
 
+test('#172: Ctrl+0 (the digit row or the keypad) resets the chat zoom, on keydown only, with no other modifier', () => {
+  const { isChatZoomResetKey } = require('../app/chat-view-state');
+  const k = (o) => ({ type: 'keydown', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false, code: 'Digit0', key: '0', ...o });
+  assert.ok(isChatZoomResetKey(k()));
+  assert.ok(isChatZoomResetKey(k({ code: 'Numpad0' })));
+  for (const bad of [{ type: 'keyup' }, { ctrlKey: false }, { shiftKey: true }, { altKey: true }, { metaKey: true }, { code: 'Digit9', key: '9' }, { code: 'KeyO', key: 'o' }]) {
+    assert.ok(!isChatZoomResetKey(k(bad)), JSON.stringify(bad));
+  }
+  assert.ok(!isChatZoomResetKey(null));
+});
+
 test('sanitizeInput drops every control character but newline and tab, and normalises line ends', () => {
   assert.strictEqual(sanitizeInput('a\x1b[201~b\x07\x7f\x00c'), 'a[201~bc');
   assert.strictEqual(sanitizeInput('one\r\ntwo\rthree\n'), 'one\ntwo\nthree');

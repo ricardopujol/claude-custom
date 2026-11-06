@@ -20,13 +20,119 @@ test('sanitizeSize rounds into 10..24 and treats a non-number as unset (never a 
 });
 
 test('sanitizeSettings defaults every field and drops unknown keys', () => {
-  assert.deepStrictEqual(fd.sanitizeSettings(undefined), { terminalFont: null, terminalSize: null, uiFont: null });
-  assert.deepStrictEqual(fd.sanitizeSettings('x'), { terminalFont: null, terminalSize: null, uiFont: null });
+  assert.deepStrictEqual(fd.sanitizeSettings(undefined), { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null });
+  assert.deepStrictEqual(fd.sanitizeSettings('x'), { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null });
   assert.deepStrictEqual(
-    fd.sanitizeSettings({ terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI', extra: 1 }),
-    { terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI' });
-  assert.deepStrictEqual(fd.sanitizeSettings({ terminalFont: 'a;b', terminalSize: '16', uiFont: 3 }),
-    { terminalFont: null, terminalSize: null, uiFont: null });
+    fd.sanitizeSettings({ terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI', chatZoom: 130, extra: 1 }),
+    { terminalFont: 'Fira Code', terminalSize: 16, uiFont: 'Segoe UI', chatZoom: 130 });
+  assert.deepStrictEqual(fd.sanitizeSettings({ terminalFont: 'a;b', terminalSize: '16', uiFont: 3, chatZoom: '130' }),
+    { terminalFont: null, terminalSize: null, uiFont: null, chatZoom: null });
+});
+
+// --- #172: Ctrl+wheel over the chat view zooms its text, in steps of 10 %, 70 % to 200 %, remembered app-wide with the fonts ---------------
+
+test('sanitizeChatZoom: a real number, clamped into 70..200 and rounded to a 10 % step; anything else is unset, never a confident 0', () => {
+  assert.strictEqual(fd.sanitizeChatZoom(100), 100);
+  assert.strictEqual(fd.sanitizeChatZoom(134), 130);
+  assert.strictEqual(fd.sanitizeChatZoom(135), 140);
+  assert.strictEqual(fd.sanitizeChatZoom(10), 70);
+  assert.strictEqual(fd.sanitizeChatZoom(500), 200);
+  for (const bad of [null, undefined, '130', NaN, Infinity, -Infinity, {}, true, []]) assert.strictEqual(fd.sanitizeChatZoom(bad), null, String(bad));
+});
+
+test('nextChatZoom: a number of whole steps, +1 = 10 % bigger, clamped at both ends; anything but a whole number is no step', () => {
+  assert.strictEqual(fd.nextChatZoom(100, 1), 110);
+  assert.strictEqual(fd.nextChatZoom(100, -1), 90);
+  assert.strictEqual(fd.nextChatZoom(100, 3), 130);
+  assert.strictEqual(fd.nextChatZoom(200, 1), 200);
+  assert.strictEqual(fd.nextChatZoom(70, -2), 70);
+  assert.strictEqual(fd.nextChatZoom(null, 1), 110, 'unset starts from 100 %');
+  for (const none of [0, NaN, undefined, '1', 0.5, Infinity]) assert.strictEqual(fd.nextChatZoom(120, none), 120, `no step for ${String(none)}`);
+  assert.strictEqual(fd.CHAT_ZOOM_DEFAULT, 100);
+});
+
+// PR #233 F10 (Dexter 4, Miguel M2): one step per 100 px of wheel TRAVEL, not per event: a touchpad pinch is a burst of small deltas.
+const run = (events) => { let acc = null; let steps = 0; for (const [dy, t, mode] of events) { const r = fd.wheelZoomSteps(acc, dy, mode || 0, t); acc = r.acc; steps += r.steps; } return { acc, steps }; };
+
+test('wheelZoomSteps: a mouse notch (100 px) is one step; up (negative deltaY) zooms in', () => {
+  assert.strictEqual(run([[-100, 0]]).steps, 1);
+  assert.strictEqual(run([[100, 0]]).steps, -1);
+  assert.strictEqual(run([[-100, 0], [-100, 50], [-100, 100]]).steps, 3);
+  assert.strictEqual(run([[-3, 0, 1]]).steps, 1, 'deltaMode 1: three lines are one notch');
+});
+
+test('wheelZoomSteps: a touchpad burst of 15 events of -4 px (60 px) is less than one step; 25 of them (100 px) is one', () => {
+  assert.strictEqual(run(Array.from({ length: 15 }, (_, i) => [-4, i * 16])).steps, 0);
+  assert.strictEqual(run(Array.from({ length: 25 }, (_, i) => [-4, i * 16])).steps, 1);
+});
+
+test('wheelZoomSteps: a change of direction and a quiet gap both start the travel again; zero and non-finite deltas are no step and change nothing', () => {
+  const dir = run([[-60, 0], [60, 10]]);
+  assert.strictEqual(dir.steps, 0);
+  assert.strictEqual(dir.acc.sum, 60, 'the travel back started from zero');
+  assert.strictEqual(run([[-60, 0], [-60, 1000]]).steps, 0, 'a quiet gap: the second 60 px is a new gesture');
+  assert.strictEqual(run([[-60, 0], [-60, 100]]).steps, 1, 'one gesture: 120 px');
+  for (const bad of [0, NaN, Infinity, -Infinity, undefined, '5']) {
+    const r = fd.wheelZoomSteps({ sum: -50, at: 0 }, bad, 0, 10);
+    assert.strictEqual(r.steps, 0, String(bad));
+    assert.deepStrictEqual(r.acc, { sum: -50, at: 0 }, `${String(bad)} leaves the travel as it was`);
+  }
+});
+
+test('property: any run of wheel events gives at most one step per 100 px of travel, and the zoom stays a 10 % step inside 70..200', () => {
+  const fc = require('fast-check');
+  fc.assert(fc.property(fc.array(fc.tuple(fc.double({ min: -300, max: 300, noNaN: true }), fc.integer({ min: 0, max: 400 })), { maxLength: 80 }), (evs) => {
+    let acc = null; let t = 0; let z = 100; let travel = 0; let steps = 0;
+    for (const [dy, gap] of evs) {
+      t += gap;
+      const r = fd.wheelZoomSteps(acc, dy, 0, t);
+      acc = r.acc; steps += Math.abs(r.steps); travel += Math.abs(dy);
+      z = fd.nextChatZoom(z, r.steps);
+      assert.ok(z >= 70 && z <= 200 && z % 10 === 0, String(z));
+    }
+    assert.ok(steps <= Math.floor(travel / 100) + 0, `${steps} steps for ${travel} px`);
+  }), { numRuns: 300 });
+});
+
+// PR #233 F12 (Dexter 5, Miguel L5): the zoom's save, as a small machine the page drives (schedule/cancel are its timers, save its fonts:set).
+function saver() {
+  const saves = []; const timers = new Map(); let id = 0;
+  const s = fd.createChatZoomSaver({ save: (z) => saves.push(z), schedule: (fn) => { timers.set(++id, fn); return id; }, cancel: (h) => timers.delete(h) });
+  const fire = () => { const fns = [...timers.values()]; timers.clear(); fns.forEach(f => f()); };
+  return { s, saves, fire, pending: () => timers.size };
+}
+
+test('the zoom saver: a wheel run is saved once, after it settles; a record that arrives meanwhile does not undo it (the pending-run guard)', () => {
+  const { s, saves, fire } = saver();
+  assert.strictEqual(s.record(120), 120, 'the record sets what shows');
+  s.zoomed(130); s.zoomed(140);
+  assert.strictEqual(s.record(120), 140, 'a record arriving mid-run (another window, an old answer) is ignored: the run is newer');
+  fire();
+  assert.deepStrictEqual(saves, [140]);
+  assert.strictEqual(s.record(140), 140);
+  assert.strictEqual(s.record(110), 110, 'once saved, a later record (another window\'s zoom) shows');
+});
+
+test('the zoom saver: a wheel before the record has loaded is kept and saved once it loads, not reverted', () => {
+  const { s, saves, fire } = saver();
+  s.zoomed(150);
+  fire();
+  assert.deepStrictEqual(saves, [], 'nothing to patch yet: main has not answered');
+  assert.strictEqual(s.record(null), 150, 'the stored value does not undo the wheel');
+  assert.deepStrictEqual(saves, [150], 'saved exactly once, as soon as the record is known');
+  assert.strictEqual(s.record(150), 150);
+  assert.deepStrictEqual(saves, [150]);
+});
+
+test('the zoom saver: flush (the page going away) saves a run that has not settled yet, at once', () => {
+  const { s, saves, pending } = saver();
+  s.record(100);
+  s.zoomed(170);
+  s.flush();
+  assert.deepStrictEqual(saves, [170]);
+  assert.strictEqual(pending(), 0);
+  s.flush();
+  assert.deepStrictEqual(saves, [170], 'nothing pending: nothing more');
 });
 
 test('stackFor puts the pick first and always keeps the fallback stack behind it', () => {

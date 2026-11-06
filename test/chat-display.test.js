@@ -173,6 +173,19 @@ test('coming into view starts at the newest message, because a hidden log has no
   assert.strictEqual(els.log.scrollTop, 900, 'a new message while it was hidden');
 });
 
+test('keepBottom (PR #233 F11): a change that grows the log keeps a reader at the bottom there, and leaves one who scrolled up where they were', () => {
+  const { view, els } = setup();
+  let height = 900;
+  Object.defineProperty(els.log, 'scrollHeight', { configurable: true, get: () => height });
+  Object.defineProperty(els.log, 'clientHeight', { configurable: true, get: () => 300 });
+  els.log.scrollTop = 600;                                   // at the bottom
+  view.keepBottom(() => { height = 1400; });                 // a zoom step: the content grows below
+  assert.strictEqual(els.log.scrollTop, 1400, 'still at the bottom, so the next reply is followed');
+  els.log.scrollTop = 200;                                   // scrolled up to read
+  view.keepBottom(() => { height = 2000; });
+  assert.strictEqual(els.log.scrollTop, 200, 'a reader above the bottom is not moved');
+});
+
 test('Enter sends the message and clears the box; Shift+Enter is a new line; empty sends nothing', async () => {
   const { view, els, sent, win } = setup();
   els.input.value = 'do the thing';
