@@ -18,8 +18,17 @@
  * SAFE. The session's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; nothing is ever submitted (no Enter is
  * sent). The project is a temp git repo; the registry, portraits and uploads are temp folders; every CLAUDE_CUSTOM_* of an
  * enclosing tab and ELECTRON_RUN_AS_NODE are stripped. The host gets a free port and its own token (CLAUDE_CUSTOM_TOKEN),
- * so it never touches a real host's. The only process killed is the host this probe spawned, with its tree, by the pid
- * this probe holds (verify/lib/process-hygiene.js), never by name.
+ * so it never binds a real host's port or uses its token. The only process killed is the host this probe spawned, with its
+ * tree, by the pid this probe holds (verify/lib/process-hygiene.js), never by name.
+ *
+ * WHAT IT LEAVES IN THIS CHECKOUT (PR #234 Miguel Y4). host.js writes into the checkout's own .harness/ whatever its cwd, and
+ * has no seam to move that (HARNESS_DIR is beside the code). Per port, it writes hosts/<port>.json, hosts/<port>.token,
+ * harness-settings-<port>.json and (if the panel is on) state/canvas/_tab-<port>.json; a killed host can't remove them, so the
+ * probe removes its own port's. It also rewrites two SHARED files (last writer wins; other probes read them by that path):
+ * session-token and harness-settings.json. The probe saves both first and puts them back after, unless something else rewrote
+ * them meanwhile (then that writer's value stays). Measured (listing + sha256 of .harness, hosts/ and state/canvas/ before
+ * and after a run): identical. Not covered by that listing, and not undone: whatever the host writes deeper under
+ * .harness/state/ at start, the same as any probe that starts a host on this checkout.
  */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host, so its children carry the probe mark
 const { spawn, execFileSync } = require('child_process');
@@ -40,6 +49,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const hygiene = createHygieneRegistry();
 hygiene.install();
+
+const HARNESS = path.join(ROOT, '.harness');
+const SHARED_TOKEN = path.join(HARNESS, 'session-token');
+const readOrNull = (f) => { try { return fs.readFileSync(f); } catch { return null; } };
+const savedSharedToken = readOrNull(SHARED_TOKEN);   // before the host can write it
+const SHARED_SETTINGS = path.join(HARNESS, 'harness-settings.json');
+const savedSharedSettings = readOrNull(SHARED_SETTINGS);
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -85,13 +101,48 @@ const dev = path.join(tmp, 'proj', 'dev');
 let host = null;
 let hostLog = '';
 let hostExit = null;   // { code, signal } once the host is gone
+let hostPort = null;
+let hostToken = null;
+
+// After the host's tree is killed (process-hygiene runs extra cleanups after the trees, on a normal end, SIGINT or an uncaught
+// error alike; PR #234 Miguel G1): this port's own files, the shared session-token put back, the temp project removed.
+hygiene.addCleanup(() => {
+  if (hostPort !== null) {
+    // host/settings-writer.js writes the same body to harness-settings-<port>.json and the shared harness-settings.json: the shared
+    // one is put back only while it still holds this host's body (a later writer's stays).
+    const own = path.join(HARNESS, `harness-settings-${hostPort}.json`);
+    const ownBody = readOrNull(own);
+    const sharedNow = readOrNull(SHARED_SETTINGS);
+    if (ownBody !== null && sharedNow !== null && sharedNow.equals(ownBody)) {
+      try {
+        if (savedSharedSettings === null) fs.rmSync(SHARED_SETTINGS, { force: true });
+        else fs.writeFileSync(SHARED_SETTINGS, savedSharedSettings);
+      } catch (e) { console.log(`NOTE  could not put .harness/harness-settings.json back: ${e.message}`); }
+    }
+    try { fs.rmSync(own, { force: true }); } catch { /* gone */ }
+    for (const f of [path.join(HARNESS, 'hosts', `${hostPort}.json`), path.join(HARNESS, 'hosts', `${hostPort}.token`), path.join(HARNESS, 'state', 'canvas', `_tab-${hostPort}.json`)]) {
+      try { fs.rmSync(f, { force: true }); } catch { /* gone */ }
+    }
+  }
+  // Only if it still holds THIS host's token: a value someone else wrote since is theirs, and stays.
+  const now = readOrNull(SHARED_TOKEN);
+  if (hostToken !== null && now !== null && now.toString('utf8').trim() === hostToken) {
+    try {
+      if (savedSharedToken === null) fs.rmSync(SHARED_TOKEN, { force: true });
+      else fs.writeFileSync(SHARED_TOKEN, savedSharedToken, { mode: 0o600 });
+    } catch (e) { console.log(`NOTE  could not put .harness/session-token back: ${e.message}`); }
+  }
+  try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
+});
 
 async function attach(port, token, t) {
   for (let i = 0; i < 60; i++) {
     const ws = new WebSocket(`ws://127.0.0.1:${port}?token=${encodeURIComponent(token)}`);
+    // Before `open` is awaited: the host replays the screen as soon as it accepts, and a listener added after the await could miss
+    // that first frame (PR #234 Miguel G2).
+    ws.on('message', (d, isBinary) => { if (isBinary) t.write(Buffer.from(d).toString('utf8')); });
     const ok = await new Promise(r => { ws.once('open', () => r(true)); ws.once('error', () => r(false)); });
     if (ok) {
-      ws.on('message', (d, isBinary) => { if (isBinary) t.write(Buffer.from(d).toString('utf8')); });
       ws.send(JSON.stringify({ type: 'resize', cols: COLS, rows: ROWS }));
       return { ws, send: d => ws.send(JSON.stringify({ type: 'input', data: d })) };
     }
@@ -106,6 +157,8 @@ async function main() {
   execFileSync('git', ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', 'init', '-q', '-b', 'develop'], { cwd: dev, stdio: 'pipe', windowsHide: true });
   const port = await freePort();
   const token = crypto.randomBytes(16).toString('hex');
+  hostPort = port;
+  hostToken = token;
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('CLAUDE_CUSTOM_')));
   delete env.ELECTRON_RUN_AS_NODE;
   Object.assign(env, {
@@ -161,8 +214,7 @@ async function main() {
 main()
   .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
   .finally(() => {
-    hygiene._emergencyCleanup('done');   // the host this probe spawned, its tree, by the pid it holds
-    try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
+    hygiene._emergencyCleanup('done');   // the host's tree by the pid it holds, then the cleanup above (its files, the token, the temp project)
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);
   });

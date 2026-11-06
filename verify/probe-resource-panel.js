@@ -280,15 +280,23 @@ async function main() {
   // Wait for `fn`, counted in samples rather than seconds (BACKLOG #114 F3): it fails once `advances` samples reached the page after
   // the wait began and none showed it (the sampler did its part), and a sampler that delivers fewer than that before `ceilingMs` is
   // reported as starved, still a FAIL, but one that names its cause instead of looking like a missing row.
+  // A read that throws (an `{ ok: false }` reply has no `children`) is a retry inside the same bounds, like waitFor's (PR #234 Miguel Y1),
+  // and the reason says how many reads failed: a starved count made of failed reads is the probe's channel, not the sampler.
   async function waitSamples(fn, advances, ceilingMs) {
     const from = samples.n;
     const t0 = Date.now();
+    let failed = 0;
+    let lastErr = '';
+    const reads = () => (failed ? `; ${failed} read(s) of the page failed, the last: ${lastErr}` : '');
     for (;;) {
-      const v = await fn();
+      let v = null;
+      try { v = await fn(); } catch (e) { failed++; lastErr = (e && e.message) || String(e); }
       const got = samples.n - from;
-      if (v) return { v, why: `after ${got} sample(s), ${Date.now() - t0} ms` };
-      if (got >= advances) return { v: null, why: `${got} samples reached the page in ${Date.now() - t0} ms and none showed it` };
-      if (Date.now() - t0 > ceilingMs) return { v: null, why: `the sampler starved: only ${got} sample(s) in ${Date.now() - t0} ms` };
+      if (v) return { v, why: `after ${got} sample(s), ${Date.now() - t0} ms${reads()}` };
+      if (got >= advances) return { v: null, why: `${got} samples reached the page in ${Date.now() - t0} ms and none showed it${reads()}` };
+      if (Date.now() - t0 > ceilingMs) {
+        return { v: null, why: `${failed ? 'too few samples seen (the page reads failed too, so the sampler may not be the cause): ' : 'the sampler starved: '}only ${got} sample(s) in ${Date.now() - t0} ms${reads()}` };
+      }
       await sleep(500);
     }
   }
@@ -588,7 +596,13 @@ async function main() {
   const runsAfter = runsOf(memGraph(gapPop || await rs()));
   check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0',
     runsBefore !== null && runsBefore >= 1 && !!gapPop && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
-  check('8: the popover draws the break too (two or more marks in the memory graph: areas and dots)', !!gapPop && gapPop.hist.graphs[1].rest + gapPop.hist.graphs[1].dots >= 2, JSON.stringify(gapPop && gapPop.hist.graphs[1]));
+  // The run count above can't see a drop to 0 (a zero point is still a point on the line). The newest minute, read where the line
+  // resumed, must be a real memory figure (PR #234 Miguel G3: this used to repeat "two or more marks", which the run count implies).
+  await view(app, 'resourcesHistoryDo', { op: 'hover', kind: 'mem', frac: 0.995 });
+  const resumed = await waitFor(async () => { const g = memGraph(await rs()); return g && g.cursor && /^now · memory \d/.test(g.readout) ? g : null; }, 5000, 150);
+  const resumedGb = resumed ? Number((/^now · memory (\d+(\.\d+)?) GB/.exec(resumed.readout) || [])[1]) : NaN;
+  check('8: after the break the line resumes at a real figure, not 0 (the newest minute reads the machine\'s memory in GB, above 0)',
+    !!resumed && resumedGb > 0, JSON.stringify(resumed));
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'resource-history-gap.png') });
   await view(app, 'resourcesHistoryDo', { op: 'esc' });
   // the popover also closes when the window loses focus / the page hides (minimise hides it)
