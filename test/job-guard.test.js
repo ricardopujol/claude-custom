@@ -469,6 +469,34 @@ test('settled: waits for KILLED (or KILL-FAILED), at most ms; at once when no st
   assert.strictEqual(await sc, 'kill-unanswered', 'a helper that left without answering');
 });
 
+test('leave (the host exiting): a stop still held is dropped with a line and DISARM; one sent and unanswered says so; an answered one is left as it is (PR #235 K4a)', async () => {
+  const h = fakeHelper();
+  const outcomes = [];
+  const { g, lines } = guardWith(h, { timeoutMs: 5000, onOutcome: (o) => outcomes.push(o) });
+  g.attach({ pid: 777, startOf: () => new Promise(() => {}) });   // the read never lands: the arm never comes
+  assert.strictEqual(g.kill(), 'held');
+  assert.strictEqual(await g.leave(30), 'dropped: host exiting');
+  assert.ok(lines.some((l) => /a held stop was dropped \(host exiting\): processes the session detached will survive it/.test(l)), lines.join(' | '));
+  assert.strictEqual(h.stdin.written[h.stdin.written.length - 1], 'DISARM\n');
+  assert.ok(!h.stdin.written.includes('KILL\n'));
+  assert.strictEqual(outcomes[outcomes.length - 1], 'dropped: host exiting', 'the stopper hears it (noteJob)');
+
+  const b = await armed();
+  b.g.kill();
+  assert.strictEqual(await b.g.leave(30), 'kill-unanswered');
+  assert.ok(b.lines.some((l) => /the host is exiting before the job answered the stop/.test(l)), b.lines.join(' | '));
+
+  const c = await armed();
+  c.g.kill();
+  const lv = c.g.leave(5000);
+  c.h.say('KILLED');
+  assert.strictEqual(await lv, 'killed');
+
+  const d = await armed();
+  assert.strictEqual(await d.g.leave(5000), 'armed', 'no stop asked: nothing to say, no wait');
+  assert.deepStrictEqual(d.h.stdin.written, ['START 1234\n'], 'and the job is left alone');
+});
+
 test('KILL_ANSWER_MS is a few seconds: long enough for a loaded PowerShell to answer, short enough not to hold a host up', () => {
   assert.ok(KILL_ANSWER_MS >= 1000 && KILL_ANSWER_MS <= 10000, String(KILL_ANSWER_MS));
 });

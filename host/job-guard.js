@@ -46,11 +46,11 @@
  * A STOP BEFORE THE ARM is held, and sent only once the helper reports the start it was sent (kill() answers 'held'); a held stop
  * that can't be sent (no proof, a failure, a timeout) is dropped and says so. THE ANSWER IS WAITED FOR: the helper is in libuv's
  * kill-on-close job, so it dies with the host, and a host that exits right after KILL loses it (measured, PR #235 K4). The host
- * waits for settled(KILL_ANSWER_MS) before it exits.
+ * exits through leave(KILL_ANSWER_MS): it waits for the answer, and a stop still held or unanswered then is said in host.log.
  *
  *   createJobGuard({ spawnFn, platform, powershell, log, timeoutMs, now, onOutcome })
  *     -> { attach({ pid, startOf, spawnWindow }) -> Promise<result>, kill() -> 'sent' | 'held' | 'not-armed', disarm(), state(), outcome(),
- *          settled(ms) -> Promise<outcome> }
+ *          settled(ms) -> Promise<outcome>, leave(ms) -> Promise<outcome> (settled, then an unanswered stop is said and closed) }
  *       result   { ok: true, ms, start } | { ok: false, reason }    reason: 'not-windows' | 'bad-pid' | 'spawn-failed' | 'unproven-start' |
  *                                                                   'start-mismatch' | 'failed: <why>' | 'timeout' | 'helper-exited'
  *       outcome  null | 'arming' | 'armed' | 'held' | 'sent' | 'killed' | 'kill-failed: <why>' | 'kill-unanswered' |
@@ -396,7 +396,20 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
     });
   }
 
-  return { attach, kill, disarm, settled, state: () => (cur ? cur.st : 'idle'), outcome: () => (cur ? cur.outcome : null) };
+  // The host is exiting: wait for a stop's answer as settled() does, then say what became of a stop still unanswered, so host.log and
+  // the reported outcome never leave it at 'held' or 'sent' (PR #235 K4a). A held stop is dropped (the helper is told DISARM); a sent
+  // one is 'kill-unanswered'. Resolves with the final outcome.
+  function leave(ms) {
+    return settled(ms).then(() => {
+      const s = cur;
+      if (!s) return null;
+      if (s.outcome === 'held') release(s, 'host exiting');
+      else if (s.outcome === 'sent') { say('the host is exiting before the job answered the stop: whether it ended is unknown'); setOutcome(s, 'kill-unanswered'); }
+      return s.outcome;
+    });
+  }
+
+  return { attach, kill, disarm, settled, leave, state: () => (cur ? cur.st : 'idle'), outcome: () => (cur ? cur.outcome : null) };
 }
 
 module.exports = { createJobGuard, helperScript, splitLines, parseLine, verdict, spawnWindowOf, msToFiletime, READY_TIMEOUT_MS, KILL_ANSWER_MS, WINDOW_EARLY_MS, WINDOW_LATE_MS };

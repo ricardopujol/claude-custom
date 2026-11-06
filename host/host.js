@@ -2218,7 +2218,8 @@ function endHost(exitCode, signal, extra = {}, lingerMs = 0) {
   if (lingerMs > 0) { setTimeout(() => process.exit(exitCode ?? 0), lingerMs); return; }
   // A stop's KILL is answered by the job helper, which dies with this host (libuv's kill-on-close job): a host that exited at once
   // lost it (measured, PR #235 K4). So the host waits for the answer, at most KILL_ANSWER_MS; with no stop waiting, it exits at once.
-  jobGuard.settled(KILL_ANSWER_MS).then(() => process.exit(exitCode ?? 0), () => process.exit(exitCode ?? 0));
+  // A stop still held or unanswered by then is said in host.log and the stop's outcome (K4a).
+  jobGuard.leave(KILL_ANSWER_MS).then(() => process.exit(exitCode ?? 0), () => process.exit(exitCode ?? 0));
 }
 
 // The machine is deliberately passive: it schedules nothing itself, so the host

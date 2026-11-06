@@ -105,7 +105,7 @@ test('#127: the stopper ends the job (for the stops jobEndsFor names), not the b
   const stop = block('const boundedStopPty = ', '\n');
   assert.doesNotMatch(stop, /jobGuard/, 'one place asks for the job: the stopper');
   const end = block('function endHost(', '\n}\n');
-  assert.match(end, /jobGuard\.settled\(KILL_ANSWER_MS\)\.then\(\(\) => process\.exit\(exitCode \?\? 0\), \(\) => process\.exit\(exitCode \?\? 0\)\);/, 'a KILL in flight is answered before the helper dies with the host');
+  assert.match(end, /jobGuard\.leave\(KILL_ANSWER_MS\)\.then\(\(\) => process\.exit\(exitCode \?\? 0\), \(\) => process\.exit\(exitCode \?\? 0\)\);/, 'a KILL in flight is answered before the helper dies with the host, and one left unanswered is said (K4a)');
 });
 
 test('the night budget follows the night\'s payload and stops the session at its deadline', () => {
