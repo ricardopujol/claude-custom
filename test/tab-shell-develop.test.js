@@ -125,11 +125,33 @@ test('#160: a "no" leaves develop exactly as it was', async () => {
   assert.strictEqual(rows(h).some(r => r.key === key('dev')), false);
 });
 
-test('#160: develop alone in its project (no lanes) is a lone tab and is not closable', async () => {
-  const h = await opened({ list: porcelain([['dev', 'develop']]) });
-  assert.strictEqual(h.shell.model()[0].closable, false);
-  assert.deepStrictEqual(await h.shell.closeTab(key('dev')), { ok: false, error: 'not closable' });
-  assert.deepStrictEqual(h.confirms, []);
+test('#160: develop closes even as the last tab the reducer holds (every lane closed by hand), and in a project with no lanes', async () => {
+  const h = await opened({ running: { 7701: wt('feat-a') } });
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.shell._state().tabs.map(t => normPath(t.path)), [key('dev'), key('feat-b')]);
+  await h.shell.closeTab(key('feat-b'));     // not running, but closable: it was a Not started lane (its x if selected)
+  assert.deepStrictEqual(h.shell._state().tabs.map(t => normPath(t.path)), [key('dev')], 'the reducer holds develop alone');
+  assert.strictEqual(h.shell.model()[0].closable, true, 'its x is still drawn (found live by verify/probe-develop-merged.js)');
+  assert.deepStrictEqual(await h.shell.closeTab(key('dev')), { ok: true });
+  assert.strictEqual(rows(h)[0].key, key('dev'));
+  const lone = await opened({ list: porcelain([['dev', 'develop']]) });
+  assert.strictEqual(lone.shell.model()[0].closable, true);
+  assert.deepStrictEqual(await lone.shell.closeTab(key('dev')), { ok: true });
+  assert.strictEqual(lone.shell.plusMenu().develop.key, key('dev'), 'one click brings it back');
+});
+
+test('#160: a single-folder window still has no close', async () => {
+  const single = createShell({
+    mode: 'single', cwd: wt('dev'), git: { list: async () => '', marker: () => null },
+    ops: { available: () => ({}), create: async () => ({}), setup: async () => ({}), remove: async () => ({}) },
+    hosts: { choosePort: async () => ({ port: 7790, action: 'spawn' }), probe: async () => 'listening', spawn: () => {}, wait: async () => true,
+      tokenFor: () => 't', tokenFile: () => 't', newToken: () => 't', control: async () => ({ ok: true }), identity: () => null, readToken: () => null },
+    views: { create: () => ({}), destroy: () => {}, send: () => {}, owns: () => false },
+    ui: { confirmClose: async () => true, changed: () => {}, focusWindow: () => {}, isFocused: () => true },
+  });
+  await single.open();
+  assert.strictEqual(single.model()[0].closable, false);
+  assert.deepStrictEqual(await single.closeTab(single.model()[0].key), { ok: false, error: 'not closable' });
 });
 
 test('#160: a stop that fails keeps develop with the Stop offer, as it keeps a lane (PR #231)', async () => {

@@ -455,7 +455,10 @@ function createShell(deps) {
     // pickAny: false -- with develop closed and nothing chosen, nothing is selected (#160), never a lane nobody picked.
     const base = tabModel.stripModel(state, runtime(), sideSelected ? companionParentOf(sideSelected) : selectedKey, { keyOf, order, pickAny: false });
     const out = [];
-    for (const e of base) {
+    for (const raw of base) {
+      // #160: in a project window develop has a close even as the last tab (the reducer may hold nothing else once every lane is
+      // closed by hand): the Lanes and + menus bring it back. The model's "never a lone tab" still holds for a single-folder window.
+      const e = raw.isDev && mode === 'tabs' ? { ...raw, closable: true } : raw;
       const mine = tabs.get(e.key);
       // While its side tab is the one showing, the branch tab is not selected, so it can call for a look again.
       out.push(sideSelected !== null && e.selected
@@ -1216,9 +1219,9 @@ function createShell(deps) {
   async function closeTabOnce(key, { ifSafe = false, stop = false, auto = false } = {}) {
     const tab = tabByKey(key);
     if (!tab || mode !== 'tabs') return { ok: false, error: 'not closable' };
-    // Develop closes like a lane (#160), but never as the window's one worktree (the model's `closable`: never a lone tab), and
-    // never by the merged close (#139): it is never merged.
-    if (tab.isDev && (auto === true || state.tabs.length <= 1)) return { ok: false, error: 'not closable' };
+    // Develop closes like a lane in every project window (#160), even as the last tab there (the menus bring it back), but never
+    // by the merged close (#139): it is never merged. A single-folder window has no close at all (mode check above).
+    if (tab.isDev && auto === true) return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
     if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
@@ -2427,6 +2430,12 @@ async function handleProbeCommand(line, api, expectedToken) {
         // Only ever a picture: never a path to some other file it could clobber.
         if (typeof cmd.file !== 'string' || !/\.png$/i.test(cmd.file)) return { ok: false, error: 'screenshot needs a .png file' };
         return await api.screenshot(cmd.file);
+      // #139 / #160: the Lanes ▾ or + menu as built; `item` clicks that item, `shot` (a .png) is a picture of its items.
+      case 'menu':
+        if (cmd.which !== 'lanes' && cmd.which !== 'plus') return { ok: false, error: 'menu needs which: lanes or plus' };
+        if (cmd.item !== undefined && typeof cmd.item !== 'string') return { ok: false, error: 'menu item must be a label' };
+        if (cmd.shot !== undefined && !(typeof cmd.shot === 'string' && /\.png$/i.test(cmd.shot))) return { ok: false, error: 'menu shot needs a .png file' };
+        return await api.menu(cmd.which, cmd.item, cmd.shot);
       case 'create':
         if (typeof cmd.branch !== 'string') return { ok: false, error: 'create needs a branch' };
         return await api.create(cmd.branch);

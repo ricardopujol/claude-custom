@@ -400,8 +400,10 @@ test('PR #80 Miguel G3: a branch name in a native menu label goes through menuTe
   // #170 S8: the template is app/tab-shell.js lanesMenuTemplate now, whose rows go through menuText (test/tab-shell-develop.test.js
   // pins `feat/r&d` -> `feat/r&&d`); main must build the menu with it, not by hand.
   const c = channels.find(x => x.name === 'strip:lanes');
-  assert.match(callText(MAIN, c.at), /lanesMenuTemplate\(tabShell\.lanesMenu\(asked\)/);
-  assert.doesNotMatch(callText(MAIN, c.at), /label: `\$\{/, 'no hand-built row labels left in main');
+  assert.match(callText(MAIN, c.at), /Menu\.buildFromTemplate\(lanesMenuFor\(asked\)\)/);
+  const builder = MAIN.slice(MAIN.indexOf('function lanesMenuFor('), MAIN.indexOf('function lanesMenuFor(') + 400);
+  assert.match(builder, /lanesMenuTemplate\(tabShell\.lanesMenu\(asked\)/);
+  assert.doesNotMatch(builder, /label: `\$\{/, 'no hand-built row labels left in main');
 });
 
 test('#139 + #141: the Lanes and reorder channels are the strip page\'s alone, and check what they were sent', () => {
@@ -413,8 +415,10 @@ test('#139 + #141: the Lanes and reorder channels are the strip page\'s alone, a
   const lanes = callText(MAIN, channels.find(x => x.name === 'strip:lanes').at);
   assert.match(lanes, /Array\.isArray\(hidden\)/);
   assert.match(lanes, /typeof k === 'string'/, 'only strings are looked up');
-  assert.match(lanes, /tabShell\.lanesMenu\(/);
-  assert.match(lanes, /r\.action === 'reopen' \? tabShell\.reopen\(r\.key\) : tabShell\.select\(r\.key\)/);
+  assert.match(lanes, /lanesMenuFor\(asked\)/);
+  const builder = MAIN.slice(MAIN.indexOf('function lanesMenuFor('), MAIN.indexOf('function lanesMenuFor(') + 400);
+  assert.match(builder, /tabShell\.lanesMenu\(/);
+  assert.match(builder, /r\.action === 'reopen' \? tabShell\.reopen\(r\.key\) : tabShell\.select\(r\.key\)/);
   const reorder = callText(MAIN, channels.find(x => x.name === 'strip:reorder').at);
   assert.match(reorder, /typeof key !== 'string'/);
   assert.match(reorder, /tabShell\.reorder\(key, typeof before === 'string' \? before : null\)/);

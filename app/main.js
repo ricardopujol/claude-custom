@@ -501,6 +501,26 @@ function tabMenuTemplate(key) {
   ];
 }
 
+/**
+ * The Lanes ▾ menu's template (BACKLOG #139): the tabs the strip page couldn't fit, then the lanes with no tab (a closed develop
+ * first, #160; Not started; Merged, whose closed rows are the merged close's Undo). A row selects the lane, which starts its
+ * session and gives it a tab, or reopens one closed. The strip's popup builds it, and so does the probe driver's `menu`, so the
+ * item a probe clicks is the item a person clicks.
+ */
+function lanesMenuFor(asked) {
+  return lanesMenuTemplate(tabShell.lanesMenu(asked),
+    (r) => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')));
+}
+
+/** The + menu's template: a closed develop first (#160), New branch…, the selected lane's shell tab. Built the same two ways. */
+function plusMenuFor() {
+  return plusMenuTemplate(tabShell.plusMenu(), {
+    reopen: (key) => tabShell.reopen(key).catch(logShellError('reopen')),     // #160: a closed develop is the first row
+    openCreate: () => tabShell.openCreate(),
+    openShell: (target) => tabShell.openShell(target).catch(logShellError('open shell')),
+  });
+}
+
 let win = null;
 let tabShell = null;
 // BACKLOG #119 A6: `gh issue list/view` for the + form's "From an issue" list, cached 60 s (host/issues.js). Made in whenReady.
@@ -1307,9 +1327,7 @@ function registerIpc() {
   ipcMain.on('strip:lanes', (e, hidden) => {
     if (!fromStrip(e)) return;
     const asked = Array.isArray(hidden) ? hidden.filter(k => typeof k === 'string').slice(0, 200) : [];
-    const template = lanesMenuTemplate(tabShell.lanesMenu(asked),
-      (r) => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')));
-    Menu.buildFromTemplate(template).popup({ window: win });
+    Menu.buildFromTemplate(lanesMenuFor(asked)).popup({ window: win });
   });
   // Drag to reorder (#141): a lane's tab dropped before another's (null: the end). The shell checks both keys and saves the order.
   ipcMain.on('strip:reorder', (e, key, before) => {
@@ -1320,11 +1338,7 @@ function registerIpc() {
   // are in the Lanes menu now.
   ipcMain.on('strip:plus', (e) => {
     if (!fromStrip(e)) return;
-    Menu.buildFromTemplate(plusMenuTemplate(tabShell.plusMenu(), {
-      reopen: (key) => tabShell.reopen(key).catch(logShellError('reopen')),     // #160: a closed develop is the first row
-      openCreate: () => tabShell.openCreate(),
-      openShell: (target) => tabShell.openShell(target).catch(logShellError('open shell')),
-    })).popup({ window: win });
+    Menu.buildFromTemplate(plusMenuFor()).popup({ window: win });
   });
   // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so its brief is written.
   ipcMain.on('strip:create', (e, branch, issue) => {
@@ -1777,6 +1791,42 @@ async function capture(wc, file) {
 // The strip's file next to the view's: <name>.png -> <name>.strip.png
 const stripFileFor = (file) => file.replace(/(\.png)?$/i, '.strip.png');
 
+/**
+ * Probe only (#139 / #160): a picture of the Lanes ▾ or + menu for a look before merge. capturePage can't see a native popup, and a
+ * screen capture would take whatever else is on the screen with it, so the probe DRAWS the items Electron built (`menu.items`:
+ * labels, separators, disabled rows) as a box under the button in the strip page, captioned as the probe's drawing, captures the
+ * strip page alone (capturePage: only this app's pixels), then removes the box. The OS draws the real popup's chrome.
+ */
+async function photographMenu(menu, which, file) {
+  const items = menu.items.map(i => ({ label: i.label, type: i.type, enabled: i.enabled }));
+  const req = JSON.stringify(JSON.stringify({ id: which === 'plus' ? 'plus' : 'lanes', name: which === 'plus' ? '+' : 'Lanes ▾', items }));
+  await win.webContents.executeJavaScript(`(() => {
+    const r = JSON.parse(${req});
+    const b = document.getElementById(r.id);
+    const at = b ? b.getBoundingClientRect() : { left: 0, bottom: 0 };
+    const box = document.createElement('div');
+    box.id = 'probe-menu-shot';
+    box.style.cssText = 'position:fixed;z-index:2147483647;top:' + Math.round(at.bottom + 2) + 'px;left:' + Math.max(4, Math.min(Math.round(at.left), innerWidth - 340)) + 'px;min-width:300px;background:#2b2b2b;color:#eee;font:13px "Segoe UI",sans-serif;border:1px solid #555;box-shadow:0 6px 16px rgba(0,0,0,.55);padding:4px 0';
+    const cap = document.createElement('div');
+    cap.textContent = 'probe drawing of the ' + r.name + ' menu, from the items Electron built';
+    cap.style.cssText = 'font-size:10px;color:#8fa98f;padding:2px 12px 5px';
+    box.appendChild(cap);
+    for (const it of r.items) {
+      const d = document.createElement('div');
+      if (it.type === 'separator') d.style.cssText = 'border-top:1px solid #555;margin:4px 0';
+      else { d.textContent = it.label; d.style.cssText = 'padding:5px 28px;white-space:pre;' + (it.enabled ? '' : 'color:#8a8a8a'); }
+      box.appendChild(d);
+    }
+    document.body.appendChild(box);
+    return true; })()`);
+  try {
+    await new Promise(r => setTimeout(r, 200));
+    return await capture(win.webContents, file);
+  } finally {
+    await win.webContents.executeJavaScript("(() => { const b = document.getElementById('probe-menu-shot'); if (b) b.remove(); return true; })()").catch(() => {});
+  }
+}
+
 // CLAUDE_CUSTOM_SCREENSHOT=<file> renders the real window, waits for the TUI to
 // draw, writes a PNG and exits. The GUI is the one surface the headless probes
 // cannot reach, so this is how it gets checked at all rather than assumed to
@@ -1923,6 +1973,10 @@ function startProbeDriver(port) {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, stripLayout, viewDom, noMenuBar, windowFrame,
         // 1B: the keys main says have a tab, and the Lanes menu's rows (Not started / Merged, with the ones closed by hand)
         stripKeys: snap.strip.map(e => e.key), lanes: snap.lanes,
+        // #139 / #160: the merged close's notice, and whether develop is closed (the pane's empty-window line)
+        mergedNotice: snap.mergedNotice || null, devClosed: snap.devClosed === true,
+        stripAlert: await win.webContents.executeJavaScript("(() => { const a = document.getElementById('strip-alert'); return a && !a.hidden ? { text: a.textContent, kind: a.className } : null; })()").catch(() => null),
+        stripPane: await win.webContents.executeJavaScript("(() => { const p = document.getElementById('pane'); return p && !p.hidden ? (document.getElementById('pane-text') || {}).textContent || '' : null; })()").catch(() => null),
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
         // #119 A6: whether the selected tab's page is showing (it steps aside while the form's issue list is open); null if unreadable.
         selectedViewVisible: (() => { const v = selectedView(); try { return v && typeof v.getVisible === 'function' ? v.getVisible() : null; } catch { return null; } })(),
@@ -2042,6 +2096,23 @@ function startProbeDriver(port) {
       if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
       hit.click();
       return { ok: true, items };
+    },
+    // #139 / #160: the Lanes ▾ or + menu as ELECTRON built it from the popup's own template; given an item's label, that item's own
+    // click; given a .png `shot`, a picture of those items drawn under the button in the strip page (photographMenu).
+    async menu(which, item, shot) {
+      const template = which === 'plus' ? plusMenuFor() : lanesMenuFor([]);
+      const built = Menu.buildFromTemplate(template);
+      const items = built.items.map(i => ({ label: i.label, type: i.type, enabled: i.enabled }));
+      let shotBytes = null;
+      if (typeof shot === 'string') {
+        try { shotBytes = await photographMenu(built, which === 'plus' ? 'plus' : 'lanes', shot); } catch (err) { return { ok: false, error: `photograph: ${err.message}`, items }; }
+      }
+      if (item === undefined) return { ok: true, items, shotBytes };
+      const hit = built.items.find(i => i.type !== 'separator' && i.label === item);
+      if (!hit) return { ok: false, error: `no item ${item}`, items };
+      if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
+      hit.click();
+      return { ok: true, items, shotBytes };
     },
     // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
     // pointer events decide what is hovered, as for a mouse.

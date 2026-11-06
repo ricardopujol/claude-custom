@@ -2219,6 +2219,16 @@ test('M4: screenshot writes only a .png', async () => {
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'shot.PNG' }), api), { ok: true, file: 'shot.PNG' });
 });
 
+test('#139 / #160 probe: menu writes only a .png, and names only the Lanes or + menu', async () => {
+  const api = { menu: async (which, item, shot) => ({ ok: true, which, item, shot }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'window-shot', file: 'w.png' }), api), { ok: false, error: 'unknown command: window-shot' }, 'no screen capture command');
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'tab' }), api), { ok: false, error: 'menu needs which: lanes or plus' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'lanes', item: 3 }), api), { ok: false, error: 'menu item must be a label' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'plus', shot: 'x.txt' }), api), { ok: false, error: 'menu shot needs a .png file' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'plus', shot: 'm.png' }), api), { ok: true, which: 'plus', item: undefined, shot: 'm.png' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'lanes', item: 'develop  (closed)' }), api), { ok: true, which: 'lanes', item: 'develop  (closed)', shot: undefined });
+});
+
 test('M4: the line reader splits on newlines and gives up on a line longer than its cap', () => {
   const r = probeLineReader(16);
   assert.deepStrictEqual(r.push('ab\ncd'), { lines: ['ab'], overflow: false });
