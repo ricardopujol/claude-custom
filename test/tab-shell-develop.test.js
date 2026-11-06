@@ -324,4 +324,9 @@ test('#160 plusMenuTemplate: a closed develop is the first item, then a separato
   withDev[2].click();
   assert.deepStrictEqual(calls, [['reopen', 'd'], ['create']]);
   assert.strictEqual(plusMenuTemplate({ ...base, create: { enabled: false, why: 'creating…' }, develop: null }, acts)[0].label, 'New branch… (creating…)');
+  // #119 A5's shell item: its label when enabled, and its click opens the shell for the item's target lane
+  const shellOn = plusMenuTemplate({ ...base, develop: null, shell: { enabled: true, label: 'Shell tab', why: null, target: 'lane-k' } }, acts);
+  assert.deepStrictEqual([shellOn[1].label, shellOn[1].enabled], ['Shell tab', true]);
+  shellOn[1].click();
+  assert.deepStrictEqual(calls[calls.length - 1], ['shell', 'lane-k']);
 });

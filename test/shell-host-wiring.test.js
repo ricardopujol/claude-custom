@@ -128,9 +128,8 @@ test('main.js: the + menu offers a Shell tab for the selected lane', () => {
   const builder = MAIN.slice(MAIN.indexOf('function plusMenuFor('), MAIN.indexOf('function plusMenuFor(') + 500);
   assert.match(builder, /plusMenuTemplate\(tabShell\.plusMenu\(\)/);
   assert.match(builder, /openShell: \(target\) => tabShell\.openShell\(target\)/);
-  const SHELL = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8');
-  assert.match(SHELL, /m\.shell\.enabled \? m\.shell\.label : `\$\{m\.shell\.label\} \(\$\{m\.shell\.why\}\)`/);
-  assert.match(SHELL, /click: \(\) => acts\.openShell\(m\.shell\.target\)/);
+  // The item's label and its click on the lane's target are plusMenuTemplate's, pinned by behaviour in test/tab-shell-develop.test.js
+  // (not read here as text: tab-shell.js is mutated, test/stryker-config.test.js).
 });
 
 test('main.js: the probe driver can open a shell by the branch tab\'s label', () => {
