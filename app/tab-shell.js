@@ -862,6 +862,7 @@ function createShell(deps) {
     // A tab that is looked at and worked in again is no longer the one that was asked to stop: the Stop offer goes (PR #231 Dexter M1),
     // so a later Stop is a plain close and asks (an edit made since would be lost otherwise).
     closeStuck.delete(next);
+    mergedPoke(next);     // looked at: a merged lane's safe check looks again at once (P7)
     selectedKey = next;
     const tab = tabByKey(next);
     let started = Promise.resolve();
@@ -1045,14 +1046,22 @@ function createShell(deps) {
    */
   function closeMergedPass(merged) {
     const runs = [];
+    mergedPolls++;
     for (const t of [...tabs.values()]) {
       if (t.isDev || isCompanionEntry(t) || t.key === devKey) continue;
-      if (!merged || merged[t.key] !== true || phaseOf(t.key) !== 'finishing') continue;
+      if (!merged || merged[t.key] !== true || phaseOf(t.key) !== 'finishing') { gitBackoff.delete(t.key); continue; }
       if (spared.has(t.key) || mergedTried.has(t) || mergedBusy.has(t.key) || closing.has(t.key) || ending.has(t.key)) continue;
       if (stuckFor(t.key) !== null) continue;     // a close already failed to end its host: the Stop offer is the person's to press
       if (!t.started || t.starting || t.ended === true) continue;     // no session: 1B gives it no tab, there is nothing to close
+      const held = gitBackoff.get(t.key);
+      if (held && mergedPolls < held.next) continue;     // git said no a moment ago (PR #236 Dexter 12, Miguel Y2): not read again yet
       mergedBusy.add(t.key);
+      gitRefused.delete(t.key);
       runs.push(closeTab(t.key, { auto: true }).then((r) => {
+        if (gitRefused.has(t.key)) {
+          const wait = Math.min(GIT_BACKOFF_MAX, held ? held.wait * 2 : 1);
+          gitBackoff.set(t.key, { wait, next: mergedPolls + wait + 1 });
+        } else gitBackoff.delete(t.key);
         if (r && (r.kept === true || r.hostEnded === true)) mergedTried.add(t);     // one try per record: a stop that failed, or one that ended the host
         if (r && typeof r.notSafe === 'string' && mergedWhy.get(t.key) !== r.notSafe) {
           mergedWhy.set(t.key, r.notSafe);
@@ -1061,6 +1070,21 @@ function createShell(deps) {
       }, (err) => log(`[shell] ${t.key}: merged close threw: ${errorText(err)}`)).finally(() => mergedBusy.delete(t.key)));
     }
     lastMergedPass = Promise.all(runs);
+  }
+
+  // PR #236 Dexter 12 / Miguel Y2: a merged lane git keeps (uncommitted, unpushed, HEAD past the merge, git can't say) changes only
+  // with git activity, and each read is 4-5 git spawns. After a refusal from git its reads are skipped for 1, 2, 4, 8, then 16 polls
+  // (the cap): git is read on polls 1, 3, 6, 11, 20, 37, 54... after the first, at most 17 polls (~51 s at the 3 s poll) apart. A
+  // refusal that isn't git's (a turn, a draft, a reader edit) is looked at again on the next poll, as before: those checks are
+  // cheap and a page ask only happens once git has passed. Anything that can change the answer looks again at once (mergedPoke).
+  const GIT_BACKOFF_MAX = 16;
+  let mergedPolls = 0;
+  const gitBackoff = new Map();      // key -> { wait, next }: the poll number before which git isn't read again for it
+  const gitRefused = new Map();      // key -> the git reason the last merged check stopped at (set by mergedCloseBlocker)
+  /** Something that can change whether this lane is safe happened (a selection, a status change, a companion closed): look at once. */
+  function mergedPoke(key) {
+    const lane = companionParentOf(key) || key;
+    gitBackoff.delete(lane);
   }
 
   // #139: the page's own answer to "is your CLI box at rest?", by id, as Type /merged's `typed` answers are.
@@ -1105,8 +1129,10 @@ function createShell(deps) {
     let why = cheapBlocker(tab, null);
     if (why) return why;
     const g = await gitFactsOf(tab);
-    why = cheapBlocker(tab, g);
+    why = cheapBlocker(tab, null);     // the read took a moment: the cheap facts first again
     if (why) return why;
+    why = cheapBlocker(tab, g);        // so only git's part can say no here
+    if (why) { gitRefused.set(tab.key, why); return why; }     // closeMergedPass backs off git's reads for it
     // The pages are asked LAST (PR #236 Dexter 6 A): a box read before git's slow reads could be typed into before the stop.
     const box = await askBox(tab);
     if (box !== true) return box === false ? 'its input box holds text, or a dialog is open' : "its page didn't say what its input box holds";
@@ -1773,6 +1799,7 @@ function createShell(deps) {
     }
     if (tabStatusLib.sameStatus(tab.status, next)) return true;
     tab.status = next;
+    mergedPoke(tab.key);     // a turn ended, a dialog went: a merged lane's safe check looks again at once (P7)
     publish();
     return true;
   }
@@ -2248,6 +2275,7 @@ function createShell(deps) {
     const showing = selectedKey === key;
     dropSide(key, { stop: false });
     const parentKey = companionParentOf(key);
+    mergedPoke(parentKey);     // its lane's merged check looks again at once (P7)
     if (showing && tabs.has(parentKey)) select(parentKey);     // a start it needs reports its own errors
     else publish();
     log(`[shell] closed ${key}`);

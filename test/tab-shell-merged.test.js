@@ -290,6 +290,55 @@ test('#139: merged but uncommitted, unpushed, an agent here, or HEAD past the me
   }
 });
 
+// --- PR #236 Dexter 12 / Miguel Y2: a merged lane git keeps isn't read every 3 s for ever -----------------
+
+test('#139 P7: after git says no, its reads back off: polls 1, 3, 6, 11, 20, 37 of 40 read git, and no page is asked', async () => {
+  const h = await liveThenMerged();
+  h.facts = { ...GIT_OK, headInDevelop: false };     // a commit after the merge: git keeps it, and nothing else will change that soon
+  const readOn = [];
+  for (let i = 1; i <= 40; i++) {
+    const before = h.factReads || 0;
+    await h.poll();
+    if ((h.factReads || 0) > before) readOn.push(i);
+  }
+  assert.deepStrictEqual(readOn, [1, 3, 6, 11, 20, 37], 'skips of 1, 2, 4, 8, 16, then 16 (the cap)');
+  assert.strictEqual(h.boxAsks, 0, 'git said no first: no page is asked');
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.strictEqual(h.logs.filter(l => /merged, kept open: /.test(l)).length, 1, 'said once');
+});
+
+test('#139 P7: a selection, a status change or a companion closing looks again at once', async () => {
+  for (const [what, poke] of [
+    ['a selection', (h) => h.shell.select(key('feat-a'))],
+    ['a status change (a turn that ended)', (h) => h.report('feat-a', { ...AT_REST, messages: 3 })],
+    ['its side session closing', async (h) => { await h.shell.openSide(key('feat-a')); await flush(); await h.shell.closeTab(SIDE_KEY()); }],
+  ]) {
+    const h = await liveThenMerged();
+    h.facts = { ...GIT_OK, dirtyCount: 1 };
+    await h.poll();                       // read 1: kept, backs off one poll
+    await h.poll();                       // skipped
+    await h.poll();                       // read 2: kept, backs off two
+    const reads = h.factReads;
+    await h.poll();                       // skipped
+    assert.strictEqual(h.factReads, reads, `${what}: backing off`);
+    h.facts = { ...GIT_OK };              // the person committed and the file is clean now
+    await poke(h);
+    await flush();
+    await h.poll();
+    assert.ok(h.factReads > reads, `${what}: read again at once`);
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, `${what}: and closed`);
+  }
+});
+
+test('#139 P7: a refusal that isn\'t git\'s (a turn, a draft) backs nothing off: the next poll looks again', async () => {
+  const h = await liveThenMerged();
+  h.boxClear = false;
+  await h.poll();
+  h.boxClear = true;
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
 // --- PR #236 Dexter 1: the close ends the lane's side session and shell too, so they are judged too -----
 
 const SIDE_KEY = () => sideKeyOf(key('feat-a'));
@@ -661,6 +710,7 @@ test('#139 PROPERTY: a merged close happens only on a poll whose marker read mer
     await flush();
     let closedOn = -1;
     let everMerged = false;
+    let gitBackedOff = false;     // a poll ended in a refusal of git's: later polls may skip git's reads (P7)
     for (let i = 0; i < polls.length; i++) {
       const p = polls[i];
       if (p.merged) h.markers[key('feat-a')] = 'feat/a'; else delete h.markers[key('feat-a')];
@@ -670,10 +720,12 @@ test('#139 PROPERTY: a merged close happens only on a poll whose marker read mer
       h.boxClear = p.box;
       h.report('feat-a', { ...AT_REST, working: p.working, turn: p.working ? 'turn' : (p.needs ? 'prompt' : 'idle'), needsInput: p.needs });
       const before = h.stops().length;
+      const readsBefore = h.factReads || 0;
       await h.poll();
       everMerged = everMerged || p.merged;
-      const safe = p.merged && p.dirty === 0 && p.unpushed === 0 && p.inDevelop === true && !p.working && !p.needs
-        && p.box === true && p.unsaved === null && p.agents === 0;
+      const cheapOk = !p.working && !p.needs && p.unsaved === null && p.agents === 0;
+      const gitOk = p.dirty === 0 && p.unpushed === 0 && p.inDevelop === true;
+      const safe = p.merged && gitOk && cheapOk && p.box === true;
       if (h.stops().length > before) {
         assert.strictEqual(closedOn, -1, 'closed twice');
         assert.ok(safe, `stopped on poll ${i} with ${JSON.stringify(p)}`);
@@ -681,9 +733,11 @@ test('#139 PROPERTY: a merged close happens only on a poll whose marker read mer
       }
       if (closedOn === -1) {
         assert.ok(h.shell.tabByKey(key('feat-a')), `poll ${i}: open until this path closes it`);
-        // liveness: once it is merged (finishing), a poll with every fact safe closes it
-        assert.ok(!(safe && everMerged), `poll ${i} was safe and merged but kept it`);
+        // liveness: once it is merged (finishing), a poll with every fact safe closes it -- unless git's reads are backing off
+        // after a refusal of git's on an earlier poll (P7: that poll isn't read; its schedule is pinned by its own test)
+        if (h.factReads > readsBefore || !gitBackedOff) assert.ok(!(safe && everMerged), `poll ${i} was safe and merged but kept it`);
       }
+      if (p.merged && cheapOk && !gitOk) gitBackedOff = true;
     }
     if (closedOn >= 0) assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
   }), { numRuns: 120 });
