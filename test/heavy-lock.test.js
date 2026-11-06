@@ -773,6 +773,48 @@ test('#178 b watch: a free slot and an unreadable status are said as such', () =
   assert.strictEqual(thrown.tick({ run: () => { throw new Error('x'); } }), 'waiting');
 });
 
+// ---- #237 Dexter 1: after a busy give-up the question is "is it still held?", not "did I free it?" ----
+const X = 'npm test (pid 5000 start 777) (since 09:00:00)';
+function freedBySomeoneElse(extra = {}) {
+  // The script gives up "busy: X" at the deadline; X then dies and someone else (this call's watcher, another lane's) frees
+  // it before this call reads the slot again.
+  let n = 0;
+  return rig({ holder: X, alive: { 5000: '777' }, ...extra, acquireOverride: (r) => {
+    n++;
+    if (n === 1) { const said = `busy: ${r.holder}`; delete r.alive[5000]; r.holder = null; return { status: 2, stdout: said }; }
+    if (r.holder) return { status: 2, stdout: `busy: ${r.holder}` };
+    r.holder = `${flagValue(r.calls[r.calls.length - 1], '-Owner')} (since 10:00:00)`;
+    return { status: 0, stdout: 'acquired' };
+  } });
+}
+
+test('#237 Dexter 1: X freed by someone else after the give-up: the slot is read again, the acquire retried, and held', () => {
+  const r = freedBySomeoneElse();
+  const lock = acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.strictEqual(lock.state, 'held', 'a free slot is not a NOT RUN');
+  assert.strictEqual(of(r, '-Acquire').length, 2);
+  assert.strictEqual(of(r, '-Release').length, 0, 'nothing for this call to free: it was already free');
+  assert.ok(r.log.some(m => /came free just after the wait gave up/.test(m)), JSON.stringify(r.log));
+});
+
+test('#237 Dexter 1: the watcher is stopped before the slot is read again, and runs around the retry too', () => {
+  const r = freedBySomeoneElse();
+  const events = [];
+  const deps = r.deps();
+  const run = deps.run;
+  deps.run = (args, o) => { events.push(args.includes('-Acquire') ? 'acquire' : args.includes('-Release') ? 'release' : 'status'); return run(args, o); };
+  const watch = () => { events.push('watch'); return { stop: () => events.push('stop') }; };
+  acquire({ label: 'x', pid: 7, watch, ...deps });
+  const tail = events.slice(events.indexOf('watch'));
+  assert.deepStrictEqual(tail, ['watch', 'acquire', 'stop', 'status', 'watch', 'acquire', 'stop']);
+});
+
+test('#237 Dexter 1: still held by a LIVE holder after the give-up is a NOT RUN, with one status read and no retry', () => {
+  const r = rig({ holder: X, alive: { 5000: '777' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'busy' && e.holder === X);
+  assert.strictEqual(of(r, '-Acquire').length, 1);
+});
+
 // ---- #113 Dexter 1: a child the start query can't list has exited, and leaves the record ----
 test('#113 Dexter 1: a provisional entry whose child the query no longer lists is DROPPED, not kept with an unknown start', () => {
   const r = rig();

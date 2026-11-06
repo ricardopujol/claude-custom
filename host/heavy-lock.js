@@ -273,11 +273,16 @@ function readHolder({ run, startsOf, work }) {
   return { holder: holder || null, live: !holderIsDead(holder, { startsOf, work }) };
 }
 
-// If the slot's holder is provably dead (holderIsDead), release it by its exact owner string.
-function reclaimDead({ run, startsOf, log, work }) {
-  let st;
-  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
-  const m = /^held: (.*)$/m.exec((st && st.stdout) || '');
+// If the slot's holder is provably dead (holderIsDead), release it by its exact owner string. `status`: the script's status
+// text when the caller has just read it (saves a second powershell); otherwise it's read here.
+function reclaimDead({ run, startsOf, log, work, status }) {
+  let text = status;
+  if (typeof text !== 'string') {
+    let st;
+    try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
+    text = (st && st.stdout) || '';
+  }
+  const m = /^held: (.*)$/m.exec(text);
   if (!m) return false;
   const holder = m[1].trim();
   if (!holderIsDead(holder, { startsOf, work, log })) return false;
@@ -287,6 +292,16 @@ function reclaimDead({ run, startsOf, log, work }) {
   try { work.clear(holder); } catch { /* the next holder overwrites it */ }
   log(`[heavy-lock] freed the slot of a dead holder: ${holder}`);
   return true;
+}
+
+// After a busy give-up (#237 Dexter 1): is the slot open now? Free (whoever freed it), or held by a provably dead holder,
+// which is then released here. A status that can't be read, a live holder, or a dead one that won't release: not open.
+function slotOpenNow({ run, startsOf, log, work }) {
+  let st;
+  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
+  const text = (st && st.stdout) || '';
+  if (/^free$/m.test(text)) { log('[heavy-lock] the slot came free just after the wait gave up: trying once more'); return true; }
+  return reclaimDead({ run, startsOf, log, work, status: text });
 }
 
 /**
@@ -345,25 +360,28 @@ function acquire({
   const owner = ownerFor(label, pid, ownStart);
   reclaimDead({ run, startsOf, log, work });
   const startedAt = now();
-  let watcher = null;
-  if (typeof watch === 'function') {
-    try { watcher = watch({ scriptPath, workFile: work.file || WORK_FILE, parentPid: pid, parentStart: ownStart, startedAt, waitMinutes }); } catch { watcher = null; }
-  }
   let r;
-  try {
-    let wait = waitMinutes;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try { r = run(['-Acquire', '-Owner', owner, '-WaitMinutes', String(wait)], { timeoutMs: (wait + 1) * 60000 }); } catch (err) { r = { status: null, stdout: err && err.message }; }
-      // Busy because of a holder (not "n ahead in the queue"): a dead one is freed and the acquire tried once more, with
-      // only what is left of the wait budget (at least 1 minute), so the whole acquire stays bounded.
-      if (r && r.status === 2 && /^busy: (?!\d+ ahead)/.test(r.stdout || '') && reclaimDead({ run, startsOf, log, work })) {
-        wait = Math.max(1, Math.min(waitMinutes, Math.floor((waitMinutes * 60000 - (now() - startedAt)) / 60000)));
-        continue;
-      }
-      break;
+  let wait = waitMinutes;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let watcher = null;
+    if (typeof watch === 'function') {
+      try { watcher = watch({ scriptPath, workFile: work.file || WORK_FILE, parentPid: pid, parentStart: ownStart, startedAt, waitMinutes }); } catch { watcher = null; }
     }
-  } finally {
-    if (watcher && typeof watcher.stop === 'function') { try { watcher.stop(); } catch { /* gone */ } }
+    try {
+      try { r = run(['-Acquire', '-Owner', owner, '-WaitMinutes', String(wait)], { timeoutMs: (wait + 1) * 60000 }); } catch (err) { r = { status: null, stdout: err && err.message }; }
+    } finally {
+      // Stopped BEFORE the slot is read again below, so its own reclaim can't race that read (#237 Dexter 1).
+      if (watcher && typeof watcher.stop === 'function') { try { watcher.stop(); } catch { /* gone */ } }
+    }
+    // Busy because of a holder (not "n ahead in the queue"): the question is "is the slot still held?", not "did I free
+    // it?" (#237 Dexter 1). The holder may have died and been freed by this call's own watcher, another lane's, or its own
+    // release, between the script's give-up and now. A slot that's free now, or whose holder is provably dead (freed here),
+    // gets the acquire once more, with only what is left of the wait budget (at least 1 minute): the whole stays bounded.
+    if (attempt === 0 && r && r.status === 2 && /^busy: (?!\d+ ahead)/.test(r.stdout || '') && slotOpenNow({ run, startsOf, log, work })) {
+      wait = Math.max(1, Math.min(waitMinutes, Math.floor((waitMinutes * 60000 - (now() - startedAt)) / 60000)));
+      continue;
+    }
+    break;
   }
   const said = (r && r.stdout) || '';
   if (!r || r.status !== 0) {
