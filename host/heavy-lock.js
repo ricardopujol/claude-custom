@@ -34,6 +34,13 @@
  * minute between holders when lanes are busy (measured 2026-11-05). Waiting 7, the second lane in a queue always gave up
  * before the first finished. 20 covers one suite ahead with room, and two suites ahead (the common case on a busy day,
  * about 18 minutes) with a little; a third ahead gives up, and says so (below). It's also the script's own default.
+ * THE LOAD GATE EATS INTO THE SAME 20. heavy-lock.ps1 has one deadline for the whole -Acquire: the time spent behind the
+ * holders AND the time this ticket, first in line with the slot free, waits for the machine to drop under the gate are
+ * both counted against it (each 20 s poll checks the gate only then). So the gate's minute between holders comes out of
+ * the margin, twice with two suites ahead; and a machine kept loaded by something outside the lock (Ricardo's REAPER, a
+ * build) spends the rest of the budget at the head of the queue. Ran out there, the script exits 3 and the last line
+ * starts "machine busy" (notRunLine), not "lock busy": the slot was free, the machine wasn't. The gate is deliberate:
+ * never worked around from here, and a longer wait would only make a loaded machine cost a longer wait.
  * The total stays bounded: the retry after a reclaim gets only what is left of that budget (at least 1 minute), each
  * -Acquire call is killed 1 minute after its own deadline, and every status and release call has its own 1-minute leash
  * (STATUS_TIMEOUT_MS, #112 Dexter 2: they used to inherit the acquire's long timeout). A wait this long is longer than the
@@ -46,7 +53,8 @@
  * (its place in the queue) then gets the slot. A longer wait never means a dead holder costs the whole wait. The side
  * process is stopped by its handle when the acquire returns, and ends on its own if its asker is gone or the wait is over.
  * GIVING UP. A busy slot after the whole wait is a HeavyLockError carrying who held it and how long it waited; notRunLine()
- * turns it into the last line a caller prints, `[heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN`, and the
+ * turns it into the last line a caller prints, `[heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN` (or, when the
+ * slot was free but the load gate held it, `[heavy-lock] machine busy after a <n> min wait: ...: NOT RUN`), and the
  * caller exits NOT_RUN_EXIT (75, EX_TEMPFAIL: "try again later"), never 1, which is what a failing suite exits.
  * QUEUE POSITION. The script owns the tickets, so a retry after a reclaim is a NEW ticket, behind anyone who asked
  * after the first call did (Dexter r2 #2). Node can't keep the place; the fix would be the script reclaiming a dead
@@ -116,14 +124,20 @@ class HeavyLockError extends Error {
 }
 
 // The one last line a caller prints when its work did not run, so it can't be misread as a failing run. Any error works:
-// a HeavyLockError says why in its own words, anything else is "the lock failed".
+// a HeavyLockError says why in its own words, anything else is "the lock failed". Two give-ups read apart from the first word:
+//   - "lock busy": another holder had the slot when the wait ran out (or tickets ahead of this one still waited for it);
+//   - "machine busy": the slot was FREE and this ticket was first, but the script's load gate (LOAD_GATE) held it back.
+const LOAD_GATE = '8 GB free RAM and under 70% CPU';
 function notRunLine(err) {
   const mins = (err && typeof err.waitedMs === 'number') ? `${Math.round(err.waitedMs / 60000)} min` : 'the whole wait';
   if (err && err.code === 'busy') {
-    const by = err.holder ? `held by ${err.holder}` : `held by nobody now${err.detail ? ` (${err.detail})` : ''}`;
-    return `[heavy-lock] lock busy for ${mins}, ${by}: NOT RUN`;
+    // Tickets ahead and nobody holding: the first in line is between two polls, or held back by the load gate itself.
+    if (!err.holder && err.detail) return `[heavy-lock] lock busy for ${mins}, held by nobody now but ${err.detail} (the first may be held back by the load gate: ${LOAD_GATE}): NOT RUN`;
+    return `[heavy-lock] lock busy for ${mins}, held by ${err.holder || 'nobody now'}: NOT RUN`;
   }
-  if (err && err.code === 'loaded') return `[heavy-lock] machine too loaded for ${mins}${err.detail ? ` (${err.detail})` : ''}: NOT RUN`;
+  if (err && err.code === 'loaded') {
+    return `[heavy-lock] machine busy after a ${mins} wait: the lock is free, but its load gate needs ${LOAD_GATE}${err.detail ? ` (now ${err.detail})` : ''}: NOT RUN`;
+  }
   return `[heavy-lock] the lock could not be taken (${(err && err.message) || 'unknown error'}): NOT RUN`;
 }
 

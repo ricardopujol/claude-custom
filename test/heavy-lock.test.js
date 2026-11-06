@@ -644,9 +644,12 @@ test('#178 b: notRunLine is the one last line, in words a builder cannot misread
   assert.strictEqual(notRunLine(new HeavyLockError('busy', 'm', { holder: 'npm test (pid 5 start 6) (since 10:00:00)', waitedMs: 20 * 60000 + 15000 })),
     '[heavy-lock] lock busy for 20 min, held by npm test (pid 5 start 6) (since 10:00:00): NOT RUN');
   assert.strictEqual(notRunLine(new HeavyLockError('busy', 'm', { detail: '2 ahead in the queue', waitedMs: 19.6 * 60000 })),
-    '[heavy-lock] lock busy for 20 min, held by nobody now (2 ahead in the queue): NOT RUN');
+    '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN');
+  assert.strictEqual(notRunLine(new HeavyLockError('busy', 'm', { waitedMs: 20 * 60000 })), '[heavy-lock] lock busy for 20 min, held by nobody now: NOT RUN');
   assert.strictEqual(notRunLine(new HeavyLockError('loaded', 'm', { detail: '4 GB free, 90% CPU', waitedMs: 20 * 60000 })),
-    '[heavy-lock] machine too loaded for 20 min (4 GB free, 90% CPU): NOT RUN');
+    '[heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4 GB free, 90% CPU): NOT RUN');
+  assert.strictEqual(notRunLine(new HeavyLockError('loaded', 'm', { waitedMs: 60000 })),
+    '[heavy-lock] machine busy after a 1 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU: NOT RUN');
   assert.match(notRunLine(new HeavyLockError('error', 'heavy-lock.ps1 failed (exit 1): boom')), /^\[heavy-lock\] the lock could not be taken \(heavy-lock\.ps1 failed \(exit 1\): boom\): NOT RUN$/);
   assert.match(notRunLine(new Error('x')), /: NOT RUN$/);
   assert.match(notRunLine(null), /: NOT RUN$/);

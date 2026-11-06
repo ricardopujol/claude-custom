@@ -13,11 +13,14 @@
  * with a line about once a minute saying who holds it and how long this run has waited.
  *
  * NOT RUN: EXIT 75. If the lock stays busy (or the machine too loaded, or the lock script fails) the command does NOT
- * run. The reason comes first, and the LAST line is always
- *   [heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN
- * (or "machine too loaded for <n> min ...: NOT RUN", "the lock could not be taken (...): NOT RUN"), and the exit code is
- * 75 (EX_TEMPFAIL, "try again later"; host/heavy-lock.js NOT_RUN_EXIT). Never 1: 1 is what a failing suite exits, and a
- * suite that never ran is not a failing one. Retry it. Documented in verify/README.md too.
+ * run. The reason comes first, and the LAST line is one of
+ *   [heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN                 another lane had the slot
+ *   [heavy-lock] machine busy after a <n> min wait: the lock is free, but its load gate needs 8 GB free RAM and
+ *     under 70% CPU (now <load>): NOT RUN                                         the slot was free, the machine wasn't
+ *   [heavy-lock] the lock could not be taken (<why>): NOT RUN                     the lock script failed
+ * and the exit code is 75 (EX_TEMPFAIL, "try again later"; host/heavy-lock.js NOT_RUN_EXIT). Never 1: 1 is what a failing
+ * suite exits, and a suite that never ran is not a failing one. Retry it. The load gate's time counts against the same
+ * wait (host/heavy-lock.js WAIT). Documented in verify/README.md too.
  *
  * Already under the lock (HEAVY_LOCK_HELD is set, by an outer wrapper or by someone who took the lock by hand with
  * heavy-lock.ps1 -Acquire) AND the slot really has a live holder: runs the command at once, takes nothing, and the line

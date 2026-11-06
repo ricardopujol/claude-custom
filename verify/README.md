@@ -23,7 +23,16 @@ exit code is **75**, never 1 (1 is a failing suite or probe):
 
     [heavy-lock] lock busy for 20 min, held by npm test (pid 123 start 456) (since 10:00:00): NOT RUN
 
-Exit 75 means "not run, retry", not "failed".
+The lock script also holds a free slot back until the machine has 8 GB free RAM
+and is under 70% CPU (its load gate). That time counts against the same 20
+minutes, so a machine kept loaded by something outside the lock (REAPER, a
+build) can use up the wait with the slot free. That give-up reads apart from a
+busy lock by its first words, with the same exit code:
+
+    [heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4.2 GB free, 91% CPU): NOT RUN
+
+Exit 75 means "not run, retry", not "failed". The load gate is deliberate:
+wait for the machine, don't work around it.
 
 `HEAVY_LOCK_HELD=1` (set by whoever holds the lock, for what it starts) skips the
 lock only while someone really holds it, and the line names that holder:

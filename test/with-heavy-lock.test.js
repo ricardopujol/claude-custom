@@ -177,14 +177,27 @@ test('#178 b: too loaded, a script failure, or any other throw from acquire is N
   }
 });
 
+test('#178 b (hub): a load-gated give-up ends "machine busy", a held slot "lock busy": the last line tells them apart, both exit 75', async () => {
+  const loaded = rig({ acquireThrows: new HeavyLockError('loaded', 'machine too loaded: 4 GB free, 90% CPU', { detail: '4 GB free, 90% CPU', waitedMs: 20 * 60000 }) });
+  assert.strictEqual(await main(['node'], loaded.deps), 75);
+  const busy = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub', { holder: 'hub (since 10:00:00)', waitedMs: 20 * 60000 }) });
+  assert.strictEqual(await main(['node'], busy.deps), 75);
+  const last = (r) => { const logs = r.events.filter(e => e.startsWith('log:')); return logs[logs.length - 1].slice(4); };
+  assert.match(last(loaded), /^\[heavy-lock\] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU \(now 4 GB free, 90% CPU\): NOT RUN$/);
+  assert.match(last(busy), /^\[heavy-lock\] lock busy for 20 min, held by hub \(since 10:00:00\): NOT RUN$/);
+});
+
 test('#178 b: the wrapper\'s header documents the NOT RUN exit code, and verify/README.md does too', () => {
   const fs = require('fs');
   const path = require('path');
   const header = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), 'utf8').split('*/')[0];
   assert.match(header, /NOT RUN: EXIT 75/);
   assert.match(header, /lock busy for <n> min, held by <owner>: NOT RUN/);
+  assert.match(header, /machine busy after a <n> min wait/);
+  assert.match(header, /load gate's time counts against the same\s+\*?\s*wait/);
   const readme = fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8');
   assert.match(readme, /exit code is \*\*75\*\*/);
+  assert.match(readme, /\[heavy-lock\] machine busy after a 20 min wait: the lock is free/);
 });
 
 test('Dexter r2 1: the suite\'s child pid is recorded as work right after it starts, before it can end', async () => {

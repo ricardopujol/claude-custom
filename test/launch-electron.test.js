@@ -356,7 +356,7 @@ test('heavy lock: a unit test process is not a probe, so launching with no heavy
   assert.strictEqual(probeName(path.join(__dirname, '..', 'verify-old', 'probe-x.js')), null);
 });
 
-test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other errors are thrown as they were', () => {
+test('heavy lock: busy / too loaded is the reason, the NOT RUN line and exit 75, not a stack; other errors are thrown as they were', () => {
   const { takeLock } = require('../verify/lib/launch-electron');
   const { HeavyLockError } = require('../host/heavy-lock');
   const said = []; const exits = [];
