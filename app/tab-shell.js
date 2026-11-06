@@ -1328,36 +1328,46 @@ function createShell(deps) {
     try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key, opts) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
   }
   /**
-   * Hand close: confirm, then the reducer's `stop` + `close`. Nothing on disk. `ifSafe` (Ctrl+click, #77)
-   * skips the confirm when unsafeReason is empty; otherwise the confirm is told why.
+   * Which of the four closes a request is (PR #236 Miguel Y3), in the order they win:
+   *   'merged'  the merged close (#139, `auto`): nothing asked; not safe now means kept, and a later poll looks again
+   *   'stop'    the Stop button on a kept tab (#129, `stop` while its offer stands): asked once already, not again
+   *   'ifSafe'  Ctrl+click (#77): no question when #77's rule passes, else the question with the reason
+   *   'ask'     the x, the menu's Close tab, a `stop` whose offer has gone: the question
    */
-  async function closeTabOnce(key, { ifSafe = false, stop = false, auto = false } = {}) {
+  function closeModeOf(key, { ifSafe = false, stop = false, auto = false } = {}) {
+    if (auto === true) return 'merged';
+    if (stop === true && stuckFor(key) !== null) return 'stop';
+    if (ifSafe === true) return 'ifSafe';
+    return 'ask';
+  }
+
+  /** A branch tab's close, in the way closeModeOf names: then the reducer's `stop` + `close`. Nothing on disk. */
+  async function closeTabOnce(key, opts) {
     const tab = tabByKey(key);
     if (!tab || mode !== 'tabs') return { ok: false, error: 'not closable' };
+    const how = closeModeOf(key, opts);
     // Develop closes like a lane in every project window (#160), even as the last tab there (the menus bring it back), but never
     // by the merged close (#139): it is never merged. A single-folder window has no close at all (mode check above).
-    if (tab.isDev && auto === true) return { ok: false, error: 'not closable' };
+    if (tab.isDev && how === 'merged') return { ok: false, error: 'not closable' };
     const phaseNow = (state.tabs.find(t => keyOf(t.path) === key) || {}).phase;
     if (phaseNow === 'removing') return { ok: false, error: 'its folder is being removed' };   // Dexter F4
     let yes = false;
     let reason = '';
     let silent = false;
-    let gitFacts = null;
-    if (auto === true) {
-      // #139: the merged close. Nothing is asked: not safe now means kept, and the next poll looks again.
+    if (how === 'merged') {
       if (phaseNow !== 'finishing') return { ok: false, notSafe: 'not merged' };
       const why = await mergedCloseBlocker(tab);
       if (why !== '') return { ok: false, notSafe: why };
       yes = true;
       silent = true;
-    } else if (stop === true && stuckFor(key) !== null) {
-      yes = true;     // #129: the Stop button on a kept tab. It was asked once; the question isn't asked again. A plain x is a new close.
-    } else if (ifSafe === true) {
-      gitFacts = await gitFactsOf(tab);
-      reason = closeReason(closeFactsOf(tab, gitFacts));
+    } else if (how === 'stop') {
+      yes = true;     // A plain x is a new close, and asks.
+    } else if (how === 'ifSafe') {
+      reason = closeReason(closeFactsOf(tab, await gitFactsOf(tab)));
+      if (reason === '') { yes = true; silent = true; }
     }
-    if (yes) { /* already answered */ } else if (ifSafe === true && reason === '') { yes = true; silent = true; } else {
-      try { yes = (await ui.confirmClose(tab, ifSafe === true ? { reason } : undefined)) === true; } catch { yes = false; }
+    if (!yes && (how === 'ifSafe' || how === 'ask')) {
+      try { yes = (await ui.confirmClose(tab, how === 'ifSafe' ? { reason } : undefined)) === true; } catch { yes = false; }
     }
     if (!yes) return { ok: false, cancelled: true };
     if (!tabs.has(key)) return { ok: true };     // gone while the dialog was up
@@ -1404,7 +1414,7 @@ function createShell(deps) {
       }
       // Dexter D6: the silent close was licensed some awaits ago. Re-read what is cheap (the marker, the claims, the
       // session) right before the stop; if any of it changed, ask after all.
-      if (silent && auto === true) {
+      if (how === 'merged') {
         // #139: the same re-read for the merged close, which never asks: anything changed (a turn began, a draft was typed) keeps it.
         const again = await mergedCloseBlocker(tab);
         if (!tabs.has(key)) return { ok: true };
@@ -1435,7 +1445,7 @@ function createShell(deps) {
     // now, and its removeResult closes it. A closed row here would offer to reopen a folder being deleted (PR #236 Miguel R1, Dexter 7).
     if (phaseOf(key) === 'removing') return { ok: true, removing: true };
     if (failure !== null) return keepStuck(key, `Couldn't end the session in ${label}: ${failure}. It may still be running.`, failure, tab);
-    if (auto === true) {
+    if (how === 'merged') {
       // PR #236 Dexter 6 B: what the view would take with it, read again now the stop is over. Its session has ended either way; a
       // tab kept here stays as an ended tab with its page, as a hand close with an unsaved edit keeps it until the person says, and
       // this path doesn't try it again (the record is in mergedTried).
@@ -1453,12 +1463,12 @@ function createShell(deps) {
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
     // The `+` menu offers it back (Ricardo, 2026-09-30), most recent first. A merged close (#139) is marked so: its row is the Undo.
-    closedByHand = [{ key, path: tab.cwd, branch: tab.branch, ...(auto === true ? { merged: true } : {}) }, ...closedByHand.filter(c => c.key !== key)];
+    closedByHand = [{ key, path: tab.cwd, branch: tab.branch, ...(how === 'merged' ? { merged: true } : {}) }, ...closedByHand.filter(c => c.key !== key)];
     persistLayout();     // closed stays closed after a restart
     apply(actions.filter(a => a.type !== 'stop'), before);
     if (targets.length > 0) log(`[shell] stop ${key}: sent`);
     if (dead.length > 0) deadPortNotice(label);     // after apply: a selection it makes would clear it
-    else if (auto === true) mergedClosed(key, label);
+    else if (how === 'merged') mergedClosed(key, label);
     return { ok: true };
   }
 
