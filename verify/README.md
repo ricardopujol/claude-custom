@@ -32,7 +32,8 @@ busy lock by its first words, with the same exit code:
     [heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4.2 GB free, 91% CPU): NOT RUN
 
 Exit 75 means "not run, retry", not "failed". The load gate is deliberate:
-wait for the machine, don't work around it.
+wait for the machine, don't work around it. Neither `HEAVY_LOCK_HELD` nor
+`HEAVY_LOCK_SCRIPT` is a way past a NOT RUN: retry later.
 
 `HEAVY_LOCK_HELD` is set by whoever holds the lock, for what it starts, to its
 own identity (`npm test (pid 123 start 456)`). It skips the lock only while that
@@ -46,8 +47,9 @@ holding it the variable is stale (a shell that forgot to unset it): a
 `WARNING: ... a STALE variable` line, and the lock is taken for real. The bare
 `HEAVY_LOCK_HELD=1` is the by-hand form (`host/heavy-lock.js`'s header): it only
 counts under a holder that took the lock by hand.
-To run a probe's code with no lock at all (a test child), point
-`HEAVY_LOCK_SCRIPT` at an absolute path that doesn't exist.
+A unit test's child process that runs a probe's code with no lock at all
+points `HEAVY_LOCK_SCRIPT` at an absolute path that doesn't exist. That's for
+test children that start nothing heavy, never for a real run.
 
 | Probe | Question | Result (2026-09-11, v2.1.268) |
 |---|---|---|

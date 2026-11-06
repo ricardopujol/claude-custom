@@ -131,14 +131,16 @@ test('script missing: runs without the lock, one warning line', () => {
 test('busy (exit 2): throws with the holder and what to do next, and never reports held', () => {
   const r = rig({ holder: 'hub: probes (since 10:00:00)' });
   assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) =>
-    e instanceof HeavyLockError && e.code === 'busy' && /hub: probes/.test(e.message) && /HEAVY_LOCK_HELD=1/.test(e.message) && /[Ww]ait/.test(e.message));
+    e instanceof HeavyLockError && e.code === 'busy' && /hub: probes/.test(e.message) && /Retry later/.test(e.message)
+    && !/set HEAVY_LOCK_HELD/.test(e.message), '#237 Miguel M5: retry later, and no variable offered as a way past it');
   assert.strictEqual(r.env[ENV_VAR], undefined);
   assert.strictEqual(of(r, '-Release').length, 0, 'a manual holder is never touched');
 });
 
 test('too loaded (exit 3): throws, with the same next step', () => {
   const r = rig({ acquireOverride: { status: 3, stdout: 'machine too loaded: 4 GB free, 90% CPU' } });
-  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'loaded' && /too loaded/.test(e.message) && /HEAVY_LOCK_HELD=1/.test(e.message));
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => e.code === 'loaded' && /too loaded/.test(e.message) && /Retry later/.test(e.message)
+    && /neither HEAVY_LOCK_HELD nor HEAVY_LOCK_SCRIPT is a way past it/.test(e.message) && !/HEAVY_LOCK_HELD=1/.test(e.message));
 });
 
 test('any other exit (or no exit status) throws too: it never runs anyway', () => {

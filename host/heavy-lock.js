@@ -113,7 +113,9 @@ const WATCH_EVERY_MS = 60000;
 const NOT_RUN_EXIT = 75;
 const WATCH_SCRIPT = path.join(__dirname, 'heavy-lock-watch.js');
 const WORK_FILE = path.join(os.tmpdir(), 'claude-custom-heavy.work.json');
-const HINT = 'Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1 (see host/heavy-lock.js).';
+// Retry later is the only next step (#237 Miguel M5): no variable is a way past a NOT RUN, so none is named here. The by-hand
+// form lives in the header (RE-ENTRANCY), for someone who really took the lock by hand.
+const HINT = 'Retry later: the lock is deliberate, and neither HEAVY_LOCK_HELD nor HEAVY_LOCK_SCRIPT is a way past it.';
 
 const SCRIPT_VAR = 'HEAVY_LOCK_SCRIPT';
 const scriptFromEnv = (env) => { const p = env && env[SCRIPT_VAR]; return typeof p === 'string' && path.isAbsolute(p) ? p : DEFAULT_SCRIPT; };
@@ -495,7 +497,7 @@ function createProcessLock({ proc = process, label = 'probe', beforeRelease = nu
 }
 
 module.exports = {
-  ENV_VAR, WAIT_VAR, SCRIPT_VAR, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, STATUS_TIMEOUT_MS, WATCH_EVERY_MS, NOT_RUN_EXIT, WATCH_SCRIPT,
+  ENV_VAR, WAIT_VAR, SCRIPT_VAR, HINT, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, STATUS_TIMEOUT_MS, WATCH_EVERY_MS, NOT_RUN_EXIT, WATCH_SCRIPT,
   HeavyLockError, notRunLine, ownerFor, parseOwner, queryStarts, defaultRun, createWorkStore, WORK_FILE, isGone, reclaimDead,
   startWatcher, acquire, release, createProcessLock,
 };

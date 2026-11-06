@@ -157,9 +157,16 @@ test('the process exiting under it (no child exit seen) still releases', async (
 });
 
 test('a busy lock says what to do next and the command never runs', async () => {
-  const r = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub. Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1') });
+  const { HINT } = require('../host/heavy-lock');
+  const r = rig({ acquireThrows: new HeavyLockError('busy', `busy: hub. ${HINT}`) });
   assert.strictEqual(await main(['node'], r.deps), NOT_RUN_EXIT);
-  assert.ok(r.events.some(e => e.startsWith('log:') && /HEAVY_LOCK_HELD=1/.test(e)));
+  assert.ok(r.events.some(e => e.startsWith('log:') && /Retry later/.test(e)));
+  assert.ok(!r.events.some(e => /set HEAVY_LOCK_HELD/.test(e)), '#237 Miguel M5: no way round the lock is offered');
+});
+
+test('#237 Miguel M5: verify/README.md says no variable is a way past NOT RUN', () => {
+  const readme = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'README.md'), 'utf8');
+  assert.match(readme.replace(/\s+/g, ' '), /Neither `HEAVY_LOCK_HELD` nor `HEAVY_LOCK_SCRIPT` is a way past a NOT RUN/);
 });
 
 test('#178 b: a lock that stays busy ends with the NOT RUN line LAST and exit 75, distinct from a failing suite\'s 1', async () => {
