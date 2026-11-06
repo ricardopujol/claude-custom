@@ -99,7 +99,8 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
       changed: () => {}, focusWindow: () => {}, isFocused: () => true,
     },
     safety: {
-      facts: async () => { h.factReads = (h.factReads || 0) + 1; if (h.onFacts) h.onFacts(h.factReads); return { ...h.facts }; },
+      // `factsWait`: a promise that holds git's read open (a slow `git status` on Windows)
+      facts: async () => { h.factReads = (h.factReads || 0) + 1; if (h.onFacts) h.onFacts(h.factReads); if (h.factsWait) await h.factsWait; return { ...h.facts }; },
       readerUnsaved: () => h.unsaved,
     },
     occupancy: { claims: () => (h.agents > 0 ? [{ agentId: 'a1', agent: 'builder', worktree: wt('feat-a'), lastAt: 0 }] : []), known: () => true },
@@ -462,6 +463,45 @@ test('#139 P4: a poll during the stop\'s wait that moves the tab to removing own
   await flush();
   assert.strictEqual(g.shell.tabByKey(key('feat-a')), null, 'removeResult closed it');
   assert.ok(!g.shell.lanesMenu([]).some(r => r.key === key('feat-a') && r.action === 'reopen'), 'and still nothing to reopen');
+});
+
+test('#139 P11: an x clicked during a merged check that keeps the tab ends in the normal hand close once the check is over', async () => {
+  const h = await liveThenMerged();
+  h.facts = { ...GIT_OK, dirtyCount: 1 };  // the merged check will keep it, on git's slow read
+  let release;
+  h.factsWait = new Promise((r) => { release = r; });
+  const polled = h.shell.poll();
+  await flush();
+  assert.strictEqual(h.factReads, 1, 'the merged check is reading git');
+  const x = h.shell.closeTab(key('feat-a'));     // the person's x, mid-check
+  await flush();
+  assert.deepStrictEqual(h.confirms, [], 'it waits for the check rather than racing it');
+  h.factsWait = null;
+  release();
+  await polled;
+  await h.pass();
+  assert.deepStrictEqual(await x, { ok: true }, 'not dropped as "already closing"');
+  assert.deepStrictEqual(h.confirms.map(c => c[0]), [key('feat-a')], 'the hand close asked its question, as any x does');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.deepStrictEqual(mergedRows(h).filter(r => r.key === key('feat-a')), [], 'a hand close: a plain closed row, not the Undo');
+  assert.strictEqual(h.shell.snapshot().mergedNotice, null);
+});
+
+test('#139 P11: an x clicked during a merged check that then closes the tab is answered by that close, nothing asked', async () => {
+  const h = await liveThenMerged();
+  let release;
+  h.factsWait = new Promise((r) => { release = r; });
+  const polled = h.shell.poll();
+  await flush();
+  const x = h.shell.closeTab(key('feat-a'));
+  h.factsWait = null;
+  release();
+  await polled;
+  await h.pass();
+  assert.deepStrictEqual(await x, { ok: true });
+  assert.deepStrictEqual(h.confirms, []);
+  assert.strictEqual(h.stops().length, 1, 'one close, one stop');
+  assert.strictEqual(h.shell.snapshot().mergedNotice, 'Closed feat/a (merged)');
 });
 
 test('#139: not merged -> never closed by this path, however many polls', async () => {

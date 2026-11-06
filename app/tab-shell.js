@@ -1057,7 +1057,7 @@ function createShell(deps) {
       if (held && mergedPolls < held.next) continue;     // git said no a moment ago (PR #236 Dexter 12, Miguel Y2): not read again yet
       mergedBusy.add(t.key);
       gitRefused.delete(t.key);
-      runs.push(closeTab(t.key, { auto: true }).then((r) => {
+      const run = closeTab(t.key, { auto: true }).then((r) => {
         if (gitRefused.has(t.key)) {
           const wait = Math.min(GIT_BACKOFF_MAX, held ? held.wait * 2 : 1);
           gitBackoff.set(t.key, { wait, next: mergedPolls + wait + 1 });
@@ -1067,10 +1067,13 @@ function createShell(deps) {
           mergedWhy.set(t.key, r.notSafe);
           log(`[shell] ${t.key}: merged, kept open: ${r.notSafe}`);
         }
-      }, (err) => log(`[shell] ${t.key}: merged close threw: ${errorText(err)}`)).finally(() => mergedBusy.delete(t.key)));
+      }, (err) => log(`[shell] ${t.key}: merged close threw: ${errorText(err)}`)).finally(() => { mergedBusy.delete(t.key); mergedRuns.delete(t.key); });
+      mergedRuns.set(t.key, run);     // a hand close asked for meanwhile waits for it (closeTab)
+      runs.push(run);
     }
     lastMergedPass = Promise.all(runs);
   }
+  const mergedRuns = new Map();      // key -> the merged close in flight for it
 
   // PR #236 Dexter 12 / Miguel Y2: a merged lane git keeps (uncommitted, unpushed, HEAD past the merge, git can't say) changes only
   // with git activity, and each read is 4-5 git spawns. After a refusal from git its reads are skipped for 1, 2, 4, 8, then 16 polls
@@ -1308,6 +1311,13 @@ function createShell(deps) {
    */
   async function closeTab(key, opts) {
     // A side or shell tab closes without a question (closeCompanionOnce); it also ends with its branch tab (#81).
+    if (closing.has(key) && mergedRuns.has(key) && !(opts && opts.auto === true)) {
+      // The person's x (or Ctrl+click, or Close tab) during a merged check (PR #236 Dexter 11): it isn't dropped. It waits for the
+      // check, then is the normal hand close, unless the merged close took the tab meanwhile.
+      try { await mergedRuns.get(key); } catch { /* the pass logs its own */ }
+      if (!tabs.has(key)) return { ok: true };
+      return closeTab(key, opts);
+    }
     if (closing.has(key)) return { ok: false, error: 'already closing' };
     closing.add(key);
     try { return await (isShellKey(key) || isSideKey(key) ? closeCompanionOnce(key, opts) : closeTabOnce(key, opts)); } finally { closing.delete(key); }
