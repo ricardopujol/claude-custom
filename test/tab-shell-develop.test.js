@@ -106,13 +106,13 @@ test('#160: develop closes like a lane: asked once, its host stopped, nothing on
   assert.deepStrictEqual(stripKeys(h), [key('feat-a')], 'its neighbour is selected');
   assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'));
   const lanes = rows(h);
-  assert.deepStrictEqual({ ...lanes[0], shortcut: undefined, type: undefined }, { ...DEV_ROW, shortcut: undefined, type: undefined }, 'develop is the first row');
-  assert.strictEqual(lanes[0].shortcut, 'Ctrl+Shift+T', 'and the most recent close');
+  const first = lanes[0];
+  assert.deepStrictEqual({ label: first.label, key: first.key, state: first.state, action: first.action }, DEV_ROW, 'develop is the first row');
+  assert.strictEqual(first.shortcut, 'Ctrl+Shift+T', 'and the most recent close');
   assert.deepStrictEqual(h.shell.plusMenu().develop, { key: key('dev'), label: 'develop', shortcut: 'Ctrl+Shift+T' });
   assert.deepStrictEqual(h.shell.snapshot().lanes.develop, { key: key('dev'), label: 'develop', state: 'closed', closed: true });
   assert.deepStrictEqual(h.shell.snapshot().lanes.notStarted.map(x => x.key), [key('feat-b')], 'never a Not started row as well');
-  const saved = h.shell && h.shell._state();
-  assert.ok(saved.dismissed.includes(key('dev')));
+  assert.ok(h.shell._state().dismissed.includes(key('dev')));
 });
 
 test('#160 P8: with develop closed and one lane left, that lane keeps its x, its Close tab and its close (one rule: the last tab closes)', async () => {

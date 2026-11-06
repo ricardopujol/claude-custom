@@ -994,10 +994,10 @@ function createShell(deps) {
     const first = tabModel.initialSelection(state.tabs, launchedFrom, { keyOf, isInside });
     if (first === null || !tabs.has(first)) return null;
     if (first === devKey) return first;
-    const fallback = devClosed() || !tabs.has(devKey) ? null : devKey;
+    const fallback = tabs.has(devKey) ? devKey : null;     // a closed develop has no tab (PR #236 Miguel G2)
     // #139 (Ricardo's notes of 2026-10-28/29: a window must not open on a lane that was already merged): a merged lane whose
     // session isn't running is never selected by the window itself, since selecting starts a claude in a folder on its way out.
-    if (['finishing', 'kept', 'removing', 'remove-failed'].includes(phaseOf(first)) && !tabs.get(first).started) {
+    if (wasMerged(first) && !tabs.get(first).started) {
       if (mergedWhy.get(first) !== 'opened on') { mergedWhy.set(first, 'opened on'); log(`[shell] ${first}: merged; the window doesn't open on it`); }
       return fallback;
     }
@@ -1054,7 +1054,7 @@ function createShell(deps) {
     mergedPolls++;
     for (const t of [...tabs.values()]) {
       if (t.isDev || isCompanionEntry(t) || t.key === devKey) continue;
-      if (!merged || merged[t.key] !== true || phaseOf(t.key) !== 'finishing') { gitBackoff.delete(t.key); continue; }
+      if (!merged || merged[t.key] !== true || !awaitsMergedClose(t.key)) { gitBackoff.delete(t.key); continue; }
       if (spared.has(t.key) || mergedTried.has(t) || mergedBusy.has(t.key) || closing.has(t.key) || ending.has(t.key)) continue;
       if (stuckFor(t.key) !== null) continue;     // a close already failed to end its host: the Stop offer is the person's to press
       if (!t.started || t.starting || t.ended === true) continue;     // no session: 1B gives it no tab, there is nothing to close
@@ -1094,6 +1094,12 @@ function createShell(deps) {
     const lane = companionParentOf(key) || key;
     gitBackoff.delete(lane);
   }
+  /** The merged close's notes about a lane, dropped once its tab closes or is kept for good (PR #236 Miguel G4): no stale state by key. */
+  function forgetMerged(key) {
+    mergedWhy.delete(key);
+    gitBackoff.delete(key);
+    gitRefused.delete(key);
+  }
 
   // #139: the page's own answer to "is your CLI box at rest?", by id, as Type /merged's `typed` answers are.
   const BOX_ANSWER_MS = 2000;
@@ -1105,11 +1111,26 @@ function createShell(deps) {
    * unsent) and `unsent` (text typed in the page outside the CLI's box: true / false, null when the page couldn't read it).
    */
   function askPage(tab) {
-    if (!tab.view) return Promise.resolve(null);
+    if (!tab.view || destroyed) return Promise.resolve(null);
     const id = ++boxSeq;
-    const reply = new Promise(resolve => boxAsks.set(id, { key: tab.key, resolve }));
-    try { views.send(tab, 'box-state', { id }); } catch (err) { boxAsks.delete(id); log('[shell] box-state send threw:', err && err.message); return Promise.resolve(null); }
-    return Promise.race([reply, sleep(BOX_ANSWER_MS).then(() => null)]).then((r) => { boxAsks.delete(id); return r; });
+    // The wait is cancelled once the page answers (PR #236 Miguel G5): no 2 s timer kept alive per question, nor after destroy().
+    // Made before the question goes: a page may answer inside send().
+    const wait = answerWait(BOX_ANSWER_MS);
+    const reply = new Promise(resolve => boxAsks.set(id, { key: tab.key, resolve, cancel: wait.cancel }));
+    try { views.send(tab, 'box-state', { id }); } catch (err) { boxAsks.delete(id); wait.cancel(); log('[shell] box-state send threw:', err && err.message); return Promise.resolve(null); }
+    return Promise.race([reply, wait.done.then(() => null)]).then((r) => { wait.cancel(); boxAsks.delete(id); return r; });
+  }
+
+  /**
+   * A wait that can be called off: a real timer, cleared on cancel. A test that injects `sleep` gets that instead (it can't be
+   * cancelled, but it's the test's own and ends at once).
+   */
+  function answerWait(ms) {
+    if (typeof deps.sleep === 'function') return { done: sleep(ms), cancel: () => {} };
+    let timer = null;
+    let wake = () => {};
+    const done = new Promise((resolve) => { wake = resolve; timer = setTimeout(resolve, ms); });
+    return { done, cancel: () => { if (timer !== null) { clearTimeout(timer); timer = null; wake(); } } };
   }
 
   /** true when the tab's page says its box is at rest, false when it says not, null when it didn't answer in time. */
@@ -1355,7 +1376,7 @@ function createShell(deps) {
     let reason = '';
     let silent = false;
     if (how === 'merged') {
-      if (phaseNow !== 'finishing') return { ok: false, notSafe: 'not merged' };
+      if (!awaitsMergedClose(key)) return { ok: false, notSafe: 'not merged' };
       const why = await mergedCloseBlocker(tab);
       if (why !== '') return { ok: false, notSafe: why };
       yes = true;
@@ -1459,6 +1480,7 @@ function createShell(deps) {
       }
     }
     clearStuck(key);     // the line about it goes with it
+    forgetMerged(key);   // whichever way it closes (a dead port's line, a hand close, the merged close)
     const before = model();
     const { state: next, actions } = lifecycle.closeByHand(state, tab.cwd);
     state = next;
@@ -1474,7 +1496,6 @@ function createShell(deps) {
 
   /** #139: the line a merged close leaves, every time: the tab it closed was on screen in this window (PR #236 Dexter 5). */
   function mergedClosed(key, label) {
-    mergedWhy.delete(key);
     mergedNotice = `Closed ${label} (merged)`;
     log(`[shell] ${key}: ${mergedNotice}`);
     publish();
@@ -1584,6 +1605,7 @@ function createShell(deps) {
 
   /** #129: a close whose host would not end keeps its tab, says so in the strip, and offers Stop (a second close, without the question). */
   function keepStuck(key, notice, failure, tab) {
+    forgetMerged(key);     // the merged close won't try this record again (mergedTried): its notes about it go
     closeNotice = notice;
     closeStuck.delete(key);     // a Map keeps the place of a key set again: delete first, so the newest failure is the last (PR #231 Miguel R4)
     closeStuck.set(key, { text: notice, tab });
@@ -2025,6 +2047,11 @@ function createShell(deps) {
 
   // The reducer's phase of a branch tab ('removing' while its folder is being deleted), or null.
   const phaseOf = (key) => { const t = state.tabs.find(x => keyOf(x.path) === key); return t && typeof t.phase === 'string' ? t.phase : null; };
+  // "Merged" means two things in this file, one helper each (PR #236 Miguel G1):
+  //   wasMerged       the reducer moved it off `live` for a merge, whatever became of its folder since (kept, being removed, failed)
+  //   awaitsMergedClose  merged, its folder untouched, its session the one the merged close may end: the merged close's own phase
+  const wasMerged = (key) => ['finishing', 'kept', 'removing', 'remove-failed'].includes(phaseOf(key));
+  const awaitsMergedClose = (key) => phaseOf(key) === 'finishing';
 
   function override(key) {
     const tab = tabByKey(key);
@@ -2049,7 +2076,8 @@ function createShell(deps) {
     selectWhenListed = null;
     // #139: starting a merged lane from its Lanes row is asking for it: the merged close leaves it alone in this window.
     const t = tabByKey(key);
-    if (t && !t.started && !t.starting && ['finishing', 'kept'].includes(phaseOf(key))) spared.add(key);
+    // (Only the merged close's own phase needs the spare: a `kept` lane is never closed by it, and leaves `kept` only for `live`.)
+    if (t && !t.started && !t.starting && awaitsMergedClose(key)) spared.add(key);
     return select(key, true);
   }
 
@@ -2308,7 +2336,15 @@ function createShell(deps) {
     return { ok: true };
   }
 
-  function destroy() { destroyed = true; }
+  function destroy() {
+    destroyed = true;
+    // A merged check still waiting for a page's answer gets "no answer" now, and its timer goes (PR #236 Miguel G5).
+    for (const [id, w] of [...boxAsks]) {
+      boxAsks.delete(id);
+      if (typeof w.cancel === 'function') w.cancel();
+      w.resolve(null);
+    }
+  }
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,

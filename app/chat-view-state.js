@@ -17,6 +17,12 @@
  *     explicit `{type:'input', data}` wrapper (app/paste-action.js pasteFrame: host/control.js must never read typed text as
  *     a control message). Control characters are stripped first, so the text can't close the bracketed paste or inject a key.
  *
+ *   boxAtRest({ screen, box, typing, drafts }) -> boolean     (BACKLOG #139; PR #236 Miguel G7)
+ *     Is the CLI's box at its prompt, empty, nothing typing into it, and none of the page's other unsent inputs (`drafts`: the
+ *     chat view's draft, the half-filled forms) holding text? What the page answers main before a merged tab closes by itself.
+ *   hasUnsent(drafts) -> boolean
+ *     The page's own unsent text alone, asked after a merged close's stop had to wait (the CLI's box is gone with the CLI).
+ *
  * Loaded as a plain <script> in renderer.html, so it is wrapped: every file there shares ONE global scope (CLAUDE.md).
  */
 

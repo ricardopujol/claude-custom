@@ -30,6 +30,8 @@
 // The drag order (app/tab-lanes.js applyOrder), read once at load (BACKLOG #170 S6: it was required inside stripModel, on every
 // call). No page loads this file today; one that does must load tab-lanes.js before it, as tab-strip.html does for its own use.
 const tabLanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
+// A page that loads them in the wrong order learns why now, not as "cannot read applyOrder of undefined" at the first strip (PR #236 Miguel G9).
+if (!tabLanes || typeof tabLanes.applyOrder !== 'function') throw new Error('app/tab-model.js needs app/tab-lanes.js loaded first');
 
 const isString = s => typeof s === 'string';
 const identity = p => p;

@@ -34,7 +34,8 @@ const flush = async () => { for (let i = 0; i < 8; i++) await settle(); };
 const GIT_OK = { branch: 'feat/a', dirtyCount: 0, unpushedCount: 0, headInDevelop: true };
 const AT_REST = { working: false, needsInput: false, lock: 'held', turn: 'idle' };
 
-function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = {}, launchedFrom = null, layout = null } = {}) {
+// `sleep`: the shell's wait (default: none at all); `'real'` leaves it out, so the shell uses real timers.
+function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = {}, launchedFrom = null, layout = null, sleep = async () => {} } = {}) {
   const h = {
     running: { ...running }, markers: { ...markers }, spawns: [], controls: [], confirms: [], removes: [], logs: [], destroyed: [],
     listText: porcelain(THREE), facts: { ...GIT_OK }, unsaved: null, agents: 0, boxClear: true, boxAsks: 0,
@@ -104,8 +105,8 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
       readerUnsaved: () => h.unsaved,
     },
     occupancy: { claims: () => (h.agents > 0 ? [{ agentId: 'a1', agent: 'builder', worktree: wt('feat-a'), lastAt: 0 }] : []), known: () => true },
-    sleep: async () => {},
   };
+  if (sleep !== 'real') deps.sleep = sleep;
   if (layout) deps.layout = layout;
   h.shell = createShell(deps);
   h.report = (name, status) => { const t = h.shell.tabByKey(key(name)); if (t && t.view) h.shell.report(t.view, status); };
@@ -722,6 +723,29 @@ test('#139 P2 wiring: the page reads #chat-input and the vault and bug-vault fie
   assert.strictEqual(ids[0], 'chat-input');
   for (const id of ['vault-label', 'vault-secret', 'bugvault-category', 'bugvault-summary-input']) assert.ok(ids.includes(id), id);
   for (const id of ids) assert.match(HTML, new RegExp(`<(?:input|textarea)[^>]*id="${id}"`), `${id} is an input of renderer.html`);
+});
+
+test('#139 P16 G5: destroy() answers a question a page never answered ("no answer": kept), so no merged check hangs on it', async () => {
+  const h = await liveThenMerged({ sleep: () => new Promise(() => {}) });     // a wait that never ends: only destroy can settle it
+  h.boxClear = undefined;                                                    // the page stays quiet
+  h.shell.poll();
+  await flush();
+  assert.strictEqual(h.boxAsks, 1, 'the merged check is waiting on the page');
+  h.shell.destroy();
+  const settled = await Promise.race([h.pass().then(() => 'settled'), new Promise(r => setTimeout(() => r('hung'), 1000))]);
+  assert.strictEqual(settled, 'settled');
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'no answer: kept');
+  assert.deepStrictEqual(h.stops(), []);
+});
+
+test('#139 P16 G5: with real timers, an answered question leaves no timer running', async () => {
+  const timers = () => process.getActiveResourcesInfo().filter(r => r === 'Timeout').length;
+  const h = await liveThenMerged({ sleep: 'real' });
+  const before = timers();
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'closed (both questions answered at once)');
+  assert.ok(h.boxAsks >= 2);
+  assert.strictEqual(timers(), before, 'the two 2 s waits were cleared, not left to run out');
 });
 
 test('#139 boxAnswered: only the page that was asked, for a question still waiting, counts', async () => {
