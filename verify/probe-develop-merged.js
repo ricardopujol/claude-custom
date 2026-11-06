@@ -10,15 +10,17 @@
  * the box-state question off a real screen, a real host end on the merged close, the strip page paint the notice and the empty
  * pane, or Electron build the two native menus. Against a throwaway container  <tmp>\proj\dev  with an origin and three lanes:
  *   #139   feat/a runs a stand-in CLI box (verify/lib/fake-claude-box.js) at rest, with the CLI's SessionStart hook sent down its
- *          host's pipe; its merged marker is written; it closes by itself: its host ends, its folder stays, the strip says
- *          "Closed feat/a (merged)", and the Lanes menu's Merged rows hold "feat/a (closed · Undo)"
+ *          host's pipe; its merged marker is written; its session is stopped by itself, the existing removal (a stand-in
+ *          Contract C that only touches this probe's temp repo) takes its folder, the tab closes, the strip says
+ *          "Closed feat/a (merged)", and the Lanes menu has no row for it (Ricardo, 2026-11-06: "B: no Undo")
  *   #160   develop closes (its x's close, the driver's yes), is the first row of the Lanes menu and of the + menu, the window
  *          with nothing open says how to get it back, the + menu's row brings it back selected and first; a restart with it
  *          closed keeps it closed with its row
  *   S7/S9  a drag of two lanes photographed at the drop, and a narrow window with a busy tab (for the report; nothing asserted)
  *
- * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; CLAUDE_CUSTOM_WORKTREE_SCRIPTS points at an empty
- * folder, so no worktree is ever removed; the marker is written only into the probe's own temp repo. ELECTRON_RUN_AS_NODE is
+ * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; CLAUDE_CUSTOM_WORKTREE_SCRIPTS points at a temp
+ * folder holding only the stand-in remove-worktree.ps1, which refuses any path outside this probe's temp folder, so no real worktree
+ * is ever removed; the marker is written only into the probe's own temp repo. ELECTRON_RUN_AS_NODE is
  * deleted and every CLAUDE_CUSTOM_* variable but the probe's own is stripped. Hosts end by their own stop, and at the end by
  * pid tree for any left whose folder is inside the temp folder (verify/lib/seen-pids, proven by start time). Every picture is the
  * app's own capturePage (the strip page, the selected view): never the screen, so no other window can end up in one. A native
@@ -57,6 +59,26 @@ fs.mkdirSync(shots, { recursive: true });
 fs.mkdirSync(scripts, { recursive: true });
 const shot = (name) => path.join(shots, `${name}.png`);
 const written = [];
+
+// #139 (B, Ricardo 2026-11-06: "B: no Undo"): the merged close only stops the session, and Contract C removes the folder. The app
+// looks for remove-worktree.ps1 in CLAUDE_CUSTOM_WORKTREE_SCRIPTS; the probe's stand-in removes ONLY a worktree inside this probe's
+// own temp folder, through `git worktree remove` on the probe's own throwaway repo, and refuses any other path. Nothing else is in
+// that folder (no create, no setup script).
+function writeStandInRemover() {
+  const ps = [
+    'param([string]$Path)',
+    '# probe-develop-merged stand-in for Contract C: removes a worktree of the probe\'s own temp repo, nothing else',
+    `$root = '${path.resolve(tmp).replace(/'/g, "''")}'`,
+    `$dev = '${path.resolve(dev).replace(/'/g, "''")}'`,
+    '$full = [System.IO.Path]::GetFullPath($Path)',
+    'if (-not $full.ToLower().StartsWith(($root + [System.IO.Path]::DirectorySeparatorChar).ToLower())) { [Console]::Error.WriteLine("refused: $full is outside $root"); exit 3 }',
+    '& git -C $dev worktree remove --force $full 2>&1 | Out-Null',
+    'if ($LASTEXITCODE -ne 0) { [Console]::Error.WriteLine("git worktree remove failed for $full"); exit 1 }',
+    'Write-Output "removed: $full"',
+    'exit 0',
+  ].join('\r\n');
+  fs.writeFileSync(path.join(scripts, 'remove-worktree.ps1'), ps + '\r\n');
+}
 
 let failures = 0;
 const check = (label, ok, detail = '') => {
@@ -223,6 +245,7 @@ async function main() {
     git(dev, 'worktree', 'add', '-q', path.join(container, dir), '-b', branch);
   }
   const featA = path.join(container, 'feat-a');
+  writeStandInRemover();
 
   let app = await launchApp(container);
   let st = await driverUp(app);
@@ -265,15 +288,15 @@ async function main() {
     st = await waitFor(async () => { const x = await state(app); return x.stripAlert && /merged/.test(x.stripAlert.text) ? x : null; }, 5000) || await state(app);
     check('139.6: the strip says "Closed feat/a (merged)", as an info line', st.mergedNotice === 'Closed feat/a (merged)' && !!st.stripAlert
       && st.stripAlert.text === 'Closed feat/a (merged)' && st.stripAlert.kind === 'info', JSON.stringify({ n: st.mergedNotice, a: st.stripAlert }));
-    const row = ((st.lanes && st.lanes.merged) || []).find(r => r.label === 'feat/a');
-    check('139.7: the Lanes menu has it as a Merged row, closed, whose click is the Undo', !!row && row.state === 'closed · Undo' && row.closed === true, JSON.stringify(st.lanes));
-    check('139.8: its host ended (identity file gone, pid dead), its folder stays', !!aHost && !alive(aHost.pid) && fs.existsSync(featA),
-      JSON.stringify({ pid: aHost && aHost.pid, alive: aHost && alive(aHost.pid), folder: fs.existsSync(featA) }));
+    const rows = [...((st.lanes && st.lanes.merged) || []), ...((st.lanes && st.lanes.notStarted) || [])].filter(r => r.label === 'feat/a');
+    check('139.7: no row for feat/a in the Lanes menu: no Undo, no closed row (B)', rows.length === 0, JSON.stringify(st.lanes));
+    const removedLog = app.out.split('\n').some(l => /\[shell\] remove .*feat-a: removed/.test(l));
+    check('139.8: its host ended (pid dead), and the existing removal (the stand-in Contract C) took its folder', !!aHost && !alive(aHost.pid) && !fs.existsSync(featA) && removedLog,
+      JSON.stringify({ pid: aHost && aHost.pid, alive: aHost && alive(aHost.pid), folder: fs.existsSync(featA), removedLog }));
     check('139.9: the other tabs stay', JSON.stringify(stripLabels(st)) === JSON.stringify(['develop', 'feat/b', 'feat/c']), stripLabels(st).join(', '));
     await windowShot(app, 'merged-close-1-notice');
     const lanes = await menuShot(app, 'lanes', 'merged-close-2-lanes-menu');
-    check('139.10: the Lanes menu as Electron built it: Merged, then "feat/a  (closed · Undo)" with Ctrl+Shift+T',
-      itemLabels(lanes).includes('Merged') && itemLabels(lanes).includes('feat/a  (closed · Undo)  (Ctrl+Shift+T)'), JSON.stringify(itemLabels(lanes)));
+    check('139.10: the Lanes menu as Electron built it has no feat/a row', !itemLabels(lanes).some(l => /^feat\/a\b/.test(l)), JSON.stringify(itemLabels(lanes)));
   }
 
   // ===== S7: a drag photographed right at the drop =====

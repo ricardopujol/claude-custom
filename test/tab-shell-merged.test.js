@@ -1,11 +1,13 @@
 'use strict';
 /**
- * BACKLOG #139: a merged tab closes by itself (Ricardo, 2026-11-05: "they should close when merge automatically").
+ * BACKLOG #139: a merged tab closes by itself (Ricardo, 2026-11-05: "they should close when merge automatically"; 2026-11-06,
+ * on the folder: "B: no Undo").
  *
- * A branch tab whose PR is merged and that is safe to close (#77's rule: merged, nothing uncommitted or unpushed, no agent,
- * no unsaved reader edit; plus an idle host and an empty CLI box) closes by itself, with "Closed <lane> (merged)" on the
- * strip's notice line and the lane in the Lanes menu's closed rows, whose click is the Undo. An unsafe one is looked at again
- * on the next poll. Every effect is a recording fake (test/tab-shell.test.js has the long form of this harness).
+ * A branch tab whose PR is merged and whose lane is safe (#77's rule: merged, nothing uncommitted or unpushed, no agent, no
+ * unsaved reader edit; plus an idle lane and empty input boxes) has its session stopped by itself. That is the merged close's
+ * only act: the existing flow then moves it to `removing`, Contract C removes the folder, and the tab closes with
+ * "Closed <lane> (merged)" on the strip's notice line. No closed row, no Undo. An unsafe lane is looked at again on a later poll.
+ * Every effect is a recording fake (test/tab-shell.test.js has the long form of this harness).
  */
 const test = require('node:test');
 const assert = require('node:assert');
@@ -53,7 +55,8 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
       available: () => ({ create: false, setup: false, remove: true }),
       create: async () => ({ ok: false, error: 'no' }), setup: async () => ({ ok: false, error: 'no' }),
       // `removeWait`: a promise that holds Contract C open, as a real `git worktree remove` takes seconds
-      remove: async ({ path: p }) => { h.removes.push(normPath(p)); if (h.removeWait) await h.removeWait; return { ok: true }; },
+      // `removeReply()`: what Contract C answers (default: removed)
+      remove: async ({ path: p }) => { h.removes.push(normPath(p)); if (h.removeWait) await h.removeWait; return h.removeReply ? h.removeReply() : { ok: true }; },
     },
     hosts: {
       choosePort: async (tab) => {
@@ -91,8 +94,7 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
         h.boxAsks++;
         // `boxFor(view)`: a page-by-page answer (a side page's box apart from its branch page's); else every page says `boxClear`
         const clear = typeof h.boxFor === 'function' ? h.boxFor(tab.view) : h.boxClear;
-        // `pageUnsent`: text typed in the page outside the CLI's box (the chat view's draft): false unless a test says otherwise
-        if (clear !== undefined) h.shell.boxAnswered(tab.view, { id: payload.id, clear, unsent: h.pageUnsent === undefined ? false : h.pageUnsent });
+        if (clear !== undefined) h.shell.boxAnswered(tab.view, { id: payload.id, clear });
       },
     },
     ui: {
@@ -129,24 +131,53 @@ async function liveThenMerged(opts) {
 
 const strip = (h) => h.shell.snapshot().strip.map(e => e.key);
 const mergedRows = (h) => h.shell.snapshot().lanes.merged;
+/** The Lanes menu's closed rows (a hand close's): the merged close never makes one. */
+const closedRowsOf = (h) => h.shell.lanesMenu([]).filter(r => r.type === 'row' && r.action === 'reopen');
 
 // --- the rows the brief names --------------------------------------------------------------------
 
-test('#139: merged and safe -> closed by itself: its host stopped, the notice, an Undo row; nothing asked, nothing removed', async () => {
+test('#139 (B): merged and safe -> its idle session stopped, nothing asked; the existing removal takes the folder and closes the tab, with the notice; no closed row', async () => {
   const h = await liveThenMerged();
   await h.poll();
-  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'closed');
   assert.deepStrictEqual(h.stops(), [{ port: 7701, token: 'tok-7701', msg: { type: 'stop' } }], 'its host ended through the hand-close path');
   assert.deepStrictEqual(h.confirms, [], 'nothing asked');
-  assert.deepStrictEqual(h.removes, [], "the folder isn't removed by this path (the reaper's, or /merged --sweep)");
+  assert.deepStrictEqual(h.removes, [key('feat-a')], 'Contract C, through the reducer\'s finishing -> removing, as when a person ends the session');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, "removeResult closed it");
   const snap = h.shell.snapshot();
   assert.strictEqual(snap.mergedNotice, 'Closed feat/a (merged)');
   assert.deepStrictEqual(alertFor({ ...snap, model: snap.strip }), { text: 'Closed feat/a (merged)', kind: 'info' });
-  assert.deepStrictEqual(mergedRows(h), [{ key: key('feat-a'), label: 'feat/a', state: 'closed · Undo', closed: true, undo: true }]);
-  const row = h.shell.lanesMenu([]).find(r => r.key === key('feat-a'));
-  assert.deepStrictEqual({ action: row.action, state: row.state, shortcut: row.shortcut }, { action: 'reopen', state: 'closed · Undo', shortcut: 'Ctrl+Shift+T' });
+  assert.deepStrictEqual(closedRowsOf(h), [], 'no closed row, no Undo, nothing for Ctrl+Shift+T');
+  assert.deepStrictEqual(mergedRows(h), [], 'no Merged row either: the folder is gone');
   assert.deepStrictEqual(strip(h), [key('dev')]);
 });
+
+test('#139 (B): the merged close never calls closeByHand and writes nothing to the saved layout', async () => {
+  const saves = [];
+  const layout = { load: () => ({ order: [], closed: [], error: null }), save: (v) => { saves.push(JSON.parse(JSON.stringify(v))); return { ok: true }; } };
+  const h = await liveThenMerged({ layout });
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.ok(saves.every(s => s.closed.length === 0), `no closed entry saved: ${JSON.stringify(saves)}`);
+  assert.deepStrictEqual(closedRowsOf(h), []);
+});
+
+for (const [what, reply, phase] of [
+  ['keeping the folder (the branch still has a brief)', { ok: false, kept: true, reason: 'the branch still has a handoff brief' }, 'kept'],
+  ['failing', { ok: false, error: 'git worktree remove failed' }, 'remove-failed'],
+]) {
+  test(`#139 (B): Contract C ${what} leaves the tab as that flow does, and this path never stops it again`, async () => {
+    const h = await liveThenMerged();
+    h.removeReply = () => reply;
+    await h.poll();
+    assert.deepStrictEqual(h.removes, [key('feat-a')]);
+    assert.ok(h.shell.tabByKey(key('feat-a')), 'the tab stays');
+    assert.strictEqual(h.shell._state().tabs.find(t => normPath(t.path) === key('feat-a')).phase, phase);
+    assert.strictEqual(h.shell.snapshot().mergedNotice, null, 'it did not close: no notice');
+    for (let i = 0; i < 4; i++) await h.poll();
+    assert.strictEqual(h.stops().length, 1, 'one stop, no loop');
+    assert.deepStrictEqual(h.removes, [key('feat-a')], 'one removal: the flow retries nothing by itself');
+  });
+}
 
 test('#139: the notice goes with the next selection', async () => {
   const h = await liveThenMerged();
@@ -230,35 +261,14 @@ async function stopThatWaits(during) {
   return h;
 }
 
-test('#139 P6 B: a reader edit made while the stop waits keeps the tab and its view (its session has ended); never tried again', async () => {
-  const h = await stopThatWaits((g) => { g.unsaved = 'app/x.js'; });
-  assert.strictEqual(h.stops().length, 1, 'the stop went');
-  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept');
-  assert.ok(!h.destroyed.includes(key('feat-a')), 'its view, and the edit in its reader, are still there');
-  assert.ok(!h.shell.lanesMenu([]).some(r => r.key === key('feat-a') && r.action === 'reopen'), 'no closed row');
-  assert.strictEqual(h.shell.snapshot().mergedNotice, null);
-  assert.ok(h.logs.some(l => /merged, its session ended, tab kept: the file reader has unsaved edits to app\/x\.js/.test(l)));
-  h.unsaved = null;
-  for (let i = 0; i < 3; i++) await h.poll();
-  assert.strictEqual(h.stops().length, 1, 'no second try by this path');
-});
-
-test('#139 P6 B: text typed in the page (the chat view) while the stop waits keeps the tab and its view', async () => {
-  const h = await stopThatWaits((g) => { g.pageUnsent = true; });
-  assert.ok(h.shell.tabByKey(key('feat-a')));
-  assert.ok(!h.destroyed.includes(key('feat-a')));
-  assert.ok(h.logs.some(l => /tab kept: its page holds text not sent/.test(l)));
-});
-
-test('#139 P6 B: a page that cannot say what it holds after the wait keeps the tab too; one that says nothing is unsent lets it close', async () => {
-  for (const odd of [null, 'yes']) {     // boxAnswered passes on only true / false; anything else is "can't tell"
-    const h = await stopThatWaits((g) => { g.pageUnsent = odd; });
-    assert.ok(h.shell.tabByKey(key('feat-a')), `${odd}: can't tell, kept`);
-    assert.ok(h.logs.some(l => /tab kept: its page couldn't say whether it holds text not sent/.test(l)), String(odd));
-  }
-  const ok = await stopThatWaits(() => {});
-  assert.strictEqual(ok.shell.tabByKey(key('feat-a')), null, 'nothing changed during the wait: closed');
-  assert.strictEqual(ok.shell.snapshot().mergedNotice, 'Closed feat/a (merged)');
+test('#139 (B): a stop whose reply is lost waits for the host to go, then the removal follows: one stop, one removal, the notice, no closed row', async () => {
+  const h = await stopThatWaits(() => {});
+  assert.strictEqual(h.stops().length, 1, 'the stop went once');
+  assert.deepStrictEqual(h.removes, [key('feat-a')]);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().mergedNotice, 'Closed feat/a (merged)');
+  assert.deepStrictEqual(closedRowsOf(h), []);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'no Stop offer: the host went');
 });
 
 test('#139: merged but the CLI box holds a draft, or the page does not answer -> kept', async () => {
@@ -462,8 +472,12 @@ test('#139 P4: a poll during the stop\'s wait that moves the tab to removing own
   assert.strictEqual(g.shell.snapshot().closeStuck, null, 'no Stop offer either');
   release();
   await flush();
+  await g.poll();
   assert.strictEqual(g.shell.tabByKey(key('feat-a')), null, 'removeResult closed it');
   assert.ok(!g.shell.lanesMenu([]).some(r => r.key === key('feat-a') && r.action === 'reopen'), 'and still nothing to reopen');
+  assert.deepStrictEqual(g.removes, [key('feat-a')], 'one removal');
+  assert.strictEqual(g.shell.snapshot().mergedNotice, 'Closed feat/a (merged)', 'one notice');
+  assert.strictEqual(g.stops().length, 1);
 });
 
 test('#139 P11: an x clicked during a merged check that keeps the tab ends in the normal hand close once the check is over', async () => {
@@ -546,7 +560,22 @@ test('#139 P9: a second real poll while the first one\'s close is in flight star
   await h.poll();
   assert.strictEqual(h.stops().length, 1);
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
-  assert.strictEqual(h.shell.lanesMenu([]).filter(r => r.key === key('feat-a')).length, 1, 'one closed row');
+  assert.deepStrictEqual(h.removes, [key('feat-a')], 'one removal');
+  assert.deepStrictEqual(closedRowsOf(h), [], 'no closed row');
+});
+
+test('#139 (B): a stopped lane is never stopped again, though its tab waits for the next poll to move to removing', async () => {
+  const h = await liveThenMerged();
+  // The host takes the stop and goes, but the next poll's probe can't tell yet ('unknown'): the reducer can't move it, and the
+  // lane sits stopped. Polls go on; this path doesn't stop it again.
+  h.onProbe = async (port) => (port === 7701 && h.stops().length > 0 ? 'unknown' : undefined);
+  for (let i = 0; i < 4; i++) await h.poll();
+  assert.strictEqual(h.stops().length, 1);
+  assert.deepStrictEqual(h.removes, []);
+  h.onProbe = null;
+  await h.poll();
+  assert.deepStrictEqual(h.removes, [key('feat-a')], 'once a poll sees it refuse, the removal runs');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
 });
 
 test('#139 P9: a failed merged close is tried once per record, even after a selection takes its Stop offer away', async () => {
@@ -565,24 +594,12 @@ test('#139 P9: a failed merged close is tried once per record, even after a sele
 
 // --- the edges around it --------------------------------------------------------------------------
 
-test('#139: the Undo (its row) reopens the lane, and the merged close leaves it alone from then on', async () => {
-  const h = await liveThenMerged();
-  await h.poll();
-  h.running[7701] = wt('feat-a');       // its host as the reopen will find it (a fresh session in the real app)
-  assert.deepStrictEqual(await h.shell.reopen(key('feat-a')), { ok: true });
-  await flush();
-  h.report('feat-a', AT_REST);
-  for (let i = 0; i < 3; i++) await h.poll();
-  assert.ok(h.shell.tabByKey(key('feat-a')), 'still open: the person asked for it');
-  assert.strictEqual(h.stops().length, 1, 'only the first close');
-});
-
-// PR #236 Dexter 3: every kind of closed row, every way of reopening it. (A `merged: false` row is also what an Undo row becomes once
-// an older build rewrites the file without `merged`.)
+// PR #236 Dexter 3: a lane closed by hand (before or after its merge), reopened while its folder exists, every way of reopening it.
+// An earlier build of this PR saved `merged: true` on such rows; that flag is ignored now, and the row reopens the same way.
 for (const [how, entryMerged, doReopen] of [
-  ['its closed row (a hand close, merged: false)', false, (h) => h.shell.reopen(key('feat-a'))],
-  ['Ctrl+Shift+T (a hand close, merged: false)', false, (h) => h.shell.reopen()],
-  ['the Undo row (merged: true)', true, (h) => h.shell.reopen(key('feat-a'))],
+  ['its closed row (a hand close)', false, (h) => h.shell.reopen(key('feat-a'))],
+  ['Ctrl+Shift+T (a hand close)', false, (h) => h.shell.reopen()],
+  ['a closed row an earlier build saved with merged: true (ignored)', true, (h) => h.shell.reopen(key('feat-a'))],
 ]) {
   test(`#139 P3: a merged lane reopened from ${how} is never closed again by itself`, async () => {
     const closed = [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', ...(entryMerged ? { merged: true } : {}) }];
@@ -640,7 +657,20 @@ test('#139 startup (P5): a lane merged before the window opened, its host still 
   await h.poll();
   assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
   assert.strictEqual(h.shell.snapshot().mergedNotice, 'Closed feat/a (merged)', 'it had a tab in this window: the notice');
-  assert.deepStrictEqual(mergedRows(h).map(r => [r.key, r.state]), [[key('feat-a'), 'closed · Undo']], 'still reachable');
+  assert.deepStrictEqual(h.removes, [key('feat-a')]);
+});
+
+test('#139 P5: a merged lane whose session the PERSON ended is removed by the same flow and gets the same notice', async () => {
+  const h = await liveThenMerged();
+  h.boxClear = false;                       // the merged close keeps it (a draft) ...
+  await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  delete h.running[7701];                   // ... and the person ends the session themselves (/exit)
+  await h.poll();
+  assert.deepStrictEqual(h.stops(), [], 'this path stopped nothing');
+  assert.deepStrictEqual(h.removes, [key('feat-a')]);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().mergedNotice, 'Closed feat/a (merged)');
 });
 
 test('#139 startup: a window opened from a merged lane with no session opens on develop, and starts nothing in that folder', async () => {
@@ -686,9 +716,9 @@ test('#139 wiring: the box-state question goes main -> that tab page -> main, ga
   assert.match(PRELOAD, /onBoxState: \(fn\) => \(ipcRenderer\.removeAllListeners\('box-state'\), ipcRenderer\.on\('box-state'/);
   assert.match(PRELOAD, /boxState: \(reply\) => ipcRenderer\.send\('tab:boxState', reply\)/);
   const handler = JS.slice(JS.indexOf('window.harness.onBoxState('), JS.indexOf('window.harness.onBoxState(') + 900);
-  assert.match(handler, /clear = unsent === false && chatViewState\.boxAtRest\(\{ screen: inputState\(lines, \{ vim: vimSeen \}\), box: boxText\(lines\), typing: typingBusy, drafts \}\)/);
-  assert.match(handler, /try \{ drafts = unsentDrafts\(\); unsent = chatViewState\.hasUnsent\(drafts\); \} catch \{ unsent = null; \}/);
-  assert.match(handler, /window\.harness\.boxState\(\{ id, clear: clear === true, unsent \}\)/);
+  assert.match(handler, /clear = chatViewState\.boxAtRest\(\{ screen: inputState\(lines, \{ vim: vimSeen \}\), box: boxText\(lines\), typing: typingBusy, drafts \}\)/);
+  assert.match(handler, /const drafts = unsentDrafts\(\);/);
+  assert.match(handler, /window\.harness\.boxState\(\{ id, clear: clear === true \}\)/);
   const on = MAIN.slice(MAIN.indexOf("ipcMain.on('tab:boxState'"), MAIN.indexOf("ipcMain.on('tab:boxState'") + 200);
   assert.match(on, /if \(!isTabView\(e\.sender\)\) return;/);
   assert.match(on, /tabShell\.boxAnswered\(e\.sender, reply\)/);
@@ -703,14 +733,6 @@ test('#139 P2 boxAtRest: text in any of the page\'s other unsent inputs (the cha
   assert.strictEqual(at({ ...rest, drafts: [] }), true);
   assert.strictEqual(at({ ...rest, drafts: 'oops' }), false, "a list that isn't a list can't be read");
   assert.strictEqual(at({ ...rest, box: 'draft', drafts: [] }), false, 'the CLI box still counts');
-});
-
-test('#139 P6 hasUnsent: the page\'s own unsent text, asked apart from the CLI\'s box once the CLI has gone', () => {
-  const has = chatViewState.hasUnsent;
-  assert.strictEqual(has(['a draft']), true);
-  assert.strictEqual(has(['', null, '  ']), false);
-  assert.strictEqual(has([]), false);
-  assert.strictEqual(has(undefined), true, "can't be read: yes");
 });
 
 test('#139 P2 wiring: the page reads #chat-input and the vault and bug-vault fields, each a real field of the tab page', () => {
@@ -762,39 +784,26 @@ test('#139 boxAnswered: only the page that was asked, for a question still waiti
   assert.ok(h.shell.tabByKey(key('feat-a')), 'no answer from its own page: kept');
 });
 
-test('#139 strip-layout: a closed lane keeps `merged: true` through the file (so its row is still the Undo after a restart); anything else is dropped', () => {
+test('#139 (B) strip-layout: `merged` on a closed entry (an earlier build of this PR wrote it) is read without throwing and dropped', () => {
   const { parseLayout } = require('../host/strip-layout');
   const k = key('feat-a');
   const body = (merged) => JSON.stringify({ version: 1, order: [], closed: [{ key: k, path: wt('feat-a'), branch: 'feat/a', merged }] });
-  assert.deepStrictEqual(parseLayout(body(true)).closed, [{ key: k, path: wt('feat-a'), branch: 'feat/a', merged: true }]);
-  for (const junk of ['true', 1, false, null, undefined]) {
-    assert.deepStrictEqual(parseLayout(body(junk)).closed, [{ key: k, path: wt('feat-a'), branch: 'feat/a' }], String(junk));
+  for (const any of [true, 'true', 1, false, null, undefined]) {
+    assert.deepStrictEqual(parseLayout(body(any)).closed, [{ key: k, path: wt('feat-a'), branch: 'feat/a' }], String(any));
   }
 });
 
-test('#139: after a restart, a lane the merged close closed is still a Merged row with its Undo', async () => {
-  const layout = { load: () => ({ order: [], closed: [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', merged: true }], error: null }), save: () => ({ ok: true }) };
-  const h = harness({ running: { 7700: wt('dev') }, layout, markers: { [key('feat-a')]: 'feat/a' } });
-  await h.shell.open();
-  await flush();
-  assert.deepStrictEqual(mergedRows(h).map(r => [r.key, r.state, r.undo]), [[key('feat-a'), 'closed · Undo', true]]);
-  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
-});
-
-test('#139 P12: a saved merged row whose folder now holds a new lane (no marker) is a plain closed row, and the file says so', async () => {
-  const saved = [];
-  const layout = {
-    load: () => ({ order: [], closed: [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', merged: true }], error: null }),
-    save: (v) => { saved.push(JSON.parse(JSON.stringify(v))); return { ok: true }; },
-  };
-  const h = harness({ running: { 7700: wt('dev') }, layout });     // git lists feat-a again, and no marker is there
-  await h.shell.open();
-  await flush();
-  assert.deepStrictEqual(mergedRows(h).filter(r => r.key === key('feat-a')), [], 'not labelled merged');
-  const row = h.shell.lanesMenu([]).find(r => r.key === key('feat-a'));
-  assert.deepStrictEqual({ state: row.state, action: row.action }, { state: 'closed', action: 'reopen' }, 'a closed row, as any hand close');
-  const last = saved[saved.length - 1];
-  assert.ok(last && last.closed.some(c => c.key === key('feat-a') && c.merged === undefined), 'the saved entry lost its merged flag');
+test('#139 (B): after a restart, an old file\'s `merged: true` closed entry is a plain closed row (no Undo, no Merged row), merged marker or not', async () => {
+  for (const markers of [{ [key('feat-a')]: 'feat/a' }, {}]) {
+    const layout = { load: () => ({ order: [], closed: [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', merged: true }], error: null }), save: () => ({ ok: true }) };
+    const h = harness({ running: { 7700: wt('dev') }, layout, markers });
+    await h.shell.open();
+    await flush();
+    const row = h.shell.lanesMenu([]).find(r => r.key === key('feat-a'));
+    assert.deepStrictEqual({ state: row.state, action: row.action }, { state: 'closed', action: 'reopen' }, 'a closed row, as any hand close');
+    assert.deepStrictEqual(mergedRows(h).filter(r => r.key === key('feat-a')), []);
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  }
 });
 
 // --- the invariant --------------------------------------------------------------------------------

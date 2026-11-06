@@ -8043,14 +8043,12 @@ if (window.harness && window.harness.onBoxState) {
   window.harness.onBoxState((ask) => {
     const id = ask && ask.id;
     let clear = false;
-    let unsent = null;     // the page's own unsent text, apart from the CLI's box (PR #236 Dexter 6): null when it can't be read
-    let drafts;
-    try { drafts = unsentDrafts(); unsent = chatViewState.hasUnsent(drafts); } catch { unsent = null; }
     try {
       const lines = screenLines();
-      clear = unsent === false && chatViewState.boxAtRest({ screen: inputState(lines, { vim: vimSeen }), box: boxText(lines), typing: typingBusy, drafts });
+      const drafts = unsentDrafts();
+      clear = chatViewState.boxAtRest({ screen: inputState(lines, { vim: vimSeen }), box: boxText(lines), typing: typingBusy, drafts });
     } catch { clear = false; }
-    window.harness.boxState({ id, clear: clear === true, unsent });
+    window.harness.boxState({ id, clear: clear === true });
   });
 }
 

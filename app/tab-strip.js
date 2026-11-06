@@ -82,7 +82,7 @@ function alertFor(payload) {
   const stuck = objectOr(p.closeStuck, null);
   if (stuck && nonEmpty(stuck.key) && nonEmpty(stuck.text)) return { text: stuck.text, kind: 'bad', stop: stuck.key };
   if (nonEmpty(p.closeNotice)) return { text: p.closeNotice, kind: 'bad' };
-  // #139: "Closed <lane> (merged)", a calm line; the Lanes menu's Merged rows hold its Undo.
+  // #139: "Closed <lane> (merged)", a calm line, once the merged lane's folder is removed and its tab goes.
   if (nonEmpty(p.mergedNotice)) return { text: p.mergedNotice, kind: 'info' };
   const create = objectOr(p.create, null);
   if (create && create.phase === 'failed' && nonEmpty(create.error)) return { text: create.error, kind: 'bad' };
