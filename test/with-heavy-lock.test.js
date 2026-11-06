@@ -180,8 +180,20 @@ test('#178 b: a lock that stays busy ends with the NOT RUN line LAST and exit 75
   assert.ok(!r.events.includes('spawn'));
 });
 
-test('#178 b: too loaded, a script failure, or any other throw from acquire is NOT RUN too (75), never a test failure', async () => {
-  for (const err of [new HeavyLockError('loaded', 'machine too loaded', { detail: '4 GB free, 90% CPU', waitedMs: 60000 }), new HeavyLockError('error', 'heavy-lock.ps1 failed (exit 1): x'), new Error('weird')]) {
+test('#237 Miguel M4: a throw from acquire that is NOT the lock\'s refusal is a bug: its stack, exit 1, never NOT RUN', async () => {
+  for (const err of [new TypeError('Cannot read properties of null'), new Error('weird')]) {
+    const r = rig({ acquireThrows: err });
+    assert.strictEqual(await main(['node'], r.deps), 1, err.message);
+    const logs = r.events.filter(e => e.startsWith('log:'));
+    assert.ok(!logs.some(l => /NOT RUN/.test(l)), 'not dressed as "retry later"');
+    assert.match(logs[logs.length - 1], /the lock code itself failed \(a bug, not a busy lock\): .*Error: /);
+    assert.match(logs[logs.length - 1], /\n\s+at /, 'with its stack');
+    assert.ok(!r.events.includes('spawn'));
+  }
+});
+
+test('#178 b: too loaded or a script failure is NOT RUN too (75), never a test failure', async () => {
+  for (const err of [new HeavyLockError('loaded', 'machine too loaded', { detail: '4 GB free, 90% CPU', waitedMs: 60000 }), new HeavyLockError('error', 'heavy-lock.ps1 failed (exit 1): x')]) {
     const r = rig({ acquireThrows: err });
     assert.strictEqual(await main(['node'], r.deps), 75, err.message);
     const logs = r.events.filter(e => e.startsWith('log:'));

@@ -12,6 +12,9 @@
  * WAITING. A busy lock is waited for (20 minutes by default, HEAVY_LOCK_WAIT_MINUTES; why 20: host/heavy-lock.js WAIT),
  * with a line about once a minute saying who holds it and how long this run has waited.
  *
+ * A throw from the lock code that isn't the lock's own refusal (a HeavyLockError) is a bug here, not a busy lock: its stack
+ * is printed and the exit is 1, never 75 (#237 Miguel M4).
+ *
  * NOT RUN: EXIT 75. If the lock stays busy (or the machine too loaded, or the lock script fails) the command does NOT
  * run. The reason comes first, and the LAST line is one of
  *   [heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN                 another lane had the slot
@@ -37,6 +40,11 @@ async function main(argv, {
   if (!argv.length) { log('usage: node scripts/with-heavy-lock.js <command> [args...]'); return 2; }
   let lock;
   try { lock = acquire({ label: 'npm test', env, log }); } catch (err) {
+    // Only the lock's own refusals are NOT RUN. Anything else is a bug in this code: its stack, and 1 (#237 Miguel M4).
+    if (!(err instanceof heavy.HeavyLockError)) {
+      log(`[heavy-lock] the lock code itself failed (a bug, not a busy lock): ${(err && err.stack) || err}`);
+      return 1;
+    }
     log(`[heavy-lock] not running: ${err && err.message}`);
     log(heavy.notRunLine(err));   // the last line, in words that can't be read as a failing suite
     return heavy.NOT_RUN_EXIT;

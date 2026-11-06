@@ -257,7 +257,13 @@ function holderIsDead(holder, { startsOf, work, log = () => {} }) {
   // Can't read what it started: not "dead" (#112 M2, decided 2026-11-05: kept on the safe side, now said). Only this module
   // writes the record, by temp file and rename, so an unreadable one is damage, not a half-write, and it may list a suite
   // that still runs. The slot then stays until the script's 60-minute takeover, and that next holder's first write heals it.
-  try { children = work.read(holder); } catch (err) {
+  try {
+    children = work.read(holder);
+    // A malformed entry (`work: [null]`, a pid that isn't a number) is damage too: "can't tell", never a throw (#237 Miguel S4).
+    if (!Array.isArray(children) || children.some(c => !c || typeof c !== 'object' || !Number.isInteger(c.pid) || c.pid <= 0)) {
+      const e = new Error('malformed entry'); e.code = 'EMALFORMED'; throw e;
+    }
+  } catch (err) {
     log(`[heavy-lock] the work record of ${holder} can't be read (${(err && (err.code || err.message)) || 'unreadable'}): `
       + 'whether its work still runs can\'t be told, so the slot stays held (heavy-lock.ps1 frees a hold after 60 minutes)');
     return false;

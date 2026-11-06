@@ -909,6 +909,20 @@ test('#113 Dexter 1: the side file\'s remove drops one pid of its own owner only
   assert.deepStrictEqual(st.read('o (pid 1 start 2)'), [{ pid: 11, start: '5' }]);
 });
 
+// ---- #237 Miguel S4: a malformed entry in the work record never throws out of acquire ----
+test('#237 Miguel S4: work: [null] (or a pid that is no number) under a dead holder is "can\'t tell": no throw, no reclaim, said', () => {
+  const fs = require('fs');
+  for (const body of ['[null]', '[{"pid":"6000"}]', '[{"start":"1"}]', '[7]']) {
+    const file = path.join(tmpDir('hl-malformed-'), 'w.json');
+    fs.writeFileSync(file, `{"owner":"npm test (pid 5000 start 777)","work":${body}}`);
+    const r = rig({ holder: `${DEAD} (since 09:00:00)` });
+    assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps(), work: createWorkStore(file) }),
+      (e) => e instanceof HeavyLockError && e.code === 'busy', `${body}: a refusal, never a TypeError`);
+    assert.strictEqual(of(r, '-Release').length, 0, `${body}: never freed on "can't tell"`);
+    assert.ok(r.log.some(m => /work record of .* can't be read \(EMALFORMED\)/.test(m)), body);
+  }
+});
+
 // ---- #112 M2: a corrupt work record, decided: the safe side, said ----
 test('#112 M2: a corrupt work record on disk keeps a dead holder\'s slot (never freed on "can\'t tell"), and a line says why', () => {
   const fs = require('fs');
