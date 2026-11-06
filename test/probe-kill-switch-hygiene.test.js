@@ -12,6 +12,27 @@ const path = require('path');
 
 const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/[^\n]*/gm, '');
 const PROBE = strip(fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-kill-switch-detached.js'), 'utf8'));
+const M1 = strip(fs.readFileSync(path.join(__dirname, '..', 'verify', 'probe-kill-switch-electron.js'), 'utf8'));
+
+test('M1 (verify/probe-kill-switch-electron.js): Electron is started only from inside an armed job, without ELECTRON_RUN_AS_NODE', () => {
+  assert.ok(M1.indexOf("require('./lib/launch-electron')") < M1.indexOf('spawn('), 'the launcher (the heavy lock) before anything starts');
+  assert.match(M1, /for \(let i = 0; i < 1200 && !fs\.existsSync\(goFile\); i\+\+\) await sleep\(50\);/, 'the stand-in starts nothing before the go');
+  assert.ok(M1.indexOf('guard.attach(') < M1.indexOf("fs.writeFileSync(goFile, 'go')"), 'the go only after the arm');
+  assert.match(M1, /if \(!a\.ok\) throw new Error/, 'an unarmed run is a failure, not a pass');
+  assert.match(M1, /delete env\.ELECTRON_RUN_AS_NODE;/);
+  assert.match(M1, /spawnElectron\(electron,/, 'Electron through launch-electron (its probeEnv strips ELECTRON_RUN_AS_NODE too)');
+});
+
+test('M1: every mode is judged on a real answer; what it started is ended by its own handle or by pid AND start, never by name', () => {
+  assert.match(M1, /const alive = async \(pid\) => \{ const m = await startTimes\(\[pid\]\); return m \? m\.has\(pid\) : null; \};/);
+  assert.match(M1, /if \(left === null\) throw new Error/);
+  assert.match(M1, /r\.verdict = r\.job === 'killed' && left\.length === 0 && tree\.length >= 4 \? 'PASS' : 'FAIL';/, 'an empty tree can never pass hold');
+  assert.match(M1, /hygiene\.registerChild\(standIn\);/);
+  assert.match(M1, /hygiene\.addCleanup\(endTree\);/);
+  assert.match(M1, /killProven\(p\.pid, p\.start\)/);
+  assert.doesNotMatch(M1, /taskkill|\/IM\b|Stop-Process|killall|pkill/i);
+  assert.match(M1, /\(\?: \(\.\*\)\)\?\$/, 'a process with an empty Name is still in the tree (measured: a parse requiring one dropped every row)');
+});
 
 test('PR #235 Miguel I7: the pty and every grandchild go through process-hygiene, so Ctrl+C and an uncaught error end them too', () => {
   assert.match(PROBE, /const \{ createHygieneRegistry \} = require\('\.\/lib\/process-hygiene'\);/);

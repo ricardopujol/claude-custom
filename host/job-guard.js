@@ -32,13 +32,17 @@
  *       'helper-killed'): with it the grandchild died, without it it lives.
  *     - no BREAKAWAY_OK. Measured 2026-11-05: with it, Git Bash's `nohup x & disown` child left the job (Cygwin breaks away whenever
  *       the job allows it); without it Git Bash and `Start-Process` start their children normally, inside the job. A program that
- *       insists on CREATE_BREAKAWAY_FROM_JOB gets access denied from CreateProcess while the session is in the job.
+ *       insists on CREATE_BREAKAWAY_FROM_JOB gets access denied from CreateProcess while the session is in the job. Electron does
+ *       not (PR #235 M1, verify/probe-kill-switch-electron.js, 2026-11-06): its sandboxed renderer, GPU, utility and crashpad start
+ *       inside the job, a real app probe passes from there, and a stop ends the whole tree.
  *
  * WHICH STOPS END THE JOB: decided in ONE place, host/kill-switch.js jobEndsFor(). As built, every stop of the kill switch does
  * (STOP-ALL, the project's STOP, the night budget); an ordinary end (claude exits, the window closes, the host is killed) never does.
  *
  * WHAT STILL ESCAPES (stated on purpose, pinned by test/job-guard-process.test.js). The pty joins the job only once the helper has
- * assigned it, about 0.5 s after spawn idle and over 1 s under load (measured: verify/README.md). A process the session started in
+ * assigned it. Measured spawn -> armed (verify/README.md): 627 / 701 / 1506 ms min / median / max of 10 at light load (CPU 17-43%,
+ * 2026-11-06, the helper's own part 95 / 105 / 478 ms), and 1008 / 1395 / 1656 ms of 8 under load (52% CPU, 2026-11-05). Most of it
+ * is powershell.exe starting; the Reflection.Emit binding is ~0.1 s. A process the session started in
  * that time that is still alive at the arm is adopted, and everything it starts later joins with it (MCP servers, hooks). A process
  * that was started AND orphaned before the arm (its parent exited before the arm) is not reached: nothing links it to the pty any
  * more. Nor is anything outside the pty's tree (a process started through COM, the Task Scheduler or Explorer).
