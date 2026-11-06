@@ -87,8 +87,16 @@ test('#127: the session\'s pty is put in a job at spawn, so a trip ends processe
   const spawnAt = HOST.indexOf('trackExit(term);');
   assert.ok(spawnAt !== -1);
   const after = HOST.slice(spawnAt, HOST.indexOf('wireTerm(term);', spawnAt));
-  assert.match(after, /jobGuard\.attach\(\{ pid: term\.pid, startOf: \(\) => trackedStart\(term\) \}\)/, 'attached right after the spawn is tracked, with the pty\'s proven start');
+  assert.match(after, /jobGuard\.attach\(\{ pid: term\.pid, startOf: \(\) => trackedStart\(term\), spawnWindow \}\)/, 'attached right after the spawn is tracked, with the pty\'s proven start and its spawn window');
   assert.match(after, /\.catch\(/, 'a rejected attach never breaks the session');
+});
+
+test('#127: the spawn window is the clock just before and just after the one pty.spawn, for both the claude and the shell path', () => {
+  const b = block('function startSession() {', '\n}\n');
+  assert.match(b, /const spawnTimed = \(\) => \{ const before = Date\.now\(\); const t = spawnPty\(\); spawnWindow = \{ before, after: Date\.now\(\) \}; return t; \};/);
+  assert.match(b, /startShellPty\(spawnTimed\)/);
+  assert.match(b, /term = spawnTimed\(\);/);
+  assert.doesNotMatch(b, /startShellPty\(spawnPty\)|term = spawnPty\(\)/, 'no spawn without its window');
 });
 
 test('#127: the stopper ends the job (for the stops jobEndsFor names), not the bounded tree kill; the host waits for its answer before it exits (PR #235 Dexter 2, 4)', () => {

@@ -1959,10 +1959,14 @@ function startSession() {
         ...providerEnv,
       },
   });
+  // The clock just before and just after the spawn: ConPTY creates the process inside pty.spawn, so its creation time falls between
+  // the two, and the job guard can prove it holds our pty without the proc-start read (host/job-guard.js spawnWindowOf).
+  let spawnWindow = null;
+  const spawnTimed = () => { const before = Date.now(); const t = spawnPty(); spawnWindow = { before, after: Date.now() }; return t; };
   if (SHELL) {
     // A shell that can't start (a missing binary, a file Windows can't run) must END the host the way an exited shell does, so the
     // tab says so and offers Restart. Left bound with no pty it would serve a blank tab for ever (Dexter, PR #208 F1).
-    const started = startShellPty(spawnPty);
+    const started = startShellPty(spawnTimed);
     if (!started.term) {
       console.error('[host] could not start the shell:', started.message, '--', SHELL_TARGET.bin);
       endHost(started.frame.exitCode, started.frame.signal, { error: started.frame.error }, FAILED_START_LINGER_MS);
@@ -1970,12 +1974,12 @@ function startSession() {
     }
     term = started.term;
   } else {
-    term = spawnPty();
+    term = spawnTimed();
   }
   trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   // And every process it starts joins a job the kill switch can end, parent links or not (BACKLOG #127). Never throws; a session
   // the guard could not arm is exactly the session it was before.
-  jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term) })
+  jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), spawnWindow })
     .catch((err) => console.log('[job-guard] attach failed:', err && err.message));
   console.log('[host] pty pid       :', term.pid);
   // Whoever this lock blocks can see which `claude` is holding the worktree.

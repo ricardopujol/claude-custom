@@ -89,6 +89,42 @@ test('real job: kill() ends a detached grandchild whose parent already exited; d
   }
 });
 
+// The spawn window, against the real helper: no exact start (proc-start failed under load), only the clock around the spawn. libuv's
+// spawn calls CreateProcess synchronously, like ConPTY's connect, so the creation lies inside. A window that ended before the process
+// was created (a stranger that took the pid later) is refused by the helper before anything is assigned.
+test('real job: with no exact start, the spawn window arms it and kill() ends it; a window that excludes it is refused', { skip: process.platform !== 'win32' && 'Windows only', timeout: 120000 }, async () => {
+  for (const mode of ['inside', 'outside']) {
+    const before = Date.now();
+    const claude = spawn(process.execPath, ['-e', 'setTimeout(()=>{},600000)'], { stdio: 'ignore', windowsHide: true });
+    const after = Date.now();
+    const procs = [];
+    const lines = [];
+    const g = createJobGuard({ log: (l) => lines.push(l) });
+    try {
+      await record(procs, claude.pid);   // for the cleanup only: the guard is never given it
+      const spawnWindow = mode === 'inside' ? { before, after } : { before: before - 60000, after: before - 10000 };
+      const r = await g.attach({ pid: claude.pid, startOf: async () => null, spawnWindow });
+      if (mode === 'inside') {
+        assert.strictEqual(r.ok, true, `${JSON.stringify(r)} ${lines.join(' | ')}`);
+        assert.ok(lines.some((l) => /proven by the spawn window/.test(l)), lines.join(' | '));
+        assert.strictEqual(g.kill(), 'sent');
+        assert.strictEqual(await g.settled(15000), 'killed');
+        for (let i = 0; i < 50 && await alive(claude.pid); i++) await sleep(100);
+        assert.strictEqual(await alive(claude.pid), false, 'ended by the job');
+      } else {
+        assert.deepStrictEqual(r, { ok: false, reason: 'start-mismatch' }, lines.join(' | '));
+        assert.strictEqual(g.kill(), 'not-armed');
+        await sleep(500);
+        assert.strictEqual(await alive(claude.pid), true, 'never in a job, never ended');
+      }
+    } finally {
+      g.disarm();
+      await cleanup(procs, []);
+      endOwn(claude);
+    }
+  }
+});
+
 // PR #235 Dexter 10: what the arm adopts, and the limit, both pinned so neither is rediscovered as a flake.
 //   early     a child started BEFORE the arm that stays alive (an MCP server, a hook): adopted at the arm, and a detached
 //             grandchild it starts LATER (through an intermediate that exits) dies with the job.

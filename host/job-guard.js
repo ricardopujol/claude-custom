@@ -12,12 +12,16 @@
  *
  * HOW. One PowerShell helper per session. Its Win32 calls are bound in memory through Reflection.Emit (as host/process-suspend.js
  * does), never `Add-Type`: Add-Type runs csc.exe, which took over 30 s on a loaded machine (PR #158, PR #235 Miguel B1). The helper
- * is spawned at once and creates the job while the pty's start time is being read; then:
+ * is spawned at once and creates the job while the pty's start time is being read; it says `UP` once it can take a line; then:
  *   stdin `START <FILETIME>`   the helper opens the pty by pid (and keeps that handle, so the pid can't be reused while it runs),
  *                              reads the opened process's start time, and only if it equals the one sent assigns it to the job
  *                              (`READY <ms> <start>`); a different start is `FAILED start-mismatch`, BEFORE any assignment, so a
- *                              stranger is never put in a job (PR #235 Dexter 5). A start that could not be proven is never sent:
- *                              the guard tells the helper DISARM and the session runs unguarded (Dexter 1).
+ *                              stranger is never put in a job (PR #235 Dexter 5).
+ *   stdin `WINDOW <lo> <hi>`   the same, when the exact start isn't known (the read failed, or is still out when the helper is up):
+ *                              the opened process must have been created inside the spawn window, the clock read just before and
+ *                              just after pty.spawn (spawnWindowOf, measured below). A stranger takes the pid only after our pty died,
+ *                              so after the window. With no window and no exact start nothing is sent: the guard tells the helper
+ *                              DISARM, a held stop is dropped with a line, and the session runs unguarded (Dexter 1).
  *   at once after READY         the pty's descendants alive at that moment are put in the job too (`ADOPTED <n> <ms>`): a child is
  *                              followed only when it was not created before its parent (a reused parent pid can't adopt a stranger)
  *                              and its start, read on a held handle, is still the one the process table had (Dexter 7, 10).
@@ -45,13 +49,14 @@
  * waits for settled(KILL_ANSWER_MS) before it exits.
  *
  *   createJobGuard({ spawnFn, platform, powershell, log, timeoutMs, now, onOutcome })
- *     -> { attach({ pid, startOf }) -> Promise<result>, kill() -> 'sent' | 'held' | 'not-armed', disarm(), state(), outcome(),
+ *     -> { attach({ pid, startOf, spawnWindow }) -> Promise<result>, kill() -> 'sent' | 'held' | 'not-armed', disarm(), state(), outcome(),
  *          settled(ms) -> Promise<outcome> }
  *       result   { ok: true, ms, start } | { ok: false, reason }    reason: 'not-windows' | 'bad-pid' | 'spawn-failed' | 'unproven-start' |
  *                                                                   'start-mismatch' | 'failed: <why>' | 'timeout' | 'helper-exited'
  *       outcome  null | 'arming' | 'armed' | 'held' | 'sent' | 'killed' | 'kill-failed: <why>' | 'kill-unanswered' |
  *                'not-armed: <reason>' | 'dropped: <reason>' | 'released'
- *   helperScript(pid), splitLines(buffer), parseLine(line), verdict({ ready, proven })   (pure, exported for the tests)
+ *   helperScript(pid), splitLines(buffer), parseLine(line), verdict({ ready, proven, window }), spawnWindowOf({ before, after }),
+ *   msToFiletime(ms)                                                                       (pure, exported for the tests)
  */
 const { spawn } = require('child_process');
 const path = require('path');
@@ -100,18 +105,21 @@ function helperScript(pid) {
     "  $j = [IntPtr](W 'CreateJobObjectW' @([IntPtr]::Zero, [IntPtr]::Zero))",
     "  if ($j -eq [IntPtr]::Zero) { throw 'CreateJobObject failed' }",
     "} catch { Say ('FAILED bind: ' + (Why $_)); exit 1 }",
+    // Bound and ready to read: the host sends the spawn window now if the pty's exact start isn't known yet.
+    "Say 'UP'",
     // ONE reader for all of stdin, so no line can sit in a buffer the next read doesn't see.
     '$in = New-Object IO.StreamReader([Console]::OpenStandardInput())',
-    // The first line: the pty's proven start, or anything else (DISARM, EOF): then nothing was ever assigned.
+    // The first line: the pty's exact start, or the window its creation must fall in; anything else (DISARM, EOF): nothing assigned.
     '$first = $in.ReadLine()',
-    "if (-not ($first -match '^START (\\d+)$')) { exit 0 }",
-    '$want = [long]$Matches[1]',
+    "if ($first -match '^START (\\d+)$') { $lo = [long]$Matches[1]; $hi = $lo }",
+    "elseif ($first -match '^WINDOW (\\d+) (\\d+)$') { $lo = [long]$Matches[1]; $hi = [long]$Matches[2] }",
+    'else { exit 0 }',
     'try {',
     `  $h = [IntPtr](W 'OpenProcess' @([uint32]${ACCESS}, $false, [int]$target))`,
     "  if ($h -eq [IntPtr]::Zero) { throw 'OpenProcess failed' }",
     '  $got = StartOfPid $target',
     // Compared BEFORE the assignment: a stranger is never put in the job (PR #235 Dexter 5).
-    "  if ($got -ne $want) { Say ('FAILED start-mismatch ' + $got); exit 1 }",
+    "  if ($got -lt $lo -or $got -gt $hi) { Say ('FAILED start-mismatch ' + $got); exit 1 }",
     "  if (-not (W 'AssignProcessToJobObject' @($j, $h))) { throw 'AssignProcessToJobObject failed' }",
     "  Say ('READY ' + $sw.ElapsedMilliseconds + ' ' + $got)",
     "} catch { Say ('FAILED ' + (Why $_)); exit 1 }",
@@ -169,6 +177,7 @@ function splitLines(buffer) {
 
 function parseLine(line) {
   let m;
+  if (line === 'UP') return { type: 'up' };
   if ((m = /^READY (\d+) (\d+)$/.exec(line))) return { type: 'ready', ms: Number(m[1]), start: m[2] };
   if ((m = /^ADOPTED (\d+) (\d+)$/.exec(line))) return { type: 'adopted', count: Number(m[1]), ms: Number(m[2]) };
   if (line === 'KILLED') return { type: 'killed' };
@@ -178,10 +187,36 @@ function parseLine(line) {
   return null;
 }
 
-// The helper only assigns the start it was sent, so a READY naming another one is a helper that can't be believed.
-function verdict({ ready, proven }) {
-  if (typeof proven !== 'string') return 'unproven-start';
-  return ready && ready.start === proven ? 'arm' : 'start-mismatch';
+// THE SPAWN WINDOW (PR #235, the hub's option to K2). node-pty's ConPTY creates the process synchronously inside pty.spawn (its
+// agent's constructor calls connect(), and term.pid is that process), so the pty's creation time lies between a clock read just
+// before pty.spawn and one just after it. A stranger can take the pid only after our pty died, which is after `after`; so a creation
+// time inside the window is our pty whatever the process table says later, and the guard needs no proc-start read to arm.
+// MEASURED 2026-11-06 (160 spawns, bundled ConPTY): created - before 34.9..101.3 ms, after - created -0.27..3.04 ms. The late edge is
+// Date.now()'s whole milliseconds (it truncates, so the process can be up to 1 ms past `after`), plus 2 ms: the only edge a stranger
+// could come in by, so it's kept tight. The early edge only guards against refusing our own pty (no live process created before
+// `before` can hold our pid), so it's generous.
+const WINDOW_EARLY_MS = 50;
+const WINDOW_LATE_MS = 3;
+const FILETIME_UNIX_EPOCH = 116444736000000000n;   // 1970-01-01 in 100 ns ticks since 1601
+const msToFiletime = (ms) => (BigInt(Math.trunc(ms)) * 10000n + FILETIME_UNIX_EPOCH).toString();
+const validMs = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+
+// { before, after } (Date.now() around pty.spawn) -> { lo, hi } FILETIME strings, or null when the two reads aren't a window.
+function spawnWindowOf(w) {
+  if (!w || !validMs(w.before) || !validMs(w.after) || w.after < w.before) return null;
+  return { lo: msToFiletime(w.before - WINDOW_EARLY_MS), hi: msToFiletime(w.after + WINDOW_LATE_MS) };
+}
+
+// The helper only assigns what it was sent (the exact start, or a creation inside the window), so a READY naming anything else is a
+// helper that can't be believed.
+function verdict({ ready, proven, window }) {
+  if (typeof proven === 'string') return ready && ready.start === proven ? 'arm' : 'start-mismatch';
+  if (window) {
+    if (!ready || !/^\d+$/.test(String(ready.start))) return 'start-mismatch';
+    const got = BigInt(ready.start);
+    return got >= BigInt(window.lo) && got <= BigInt(window.hi) ? 'arm' : 'start-mismatch';
+  }
+  return 'unproven-start';
 }
 
 const WAITING = new Set(['held', 'sent']);   // a stop asked for and not yet answered
@@ -219,14 +254,18 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
     send(s, 'DISARM', true);
   }
 
-  function attach({ pid, startOf = async () => null } = {}) {
+  // pid: the pty's. startOf(): Promise<FILETIME string | null>, kill-tree's read of its start. spawnWindow: { before, after }, Date.now()
+  // around pty.spawn; with it the guard arms even when that read fails (under load), without it an unread start never arms.
+  function attach({ pid, startOf = async () => null, spawnWindow = null } = {}) {
     if (platform !== 'win32') return Promise.resolve({ ok: false, reason: 'not-windows' });
     if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve({ ok: false, reason: 'bad-pid' });
     if (cur) release(cur, 'a new session');      // one helper at a time: an earlier session's job is released, not ended
     // host.js attaches right after pty.spawn, so this is how long the session ran outside the job (PR #235 hub H1).
     const t0 = now();
     const since = () => { try { return Math.max(0, Math.round(now() - t0)); } catch { return null; } };
-    const s = { child: null, st: 'starting', pendingKill: false, outcome: null, proven: undefined, settled: false, readySeen: false, stderr: '' };
+    const window = spawnWindowOf(spawnWindow);
+    // proven: undefined until the read lands, then a FILETIME or null. sent: what the helper was told to compare against.
+    const s = { child: null, st: 'starting', pendingKill: false, outcome: null, proven: undefined, up: false, sent: null, settled: false, readySeen: false, stderr: '' };
     cur = s;
     setOutcome(s, 'arming');
     try {
@@ -263,15 +302,26 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
         }
         resolve(r);
       };
+      // The exact start when it's known; otherwise the spawn window, once the read failed or the helper is up and the read is still out
+      // (the arm never waits on a slow proc-start); with neither, an unread start is never sent (PR #235 Dexter 1).
+      const offer = () => {
+        if (s.sent || s.settled || s.st !== 'starting') return;
+        if (typeof s.proven === 'string') { s.sent = { proven: s.proven }; send(s, `START ${s.proven}`, false); return; }
+        if (window && (s.proven === null || s.up)) { s.sent = { window }; send(s, `WINDOW ${window.lo} ${window.hi}`, false); return; }
+        if (s.proven === null) settle({ ok: false, reason: 'unproven-start' });
+      };
       const handle = (msg) => {
-        if (msg.type === 'ready') {
+        if (msg.type === 'up') {
+          s.up = true;
+          offer();
+        } else if (msg.type === 'ready') {
           if (s.readySeen) return;
           s.readySeen = true;
-          const v = verdict({ ready: msg, proven: s.proven });
+          const v = verdict({ ready: msg, ...(s.sent || {}) });
           if (v !== 'arm') { settle({ ok: false, reason: v }); return; }
           if (s.st !== 'starting') { settle({ ok: true, ms: msg.ms, start: msg.start }); return; }   // released meanwhile
           s.st = 'armed';
-          say(`armed for pid ${pid} ${since()} ms after spawn (helper ${msg.ms} ms)`);
+          say(`armed for pid ${pid} ${since()} ms after spawn (helper ${msg.ms} ms)${s.sent.window ? ', proven by the spawn window' : ''}`);
           setOutcome(s, 'armed');
           const held = s.pendingKill;
           settle({ ok: true, ms: msg.ms, start: msg.start });
@@ -304,15 +354,14 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
           for (const line of lines) { const msg = parseLine(line); if (msg) handle(msg); }
         });
       }
-      // The proof runs while PowerShell starts: only a proven start is ever sent (PR #235 Dexter 1, 5).
+      // The read runs while PowerShell starts: only a proven start, or the window, is ever sent (PR #235 Dexter 1, 5).
       Promise.resolve()
         .then(() => startOf())
         .catch(() => null)
         .then((p) => {
           if (s.settled || s.st !== 'starting') return;
           s.proven = typeof p === 'string' && /^\d+$/.test(p) ? p : null;
-          if (s.proven === null) settle({ ok: false, reason: 'unproven-start' });
-          else send(s, `START ${s.proven}`, false);
+          offer();
         });
       timer = setTimeout(() => settle({ ok: false, reason: 'timeout' }), timeoutMs);
       if (timer && typeof timer.unref === 'function') timer.unref();
@@ -350,4 +399,4 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
   return { attach, kill, disarm, settled, state: () => (cur ? cur.st : 'idle'), outcome: () => (cur ? cur.outcome : null) };
 }
 
-module.exports = { createJobGuard, helperScript, splitLines, parseLine, verdict, READY_TIMEOUT_MS, KILL_ANSWER_MS };
+module.exports = { createJobGuard, helperScript, splitLines, parseLine, verdict, spawnWindowOf, msToFiletime, READY_TIMEOUT_MS, KILL_ANSWER_MS, WINDOW_EARLY_MS, WINDOW_LATE_MS };

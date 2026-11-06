@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { EventEmitter } = require('events');
 
-const { createJobGuard, helperScript, splitLines, parseLine, verdict, KILL_ANSWER_MS } = require('../host/job-guard');
+const { createJobGuard, helperScript, splitLines, parseLine, verdict, spawnWindowOf, msToFiletime, KILL_ANSWER_MS, WINDOW_EARLY_MS, WINDOW_LATE_MS } = require('../host/job-guard');
 
 // A fake helper: stdout/stderr/stdin are emitters, `kill()` records and exits it, `say()` prints a line.
 function fakeHelper() {
@@ -59,10 +59,12 @@ test('helperScript: binds kernel32 through Reflection.Emit, never Add-Type/csc.e
 test('helperScript: compares the start it was sent BEFORE assigning, so a stranger is never put in the job (PR #235 Dexter 5)', () => {
   const s = helperScript(777);
   const start = s.indexOf("-match '^START (\\d+)$'");
-  const mismatch = s.indexOf("Say ('FAILED start-mismatch ' + $got); exit 1");
+  const mismatch = s.indexOf("if ($got -lt $lo -or $got -gt $hi) { Say ('FAILED start-mismatch ' + $got); exit 1 }");
   const assign = s.indexOf("W 'AssignProcessToJobObject' @($j, $h)");
   assert.ok(start > 0 && mismatch > start && assign > mismatch, `START read (${start}), then the compare (${mismatch}), then the assign (${assign})`);
-  assert.match(s, /if \(-not \(\$first -match '\^START \(\\d\+\)\$'\)\) \{ exit 0 \}/, 'no START (DISARM, EOF): it leaves having assigned nothing');
+  assert.match(s, /\$first -match '\^START \(\\d\+\)\$'\) \{ \$lo = \[long\]\$Matches\[1\]; \$hi = \$lo \}/, 'an exact start is a window of one tick');
+  assert.match(s, /elseif \(\$first -match '\^WINDOW \(\\d\+\) \(\\d\+\)\$'\) \{ \$lo = \[long\]\$Matches\[1\]; \$hi = \[long\]\$Matches\[2\] \}\nelse \{ exit 0 \}/, 'neither (DISARM, EOF): it leaves having assigned nothing');
+  assert.ok(s.indexOf("Say 'UP'") > s.indexOf('CreateJobObjectW') && s.indexOf("Say 'UP'") < s.indexOf('$first = $in.ReadLine()'), 'UP once bound, before the first read');
   assert.match(s, /if \(\$line -eq 'KILL'\) \{[^\n]*TerminateJobObject/, 'only an explicit KILL ends the job');
 });
 
@@ -87,19 +89,138 @@ test('splitLines: whole lines only; the tail waits, CRLF is trimmed (PR #235 Dex
 });
 
 test('parseLine: each answer, whole-line anchored; anything else is nothing', () => {
+  assert.deepStrictEqual(parseLine('UP'), { type: 'up' });
   assert.deepStrictEqual(parseLine('READY 286 134383984619939661'), { type: 'ready', ms: 286, start: '134383984619939661' });
   assert.deepStrictEqual(parseLine('ADOPTED 3 900'), { type: 'adopted', count: 3, ms: 900 });
   assert.deepStrictEqual(parseLine('KILLED'), { type: 'killed' });
   assert.deepStrictEqual(parseLine('KILL-FAILED TerminateJobObject failed'), { type: 'kill-failed', reason: 'TerminateJobObject failed' });
   assert.deepStrictEqual(parseLine('FAILED start-mismatch 999'), { type: 'failed', reason: 'start-mismatch' });
   assert.deepStrictEqual(parseLine('FAILED OpenProcess failed'), { type: 'failed', reason: 'failed: OpenProcess failed' });
-  for (const junk of ['READY 5', 'READY 5 12x', ' READY 5 1', 'KILLED!', 'ADOPTED x 1', '']) assert.strictEqual(parseLine(junk), null, junk);
+  for (const junk of ['READY 5', 'READY 5 12x', ' READY 5 1', 'KILLED!', 'ADOPTED x 1', '', 'UP ', 'UPX']) assert.strictEqual(parseLine(junk), null, junk);
 });
 
-test('verdict: armed only on the start that was sent', () => {
+test('verdict: armed only on the start that was sent, or inside the window that was sent', () => {
   assert.strictEqual(verdict({ ready: { start: '1' }, proven: '1' }), 'arm');
   assert.strictEqual(verdict({ ready: { start: '2' }, proven: '1' }), 'start-mismatch');
   assert.strictEqual(verdict({ ready: { start: '1' }, proven: null }), 'unproven-start');
+  assert.strictEqual(verdict({ ready: { start: '1' } }), 'unproven-start', 'nothing sent: nothing to believe');
+  const window = { lo: '100', hi: '200' };
+  assert.strictEqual(verdict({ ready: { start: '100' }, window }), 'arm');
+  assert.strictEqual(verdict({ ready: { start: '200' }, window }), 'arm');
+  assert.strictEqual(verdict({ ready: { start: '99' }, window }), 'start-mismatch');
+  assert.strictEqual(verdict({ ready: { start: '201' }, window }), 'start-mismatch');
+  assert.strictEqual(verdict({ ready: { start: '12x' }, window }), 'start-mismatch');
+  assert.strictEqual(verdict({ ready: { start: '150' }, proven: '1', window }), 'start-mismatch', 'an exact start wins over the window');
+});
+
+// --- the spawn window (PR #235, the hub's option to K2) --------------------------------------------------------------------------------
+
+test('msToFiletime: Date.now() milliseconds to FILETIME ticks, exactly (no float rounding on 18 digits)', () => {
+  assert.strictEqual(msToFiletime(0), '116444736000000000');
+  assert.strictEqual(msToFiletime(1), '116444736000010000');
+  assert.strictEqual(msToFiletime(Date.UTC(2000, 0, 1)), '125911584000000000', 'the published FILETIME of 2000-01-01T00:00:00Z');
+  assert.strictEqual(msToFiletime(1762387200123), (1762387200123n * 10000n + 116444736000000000n).toString());
+});
+
+test('spawnWindowOf: [before - 50 ms, after + 3 ms] in FILETIME; both edges are inside, a tick past either is not', () => {
+  assert.strictEqual(WINDOW_EARLY_MS, 50);
+  assert.strictEqual(WINDOW_LATE_MS, 3, 'the edge a stranger could come in by: 1 ms of Date.now() truncation + 2 ms (measured: at most 0.27 ms past)');
+  const w = spawnWindowOf({ before: 1762387200000, after: 1762387200040 });
+  assert.deepStrictEqual(w, { lo: msToFiletime(1762387199950), hi: msToFiletime(1762387200043) });
+  const tick = (ft, d) => (BigInt(ft) + BigInt(d)).toString();
+  assert.strictEqual(verdict({ ready: { start: w.lo }, window: w }), 'arm');
+  assert.strictEqual(verdict({ ready: { start: tick(w.lo, -1) }, window: w }), 'start-mismatch');
+  assert.strictEqual(verdict({ ready: { start: w.hi }, window: w }), 'arm');
+  assert.strictEqual(verdict({ ready: { start: tick(w.hi, 1) }, window: w }), 'start-mismatch');
+  for (const bad of [null, undefined, {}, { before: 5 }, { before: 10, after: 5 }, { before: NaN, after: 1 }, { before: '1', after: 2 }, { before: 0, after: 1 }]) {
+    assert.strictEqual(spawnWindowOf(bad), null, JSON.stringify(bad));
+  }
+});
+
+const WIN = { before: 1762387200000, after: 1762387200040 };
+// Built inside each test, not at load: a module without msToFiletime fails these tests one by one, not the whole file.
+const ft = (ms) => (BigInt(ms) * 10000n + 116444736000000000n).toString();
+const inWindow = ft(1762387200039);
+const reusedLater = ft(1762387201500);   // Dexter 1: a stranger that took the pid after the tree kill, 1.5 s in
+
+// The deleted origin test, kept: a start the read could not get does not switch the guard off (it's exactly what happens under load).
+test('attach: a start time that could not be read does not stop the guard: the spawn window proves the pty instead', async () => {
+  const h = fakeHelper();
+  const { g, lines } = guardWith(h);
+  const p = g.attach({ pid: 777, startOf: async () => null, spawnWindow: WIN });
+  await tick();
+  const w = spawnWindowOf(WIN);
+  assert.deepStrictEqual(h.stdin.written, [`WINDOW ${w.lo} ${w.hi}\n`]);
+  h.say(`READY 300 ${inWindow}`);
+  assert.deepStrictEqual(await p, { ok: true, ms: 300, start: inWindow });
+  assert.strictEqual(g.state(), 'armed');
+  assert.ok(lines.some((l) => /armed for pid 777 \d+ ms after spawn \(helper 300 ms\), proven by the spawn window/.test(l)), lines.join(' | '));
+});
+
+test('attach: the helper is up and the read is still out: the window goes at once, the late read changes nothing', async () => {
+  const h = fakeHelper();
+  const { g } = guardWith(h);
+  let release;
+  const p = g.attach({ pid: 777, startOf: () => new Promise((r) => { release = r; }), spawnWindow: WIN });
+  await tick();
+  assert.deepStrictEqual(h.stdin.written, []);
+  h.say('UP');
+  const w = spawnWindowOf(WIN);
+  assert.deepStrictEqual(h.stdin.written, [`WINDOW ${w.lo} ${w.hi}\n`]);
+  release('999');
+  await tick();
+  assert.deepStrictEqual(h.stdin.written, [`WINDOW ${w.lo} ${w.hi}\n`], 'one first line only');
+  h.say(`READY 5 ${inWindow}`);
+  assert.strictEqual((await p).ok, true);
+});
+
+test('attach: with an exact start known, START goes, never the window', async () => {
+  const h = fakeHelper();
+  const { g } = guardWith(h);
+  const p = g.attach({ pid: 777, startOf: async () => inWindow, spawnWindow: WIN });
+  await tick();
+  h.say('UP');
+  assert.deepStrictEqual(h.stdin.written, [`START ${inWindow}\n`]);
+  h.say(`READY 5 ${inWindow}`);
+  assert.strictEqual((await p).ok, true);
+});
+
+test('a held stop with an unread start is sent once the window proved the pty: KILL', async () => {
+  const h = fakeHelper();
+  const { g } = guardWith(h);
+  const p = g.attach({ pid: 777, startOf: async () => null, spawnWindow: WIN });
+  assert.strictEqual(g.kill(), 'held');
+  await tick();
+  h.say(`READY 5 ${inWindow}`);
+  assert.strictEqual((await p).ok, true);
+  assert.ok(h.stdin.written.includes('KILL\n'), h.stdin.written.join(''));
+  assert.strictEqual(g.outcome(), 'sent');
+});
+
+// Dexter 1's counterexample with the window: proc-start timed out, a stop is held, the tree kill ended claude and its pid went to a
+// stranger X. X was created after the window, so the helper refuses it before assigning; a READY naming X is not believed either.
+test('Dexter 1, windowed: the pid reused after the tree kill is refused, the held stop is dropped with a line, no KILL', async () => {
+  const h = fakeHelper();
+  const { g, lines } = guardWith(h);
+  const p = g.attach({ pid: 777, startOf: async () => null, spawnWindow: WIN });
+  g.kill();
+  await tick();
+  h.say(`FAILED start-mismatch ${reusedLater}`);
+  assert.deepStrictEqual(await p, { ok: false, reason: 'start-mismatch' });
+  assert.ok(!h.stdin.written.includes('KILL\n'));
+  assert.strictEqual(h.stdin.written[h.stdin.written.length - 1], 'DISARM\n');
+  assert.strictEqual(g.outcome(), 'dropped: start-mismatch');
+  assert.ok(lines.some((l) => /a held stop was dropped \(start-mismatch\)/.test(l)), lines.join(' | '));
+
+  const h2 = fakeHelper();
+  const { g: g2 } = guardWith(h2);
+  const p2 = g2.attach({ pid: 777, startOf: async () => null, spawnWindow: WIN });
+  g2.kill();
+  await tick();
+  h2.say(`READY 5 ${reusedLater}`);
+  assert.deepStrictEqual(await p2, { ok: false, reason: 'start-mismatch' });
+  assert.ok(!h2.stdin.written.includes('KILL\n'));
+  assert.strictEqual(g2.outcome(), 'dropped: start-mismatch');
 });
 
 // --- attach -------------------------------------------------------------------------------------------------------------------------
@@ -117,7 +238,8 @@ test('attach: PowerShell with the script encoded, stderr piped; START goes out o
   assert.deepStrictEqual(opts.stdio, ['pipe', 'pipe', 'pipe']);
   assert.strictEqual(opts.windowsHide, true);
   await tick();
-  assert.deepStrictEqual(h.stdin.written, [], 'nothing before the proof');
+  h.say('UP');
+  assert.deepStrictEqual(h.stdin.written, [], 'nothing before the proof (no window given)');
   release('1234');
   await tick();
   assert.deepStrictEqual(h.stdin.written, ['START 1234\n']);
