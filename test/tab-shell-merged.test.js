@@ -17,6 +17,8 @@ const { createShell } = require('../app/tab-shell');
 const { normPath } = require('../host/project-layout');
 const { alertFor } = require('../app/tab-strip');
 const chatViewState = require('../app/chat-view-state');
+const { sideKeyOf } = require('../host/side-session');
+const { shellKeyOf } = require('../host/shell-tab');
 
 const ROOT = path.join(os.tmpdir(), 'cc-tabshell-merged');
 const wt = (name) => path.join(ROOT, name);
@@ -80,7 +82,9 @@ function harness({ running = { 7700: wt('dev'), 7701: wt('feat-a') }, markers = 
       send: (tab, channel, payload) => {
         if (channel !== 'box-state') return;
         h.boxAsks++;
-        if (h.boxClear !== undefined) h.shell.boxAnswered(tab.view, { id: payload.id, clear: h.boxClear });
+        // `boxFor(view)`: a page-by-page answer (a side page's box apart from its branch page's); else every page says `boxClear`
+        const clear = typeof h.boxFor === 'function' ? h.boxFor(tab.view) : h.boxClear;
+        if (clear !== undefined) h.shell.boxAnswered(tab.view, { id: payload.id, clear });
       },
     },
     ui: {
@@ -218,6 +222,83 @@ test('#139: merged but uncommitted, unpushed, an agent here, or HEAD past the me
     assert.ok(h.shell.tabByKey(key('feat-a')), name);
     assert.deepStrictEqual(h.stops(), [], name);
   }
+});
+
+// --- PR #236 Dexter 1: the close ends the lane's side session and shell too, so they are judged too -----
+
+const SIDE_KEY = () => sideKeyOf(key('feat-a'));
+const SHELL_KEY = () => shellKeyOf(key('feat-a'));
+const reportSide = (h, status) => { const s = h.shell.tabByKey(SIDE_KEY()); h.shell.report(s.view, status); };
+
+test('#139 P1: a side session in a turn, asking, or not reported keeps the lane; at rest, the lane closes and the side goes with it', async () => {
+  const h = await liveThenMerged();
+  await h.shell.openSide(key('feat-a'));
+  await flush();
+  const side = h.shell.tabByKey(SIDE_KEY());
+  assert.ok(side && side.started, 'the side session runs');
+  await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept: the side session has not said what it is doing');
+  reportSide(h, { ...AT_REST, lock: 'unlocked', working: true, turn: 'turn' });
+  await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept: the side session is answering');
+  reportSide(h, { ...AT_REST, lock: 'unlocked', needsInput: true, turn: 'prompt' });
+  await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept: the side session is asking');
+  assert.deepStrictEqual(h.stops(), [], 'nothing stopped, the side least of all');
+  assert.ok(h.logs.some(l => /merged, kept open: its side session is working/.test(l)));
+  reportSide(h, { ...AT_REST, lock: 'unlocked' });
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'both at rest: closed');
+  assert.strictEqual(h.shell.tabByKey(SIDE_KEY()), null, 'its side went with it');
+});
+
+test('#139 P1: a side session whose box holds a draft keeps the lane', async () => {
+  const h = await liveThenMerged();
+  await h.shell.openSide(key('feat-a'));
+  await flush();
+  reportSide(h, { ...AT_REST, lock: 'unlocked' });
+  // the fake page answers per tab: the branch page's box is empty, the side page's isn't
+  const send = h.shell.tabByKey(SIDE_KEY()).view;
+  h.boxFor = (view) => (view === send ? false : true);
+  await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(h.stops(), []);
+  assert.ok(h.logs.some(l => /its side session's input box holds text/.test(l)));
+});
+
+test('#139 P1: an open shell tab keeps the lane whatever it reports (nothing proves a shell idle)', async () => {
+  const h = await liveThenMerged();
+  await h.shell.openShell(key('feat-a'));
+  await flush();
+  assert.ok(h.shell.tabByKey(SHELL_KEY()), 'the shell tab is open');
+  for (let i = 0; i < 3; i++) await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(h.stops(), []);
+  assert.ok(h.logs.some(l => /its shell tab is open/.test(l)));
+  await h.shell.closeTab(SHELL_KEY());
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'the shell closed: the lane closes');
+});
+
+test('#139 P1: a lane session in a night run (/bedtime) keeps the lane, idle between ticks or not', async () => {
+  const h = await liveThenMerged();
+  h.report('feat-a', { ...AT_REST, night: true });
+  await h.poll();
+  await h.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(h.stops(), []);
+  h.report('feat-a', AT_REST);
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('#139 P1: a side session that ended (its claude exited) does not keep the lane', async () => {
+  const h = await liveThenMerged();
+  await h.shell.openSide(key('feat-a'));
+  await flush();
+  h.shell.tabByKey(SIDE_KEY()).ended = true;
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
 });
 
 test('#139: merged, the stop fails -> kept with the Stop offer; later polls never try again (no loop)', async () => {

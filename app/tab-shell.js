@@ -1088,25 +1088,51 @@ function createShell(deps) {
 
   /**
    * Why a merged tab must not be closed by itself right now, or '' when it may: #77's rule (closeReason: the marker and HEAD on
-   * origin/develop, nothing uncommitted or unpushed, no agent here, no unsaved reader edit) plus an idle host (sessionBusyWhy: the
-   * lock held, no turn, nothing asking) and a CLI box at rest (the page's own reading). Anything that can't be read keeps it.
+   * origin/develop, nothing uncommitted or unpushed, no agent here, no unsaved reader edit) plus an idle lane (laneRestBlocker: its
+   * session and its side session at rest and in no night run, no shell tab) and every CLI box it holds at rest (each page's own
+   * reading). Anything that can't be read keeps it.
    */
   async function mergedCloseBlocker(tab) {
     if (!tab.started || tab.starting || tab.ended === true) return 'its session is not running';
-    const idle = () => (tab.status ? busyWhy(tab.status) : "hasn't reported what it's doing");
-    let why = idle();
-    if (why) return `its session ${why}`;
+    let why = laneRestBlocker(tab);
+    if (why) return why;
     const unsaved = readerUnsavedOf(tab);
     if (unsaved) return `the file reader has unsaved edits to ${unsaved}`;
     const agents = agentsHereOf(tab);
     if (agents !== 0) return agents === null ? "couldn't check for agents" : 'an agent is working here';
     const box = await askBox(tab);
     if (box !== true) return box === false ? 'its input box holds text, or a dialog is open' : "its page didn't say what its input box holds";
+    const side = sideRecordOf(tab);
+    if (side && side.started && side.ended !== true) {
+      const sideBox = await askBox(side);
+      if (sideBox !== true) return sideBox === false ? "its side session's input box holds text, or a dialog is open" : "its side session's page didn't say what its input box holds";
+    }
     const reason = closeReason(closeFactsOf(tab, await gitFactsOf(tab)));
     if (reason) return reason;
-    why = idle();     // the awaits above took a moment: a turn may have started
-    return why ? `its session ${why}` : '';
+    return laneRestBlocker(tab);     // the awaits above took a moment: a turn may have started, a shell been opened
   }
+
+  /**
+   * The cheap half of "this lane is at rest" (#139; PR #236 Dexter 1), '' when it is: the merged close ends the lane's side session
+   * and its shell with it, so they are judged too. Its session and a side session by the same rule (sessionBusyWhy: the lock, no turn,
+   * nothing asking), neither in a night run (/bedtime, idle between ticks but not done); a shell tab keeps it whatever it says, since
+   * nothing proves a shell idle (a dev server or a test run reports no turn).
+   */
+  function laneRestBlocker(tab) {
+    const own = sessionRestWhy(tab.status);
+    if (own) return `its session ${own}`;
+    if (tabs.has(shellKeyOf(tab.key))) return "its shell tab is open (a shell can't be shown to be idle)";
+    const side = sideRecordOf(tab);
+    if (side && sideHolds(side)) {
+      if (!side.started || side.starting) return "its side session hasn't come up yet";
+      const s = sessionRestWhy(side.status);
+      if (s) return `its side session ${s}`;
+    }
+    return '';
+  }
+  const sessionRestWhy = (st) => (!st ? "hasn't reported what it's doing" : st.night === true ? 'is in a night run (/bedtime)' : busyWhy(st) || '');
+  /** A side record that may have a host running: a presented one not ended, a start under way, or a host a start left behind. */
+  const sideHolds = (s) => (s.started === true && s.ended !== true) || s.starting === true || !!s.pending || !!s.unconfirmed;
 
   /** The window opened: build the tabs and start the selected one. */
   async function open() {
