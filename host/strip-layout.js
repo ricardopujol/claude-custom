@@ -13,6 +13,15 @@
  * running code from before them rewrites the file without them, which wipes the tombstones and degrades to "a lane this window
  * reopened is removed, one another window closed stays closed" for as long as the two builds share a project.
  *
+ * Mixed versions, BACKLOG #160 and #139 (PR #236 Dexter 9). Develop is held in `closed` like a lane (its key is `<container>\dev`).
+ * A window running code from before #160 that reads a file with develop in `closed` seeds it into its reducer's `dismissed`, so it
+ * opens with NO develop tab, and its first selection falls to the first lane, which STARTS a claude there that nobody chose (and
+ * that build has no merged check, so it may be a merged lane). Nothing in this file can stop that: the old build is the old build.
+ * Reopening develop in a new window, or `/pause`-ing the old one, ends it. The other way round is harmless: a new window reads an
+ * old file (no develop in `closed`) as develop open. `merged` (#139) is additive too; an older build rewrites the file without it,
+ * which turns an Undo row into a plain closed row. Both reopen the lane, and a reopened lane that's merged is spared either way
+ * (app/tab-shell.js reopen), so only the row's label changes.
+ *
  * A key is the shell's own (app/tab-shell.js keyOf: the lower-cased worktree path), so it is only compared, never parsed.
  * `closed` is most recent first. Parsing is strict and drops what it doesn't understand one entry at a time; a FILE that
  * can't be read (any error but "missing") or isn't an object is an unknown store: load reports an error, and save refuses to
