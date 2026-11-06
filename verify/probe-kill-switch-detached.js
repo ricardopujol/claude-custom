@@ -61,8 +61,12 @@ async function run(kind, { useGuard }) {
   const sleeperJs = path.join(os.tmpdir(), `cc-probe-detached-${tag}-sleeper.js`);
   fs.writeFileSync(sleeperJs, "require('fs').writeFileSync(process.argv[2], String(process.pid)); setTimeout(() => {}, 600000);\n");
   const [file, args] = intermediate(kind, sleeperJs, pidFile);
-  // The intermediate starts 2.5 s in, after the guard has had time to put claude in its job (as claude's real children start later).
-  const standIn = `setTimeout(()=>{require('child_process').spawn(${JSON.stringify(file)},${JSON.stringify(args)},{stdio:'ignore',windowsHide:true})},2500);setTimeout(()=>{},600000)`;
+  // The intermediate starts once the probe writes goFile: after the guard armed (or at once, with no guard). Never on a fixed timer:
+  // on a loaded machine the arm can take longer, and a grandchild born before it is outside the job (PR #235 hub H1). The window
+  // before the arm is real in the host too; this probe measures what the job covers once armed.
+  const goFile = path.join(os.tmpdir(), `cc-probe-detached-${tag}.go`);
+  fs.rmSync(goFile, { force: true });
+  const standIn = `const fs=require('fs');const t=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(goFile)}))return;clearInterval(t);require('child_process').spawn(${JSON.stringify(file)},${JSON.stringify(args)},{stdio:'ignore',windowsHide:true})},50);setTimeout(()=>{},600000)`;
 
   const term = pty.spawn(process.execPath, ['-e', standIn], { name: 'xterm', cols: 80, rows: 24 });
   kt.trackExit(term);
@@ -79,6 +83,7 @@ async function run(kind, { useGuard }) {
       if (!r.ok) throw new Error(`the guard did not arm: ${r.reason}`);
       result.attachMs = Date.now() - t0;
     }
+    fs.writeFileSync(goFile, 'go');
     for (let i = 0; i < 150 && !fs.existsSync(pidFile); i++) await sleep(100);
     if (!fs.existsSync(pidFile)) throw new Error('the grandchild never ran (its intermediate failed to start it)');
     await sleep(200);   // the intermediate has exited by now: the grandchild's parent is gone
@@ -106,6 +111,7 @@ async function run(kind, { useGuard }) {
     if (claudeStart && await alive(term.pid)) kt.killProven(term.pid, claudeStart);
     fs.rmSync(pidFile, { force: true });
     fs.rmSync(sleeperJs, { force: true });
+    fs.rmSync(goFile, { force: true });
   }
   return result;
 }

@@ -28,7 +28,11 @@ test('real job: kill() ends a detached grandchild whose parent already exited; d
     const sleeper = `setTimeout(()=>{},600000)`;
     // kill-test-ok: the grandchild reports its pid in pidFile, and the finally below ends it by that pid, proven by its start time
     const inter = `const g=require('child_process').spawn(process.execPath,['-e',${JSON.stringify(sleeper)}],{detached:true,stdio:'ignore'});g.unref();require('fs').writeFileSync(${JSON.stringify(pidFile)},String(g.pid));process.exit(0)`;
-    const standIn = `setTimeout(()=>{require('child_process').spawn(process.execPath,['-e',${JSON.stringify(inter)}],{stdio:'ignore'})},2500);setTimeout(()=>{},600000)`;
+    // The stand-in starts the intermediate only once the test says the job is armed (goFile), never on a timer: on a loaded
+    // machine the arm took longer than a fixed 2.5 s, the grandchild was born outside the job and survived (PR #235 hub H1).
+    const goFile = path.join(os.tmpdir(), `cc-jobguard-${process.pid}-${mode}.go`);
+    fs.rmSync(goFile, { force: true });
+    const standIn = `const fs=require('fs');const t=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(goFile)}))return;clearInterval(t);require('child_process').spawn(process.execPath,['-e',${JSON.stringify(inter)}],{stdio:'ignore'})},50);setTimeout(()=>{},600000)`;
     const claude = spawn(process.execPath, ['-e', standIn], { stdio: 'ignore', windowsHide: true });
     const claudeStart = (await startTimes([claude.pid])).get(claude.pid);
     let helperChild = null;
@@ -39,6 +43,7 @@ test('real job: kill() ends a detached grandchild whose parent already exited; d
       const r = await g.attach({ pid: claude.pid, startOf: async () => claudeStart, exited: () => claude.exitCode !== null });
       assert.strictEqual(r.ok, true, JSON.stringify(r));
       assert.strictEqual(r.start, claudeStart, 'the helper opened the process we meant');
+      fs.writeFileSync(goFile, 'go');   // armed: now the stand-in may start the grandchild
       for (let i = 0; i < 100 && !fs.existsSync(pidFile); i++) await sleep(100);
       gpid = Number(fs.readFileSync(pidFile, 'utf8'));
       gStart = (await startTimes([gpid])).get(gpid);
@@ -62,6 +67,7 @@ test('real job: kill() ends a detached grandchild whose parent already exited; d
       if (gpid && gStart && await alive(gpid)) killProven(gpid, gStart);
       if (claude.exitCode === null && await alive(claude.pid)) killProven(claude.pid, claudeStart);
       fs.rmSync(pidFile, { force: true });
+      fs.rmSync(goFile, { force: true });
     }
   }
 });
