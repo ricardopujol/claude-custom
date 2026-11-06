@@ -331,11 +331,12 @@ function createShell(deps) {
   let closedByHand = kept.closed;      // [{ key, path, branch, merged? }], most recent first
   // BACKLOG #139, a merged tab closes by itself. `mergedLive`: lanes whose merge this window saw while they were open (a later poll's
   // mark-merged), the ones whose close gets the strip's notice; a lane merged before the window first listed it gets a log line.
-  // `spared`: lanes the person brought back after the merge (an Undo, or a merged lane started from its row), never closed by
+  // `spared`: lanes the person brought back after the merge (any reopen of a closed row, or a merged lane started from its row), never closed by
   // this path again in this window. `mergedTried`: tab records whose merged close failed to end the host: kept with the Stop
   // offer, never tried again by this path (the bound on retries: one per record). `mergedBusy`: a merged close in flight.
   const mergedLive = new Set();
   const spared = new Set();
+  const reopening = new Set();         // lanes the person reopened that no poll has listed since: their first listing decides `spared`
   const mergedTried = new WeakSet();
   const mergedBusy = new Set();
   const mergedWhy = new Map();         // key -> the last reason a merged tab was kept, so the log says it once, not every poll
@@ -929,10 +930,12 @@ function createShell(deps) {
         // The strip draws it from state.tabs; the session keeps running (W4) until the merged close finds it safe (#139).
         log(`[shell] ${key}: merged (${a.branch})`);
         if (openedNow.has(key)) mergedLive.delete(key); else mergedLive.add(key);
+        if (openedNow.has(key) && reopening.has(key)) spared.add(key);     // reopened by the person, merged already (Dexter 3)
       } else if (a.type === 'remove') {
         runRemove(a.path);
       }
     }
+    for (const k of openedNow) reopening.delete(k);     // its first listing is the one that says whether it came back merged
     if (reselect && selectedKey !== null) select(selectedKey);
     publish();
   }
@@ -1643,8 +1646,10 @@ function createShell(deps) {
     const target = key === undefined ? list[0] : list.find(c => c.key === key);
     if (!target) return { ok: false, error: 'nothing to reopen' };
     const entry = closedByHand.find(c => c.key === target.key);
-    // #139: the Undo of a merged close. The person wants it open, so the merged close leaves it alone from now on in this window.
-    if (entry.merged === true) spared.add(entry.key);
+    // #139 (PR #236 Dexter 3): the person wants it open. If it comes back already merged (the poll that lists it marks it merged in
+    // the same batch), the merged close leaves it alone from then on in this window, whatever kind of closed row it was: the Undo of
+    // a merged close, or a lane closed by hand before or after its merge. Judged from that poll's marker, never the saved flag.
+    reopening.add(entry.key);
     state = lifecycle.reopen(state, entry.path).state;
     closedByHand = closedByHand.filter(c => c.key !== target.key);
     reopenedUnlisted.add(target.key);

@@ -364,6 +364,47 @@ test('#139: the Undo (its row) reopens the lane, and the merged close leaves it 
   assert.strictEqual(h.stops().length, 1, 'only the first close');
 });
 
+// PR #236 Dexter 3: every kind of closed row, every way of reopening it. (A `merged: false` row is also what an Undo row becomes once
+// an older build rewrites the file without `merged`.)
+for (const [how, entryMerged, doReopen] of [
+  ['its closed row (a hand close, merged: false)', false, (h) => h.shell.reopen(key('feat-a'))],
+  ['Ctrl+Shift+T (a hand close, merged: false)', false, (h) => h.shell.reopen()],
+  ['the Undo row (merged: true)', true, (h) => h.shell.reopen(key('feat-a'))],
+]) {
+  test(`#139 P3: a merged lane reopened from ${how} is never closed again by itself`, async () => {
+    const closed = [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a', ...(entryMerged ? { merged: true } : {}) }];
+    const layout = { load: () => ({ order: [], closed, error: null }), save: () => ({ ok: true }) };
+    const h = harness({ running: { 7700: wt('dev') }, markers: { [key('feat-a')]: 'feat/a' }, layout });
+    await h.shell.open();
+    await flush();
+    assert.deepStrictEqual(await doReopen(h), { ok: true });
+    await flush();
+    const t = h.shell.tabByKey(key('feat-a'));
+    assert.ok(t && t.started, 'a fresh session came up');
+    h.report('feat-a', AT_REST);
+    for (let i = 0; i < 3; i++) await h.poll();
+    assert.ok(h.shell.tabByKey(key('feat-a')), 'still open: the person asked for it');
+    assert.deepStrictEqual(h.stops(), []);
+  });
+}
+
+test('#139 P3: a lane reopened BEFORE its merge is still closed by the merged close once it merges while open', async () => {
+  const closed = [{ key: key('feat-a'), path: wt('feat-a'), branch: 'feat/a' }];
+  const layout = { load: () => ({ order: [], closed, error: null }), save: () => ({ ok: true }) };
+  const h = harness({ running: { 7700: wt('dev') }, layout });
+  await h.shell.open();
+  await flush();
+  await h.shell.reopen(key('feat-a'));
+  await flush();
+  h.report('feat-a', AT_REST);
+  await h.poll();
+  h.markers[key('feat-a')] = 'feat/a';     // its PR merges now, with the tab open
+  await h.poll();
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'merged while open: closed');
+  assert.strictEqual(h.shell.snapshot().mergedNotice, 'Closed feat/a (merged)');
+});
+
 test('#139: a merged lane the person starts from its Merged row is not closed by itself', async () => {
   const h = harness({ running: { 7700: wt('dev') }, markers: { [key('feat-a')]: 'feat/a' } });
   await h.shell.open();
