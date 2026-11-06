@@ -482,6 +482,13 @@ test('the eight modules that decide what is killed, deleted or kept running are 
   }
 });
 
+test('the job guard (what a stop ends beyond the tree, #127) is mutated, by its pure tests; its real-process half stays out (PR #235 Miguel I5)', () => {
+  assert.ok(conf.mutate.includes('host/job-guard.js'), 'host/job-guard.js must be in stryker.conf.json\'s mutate');
+  const cmd = conf.commandRunner.command;
+  assert.ok(cmd.includes('test/job-guard.test.js'), 'its pure tests run in the command');
+  assert.ok(!cmd.includes('test/job-guard-process.test.js'), 'the real Job Object test stays out (a Stryker timeout is a kill)');
+});
+
 test('the real-process halves of status-relay, probe-hygiene and settings-writer stay split out of the command (Miguel, PR #142 I1/I2)', () => {
   // A Stryker timeout counts as a KILL, and a hung child is left behind: the tests that run real processes live in <name>-process.test.js,
   // exempt from the command, while the pure tests stay in. Each must exist, still spawn, and stay out; the pure file must not spawn.
