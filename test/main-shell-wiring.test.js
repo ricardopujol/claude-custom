@@ -472,6 +472,8 @@ test('#31 (Dexter F1): the window regaining focus is a look at the selected tab'
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
+  // PR #236 Miguel Y4: the view with the keyboard went and none replaces it: the strip page takes it
+  assert.match(MAIN, /else if \(step\.focusStrip === true && win && !win\.isDestroyed\(\)\) win\.webContents\.focus\(\);/);
   // Dexter F7 (PR #80): only while the field takes typing -- not during Contract A's fetch.
   // #66: the indexing field holds the keyboard the same way while it has focus.
   assert.match(MAIN, /const stripBusy = \(!!snapshot\.create && snapshot\.create\.phase !== 'running'\) \|\| indexFieldFocused;/);

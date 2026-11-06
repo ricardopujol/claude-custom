@@ -979,6 +979,7 @@ function applySelection(snapshot) {
   stripWasBusy = stripBusy;
   const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });
   if (step.focus) live.webContents.focus();
+  else if (step.focusStrip === true && win && !win.isDestroyed()) win.webContents.focus();     // the view with the keyboard went (PR #236 Miguel Y4)
   lastFocusedView = step.lastFocused;
   pushStripAccent();
   // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
@@ -2188,6 +2189,16 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
       sel.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
       return { ok: true, before };
+    },
+    // PR #236 Miguel Y4: a key to the strip page itself. Says first whether the strip page held the keyboard (only meaningful while
+    // the window is focused, which a probe can't make sure of while someone uses the machine).
+    async stripKey(key, modifiers) {
+      if (!win || win.isDestroyed()) return { ok: false, error: 'no window' };
+      const stripFocused = win.webContents.isFocused();
+      const windowFocused = win.isFocused();
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
+      return { ok: true, stripFocused, windowFocused };
     },
     // #34: the window as the OS minimises and restores it (the real events fire), and the OS's
     // reduced-motion preference emulated on the selected view through the debugger protocol.

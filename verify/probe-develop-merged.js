@@ -306,6 +306,19 @@ async function main() {
   await sleep(500);
   await windowShot(app, 'develop-reopen-4-empty');
 
+  // PR #236 Miguel Y4: the empty window is reachable from the keyboard. Ctrl+Shift+T into the strip page reopens the most recent
+  // close (feat/c here), which is then closed again so the run goes on from the same empty window.
+  const keyed = await command(app, { cmd: 'strip-key', key: 'T', modifiers: ['control', 'shift'] });
+  st = await waitFor(async () => { const x = await state(app); return (x.tabs || []).some(t => t.label === 'feat/c' && t.started) ? x : null; }, 40000) || await state(app);
+  check('160.5b: Ctrl+Shift+T pressed into the empty window\'s strip page reopens the most recent close (feat/c)',
+    keyed.ok === true && labels(st).includes('feat/c'), JSON.stringify({ keyed, labels: labels(st) }));
+  // The keyboard itself is the strip page's only while the window has the OS focus, which a probe can't make sure of while
+  // someone else uses the machine: checked when it does, said otherwise.
+  if (keyed.windowFocused === true) check('160.5c: ...and the strip page held the keyboard when the last view went', keyed.stripFocused === true, JSON.stringify(keyed));
+  else console.log(`(160.5c: the window didn't have the OS focus, so whether the strip page held the keyboard isn't measured: ${JSON.stringify(keyed)})`);
+  await command(app, { cmd: 'close', label: 'feat/c' }, 60000);
+  await waitFor(async () => { const x = await state(app); return stripLabels(x).length === 0 ? x : null; }, 15000);
+
   const back = await clickRow(app, 'plus', 'develop  (closed)');
   st = await waitFor(async () => { const x = await state(app); const d = (x.tabs || []).find(t => t.label === 'develop'); return d && d.started && d.selected ? x : null; }, 40000) || await state(app);
   check('160.7: the + menu\'s develop row brings it back, selected, first, started', back.ok === true && labels(st)[0] === 'develop' && !!(st.tabs.find(t => t.label === 'develop') || {}).selected,

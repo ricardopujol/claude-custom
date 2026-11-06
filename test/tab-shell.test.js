@@ -828,9 +828,11 @@ test('F4: focusStep -- focus a selected view that lacks the keyboard, only while
   assert.deepStrictEqual(focusStep(w, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: w }, 'window not focused');
 });
 
-test('R2-4: focusStep -- a selection with no view leaves nothing holding the keyboard', () => {
+test('R2-4: focusStep -- a selection with no view leaves no view holding the keyboard; the strip page takes it if a view had it (Miguel Y4)', () => {
   const v = {};
-  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null, focusStrip: true },
+    'the view that had the keyboard went: the strip page gets it, so Lanes ▾, + and Ctrl+Shift+T are reachable');
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null }, 'nothing had it: nothing to move');
   assert.deepStrictEqual(focusStep(v, { windowFocused: false, selectedView: null }), { focus: false, lastFocused: null });
   assert.deepStrictEqual(focusStep(undefined, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: null });
 });
@@ -2190,6 +2192,15 @@ test('handleProbeCommand: key is dispatched with its name, and needs one', async
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'key' }), api), { ok: false, error: 'key needs a key' });
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'key', key: 'Tab', modifiers: 'control' }), api),
     { ok: false, error: 'key modifiers must be a list' });
+});
+
+test('handleProbeCommand: strip-key (PR #236 Miguel Y4) goes to the strip page, with the same checks as key', async () => {
+  const seen = [];
+  const api = { stripKey: async (k, m) => { seen.push([k, m]); return { ok: true, stripFocused: true, windowFocused: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key', key: 'T', modifiers: ['control', 'shift'] }), api), { ok: true, stripFocused: true, windowFocused: true });
+  assert.deepStrictEqual(seen, [['T', ['control', 'shift']]]);
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key' }), api), { ok: false, error: 'strip-key needs a key' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key', key: 'T', modifiers: 'shift' }), api), { ok: false, error: 'strip-key modifiers must be a list' });
 });
 
 // --- Miguel, PR #75 M4: the probe driver answers only the probe -------------------

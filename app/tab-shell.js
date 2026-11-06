@@ -2382,13 +2382,20 @@ function plusMenuTemplate(m, acts) {
  * the keyboard on the strip, so `lastFocused` becomes null. Without that, A ->
  * B (no view) -> A still believed A had the keyboard and never focused it.
  * Main also clears it when the strip page itself takes focus (a click on it).
+ *
+ * PR #236 Miguel Y4: the view that had the keyboard went (its tab closed, the last one in the window or not) and no view replaces
+ * it: `focusStrip: true`, so main gives the keyboard to the strip page, whose Lanes ▾ and + buttons and shortcuts (Ctrl+Shift+T)
+ * bring a tab back. Otherwise a window with no tab open can't be reached from the keyboard at all.
  */
 function focusStep(lastFocused, { windowFocused, selectedView, stripBusy = false } = {}) {
   // PR 3: the branch form is in the strip page. While it is open, every
   // publish (3 s poll, status reports) would otherwise hand the keyboard back
   // to the view mid-typing. Null, so the view is focused again once it closes.
   if (stripBusy === true) return { focus: false, lastFocused: null };
-  if (!selectedView) return { focus: false, lastFocused: null };
+  if (!selectedView) {
+    return windowFocused === true && lastFocused !== null && lastFocused !== undefined
+      ? { focus: false, lastFocused: null, focusStrip: true } : { focus: false, lastFocused: null };
+  }
   if (windowFocused === true && selectedView !== lastFocused) return { focus: true, lastFocused: selectedView };
   return { focus: false, lastFocused: lastFocused === undefined ? null : lastFocused };
 }
@@ -2571,6 +2578,12 @@ async function handleProbeCommand(line, api, expectedToken) {
         if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'key needs a key' };
         if (cmd.modifiers !== undefined && !Array.isArray(cmd.modifiers)) return { ok: false, error: 'key modifiers must be a list' };
         return await api.key(cmd.key, (cmd.modifiers || []).map(String));
+      }
+      case 'strip-key': {
+        // PR #236 Miguel Y4: a key sent to the STRIP page (the window with no tab open): its shortcuts must bring a tab back.
+        if (typeof cmd.key !== 'string' || !cmd.key) return { ok: false, error: 'strip-key needs a key' };
+        if (cmd.modifiers !== undefined && !Array.isArray(cmd.modifiers)) return { ok: false, error: 'strip-key modifiers must be a list' };
+        return await api.stripKey(cmd.key, (cmd.modifiers || []).map(String));
       }
       case 'screenshot':
         // Only ever a picture: never a path to some other file it could clobber.
