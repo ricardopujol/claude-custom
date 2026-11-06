@@ -22,10 +22,10 @@
  * suite exits, and a suite that never ran is not a failing one. Retry it. The load gate's time counts against the same
  * wait (host/heavy-lock.js WAIT). Documented in verify/README.md too.
  *
- * Already under the lock (HEAVY_LOCK_HELD is set, by an outer wrapper or by someone who took the lock by hand with
- * heavy-lock.ps1 -Acquire) AND the slot really has a live holder: runs the command at once, takes nothing, and the line
- * names that holder. Set with nobody holding the slot, it's a stale variable: a warning, and the lock is taken for real.
- * How to set it by hand: see host/heavy-lock.js.
+ * Already under the lock (HEAVY_LOCK_HELD names the live holder of the slot: an outer wrapper or probe sets it to its own
+ * identity, a by-hand holder uses the bare "1"): runs the command at once, takes nothing, and the line names that holder.
+ * Under another lane's holder it's a stranger's variable: a warning, and the lock is waited for like any run. With nobody
+ * holding the slot it's a stale variable: a warning, and the lock is taken for real. The rule: host/heavy-lock.js RE-ENTRANCY.
  */
 const { spawn } = require('child_process');
 const heavy = require('../host/heavy-lock');
@@ -63,7 +63,9 @@ async function main(argv, {
   try {
     const result = await new Promise((resolve) => {
       try {
-        child = spawnFn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...env, [heavy.ENV_VAR]: '1' } });
+        // The flag names this run's holder (its own owner when it took the lock, the outer one when re-entrant), so only
+        // what it starts is re-entrant under it (#237 Dexter 2). No lock script: nothing to name, the bare form.
+        child = spawnFn(argv[0], argv.slice(1), { stdio: 'inherit', env: { ...env, [heavy.ENV_VAR]: typeof lock.flag === 'string' ? lock.flag : '1' } });
       } catch (err) { log(`[heavy-lock] could not start ${argv[0]}: ${err && err.message}`); return resolve(1); }
       if (child && child.pid && typeof lock.addWork === 'function') {   // the suite's node: a dead wrapper with this alive is not a dead holder
         // Provisional first (start unknown = alive while the pid runs), then with its start time once that query returns:

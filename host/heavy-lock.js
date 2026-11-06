@@ -11,17 +11,21 @@
  *     probe does before it spawns anything heavy, and releases when that probe process ends: normal exit, error,
  *     SIGINT, SIGTERM, SIGHUP. Its Electron trees are stopped first, then the slot is freed.
  *
- * RE-ENTRANCY. Whoever holds the lock sets the environment variable HEAVY_LOCK_HELD=1 for everything it starts, and
- * anything that finds it set to exactly "1" does not try to take the lock again (the second asker would wait on its own
- * parent). But a variable can outlive its holder (a shell that exported it and forgot, a background shell that inherited
- * it), so the flag alone is not trusted (2026-11-05): the slot's holder is read from the script's status first.
- *   - a live holder (a "(pid N start T)" owner whose asker or recorded work still runs, or a manual owner, which can't be
- *     proven dead): the lock is not taken, and the line NAMES that holder, so a skip is never mistaken for a missing lock;
- *   - nobody holds it, or the holder is provably dead: a STALE variable. A loud warning, and the lock is taken for real
+ * RE-ENTRANCY. Whoever holds the lock sets the environment variable HEAVY_LOCK_HELD to ITS OWN IDENTITY (the owner string
+ * it holds the slot with, "<label> (pid N start T)") for everything it starts, and anything that finds the flag under that
+ * same live holder does not try to take the lock again (the second asker would wait on its own parent). A variable can
+ * outlive its holder (a shell that exported it and forgot, a background shell that inherited it), so the flag alone is
+ * never trusted (2026-11-05; #237 Dexter 2): the slot's holder is read from the script's status first.
+ *   - the live holder is the one the flag names: the lock is not taken, and the line NAMES that holder;
+ *   - a live holder the flag does NOT name (another lane's wrapper or probe): a STRANGER'S variable. A warning, and the
+ *     lock is waited for the normal way, so a leftover flag never runs a second suite beside another lane's;
+ *   - nobody holds it, or the holder is provably dead: a STALE variable. A warning, and the lock is taken for real
  *     (a dead holder is freed first by the usual rules). On release the flag goes, like any flag this module sets;
- *   - the status can't be read (or the script is missing): can't tell, so the flag is trusted, and the line says so.
- * This is not an ancestry check: a stale flag in a shell while another lane really holds the slot still skips, but the
- * line then names that other lane's holder. A person who took the lock by hand sets the flag, and unsets it after:
+ *   - the status can't be read: can't tell, so the flag is trusted, and the line says so.
+ * "Live" is the dead-holder rule below: a "(pid N start T)" owner whose asker or recorded work still runs, or a by-hand
+ * owner, which can't be proven dead. THE BARE "1" is the by-hand form: it names a by-hand holder only, never a holder in the
+ * wrapper form "(pid N ...)" (that is some lane's own run). Any other value ("0", "true", "") is no flag at all. A person
+ * who took the lock by hand sets the bare flag, and unsets it after:
  *
  *   powershell -File ~\.claude\scripts\heavy-lock.ps1 -Acquire -Owner "<lane>: <what>"
  *   $env:HEAVY_LOCK_HELD = '1'        # PowerShell;  Git Bash: export HEAVY_LOCK_HELD=1
@@ -114,7 +118,14 @@ const HINT = 'Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=
 const SCRIPT_VAR = 'HEAVY_LOCK_SCRIPT';
 const scriptFromEnv = (env) => { const p = env && env[SCRIPT_VAR]; return typeof p === 'string' && path.isAbsolute(p) ? p : DEFAULT_SCRIPT; };
 const waitFromEnv = (env) => { const n = Number(env && env[WAIT_VAR]); return Number.isInteger(n) && n > 0 ? n : DEFAULT_WAIT_MINUTES; };
-const isHeld = (env) => !!env && env[ENV_VAR] === '1';
+// The flag's two forms (RE-ENTRANCY): a holder's identity (the owner string this module wrote, "<label> (pid N start T)" or
+// "<label> (pid N)"), or a bare "1" (the by-hand way). Anything else ("0", "true", "") is no flag.
+const WRAPPER_OWNER = /\(pid \d+(?: start \d+)?\)/;
+const isHeld = (env) => !!env && typeof env[ENV_VAR] === 'string' && (env[ENV_VAR] === '1' || WRAPPER_OWNER.test(env[ENV_VAR]));
+// Is the live holder the one this flag names? An identity names exactly the holder that wrote it (the script's own
+// StartsWith match, so "(pid 1 ...)" never names "(pid 12 ...)"). A bare "1" names a by-hand holder only: never a holder in
+// the wrapper form, which is some lane's wrapper or probe and set its own identity for its own children.
+const flagNames = (flag, holder) => (flag === '1' ? !WRAPPER_OWNER.test(holder) : String(holder).startsWith(flag));
 
 // `holder`: who held the slot when the wait ended (null: nobody, or unknown); `waitedMs`: how long this asker waited.
 class HeavyLockError extends Error {
@@ -340,20 +351,28 @@ function acquire({
   if (run === undefined) run = defaultRun(scriptPath, { spawnFn, timeoutMs: (waitMinutes + 1) * 60000 });
   if (startsOf === undefined) startsOf = (pids) => queryStarts(pids, spawnFn);
   if (isHeld(env)) {
-    // The flag is trusted only while someone really holds the slot (RE-ENTRANCY above): the skip names who.
+    // The flag is trusted only while the holder it names really holds the slot (RE-ENTRANCY above): the skip names who.
+    const flag = env[ENV_VAR];
     const outer = exists(scriptPath) ? readHolder({ run, startsOf, work }) : { holder: null, live: null };
-    if (outer.live !== false) {
+    if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
       log(outer.holder
-        ? `[heavy-lock] ${ENV_VAR}=1 is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
-        : `[heavy-lock] ${ENV_VAR}=1 is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
-      return { state: 'reentrant', holder: outer.holder, release: () => false, addWork: () => false };
+        ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
+        : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
+      return { state: 'reentrant', holder: outer.holder, flag, release: () => false, addWork: () => false };
     }
-    log(`[heavy-lock] WARNING: ${ENV_VAR}=1 is set but ${outer.holder ? `the slot's holder is gone (${outer.holder})` : 'nobody holds the lock'}: `
-      + `a STALE variable in this shell. Taking the lock for real; unset ${ENV_VAR} (see host/heavy-lock.js).`);
+    if (outer.live === true) {
+      // A live holder the flag doesn't name: another lane's. Running beside it is exactly what the lock is for (#237 Dexter 2).
+      log(`[heavy-lock] WARNING: ${ENV_VAR}=${flag} is set, but the slot is held by ${outer.holder}, which `
+        + `${flag === '1' ? 'is another lane\'s wrapper or probe' : 'is not the holder that set it'}: a STRANGER'S variable in this shell. `
+        + `Waiting for the lock the normal way; unset ${ENV_VAR} (see host/heavy-lock.js).`);
+    } else {
+      log(`[heavy-lock] WARNING: ${ENV_VAR} is set but ${outer.holder ? `the slot's holder is gone (${outer.holder})` : 'nobody holds the lock'}: `
+        + `a STALE variable in this shell. Taking the lock for real; unset ${ENV_VAR} (see host/heavy-lock.js).`);
+    }
   }
   if (!exists(scriptPath)) {
     log(`[heavy-lock] ${scriptPath} not found; running without the heavy-work lock`);
-    return { state: 'missing', release: () => false, addWork: () => false };
+    return { state: 'missing', flag: isHeld(env) ? env[ENV_VAR] : undefined, release: () => false, addWork: () => false };
   }
   let ownStart = null;
   try { const m = startsOf([pid]); const v = m && m.get(pid); ownStart = typeof v === 'string' ? v : null; } catch { /* owner without a start */ }
@@ -398,10 +417,10 @@ function acquire({
     }
     throw new HeavyLockError('error', `heavy-lock.ps1 failed (exit ${r && r.status}): ${said}`, { waitedMs });
   }
-  env[ENV_VAR] = '1';
+  env[ENV_VAR] = owner;   // its own identity, so only what it starts is re-entrant under it (#237 Dexter 2)
   let done = false;
   return {
-    state: 'held', owner,
+    state: 'held', owner, flag: owner,
     // Record a heavy child (the suite's node, a probe's Electron root) so a dead asker with a live child isn't "dead".
     // No start given: it's read here, SYNCHRONOUSLY (one powershell query, 0.5-1.5 s). The caller still holds the child's
     // handle, so a query that answers without its pid means it HAS exited (Windows doesn't reuse a pid while a handle is

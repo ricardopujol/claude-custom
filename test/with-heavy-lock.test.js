@@ -9,7 +9,7 @@ const EventEmitter = require('node:events');
 const { main } = require('../scripts/with-heavy-lock');
 const { HeavyLockError, ENV_VAR, NOT_RUN_EXIT } = require('../host/heavy-lock');
 
-function rig({ acquireThrows = null, state = 'held' } = {}) {
+function rig({ acquireThrows = null, state = 'held', flag = 'npm test (pid 9 start 99)' } = {}) {
   const events = [];
   const child = new EventEmitter();
   child.pid = 4242;
@@ -20,7 +20,7 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
       events.push('acquire:' + o.label);
       if (acquireThrows) throw acquireThrows;
       let done = false;
-      return { state, addWork: (pid, start) => { events.push('work:' + pid); if (start === null) events.push('provisional:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
+      return { state, flag, addWork: (pid, start) => { events.push('work:' + pid); if (start === null) events.push('provisional:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
     },
     spawn: (cmd, args, opts) => { events.push('spawn'); spawned = { cmd, args, opts }; return child; },
     killFn: (pid) => events.push('kill:' + pid),
@@ -38,8 +38,13 @@ test('runs the command under the lock, passes the re-entrancy flag, returns its 
   assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'release']);
   assert.strictEqual(r.spawned().cmd, 'node');
   assert.deepStrictEqual(r.spawned().args, ['--test', 'x']);
-  assert.strictEqual(r.spawned().opts.env[ENV_VAR], '1');
+  assert.strictEqual(r.spawned().opts.env[ENV_VAR], 'npm test (pid 9 start 99)', '#237 Dexter 2: the flag names this run\'s holder, not a bare 1');
   assert.strictEqual(r.spawned().opts.env.A, 'a');
+  const bare = rig({ state: 'missing', flag: null });
+  const q = main(['node'], bare.deps);
+  bare.child.emit('exit', 0, null);
+  await q;
+  assert.strictEqual(bare.spawned().opts.env[ENV_VAR], '1', 'no lock script: nothing to name, the bare form');
   assert.strictEqual(r.spawned().opts.stdio, 'inherit');
 });
 
