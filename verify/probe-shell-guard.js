@@ -38,6 +38,7 @@ const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn, spawnSync } = require('child_process');
+const { createProcessLock, HeavyLockError, notRunLine, NOT_RUN_EXIT } = require('../host/heavy-lock');
 
 const HOOK = 'C:/Users/ricar/.claude/skills/worktree/scripts/shell-guard.js';
 const BIN = path.join(process.env.APPDATA || '', 'npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe');
@@ -379,6 +380,15 @@ async function main() {
   if (!process.env.HEAVY_LOCK_HELD) {   // trap 3: one claude at a time, machine-wide
     const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), process.execPath, __filename], { stdio: 'inherit' });
     process.exit(r.status === null ? 1 : r.status);
+  }
+  // The flag alone is not trusted (host/heavy-lock.js RE-ENTRANCY, 2026-11-05): under a live holder (the wrapper above) this
+  // skips and the line names that holder; a STALE flag with nobody holding the slot is warned about and the lock is taken for
+  // real, released when this process ends. It used to run with no lock at all, silently.
+  try { createProcessLock({ label: 'probe-shell-guard' }).ensure(); } catch (err) {
+    if (!(err instanceof HeavyLockError)) throw err;
+    console.error(`[heavy-lock] probe-shell-guard did not run: ${err.message}`);
+    console.error(notRunLine(err));
+    process.exit(NOT_RUN_EXIT);
   }
   if (!fs.existsSync(BIN)) { console.error(`FAIL: claude not found at ${BIN}`); process.exit(2); }
   if (!fs.existsSync(HOOK)) { console.error(`FAIL: hook not found at ${HOOK}`); process.exit(2); }
