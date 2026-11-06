@@ -131,6 +131,7 @@ const { suspendVerified } = require('../host/process-suspend');
 const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
+const { createStopByPid } = require('../host/stop-by-pid');
 const { runStopAll, countUnstoppable, describeUnstoppable } = require('../host/kill-switch');
 const { writeFileAtomic } = require('../host/atomic-write');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -338,6 +339,9 @@ function stopAllInstalls() {
 function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
+
+// #129: end a tab's host by pid when its stop message failed (host/stop-by-pid.js).
+const stopHostByPid = createStopByPid({ identities: () => ownIdentities(), kill: (pid, start) => killProvenAsync(pid, start), ownPids: [process.pid, process.ppid] });
 
 function spawnHost(tab, port, token) {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
@@ -1015,7 +1019,7 @@ function onShellChanged(snapshot) {
   applySelection(snapshot);
   // `model` is the strip's tabs only (1B: a lane with no running session is a row in `lanes`, the Lanes menu's rows).
   lastStripPayload = {
-    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
+    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, closeStuck: snapshot.closeStuck,
     mode: snapshot.mode, create: snapshot.create,
   };
   win.webContents.send('strip-model', lastStripPayload);
@@ -1024,9 +1028,9 @@ function onShellChanged(snapshot) {
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
 // close. Nothing on disk is touched.
-async function closeTabFlow(key, { ifSafe = false } = {}) {
+async function closeTabFlow(key, { ifSafe = false, stop = false } = {}) {
   if (!key || !tabShell) return null;
-  return tabShell.closeTab(key, { ifSafe });
+  return tabShell.closeTab(key, { ifSafe, stop });
 }
 
 let closeAsking = false;     // the window-close question is up: a second close gesture doesn't stack another
@@ -1288,6 +1292,10 @@ function registerIpc() {
   ipcMain.on('strip:close', (e, key, ifSafe) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     closeTabFlow(key, { ifSafe: ifSafe === true });
+  });
+  ipcMain.on('strip:stop', (e, key) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    closeTabFlow(key, { stop: true });
   });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
@@ -1852,6 +1860,16 @@ function startProbeDriver(port) {
     win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
     return { ok: true };
   };
+  // #129: a real click on the Stop button in the strip's alert line (a tab kept because its host wouldn't end), read from the DOM.
+  const stripStopClick = async () => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      "JSON.stringify((() => { const n = document.querySelector('#strip-alert .stop'); if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())"));
+    if (!rect) return { ok: false, error: 'no Stop button in the strip' };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: [] };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1878,7 +1896,7 @@ function startProbeDriver(port) {
       let stripChrome = null;
       try {
         stripChrome = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, stop: !!document.querySelector('#strip-alert .stop'), stopInView: (() => { const b = document.querySelector('#strip-alert .stop'); if (!b) return null; const r = b.getBoundingClientRect(); const a = document.getElementById('strip-alert').getBoundingClientRect(); return r.width > 0 && r.left >= a.left - 1 && r.right <= a.right + 1; })(), textClipped: (() => { const n = document.querySelector('#strip-alert .alert-text'); return n ? n.scrollWidth > n.clientWidth : null; })(), pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
           // #62: the lean button and chip as painted
           + "lean: { bodyLean: document.body.classList.contains('lean'), btnHidden: document.getElementById('lean-btn').hidden, chipHidden: document.getElementById('lean-chip').hidden, label: document.getElementById('lean-chip-label').textContent, night: document.getElementById('lean-chip-night').hidden ? null : document.getElementById('lean-chip-night').textContent, back: document.getElementById('lean-back').textContent, dotAnim: (() => { const d = document.querySelector('.dot.working'); return d ? getComputedStyle(d).animationName : null; })(), "
           + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, drawn: b.querySelectorAll('canvas[data-still-drawn]').length, failed: b.querySelectorAll('canvas[data-still-failed]').length, imgs: b.querySelectorAll('img').length, imgsLoaded: [...b.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth > 0).length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
@@ -2021,6 +2039,7 @@ function startProbeDriver(port) {
     async ctrlClick(label) { return stripClick(label, false, ['control']); },
     // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
     async xClick(label) { return stripClick(label, true, []); },
+    async stopClick() { return stripStopClick(); },
     // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
     // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
     async tabMenu(label, item) {
@@ -2055,6 +2074,16 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'mouseDown', ...base });
       sel.webContents.sendInputEvent({ type: 'mouseUp', ...base });
       return { ok: true };
+    },
+    // PR #233 F14: a real mouse wheel over the selected tab's view (x, y in its own pixels), with Ctrl held if asked. Answers the view's PAGE
+    // zoom factor after it, which the chat's Ctrl+wheel must leave at 1.
+    async mouseWheel(x, y, deltaY, ctrl) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      sel.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: 0, deltaY, canScroll: true, modifiers: ctrl ? ['control'] : [] });
+      await new Promise((r) => setTimeout(r, 250));
+      return { ok: true, zoomFactor: sel.webContents.getZoomFactor() };
     },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
@@ -2372,6 +2401,9 @@ app.whenReady().then(async () => {
       newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
         || require('crypto').randomBytes(24).toString('hex'),
       control: (c) => sendControl(c),
+      // #129: the retry of a stop that failed, by pid: the identity file names the host's pid and its OS start time, and the kill
+      // proves both on a held handle (host/kill-tree.js). No file (or no start time) for the port: the host is gone, or can't be proved.
+      stopByPid: (port, who) => stopHostByPid(port, who),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
       // PR #227 Dexter 4: the branch hosts the identity files say are running, so a lane whose first look missed its host is looked for again only where one serves it

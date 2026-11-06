@@ -711,7 +711,11 @@ if (window.harness && window.harness.occupancy) {
 
 // --- fonts and plain colour (BACKLOG #88, #92) ---------------------------------
 // Declared before the terminal because applyTheme (called from many places) reads them. `null` = not yet known.
-let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont }
+let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont, chatZoom }
+// BACKLOG #172: the chat view's text zoom and its save (app/fonts-display.js createChatZoomSaver: a wheel run is saved once it settles, kept
+// until the record has loaded, and newer than any record that arrives meanwhile). Declared here because takeFontSettings reads it.
+const chatZoomSaver = fontsDisplay.createChatZoomSaver({ save: (z) => setFontSettings({ chatZoom: z }),
+  schedule: (fn, ms) => setTimeout(fn, ms), cancel: (h) => clearTimeout(h) });
 let projectTerminalFont = null;     // this project's look.terminalFont: the override over the app-wide one
 let plainColourOn = false;          // this project's look.backgroundMode === 'colour': no media, the app colour is the background
 let fontFamilies = null;            // every installed family main listed (null = not listed yet)
@@ -4140,12 +4144,30 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           copyButtons: [...log.querySelectorAll('.chat-copy')].map(b => ({ label: b.getAttribute('aria-label'), text: b.textContent })),
           logText: log.textContent, term: { cols: term.cols, rows: term.rows }, resizeSends,
           rootRect: rectOf(root), termRect: rectOf(document.getElementById('term')),
+          // #171: what the chat paints over the background, and whether the live terminal's pixels are seen
+          rootBg: getComputedStyle(root).backgroundColor, termOpacity: getComputedStyle(document.getElementById('term')).opacity,
+          hasBg: document.body.classList.contains('has-bg'), lookMode: document.documentElement.getAttribute('data-look-mode'),
+          // #172: the conversation's zoom as painted, the value the page holds, and the terminal's font (which must never move with it)
+          logZoom: getComputedStyle(log).zoom, chatZoom: chatZoomSaver.current(), termFontSize: term.options.fontSize,
+          // PR #233 F11: where the conversation is scrolled (at the bottom = within chat-display's 40 px of it)
+          logScroll: { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight <= 40 },
+          focusInChat: !!(document.activeElement && root.contains(document.activeElement)),
         });
       }
       case 'chatDo': {
         if (a.what === 'toggle') { chatBtn.click(); return JSON.stringify({ ok: true }); }
         if (a.what === 'clearInput') { document.getElementById('chat-input').value = ''; return JSON.stringify({ ok: true }); }
         if (a.what === 'key') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); return JSON.stringify({ ok: true }); }
+        // PR #233 F11 / F13: put the conversation at its bottom; take the keyboard out of the chat's type box (as a click on its text does)
+        if (a.what === 'scrollBottom') { const l = document.getElementById('chat-log'); l.scrollTop = l.scrollHeight; return JSON.stringify({ ok: true }); }
+        if (a.what === 'blur') { if (document.activeElement) document.activeElement.blur(); return JSON.stringify({ ok: true, active: document.activeElement ? document.activeElement.tagName : null }); }
+        // #172: a wheel over the conversation, as a mouse sends it; `cancelled` is whether the page's handler stopped Chromium's own zoom
+        if (a.what === 'wheel') {
+          const target = document.getElementById('chat-log');
+          const r = target.getBoundingClientRect();
+          const ev = new WheelEvent('wheel', { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, deltaY: Number(a.deltaY) || 0, ctrlKey: a.ctrl === true, bubbles: true, cancelable: true });
+          return JSON.stringify({ ok: true, cancelled: !target.dispatchEvent(ev) });
+        }
         if (a.what === 'type') {
           if (typeof a.text !== 'string' || !a.text || a.text.length > 2000) return JSON.stringify({ ok: false, error: 'type needs text' });
           document.getElementById('chat-input').value = a.text;
@@ -9077,6 +9099,8 @@ if (document.fonts && document.fonts.addEventListener) document.fonts.addEventLi
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);
+  // #172: the chat's zoom, this window's save or another window's; a wheel run still waiting to be saved is newer than any record.
+  applyChatZoom(chatZoomSaver.record(fontSettings.chatZoom));
   applyFonts();
   renderStylePanel();
 }
@@ -10216,6 +10240,40 @@ if (term.textarea) term.textarea.addEventListener('focus', () => { if (chatShown
 
 chatBtn.addEventListener('click', chatToggle);
 document.getElementById('chat-show-tools').addEventListener('click', chatToggle);
+
+// #172: Ctrl+wheel over the chat zooms its conversation in 10 % steps (70 % to 200 %), one step per 100 px of wheel travel (a mouse notch;
+// a touchpad pinch's burst of small deltas adds up the same way, PR #233 F10). Ctrl+0 puts it back to 100 % wherever the keyboard is in the
+// page, while the chat is the display shown (F13). The wheel is cancelled, so Chromium never zooms the page; the listener has to be
+// non-passive for that, and it is on the chat view only (a plain wheel returns at once). The terminal's font and size are never touched.
+// Remembered app-wide in the fonts record (main's fonts-global) through chatZoomSaver, which saves a run once it settles and when the page goes away.
+const chatViewEl = document.getElementById('chat-view');
+let chatWheel = null;                // the wheel travel not yet turned into a step (fontsDisplay.wheelZoomSteps)
+// A reader at the bottom of the conversation stays there through a zoom step, so the next reply is still followed (PR #233 F11: measured in
+// probe J, a zoom-in left the log 178 px above the bottom and the next reply arrived out of view).
+function applyChatZoom(z) {
+  const el = document.getElementById('chat-view');
+  if (!el) return;
+  chatUi.keepBottom(() => el.style.setProperty('--chat-zoom', String(z / 100)));
+}
+function zoomChat(next) {
+  if (next === chatZoomSaver.current()) return;
+  chatZoomSaver.zoomed(next);
+  applyChatZoom(next);
+}
+chatViewEl.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  const r = fontsDisplay.wheelZoomSteps(chatWheel, e.deltaY, e.deltaMode, e.timeStamp);
+  chatWheel = r.acc;
+  if (r.steps !== 0) zoomChat(fontsDisplay.nextChatZoom(chatZoomSaver.current(), r.steps));
+}, { passive: false });
+document.addEventListener('keydown', (e) => {
+  if (!chatShown || !chatViewState.isChatZoomResetKey(e)) return;
+  e.preventDefault();
+  zoomChat(fontsDisplay.CHAT_ZOOM_DEFAULT);
+});
+window.addEventListener('pagehide', () => chatZoomSaver.flush());
+// #172 end
 // The terminal's own key handler decides the shortcut while it has focus (xterm consumes keys before a document listener); this is the chat's.
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented || !chatViewState.isChatKey(e)) return;

@@ -13,7 +13,7 @@ detach/reattach — so the probes exercise the real component, not a mock.
 |---|---|---|
 | `probe-render.js` | Does the Ink TUI render faithfully through the host? | Yes — banner, box rules, prompt all correct |
 | `probe-keys.js` | Shift+Tab modes, Shift+Enter newline, rule alignment | All pass; rules exactly `cols` wide |
-| `probe-detach.js` | Does the session survive with no viewer? Full mode cycle | Survives; state intact on reattach |
+| `probe-detach.js` | Does the session survive with no viewer, intact and responsive on reattach? Exits 1 if a check fails or the host dies | 2026-11-05 (BACKLOG #168, rewritten: the spike's hard-coded pre-worktree path killed its host at start and it still exited 0): 9/9. A host up with no viewer for 4 s keeps itself and its pty; a fresh client's replay holds the draft typed before the detach, before it sends a key, and its keys land on the same line. A host that dies fails check 1 with its log and exits 1. cmd.exe stand-in, temp project, own port and token. The Shift+Tab mode cycle it used to print is `probe-keys.js`'s question |
 | `probe-settings.js` | Does `--settings` merge or shadow? | Top-level merge, **wholesale replace within a key** |
 | `probe-hook-layers.js` | Do `--settings` hooks replace the project layer's? | No — they **accumulate** |
 | `probe-hook-e2e.js` | Does a helper invocation reach the running host? | Yes, `subagent_type` round-trips |
