@@ -217,6 +217,34 @@ test('a second attach releases the first helper instead of killing it', async ()
   await tick();
 });
 
+// PR #235 hub H1: what the session starts and detaches before the arm is outside the job, so host.log must say when the arm landed.
+test('the log says how long after attach (the pty\'s spawn) the job armed, and why it did not', async () => {
+  let clock = 1000;
+  const lines = [];
+  const h = fakeHelper();
+  const { g } = guardWith(h, { log: (l) => lines.push(l), now: () => clock });
+  const p = g.attach({ pid: 777, startOf: async () => '1', exited: () => false });
+  clock = 1830;
+  h.say('READY 286 1');
+  await p;
+  assert.ok(lines.some((l) => /^\[job-guard\] armed for pid 777 830 ms after spawn \(helper 286 ms\)$/.test(l)), lines.join(' | '));
+
+  const lines2 = [];
+  const h2 = fakeHelper();
+  let clock2 = 0;
+  const { g: g2 } = guardWith(h2, { log: (l) => lines2.push(l), now: () => clock2 });
+  const p2 = g2.attach({ pid: 777 });
+  clock2 = 40;
+  h2.say('FAILED AssignProcessToJobObject 5');
+  await p2;
+  assert.ok(lines2.some((l) => /^\[job-guard\] not armed for pid 777 after 40 ms \(failed: AssignProcessToJobObject 5\)$/.test(l)), lines2.join(' | '));
+
+  const lines3 = [];
+  const g3 = createJobGuard({ spawnFn: () => { throw new Error('ENOENT'); }, platform: 'win32', log: (l) => lines3.push(l), now: () => 5 });
+  await g3.attach({ pid: 777 });
+  assert.deepStrictEqual(lines3, ['[job-guard] not armed for pid 777 after 0 ms (spawn-failed)'], 'a helper that cannot start is in host.log too');
+});
+
 test('a logger that throws never breaks the guard', async () => {
   const h = fakeHelper();
   const { g } = guardWith(h, { log: () => { throw new Error('log'); } });

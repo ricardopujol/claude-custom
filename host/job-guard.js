@@ -90,7 +90,7 @@ function helperScript(pid) {
 
 const encode = (script) => Buffer.from(script, 'utf16le').toString('base64');
 
-function createJobGuard({ spawnFn = spawn, platform = process.platform, powershell = POWERSHELL, log = () => {}, timeoutMs = READY_TIMEOUT_MS } = {}) {
+function createJobGuard({ spawnFn = spawn, platform = process.platform, powershell = POWERSHELL, log = () => {}, timeoutMs = READY_TIMEOUT_MS, now = Date.now } = {}) {
   let helper = null;
   let st = 'idle';                  // idle | attaching | armed | released | ended | failed
   let pendingKill = false;          // a stop came while attaching: sent once the helper's start is proven
@@ -130,10 +130,14 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
     if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve({ ok: false, reason: 'bad-pid' });
     if (helper !== null) disarm();                       // one helper at a time: an earlier session's job is released, not killed
     pendingKill = false;
+    // host.js attaches right after pty.spawn, so this is how long the session ran outside the job: anything it started and
+    // detached in that time is not a member (PR #235 hub H1). host.log gets the number either way.
+    const t0 = now();
+    const since = () => { try { return Math.max(0, Math.round(now() - t0)); } catch { return null; } };
     let child;
     try {
       child = spawnFn(powershell, ['-NoProfile', '-NonInteractive', '-EncodedCommand', encode(helperScript(pid))], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
-    } catch (err) { st = 'failed'; return Promise.resolve({ ok: false, reason: 'spawn-failed' }); }
+    } catch (err) { st = 'failed'; say(`not armed for pid ${pid} after ${since()} ms (spawn-failed)`); return Promise.resolve({ ok: false, reason: 'spawn-failed' }); }
     helper = child;
     st = 'attaching';
     for (const s of [child.stdin, child.stdout]) { try { if (s && typeof s.unref === 'function') s.unref(); } catch { /* optional */ } }
@@ -148,7 +152,7 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
         if (done) return;
         done = true;
         if (timer) clearTimeout(timer);
-        if (!r.ok) { if (st === 'attaching' || st === 'armed') st = 'failed'; sendDisarm(); say(`not armed (${r.reason})`); }
+        if (!r.ok) { if (st === 'attaching' || st === 'armed') st = 'failed'; sendDisarm(); say(`not armed for pid ${pid} after ${since()} ms (${r.reason})`); }
         resolve(r);
       };
       child.on('error', () => finish({ ok: false, reason: 'spawn-failed' }));
@@ -177,7 +181,7 @@ function createJobGuard({ spawnFn = spawn, platform = process.platform, powershe
           if (typeof proven === 'string' && proven !== start) { finish({ ok: false, reason: 'start-mismatch' }); return; }
           if (exitedNow()) { finish({ ok: false, reason: 'target-exited' }); return; }
           if (st === 'attaching') st = 'armed';
-          say(`armed for pid ${pid} in ${ms} ms${typeof proven === 'string' ? '' : ' (its start time was not proven)'}`);
+          say(`armed for pid ${pid} ${since()} ms after spawn (helper ${ms} ms)${typeof proven === 'string' ? '' : ' (its start time was not proven)'}`);
           done = true;
           if (timer) clearTimeout(timer);
           if (st === 'armed' && pendingKill) { say('a stop came while it was starting: ending the job now'); sendKill(); }
