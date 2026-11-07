@@ -167,6 +167,33 @@ test('A1: the last run finishing clean flashes happy, though a sibling failed an
   assert.strictEqual(r.m.causeOf('code-reviewer'), null);
 });
 
+test('A1: before any subagent has spoken, a failed spawn\'s flash ending leaves the live run\'s card as that run is', () => {
+  // The property's counterexample (fast-check, the whole suite's run): every session starts with no agent_id seen yet, and a
+  // spawn's result is matched by its own tool_use_id, so its failure is the failed run's for certain, not the name's.
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const send = (event, payload) => m.handle({ event, payload });
+  send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_1', tool_input: { subagent_type: 'tb' } });
+  send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_2', tool_input: { subagent_type: 'tb' } });
+  send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: 'toolu_2', error: 'boom' });
+  t += FLASH_MS + 1;
+  m.tick();
+  assert.strictEqual(m.stateOf('tb'), 'working', 'the one run left never failed');
+  assert.strictEqual(m.causeOf('tb'), null);
+});
+
+test('A1: a name whose calls were attributed by guess (no agent_id) keeps the name-scoped rule', () => {
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const send = (event, payload) => m.handle({ event, payload });
+  send('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'old' } });
+  send('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 1 } });   // whose? a guess
+  send('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'old' } });
+  send('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'y' }, tool_response: { exit_code: 0 } });
+  send('SubagentStop', { agent_type: 'old' });
+  assert.strictEqual(m.stateOf('old'), 'stressed', 'never hide a failure that may be the remaining run\'s');
+});
+
 test('A1: the remaining run\'s OWN failure still shows on the one card', () => {
   const r = rig();
   const a = r.spawnRun('code-reviewer', 'toolu_A');

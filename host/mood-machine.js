@@ -58,9 +58,9 @@
  *
  * INSTANCES (BACKLOG #142 b). Two or more runs of one name are one card each: instancesOf(agent) gives their rows, each keyed by
  * the CLI's own id for the run and carrying the run's own state, detail and cause (see INSTANCE CARDS, below). The name's card
- * is what every other consumer (sort, hide, bubbles, medals) reads; while the CLI labels its calls it is read FROM the runs shown,
- * so one card left is that run's and never a departed sibling's (PR #239 Dexter 1). An older CLI that labels nothing keeps the
- * name-scoped errors below.
+ * is what every other consumer (sort, hide, bubbles, medals) reads; unless one of its calls was attributed by guess, it is read
+ * FROM the runs shown, so one card left is that run's and never a departed sibling's (PR #239 Dexter 1). A name whose calls an
+ * older CLI left unlabelled (guessed) keeps the name-scoped errors below.
  *
  * Reading and writing come from PreToolUse alone (their PostToolUse isn't
  * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
@@ -333,7 +333,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     let a = agents.get(agent);
     if (!a) {
       a = { state: SLEEPING, detail: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0,
-        failures: [], repeatTool: null, repeatFrom: null, repeatAt: null, extraSig: null, done: [] };
+        failures: [], repeatTool: null, repeatFrom: null, repeatAt: null, extraSig: null, done: [], guessed: false };
       agents.set(agent, a);
     }
     return a;
@@ -367,6 +367,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     a.repeatFrom = null;
     a.repeatAt = null;
     a.done = [];
+    a.guessed = false;
   }
   // A good call, into a record that has a retry series (a name's card or a run's): the same call again counts on, another starts
   // a new series. The series' tool and first call are kept for its cause ("the same command 3 times in 40 s").
@@ -470,12 +471,12 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     });
   }
 
-  // The name's cause: while the CLI labels its calls, the shown rows' (the first stressed one's); otherwise the name's own record
-  // (an older CLI can't say whose a call is, so a failure stays the name's: test/mood-machine.test.js "a failure is not cleared by a
-  // sibling finishing cleanly").
+  // The name's cause: unless one of its calls was attributed by guess (a.guessed), the shown rows' (the first stressed one's);
+  // otherwise the name's own record (a call without agent_id, from an older CLI, is pinned on a run by guess, so a failure stays
+  // the name's: test/mood-machine.test.js "a failure is not cleared by a sibling finishing cleanly").
   function causeFor(agent, a) {
     if (a.state !== STRESSED) return null;
-    if (saysWho) {
+    if (!a.guessed) {
       const s = rowsOf(agent).find(r => r.state === STRESSED);
       if (s) return s.cause;
     }
@@ -487,10 +488,11 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   const extrasOf = (agent, a) => JSON.stringify([causeFor(agent, a), instancesOf(agent)]);
   function setState(agent, a, state) {
     if (state === SLEEPING) a.done = [];      // asleep: no run of it is open or flashing any more
-    // PR #239 Dexter 1: while the CLI labels its calls, the runs shown are the only source of the name's stress. Stressed if any
-    // shown row is, else working while one runs, else the happy flash; its detail the best of theirs that fits that state (with one
+    // PR #239 Dexter 1: unless a call of this name was attributed by guess (a.guessed: no agent_id), the runs shown are the only
+    // source of the name's stress. Not "has the CLI ever said who": every session starts that way, and a spawn's own result is
+    // matched by its tool_use_id, so it's certain (the property found that). Stressed if any shown row is, else working while one runs, else the happy flash; its detail the best of theirs that fits that state (with one
     // row, that row's). A retry series is a run's own: a sibling's different call doesn't end it. Asleep stays asleep.
-    const shown = state === SLEEPING || !saysWho ? [] : rowsOf(agent);
+    const shown = state === SLEEPING || a.guessed ? [] : rowsOf(agent);
     if (shown.length > 0) state = shown.some(r => r.state === STRESSED) ? STRESSED : shown.some(r => r.live) ? WORKING : HAPPY;
     const detail = shown.length > 0 ? bestDetail(shown, state) : refine(agent, a, state);
     const moved = a.state !== state || a.detail !== detail;
@@ -973,7 +975,11 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       // session's own foreground work -- never a background run.
       let inv;
       if (p.agent_id) inv = bind(p.agent_id, p.agent_type);
-      else if (!saysWho) inv = [...invs].reverse().find(mainForeground);
+      else if (!saysWho) {
+        inv = [...invs].reverse().find(mainForeground);
+        // A guess at whose call this is: that name's runs' own records can't be trusted, so it keeps the name-scoped rule.
+        if (inv) ensure(inv.name).guessed = true;
+      }
       if (!inv) return;                       // no running agent to attribute to
       if (p.agent_id) refresh(inv); else refreshAll();
       inv.waiting = false;
@@ -1026,6 +1032,8 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (p.agent_id) inv = bind(p.agent_id, p.agent_type);
       else if (p.agent_type) inv = [...invs].reverse().find(i => i.name === p.agent_type);
       else inv = current();
+      // Without agent_id, which instance stopped is a guess (the youngest): the name keeps the name-scoped rule.
+      if (inv && !p.agent_id) ensure(inv.name).guessed = true;
       if (!inv) return;                       // never started here; not ours to end
       finish(inv);
       return;
