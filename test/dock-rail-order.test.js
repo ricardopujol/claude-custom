@@ -177,6 +177,16 @@ test('the hot zone is a thin line across the rail at the gap, inside the rail', 
   assert.equal(at(5).zones.find(z => z.line).rect.y, 0, 'at the top: never above the rail');
 });
 
+// PR #241 Miguel L6: the line stands 6 px in from each side of the rail, so it reads as a gap marker and not the rail's border; a
+// rail too narrow for that (16 px or less across) gets a line the whole way across.
+test('the line is inset 6 px from each side, and spans a rail too narrow for the inset', () => {
+  const line = rail => D.railDrop(NO_HIT, rail, { x: rail.rect.x + 2, y: 21 }, 'vault').zones.find(z => z.line).rect;
+  assert.deepEqual([line(RAIL).x, line(RAIL).width], [954, 40]);
+  const narrow = w => ({ ...RAIL, rect: { ...RAIL.rect, width: w }, slots: RAIL.slots.map(s => ({ ...s, rect: { ...s.rect, width: w } })) });
+  assert.deepEqual([line(narrow(17)).x, line(narrow(17)).width], [954, 5], '17 px: still inset');
+  assert.deepEqual([line(narrow(16)).x, line(narrow(16)).width], [948, 16], '16 px: across the whole rail');
+});
+
 test('a drop that would leave the tab where it is shows no line and has no target', () => {
   for (const [y, id] of [[100, 'vault'], [500, 'vault'], [55, 'git'], [21, 'agents']]) {
     const r = at(y, id);

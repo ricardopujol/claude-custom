@@ -257,8 +257,10 @@ async function main() {
   const docked0 = docked.length ? docked[0][1][0] : null;
   r = await view(app, 'drag', { id: docked0, to: railPoint(s) });
   s = await stateFor(app, () => true);
-  check('2: a docked tab\'s name dropped on the rail changes nothing (no rail target for a docked panel, as before #109)',
-    r.ok && JSON.stringify(groupTabs(s)) === JSON.stringify(docked) && JSON.stringify(railOrder(s)) === JSON.stringify(grouped), JSON.stringify([r.during, groupTabs(s), railOrder(s)]));
+  // Read mid-drag too (PR #241 Dexter 4): the end state alone can't tell the railSlots guard is there, since a reorder of a module
+  // that isn't on the rail changes nothing anyway; the line it would draw is what shows.
+  check('2: a docked tab\'s name dropped on the rail changes nothing, and mid-drag shows no insertion line (no rail target for a docked panel, as before #109)',
+    r.ok && r.during.lines === 0 && r.during.dragging && JSON.stringify(groupTabs(s)) === JSON.stringify(docked) && JSON.stringify(railOrder(s)) === JSON.stringify(grouped), JSON.stringify([r.during, groupTabs(s), railOrder(s)]));
 
   // 3 -------------------------------------------------------------------------------------------
   s = await reset();

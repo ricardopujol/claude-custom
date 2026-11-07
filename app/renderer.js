@@ -3593,6 +3593,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
   const overlayState = () => ({
     zones: document.querySelectorAll('#dock-overlay .dz').length,
     hot: document.querySelectorAll('#dock-overlay .dz.hot').length,
+    lines: document.querySelectorAll('#dock-overlay .dz.line').length,      // a place in the rail (#109)
     dragging: document.body.classList.contains('dock-dragging'),
     ghost: !!document.querySelector('#dock-ghost'),         // made on the fly by the drag, so not a getElementById
   });

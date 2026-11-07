@@ -184,6 +184,9 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   assert.match(JS, /function onRailScroll\(\) \{\n\s+if \(!drag \|\| !press\) return;\n\s+drag\.rail = railSlots\(drag\.rect, drag\.id\);\n\s+follow\(press\.cx, press\.cy\);/);
   assert.match(JS, /if \(drag\.railEl\) drag\.railEl\.removeEventListener\('scroll', onRailScroll\);/);
   assert.match(JS, /const step = DD\.railScrollStep\(drag\.rail, drag\.at\);/);
+  // PR #241 Dexter 4 / Miguel L6: only a module ON the dock rail gets the rail's slots, so a docked tab over the rail draws no line
+  // (verify/probe-rail-drag.js case 2 reads the lines mid-drag).
+  assert.match(JS, /const railed = placementLayout\(\)\.rail;\n\s+if \(!Array\.isArray\(railed\) \|\| !railed\.includes\(id\)\) return null;/);
   // PR #241 Dexter 1: only pressStep's 'drop' commits. A hold-started drag released unmoved answers 'cancel', and a cancel never docks.
   assert.match(release, /const effect = feed\(\{ type: 'up' \}\);/);
   assert.match(release, /if \(!d \|\| effect !== 'drop' \|\| !d\.target\) return;/);
