@@ -131,8 +131,9 @@ const flagNames = (flag, holder) => (flag === '1' ? !WRAPPER_OWNER.test(holder) 
 
 // `holder`: who held the slot when the wait ended (null: nobody, or unknown); `waitedMs`: how long this asker waited.
 class HeavyLockError extends Error {
-  constructor(code, message, { holder = null, waitedMs = null, detail = null } = {}) {
+  constructor(code, message, { holder = null, waitedMs = null, detail = null, timedOut = false } = {}) {
     super(message); this.name = 'HeavyLockError'; this.code = code; this.holder = holder; this.waitedMs = waitedMs; this.detail = detail;
+    this.timedOut = timedOut;
   }
 }
 
@@ -141,17 +142,29 @@ class HeavyLockError extends Error {
 //   - "lock busy": another holder had the slot when the wait ran out (or tickets ahead of this one still waited for it);
 //   - "machine busy": the slot was FREE and this ticket was first, but the script's load gate (LOAD_GATE) held it back.
 const LOAD_GATE = '8 GB free RAM and under 70% CPU';
+// One physical line, whatever the script printed (#237 Miguel S1): a PowerShell exception is several lines, and the last
+// line of the output must still start with "[heavy-lock]".
+const oneLine = (s) => String(s).replace(/\s+/g, ' ').trim();
+// `timedOut`: the -Acquire call ran past its wait and was stopped by its own wait + 1 timer (#237 Dexter 6).
+const TIMED_OUT = ' (heavy-lock.ps1 ran past its wait and was stopped)';
 function notRunLine(err) {
-  const mins = (err && typeof err.waitedMs === 'number') ? `${Math.round(err.waitedMs / 60000)} min` : 'the whole wait';
+  const known = err && typeof err.waitedMs === 'number';
+  const n = known ? `${Math.round(err.waitedMs / 60000)} min` : null;
+  const timed = err && err.timedOut ? TIMED_OUT : '';
+  const holder = err && err.holder ? oneLine(err.holder) : null;
+  const detail = err && err.detail ? oneLine(err.detail) : null;
   if (err && err.code === 'busy') {
+    const span = n ? `lock busy for ${n}` : 'lock busy for the whole wait';
     // Tickets ahead and nobody holding: the first in line is between two polls, or held back by the load gate itself.
-    if (!err.holder && err.detail) return `[heavy-lock] lock busy for ${mins}, held by nobody now but ${err.detail} (the first may be held back by the load gate: ${LOAD_GATE}): NOT RUN`;
-    return `[heavy-lock] lock busy for ${mins}, held by ${err.holder || 'nobody now'}: NOT RUN`;
+    if (!holder && detail) return `[heavy-lock] ${span}${timed}, held by nobody now but ${detail} (the first may be held back by the load gate: ${LOAD_GATE}): NOT RUN`;
+    if (!holder && timed) return `[heavy-lock] ${span}${timed}, held by a holder its status could not name: NOT RUN`;
+    return `[heavy-lock] ${span}${timed}, held by ${holder || 'nobody now'}: NOT RUN`;
   }
   if (err && err.code === 'loaded') {
-    return `[heavy-lock] machine busy after a ${mins} wait: the lock is free, but its load gate needs ${LOAD_GATE}${err.detail ? ` (now ${err.detail})` : ''}: NOT RUN`;
+    const span = n ? `machine busy after a ${n} wait` : 'machine busy after the whole wait';
+    return `[heavy-lock] ${span}${timed}: the lock is free, but its load gate needs ${LOAD_GATE}${detail ? ` (now ${detail})` : ''}: NOT RUN`;
   }
-  return `[heavy-lock] the lock could not be taken (${(err && err.message) || 'unknown error'}): NOT RUN`;
+  return `[heavy-lock] the lock could not be taken (${oneLine((err && err.message) || 'unknown error')}): NOT RUN`;
 }
 
 // Closed with a paren so that "(pid 1 ...)" is never a prefix of "(pid 12 ...)": the script releases by StartsWith(owner).
@@ -373,11 +386,15 @@ function acquire({
   if (isHeld(env)) {
     // The flag is trusted only while the holder it names really holds the slot (RE-ENTRANCY above): the skip names who.
     const flag = env[ENV_VAR];
-    const outer = exists(scriptPath) ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
+    const scriptThere = exists(scriptPath);
+    const outer = scriptThere ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
     if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
+      // Flag set and no script: the reason is the missing script, not an unreadable status (#237 Miguel S3).
       log(outer.holder
         ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
-        : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
+        : !scriptThere
+          ? `[heavy-lock] ${ENV_VAR} is set and the lock script ${scriptPath} is not on this machine: not taking the lock (re-entrant, no script to ask)`
+          : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
       return { state: 'reentrant', holder: outer.holder, flag, release: () => false, addWork: () => false };
     }
     if (outer.live === true) {
@@ -434,6 +451,18 @@ function acquire({
     if (r && r.status === 3) {
       const m = /^machine too loaded: (.*)$/m.exec(said);
       throw new HeavyLockError('loaded', `${said || 'machine too loaded'}. ${HINT}`, { detail: m ? m[1].trim() : null, waitedMs });
+    }
+    if (r && r.status === null && /ETIMEDOUT/.test(said)) {
+      // Killed by its own wait + 1 timer (#237 Dexter 6): on a loaded machine the script's load check plus its 20 s sleep can
+      // run past the deadline. The wait ran out all the same, so the slot is read again to say which give-up it was.
+      let text = '';
+      try { const st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); text = (st && st.stdout) || ''; } catch { text = ''; }
+      const held = /^held: (.*)$/m.exec(text);
+      if (/^free$/m.test(text) && !held) {
+        throw new HeavyLockError('loaded', `heavy-lock.ps1 ran past its wait and was stopped; the slot is free. ${HINT}`, { waitedMs, timedOut: true });
+      }
+      const holder = held ? held[1].trim() || null : null;
+      throw new HeavyLockError('busy', `heavy-lock.ps1 ran past its wait and was stopped${holder ? `; held by ${holder}` : ''}. ${HINT}`, { holder, waitedMs, timedOut: true });
     }
     throw new HeavyLockError('error', `heavy-lock.ps1 failed (exit ${r && r.status}): ${said}`, { waitedMs });
   }

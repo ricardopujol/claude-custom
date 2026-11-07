@@ -632,6 +632,9 @@ test('2026-11-05: the flag set + a status that cannot be read, or no script: can
   b.env[ENV_VAR] = '1';
   assert.strictEqual(acquire({ label: 'x', pid: 7, ...b.deps() }).state, 'reentrant');
   assert.strictEqual(b.calls.length, 0, 'no script, nothing run');
+  // #237 Miguel S3: the reason said is the missing script, not an unreadable status.
+  assert.match(b.log[0], /HEAVY_LOCK_HELD is set and the lock script .* is not on this machine: not taking the lock/);
+  assert.doesNotMatch(b.log[0], /could not be read/);
 });
 
 test('2026-11-05: HEAVY_LOCK_SCRIPT points the module at another script; a relative one is ignored', () => {
@@ -1118,4 +1121,57 @@ test('#237 Dexter 5: flag set, the holder it names is dead, its work record is c
   assert.strictEqual(lock.state, 'reentrant');
   assert.ok(r.log.some(m => /work record of npm test \(pid 5000 start 777\) \(since 09:00:00\) can't be read/.test(m)), JSON.stringify(r.log));
   assert.strictEqual(of(r, '-Release').length, 0);
+});
+
+// ---- #237 L9 (Dexter 6, Miguel S1, S3): every give-up ends on one proper [heavy-lock] line ----
+function timedOutRig(status) {
+  // The -Acquire call is killed by its own wait + 1 timer: status null, ETIMEDOUT, 21 minutes on the clock.
+  const r = rig({ acquireOverride: (rr) => { rr.clock.t = 21 * 60000; return { status: null, stdout: '[ETIMEDOUT spawnSync C:\\Windows\\powershell.exe ETIMEDOUT]' }; } });
+  const run = r.run;
+  r.run = (args, o) => (args.length === 0 && r.clock.t > 0 ? (r.calls.push(args), status) : run(args, o));
+  return r;
+}
+
+test('#237 Dexter 6: an -Acquire killed by its own timer under a holder is "lock busy", names the holder, and says it was stopped', () => {
+  const r = timedOutRig({ status: 0, stdout: 'held: hub: probes (since 10:00:00)' });
+  let err = null;
+  try { acquire({ label: 'x', pid: 7, ...r.deps() }); } catch (e) { err = e; }
+  assert.ok(err instanceof HeavyLockError);
+  assert.strictEqual(err.code, 'busy');
+  assert.strictEqual(err.holder, 'hub: probes (since 10:00:00)');
+  assert.strictEqual(err.timedOut, true);
+  assert.strictEqual(notRunLine(err), '[heavy-lock] lock busy for 21 min (heavy-lock.ps1 ran past its wait and was stopped), held by hub: probes (since 10:00:00): NOT RUN');
+});
+
+test('#237 Dexter 6: killed by its timer with the slot free is "machine busy"; with the status unreadable it still says lock busy, not "exit null"', () => {
+  const free = timedOutRig({ status: 0, stdout: 'free\nload: 3 GB free RAM, 95% CPU' });
+  let e1 = null;
+  try { acquire({ label: 'x', pid: 7, ...free.deps() }); } catch (e) { e1 = e; }
+  assert.strictEqual(e1.code, 'loaded');
+  assert.match(notRunLine(e1), /^\[heavy-lock\] machine busy after a 21 min wait \(heavy-lock\.ps1 ran past its wait and was stopped\): the lock is free/);
+  const dark = timedOutRig({ status: null, stdout: '[ETIMEDOUT]' });
+  let e2 = null;
+  try { acquire({ label: 'x', pid: 7, ...dark.deps() }); } catch (e) { e2 = e; }
+  assert.strictEqual(e2.code, 'busy');
+  assert.strictEqual(notRunLine(e2), '[heavy-lock] lock busy for 21 min (heavy-lock.ps1 ran past its wait and was stopped), held by a holder its status could not name: NOT RUN');
+  assert.doesNotMatch(notRunLine(e2), /exit null/);
+});
+
+test('#237 Miguel S1: the NOT RUN line is ONE physical line starting [heavy-lock], whatever the script printed', () => {
+  const lines = [
+    notRunLine(new HeavyLockError('error', 'heavy-lock.ps1 failed (exit 1): At line:1 char:1\r\n+ boom\r\n    + CategoryInfo')),
+    notRunLine(new HeavyLockError('busy', 'x', { holder: 'a\nb (pid 1 start 2)', waitedMs: 60000 })),
+    notRunLine(new HeavyLockError('loaded', 'x', { detail: '3 GB\r\nfree', waitedMs: 60000 })),
+    notRunLine(new Error('a\nb')),
+  ];
+  for (const l of lines) {
+    assert.strictEqual(l.split(/\r?\n/).length, 1, JSON.stringify(l));
+    assert.match(l, /^\[heavy-lock\] .*: NOT RUN$/);
+  }
+});
+
+test('#237 Miguel S1: with no wait time known the lines still read right', () => {
+  assert.strictEqual(notRunLine(new HeavyLockError('loaded', 'x')), `[heavy-lock] machine busy after the whole wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU: NOT RUN`);
+  assert.strictEqual(notRunLine(new HeavyLockError('busy', 'x', { holder: 'h' })), '[heavy-lock] lock busy for the whole wait, held by h: NOT RUN');
+  assert.doesNotMatch(notRunLine(new HeavyLockError('loaded', 'x')), /a the whole wait wait/);
 });
