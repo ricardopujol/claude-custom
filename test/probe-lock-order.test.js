@@ -51,15 +51,26 @@ test('every verify script requires the launcher before it starts anything heavy'
 // Sync forms (spawnSync, execFileSync, execSync) aren't starts: they end before they return.
 // EACH START MUST BE ONE OF:
 //   - wrapped: `noteChild(` earlier on the same line (`kids.push(noteChild(spawn(...)))`);
-//   - paired: a `noteChild(` after it and before the next start (the usual `const host = spawn(...); noteChild(host);`);
+//   - paired: assigned to a name (`const host = spawn(...)`, `w.c = spawn(...)`) and `noteChild(<that name>` after it,
+//     before the next start and within PAIR_LINES lines (#237 Dexter 9 f, Miguel S6: any `noteChild(` used to pair it,
+//     `noteChild(null)` or another child's, however far away);
 //   - excused ON ITS LINE (or the line above) with `// lock-ok: <reason>`: a short, bounded child the probe waits for or
 //     stops itself (a powershell sample, a git call), never a host, a claude or anything that outlives a step.
 // NOT SEEN: a start inside a helper in verify/lib (launchElectron/spawnElectron record their Electron themselves;
 // spawnWithTimeout is bounded by its own timeout), or a spawn built from a string the scan can't read. Extend START for a new
 // shape rather than excusing it.
 const START = /(?<![\w$.])(?:spawn|fork|execFile|exec)\s*\(|\.(?:spawn|fork|execFile)\s*\(/g;
-const NOTE = /\bnoteChild\s*\(/g;
 const LOCK_OK = /\/\/.*\block-ok:[ \t]*\S/;
+const PAIR_LINES = 6;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The name a start is assigned to on its own line (`const h = spawn(`, `w.c = cp.spawn(`, `x = await fork(`), or null.
+function assignedName(s, at) {
+  const lineStart = s.lastIndexOf('\n', at) + 1;
+  const m = /(?:^|[\s;(,])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=\s*(?:await\s+)?(?:[A-Za-z_$][\w$]*)?$/.exec(s.slice(lineStart, at));
+  return m ? m[1] : null;
+}
+// Probes that take the lock: through the launcher, or through host/heavy-lock directly (createProcessLock / acquire).
+const TAKES_LOCK = (src) => LAUNCHER_REQUIRE.test(src) || /require\([^)]*host\/heavy-lock['"]\)/.test(src);
 
 // strip(), and every string's contents blanked too (quotes kept, line breaks kept): a word "spawn (" in a message, or the
 // source of a child script handed to `node -e`, is not a start in this file.
@@ -84,15 +95,20 @@ function unrecordedStarts(source) {
   const s = blankStrings(strip(source));
   const orig = source.split(/\r?\n/);
   const starts = [...s.matchAll(START)].map(m => m.index);
-  const notes = [...s.matchAll(NOTE)].map(m => m.index);
   const lineOf = (i) => s.slice(0, i).split('\n').length;
   const out = [];
   starts.forEach((at, k) => {
     const line = lineOf(at);
     const lineStart = s.lastIndexOf('\n', at) + 1;
     if (/\bnoteChild\s*\(/.test(s.slice(lineStart, at))) return;                          // wrapped
-    const next = k + 1 < starts.length ? starts[k + 1] : Infinity;
-    if (notes.some(n => n > at && n < next)) return;                                     // paired
+    const name = assignedName(s, at);
+    if (name) {
+      // The window: up to the next start, and no further than PAIR_LINES lines on.
+      let end = k + 1 < starts.length ? starts[k + 1] : s.length;
+      let lines = 0;
+      for (let i = at; i < end; i++) if (s[i] === '\n' && ++lines > PAIR_LINES) { end = i; break; }
+      if (new RegExp(`\\bnoteChild\\s*\\(\\s*${escapeRe(name)}\\s*[,)]`).test(s.slice(at, end))) return;   // paired, by name
+    }
     if (LOCK_OK.test(orig[line - 1] || '') || LOCK_OK.test(orig[line - 2] || '')) return; // excused, with a reason
     out.push({ line, text: (orig[line - 1] || '').trim() });
   });
@@ -116,10 +132,27 @@ test('the pairing scan: wrapped, paired and excused starts pass; fork, execFile,
     ["const p = pty.spawn(claudeBin, ['--model', 'haiku'], {});", 1],
     ["const p = cp.spawn('x');", 1],
     ["const a = spawn('a');\nconst b = spawn('b');\nnoteChild(b);", 1],   // a's noteChild would have to come before b's start
-    ["const a = spawn('a');   // lock-ok:\nnoteChild(null);", 0],           // (paired by the call after it: fine)
+    ["const a = spawn('a');   // lock-ok:\nnoteChild(null);", 1],           // #237 Dexter 9 f: noteChild(null) names no child
+    ["const a = spawn('a');\nnoteChild(other);", 1],                       // another child's noteChild
+    ["const a = spawn('a');\nnoteChild(ab);", 1],                          // a longer name is another name
+    [`const a = spawn('a');\n${'x();\n'.repeat(8)}noteChild(a);`, 1],      // too far away to be its pairing
+    ["kids.push(spawn('a'));\nnoteChild(kids[0]);", 1],                    // not assigned to a name: wrap it instead
     ["const a = spawn('a');   // lock-ok:", 1],                            // an excuse needs a reason
   ];
   for (const [src, n] of bad) assert.strictEqual(unrecordedStarts(src).length, n, src);
+  const named = [
+    "const h = spawn(process.execPath, [hostJs]);\nh.on('exit', f);\nnoteChild(h);",
+    "w.c = cp.spawn('x');\nnoteChild(w.c, lock);",
+    "let p;\np = fork('w.js');\nnoteChild(p);",
+  ];
+  for (const src of named) assert.deepStrictEqual(unrecordedStarts(src), [], src);
+});
+
+test('#237 Miguel S6: the scan covers a probe that takes the lock through host/heavy-lock, not only through the launcher', () => {
+  assert.strictEqual(TAKES_LOCK(strip("const { createProcessLock } = require('../host/heavy-lock');")), true);
+  assert.strictEqual(TAKES_LOCK(strip("const L = require('./lib/launch-electron');")), true);
+  assert.strictEqual(TAKES_LOCK(strip("const x = require('../host/heavy-lock-watch');")), false);
+  assert.strictEqual(TAKES_LOCK(strip("const fs = require('fs');")), false);
 });
 
 test('every probe that takes the lock records each process it starts by hand with noteChild (or excuses it, with a reason)', () => {
@@ -127,7 +160,7 @@ test('every probe that takes the lock records each process it starts by hand wit
   for (const f of fs.readdirSync(VERIFY)) {
     if (!f.endsWith('.js')) continue;
     const src = fs.readFileSync(path.join(VERIFY, f), 'utf8');
-    if (!LAUNCHER_REQUIRE.test(strip(src))) continue;
+    if (!TAKES_LOCK(strip(src))) continue;
     for (const u of unrecordedStarts(src)) missing.push(`verify/${f}:${u.line}: ${u.text}`);
   }
   assert.deepStrictEqual(missing, [], 'call noteChild(child) from ./lib/launch-electron right after the start, or mark a short bounded child `// lock-ok: <reason>`');

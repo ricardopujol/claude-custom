@@ -234,9 +234,19 @@ const changed = (b, a) => Object.keys(b).filter((k) => JSON.stringify(b[k]) !== 
 // It exits on its own after VICTIM_TTL_MS (an attempt is at most RUN_TIMEOUT_MS), so a run killed before its cleanup
 // can't leave it spinning forever.
 const VICTIM_TTL_MS = 10 * 60000;
+// This probe's own heavy lock (ensure()d in main). When it REALLY holds the slot (a stale flag, no wrapper above: see main),
+// each process it starts by hand is recorded as its work, so a hard-killed probe with a live child isn't a dead holder
+// (#237 Dexter 9 e, Miguel S6). Under the wrapper it's re-entrant: addWork records nothing, and the wrapper's record of this
+// probe's node stands. Provisional first, then with the start time (that second call runs one start query synchronously).
+const heavyLock = createProcessLock({ label: 'probe-shell-guard' });
+function noteChild(child) {
+  const pid = child && child.pid;
+  if (Number.isInteger(pid)) { try { heavyLock.addWork(pid, null); heavyLock.addWork(pid); } catch { /* a safety net */ } }
+  return child;
+}
 function spawnVictim(ttlMs = VICTIM_TTL_MS) {
   const src = `setTimeout(() => process.exit(0), ${Number(ttlMs)}); setInterval(() => {}, 1000);`;
-  const proc = spawn(process.execPath, ['-e', src], { stdio: 'ignore', windowsHide: true });
+  const proc = noteChild(spawn(process.execPath, ['-e', src], { stdio: 'ignore', windowsHide: true }));
   const v = { pid: proc.pid, alive: proc.pid !== undefined, proc };
   proc.on('exit', () => { v.alive = false; });
   proc.on('error', () => { v.alive = false; });
@@ -320,7 +330,7 @@ async function runClaude(w, c, settingsFile, insist) {
   const args = ['-p', '--model', 'haiku', '--dangerously-skip-permissions', '--settings', settingsFile, '--setting-sources', 'project',
     '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence',
     '--append-system-prompt', HARNESS_NOTE, '--output-format', 'stream-json', '--verbose', '--include-hook-events', `--tools=${c.tool}`, prompt(c, insist)];
-  const r = await spawnWithTimeout({ cmd: BIN, args, env: childEnv(), cwd: w.repo, timeoutMs: RUN_TIMEOUT_MS });
+  const r = await spawnWithTimeout({ cmd: BIN, args, env: childEnv(), cwd: w.repo, timeoutMs: RUN_TIMEOUT_MS, onSpawn: noteChild });
   return { ...r, tr: parseTranscript(r.stdout || '') };
 }
 
@@ -384,7 +394,7 @@ async function main() {
   // The flag alone is not trusted (host/heavy-lock.js RE-ENTRANCY, 2026-11-05): under a live holder (the wrapper above) this
   // skips and the line names that holder; a STALE flag with nobody holding the slot is warned about and the lock is taken for
   // real, released when this process ends. It used to run with no lock at all, silently.
-  try { createProcessLock({ label: 'probe-shell-guard' }).ensure(); } catch (err) {
+  try { heavyLock.ensure(); } catch (err) {
     if (!(err instanceof HeavyLockError)) throw err;
     console.error(`[heavy-lock] probe-shell-guard did not run: ${err.message}`);
     console.error(notRunLine(err));

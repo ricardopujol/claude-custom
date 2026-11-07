@@ -602,8 +602,26 @@ test('2026-11-05: the flag set + NOBODY holding the slot is a stale variable: on
   assert.match(r.holder, /^x \(pid 7 start 100\)/);
   assert.strictEqual(r.log.length, 1);
   assert.match(r.log[0], /^\[heavy-lock\] WARNING: HEAVY_LOCK_HELD is set but nobody holds the lock: a STALE variable in this shell\. Taking the lock for real; unset HEAVY_LOCK_HELD/);
+  assert.strictEqual(r.env[ENV_VAR], lock.owner, 'while held, the flag is this holder\'s own identity');
   assert.strictEqual(lock.release(), true);
   assert.strictEqual(r.holder, null);
+  // #237 Miguel S8: "on release the flag goes", the stale one included.
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(r.env, ENV_VAR), false);
+});
+
+test('#237 Miguel S8: readHolder\'s status and reclaimDead\'s status and -Release all carry the 1-minute leash', () => {
+  // The flag path (readHolder), then a dead holder freed before the ticket (reclaimDead): every call but the -Acquire is
+  // bounded by STATUS_TIMEOUT_MS, never by the acquire's long timeout.
+  const r = rig({ holder: `${DEAD} (since 09:00:00)` });
+  r.env[ENV_VAR] = '1';
+  const seen = [];
+  const run = r.run;
+  r.run = (args, o) => { seen.push({ args, t: o && o.timeoutMs }); return run(args, o); };
+  const lock = acquire({ label: 'x', pid: 7, waitMinutes: 20, ...r.deps() });
+  assert.strictEqual(lock.state, 'held');
+  const kinds = seen.map(s => (s.args.includes('-Acquire') ? 'acquire' : s.args.includes('-Release') ? 'release' : 'status'));
+  assert.deepStrictEqual(kinds, ['status', 'status', 'release', 'acquire'], 'readHolder, reclaimDead\'s status, its release, the ticket');
+  for (const s of seen) assert.strictEqual(s.t, s.args.includes('-Acquire') ? 21 * 60000 : STATUS_TIMEOUT_MS, JSON.stringify(s.args));
 });
 
 test('2026-11-05: the flag set + a provably dead holder is stale too: warned, the dead holder freed, the lock taken', () => {
