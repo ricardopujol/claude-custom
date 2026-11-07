@@ -154,6 +154,7 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('capture failed:', err && err.message);
     mainLock.exit(1);
+    return;   // #243 Miguel S1: app.exit doesn't stop this function; the write below would run with no image
   }
 
   fs.writeFileSync(output, png);
