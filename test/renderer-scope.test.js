@@ -167,6 +167,8 @@ const ALLOWED_GLOBALS = new Set([
   'occupancyDisplay', 'occupancyConfirm',
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
   'terminalBar',
+  // app/term-fit.js (#177, the terminal refit that settles): one namespace object, IIFE-wrapped.
+  'termFit',
   'summaryDisplay',
   // app/docs-drift-display.js (backlog #39 job 2): one namespace object, IIFE-wrapped.
   'docsDriftDisplay',
