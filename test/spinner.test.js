@@ -22,7 +22,11 @@ test('spinnerSource refuses a missing parent or cap, and names both in the sourc
     assert.throws(() => spinnerSource(p, m), /spinnerSource/, `${p} ${m}`);
   }
   const s = spinnerSource(4321, 9000);
-  assert.match(s, /const p=4321,end=Date\.now\(\)\+9000;/);
+  assert.match(s, /const p=4321,end=performance\.now\(\)\+9000;/);
+  // #237 Dexter 8: the cadence and the cap on a monotonic clock; a wall-clock step can't be faked in a real child.
+  assert.doesNotMatch(s, /Date\.now/);
+  assert.match(s, /const t=performance\.now\(\)\+20;while\(performance\.now\(\)<t\)\{\}/);
+  assert.match(s, /if\(performance\.now\(\)>end\)process\.exit\(0\);/);
   assert.match(s, /process\.kill\(p,0\)/, 'liveness only, never a signal');
   assert.doesNotMatch(s, /for\(;;\)\{\}/, 'no bare busy loop that never looks up');
 });
