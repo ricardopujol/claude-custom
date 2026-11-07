@@ -2370,7 +2370,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   if (btn) btn.classList.toggle('own', ownLayout !== null);
   kbRefresh();                      // a keyboard move in flight lights the zones of the dock as it is now
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
-  if (refit) setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  if (refit) setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // The settle motion (dockable panels D4): the dock gets `.settling` for the length of the glide, and the CSS moves the
@@ -3283,7 +3283,7 @@ function applyFocusMode(on) {
   paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
   renderLayout();   // the rails are display:none while focus is on: draw the dock again so any rail that lost its fit then is fitted now
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 if (focusBridge) focusBridge.onChange(applyFocusMode);
 for (const id of ['focus-btn', 'focus-exit']) {
@@ -5628,7 +5628,7 @@ function applyTheme(theme) {
   renderTopBar();
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // --- agent roster -----------------------------------------------------------
@@ -9086,7 +9086,7 @@ function applyFonts() {
   term.options.fontSize = eff.fontSize;
   // A font change alters the cell size, so the pty must be told the new geometry or Ink's layout corrupts.
   clearTimeout(fontFitTimer);
-  fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  fontFitTimer = setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // A tab that was in the background misses a focus-mode or lean push, and its rails measured zero while hidden: fit them when it shows.
@@ -9910,6 +9910,21 @@ function sendResize() {
   }
 }
 
+// Every refit of the terminal to its box (BACKLOG #177). One fit.fit() can be a column short: xterm's cell width follows the column
+// count, so the box is asked again after each resize until it agrees (app/term-fit.js has the measured case). The pty is then told
+// only a size it wasn't told last. FitAddon's own resize step: clear the renderer (a full render), then resize.
+function refitTerminal() {
+  window.termFit.settleFit({
+    size: () => ({ cols: term.cols, rows: term.rows }),
+    propose: () => fit.proposeDimensions(),
+    resize: (cols, rows) => {
+      try { term._core._renderService.clear(); } catch { /* the full render is a nicety; the resize is what counts */ }
+      term.resize(cols, rows);
+    },
+  });
+  if (window.termFit.needsSend({ cols: term.cols, rows: term.rows }, lastSentResize)) sendResize();
+}
+
 // Everything xterm translates from a keypress flows through here.
 // Typing drops the selection, as in Windows Terminal: a selection left
 // behind is the one a later Ctrl+C would copy instead of interrupting
@@ -10286,7 +10301,7 @@ chatRefreshView();
 // Resize must propagate on window resize AND on font change, or the Ink layout
 // corrupts.
 const ro = new ResizeObserver(() => {
-  try { fit.fit(); sendResize(); } catch {}
+  try { refitTerminal(); } catch {}
 });
 ro.observe(document.getElementById('termwrap'));
 
