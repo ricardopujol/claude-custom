@@ -13,7 +13,12 @@
  *   stressCause({ failures: [SendMessage to "the hub" x2], retry: { tool: "Read", count: 3, from: 0, to: 40000 } })
  *     -> "2 messages to the hub failed to send, then it retried the same read 3 times in 40 s"
  *
- * Null when there's nothing to say. Never a number for an unknown: a retry with no readable span says no span.
+ * (That's the shape Ricardo asked for. On a default install a read can't be in it: Read, Grep and Glob have no PostToolUse hook
+ * (host/settings-writer.js POST_TOOL_MATCHER), so a failed or repeated read never reaches the mood machine. A repeated Bash
+ * command, a failed SendMessage, a failed spawn can: PR #239 Dexter 6.)
+ *
+ * Null when there's nothing to say. Never a number for an unknown: a retry with no readable span says no span. A span reads in
+ * seconds under a minute, "M min S s" under ten minutes, whole minutes after (PR #239 Miguel S10: 90 s is "1 min 30 s").
  */
 
 // How many kinds of failure one record keeps. More than this is one count at the end, so the record stays bounded.
@@ -23,11 +28,14 @@ const SHOWN = 3;
 
 const finite = (v) => typeof v === 'number' && Number.isFinite(v);
 const str = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+// A SendMessage's `to` is whatever the model typed, kept per kind and drawn in a tooltip: capped, with an ellipsis (Miguel S7).
+const TO_MAX = 40;
+const capped = (s) => (s !== null && s.length > TO_MAX ? s.slice(0, TO_MAX - 1) + '…' : s);
 
 /** Records one failed call into `failures` (mutated), grouped with an earlier one of the same kind. */
 function addFailure(failures, { tool, to, run = false, at } = {}) {
   const t = str(tool);
-  const whom = t === 'SendMessage' ? str(to) : null;
+  const whom = t === 'SendMessage' ? capped(str(to)) : null;
   const same = failures.find((f) => f.tool === t && f.to === whom && f.run === !!run);
   if (same) { same.n++; return failures; }
   if (failures.length >= MAX_KINDS) {
@@ -58,8 +66,10 @@ const NOUN = { Read: 'read', Grep: 'search', Glob: 'search', WebSearch: 'search'
 
 function span(ms) {
   if (!finite(ms) || ms < 0) return '';
-  if (ms < 60_000) return ` in ${Math.max(1, Math.round(ms / 1000))} s`;
-  return ` in ${Math.round(ms / 60_000)} min`;
+  const s = Math.max(1, Math.round(ms / 1000));
+  if (s < 60) return ` in ${s} s`;
+  if (s < 600) return ` in ${Math.floor(s / 60)} min${s % 60 ? ` ${s % 60} s` : ''}`;
+  return ` in ${Math.round(s / 60)} min`;
 }
 
 function retryWords(r) {
@@ -87,4 +97,4 @@ function stressCause(record) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-module.exports = { stressCause, addFailure, MAX_KINDS };
+module.exports = { stressCause, addFailure, MAX_KINDS, TO_MAX };

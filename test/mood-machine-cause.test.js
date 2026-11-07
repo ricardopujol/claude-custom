@@ -28,8 +28,9 @@ function rig() {
     send('PostToolUse', { tool_name: tool, tool_use_id: 'tu' + (++n), tool_input: input, tool_response: { exit_code: 0 }, ...by(type) });
   const err = (type, tool = 'Bash') =>
     send('PostToolUse', { tool_name: tool, tool_use_id: 'tu' + (++n), tool_input: { command: 'x' }, tool_response: { exit_code: 1 }, ...by(type) });
-  const failed = (type, tool = 'Read') =>
-    send('PostToolUseFailure', { tool_name: tool, tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/b' }, error: 'boom', ...by(type) });
+  // Only tools whose Post hooks are registered (host/settings-writer.js POST_TOOL_MATCHER): a Read has none (PR #239 Dexter 6).
+  const failed = (type, tool = 'Bash') =>
+    send('PostToolUseFailure', { tool_name: tool, tool_use_id: 'tu' + (++n), tool_input: { command: 'b' }, error: 'boom', ...by(type) });
   const sendFailed = (type, to) =>
     send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm' + (++n), tool_input: { to, message: 'hi' }, tool_response: { success: false }, ...by(type) });
   return { m, cards, send, by, spawnAgent, ok, err, failed, sendFailed, advance: (ms) => { t += ms; m.tick(); } };
@@ -49,9 +50,9 @@ test('a tool error: the cause names the tool, and counts', () => {
 test('a failed call (PostToolUseFailure, its only event) is a cause too', () => {
   const r = rig();
   r.spawnAgent('ta');
-  r.failed('ta', 'Read');
+  r.failed('ta', 'Bash');
   assert.strictEqual(r.m.stateOf('ta'), 'stressed');
-  assert.strictEqual(r.m.causeOf('ta'), 'A Read call failed');
+  assert.strictEqual(r.m.causeOf('ta'), 'A Bash call failed');
 });
 
 test('a message that failed to send says whom it was for', () => {
@@ -81,8 +82,9 @@ test('Ricardo\'s example: failures, then a retry loop, in the order they happene
   r.spawnAgent('ta');
   r.sendFailed('ta', 'the hub');
   r.sendFailed('ta', 'the hub');
-  for (let i = 0; i < 3; i++) { r.ok('ta', 'Read', { file_path: 'C:/same' }); if (i < 2) r.advance(20_000); }
-  assert.strictEqual(r.m.causeOf('ta'), '2 messages to the hub failed to send, then it retried the same read 3 times in 40 s');
+  // Ricardo's sentence said "the same read"; a read has no Post hook, so the live shape is a repeated command (PR #239 Dexter 6).
+  for (let i = 0; i < 3; i++) { r.ok('ta', 'Bash', { command: 'npm test' }); if (i < 2) r.advance(20_000); }
+  assert.strictEqual(r.m.causeOf('ta'), '2 messages to the hub failed to send, then it retried the same command 3 times in 40 s');
 });
 
 test('SubagentStop with errors: the stressed flash carries what failed', () => {
@@ -137,7 +139,7 @@ test('stressCause: no record, or nothing in it, is no cause', () => {
   addFailure(f, { tool: 'Edit', at: 5 });
   addFailure(f, { tool: 'Bash', at: 9 });
   assert.strictEqual(stressCause({ failures: f, retry: null }), '2 Bash calls failed, then an Edit call failed');
-  assert.strictEqual(stressCause({ failures: [], retry: { tool: 'Grep', count: 4, from: 0, to: 125_000 } }), 'It retried the same search 4 times in 2 min');
+  assert.strictEqual(stressCause({ failures: [], retry: { tool: 'Grep', count: 4, from: 0, to: 125_000 } }), 'It retried the same search 4 times in 2 min 5 s');
 });
 
 // ---- the property -------------------------------------------------------------------------------------------------
@@ -145,7 +147,7 @@ test('stressCause: no record, or nothing in it, is no cause', () => {
 const TYPES = ['ta', 'tb'];
 const opArb = fc.oneof(
   { weight: 3, arbitrary: fc.record({ op: fc.constant('spawn'), type: fc.nat(), fail: fc.boolean() }) },
-  { weight: 5, arbitrary: fc.record({ op: fc.constant('call'), who: fc.nat(), kind: fc.constantFrom('ok', 'same', 'same', 'err', 'fail', 'send'), tool: fc.constantFrom('Bash', 'Read') }) },
+  { weight: 5, arbitrary: fc.record({ op: fc.constant('call'), who: fc.nat(), kind: fc.constantFrom('ok', 'same', 'same', 'err', 'fail', 'send'), tool: fc.constantFrom('Bash', 'Artifact') }) },
   { weight: 3, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 12_000 }) }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat() }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('interrupt'), who: fc.nat() }) },

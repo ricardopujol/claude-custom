@@ -735,3 +735,17 @@ test('app/peer-cue.js is the only file in the app that makes a sound', () => {
     && /AudioContext|new Audio\(|<audio/.test(strip(fs2.readFileSync(path.join(dir, f), 'utf8'))));
   assert.deepStrictEqual(makers, ['peer-cue.js']);
 });
+
+// PR #239 Dexter 6: the #162 cause tests post only tools whose PostToolUse / PostToolUseFailure hooks are registered, so every
+// fixture is a shape that can arrive live (a Read has no Post hook: "the same read" can't be detected on a default install).
+test('the mood machine\'s cause tests post only tools whose Post hooks are registered', () => {
+  const hooked = new Set(read('host/settings-writer.js').match(/const POST_TOOL_MATCHER = '([^']+)'/)[1].split('|'));
+  const causeTests = read('test/mood-machine-cause.test.js');
+  const posted = new Set();
+  for (const m of causeTests.matchAll(/(?:r\.(?:ok|err|failed)\('t[ab]', '([A-Za-z]+)'|tool: fc\.constantFrom\(([^)]*)\))/g)) {
+    if (m[1]) posted.add(m[1]);
+    else for (const t of m[2].matchAll(/'([A-Za-z]+)'/g)) posted.add(t[1]);
+  }
+  assert.ok(posted.size > 0, 'the scan found the fixtures');
+  for (const t of posted) assert.ok(hooked.has(t), `${t} has no PostToolUse hook, so it can't happen live`);
+});
