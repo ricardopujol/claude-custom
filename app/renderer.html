@@ -1162,6 +1162,8 @@
       border: 1.5px dashed var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent);
     }
     #dock-overlay .dz.hot { border-style: solid; background: color-mix(in srgb, var(--accent) 40%, transparent); }
+    /* A place in the dock's rail (BACKLOG #109): a thin solid line across the rail at the gap the tab drops into. */
+    #dock-overlay .dz.line { border: 0; border-radius: 1px; background: var(--accent); }
     #dock-ghost {
       position: fixed; z-index: 70; pointer-events: none; padding: 5px 9px; font-size: 11px; white-space: nowrap;
       background: var(--panel); color: var(--text); border: 1px solid var(--accent); border-radius: 3px;

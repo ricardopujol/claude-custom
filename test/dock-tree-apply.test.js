@@ -633,6 +633,20 @@ test('#85: the dock rail is one element keyed "dock", marked as the dock\'s, kep
   assert.ok(!w.dock.children.some(e => e.classes.has('drail')), 'an empty rail is gone');
 });
 
+test('#109: a reordered dock rail is drawn in its own order, a separator where the group changes; the mark alone redraws it', () => {
+  const w = makeDoc();
+  const l = ['vault', 'git', 'agents'].reduce((acc, id) => T.unpin(acc, id), T.defaultLayout(IDS));     // stored vault, git, agents
+  V.applyBoxes(planD4(l), w.doc);
+  const rail = w.dock.children.find(e => e.classes.has('drail'));
+  assert.deepStrictEqual(railButtons(rail).map(b => b.dataset.module), ['agents', 'git', 'vault'], 'no mark: grouped, as before');
+  // The same stored order with the mark is another drawing, though the modules are the same list.
+  V.applyBoxes(planD4({ ...l, railOrdered: true }), w.doc);
+  assert.deepStrictEqual(railButtons(rail).map(b => b.dataset.module), ['vault', 'git', 'agents']);
+  assert.deepStrictEqual(rail.children.map(c => (c.classes.has('rail-sep') ? '|' : c.dataset.module)), ['vault', '|', 'git', 'agents'], 'Me, then Work');
+  V.applyBoxes(planD4(T.moveOnRail(l, 'vault', 'agents')), w.doc);
+  assert.deepStrictEqual(railButtons(rail).map(b => b.dataset.module), ['vault', 'agents', 'git']);
+});
+
 test('#85: a docked group has a Pinned button for the panel it shows, pressed, kept across tab changes', () => {
   const w = makeDoc();
   V.applyBoxes(planD4(T.defaultLayout(IDS)), w.doc);
