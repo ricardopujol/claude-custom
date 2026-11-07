@@ -28,8 +28,9 @@ const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
 const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
 // BACKLOG #74 A: the quit's timeline, only when CLAUDE_CUSTOM_QUIT_LOG names a file (verify/probe-quit-linger.js); a no-op otherwise.
-const quitMark = createQuitLog(process.env.CLAUDE_CUSTOM_QUIT_LOG);
-if (process.env.CLAUDE_CUSTOM_QUIT_LOG) wireQuitLog(app, quitMark);
+const QUIT_LOG_FILE = process.env.CLAUDE_CUSTOM_QUIT_LOG || null;
+const quitMark = createQuitLog(QUIT_LOG_FILE);
+if (QUIT_LOG_FILE) wireQuitLog(app, quitMark);
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -2658,5 +2659,5 @@ app.on('will-quit', (e) => {
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
-armQuitWatchdog(app, process.env.CLAUDE_CUSTOM_QUIT_LOG ? { hardKill: () => { quitMark('quit watchdog fires'); process.kill(process.pid, 'SIGKILL'); } } : {});
-if (process.env.CLAUDE_CUSTOM_QUIT_LOG) markWillQuitEnd(app, quitMark);
+armQuitWatchdog(app, QUIT_LOG_FILE ? { onFire: () => quitMark('quit watchdog fires') } : {});
+if (QUIT_LOG_FILE) markWillQuitEnd(app, quitMark);

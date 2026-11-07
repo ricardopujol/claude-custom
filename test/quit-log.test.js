@@ -56,10 +56,11 @@ test('the app\'s quit events are marked, the first will-quit listener before any
 
   r.app.emit('before-quit');
   r.app.emit('window-all-closed');
-  r.app.emit('will-quit', { defaultPrevented: true });
+  r.app.emit('will-quit', { defaultPrevented: false });
   r.app.emit('quit');
   r.proc.emit('exit', 0);
-  assert.deepStrictEqual(r.steps, ['before-quit', 'window-all-closed', 'will-quit first (prevented)', 'quit', 'process exit 0']);
+  // The first will-quit listener says nothing about prevention: nothing can have prevented the quit before it (PR #242 Dexter 9).
+  assert.deepStrictEqual(r.steps, ['before-quit', 'window-all-closed', 'will-quit first', 'quit', 'process exit 0']);
 });
 
 test('a window\'s close and closed, and a page\'s destroyed and render-process-gone, are marked with their ids', () => {
@@ -90,4 +91,48 @@ test('no mark function wires nothing', () => {
   wireQuitLog(app, null, new EventEmitter());
   markWillQuitEnd(app, undefined);
   assert.strictEqual(app.eventNames().length, 0);
+});
+
+test('a close prevented by a LATER listener (main.js hides to the tray) is marked once every listener has run (PR #242 Dexter 5)', async () => {
+  const r = appRig();
+  const w = new EventEmitter(); w.id = 1;
+  r.app.emit('browser-window-created', {}, w);            // the log's listener first, as in Electron (inside the constructor)
+  w.on('close', (e) => e.preventDefault());               // then main.js's own: hide to the tray
+  const ev = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  w.emit('close', ev);
+  await Promise.resolve();
+  assert.deepStrictEqual(r.steps, ['window 1 close', 'window 1 close prevented (the window stays: hidden, or the close was held)']);
+
+  const r2 = appRig();
+  const w2 = new EventEmitter(); w2.id = 2;
+  r2.app.emit('browser-window-created', {}, w2);
+  w2.emit('close', { defaultPrevented: false, preventDefault() {} });
+  await Promise.resolve();
+  assert.deepStrictEqual(r2.steps, ['window 2 close'], 'a close nobody prevented says nothing more');
+});
+
+test('the held quit shows on the LAST will-quit listener (the paused-resume hold in main.js)', () => {
+  const app = new EventEmitter();
+  const steps = [];
+  app.on('will-quit', (e) => { e.defaultPrevented = true; });   // main.js's resume hold calls preventDefault
+  markWillQuitEnd(app, (s) => steps.push(s));
+  app.emit('will-quit', { defaultPrevented: false });
+  assert.deepStrictEqual(steps, ['will-quit last (prevented)']);
+});
+
+test('the default append writes "<ms> <step>" lines that the probe reads back in order (quit-log and readTimeline, Miguel F8)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { readTimeline } = require('../verify/lib/quit-linger');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-quit-log-test-'));
+  try {
+    const file = path.join(dir, 'quit.log');
+    let t = 1000;
+    const mark = createQuitLog(file, { now: () => (t += 250) });   // the real fs.appendFileSync
+    mark('window 1 close');
+    mark('process exit 0');
+    assert.deepStrictEqual(readTimeline(fs.readFileSync(file, 'utf8'), 1000), ['0.25s window 1 close', '0.50s process exit 0']);
+    assert.deepStrictEqual(readTimeline('not a line\n', 0), []);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

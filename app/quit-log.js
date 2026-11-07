@@ -18,11 +18,19 @@ function wireQuitLog(app, mark, proc = process) {
   if (typeof mark !== 'function') return;
   app.prependListener('before-quit', () => mark('before-quit'));
   app.prependListener('window-all-closed', () => mark('window-all-closed'));
-  app.prependListener('will-quit', (e) => mark(`will-quit first${e && e.defaultPrevented ? ' (prevented)' : ''}`));
+  // First of the will-quit listeners: nothing can have prevented the quit yet, so there's nothing to say about it here (the last
+  // listener, markWillQuitEnd, is where a held quit shows; PR #242 Dexter 9).
+  app.prependListener('will-quit', () => mark('will-quit first'));
   app.on('quit', () => mark('quit'));
   app.on('browser-window-created', (_e, w) => {
     const id = w.id;
-    w.on('close', (e) => mark(`window ${id} close${e && e.defaultPrevented ? ' (prevented)' : ''}`));
+    // browser-window-created fires inside the BrowserWindow constructor, so this listener runs BEFORE app/main.js's own 'close'
+    // handler (the one that hides to the tray or asks about unsaved text). Whether the close was prevented is read once every
+    // listener has run: a microtask after the emit (PR #242 Dexter 5).
+    w.on('close', (e) => {
+      mark(`window ${id} close`);
+      queueMicrotask(() => { if (e && e.defaultPrevented) mark(`window ${id} close prevented (the window stays: hidden, or the close was held)`); });
+    });
     w.once('closed', () => mark(`window ${id} closed`));
   });
   app.on('web-contents-created', (_e, wc) => {
