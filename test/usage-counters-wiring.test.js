@@ -21,7 +21,7 @@ test('a usage frame is a KNOWN control type, or it would be typed into the pty a
 });
 
 test('the host counts a usage frame and answers nothing', () => {
-  assert.match(HOST, /const usageCounters = createUsageCounters\(\{ store, log:/);
+  assert.match(HOST, /const usageCounters = createUsageCounters\(\{ store, off: countingOff\(process\.env\), log:/);
   assert.match(HOST, /msg\.type === 'usage'\) \{\s*usageCounters\.bump\(msg\.key\);[^\n]*\n\s*return;/);
 });
 
@@ -48,7 +48,9 @@ test('every dock panel id makes a valid key (the list itself is pinned in usage-
 test('a panel counts only after the layout loaded, and only within a moment of a user gesture (I3)', () => {
   assert.match(RENDERER, /const usageGestureLive = \(\) => layoutLoaded && helloSeen && Date\.now\(\) - usageGestureAt < 1500;/);
   assert.match(RENDERER, /if \(usageGestureLive\(\)\) usage\('panel:' \+ id\); onModuleShown\(id\);/);
-  for (const site of ['function selectModule(id) { usageGesture();', 'function revealModule(id) {\n  usageGesture();', 'function openPeek(id, byKeyboard) {\n  usageGesture();', 'a burst\'s drawn sizes would hide this change until its own flush\n  usageGesture();']) {
+  // #97: the gesture is the default; only a reveal that isn't the person's (Claude's canvas render) passes gesture: false
+  for (const site of ['function selectModule(id, { gesture = true } = {}) { if (gesture) usageGesture();', 'function revealModule(id, { gesture = true } = {}) {\n  if (gesture) usageGesture();',
+    'function openPeek(id, byKeyboard) {\n  usageGesture();', 'a burst\'s drawn sizes would hide this change until its own flush\n  if (gesture) usageGesture();']) {
     assert.ok(RENDERER.replace(/\r\n/g, '\n').includes(site), site);
   }
   assert.strictEqual((RENDERER.match(/function usage\(key\)/g) || []).length, 1, 'defined once');

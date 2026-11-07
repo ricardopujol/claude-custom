@@ -2048,7 +2048,7 @@ function canvasFetchIfNeeded() {
 
 // Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
 function canvasDock() {
-  revealModule('canvas');
+  revealModule('canvas', { gesture: false });
 }
 
 function canvasOnFrame(frame) {
@@ -2424,9 +2424,9 @@ function saveGlobalLayout(l) {
 // is about (a dropped or ticked panel): it shows in its group in THIS window.
 // `userAction: false` is for a change that is not a click or a key (a float's move or resize): it leaves keyboard
 // focus where it is, so a field focused inside the float keeps it (PR #102 Miguel S3).
-function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true } = {}) {
+function commitPlacement(next, { justThisTab = false, select = null, userAction = true, refit = true, gesture = true } = {}) {
   if (flushKeyBurst) flushKeyBurst();       // a burst's drawn sizes would hide this change until its own flush
-  usageGesture();
+  if (gesture) usageGesture();              // #97: a change the person didn't make (Claude's canvas render) shows its panel uncounted
   const l = DTm.normalize(next, MODULE_IDS);
   const toOwn = justThisTab || ownLayout !== null;
   railEvent({ type: 'gone' });              // any change of the placement closes a rail's popover
@@ -2499,13 +2499,14 @@ function togglePin(id, { justThisTab = false } = {}) {
 
 // "Show this panel" from somewhere other than its tab (the Resources link, Claude's panel asked to build something): a hidden
 // panel is docked, an unpinned one opens from the rail and stays open until closed, a docked one is selected (PR #168 Miguel Y3).
-function revealModule(id) {
-  usageGesture();
+// `gesture: false` (#97) when the reveal isn't the person's (Claude's canvas render): the panel shows, and isn't counted as used.
+function revealModule(id, { gesture = true } = {}) {
+  if (gesture) usageGesture();
   const l = placementLayout();
-  if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id });
+  if (l.hidden.includes(id)) commitPlacement(DTm.show(settledLayout(), id), { select: id, gesture });
   else if ((l.rail || []).includes(id)) {
     if (railSt.module !== id) { railEvent({ type: 'click', module: id }); renderLayout({ refit: false }); }
-  } else selectModule(id);
+  } else selectModule(id, { gesture });
 }
 
 // A rail's button: its panel opens over the terminal, a second press (or Esc, or a press in the terminal) closes it. It changes no
@@ -2525,7 +2526,7 @@ function openPeek(id, byKeyboard) {
 }
 
 // A tab or a rail button: that module shows in its group, and Ctrl+B's fold is undone.
-function selectModule(id) { usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
+function selectModule(id, { gesture = true } = {}) { if (gesture) usageGesture(); commitSelection(DTm.selectTab(selection, placementLayout(), id)); }
 
 // --- moving modules: right-click, the layout menu, drag (layout pass L1) -----
 // Ways in (the Window menu's checks, a tab's right-click, dragging a tab), one
@@ -6352,7 +6353,10 @@ if (agentLogEl) {
 // Pure rules: app/medals-display.js and app/bubble-display.js. This is the wiring. The card shows only a count chip; the
 // medals with their reasons and dates are on the shelf under an agent's log. A bubble is a joke over a card: never information.
 // Usage counters (audit move 2): the host counts a feature use by key and ignores a key it doesn't know. Invisible, never an answer.
-function usage(key) { sendJson({ type: 'usage', key }); }
+// BACKLOG #97: a page main opened for a probe (?probe=1, its driver moves the dock through the same functions a click does) counts
+// nothing. The host and main also refuse a probe's or a test's counts (host/usage-counters.js countingOff); this is the page's half.
+const usageOff = new URLSearchParams(location.search).get('probe') === '1';
+function usage(key) { if (usageOff) return; sendJson({ type: 'usage', key }); }
 function sendJson(obj) {
   try { ws.send(JSON.stringify(obj)); } catch { /* not attached: the next hello brings the truth */ }
 }

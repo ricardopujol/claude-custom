@@ -39,7 +39,7 @@ const { handlePortraitMessage, handleGlobalPortraitMessage } = require('./portra
 const { watchGlobalDir } = require('./global-watch');
 const { createHiddenAgents, validRosterMsg } = require('./hidden-agents');
 const { createMedals } = require('./medals');
-const { createUsageCounters } = require('./usage-counters');
+const { createUsageCounters, countingOff } = require('./usage-counters');
 const { validGive, validRemove } = require('../app/medals-display');
 const { createBubbles, createBubbleSettings } = require('./bubbles');
 const { createBubbleGate } = require('./bubble-gate');
@@ -464,7 +464,8 @@ console.log('[host] theme          :', theme.name);
 const mood = createMoodMachine({ mono: () => performance.now() });
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
-const usageCounters = createUsageCounters({ store, log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
+// Off in a host a probe or a test started (BACKLOG #97): only a person's own windows count.
+const usageCounters = createUsageCounters({ store, off: countingOff(process.env), log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)
 // The Git panel's data. The branch ledger is the PROJECT's (every tab of it shares one), so it
 // lives in <project>\.claude-custom\ beside the look, behind the same `*` .gitignore, and never
 // through a linked folder (ledgerFileFor).
