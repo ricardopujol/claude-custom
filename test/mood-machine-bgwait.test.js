@@ -338,23 +338,28 @@ test('PR #224 Dexter 7: a quiet run whose Bash result was lost shows the wait (r
 });
 
 // BACKLOG #181: the property's counterexample (seed -728087653), pinned as TODAY's behaviour. A background child gets no refresh from
-// its parent (refresh stops at a background run's edge), so its own silence starts at its launch; past STALL_MS it lost its SubagentStop
-// and is reaped like any silent run. The reap ends the parent's hold, and a parent with no hold, nothing in flight and 30 minutes of
-// silence is stuck. The machine was right; the property's oracle had kept the child alive for ever.
-test('BACKLOG #181: a background child silent for STALL_MS + 1 ms is reaped; the parent that held for it is stuck, not bgwaitlate', () => {
+// its parent (refresh stops at a background run's edge), so its own silence starts at its launch. Past STALL_MS the child has gone
+// silent (its SubagentStop never came) and is reaped like any silent run. The reap ends the parent's hold. A parent past STUCK_MS with
+// no hold and nothing in flight is stuck, and here it's already past STALL_MS. That lasts one tick: the tick that reaps the child still
+// judged the parent quiet (holds are dropped after the stale pass), so the next tick reaps the parent too, cut off, and it sleeps.
+// The machine was right; the property's oracle had kept the child alive for ever.
+test('BACKLOG #181: a parent waiting on a background child shows bgwait inside the limit and bgwaitlate at STALL_MS; at STALL_MS + 1 ms the silent child is reaped and the parent is stuck for that tick; on the next tick the parent is reaped too and sleeps', () => {
   const r = rig();
   const a = started(r);
   BG_CHILD(r, a, 'akid-10000000000000');
   for (const ms of [243788, 306830, 6182, 339193, 361502, 212351]) r.advance(ms);
-  assert.strictEqual(r.now() - 1_000_000, STALL_MS - 330154, 'the replayed advances, before the last');
+  assert.strictEqual(r.now() - 1_000_000, STALL_MS - 330154, 'STALL_MS changed: re-derive the replay from the seed');
   assert.strictEqual(r.detail('miguel'), BGWAIT, 'inside the limit it waits on the child');
   r.advance(330154);                               // exactly STALL_MS of the child's silence: not past it yet
-  assert.strictEqual(r.m.stack().includes('dexter'), true);
+  assert.strictEqual(r.m.stack().includes('dexter'), true, 'still alive at exactly STALL_MS');
   assert.strictEqual(r.detail('miguel'), BGWAIT_LATE, 'red from exactly 30 minutes');
   r.advance(1);                                    // STALL_MS + 1 ms (the property's sequence sums to 1,800,001 ms)
   assert.strictEqual(r.m.stack().includes('dexter'), false, 'the silent child is reaped');
-  assert.strictEqual(r.detail('miguel'), 'stuck', 'its hold ended with it: silent, nothing in flight, no wait');
+  assert.strictEqual(r.detail('miguel'), 'stuck', 'for this tick: its hold ended with the child, nothing in flight, no wait');
   assert.strictEqual(r.m.waitOf('miguel'), null);
+  r.advance(1_000);                                // the next tick: its own silence is past STALL_MS with no hold
+  assert.strictEqual(r.m.stack().includes('miguel'), false, 'the parent follows its child out');
+  assert.strictEqual(r.m.stateOf('miguel'), 'sleeping', 'cut off, so it sleeps at once');
 });
 
 test('PROPERTY: a run with a live background task is never asleep inside the quiet limit; red exactly from 30 minutes of silence; the wait ends with its work; a background child silent past STALL_MS is gone (reaped), so it no longer counts as live', () => {
@@ -379,7 +384,8 @@ test('PROPERTY: a run with a live background task is never asleep inside the qui
       if (gone) break;
       if (o.op === 'advance') {
         r.advance(o.ms);
-        // Silent past STALL_MS, the child lost its SubagentStop: the stall clock reaps it, and its hold ends with it (BACKLOG #181).
+        // Silent past STALL_MS, the child went silent (its SubagentStop never came): the stall clock reaps it, and its hold ends with
+        // it (BACKLOG #181).
         if (kid !== null && r.now() - kidAt > STALL_MS) kid = null;
       }
       else if (o.op === 'launch') { launch(r, a); shell = true; lastEvent = r.now(); }
@@ -399,4 +405,22 @@ test('PROPERTY: a run with a live background task is never asleep inside the qui
       if (r.m.waitOf('miguel') !== null) assert.ok(d === BGWAIT || d === BGWAIT_LATE, 'a wait is reported only while the card shows it');
     }
   }), { numRuns: 300 });
+});
+
+// BACKLOG #181, the property's other shape: the child is reaped while its parent spoke recently and holds no shell. That's where the
+// new oracle adds an assertion ("no work, no wait"), and the generator rarely lands there (a reach counter read 0 on seed 1), so it's
+// pinned here as a fixed example.
+test('BACKLOG #181: a background child silent past STALL_MS is reaped while its parent spoke recently; the parent stays, with no wait', () => {
+  const r = rig();
+  const a = started(r);
+  BG_CHILD(r, a, 'akid-20000000000000');
+  r.advance(25 * 60_000);
+  r.pre(a, 'Read', { file_path: 'C:/x' });         // the parent speaks; it doesn't refresh its background child
+  r.advance(STALL_MS - 25 * 60_000 + 1);           // the child's silence is STALL_MS + 1 ms, the parent's about 5 minutes
+  assert.strictEqual(r.m.stack().includes('dexter'), false, 'the silent child is reaped');
+  assert.strictEqual(r.m.stack().includes('miguel'), true, 'the parent is inside its own limit');
+  const d = r.detail('miguel');
+  assert.ok(d !== BGWAIT && d !== BGWAIT_LATE, 'no work, no wait: got ' + d);
+  assert.strictEqual(r.m.waitOf('miguel'), null);
+  assert.notStrictEqual(r.m.stateOf('miguel'), 'sleeping', 'it spoke recently, so it is not asleep');
 });
