@@ -3135,11 +3135,20 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     // A rail button's text is its name, which may be hidden (icons only): the ghost says the label, as a tab's does.
     press = { id: b.dataset.module, label: rail ? (b.getAttribute('aria-label') || b.dataset.module) : b.textContent, el: b, pointerId: e.pointerId,
       rail, st: null, opts: rail ? DD.PRESS.rail : DD.PRESS.tab, timer: null, cx: e.clientX, cy: e.clientY };
-    feed({ type: 'down', x: e.clientX, y: e.clientY, t: e.timeStamp });
-    // Holding a rail button still starts the drag too: the timer asks pressStep at the hold time.
+    // Every event of a press carries performance.now(): one clock for the press and its hold (PR #241 Miguel L1).
+    feed({ type: 'down', x: e.clientX, y: e.clientY, t: performance.now() });
+    // Holding a rail button still starts the drag too: the timer asks pressStep at the hold time, and a timer that fires early
+    // is armed again for what is left (dockDrag.holdRemaining), so an early fire never turns the hold into a click.
     if (press.opts.holdMs !== null) {
       const mine = press;
-      mine.timer = setTimeout(() => { if (press === mine && !drag) feed({ type: 'hold', t: performance.now() }); }, press.opts.holdMs);
+      const fire = () => {
+        if (press !== mine || drag) return;
+        const now = performance.now();
+        feed({ type: 'hold', t: now });
+        const left = drag ? null : DD.holdRemaining(mine.st, now, mine.opts);
+        if (left !== null && left > 0) mine.timer = setTimeout(fire, left);
+      };
+      mine.timer = setTimeout(fire, press.opts.holdMs);
     }
     // Capture keeps the moves and the release coming to this page when the pointer leaves the window; if the
     // release is lost anyway (Alt-Tab, an OS dialog), the three guards below end the drag (PR #100 Miguel I2).
@@ -3150,7 +3159,7 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
     press.cx = e.clientX;
     press.cy = e.clientY;
-    feed({ type: 'move', x: e.clientX, y: e.clientY, t: e.timeStamp });
+    feed({ type: 'move', x: e.clientX, y: e.clientY, t: performance.now() });
   });
   window.addEventListener('pointerup', (e) => {
     if (!press || e.pointerId !== press.pointerId) return;      // another pointer's release ends nothing (Dexter 3)

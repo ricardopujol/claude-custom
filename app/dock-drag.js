@@ -257,7 +257,13 @@ const PRESS = Object.freeze({
   tab: Object.freeze({ distance: 5, holdMs: null }),
 });
 
-const NOTHING = (state) => ({ state, effect: 'none' });
+const unchanged = (state) => ({ state, effect: 'none' });
+
+/** The thresholds as pressStep reads them: { distance, holdMs: number | null }. Anything that isn't one reads as PRESS.rail. */
+function pressOpts(opts) {
+  const o = isObject(opts) && isNumber(opts.distance) && opts.distance >= 0 ? opts : PRESS.rail;
+  return { distance: o.distance, holdMs: isNumber(o.holdMs) && o.holdMs >= 0 ? o.holdMs : null };
+}
 
 /**
  * One step of a press. `state`: null (nothing pressed), { phase: 'pressed', x, y, t } or { phase: 'dragging', x, y, t, moved }
@@ -269,18 +275,18 @@ const NOTHING = (state) => ({ state, effect: 'none' });
  * pressed) is a 'cancel', so it can't dock in whatever rim the press point sits in.
  */
 function pressStep(state, ev, opts) {
-  const o = isObject(opts) && isNumber(opts.distance) && opts.distance >= 0 ? opts : PRESS.rail;
-  const hold = isNumber(o.holdMs) && o.holdMs >= 0 ? o.holdMs : null;
+  const o = pressOpts(opts);
+  const hold = o.holdMs;
   const st = isObject(state) && (state.phase === 'pressed' || state.phase === 'dragging') ? state : null;
-  if (!isObject(ev)) return NOTHING(st);
+  if (!isObject(ev)) return unchanged(st);
   const type = ev.type;
   if (type === 'down') {
     // A second down during a press or a drag (another touch or pen pointer) is ignored: the press goes on from its own point,
     // and a drag that started never ends in a click (PR #241 Dexter 3). A lost release of the same pointer is the page's to end.
-    if (st || !isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
-    return NOTHING({ phase: 'pressed', x: ev.x, y: ev.y, t: isNumber(ev.t) ? ev.t : 0 });
+    if (st || !isNumber(ev.x) || !isNumber(ev.y)) return unchanged(st);
+    return unchanged({ phase: 'pressed', x: ev.x, y: ev.y, t: isNumber(ev.t) ? ev.t : 0 });
   }
-  if (!st) return NOTHING(null);
+  if (!st) return unchanged(null);
   if (type === 'up') {
     if (st.phase !== 'dragging') return { state: null, effect: 'click' };
     return { state: null, effect: st.moved === true ? 'drop' : 'cancel' };
@@ -289,17 +295,28 @@ function pressStep(state, ev, opts) {
   const held = isNumber(ev.t) && hold !== null && ev.t - st.t >= hold;
   const dragging = moved => ({ phase: 'dragging', x: st.x, y: st.y, t: st.t, moved });
   if (type === 'hold') {
-    if (st.phase !== 'pressed' || !held) return NOTHING(st);
+    if (st.phase !== 'pressed' || !held) return unchanged(st);
     return { state: dragging(false), effect: 'start' };
   }
   if (type === 'move') {
-    if (!isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
+    if (!isNumber(ev.x) || !isNumber(ev.y)) return unchanged(st);
     const far = Math.hypot(ev.x - st.x, ev.y - st.y) >= o.distance;
     if (st.phase === 'dragging') return { state: far && st.moved !== true ? dragging(true) : st, effect: 'move' };
     if (far || held) return { state: dragging(far), effect: 'start' };
-    return NOTHING(st);
+    return unchanged(st);
   }
-  return NOTHING(st);
+  return unchanged(st);
+}
+
+/**
+ * How many ms a press still has to be held, at time `t` (the clock pressStep's events carry), before the hold starts its drag:
+ * 0 when it is due, null when there is no hold to wait for (no press, already dragging, a tab name, junk). The page's timer can
+ * fire early; it asks this and re-arms for the rest instead of letting the hold become a click (PR #241 Miguel L1).
+ */
+function holdRemaining(state, t, opts) {
+  const o = pressOpts(opts);
+  if (o.holdMs === null || !isObject(state) || state.phase !== 'pressed' || !isNumber(state.t) || !isNumber(t)) return null;
+  return Math.max(0, state.t + o.holdMs - t);
 }
 
 // --- a drop on the dock's rail: its place in the rail (BACKLOG #109) ---------------------------------
@@ -376,7 +393,7 @@ function railScrollStep(rail, point) {
   return 0;
 }
 
-const API = { RIM, BAND, TAB_BAR, PRESS, RAIL_SCROLL, railScrollStep, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep, railDrop };
+const API = { RIM, BAND, TAB_BAR, PRESS, RAIL_SCROLL, railScrollStep, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep, holdRemaining, railDrop };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

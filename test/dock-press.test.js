@@ -80,6 +80,22 @@ test('a hold, then a move past the distance, then a release is a drop: the drag 
     ['none', 'start', 'move', 'move', 'drop'], 'once it has moved the distance, coming back to the press point still drops');
 });
 
+// PR #241 Miguel L1: the page's hold timer fires once, and a timer can fire early (by the clock pressStep reads), which turned the
+// hold into a click. holdRemaining says how long is still to wait, so the page re-arms for the rest.
+test('holdRemaining: the ms still to wait for the hold, 0 when it is due, null when there is no hold to wait for', () => {
+  const st = D.pressStep(null, down(100, 100, 1000), D.PRESS.rail).state;
+  assert.equal(D.holdRemaining(st, 1000, D.PRESS.rail), 250);
+  assert.equal(D.holdRemaining(st, 1249, D.PRESS.rail), 1, 'an early fire at 249 ms: one more to wait');
+  assert.equal(D.holdRemaining(st, 1250, D.PRESS.rail), 0, 'due at 250 ms');
+  assert.equal(D.holdRemaining(st, 1400, D.PRESS.rail), 0);
+  assert.equal(D.holdRemaining(st, 1000, D.PRESS.tab), null, 'a tab name has no hold');
+  const dragging = D.pressStep(st, move(150, 100, 1010), D.PRESS.rail).state;
+  assert.equal(D.holdRemaining(dragging, 1100, D.PRESS.rail), null, 'already dragging');
+  for (const [s, t] of [[null, 5], [st, NaN], [st, 'x'], [{}, 5]]) assert.equal(D.holdRemaining(s, t, D.PRESS.rail), null);
+  // The re-armed fire at 1250 starts it: an early fire never makes a click.
+  assert.deepEqual(run([down(100, 100, 1000), { type: 'hold', t: 1249 }, { type: 'hold', t: 1250 }, up(1300)], D.PRESS.rail).effects, ['none', 'none', 'start', 'cancel']);
+});
+
 test('a small move after the hold time starts the drag too (the timer may come late)', () => {
   assert.deepEqual(run([down(100, 100, 0), move(101, 100, 260)], D.PRESS.rail).effects, ['none', 'start']);
 });

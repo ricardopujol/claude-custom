@@ -187,6 +187,11 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   // PR #241 Dexter 4 / Miguel L6: only a module ON the dock rail gets the rail's slots, so a docked tab over the rail draws no line
   // (verify/probe-rail-drag.js case 2 reads the lines mid-drag).
   assert.match(JS, /const railed = placementLayout\(\)\.rail;\n\s+if \(!Array\.isArray\(railed\) \|\| !railed\.includes\(id\)\) return null;/);
+  // PR #241 Miguel L1: one clock for the press and its hold, and an early timer re-armed for the rest.
+  assert.doesNotMatch(JS, /feed\(\{ type: '(?:down|move)'[^}]*e\.timeStamp/, 'no event of a press on the event\'s own clock');
+  assert.match(JS, /feed\(\{ type: 'down', x: e\.clientX, y: e\.clientY, t: performance\.now\(\) \}\);/);
+  assert.match(JS, /feed\(\{ type: 'move', x: e\.clientX, y: e\.clientY, t: performance\.now\(\) \}\);/);
+  assert.match(JS, /const left = drag \? null : DD\.holdRemaining\(mine\.st, now, mine\.opts\);\n\s+if \(left !== null && left > 0\) mine\.timer = setTimeout\(fire, left\);/);
   // PR #241 Dexter 1: only pressStep's 'drop' commits. A hold-started drag released unmoved answers 'cancel', and a cancel never docks.
   assert.match(release, /const effect = feed\(\{ type: 'up' \}\);/);
   assert.match(release, /if \(!d \|\| effect !== 'drop' \|\| !d\.target\) return;/);
