@@ -23,7 +23,7 @@
  * started is ended: the stand-in by its own handle, anything else by pid AND start time, through process-hygiene on Ctrl+C or an
  * uncaught error too. Exit 1 if any mode fails or can't be judged.
  */
-const { spawnElectron } = require('./lib/launch-electron');   // first: it takes the heavy lock (test/probe-lock-order.test.js)
+const { spawnElectron, noteChild } = require('./lib/launch-electron');   // first: it takes the heavy lock (test/probe-lock-order.test.js)
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -64,6 +64,7 @@ async function inner(mode, goFile, outFile, tmp) {
   if (!fs.existsSync(goFile)) process.exit(3);
   if (mode === 'probe') {
     const child = spawn(process.execPath, [path.join(__dirname, REAL_PROBE)], { stdio: 'inherit' });
+    noteChild(child);
     child.on('exit', (code) => { fs.writeFileSync(outFile, JSON.stringify({ probeExit: code })); process.exit(0); });
     return;
   }
@@ -84,6 +85,7 @@ async function inner(mode, goFile, outFile, tmp) {
 
 // --- the outer probe -----------------------------------------------------------------------------------------------------------------
 const run = (file, args, ms = 60000) => new Promise((resolve) => {
+  // lock-ok: a process-table query the probe awaits, bounded by execFile's own timeout
   execFile(file, args, { encoding: 'utf8', windowsHide: true, timeout: ms, maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => resolve(err && !stdout ? null : String(stdout)));
 });
 // The tree under root, by parent links, a child accepted only if it wasn't created before its parent (the guard's own rule).
@@ -134,6 +136,7 @@ async function outer(modes) {
     const before = Date.now();
     const standIn = spawn(process.execPath, [__filename, '--inner', mode, goFile, outFile, tmp], { stdio: mode === 'probe' ? ['ignore', 'inherit', 'inherit'] : 'ignore', env, windowsHide: true });
     const spawnWindow = { before, after: Date.now() };
+    noteChild(standIn);
     hygiene.registerChild(standIn);
     const ended = [];   // { pid, start } this mode's tree, for the cleanup
     const endTree = () => { for (const p of ended) { try { killProven(p.pid, p.start); } catch { /* gone */ } } };
