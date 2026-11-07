@@ -223,3 +223,14 @@ test('A3: the resumed run finishing again inside the old flash is still one card
   const rows = r.m.instancesOf('code-reviewer');
   assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'working']]);
 });
+
+test('A4: a finished instance\'s row says it ended; a live row carries its run\'s agent_id', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.ok(a.id, 'A had an id');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.ended === true, x.agentId]), [['toolu_A', true, undefined], ['toolu_B', false, b.id]],
+    'a flash is no run to pause, so it names none');
+});

@@ -62,3 +62,37 @@ test('the roster draws one card per instance, and the ×N badge is gone', () => 
   assert.doesNotMatch(js, /function countBadgeHtml/);
   assert.doesNotMatch(js, /class="agent-count"/);
 });
+
+// ---- PR #239 Dexter 4: a finished instance's card offers no Pause; a live one's Pause names its own run ---------------------------
+
+const P = require('../app/agent-pause-display');
+
+test('A4: cardHtml draws no Pause on a finished instance card, and a live instance card\'s Pause carries its own task id', () => {
+  const pause = { kind: 'pause' };
+  assert.strictEqual(P.cardHtml(pause, { agent: 'code-reviewer', instance: 'toolu_A', ended: true, agentId: 'aA1' }), '', 'a flash is not a run');
+  const live = P.cardHtml(pause, { agent: 'code-reviewer', instance: 'toolu_B', agentId: 'acode-reviewer-00000000000000bb' });
+  assert.match(live, /data-agent-pause-task="acode-reviewer-00000000000000bb"/);
+  assert.strictEqual(P.cardHtml(pause, { agent: 'code-reviewer' }), P.html(pause, 'code-reviewer'), 'a name card is unchanged');
+  assert.doesNotMatch(P.cardHtml(pause, { agent: 'code-reviewer', instance: 'toolu_B', agentId: 'not plain!' }), /data-agent-pause-task/, 'only a plain id');
+});
+
+test('A4: a click on a live instance card\'s Pause names that run', () => {
+  assert.deepStrictEqual(P.clickAction({ agentPauseAct: 'pause', agent: 'code-reviewer', agentPauseTask: 'aB_1' }),
+    { act: 'pause', agent: 'code-reviewer', taskId: 'aB_1' });
+  assert.deepStrictEqual(P.clickAction({ agentPauseAct: 'pause', agent: 'code-reviewer' }), { act: 'pause', agent: 'code-reviewer' });
+  assert.deepStrictEqual(P.clickAction({ agentPauseAct: 'pause', agent: 'code-reviewer', agentPauseTask: 'x y' }), { act: 'pause', agent: 'code-reviewer' });
+});
+
+test('A4: an instance card carries whether it ended and its run\'s agent_id', () => {
+  const cards = D.instanceRows(row({ instances: [
+    { id: 'toolu_A', state: 'happy', detail: 'happy', ended: true, agentId: 'aA' },
+    { id: 'toolu_B', state: 'working', detail: 'working', agentId: 'aB' },
+  ] }));
+  assert.deepStrictEqual(cards.map(c => [c.instance, c.ended === true, c.agentId]), [['toolu_A', true, 'aA'], ['toolu_B', false, 'aB']]);
+});
+
+test('A4: the roster card draws its Pause through cardHtml, and the click prefers the card\'s own task id', () => {
+  const js = read('app/renderer.js');
+  assert.match(js, /window\.agentPauseDisplay\.cardHtml\(agentPauses\.view\(r\.agent, counts\.get\(r\.agent\) \|\| 0\), r\)/);
+  assert.match(js, /const taskId = act\.taskId !== undefined \? act\.taskId : ids\.length === 1 \? ids\[0\] : undefined;/);
+});

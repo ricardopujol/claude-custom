@@ -110,6 +110,9 @@ function instanceRows(row) {
       portrait: i.portrait && typeof i.portrait === 'object' ? i.portrait : base.portrait };
     if (typeof i.cause === 'string') card.cause = i.cause;
     if (i.wait && typeof i.wait === 'object') card.wait = i.wait;
+    // PR #239 Dexter 4: a finish still flashing offers no Pause, and a live card's Pause names its own run.
+    if (i.ended === true) card.ended = true;
+    if (typeof i.agentId === 'string' && i.agentId !== '') card.agentId = i.agentId;
     return card;
   });
 }

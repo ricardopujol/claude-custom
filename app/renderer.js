@@ -5837,16 +5837,18 @@ document.addEventListener('click', (e) => {
 // typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
 const agentPauses = window.agentPauseDisplay.createAgentPauses();
 let latestAgentIds = [];      // [{ name, agentId }] of the live runs, from every `processes` frame
-function agentPauseHtml(agent, counts) {
-  return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
+// `r` is the card: a name card, or one instance card (#142 b), whose flash offers nothing and whose Pause names its own run.
+function agentPauseHtml(r, counts) {
+  return window.agentPauseDisplay.cardHtml(agentPauses.view(r.agent, counts.get(r.agent) || 0), r);
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest && e.target.closest('.agent-pause-btn');
   const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
   if (!act) return;
   // The run's task id, when the host knows exactly one: named in the line, and what our TaskStop is recognised by (app/agent-pause-display.js).
+  // An instance card names its own run (PR #239 Dexter 4); a name card, the one run the host knows, if it knows exactly one.
   const ids = latestAgentIds.filter(a => a.name === act.agent).map(a => a.agentId);
-  const taskId = ids.length === 1 ? ids[0] : undefined;
+  const taskId = act.taskId !== undefined ? act.taskId : ids.length === 1 ? ids[0] : undefined;
   const command = window.agentPauseDisplay.commandFor(act.act, act.agent, taskId) || window.agentPauseDisplay.commandFor(act.act, act.agent);
   if (!command || !agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)) return;
   renderRoster();
@@ -6233,7 +6235,7 @@ function renderRoster() {
       agentFnHtml(entry) +
       `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
       window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
-      agentPauseHtml(r.agent, counts) +
+      agentPauseHtml(r, counts) +
       agentModelHtml(r.agent) +
       occupancyWhereHtml(r.agent) +
       careerHtml(r.agent) +

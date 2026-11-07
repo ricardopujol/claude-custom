@@ -429,7 +429,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     for (const inv of invs) {
       if (inv.name !== agent) continue;
       const state = inv.runState;
-      const row = { serial: inv.order, live: true, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
+      const row = { serial: inv.order, live: true, inv, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
       if (state === STRESSED) row.cause = stressCause({ failures: inv.failures, retry: retryOf(inv) });
       if (row.detail === BGWAIT || row.detail === BGWAIT_LATE) row.wait = { on: inv.holds[inv.holds.length - 1].what, since: inv.lastActivity };
       rows.push(row);
@@ -451,9 +451,15 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     }
     return best;
   }
+  // A drawn row also says which run it is (PR #239 Dexter 4): a live one's `agentId` (its task id, for its own Pause), and
+  // `ended: true` on a finish still flashing (no Pause: it isn't running).
   function instancesOf(agent) {
     const rows = rowsOf(agent);
-    return rows.length < 2 ? null : rows.map(({ serial, live, ...row }) => row);
+    if (rows.length < 2) return null;
+    return rows.map(({ serial, live, inv, ...row }) => {
+      if (!live) return { ...row, ended: true };
+      return typeof inv.agentId === 'string' && inv.agentId ? { ...row, agentId: inv.agentId } : row;
+    });
   }
 
   // The name's cause: while the CLI labels its calls, the shown rows' (the first stressed one's); otherwise the name's own record
