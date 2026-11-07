@@ -24,6 +24,9 @@
  * and the exit code is 75 (EX_TEMPFAIL, "try again later"; host/heavy-lock.js NOT_RUN_EXIT). Never 1: 1 is what a failing
  * suite exits, and a suite that never ran is not a failing one. Retry it. The load gate's time counts against the same
  * wait (host/heavy-lock.js WAIT). Documented in verify/README.md too.
+ * THE RULE IS 75 PLUS THAT LAST LINE, not 75 alone (#237 Dexter 7). A command that ran can exit 75 itself (a nested
+ * probe's own NOT RUN); its code passes through unchanged, and the last line is then
+ *   [heavy-lock] the command ran under the lock and exited 75 itself: that is its own code (...), not this wrapper's NOT RUN
  *
  * Already under the lock (HEAVY_LOCK_HELD names the live holder of the slot: an outer wrapper or probe sets it to its own
  * identity, a by-hand holder uses the bare "1"): runs the command at once, takes nothing, and the line names that holder.
@@ -83,6 +86,11 @@ async function main(argv, {
       child.on('error', (err) => { log(`[heavy-lock] could not start ${argv[0]}: ${err && err.message}`); resolve(1); });
       child.on('exit', (code) => resolve(code === null || code === undefined ? 1 : code));
     });
+    // 75 isn't unique to NOT RUN (#237 Dexter 7): a command that RAN can exit 75 itself (today, a nested probe's own NOT
+    // RUN). The code passes through unchanged, and the last line says whose 75 it is.
+    if (!signalled && result === heavy.NOT_RUN_EXIT) {
+      log(`[heavy-lock] the command ran under the lock and exited ${heavy.NOT_RUN_EXIT} itself: that is its own code (see its output above), not this wrapper's NOT RUN`);
+    }
     return signalled || result;
   } finally {
     cleanup();

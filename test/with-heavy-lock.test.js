@@ -224,6 +224,28 @@ test('#178 b: the wrapper\'s header documents the NOT RUN exit code, and verify/
   assert.match(readme, /\[heavy-lock\] machine busy after a 20 min wait: the lock is free/);
 });
 
+test('#237 Dexter 7: a command that RAN and exited 75 itself passes 75 through, and the last line says it is its own code', async () => {
+  const r = rig();
+  const p = main(['node', '-e', 'process.exit(75)'], r.deps);
+  r.child.emit('exit', 75, null);
+  assert.strictEqual(await p, NOT_RUN_EXIT);
+  const logs = r.events.filter(e => e.startsWith('log:'));
+  assert.match(logs[logs.length - 1], /^log:\[heavy-lock\] the command ran under the lock and exited 75 itself: that is its own code/);
+  assert.ok(!logs.some(l => /: NOT RUN$/.test(l)), 'never a NOT RUN line for a command that ran');
+  // Any other code says nothing extra.
+  const q = rig();
+  const pq = main(['node'], q.deps);
+  q.child.emit('exit', 1, null);
+  assert.strictEqual(await pq, 1);
+  assert.ok(!q.events.some(e => /exited 75 itself/.test(e)));
+  // Documented: 75 plus the last line is the rule.
+  const fs = require('fs');
+  const path = require('path');
+  const header = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), 'utf8').split('*/')[0];
+  assert.match(header, /THE RULE IS 75 PLUS THAT LAST LINE/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8'), /75 \*\*plus\*\* that NOT RUN last line/);
+});
+
 test('Dexter r2 1: the suite\'s child pid is recorded as work right after it starts, before it can end', async () => {
   const r = rig();
   const p = main(['node', '--test'], r.deps);

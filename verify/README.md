@@ -35,6 +35,12 @@ Exit 75 means "not run, retry", not "failed". The load gate is deliberate:
 wait for the machine, don't work around it. Neither `HEAVY_LOCK_HELD` nor
 `HEAVY_LOCK_SCRIPT` is a way past a NOT RUN: retry later.
 
+The rule is 75 **plus** that NOT RUN last line, not 75 alone. A command that ran
+under the lock can exit 75 itself (a nested probe's own NOT RUN). The wrapper
+passes that code through unchanged, and its last line then says whose 75 it is:
+
+    [heavy-lock] the command ran under the lock and exited 75 itself: that is its own code (see its output above), not this wrapper's NOT RUN
+
 `HEAVY_LOCK_HELD` is set by whoever holds the lock, for what it starts, to its
 own identity (`npm test (pid 123 start 456)`). It skips the lock only while that
 same holder really holds it, and the line names that holder:
