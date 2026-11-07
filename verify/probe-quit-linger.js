@@ -24,6 +24,23 @@
  * video (a looping background video in the strip). A condition the driver can't set up is reported, and the cycle still measured.
  * --bound S: also FAIL a cycle whose last app process is still listed S seconds after the close (the regression form).
  *
+ * --ecore-load: one busy-loop node per efficiency core, pinned to it, at BelowNormal (P-cores and normal-priority work untouched);
+ * --interleave: cycle 1 of every condition, then cycle 2, ... so the arms share the machine's state; a condition "<what>:boost" is
+ * the diagnostic arm that sets every thread of that launch's own Electron processes back to normal priority right after the close.
+ * The app's quit timeline (app/quit-log.js, CLAUDE_CUSTOM_QUIT_LOG) is on in every cycle unless --no-quit-log.
+ *
+ * RESULTS 2026-11-07 (Katana, i7-13620H: logical processors 0-11 P-cores, 12-15 E-cores; other lanes busy all afternoon):
+ *   - the app's JavaScript quit (window close event -> closed -> window-all-closed -> before-quit -> will-quit, every listener ->
+ *     process exit) took 20-80 ms in all 50 logged cycles; everything after is Chromium's native teardown.
+ *   - one tab, no load of mine, 10 cycles: last app process gone median 19.3 s, max 44.4 s, 1 still there at 60 s; with
+ *     `--load`, 10 cycles: median 23.3 s, max 52.6 s, 3 still there at 60 s. An hour later every condition (notab, panel, chat
+ *     asked, video) went in 0.25-2.1 s: the conditions don't matter, the machine's state does.
+ *   - the lingering threads are Ready, not waiting: the gpu-process's last 24-25 at priority 1-4, the renderers', utility's and
+ *     browser's last one at 4. Under --ecore-load (total CPU 34-76 %): plain close >60 s in 5 of 5; the :boost arm 1.1-2.3 s,
+ *     5 of 5. A kill by pid doesn't help (the killed root stayed listed, "stuck", every time under the load).
+ *   - the trivial Electron under --ecore-load didn't draw its window in 120 s (4 of 4; it lacks the app's
+ *     disable-renderer-backgrounding) and its killed tree stayed listed; with the E-cores free it came and went in 1.6-1.9 s.
+ *
  * SAFE: every launch goes through verify/lib/launch-electron.js (ELECTRON_RUN_AS_NODE and the enclosing tab's CLAUDE_CUSTOM_* stripped,
  * the probe mark, the ledger, the exit sweep). The hosts this run started are ended at each cycle's end through seen-pids (a recorded
  * start, proven again in the kill call). A lingering process is NOT killed (a terminating process ignores it, and no handle is held to
@@ -518,8 +535,9 @@ async function main() {
   const snaps = [snapshotFile(LAYOUT_FILE), snapshotFile(TREE_FILE)];
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-quit-linger-'));
   const stopLoad = LOAD ? startLoad() : null;
-  // The spinners' own end: generous for the whole run (about 90 s a cycle), and never more than 30 minutes.
-  const stopEcore = ECORE_LOAD ? startEcoreLoad(Math.min(30 * 60000, (CYCLES * CONDITIONS.length * (WATCH_S + 40) + 60) * 1000)) : null;
+  // The spinners' own end: the longest a cycle can take (a 120 s start wait under this load, the watch, a 20 s stop, the setup),
+  // for every cycle, and never more than 30 minutes. (Sized at the watch + 40 s first, they ended mid-run on 2026-11-07.)
+  const stopEcore = ECORE_LOAD ? startEcoreLoad(Math.min(30 * 60000, (CYCLES * CONDITIONS.length * (WATCH_S + 200) + 60) * 1000)) : null;
   const results = [];
   // --interleave: cycle 1 of every condition, then cycle 2 of every condition, ... so the arms share the machine's state.
   const order = [];
