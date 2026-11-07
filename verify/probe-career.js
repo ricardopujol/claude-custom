@@ -12,6 +12,7 @@
    read landed -- because the boot broadcast fires with no clients and the
    refresh is gated on a change that had already happened. */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn } = require('child_process');
 const fs = require('fs'); const path = require('path');
 const WebSocket = require('ws');
@@ -23,6 +24,7 @@ const token = () => { try { return fs.readFileSync(path.join(REPO,'.harness','se
 (async () => {
   const host = spawn(process.execPath, [path.join(REPO,'host','host.js')],
     { cwd: REPO, env: { ...process.env, CLAUDE_CUSTOM_PORT: String(PORT) }, stdio: 'ignore' });
+  noteChild(host);   // the lock's work record: a live host keeps this probe a live holder (BACKLOG #112)
   await sleep(6000);
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}?token=${encodeURIComponent(token())}`);
   let hello = null, pushed = null;

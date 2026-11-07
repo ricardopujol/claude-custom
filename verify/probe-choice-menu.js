@@ -53,6 +53,7 @@
    PROBE_MOUSE_COMMIT=1 re-runs the click step. It COMMITS a /model choice into
    the user's real settings, so it is opt-in; the default run is read-only. */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -72,7 +73,7 @@ async function scenario(name, { cwd, port, steps }) {
   const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = '11';
-  const host = spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], {
+  const host = noteChild(spawn(process.execPath, [path.join(REPO, 'host', 'host.js')], {   // noteChild: the lock's work record (BACKLOG #112)
     env: {
       ...process.env,
       CLAUDE_CUSTOM_PORT: String(port),
@@ -81,7 +82,7 @@ async function scenario(name, { cwd, port, steps }) {
       CLAUDE_CUSTOM_REGISTRY: registry,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  }));
   host.stderr.on('data', (d) => process.stderr.write('[host!] ' + d));
   const raw = [];
   let ws;

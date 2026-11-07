@@ -18,6 +18,7 @@
  *
  * Run: node verify/probe-kill-switch.js        (exit 0 = all three held)
  */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -60,6 +61,7 @@ async function startHost() {
     CLAUDE_CUSTOM_CLAUDE_HOME: claudeHome,
   });
   const child = spawn(process.execPath, [path.join(ROOT, 'host', 'host.js')], { cwd: ROOT, env, windowsHide: true });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   hygiene.registerChild(child);
   const h = { child, out: '', exited: false, exitAt: null };
   child.stdout.on('data', (d) => { h.out += d; });
