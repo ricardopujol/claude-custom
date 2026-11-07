@@ -198,11 +198,23 @@ const sentence = (c) => typeof c === 'string' && c.trim() !== '';
 
 test('property: whatever the events, a stressed card always carries a non-empty cause, and a card not stressed carries none', () => {
   fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 60 }), (ops) => {
-    run(ops, (m) => {
+    run(ops, (m, live) => {
       for (const r of m.roster()) {
         const c = m.causeOf(r.agent);
         if (r.state === 'stressed') assert.ok(sentence(c), `${r.agent} is stressed with no cause`);
         else assert.strictEqual(c, null, `${r.agent} is ${r.state} and still says ${JSON.stringify(c)}`);
+        // #142 b: the same holds for every instance card, and the instance cards are the live runs (plus finishes still flashing)
+        const rows = m.instancesOf(r.agent);
+        const mine = live.filter(a => a.type === r.agent).map(a => a.key);
+        if (rows === null) { assert.ok(mine.length <= 1, `${r.agent}: ${mine.length} live runs and no instance cards`); continue; }
+        assert.ok(rows.length >= 2, `${r.agent}: instance cards only for two or more`);
+        assert.strictEqual(new Set(rows.map(x => x.id)).size, rows.length, `${r.agent}: an id twice`);
+        for (const k of mine) assert.strictEqual(rows.filter(x => x.id === k).length, 1, `${r.agent}: live run ${k} is one card`);
+        for (const x of rows) {
+          if (x.state === 'stressed') assert.ok(sentence(x.cause), `${r.agent}/${x.id} is stressed with no cause`);
+          else assert.strictEqual(x.cause, undefined, `${r.agent}/${x.id} is ${x.state} and still says ${JSON.stringify(x.cause)}`);
+          if (!mine.includes(x.id)) assert.ok(x.state === 'happy' || x.state === 'stressed', `${r.agent}/${x.id}: an ended run only shows its finish`);
+        }
       }
     });
   }), { numRuns: 500 });
