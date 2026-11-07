@@ -202,6 +202,39 @@ test('safety rules of the run: env stripped, haiku, one claude at a time under t
   assert.match(PROBE, /command: `node "\$\{HOOK\}"`/);
 });
 
+test('2026-11-05: under HEAVY_LOCK_HELD it still asks the lock (a stale flag takes it for real, a live holder is named), before anything is swept or made', () => {
+  const flag = PROBE.indexOf('if (!process.env.HEAVY_LOCK_HELD)');
+  const ensure = PROBE.indexOf('heavyLock.ensure()');
+  assert.match(PROBE, /const heavyLock = createProcessLock\(\{ label: 'probe-shell-guard' \}\);/);
+  assert.ok(flag > 0 && ensure > flag, 'ensure() runs on the path the flag lets through');
+  assert.ok(ensure < PROBE.indexOf('sweepLeftovers();') && ensure < PROBE.indexOf('w = makeWorld();'), 'the lock is checked before the sweep and the world');
+  assert.match(PROBE, /require\('\.\.\/host\/heavy-lock'\)/);
+  assert.match(PROBE, /console\.error\(notRunLine\(err\)\);\s*process\.exit\(NOT_RUN_EXIT\);/, 'a refused lock is the NOT RUN line and exit 75');
+});
+
+test('#237 Dexter 9 e: when the probe really holds its lock, the victim and each claude run are recorded as its work', () => {
+  // The victim is wrapped in noteChild at its start; the claude run hands its child to noteChild through onSpawn.
+  assert.match(PROBE, /const proc = noteChild\(spawn\(process\.execPath, \['-e', src\]/);
+  assert.match(PROBE, /spawnWithTimeout\(\{[^}]*onSpawn: noteChild \}\)/);
+  assert.match(PROBE, /heavyLock\.addWork\(pid, null\); heavyLock\.addWork\(pid\);/, 'provisional first, then with its start');
+  // With no lock held (a unit test, or re-entrant under the wrapper) the victim still starts; recording just does nothing.
+  const { spawnVictim } = require('../verify/probe-shell-guard');
+  const v = spawnVictim(2000);
+  try { assert.ok(v.alive && Number.isInteger(v.pid)); } finally { if (v.alive) v.proc.kill(); }
+});
+
+// Any verify script that reads the flag itself must not trust it alone: it has to ask host/heavy-lock too.
+test('2026-11-05: no verify script trusts HEAVY_LOCK_HELD alone', () => {
+  const dir = path.join(__dirname, '..', 'verify');
+  const bare = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith('.js')) continue;
+    const src = strip(fs.readFileSync(path.join(dir, f), 'utf8'));
+    if (/process\.env\.HEAVY_LOCK_HELD|process\.env\[['"]HEAVY_LOCK_HELD['"]\]/.test(src) && !/\.ensure\(\)|\bacquire\(/.test(src)) bare.push(`verify/${f}`);
+  }
+  assert.deepStrictEqual(bare, []);
+});
+
 test('it never writes the real settings or anything under ~/.claude, and never stashes the real repo', () => {
   assert.doesNotMatch(PROBE, /writeFileSync\([^)]*\.claude/);
   assert.doesNotMatch(PROBE, /\.claude[\\/]+settings\.json/);

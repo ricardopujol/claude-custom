@@ -17,6 +17,10 @@
  *     explicit `{type:'input', data}` wrapper (app/paste-action.js pasteFrame: host/control.js must never read typed text as
  *     a control message). Control characters are stripped first, so the text can't close the bracketed paste or inject a key.
  *
+ *   boxAtRest({ screen, box, typing, drafts }) -> boolean     (BACKLOG #139; PR #236 Miguel G7)
+ *     Is the CLI's box at its prompt, empty, nothing typing into it, and none of the page's other unsent inputs (`drafts`: the
+ *     chat view's draft, the half-filled forms) holding text? What the page answers main before a merged tab's session is stopped.
+ *
  * Loaded as a plain <script> in renderer.html, so it is wrapped: every file there shares ONE global scope (CLAUDE.md).
  */
 
@@ -126,6 +130,18 @@ const emptyBox = (box) => box === '' || /^Try "/.test(box);
 // saw EMPTY, so a box holding nothing but one placeholder holds our paste. Only a bracketed paste is read back this way.
 const PLACEHOLDER = /^\[Pasted text #\d+(?: \+\d+ lines?)?\]$/;
 const onlyPlaceholder = (box) => typeof box === 'string' && PLACEHOLDER.test(box.trim());
+
+/**
+ * BACKLOG #139: is the CLI's box at rest -- at its prompt, holding nothing anyone typed, with nothing being typed into it by this
+ * page? Main asks before it closes a merged tab by itself; anything else (a draft, a dialog, a multi-line box, a screen it can't
+ * read) is "no". Pure; the same reading of the box as sendBlocker's. `drafts` (PR #236 Dexter 2): the values of the page's other unsent
+ * inputs (the chat view's #chat-input, which lives in the DOM only, and the half-filled forms); any one holding text is "no", and a
+ * `drafts` that isn't a list can't be read, so it is "no" too. Left out, there are none.
+ */
+function boxAtRest({ screen, box, typing, drafts } = {}) {
+  if (drafts !== undefined && !(Array.isArray(drafts) && drafts.every(d => typeof d !== 'string' || d.trim() === ''))) return false;
+  return typing !== true && screen === 'ready' && typeof box === 'string' && emptyBox(box);
+}
 
 // Appended to a failure that came after the CLI's draft was cleared (#174): the person's draft is gone (the CLI's Ctrl+Y brings back a
 // single line), and the note must not read as if nothing had happened.
@@ -319,7 +335,7 @@ function writeWanted(storage, cwd, wanted) {
   try { if (storage) storage.write(keyFor(cwd), wanted === true ? '1' : '0'); } catch { /* a full or blocked store: the switch just isn't remembered */ }
 }
 
-const api = { viewFor, isChatKey, isChatZoomResetKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
+const api = { viewFor, isChatKey, isChatZoomResetKey, sanitizeInput, planChatSend, runChatSend, sendBlocker, boxAtRest, readWanted, writeWanted, FLIP_NOTE, ENTER_DELAY_MS, SEND_NOTES: NOTE };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.chatViewState = api;
 

@@ -291,13 +291,23 @@ test('main: sweepFn gets dryRun true without --stop and false with it; --stop ho
   } finally { rm(dir); }
 });
 
-test('main: --stop with the heavy lock busy refuses (exit 2) and sweeps nothing; a sweep that throws still releases the lock', async () => {
+test('main: --stop with the heavy lock busy is NOT RUN (exit 75, the lock\'s NOT RUN line last) and sweeps nothing; a sweep that throws still releases the lock', async () => {
+  // #237 Miguel S5: the same contract as scripts/with-heavy-lock.js.
+  const { HeavyLockError, NOT_RUN_EXIT } = require('../host/heavy-lock');
   let swept = 0;
   const lines = [];
-  const code = await main(['--stop'], { log: (l) => lines.push(l), sweepFn: async () => { swept++; }, acquireLock: () => { throw new Error('busy: npm test'); } });
-  assert.strictEqual(code, 2);
+  const busy = new HeavyLockError('busy', 'busy: npm test (pid 1 start 2)', { holder: 'npm test (pid 1 start 2)', waitedMs: 20 * 60000 });
+  const code = await main(['--stop'], { log: (l) => lines.push(l), sweepFn: async () => { swept++; }, acquireLock: () => { throw busy; } });
+  assert.strictEqual(code, NOT_RUN_EXIT);
   assert.strictEqual(swept, 0);
   assert.match(lines.join('\n'), /nothing was stopped/);
+  assert.strictEqual(lines[lines.length - 1], '[heavy-lock] lock busy for 20 min, held by npm test (pid 1 start 2): NOT RUN');
+  // A throw that isn't the lock's refusal is a bug: its stack, exit 1, never NOT RUN.
+  const bug = [];
+  assert.strictEqual(await main(['--stop'], { log: (l) => bug.push(l), sweepFn: async () => { swept++; }, acquireLock: () => { throw new TypeError('x is null'); } }), 1);
+  assert.strictEqual(swept, 0);
+  assert.ok(!bug.some(l => /NOT RUN/.test(l)));
+  assert.match(bug.join('\n'), /a bug, not a busy lock.*TypeError: x is null/s);
   const events = [];
   await assert.rejects(main(['--stop'], { log() {}, sweepFn: async () => { throw new Error('boom'); }, acquireLock: () => fakeLock(events) }), /boom/);
   assert.deepStrictEqual(events, ['release']);

@@ -441,11 +441,11 @@ test('only one poll runs at a time: a tick that finds one running does nothing',
 
 // --- hand close: criterion 5 -------------------------------------------------
 
-test('hand close: confirm, then stop + close; the tab stays closed while git lists it, and dev cannot', async () => {
+test('hand close: confirm, then stop + close; the tab stays closed while git lists it', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
-  assert.strictEqual((await h.shell.closeTab(key('dev'))).ok, false, 'dev has no close (criterion 6)');
+  // (criterion 6, "dev has no close", was replaced by BACKLOG #160: test/tab-shell-develop.test.js)
   h.confirm = false;
   assert.strictEqual((await h.shell.closeTab(key('feat-a'))).cancelled, true);
   assert.deepStrictEqual(h.controls, []);
@@ -828,9 +828,11 @@ test('F4: focusStep -- focus a selected view that lacks the keyboard, only while
   assert.deepStrictEqual(focusStep(w, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: w }, 'window not focused');
 });
 
-test('R2-4: focusStep -- a selection with no view leaves nothing holding the keyboard', () => {
+test('R2-4: focusStep -- a selection with no view leaves no view holding the keyboard; the strip page takes it if a view had it (Miguel Y4)', () => {
   const v = {};
-  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null, focusStrip: true },
+    'the view that had the keyboard went: the strip page gets it, so Lanes ▾, + and Ctrl+Shift+T are reachable');
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null }, 'nothing had it: nothing to move');
   assert.deepStrictEqual(focusStep(v, { windowFocused: false, selectedView: null }), { focus: false, lastFocused: null });
   assert.deepStrictEqual(focusStep(undefined, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: null });
 });
@@ -2056,7 +2058,7 @@ test('the override is offered only for a blocked tab, and reaches only that view
   assert.strictEqual(h.shell.menuState(key('feat-a')).override, true);
   assert.strictEqual(h.shell.override(key('feat-a')), true);
   assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'lock-override'), [[key('feat-a'), 'lock-override', undefined]]);
-  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: false }, 'dev has no close');
+  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: true }, 'dev closes too (#160)');
   assert.deepStrictEqual(h.shell.menuState('nope'), { key: 'nope', override: false, close: false });
 });
 
@@ -2192,6 +2194,15 @@ test('handleProbeCommand: key is dispatched with its name, and needs one', async
     { ok: false, error: 'key modifiers must be a list' });
 });
 
+test('handleProbeCommand: strip-key (PR #236 Miguel Y4) goes to the strip page, with the same checks as key', async () => {
+  const seen = [];
+  const api = { stripKey: async (k, m) => { seen.push([k, m]); return { ok: true, stripFocused: true, windowFocused: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key', key: 'T', modifiers: ['control', 'shift'] }), api), { ok: true, stripFocused: true, windowFocused: true });
+  assert.deepStrictEqual(seen, [['T', ['control', 'shift']]]);
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key' }), api), { ok: false, error: 'strip-key needs a key' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key', key: 'T', modifiers: 'shift' }), api), { ok: false, error: 'strip-key modifiers must be a list' });
+});
+
 // --- Miguel, PR #75 M4: the probe driver answers only the probe -------------------
 
 test('M4: a line without the token, or with another one, is refused and runs nothing', async () => {
@@ -2217,6 +2228,16 @@ test('M4: screenshot writes only a .png', async () => {
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'C:\\Windows\\win.ini' }), api),
     { ok: false, error: 'screenshot needs a .png file' });
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'shot.PNG' }), api), { ok: true, file: 'shot.PNG' });
+});
+
+test('#139 / #160 probe: menu writes only a .png, and names only the Lanes or + menu', async () => {
+  const api = { menu: async (which, item, shot) => ({ ok: true, which, item, shot }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'window-shot', file: 'w.png' }), api), { ok: false, error: 'unknown command: window-shot' }, 'no screen capture command');
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'tab' }), api), { ok: false, error: 'menu needs which: lanes or plus' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'lanes', item: 3 }), api), { ok: false, error: 'menu item must be a label' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'plus', shot: 'x.txt' }), api), { ok: false, error: 'menu shot needs a .png file' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'plus', shot: 'm.png' }), api), { ok: true, which: 'plus', item: undefined, shot: 'm.png' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'lanes', item: 'develop  (closed)' }), api), { ok: true, which: 'lanes', item: 'develop  (closed)', shot: undefined });
 });
 
 test('M4: the line reader splits on newlines and gives up on a line longer than its cap', () => {
@@ -2771,9 +2792,13 @@ test('ctrl-close: a plain close (no ifSafe) still asks once, with no reason, eve
   assert.deepStrictEqual(h.confirms, [null]);
 });
 
-test('ctrl-close: dev still has no close', async () => {
+test('ctrl-close on dev (#160): it is never merged, so it asks why before it closes', async () => {
   const h = await mergedHarness();
-  assert.strictEqual((await h.shell.closeTab(key('dev'), { ifSafe: true })).ok, false);
+  h.facts = { ...GIT_OK, branch: 'develop' };
+  const r = await ctrlClose(h, 'dev');
+  assert.strictEqual(r.cancelled, true, 'asked, and the answer was no');
+  assert.deepStrictEqual(asked(h), [said("This one isn't merged.")]);
+  assert.ok(h.shell.tabByKey(key('dev')), 'still open');
 });
 
 // Ricardo, 2026-10-09 (design round 2): the tab's OWN session no longer asks. Ctrl+click closes a merged, saved,

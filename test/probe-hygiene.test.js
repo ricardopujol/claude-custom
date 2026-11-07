@@ -181,6 +181,14 @@ test('spawnWithTimeout does NOT call killFn when the child exits on its own befo
   assert.deepStrictEqual(killedPids, []);
 });
 
+test('#237 Dexter 9 e: spawnWithTimeout hands the child to onSpawn once, right after the start; a throwing onSpawn never stops the run', async () => {
+  const seen = [];
+  const r = await spawnWithTimeout({ cmd: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 5000, onSpawn: (c) => seen.push(c.pid) });
+  assert.deepStrictEqual(seen, [r.pid]);
+  const t = await spawnWithTimeout({ cmd: process.execPath, args: ['-e', 'process.exit(0)'], timeoutMs: 5000, onSpawn: () => { throw new Error('x'); } });
+  assert.strictEqual(t.code, 0);
+});
+
 // --- Finding 6: killTree itself was never directly unit-tested --------------
 
 test('killTree does nothing when the child has already exited (exitCode !== null)', () => {

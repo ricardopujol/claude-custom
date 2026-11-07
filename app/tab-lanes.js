@@ -49,10 +49,11 @@ const needsEye = e => e.phase === 'removing' || e.badge === 'warn';
 const rowOf = (e, state) => ({ key: e.key, label: isString(e.label) && e.label !== '' ? e.label : e.key, state, closed: false });
 
 /**
- * placeLanes(entries, closedRows) -> { strip: entries[], menu: { notStarted: row[], merged: row[] } }
- * `closedRows` are the lanes closed by hand (`{ key, label }`), which are not entries at all. A row is
+ * placeLanes(entries, closedRows) -> { strip: entries[], menu: { develop: row | null, notStarted: row[], merged: row[] } }
+ * `closedRows` are the lanes closed by hand (`{ key, label, isDev? }`), which are not entries at all. A row is
  * `{ key, label, state: 'not started' | 'ended' | 'merged' | 'closed', closed }`. Every entry is in `strip` or is a
- * menu row, exactly once; a closed row never repeats a lane that has an entry.
+ * menu row, exactly once; a closed row never repeats a lane that has an entry. A closed develop (BACKLOG #160) is
+ * `menu.develop`, never a Not started row: the menus list it first.
  */
 function placeLanes(entries, closedRows) {
   const list = Array.isArray(entries) ? entries.filter(isEntry) : [];
@@ -75,12 +76,15 @@ function placeLanes(entries, closedRows) {
     else notStarted.push(rowOf(e, e.started === true ? 'ended' : 'not started'));
   }
   const known = new Set(list.map(e => e.key));
+  let develop = null;
   for (const c of Array.isArray(closedRows) ? closedRows : []) {
     if (!c || typeof c !== 'object' || !isString(c.key) || c.key === '' || known.has(c.key)) continue;
     known.add(c.key);
-    notStarted.push({ key: c.key, label: isString(c.label) && c.label !== '' ? c.label : c.key, state: 'closed', closed: true });
+    const row = { key: c.key, label: isString(c.label) && c.label !== '' ? c.label : c.key, state: 'closed', closed: true };
+    if (c.isDev === true) develop = row;
+    else notStarted.push(row);
   }
-  return { strip, menu: { notStarted, merged } };
+  return { strip, menu: { develop, notStarted, merged } };
 }
 
 /** How many tabs fit in `width` px: whole MIN_TAB-wide ones, at least one. A width that isn't a number is no limit. */
@@ -184,24 +188,26 @@ function leaving(prevKeys, nextKeys, hiddenKeys) {
 
 /**
  * The Lanes menu as plain rows for the native menu (main maps them to its template):
- * `{ type: 'header', label }` | `{ type: 'row', label, key, state, action: 'select' | 'reopen' }`. Hidden tabs first,
- * then Not started, then Merged; a group with nothing in it has no header.
+ * `{ type: 'header', label }` | `{ type: 'separator' }` | `{ type: 'row', label, key, state, action: 'select' | 'reopen' }`.
+ * A closed develop first (BACKLOG #160), with a separator after it when anything follows; then Hidden tabs, Not started,
+ * Merged; a group with nothing in it has no header.
  */
 function lanesMenuRows(menu, hiddenEntries) {
   const m = menu && typeof menu === 'object' ? menu : {};
   const out = [];
-  const group = (title, rows) => {
-    if (rows.length === 0) return;
-    out.push({ type: 'header', label: title });
-    out.push(...rows);
-  };
+  const dev = isEntry(m.develop) ? m.develop : null;
+  if (dev) out.push({ type: 'row', label: isString(dev.label) && dev.label !== '' ? dev.label : dev.key, key: dev.key, state: 'closed', action: 'reopen' });
   const hidden = (Array.isArray(hiddenEntries) ? hiddenEntries : []).filter(isEntry)
     .map(e => ({ type: 'row', label: isString(e.label) && e.label !== '' ? e.label : e.key, key: e.key, state: 'running', action: 'select' }));
   const asRows = (rows) => (Array.isArray(rows) ? rows : []).filter(isEntry)
     .map(r => ({ type: 'row', label: isString(r.label) && r.label !== '' ? r.label : r.key, key: r.key, state: isString(r.state) ? r.state : '', action: r.closed === true ? 'reopen' : 'select' }));
+  const rest = [];
+  const group = (title, rows) => { if (rows.length > 0) rest.push({ type: 'header', label: title }, ...rows); };
   group('Hidden tabs', hidden);
   group('Not started', asRows(m.notStarted));
   group('Merged', asRows(m.merged));
+  if (dev && rest.length > 0) out.push({ type: 'separator' });
+  out.push(...rest);
   return out;
 }
 

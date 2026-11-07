@@ -176,6 +176,7 @@ function runRelay(hostPid, doc) {
     const user = `"${process.execPath}" -e "process.stdout.write('USER-ROW')"`;
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
+    // lock-ok: the status relay, one message to the host, awaited to its close; not work that outlives this step.
     const child = spawn(process.execPath, [RELAY, '--pipe', `claude-custom-${hostPid}`,
       '--then', Buffer.from(user, 'utf8').toString('base64'), '--quiet-when', CHROME_FILE], { env, windowsHide: true });
     let out = '';

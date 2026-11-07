@@ -29,7 +29,7 @@ const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
 const { killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
-const { spawnElectron } = require(path.join(__dirname, 'lib', 'launch-electron'));
+const { spawnElectron, noteChild } = require(path.join(__dirname, 'lib', 'launch-electron'));
 const MAIN = path.join(__dirname, 'probe71', 'sandbox-main.js');
 
 function runElectron(mode) {
@@ -52,6 +52,7 @@ function runElectron(mode) {
     for (const f of [winLog, winStop, env.PROBE_ARM].filter(Boolean)) { try { fs.unlinkSync(f); } catch { /* none yet */ } }
     const watcher = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(__dirname, 'probe71', 'watch-windows.ps1'),
       '-Root', String(child.pid), '-Log', winLog, '-Stop', winStop, ...(env.PROBE_ARM ? ['-Arm', env.PROBE_ARM] : [])], { stdio: 'ignore', windowsHide: true });
+    noteChild(watcher);   // runs as long as the Electron does: the lock's work record covers it (BACKLOG #113)
     let log = '';
     child.stdout.on('data', d => { log += d; });
     child.stderr.on('data', d => { log += d; });

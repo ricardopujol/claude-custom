@@ -91,6 +91,7 @@ function sampleGpu(seconds) {
   const script = `$s = Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval 5 -MaxSamples ${Math.max(1, Math.floor(seconds / 5))} -ErrorAction SilentlyContinue; ` +
     `$s | ForEach-Object { $t = $_.Timestamp.Ticks; $_.CounterSamples | Where-Object { $_.CookedValue -gt 0 } | ForEach-Object { [pscustomobject]@{ at = $t; name = $_.InstanceName; value = $_.CookedValue } } } | ConvertTo-Json -Compress`;
   return new Promise((resolve) => {
+    // lock-ok: one powershell sample, awaited to its exit; not work that outlives this step.
     const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
     let text = '';
     ps.stdout.on('data', (d) => { text += d; });

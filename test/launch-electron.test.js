@@ -356,18 +356,19 @@ test('heavy lock: a unit test process is not a probe, so launching with no heavy
   assert.strictEqual(probeName(path.join(__dirname, '..', 'verify-old', 'probe-x.js')), null);
 });
 
-test('heavy lock: busy / too loaded is one line and exit 1, not a stack; other errors are thrown as they were', () => {
+test('heavy lock: busy / too loaded is the reason, the NOT RUN line and exit 75, not a stack; other errors are thrown as they were', () => {
   const { takeLock } = require('../verify/lib/launch-electron');
   const { HeavyLockError } = require('../host/heavy-lock');
   const said = []; const exits = [];
-  const busy = { ensure: () => { throw new HeavyLockError('busy', 'busy: hub. Wait and retry'); } };
+  const busy = { ensure: () => { throw new HeavyLockError('busy', 'busy: hub. Wait and retry', { holder: 'hub (since 10:00:00)', waitedMs: 20 * 60000 }); } };
   assert.throws(() => takeLock(busy, (c) => exits.push(c), (m) => said.push(m)), HeavyLockError);   // the fake exit returns, so it rethrows
-  assert.deepStrictEqual(exits, [1]);
-  assert.strictEqual(said.length, 1);
+  assert.deepStrictEqual(exits, [75], '#178 b: NOT RUN is 75, never a probe\'s own failure code');
+  assert.strictEqual(said.length, 2);
   assert.match(said[0], /did not run: busy: hub/);
+  assert.strictEqual(said[1], '[heavy-lock] lock busy for 20 min, held by hub (since 10:00:00): NOT RUN', 'the NOT RUN line comes last');
   const other = { ensure: () => { throw new TypeError('x'); } };
   assert.throws(() => takeLock(other, (c) => exits.push(c), (m) => said.push(m)), TypeError);
-  assert.deepStrictEqual(exits, [1], 'no exit for an unexpected error');
+  assert.deepStrictEqual(exits, [75], 'no exit for an unexpected error');
   assert.doesNotThrow(() => takeLock(null));
 });
 
@@ -394,8 +395,17 @@ test('BACKLOG #112: noteChild records a hand-started child twice (unknown start 
   const child = { pid: 77 };
   assert.strictEqual(noteChild(child, heavyLock), child);
   assert.deepStrictEqual(seen, [[77, null], [77, undefined]]);
-  assert.strictEqual(noteChild({ pid: undefined }, heavyLock) !== null, true);
+  const noPid = { pid: undefined };
+  assert.strictEqual(noteChild(noPid, heavyLock), noPid, '#113 M3: the very child comes back, recorded or not');
   assert.strictEqual(seen.length, 2, 'a child with no pid is not recorded');
   assert.doesNotThrow(() => noteChild(child, null), 'no lock, nothing to record');
   assert.doesNotThrow(() => noteChild(child, { addWork: () => { throw new Error('disk'); } }), 'a failing record never stops the probe');
+});
+
+test('#112 M5: lockFor is declared before noteWork and noteChild, its users', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'lib', 'launch-electron.js'), 'utf8');
+  const at = (re) => { const m = re.exec(src); assert.ok(m, String(re)); return m.index; };
+  const decl = at(/^const lockFor = /m);
+  assert.ok(decl < at(/^const noteWork = /m), 'lockFor before noteWork');
+  assert.ok(decl < at(/^const noteChild = /m), 'lockFor before noteChild');
 });

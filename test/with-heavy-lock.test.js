@@ -7,9 +7,9 @@ const test = require('node:test');
 const assert = require('node:assert');
 const EventEmitter = require('node:events');
 const { main } = require('../scripts/with-heavy-lock');
-const { HeavyLockError, ENV_VAR } = require('../host/heavy-lock');
+const { HeavyLockError, ENV_VAR, NOT_RUN_EXIT } = require('../host/heavy-lock');
 
-function rig({ acquireThrows = null, state = 'held' } = {}) {
+function rig({ acquireThrows = null, state = 'held', flag = 'npm test (pid 9 start 99)' } = {}) {
   const events = [];
   const child = new EventEmitter();
   child.pid = 4242;
@@ -20,7 +20,7 @@ function rig({ acquireThrows = null, state = 'held' } = {}) {
       events.push('acquire:' + o.label);
       if (acquireThrows) throw acquireThrows;
       let done = false;
-      return { state, addWork: (pid, start) => { events.push('work:' + pid); if (start === null) events.push('provisional:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
+      return { state, flag, addWork: (pid, start) => { events.push('work:' + pid); if (start === null) events.push('provisional:' + pid); return true; }, release: () => { if (done) return false; done = true; events.push('release'); return state === 'held'; } };
     },
     spawn: (cmd, args, opts) => { events.push('spawn'); spawned = { cmd, args, opts }; return child; },
     killFn: (pid) => events.push('kill:' + pid),
@@ -38,8 +38,13 @@ test('runs the command under the lock, passes the re-entrancy flag, returns its 
   assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'release']);
   assert.strictEqual(r.spawned().cmd, 'node');
   assert.deepStrictEqual(r.spawned().args, ['--test', 'x']);
-  assert.strictEqual(r.spawned().opts.env[ENV_VAR], '1');
+  assert.strictEqual(r.spawned().opts.env[ENV_VAR], 'npm test (pid 9 start 99)', '#237 Dexter 2: the flag names this run\'s holder, not a bare 1');
   assert.strictEqual(r.spawned().opts.env.A, 'a');
+  const bare = rig({ state: 'missing', flag: null });
+  const q = main(['node'], bare.deps);
+  bare.child.emit('exit', 0, null);
+  await q;
+  assert.strictEqual(bare.spawned().opts.env[ENV_VAR], '1', 'no lock script: nothing to name, the bare form');
   assert.strictEqual(r.spawned().opts.stdio, 'inherit');
 });
 
@@ -100,9 +105,9 @@ test('the signal listeners are removed when the run ends', async () => {
   assert.strictEqual(r.proc.listenerCount('SIGINT'), 0);
 });
 
-test('busy: says who holds it, returns non-zero, and never runs the command', async () => {
+test('busy: says who holds it, returns NOT_RUN_EXIT, and never runs the command', async () => {
   const r = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub: probes (since 10:00:00)') });
-  assert.strictEqual(await main(['node'], r.deps), 1);
+  assert.strictEqual(await main(['node'], r.deps), NOT_RUN_EXIT);
   assert.ok(!r.events.includes('spawn'));
   assert.ok(r.events.some(e => e.startsWith('log:') && /hub: probes/.test(e)));
   assert.ok(!r.events.includes('release'));
@@ -152,9 +157,108 @@ test('the process exiting under it (no child exit seen) still releases', async (
 });
 
 test('a busy lock says what to do next and the command never runs', async () => {
-  const r = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub. Wait and retry; if you hold the lock by hand, set HEAVY_LOCK_HELD=1') });
-  assert.strictEqual(await main(['node'], r.deps), 1);
-  assert.ok(r.events.some(e => e.startsWith('log:') && /HEAVY_LOCK_HELD=1/.test(e)));
+  const { HINT } = require('../host/heavy-lock');
+  const r = rig({ acquireThrows: new HeavyLockError('busy', `busy: hub. ${HINT}`) });
+  assert.strictEqual(await main(['node'], r.deps), NOT_RUN_EXIT);
+  assert.ok(r.events.some(e => e.startsWith('log:') && /Retry later/.test(e)));
+  assert.ok(!r.events.some(e => /set HEAVY_LOCK_HELD/.test(e)), '#237 Miguel M5: no way round the lock is offered');
+});
+
+test('#237 Miguel M5: verify/README.md says no variable is a way past NOT RUN', () => {
+  const readme = require('fs').readFileSync(require('path').join(__dirname, '..', 'verify', 'README.md'), 'utf8');
+  assert.match(readme.replace(/\s+/g, ' '), /Neither `HEAVY_LOCK_HELD` nor `HEAVY_LOCK_SCRIPT` is a way past a NOT RUN/);
+});
+
+test('#178 b: a lock that stays busy ends with the NOT RUN line LAST and exit 75, distinct from a failing suite\'s 1', async () => {
+  const err = new HeavyLockError('busy', 'busy: npm test (pid 5 start 6) (since 10:00:00). Wait and retry', { holder: 'npm test (pid 5 start 6) (since 10:00:00)', waitedMs: 20 * 60000 });
+  const r = rig({ acquireThrows: err });
+  const code = await main(['node'], r.deps);
+  assert.strictEqual(code, 75);
+  assert.notStrictEqual(code, 1);
+  const logs = r.events.filter(e => e.startsWith('log:'));
+  assert.strictEqual(logs[logs.length - 1], 'log:[heavy-lock] lock busy for 20 min, held by npm test (pid 5 start 6) (since 10:00:00): NOT RUN');
+  assert.ok(!r.events.includes('spawn'));
+});
+
+test('#237 Miguel M4: a throw from acquire that is NOT the lock\'s refusal is a bug: its stack, exit 1, never NOT RUN', async () => {
+  for (const err of [new TypeError('Cannot read properties of null'), new Error('weird')]) {
+    const r = rig({ acquireThrows: err });
+    assert.strictEqual(await main(['node'], r.deps), 1, err.message);
+    const logs = r.events.filter(e => e.startsWith('log:'));
+    assert.ok(!logs.some(l => /NOT RUN/.test(l)), 'not dressed as "retry later"');
+    assert.match(logs[logs.length - 1], /the lock code itself failed \(a bug, not a busy lock\): .*Error: /);
+    assert.match(logs[logs.length - 1], /\n\s+at /, 'with its stack');
+    assert.ok(!r.events.includes('spawn'));
+  }
+});
+
+test('#178 b: too loaded or a script failure is NOT RUN too (75), never a test failure', async () => {
+  for (const err of [new HeavyLockError('loaded', 'machine too loaded', { detail: '4 GB free, 90% CPU', waitedMs: 60000 }), new HeavyLockError('error', 'heavy-lock.ps1 failed (exit 1): x')]) {
+    const r = rig({ acquireThrows: err });
+    assert.strictEqual(await main(['node'], r.deps), 75, err.message);
+    const logs = r.events.filter(e => e.startsWith('log:'));
+    assert.match(logs[logs.length - 1], /: NOT RUN$/);
+  }
+});
+
+test('#178 b (hub): a load-gated give-up ends "machine busy", a held slot "lock busy": the last line tells them apart, both exit 75', async () => {
+  const loaded = rig({ acquireThrows: new HeavyLockError('loaded', 'machine too loaded: 4 GB free, 90% CPU', { detail: '4 GB free, 90% CPU', waitedMs: 20 * 60000 }) });
+  assert.strictEqual(await main(['node'], loaded.deps), 75);
+  const busy = rig({ acquireThrows: new HeavyLockError('busy', 'busy: hub', { holder: 'hub (since 10:00:00)', waitedMs: 20 * 60000 }) });
+  assert.strictEqual(await main(['node'], busy.deps), 75);
+  const last = (r) => { const logs = r.events.filter(e => e.startsWith('log:')); return logs[logs.length - 1].slice(4); };
+  assert.match(last(loaded), /^\[heavy-lock\] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU \(now 4 GB free, 90% CPU\): NOT RUN$/);
+  assert.match(last(busy), /^\[heavy-lock\] lock busy for 20 min, held by hub \(since 10:00:00\): NOT RUN$/);
+});
+
+test('#178 b: the wrapper\'s header documents the NOT RUN exit code, and verify/README.md does too', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const header = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), 'utf8').split('*/')[0];
+  assert.match(header, /NOT RUN: EXIT 75/);
+  assert.match(header, /lock busy for <n> min, held by <owner>: NOT RUN/);
+  assert.match(header, /machine busy after a <n> min wait/);
+  assert.match(header, /load gate's time counts against the same\s+\*?\s*wait/);
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8');
+  assert.match(readme, /exit code is \*\*75\*\*/);
+  assert.match(readme, /\[heavy-lock\] machine busy after a 20 min wait: the lock is free/);
+});
+
+test('#237 Miguel S2: the queue variant, the error shape and the timed-out wording are documented, exactly as the code prints them', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { notRunLine } = require('../host/heavy-lock');
+  const header = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), 'utf8').split('*/')[0];
+  assert.match(header, /held by nobody now but <k> ahead in the queue/);
+  assert.match(header, /the 'error'/);
+  assert.match(header, /ran past its wait and was stopped/);
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8');
+  const queued = notRunLine(new HeavyLockError('busy', 'x', { detail: '2 ahead in the queue', waitedMs: 20 * 60000 }));
+  assert.ok(readme.includes(`    ${queued}\n`) || readme.includes(`    ${queued}\r\n`), `README shows the real queue line: ${queued}`);
+  assert.match(readme, /\[heavy-lock\] the lock could not be taken \(heavy-lock\.ps1 failed \(exit 1\): \.\.\.\): NOT RUN/);
+  assert.match(readme, /\(heavy-lock\.ps1 ran past its wait and was stopped\)/);
+});
+
+test('#237 Dexter 7: a command that RAN and exited 75 itself passes 75 through, and the last line says it is its own code', async () => {
+  const r = rig();
+  const p = main(['node', '-e', 'process.exit(75)'], r.deps);
+  r.child.emit('exit', 75, null);
+  assert.strictEqual(await p, NOT_RUN_EXIT);
+  const logs = r.events.filter(e => e.startsWith('log:'));
+  assert.match(logs[logs.length - 1], /^log:\[heavy-lock\] the command ran under the lock and exited 75 itself: that is its own code/);
+  assert.ok(!logs.some(l => /: NOT RUN$/.test(l)), 'never a NOT RUN line for a command that ran');
+  // Any other code says nothing extra.
+  const q = rig();
+  const pq = main(['node'], q.deps);
+  q.child.emit('exit', 1, null);
+  assert.strictEqual(await pq, 1);
+  assert.ok(!q.events.some(e => /exited 75 itself/.test(e)));
+  // Documented: 75 plus the last line is the rule.
+  const fs = require('fs');
+  const path = require('path');
+  const header = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), 'utf8').split('*/')[0];
+  assert.match(header, /THE RULE IS 75 PLUS THAT LAST LINE/);
+  assert.match(fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8'), /75 \*\*plus\*\* that NOT RUN last line/);
 });
 
 test('Dexter r2 1: the suite\'s child pid is recorded as work right after it starts, before it can end', async () => {
@@ -182,7 +286,7 @@ test('BACKLOG #112: a hard kill during the start-time query still leaves the sui
   const store = createWorkStore(path.join(tmpDir('hl-gap-'), 'w.json'));
   let seen = null, owner = null;
   r.deps.acquire = (o) => acquire({
-    ...o, scriptPath: 'x', exists: () => true, work: store,
+    ...o, scriptPath: 'x', exists: () => true, work: store, watch: null,
     run: (args) => (args.includes('-Acquire') ? (owner = args[args.indexOf('-Owner') + 1], { status: 0, stdout: 'acquired' }) : { status: 0, stdout: 'ok' }),
     // The slow start query: this is the moment a hard kill of the wrapper would land. The record then is what a later asker sees.
     startsOf: (pids) => {

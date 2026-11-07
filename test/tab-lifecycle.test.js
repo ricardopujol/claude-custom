@@ -419,11 +419,19 @@ test('reopen matches the path however it is spelled, and ignores a path that is 
   }
 });
 
-test('closing dev by hand does nothing', () => {
+// BACKLOG #160 (Ricardo, 2026-11-05): develop closes like a lane and comes back by a reopen. It replaces "closing dev by hand does nothing".
+test('#160: closing dev by hand stops and closes it; polls keep it closed (and still open new lanes) until it is reopened', () => {
   const s1 = reconcile(initial(), obs([DEV_WT, A_WT])).state;
   const r = closeByHand(s1, DEV);
-  assert.deepStrictEqual(r.actions, []);
-  assert.deepStrictEqual(r.state, s1);
+  assert.deepStrictEqual(r.actions, [{ type: 'stop', path: DEV }, { type: 'close', path: DEV }]);
+  assert.deepStrictEqual(r.state.tabs.map(t => t.path), [A]);
+  assert.deepStrictEqual(r.state.dismissed, [normPath(DEV)]);
+  const again = reconcile(r.state, obs([DEV_WT, A_WT, B_WT]));
+  assert.deepStrictEqual(again.actions, [{ type: 'open', path: B, branch: 'feat/b' }], 'dev stays closed; a poll that lists it is still a good poll');
+  assert.deepStrictEqual(again.state.dismissed, [normPath(DEV)], 'git lists dev, so the close is kept');
+  const back = reconcile(reopen(again.state, DEV).state, obs([DEV_WT, A_WT, B_WT]));
+  assert.deepStrictEqual(back.actions, [{ type: 'open', path: DEV, branch: 'develop' }]);
+  assert.deepStrictEqual(back.state.tabs.map(t => t.path), [DEV, A, B], 'dev first again');
 });
 
 test('closing a tab by hand stops it, closes it, and keeps it closed while the window lives', () => {
@@ -611,11 +619,14 @@ test('PROPERTY: a poll opens a tab only for an openable worktree', () => {
   }));
 });
 
-test('PROPERTY: dev is never stopped, closed or removed', () => {
+// #160: develop closes by hand now. Nothing else ever stops or closes it, and nothing ever removes it or marks it merged.
+test('PROPERTY: dev is stopped or closed only by a hand close, and never removed or marked merged', () => {
   fc.assert(fc.property(eventsArb, (events) => {
-    walk(events, (_, __, r) => {
+    walk(events, (_, e, r) => {
       for (const a of r.actions) {
-        if (['stop', 'close', 'remove', 'mark-merged'].includes(a.type)) assert.ok(!samePath(a.path, DEV), a.type);
+        if (!samePath(a.path, DEV)) continue;
+        assert.ok(!['remove', 'mark-merged'].includes(a.type), a.type);
+        if (['stop', 'close'].includes(a.type)) assert.strictEqual(e.kind, 'close', `${a.type} by ${e.kind}`);
       }
     });
   }));
@@ -666,11 +677,11 @@ test('PROPERTY: reconciling the same observation twice, the second call emits no
   }));
 });
 
-test('PROPERTY: whenever dev is among the worktrees, dev is the first tab, and no two tabs share a folder', () => {
+test('PROPERTY: whenever dev is among the worktrees and not closed by hand (#160), dev is the first tab, and no two tabs share a folder', () => {
   fc.assert(fc.property(eventsArb, (events) => {
     walk(events, (_, e, r) => {
       const tabs = r.state.tabs;
-      if (e.kind === 'obs' && e.o.worktrees.some(w => w.isDev)) {
+      if (e.kind === 'obs' && e.o.worktrees.some(w => w.isDev) && !r.state.dismissed.includes(normPath(DEV))) {
         assert.ok(tabs[0].isDev);
         assert.ok(samePath(tabs[0].path, DEV));
       }
