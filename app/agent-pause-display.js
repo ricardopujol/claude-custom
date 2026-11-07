@@ -65,11 +65,13 @@ function commandFor(verb, agent, id) {
   return null;
 }
 
-/** A click's data attributes -> { act, agent } or null. */
+/** A click's data attributes -> { act, agent, taskId? } or null. `taskId`: the run an instance card named (a plain id only). */
 function clickAction(data) {
   if (!data || typeof data !== 'object') return null;
   if ((data.agentPauseAct !== 'pause' && data.agentPauseAct !== 'resume') || !plainName(data.agent)) return null;
-  return { act: data.agentPauseAct, agent: data.agent };
+  const out = { act: data.agentPauseAct, agent: data.agent };
+  if (typeof data.agentPauseTask === 'string' && ID_RE.test(data.agentPauseTask)) out.taskId = data.agentPauseTask;
+  return out;
 }
 
 function createAgentPauses() {
@@ -171,12 +173,13 @@ function clockOf(ms) {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-/** The card's control, as markup: '' when there is nothing to show. */
-function html(view, agent) {
+/** The card's control, as markup: '' when there is nothing to show. `taskId`: the run this card is (an instance card), named on its Pause. */
+function html(view, agent, taskId) {
   const a = esc(agent);
+  const task = typeof taskId === 'string' && ID_RE.test(taskId) ? ` data-agent-pause-task="${esc(taskId)}"` : '';
   switch (view && view.kind) {
     case 'pause':
-      return `<div class="agent-pause"><button type="button" class="agent-pause-btn" data-agent-pause-act="pause" data-agent="${a}" title="Stop ${a} and keep its conversation, to resume later">Pause</button></div>`;
+      return `<div class="agent-pause"><button type="button" class="agent-pause-btn" data-agent-pause-act="pause" data-agent="${a}"${task} title="Stop ${a} and keep its conversation, to resume later">Pause</button></div>`;
     case 'pausing': return '<div class="agent-pause"><span class="agent-paused-badge">pausing…</span></div>';
     case 'resuming': return '<div class="agent-pause"><span class="agent-paused-badge">resuming…</span></div>';
     case 'paused':
@@ -186,7 +189,19 @@ function html(view, agent) {
   }
 }
 
-const API = { PAUSE_TIMEOUT_MS, INPUT_KIND, commandFor, clickAction, createAgentPauses, html };
+/**
+ * One roster card's control (BACKLOG #142 b, PR #239 Dexter 4). The pause state stays per agent name (the open question's default),
+ * but an INSTANCE card is one run: a finish still flashing (`ended`) isn't running, so it offers nothing, and a live one's Pause
+ * names its own run's task id (`agentId`), so a click pauses that run and never its sibling. A name card is html() unchanged.
+ */
+function cardHtml(view, card) {
+  if (!card || typeof card !== 'object') return '';
+  if (!card.instance) return html(view, card.agent);
+  if (card.ended === true) return '';
+  return html(view, card.agent, card.agentId);
+}
+
+const API = { PAUSE_TIMEOUT_MS, INPUT_KIND, commandFor, clickAction, createAgentPauses, html, cardHtml };
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.agentPauseDisplay = API;
 

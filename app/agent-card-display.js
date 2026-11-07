@@ -5,9 +5,11 @@
  *
  * `mood.stack()` already holds one entry per running instance (pushed on
  * PreToolUse(Agent), spliced on SubagentStop) and reaches the renderer as
- * `party` -- this module turns that list into per-agent counts so the roster
- * can draw a `×N` badge instead of silently collapsing two concurrent runs
- * into one card with no signal that a second is in flight.
+ * `party` -- this module turns that list into per-agent counts. They feed the
+ * agent's Pause (offered only for exactly one running instance) and the tool
+ * belt's "the current run isn't affected". Two concurrent runs are no longer
+ * collapsed into one card with a count: since BACKLOG #142 b each is its own
+ * card (app/agent-state-display.js instanceRows).
  *
  * The model line follows host/session-model.js's own rule: absence is `null`,
  * never a guess and never `''`, and this module's job is to turn THAT into a

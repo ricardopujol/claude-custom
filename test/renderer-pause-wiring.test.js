@@ -71,11 +71,11 @@ test('the agent card\'s Pause / Resume: the script loads before renderer.js, the
   assert.ok(at !== -1 && at < HTML.indexOf('<script src="./renderer.js"></script>'));
   const code = strip(RAW);
   assert.match(code, /const agentPauses = window\.agentPauseDisplay\.createAgentPauses\(\)/);
-  assert.match(code, /agentPauseHtml\(r\.agent, counts\)/, 'the live roster card carries the control');
+  assert.match(code, /agentPauseHtml\(r, counts\)/, 'the live roster card carries the control (per card: #142 b, PR #239 Dexter 4)');
   // PR #158 Dexter 1 is pinned through the REAL planTyping in test/agent-pause-display.test.js; here only that the click names that kind.
   assert.match(code, /typeCommand\(command, [\s\S]*?window\.agentPauseDisplay\.INPUT_KIND, \{ submit: true, typeOnly: false \}\)/);
   // the click: validated, then typed with the gate (submit true, not type-only), and a refusal puts the phase back
-  const click = code.slice(code.indexOf("closest('.agent-pause-btn')"), code.indexOf('function countBadgeHtml'));
+  const click = code.slice(code.indexOf("closest('.agent-pause-btn')"), code.indexOf("let activeRosterTab = 'active'"));
   assert.match(click, /window\.agentPauseDisplay\.clickAction\(b\.dataset\)/);
   assert.ok(click.includes('window.agentPauseDisplay.commandFor(act.act, act.agent, taskId)'));
   assert.ok(click.includes("agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)"));
@@ -105,7 +105,8 @@ test('the agent pause machine is fed what it needs: the turn state, the CLI\'s T
   assert.ok(code.includes('agentPauses.turnIs(sessionTurn, Date.now())'));
   // R2-1: the run's ids ride on every processes frame, and the line names the one id there is
   assert.ok(code.includes('latestAgentIds = Array.isArray(msg.agents)'));
-  assert.ok(code.includes('const taskId = ids.length === 1 ? ids[0] : undefined;'));
+  // ...unless the card is one instance's (#142 b), which names its own run (PR #239 Dexter 4)
+  assert.ok(code.includes('const taskId = act.taskId !== undefined ? act.taskId : ids.length === 1 ? ids[0] : undefined;'));
   assert.ok(code.includes("window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false }"), 'the line is typed with the kind planTyping accepts');
 });
 
