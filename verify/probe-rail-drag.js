@@ -419,18 +419,17 @@ async function main() {
   // once at the drag's start, so a scroll mid-drag put the line and the drop in the wrong gap. Now a scroll measures them again,
   // and a pointer held near the rail's end scrolls it.
   await view(app, 'layout', { layout: T.startLayout(IDS) });
-  await view(app, 'squeeze', { height: 420 });
   s = await stateFor(app, v => !!dockRail(v) && dockRail(v).scroll.scrollHeight > dockRail(v).scroll.clientHeight + 40, 6000);
   const full = railOrder(s);
   const sc = dockRail(s).scroll;
-  check('8: setup: every panel on the rail, and the rail overflows its 420 px dock', sc.scrollHeight > sc.clientHeight + 40, JSON.stringify(sc));
+  check('8: setup: every panel on the rail, and the rail overflows the window (it scrolls)', sc.scrollHeight > sc.clientHeight + 40, JSON.stringify([sc, dockRail(s).rect, s.dock]));
   await view(app, 'railScroll', { to: 'top' });
   const moving = full[0];
   const target = full[full.length - 2];
   r = await view(app, 'railPress', { id: moving, how: 'drag', before: full[3], release: false });
   mv = await view(app, 'railPressMove', { scroll: 100000, before: target });
   check(`8: scrolled to the end mid-drag, the line follows the buttons: it sits at the gap above ${target}, where the pointer is`,
-    r.ok && mv.ok && mv.scrollTop > 0 && mv.lines === 1 && mv.lineTop !== null && Math.abs(mv.lineTop - (mv.pointerY - 3)) <= 8 /* a separator's gap puts it up to 6 px above the button */, JSON.stringify(mv));
+    r.ok && mv.ok && mv.scrollTop > 0 && mv.lines === 1 && mv.lineTop !== null && Math.abs(mv.lineTop - (mv.pointerY - 3)) <= 8 /* a separator's gap puts it up to 6 px above the button */, JSON.stringify([r.during, mv]));
   r = await view(app, 'railRelease');
   const want8 = (() => { const rest = full.filter(id => id !== moving); rest.splice(rest.indexOf(target), 0, moving); return rest; })();
   s = await stateFor(app, v => JSON.stringify(railOrder(v)) === JSON.stringify(want8));
@@ -445,7 +444,6 @@ async function main() {
   check('8: a drag held near the rail\'s bottom scrolls it down on its own', r.ok && mv.ok && mv.scrollTop > 0, JSON.stringify(mv));
   await view(app, 'key', { key: 'Escape', selector: 'body' });
   await view(app, 'railRelease');
-  await view(app, 'squeeze', {});
 
   await quitApp(app);
 }
