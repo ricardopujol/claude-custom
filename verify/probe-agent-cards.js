@@ -19,6 +19,10 @@
  *    2 (before, every repaint replaced both), the quiet card kept throughout; two instances of one agent busy at once (a read
  *    and a Bash start or end a second) = 10 repaints, 13 card nodes of 4 (a full replace would be 40). A press on a card that
  *    DID change can still be dropped: BACKLOG #184.
+ *    Case 4 (BACKLOG #184): the hook event aimed at the CLICKED card itself, 20 presses, each with that card's detail changing
+ *    between mousedown and mouseup. Since #184 a changed card is patched in place (app/roster-morph.js), so its node stays and the
+ *    click lands; the repaint counter now watches the cards' insides too (a patch swaps no child of #agents), and __removed still
+ *    counts swapped card nodes, which a busy card no longer causes.
  * B. BACKLOG #162: a stressed card carries its cause as its hover (the card's title, and the words under its name), and a
  *    picture of it hovered: agent-card-stressed-hover.png. The OS draws a native tooltip outside the page, where capturePage
  *    can't see it, so the probe draws the card's own title text at the hover point, captioned ON the picture as the probe's
@@ -75,6 +79,13 @@ const churn = () => {
   if (flying) { send('PostToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step ' + flying }, tool_response: { exit_code: 0 }, ...by('probe-churn') }); flying = null; }
   else { flying = 'tu' + (++n); send('PreToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step ' + flying }, ...by('probe-churn') }); }
 };
+// The same step aimed at any agent's card (BACKLOG #184: the clicked card's own churn), each agent with its own call in flight.
+const flyingBy = {};
+const churnOn = (name) => {
+  const id = flyingBy[name];
+  if (id) { send('PostToolUse', { tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'step ' + id }, tool_response: { exit_code: 0 }, ...by(name) }); flyingBy[name] = null; }
+  else { const t = 'tc' + (++n); flyingBy[name] = t; send('PreToolUse', { tool_name: 'Bash', tool_use_id: t, tool_input: { command: 'step ' + t }, ...by(name) }); }
+};
 const need = async (what) => {
   if (what === 'churn') churn();
   if (what === 'busy') for (let i = 0; i < 10; i++) { churn(); await sleep(1000); }
@@ -118,12 +129,14 @@ app.whenReady().then(async () => {
     check('the roster is on screen', await until(onScreen, 10000));
     check('both cards are on the roster', await until('document.querySelectorAll("#agents .agent[data-agent^=\\'probe-\\']").length === 2', 30000));
     // What reached the page: every click (capture phase, so nothing in the page can hide it from us), and every time the
-    // roster's markup was really replaced (paintAgents -> setRosterHtml -> replaceChildren is a childList mutation).
-    // __repaints: roster repaints that replaced anything (one observer call per paint); __removed: card nodes they replaced
-    // (PR #239 A5: since the per-card patch, a sibling's change replaces its own card, not every card).
+    // roster's markup was really changed (paintAgents -> setRosterHtml: a card swapped, or patched in place).
+    // __repaints: roster repaints that changed anything (one observer call per paint; the subtree too, since BACKLOG #184 patches a
+    // changed card in place); __removed: card nodes they swapped (PR #239 A5: a sibling's change swapped only its own card; #184:
+    // a changed card is patched, so none is swapped unless the cards themselves change).
     await js('window.__clicks = []; window.__repaints = 0; window.__removed = 0;' +
       ' document.addEventListener("click", (e) => { const t = e.target; window.__clicks.push({ onButton: !!(t && t.closest && t.closest("[data-medal-open]")), tag: t && t.tagName, id: t && t.id || null, cls: t && String(t.className || "") }); }, true);' +
-      ' new MutationObserver((ms) => { window.__repaints++; for (const m of ms) for (const n of m.removedNodes) if (n.classList && n.classList.contains("agent")) window.__removed++; }).observe(document.getElementById("agents"), { childList: true }); true');
+      ' const agentsRoot = document.getElementById("agents");' +
+      ' new MutationObserver((ms) => { window.__repaints++; for (const m of ms) if (m.target === agentsRoot) for (const n of m.removedNodes) if (n.classList && n.classList.contains("agent")) window.__removed++; }).observe(agentsRoot, { childList: true, subtree: true, attributes: true, characterData: true }); true');
     const cardNode = 'document.querySelector("#agents .agent[data-agent=\\'probe-click\\']")';
     const BTN = '#agents .agent[data-agent=\\'probe-click\\'] [data-medal-open]';
     // The point, and what is really under it (a press that lands on something else measures nothing).
@@ -167,6 +180,28 @@ app.whenReady().then(async () => {
     check('3. A5: the clicked card, unchanged, keeps its node', kept === true);
     check('3. A5: ...and the click lands', landed, changed);
 
+    // 4. BACKLOG #184: the hook event aimed at the CLICKED card itself, 20 presses. Each press: mousedown on its medal button, a
+    // Bash call starting or ending on probe-click (its card's detail changes: working <-> running), then mouseup at the same point.
+    // Before #184 the changed card's node was swapped and the click dropped; now the card is patched in place and must land.
+    const aimed = { presses: 0, changed: 0, landed: 0, dropped: 0, kept: 0, swapped: 0 };
+    for (let k = 0; k < 20; k++) {
+      await js('window.__clickCard = ' + cardNode + '; window.__detail0 = window.__clickCard.dataset.detail; window.__removed = 0; true');
+      const r = await press(async () => {
+        churnOn('probe-click');
+        await until('(() => { const c = ' + cardNode + '; return !!c && c.dataset.detail !== window.__detail0; })()', 5000);
+      });
+      const after = JSON.parse(await js('JSON.stringify({ changed: (' + cardNode + ').dataset.detail !== window.__detail0, kept: window.__clickCard === ' + cardNode + ', removed: window.__removed })'));
+      aimed.presses++;
+      if (after.changed) aimed.changed++;
+      if (after.kept) aimed.kept++;
+      aimed.swapped += after.removed;
+      if (r.clicks.some(c => c.onButton)) aimed.landed++; else aimed.dropped++;
+    }
+    console.log('[#184] 20 presses, each with the CLICKED card changing between mousedown and mouseup: ' + JSON.stringify(aimed));
+    check('4. #184: the clicked card really changed during every press', aimed.changed === 20, aimed);
+    check('4. #184: the clicked card kept its node through every press', aimed.kept === 20 && aimed.swapped === 0, aimed);
+    check('4. #184: 0 of 20 clicks dropped', aimed.dropped === 0 && aimed.landed === 20, aimed);
+
     // The repaint rate. Quiet: an agent working, no events, processes frames every second.
     await js('window.__repaints = 0; window.__removed = 0; true');
     await sleep(10000);
@@ -179,7 +214,8 @@ app.whenReady().then(async () => {
     console.log('[F4] 10 s of one Bash call starting or ending a second on another agent: ' + busy.repaints + ' repaints, ' + busy.removed +
       ' card nodes replaced (2 cards on the roster), the quiet card node ' + (busy.kept ? 'kept throughout' : 'replaced'));
     check('busy: the roster is repainted when a card changes', busy.repaints > 0, busy);
-    check('busy: A5: only the changing card is replaced, one node per repaint', busy.removed === busy.repaints && busy.kept, busy);
+    // A5 kept the quiet card; since #184 the changing card is patched in place too, so no card node is swapped at all.
+    check('busy: A5 + #184: the quiet card keeps its node, and the changing card is patched, not swapped', busy.removed === 0 && busy.kept, busy);
 
     // Pictures, through the app's own capturePage (never the screen): the roster panel's rectangle.
     const SHOTS = path.join(require('os').tmpdir(), 'cc-try');
@@ -225,6 +261,17 @@ app.whenReady().then(async () => {
     await need('churn');
     await until('window.__repaints > 0', 5000);
     check('B. Y5: a sibling\\'s repaint keeps the hovered card\\'s node', await js('window.__clickCard === ' + cardNode));
+    // #184 (Miguel Y5's rest): the HOVERED card itself changes (a Bash call on probe-click starts and ends well: stressed -> working,
+    // its cause title goes; working and probe-churn's working sort the same, by name, so the cards keep their places). Patched in
+    // place, the node the pointer is over stays and its title changes on it. The OS tooltip itself is drawn outside the page, so
+    // what's measured is the node and its title, not the tooltip's pixels.
+    await js('window.__clickCard = ' + cardNode + '; true');
+    churnOn('probe-click');
+    churnOn('probe-click');
+    const hoverAfter = await until('(() => { const c = ' + cardNode + '; return c && c.dataset.state !== "stressed" ? JSON.stringify({ state: c.dataset.state, title: c.getAttribute("title"), kept: c === window.__clickCard, hovered: c.matches(":hover") }) : null; })()', 5000);
+    console.log('[#184] the hovered card itself changed: ' + hoverAfter);
+    const hv = hoverAfter ? JSON.parse(hoverAfter) : {};
+    check('B. #184: the hovered card changing keeps its node, still hovered, its title updated on it', hv.kept === true && hv.hovered === true && hv.title !== title, hoverAfter);
 
     // C. BACKLOG #142 b: two instances of one agent are two cards, each with its own state; no ×N badge.
     const twin = (k) => ({ agent_id: 'aprobe-twin-' + String(7000 + k).padStart(16, '0'), agent_type: 'probe-twin' });

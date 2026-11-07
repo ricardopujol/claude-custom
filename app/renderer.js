@@ -5688,6 +5688,21 @@ function applyFaceVideo(v) {
 
 // Each roster card node -> the markup it was painted from (before any live video was moved into it): what rosterPatch compares.
 const paintedCardHtml = new WeakMap();
+// setRosterHtml's per-card path (BACKLOG #184): each changed card patched in place, never swapped. A video in a control that was
+// replaced is unloaded, as the full replace does; a new one is watched and paused at once (a hidden window never calls back).
+function patchRosterCards(oldNodes, freshNodes, freshHtml, changed) {
+  const videosOf = n => (n.nodeType !== 1 ? [] : n.tagName === 'VIDEO' ? [n] : [...n.querySelectorAll('video')]);
+  const added = [];
+  const hooks = {
+    removed: (n) => { for (const v of videosOf(n)) { if (faceVideoObserver) faceVideoObserver.unobserve(v); portraitMedia.unloadVideo(v); } },
+    added: (n) => { added.push(...videosOf(n)); },
+  };
+  for (const i of changed) {
+    const live = window.rosterMorph.morphElement(oldNodes[i], freshNodes[i], hooks);
+    paintedCardHtml.set(live, freshHtml[i]);
+  }
+  for (const v of added) { if (faceVideoObserver) faceVideoObserver.observe(v); applyFaceVideo(v); }
+}
 function setRosterHtml(html) {
   // A repaint runs about once a second while anything is running. A video that
   // is unloaded and recreated each time restarts from frame 0 and never loops
@@ -5700,6 +5715,11 @@ function setRosterHtml(html) {
   // PER CARD (PR #239 Dexter 5 / Miguel Y5): when the same cards sit in the same places, only those whose markup changed are
   // replaced (app/agent-state-display.js rosterPatch), so an unchanged card keeps its node, and a press on its button or a hover on
   // it survives a sibling's repaint. Each card's painted markup is remembered (paintedCardHtml) to compare with.
+  //
+  // IN PLACE (BACKLOG #184): a changed card is no longer swapped either. app/roster-morph.js patches its attributes and text onto
+  // the live nodes, so a press on the card, or on a control in it that is still the same control, lands even when the card changes
+  // between mousedown and mouseup; a hovered card's title changes on the same node. A control that turned into another (a Pause
+  // turned Resume) is replaced: its videos are unloaded, a new video is watched and paused, as in the full replace below.
   const stage = document.createElement('div');
   stage.innerHTML = html;
   const freshNodes = [...stage.childNodes];
@@ -5708,8 +5728,9 @@ function setRosterHtml(html) {
   const keyOf = n => (n.nodeType === 1 && n.dataset && n.dataset.agent ? n.dataset.agent + '|' + (n.dataset.instance || '') : null);
   const patch = window.agentStateDisplay.rosterPatch(oldNodes.map(n => ({ key: keyOf(n), html: paintedCardHtml.get(n) })),
     freshNodes.map((n, i) => ({ key: keyOf(n), html: freshHtml[i] })));
-  const going = patch.full ? oldNodes : patch.replace.map(i => oldNodes[i]);
-  const coming = patch.full ? freshNodes : patch.replace.map(i => freshNodes[i]);
+  if (!patch.full) { patchRosterCards(oldNodes, freshNodes, freshHtml, patch.replace); return; }
+  const going = oldNodes;
+  const coming = freshNodes;
   const videosIn = nodes => nodes.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video[data-face-key]')] : []));
   // Every live video of a face key is kept, not only the first: two instance cards on one picture each keep their own (Miguel Y1).
   const oldVideos = videosIn(going);
@@ -5726,9 +5747,8 @@ function setRosterHtml(html) {
       portraitMedia.unloadVideo(v);
     }
   }
-  if (patch.full) agentsEl.replaceChildren(...freshNodes);
-  else patch.replace.forEach(i => oldNodes[i].replaceWith(freshNodes[i]));
-  coming.forEach(n => paintedCardHtml.set(n, freshHtml[freshNodes.indexOf(n)]));
+  agentsEl.replaceChildren(...freshNodes);
+  freshNodes.forEach((n, i) => paintedCardHtml.set(n, freshHtml[i]));
   for (const v of coming.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video')] : []))) {
     if (faceVideoObserver) faceVideoObserver.observe(v);
     // Applied at once, not left to the observer's first callback: a hidden
