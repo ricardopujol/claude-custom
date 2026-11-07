@@ -245,7 +245,166 @@ function describeDrop(moved, panel, where) {
   return moved ? `Moved ${panel} ${where}.` : `Not moved: ${panel} is already there.`;
 }
 
-const API = { RIM, BAND, TAB_BAR, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop };
+// --- one press: a click or a drag (BACKLOG #109) --------------------------------------------------
+//
+// A tab's name and a rail button's icon are both drag handles. A press is a click (the tab selects, the rail's panel opens) or a
+// drag (the zones above), never both: the page feeds every pointer event of the press here and acts on the effect. A rail button
+// also starts on a hold, because its click opens a panel and a person who holds still on it means to pick it up.
+
+/** The thresholds. `holdMs: null`: holding still never starts a drag. */
+const PRESS = Object.freeze({
+  rail: Object.freeze({ distance: 6, holdMs: 250 }),
+  tab: Object.freeze({ distance: 5, holdMs: null }),
+});
+
+const unchanged = (state) => ({ state, effect: 'none' });
+
+/** The thresholds as pressStep reads them: { distance, holdMs: number | null }. Anything that isn't one reads as PRESS.rail. */
+function pressOpts(opts) {
+  const o = isObject(opts) && isNumber(opts.distance) && opts.distance >= 0 ? opts : PRESS.rail;
+  return { distance: o.distance, holdMs: isNumber(o.holdMs) && o.holdMs >= 0 ? o.holdMs : null };
+}
+
+/**
+ * One step of a press. `state`: null (nothing pressed), { phase: 'pressed', x, y, t } or { phase: 'dragging', x, y, t, moved }
+ * (x, y, t: the press point). `ev`: { type: 'down', x, y, t } | { type: 'move', x, y, t } | { type: 'hold', t } (the page's timer)
+ * | { type: 'up' } | { type: 'cancel' }. `opts`: PRESS.rail or PRESS.tab (anything else reads as the rail's). Answers
+ * { state, effect }, effect one of 'none' | 'start' (the drag begins here) | 'move' | 'drop' | 'click' | 'cancel'. A press that
+ * crosses neither threshold before its release is a 'click'; once 'start' is answered there is no click. A drop needs movement
+ * (PR #241 Dexter 1): the release of a drag that never got the distance from its press point (a hold let go where it was
+ * pressed) is a 'cancel', so it can't dock in whatever rim the press point sits in.
+ */
+function pressStep(state, ev, opts) {
+  const o = pressOpts(opts);
+  const hold = o.holdMs;
+  const st = isObject(state) && (state.phase === 'pressed' || state.phase === 'dragging') ? state : null;
+  if (!isObject(ev)) return unchanged(st);
+  const type = ev.type;
+  if (type === 'down') {
+    // A second down during a press or a drag (another touch or pen pointer) is ignored: the press goes on from its own point,
+    // and a drag that started never ends in a click (PR #241 Dexter 3). A lost release of the same pointer is the page's to end.
+    if (st || !isNumber(ev.x) || !isNumber(ev.y)) return unchanged(st);
+    return unchanged({ phase: 'pressed', x: ev.x, y: ev.y, t: isNumber(ev.t) ? ev.t : 0 });
+  }
+  if (!st) return unchanged(null);
+  if (type === 'up') {
+    if (st.phase !== 'dragging') return { state: null, effect: 'click' };
+    return { state: null, effect: st.moved === true ? 'drop' : 'cancel' };
+  }
+  if (type === 'cancel') return { state: null, effect: st.phase === 'dragging' ? 'cancel' : 'none' };
+  const held = isNumber(ev.t) && hold !== null && ev.t - st.t >= hold;
+  const dragging = moved => ({ phase: 'dragging', x: st.x, y: st.y, t: st.t, moved });
+  if (type === 'hold') {
+    if (st.phase !== 'pressed' || !held) return unchanged(st);
+    return { state: dragging(false), effect: 'start' };
+  }
+  if (type === 'move') {
+    if (!isNumber(ev.x) || !isNumber(ev.y)) return unchanged(st);
+    const far = Math.hypot(ev.x - st.x, ev.y - st.y) >= o.distance;
+    if (st.phase === 'dragging') return { state: far && st.moved !== true ? dragging(true) : st, effect: 'move' };
+    if (far || held) return { state: dragging(far), effect: 'start' };
+    return unchanged(st);
+  }
+  return unchanged(st);
+}
+
+/**
+ * How many ms a press still has to be held, at time `t` (the clock pressStep's events carry), before the hold starts its drag:
+ * 0 when it is due, null when there is no hold to wait for (no press, already dragging, a tab name, junk). The page's timer can
+ * fire early; it asks this and re-arms for the rest instead of letting the hold become a click (PR #241 Miguel L1).
+ */
+function holdRemaining(state, t, opts) {
+  const o = pressOpts(opts);
+  if (o.holdMs === null || !isObject(state) || state.phase !== 'pressed' || !isNumber(state.t) || !isNumber(t)) return null;
+  return Math.max(0, state.t + o.holdMs - t);
+}
+
+// --- a drop on the dock's rail: its place in the rail (BACKLOG #109) ---------------------------------
+
+const LINE = 2;         // px: the insertion line's thickness
+const LINE_INSET = 6;   // px off each side of the rail, so the line reads as a gap marker and not the rail's border
+
+const isRect = r => isObject(r) && isNumber(r.x) && isNumber(r.y) && isNumber(r.width) && isNumber(r.height);
+
+/**
+ * Where a rail tab dragged over the dock's rail lands. `hit` is zonesAt's answer for the same point, `rail` the rail as the drag
+ * measured it at its start: { rect, dir: 'v' | 'h', slots: [{ id, rect }] } in the order drawn, every rect relative to the dock,
+ * as the point is. Answers `hit` itself when the point is off the rail, when anything is junk, or when `hit` has a target that
+ * wins over the rail: a float over it (it is on top), or the rim along the window's edge the rail runs beside (the only way to
+ * dock a rail tab along that edge). The rim strips that cross the rail's ends are the rail's: the window's top rim covers the
+ * first tab's top 14 px, and a drop there means "first", not "along the top" (found by verify/probe-rail-drag.js). Over the rail:
+ * the drop goes before the first tab whose middle is past the pointer, else to the end, `target` { rail: 'dock', before: id |
+ * null }, and the hot zone is a thin line across the rail at that gap. A drop that would leave `id` where it is has no target
+ * and no line.
+ */
+function railDrop(hit, rail, point, id) {
+  if (!isObject(rail) || !isRect(rail.rect) || (rail.dir !== 'v' && rail.dir !== 'h') || !Array.isArray(rail.slots)) return hit;
+  if (!isObject(point) || !isNumber(point.x) || !isNumber(point.y) || !contains(rail.rect, point)) return hit;
+  const ends = rail.dir === 'v' ? ['top', 'bottom'] : ['left', 'right'];
+  if (hit && hit.target && !(isObject(hit.target) && ends.includes(hit.target.edge))) return hit;
+  const slots = rail.slots.filter(s => isObject(s) && typeof s.id === 'string' && isRect(s.rect));
+  const v = rail.dir === 'v';
+  const along = v ? point.y : point.x;
+  const lo = r => (v ? r.y : r.x);
+  const hi = r => (v ? r.y + r.height : r.x + r.width);
+  const k = slots.findIndex(s => (lo(s.rect) + hi(s.rect)) / 2 > along);
+  const before = k === -1 ? null : slots[k].id;
+  const mine = slots.findIndex(s => s.id === id);
+  const zones = hit && Array.isArray(hit.zones) ? hit.zones : [];
+  // Before itself, or before the tab right after it (or the end, when it is last): it stays where it is.
+  const stays = mine !== -1 && (before === id || (k === -1 ? mine === slots.length - 1 : k === mine + 1));
+  if (stays) return { zones, target: null };
+  const target = { rail: 'dock', before };
+  const rect = railLineRect(rail.rect, v, slots.map(s => s.rect), k);
+  return { zones: [...zones.map(z => ({ ...z, hot: false })), { rect, target, hot: true, line: true }], target };
+}
+
+/**
+ * The insertion line's rectangle (PR #241 Miguel S1: apart from where the drop lands): across a rail at `railRect` (`v`: vertical)
+ * at the gap before slot `k` of `slotRects` (-1: under the last), LINE thick, LINE_INSET in from each side unless the rail is too
+ * narrow for it, and never past either end of the rail.
+ */
+function railLineRect(railRect, v, slotRects, k) {
+  const lo = r => (v ? r.y : r.x);
+  const hi = r => (v ? r.y + r.height : r.x + r.width);
+  // The gap: between the tab before it and this one, at the rail's start for the first, under the last for the end.
+  let gap;
+  if (!slotRects.length) gap = lo(railRect);
+  else if (k === -1) gap = hi(slotRects[slotRects.length - 1]);
+  else if (k === 0) gap = lo(slotRects[0]);
+  else gap = (hi(slotRects[k - 1]) + lo(slotRects[k])) / 2;
+  const start = lo(railRect);
+  const at = Math.round(Math.min(Math.max(gap - LINE / 2, start), start + (v ? railRect.height : railRect.width) - LINE));
+  const across = v ? railRect.width : railRect.height;
+  const inset = across > 2 * LINE_INSET + 4 ? LINE_INSET : 0;
+  return v
+    ? { x: railRect.x + inset, y: at, width: across - 2 * inset, height: LINE }
+    : { x: at, y: railRect.y + inset, width: LINE, height: across - 2 * inset };
+}
+
+/** A drag held near either end of a long rail scrolls it (PR #241 Dexter 2, Miguel M2): px from the end, and px per frame at most. */
+const RAIL_SCROLL = Object.freeze({ edge: 28, max: 12 });
+
+/**
+ * How far a rail scrolls this frame under a drag at `point` (both relative to the dock, as railDrop's): negative toward its
+ * start (up, or left on a horizontal rail), positive toward its end, 0 off the rail, away from both ends, or on junk. Inside
+ * the edge it is at least 1 px and grows to RAIL_SCROLL.max at the very end.
+ */
+function railScrollStep(rail, point) {
+  if (!isObject(rail) || !isRect(rail.rect) || (rail.dir !== 'v' && rail.dir !== 'h')) return 0;
+  if (!isObject(point) || !isNumber(point.x) || !isNumber(point.y) || !contains(rail.rect, point)) return 0;
+  const v = rail.dir === 'v';
+  const along = v ? point.y : point.x;
+  const start = v ? rail.rect.y : rail.rect.x;
+  const end = start + (v ? rail.rect.height : rail.rect.width);
+  const { edge, max } = RAIL_SCROLL;
+  const speed = d => Math.max(1, Math.round(max * (edge - d) / edge));
+  if (along - start < edge) return -speed(along - start);
+  if (end - along < edge) return speed(end - along);
+  return 0;
+}
+
+const API = { RIM, BAND, TAB_BAR, PRESS, RAIL_SCROLL, railScrollStep, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep, holdRemaining, railDrop };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

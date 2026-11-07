@@ -2,7 +2,8 @@
 /**
  * The rail's three groups (chrome grammar, Ricardo's picks 2026-10-26): Work, Repo, Me, a separator between them. Pure: the dock
  * (app/dock-tree-display.js) draws what groupRail returns. The layout's own order is untouched (a saved layout names the same ids);
- * only the order the buttons are DRAWN in is grouped.
+ * only the order the buttons are DRAWN in is grouped. Once the person reorders the rail (BACKLOG #109, `layout.railOrdered`), it
+ * is drawn in the layout's order instead, through inOrder.
  *
  * The reader is a Repo item in the picks but is no rail module (it opens from the Files tab), so it has no entry here.
  * Map and Schedules were not in the picks: Map follows Resources in Work (open question for Ricardo), Schedules follows Map.
@@ -43,7 +44,21 @@ function groupRail(ids) {
   return out;
 }
 
-const API = { GROUPS, groupOf, groupRail };
+/**
+ * A rail the person put in their own order (BACKLOG #109, `layout.railOrdered`): `ids` -> [{ id } | { sep: true }] in the order
+ * given, a separator wherever two neighbours belong to different groups, none at either end. Junk dropped as groupRail does.
+ */
+function inOrder(ids) {
+  const list = Array.isArray(ids) ? ids.filter(i => typeof i === 'string' && i !== '') : [];
+  const out = [];
+  list.forEach((id, i) => {
+    if (i > 0 && groupOf(list[i - 1]) !== groupOf(id)) out.push({ sep: true });
+    out.push({ id });
+  });
+  return out;
+}
+
+const API = { GROUPS, groupOf, groupRail, inOrder };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.railGroups = API;
