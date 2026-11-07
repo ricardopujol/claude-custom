@@ -7,7 +7,9 @@
  *
  *   node verify/eval-ask-explain.js [--model qwen3.5:4b] [--out <raw json>] [--dir <index folder>] [--only 1,4]
  *
- * HEAVY: the GPU. It takes the heavy-work lock itself (BACKLOG #179), so a busy slot waits or ends NOT RUN (exit 75). It builds (or reuses) the index in --dir, runs the model with
+ * HEAVY: the GPU. It takes the heavy-work lock itself (BACKLOG #179), so a busy slot waits or ends NOT RUN (exit 75); with a claude model,
+ * each answer's claude is recorded with noteChild, whose start-time query is one synchronous PowerShell call (about a
+ * second per answer, #243 Miguel S6). It builds (or reuses) the index in --dir, runs the model with
  * thinking off, and unloads it when done. It never starts or installs anything; Ollama down exits 2.
  * The prompt below is the explainer prompt the panel will ship (host/ask-explain.js takes it from here once the bar is met).
  */
