@@ -10007,27 +10007,37 @@ dropZone.addEventListener('drop', (e) => {
 
   const files = [...(e.dataTransfer.files || [])];
   if (!files.length) return;
+  sendDropFiles(files);
+});
 
-  // `File.path` WAS REMOVED IN ELECTRON 32 and this app is on 33: it is
-  // undefined here, with no error and no warning, which is how every
-  // drag-and-drop snippet still on the internet fails silently. The path comes
-  // across the preload bridge via webUtils.getPathForFile instead.
-  const entries = files
-    .map(f => ({
-      path: (window.harness && window.harness.pathForFile) ? window.harness.pathForFile(f) : '',
-      // A dropped folder arrives as a File with no type and a size the OS makes
-      // up. Sent as a HINT only -- the host stats the path rather than trusting
-      // either field.
-      isDirectory: !f.type && !(f.size > 0),
-    }))
-    .filter(x => x.path);
-
-  if (!entries.length) return;
+// The drop's own path, for a drop and for files pasted with Ctrl+V (BACKLOG #136 (1)). `File.path` WAS REMOVED IN ELECTRON 32 and
+// this app is on 33: the path comes across the preload bridge via webUtils.getPathForFile (app/paste-action.js fileEntries).
+function sendDropFiles(files) {
+  const entries = fileEntries(files, window.harness && window.harness.pathForFile);
+  if (!entries.length) return false;
   usage('terminal:drop');
   // Through the confirm, like typing and pasting: a dropped file types its path into the prompt, and that is
   // the person's own act in a worktree an agent may be writing in (PR #96 Miguel S5).
   userInput(JSON.stringify({ type: 'drop', entries }));
-});
+  return true;
+}
+
+// Ctrl+V with files copied in Explorer (#136 (1), Ricardo 2026-11-06: "Act like a drop"). The clipboard bridge says files are there;
+// main runs a native paste into this page (window.harness.pasteFiles, only when files are ALL the clipboard holds), and its paste
+// event carries every file as a File, which goes down the drop's path above. MEASURED 2026-11-07: main's own clipboard API sees only
+// the first of two copied files; the paste event sees both. Capture phase on the document, so xterm's textarea listener never gets it
+// (it would paste nothing, or raw text). A paste this page asked for is always taken here, files or not, for the same reason.
+let filePasteArmedUntil = 0;
+document.addEventListener('paste', (e) => {
+  const armed = Date.now() < filePasteArmedUntil;
+  const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+  const inTerm = !!(e.target && e.target.closest && e.target.closest('#term'));
+  if (!armed && !(files.length && inTerm)) return;
+  filePasteArmedUntil = 0;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  if (files.length) sendDropFiles(files);
+}, true);
 
 // What the drop did, said out loud. A gesture that silently widens what the
 // session may read is exactly the thing that should not be silent.
@@ -10172,6 +10182,13 @@ async function pasteFromClipboard() {
   } else if (action.kind === 'image') {
     logLine('Ctrl+V (image)', action.data);
     userInput(action.data);
+  } else if (action.kind === 'files' && typeof window.harness.pasteFiles === 'function') {
+    // #136 (1): the files come back in a paste event (the capture listener beside the drop handler), not in this answer
+    logLine('Ctrl+V (files)', '');
+    filePasteArmedUntil = Date.now() + 2000;
+    let r;
+    try { r = await window.harness.pasteFiles(); } catch (err) { r = { ok: false, error: err && err.message }; }
+    if (!r || r.ok !== true) { filePasteArmedUntil = 0; flourish({ icon: '⛔', name: 'Ctrl+V could not paste the copied file' + (r && r.error ? ': ' + r.error : '') }); }
   }
 }
 

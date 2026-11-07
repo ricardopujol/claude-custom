@@ -156,3 +156,70 @@ test('with isSender, the handlers answer any of the window\'s views and nobody e
   assert.strictEqual((await write({ sender: views[1] }, 'x')).ok, true);
   assert.strictEqual((await write({ sender: {} }, 'x')).ok, false);
 });
+
+// --- #136 (1): a file copied in Explorer and pasted with Ctrl+V acts like a drop (Ricardo 2026-11-06) ----------------------------
+// MEASURED 2026-11-07 on the Katana (Electron 33, two files put on the clipboard with Set-Clipboard -Path, as Explorer's Copy does):
+// main's clipboard.availableFormats() is ['text/uri-list'], readText() is '', and readBuffer('FileNameW') holds only the FIRST file's
+// name (UTF-16, NUL-ended). A paste EVENT in the page carries both as File objects whose webUtils.getPathForFile is the real path. So
+// main only says files are there; the page takes them from a native paste, the drop's own source.
+
+const { CLIPBOARD_PASTE_FILES } = require('../app/clipboard-bridge');
+
+function fakeFileClipboard({ text = '', image = false, formats = ['text/uri-list'], fileNameW = 'C:\\x\\a.md\u0000', throws = false } = {}) {
+  const calls = { readBuffer: 0, formats: 0 };
+  return {
+    calls,
+    readText: () => text,
+    readImage: () => ({ isEmpty: () => !image }),
+    availableFormats: () => { calls.formats++; if (throws) throw new Error('locked'); return formats; },
+    readBuffer: (f) => { calls.readBuffer++; if (throws) throw new Error('locked'); return Buffer.from(f === 'FileNameW' ? fileNameW : '', 'utf16le'); },
+  };
+}
+
+test('#136 (1): files copied in Explorer (no text, no image) are reported as files', () => {
+  assert.deepStrictEqual(readClipboard(fakeFileClipboard()), { text: '', hasImage: false, hasFiles: true });
+});
+
+test('#136 (1): either measured sign is enough: the text/uri-list format, or a FileNameW name', () => {
+  assert.strictEqual(readClipboard(fakeFileClipboard({ formats: [] })).hasFiles, true, 'FileNameW alone');
+  assert.strictEqual(readClipboard(fakeFileClipboard({ fileNameW: '' })).hasFiles, true, 'text/uri-list alone');
+  assert.deepStrictEqual(readClipboard(fakeFileClipboard({ formats: [], fileNameW: '' })), { text: '', hasImage: false });
+});
+
+test('#136 (1): text still wins, exactly as before: with text on the clipboard nothing about files is looked at', () => {
+  const cb = fakeFileClipboard({ text: 'hello' });
+  assert.deepStrictEqual(readClipboard(cb), { text: 'hello', hasImage: false });
+  assert.strictEqual(cb.calls.readBuffer + cb.calls.formats, 0);
+});
+
+test('#136 (1): an image still wins over files (the CLI attaches it itself, #8)', () => {
+  assert.deepStrictEqual(readClipboard(fakeFileClipboard({ image: true })), { text: '', hasImage: true });
+});
+
+test('#136 (1): a clipboard whose format reads throw is simply not files', () => {
+  assert.deepStrictEqual(readClipboard(fakeFileClipboard({ throws: true })), { text: '', hasImage: false });
+});
+
+test('#136 (1): the paste-files handler asks the SENDER for a native paste, for the window\'s own pages only', async () => {
+  const ipcMain = fakeIpc();
+  const pasted = [];
+  const win = { webContents: { paste: () => pasted.push('win') } };
+  registerClipboardHandlers({ ipcMain, clipboard: fakeFileClipboard(), win });
+  const handler = ipcMain.handlers.get(CLIPBOARD_PASTE_FILES);
+  assert.strictEqual(typeof handler, 'function', 'the channel is handled');
+  assert.deepStrictEqual(await handler({ sender: win.webContents }), { ok: true });
+  assert.deepStrictEqual(pasted, ['win']);
+  const stranger = { paste: () => pasted.push('stranger') };
+  assert.strictEqual((await handler({ sender: stranger })).ok, false);
+  assert.deepStrictEqual(pasted, ['win'], 'nobody else gets a paste');
+  // and with nothing but files on the clipboard: no text paste can be started from here, so a text-only clipboard is refused too
+  const ipc2 = fakeIpc();
+  const w2 = { webContents: { paste: () => pasted.push('w2') } };
+  registerClipboardHandlers({ ipcMain: ipc2, clipboard: fakeClipboard({ text: 'hunter2' }), win: w2 });
+  assert.strictEqual((await ipc2.handlers.get(CLIPBOARD_PASTE_FILES)({ sender: w2.webContents })).ok, false);
+  assert.ok(!pasted.includes('w2'));
+});
+
+test('#136 (1): the preload invokes the paste-files channel', () => {
+  assert.ok(app('preload.js').includes(`ipcRenderer.invoke('${CLIPBOARD_PASTE_FILES}')`), `preload.js must invoke '${CLIPBOARD_PASTE_FILES}'`);
+});

@@ -34,7 +34,24 @@ function pasteAction(clip) {
   // image. Real text is pasted with its whitespace intact.
   if (text.trim()) return { kind: 'text', text };
   if (clip && clip.hasImage === true) return { kind: 'image', data: IMAGE_PASTE_BYTES };
+  // Files copied in Explorer (BACKLOG #136 (1), Ricardo 2026-11-06: "Act like a drop"): the renderer takes them from a native paste
+  // and sends them down the drop's own path. Last, so a text or image paste is exactly what it was.
+  if (clip && clip.hasFiles === true) return { kind: 'files' };
   return { kind: 'none' };
+}
+
+// Files (from a drop or a pasted file list) -> the drop frame's entries. `pathFor` is the preload's pathForFile
+// (webUtils.getPathForFile: File.path was removed in Electron 32). A folder arrives as a File with no type and a size the OS makes
+// up, so isDirectory is a HINT only: the host stats the path. Files with no path are left out.
+function fileEntries(files, pathFor) {
+  if (typeof pathFor !== 'function' || !files || typeof files.length !== 'number') return [];
+  const out = [];
+  for (const f of Array.from(files)) {
+    let p = '';
+    try { p = pathFor(f) || ''; } catch { p = ''; }
+    if (typeof p === 'string' && p) out.push({ path: p, isDirectory: !(f && f.type) && !(f && f.size > 0) });
+  }
+  return out;
 }
 
 // Plain Ctrl+V on keydown only -- keyup as well would paste twice. Any extra
@@ -107,9 +124,10 @@ function pasteFailureNote(why) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { pasteAction, isPasteKey, copyKeyAction, selectionVisible, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
+  module.exports = { pasteAction, fileEntries, isPasteKey, copyKeyAction, selectionVisible, pasteFrame, pasteFailureNote, IMAGE_PASTE_BYTES };
 } else {
   root.pasteAction = pasteAction;
+  root.fileEntries = fileEntries;
   root.isPasteKey = isPasteKey;
   root.copyKeyAction = copyKeyAction;
   root.selectionVisible = selectionVisible;

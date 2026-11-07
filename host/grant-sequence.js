@@ -14,6 +14,14 @@
  *   3. type `/add-dir <dir>` alone, then require the box to read back as exactly that command (commandTyped);
  *   4. only then send the Enter, alone. If the read-back fails: clear what was typed and send NO Enter.
  * The person's own keys are held while 1-4 run (createInputGate), and drops are run one after another by the caller.
+ *
+ * THE DRAFT IS KEPT (BACKLOG #136 residuals, Ricardo 2026-11-06). Before the first clear the box is read back as one line (draftOf);
+ * once the grants are done and their dialogs answered, that line is typed back with the dropped paths after it. A draft that can't be
+ * read back whole is never cleared: one taller than the box (its head is hidden), or one holding a `[Pasted text #N]` or `[Image #N]`
+ * label (typing the label back would type the label, not what the CLI was holding). Then the folder is reported as not requested and
+ * the paths go after the draft. A drop with no grant puts a space before the paths when the box already holds something (no gluing).
+ * Rows are joined with one space: a soft wrap swallows exactly one (top-bar-display.js commandTyped), and a hard newline can't be typed
+ * back without submitting, so it becomes a space too.
  */
 const { quote } = require('./drop');
 const { liveBox, inputState, commandTyped, scrollCapRows } = require('../app/top-bar-display');
@@ -59,6 +67,21 @@ function boxEmpty(lines, termRows) {
   if (!box || box.length !== 1) return false;
   if (/^❯\s+Try "/.test(box[0])) return true;
   return /^❯\s*$/.test(box[0]) && box.length < scrollCapRows(termRows);
+}
+
+// What the box holds, as the one line that would be typed back: { ok: true, text } ('' for an empty box), or { ok: false, why } when it
+// can't be read back whole. Only an idle box is read; a menu or dialog holds no draft (and grantOne refuses it on its own).
+const HELD_LABEL = /\[(?:Pasted text|Image) #\d+/;
+const TYPE_BACK_CHUNK = 200;       // characters per write: one big write is taken for a paste and collapsed (top-bar-display.js COMMAND_CHUNK)
+function draftOf(lines, termRows) {
+  if (!idleBox(lines)) return { ok: false, why: 'the prompt is not showing' };
+  if (boxEmpty(lines, termRows)) return { ok: true, text: '' };
+  const box = liveBox(lines).box;
+  const cap = scrollCapRows(termRows);
+  if (cap < 1 || box.length >= cap) return { ok: false, why: 'the draft in the prompt is taller than the box, so it could not be read back whole' };
+  const text = box.map((row, i) => (i === 0 ? row.slice(1) : row).trim()).filter(Boolean).join(' ');
+  if (HELD_LABEL.test(text)) return { ok: false, why: 'the draft in the prompt holds a pasted block or an image that typing it back would lose' };
+  return { ok: true, text };
 }
 
 // The screen as it is NOW: xterm parses the pty's output asynchronously, so a read right after a write can see a screen several seconds old
@@ -135,16 +158,31 @@ async function waitDrawn(env) {
 /**
  * One drop, start to end. Grants run one at a time, each with its own read-back; the next waits for the previous one's dialog to be
  * answered. `onGranted(dir)` runs only after that grant's Enter went out, `onFailed(dir, reason)` for every folder that was not
- * requested. The path text is typed last, only at an idle prompt.
+ * requested. The path text is typed last, only at an idle prompt, after the draft the grants cleared (#136 (2)).
  *   env: { lines(), termRows(), write(data), sleep(ms), keyGap, exclusive(fn), log(line) }
  */
 async function runDrop({ dirs = [], text = '', env, onGranted = () => {}, onFailed = () => {} }) {
+  // #136 (2): the draft is read in the SAME held stretch as the first grant's clear, so no key the person types can slip in between the
+  // read and the clear and be lost. A draft that can't be read back whole stops the drop's grants before anything is cleared.
+  let draft = '';
   for (let i = 0; i < dirs.length; i++) {
     const dir = dirs[i];
-    const r = await env.exclusive(() => grantOne(dir, env));
+    const r = await env.exclusive(async () => {
+      if (i === 0) {
+        const lines = await readScreen(env);
+        const before = draftOf(lines, env.termRows());
+        if (before.ok) draft = before.text;
+        else if (idleBox(lines)) return { ok: false, reason: before.why, keepDraft: true };
+      }
+      return grantOne(dir, env);
+    });
+    if (r.keepDraft) {
+      for (const d of dirs) { env.log(`[host] grant of ${d} not requested: ${r.reason}`); onFailed(d, r.reason); }
+      break;
+    }
     if (!r.ok) { env.log(`[host] grant of ${dir} not requested: ${r.reason}`); onFailed(dir, r.reason); continue; }
     onGranted(dir);
-    if (i < dirs.length - 1 || text) {
+    if (i < dirs.length - 1 || text || draft) {
       // First see the dialog DRAWN, then wait for it to go: right after the Enter the screen can still read as an idle prompt
       // (the dialog's frame is on its way), and the next keys would land in it (Dexter R2-2).
       if (!(await waitDrawn(env))) env.log(`[host] grant: no dialog drawn within ${DIALOG_SEEN_MS} ms of the Enter for ${dir}; carrying on`);
@@ -156,9 +194,21 @@ async function runDrop({ dirs = [], text = '', env, onGranted = () => {}, onFail
       }
     }
   }
-  if (!text) return;
-  if (dirs.length && !idleBox((await readScreen(env)))) { env.log('[host] drop text not typed: the prompt is not showing'); return; }
-  await env.exclusive(async () => { env.write(text); });
+  if (!text && !draft) return;
+  await env.exclusive(async () => {
+    const now = await readScreen(env);
+    if (dirs.length && !idleBox(now)) { env.log('[host] drop text not typed: the prompt is not showing'); return; }
+    // An emptied box gets the draft back first; a box still holding something (no grant cleared it) gets a space before the paths (#136 (3)).
+    const empty = boxEmpty(now, env.termRows());
+    const out = draft && empty ? (text ? draft + ' ' + text : draft) : (text ? (empty ? '' : ' ') + text : '');
+    if (!out) return;
+    if (draft && empty) env.log('[host] drop: the draft is typed back (' + draft.length + ' characters) with the path after it');
+    const chars = Array.from(out);
+    for (let at = 0; at < chars.length; at += TYPE_BACK_CHUNK) {
+      if (at > 0) await env.sleep(env.keyGap);
+      env.write(chars.slice(at, at + TYPE_BACK_CHUNK).join(''));
+    }
+  });
 }
 
 /**
@@ -182,6 +232,6 @@ function createInputGate({ write }) {
 }
 
 module.exports = {
-  runDrop, grantOne, clearBox, waitIdle, idleBox, boxEmpty, createInputGate, scrollCapRows,
+  runDrop, grantOne, clearBox, waitIdle, idleBox, boxEmpty, draftOf, createInputGate, scrollCapRows,
   CTRL_E, CTRL_U, MAX_CLEAR_PASSES, KEY_GAP_MS, DIALOG_WAIT_MS,
 };
