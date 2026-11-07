@@ -15,6 +15,8 @@
  *   3b a drag from a rail icon onto the window's right rim (inside the rail's outer 14 px) docks it along the right edge
  *   4  a drag from a rail icon that ends where it started (on its own place in the rail) changes nothing and opens no panel
  *   5  a rail icon held still for 320 ms is a drag (250 ms threshold): its release opens no panel and changes nothing
+ *   5b PR #241 Dexter 1: a hold pressed inside the window's right rim and let go without moving changes nothing and saves nothing;
+ *      a hold, then a move, then a release still docks
  *   6  a drop between two rail tabs puts the tab there: one insertion line mid-drag, the rail redrawn in the new order, the docked
  *      groups unchanged, layout-tree.json holding the order and the railOrdered mark
  *   7  after a restart of the window the rail comes back in that order
@@ -290,6 +292,24 @@ async function main() {
   s = await stateFor(app, () => true);
   check('5: a rail icon held still 320 ms is a drag (ghost up), and its release opens no panel and changes nothing',
     r.ok && r.during.dragging && r.during.ghost && r.peek === null && JSON.stringify(railOrder(s)) === JSON.stringify(grouped), JSON.stringify([r, railOrder(s)]));
+
+  // 5b: PR #241 Dexter 1 (High). A hold pressed at x = dock.width - 8 (on the button, inside the window's right rim) and let go
+  // there was judged at the press point, so the right rim docked the panel along the right edge and saved it. A drop needs movement.
+  s = await reset();
+  const fogBtn = dockRail(s).tabRects[dockRail(s).modules.indexOf('fog')];
+  await sleep(500);                                       // the reset's own save has landed
+  const savedBefore = fs.readFileSync(TREE_FILE, 'utf8');
+  r = await view(app, 'railPress', { id: 'fog', how: 'hold', pressAt: { x: s.dock.width - 8, y: fogBtn.top - s.dock.top + fogBtn.height / 2 } });
+  await sleep(500);
+  s = await stateFor(app, () => true);
+  check('5b: a hold in the right rim let go without moving docks nothing, reorders nothing, saves nothing and opens no panel',
+    r.ok && r.during.dragging && r.peek === null && JSON.stringify(railOrder(s)) === JSON.stringify(grouped) && JSON.stringify(groupTabs(s)) === JSON.stringify(docked)
+      && fs.readFileSync(TREE_FILE, 'utf8') === savedBefore, JSON.stringify([r, railOrder(s), groupTabs(s)]));
+  const termAt = { x: s.termwrap.left - s.dock.left + 20, y: s.termwrap.top - s.dock.top + s.termwrap.height / 2 };
+  r = await view(app, 'railPress', { id: 'fog', how: 'hold', to: termAt });
+  s = await stateFor(app, v => v.groups.some(g => g.tabs.includes('fog')));
+  check('5b: ...and a hold, then a move to the terminal\'s left band, then the release still docks it there',
+    r.ok && s.groups.some(g => g.tabs.includes('fog')) && !railOrder(s).includes('fog'), JSON.stringify([r, railOrder(s), groupTabs(s)]));
 
   // 6 -------------------------------------------------------------------------------------------
   s = await reset();

@@ -63,8 +63,21 @@ test('a tab name keeps its 5 px', () => {
 
 test('a rail button held still for 250 ms starts the drag; 249 ms does not', () => {
   assert.deepEqual(run([down(100, 100, 1000), { type: 'hold', t: 1249 }], D.PRESS.rail).effects, ['none', 'none']);
-  const r = run([down(100, 100, 1000), { type: 'hold', t: 1250 }, up(1300)], D.PRESS.rail);
-  assert.deepEqual(r.effects, ['none', 'start', 'drop'], 'a long press is a drag, and its release no click');
+  const r = run([down(100, 100, 1000), { type: 'hold', t: 1250 }, move(110, 100, 1260), up(1300)], D.PRESS.rail);
+  assert.deepEqual(r.effects, ['none', 'start', 'move', 'drop'], 'a long press is a drag, and its release no click');
+});
+
+// PR #241 Dexter 1 (High): a hold-started drag released where it was pressed was judged at the press point; pressed in the
+// window's right rim (the rail's outer 14 px), that docked the panel along the right edge and saved it. A drop needs movement.
+test('a hold released without moving past the distance is a cancel, never a drop and never a click', () => {
+  assert.deepEqual(run([down(100, 100, 0), { type: 'hold', t: 300 }, up(320)], D.PRESS.rail).effects, ['none', 'start', 'cancel']);
+  assert.deepEqual(run([down(100, 100, 0), { type: 'hold', t: 300 }, move(103, 104, 310), move(100, 99, 315), up(320)], D.PRESS.rail).effects,
+    ['none', 'start', 'move', 'move', 'cancel'], 'a wobble under the distance after the hold is still no drop');
+});
+
+test('a hold, then a move past the distance, then a release is a drop: the drag moved', () => {
+  assert.deepEqual(run([down(100, 100, 0), { type: 'hold', t: 300 }, move(106, 100, 310), move(100, 100, 320), up(330)], D.PRESS.rail).effects,
+    ['none', 'start', 'move', 'move', 'drop'], 'once it has moved the distance, coming back to the press point still drops');
 });
 
 test('a small move after the hold time starts the drag too (the timer may come late)', () => {
@@ -131,5 +144,9 @@ test('property: one press is a click or a drag, never both, and only a press tha
       || (e.type === 'hold' && opts.holdMs !== null && e.t >= opts.holdMs));
     assert.equal(starts === 1, crossed, 'a drag exactly when a threshold was crossed');
     assert.equal(clicks, !cancelled && !crossed ? 1 : 0, 'a click exactly when released without crossing one');
+    // Dexter 1: a drop needs movement. A drag only a hold started, released before any move went the distance, is a cancel.
+    const movedFar = mid.some(e => e.type === 'move' && Math.hypot(e.x, e.y) >= opts.distance);
+    const drops = effects.filter(e => e === 'drop').length;
+    assert.equal(drops, !cancelled && starts === 1 && movedFar ? 1 : 0, 'a drop exactly when the drag moved the distance and was released');
   }), RUNS);
 });

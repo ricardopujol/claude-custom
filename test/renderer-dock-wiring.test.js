@@ -174,6 +174,10 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   const release = JS.slice(up, JS.indexOf('\n  });', up));
   assert.match(release, /if \(d\.target\.rail === 'dock'\) \{ commitPlacement\(DTm\.moveOnRail\(settledLayout\(\), d\.id, d\.target\.before\)\); return; \}/);
   assert.ok(release.indexOf('end();') < release.indexOf('moveOnRail'), 'ended before the reorder redraws the rail');
+  // PR #241 Dexter 1: only pressStep's 'drop' commits. A hold-started drag released unmoved answers 'cancel', and a cancel never docks.
+  assert.match(release, /const effect = feed\(\{ type: 'up' \}\);/);
+  assert.match(release, /if \(!d \|\| effect !== 'drop' \|\| !d\.target\) return;/);
+  assert.ok(release.indexOf("effect !== 'drop'") < release.indexOf('commitPlacement('), 'judged before anything is committed');
 });
 
 test('D2: a float move or resize is drawn while it goes and saved once on release, on the placement as it is NOW; a press only raises, in the selection', () => {

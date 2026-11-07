@@ -260,11 +260,13 @@ const PRESS = Object.freeze({
 const NOTHING = (state) => ({ state, effect: 'none' });
 
 /**
- * One step of a press. `state`: null (nothing pressed), { phase: 'pressed', x, y, t } or { phase: 'dragging' }. `ev`:
- * { type: 'down', x, y, t } | { type: 'move', x, y, t } | { type: 'hold', t } (the page's timer) | { type: 'up' } | { type: 'cancel' }.
- * `opts`: PRESS.rail or PRESS.tab (anything else reads as the rail's). Answers { state, effect }, effect one of
- * 'none' | 'start' (the drag begins here) | 'move' | 'drop' | 'click' | 'cancel'. A press that crosses neither threshold before
- * its release is a 'click'; once 'start' is answered, the release is a 'drop' and no click.
+ * One step of a press. `state`: null (nothing pressed), { phase: 'pressed', x, y, t } or { phase: 'dragging', x, y, t, moved }
+ * (x, y, t: the press point). `ev`: { type: 'down', x, y, t } | { type: 'move', x, y, t } | { type: 'hold', t } (the page's timer)
+ * | { type: 'up' } | { type: 'cancel' }. `opts`: PRESS.rail or PRESS.tab (anything else reads as the rail's). Answers
+ * { state, effect }, effect one of 'none' | 'start' (the drag begins here) | 'move' | 'drop' | 'click' | 'cancel'. A press that
+ * crosses neither threshold before its release is a 'click'; once 'start' is answered there is no click. A drop needs movement
+ * (PR #241 Dexter 1): the release of a drag that never got the distance from its press point (a hold let go where it was
+ * pressed) is a 'cancel', so it can't dock in whatever rim the press point sits in.
  */
 function pressStep(state, ev, opts) {
   const o = isObject(opts) && isNumber(opts.distance) && opts.distance >= 0 ? opts : PRESS.rail;
@@ -277,17 +279,22 @@ function pressStep(state, ev, opts) {
     return NOTHING({ phase: 'pressed', x: ev.x, y: ev.y, t: isNumber(ev.t) ? ev.t : 0 });
   }
   if (!st) return NOTHING(null);
-  if (type === 'up') return { state: null, effect: st.phase === 'dragging' ? 'drop' : 'click' };
+  if (type === 'up') {
+    if (st.phase !== 'dragging') return { state: null, effect: 'click' };
+    return { state: null, effect: st.moved === true ? 'drop' : 'cancel' };
+  }
   if (type === 'cancel') return { state: null, effect: st.phase === 'dragging' ? 'cancel' : 'none' };
   const held = isNumber(ev.t) && hold !== null && ev.t - st.t >= hold;
+  const dragging = moved => ({ phase: 'dragging', x: st.x, y: st.y, t: st.t, moved });
   if (type === 'hold') {
     if (st.phase !== 'pressed' || !held) return NOTHING(st);
-    return { state: { phase: 'dragging' }, effect: 'start' };
+    return { state: dragging(false), effect: 'start' };
   }
   if (type === 'move') {
     if (!isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
-    if (st.phase === 'dragging') return { state: st, effect: 'move' };
-    if (Math.hypot(ev.x - st.x, ev.y - st.y) >= o.distance || held) return { state: { phase: 'dragging' }, effect: 'start' };
+    const far = Math.hypot(ev.x - st.x, ev.y - st.y) >= o.distance;
+    if (st.phase === 'dragging') return { state: far && st.moved !== true ? dragging(true) : st, effect: 'move' };
+    if (far || held) return { state: dragging(far), effect: 'start' };
     return NOTHING(st);
   }
   return NOTHING(st);

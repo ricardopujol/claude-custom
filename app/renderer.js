@@ -3126,12 +3126,13 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   window.addEventListener('pointerup', () => {
     if (!press) return;
     const d = drag;
-    feed({ type: 'up' });
+    const effect = feed({ type: 'up' });
     // Ended BEFORE the drop redraws: the redraw removes the dragged tab's button,
     // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
     end();
-    if (!d) return;                                     // never dragged: the click that follows selects the tab, or opens the rail's panel
-    if (!d.target) return;
+    // Never dragged: the click that follows selects the tab, or opens the rail's panel. Dragged but never moved the distance
+    // (a hold released where it was pressed): 'cancel', a no-op wherever the press point is, even in a rim (PR #241 Dexter 1).
+    if (!d || effect !== 'drop' || !d.target) return;
     // A place on the dock's rail: only the rail's order changes, nothing docks (#109).
     if (d.target.rail === 'dock') { commitPlacement(DTm.moveOnRail(settledLayout(), d.id, d.target.before)); return; }
     // The terminal's middle floats the panel where it was dropped: the model says where (D2).
@@ -3731,11 +3732,16 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (!btn) return JSON.stringify({ ok: false, error: 'no such rail button' });
         const icon = btn.querySelector('.rail-icon-box') || btn;
         const from = icon.getBoundingClientRect();
-        const x0 = from.left + from.width / 2;
-        const y0 = from.top + from.height / 2;
+        // `pressAt` ({ x, y } relative to #dock): press there on the button instead of the icon's middle (PR #241 Dexter 1: the rim).
+        const dockBox = document.getElementById('dock').getBoundingClientRect();
+        const x0 = a.pressAt ? dockBox.left + a.pressAt.x : from.left + from.width / 2;
+        const y0 = a.pressAt ? dockBox.top + a.pressAt.y : from.top + from.height / 2;
         icon.dispatchEvent(ptr('pointerdown', x0, y0));
-        if (a.how === 'hold') await new Promise(r => setTimeout(r, 320));
-        else if (a.how === 'drag') {
+        if (a.how === 'hold') {
+          await new Promise(r => setTimeout(r, 320));
+          // A hold, then a move to `to`: the drag the hold started, moved and dropped there.
+          if (a.to) { const x1 = dockBox.left + a.to.x; const y1 = dockBox.top + a.to.y; window.dispatchEvent(ptr('pointermove', x1, y1)); window.__railPressAt = { x: x1, y: y1, btn }; }
+        } else if (a.how === 'drag') {
           window.dispatchEvent(ptr('pointermove', x0 + 8, y0));
           let x1;
           let y1;
