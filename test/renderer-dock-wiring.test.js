@@ -187,6 +187,9 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   // PR #241 Dexter 4 / Miguel L6: only a module ON the dock rail gets the rail's slots, so a docked tab over the rail draws no line
   // (verify/probe-rail-drag.js case 2 reads the lines mid-drag).
   assert.match(JS, /const railed = placementLayout\(\)\.rail;\n\s+if \(!Array\.isArray\(railed\) \|\| !railed\.includes\(id\)\) return null;/);
+  // PR #241 Miguel L7: a drag measures the dock, its size and the rail once; a resize mid-drag would leave all three stale, so it
+  // ends the drag, as a blur does, and nothing is committed.
+  assert.match(JS, /window\.addEventListener\('resize', \(\) => \{ cancelTabDrag\(\); \}\);/);
   // PR #241 Miguel L5: the move path. A pointermove keeps the point and feeds pressStep; its 'start' begins the drag and follows
   // the point, its 'move' follows it; nothing else draws a drag.
   const moveAt = JS.search(/window\.addEventListener\('pointermove', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId/);

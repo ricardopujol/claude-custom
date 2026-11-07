@@ -3188,6 +3188,9 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
   window.addEventListener('blur', () => { cancelTabDrag(); });
+  // The dock's rectangle, its size and the rail were measured at the drag's start: a resize makes them stale, so it ends the
+  // drag with nothing moved, as a blur does (PR #241 Miguel L7).
+  window.addEventListener('resize', () => { cancelTabDrag(); });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
   }, true);
@@ -3817,6 +3820,11 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (typeof a.scroll === 'number' && rail) {
           rail.scrollTop = a.scroll;
           await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));     // the scroll event has run
+        }
+        // `resize`: the window's resize event mid-drag (PR #241 Miguel L7), and what the drag looks like after it.
+        if (a.resize === true) {
+          window.dispatchEvent(new Event('resize'));
+          return JSON.stringify({ ok: true, after: overlayState() });
         }
         const linesAfterScroll = document.querySelectorAll('#dock-overlay .dz.line').length;
         let x1 = held.x;

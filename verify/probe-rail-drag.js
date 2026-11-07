@@ -403,6 +403,18 @@ async function main() {
     r.ok && r.during.lines === 0 && r.during.hot === 1 && !!mg && mg.rect.right <= s.termwrap.left + 1 && r.peek === null, JSON.stringify([r.during, mg && mg.rect, s.termwrap.left]));
   await view(app, 'layout', { layout: START });
 
+  // 10: PR #241 Miguel L7. A resize mid-drag ends it: the measurements it holds are stale. Nothing docks on the release after.
+  s = await reset();
+  const docked10 = groupTabs(s);
+  const t10 = { x: s.termwrap.left - s.dock.left + 20, y: s.termwrap.top - s.dock.top + s.termwrap.height / 2 };
+  r = await view(app, 'railPress', { id: 'git', how: 'drag', to: t10, release: false });
+  let mv = await view(app, 'railPressMove', { resize: true });
+  const rel = await view(app, 'railRelease');
+  s = await stateFor(app, () => true);
+  check('10: a window resize mid-drag ends the drag (no ghost, no zones); the release after docks nothing and opens no panel',
+    r.ok && r.during.dragging && mv.ok && !mv.after.dragging && !mv.after.ghost && mv.after.zones === 0 && rel.ok && rel.peek === null
+      && JSON.stringify(groupTabs(s)) === JSON.stringify(docked10) && railOrder(s).includes('git'), JSON.stringify([mv, rel, groupTabs(s)]));
+
   // 8: PR #241 Dexter 2 / Miguel M2. Every panel on the rail in a short dock: the rail overflows and scrolls. The slots were measured
   // once at the drag's start, so a scroll mid-drag put the line and the drop in the wrong gap. Now a scroll measures them again,
   // and a pointer held near the rail's end scrolls it.
@@ -416,7 +428,7 @@ async function main() {
   const moving = full[0];
   const target = full[full.length - 2];
   r = await view(app, 'railPress', { id: moving, how: 'drag', before: full[3], release: false });
-  let mv = await view(app, 'railPressMove', { scroll: 100000, before: target });
+  mv = await view(app, 'railPressMove', { scroll: 100000, before: target });
   check(`8: scrolled to the end mid-drag, the line follows the buttons: it sits at the gap above ${target}, where the pointer is`,
     r.ok && mv.ok && mv.scrollTop > 0 && mv.lines === 1 && mv.lineTop !== null && Math.abs(mv.lineTop - (mv.pointerY - 3)) <= 8 /* a separator's gap puts it up to 6 px above the button */, JSON.stringify(mv));
   r = await view(app, 'railRelease');
