@@ -13,6 +13,14 @@
  * running code from before them rewrites the file without them, which wipes the tombstones and degrades to "a lane this window
  * reopened is removed, one another window closed stays closed" for as long as the two builds share a project.
  *
+ * Mixed versions, BACKLOG #160 (PR #236 Dexter 9). Develop is held in `closed` like a lane (its key is `<container>\dev`). A
+ * window running code from before #160 that reads a file with develop in `closed` seeds it into its reducer's `dismissed`, so it
+ * opens with NO develop tab, and its first selection falls to the first lane, which STARTS a claude there that nobody chose (and
+ * that build has no merged check, so it may be a merged lane). Nothing in this file can stop that: the old build is the old build.
+ * Reopening develop in a new window, or `/pause`-ing the old one, ends it. The other way round is harmless: a new window reads an
+ * old file (no develop in `closed`) as develop open. The merged close (#139) writes nothing here: it only stops a session, and the
+ * folder's removal closes the tab. A `merged: true` an earlier build of that PR wrote is dropped on read (cleanClosed).
+ *
  * A key is the shell's own (app/tab-shell.js keyOf: the lower-cased worktree path), so it is only compared, never parsed.
  * `closed` is most recent first. Parsing is strict and drops what it doesn't understand one entry at a time; a FILE that
  * can't be read (any error but "missing") or isn't an object is an unknown store: load reports an error, and save refuses to
@@ -54,6 +62,8 @@ function cleanClosed(list) {
     if (!key || !p || out.some(x => x.key === key)) continue;
     // Reopen finds a lane by `key` and un-closes it by `path`; a pair that disagrees would leave it closed for good (PR #227 Dexter 7).
     if (normPath(p) !== key) continue;
+    // Any other field is dropped, `merged` included: a file written by an earlier build of PR #236 (its merged close left a
+    // `merged: true` Undo row) reads as an ordinary closed lane (Ricardo, 2026-11-06: "B: no Undo").
     out.push({ key, path: p, branch: text(c.branch) });
   }
   return out.slice(0, MAX_CLOSED);
