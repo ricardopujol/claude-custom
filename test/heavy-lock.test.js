@@ -808,7 +808,7 @@ const { watchTick } = require('../host/heavy-lock-watch');
 function tickRig(over = {}) {
   const r = rig(over);
   const d = r.deps();
-  return { r, d, tick: (extra = {}) => watchTick({ run: d.run, startsOf: d.startsOf, work: d.work, log: d.log, parentPid: 7, parentStart: '100', startedAt: 0, now: () => 3 * 60000 + 5000, ...extra }) };
+  return { r, d, tick: (extra = {}) => watchTick({ run: d.run, startsOf: d.startsOf, work: d.work, log: d.log, parentPid: 7, startedAt: 0, now: () => 3 * 60000 + 5000, alive: (p) => r.alive[p] !== undefined, ...extra }) };
 }
 
 test('#178 b watch: says how long the asker has waited and who holds the slot', () => {
@@ -832,16 +832,31 @@ test('#178 b watch: a holder that died during the wait is freed by the dead-hold
   assert.strictEqual(of(orphan.r, '-Release').length, 0, 'its recorded work still runs');
 });
 
-test('#178 b watch: the asker gone (or its pid reused) ends the watcher before it reads or frees anything; "cannot tell" carries on', () => {
-  for (const alive of [{ 7: undefined }, { 7: '999' }]) {
-    const { r, tick } = tickRig({ holder: `${DEAD} (since 09:00:00)` });
-    Object.assign(r.alive, alive);
-    if (alive[7] === undefined) delete r.alive[7];
-    assert.strictEqual(tick(), 'asker-gone');
-    assert.strictEqual(r.calls.length, 0);
+test('#178 b watch: the asker gone ends the watcher before it reads or frees anything; "cannot tell" carries on', () => {
+  const { r, tick } = tickRig({ holder: `${DEAD} (since 09:00:00)` });
+  delete r.alive[7];
+  assert.strictEqual(tick(), 'asker-gone');
+  assert.strictEqual(r.calls.length, 0);
+  const t = tickRig({ holder: 'hub: probes (since 10:00:00)' });
+  assert.strictEqual(t.tick({ alive: () => { throw new Error('cannot ask'); } }), 'waiting');
+});
+
+test('#237 Miguel M1: one tick costs one status read, and a start query only for a "(pid N start T)" holder; never one for the asker', () => {
+  for (const [holder, queries] of [[`${DEAD} (since 09:00:00)`, 1], ['hub: probes (since 10:00:00)', 0]]) {
+    const { r, tick } = tickRig({ holder, alive: { 5000: '777' } });
+    const asked = [];
+    tick({ startsOf: (pids) => { asked.push(pids); return r.startsOf(pids); } });
+    assert.strictEqual(r.calls.filter(a => a.length === 0).length, 1, `${holder}: the status is read once and handed to the reclaim`);
+    assert.strictEqual(asked.length, queries, holder);
+    assert.ok(!asked.some(p => p.includes(7)), 'the asker is checked with process.kill(pid, 0), not a query');
   }
-  const t = tickRig({ holder: 'hub: probes (since 10:00:00)', startsFail: true });
-  assert.strictEqual(t.tick(), 'waiting');
+});
+
+test('#237 Miguel M1: pidAlive tests liveness with process.kill(pid, 0): this process runs, a pid nobody has does not', () => {
+  const { pidAlive } = require('../host/heavy-lock-watch');
+  assert.strictEqual(pidAlive(process.pid), true);
+  // Windows pids are multiples of 4 well below this; an odd number past 2^31 is never a live process.
+  assert.strictEqual(pidAlive(2147483647), false);
 });
 
 test('#178 b watch: a free slot and an unreadable status are said as such', () => {
@@ -987,7 +1002,8 @@ function loopRig({ alive = true, statusThrows = false } = {}) {
   l.deps = {
     log: (m) => l.log.push(m), exit: (c) => l.exits.push(c), now: () => l.t,
     run: () => { l.runs++; if (statusThrows) throw new Error('no powershell'); return { status: 0, stdout: 'held: hub: probes (since 10:00:00)' }; },
-    startsOf: () => (alive === 'cant-tell' ? null : alive ? new Map([[7, '100']]) : new Map()),
+    startsOf: () => new Map([[7, '100']]),
+    alive: () => { if (alive === 'cant-tell') throw new Error('cannot ask'); return alive; },
     work: { read: () => [], clear() {} },
     setTimer: (fn, ms) => l.timers.push({ fn, ms }),
   };
