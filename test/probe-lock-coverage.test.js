@@ -78,7 +78,8 @@ test('the classifier: each heavy kind is seen, a read of claude.exe or a comment
   assert.deepStrictEqual(heavyKinds("const p = pty.spawn(BIN, args); // BIN = claude.exe\nconst BIN = 'claude.exe';"), ['claude']);
   assert.deepStrictEqual(heavyKinds("pty.spawn('cmd.exe', ['/c', 'claude', ...args])"), ['claude']);
   assert.deepStrictEqual(heavyKinds("const exe = resolveClaudeExe(); const s = spawnSync(ps, []);"), ['claude']);
-  assert.deepStrictEqual(heavyKinds("const { askClaude } = require('../host/ask-claude'); const r = execFile('git', []);"), ['claude']);
+  // path.join form: test/stryker-config.test.js reads a literal require('../host/...') in a test file as exercising that module
+  assert.deepStrictEqual(heavyKinds("const { askClaude } = require(path.join(ROOT, 'host', 'ask-claude')); const r = execFile('git', []);"), ['claude']);
   assert.deepStrictEqual(heavyKinds("const o = createAskOllama();"), ['ollama']);
   assert.deepStrictEqual(heavyKinds("fetch('http://127.0.0.1:11434/api/tags')"), ['ollama']);
   assert.deepStrictEqual(heavyKinds("const exe = path.join(root, 'claude.exe'); fs.readFileSync(exe);"), [], 'reading claude.exe starts nothing');
