@@ -684,6 +684,10 @@ const describe = (agent, state, detail) => {
   if (BG_WAIT_DETAILS.has(d)) out.wait = mood.waitOf(agent);
   const cause = state === 'stressed' ? mood.causeOf(agent) : null;
   if (cause) out.cause = cause;
+  // BACKLOG #142 b: two or more runs of the agent are one card each (host/mood-machine.js instancesOf), each wearing the picture of
+  // its own state, by the same rule as the name's card above.
+  const instances = mood.instancesOf(agent);
+  if (instances) out.instances = instances.map((i) => ({ ...i, portrait: portraitOf(agent, BG_WAIT_DETAILS.has(i.detail) ? i.state : i.detail, i.state) }));
   return out;
 };
 

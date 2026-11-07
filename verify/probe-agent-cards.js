@@ -11,6 +11,15 @@
  *         roster's markup is replaced while the button is held.
  *    Each case records whether a `click` reached the button. Then the repaint rate: how many times the roster's
  *    markup is really replaced in 10 s of an agent working with no new events, and in 10 s of one hook event a second.
+ *    Measured 2026-11-07: the click is DROPPED (mousedown lands on the old button, mouseup on its replacement, so no
+ *    `click` fires); a rebuild with nothing changed replaces no markup, and neither do 10 s of quiet; 10 s of one event a
+ *    second on another agent replaced it 7 times. Recorded here, left for the hub (#17 F4).
+ * B. BACKLOG #162: a stressed card carries its cause as its hover (the card's title, and the words under its name), and a
+ *    picture of it hovered: agent-card-stressed-hover.png. The OS draws a native tooltip outside the page, where capturePage
+ *    can't see it, so the probe draws the card's own title text in a tooltip-styled box at the hover point.
+ * C. BACKLOG #142 b: two instances of one agent are two cards (data-instance = each spawn's tool_use_id), each its own state,
+ *    no ×N badge; one finishing flashes, then leaves. Picture: agent-card-two-instances.png.
+ * Pictures go to %TEMP%\cc-try\, through the app's own capturePage (never the screen).
  *
  * `claude` is replaced by cmd.exe (CLAUDE_CUSTOM_BIN) so nothing is billed. Everything goes to temp folders.
  *
@@ -153,6 +162,61 @@ app.whenReady().then(async () => {
     const busy = await js('window.__repaints');
     console.log('[F4] markup replacements in 10 s of one Bash call starting or ending a second on another agent: ' + busy);
     check('busy: the roster is replaced when a card changes', busy > 0, busy);
+
+    // Pictures, through the app's own capturePage (never the screen): the roster panel's rectangle.
+    const SHOTS = path.join(require('os').tmpdir(), 'cc-try');
+    const shot = async (name) => {
+      fs.mkdirSync(SHOTS, { recursive: true });
+      const r = JSON.parse(await js('JSON.stringify((() => { const b = document.querySelector("[data-panel=agents]").getBoundingClientRect();' +
+        ' return { x: Math.max(0, Math.floor(b.left)), y: Math.max(0, Math.floor(b.top)), width: Math.ceil(b.width), height: Math.min(Math.ceil(b.height), window.innerHeight - Math.max(0, Math.floor(b.top))) }; })())'));
+      const img = await win.webContents.capturePage(r);
+      const file = path.join(SHOTS, name);
+      fs.writeFileSync(file, img.toPNG());
+      console.log('[shot] ' + file);
+      return file;
+    };
+
+    // B. BACKLOG #162: a stressed card says why on hover (its title, and the words under its name).
+    send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), tool_input: { command: 'npm test' }, tool_response: { exit_code: 1 }, ...by('probe-click') });
+    const SC = '#agents .agent[data-agent=\\'probe-click\\']';
+    const title = await until('(() => { const c = document.querySelector("' + SC + '"); return c && c.dataset.state === "stressed" && c.getAttribute("title"); })()', 10000);
+    check('B. the stressed card carries its cause as its hover', title === 'A Bash call failed', title);
+    const stateTitle = await js('(() => { const s = document.querySelector("' + SC + ' .state"); return s && s.getAttribute("title"); })()');
+    check('B. ...and the words under its name carry the same', stateTitle === title, stateTitle);
+    // A native tooltip is drawn by the OS, outside the page, so capturePage can't see it: the probe draws the card's OWN title text
+    // in a tooltip-styled box at the hover point (id probe-tooltip), and takes it away after the picture.
+    const at = await js('(() => { const c = document.querySelector("' + SC + '"); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect();' +
+      ' const d = document.createElement("div"); d.id = "probe-tooltip"; d.textContent = c.getAttribute("title");' +
+      ' Object.assign(d.style, { position: "fixed", left: Math.round(r.left + 24) + "px", top: Math.round(r.top + r.height / 2 + 16) + "px", background: "#ffffe1", color: "#000",' +
+      ' border: "1px solid #767676", font: "12px Segoe UI, sans-serif", padding: "2px 6px", zIndex: 9999, pointerEvents: "none", whiteSpace: "nowrap" });' +
+      ' document.body.appendChild(d); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()');
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y });
+    await sleep(500);
+    await shot('agent-card-stressed-hover.png');
+    await js('document.getElementById("probe-tooltip").remove(); true');
+
+    // C. BACKLOG #142 b: two instances of one agent are two cards, each with its own state; no ×N badge.
+    const twin = (k) => ({ agent_id: 'aprobe-twin-' + String(7000 + k).padStart(16, '0'), agent_type: 'probe-twin' });
+    for (const k of [1, 2]) {
+      send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_twin' + k, tool_input: { subagent_type: 'probe-twin' } });
+      send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), tool_input: { command: 'hi ' + k }, tool_response: { exit_code: 0 }, ...twin(k) });
+    }
+    send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), tool_input: { command: 'npm test' }, tool_response: { exit_code: 1 }, ...twin(2) });
+    const TW = '#agents .agent[data-agent=\\'probe-twin\\']';
+    const twins = await until('(() => { const cs = [...document.querySelectorAll("' + TW + '")]; if (cs.length !== 2 || cs[1].dataset.state !== "stressed") return null;' +
+      ' return JSON.stringify(cs.map(c => ({ instance: c.dataset.instance, state: c.dataset.state, title: c.getAttribute("title") }))); })()', 10000);
+    check('C. two instances are two cards, each its own state, keyed by the spawn\\'s id', twins === JSON.stringify([
+      { instance: 'toolu_twin1', state: 'working', title: null }, { instance: 'toolu_twin2', state: 'stressed', title: 'A Bash call failed' }]), twins);
+    check('C. no ×N badge anywhere on the roster', await js('document.querySelectorAll("#agents .agent-count").length === 0'));
+    await js('(() => { document.querySelector("' + TW + '").scrollIntoView({ block: "start" }); return true; })()');
+    await sleep(300);
+    await shot('agent-card-two-instances.png');
+    // One of them finishing: its card flashes, then leaves, and the name is one card again.
+    send('SubagentStop', twin(1));
+    const flashing = await until('(() => { const c = document.querySelector("' + TW + '[data-instance=toolu_twin1]"); return c && c.dataset.state === "happy"; })()', 5000);
+    check('C. a finished instance flashes happy on its own card', !!flashing);
+    const one = await until('document.querySelectorAll("' + TW + '").length === 1', 15000);
+    check('C. ...then leaves: one card for the name again', !!one);
   } catch (err) {
     check('probe ran to completion', false, String(err && err.stack || err));
   }

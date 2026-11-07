@@ -96,7 +96,25 @@ function causeTitle(state, cause) {
   return cause.trim();
 }
 
-const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, FINER_STATES: Object.keys(FINER) };
+// BACKLOG #142 b: the cards one roster row draws. Two or more instances of one agent (the host's `instances`, host/mood-machine.js
+// instancesOf) are one card each: the row's name, entry and portrait, with the instance's own state, detail, cause, wait and
+// portrait, and its id as `instance`. The name's own cause and wait never leak onto an instance card. A row with fewer than two
+// well-formed instances is its one card, unchanged (an older host sends none).
+const goodInstance = (i) => !!i && typeof i === 'object' && typeof i.id === 'string' && i.id !== '' && typeof i.state === 'string';
+function instanceRows(row) {
+  const list = row && Array.isArray(row.instances) ? row.instances.filter(goodInstance) : [];
+  if (list.length < 2) return [row];
+  const { instances, cause, wait, ...base } = row;
+  return list.map((i) => {
+    const card = { ...base, instance: i.id, state: i.state, detail: typeof i.detail === 'string' ? i.detail : i.state,
+      portrait: i.portrait && typeof i.portrait === 'object' ? i.portrait : base.portrait };
+    if (typeof i.cause === 'string') card.cause = i.cause;
+    if (i.wait && typeof i.wait === 'object') card.wait = i.wait;
+    return card;
+  });
+}
+
+const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, instanceRows, FINER_STATES: Object.keys(FINER) };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module system.
 if (typeof module !== 'undefined' && module.exports) {

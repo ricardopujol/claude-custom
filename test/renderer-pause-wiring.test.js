@@ -75,7 +75,7 @@ test('the agent card\'s Pause / Resume: the script loads before renderer.js, the
   // PR #158 Dexter 1 is pinned through the REAL planTyping in test/agent-pause-display.test.js; here only that the click names that kind.
   assert.match(code, /typeCommand\(command, [\s\S]*?window\.agentPauseDisplay\.INPUT_KIND, \{ submit: true, typeOnly: false \}\)/);
   // the click: validated, then typed with the gate (submit true, not type-only), and a refusal puts the phase back
-  const click = code.slice(code.indexOf("closest('.agent-pause-btn')"), code.indexOf('function countBadgeHtml'));
+  const click = code.slice(code.indexOf("closest('.agent-pause-btn')"), code.indexOf("let activeRosterTab = 'active'"));
   assert.match(click, /window\.agentPauseDisplay\.clickAction\(b\.dataset\)/);
   assert.ok(click.includes('window.agentPauseDisplay.commandFor(act.act, act.agent, taskId)'));
   assert.ok(click.includes("agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)"));

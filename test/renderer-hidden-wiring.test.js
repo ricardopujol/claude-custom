@@ -30,7 +30,8 @@ test('the persisted set arrives in hello and is replaced by hidden frames', () =
 test('the hide button is its own element, never inside .face and never a card click', () => {
   const html = SRC.slice(SRC.indexOf('function hideButtonHtml'), SRC.indexOf('function hideButtonHtml') + 700);
   assert.match(html, /<button type="button" class="agent-hide"/);
-  const card = SRC.slice(SRC.indexOf("paintAgents(shown.map"), SRC.indexOf("paintAgents(shown.map") + 900);
+  const card = SRC.slice(SRC.indexOf("paintAgents(shown.flatMap"), SRC.indexOf("paintAgents(shown.flatMap") + 1500);
+  assert.ok(card.length > 0, 'the live roster card is drawn from shown.flatMap (one card per instance, #142 b)');
   // the button is emitted before the face div, i.e. a sibling of it, not a child
   assert.ok(card.indexOf('hideButtonHtml(r)') < card.indexOf('<div class="face"'));
   assert.doesNotMatch(SRC, /\.agent'\)\.addEventListener\('click'/);
