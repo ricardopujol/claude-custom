@@ -18,7 +18,7 @@
 
    Safety: every suspended pid is registered with the hygiene registry (Ctrl+C or a crash resumes it), the shells are ended
    through killProven (pid + start time re-proved on a held handle), and the session through its held pty handle. Nothing is
-   ever killed or suspended by name. Run it under ~/.claude/scripts/heavy-lock.ps1.
+   ever killed or suspended by name. It takes the heavy-work lock itself when it starts.
 
    RESULTS: filled in below after the run. */
 

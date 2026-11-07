@@ -14,7 +14,8 @@
  * ELECTRON_RUN_AS_NODE is stripped from the hosts' environment first (CLAUDE.md traps). Only processes this probe started are
  * stopped, through their own handles (verify/lib/process-hygiene.js), never by name.
  *
- * No Electron and no window, so it doesn't take the heavy lock: three plain node hosts, one at a time, each a few seconds.
+ * No Electron and no window, but its hosts are heavy work, so it takes the heavy-work lock itself (BACKLOG #179): three plain
+ * node hosts, one at a time, each a few seconds.
  *
  * Run: node verify/probe-kill-switch.js        (exit 0 = all three held)
  */

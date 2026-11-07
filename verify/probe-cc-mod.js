@@ -21,7 +21,7 @@
  * the host here always holds its own lease (the poll check below is therefore always meaningful).
  *
  * Traps (CLAUDE.md): ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable are stripped from what the children inherit. No Electron is
- * started, so the heavy lock is not needed. Nothing is killed by name: only the pids this probe started, through host/kill-tree.js.
+ * started; the host and the real claude are heavy work, so it takes the heavy-work lock itself (BACKLOG #179). Nothing is killed by name: only the pids this probe started, through host/kill-tree.js.
  */
 const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn, spawnSync } = require('child_process');

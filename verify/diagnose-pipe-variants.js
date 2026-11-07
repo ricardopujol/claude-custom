@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/launch-electron');   // #243 Miguel I4: takes the heavy-work lock, so its timings are taken on a machine with nothing heavy beside it
 /* Exactly 4 connections succeed then none, independent of pacing -- libuv's
    default pending named-pipe instance count. Question: are instances never
    recycled, and does explicitly releasing the server-side socket recycle them?
