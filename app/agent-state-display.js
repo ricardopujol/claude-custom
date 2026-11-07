@@ -89,7 +89,14 @@ function waitNoteHtml(detail, wait, now) {
   return `<div class="wait-note" data-late="${note.late}">${esc(note.text)}</div>`;
 }
 
-const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, FINER_STATES: Object.keys(FINER) };
+// BACKLOG #162: the hover of a stressed card, the host's own sentence (host/stress-cause.js, on the `mood` frame as `cause`). Only a
+// stressed card shows one, so a cause that outlived its state is never drawn; nothing to show is '' (the card then has no title).
+function causeTitle(state, cause) {
+  if (state !== 'stressed' || typeof cause !== 'string') return '';
+  return cause.trim();
+}
+
+const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, FINER_STATES: Object.keys(FINER) };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module system.
 if (typeof module !== 'undefined' && module.exports) {

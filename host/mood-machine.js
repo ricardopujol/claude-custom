@@ -51,6 +51,11 @@
  *
  * `waiting` has a second source (BACKLOG #119 A2): the claude-custom mod's agent snapshot, see observeAgents().
  *
+ * CAUSE (BACKLOG #162). A stressed card says why: causeOf(agent) is one sentence from host/stress-cause.js, built from the card's
+ * record (every failed call since the name's errors last reset, and the retry series while it lasts). It is present exactly while
+ * the card is `stressed` and null otherwise. A cause that changes while the state and detail don't (a second failure) is announced
+ * as `cards`, so `change` keeps meaning "the state or detail moved".
+ *
  * Reading and writing come from PreToolUse alone (their PostToolUse isn't
  * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
  * are sequential: its newest call (a Pre, or a Post of a call whose only hook
@@ -62,6 +67,7 @@
  */
 
 const { EventEmitter } = require('events');
+const { stressCause, addFailure } = require('./stress-cause');
 
 const SLEEPING = 'sleeping';
 const WORKING = 'working';
@@ -305,11 +311,31 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   function ensure(agent) {
     let a = agents.get(agent);
     if (!a) {
-      a = { state: SLEEPING, detail: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0 };
+      a = { state: SLEEPING, detail: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0,
+        failures: [], repeatTool: null, repeatFrom: null, repeatAt: null, extraSig: null };
       agents.set(agent, a);
     }
     return a;
   }
+
+  // A failed call: the count the state machine reads, and the record the cause is read from, in ONE place so they can't part.
+  function fail(a, what) {
+    a.errors++;
+    addFailure(a.failures, { ...what, at: now() });
+  }
+  // "A fresh run starts clean": the count, the record and the retry series together.
+  function startClean(a) {
+    a.errors = 0;
+    a.failures = [];
+    a.repeats = 0;
+    a.lastSignature = null;
+    a.repeatTool = null;
+    a.repeatFrom = null;
+    a.repeatAt = null;
+  }
+  // The retry series a card is in, for its cause: only while it IS one (RETRY_LIMIT running).
+  const retryOf = (a) => (a.repeats >= RETRY_LIMIT ? { tool: a.repeatTool, count: a.repeats, from: a.repeatFrom, to: a.repeatAt } : null);
+  const causeFor = (a) => (a.state === STRESSED ? stressCause({ failures: a.failures, retry: retryOf(a) }) : null);
 
   // The card's finer name for `state` (see DETAIL, in the header): the best of
   // what its invocations show, or `state` itself.
@@ -342,12 +368,18 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     return best;
   }
 
+  // What the card carries beside its state and detail. A move of it alone is a `cards` event (see CAUSE in the header).
+  const extrasOf = (agent, a) => JSON.stringify([causeFor(a)]);
   function setState(agent, a, state) {
     const detail = refine(agent, a, state);
-    if (a.state === state && a.detail === detail) return;
+    const moved = a.state !== state || a.detail !== detail;
     a.state = state;
     a.detail = detail;
-    machine.emit('change', { agent, state, detail });
+    const extra = extrasOf(agent, a);
+    const extraMoved = extra !== a.extraSig;
+    a.extraSig = extra;
+    if (moved) machine.emit('change', { agent, state, detail });
+    else if (extraMoved) machine.emit('cards', { agent });
   }
 
   // Re-asks every card for its detail: time passing (a linger ending, a silence
@@ -523,7 +555,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     if (!inv || !isOpen(inv)) { lateResult(event, p); return; }
     if (interrupted) { cutOff(subtree(inv)); return; }
     if (event === 'PostToolUseFailure') {
-      ensure(inv.name).errors++;
+      fail(ensure(inv.name), { run: true });
       finish(inv);
       return;
     }
@@ -579,11 +611,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     reapedIds.delete(agentId);
     queued.delete(agentId);
     const a = ensure(name);
-    if (!running(name)) {
-      a.errors = 0;
-      a.repeats = 0;
-      a.lastSignature = null;
-    }
+    if (!running(name)) startClean(a);
     a.flashUntil = 0;
     a.lastActivity = now();
     const inv = {
@@ -724,11 +752,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const a = ensure(agent);
       // "A fresh run starts clean" -- but only if it IS a fresh run (Dexter
       // F4): a parallel second instance must not wipe the first's errors.
-      if (!running(agent)) {
-        a.errors = 0;
-        a.repeats = 0;
-        a.lastSignature = null;
-      }
+      if (!running(agent)) startClean(a);
       a.flashUntil = 0;
       a.lastActivity = now();
       const parent = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
@@ -830,7 +854,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const agent = inv.name;
       const a = ensure(agent);
       if (!callInterrupted && (failureEvent || isFailure(p.tool_response))) {
-        a.errors++;
+        fail(a, { tool, to: p.tool_input && p.tool_input.to });
         a.repeats = 0;
         a.lastSignature = null;
         setState(agent, a, STRESSED);
@@ -838,9 +862,12 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       }
 
       // A repeated identical call reads as a retry loop even when each
-      // individual call reports success.
+      // individual call reports success. The series' tool and first call are
+      // kept for its cause ("the same command 3 times in 40 s").
       const signature = tool + ':' + JSON.stringify(p.tool_input ?? null);
-      a.repeats = signature === a.lastSignature ? a.repeats + 1 : 1;
+      if (signature === a.lastSignature) a.repeats++;
+      else { a.repeats = 1; a.repeatTool = tool; a.repeatFrom = now(); }
+      a.repeatAt = now();
       a.lastSignature = signature;
 
       setState(agent, a, a.repeats >= RETRY_LIMIT ? STRESSED : WORKING);
@@ -1001,6 +1028,8 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // app/agent-card-display.js counts it for the ×N badge).
   machine.stack = () => invs.map(i => i.name);
   machine.detailOf = agent => (agents.get(agent) || { detail: SLEEPING }).detail;
+  // BACKLOG #162: why the card is stressed, one sentence (host/stress-cause.js); null whenever it isn't stressed.
+  machine.causeOf = agent => { const a = agents.get(agent); return a ? causeFor(a) : null; };
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state, detail: a.detail }));
   // Sizes of the per-host bookkeeping, for the test that it stays bounded.
   machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size,

@@ -6222,7 +6222,10 @@ function renderRoster() {
     // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
     // `data-detail`, drawn as a corner badge and as words under the name.
     const look = window.agentStateDisplay.describeState(r.state, r.detail);
+    // BACKLOG #162: a stressed card says why on hover, the card itself and the words under the name (their own titles win elsewhere).
+    const cause = window.agentStateDisplay.causeTitle(r.state, r.cause);
     return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
+      (cause ? ` title="${escapeHtml(cause)}"` : '') +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
       window.medalsDisplay.cardButtonHtml(r.agent) +
@@ -6230,7 +6233,7 @@ function renderRoster() {
       window.agentStateDisplay.badgeHtml(r.state, r.detail) +
       `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
       agentFnHtml(entry) +
-      `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
       window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
       agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
