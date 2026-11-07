@@ -57,8 +57,10 @@
  * as `cards`, so `change` keeps meaning "the state or detail moved".
  *
  * INSTANCES (BACKLOG #142 b). Two or more runs of one name are one card each: instancesOf(agent) gives their rows, each keyed by
- * the CLI's own id for the run and carrying the run's own state, detail and cause (see INSTANCE CARDS, below). The name's card,
- * its state and its name-scoped errors are unchanged: every other consumer (sort, hide, bubbles, medals) still reads it.
+ * the CLI's own id for the run and carrying the run's own state, detail and cause (see INSTANCE CARDS, below). The name's card
+ * is what every other consumer (sort, hide, bubbles, medals) reads; while the CLI labels its calls it is read FROM the runs shown,
+ * so one card left is that run's and never a departed sibling's (PR #239 Dexter 1). An older CLI that labels nothing keeps the
+ * name-scoped errors below.
  *
  * Reading and writing come from PreToolUse alone (their PostToolUse isn't
  * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
@@ -227,6 +229,8 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // Errors stay name-scoped on purpose (see test/mood-machine.test.js, "a
   // failure is not cleared by a sibling finishing cleanly"): a name that
   // recorded a failure shows it until every instance of it has finished.
+  // That holds for an older CLI that doesn't say whose a call is. One that does (saysWho) gives each run its own record, and the
+  // card reads the runs shown (setState, PR #239 Dexter 1).
   const agents = new Map();
 
   // INVOCATIONS: every subagent run that has started and not ended, in start
@@ -365,7 +369,6 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   }
   // The retry series a card is in, for its cause: only while it IS one (RETRY_LIMIT running).
   const retryOf = (a) => (a.repeats >= RETRY_LIMIT ? { tool: a.repeatTool, count: a.repeats, from: a.repeatFrom, to: a.repeatAt } : null);
-  const causeFor = (a) => (a.state === STRESSED ? stressCause({ failures: a.failures, retry: retryOf(a) }) : null);
 
   // The card's finer name for `state` (see DETAIL, in the header): the best of
   // what its invocations show, or `state` itself.
@@ -413,35 +416,70 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // { id, state, detail, cause?, wait? }: `state` is the run's own (working or stressed while it runs, happy or stressed while its
   // finish flashes), `cause` is #162's sentence from the run's own record, present exactly while the row is stressed.
   // A run cut off (Esc, /clear, a reap) leaves at once, as the name's card doesn't celebrate one. Errors and retries are the run's
-  // own here; the name's card keeps its name-scoped count (see `agents` above).
-  function instancesOf(agent) {
+  // own here.
+  //
+  // The rows SHOWN for a name, whatever their number (`live` marks an open run's): instancesOf draws them from two up, and while
+  // the CLI labels its calls they are also what the name's own card reads (see setState): one row left is that run's card, so it
+  // never shows a departed sibling's failure (PR #239 Dexter 1).
+  function rowsOf(agent) {
     const t = now();
     const rows = [];
     for (const inv of invs) {
       if (inv.name !== agent) continue;
       const state = inv.runState;
-      const row = { serial: inv.id, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
+      const row = { serial: inv.id, live: true, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
       if (state === STRESSED) row.cause = stressCause({ failures: inv.failures, retry: retryOf(inv) });
       if (row.detail === BGWAIT || row.detail === BGWAIT_LATE) row.wait = { on: inv.holds[inv.holds.length - 1].what, since: inv.lastActivity };
       rows.push(row);
     }
     const a = agents.get(agent);
     // A finish still flashing whose run came back (a resume within the flash) is that run's live row, not a second card.
-    for (const d of a ? a.done : []) if (t <= d.until && !rows.some(r => r.id === d.id)) rows.push({ serial: d.serial, id: d.id, state: d.state, detail: d.state, ...(d.cause ? { cause: d.cause } : {}) });
-    if (rows.length < 2) return null;
+    for (const d of a ? a.done : []) if (t <= d.until && !rows.some(r => r.id === d.id)) rows.push({ serial: d.serial, live: false, id: d.id, state: d.state, detail: d.state, ...(d.cause ? { cause: d.cause } : {}) });
     rows.sort((x, y) => x.serial - y.serial);
-    return rows.map(({ serial, ...row }) => row);
+    return rows;
+  }
+  // The finer names a stressed card can show (an error outranks what the tool is: see runDetail).
+  const STRESSED_FITS = new Set([WAITING, STUCK, HELPER, BGWAIT, BGWAIT_LATE]);
+  function bestDetail(rows, state) {
+    let best = state;
+    for (const r of rows) {
+      const d = r.detail;
+      if (d === r.state || (state === STRESSED && !STRESSED_FITS.has(d))) continue;
+      if ((RANK[d] || 0) > (RANK[best] || 0)) best = d;
+    }
+    return best;
+  }
+  function instancesOf(agent) {
+    const rows = rowsOf(agent);
+    return rows.length < 2 ? null : rows.map(({ serial, live, ...row }) => row);
+  }
+
+  // The name's cause: while the CLI labels its calls, the shown rows' (the first stressed one's); otherwise the name's own record
+  // (an older CLI can't say whose a call is, so a failure stays the name's: test/mood-machine.test.js "a failure is not cleared by a
+  // sibling finishing cleanly").
+  function causeFor(agent, a) {
+    if (a.state !== STRESSED) return null;
+    if (saysWho) {
+      const s = rowsOf(agent).find(r => r.state === STRESSED);
+      if (s) return s.cause;
+    }
+    return stressCause({ failures: a.failures, retry: retryOf(a) });
   }
 
   // What the card carries beside its state and detail. A move of it alone is a `cards` event (see CAUSE in the header).
   // The instance cards are among them (#142 b): a second run starting, or one run's own state moving, leaves the name's state alone.
-  const extrasOf = (agent, a) => JSON.stringify([causeFor(a), instancesOf(agent)]);
+  const extrasOf = (agent, a) => JSON.stringify([causeFor(agent, a), instancesOf(agent)]);
   function setState(agent, a, state) {
-    const detail = refine(agent, a, state);
+    if (state === SLEEPING) a.done = [];      // asleep: no run of it is open or flashing any more
+    // PR #239 Dexter 1: while the CLI labels its calls, the runs shown are the only source of the name's stress. Stressed if any
+    // shown row is, else working while one runs, else the happy flash; its detail the best of theirs that fits that state (with one
+    // row, that row's). A retry series is a run's own: a sibling's different call doesn't end it. Asleep stays asleep.
+    const shown = state === SLEEPING || !saysWho ? [] : rowsOf(agent);
+    if (shown.length > 0) state = shown.some(r => r.state === STRESSED) ? STRESSED : shown.some(r => r.live) ? WORKING : HAPPY;
+    const detail = shown.length > 0 ? bestDetail(shown, state) : refine(agent, a, state);
     const moved = a.state !== state || a.detail !== detail;
     a.state = state;
     a.detail = detail;
-    if (state === SLEEPING) a.done = [];      // asleep: no run of it is open or flashing any more
     const extra = extrasOf(agent, a);
     const extraMoved = extra !== a.extraSig;
     a.extraSig = extra;
@@ -1105,7 +1143,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   machine.instancesOf = instancesOf;
   machine.detailOf = agent => (agents.get(agent) || { detail: SLEEPING }).detail;
   // BACKLOG #162: why the card is stressed, one sentence (host/stress-cause.js); null whenever it isn't stressed.
-  machine.causeOf = agent => { const a = agents.get(agent); return a ? causeFor(a) : null; };
+  machine.causeOf = agent => { const a = agents.get(agent); return a ? causeFor(agent, a) : null; };
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state, detail: a.detail }));
   // Sizes of the per-host bookkeeping, for the test that it stays bounded.
   machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size,

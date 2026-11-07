@@ -168,7 +168,8 @@ function run(ops, onStep) {
         const key = 'toolu_' + (++n);
         send('PreToolUse', { tool_name: 'Agent', tool_use_id: key, tool_input: { subagent_type: type } });
         if (o.fail) { send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: key, error: 'boom' }); break; }
-        const a = { id: 'a' + type + '-' + String(++n).padStart(16, '0'), type, key };
+        // `own`: the oracle's model of the run's OWN state (PR #239 Dexter 1), from its own calls only.
+        const a = { id: 'a' + type + '-' + String(++n).padStart(16, '0'), type, key, own: 'working', sig: null, reps: 0 };
         live.push(a);
         send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: {}, ...by(a) });
         break;
@@ -181,6 +182,13 @@ function run(ops, onStep) {
         else if (o.kind === 'send') send('PostToolUse', { ...common, tool_name: 'SendMessage', tool_input: { to: 'hub' }, tool_response: { success: false } });
         else send('PostToolUse', { ...common, tool_input: { command: o.kind === 'same' ? 'same' : 'c' + (++n) },
           tool_response: { exit_code: o.kind === 'err' ? 1 : 0 } });
+        if (o.kind === 'fail' || o.kind === 'send' || o.kind === 'err') { a.own = 'stressed'; a.sig = null; a.reps = 0; }
+        else {
+          const sig = o.kind === 'same' ? o.tool + ':same' : null;
+          a.reps = sig !== null && sig === a.sig ? a.reps + 1 : 1;
+          a.sig = sig;
+          a.own = a.reps >= 3 ? 'stressed' : 'working';
+        }
         break;
       }
       case 'advance': t += o.ms; m.tick(); break;
@@ -206,7 +214,13 @@ test('property: whatever the events, a stressed card always carries a non-empty 
         // #142 b: the same holds for every instance card, and the instance cards are the live runs (plus finishes still flashing)
         const rows = m.instancesOf(r.agent);
         const mine = live.filter(a => a.type === r.agent).map(a => a.key);
-        if (rows === null) { assert.ok(mine.length <= 1, `${r.agent}: ${mine.length} live runs and no instance cards`); continue; }
+        if (rows === null) {
+          assert.ok(mine.length <= 1, `${r.agent}: ${mine.length} live runs and no instance cards`);
+          // PR #239 Dexter 1: one card left with one live run is THAT run's card, never a departed sibling's record.
+          const one = live.filter(a => a.type === r.agent);
+          if (one.length === 1) assert.strictEqual(r.state, one[0].own, `${r.agent}: the one card shows ${r.state}, its run is ${one[0].own}`);
+          continue;
+        }
         assert.ok(rows.length >= 2, `${r.agent}: instance cards only for two or more`);
         assert.strictEqual(new Set(rows.map(x => x.id)).size, rows.length, `${r.agent}: an id twice`);
         for (const k of mine) assert.strictEqual(rows.filter(x => x.id === k).length, 1, `${r.agent}: live run ${k} is one card`);

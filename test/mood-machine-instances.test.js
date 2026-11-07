@@ -126,3 +126,53 @@ test('every live instance appears exactly once, and ids never repeat', () => {
   assert.strictEqual(new Set(ids(rows)).size, 3);
   assert.deepStrictEqual(r.m.stack().filter(x => x === 'qa-expert').length, 3);
 });
+
+// ---- PR #239 Dexter 1 (High): when the view collapses to one card, that card is the remaining run's, never a departed run's --------
+
+test('A1: a failed sibling cut off (Esc) leaves the remaining run\'s card as that run is: working, no cause', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  assert.deepStrictEqual(r.m.instancesOf('code-reviewer').map(x => x.state), ['stressed', 'working']);
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...a.by });
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null, 'one card again');
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'working', 'B never failed');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), null, 'and A\'s failure is not blamed on B');
+});
+
+test('A1: a failed sibling that finished, once its flash ends, leaves the remaining run\'s card as that run is', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  r.ok(a);
+  r.send('SubagentStop', a.by);
+  assert.deepStrictEqual(r.m.instancesOf('code-reviewer').map(x => [x.id, x.state]), [['toolu_A', 'stressed'], ['toolu_B', 'working']]);
+  r.advance(FLASH_MS + 1);
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null);
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'working');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), null);
+});
+
+test('A1: the last run finishing clean flashes happy, though a sibling failed and left before it', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  r.send('SubagentStop', a.by);
+  r.advance(FLASH_MS + 1);                       // A's flash is over: B is the one card
+  r.send('SubagentStop', b.by);
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'happy', 'B finished clean');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), null);
+});
+
+test('A1: the remaining run\'s OWN failure still shows on the one card', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(b);
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...a.by });
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'stressed');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), 'A Bash call failed');
+});
