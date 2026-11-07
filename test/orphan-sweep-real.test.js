@@ -20,7 +20,11 @@ test('a probe\'s launcher marks process.env and the mark survives the env stripp
     const kept = le.cleanElectronEnv({ ...process.env }).${MARK_VAR};
     const probe = le.probeEnv({ ...process.env, CLAUDE_CUSTOM_X: '1' }, { ...process.env, CLAUDE_CUSTOM_X: '1' }).${MARK_VAR};
     console.log(JSON.stringify({ mark, kept, probe }));`;
-  const env = { ...process.env, HEAVY_LOCK_HELD: '1' };   // no real machine lock for this child
+  // No real machine lock for this child: the lock script is pointed at a path that doesn't exist ('missing'). HEAVY_LOCK_HELD=1
+  // alone no longer does it: with nobody holding the slot (this file run on its own) that is a stale flag, and the child would
+  // take the real lock (host/heavy-lock.js RE-ENTRANCY).
+  const env = { ...process.env, HEAVY_LOCK_SCRIPT: path.join(__dirname, 'no-such-heavy-lock.ps1') };
+  delete env.HEAVY_LOCK_HELD;
   delete env[MARK_VAR];
   const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', env });
   assert.strictEqual(r.status, 0, r.stderr);

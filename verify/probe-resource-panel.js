@@ -36,7 +36,7 @@
  */
 
 const { spawn, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
@@ -441,6 +441,7 @@ async function main() {
       const posix = idleJs.replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`).replace(/\\/g, '/');
       const payload = `source /dev/null 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && eval 'node ${posix}' < /dev/null && pwd -P >| /dev/null`;
       const sh = spawn(bashExe, ['-c', payload], { stdio: 'ignore', windowsHide: true });
+      noteChild(sh);   // a bash running a node script: the lock's work record covers it (BACKLOG #113)
       hygiene.registerChild(sh);
       try {
         const line = await waitFor(async () => { const l = cimLine(sh.pid); return /eval/.test(l) ? l : null; }, 15000, 300);
