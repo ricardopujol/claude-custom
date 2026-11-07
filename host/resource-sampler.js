@@ -123,6 +123,39 @@ function createSampler({
   let lastAny = null;   // the latest sample of either mode (machine CPU is a delta of these)
   let prevAny = null;
   let lastMode = null;
+  // CAPTURE ORDER (BACKLOG #176). The off-cadence take runs beside the cadence one, and at app start on another powershell (the
+  // shared poller's one-off call), so the record that read a counter first can land second. A pair is only ever moved forward: a
+  // record that was in flight while one captured at the same time or later landed is LATE and replaces nothing.
+  // A record is a SPAN of reads, each section on its own clock (PR #240, Dexter 2): the script reads the per-process counters first,
+  // then the GPU engines, then the CPU counter last. So each pair is ordered on every section its deltas use: the machine pair on
+  // the CPU and GPU times (the chip), the full pair on the CPU and per-process times (the panel). A record that is behind the newest
+  // on ANY of them is late for that pair. A section a record lacks can't order it (its delta is null anyway). A record that STARTED
+  // after the newest landed is taken whatever its times, so a clock stepped back costs one "—", as it always has, instead of
+  // freezing the pair on the old figure.
+  let anyMoves = 0;     // how many times the machine pair / the full pair moved: a take that sees a change during its flight overlapped
+  let fullMoves = 0;
+  let anyNewest = {};   // the newest capture time per section each pair has taken (a missing key: none to order against)
+  let fullNewest = {};
+  // Each section's capture time, the CIM counters' own Timestamp_Sys100NS. Strictly a BigInt or null: never coerced (Number(null) is 0).
+  const bigOrNull = v => (typeof v === 'bigint' ? v : null);
+  const perfAt = s => {
+    if (!s || !(s.perf instanceof Map)) return null;
+    let t = null;   // one query: its rows share a clock, so the latest row is when it ran
+    for (const r of s.perf.values()) { const v = bigOrNull(r && r.ts); if (v !== null && (t === null || v > t)) t = v; }
+    return t;
+  };
+  const SECTIONS = {
+    cpu: s => bigOrNull(s && s.cpuTotal ? s.cpuTotal.ts : null),
+    gpu: s => bigOrNull(s && s.gpu ? s.gpu.ts : null),
+    perf: perfAt,
+  };
+  const MACHINE_SECTIONS = ['cpu', 'gpu'];
+  const FULL_SECTIONS = ['cpu', 'perf'];
+  const isLate = (s, newest, secs, overlapped) => overlapped && secs.some((k) => {
+    const t = SECTIONS[k](s);
+    return t !== null && newest[k] !== undefined && t <= newest[k];
+  });
+  const advance = (s, newest, secs) => { for (const k of secs) { const t = SECTIONS[k](s); if (t !== null) newest[k] = t; } };
   let inFlight = null;  // the exec promise running now (it can be killed by its own pid on stop)
   let adhocRunning = null;   // with a fetch: the off-cadence take, which does not wait for the cadence one
   let adhocFlight = null;
@@ -137,8 +170,11 @@ function createSampler({
   function take(mode, adhoc = false) {
     const side = adhoc && fetch !== null;
     if (side ? adhocRunning : running) return side ? adhocRunning : running;
+    const seen = { any: anyMoves, full: fullMoves };   // what the pairs were when this flight began
     const p = (async () => {
       let dropped = false;
+      let moved = false;
+      let own = null;   // this flight's own process list, for sampleNow (whatever the pairs decide)
       try {
         const flight = fetch ? fetch(mode, adhoc) : exec(scriptFor(mode));
         if (side) adhocFlight = flight; else inFlight = flight;
@@ -153,18 +189,26 @@ function createSampler({
         const now_ = policy(wanted);
         if (!started || now_ === null) { dropped = true; } else {
           failures = 0;
-          lastGoodAt = s.at;
-          lastMode = held;
-          if (held === 'full' && now_ === 'full') { prev = last; last = s; }
-          prevAny = lastAny;
-          lastAny = s;
+          if (held === 'full' && now_ === 'full') own = s.procs;
+          if (held === 'full' && now_ === 'full' && !isLate(s, fullNewest, FULL_SECTIONS, fullMoves !== seen.full)) {
+            prev = last; last = s; fullMoves++; moved = true;
+            advance(s, fullNewest, FULL_SECTIONS);
+          }
+          if (!isLate(s, anyNewest, MACHINE_SECTIONS, anyMoves !== seen.any)) {
+            prevAny = lastAny; lastAny = s; anyMoves++; moved = true;
+            advance(s, anyNewest, MACHINE_SECTIONS);
+          }
+          // A late record changes nothing the view sees (Miguel S2): lastGoodAt would go back in time, and lastMode would name a
+          // record that isn't shown. It emits nothing either.
+          if (moved) { lastGoodAt = s.at; lastMode = held; }
         }
       } catch {
         if (started && policy(wanted) !== null) failures++; else dropped = true;
       } finally {
         if (side) { adhocRunning = null; adhocFlight = null; } else { running = null; inFlight = null; }
       }
-      if (!dropped) emit(adhoc);
+      if (!dropped && (moved || failures > 0)) emit(adhoc);
+      return own;
     })();
     if (side) adhocRunning = p; else running = p;
     return p;
@@ -209,19 +253,21 @@ function createSampler({
       const before = policy(wanted);
       wanted = { panel: !!(next && next.panel), chip: !!(next && next.chip) };
       const after = policy(wanted);
-      if (after !== 'full') { prev = null; last = null; }
+      // A forgotten pair has nothing to order against: nothing is late against an empty pair.
+      if (after !== 'full') { prev = null; last = null; fullNewest = {}; }
       // Nothing is being sampled: the machine pair is forgotten too, so the first sample after a pause (a minimised
       // window) is "—", not the average of the whole gap shown as the machine's CPU now (Dexter finding 7).
-      if (after === null) { prevAny = null; lastAny = null; }
+      if (after === null) { prevAny = null; lastAny = null; anyNewest = {}; }
       if (after === before && timer) return;
       wake();
     },
-    // Stop's re-read: a sample taken after the click, never one already in flight.
+    // Stop's re-read: a sample taken after the click, never one already in flight. It is THIS take's own process list (PR #240,
+    // Dexter 1): the pairs are ordered by the counters, read after the process table, so a cadence record already in flight can be
+    // the newer one for the deltas while its process list was read before the click. null when this take failed or was dropped.
     async sampleNow() {
       if (running && fetch === null) await running;
-      const before = last;
-      await take('full', true);
-      return failures === 0 && last && last !== before ? last.procs : null;
+      const own = await take('full', true);
+      return Array.isArray(own) ? own : null;
     },
     snapshot,
   };

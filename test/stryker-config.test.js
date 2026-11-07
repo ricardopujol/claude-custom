@@ -81,6 +81,7 @@ const REPO_SCANNING = new Set([
   'renderer-changes-wiring.test.js',
   'bounded-shutdown-process.test.js',   // #121 (PR #217): real children with a blocked event loop and a real watchdog; the pure tests are in bounded-shutdown.test.js, which IS in the command
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
+  'job-guard-process.test.js',     // #127: a real Job Object (real PowerShell, real sleepers, seconds per case); the pure tests are in job-guard.test.js
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -479,6 +480,13 @@ test('the eight modules that decide what is killed, deleted or kept running are 
     'app/quit-watchdog.js', 'host/settings-writer.js', 'host/canvas-mcp.js']) {
     assert.ok(conf.mutate.includes(rel), `${rel} must be in stryker.conf.json's mutate`);
   }
+});
+
+test('the job guard (what a stop ends beyond the tree, #127) is mutated, by its pure tests; its real-process half stays out (PR #235 Miguel I5)', () => {
+  assert.ok(conf.mutate.includes('host/job-guard.js'), 'host/job-guard.js must be in stryker.conf.json\'s mutate');
+  const cmd = conf.commandRunner.command;
+  assert.ok(cmd.includes('test/job-guard.test.js'), 'its pure tests run in the command');
+  assert.ok(!cmd.includes('test/job-guard-process.test.js'), 'the real Job Object test stays out (a Stryker timeout is a kill)');
 });
 
 test('the real-process halves of status-relay, probe-hygiene and settings-writer stay split out of the command (Miguel, PR #142 I1/I2)', () => {

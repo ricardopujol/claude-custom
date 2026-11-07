@@ -193,3 +193,15 @@ test('F5: a raw-pid kill (start not read yet) is "sent"; an injected kill that s
   assert.strictEqual(killOutcomeOf(null), null);
   assert.strictEqual(killOutcomeOf({}), null);
 });
+
+test('#127 trackedStart: the start time trackExit read for an IPty, once it is read; null when unknown or untracked', async () => {
+  const { trackedStart } = require('../host/kill-tree');
+  const known = trackExit(pty(41), { startTimes: async () => new Map([[41, '133000000000000001']]) });
+  assert.strictEqual(await trackedStart(known), '133000000000000001');
+  const unknown = trackExit(pty(42), NO_START);
+  assert.strictEqual(await trackedStart(unknown), null);
+  assert.strictEqual(await trackedStart(pty(43)), null, 'never tracked: nothing was read');
+  assert.strictEqual(await trackedStart(null), null);
+  const failing = trackExit(pty(44), { startTimes: async () => { throw new Error('ps'); } });
+  assert.strictEqual(await trackedStart(failing), null);
+});

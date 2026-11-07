@@ -866,6 +866,9 @@ try {
   console.warn('[renderer] WebGL addon unavailable, using fallback:', e.message);
 }
 
+// The one bare fit left on purpose (BACKLOG #177): the #termwrap ResizeObserver's first callback refits through refitTerminal(),
+// and the socket's onopen sends the size whatever it is. Don't swap it for refitTerminal(): that reads `let lastSentResize`, declared
+// far below, so here it throws a temporal-dead-zone ReferenceError and stops the whole script.
 fit.fit();
 
 // The terminal bar's view of the buffer (#49). The prompt part follows the viewport; a resize reflows every line
@@ -2370,7 +2373,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   if (btn) btn.classList.toggle('own', ownLayout !== null);
   kbRefresh();                      // a keyboard move in flight lights the zones of the dock as it is now
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
-  if (refit) setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  if (refit) setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // The settle motion (dockable panels D4): the dock gets `.settling` for the length of the glide, and the CSS moves the
@@ -3283,7 +3286,7 @@ function applyFocusMode(on) {
   paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
   renderLayout();   // the rails are display:none while focus is on: draw the dock again so any rail that lost its fit then is fitted now
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 if (focusBridge) focusBridge.onChange(applyFocusMode);
 for (const id of ['focus-btn', 'focus-exit']) {
@@ -5628,7 +5631,7 @@ function applyTheme(theme) {
   renderTopBar();
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // --- agent roster -----------------------------------------------------------
@@ -5683,6 +5686,8 @@ function applyFaceVideo(v) {
   else v.pause();
 }
 
+// Each roster card node -> the markup it was painted from (before any live video was moved into it): what rosterPatch compares.
+const paintedCardHtml = new WeakMap();
 function setRosterHtml(html) {
   // A repaint runs about once a second while anything is running. A video that
   // is unloaded and recreated each time restarts from frame 0 and never loops
@@ -5691,24 +5696,40 @@ function setRosterHtml(html) {
   // the live one before the roster is replaced, and only nodes that go away or
   // change are unloaded. The move is synchronous, so the browser's "removed from
   // the document" pause never runs.
-  const oldByKey = new Map();
-  for (const v of agentsEl.querySelectorAll('video[data-face-key]')) {
-    if (!oldByKey.has(v.dataset.faceKey)) oldByKey.set(v.dataset.faceKey, v);
-  }
+  //
+  // PER CARD (PR #239 Dexter 5 / Miguel Y5): when the same cards sit in the same places, only those whose markup changed are
+  // replaced (app/agent-state-display.js rosterPatch), so an unchanged card keeps its node, and a press on its button or a hover on
+  // it survives a sibling's repaint. Each card's painted markup is remembered (paintedCardHtml) to compare with.
   const stage = document.createElement('div');
   stage.innerHTML = html;
-  const plan = portraitMedia.planVideoReuse([...oldByKey.keys()],
-    [...stage.querySelectorAll('video[data-face-key]')].map(v => v.dataset.faceKey));
-  for (const fresh of [...stage.querySelectorAll('video[data-face-key]')]) {
-    const old = plan.reuse.has(fresh.dataset.faceKey) ? oldByKey.get(fresh.dataset.faceKey) : null;
-    if (old) { oldByKey.delete(fresh.dataset.faceKey); fresh.replaceWith(old); }
+  const freshNodes = [...stage.childNodes];
+  const freshHtml = freshNodes.map(n => (n.nodeType === 1 ? n.outerHTML : n.textContent));
+  const oldNodes = [...agentsEl.childNodes];
+  const keyOf = n => (n.nodeType === 1 && n.dataset && n.dataset.agent ? n.dataset.agent + '|' + (n.dataset.instance || '') : null);
+  const patch = window.agentStateDisplay.rosterPatch(oldNodes.map(n => ({ key: keyOf(n), html: paintedCardHtml.get(n) })),
+    freshNodes.map((n, i) => ({ key: keyOf(n), html: freshHtml[i] })));
+  const going = patch.full ? oldNodes : patch.replace.map(i => oldNodes[i]);
+  const coming = patch.full ? freshNodes : patch.replace.map(i => freshNodes[i]);
+  const videosIn = nodes => nodes.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video[data-face-key]')] : []));
+  // Every live video of a face key is kept, not only the first: two instance cards on one picture each keep their own (Miguel Y1).
+  const oldVideos = videosIn(going);
+  const newVideos = videosIn(coming);
+  const pairs = portraitMedia.pairVideoReuse(oldVideos.map(v => v.dataset.faceKey), newVideos.map(v => v.dataset.faceKey));
+  newVideos.forEach((fresh, j) => {
+    const old = pairs[j] >= 0 ? oldVideos[pairs[j]] : null;
+    if (old) fresh.replaceWith(old);
+  });
+  for (const n of going) {
+    if (n.nodeType !== 1) continue;
+    for (const v of n.querySelectorAll('video')) {
+      if (faceVideoObserver) faceVideoObserver.unobserve(v);
+      portraitMedia.unloadVideo(v);
+    }
   }
-  for (const v of agentsEl.querySelectorAll('video')) {
-    if (faceVideoObserver) faceVideoObserver.unobserve(v);
-    portraitMedia.unloadVideo(v);
-  }
-  agentsEl.replaceChildren(...stage.childNodes);
-  for (const v of agentsEl.querySelectorAll('video')) {
+  if (patch.full) agentsEl.replaceChildren(...freshNodes);
+  else patch.replace.forEach(i => oldNodes[i].replaceWith(freshNodes[i]));
+  coming.forEach(n => paintedCardHtml.set(n, freshHtml[freshNodes.indexOf(n)]));
+  for (const v of coming.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video')] : []))) {
     if (faceVideoObserver) faceVideoObserver.observe(v);
     // Applied at once, not left to the observer's first callback: a hidden
     // window never delivers one, and the `autoplay` attribute would start the
@@ -5777,9 +5798,10 @@ function careerHtml(agent) {
     `</div>`;
 }
 
-// The model line under the state (FF10) and the ×N badge beside the name for
-// concurrent instances of one agent (FF8). Both judgements live in
-// app/agent-card-display.js so they can be tested; this is only the drawing.
+// The model line under the state (FF10). The judgement lives in
+// app/agent-card-display.js so it can be tested; this is only the drawing.
+// (Concurrent instances of one agent were a ×N badge here (FF8); since
+// BACKLOG #142 b each is its own card, app/agent-state-display.js instanceRows.)
 function agentModelHtml(agent) {
   const entry = modelEntry(sessionModel && sessionModel.agents, agent);
   const m = modelLine(entry, sessionModel && sessionModel.errors);
@@ -5836,16 +5858,18 @@ document.addEventListener('click', (e) => {
 // typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
 const agentPauses = window.agentPauseDisplay.createAgentPauses();
 let latestAgentIds = [];      // [{ name, agentId }] of the live runs, from every `processes` frame
-function agentPauseHtml(agent, counts) {
-  return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
+// `r` is the card: a name card, or one instance card (#142 b), whose flash offers nothing and whose Pause names its own run.
+function agentPauseHtml(r, counts) {
+  return window.agentPauseDisplay.cardHtml(agentPauses.view(r.agent, counts.get(r.agent) || 0), r);
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest && e.target.closest('.agent-pause-btn');
   const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
   if (!act) return;
   // The run's task id, when the host knows exactly one: named in the line, and what our TaskStop is recognised by (app/agent-pause-display.js).
+  // An instance card names its own run (PR #239 Dexter 4); a name card, the one run the host knows, if it knows exactly one.
   const ids = latestAgentIds.filter(a => a.name === act.agent).map(a => a.agentId);
-  const taskId = ids.length === 1 ? ids[0] : undefined;
+  const taskId = act.taskId !== undefined ? act.taskId : ids.length === 1 ? ids[0] : undefined;
   const command = window.agentPauseDisplay.commandFor(act.act, act.agent, taskId) || window.agentPauseDisplay.commandFor(act.act, act.agent);
   if (!command || !agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)) return;
   renderRoster();
@@ -5856,13 +5880,6 @@ document.addEventListener('click', (e) => {
     if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
   }, window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false });
 });
-
-function countBadgeHtml(agent, counts) {
-  // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
-  // concurrent run is news.
-  const n = counts.get(agent) || 0;
-  return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
-}
 
 // --- Active/Inactive roster tabs (BACKLOG D #16) -----------------------------
 // The split and sort are pure decisions in app/roster-tabs-display.js; this is
@@ -6216,35 +6233,46 @@ function renderRoster() {
     return;
   }
 
-  paintAgents(shown.map(r => {
-    if (r.explainer) return explainerCardHtml(false);
-    const entry = rosterIndexEntry(r.agent);
-    // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
-    // `data-detail`, drawn as a corner badge and as words under the name.
-    const look = window.agentStateDisplay.describeState(r.state, r.detail);
-    return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
-      (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
-      hideButtonHtml(r) +
-      window.medalsDisplay.cardButtonHtml(r.agent) +
-      `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
-      window.agentStateDisplay.badgeHtml(r.state, r.detail) +
-      `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
-      agentFnHtml(entry) +
-      `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
-      window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
-      agentPauseHtml(r.agent, counts) +
-      agentModelHtml(r.agent) +
-      occupancyWhereHtml(r.agent) +
-      careerHtml(r.agent) +
-      beltHtml(r.agent) +
-      `</div>` +
-    `</div>`;
-  }).join(''));
+  // BACKLOG #142 b: two or more instances of one agent are one card each (app/agent-state-display.js instanceRows), after the hide
+  // and search filters, which stay per agent name: every card of a name carries the same data-agent, so a medal, a hide or a pause
+  // on one card is the name's (the open question's default).
+  paintAgents(shown.flatMap((r) => window.agentStateDisplay.instanceRows(r)).map((r) => (r.explainer ? explainerCardHtml(false) : activeCardHtml(r, counts))).join(''));
+}
+
+// One card on the Active tab: a name's, or one instance's (#142 b). Out of renderRoster, which was long past readable (PR #239
+// Miguel S8); `counts` is the running count per name, for the Pause.
+function activeCardHtml(r, counts) {
+  const entry = rosterIndexEntry(r.agent);
+  // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
+  // `data-detail`, drawn as a corner badge and as words under the name.
+  const look = window.agentStateDisplay.describeState(r.state, r.detail);
+  // BACKLOG #162: a stressed card says why on hover, the card itself and the words under the name (their own titles win elsewhere).
+  const cause = window.agentStateDisplay.causeTitle(r.state, r.cause);
+  return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
+    (r.instance ? ` data-instance="${escapeHtml(r.instance)}"` : '') +
+    (cause ? ` title="${escapeHtml(cause)}"` : '') +
+    (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
+    hideButtonHtml(r) +
+    window.medalsDisplay.cardButtonHtml(r.agent) +
+    `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
+    window.agentStateDisplay.badgeHtml(r.state, r.detail) +
+    `<div class="meta">` + agentNameHtml(r.agent, entry, '') +
+    agentFnHtml(entry) +
+    `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+    window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
+    agentPauseHtml(r, counts) +
+    agentModelHtml(r.agent) +
+    occupancyWhereHtml(r.agent) +
+    careerHtml(r.agent) +
+    beltHtml(r.agent) +
+    `</div>` +
+  `</div>`;
 }
 
 // BACKLOG #155: a waiting card counts minutes, and the host only speaks when the detail changes: repaint the roster twice a minute while one waits.
 setInterval(() => {
-  for (const r of roster.values()) if (r.detail === 'bgwait' || r.detail === 'bgwaitlate') { renderRoster(); return; }
+  // A name's row or one of its instance cards (#142 b, PR #239 Miguel S3).
+  if (window.agentStateDisplay.anyWaiting([...roster.values()])) renderRoster();
 }, 30_000);
 
 function renderRosterIndex(rosterIndex) {
@@ -9110,7 +9138,7 @@ function applyFonts() {
   term.options.fontSize = eff.fontSize;
   // A font change alters the cell size, so the pty must be told the new geometry or Ink's layout corrupts.
   clearTimeout(fontFitTimer);
-  fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  fontFitTimer = setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // A tab that was in the background misses a focus-mode or lean push, and its rails measured zero while hidden: fit them when it shows.
@@ -9550,8 +9578,8 @@ function handleControl(msg) {
     }
     latestParty = msg.party || [];
     renderParty(msg.party);
-    // The ×N badge is derived from `party`, which just changed; the roster map
-    // itself may not have, so nothing else here would repaint it.
+    // The belt and the pauses read `party`, which just changed; the roster map
+    // itself may not have, so nothing else here would repaint them.
     renderRoster();
     return;
   }
@@ -9934,6 +9962,23 @@ function sendResize() {
   }
 }
 
+// Every refit of the terminal to its box (BACKLOG #177). One fit.fit() can be a column short: xterm's cell width follows the column
+// count, so the box is asked again after each resize until it agrees (app/term-fit.js has the measured case). The pty is then told
+// only a size it wasn't told last. FitAddon's own resize step: clear the renderer (a full render), then resize.
+function refitTerminal() {
+  window.termFit.settleFit({
+    size: () => ({ cols: term.cols, rows: term.rows }),
+    propose: () => fit.proposeDimensions(),
+    resize: (cols, rows) => {
+      // xterm PRIVATE API (`_core._renderService`), as FitAddon itself calls it, on @xterm/xterm 5.5.0: an upgrade can drop it, and
+      // the catch then keeps the resize going without the full render.
+      try { term._core._renderService.clear(); } catch { /* the full render is a nicety; the resize is what counts */ }
+      term.resize(cols, rows);
+    },
+  });
+  if (window.termFit.needsSend({ cols: term.cols, rows: term.rows }, lastSentResize)) sendResize();
+}
+
 // Everything xterm translates from a keypress flows through here.
 // Typing drops the selection, as in Windows Terminal: a selection left
 // behind is the one a later Ctrl+C would copy instead of interrupting
@@ -10310,7 +10355,7 @@ chatRefreshView();
 // Resize must propagate on window resize AND on font change, or the Ink layout
 // corrupts.
 const ro = new ResizeObserver(() => {
-  try { fit.fit(); sendResize(); } catch {}
+  try { refitTerminal(); } catch {}
 });
 ro.observe(document.getElementById('termwrap'));
 

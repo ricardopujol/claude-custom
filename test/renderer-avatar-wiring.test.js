@@ -29,7 +29,8 @@ test('every roster paint goes through setRosterHtml: nothing else assigns #agent
 
 test('setRosterHtml keeps a live video whose key is unchanged instead of recreating it (Dexter F1)', () => {
   const b = body('function setRosterHtml');
-  assert.match(b, /portraitMedia\.planVideoReuse/);
+  // One old node per fresh video of a key, so two instance cards on one picture each keep theirs (#142 b, PR #239 Miguel Y1).
+  assert.match(b, /portraitMedia\.pairVideoReuse/);
   assert.match(b, /fresh\.replaceWith\(old\)/, 'the live node must replace the staged copy');
   assert.ok(b.indexOf('fresh.replaceWith(old)') < b.indexOf('agentsEl.replaceChildren'),
     'the swap must happen before the roster is replaced, in the same task');
