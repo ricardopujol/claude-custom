@@ -31,6 +31,22 @@ busy lock by its first words, with the same exit code:
 
     [heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4.2 GB free, 91% CPU): NOT RUN
 
+Two more shapes end the same way, with the same exit code. Earlier tickets
+still waiting with nobody holding the slot (the first in line is between two
+polls, or held back by the load gate):
+
+    [heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN
+
+And the lock script itself failing (its output, on one line):
+
+    [heavy-lock] the lock could not be taken (heavy-lock.ps1 failed (exit 1): ...): NOT RUN
+
+On a loaded machine the script call can run past its wait and be stopped by
+its own timer. The busy and machine-busy lines then say so after the minutes,
+`(heavy-lock.ps1 ran past its wait and was stopped)`. The last line is always one
+physical line that starts with `[heavy-lock]`. `verify/sweep-orphans.js --stop`
+ends the same way when it can't take the lock.
+
 Exit 75 means "not run, retry", not "failed". The load gate is deliberate:
 wait for the machine, don't work around it. Neither `HEAVY_LOCK_HELD` nor
 `HEAVY_LOCK_SCRIPT` is a way past a NOT RUN: retry later.

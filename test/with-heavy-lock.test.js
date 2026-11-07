@@ -224,6 +224,21 @@ test('#178 b: the wrapper\'s header documents the NOT RUN exit code, and verify/
   assert.match(readme, /\[heavy-lock\] machine busy after a 20 min wait: the lock is free/);
 });
 
+test('#237 Miguel S2: the queue variant, the error shape and the timed-out wording are documented, exactly as the code prints them', () => {
+  const fs = require('fs');
+  const path = require('path');
+  const { notRunLine } = require('../host/heavy-lock');
+  const header = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'with-heavy-lock.js'), 'utf8').split('*/')[0];
+  assert.match(header, /held by nobody now but <k> ahead in the queue/);
+  assert.match(header, /the 'error'/);
+  assert.match(header, /ran past its wait and was stopped/);
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'verify', 'README.md'), 'utf8');
+  const queued = notRunLine(new HeavyLockError('busy', 'x', { detail: '2 ahead in the queue', waitedMs: 20 * 60000 }));
+  assert.ok(readme.includes(`    ${queued}\n`) || readme.includes(`    ${queued}\r\n`), `README shows the real queue line: ${queued}`);
+  assert.match(readme, /\[heavy-lock\] the lock could not be taken \(heavy-lock\.ps1 failed \(exit 1\): \.\.\.\): NOT RUN/);
+  assert.match(readme, /\(heavy-lock\.ps1 ran past its wait and was stopped\)/);
+});
+
 test('#237 Dexter 7: a command that RAN and exited 75 itself passes 75 through, and the last line says it is its own code', async () => {
   const r = rig();
   const p = main(['node', '-e', 'process.exit(75)'], r.deps);

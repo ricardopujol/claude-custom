@@ -18,9 +18,15 @@
  * NOT RUN: EXIT 75. If the lock stays busy (or the machine too loaded, or the lock script fails) the command does NOT
  * run. The reason comes first, and the LAST line is one of
  *   [heavy-lock] lock busy for <n> min, held by <owner>: NOT RUN                 another lane had the slot
+ *   [heavy-lock] lock busy for <n> min, held by nobody now but <k> ahead in the queue (the first may be held back
+ *     by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN                 earlier tickets were still waiting
  *   [heavy-lock] machine busy after a <n> min wait: the lock is free, but its load gate needs 8 GB free RAM and
  *     under 70% CPU (now <load>): NOT RUN                                         the slot was free, the machine wasn't
- *   [heavy-lock] the lock could not be taken (<why>): NOT RUN                     the lock script failed
+ *   [heavy-lock] the lock could not be taken (<why>): NOT RUN                     the lock script failed (the 'error'
+ *                                                                                 shape: <why> is its output, one line)
+ * The first and third get " (heavy-lock.ps1 ran past its wait and was stopped)" after the "<n> min" part when the script
+ * call was killed by its own wait + 1 minute timer (a loaded machine); then an unreadable holder reads "held by a holder
+ * its status could not name". The last line is always one physical line starting "[heavy-lock]".
  * and the exit code is 75 (EX_TEMPFAIL, "try again later"; host/heavy-lock.js NOT_RUN_EXIT). Never 1: 1 is what a failing
  * suite exits, and a suite that never ran is not a failing one. Retry it. The load gate's time counts against the same
  * wait (host/heavy-lock.js WAIT). Documented in verify/README.md too.
