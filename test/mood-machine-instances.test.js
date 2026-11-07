@@ -195,3 +195,31 @@ test('A2: two runs bound crosswise, the completed result swaps them back WITH th
   assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'stressed']], 'A finished clean; B is the one that failed');
   assert.strictEqual(rows[1].cause, 'A Bash call failed', 'and B keeps its own cause');
 });
+
+// ---- PR #239 Dexter 3 / Miguel Y2: a run resumed inside its own finish flash takes over its card ---------------------------------
+
+const resume = (r, id, key) => r.send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: key, tool_input: { to: id, message: 'again' },
+  tool_response: { success: true, resumedAgentId: id } });
+
+test('A3: a run resumed inside its own flash, while a sibling runs, is ONE card: its own, in its place', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  r.advance(1_000);                                   // inside FLASH_MS
+  resume(r, a.id, 'sm1');
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'working'], ['toolu_B', 'working']], 'two runs, two cards; A where it was');
+});
+
+test('A3: the resumed run finishing again inside the old flash is still one card, never an id twice', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  r.advance(1_000);
+  resume(r, a.id, 'sm1');
+  r.send('SubagentStop', a.by);
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'working']]);
+});

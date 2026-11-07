@@ -305,13 +305,15 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // hook of its own, so its hold lasts until TaskStop names it or the run ends (PR #224, Dexter 1).
   const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, modWaitingAt: 0, clearedAt: -Infinity, holds: [] });
   // A run's OWN card (BACKLOG #142 b): its state (working or stressed while it runs), its failures and its retry series, kept apart
-  // from the name's so two instances each show their own. `spawned`: it began with an Agent call, so its key is that call's id.
-  const freshRun = (spawned) => ({ spawned, runState: WORKING, errors: 0, failures: [], repeats: 0, lastSignature: null,
+  // from the name's so two instances each show their own. `instance`: the card id it was given (below), or null; `order`: where its
+  // card sits among the name's (start order), which a resume inside its own flash keeps.
+  const freshRun = (instance, order) => ({ instance, order, runState: WORKING, errors: 0, failures: [], repeats: 0, lastSignature: null,
     repeatTool: null, repeatFrom: null, repeatAt: null });
   // The id an instance card is keyed by: the CLI's own, never a position. A spawn's tool_use_id (known from its first event, and
-  // never swapped by adopt()), else the agent_id of a run that came back without a spawn (a resume). Only a payload with neither
-  // (an older CLI) falls back to this host's serial for the run, which is as stable as the run itself.
-  const instanceId = inv => (inv.spawned && inv.key !== null ? inv.key : inv.agentId || `run:${inv.id}`);
+  // never swapped by adopt()); a run resumed inside its own finish flash takes that flash's id, so it takes over its card (PR #239
+  // Dexter 3); else the agent_id of a run that came back without a spawn (a resume). Only a payload with none of these (an older
+  // CLI) falls back to this host's serial for the run, which is as stable as the run itself.
+  const instanceId = inv => inv.instance || inv.agentId || `run:${inv.id}`;
   const isQuiet = inv => inv.holds.length > 0;
   // It launched background work. `what` is the one-line thing it waits on; `child` is the invocation, for a background child.
   function holdFor(inv, what, child = null) {
@@ -427,7 +429,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     for (const inv of invs) {
       if (inv.name !== agent) continue;
       const state = inv.runState;
-      const row = { serial: inv.id, live: true, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
+      const row = { serial: inv.order, live: true, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
       if (state === STRESSED) row.cause = stressCause({ failures: inv.failures, retry: retryOf(inv) });
       if (row.detail === BGWAIT || row.detail === BGWAIT_LATE) row.wait = { on: inv.holds[inv.holds.length - 1].what, since: inv.lastActivity };
       rows.push(row);
@@ -627,7 +629,12 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const finished = completed(inv);
       if (finished) {
         const stressed = inv.errors > 0;
-        ensure(inv.name).done.push({ serial: inv.id, id: instanceId(inv), state: stressed ? STRESSED : HAPPY, until: now() + flashMs,
+        const card = ensure(inv.name);
+        const id = instanceId(inv);
+        // One flash per card: a resumed run finishing again inside its old flash replaces it, never an id twice.
+        card.done = card.done.filter(d => d.id !== id);
+        // `agentId` links the flash to its run, so a resume inside it takes the card over (PR #239 Dexter 3).
+        card.done.push({ serial: inv.order, id, agentId: inv.agentId, state: stressed ? STRESSED : HAPPY, until: now() + flashMs,
           cause: stressed ? stressCause({ failures: inv.failures, retry: retryOf(inv) }) : null });
       }
       names.set(inv.name, names.get(inv.name) || finished);
@@ -733,12 +740,16 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     reapedIds.delete(agentId);
     queued.delete(agentId);
     const a = ensure(name);
+    // Its own finish still flashing: the resumed run takes that card over (its id and place), so it's one card, not two.
+    const flash = a.done.find(d => d.agentId === agentId && now() <= d.until) || null;
     if (!running(name)) startClean(a);
     a.flashUntil = 0;
     a.lastActivity = now();
+    const id = ++serial;
     const inv = {
-      id: ++serial, key, name, agentId, parent: null, orphan: false, background: true,
-      description: undefined, startedAt: now(), lastActivity: now(), ...idleTools(), ...freshRun(false),
+      id, key, name, agentId, parent: null, orphan: false, background: true,
+      description: undefined, startedAt: now(), lastActivity: now(), ...idleTools(),
+      ...freshRun(flash ? flash.id : null, flash ? flash.serial : id),
     };
     if (mate) { inv.mate = mate; mate.ended = false; mate.reaped = false; mate.wake = false; mate.runtimeId = agentId; }
     invs.push(inv);
@@ -878,8 +889,9 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       a.flashUntil = 0;
       a.lastActivity = now();
       const parent = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
+      const id = ++serial;
       const inv = {
-        id: ++serial, key, name: agent, agentId: null, parent,
+        id, key, name: agent, agentId: null, parent,
         // A spawner that names itself but can't be found (reaped, ended,
         // never seen -- or the host restarted) is some AGENT, not the main
         // session. "Unknown" used to be merged into "main session", so Stop
@@ -887,7 +899,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         // orphan ends only on its own events, SessionEnd and the reapers.
         orphan: !!p.agent_id && !parent,
         background: input.run_in_background === true, description: input.description,
-        startedAt: now(), lastActivity: now(), ...idleTools(), ...freshRun(true),
+        startedAt: now(), lastActivity: now(), ...idleTools(), ...freshRun(key, id),
       };
       invs.push(inv);
       if (inv.key !== null) spawns.set(inv.key, inv);
