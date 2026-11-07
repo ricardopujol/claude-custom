@@ -458,7 +458,8 @@ adoptOnStart({
 const theme = resolveTheme(PROJECT_ROOT, { registryDir: REGISTRY_DIR });
 console.log('[host] theme          :', theme.name);
 
-const mood = createMoodMachine();
+// Flash deadlines on a monotonic clock: a wall-clock step back can't stretch a happy/stressed flash (PR #239 Dexter 7).
+const mood = createMoodMachine({ mono: () => performance.now() });
 const processes = createProcessTracker();
 const store = createStore({ dir: path.join(HARNESS_DIR, 'state') });
 const usageCounters = createUsageCounters({ store, log: (...a) => console.log(...a) });      // invisible: which features get used (scripts/usage-report.js); above its users (canvasControl's emit)

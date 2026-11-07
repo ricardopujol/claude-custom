@@ -220,7 +220,10 @@ function remember(set, value) {
 function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_MS,
                             maxInvocationMs = MAX_INVOCATION_MS, flashMs = FLASH_MS,
                             toolLingerMs = TOOL_LINGER_MS, stuckMs = STUCK_MS, waitGraceMs = WAIT_GRACE_MS,
-                            waitRedMs = WAIT_RED_MS, quietStallMs = QUIET_STALL_MS } = {}) {
+                            waitRedMs = WAIT_RED_MS, quietStallMs = QUIET_STALL_MS, mono = now } = {}) {
+  // `mono`: the clock the happy/stressed FLASH deadlines run on (the name's and each instance card's). A monotonic one in the host
+  // (performance.now), so a wall-clock step back can't stretch a flash to minutes (PR #239 Dexter 7). It defaults to `now`, so a
+  // test that injects one clock drives both.
   const machine = new EventEmitter();
 
   // CARDS, keyed by agent NAME: the face the roster shows.
@@ -425,6 +428,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // never shows a departed sibling's failure (PR #239 Dexter 1).
   function rowsOf(agent) {
     const t = now();
+    const tm = mono();                         // flash deadlines (Dexter 7)
     const rows = [];
     for (const inv of invs) {
       if (inv.name !== agent) continue;
@@ -436,7 +440,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     }
     const a = agents.get(agent);
     // A finish still flashing whose run came back (a resume within the flash) is that run's live row, not a second card.
-    for (const d of a ? a.done : []) if (t <= d.until && !rows.some(r => r.id === d.id)) rows.push({ serial: d.serial, live: false, id: d.id, state: d.state, detail: d.state, ...(d.cause ? { cause: d.cause } : {}) });
+    for (const d of a ? a.done : []) if (tm <= d.until && !rows.some(r => r.id === d.id)) rows.push({ serial: d.serial, live: false, id: d.id, state: d.state, detail: d.state, ...(d.cause ? { cause: d.cause } : {}) });
     rows.sort((x, y) => x.serial - y.serial);
     return rows;
   }
@@ -640,7 +644,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         // One flash per card: a resumed run finishing again inside its old flash replaces it, never an id twice.
         card.done = card.done.filter(d => d.id !== id);
         // `agentId` links the flash to its run, so a resume inside it takes the card over (PR #239 Dexter 3).
-        card.done.push({ serial: inv.order, id, agentId: inv.agentId, state: stressed ? STRESSED : HAPPY, until: now() + flashMs,
+        card.done.push({ serial: inv.order, id, agentId: inv.agentId, state: stressed ? STRESSED : HAPPY, until: mono() + flashMs,
           cause: stressed ? stressCause({ failures: inv.failures, retry: retryOf(inv) }) : null });
       }
       names.set(inv.name, names.get(inv.name) || finished);
@@ -652,7 +656,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (running(name)) {
         setState(name, a, a.errors > 0 ? STRESSED : WORKING);
       } else if (finished) {
-        a.flashUntil = now() + flashMs;
+        a.flashUntil = mono() + flashMs;
         setState(name, a, a.errors > 0 ? STRESSED : HAPPY);
       } else {
         a.flashUntil = 0;
@@ -747,7 +751,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     queued.delete(agentId);
     const a = ensure(name);
     // Its own finish still flashing: the resumed run takes that card over (its id and place), so it's one card, not two.
-    const flash = a.done.find(d => d.agentId === agentId && now() <= d.until) || null;
+    const flash = a.done.find(d => d.agentId === agentId && mono() <= d.until) || null;
     if (!running(name)) startClean(a);
     a.flashUntil = 0;
     a.lastActivity = now();
@@ -1075,6 +1079,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
 
   function tick() {
     const t = now();
+    const tm = mono();                         // flash deadlines run on the monotonic clock (PR #239 Dexter 7)
 
     // BACKSTOPS, PER INVOCATION. Two clocks, because there are two questions
     // (Dexter F7): `lastActivity` asks "is it thinking" and is refreshed up
@@ -1111,7 +1116,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
 
     for (const [agent, a] of agents) {
       // An instance card's finish flash is over (#142 b); settle() below announces the rows that changed.
-      if (a.done.length) a.done = a.done.filter(d => t <= d.until);
+      if (a.done.length) a.done = a.done.filter(d => tm <= d.until);
       if (a.state === SLEEPING) continue;
 
       // A finished agent holds its happy/stressed flash, then sleeps --
@@ -1120,7 +1125,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       // so the WORKING side is unreachable today (measured by Mortimer); it is
       // kept as the defence against the class that produced F3.
       if (a.flashUntil) {
-        if (t > a.flashUntil) {
+        if (tm > a.flashUntil) {
           a.flashUntil = 0;
           setState(agent, a, running(agent) ? WORKING : SLEEPING);
         }

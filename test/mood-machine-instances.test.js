@@ -224,6 +224,38 @@ test('A3: the resumed run finishing again inside the old flash is still one card
   assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'working']]);
 });
 
+// ---- PR #239 Dexter 7: a finish flash runs on a monotonic clock, so a wall-clock step back can't stretch it ------------------
+
+test('A7: a wall-clock step back of 10 minutes doesn\'t keep a finished instance\'s card for 10 minutes', () => {
+  let wall = 5_000_000, mono = 100;
+  const m = createMoodMachine({ now: () => wall, mono: () => mono });
+  const send = (event, payload) => m.handle({ event, payload });
+  const run = (key, id) => {
+    send('PreToolUse', { tool_name: 'Agent', tool_use_id: key, tool_input: { subagent_type: 'qa' } });
+    send('PreToolUse', { tool_name: 'Read', tool_use_id: 'r' + key, tool_input: {}, agent_id: id, agent_type: 'qa' });
+    return { agent_id: id, agent_type: 'qa' };
+  };
+  const a = run('toolu_A', 'aqa-000000000000000a');
+  const b = run('toolu_B', 'aqa-000000000000000b');
+  send('SubagentStop', a);
+  assert.strictEqual(m.instancesOf('qa').length, 2, 'A flashes beside B');
+  wall -= 600_000;                       // the system clock steps back
+  mono += FLASH_MS + 1;                  // while real time moves on past the flash
+  m.tick();
+  assert.strictEqual(m.instancesOf('qa'), null, 'the flash is over: B is the one card');
+  send('SubagentStop', b);
+  assert.strictEqual(m.stateOf('qa'), 'happy');
+  wall -= 600_000;
+  mono += FLASH_MS + 1;
+  m.tick();
+  assert.strictEqual(m.stateOf('qa'), 'sleeping', 'the name\'s own flash ends on the same clock');
+});
+
+test('A7: the host gives the mood machine a monotonic clock for its flashes', () => {
+  const host = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  assert.match(host, /const mood = createMoodMachine\(\{ mono: \(\) => performance\.now\(\) \}\);/);
+});
+
 test('A4: a finished instance\'s row says it ended; a live row carries its run\'s agent_id', () => {
   const r = rig();
   const a = r.spawnRun('code-reviewer', 'toolu_A');
