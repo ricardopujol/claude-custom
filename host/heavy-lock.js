@@ -349,12 +349,19 @@ function acquire({
   run,
   exists = fs.existsSync, log = console.log, startsOf,
   work = createWorkStore(), now = Date.now,
-  // The side process that prints the wait and frees a holder that dies during it. Started only on the real machine path
-  // (no injected run or spawn), so a test never starts one unless it hands one in.
+  // The side process that prints the wait and frees a holder that dies during it: an explicit dependency (#237 Miguel M2).
+  // `watch`: a function starts one, null starts none (every unit test passes null or a fake). Not given: the real one,
+  // started through `spawnAsync` (child_process.spawn unless injected). One safety net stays: a caller that fakes the
+  // script calls (`run` or `spawnFn`) but not `spawnAsync` gets NO default watcher, because a real one would read and
+  // reclaim on the real lock that the fake was meant to keep the test away from.
+  spawnAsync,
   watch,
 } = {}) {
-  const injected = run !== undefined || spawnFn !== undefined;
-  if (watch === undefined) watch = injected ? null : startWatcher;
+  if (watch === undefined) {
+    const fakesTheScript = run !== undefined || spawnFn !== undefined;
+    watch = (fakesTheScript && spawnAsync === undefined) ? null
+      : (cfg) => startWatcher({ ...cfg, spawnFn: spawnAsync || spawn, env });
+  }
   if (spawnFn === undefined) spawnFn = spawnSync;
   if (run === undefined) run = defaultRun(scriptPath, { spawnFn, timeoutMs: (waitMinutes + 1) * 60000 });
   if (startsOf === undefined) startsOf = (pids) => queryStarts(pids, spawnFn);

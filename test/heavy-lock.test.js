@@ -44,7 +44,8 @@ function rig({ holder = null, alive = {}, acquireOverride = null, releaseStatus 
     clear: (h) => { if (r.work && h.startsWith(r.work.owner)) r.work = null; },
   };
   r.clock = { t: 0 };
-  r.deps = () => ({ run: r.run, exists: r.exists, env: r.env, log: (m) => r.log.push(m), startsOf: r.startsOf, work: r.workStore, now: () => r.clock.t });
+  // watch: null. The real watcher is the default, so every unit test hands in null or a fake (#237 Miguel M2).
+  r.deps = () => ({ run: r.run, exists: r.exists, env: r.env, log: (m) => r.log.push(m), startsOf: r.startsOf, work: r.workStore, now: () => r.clock.t, watch: null });
   return r;
 }
 const flagValue = (args, flag) => args[args.indexOf(flag) + 1];
@@ -279,14 +280,14 @@ test('defaultRun: a powershell that cannot start says why; a timeout says the si
 
 test('acquire with the real runner and an injected spawn: the failure to start reaches the HeavyLockError message', () => {
   const spawnFn = () => ({ status: null, error: Object.assign(new Error('nope'), { code: 'ENOENT' }) });
-  assert.throws(() => acquire({ label: 'x', pid: 7, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map() }),
+  assert.throws(() => acquire({ label: 'x', pid: 7, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map(), watch: null, work: createWorkStore(path.join(tmpDir('hl-enoent-'), 'w.json')) }),
     (e) => e.code === 'error' && /ENOENT/.test(e.message));
 });
 
 test('Miguel r2 N3 / #112 Dexter 2: -Acquire is killed at the wait plus one minute; status and release get their own 1-minute leash', () => {
   const seen = [];
   const spawnFn = (cmd, args, o) => { seen.push({ kind: args.includes('-Acquire') ? 'acquire' : args.includes('-Release') ? 'release' : 'status', t: o.timeout }); return { status: 0, stdout: 'free' }; };
-  const lock = acquire({ label: 'x', pid: 7, waitMinutes: 3, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map(), work: createWorkStore(path.join(tmpDir('hl-n3-'), 'w.json')) });
+  const lock = acquire({ label: 'x', pid: 7, waitMinutes: 3, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map(), work: createWorkStore(path.join(tmpDir('hl-n3-'), 'w.json')), watch: null });
   lock.release();
   assert.deepStrictEqual(seen.map(s => s.kind), ['status', 'acquire', 'release']);
   assert.strictEqual(seen[1].t, 4 * 60000);
@@ -639,9 +640,9 @@ test('2026-11-05: HEAVY_LOCK_SCRIPT points the module at another script; a relat
   const seen = [];
   const exists = (p) => { seen.push(p); return false; };
   const abs = path.join(tmpDir('hl-sv-'), 'nope.ps1');
-  assert.strictEqual(acquire({ label: 'x', pid: 7, env: { [SCRIPT_VAR]: abs }, exists, log: () => {}, startsOf: () => new Map(), run: () => ({ status: 0 }) }).state, 'missing');
+  assert.strictEqual(acquire({ label: 'x', pid: 7, env: { [SCRIPT_VAR]: abs }, exists, log: () => {}, startsOf: () => new Map(), run: () => ({ status: 0 }), watch: null }).state, 'missing');
   assert.strictEqual(seen[0], abs);
-  acquire({ label: 'x', pid: 7, env: { [SCRIPT_VAR]: 'rel\\x.ps1' }, exists, log: () => {}, startsOf: () => new Map(), run: () => ({ status: 0 }) });
+  acquire({ label: 'x', pid: 7, env: { [SCRIPT_VAR]: 'rel\\x.ps1' }, exists, log: () => {}, startsOf: () => new Map(), run: () => ({ status: 0 }), watch: null });
   assert.strictEqual(seen[1], DEFAULT_SCRIPT);
 });
 
@@ -711,7 +712,7 @@ test('#178 b: the watcher runs exactly around the wait, with the asker and its s
     const run = deps.run;
     deps.run = (args, o) => { if (args.includes('-Acquire')) events.push('acquire'); return run(args, o); };
     const watch = (cfg) => { events.push(['watch', cfg.parentPid, cfg.parentStart, cfg.waitMinutes, typeof cfg.startedAt]); return { stop: () => events.push('stop') }; };
-    try { acquire({ label: 'x', pid: 7, waitMinutes: 20, watch, ...deps }); } catch (e) { assert.strictEqual(e.code, 'busy'); }
+    try { acquire({ label: 'x', pid: 7, waitMinutes: 20, ...deps, watch }); } catch (e) { assert.strictEqual(e.code, 'busy'); }
     assert.deepStrictEqual(events, [['watch', 7, '100', 20, 'number'], 'acquire', 'stop'], String(holder));
   }
 });
@@ -720,13 +721,13 @@ test('#178 b: no watcher when nothing is waited for (re-entrant, script missing)
   let started = 0;
   const watch = () => { started++; return { stop() {} }; };
   const a = rig(); a.env[ENV_VAR] = 'npm test (pid 1 start 100)'; a.holder = 'npm test (pid 1 start 100) (since 10:00:00)';
-  acquire({ label: 'x', pid: 7, watch, ...a.deps() });
-  const b = rig({ exists: false }); acquire({ label: 'x', pid: 7, watch, ...b.deps() });
+  acquire({ label: 'x', pid: 7, ...a.deps(), watch });
+  const b = rig({ exists: false }); acquire({ label: 'x', pid: 7, ...b.deps(), watch });
   assert.strictEqual(started, 0);
   const c = rig();
-  assert.strictEqual(acquire({ label: 'x', pid: 7, watch: () => { throw new Error('no node'); }, ...c.deps() }).state, 'held');
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...c.deps(), watch: () => { throw new Error('no node'); } }).state, 'held');
   const d = rig();
-  assert.strictEqual(acquire({ label: 'x', pid: 7, watch: () => ({ stop() { throw new Error('gone'); } }), ...d.deps() }).state, 'held');
+  assert.strictEqual(acquire({ label: 'x', pid: 7, ...d.deps(), watch: () => ({ stop() { throw new Error('gone'); } }) }).state, 'held');
 });
 
 test('#178 b: startWatcher starts node on host/heavy-lock-watch.js with its config, its lines on stderr, without the re-entrancy flag', () => {
@@ -753,13 +754,53 @@ test('#178 b: startWatcher starts node on host/heavy-lock-watch.js with its conf
   assert.doesNotThrow(() => startWatcher({ waitMinutes: 1, spawnFn: () => { throw new Error('EPERM'); } }).stop());
 });
 
-test('#178 b: the default watcher starts only on the real machine path: an injected run or spawn never starts a process', () => {
-  // Both of these would spawn a real node if the default watcher ran; each finishes with no child left, and the fake spawn
-  // sees only powershell calls.
-  const cmds = [];
-  const spawnFn = (cmd) => { cmds.push(cmd); return { status: 0, stdout: 'free' }; };
-  acquire({ label: 'x', pid: 7, waitMinutes: 1, exists: () => true, env: {}, log: () => {}, spawnFn, startsOf: () => new Map(), work: createWorkStore(path.join(tmpDir('hl-nw-'), 'w.json')) });
-  assert.ok(cmds.length > 0 && cmds.every(c => /powershell\.exe$/i.test(c)), JSON.stringify(cmds));
+test('#237 Miguel M2: with no `watch` given, acquire starts the real watcher (node on heavy-lock-watch.js) through spawnAsync, around the wait', () => {
+  // Nothing real starts: the async spawn is a fake, and the script calls go to a fake spawnSync.
+  const sync = [];
+  const spawnFn = (cmd, args) => { sync.push(args.includes('-Acquire') ? 'acquire' : 'other'); return { status: 0, stdout: 'free' }; };
+  const started = [];
+  const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.unref = () => {}; child.kill = () => started.push('kill');
+  const spawnAsync = (cmd, args) => { started.push({ cmd, script: args[0], cfg: JSON.parse(args[1]), acquiresBefore: sync.filter(s => s === 'acquire').length }); return child; };
+  acquire({ label: 'x', pid: 7, waitMinutes: 1, exists: () => true, env: {}, log: () => {}, spawnFn, spawnAsync, startsOf: () => new Map([[7, '100']]), work: createWorkStore(path.join(tmpDir('hl-nw-'), 'w.json')) });
+  assert.strictEqual(started.length, 2, 'one watcher, stopped by its handle');
+  assert.strictEqual(started[0].cmd, process.execPath);
+  assert.strictEqual(started[0].script, WATCH_SCRIPT);
+  assert.strictEqual(started[0].cfg.parentPid, 7);
+  assert.strictEqual(started[0].acquiresBefore, 0, 'started before the -Acquire, so it speaks during the wait');
+  assert.strictEqual(started[1], 'kill');
+});
+
+test('#237 Miguel M2: watch: null starts nothing, even with an async spawn handed in', () => {
+  let n = 0;
+  const spawnFn = () => ({ status: 0, stdout: 'free' });
+  acquire({ label: 'x', pid: 7, waitMinutes: 1, exists: () => true, env: {}, log: () => {}, spawnFn, spawnAsync: () => { n++; return new EventEmitter(); }, startsOf: () => new Map(), work: createWorkStore(path.join(tmpDir('hl-nw0-'), 'w.json')), watch: null });
+  assert.strictEqual(n, 0);
+});
+
+test('#237 Miguel M2: a caller that fakes the script but not the async spawn gets no default watcher (the module\'s own spawn is never called)', () => {
+  // A fresh copy of the module, loaded while child_process.spawn is a counter, so its default spawn IS that counter: the
+  // safety net is measured, not assumed. Restored before anything else runs.
+  const cp = require('child_process');
+  const realSpawn = cp.spawn;
+  const id = require.resolve('../host/heavy-lock');
+  const cached = require.cache[id];
+  let n = 0;
+  let fresh;
+  try {
+    cp.spawn = () => { n++; const c = new EventEmitter(); c.exitCode = null; c.signalCode = null; c.unref = () => {}; c.kill = () => {}; return c; };
+    delete require.cache[id];
+    fresh = require('../host/heavy-lock');
+  } finally {
+    cp.spawn = realSpawn;
+    require.cache[id] = cached;
+  }
+  const base = () => ({ label: 'x', pid: 7, waitMinutes: 1, exists: () => true, env: {}, log: () => {}, startsOf: () => new Map([[7, '100']]) });
+  assert.strictEqual(fresh.acquire({ ...base(), spawnFn: () => ({ status: 0, stdout: 'free' }), work: createWorkStore(path.join(tmpDir('hl-nw1-'), 'w.json')) }).state, 'held');
+  assert.strictEqual(fresh.acquire({ ...base(), run: () => ({ status: 0, stdout: 'acquired' }), work: createWorkStore(path.join(tmpDir('hl-nw2-'), 'w.json')) }).state, 'held');
+  assert.strictEqual(n, 0, 'a faked script call must never start a real watcher against the real lock');
+  // The counter really is the copy's default spawn (else the 0 above proves nothing): its startWatcher calls it.
+  fresh.startWatcher({ waitMinutes: 1 }).stop();
+  assert.strictEqual(n, 1);
 });
 
 // ---- the watcher's one step (host/heavy-lock-watch.js) ----
@@ -852,7 +893,7 @@ test('#237 Dexter 1: the watcher is stopped before the slot is read again, and r
   const run = deps.run;
   deps.run = (args, o) => { events.push(args.includes('-Acquire') ? 'acquire' : args.includes('-Release') ? 'release' : 'status'); return run(args, o); };
   const watch = () => { events.push('watch'); return { stop: () => events.push('stop') }; };
-  acquire({ label: 'x', pid: 7, watch, ...deps });
+  acquire({ label: 'x', pid: 7, ...deps, watch });
   const tail = events.slice(events.indexOf('watch'));
   assert.deepStrictEqual(tail, ['watch', 'acquire', 'stop', 'status', 'watch', 'acquire', 'stop']);
 });

@@ -249,7 +249,7 @@ test('BACKLOG #112: a hard kill during the start-time query still leaves the sui
   const store = createWorkStore(path.join(tmpDir('hl-gap-'), 'w.json'));
   let seen = null, owner = null;
   r.deps.acquire = (o) => acquire({
-    ...o, scriptPath: 'x', exists: () => true, work: store,
+    ...o, scriptPath: 'x', exists: () => true, work: store, watch: null,
     run: (args) => (args.includes('-Acquire') ? (owner = args[args.indexOf('-Owner') + 1], { status: 0, stdout: 'acquired' }) : { status: 0, stdout: 'ok' }),
     // The slow start query: this is the moment a hard kill of the wrapper would land. The record then is what a later asker sees.
     startsOf: (pids) => {
