@@ -428,9 +428,9 @@ test('the retry policy cannot be widened from outside this module', () => {
   const mod = require('../host/atomic-write');
   assert.strictEqual(mod.TRANSIENT, undefined, 'the mutable Set must not be exported');
 
-  // The snapshot is a copy: mutating it must not reach the policy.
-  assert.ok(Array.isArray(mod.TRANSIENT_CODES));
-  assert.throws(() => mod.TRANSIENT_CODES.push('ENOENT'), TypeError);
+  // No snapshot of the policy is published either (BACKLOG #93: TRANSIENT_CODES was read only by this file's tests), so the
+  // predicate is the one way to see it.
+  assert.strictEqual(mod.TRANSIENT_CODES, undefined, 'no copy of the policy is exported');
 
   // And the policy itself still refuses a non-transient code.
   assert.strictEqual(mod.isTransient({ code: 'ENOENT' }), false);
@@ -443,19 +443,12 @@ test('the retry policy cannot be widened from outside this module', () => {
 // Mortimer's run on this branch: host/atomic-write.js scored 95.2% with three
 // survivors, and all three were real gaps rather than equivalent mutants.
 
-test('the published policy snapshot says exactly which codes are transient', () => {
-  // Survivor: ArrayDeclaration at the TRANSIENT_CODES line, mutated to `[]`.
-  // The existing test asserted it was an array and that pushing to it threw --
-  // both still true of an EMPTY array. Nothing asserted its CONTENTS, so the
-  // snapshot could have published nothing at all and no test would notice.
+test('the policy says exactly which codes are transient', () => {
+  // Was the TRANSIENT_CODES snapshot's test (a survivor: ArrayDeclaration mutated to `[]`). The snapshot is gone (BACKLOG #93), so
+  // the predicate is pinned directly: exactly these three, and nothing else that a rename can throw on Windows.
   const mod = require('../host/atomic-write');
-  assert.deepStrictEqual([...mod.TRANSIENT_CODES].sort(), ['EACCES', 'EBUSY', 'EPERM']);
-  // And the snapshot must agree with the predicate it claims to describe --
-  // two sources of one truth are exactly what drifts.
-  for (const code of mod.TRANSIENT_CODES) {
-    assert.strictEqual(mod.isTransient({ code }), true, `${code} must be transient`);
-  }
-  assert.strictEqual(mod.isTransient({ code: 'ENOENT' }), false);
+  for (const code of ['EACCES', 'EBUSY', 'EPERM']) assert.strictEqual(mod.isTransient({ code }), true, `${code} must be transient`);
+  for (const code of ['ENOENT', 'EEXIST', 'EISDIR', 'ENOTEMPTY', 'EXDEV', 'EMFILE', undefined]) assert.strictEqual(mod.isTransient({ code }), false, String(code));
 });
 
 test('async INVARIANT: success at attempt k costs exactly k calls and k-1 sleeps', async () => {

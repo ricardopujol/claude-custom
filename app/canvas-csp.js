@@ -15,9 +15,6 @@
 
 const { hostOrigin } = require('../host/canvas-origin');      // one origin rule for the panel and the host (PR #122 Miguel G8)
 
-// The policy's directive count: the property test holds the CSP to it.
-const CSP_DIRECTIVES = 8;
-
 /** The policy text. No input: nothing the panel is shown can add a source. */
 function buildCsp() {
   return [
@@ -84,4 +81,4 @@ function buildPage(html) {
     + `<script>${PANEL_SHIM}</script></head><body>${page}`;
 }
 
-module.exports = { hostOrigin, buildCsp, buildPage, PANEL_SHIM, CSP_DIRECTIVES };
+module.exports = { hostOrigin, buildCsp, buildPage, PANEL_SHIM };

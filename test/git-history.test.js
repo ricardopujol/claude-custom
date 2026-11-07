@@ -158,18 +158,18 @@ test('a repo with no develop, main or master is ok:false', async () => {
 });
 
 // ---------- one graph instead of a spawn per branch ----------
-const { parseGraph, mergeCounts, laneFacts: laneFactsOf } = require('../host/git-history');
-// "hash parents time subject" rows, newest first like git log
-const graph = rows => rows.map(([h, p, t, s]) => [h, p, String(t), s].join('\x1f')).join('\n') + '\n';
+const { mergeCounts, laneFacts: laneFactsOf } = require('../host/git-history');
+// "hash parents time subject" rows -> the Map readHistory builds from `git log --all` (hash -> { parents, time, subject }). The
+// synchronous parseGraph that tests used to build it was exported for them alone and is removed (BACKLOG #93); the parse itself is
+// readHistory's (parseGraphYielding), exercised through fakeRun above.
+const graphOf = rows => new Map(rows.map(([h, p, t, s]) => [h, { parents: p.split(/\s+/).filter(Boolean), time: Number(t), subject: s }]));
 
-test('parseGraph: hash -> { parents, time, subject }', () => {
-  const g = parseGraph(graph([['b', 'a', 2, 'two'], ['a', '', 1, 'one']]));
-  assert.deepStrictEqual(g.get('b'), { parents: ['a'], time: 2, subject: 'two' });
-  assert.deepStrictEqual(g.get('a'), { parents: [], time: 1, subject: 'one' });
+test('#93: parseGraph is no longer exported (only this test used it)', () => {
+  assert.strictEqual(require('../host/git-history').parseGraph, undefined);
 });
 
 // develop: a - m1 - c - m2     feature x: a - x1 - x2 (merged at m1)     feature y: m1 - y1 (merged at m2)
-const G = parseGraph(graph([
+const G = graphOf(([
   ['m2', 'c y1', 6, 'Merge y'], ['y1', 'm1', 5, 'y one'], ['c', 'm1', 4, 'c'],
   ['m1', 'a x2', 3, 'Merge x'], ['x2', 'x1', 2.5, 'x two'], ['x1', 'a', 2, 'x one'], ['a', '', 1, 'root'],
 ]));
@@ -183,7 +183,7 @@ test('mergeCounts of an unknown tip is empty', () => {
 });
 
 test('laneFacts: ahead of the integration tip, and the oldest non-merge commit it adds', () => {
-  const g = parseGraph(graph([
+  const g = graphOf(([
     ['l3', 'l2 c', 9, 'Merge develop into lane'], ['l2', 'l1', 8, 'lane two'], ['l1', 'm1', 7, 'lane one'],
     ['m2', 'c y1', 6, 'Merge y'], ['y1', 'm1', 5, 'y one'], ['c', 'm1', 4, 'c'],
     ['m1', 'a x2', 3, 'Merge x'], ['x2', 'x1', 2.5, 'x two'], ['x1', 'a', 2, 'x one'], ['a', '', 1, 'root'],
@@ -196,21 +196,21 @@ test('laneFacts: ahead of the integration tip, and the oldest non-merge commit i
 // ---------- PR #84 review (Dexter, Miguel) ----------
 
 test('Dexter F3: a rebased lane whose commits share one commit time still gives its FIRST commit', () => {
-  const g = parseGraph(rowsToGraph([
+  const g = graphOf(([
     ['c', 'b', 1000, 'third'], ['b', 'a', 1000, 'second'], ['a', 'd1', 1000, 'first'], ['d1', '', 1, 'root'],
   ]));
   assert.deepStrictEqual(laneFactsOf(g, 'd1', 'c'), { ahead: 3, first: 'first' });
 });
 
 test('Dexter F3: clock skew (a child older than its parent) still gives the first commit', () => {
-  const g = parseGraph(rowsToGraph([
+  const g = graphOf(([
     ['c', 'b', 5, 'third'], ['b', 'a', 3, 'second'], ['a', 'd1', 9, 'first'], ['d1', '', 1, 'root'],
   ]));
   assert.strictEqual(laneFactsOf(g, 'd1', 'c').first, 'first');
 });
 
 test('a lane that merged another lane in: the older of its two starts', () => {
-  const g = parseGraph(rowsToGraph([
+  const g = graphOf(([
     ['m', 'b2 o1', 9, 'Merge other'], ['o1', 'd1', 2, 'other start'], ['b2', 'b1', 8, 'b two'], ['b1', 'd1', 5, 'b start'], ['d1', '', 1, 'root'],
   ]));
   assert.deepStrictEqual(laneFactsOf(g, 'd1', 'm'), { ahead: 4, first: 'other start' });

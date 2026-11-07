@@ -108,16 +108,8 @@ function addGraphLine(g, line) {
   g.set(hash, { parents: parents.trim().split(/\s+/).filter(Boolean), time: Number(time) || 0, subject });
 }
 
-/** `git log --all GRAPH_FORMAT` -> Map(hash -> { parents, time, subject }) */
-function parseGraph(text) {
-  const g = new Map();
-  if (typeof text !== 'string') return g;
-  for (const line of text.split(/\r?\n/)) addGraphLine(g, line);
-  return g;
-}
-
-// The same, yielding to the event loop every few thousand commits: on a big repo one synchronous
-// parse could hold the host past the hook helper's 80ms connect timeout (PR #84 Miguel I3).
+// `git log --all GRAPH_FORMAT` -> Map(hash -> { parents, time, subject }), yielding to the event loop every few thousand commits: on
+// a big repo one synchronous parse could hold the host past the hook helper's 80ms connect timeout (PR #84 Miguel I3).
 const GRAPH_BATCH = 5000;
 async function parseGraphYielding(text) {
   const g = new Map();
@@ -312,6 +304,6 @@ async function readHistory(cwd, { run = defaultRun } = {}) {
 }
 
 module.exports = {
-  parseMerges, parseRefs, parseWorktrees, parseGraph, integrationOf, mergeCounts, laneFacts, readHistory, readOrigin,
+  parseMerges, parseRefs, parseWorktrees, integrationOf, mergeCounts, laneFacts, readHistory, readOrigin,
   defaultRun, MERGE_FORMAT, REF_FORMAT, GRAPH_FORMAT,
 };

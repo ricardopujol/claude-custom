@@ -10,7 +10,12 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fc = require('fast-check');
-const { hostOrigin, buildCsp, buildPage, PANEL_SHIM, CSP_DIRECTIVES } = require('../app/canvas-csp');
+const { hostOrigin, buildCsp, buildPage, PANEL_SHIM } = require('../app/canvas-csp');
+
+// BACKLOG #93 (Ricardo 2026-11-06: "Remove 6, keep 3"): CSP_DIRECTIVES was exported for this file alone; the count is pinned here.
+test('#93: CSP_DIRECTIVES is no longer exported (only this test used it)', () => {
+  assert.strictEqual(require('../app/canvas-csp').CSP_DIRECTIVES, undefined);
+});
 
 test('hostOrigin: a bare host is https, an explicit scheme and port are kept, case is folded', () => {
   assert.strictEqual(hostOrigin('api.open-meteo.com'), 'https://api.open-meteo.com');
@@ -39,7 +44,7 @@ test('property: an origin is only ever scheme://host[:port], whatever the input'
 test('buildCsp: nothing is loadable or connectable, and the fixed directives never move', () => {
   const csp = buildCsp();
   const parts = csp.split('; ');
-  assert.strictEqual(parts.length, CSP_DIRECTIVES);
+  assert.strictEqual(parts.length, 8);
   for (const want of ["default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'", 'img-src data:', 'font-src data:',
     "connect-src 'none'", "form-action 'none'", "base-uri 'none'"]) assert.ok(parts.includes(want), want);
   assert.doesNotMatch(csp, /https?:/);

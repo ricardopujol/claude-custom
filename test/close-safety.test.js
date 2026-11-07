@@ -9,23 +9,30 @@ const assert = require('node:assert');
 const fc = require('fast-check');
 
 const {
-  isSafeToClose, closeReasons, closeReason, readCloseFacts, makeRun, GIT_TIMEOUT_MS, STATUS_ARGS,
+  closeReasons, closeReason, readCloseFacts, makeRun, GIT_TIMEOUT_MS, STATUS_ARGS,
 } = require('../host/close-safety');
 
 const SAFE = { merged: true, dirtyCount: 0, unpushedCount: 0, agentsHere: 0 };
+// Safe = no reason to ask. isSafeToClose was exactly this wrapper, used only here, and is removed (BACKLOG #93); every rule it
+// pinned is a rule of closeReasons, so the assertions stay, through this.
+const isSafeToClose = (facts) => closeReasons(facts).length === 0;
 
-test('isSafeToClose: merged, clean, pushed and unoccupied is safe', () => {
+test('#93: isSafeToClose is no longer exported (only this test used it)', () => {
+  assert.strictEqual(require('../host/close-safety').isSafeToClose, undefined);
+});
+
+test('safe: merged, clean, pushed and unoccupied is safe', () => {
   assert.strictEqual(isSafeToClose(SAFE), true);
 });
 
-test("isSafeToClose: the tab's own session is not a fact -- mid-turn, waiting or unknown still closes", () => {
+test("safe: the tab's own session is not a fact -- mid-turn, waiting or unknown still closes", () => {
   for (const session of ['idle', 'busy', 'waiting', null, undefined, 'x']) {
     assert.strictEqual(isSafeToClose({ ...SAFE, session }), true, String(session));
     assert.deepStrictEqual(closeReasons({ ...SAFE, session }), [], String(session));
   }
 });
 
-test('isSafeToClose: every combination -- only the all-clear one is safe', () => {
+test('safe: every combination -- only the all-clear one is safe', () => {
   for (const merged of [true, false]) {
     for (const dirtyCount of [0, 2]) {
       for (const unpushedCount of [0, 3]) {
@@ -33,14 +40,13 @@ test('isSafeToClose: every combination -- only the all-clear one is safe', () =>
           const expected = merged && dirtyCount === 0 && unpushedCount === 0 && agentsHere === 0;
           const facts = { merged, dirtyCount, unpushedCount, agentsHere };
           assert.strictEqual(isSafeToClose(facts), expected, JSON.stringify(facts));
-          assert.strictEqual(closeReasons(facts).length === 0, expected, JSON.stringify(facts));
         }
       }
     }
   }
 });
 
-test('isSafeToClose: unknown is never safe (null, undefined, strings, NaN, negatives)', () => {
+test('safe: unknown is never safe (null, undefined, strings, NaN, negatives)', () => {
   for (const bad of [null, undefined, '0', NaN, -1, 1.5, {}, false]) {
     for (const k of ['dirtyCount', 'unpushedCount', 'agentsHere']) {
       assert.strictEqual(isSafeToClose({ ...SAFE, [k]: bad }), false, `${k}=${String(bad)}`);
@@ -81,11 +87,13 @@ test("closeReason: the rule first, then each reason as a sentence (Ricardo's wor
     "Ctrl+click only closes a tab that's merged, saved and pushed. This one isn't merged. This one has 2 uncommitted files.");
 });
 
-test('property: safe exactly when closeReasons is empty', () => {
+test('property: no reason to ask exactly when every fact is known and clear (closeReason is empty then, and only then)', () => {
   const n = fc.oneof(fc.nat(5), fc.constant(null), fc.constant(undefined), fc.constant(NaN), fc.constant('0'));
   fc.assert(fc.property(fc.oneof(fc.boolean(), fc.constant(null)), n, n, n, (merged, dirtyCount, unpushedCount, agentsHere) => {
     const f = { merged, dirtyCount, unpushedCount, agentsHere };
-    assert.strictEqual(isSafeToClose(f), closeReasons(f).length === 0);
+    const clear = merged === true && [dirtyCount, unpushedCount, agentsHere].every(v => v === 0);
+    assert.strictEqual(closeReasons(f).length === 0, clear);
+    assert.strictEqual(closeReason(f) === '', clear);
   }));
 });
 

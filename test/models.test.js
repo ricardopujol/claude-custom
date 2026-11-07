@@ -18,9 +18,14 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const {
-  normalizeModel, normalizeCatalogue, filterModels, sortModels,
-  TARGETS, perMillion,
+  normalizeModel, normalizeCatalogue, sortModels, perMillion,
 } = require('../host/models');
+
+// BACKLOG #93 (Ricardo 2026-11-06): filterModels was used only by its own tests; the Models panel filters the rows itself
+// (app/renderer.js, the session target keeps only models with tools, free-only keeps only the known-free).
+test('#93: filterModels is no longer exported (only its own tests used it)', () => {
+  assert.strictEqual(require('../host/models').filterModels, undefined);
+});
 
 // A row shaped like the real endpoint returns. Prices are STRINGS, per token.
 const raw = (over = {}) => ({
@@ -88,61 +93,6 @@ test('a missing supported_parameters is NOT taken as tool support', () => {
   // output at once -- and it looks like the harness is broken, not the model.
   assert.strictEqual(normalizeModel(raw({ supported_parameters: undefined })).tools, false);
   assert.strictEqual(normalizeModel(raw({ supported_parameters: null })).tools, false);
-});
-
-// --- the two targets, which want different things ----------------------------
-
-test('the main session only offers models that can call tools', () => {
-  const list = normalizeCatalogue([
-    raw({ id: 'a/tools' }),
-    raw({ id: 'b/chat-only', supported_parameters: ['max_tokens'] }),
-  ]);
-  const got = filterModels(list, { target: TARGETS.SESSION }).map(m => m.id);
-  assert.deepStrictEqual(got, ['a/tools']);
-});
-
-test('the council accepts a chat-only model, because an opinion needs no tools', () => {
-  const list = normalizeCatalogue([
-    raw({ id: 'a/tools' }),
-    raw({ id: 'b/chat-only', supported_parameters: ['max_tokens'] }),
-  ]);
-  const got = filterModels(list, { target: TARGETS.COUNCIL }).map(m => m.id).sort();
-  assert.deepStrictEqual(got, ['a/tools', 'b/chat-only']);
-});
-
-test('a search matches the id and the display name', () => {
-  const list = normalizeCatalogue([
-    raw({ id: 'openai/gpt-5.1', name: 'OpenAI: GPT-5.1' }),
-    raw({ id: 'google/gemini-2.5-pro', name: 'Google: Gemini 2.5 Pro' }),
-  ]);
-  assert.deepStrictEqual(filterModels(list, { search: 'gemini' }).map(m => m.id), ['google/gemini-2.5-pro']);
-  assert.deepStrictEqual(filterModels(list, { search: 'OPENAI' }).map(m => m.id), ['openai/gpt-5.1']);
-});
-
-test('a search with no matches returns nothing, rather than everything', () => {
-  // The failure mode that looks like success: an unmatched filter falling
-  // through to the full list reads as "no filter applied".
-  const list = normalizeCatalogue([raw()]);
-  assert.deepStrictEqual(filterModels(list, { search: 'zzzz' }), []);
-});
-
-test('a minimum context window can be required', () => {
-  const list = normalizeCatalogue([
-    raw({ id: 'small', context_length: 8000 }),
-    raw({ id: 'big', context_length: 400000 }),
-  ]);
-  assert.deepStrictEqual(filterModels(list, { minContext: 100000 }).map(m => m.id), ['big']);
-});
-
-test('free-only filtering excludes the UNPRICED, not just the paid', () => {
-  // "Free" must mean known-to-be-free. An unpriced model is not free, it is
-  // unknown, and including it here is how someone picks a model that bills.
-  const list = normalizeCatalogue([
-    raw({ id: 'free', pricing: { prompt: '0', completion: '0' } }),
-    raw({ id: 'paid', pricing: { prompt: '0.000001', completion: '0.000002' } }),
-    raw({ id: 'unpriced', pricing: undefined }),
-  ]);
-  assert.deepStrictEqual(filterModels(list, { freeOnly: true }).map(m => m.id), ['free']);
 });
 
 // --- ordering -----------------------------------------------------------------
