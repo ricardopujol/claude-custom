@@ -122,17 +122,14 @@ test('the held quit shows on the LAST will-quit listener (the paused-resume hold
 
 test('the default append writes "<ms> <step>" lines that the probe reads back in order (quit-log and readTimeline, Miguel F8)', () => {
   const fs = require('fs');
-  const os = require('os');
   const path = require('path');
+  const { tmpDir } = require('./tmp-dir');
   const { readTimeline } = require('../verify/lib/quit-linger');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-quit-log-test-'));
-  try {
-    const file = path.join(dir, 'quit.log');
-    let t = 1000;
-    const mark = createQuitLog(file, { now: () => (t += 250) });   // the real fs.appendFileSync
-    mark('window 1 close');
-    mark('process exit 0');
-    assert.deepStrictEqual(readTimeline(fs.readFileSync(file, 'utf8'), 1000), ['0.25s window 1 close', '0.50s process exit 0']);
-    assert.deepStrictEqual(readTimeline('not a line\n', 0), []);
-  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  const file = path.join(tmpDir('cc-quit-log-test-'), 'quit.log');   // removed by the helper at exit
+  let t = 1000;
+  const mark = createQuitLog(file, { now: () => (t += 250) });   // the real fs.appendFileSync
+  mark('window 1 close');
+  mark('process exit 0');
+  assert.deepStrictEqual(readTimeline(fs.readFileSync(file, 'utf8'), 1000), ['0.25s window 1 close', '0.50s process exit 0']);
+  assert.deepStrictEqual(readTimeline('not a line\n', 0), []);
 });
