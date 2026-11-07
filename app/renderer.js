@@ -3122,6 +3122,11 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   }
 
   document.addEventListener('pointerdown', (e) => {
+    // One pointer at a time (PR #241 Dexter 3): another touch or pen pointer during a press or a drag is ignored, so it can't
+    // overwrite the press, leak the first ghost or clear the swallowed click. The same pointer pressing again lost its release:
+    // that press ends (a drag is dropped, nothing committed) and this one starts.
+    if (press && e.pointerId !== press.pointerId) return;
+    if (press) end();
     swallowClick = false;                                // a new press: whatever the last drag left behind is not this one's
     if (e.button !== 0) return;
     const b = e.target.closest && e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
@@ -3141,14 +3146,14 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     try { b.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
   });
   window.addEventListener('pointermove', (e) => {
-    if (!press) return;
+    if (!press || e.pointerId !== press.pointerId) return;      // another pointer's moves are not this press's (Dexter 3)
     if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
     press.cx = e.clientX;
     press.cy = e.clientY;
     feed({ type: 'move', x: e.clientX, y: e.clientY, t: e.timeStamp });
   });
-  window.addEventListener('pointerup', () => {
-    if (!press) return;
+  window.addEventListener('pointerup', (e) => {
+    if (!press || e.pointerId !== press.pointerId) return;      // another pointer's release ends nothing (Dexter 3)
     const d = drag;
     const effect = feed({ type: 'up' });
     // Ended BEFORE the drop redraws: the redraw removes the dragged tab's button,

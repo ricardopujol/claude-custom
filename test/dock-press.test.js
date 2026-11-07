@@ -99,8 +99,17 @@ test('events with no press are nothing: a move, a hold, a release, a cancel', ()
   for (const ev of [move(5, 5), { type: 'hold', t: 999 }, up(), { type: 'cancel' }]) assert.deepEqual(D.pressStep(null, ev, D.PRESS.rail), { state: null, effect: 'none' });
 });
 
-test('a second down while pressed starts over from the new point (a lost release)', () => {
-  assert.deepEqual(run([down(0, 0, 0), down(500, 500, 10), move(503, 500, 20), up(30)], D.PRESS.rail).effects, ['none', 'none', 'none', 'click']);
+// PR #241 Dexter 3: down, a move past the distance, down, up answered 'click' (a click after a drag had started); on the page a
+// second touch or pen pointer overwrote the press and leaked the first ghost. A second down during a press or a drag is ignored:
+// the press goes on from its own point. (A lost release of the SAME pointer is the page's to end: it cancels, then presses anew.)
+test('a second down while pressed is ignored: the press goes on from its own point', () => {
+  assert.deepEqual(run([down(0, 0, 0), down(500, 500, 10), move(503, 500, 20), up(30)], D.PRESS.rail).effects, ['none', 'none', 'start', 'drop'],
+    '503 px from the first press point is a drag, not a 3 px wobble from the second');
+  assert.deepEqual(run([down(0, 0, 0), down(500, 500, 10), up(30)], D.PRESS.rail).effects, ['none', 'none', 'click']);
+});
+
+test('a second down while dragging is ignored: no click after a start', () => {
+  assert.deepEqual(run([down(0, 0, 0), move(50, 0, 5), down(0, 0, 10), up(20)], D.PRESS.rail).effects, ['none', 'start', 'none', 'drop']);
 });
 
 test('junk never throws and changes nothing: unknown events, junk numbers, junk options read as the rail\'s', () => {
@@ -128,6 +137,8 @@ test('property: one press is a click or a drag, never both, and only a press tha
   const ev = fc.oneof(
     fc.record({ type: fc.constant('move'), x: fc.integer({ min: -40, max: 40 }), y: fc.integer({ min: -40, max: 40 }), t: fc.integer({ min: 0, max: 600 }) }),
     fc.record({ type: fc.constant('hold'), t: fc.integer({ min: 0, max: 600 }) }),
+    // Dexter 3: a second pointer's down can come at any point of the press; it changes nothing.
+    fc.record({ type: fc.constant('down'), x: fc.integer({ min: -40, max: 40 }), y: fc.integer({ min: -40, max: 40 }), t: fc.integer({ min: 0, max: 600 }) }),
   );
   fc.assert(fc.property(fc.array(ev, { maxLength: 12 }), fc.boolean(), fc.constantFrom('rail', 'tab'), (mid, cancelled, kind) => {
     const opts = D.PRESS[kind];

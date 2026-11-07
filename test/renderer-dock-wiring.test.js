@@ -37,7 +37,7 @@ test('Dexter F2 / Miguel B1: a redraw moves focus only as renderEffects says -- 
 });
 
 test('Dexter F1 / Miguel I2: a drop ends the drag BEFORE the move redraws away its source', () => {
-  const at = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\r?\n\s+if \(!press\) return;/);
+  const at = JS.search(/window\.addEventListener\('pointerup', \(e\) => \{\r?\n\s+if \(!press \|\| e\.pointerId !== press\.pointerId\) return;/);
   assert.ok(at !== -1, 'the tab drag\'s pointerup handler must be findable');
   const handler = JS.slice(at, JS.indexOf('  });', at));
   const end = handler.indexOf('end();');
@@ -159,7 +159,11 @@ test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its star
 });
 
 test('#109: a rail button starts the same drag as a tab name, through pressStep, and a drop on the rail only reorders it', () => {
-  const down = JS.search(/document\.addEventListener\('pointerdown', \(e\) => \{\n\s+swallowClick = false;/);
+  // PR #241 Dexter 3: one pointer at a time. Another pointer's down, moves and release are ignored; the same pointer pressing
+  // again (a lost release) ends the old press first, so no ghost leaks and the swallowed click isn't cleared by a stranger.
+  assert.match(JS, /if \(press && e\.pointerId !== press\.pointerId\) return;\n\s+if \(press\) end\(\);\n\s+swallowClick = false;/);
+  assert.match(JS, /window\.addEventListener\('pointermove', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId !== press\.pointerId\) return;/);
+  const down = JS.search(/document\.addEventListener\('pointerdown', \(e\) => \{\n(?:\s+\/\/[^\n]*\n)*\s+if \(press && e\.pointerId/);
   assert.ok(down !== -1, 'the tab drag\'s press handler must be findable');
   const press = JS.slice(down, JS.indexOf('\n  });', down));
   assert.match(press, /closest\('\.zone-tabs button\[data-module\], \.drail button\[data-module\]'\)/, 'a rail button is a handle too');
@@ -170,7 +174,7 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   assert.match(JS, /tabDragClaimsClick = \(e\) => \{\n\s+if \(!swallowClick\) return false;\n\s+swallowClick = false;\n\s+return e\.detail !== 0;\n\s+\};/);
   assert.match(JS, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{\n\s+if \(tabDragClaimsClick\(e\)\) return;[^\n]*\n\s+openPeek\(id, e\.detail === 0\);/);
   assert.match(JS, /DD\.railDrop\(DD\.zonesAt\(/);
-  const up = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\n\s+if \(!press\) return;/);
+  const up = JS.search(/window\.addEventListener\('pointerup', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId !== press\.pointerId\) return;/);
   const release = JS.slice(up, JS.indexOf('\n  });', up));
   assert.match(release, /if \(d\.target\.rail === 'dock'\) \{ commitPlacement\(DTm\.moveOnRail\(settledLayout\(\), d\.id, d\.target\.before\)\); return; \}/);
   assert.ok(release.indexOf('end();') < release.indexOf('moveOnRail'), 'ended before the reorder redraws the rail');

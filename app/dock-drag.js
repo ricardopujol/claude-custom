@@ -275,7 +275,9 @@ function pressStep(state, ev, opts) {
   if (!isObject(ev)) return NOTHING(st);
   const type = ev.type;
   if (type === 'down') {
-    if (!isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
+    // A second down during a press or a drag (another touch or pen pointer) is ignored: the press goes on from its own point,
+    // and a drag that started never ends in a click (PR #241 Dexter 3). A lost release of the same pointer is the page's to end.
+    if (st || !isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
     return NOTHING({ phase: 'pressed', x: ev.x, y: ev.y, t: isNumber(ev.t) ? ev.t : 0 });
   }
   if (!st) return NOTHING(null);
