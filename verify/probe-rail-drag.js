@@ -20,6 +20,8 @@
  *   6  a drop between two rail tabs puts the tab there: one insertion line mid-drag, the rail redrawn in the new order, the docked
  *      groups unchanged, layout-tree.json holding the order and the railOrdered mark
  *   7  after a restart of the window the rail comes back in that order
+ *   8  PR #241 Dexter 2 / Miguel M2: a rail that overflows, scrolled mid-drag: the line and the drop follow the buttons; a drag
+ *      held near the rail's end scrolls it
  *
  * Screenshots (the app's own capturePage, never the screen), into --shots: rail-drag-ghost.png (a drag in flight from a rail icon
  * over the terminal: the ghost and the zones), rail-drag-inflight.png (over the rail: the insertion line), rail-drag-reordered.png
@@ -366,6 +368,38 @@ async function main() {
   check('7: ...and the docked groups as they were', JSON.stringify(groupTabs(s)) === JSON.stringify(docked), JSON.stringify(groupTabs(s)));
   await sleep(300);
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'rail-drag-restart.png') });
+
+  // 8: PR #241 Dexter 2 / Miguel M2. Every panel on the rail in a short dock: the rail overflows and scrolls. The slots were measured
+  // once at the drag's start, so a scroll mid-drag put the line and the drop in the wrong gap. Now a scroll measures them again,
+  // and a pointer held near the rail's end scrolls it.
+  await view(app, 'layout', { layout: T.startLayout(IDS) });
+  await view(app, 'squeeze', { height: 420 });
+  s = await stateFor(app, v => !!dockRail(v) && dockRail(v).scroll.scrollHeight > dockRail(v).scroll.clientHeight + 40, 6000);
+  const full = railOrder(s);
+  const sc = dockRail(s).scroll;
+  check('8: setup: every panel on the rail, and the rail overflows its 420 px dock', sc.scrollHeight > sc.clientHeight + 40, JSON.stringify(sc));
+  await view(app, 'railScroll', { to: 'top' });
+  const moving = full[0];
+  const target = full[full.length - 2];
+  r = await view(app, 'railPress', { id: moving, how: 'drag', before: full[3], release: false });
+  let mv = await view(app, 'railPressMove', { scroll: 100000, before: target });
+  check(`8: scrolled to the end mid-drag, the line follows the buttons: it sits at the gap above ${target}, where the pointer is`,
+    r.ok && mv.ok && mv.scrollTop > 0 && mv.lines === 1 && mv.lineTop !== null && Math.abs(mv.lineTop - (mv.pointerY - 3)) <= 8 /* a separator's gap puts it up to 6 px above the button */, JSON.stringify(mv));
+  r = await view(app, 'railRelease');
+  const want8 = (() => { const rest = full.filter(id => id !== moving); rest.splice(rest.indexOf(target), 0, moving); return rest; })();
+  s = await stateFor(app, v => JSON.stringify(railOrder(v)) === JSON.stringify(want8));
+  check(`8: ...and the drop puts ${moving} just before ${target}`, JSON.stringify(railOrder(s)) === JSON.stringify(want8), JSON.stringify(railOrder(s)));
+  // Auto-scroll: from the top, a drag held 5 px above the rail's bottom scrolls it down.
+  await view(app, 'railScroll', { to: 'top' });
+  s = await stateFor(app, () => true);
+  const rb = dockRail(s).rect;
+  r = await view(app, 'railPress', { id: railOrder(s)[1], how: 'drag', to: { x: rb.left - s.dock.left + rb.width / 2, y: rb.top - s.dock.top + rb.height - 5 }, release: false });
+  await sleep(600);
+  mv = await view(app, 'railPressMove', {});
+  check('8: a drag held near the rail\'s bottom scrolls it down on its own', r.ok && mv.ok && mv.scrollTop > 0, JSON.stringify(mv));
+  await view(app, 'key', { key: 'Escape', selector: 'body' });
+  await view(app, 'railRelease');
+  await view(app, 'squeeze', {});
 
   await quitApp(app);
 }

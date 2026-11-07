@@ -3048,7 +3048,11 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
       try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ }
     }
     press = null;
-    if (drag) drag.ghost.remove();
+    if (drag) {
+      drag.ghost.remove();
+      if (drag.railEl) drag.railEl.removeEventListener('scroll', onRailScroll);
+      cancelAnimationFrame(drag.scrollFrame);
+    }
     drag = null;
     overlay.textContent = '';
     document.body.classList.remove('dock-dragging');
@@ -3074,6 +3078,11 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     const own = DTm.floatOf(placementLayout(), press.id);
     drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null, rail: null };
     drag.rail = railSlots(drag.rect, press.id);
+    // The dock rail scrolls (a full one overflows): its buttons move under the pointer, so a scroll measures them again (PR #241
+    // Dexter 2, Miguel M2). Only a drag that has a place in the rail listens.
+    drag.railEl = drag.rail ? dock.querySelector(':scope > .drail[data-rail="dock"]') : null;
+    drag.scrollFrame = 0;
+    if (drag.railEl) drag.railEl.addEventListener('scroll', onRailScroll, { passive: true });
     document.body.appendChild(drag.ghost);
     document.body.classList.add('dock-dragging');
     swallowClick = press.rail;                           // a tab's name keeps what it did before #109
@@ -3088,6 +3097,21 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
     const sig = JSON.stringify(hit.zones);
     if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+    if (drag.railEl && !drag.scrollFrame && DD.railScrollStep(drag.rail, drag.at) !== 0) drag.scrollFrame = requestAnimationFrame(scrollTick);
+  }
+  // The rail scrolled under the drag: its buttons are measured again and the pointer, which hasn't moved, is judged again.
+  function onRailScroll() {
+    if (!drag || !press) return;
+    drag.rail = railSlots(drag.rect, drag.id);
+    follow(press.cx, press.cy);
+  }
+  // While the pointer holds near an end of the rail, it scrolls that way, a frame at a time (dockDrag.railScrollStep).
+  function scrollTick() {
+    if (!drag || !drag.railEl) return;
+    const step = DD.railScrollStep(drag.rail, drag.at);
+    if (step === 0) { drag.scrollFrame = 0; return; }
+    if (drag.rail && drag.rail.dir === 'h') drag.railEl.scrollLeft += step; else drag.railEl.scrollTop += step;
+    drag.scrollFrame = requestAnimationFrame(scrollTick);
   }
   // One pointer event of the press through dockDrag.pressStep; 'start' begins the drag where the pointer is now.
   function feed(ev) {
@@ -3768,6 +3792,32 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         if (btn.isConnected) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, clientX: at.x, clientY: at.y }));
         await new Promise(r => requestAnimationFrame(() => r()));
         return JSON.stringify({ ok: true, during, after: overlayState(), peek: peek ? peek.module : null });
+      })();
+      // A drag left in flight by railPress moved again: to the top of rail button `before` as it is NOW (after a scroll), or to `to`.
+      // `scroll`: the dock rail's scrollTop is set first, as a wheel would, and the page's own scroll event runs.
+      case 'railPressMove': return (async () => {
+        const held = window.__railPressAt;
+        if (!held) return JSON.stringify({ ok: false, error: 'no rail press in flight' });
+        const rail = document.querySelector('#dock > .drail[data-rail="dock"]');
+        if (typeof a.scroll === 'number' && rail) {
+          rail.scrollTop = a.scroll;
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));     // the scroll event has run
+        }
+        const linesAfterScroll = document.querySelectorAll('#dock-overlay .dz.line').length;
+        let x1 = held.x;
+        let y1 = held.y;
+        if (a.before && rail) {
+          const b = rail.querySelector(`button[data-module="${CSS.escape(String(a.before))}"]`);
+          if (!b) return JSON.stringify({ ok: false, error: 'no such rail button' });
+          const r = b.getBoundingClientRect();
+          x1 = r.left + r.width / 2;
+          y1 = r.top + 3;
+        } else if (a.to) { const d = document.getElementById('dock').getBoundingClientRect(); x1 = d.left + a.to.x; y1 = d.top + a.to.y; }
+        window.dispatchEvent(ptr('pointermove', x1, y1));
+        window.__railPressAt = { ...held, x: x1, y: y1 };
+        const line = document.querySelector('#dock-overlay .dz.line');
+        const lineTop = line ? line.getBoundingClientRect().top : null;
+        return JSON.stringify({ ok: true, linesAfterScroll, lines: document.querySelectorAll('#dock-overlay .dz.line').length, lineTop, pointerY: y1, scrollTop: rail ? rail.scrollTop : null });
       })();
       case 'railRelease': return (async () => {
         const at = window.__railPressAt;

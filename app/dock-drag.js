@@ -352,7 +352,29 @@ function railDrop(hit, rail, point, id) {
   return { zones: [...zones.map(z => ({ ...z, hot: false })), { rect, target, hot: true, line: true }], target };
 }
 
-const API = { RIM, BAND, TAB_BAR, PRESS, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep, railDrop };
+/** A drag held near either end of a long rail scrolls it (PR #241 Dexter 2, Miguel M2): px from the end, and px per frame at most. */
+const RAIL_SCROLL = Object.freeze({ edge: 28, max: 12 });
+
+/**
+ * How far a rail scrolls this frame under a drag at `point` (both relative to the dock, as railDrop's): negative toward its
+ * start (up, or left on a horizontal rail), positive toward its end, 0 off the rail, away from both ends, or on junk. Inside
+ * the edge it is at least 1 px and grows to RAIL_SCROLL.max at the very end.
+ */
+function railScrollStep(rail, point) {
+  if (!isObject(rail) || !isRect(rail.rect) || (rail.dir !== 'v' && rail.dir !== 'h')) return 0;
+  if (!isObject(point) || !isNumber(point.x) || !isNumber(point.y) || !contains(rail.rect, point)) return 0;
+  const v = rail.dir === 'v';
+  const along = v ? point.y : point.x;
+  const start = v ? rail.rect.y : rail.rect.x;
+  const end = start + (v ? rail.rect.height : rail.rect.width);
+  const { edge, max } = RAIL_SCROLL;
+  const speed = d => Math.max(1, Math.round(max * (edge - d) / edge));
+  if (along - start < edge) return -speed(along - start);
+  if (end - along < edge) return speed(end - along);
+  return 0;
+}
+
+const API = { RIM, BAND, TAB_BAR, PRESS, RAIL_SCROLL, railScrollStep, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep, railDrop };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

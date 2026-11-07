@@ -229,6 +229,36 @@ test('no rail, a junk rail or a junk point: the hit as it was', () => {
   for (const p of [null, {}, { x: NaN, y: 2 }, { x: 'a', y: 1 }]) assert.equal(D.railDrop(NO_HIT, RAIL, p, 'vault'), NO_HIT);
 });
 
+// --- a long rail scrolls under a drag (PR #241 Dexter 2, Miguel M2) ----------------------------
+// A full rail on a laptop overflows and scrolls; #164's "favourites to the top" is exactly a drop at a gap scrolled out of sight.
+// While a drag holds the pointer near either end of the rail, the rail scrolls that way, faster the nearer the end.
+
+test('the auto-scroll edge and speed', () => {
+  assert.equal(D.RAIL_SCROLL.edge, 28);
+  assert.equal(D.RAIL_SCROLL.max, 12);
+});
+
+test('near the rail\'s top it scrolls up, near its bottom down, faster the nearer; in between, not at all', () => {
+  const step = y => D.railScrollStep(RAIL, { x: 960, y });
+  assert.equal(step(0), -12, 'at the very top: the most');
+  assert.equal(step(27), -1, 'just inside the edge: the least, never zero');
+  assert.equal(step(28), 0);
+  assert.equal(step(300), 0);
+  assert.equal(step(571), 0);
+  assert.equal(step(573), 1);
+  assert.equal(step(599), 12);
+  assert.ok(step(5) < step(20), 'nearer the top is faster up');
+});
+
+test('off the rail, a junk rail or a junk point: no scroll; a horizontal rail scrolls along x', () => {
+  assert.equal(D.railScrollStep(RAIL, { x: 100, y: 5 }), 0, 'beside the rail');
+  for (const rail of [null, {}, { rect: RAIL.rect }, { ...RAIL, dir: 'q' }]) assert.equal(D.railScrollStep(rail, { x: 960, y: 5 }), 0);
+  for (const p of [null, {}, { x: NaN, y: 5 }]) assert.equal(D.railScrollStep(RAIL, p), 0);
+  const h = { rect: { x: 0, y: 560, width: 300, height: 40 }, dir: 'h' };
+  assert.equal(D.railScrollStep(h, { x: 2, y: 580 }) < 0, true);
+  assert.equal(D.railScrollStep(h, { x: 298, y: 580 }) > 0, true);
+});
+
 // --- the property ---------------------------------------------------------------------------
 
 test('property: whatever sequence of rail drops, the rail holds each module exactly once and nothing else moves', () => {

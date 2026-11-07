@@ -174,6 +174,12 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   const release = JS.slice(up, JS.indexOf('\n  });', up));
   assert.match(release, /if \(d\.target\.rail === 'dock'\) \{ commitPlacement\(DTm\.moveOnRail\(settledLayout\(\), d\.id, d\.target\.before\)\); return; \}/);
   assert.ok(release.indexOf('end();') < release.indexOf('moveOnRail'), 'ended before the reorder redraws the rail');
+  // PR #241 Dexter 2 / Miguel M2: the rail scrolls under a drag, so its scroll measures the slots again and re-judges the point;
+  // and a pointer held near either end scrolls it (railScrollStep, one frame at a time). The listener goes with the drag.
+  assert.match(JS, /if \(drag\.railEl\) drag\.railEl\.addEventListener\('scroll', onRailScroll, \{ passive: true \}\);/);
+  assert.match(JS, /function onRailScroll\(\) \{\n\s+if \(!drag \|\| !press\) return;\n\s+drag\.rail = railSlots\(drag\.rect, drag\.id\);\n\s+follow\(press\.cx, press\.cy\);/);
+  assert.match(JS, /if \(drag\.railEl\) drag\.railEl\.removeEventListener\('scroll', onRailScroll\);/);
+  assert.match(JS, /const step = DD\.railScrollStep\(drag\.rail, drag\.at\);/);
   // PR #241 Dexter 1: only pressStep's 'drop' commits. A hold-started drag released unmoved answers 'cancel', and a cancel never docks.
   assert.match(release, /const effect = feed\(\{ type: 'up' \}\);/);
   assert.match(release, /if \(!d \|\| effect !== 'drop' \|\| !d\.target\) return;/);
