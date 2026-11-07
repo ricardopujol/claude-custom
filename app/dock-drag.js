@@ -355,20 +355,31 @@ function railDrop(hit, rail, point, id) {
   const stays = mine !== -1 && (before === id || (k === -1 ? mine === slots.length - 1 : k === mine + 1));
   if (stays) return { zones, target: null };
   const target = { rail: 'dock', before };
+  const rect = railLineRect(rail.rect, v, slots.map(s => s.rect), k);
+  return { zones: [...zones.map(z => ({ ...z, hot: false })), { rect, target, hot: true, line: true }], target };
+}
+
+/**
+ * The insertion line's rectangle (PR #241 Miguel S1: apart from where the drop lands): across a rail at `railRect` (`v`: vertical)
+ * at the gap before slot `k` of `slotRects` (-1: under the last), LINE thick, LINE_INSET in from each side unless the rail is too
+ * narrow for it, and never past either end of the rail.
+ */
+function railLineRect(railRect, v, slotRects, k) {
+  const lo = r => (v ? r.y : r.x);
+  const hi = r => (v ? r.y + r.height : r.x + r.width);
   // The gap: between the tab before it and this one, at the rail's start for the first, under the last for the end.
   let gap;
-  if (!slots.length) gap = lo(rail.rect);
-  else if (k === -1) gap = hi(slots[slots.length - 1].rect);
-  else if (k === 0) gap = lo(slots[0].rect);
-  else gap = (hi(slots[k - 1].rect) + lo(slots[k].rect)) / 2;
-  const start = lo(rail.rect);
-  const at = Math.round(Math.min(Math.max(gap - LINE / 2, start), start + (v ? rail.rect.height : rail.rect.width) - LINE));
-  const across = v ? rail.rect.width : rail.rect.height;
+  if (!slotRects.length) gap = lo(railRect);
+  else if (k === -1) gap = hi(slotRects[slotRects.length - 1]);
+  else if (k === 0) gap = lo(slotRects[0]);
+  else gap = (hi(slotRects[k - 1]) + lo(slotRects[k])) / 2;
+  const start = lo(railRect);
+  const at = Math.round(Math.min(Math.max(gap - LINE / 2, start), start + (v ? railRect.height : railRect.width) - LINE));
+  const across = v ? railRect.width : railRect.height;
   const inset = across > 2 * LINE_INSET + 4 ? LINE_INSET : 0;
-  const rect = v
-    ? { x: rail.rect.x + inset, y: at, width: across - 2 * inset, height: LINE }
-    : { x: at, y: rail.rect.y + inset, width: LINE, height: across - 2 * inset };
-  return { zones: [...zones.map(z => ({ ...z, hot: false })), { rect, target, hot: true, line: true }], target };
+  return v
+    ? { x: railRect.x + inset, y: at, width: across - 2 * inset, height: LINE }
+    : { x: at, y: railRect.y + inset, width: LINE, height: across - 2 * inset };
 }
 
 /** A drag held near either end of a long rail scrolls it (PR #241 Dexter 2, Miguel M2): px from the end, and px per frame at most. */

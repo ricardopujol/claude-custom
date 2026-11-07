@@ -28,8 +28,11 @@
 const migrateApi = typeof module !== 'undefined' && module.exports
   ? require('./dock-migrate')
   : root.dockMigrate;
-// The rail's default (grouped) order is app/rail-groups.js's, read when asked (it loads before this file on the page).
-const railGroupsApi = () => (typeof module !== 'undefined' && module.exports ? require('./rail-groups') : root.railGroups);
+// The rail's default (grouped) order is app/rail-groups.js's: required under Node, a page global in the window (renderer.html
+// loads rail-groups.js before this file, and it requires nothing, so there is no cycle to wait out).
+const railGroupsApi = typeof module !== 'undefined' && module.exports
+  ? require('./rail-groups')
+  : root.railGroups;
 
 const VERSION = 2;
 const MIN = { width: 120, height: 80 };               // a panel
@@ -608,7 +611,7 @@ function showOnRail(layout, id) {
 function drawnRail(layout) {
   const rail = railOf(layout);
   if (layout.railOrdered === true) return [...rail];
-  return railGroupsApi().groupRail(rail).filter(i => !i.sep).map(i => i.id);
+  return railGroupsApi.groupRail(rail).filter(i => !i.sep).map(i => i.id);
 }
 
 /**
