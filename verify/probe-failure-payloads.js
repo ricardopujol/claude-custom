@@ -22,6 +22,7 @@
 
    Deletes ELECTRON_RUN_AS_NODE: Claude Code is itself an Electron app, and a
    child spawned from a session would otherwise inherit it. */
+require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before claude starts; its claude runs are spawnSync, so this probe is a live holder for each whole run
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

@@ -72,6 +72,7 @@
    RE-RUN with the real host/loadout-hook.js (same day, same CLI): PASS (1),
    PASS (2), PASS (1c), PASS (5), hook median 59 ms, spawn path 436 ms. */
 
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawnSync } = require('child_process');
 const http = require('http');
 const fs = require('fs');
@@ -235,7 +236,7 @@ async function runScenario(label, hookPath, loadout) {
   const args = ['-p', 'say hi', '--output-format', 'json', '--no-session-persistence',
     '--settings', settingsFile, '--permission-mode', 'bypassPermissions', '--allowedTools', 'Agent,Bash'];
   console.log(`[${at()}] spawning claude ${args.join(' ')}`);
-  const r = await spawnWithTimeout({ cmd: 'claude', args, env, timeoutMs: 120000, shell: process.platform === 'win32' });
+  const r = await spawnWithTimeout({ cmd: 'claude', args, env, timeoutMs: 120000, shell: process.platform === 'win32', onSpawn: noteChild });
   await new Promise(res => fake.server.close(res));
   console.log(`[${at()}] exit=${r.code} timedOut=${r.timedOut} requests=${fake.requests.length}`);
   fake.requests.forEach(q => console.log(`      req#${q.n} model=${q.model} sub=${q.isSub} reply=${q.reply}`));

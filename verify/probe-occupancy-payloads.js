@@ -22,6 +22,7 @@
 
    Deletes ELECTRON_RUN_AS_NODE and ANTHROPIC_API_KEY (a probe must never bill a key). Writes only inside two
    temp folders. */
+require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before claude starts; its claude runs are spawnSync, so this probe is a live holder for each whole run
 const fs = require('fs');
 const os = require('os');
 const path = require('path');

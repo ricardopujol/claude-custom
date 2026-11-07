@@ -22,6 +22,7 @@
  * session's identity (CLAUDECODE, CLAUDE_CODE_*); ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN are dropped too so
  * the key can't be redirected.
  */
+require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before claude starts; its claude runs are spawnSync, so this probe is a live holder for each whole run
 const { spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
