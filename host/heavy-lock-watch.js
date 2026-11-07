@@ -12,8 +12,9 @@
  *   - frees a holder that died during the wait, by reclaimDead's rules (asker AND recorded work gone, "can't tell" is never
  *     "dead", a manual owner is never touched). The asker's own ticket then takes the slot in the script's next poll, so
  *     its place in the queue is kept.
- * It never acquires, and never releases anything but a provably dead holder. It ends on its own after `maxMs` (the wait
- * plus 2 minutes), and the asker stops it by its handle as soon as the acquire returns.
+ * It never acquires, and never releases anything but a provably dead holder. It ends on its own after `maxMs` (its one
+ * -Acquire call's wait plus 2 minutes, a minute past that call's own kill timer), and the asker stops it by its handle as
+ * soon as the acquire returns. A config without a pid, a script path, a start time, a cadence or a cap exits 2 at once.
  */
 const heavy = require('./heavy-lock');
 
@@ -40,23 +41,41 @@ function watchTick({ run, startsOf, work, log, parentPid, parentStart, startedAt
   return 'waiting';
 }
 
-function main(cfg, { log = (m) => process.stderr.write(`${m}\n`), exit = (c) => process.exit(c) } = {}) {
-  const run = heavy.defaultRun(cfg.scriptPath, { timeoutMs: heavy.STATUS_TIMEOUT_MS });
-  const work = heavy.createWorkStore(cfg.workFile);
-  const deps = { run, startsOf: (pids) => heavy.queryStarts(pids), work, log, parentPid: cfg.parentPid, parentStart: cfg.parentStart, startedAt: cfg.startedAt };
-  const deadline = Date.now() + cfg.maxMs;
+// The loop: a tick every `everyMs`, ended by the deadline (`maxMs` after start) or by the asker being gone. The deadline is
+// what guarantees an end when every tick says "can't tell, carry on" (#237 Dexter 9 a). Every outside effect is injectable.
+function main(cfg, {
+  log = (m) => process.stderr.write(`${m}\n`), exit = (c) => process.exit(c),
+  run = heavy.defaultRun(cfg.scriptPath, { timeoutMs: heavy.STATUS_TIMEOUT_MS }),
+  startsOf = (pids) => heavy.queryStarts(pids), work = heavy.createWorkStore(cfg.workFile),
+  now = Date.now, setTimer = setTimeout,
+} = {}) {
+  const deps = { run, startsOf, work, log, parentPid: cfg.parentPid, parentStart: cfg.parentStart, startedAt: cfg.startedAt, now };
+  const deadline = now() + cfg.maxMs;
   const loop = () => {
-    if (Date.now() > deadline || watchTick(deps) === 'asker-gone') return exit(0);
-    setTimeout(loop, cfg.everyMs);
+    if (now() > deadline || watchTick(deps) === 'asker-gone') return exit(0);
+    setTimer(loop, cfg.everyMs);
   };
-  setTimeout(loop, cfg.everyMs);
+  setTimer(loop, cfg.everyMs);
 }
 
-module.exports = { watchTick, main };
+// The command line's config, or null (#237 Miguel S9): a missing script path would run `powershell -File undefined` every
+// tick, and a missing start time would print "NaN min".
+function parseConfig(arg) {
+  let cfg = null;
+  try { cfg = JSON.parse(arg); } catch { return null; }
+  const ok = cfg && typeof cfg === 'object'
+    && Number.isInteger(cfg.parentPid) && cfg.parentPid > 0
+    && typeof cfg.scriptPath === 'string' && cfg.scriptPath.length > 0
+    && Number.isFinite(cfg.startedAt)
+    && Number.isFinite(cfg.everyMs) && cfg.everyMs > 0
+    && Number.isFinite(cfg.maxMs) && cfg.maxMs > 0;
+  return ok ? cfg : null;
+}
+
+module.exports = { watchTick, main, parseConfig };
 
 if (require.main === module) {
-  let cfg = null;
-  try { cfg = JSON.parse(process.argv[2]); } catch { /* bad call */ }
-  if (!cfg || !Number.isInteger(cfg.parentPid) || !(cfg.everyMs > 0) || !(cfg.maxMs > 0)) process.exit(2);
+  const cfg = parseConfig(process.argv[2]);
+  if (!cfg) process.exit(2);
   main(cfg);
 }

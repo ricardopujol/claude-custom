@@ -327,11 +327,15 @@ function slotOpenNow({ run, startsOf, log, work }) {
  * The side process that speaks for a waiting acquire (see WHILE IT WAITS). Returns { stop() }; a watcher that can't start
  * is no watcher (the wait itself goes on, silent as before). Its lines go to this process's stderr.
  */
-function startWatcher({ scriptPath, workFile, parentPid, parentStart, startedAt, waitMinutes, everyMs = WATCH_EVERY_MS, spawnFn = spawn, execPath = process.execPath, env = process.env } = {}) {
-  const cfg = { scriptPath, workFile, parentPid, parentStart, startedAt, everyMs, maxMs: (waitMinutes + 2) * 60000 };
+// `waitMinutes` is the ONE -Acquire call this watcher speaks for (each attempt starts its own, #237 Dexter 1). That call is
+// killed at its wait + 1 minute, so the watcher's own end at wait + 2 always outlasts it (#237 Miguel S9): it never goes
+// quiet while its call still waits, and never outlives it by more than a minute and a tick.
+const watcherMaxMs = (waitMinutes) => (waitMinutes + 2) * 60000;
+function startWatcher({ scriptPath, workFile, parentPid, parentStart, startedAt, waitMinutes, everyMs = WATCH_EVERY_MS, spawnFn = spawn, execPath = process.execPath, env = process.env, versions = process.versions } = {}) {
+  const cfg = { scriptPath, workFile, parentPid, parentStart, startedAt, everyMs, maxMs: watcherMaxMs(waitMinutes) };
   const childEnv = { ...env };
   delete childEnv[ENV_VAR];
-  if (process.versions && process.versions.electron) childEnv.ELECTRON_RUN_AS_NODE = '1';   // a plain node, even from an Electron main
+  if (versions && versions.electron) childEnv.ELECTRON_RUN_AS_NODE = '1';   // a plain node, even from an Electron main
   let c = null;
   try { c = spawnFn(execPath, [WATCH_SCRIPT, JSON.stringify(cfg)], { stdio: ['ignore', 'ignore', 'inherit'], windowsHide: true, env: childEnv }); } catch { return { stop() {} }; }
   if (c && typeof c.on === 'function') c.on('error', () => { /* no watcher: the wait goes on */ });
@@ -399,7 +403,7 @@ function acquire({
   for (let attempt = 0; attempt < 2; attempt++) {
     let watcher = null;
     if (typeof watch === 'function') {
-      try { watcher = watch({ scriptPath, workFile: work.file || WORK_FILE, parentPid: pid, parentStart: ownStart, startedAt, waitMinutes }); } catch { watcher = null; }
+      try { watcher = watch({ scriptPath, workFile: work.file || WORK_FILE, parentPid: pid, parentStart: ownStart, startedAt, waitMinutes: wait }); } catch { watcher = null; }
     }
     try {
       try { r = run(['-Acquire', '-Owner', owner, '-WaitMinutes', String(wait)], { timeoutMs: (wait + 1) * 60000 }); } catch (err) { r = { status: null, stdout: err && err.message }; }

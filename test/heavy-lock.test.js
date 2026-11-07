@@ -979,3 +979,114 @@ test('#112 M2: a corrupt work record on disk keeps a dead holder\'s slot (never 
   createWorkStore(file).add('y (pid 8 start 1)', 9, '2');
   assert.deepStrictEqual(createWorkStore(file).read('y (pid 8 start 1)'), [{ pid: 9, start: '2' }]);
 });
+
+// ---- #237 L6 (Miguel M3, S9; Dexter 9 a-c): the watcher's loop, its command line, and its start ----
+const watchMod = require('../host/heavy-lock-watch');
+function loopRig({ alive = true, statusThrows = false } = {}) {
+  const l = { t: 1000, timers: [], exits: [], log: [], runs: 0 };
+  l.deps = {
+    log: (m) => l.log.push(m), exit: (c) => l.exits.push(c), now: () => l.t,
+    run: () => { l.runs++; if (statusThrows) throw new Error('no powershell'); return { status: 0, stdout: 'held: hub: probes (since 10:00:00)' }; },
+    startsOf: () => (alive === 'cant-tell' ? null : alive ? new Map([[7, '100']]) : new Map()),
+    work: { read: () => [], clear() {} },
+    setTimer: (fn, ms) => l.timers.push({ fn, ms }),
+  };
+  l.cfg = { scriptPath: 'x.ps1', parentPid: 7, parentStart: '100', startedAt: 0, everyMs: 60000, maxMs: 3 * 60000 };
+  // Fire the next armed timer, the clock moved on by its delay.
+  l.fire = () => { const t = l.timers.shift(); l.t += t.ms; t.fn(); };
+  return l;
+}
+
+test('#237 Dexter 9 a: main() exits 0 at its deadline even when every tick says "can\'t tell, carry on"', () => {
+  const l = loopRig({ alive: 'cant-tell', statusThrows: true });
+  watchMod.main(l.cfg, l.deps);
+  assert.strictEqual(l.timers.length, 1, 'armed once at start, nothing run yet');
+  assert.strictEqual(l.timers[0].ms, 60000);
+  let guard = 0;
+  while (l.exits.length === 0 && l.timers.length && guard++ < 50) l.fire();
+  assert.deepStrictEqual(l.exits, [0]);
+  assert.strictEqual(l.timers.length, 0, 'never re-armed after the exit');
+  assert.strictEqual(l.runs, 3, 'ticks at 1, 2 and 3 minutes; the fourth is past the 3-minute deadline');
+});
+
+test('#237 Miguel M3: main() exits 0 on the first tick that finds the asker gone, before it reads the status', () => {
+  const l = loopRig({ alive: false });
+  watchMod.main(l.cfg, l.deps);
+  l.fire();
+  assert.deepStrictEqual(l.exits, [0]);
+  assert.strictEqual(l.runs, 0);
+  assert.strictEqual(l.timers.length, 0);
+});
+
+test('#237 Miguel M3: main() re-arms after a waiting tick, with everyMs', () => {
+  const l = loopRig();
+  watchMod.main(l.cfg, l.deps);
+  l.fire();
+  assert.deepStrictEqual(l.exits, []);
+  assert.strictEqual(l.timers.length, 1);
+  assert.strictEqual(l.timers[0].ms, 60000);
+  assert.match(l.log[0], /waited 1 min so far for the lock, held by hub: probes/);
+});
+
+test('#237 Miguel S9: the command line\'s config needs a pid, a script path, a start time, a cadence and a cap', () => {
+  const good = { scriptPath: 'C:/x.ps1', workFile: 'w.json', parentPid: 7, parentStart: '100', startedAt: 5, everyMs: 60000, maxMs: 120000 };
+  assert.deepStrictEqual(watchMod.parseConfig(JSON.stringify(good)), good);
+  const bad = [
+    '{bad', 'null', '7', JSON.stringify({ ...good, parentPid: 0 }), JSON.stringify({ ...good, parentPid: '7' }),
+    JSON.stringify({ ...good, scriptPath: undefined }), JSON.stringify({ ...good, scriptPath: '' }),
+    JSON.stringify({ ...good, startedAt: undefined }), JSON.stringify({ ...good, startedAt: 'now' }),
+    JSON.stringify({ ...good, everyMs: 0 }), JSON.stringify({ ...good, maxMs: -1 }),
+  ];
+  for (const arg of bad) assert.strictEqual(watchMod.parseConfig(arg), null, arg);
+});
+
+test('#237 Miguel M3: the real command line exits 2 on a bad config (bounded real process, its own child only)', () => {
+  const { spawnSync } = require('child_process');
+  const env = { ...process.env };
+  delete env[ENV_VAR];
+  delete env.ELECTRON_RUN_AS_NODE;
+  for (const arg of ['{bad', JSON.stringify({ parentPid: 7, startedAt: 0, everyMs: 10, maxMs: 10 })]) {
+    const r = spawnSync(process.execPath, [WATCH_SCRIPT, arg], { encoding: 'utf8', timeout: 15000, windowsHide: true, env });
+    assert.strictEqual(r.error, undefined, String(r.error));
+    assert.strictEqual(r.status, 2, `${arg}: ${r.stderr}`);
+  }
+});
+
+test('#237 Dexter 9 b: a watcher whose child emits \'error\' later (EACCES on the node) never throws into its asker', () => {
+  const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.unref = () => {}; child.kill = () => {};
+  const w = startWatcher({ scriptPath: 'x', waitMinutes: 1, startedAt: 0, parentPid: 7, spawnFn: () => child, env: {} });
+  assert.doesNotThrow(() => child.emit('error', Object.assign(new Error('spawn EACCES'), { code: 'EACCES' })));
+  assert.doesNotThrow(() => w.stop());
+});
+
+test('#237 Dexter 9 c: from an Electron main the watcher is started as plain node (ELECTRON_RUN_AS_NODE=1); from node it isn\'t set', () => {
+  const envs = [];
+  const spawnFn = (cmd, args, o) => { envs.push(o.env); const c = new EventEmitter(); c.exitCode = 0; c.signalCode = null; c.unref = () => {}; return c; };
+  startWatcher({ scriptPath: 'x', waitMinutes: 1, startedAt: 0, parentPid: 7, spawnFn, env: { [ENV_VAR]: 'o (pid 7 start 1)' }, versions: { node: '22', electron: '33.0.0' } });
+  startWatcher({ scriptPath: 'x', waitMinutes: 1, startedAt: 0, parentPid: 7, spawnFn, env: {}, versions: { node: '22' } });
+  assert.strictEqual(envs[0].ELECTRON_RUN_AS_NODE, '1');
+  assert.strictEqual(envs[0][ENV_VAR], undefined, 'never the re-entrancy flag');
+  assert.strictEqual(Object.prototype.hasOwnProperty.call(envs[1], 'ELECTRON_RUN_AS_NODE'), false);
+});
+
+test('#237 Miguel S9: each attempt\'s watcher is bounded by THAT call\'s wait, and outlasts the call\'s own kill timer', () => {
+  // The first call gives up at the 20-minute deadline (the clock moves past it), X is freed, the retry gets 1 minute.
+  let n = 0;
+  const r = rig({ holder: X, alive: { 5000: '777' }, acquireOverride: (rr) => {
+    n++;
+    if (n === 1) { const said = `busy: ${rr.holder}`; delete rr.alive[5000]; rr.holder = null; rr.clock.t = 20 * 60000 + 5000; return { status: 2, stdout: said }; }
+    rr.holder = `${flagValue(rr.calls[rr.calls.length - 1], '-Owner')} (since 10:00:00)`;
+    return { status: 0, stdout: 'acquired' };
+  } });
+  const cfgs = [];
+  const timeouts = [];
+  const deps = r.deps();
+  const run = deps.run;
+  deps.run = (args, o) => { if (args.includes('-Acquire')) timeouts.push(o.timeoutMs); return run(args, o); };
+  const spawnFn = (cmd, args) => { cfgs.push(JSON.parse(args[1])); const c = new EventEmitter(); c.exitCode = 0; c.signalCode = null; c.unref = () => {}; return c; };
+  const lock = acquire({ label: 'x', pid: 7, ...deps, watch: (cfg) => startWatcher({ ...cfg, spawnFn, env: {} }) });
+  assert.strictEqual(lock.state, 'held');
+  assert.deepStrictEqual(timeouts, [21 * 60000, 2 * 60000]);
+  assert.deepStrictEqual(cfgs.map(c => c.maxMs), [22 * 60000, 3 * 60000]);
+  cfgs.forEach((c, i) => assert.ok(c.maxMs > timeouts[i], `watcher ${i} outlasts its call`));
+});
