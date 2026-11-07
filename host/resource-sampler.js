@@ -123,6 +123,18 @@ function createSampler({
   let lastAny = null;   // the latest sample of either mode (machine CPU is a delta of these)
   let prevAny = null;
   let lastMode = null;
+  // CAPTURE ORDER (BACKLOG #176). The off-cadence take runs beside the cadence one, and at app start on another powershell (the
+  // shared poller's one-off call), so the record that read the CPU counter first can land second. A pair is only ever moved
+  // forward: a record that was in flight while one captured at the same time or later landed is LATE and replaces nothing.
+  // Capture time is the CIM counter's own Timestamp_Sys100NS. A record with no counter can't be ordered and is taken (its
+  // delta is null anyway); one that STARTED after the newest landed is taken whatever its timestamp, so a clock stepped back
+  // costs one "—", as it always has, instead of freezing the pair on the old figure.
+  let anyMoves = 0;     // how many times the machine pair / the full pair moved: a take that sees a change during its flight overlapped
+  let fullMoves = 0;
+  let anyNewest = null; // the newest capture time either pair holds (null: none to order against)
+  let fullNewest = null;
+  const capturedAt = s => (s && s.cpuTotal ? s.cpuTotal.ts : null);
+  const isLate = (s, newest, overlapped) => overlapped && newest !== null && capturedAt(s) !== null && capturedAt(s) <= newest;
   let inFlight = null;  // the exec promise running now (it can be killed by its own pid on stop)
   let adhocRunning = null;   // with a fetch: the off-cadence take, which does not wait for the cadence one
   let adhocFlight = null;
@@ -137,6 +149,7 @@ function createSampler({
   function take(mode, adhoc = false) {
     const side = adhoc && fetch !== null;
     if (side ? adhocRunning : running) return side ? adhocRunning : running;
+    const seen = { any: anyMoves, full: fullMoves };   // what the pairs were when this flight began
     const p = (async () => {
       let dropped = false;
       try {
@@ -155,9 +168,15 @@ function createSampler({
           failures = 0;
           lastGoodAt = s.at;
           lastMode = held;
-          if (held === 'full' && now_ === 'full') { prev = last; last = s; }
-          prevAny = lastAny;
-          lastAny = s;
+          const at = capturedAt(s);
+          if (held === 'full' && now_ === 'full' && !isLate(s, fullNewest, fullMoves !== seen.full)) {
+            prev = last; last = s; fullMoves++;
+            if (at !== null) fullNewest = at;
+          }
+          if (!isLate(s, anyNewest, anyMoves !== seen.any)) {
+            prevAny = lastAny; lastAny = s; anyMoves++;
+            if (at !== null) anyNewest = at;
+          }
         }
       } catch {
         if (started && policy(wanted) !== null) failures++; else dropped = true;
@@ -209,10 +228,11 @@ function createSampler({
       const before = policy(wanted);
       wanted = { panel: !!(next && next.panel), chip: !!(next && next.chip) };
       const after = policy(wanted);
-      if (after !== 'full') { prev = null; last = null; }
+      // A forgotten pair has nothing to order against: nothing is late against an empty pair.
+      if (after !== 'full') { prev = null; last = null; fullNewest = null; }
       // Nothing is being sampled: the machine pair is forgotten too, so the first sample after a pause (a minimised
       // window) is "—", not the average of the whole gap shown as the machine's CPU now (Dexter finding 7).
-      if (after === null) { prevAny = null; lastAny = null; }
+      if (after === null) { prevAny = null; lastAny = null; anyNewest = null; }
       if (after === before && timer) return;
       wake();
     },
