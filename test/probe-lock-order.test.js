@@ -69,8 +69,9 @@ function assignedName(s, at) {
   const m = /(?:^|[\s;(,])(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*=\s*(?:await\s+)?(?:[A-Za-z_$][\w$]*)?$/.exec(s.slice(lineStart, at));
   return m ? m[1] : null;
 }
-// Probes that take the lock: through the launcher, or through host/heavy-lock directly (createProcessLock / acquire).
-const TAKES_LOCK = (src) => LAUNCHER_REQUIRE.test(src) || /require\([^)]*host\/heavy-lock['"]\)/.test(src);
+// Probes that take the lock: through the launcher, through host/heavy-lock directly (createProcessLock / acquire), or, for an
+// Electron main, through verify/lib/electron-main-lock (#179), however the path is written; never heavy-lock-watch.
+const TAKES_LOCK = (src) => LAUNCHER_REQUIRE.test(src) || /require\([^)]*(?:host[\\/'",\s]+heavy-lock|lib[\\/'",\s]+electron-main-lock)(?:\.js)?['"]/.test(src);
 
 // strip(), and every string's contents blanked too (quotes kept, line breaks kept): a word "spawn (" in a message, or the
 // source of a child script handed to `node -e`, is not a start in this file.
@@ -152,6 +153,8 @@ test('#237 Miguel S6: the scan covers a probe that takes the lock through host/h
   assert.strictEqual(TAKES_LOCK(strip("const { createProcessLock } = require('../host/heavy-lock');")), true);
   assert.strictEqual(TAKES_LOCK(strip("const L = require('./lib/launch-electron');")), true);
   assert.strictEqual(TAKES_LOCK(strip("const x = require('../host/heavy-lock-watch');")), false);
+  assert.strictEqual(TAKES_LOCK(strip("const h = require(path.join(__dirname, '..', 'host', 'heavy-lock'));")), true);
+  assert.strictEqual(TAKES_LOCK(strip("const m = require('./lib/electron-main-lock').takeMainLock({ app, label });")), true);
   assert.strictEqual(TAKES_LOCK(strip("const fs = require('fs');")), false);
 });
 
