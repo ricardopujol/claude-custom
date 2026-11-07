@@ -28,6 +28,11 @@
 const migrateApi = typeof module !== 'undefined' && module.exports
   ? require('./dock-migrate')
   : root.dockMigrate;
+// The rail's default (grouped) order is app/rail-groups.js's: required under Node, a page global in the window (renderer.html
+// loads rail-groups.js before this file, and it requires nothing, so there is no cycle to wait out).
+const railGroupsApi = typeof module !== 'undefined' && module.exports
+  ? require('./rail-groups')
+  : root.railGroups;
 
 const VERSION = 2;
 const MIN = { width: 120, height: 80 };               // a panel
@@ -209,7 +214,10 @@ function normalize(raw, ids) {
   }
 
   const live = new Set([...groups({ root: r }).map(x => x.id), ...floats.map(f => f.id)]);
-  return { version: VERSION, root: r, floats, rail: railIds, hidden: hiddenIds, seat: cleanSeat(raw.seat, [...hiddenIds, ...railIds], live) };
+  // BACKLOG #109: the person put the rail in their own order (moveOnRail). Only `true` is the mark, and a layout without it has
+  // no such key at all, so every layout saved before #109 reads back exactly as it did.
+  const ordered = raw.railOrdered === true ? { railOrdered: true } : {};
+  return { version: VERSION, root: r, floats, rail: railIds, hidden: hiddenIds, seat: cleanSeat(raw.seat, [...hiddenIds, ...railIds], live), ...ordered };
 }
 
 // Only a plain object of string -> string survives; nothing else a window stored is trusted.
@@ -593,6 +601,38 @@ function showOnRail(layout, id) {
   const l = clone(layout);
   l.hidden = l.hidden.filter(h => h !== id);
   l.rail = [...railOf(l), id];
+  return normalize(l, modulesIn(layout));
+}
+
+/**
+ * The dock rail's modules in the order they are drawn (BACKLOG #109): the layout's own order once the person reordered it
+ * (`railOrdered`), else grouped (Work, Repo, Me: app/rail-groups.js), as every rail was before #109.
+ */
+function drawnRail(layout) {
+  const rail = railOf(layout);
+  if (layout.railOrdered === true) return [...rail];
+  return railGroupsApi.groupRail(rail).filter(i => !i.sep).map(i => i.id);
+}
+
+/**
+ * A rail tab dropped on the rail (BACKLOG #109): `id` goes just before `before` (another module on the rail), or to the end when
+ * `before` is null. It starts from the order the rail is drawn in, and the layout is marked `railOrdered` from then on. Nothing
+ * but the rail's order changes; a drop that leaves the order as it is drawn, or names a module that isn't on the rail, answers
+ * the very layout it was given.
+ */
+function moveOnRail(layout, id, before) {
+  const rail = railOf(layout);
+  if (typeof id !== 'string' || !rail.includes(id)) return layout;
+  if (before !== null && (typeof before !== 'string' || !rail.includes(before))) return layout;
+  if (before === id) return layout;
+  const drawn = drawnRail(layout);
+  const rest = drawn.filter(r => r !== id);
+  const at = before === null ? rest.length : rest.indexOf(before);
+  const next = [...rest.slice(0, at), id, ...rest.slice(at)];
+  if (next.every((r, i) => r === drawn[i])) return layout;
+  const l = clone(layout);
+  l.rail = next;
+  l.railOrdered = true;
   return normalize(l, modulesIn(layout));
 }
 
@@ -1024,13 +1064,14 @@ function fit(layout, selection, viewport) {
     const narrower = run(whole.width - RAIL.side);
     if (termWidth(narrower) >= TERM_MIN.width && shutRails(narrower) >= shutRails(drawn)) { drawn = narrower; strip = RAIL.side; }
   }
-  if (strip) drawn.boxes.push({ kind: 'rail', id: 'dock', dir: 'v', modules: [...railIds], groups: [], rect: { x: whole.width - strip, y: 0, width: strip, height: whole.height } });
+  // `ordered`: the person's own order (BACKLOG #109), drawn as it is; otherwise the page draws the rail grouped.
+  if (strip) drawn.boxes.push({ kind: 'rail', id: 'dock', dir: 'v', modules: [...railIds], groups: [], ordered: layout.railOrdered === true, rect: { x: whole.width - strip, y: 0, width: strip, height: whole.height } });
   return { boxes: drawn.boxes, splits: drawn.splits };
 }
 
 const API = {
   HIDDEN_UNTIL_USED, VERSION, MIN, TERM_MIN, RAIL, GUTTER, DEFAULT_SIZE, FLOAT_MIN, FLOAT_DEFAULT, CASCADE, defaultLayout, startLayout, unpinAll, readStored, normalize, groups, count, hasTerm,
-  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, unpin, pin, showOnRail, unpinGroup, minSize, setSplitSizes,
+  fromV1, readAny, selectionFromV1, groupOf, floatOf, allGroups, dock, moveFloat, resizeFloat, floatSpotAt, hide, show, unpin, pin, showOnRail, drawnRail, moveOnRail, unpinGroup, minSize, setSplitSizes,
   cleanSelection, selectTab, raiseFloat, toggleFoldAll, toggleCollapse, pruneCollapsed, isCollapsed, activeOf, fit, peekFor, PEEK,
 };
 
