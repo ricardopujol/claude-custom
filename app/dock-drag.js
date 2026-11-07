@@ -245,7 +245,55 @@ function describeDrop(moved, panel, where) {
   return moved ? `Moved ${panel} ${where}.` : `Not moved: ${panel} is already there.`;
 }
 
-const API = { RIM, BAND, TAB_BAR, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop };
+// --- one press: a click or a drag (BACKLOG #109) --------------------------------------------------
+//
+// A tab's name and a rail button's icon are both drag handles. A press is a click (the tab selects, the rail's panel opens) or a
+// drag (the zones above), never both: the page feeds every pointer event of the press here and acts on the effect. A rail button
+// also starts on a hold, because its click opens a panel and a person who holds still on it means to pick it up.
+
+/** The thresholds. `holdMs: null`: holding still never starts a drag. */
+const PRESS = Object.freeze({
+  rail: Object.freeze({ distance: 6, holdMs: 250 }),
+  tab: Object.freeze({ distance: 5, holdMs: null }),
+});
+
+const NOTHING = (state) => ({ state, effect: 'none' });
+
+/**
+ * One step of a press. `state`: null (nothing pressed), { phase: 'pressed', x, y, t } or { phase: 'dragging' }. `ev`:
+ * { type: 'down', x, y, t } | { type: 'move', x, y, t } | { type: 'hold', t } (the page's timer) | { type: 'up' } | { type: 'cancel' }.
+ * `opts`: PRESS.rail or PRESS.tab (anything else reads as the rail's). Answers { state, effect }, effect one of
+ * 'none' | 'start' (the drag begins here) | 'move' | 'drop' | 'click' | 'cancel'. A press that crosses neither threshold before
+ * its release is a 'click'; once 'start' is answered, the release is a 'drop' and no click.
+ */
+function pressStep(state, ev, opts) {
+  const o = isObject(opts) && isNumber(opts.distance) && opts.distance >= 0 ? opts : PRESS.rail;
+  const hold = isNumber(o.holdMs) && o.holdMs >= 0 ? o.holdMs : null;
+  const st = isObject(state) && (state.phase === 'pressed' || state.phase === 'dragging') ? state : null;
+  if (!isObject(ev)) return NOTHING(st);
+  const type = ev.type;
+  if (type === 'down') {
+    if (!isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
+    return NOTHING({ phase: 'pressed', x: ev.x, y: ev.y, t: isNumber(ev.t) ? ev.t : 0 });
+  }
+  if (!st) return NOTHING(null);
+  if (type === 'up') return { state: null, effect: st.phase === 'dragging' ? 'drop' : 'click' };
+  if (type === 'cancel') return { state: null, effect: st.phase === 'dragging' ? 'cancel' : 'none' };
+  const held = isNumber(ev.t) && hold !== null && ev.t - st.t >= hold;
+  if (type === 'hold') {
+    if (st.phase !== 'pressed' || !held) return NOTHING(st);
+    return { state: { phase: 'dragging' }, effect: 'start' };
+  }
+  if (type === 'move') {
+    if (!isNumber(ev.x) || !isNumber(ev.y)) return NOTHING(st);
+    if (st.phase === 'dragging') return { state: st, effect: 'move' };
+    if (Math.hypot(ev.x - st.x, ev.y - st.y) >= o.distance || held) return { state: { phase: 'dragging' }, effect: 'start' };
+    return NOTHING(st);
+  }
+  return NOTHING(st);
+}
+
+const API = { RIM, BAND, TAB_BAR, PRESS, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;

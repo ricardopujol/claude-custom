@@ -152,7 +152,8 @@ test('PR #100 Miguel I4: tab and rail buttons have a focus ring that sits inside
 test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its start and rebuilds the overlay only when the zones change', () => {
   assert.doesNotMatch(JS, /pointInDock/, 'no per-move getBoundingClientRect');
   assert.match(JS, /rect: dock\.getBoundingClientRect\(\), viewport: dockViewport\(\)/);
-  assert.match(JS, /drag\.at = \{ x: e\.clientX - drag\.rect\.left, y: e\.clientY - drag\.rect\.top \};/);
+  // BACKLOG #109: the move's point arrives through pressStep's `follow(x, y)`, still against the rectangle read at the start.
+  assert.match(JS, /drag\.at = \{ x: x - drag\.rect\.left, y: y - drag\.rect\.top \};/);
   assert.match(JS, /zonesAt\(lastPlan \? lastPlan\.boxes : \[\], drag\.viewport, drag\.at, \{ exclude: drag\.exclude \}\)/);
   assert.match(JS, /if \(sig !== drag\.sig\) \{ drag\.sig = sig; drawZones\(hit\.zones\); \}/);
 });

@@ -3002,7 +3002,9 @@ async function retryPresets() {
 // --- dragging a module's tab (dockable panels D1) ---------------------------------
 // Pointer events, not HTML5 drag-and-drop: the zones are drawn and hit-tested by
 // app/dock-drag.js, and HTML5 drag gives no control over either. A press that
-// never moves 5 px stays a click (it selects the tab). While dragging, every zone
+// never moves 5 px stays a click (it selects the tab). A rail button is a handle
+// too (BACKLOG #109): 6 px of movement or 250 ms held starts its drag, a release
+// before either is the click that opens its panel (dockDrag.pressStep). While dragging, every zone
 // of the cell under the pointer is lit in #dock-overlay and the one under it
 // fills; a drop on a zone docks, anywhere else changes nothing.
 let cancelTabDrag = () => {};      // the socket closing ends a drag too
@@ -3023,15 +3025,24 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
 (function initTabDrag() {
   const dock = document.getElementById('dock');
   const overlay = document.getElementById('dock-overlay');
-  let press = null;                // { id, label, x, y, el, pointerId }: the button is down, not yet dragged
+  const DD = window.dockDrag;
+  // { id, label, el, pointerId, rail, st, opts, timer, cx, cy }: the button is down. `rail`: a rail button (BACKLOG #109), whose
+  // icon or name is a drag handle like a tab's name; `st` is dockDrag.pressStep's state, which says click or drag.
+  let press = null;
   let drag = null;                 // { id, ghost, target, rect, viewport, sig }
+  // A press that became a drag leaves a click behind on its button when the button is still there (a drop that changed
+  // nothing, a drag back onto the rail): that click is the drag's, so it never opens the rail's panel or selects (#109).
+  let swallowClick = false;
 
   function drawZones(zones) {
     tabDragDraws += 1;
     paintZones(zones);
   }
   function end() {
-    if (press) { try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ } }
+    if (press) {
+      clearTimeout(press.timer);
+      try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ }
+    }
     press = null;
     if (drag) drag.ghost.remove();
     drag = null;
@@ -3040,11 +3051,50 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   }
   cancelTabDrag = () => { if (press || drag) end(); };
 
+  // The drag begins: the dock's rectangle and size are read once, here, as a move event must not force a layout every time.
+  function begin() {
+    // A rail's open panel goes off the screen, as a keyboard Move does: it would cover the zones the drag lights.
+    if (press.rail && peek) { railEvent({ type: 'drop' }); renderLayout({ refit: false }); }
+    // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
+    const own = DTm.floatOf(placementLayout(), press.id);
+    drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null };
+    document.body.appendChild(drag.ghost);
+    document.body.classList.add('dock-dragging');
+    swallowClick = press.rail;                           // a tab's name keeps what it did before #109
+  }
+  function follow(x, y) {
+    drag.ghost.style.left = `${x + 12}px`;
+    drag.ghost.style.top = `${y + 10}px`;
+    drag.at = { x: x - drag.rect.left, y: y - drag.rect.top };
+    const hit = DD.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude });
+    drag.target = hit.target;
+    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
+    const sig = JSON.stringify(hit.zones);
+    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+  }
+  // One pointer event of the press through dockDrag.pressStep; 'start' begins the drag where the pointer is now.
+  function feed(ev) {
+    const out = DD.pressStep(press.st, ev, press.opts);
+    press.st = out.state;
+    if (out.effect === 'start') { begin(); follow(press.cx, press.cy); } else if (out.effect === 'move') follow(press.cx, press.cy);
+    return out.effect;
+  }
+
   document.addEventListener('pointerdown', (e) => {
+    swallowClick = false;                                // a new press: whatever the last drag left behind is not this one's
     if (e.button !== 0) return;
-    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
+    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
     if (!b) return;
-    press = { id: b.dataset.module, label: b.textContent, x: e.clientX, y: e.clientY, el: b, pointerId: e.pointerId };
+    const rail = b.parentNode.classList.contains('drail');
+    // A rail button's text is its name, which may be hidden (icons only): the ghost says the label, as a tab's does.
+    press = { id: b.dataset.module, label: rail ? (b.getAttribute('aria-label') || b.dataset.module) : b.textContent, el: b, pointerId: e.pointerId,
+      rail, st: null, opts: rail ? DD.PRESS.rail : DD.PRESS.tab, timer: null, cx: e.clientX, cy: e.clientY };
+    feed({ type: 'down', x: e.clientX, y: e.clientY, t: e.timeStamp });
+    // Holding a rail button still starts the drag too: the timer asks pressStep at the hold time.
+    if (press.opts.holdMs !== null) {
+      const mine = press;
+      mine.timer = setTimeout(() => { if (press === mine && !drag) feed({ type: 'hold', t: performance.now() }); }, press.opts.holdMs);
+    }
     // Capture keeps the moves and the release coming to this page when the pointer leaves the window; if the
     // release is lost anyway (Alt-Tab, an OS dialog), the three guards below end the drag (PR #100 Miguel I2).
     try { b.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
@@ -3052,36 +3102,33 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   window.addEventListener('pointermove', (e) => {
     if (!press) return;
     if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
-    if (!drag) {
-      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
-      // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
-      // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
-      const own = DTm.floatOf(placementLayout(), press.id);
-      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null };
-      document.body.appendChild(drag.ghost);
-      document.body.classList.add('dock-dragging');
-    }
-    drag.ghost.style.left = `${e.clientX + 12}px`;
-    drag.ghost.style.top = `${e.clientY + 10}px`;
-    drag.at = { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top };
-    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude });
-    drag.target = hit.target;
-    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
-    const sig = JSON.stringify(hit.zones);
-    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+    press.cx = e.clientX;
+    press.cy = e.clientY;
+    feed({ type: 'move', x: e.clientX, y: e.clientY, t: e.timeStamp });
   });
   window.addEventListener('pointerup', () => {
     if (!press) return;
     const d = drag;
+    feed({ type: 'up' });
     // Ended BEFORE the drop redraws: the redraw removes the dragged tab's button,
     // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
     end();
-    if (!d) return;                                     // never moved: the click that follows selects the tab
+    if (!d) return;                                     // never dragged: the click that follows selects the tab, or opens the rail's panel
     if (!d.target) return;
     // The terminal's middle floats the panel where it was dropped: the model says where (D2).
     const target = landingFor(d.target, d.at, d.viewport);
     commitPlacement(DTm.dock(settledLayout(), d.id, target), { select: d.id });
   });
+  // The click a drag leaves behind on its own button is the drag's (#109): taken before the page's click handler sees it.
+  document.addEventListener('click', (e) => {
+    if (!swallowClick) return;
+    swallowClick = false;
+    if (e.detail === 0) return;                          // a keyboard click is never a drag's
+    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
   window.addEventListener('blur', () => { cancelTabDrag(); });
