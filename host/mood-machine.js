@@ -51,6 +51,15 @@
  *
  * `waiting` has a second source (BACKLOG #119 A2): the claude-custom mod's agent snapshot, see observeAgents().
  *
+ * CAUSE (BACKLOG #162). A stressed card says why: causeOf(agent) is one sentence from host/stress-cause.js, built from the card's
+ * record (every failed call since the name's errors last reset, and the retry series while it lasts). It is present exactly while
+ * the card is `stressed` and null otherwise. A cause that changes while the state and detail don't (a second failure) is announced
+ * as `cards`, so `change` keeps meaning "the state or detail moved".
+ *
+ * INSTANCES (BACKLOG #142 b). Two or more runs of one name are one card each: instancesOf(agent) gives their rows, each keyed by
+ * the CLI's own id for the run and carrying the run's own state, detail and cause (see INSTANCE CARDS, below). The name's card,
+ * its state and its name-scoped errors are unchanged: every other consumer (sort, hide, bubbles, medals) still reads it.
+ *
  * Reading and writing come from PreToolUse alone (their PostToolUse isn't
  * hooked: host/settings-writer.js), so they last TOOL_LINGER_MS. A run's calls
  * are sequential: its newest call (a Pre, or a Post of a call whose only hook
@@ -62,6 +71,7 @@
  */
 
 const { EventEmitter } = require('events');
+const { stressCause, addFailure } = require('./stress-cause');
 
 const SLEEPING = 'sleeping';
 const WORKING = 'working';
@@ -290,6 +300,14 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // QUIET. A background child is a hold that ENDS with the child (its SubagentStop, a cut-off, a reap); a backgrounded Bash has no end
   // hook of its own, so its hold lasts until TaskStop names it or the run ends (PR #224, Dexter 1).
   const idleTools = () => ({ bash: new Map(), tool: null, waiting: false, modWaiting: false, modWaitingAt: 0, clearedAt: -Infinity, holds: [] });
+  // A run's OWN card (BACKLOG #142 b): its state (working or stressed while it runs), its failures and its retry series, kept apart
+  // from the name's so two instances each show their own. `spawned`: it began with an Agent call, so its key is that call's id.
+  const freshRun = (spawned) => ({ spawned, runState: WORKING, errors: 0, failures: [], repeats: 0, lastSignature: null,
+    repeatTool: null, repeatFrom: null, repeatAt: null });
+  // The id an instance card is keyed by: the CLI's own, never a position. A spawn's tool_use_id (known from its first event, and
+  // never swapped by adopt()), else the agent_id of a run that came back without a spawn (a resume). Only a payload with neither
+  // (an older CLI) falls back to this host's serial for the run, which is as stable as the run itself.
+  const instanceId = inv => (inv.spawned && inv.key !== null ? inv.key : inv.agentId || `run:${inv.id}`);
   const isQuiet = inv => inv.holds.length > 0;
   // It launched background work. `what` is the one-line thing it waits on; `child` is the invocation, for a background child.
   function holdFor(inv, what, child = null) {
@@ -305,11 +323,49 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   function ensure(agent) {
     let a = agents.get(agent);
     if (!a) {
-      a = { state: SLEEPING, detail: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0 };
+      a = { state: SLEEPING, detail: SLEEPING, errors: 0, lastActivity: now(), flashUntil: 0, lastSignature: null, repeats: 0,
+        failures: [], repeatTool: null, repeatFrom: null, repeatAt: null, extraSig: null, done: [] };
       agents.set(agent, a);
     }
     return a;
   }
+
+  // A failed call: the count the state machine reads, and the record the cause is read from, in ONE place so they can't part.
+  // The name's card and the run's own card (BACKLOG #142 b) both take it: the name's for its one card, the run's for its
+  // instance card, which is stressed by its own failures and no sibling's.
+  function fail(a, what, inv = null) {
+    const at = now();
+    a.errors++;
+    addFailure(a.failures, { ...what, at });
+    if (!inv) return;
+    inv.errors++;
+    addFailure(inv.failures, { ...what, at });
+    inv.repeats = 0;
+    inv.lastSignature = null;
+    inv.runState = STRESSED;
+  }
+  // "A fresh run starts clean": the count, the record and the retry series together, and the instance cards still flashing.
+  function startClean(a) {
+    a.errors = 0;
+    a.failures = [];
+    a.repeats = 0;
+    a.lastSignature = null;
+    a.repeatTool = null;
+    a.repeatFrom = null;
+    a.repeatAt = null;
+    a.done = [];
+  }
+  // A good call, into a record that has a retry series (a name's card or a run's): the same call again counts on, another starts
+  // a new series. The series' tool and first call are kept for its cause ("the same command 3 times in 40 s").
+  function noteCall(rec, tool, signature) {
+    if (signature === rec.lastSignature) rec.repeats++;
+    else { rec.repeats = 1; rec.repeatTool = tool; rec.repeatFrom = now(); }
+    rec.repeatAt = now();
+    rec.lastSignature = signature;
+  }
+  // The retry series a card is in, for its cause: only while it IS one (RETRY_LIMIT running).
+  const retryOf = (a) => (a.repeats >= RETRY_LIMIT ? { tool: a.repeatTool, count: a.repeats, from: a.repeatFrom, to: a.repeatAt } : null);
+  const causeFor = (a) => (a.state === STRESSED ? stressCause({ failures: a.failures, retry: retryOf(a) }) : null);
 
   // The card's finer name for `state` (see DETAIL, in the header): the best of
   // what its invocations show, or `state` itself.
@@ -319,35 +375,78 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // the label and by the wait alike (PR #224, Dexter 7).
   const flyingOf = (inv, t) => [...inv.bash.values()].filter(at => t - at <= stallMs);
   const bgWaiting = (inv, t) => isQuiet(inv) && flyingOf(inv, t).length === 0 && fgChildren(inv).length === 0 && t - inv.lastActivity >= waitGraceMs;
+  // What ONE run shows for `state`: the best of its own finer names, or `state`. `repeating`: the record the state was read from
+  // is in a retry series (the name's for its card, the run's own for an instance card).
+  function runDetail(inv, state, repeating, t) {
+    if (state !== WORKING && state !== STRESSED) return state;
+    if (inv.waiting || inv.modWaiting) return WAITING;
+    const kids = fgChildren(inv).length > 0;
+    const flying = flyingOf(inv, t);
+    if (repeating || (!kids && !isQuiet(inv) && flying.length === 0 && t - inv.lastActivity > stuckMs)) return STUCK;
+    if (kids) return HELPER;
+    let best = state;
+    const take = d => { if ((RANK[d] || 0) > (RANK[best] || 0)) best = d; };
+    if (bgWaiting(inv, t)) take(t - inv.lastActivity >= waitRedMs ? BGWAIT_LATE : BGWAIT);
+    if (state !== WORKING) return best;      // an error outranks what the tool is
+    let newest = null;
+    for (const at of flying) if (!newest || at >= newest.at) newest = { kind: RUNNING, at };
+    if (inv.tool && t - inv.tool.at <= toolLingerMs && (!newest || inv.tool.at > newest.at)) newest = inv.tool;
+    if (newest) take(newest.kind);
+    return best;
+  }
   function refine(agent, a, state) {
     if (state !== WORKING && state !== STRESSED) return state;
     const t = now();
     const repeating = a.repeats >= RETRY_LIMIT;
     let best = state;
-    const take = d => { if ((RANK[d] || 0) > (RANK[best] || 0)) best = d; };
     for (const inv of invs) {
       if (inv.name !== agent) continue;
-      if (inv.waiting || inv.modWaiting) { take(WAITING); continue; }
-      const kids = fgChildren(inv).length > 0;
-      const flying = flyingOf(inv, t);
-      if (repeating || (!kids && !isQuiet(inv) && flying.length === 0 && t - inv.lastActivity > stuckMs)) { take(STUCK); continue; }
-      if (kids) { take(HELPER); continue; }
-      if (bgWaiting(inv, t)) take(t - inv.lastActivity >= waitRedMs ? BGWAIT_LATE : BGWAIT);
-      if (state !== WORKING) continue;       // an error outranks what the tool is
-      let newest = null;
-      for (const at of flying) if (!newest || at >= newest.at) newest = { kind: RUNNING, at };
-      if (inv.tool && t - inv.tool.at <= toolLingerMs && (!newest || inv.tool.at > newest.at)) newest = inv.tool;
-      if (newest) take(newest.kind);
+      const d = runDetail(inv, state, repeating, t);
+      if ((RANK[d] || 0) > (RANK[best] || 0)) best = d;
     }
     return best;
   }
 
+  // INSTANCE CARDS (BACKLOG #142 b, Ricardo: "two or more instances of one agent on the same branch show as separate agents, not
+  // ×2"). One row per open run of the name, plus one per run whose FINISH is still flashing (`a.done`), in start order, so no card
+  // moves when another finishes; null while that is fewer than two, when the name's own card is the one card. A row is
+  // { id, state, detail, cause?, wait? }: `state` is the run's own (working or stressed while it runs, happy or stressed while its
+  // finish flashes), `cause` is #162's sentence from the run's own record, present exactly while the row is stressed.
+  // A run cut off (Esc, /clear, a reap) leaves at once, as the name's card doesn't celebrate one. Errors and retries are the run's
+  // own here; the name's card keeps its name-scoped count (see `agents` above).
+  function instancesOf(agent) {
+    const t = now();
+    const rows = [];
+    for (const inv of invs) {
+      if (inv.name !== agent) continue;
+      const state = inv.runState;
+      const row = { serial: inv.id, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
+      if (state === STRESSED) row.cause = stressCause({ failures: inv.failures, retry: retryOf(inv) });
+      if (row.detail === BGWAIT || row.detail === BGWAIT_LATE) row.wait = { on: inv.holds[inv.holds.length - 1].what, since: inv.lastActivity };
+      rows.push(row);
+    }
+    const a = agents.get(agent);
+    // A finish still flashing whose run came back (a resume within the flash) is that run's live row, not a second card.
+    for (const d of a ? a.done : []) if (t <= d.until && !rows.some(r => r.id === d.id)) rows.push({ serial: d.serial, id: d.id, state: d.state, detail: d.state, ...(d.cause ? { cause: d.cause } : {}) });
+    if (rows.length < 2) return null;
+    rows.sort((x, y) => x.serial - y.serial);
+    return rows.map(({ serial, ...row }) => row);
+  }
+
+  // What the card carries beside its state and detail. A move of it alone is a `cards` event (see CAUSE in the header).
+  // The instance cards are among them (#142 b): a second run starting, or one run's own state moving, leaves the name's state alone.
+  const extrasOf = (agent, a) => JSON.stringify([causeFor(a), instancesOf(agent)]);
   function setState(agent, a, state) {
     const detail = refine(agent, a, state);
-    if (a.state === state && a.detail === detail) return;
+    const moved = a.state !== state || a.detail !== detail;
     a.state = state;
     a.detail = detail;
-    machine.emit('change', { agent, state, detail });
+    if (state === SLEEPING) a.done = [];      // asleep: no run of it is open or flashing any more
+    const extra = extrasOf(agent, a);
+    const extraMoved = extra !== a.extraSig;
+    a.extraSig = extra;
+    if (moved) machine.emit('change', { agent, state, detail });
+    else if (extraMoved) machine.emit('cards', { agent });
   }
 
   // Re-asks every card for its detail: time passing (a linger ending, a silence
@@ -476,7 +575,14 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       if (inv.mate) { inv.mate.ended = true; inv.mate.reaped = reaped; inv.mate.wake = false; }
       else if (reaped && inv.background && inv.agentId) remember(reapedIds, inv.agentId);
       if (inv.key !== null) { spawns.delete(inv.key); remember(endedKeys, inv.key); }
-      names.set(inv.name, names.get(inv.name) || completed(inv));
+      // A run that FINISHED flashes on its own instance card too (#142 b), with its own errors; one cut off leaves at once.
+      const finished = completed(inv);
+      if (finished) {
+        const stressed = inv.errors > 0;
+        ensure(inv.name).done.push({ serial: inv.id, id: instanceId(inv), state: stressed ? STRESSED : HAPPY, until: now() + flashMs,
+          cause: stressed ? stressCause({ failures: inv.failures, retry: retryOf(inv) }) : null });
+      }
+      names.set(inv.name, names.get(inv.name) || finished);
     }
     for (const other of invs) other.holds = other.holds.filter(h => h.child === null || invs.includes(h.child));
     for (const [name, finished] of names) {
@@ -523,7 +629,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     if (!inv || !isOpen(inv)) { lateResult(event, p); return; }
     if (interrupted) { cutOff(subtree(inv)); return; }
     if (event === 'PostToolUseFailure') {
-      ensure(inv.name).errors++;
+      fail(ensure(inv.name), { run: true }, inv);
       finish(inv);
       return;
     }
@@ -579,16 +685,12 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     reapedIds.delete(agentId);
     queued.delete(agentId);
     const a = ensure(name);
-    if (!running(name)) {
-      a.errors = 0;
-      a.repeats = 0;
-      a.lastSignature = null;
-    }
+    if (!running(name)) startClean(a);
     a.flashUntil = 0;
     a.lastActivity = now();
     const inv = {
       id: ++serial, key, name, agentId, parent: null, orphan: false, background: true,
-      description: undefined, startedAt: now(), lastActivity: now(), ...idleTools(),
+      description: undefined, startedAt: now(), lastActivity: now(), ...idleTools(), ...freshRun(false),
     };
     if (mate) { inv.mate = mate; mate.ended = false; mate.reaped = false; mate.wake = false; mate.runtimeId = agentId; }
     invs.push(inv);
@@ -724,11 +826,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const a = ensure(agent);
       // "A fresh run starts clean" -- but only if it IS a fresh run (Dexter
       // F4): a parallel second instance must not wipe the first's errors.
-      if (!running(agent)) {
-        a.errors = 0;
-        a.repeats = 0;
-        a.lastSignature = null;
-      }
+      if (!running(agent)) startClean(a);
       a.flashUntil = 0;
       a.lastActivity = now();
       const parent = p.agent_id ? bind(p.agent_id, p.agent_type) : null;
@@ -741,7 +839,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         // orphan ends only on its own events, SessionEnd and the reapers.
         orphan: !!p.agent_id && !parent,
         background: input.run_in_background === true, description: input.description,
-        startedAt: now(), lastActivity: now(), ...idleTools(),
+        startedAt: now(), lastActivity: now(), ...idleTools(), ...freshRun(true),
       };
       invs.push(inv);
       if (inv.key !== null) spawns.set(inv.key, inv);
@@ -830,7 +928,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const agent = inv.name;
       const a = ensure(agent);
       if (!callInterrupted && (failureEvent || isFailure(p.tool_response))) {
-        a.errors++;
+        fail(a, { tool, to: p.tool_input && p.tool_input.to }, inv);
         a.repeats = 0;
         a.lastSignature = null;
         setState(agent, a, STRESSED);
@@ -838,10 +936,11 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       }
 
       // A repeated identical call reads as a retry loop even when each
-      // individual call reports success.
+      // individual call reports success: on the name's card and on the run's own.
       const signature = tool + ':' + JSON.stringify(p.tool_input ?? null);
-      a.repeats = signature === a.lastSignature ? a.repeats + 1 : 1;
-      a.lastSignature = signature;
+      noteCall(a, tool, signature);
+      noteCall(inv, tool, signature);
+      inv.runState = inv.repeats >= RETRY_LIMIT ? STRESSED : WORKING;
 
       setState(agent, a, a.repeats >= RETRY_LIMIT ? STRESSED : WORKING);
       return;
@@ -945,6 +1044,8 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     if (gone.size) reap([...gone]);
 
     for (const [agent, a] of agents) {
+      // An instance card's finish flash is over (#142 b); settle() below announces the rows that changed.
+      if (a.done.length) a.done = a.done.filter(d => t <= d.until);
       if (a.state === SLEEPING) continue;
 
       // A finished agent holds its happy/stressed flash, then sleeps --
@@ -998,9 +1099,13 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   machine.stateOf = agent => (agents.get(agent) || { state: SLEEPING }).state;
   // Every live invocation's NAME, in start order -- one entry per running
   // instance, unchanged for every consumer (host.js draws this as `party`,
-  // app/agent-card-display.js counts it for the ×N badge).
+  // app/agent-card-display.js counts it for the belt and the pauses).
   machine.stack = () => invs.map(i => i.name);
+  // BACKLOG #142 b: the agent's instance cards, one per run, while there are two or more; null otherwise (see INSTANCE CARDS).
+  machine.instancesOf = instancesOf;
   machine.detailOf = agent => (agents.get(agent) || { detail: SLEEPING }).detail;
+  // BACKLOG #162: why the card is stressed, one sentence (host/stress-cause.js); null whenever it isn't stressed.
+  machine.causeOf = agent => { const a = agents.get(agent); return a ? causeFor(a) : null; };
   machine.roster = () => [...agents].map(([agent, a]) => ({ agent, state: a.state, detail: a.detail }));
   // Sizes of the per-host bookkeeping, for the test that it stays bounded.
   machine.bookkeeping = () => ({ spawns: spawns.size, endedKeys: endedKeys.size, endedIds: endedIds.size,

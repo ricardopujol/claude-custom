@@ -676,10 +676,18 @@ const portraitOf = (agent, state, baseState) => portraitFor(agent, state, {
 // BACKLOG #155: a card waiting on background work (bgwait / bgwaitlate) has no picture of its own: it wears its base state's, and carries
 // `wait` ({ on, since }) for the "on: ... · N min" line.
 const BG_WAIT_DETAILS = new Set(['bgwait', 'bgwaitlate']);
+// BACKLOG #162: a stressed card carries `cause`, the one sentence host/stress-cause.js makes from the mood machine's record (the
+// card's hover shows it; #101's card that opens in place reuses the same field). Only while the machine says stressed too.
 const describe = (agent, state, detail) => {
   const d = detail || state;
   const out = { agent, state, detail: d, portrait: portraitOf(agent, BG_WAIT_DETAILS.has(d) ? state : d, state) };
   if (BG_WAIT_DETAILS.has(d)) out.wait = mood.waitOf(agent);
+  const cause = state === 'stressed' ? mood.causeOf(agent) : null;
+  if (cause) out.cause = cause;
+  // BACKLOG #142 b: two or more runs of the agent are one card each (host/mood-machine.js instancesOf), each wearing the picture of
+  // its own state, by the same rule as the name's card above.
+  const instances = mood.instancesOf(agent);
+  if (instances) out.instances = instances.map((i) => ({ ...i, portrait: portraitOf(agent, BG_WAIT_DETAILS.has(i.detail) ? i.state : i.detail, i.state) }));
   return out;
 };
 
@@ -2209,6 +2217,12 @@ mood.on('change', ({ agent, state, detail }) => {
   // An agent that woke is un-hidden here too (BACKLOG #14) -- the renderer
   // applies the same rule itself, but the host persists it and is authoritative.
   if (hiddenAgents.reconcile(mood.roster()).cleared.length) broadcastHidden();
+});
+// What a card carries beside its state moved (a stressed card's cause, BACKLOG #162): the same frame, re-described. Its state didn't
+// move, so neither the bubbles nor the hidden set are asked.
+mood.on('cards', ({ agent }) => {
+  const row = mood.roster().find(r => r.agent === agent);
+  if (row) broadcastControl({ type: 'mood', ...describe(row.agent, row.state, row.detail) });
 });
 let installWideTicks = 0;
 const moodTimer = setInterval(() => {

@@ -5777,9 +5777,10 @@ function careerHtml(agent) {
     `</div>`;
 }
 
-// The model line under the state (FF10) and the ×N badge beside the name for
-// concurrent instances of one agent (FF8). Both judgements live in
-// app/agent-card-display.js so they can be tested; this is only the drawing.
+// The model line under the state (FF10). The judgement lives in
+// app/agent-card-display.js so it can be tested; this is only the drawing.
+// (Concurrent instances of one agent were a ×N badge here (FF8); since
+// BACKLOG #142 b each is its own card, app/agent-state-display.js instanceRows.)
 function agentModelHtml(agent) {
   const entry = modelEntry(sessionModel && sessionModel.agents, agent);
   const m = modelLine(entry, sessionModel && sessionModel.errors);
@@ -5856,13 +5857,6 @@ document.addEventListener('click', (e) => {
     if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
   }, window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false });
 });
-
-function countBadgeHtml(agent, counts) {
-  // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
-  // concurrent run is news.
-  const n = counts.get(agent) || 0;
-  return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
-}
 
 // --- Active/Inactive roster tabs (BACKLOG D #16) -----------------------------
 // The split and sort are pure decisions in app/roster-tabs-display.js; this is
@@ -6216,21 +6210,28 @@ function renderRoster() {
     return;
   }
 
-  paintAgents(shown.map(r => {
+  // BACKLOG #142 b: two or more instances of one agent are one card each (app/agent-state-display.js instanceRows), after the hide
+  // and search filters, which stay per agent name: every card of a name carries the same data-agent, so a medal, a hide or a pause
+  // on one card is the name's (the open question's default).
+  paintAgents(shown.flatMap((r) => window.agentStateDisplay.instanceRows(r)).map(r => {
     if (r.explainer) return explainerCardHtml(false);
     const entry = rosterIndexEntry(r.agent);
     // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
     // `data-detail`, drawn as a corner badge and as words under the name.
     const look = window.agentStateDisplay.describeState(r.state, r.detail);
+    // BACKLOG #162: a stressed card says why on hover, the card itself and the words under the name (their own titles win elsewhere).
+    const cause = window.agentStateDisplay.causeTitle(r.state, r.cause);
     return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
+      (r.instance ? ` data-instance="${escapeHtml(r.instance)}"` : '') +
+      (cause ? ` title="${escapeHtml(cause)}"` : '') +
       (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
       hideButtonHtml(r) +
       window.medalsDisplay.cardButtonHtml(r.agent) +
       `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
       window.agentStateDisplay.badgeHtml(r.state, r.detail) +
-      `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
+      `<div class="meta">` + agentNameHtml(r.agent, entry, '') +
       agentFnHtml(entry) +
-      `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+      `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
       window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
       agentPauseHtml(r.agent, counts) +
       agentModelHtml(r.agent) +
@@ -9550,8 +9551,8 @@ function handleControl(msg) {
     }
     latestParty = msg.party || [];
     renderParty(msg.party);
-    // The ×N badge is derived from `party`, which just changed; the roster map
-    // itself may not have, so nothing else here would repaint it.
+    // The belt and the pauses read `party`, which just changed; the roster map
+    // itself may not have, so nothing else here would repaint them.
     renderRoster();
     return;
   }
