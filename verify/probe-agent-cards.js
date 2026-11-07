@@ -14,9 +14,15 @@
  *    Measured 2026-11-07: the click is DROPPED (mousedown lands on the old button, mouseup on its replacement, so no
  *    `click` fires); a rebuild with nothing changed replaces no markup, and neither do 10 s of quiet; 10 s of one event a
  *    second on another agent replaced it 7 times. Recorded here, left for the hub (#17 F4).
+ *    After PR #239 A5 (a repaint replaces only the cards whose markup changed), same day: the click LANDS and the clicked
+ *    card keeps its node; 10 s of one Bash start or end a second on the other agent = 10 repaints replacing 10 card nodes of
+ *    2 (before, every repaint replaced both), the quiet card kept throughout; two instances of one agent busy at once (a read
+ *    and a Bash start or end a second) = 10 repaints, 13 card nodes of 4 (a full replace would be 40). A press on a card that
+ *    DID change can still be dropped: BACKLOG #184.
  * B. BACKLOG #162: a stressed card carries its cause as its hover (the card's title, and the words under its name), and a
  *    picture of it hovered: agent-card-stressed-hover.png. The OS draws a native tooltip outside the page, where capturePage
- *    can't see it, so the probe draws the card's own title text in a tooltip-styled box at the hover point.
+ *    can't see it, so the probe draws the card's own title text at the hover point, captioned ON the picture as the probe's
+ *    drawing (PR #239 Miguel Y3). Then a sibling's repaint while hovered keeps the hovered card's node (Miguel Y5).
  * C. BACKLOG #142 b: two instances of one agent are two cards (data-instance = each spawn's tool_use_id), each its own state,
  *    no ×N badge; one finishing flashes, then leaves. Picture: agent-card-two-instances.png.
  * Pictures go to %TEMP%\cc-try\, through the app's own capturePage (never the screen).
@@ -40,12 +46,13 @@ const check = (label, ok, detail = '') => {
   if (!ok) failures++;
 };
 
-const mainSource = (port, helper, pipe) => `
+const mainSource = (port, helper, pipe, userData) => `
 const { app, BrowserWindow } = require('electron');
 const path = require('path'); const fs = require('fs');
 const ROOT = ${JSON.stringify(ROOT)};
 const { probeWindowOptions } = require(path.join(ROOT, 'host', 'probe-window'));
-app.setPath('userData', ${JSON.stringify(path.join(os.tmpdir(), 'cc-agent-cards-userdata-' + process.pid))});
+// Inside the run's own temp folder, which cleanup() removes (PR #239 Miguel S9: it used to be left in %TEMP%).
+app.setPath('userData', ${JSON.stringify(userData)});
 const results = [];
 const check = (name, ok, detail) => { results.push({ name, ok: !!ok, detail }); console.log('[check]', ok ? 'PASS' : 'FAIL', name, detail === undefined ? '' : JSON.stringify(detail)); };
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -63,8 +70,10 @@ const by = (name) => ({ agent_id: 'a' + name + '-' + String(4242 + name.length).
 // One step of churn: probe-churn's Bash call starts (running) or ends (working): its card's markup changes either way.
 let flying = null;
 const churn = () => {
-  if (flying) { send('PostToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step' }, tool_response: { exit_code: 0 }, ...by('probe-churn') }); flying = null; }
-  else { flying = 'tu' + (++n); send('PreToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step' }, ...by('probe-churn') }); }
+  // Each step its own command: the same one again and again is a retry loop, which turns the card stuck and re-sorts the roster
+  // (a full replace, rightly), and the measurement below is about a card that changes in place.
+  if (flying) { send('PostToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step ' + flying }, tool_response: { exit_code: 0 }, ...by('probe-churn') }); flying = null; }
+  else { flying = 'tu' + (++n); send('PreToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step ' + flying }, ...by('probe-churn') }); }
 };
 const need = async (what) => {
   if (what === 'churn') churn();
@@ -110,9 +119,12 @@ app.whenReady().then(async () => {
     check('both cards are on the roster', await until('document.querySelectorAll("#agents .agent[data-agent^=\\'probe-\\']").length === 2', 30000));
     // What reached the page: every click (capture phase, so nothing in the page can hide it from us), and every time the
     // roster's markup was really replaced (paintAgents -> setRosterHtml -> replaceChildren is a childList mutation).
-    await js('window.__clicks = []; window.__repaints = 0;' +
+    // __repaints: roster repaints that replaced anything (one observer call per paint); __removed: card nodes they replaced
+    // (PR #239 A5: since the per-card patch, a sibling's change replaces its own card, not every card).
+    await js('window.__clicks = []; window.__repaints = 0; window.__removed = 0;' +
       ' document.addEventListener("click", (e) => { const t = e.target; window.__clicks.push({ onButton: !!(t && t.closest && t.closest("[data-medal-open]")), tag: t && t.tagName, id: t && t.id || null, cls: t && String(t.className || "") }); }, true);' +
-      ' new MutationObserver(() => { window.__repaints++; }).observe(document.getElementById("agents"), { childList: true }); true');
+      ' new MutationObserver((ms) => { window.__repaints++; for (const m of ms) for (const n of m.removedNodes) if (n.classList && n.classList.contains("agent")) window.__removed++; }).observe(document.getElementById("agents"), { childList: true }); true');
+    const cardNode = 'document.querySelector("#agents .agent[data-agent=\\'probe-click\\']")';
     const BTN = '#agents .agent[data-agent=\\'probe-click\\'] [data-medal-open]';
     // The point, and what is really under it (a press that lands on something else measures nothing).
     const point = async () => js('(() => { const b = document.querySelector("' + BTN + '"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect();' +
@@ -142,26 +154,32 @@ app.whenReady().then(async () => {
     check('2. renderRoster() with nothing changed replaces no markup', same.repaints === 0, same.repaints);
     check('2. ...and the click lands', same.clicks.some(c => c.onButton), same);
 
+    await js('window.__clickCard = ' + cardNode + '; true');
     const changed = await press(async () => {
       await need('churn');
       await until('window.__repaints > 0', 5000);
     });
-    check('3. a real hook event on ANOTHER agent replaced the roster markup while the button was held', changed.repaints > 0, changed.repaints);
+    check('3. a real hook event on ANOTHER agent repainted the roster while the button was held', changed.repaints > 0, changed.repaints);
+    const kept = await js('window.__clickCard === ' + cardNode);
     const landed = changed.clicks.some(c => c.onButton);
-    console.log('[F4] click with the roster rebuilt between mousedown and mouseup: ' + (landed ? 'LANDED' : 'DROPPED') + ' ' + JSON.stringify(changed));
-    check('3. the case ran to an answer (landed or dropped, recorded above)', changed.repaints > 0);
+    console.log('[F4] click with ANOTHER card repainted between mousedown and mouseup: ' + (landed ? 'LANDED' : 'DROPPED') + ', the clicked card node ' + (kept ? 'kept' : 'replaced') + ' ' + JSON.stringify(changed));
+    // Before PR #239 A5 every repaint replaced every card, and this click was DROPPED (measured twice on 2026-11-07).
+    check('3. A5: the clicked card, unchanged, keeps its node', kept === true);
+    check('3. A5: ...and the click lands', landed, changed);
 
     // The repaint rate. Quiet: an agent working, no events, processes frames every second.
-    await js('window.__repaints = 0; true');
+    await js('window.__repaints = 0; window.__removed = 0; true');
     await sleep(10000);
     const quiet = await js('window.__repaints');
     console.log('[F4] markup replacements in 10 s of a working agent with no events: ' + quiet);
     check('quiet: the 1 s processes frames replace no markup', quiet === 0, quiet);
-    await js('window.__repaints = 0; true');
+    await js('window.__repaints = 0; window.__removed = 0; window.__clickCard = ' + cardNode + '; true');
     await need('busy');
-    const busy = await js('window.__repaints');
-    console.log('[F4] markup replacements in 10 s of one Bash call starting or ending a second on another agent: ' + busy);
-    check('busy: the roster is replaced when a card changes', busy > 0, busy);
+    const busy = JSON.parse(await js('JSON.stringify({ repaints: window.__repaints, removed: window.__removed, kept: window.__clickCard === ' + cardNode + ' })'));
+    console.log('[F4] 10 s of one Bash call starting or ending a second on another agent: ' + busy.repaints + ' repaints, ' + busy.removed +
+      ' card nodes replaced (2 cards on the roster), the quiet card node ' + (busy.kept ? 'kept throughout' : 'replaced'));
+    check('busy: the roster is repainted when a card changes', busy.repaints > 0, busy);
+    check('busy: A5: only the changing card is replaced, one node per repaint', busy.removed === busy.repaints && busy.kept, busy);
 
     // Pictures, through the app's own capturePage (never the screen): the roster panel's rectangle.
     const SHOTS = path.join(require('os').tmpdir(), 'cc-try');
@@ -177,6 +195,9 @@ app.whenReady().then(async () => {
     };
 
     // B. BACKLOG #162: a stressed card says why on hover (its title, and the words under its name).
+    // Case 3's click now lands (A5) and opens the medal menu: close it, so it doesn't cover the cards in the pictures.
+    await closeMenu();
+    check('the medal menu is closed before the pictures', await until('typeof medalMenuEl === "undefined" || !medalMenuEl || medalMenuEl.hidden', 3000));
     send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), tool_input: { command: 'npm test' }, tool_response: { exit_code: 1 }, ...by('probe-click') });
     const SC = '#agents .agent[data-agent=\\'probe-click\\']';
     const title = await until('(() => { const c = document.querySelector("' + SC + '"); return c && c.dataset.state === "stressed" && c.getAttribute("title"); })()', 10000);
@@ -184,16 +205,26 @@ app.whenReady().then(async () => {
     const stateTitle = await js('(() => { const s = document.querySelector("' + SC + ' .state"); return s && s.getAttribute("title"); })()');
     check('B. ...and the words under its name carry the same', stateTitle === title, stateTitle);
     // A native tooltip is drawn by the OS, outside the page, so capturePage can't see it: the probe draws the card's OWN title text
-    // in a tooltip-styled box at the hover point (id probe-tooltip), and takes it away after the picture.
+    // at the hover point (id probe-tooltip), with a caption ON the picture saying it's the probe's drawing, not the app's look
+    // (PR #239 Miguel Y3), and takes both away after the picture.
     const at = await js('(() => { const c = document.querySelector("' + SC + '"); c.scrollIntoView({ block: "center" }); const r = c.getBoundingClientRect();' +
-      ' const d = document.createElement("div"); d.id = "probe-tooltip"; d.textContent = c.getAttribute("title");' +
-      ' Object.assign(d.style, { position: "fixed", left: Math.round(r.left + 24) + "px", top: Math.round(r.top + r.height / 2 + 16) + "px", background: "#ffffe1", color: "#000",' +
-      ' border: "1px solid #767676", font: "12px Segoe UI, sans-serif", padding: "2px 6px", zIndex: 9999, pointerEvents: "none", whiteSpace: "nowrap" });' +
-      ' document.body.appendChild(d); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()');
+      ' const box = document.createElement("div"); box.id = "probe-tooltip";' +
+      ' Object.assign(box.style, { position: "fixed", left: Math.round(r.left + 24) + "px", top: Math.round(r.top + r.height / 2 + 16) + "px", zIndex: 9999, pointerEvents: "none", maxWidth: "300px" });' +
+      ' const tip = document.createElement("div"); tip.textContent = c.getAttribute("title");' +
+      ' Object.assign(tip.style, { background: "#2b2b2b", color: "#fff", border: "1px solid #888", font: "12px Segoe UI, sans-serif", padding: "3px 7px", whiteSpace: "nowrap", display: "inline-block" });' +
+      ' const cap = document.createElement("div"); cap.textContent = "Probe\\u2019s drawing of the card\\u2019s hover text. Windows draws the real tooltip outside the page.";' +
+      ' Object.assign(cap.style, { marginTop: "3px", background: "#fff3c4", color: "#5a4500", border: "1px dashed #b38f00", font: "italic 10px Segoe UI, sans-serif", padding: "2px 5px", whiteSpace: "normal" });' +
+      ' box.append(tip, cap); document.body.appendChild(box); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()');
     win.webContents.sendInputEvent({ type: 'mouseMove', x: at.x, y: at.y });
     await sleep(500);
     await shot('agent-card-stressed-hover.png');
     await js('document.getElementById("probe-tooltip").remove(); true');
+    // Miguel Y5: with the pointer on the stressed card, another agent's card changes: the hovered card keeps its node (so the OS
+    // tooltip it owns isn't torn down by a sibling's repaint).
+    await js('window.__repaints = 0; window.__clickCard = ' + cardNode + '; true');
+    await need('churn');
+    await until('window.__repaints > 0', 5000);
+    check('B. Y5: a sibling\\'s repaint keeps the hovered card\\'s node', await js('window.__clickCard === ' + cardNode));
 
     // C. BACKLOG #142 b: two instances of one agent are two cards, each with its own state; no ×N badge.
     const twin = (k) => ({ agent_id: 'aprobe-twin-' + String(7000 + k).padStart(16, '0'), agent_type: 'probe-twin' });
@@ -211,6 +242,19 @@ app.whenReady().then(async () => {
     await js('(() => { document.querySelector("' + TW + '").scrollIntoView({ block: "start" }); return true; })()');
     await sleep(300);
     await shot('agent-card-two-instances.png');
+    // Dexter 5's rate: two instances of one agent busy at once (one reading every second, the other running a Bash call that
+    // starts or ends every second), 10 s. Each instance's detail is its own card now, so this is the per-instance repaint rate.
+    await js('window.__repaints = 0; window.__removed = 0; true');
+    for (let i = 0; i < 10; i++) {
+      send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tr' + (++n), tool_input: { file_path: 'C:/x' + i }, ...twin(1) });
+      if (i % 2 === 0) send('PreToolUse', { tool_name: 'Bash', tool_use_id: 'tb' + i, tool_input: { command: 'b' + i }, ...twin(2) });
+      else send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tb' + (i - 1), tool_input: { command: 'b' + (i - 1) }, tool_response: { exit_code: 0 }, ...twin(2) });
+      await sleep(1000);
+    }
+    const twinRate = JSON.parse(await js('JSON.stringify({ repaints: window.__repaints, removed: window.__removed, cards: document.querySelectorAll("#agents .agent").length })'));
+    console.log('[F4] 10 s of two instances of one agent busy (a read a second, a Bash start or end a second): ' + twinRate.repaints + ' repaints, ' +
+      twinRate.removed + ' card nodes replaced, ' + twinRate.cards + ' cards on the roster');
+    check('C. Dexter 5: two busy instances repaint only their own cards, never the whole roster each time', twinRate.repaints > 0 && twinRate.removed < twinRate.repaints * twinRate.cards, twinRate);
     // One of them finishing: its card flashes, then leaves, and the name is one card again.
     send('SubagentStop', twin(1));
     const flashing = await until('(() => { const c = document.querySelector("' + TW + '[data-instance=toolu_twin1]"); return c && c.dataset.state === "happy"; })()', 5000);
@@ -272,7 +316,7 @@ async function run() {
     });
 
     const mainFile = path.join(tmp, 'probe-main.js');
-    fs.writeFileSync(mainFile, mainSource(port, mainHelper, pipe));
+    fs.writeFileSync(mainFile, mainSource(port, mainHelper, pipe, path.join(tmp, 'userdata')));
     const electron = spawnElectron(require('electron'), [mainFile], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORT', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_TOKEN', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_SESSION_ID', 'CLAUDE_CUSTOM_HELPER'] });
     hygiene.registerChild(electron);
     electron.stdout.on('data', d => process.stdout.write(d));
