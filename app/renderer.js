@@ -866,6 +866,9 @@ try {
   console.warn('[renderer] WebGL addon unavailable, using fallback:', e.message);
 }
 
+// The one bare fit left on purpose (BACKLOG #177): the #termwrap ResizeObserver's first callback refits through refitTerminal(),
+// and the socket's onopen sends the size whatever it is. Don't swap it for refitTerminal(): that reads `let lastSentResize`, declared
+// far below, so here it throws a temporal-dead-zone ReferenceError and stops the whole script.
 fit.fit();
 
 // The terminal bar's view of the buffer (#49). The prompt part follows the viewport; a resize reflows every line
@@ -9942,6 +9945,8 @@ function refitTerminal() {
     size: () => ({ cols: term.cols, rows: term.rows }),
     propose: () => fit.proposeDimensions(),
     resize: (cols, rows) => {
+      // xterm PRIVATE API (`_core._renderService`), as FitAddon itself calls it, on @xterm/xterm 5.5.0: an upgrade can drop it, and
+      // the catch then keeps the resize going without the full render.
       try { term._core._renderService.clear(); } catch { /* the full render is a nicety; the resize is what counts */ }
       term.resize(cols, rows);
     },

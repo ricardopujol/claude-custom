@@ -13,13 +13,16 @@ const TF = require('../app/term-fit');
 
 const D = 8.2036;
 const cellAt = (cols) => Math.round(cols * D) / cols;
+// The row axis follows the same rule (PR #240 C3, Dexter 3): the CSS cell height is round(rows * DH) / rows, from the CURRENT row count.
+const DH = 16.2;
+const cellHAt = (rows) => Math.round(rows * DH) / rows;
 
-function fakeTerm({ cols, rows = 37, avail = 591, availH = 600, cellH = 16 }) {
+function fakeTerm({ cols, rows = 37, avail = 591, availH = 600 }) {
   const t = { cols, rows, resizes: [] };
   return {
     t,
     size: () => ({ cols: t.cols, rows: t.rows }),
-    propose: () => ({ cols: Math.floor(avail / cellAt(t.cols)), rows: Math.floor(availH / cellH) }),
+    propose: () => ({ cols: Math.floor(avail / cellAt(t.cols)), rows: Math.floor(availH / cellHAt(t.rows)) }),
     resize: (c, r) => { t.resizes.push([c, r]); t.cols = c; t.rows = r; },
   };
 }
@@ -89,17 +92,38 @@ test('a knife-edge cycle (n proposes m, m proposes n) ends on the smaller size, 
   assert.deepStrictEqual(resizes, [[51, 20], [50, 20]]);
 });
 
-test('property: from any column count and any box, the fit settles within MAX_STEPS on a size the box agrees with (or the smaller of a cycle)', () => {
-  fc.assert(fc.property(fc.integer({ min: 2, max: 400 }), fc.integer({ min: 20, max: 3000 }), (cols, avail) => {
-    const f = fakeTerm({ cols, avail });
+test('property: from any size and any box, the fit settles within MAX_STEPS on a size the box agrees with (or the smaller of a cycle), on both axes', () => {
+  fc.assert(fc.property(fc.integer({ min: 2, max: 400 }), fc.integer({ min: 20, max: 3000 }), fc.integer({ min: 1, max: 200 }), fc.integer({ min: 20, max: 3000 }), (cols, avail, rows, availH) => {
+    const f = fakeTerm({ cols, avail, rows, availH });
     const end = TF.settleFit(f);
     assert.ok(f.t.resizes.length <= TF.MAX_STEPS);
     const p = f.propose();
     // Settled: the box agrees; or, at a cycle's end, the size is the smaller one, so it proposes a bigger one it can't hold.
-    assert.ok(p.cols === end.cols || p.cols > end.cols, `ended at ${end.cols} cols, the box proposes ${p.cols} (avail ${avail}, from ${cols})`);
+    assert.ok(p.rows >= end.rows, 'ended at ' + end.rows + ' rows, the box proposes ' + p.rows + ' (availH ' + availH + ', from ' + rows + ')');
+    assert.ok(end.rows * cellHAt(end.rows) <= availH, end.rows + ' rows of ' + cellHAt(end.rows) + ' px overflow ' + availH);
+    assert.ok(p.cols >= end.cols, `ended at ${end.cols} cols, the box proposes ${p.cols} (avail ${avail}, from ${cols})`);
     // And what it ended on fits: its own cells fit the box.
     assert.ok(end.cols * cellAt(end.cols) <= avail || end.cols === 2, `${end.cols} cols of ${cellAt(end.cols)} px overflow ${avail}`);
   }), { numRuns: 500 });
+});
+
+test('PR #240 C5 (Miguel I2): a proposal that never agrees gets exactly MAX_STEPS resizes, and a smaller maxSteps is that many', () => {
+  const run = (maxSteps) => {
+    const t = { cols: 40, rows: 20 };
+    const resizes = [];
+    const end = TF.settleFit({
+      size: () => ({ ...t }),
+      propose: () => ({ cols: t.cols + 1, rows: t.rows }),
+      resize: (c, r) => { resizes.push([c, r]); t.cols = c; t.rows = r; },
+      ...(maxSteps === undefined ? {} : { maxSteps }),
+    });
+    return { end, resizes };
+  };
+  const dflt = run();
+  assert.strictEqual(TF.MAX_STEPS, 4);
+  assert.strictEqual(dflt.resizes.length, TF.MAX_STEPS, 'the bound is reached, and not passed');
+  assert.deepStrictEqual(dflt.end, { cols: 44, rows: 20 });
+  assert.deepStrictEqual(run(1).resizes, [[41, 20]]);
 });
 
 test('the pty is told only a size it was not told last: an unchanged refit sends nothing', () => {
@@ -107,4 +131,9 @@ test('the pty is told only a size it was not told last: an unchanged refit sends
   assert.strictEqual(TF.needsSend({ cols: 72, rows: 37 }, { cols: 71, rows: 37 }), true);
   assert.strictEqual(TF.needsSend({ cols: 72, rows: 37 }, { cols: 72, rows: 36 }), true);
   assert.strictEqual(TF.needsSend({ cols: 72, rows: 37 }, { cols: 72, rows: 37 }), false);
+  // PR #240 C6 (Miguel S6): a size that isn't one (no renderer yet) is never sent, whatever was sent last.
+  for (const now of [null, undefined, { cols: 0, rows: 37 }, { cols: 72, rows: 0 }, { cols: NaN, rows: 37 }, { cols: 72.5, rows: 37 }]) {
+    assert.strictEqual(TF.needsSend(now, null), false, JSON.stringify(now));
+    assert.strictEqual(TF.needsSend(now, { cols: 72, rows: 37 }), false, JSON.stringify(now));
+  }
 });

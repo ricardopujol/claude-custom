@@ -17,6 +17,7 @@
  */
 (function (root) {
 
+// Two resizes for the measured case (32 -> 71 -> 72), and a cycle is caught on its third proposal; 4 is that plus headroom.
 const MAX_STEPS = 4;
 
 const usable = (d) => !!d && Number.isInteger(d.cols) && Number.isInteger(d.rows) && d.cols > 0 && d.rows > 0;
@@ -36,6 +37,8 @@ function settleFit({ size, propose, resize, maxSteps = MAX_STEPS }) {
     if (!usable(p) || same(p, cur)) break;
     been.push(cur);
     if (been.some((b) => same(b, p))) {
+      // Each axis takes its own smaller size. Rows don't depend on the column cell width (each axis's cell follows its own count),
+      // so the two axes can't cycle out of phase into a size neither step proposed.
       const small = { cols: Math.min(p.cols, cur.cols), rows: Math.min(p.rows, cur.rows) };
       if (!same(small, cur)) resize(small.cols, small.rows);
       break;

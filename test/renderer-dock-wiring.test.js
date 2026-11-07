@@ -190,6 +190,9 @@ test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows 
   // BACKLOG #177: the refit is the settled one (app/term-fit.js), which tells the pty only a changed size.
   assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ refitTerminal\(\); \} catch \{\} \}, 0\);/);
   assert.match(JS, /function refitTerminal\(\) \{\r?\n\s+window\.termFit\.settleFit\(/);
+  // PR #240 C3 (Dexter 3, Miguel I3): the settled size reaches the pty, and only when it changed: the function's last line, then its end.
+  assert.match(JS, /function refitTerminal\(\) \{[\s\S]{0,900}?\r?\n\s+\}\);\r?\n\s+if \(window\.termFit\.needsSend\(\{ cols: term\.cols, rows: term\.rows \}, lastSentResize\)\) sendResize\(\);\r?\n\}/,
+    'refitTerminal ends by telling the pty the settled size, gated on needsSend against what it was told last');
 });
 
 test('PR #102 Miguel Y4: pressing a float\'s bar or grip does not take keyboard focus out of a field inside it (the press cancels the mousedown default)', () => {
