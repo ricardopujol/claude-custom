@@ -1175,3 +1175,18 @@ test('#237 Miguel S1: with no wait time known the lines still read right', () =>
   assert.strictEqual(notRunLine(new HeavyLockError('busy', 'x', { holder: 'h' })), '[heavy-lock] lock busy for the whole wait, held by h: NOT RUN');
   assert.doesNotMatch(notRunLine(new HeavyLockError('loaded', 'x')), /a the whole wait wait/);
 });
+
+// ---- #237 L12 (Miguel M6): the status is parsed in one place ----
+test('#237 Miguel M6: parseStatus reads every status line the script prints, and the watcher uses it and LOAD_GATE', () => {
+  const { parseStatus, LOAD_GATE } = require('../host/heavy-lock');
+  assert.deepStrictEqual(parseStatus('held: npm test (pid 1 start 2) (since 10:00:00)\nqueue 1: a\nqueue 2: b\nload: 20 GB free RAM, 10% CPU'),
+    { held: 'npm test (pid 1 start 2) (since 10:00:00)', free: false, queued: 2, load: '20 GB free RAM, 10% CPU' });
+  assert.deepStrictEqual(parseStatus('free'), { held: null, free: true, queued: 0, load: null });
+  assert.deepStrictEqual(parseStatus('held: '), { held: '', free: false, queued: 0, load: null }, 'an empty holder line is a line');
+  assert.deepStrictEqual(parseStatus(null), { held: null, free: false, queued: 0, load: null });
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'host', 'heavy-lock-watch.js'), 'utf8');
+  assert.ok(!src.includes('8 GB free RAM'), 'the gate is heavy.LOAD_GATE, never re-typed');
+  assert.ok(!/\/\^held: /.test(src), 'no status regex of its own');
+  assert.strictEqual(LOAD_GATE, '8 GB free RAM and under 70% CPU');
+});

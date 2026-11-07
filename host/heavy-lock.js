@@ -212,6 +212,25 @@ function defaultRun(scriptPath, { spawnFn = spawnSync, timeoutMs = (DEFAULT_WAIT
   };
 }
 
+// heavy-lock.ps1 -Acquire's two refusals, by exit code (0 is "acquired"; anything else is a script failure).
+const SCRIPT_BUSY = 2;
+const SCRIPT_LOADED = 3;
+
+// The script's status text, parsed in ONE place (#237 Miguel M6): when agent-creator changes its lines, this is the one
+// place to follow. `held`: the holder line's text ('' for an empty one, null when there's no such line); `free`: the slot
+// is free; `queued`: tickets waiting; `load`: the machine's load as the script reports it, or null.
+function parseStatus(text) {
+  const t = String(text || '');
+  const held = /^held: (.*)$/m.exec(t);
+  const load = /^load: (.*)$/m.exec(t);
+  return { held: held ? held[1].trim() : null, free: /^free$/m.test(t), queued: (t.match(/^queue \d+:/gm) || []).length, load: load ? load[1].trim() : null };
+}
+
+// The status, read with its own 1-minute leash: its text, or '' when it couldn't be read (which parses as "can't tell").
+function readStatus(run) {
+  try { const st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); return (st && st.stdout) || ''; } catch { return ''; }
+}
+
 function release({ owner, scriptPath = DEFAULT_SCRIPT, run = defaultRun(scriptPath), log = console.log } = {}) {
   let r;
   try { r = run(['-Release', '-Owner', owner], { timeoutMs: STATUS_TIMEOUT_MS }); } catch (err) { r = { status: null, stdout: err && err.message }; }
@@ -297,27 +316,16 @@ function holderIsDead(holder, { startsOf, work, log = () => {} }) {
 // dead), false (free, or the holder is provably dead), or null (the status could not be read).
 // `log` hears why a dead-looking holder still counts as live (#237 Dexter 5: the #112 "can't be read" line).
 function readHolder({ run, startsOf, work, log = () => {} }) {
-  let st = null;
-  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { st = null; }
-  const text = (st && st.stdout) || '';
-  const m = /^held: (.*)$/m.exec(text);
-  if (!m) return /^free$/m.test(text) ? { holder: null, live: false } : { holder: null, live: null };
-  const holder = m[1].trim();
-  return { holder: holder || null, live: !holderIsDead(holder, { startsOf, work, log }) };
+  const s = parseStatus(readStatus(run));
+  if (s.held === null) return s.free ? { holder: null, live: false } : { holder: null, live: null };
+  return { holder: s.held || null, live: !holderIsDead(s.held, { startsOf, work, log }) };
 }
 
 // If the slot's holder is provably dead (holderIsDead), release it by its exact owner string. `status`: the script's status
 // text when the caller has just read it (saves a second powershell); otherwise it's read here.
 function reclaimDead({ run, startsOf, log, work, status }) {
-  let text = status;
-  if (typeof text !== 'string') {
-    let st;
-    try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
-    text = (st && st.stdout) || '';
-  }
-  const m = /^held: (.*)$/m.exec(text);
-  if (!m) return false;
-  const holder = m[1].trim();
+  const holder = parseStatus(typeof status === 'string' ? status : readStatus(run)).held;
+  if (holder === null) return false;
   if (!holderIsDead(holder, { startsOf, work, log })) return false;
   let r;
   try { r = run(['-Release', '-Owner', holder], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
@@ -330,11 +338,65 @@ function reclaimDead({ run, startsOf, log, work, status }) {
 // After a busy give-up (#237 Dexter 1): is the slot open now? Free (whoever freed it), or held by a provably dead holder,
 // which is then released here. A status that can't be read, a live holder, or a dead one that won't release: not open.
 function slotOpenNow({ run, startsOf, log, work }) {
-  let st;
-  try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { return false; }
-  const text = (st && st.stdout) || '';
-  if (/^free$/m.test(text)) { log('[heavy-lock] the slot came free just after the wait gave up: trying once more'); return true; }
+  const text = readStatus(run);
+  if (parseStatus(text).free) { log('[heavy-lock] the slot came free just after the wait gave up: trying once more'); return true; }
   return reclaimDead({ run, startsOf, log, work, status: text });
+}
+
+// The flag's decision (RE-ENTRANCY above), out of acquire (#237 Miguel M6): the re-entrant lock when the flag names the
+// slot's live holder (or who holds it can't be told), else null, after saying why the flag was set aside.
+function reentrantSkip({ env, scriptPath, exists, run, startsOf, work, log }) {
+  if (!isHeld(env)) return null;
+  // The flag is trusted only while the holder it names really holds the slot: the skip names who.
+  const flag = env[ENV_VAR];
+  const scriptThere = exists(scriptPath);
+  const outer = scriptThere ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
+  if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
+    // Flag set and no script: the reason is the missing script, not an unreadable status (#237 Miguel S3).
+    log(outer.holder
+      ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
+      : !scriptThere
+        ? `[heavy-lock] ${ENV_VAR} is set and the lock script ${scriptPath} is not on this machine: not taking the lock (re-entrant, no script to ask)`
+        : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
+    return { state: 'reentrant', holder: outer.holder, flag, release: () => false, addWork: () => false };
+  }
+  if (outer.live === true) {
+    // A live holder the flag doesn't name: another lane's. Running beside it is exactly what the lock is for (#237 Dexter 2).
+    log(`[heavy-lock] WARNING: ${ENV_VAR}=${flag} is set, but the slot is held by ${outer.holder}, which `
+      + `${flag === '1' ? 'is another lane\'s wrapper or probe' : 'is not the holder that set it'}: a STRANGER'S variable in this shell. `
+      + `Waiting for the lock the normal way; unset ${ENV_VAR} (see host/heavy-lock.js).`);
+  } else {
+    log(`[heavy-lock] WARNING: ${ENV_VAR} is set but ${outer.holder ? `the slot's holder is gone (${outer.holder})` : 'nobody holds the lock'}: `
+      + `a STALE variable in this shell. Taking the lock for real; unset ${ENV_VAR} (see host/heavy-lock.js).`);
+  }
+  return null;
+}
+
+// The give-up's HeavyLockError from the last -Acquire answer `r` (#237 Miguel M6). `run` reads the slot again when the
+// call was killed by its own timer (#237 Dexter 6).
+function failureFrom(r, waitedMs, run) {
+  const said = (r && r.stdout) || '';
+  if (r && r.status === SCRIPT_BUSY) {
+    const m = /^busy: (.*)$/m.exec(said);
+    const what = m ? m[1].trim() : '';
+    const queued = /^\d+ ahead in the queue$/.test(what);
+    return new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs });
+  }
+  if (r && r.status === SCRIPT_LOADED) {
+    const m = /^machine too loaded: (.*)$/m.exec(said);
+    return new HeavyLockError('loaded', `${said || 'machine too loaded'}. ${HINT}`, { detail: m ? m[1].trim() : null, waitedMs });
+  }
+  if (r && r.status === null && /ETIMEDOUT/.test(said)) {
+    // Killed by its own wait + 1 timer: on a loaded machine the script's load check plus its 20 s sleep can run past the
+    // deadline. The wait ran out all the same, so the slot is read again to say which give-up it was.
+    const s = parseStatus(readStatus(run));
+    if (s.free && s.held === null) {
+      return new HeavyLockError('loaded', `heavy-lock.ps1 ran past its wait and was stopped; the slot is free. ${HINT}`, { waitedMs, timedOut: true });
+    }
+    const holder = s.held || null;
+    return new HeavyLockError('busy', `heavy-lock.ps1 ran past its wait and was stopped${holder ? `; held by ${holder}` : ''}. ${HINT}`, { holder, waitedMs, timedOut: true });
+  }
+  return new HeavyLockError('error', `heavy-lock.ps1 failed (exit ${r && r.status}): ${said}`, { waitedMs });
 }
 
 /**
@@ -383,30 +445,8 @@ function acquire({
   if (spawnFn === undefined) spawnFn = spawnSync;
   if (run === undefined) run = defaultRun(scriptPath, { spawnFn, timeoutMs: (waitMinutes + 1) * 60000 });
   if (startsOf === undefined) startsOf = (pids) => queryStarts(pids, spawnFn);
-  if (isHeld(env)) {
-    // The flag is trusted only while the holder it names really holds the slot (RE-ENTRANCY above): the skip names who.
-    const flag = env[ENV_VAR];
-    const scriptThere = exists(scriptPath);
-    const outer = scriptThere ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
-    if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
-      // Flag set and no script: the reason is the missing script, not an unreadable status (#237 Miguel S3).
-      log(outer.holder
-        ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
-        : !scriptThere
-          ? `[heavy-lock] ${ENV_VAR} is set and the lock script ${scriptPath} is not on this machine: not taking the lock (re-entrant, no script to ask)`
-          : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);
-      return { state: 'reentrant', holder: outer.holder, flag, release: () => false, addWork: () => false };
-    }
-    if (outer.live === true) {
-      // A live holder the flag doesn't name: another lane's. Running beside it is exactly what the lock is for (#237 Dexter 2).
-      log(`[heavy-lock] WARNING: ${ENV_VAR}=${flag} is set, but the slot is held by ${outer.holder}, which `
-        + `${flag === '1' ? 'is another lane\'s wrapper or probe' : 'is not the holder that set it'}: a STRANGER'S variable in this shell. `
-        + `Waiting for the lock the normal way; unset ${ENV_VAR} (see host/heavy-lock.js).`);
-    } else {
-      log(`[heavy-lock] WARNING: ${ENV_VAR} is set but ${outer.holder ? `the slot's holder is gone (${outer.holder})` : 'nobody holds the lock'}: `
-        + `a STALE variable in this shell. Taking the lock for real; unset ${ENV_VAR} (see host/heavy-lock.js).`);
-    }
-  }
+  const skip = reentrantSkip({ env, scriptPath, exists, run, startsOf, work, log });
+  if (skip) return skip;
   if (!exists(scriptPath)) {
     log(`[heavy-lock] ${scriptPath} not found; running without the heavy-work lock`);
     return { state: 'missing', flag: isHeld(env) ? env[ENV_VAR] : undefined, release: () => false, addWork: () => false };
@@ -433,39 +473,13 @@ function acquire({
     // it?" (#237 Dexter 1). The holder may have died and been freed by this call's own watcher, another lane's, or its own
     // release, between the script's give-up and now. A slot that's free now, or whose holder is provably dead (freed here),
     // gets the acquire once more, with only what is left of the wait budget (at least 1 minute): the whole stays bounded.
-    if (attempt === 0 && r && r.status === 2 && /^busy: (?!\d+ ahead)/.test(r.stdout || '') && slotOpenNow({ run, startsOf, log, work })) {
+    if (attempt === 0 && r && r.status === SCRIPT_BUSY && /^busy: (?!\d+ ahead)/.test(r.stdout || '') && slotOpenNow({ run, startsOf, log, work })) {
       wait = Math.max(1, Math.min(waitMinutes, Math.floor((waitMinutes * 60000 - (now() - startedAt)) / 60000)));
       continue;
     }
     break;
   }
-  const said = (r && r.stdout) || '';
-  if (!r || r.status !== 0) {
-    const waitedMs = now() - startedAt;
-    if (r && r.status === 2) {
-      const m = /^busy: (.*)$/m.exec(said);
-      const what = m ? m[1].trim() : '';
-      const queued = /^\d+ ahead in the queue$/.test(what);
-      throw new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs });
-    }
-    if (r && r.status === 3) {
-      const m = /^machine too loaded: (.*)$/m.exec(said);
-      throw new HeavyLockError('loaded', `${said || 'machine too loaded'}. ${HINT}`, { detail: m ? m[1].trim() : null, waitedMs });
-    }
-    if (r && r.status === null && /ETIMEDOUT/.test(said)) {
-      // Killed by its own wait + 1 timer (#237 Dexter 6): on a loaded machine the script's load check plus its 20 s sleep can
-      // run past the deadline. The wait ran out all the same, so the slot is read again to say which give-up it was.
-      let text = '';
-      try { const st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); text = (st && st.stdout) || ''; } catch { text = ''; }
-      const held = /^held: (.*)$/m.exec(text);
-      if (/^free$/m.test(text) && !held) {
-        throw new HeavyLockError('loaded', `heavy-lock.ps1 ran past its wait and was stopped; the slot is free. ${HINT}`, { waitedMs, timedOut: true });
-      }
-      const holder = held ? held[1].trim() || null : null;
-      throw new HeavyLockError('busy', `heavy-lock.ps1 ran past its wait and was stopped${holder ? `; held by ${holder}` : ''}. ${HINT}`, { holder, waitedMs, timedOut: true });
-    }
-    throw new HeavyLockError('error', `heavy-lock.ps1 failed (exit ${r && r.status}): ${said}`, { waitedMs });
-  }
+  if (!r || r.status !== 0) throw failureFrom(r, now() - startedAt, run);
   env[ENV_VAR] = owner;   // its own identity, so only what it starts is re-entrant under it (#237 Dexter 2)
   let done = false;
   return {
@@ -545,6 +559,7 @@ function createProcessLock({ proc = process, label = 'probe', beforeRelease = nu
 
 module.exports = {
   ENV_VAR, WAIT_VAR, SCRIPT_VAR, HINT, DEFAULT_SCRIPT, DEFAULT_WAIT_MINUTES, STATUS_TIMEOUT_MS, WATCH_EVERY_MS, NOT_RUN_EXIT, WATCH_SCRIPT,
+  LOAD_GATE, SCRIPT_BUSY, SCRIPT_LOADED, parseStatus, readStatus,
   HeavyLockError, notRunLine, ownerFor, parseOwner, queryStarts, defaultRun, createWorkStore, WORK_FILE, isGone, reclaimDead,
   startWatcher, acquire, release, createProcessLock,
 };

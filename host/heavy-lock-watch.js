@@ -33,20 +33,16 @@ function watchTick({ run, startsOf, work, log, parentPid, startedAt, now = Date.
   try { up = alive(parentPid); } catch { /* can't tell: carry on */ }
   if (up === false) return 'asker-gone';
   const mins = Math.floor((now() - startedAt) / 60000);
-  let st = null;
-  try { st = run([], { timeoutMs: heavy.STATUS_TIMEOUT_MS }); } catch { st = null; }
-  const text = (st && st.stdout) || '';
-  const held = /^held: (.*)$/m.exec(text);
-  const waiting = (text.match(/^queue \d+:/gm) || []).length;
-  const q = waiting ? `; ${waiting} waiting, this one included` : '';
-  const load = /^load: (.*)$/m.exec(text);
-  if (held) log(`[heavy-lock] waited ${mins} min so far for the lock, held by ${held[1].trim()}${q}`);
-  // A free slot that isn't granted: an earlier ticket goes first, or the script's load gate (8 GB free RAM, under 70% CPU) holds it.
-  else if (/^free$/m.test(text)) {
-    const why = waiting > 1 ? 'an earlier ticket goes first, or the load gate' : 'the load gate: it needs 8 GB free RAM and under 70% CPU';
-    log(`[heavy-lock] waited ${mins} min so far for the lock: the slot is free${q} (${why}${load ? `; now ${load[1].trim()}` : ''})`);
+  const text = heavy.readStatus(run);
+  const s = heavy.parseStatus(text);
+  const q = s.queued ? `; ${s.queued} waiting, this one included` : '';
+  if (s.held !== null) log(`[heavy-lock] waited ${mins} min so far for the lock, held by ${s.held}${q}`);
+  // A free slot that isn't granted: an earlier ticket goes first, or the script's load gate (heavy.LOAD_GATE) holds it.
+  else if (s.free) {
+    const why = s.queued > 1 ? 'an earlier ticket goes first, or the load gate' : `the load gate: it needs ${heavy.LOAD_GATE}`;
+    log(`[heavy-lock] waited ${mins} min so far for the lock: the slot is free${q} (${why}${s.load ? `; now ${s.load}` : ''})`);
   } else log(`[heavy-lock] waited ${mins} min so far for the lock (its status could not be read)`);
-  if (held) { try { heavy.reclaimDead({ run, startsOf, log, work, status: text }); } catch { /* the next tick tries again */ } }
+  if (s.held !== null) { try { heavy.reclaimDead({ run, startsOf, log, work, status: text }); } catch { /* the next tick tries again */ } }
   return 'waiting';
 }
 
