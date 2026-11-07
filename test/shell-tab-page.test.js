@@ -115,8 +115,9 @@ test('N2: the failed-start linger is at least two of the window\'s 150 ms probes
 test('N2: the host passes the linger to endHost for a failed start only, delays process.exit by it, and sends the frame to a late client', () => {
   const host = read('host/host.js');
   assert.match(host, /error: started\.frame\.error \}, FAILED_START_LINGER_MS\);/);
-  const end = host.slice(host.indexOf('function endHost('), host.indexOf('function endHost(') + 600);
-  assert.match(end, /if \(lingerMs > 0\) \{ setTimeout\(\(\) => process\.exit\(exitCode \?\? 0\), lingerMs\); return; \}\s*\n\s*process\.exit\(exitCode \?\? 0\);/);
+  const end = host.slice(host.indexOf('function endHost('), host.indexOf('function endHost(') + 1200);
+  // Without a linger the host exits once the job guard has had its bounded wait for a stop's answer (PR #235 K4a, K4b).
+  assert.match(end, /if \(lingerMs > 0\) \{ setTimeout\(\(\) => process\.exit\(exitCode \?\? 0\), lingerMs\); return; \}(?:\s*\n\s*\/\/[^\n]*)*\s*\n\s*jobGuard\.leave\(KILL_ANSWER_MS\)\.then\(\(\) => process\.exit\(exitCode \?\? 0\), \(\) => process\.exit\(exitCode \?\? 0\)\);/);
   assert.match(host, /endHost\(exitCode, signal\);/, 'an exited shell or claude still ends at once');
   assert.match(host, /if \(endedFrame\) ws\.send\(endedFrame\);/);
 });
