@@ -20,6 +20,7 @@
  *   6  a drop between two rail tabs puts the tab there: one insertion line mid-drag, the rail redrawn in the new order, the docked
  *      groups unchanged, layout-tree.json holding the order and the railOrdered mark
  *   7  after a restart of the window the rail comes back in that order
+ *   9  PR #241 Miguel L2: a group folded to its own rail: its icon's click still opens its panel; a drag from it docks the panel
  *   8  PR #241 Dexter 2 / Miguel M2: a rail that overflows, scrolled mid-drag: the line and the drop follow the buttons; a drag
  *      held near the rail's end scrolls it
  *
@@ -27,6 +28,11 @@
  * over the terminal: the ghost and the zones), rail-drag-inflight.png (over the rail: the insertion line), rail-drag-reordered.png
  * (the rail after the reorder), rail-drag-restart.png (after the restart). The window is told it is focused first (main's own
  * `windowFocus`, no OS focus taken), so the shots aren't under the unfocused dim.
+ *
+ * NOT COVERED HERE (PR #241 Miguel L3): pointer capture. The presses are synthetic PointerEvents (pointerId 1, no real pointer
+ * behind them), so setPointerCapture throws and is caught, and no lostpointercapture ever fires: the capture path (moves and the
+ * release reaching the page after the pointer leaves the window, and a lost capture ending the drag) is checked by hand, with a
+ * real mouse: drag a rail icon out past the window's edge and back, release; and Alt-Tab mid-drag, the drag ends with nothing moved.
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills; ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_*
  * variable are deleted before the window is launched; registry, portraits, uploads and user data are temp folders. The window's
@@ -369,7 +375,33 @@ async function main() {
   check('7: after a restart the rail comes back in the order it was left in', JSON.stringify(railOrder(s)) === JSON.stringify(want2), JSON.stringify(railOrder(s)));
   check('7: ...and the docked groups as they were', JSON.stringify(groupTabs(s)) === JSON.stringify(docked), JSON.stringify(groupTabs(s)));
   await sleep(300);
-  await command(app, { cmd: 'screenshot', file: path.join(shots, 'rail-drag-restart.png') });
+  // PR #241 Miguel L4: the shot is taken of the order just read from the page, and asserted, not only pictured.
+  const restartShot = await command(app, { cmd: 'screenshot', file: path.join(shots, 'rail-drag-restart.png') });
+  const shotOrder = railOrder(await stateFor(app, () => true));
+  check('7: screenshot after the restart, of the rail in the order it was left in', restartShot.ok && restartShot.viewBytes > 0 && JSON.stringify(shotOrder) === JSON.stringify(want2),
+    JSON.stringify([restartShot, shotOrder]));
+
+  // 9: PR #241 Miguel L2. A group folded to a rail in this window has rail buttons too, and they drag like the dock rail's (the
+  // press matches every .drail). Its own click still opens its panel, a drag from it docks the panel, and it has no place to
+  // reorder into (it isn't the dock's rail).
+  await view(app, 'layout', { layout: START });
+  await view(app, 'collapse', { id: 'right' });
+  s = await stateFor(app, v => v.rails.some(rl => rl.id === null && rl.modules.includes('models')), 6000);
+  const folded = s.rails.find(rl => rl.id === null && rl.modules.includes('models'));
+  check('9: setup: the docked group folded to a rail of its own in this window', !!folded, JSON.stringify(s.rails.map(rl => [rl.id, rl.modules.length])));
+  r = await view(app, 'railPress', { id: 'models', how: 'click' });
+  check('9: a click on a folded group\'s rail icon still opens its panel', r.ok && r.peek === 'models' && r.during.dragging === false, JSON.stringify(r));
+  await view(app, 'collapse', { id: 'right' });          // open it again: the popover goes with the change
+  await view(app, 'layout', { layout: START });
+  await view(app, 'collapse', { id: 'right' });
+  s = await stateFor(app, v => v.rails.some(rl => rl.id === null), 6000);
+  const t9 = { x: s.termwrap.left - s.dock.left + 20, y: s.termwrap.top - s.dock.top + s.termwrap.height / 2 };
+  r = await view(app, 'railPress', { id: 'models', how: 'drag', to: t9 });
+  s = await stateFor(app, v => v.groups.some(g => g.tabs.includes('models')));
+  const mg = s.groups.find(g => g.tabs.includes('models'));
+  check('9: a drag from a folded group\'s rail icon to the terminal\'s left band docks the panel there, with no insertion line on the way',
+    r.ok && r.during.lines === 0 && r.during.hot === 1 && !!mg && mg.rect.right <= s.termwrap.left + 1 && r.peek === null, JSON.stringify([r.during, mg && mg.rect, s.termwrap.left]));
+  await view(app, 'layout', { layout: START });
 
   // 8: PR #241 Dexter 2 / Miguel M2. Every panel on the rail in a short dock: the rail overflows and scrolls. The slots were measured
   // once at the drag's start, so a scroll mid-drag put the line and the drop in the wrong gap. Now a scroll measures them again,

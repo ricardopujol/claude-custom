@@ -187,6 +187,12 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   // PR #241 Dexter 4 / Miguel L6: only a module ON the dock rail gets the rail's slots, so a docked tab over the rail draws no line
   // (verify/probe-rail-drag.js case 2 reads the lines mid-drag).
   assert.match(JS, /const railed = placementLayout\(\)\.rail;\n\s+if \(!Array\.isArray\(railed\) \|\| !railed\.includes\(id\)\) return null;/);
+  // PR #241 Miguel L5: the move path. A pointermove keeps the point and feeds pressStep; its 'start' begins the drag and follows
+  // the point, its 'move' follows it; nothing else draws a drag.
+  const moveAt = JS.search(/window\.addEventListener\('pointermove', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId/);
+  const moveHandler = JS.slice(moveAt, JS.indexOf('\n  });', moveAt));
+  assert.match(moveHandler, /press\.cx = e\.clientX;\n\s+press\.cy = e\.clientY;\n\s+feed\(\{ type: 'move'/);
+  assert.match(JS, /if \(out\.effect === 'start'\) \{ begin\(\); follow\(press\.cx, press\.cy\); \} else if \(out\.effect === 'move'\) follow\(press\.cx, press\.cy\);/);
   // PR #241 Miguel L1: one clock for the press and its hold, and an early timer re-armed for the rest.
   assert.doesNotMatch(JS, /feed\(\{ type: '(?:down|move)'[^}]*e\.timeStamp/, 'no event of a press on the event\'s own clock');
   assert.match(JS, /feed\(\{ type: 'down', x: e\.clientX, y: e\.clientY, t: performance\.now\(\) \}\);/);
