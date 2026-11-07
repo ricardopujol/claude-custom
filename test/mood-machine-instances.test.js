@@ -224,6 +224,32 @@ test('A3: the resumed run finishing again inside the old flash is still one card
   assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'working']]);
 });
 
+// ---- PR #239 Dexter 8: the guards no test would have missed --------------------------------------------------------------------
+
+test('A8: a name that falls asleep shows no flashing cards (the SLEEPING clear)', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  const c = r.spawnRun('code-reviewer', 'toolu_C');
+  r.send('SubagentStop', a.by);
+  r.send('SubagentStop', b.by);
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...c.by });   // the last one cut off
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'sleeping');
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null, 'no cards under a sleeping name');
+});
+
+test('A8: a failure ends the run\'s retry series (fail() resets it): same, same, error, same is working again', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  const same = () => r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tq' + Math.random(), tool_input: { command: 'same' }, tool_response: { exit_code: 0 }, ...a.by });
+  same();
+  same();
+  r.err(a);
+  same();
+  assert.strictEqual(r.m.instancesOf('code-reviewer')[0].state, 'working', 'one call after the error, not the third of a series');
+});
+
 // ---- PR #239 Dexter 7: a finish flash runs on a monotonic clock, so a wall-clock step back can't stretch it ------------------
 
 test('A7: a wall-clock step back of 10 minutes doesn\'t keep a finished instance\'s card for 10 minutes', () => {

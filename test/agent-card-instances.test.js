@@ -22,7 +22,8 @@ test('instanceRows: a row without instances is its one card, unchanged', () => {
 });
 
 test('instanceRows: two instances are two cards of the same agent, each with its own state, detail, cause and portrait', () => {
-  const cards = D.instanceRows(row({ state: 'stressed', instances: [
+  // The name's own cause and wait (PR #239 Miguel S1) must never leak onto an instance card that has none.
+  const cards = D.instanceRows(row({ state: 'stressed', cause: 'the name\'s own', wait: { on: 'npm test', since: 1 }, instances: [
     { id: 'toolu_A', state: 'working', detail: 'reading', portrait: { tier: 'file', src: 'a' } },
     { id: 'toolu_B', state: 'stressed', detail: 'stressed', cause: 'A Bash call failed' },
   ] }));
@@ -32,6 +33,8 @@ test('instanceRows: two instances are two cards of the same agent, each with its
   assert.deepStrictEqual(cards[0].portrait, { tier: 'file', src: 'a' });
   assert.deepStrictEqual(cards[1].portrait, { tier: 'text' }, 'no portrait of its own: the agent\'s');
   assert.ok(cards.every(c => !('instances' in c) || c.instances === undefined), 'a card never carries the list again');
+  assert.ok(!('cause' in cards[0]) && !('wait' in cards[0]), 'the working card carries neither the name\'s cause nor its wait');
+  assert.strictEqual(cards[1].cause, 'A Bash call failed', 'the stressed card carries its own cause, not the name\'s');
 });
 
 test('instanceRows: a malformed instance is skipped, and fewer than two good ones is the one card', () => {

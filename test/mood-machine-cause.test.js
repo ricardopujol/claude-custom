@@ -124,11 +124,15 @@ test('the cause clears when the state leaves stressed, and a fresh run starts cl
 test('a cause that changes while the card stays stressed is announced as `cards`, never as a repeated `change`', () => {
   const r = rig();
   r.spawnAgent('ta');
+  const changes = [];
+  r.m.on('change', (c) => changes.push(c));
   r.err('ta');
   const before = r.cards.length;
+  const changedBefore = changes.length;
   r.err('ta');
   assert.ok(r.cards.length > before, 'the second failure changed the words');
   assert.strictEqual(r.cards[r.cards.length - 1].agent, 'ta');
+  assert.strictEqual(changes.length, changedBefore, 'and no repeated `change`: the state and detail stayed (PR #239 Miguel S2)');
 });
 
 test('stressCause: no record, or nothing in it, is no cause', () => {
@@ -145,11 +149,18 @@ test('stressCause: no record, or nothing in it, is no cause', () => {
 // ---- the property -------------------------------------------------------------------------------------------------
 
 const TYPES = ['ta', 'tb'];
+// PR #239 Dexter 8: the generator reaches the seams the review found. A `quiet` spawn says nothing until its first call, so first
+// speech can come in any order against spawn order (crosswise binding, Dexter 2); `result` is a spawn's completed result (adopt(),
+// with or without a SubagentStop after it); `resume` brings an ended run back by SendMessage, inside its flash or after (Dexter 3);
+// `again` re-delivers the last event as it was.
 const opArb = fc.oneof(
-  { weight: 3, arbitrary: fc.record({ op: fc.constant('spawn'), type: fc.nat(), fail: fc.boolean() }) },
+  { weight: 3, arbitrary: fc.record({ op: fc.constant('spawn'), type: fc.nat(), fail: fc.boolean(), quiet: fc.boolean() }) },
   { weight: 5, arbitrary: fc.record({ op: fc.constant('call'), who: fc.nat(), kind: fc.constantFrom('ok', 'same', 'same', 'err', 'fail', 'send'), tool: fc.constantFrom('Bash', 'Artifact') }) },
   { weight: 3, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 12_000 }) }) },
   { weight: 2, arbitrary: fc.record({ op: fc.constant('finish'), who: fc.nat() }) },
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('result'), who: fc.nat(), stopToo: fc.boolean() }) },
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('resume'), who: fc.nat() }) },
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('again') }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('interrupt'), who: fc.nat() }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('stop') }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('sessionEnd') }) },
@@ -158,46 +169,75 @@ const opArb = fc.oneof(
 function run(ops, onStep) {
   let t = 1_000_000;
   const m = createMoodMachine({ now: () => t, stallMs: 10 ** 12, maxInvocationMs: 10 ** 12, quietStallMs: 10 ** 12 });
+  // `live`: the runs going; `gone`: runs that spoke and ended (the machine knows their ids, so a resume reaches them).
+  // `own`: the oracle's model of a run's OWN state (PR #239 Dexter 1), from its own calls only.
   const live = [];
+  const gone = [];
   let n = 0;
-  const send = (event, payload) => m.handle({ event, payload });
+  let last = null;                                  // the last event, for `again`: { event, payload, apply }
+  const send = (event, payload, apply = null) => { last = { event, payload, apply }; m.handle({ event, payload }); if (apply) apply(); };
   const by = (a) => ({ agent_id: a.id, agent_type: a.type });
+  const fresh = (a) => Object.assign(a, { own: 'working', sig: null, reps: 0 });
+  const leave = (a) => { live.splice(live.indexOf(a), 1); if (a.spoke) gone.push(a); };
+  // Ops that name a run by its id pick one that has SPOKEN: a SubagentStop of a run that never spoke is first-come bound to some
+  // unbound record of its type, the crosswise limit the machine accepts (host/mood-machine.js bind()).
+  const spoken = () => live.filter(a => a.spoke);
   for (const o of ops) {
-    const pick = (i) => (live.length ? live[i % live.length] : null);
+    const pick = (list, i) => (list.length ? list[i % list.length] : null);
     switch (o.op) {
       case 'spawn': {
         const type = TYPES[o.type % TYPES.length];
         const key = 'toolu_' + (++n);
         send('PreToolUse', { tool_name: 'Agent', tool_use_id: key, tool_input: { subagent_type: type } });
         if (o.fail) { send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: key, error: 'boom' }); break; }
-        // `own`: the oracle's model of the run's OWN state (PR #239 Dexter 1), from its own calls only.
-        const a = { id: 'a' + type + '-' + String(++n).padStart(16, '0'), type, key, own: 'working', sig: null, reps: 0 };
+        const a = fresh({ id: 'a' + type + '-' + String(++n).padStart(16, '0'), type, key, spoke: !o.quiet, background: false });
         live.push(a);
-        send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: {}, ...by(a) });
+        if (!o.quiet) send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: {}, ...by(a) });
         break;
       }
       case 'call': {
-        const a = pick(o.who);
+        const a = pick(live, o.who);
         if (!a) break;
+        a.spoke = true;
         const common = { tool_name: o.tool, tool_use_id: 'tu' + (++n), ...by(a) };
-        if (o.kind === 'fail') send('PostToolUseFailure', { ...common, tool_input: {}, error: 'x' });
-        else if (o.kind === 'send') send('PostToolUse', { ...common, tool_name: 'SendMessage', tool_input: { to: 'hub' }, tool_response: { success: false } });
-        else send('PostToolUse', { ...common, tool_input: { command: o.kind === 'same' ? 'same' : 'c' + (++n) },
-          tool_response: { exit_code: o.kind === 'err' ? 1 : 0 } });
-        if (o.kind === 'fail' || o.kind === 'send' || o.kind === 'err') { a.own = 'stressed'; a.sig = null; a.reps = 0; }
-        else {
+        const apply = () => {
+          if (o.kind === 'fail' || o.kind === 'send' || o.kind === 'err') { a.own = 'stressed'; a.sig = null; a.reps = 0; return; }
           const sig = o.kind === 'same' ? o.tool + ':same' : null;
           a.reps = sig !== null && sig === a.sig ? a.reps + 1 : 1;
           a.sig = sig;
           a.own = a.reps >= 3 ? 'stressed' : 'working';
-        }
+        };
+        if (o.kind === 'fail') send('PostToolUseFailure', { ...common, tool_input: {}, error: 'x' }, apply);
+        else if (o.kind === 'send') send('PostToolUse', { ...common, tool_name: 'SendMessage', tool_input: { to: 'hub' }, tool_response: { success: false } }, apply);
+        else send('PostToolUse', { ...common, tool_input: { command: o.kind === 'same' ? 'same' : 'c' + (++n) },
+          tool_response: { exit_code: o.kind === 'err' ? 1 : 0 } }, apply);
         break;
       }
-      case 'advance': t += o.ms; m.tick(); break;
-      case 'finish': { const a = pick(o.who); if (!a) break; send('SubagentStop', by(a)); live.splice(live.indexOf(a), 1); break; }
-      case 'interrupt': { const a = pick(o.who); if (!a) break; send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), is_interrupt: true, ...by(a) }); live.splice(live.indexOf(a), 1); break; }
-      case 'stop': send('Stop', {}); live.length = 0; break;
-      case 'sessionEnd': send('SessionEnd', {}); live.length = 0; break;
+      case 'advance': t += o.ms; m.tick(); last = null; break;
+      case 'finish': { const a = pick(spoken(), o.who); if (!a) break; send('SubagentStop', by(a)); leave(a); break; }
+      case 'result': {
+        // A spawned run's completed result, naming its id; its own SubagentStop may follow (a no-op then) or never come.
+        const a = pick(spoken().filter(x => !x.background), o.who);
+        if (!a) break;
+        send('PostToolUse', { tool_name: 'Agent', tool_use_id: a.key, tool_input: { subagent_type: a.type }, tool_response: { status: 'completed', agentId: a.id } });
+        if (o.stopToo) send('SubagentStop', by(a));
+        leave(a);
+        break;
+      }
+      case 'resume': {
+        const a = pick(gone, o.who);
+        if (!a) break;
+        send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm' + (++n), tool_input: { to: a.id, message: 'again' },
+          tool_response: { success: true, resumedAgentId: a.id } });
+        gone.splice(gone.indexOf(a), 1);
+        live.push(fresh(Object.assign(a, { background: true })));     // a resumed run is background work, a fresh record
+        break;
+      }
+      case 'again': if (last) send(last.event, last.payload, last.apply); break;
+      case 'interrupt': { const a = pick(spoken(), o.who); if (!a) break; send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), is_interrupt: true, ...by(a) }); leave(a); break; }
+      // The turn ends its foreground runs; a resumed (background) run outlives it.
+      case 'stop': send('Stop', {}); for (const a of live.filter(x => !x.background)) leave(a); break;
+      case 'sessionEnd': send('SessionEnd', {}); for (const a of [...live]) leave(a); break;
       default: throw new Error(o.op);
     }
     onStep(m, live);
@@ -213,24 +253,33 @@ test('property: whatever the events, a stressed card always carries a non-empty 
         const c = m.causeOf(r.agent);
         if (r.state === 'stressed') assert.ok(sentence(c), `${r.agent} is stressed with no cause`);
         else assert.strictEqual(c, null, `${r.agent} is ${r.state} and still says ${JSON.stringify(c)}`);
-        // #142 b: the same holds for every instance card, and the instance cards are the live runs (plus finishes still flashing)
+        // #142 b: the same holds for every instance card, and the instance cards are the live runs (plus finishes still flashing).
+        // Runs are matched by their OWN agent_id, never by spawn key: a crosswise binding puts a run on its sibling's record (and
+        // card id) until adopt() corrects it, and the card must show the run's own record all along (Dexter 1, 2).
         const rows = m.instancesOf(r.agent);
-        const mine = live.filter(a => a.type === r.agent).map(a => a.key);
+        const mine = live.filter(a => a.type === r.agent);
         if (rows === null) {
           assert.ok(mine.length <= 1, `${r.agent}: ${mine.length} live runs and no instance cards`);
           // PR #239 Dexter 1: one card left with one live run is THAT run's card, never a departed sibling's record.
-          const one = live.filter(a => a.type === r.agent);
-          if (one.length === 1) assert.strictEqual(r.state, one[0].own, `${r.agent}: the one card shows ${r.state}, its run is ${one[0].own}`);
+          if (mine.length === 1) assert.strictEqual(r.state, mine[0].own, `${r.agent}: the one card shows ${r.state}, its run is ${mine[0].own}`);
           continue;
         }
         assert.ok(rows.length >= 2, `${r.agent}: instance cards only for two or more`);
         assert.strictEqual(new Set(rows.map(x => x.id)).size, rows.length, `${r.agent}: an id twice`);
-        for (const k of mine) assert.strictEqual(rows.filter(x => x.id === k).length, 1, `${r.agent}: live run ${k} is one card`);
+        const liveRows = rows.filter(x => x.ended !== true);
+        assert.strictEqual(liveRows.length, mine.length, `${r.agent}: ${liveRows.length} live cards for ${mine.length} live runs`);
+        for (const a of mine.filter(x => x.spoke)) {
+          const its = liveRows.filter(x => x.agentId === a.id);
+          assert.strictEqual(its.length, 1, `${r.agent}: live run ${a.id} is one card`);
+          assert.strictEqual(its[0].state, a.own, `${r.agent}/${a.id}: its card shows ${its[0].state}, the run is ${a.own}`);
+        }
         for (const x of rows) {
           if (x.state === 'stressed') assert.ok(sentence(x.cause), `${r.agent}/${x.id} is stressed with no cause`);
           else assert.strictEqual(x.cause, undefined, `${r.agent}/${x.id} is ${x.state} and still says ${JSON.stringify(x.cause)}`);
-          if (!mine.includes(x.id)) assert.ok(x.state === 'happy' || x.state === 'stressed', `${r.agent}/${x.id}: an ended run only shows its finish`);
+          if (x.ended === true) assert.ok(x.state === 'happy' || x.state === 'stressed', `${r.agent}/${x.id}: an ended run only shows its finish`);
         }
+        // An asleep name shows no cards at all (Dexter 8: the SLEEPING clear of the flashes).
+        assert.notStrictEqual(r.state, 'sleeping', `${r.agent} is asleep with ${rows.length} cards`);
       }
     });
   }), { numRuns: 500 });
