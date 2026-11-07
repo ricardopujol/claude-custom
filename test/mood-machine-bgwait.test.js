@@ -337,7 +337,27 @@ test('PR #224 Dexter 7: a quiet run whose Bash result was lost shows the wait (r
   assert.strictEqual(r.detail('miguel'), BGWAIT_LATE);
 });
 
-test('PROPERTY: a run with a live background task is never asleep inside the quiet limit; red exactly from 30 minutes of silence; the wait ends with its work', () => {
+// BACKLOG #181: the property's counterexample (seed -728087653), pinned as TODAY's behaviour. A background child gets no refresh from
+// its parent (refresh stops at a background run's edge), so its own silence starts at its launch; past STALL_MS it lost its SubagentStop
+// and is reaped like any silent run. The reap ends the parent's hold, and a parent with no hold, nothing in flight and 30 minutes of
+// silence is stuck. The machine was right; the property's oracle had kept the child alive for ever.
+test('BACKLOG #181: a background child silent for STALL_MS + 1 ms is reaped; the parent that held for it is stuck, not bgwaitlate', () => {
+  const r = rig();
+  const a = started(r);
+  BG_CHILD(r, a, 'akid-10000000000000');
+  for (const ms of [243788, 306830, 6182, 339193, 361502, 212351]) r.advance(ms);
+  assert.strictEqual(r.now() - 1_000_000, STALL_MS - 330154, 'the replayed advances, before the last');
+  assert.strictEqual(r.detail('miguel'), BGWAIT, 'inside the limit it waits on the child');
+  r.advance(330154);                               // exactly STALL_MS of the child's silence: not past it yet
+  assert.strictEqual(r.m.stack().includes('dexter'), true);
+  assert.strictEqual(r.detail('miguel'), BGWAIT_LATE, 'red from exactly 30 minutes');
+  r.advance(1);                                    // STALL_MS + 1 ms (the property's sequence sums to 1,800,001 ms)
+  assert.strictEqual(r.m.stack().includes('dexter'), false, 'the silent child is reaped');
+  assert.strictEqual(r.detail('miguel'), 'stuck', 'its hold ended with it: silent, nothing in flight, no wait');
+  assert.strictEqual(r.m.waitOf('miguel'), null);
+});
+
+test('PROPERTY: a run with a live background task is never asleep inside the quiet limit; red exactly from 30 minutes of silence; the wait ends with its work; a background child silent past STALL_MS is gone (reaped), so it no longer counts as live', () => {
   const opArb = fc.oneof(
     { weight: 3, arbitrary: fc.record({ op: fc.constant('advance'), ms: fc.integer({ min: 0, max: 8 * 60_000 }) }) },
     { weight: 1, arbitrary: fc.constant({ op: 'launch' }) },
@@ -351,14 +371,19 @@ test('PROPERTY: a run with a live background task is never asleep inside the qui
     const a = started(r);
     let shell = false;          // a backgrounded Bash: no end hook, it lasts
     let kid = null;             // a live background child
+    let kidAt = 0;              // its launch: it speaks no events here, and its parent's don't refresh it, so its silence starts there
     let lastEvent = r.now();
     let gone = false;           // let go: later events name an id nobody holds
     let n = 0;
     for (const o of ops) {
       if (gone) break;
-      if (o.op === 'advance') r.advance(o.ms);
+      if (o.op === 'advance') {
+        r.advance(o.ms);
+        // Silent past STALL_MS, the child lost its SubagentStop: the stall clock reaps it, and its hold ends with it (BACKLOG #181).
+        if (kid !== null && r.now() - kidAt > STALL_MS) kid = null;
+      }
       else if (o.op === 'launch') { launch(r, a); shell = true; lastEvent = r.now(); }
-      else if (o.op === 'launchChild' && kid === null) { kid = BG_CHILD(r, a, 'akid-' + (++n) + '0000000000000'); lastEvent = r.now(); }
+      else if (o.op === 'launchChild' && kid === null) { kid = BG_CHILD(r, a, 'akid-' + (++n) + '0000000000000'); kidAt = r.now(); lastEvent = r.now(); }
       else if (o.op === 'stopChild' && kid !== null) { r.ev('SubagentStop', { agent_id: kid.id, agent_type: kid.type }); kid = null; }
       else if (o.op === 'read') { r.pre(a, 'Read', { file_path: 'C:/x' }); lastEvent = r.now(); }
       else if (o.op === 'bashOk') { r.post(a, 'Bash', r.pre(a, 'Bash', { command: 'true' })); lastEvent = r.now(); }
