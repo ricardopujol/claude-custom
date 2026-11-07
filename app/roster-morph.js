@@ -11,6 +11,18 @@
  * A control that turned into ANOTHER one (another tag, class, or data-* attribute: a Pause turned Resume, a hide turned unhide,
  * another face video) is replaced, never morphed into the other: a held press must not fire an action that wasn't pressed. Its
  * old node goes through `hooks.removed` (the renderer unloads its videos) and the new one through `hooks.added` (watched, paused).
+ * The rule reads only the control's OWN attributes, so a control whose action depends on state must carry that state itself: the
+ * face pencil carries `data-portrait-state` rather than reading the card's live `data-state` (PR #244 Dexter 1).
+ *
+ * What it doesn't do, on purpose:
+ * - A child the fresh markup doesn't have is removed, whoever put it there. The known case is the speech bubble
+ *   (app/bubble-display.js attach inserts `.agent-bubble` as a card's first child): a patched card loses it and paintAgents'
+ *   paintBubbles puts it back, rebuilt settled, as the old per-card swap did (PR #244 Miguel Y2).
+ * - The rule applies to every element, not only to controls, so a press on plain card text whose element changes class or data-*
+ *   mid-press (a wait note's data-late flipping, `.career` turning `.career career-unknown`) is still dropped, as before #184
+ *   (PR #244 Dexter 3). Narrowing it would mean deciding which elements a click reads; left as a known residual.
+ * - The caller's contract: `old` and `fresh` are element nodes of one card (rosterPatch's key and position). patchCards falls
+ *   back to a plain swap if a patch throws midway, so a half-patched card is never left for identical markup to skip (Miguel G3).
  *
  * Loaded two ways: require() from tests, and a plain <script> in the renderer, which shares one global scope (hence the IIFE).
  */
@@ -86,7 +98,45 @@ function morphElement(old, fresh, hooks) {
   return old;
 }
 
-const api = { morphElement, identity };
+const videosOf = (n) => (!n || n.nodeType !== 1 ? [] : n.tagName === 'VIDEO' ? [n] : [...n.querySelectorAll('video')]);
+
+/**
+ * Patch each changed card (`changed`: indexes into oldNodes / freshNodes) and keep the face videos right while doing it: a video in
+ * a node that leaves is unobserved and unloaded (removing it alone leaves the decoder running); a video that arrives is observed
+ * and handed to applyFaceVideo at once (a hidden window never calls the observer back, and `autoplay` would start it). A patch
+ * that throws is undone by swapping in a pristine copy of the fresh card. Returns the card node now in the document, per index.
+ * `media` = { observer (an IntersectionObserver or null), unloadVideo(v), applyFaceVideo(v), onError(err)? }.
+ */
+function patchCards(oldNodes, freshNodes, changed, media) {
+  const added = [];
+  const hooks = {
+    removed: (n) => { for (const v of videosOf(n)) { if (media.observer) media.observer.unobserve(v); media.unloadVideo(v); } },
+    added: (n) => { added.push(...videosOf(n)); },
+  };
+  const live = changed.map((i) => {
+    const old = oldNodes[i];
+    const spare = freshNodes[i].cloneNode(true);
+    try {
+      return morphElement(old, freshNodes[i], hooks);
+    } catch (err) {
+      if (media.onError) media.onError(err);
+      hooks.removed(old);
+      old.replaceWith(spare);
+      hooks.added(spare);
+      return spare;
+    }
+  });
+  // Only what is really in the document now: a video that arrived in a patch that then threw left with the half-patched card.
+  for (const v of added) {
+    if (!v.isConnected) continue;
+    if (media.observer) media.observer.observe(v);
+    media.applyFaceVideo(v);
+  }
+  return live;
+}
+
+// `identity` is exported for the tests (and documents the rule); the renderer calls patchCards.
+const api = { morphElement, patchCards, identity };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

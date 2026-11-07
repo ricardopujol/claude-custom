@@ -23,6 +23,8 @@
  *    between mousedown and mouseup. Since #184 a changed card is patched in place (app/roster-morph.js), so its node stays and the
  *    click lands; the repaint counter now watches the cards' insides too (a patch swaps no child of #agents), and __removed still
  *    counts swapped card nodes, which a busy card no longer causes.
+ *    Case 5 (PR #244 Dexter 2): a press on Pause whose button becomes the "pausing" badge mid-press must fire nothing: no Pause, no
+ *    card click, no activity log (the replaced control's press drops, even though its parent div is kept).
  * B. BACKLOG #162: a stressed card carries its cause as its hover (the card's title, and the words under its name), and a
  *    picture of it hovered: agent-card-stressed-hover.png. The OS draws a native tooltip outside the page, where capturePage
  *    can't see it, so the probe draws the card's own title text at the hover point, captioned ON the picture as the probe's
@@ -134,20 +136,20 @@ app.whenReady().then(async () => {
     // changed card in place); __removed: card nodes they swapped (PR #239 A5: a sibling's change swapped only its own card; #184:
     // a changed card is patched, so none is swapped unless the cards themselves change).
     await js('window.__clicks = []; window.__repaints = 0; window.__removed = 0;' +
-      ' document.addEventListener("click", (e) => { const t = e.target; window.__clicks.push({ onButton: !!(t && t.closest && t.closest("[data-medal-open]")), tag: t && t.tagName, id: t && t.id || null, cls: t && String(t.className || "") }); }, true);' +
+      ' document.addEventListener("click", (e) => { const t = e.target; window.__clicks.push({ onButton: !!(t && t.closest && t.closest("[data-medal-open]")), inRoster: !!(t && t.closest && t.closest("#agents")), onPause: !!(t && t.closest && t.closest(".agent-pause-btn")), tag: t && t.tagName, id: t && t.id || null, cls: t && String(t.className || "") }); }, true);' +
       ' const agentsRoot = document.getElementById("agents");' +
       ' new MutationObserver((ms) => { window.__repaints++; for (const m of ms) if (m.target === agentsRoot) for (const n of m.removedNodes) if (n.classList && n.classList.contains("agent")) window.__removed++; }).observe(agentsRoot, { childList: true, subtree: true, attributes: true, characterData: true }); true');
     const cardNode = 'document.querySelector("#agents .agent[data-agent=\\'probe-click\\']")';
     const BTN = '#agents .agent[data-agent=\\'probe-click\\'] [data-medal-open]';
     // The point, and what is really under it (a press that lands on something else measures nothing).
-    const point = async () => js('(() => { const b = document.querySelector("' + BTN + '"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect();' +
+    const point = async (sel = BTN) => js('(() => { const b = document.querySelector("' + sel + '"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect();' +
       ' const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2); const at = document.elementFromPoint(x, y);' +
-      ' return { x, y, w: r.width, h: r.height, dpr: window.devicePixelRatio, inner: [window.innerWidth, window.innerHeight], onButton: !!(at && at.closest && at.closest("[data-medal-open]")), at: at ? at.tagName + "." + String(at.className || "") : null }; })()');
+      ' return { x, y, w: r.width, h: r.height, dpr: window.devicePixelRatio, inner: [window.innerWidth, window.innerHeight], onButton: !!(at && at.closest && at.closest("[data-medal-open]")), hit: !!(at && at.closest && at.closest("' + sel + '")), at: at ? at.tagName + "." + String(at.className || "") : null }; })()');
     const closeMenu = () => js('(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); if (typeof medalMenuEl !== "undefined" && medalMenuEl) medalMenuEl.hidden = true; return true; })()');
-    const press = async (between) => {
+    const press = async (between, sel) => {
       await closeMenu();
       await sleep(300);
-      const p = await point();
+      const p = await point(sel);
       console.log('[point] ' + JSON.stringify(p));
       await js('window.__clicks = []; window.__repaints = 0; true');
       win.webContents.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y });
@@ -157,7 +159,7 @@ app.whenReady().then(async () => {
       await sleep(80);
       win.webContents.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 });
       await sleep(300);
-      return JSON.parse(await js('JSON.stringify({ clicks: window.__clicks, repaints: window.__repaints })'));
+      return { ...JSON.parse(await js('JSON.stringify({ clicks: window.__clicks, repaints: window.__repaints })')), point: p };
     };
 
     const plain = await press(async () => {});
@@ -201,6 +203,25 @@ app.whenReady().then(async () => {
     check('4. #184: the clicked card really changed during every press', aimed.changed === 20, aimed);
     check('4. #184: the clicked card kept its node through every press', aimed.kept === 20 && aimed.swapped === 0, aimed);
     check('4. #184: 0 of 20 clicks dropped', aimed.dropped === 0 && aimed.landed === 20, aimed);
+
+    // 5. PR #244 Dexter 2: a control that turns into ANOTHER one mid-press is replaced, and the press must fire nothing. Mousedown on
+    // probe-click's Pause, then its pause machine moves to "pausing" (the button becomes a badge in the same, kept div.agent-pause),
+    // then mouseup at the same point. If the engine sent the click to the nearest live ancestor, it would hit div.agent-pause and the
+    // card handler would open the activity log. No plain press on Pause is made: a landed one would type a real pause line.
+    const PAUSE = '#agents .agent[data-agent=\\'probe-click\\'] .agent-pause-btn';
+    check('5. probe-click has a Pause button to press', await until('!!document.querySelector("' + PAUSE + '")', 5000));
+    const flipped = await press(async () => {
+      await js('agentPauses.begin("probe-click", "pause", Date.now()); renderRoster(); true');
+      await until('!document.querySelector("' + PAUSE + '")', 3000);
+    }, PAUSE);
+    const logOpen = await js('!!(agentLog && agentLog.open)');
+    console.log('[#244 D2] a press on Pause that became "pausing" mid-press: ' + JSON.stringify({ point: flipped.point, clicks: flipped.clicks, logOpen }));
+    check('5. D2: the mousedown really was on Pause', flipped.point.hit === true, flipped.point);
+    check('5. D2: nothing reached the roster: no Pause, no card click', flipped.clicks.every(c => !c.inRoster && !c.onPause), flipped.clicks);
+    check('5. D2: ...and no activity log opened', logOpen === false, logOpen);
+    // Back to where it was: the typing never happened, so the machine is told it was refused, and the Pause button comes back.
+    await js('agentPauses.refused("probe-click"); renderRoster(); true');
+    check('5. the Pause button is back after the case', await until('!!document.querySelector("' + PAUSE + '")', 5000));
 
     // The repaint rate. Quiet: an agent working, no events, processes frames every second.
     await js('window.__repaints = 0; window.__removed = 0; true');
@@ -265,6 +286,8 @@ app.whenReady().then(async () => {
     // its cause title goes; working and probe-churn's working sort the same, by name, so the cards keep their places). Patched in
     // place, the node the pointer is over stays and its title changes on it. The OS tooltip itself is drawn outside the page, so
     // what's measured is the node and its title, not the tooltip's pixels.
+    // IF THIS FLAKES, look here first (PR #244 Miguel G5): it relies on one good Bash call clearing "stressed" within the 5 s wait
+    // (a longer mood hold makes hoverAfter null, a false negative) and on :hover being recomputed after the patch.
     await js('window.__clickCard = ' + cardNode + '; true');
     churnOn('probe-click');
     churnOn('probe-click');
