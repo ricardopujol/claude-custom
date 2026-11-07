@@ -140,7 +140,8 @@ test('the roster: the explainer is placed by its own rules (Active while a panel
   assert.match(JS, /const inactive = inactiveAll\.filter\(a => a !== ASK_AGENT\);/);
   assert.match(JS, /window\.agentStateDisplay\.sortRows\(\[\.\.\.roster\.values\(\), \.\.\.\(exRow \? \[exRow\] : \[\]\)\]\)/);
   assert.match(JS, /if \(roster\.size === 0 && !exRow\) \{/, 'an empty roster with the explainer on it is not "no agents yet"');
-  assert.match(JS, /if \(r\.explainer\) return explainerCardHtml\(false\);/);
+  // The Active tab draws the explainer's own card, every other row through activeCardHtml (PR #239 Miguel S8).
+  assert.match(JS, /\(r\.explainer \? explainerCardHtml\(false\) : activeCardHtml\(r, counts\)\)/);
 });
 
 test('the explainer\'s card is keyed by the fixed id for medals, and wears its name only as a label (a rename keeps its medals)', () => {
