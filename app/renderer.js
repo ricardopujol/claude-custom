@@ -3014,7 +3014,7 @@ function paintZones(zones) {
   const overlayEl = document.getElementById('dock-overlay');
   overlayEl.textContent = '';
   for (const z of zones) {
-    const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
+    const el = node('div', { className: `dz${z.hot ? ' hot' : ''}${z.line ? ' line' : ''}` });     // `line`: a place in the rail (#109)
     Object.assign(el.style, { left: `${z.rect.x}px`, top: `${z.rect.y}px`, width: `${z.rect.width}px`, height: `${z.rect.height}px` });
     overlayEl.appendChild(el);
   }
@@ -3051,13 +3051,25 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
   }
   cancelTabDrag = () => { if (press || drag) end(); };
 
+  // The dock's rail as the drag measures it once, at its start (#109): its rectangle and its buttons in the order drawn, relative
+  // to the dock as the drag's point is. Only a module ON that rail gets one: a docked tab dropped on the rail changes nothing.
+  function railSlots(dockRect, id) {
+    const railed = placementLayout().rail;
+    if (!Array.isArray(railed) || !railed.includes(id)) return null;
+    const el = dock.querySelector(':scope > .drail[data-rail="dock"]');
+    if (!el) return null;
+    const rel = r => ({ x: r.left - dockRect.left, y: r.top - dockRect.top, width: r.width, height: r.height });
+    const slots = [...el.querySelectorAll('button[data-module]')].map(b => ({ id: b.dataset.module, rect: rel(b.getBoundingClientRect()) }));
+    return { rect: rel(el.getBoundingClientRect()), dir: el.dataset.dir === 'h' ? 'h' : 'v', slots };
+  }
   // The drag begins: the dock's rectangle and size are read once, here, as a move event must not force a layout every time.
   function begin() {
     // A rail's open panel goes off the screen, as a keyboard Move does: it would cover the zones the drag lights.
     if (press.rail && peek) { railEvent({ type: 'drop' }); renderLayout({ refit: false }); }
     // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
     const own = DTm.floatOf(placementLayout(), press.id);
-    drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null };
+    drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null, rail: null };
+    drag.rail = railSlots(drag.rect, press.id);
     document.body.appendChild(drag.ghost);
     document.body.classList.add('dock-dragging');
     swallowClick = press.rail;                           // a tab's name keeps what it did before #109
@@ -3066,7 +3078,8 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     drag.ghost.style.left = `${x + 12}px`;
     drag.ghost.style.top = `${y + 10}px`;
     drag.at = { x: x - drag.rect.left, y: y - drag.rect.top };
-    const hit = DD.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude });
+    // Over the dock's rail a rail tab finds its place in it (#109); the rim and a float on top still win (dockDrag.railDrop).
+    const hit = DD.railDrop(DD.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude }), drag.rail, drag.at, drag.id);
     drag.target = hit.target;
     // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
     const sig = JSON.stringify(hit.zones);
@@ -3115,6 +3128,8 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     end();
     if (!d) return;                                     // never dragged: the click that follows selects the tab, or opens the rail's panel
     if (!d.target) return;
+    // A place on the dock's rail: only the rail's order changes, nothing docks (#109).
+    if (d.target.rail === 'dock') { commitPlacement(DTm.moveOnRail(settledLayout(), d.id, d.target.before)); return; }
     // The terminal's middle floats the panel where it was dropped: the model says where (D2).
     const target = landingFor(d.target, d.at, d.viewport);
     commitPlacement(DTm.dock(settledLayout(), d.id, target), { select: d.id });
@@ -3701,6 +3716,56 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         btn.click();
         return JSON.stringify({ ok: true, after: overlayState() });
       }
+      // BACKLOG #109 (verify/probe-rail-drag.js): a press on a rail button's ICON. `how`: 'click' (down, up, the click a browser
+      // sends), 'drag' (down, 8 px, then to `to` ({ x, y } relative to #dock) or to the top of the rail button `before`, or under
+      // the last one when `before` is null), 'hold' (down, still for 320 ms). `release: false` leaves a drag in flight for
+      // `railRelease`. A release is followed by the click a browser would send to the pressed button, which a drag must swallow.
+      case 'railPress': return (async () => {
+        const btn = document.querySelector(`.drail button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!btn) return JSON.stringify({ ok: false, error: 'no such rail button' });
+        const icon = btn.querySelector('.rail-icon-box') || btn;
+        const from = icon.getBoundingClientRect();
+        const x0 = from.left + from.width / 2;
+        const y0 = from.top + from.height / 2;
+        icon.dispatchEvent(ptr('pointerdown', x0, y0));
+        if (a.how === 'hold') await new Promise(r => setTimeout(r, 320));
+        else if (a.how === 'drag') {
+          window.dispatchEvent(ptr('pointermove', x0 + 8, y0));
+          let x1;
+          let y1;
+          if (a.to) { const d = document.getElementById('dock').getBoundingClientRect(); x1 = d.left + a.to.x; y1 = d.top + a.to.y; } else {
+            const rail = btn.parentNode;
+            const all = [...rail.querySelectorAll('button[data-module]')];
+            const at = a.before === null ? null : all.find(b => b.dataset.module === a.before);
+            const r = (at || all[all.length - 1]).getBoundingClientRect();
+            x1 = r.left + r.width / 2;
+            y1 = at ? r.top + 3 : Math.min(r.bottom + 4, rail.getBoundingClientRect().bottom - 2);
+          }
+          window.dispatchEvent(ptr('pointermove', x1, y1));
+          window.__railPressAt = { x: x1, y: y1, btn };
+        }
+        const during = { ...overlayState(), lines: document.querySelectorAll('#dock-overlay .dz.line').length, ghostText: (document.querySelector('#dock-ghost') || {}).textContent || null };
+        if (a.release === false) {
+          window.__railPressAt = window.__railPressAt || { x: x0, y: y0, btn };
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));      // painted, so a screenshot shows it
+          return JSON.stringify({ ok: true, during });
+        }
+        const at = window.__railPressAt || { x: x0, y: y0 };
+        window.__railPressAt = null;
+        window.dispatchEvent(ptr('pointerup', at.x, at.y));
+        if (btn.isConnected) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, clientX: at.x, clientY: at.y }));
+        await new Promise(r => requestAnimationFrame(() => r()));
+        return JSON.stringify({ ok: true, during, after: overlayState(), peek: peek ? peek.module : null });
+      })();
+      case 'railRelease': return (async () => {
+        const at = window.__railPressAt;
+        if (!at) return JSON.stringify({ ok: false, error: 'no rail press in flight' });
+        window.__railPressAt = null;
+        window.dispatchEvent(ptr('pointerup', at.x, at.y));
+        if (at.btn.isConnected) at.btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, clientX: at.x, clientY: at.y }));
+        await new Promise(r => requestAnimationFrame(() => r()));
+        return JSON.stringify({ ok: true, after: overlayState(), peek: peek ? peek.module : null });
+      })();
       // A divider dragged by `delta` px (synthetic pointer events on the bar), in two steps; `hold` leaves the bar pressed.
       case 'gutter': {
         const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);

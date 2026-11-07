@@ -158,6 +158,22 @@ test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its star
   assert.match(JS, /if \(sig !== drag\.sig\) \{ drag\.sig = sig; drawZones\(hit\.zones\); \}/);
 });
 
+test('#109: a rail button starts the same drag as a tab name, through pressStep, and a drop on the rail only reorders it', () => {
+  const down = JS.search(/document\.addEventListener\('pointerdown', \(e\) => \{\n\s+swallowClick = false;/);
+  assert.ok(down !== -1, 'the tab drag\'s press handler must be findable');
+  const press = JS.slice(down, JS.indexOf('\n  });', down));
+  assert.match(press, /closest\('\.zone-tabs button\[data-module\], \.drail button\[data-module\]'\)/, 'a rail button is a handle too');
+  assert.match(press, /opts: rail \? DD\.PRESS\.rail : DD\.PRESS\.tab/);
+  assert.match(JS, /const out = DD\.pressStep\(press\.st, ev, press\.opts\);/);
+  // The drag's click is swallowed before the page's click handler opens the rail's panel: a capture listener.
+  assert.match(JS, /document\.addEventListener\('click', \(e\) => \{\n\s+if \(!swallowClick\) return;[\s\S]*?e\.stopPropagation\(\);\n\s+\}, true\);/);
+  assert.match(JS, /DD\.railDrop\(DD\.zonesAt\(/);
+  const up = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\n\s+if \(!press\) return;/);
+  const release = JS.slice(up, JS.indexOf('\n  });', up));
+  assert.match(release, /if \(d\.target\.rail === 'dock'\) \{ commitPlacement\(DTm\.moveOnRail\(settledLayout\(\), d\.id, d\.target\.before\)\); return; \}/);
+  assert.ok(release.indexOf('end();') < release.indexOf('moveOnRail'), 'ended before the reorder redraws the rail');
+});
+
 test('D2: a float move or resize is drawn while it goes and saved once on release, on the placement as it is NOW; a press only raises, in the selection', () => {
   const up = JS.search(/window\.addEventListener\('pointerup', \(e\) => \{\r?\n\s+const d = floatDrag;/);
   assert.ok(up !== -1, 'the float drag\'s pointerup handler must be findable');

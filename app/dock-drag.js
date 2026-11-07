@@ -293,7 +293,59 @@ function pressStep(state, ev, opts) {
   return NOTHING(st);
 }
 
-const API = { RIM, BAND, TAB_BAR, PRESS, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep };
+// --- a drop on the dock's rail: its place in the rail (BACKLOG #109) ---------------------------------
+
+const LINE = 2;         // px: the insertion line's thickness
+const LINE_INSET = 6;   // px off each side of the rail, so the line reads as a gap marker and not the rail's border
+
+const isRect = r => isObject(r) && isNumber(r.x) && isNumber(r.y) && isNumber(r.width) && isNumber(r.height);
+
+/**
+ * Where a rail tab dragged over the dock's rail lands. `hit` is zonesAt's answer for the same point, `rail` the rail as the drag
+ * measured it at its start: { rect, dir: 'v' | 'h', slots: [{ id, rect }] } in the order drawn, every rect relative to the dock,
+ * as the point is. Answers `hit` itself when the point is off the rail, when anything is junk, or when `hit` has a target that
+ * wins over the rail: a float over it (it is on top), or the rim along the window's edge the rail runs beside (the only way to
+ * dock a rail tab along that edge). The rim strips that cross the rail's ends are the rail's: the window's top rim covers the
+ * first tab's top 14 px, and a drop there means "first", not "along the top" (found by verify/probe-rail-drag.js). Over the rail:
+ * the drop goes before the first tab whose middle is past the pointer, else to the end, `target` { rail: 'dock', before: id |
+ * null }, and the hot zone is a thin line across the rail at that gap. A drop that would leave `id` where it is has no target
+ * and no line.
+ */
+function railDrop(hit, rail, point, id) {
+  if (!isObject(rail) || !isRect(rail.rect) || (rail.dir !== 'v' && rail.dir !== 'h') || !Array.isArray(rail.slots)) return hit;
+  if (!isObject(point) || !isNumber(point.x) || !isNumber(point.y) || !contains(rail.rect, point)) return hit;
+  const ends = rail.dir === 'v' ? ['top', 'bottom'] : ['left', 'right'];
+  if (hit && hit.target && !(isObject(hit.target) && ends.includes(hit.target.edge))) return hit;
+  const slots = rail.slots.filter(s => isObject(s) && typeof s.id === 'string' && isRect(s.rect));
+  const v = rail.dir === 'v';
+  const along = v ? point.y : point.x;
+  const lo = r => (v ? r.y : r.x);
+  const hi = r => (v ? r.y + r.height : r.x + r.width);
+  const k = slots.findIndex(s => (lo(s.rect) + hi(s.rect)) / 2 > along);
+  const before = k === -1 ? null : slots[k].id;
+  const mine = slots.findIndex(s => s.id === id);
+  const zones = hit && Array.isArray(hit.zones) ? hit.zones : [];
+  // Before itself, or before the tab right after it (or the end, when it is last): it stays where it is.
+  const stays = mine !== -1 && (before === id || (k === -1 ? mine === slots.length - 1 : k === mine + 1));
+  if (stays) return { zones, target: null };
+  const target = { rail: 'dock', before };
+  // The gap: between the tab before it and this one, at the rail's start for the first, under the last for the end.
+  let gap;
+  if (!slots.length) gap = lo(rail.rect);
+  else if (k === -1) gap = hi(slots[slots.length - 1].rect);
+  else if (k === 0) gap = lo(slots[0].rect);
+  else gap = (hi(slots[k - 1].rect) + lo(slots[k].rect)) / 2;
+  const start = lo(rail.rect);
+  const at = Math.round(Math.min(Math.max(gap - LINE / 2, start), start + (v ? rail.rect.height : rail.rect.width) - LINE));
+  const across = v ? rail.rect.width : rail.rect.height;
+  const inset = across > 2 * LINE_INSET + 4 ? LINE_INSET : 0;
+  const rect = v
+    ? { x: rail.rect.x + inset, y: at, width: across - 2 * inset, height: LINE }
+    : { x: at, y: rail.rect.y + inset, width: LINE, height: across - 2 * inset };
+  return { zones: [...zones.map(z => ({ ...z, hot: false })), { rect, target, hot: true, line: true }], target };
+}
+
+const API = { RIM, BAND, TAB_BAR, PRESS, zonesAt, candidates, startTarget, nextZone, zonesFor, describeTarget, describeDrop, pressStep, railDrop };
 
 // One namespace on the page (`window.dockDrag`).
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
