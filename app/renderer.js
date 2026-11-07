@@ -6822,43 +6822,9 @@ function wireModelPanel() {
   }
 }
 
-// --- project HP -------------------------------------------------------------
-// One bar, one meaning: pass rate. The label says so, because a composite
-// number gets quoted as though it included coverage and lint.
-const HP_STATES = ['healthy', 'hurt', 'critical', 'unknown'];
-
-let lastHealthKnown = null;      // { label, fraction } of the last finished run, shown (dimmed) while the next one runs
-function renderHealth(h) {
-  const el = document.getElementById('hp');
-  if (!el || !h) return;
-  el.classList.add('show');
-  el.classList.remove(...HP_STATES, 'running', 'stale');
-  el.classList.add(HP_STATES.includes(h.state) ? h.state : 'unknown');
-  if (h.running) el.classList.add('running');
-
-  // Chrome grammar A: a number or a dash, never a sentence. Running is the chip's shimmer, unknown its dashed border; the words
-  // ("no test suite", "no result yet") live in the hover text. The bar is the 28 px micro-bar (app/chip-model.js).
-  // While the suite runs the chip keeps its last known value and bar, dimmed (app/chip-model.js healthChip); a new result replaces it.
-  const view = chipModel.healthChip(h, lastHealthKnown);
-  if (view.known) lastHealthKnown = view.known;
-  el.classList.toggle('stale', view.stale);
-
-  el.innerHTML = `<span>HP</span><span class="track"><span class="fill"></span></span>` +
-                 `<span class="num">${escapeHtml(view.label)}</span>`;
-  el.querySelector('.fill').style.width = view.bar.px + 'px';
-
-  el.title = h.running ? 'Running the test suite…'
-    : h.state === 'unknown'
-      ? (h.runner ? 'No result yet. Click to run the suite.' : 'No recognisable test suite in this project')
-      : `Pass rate only — ${h.passed || 0} passed, ${h.failed || 0} failed` +
-        (h.tookMs ? ` in ${(h.tookMs / 1000).toFixed(1)}s` : '') +
-        '. Click to run the suite.';
-}
-
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('#hp')) return;
-  try { ws.send(JSON.stringify({ type: 'health' })); } catch {}
-});
+// The project HP heart (the test pass rate) left the top bar: BACKLOG #163, Ricardo 2026-11-06 "Remove it". The host still
+// answers `health` (host/health.js, verify/probe-health.js) and app/chip-model.js keeps healthChip for a later game layer;
+// the page draws neither, and the `health` field of hello / the `health` broadcast are ignored here.
 
 // --- cooldowns ---------------------------------------------------------------
 // Advisory, never blocking. The point is to make a cost visible, not to
@@ -9400,7 +9366,6 @@ function handleControl(msg) {
     // May be null on a fast attach -- quotaDisplay draws "reading…" for that,
     // and the host sends a `quota` message as soon as the read lands.
     renderQuota(msg.quota || null);
-    renderHealth(msg.health);
     renderCooldowns(msg.cooldowns);
     renderBugVault(msg.vault);
     renderProcesses(msg.running);
@@ -9640,10 +9605,7 @@ function handleControl(msg) {
     flourish(msg.milestone);
     return;
   }
-  if (msg.type === 'health') {
-    renderHealth(msg.health);
-    return;
-  }
+  if (msg.type === 'health') return;   // #163: nothing in the page draws the pass rate now
   if (msg.type === 'turn') {
     sessionTurn = msg.turn === undefined ? null : msg.turn;
     agentPauses.turnIs(sessionTurn, Date.now());     // the busy -> idle edge is where an agent Pause's timeout starts counting

@@ -571,31 +571,6 @@
     #bugvault-add { display: flex; flex-direction: column; gap: 6px;
       border-top: 1px solid var(--border); padding-top: 10px; }
 
-    /* --- project HP -------------------------------------------------------
-       One bar, one meaning: pass rate. Clicking it runs the suite. */
-    #hp {
-      display: none; align-items: center; gap: 6px; flex: 0 0 auto; white-space: nowrap;
-      font-size: 10.5px; color: var(--dim); cursor: pointer;
-      -webkit-app-region: no-drag;
-    }
-    #hp.show { display: flex; }
-    #hp .track {
-      width: 64px; height: 7px; border-radius: 4px;
-      background: var(--border); overflow: hidden; border: 1px solid var(--border);
-    }
-    #hp .fill { height: 100%; width: 0; transition: width .4s ease, background .4s ease; }
-    #hp.healthy  .fill { background: var(--ok); }
-    #hp.hurt     .fill { background: var(--accent); }
-    #hp.critical .fill { background: var(--bad); }
-    /* Unknown is NOT an empty bar -- an empty bar reads as "everything is
-       broken", which is a false accusation against a project with no tests. */
-    #hp.unknown .track { background: repeating-linear-gradient(
-      45deg, var(--border), var(--border) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 3px, color-mix(in srgb, var(--border) 85%, var(--text)) 6px); }
-    #hp.unknown .fill { width: 0; }
-    #hp.running .track { animation: hp-pulse 1.1s ease-in-out infinite; }
-    @keyframes hp-pulse { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
-    #hp .num { font-variant-numeric: tabular-nums; color: var(--text); }
-
     /* --- cooldowns --------------------------------------------------------
        Advisory, never blocking: the harness does not refuse to run an agent,
        it makes a cost visible. So this is a note, not a barrier. */
@@ -2304,7 +2279,7 @@
     .chip-ic { display: inline-flex; color: var(--dim); }
     .chip-icon { width: 14px; height: 14px; flex: none; }
     /* Figures are JetBrains Mono, tabular. */
-    .chip-v, .chip .num, #hp .num, #quota .meter .pct, #usage .val, #status-fields .sf-chip .chip-v, #top-bar > .tb-chip .tbr-n {
+    .chip-v, .chip .num, #quota .meter .pct, #usage .val, #status-fields .sf-chip .chip-v, #top-bar > .tb-chip .tbr-n {
       font-family: var(--font-figures); font-variant-numeric: tabular-nums; font-weight: 500; font-size: 12px; }
     .chip > .tb-chip { font-weight: 500; font-size: 12px; font-variant-numeric: tabular-nums; }
     #usage .lbl, #quota .meter .lbl { font-size: 12px; text-transform: none; letter-spacing: 0; opacity: .75; }
@@ -2317,25 +2292,19 @@
     .chip-ctx { padding: 0 7px; }
     .chip-ctx .tb-ctx { margin-left: 0; width: 12px; height: 12px; }
     /* The micro-bar: 28 px wide, whatever the meter is called. */
-    #hp .track, #quota .meter .track, #usage .milestone .track { width: 28px; height: 4px; border: 0; border-radius: 2px; flex: none; }
-    #hp > span:first-child { display: none; }               /* the heart-pulse icon says it; the title spells it out */
-    .chip-hp:has(> #hp:not(.show)) { display: none; }
-    #hp { font-size: 12px; gap: 6px; }
-    /* Loading is a shimmer in a dashed chip. Only RUNNING and LOADING states shimmer; an unknown HP is the dashed border and nothing
-       moves. A running HP keeps its last value and bar, dimmed (.stale, app/chip-model.js healthChip). */
+    #quota .meter .track, #usage .milestone .track { width: 28px; height: 4px; border: 0; border-radius: 2px; flex: none; }
+    /* Loading is a shimmer in a dashed chip. Only LOADING and PENDING states shimmer; a note is the dashed border and nothing moves. */
     @keyframes chip-shimmer { from { background-position: -64px 0; } to { background-position: 64px 0; } }
-    #usage.has-note, #quota.is-note, .chip-hp:has(> #hp.unknown) { border-style: dashed; }
-    #quota.is-loading, .chip-hp:has(> #hp.running), .chip:has(> .tb-chip.pending) {
+    #usage.has-note, #quota.is-note { border-style: dashed; }
+    #quota.is-loading, .chip:has(> .tb-chip.pending) {
       border-style: dashed;
       background-image: linear-gradient(90deg, transparent, color-mix(in srgb, var(--text) 14%, transparent), transparent);
       background-size: 64px 100%; background-repeat: no-repeat; animation: chip-shimmer 1.3s linear infinite;
     }
     .chip > .tb-chip.pending { animation: none; opacity: .75; }
-    #hp.running .track { animation: none; }
-    #hp.stale .track, #hp.stale .num { opacity: .55; }
     .chip:has(> .tb-chip.notice) { border-style: dashed; }
     @media (prefers-reduced-motion: reduce) {
-      #quota.is-loading, .chip-hp:has(> #hp.running), .chip:has(> .tb-chip.pending) { animation: none; }
+      #quota.is-loading, .chip:has(> .tb-chip.pending) { animation: none; }
     }
     /* Warnings: one chip with a count. */
     .chip-warn { border-color: var(--accent); color: var(--accent); cursor: default; }
@@ -2368,7 +2337,7 @@
          step 2, up to 1000 px: icon and a short value (the resources chip as `23 · 52 · 8`, the first characters of the model, the skulls without the mode's name);
          step 3, up to 759 px: tighter chips, and the model is its icon alone. */
     @media (max-width: 1399px) {
-      #hp .track, #quota .meter .track, #usage .milestone .track, #usage .lbl, #quota .meter .lbl, #usage .milestone .lbl { display: none; }
+      #quota .meter .track, #usage .milestone .track, #usage .lbl, #quota .meter .lbl, #usage .milestone .lbl { display: none; }
       #usage, #quota { gap: 6px; }
       header .title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     }
@@ -2451,7 +2420,6 @@
       <!-- Chrome grammar A: every warning is ONE chip with a count; the detail is its hover text (app/chip-model.js warningsChip),
            never a sentence in the header. #wt-health and #wt-lock above stay as the data the chip is made from, and are never drawn. -->
       <span id="hdr-warn" class="chip chip-warn" hidden role="img" aria-label="warnings"><span class="chip-ic" data-chip-icon="triangle-alert"></span><span class="chip-v" id="hdr-warn-n"></span></span>
-      <span class="chip chip-hp"><span class="chip-ic" data-chip-icon="heart-pulse"></span><span id="hp" title="Project HP — click to run the test suite"></span></span>
       <!-- FF12: model + effort, the two things that change how the NEXT turn
            behaves. Working directory is FF3 (window title); spend/quota are
            status, not controls, and stay in #usage/#quota below. -->
