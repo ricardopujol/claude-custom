@@ -85,6 +85,15 @@ function killChildTree(child, { killFn = killPidTree, provenKill = killProven } 
   return true;
 }
 
+// The start time (FILETIME string) trackExit read for an IPty, once that read has finished; null when it could not be read, the child
+// was never tracked, or it is a Node ChildProcess (those hold their pid until 'exit', so they need no proof). For callers that must
+// check a pid they hand to the OS against the process they spawned (host/job-guard.js).
+async function trackedStart(child) {
+  if (!child || !child[TRACKED] || 'exitCode' in child) return null;
+  try { await child[START_READ]; } catch { /* unknown */ }
+  return typeof child[START] === 'string' ? child[START] : null;
+}
+
 // What killChildTree's last attempt on this child answered: killProven's 'killed' | 'gone' | 'mismatch' | 'failed' | 'unknown', or
 // 'sent' (a raw-pid kill, no proof), or null (no attempt, or an injected kill that said nothing).
 function killOutcomeOf(child) {
@@ -261,4 +270,4 @@ async function killProvenAsync(pid, start, { runAsync = execFileAsync, powershel
   } catch { return 'unknown'; }
 }
 
-module.exports = { killTree, killPidTree, killChildTree, killOutcomeOf, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill, KILL_PROVEN_TIMEOUT_MS };
+module.exports = { killTree, killPidTree, killChildTree, killOutcomeOf, trackedStart, trackExit, childExited, killProven, killProvenBatch, killProvenAsync, parseProvenKill, KILL_PROVEN_TIMEOUT_MS };

@@ -158,5 +158,12 @@ test('watchdog: its default clock is monotonic, a wall-clock step of an hour doe
 test('host.js: the kill switch stopper gets the bounded stopPty, not the bare one', () => {
   const stopper = HOST_SRC.slice(HOST_SRC.indexOf('const killStop = createStopper({'), HOST_SRC.indexOf('const killSwitch = watchKillSwitch'));
   assert.match(stopper, /stopPty: boundedStopPty,/);
-  assert.match(HOST_SRC, /const boundedStopPty = \(t, opts\) => runShutdown\(\{[^\n]*steps: \[\(\) => stopPty\(t, opts\)\]/);
+  assert.match(HOST_SRC, /const boundedStopPty = \(t, opts\) => runShutdown\(\{[^\n]*steps: \[\(\) => stopPty\(t, opts\)\] \}\);/, 'the tree kill under the watchdog; the job is the stopper\'s (#127)');
+});
+
+// PR #235 Dexter 4 / Miguel I1: the host waits KILL_ANSWER_MS for the job helper's answer before it exits. That wait must sit well inside
+// the shutdown bound, so a host waiting on a slow helper is never mistaken for a stuck teardown.
+test('the job answer\'s wait fits under the shutdown bound, beside the slowest proven kill', () => {
+  const { KILL_ANSWER_MS } = require('../host/job-guard');
+  assert.ok(KILL_PROVEN_TIMEOUT_MS + KILL_ANSWER_MS < SHUTDOWN_BOUND_MS, `${KILL_PROVEN_TIMEOUT_MS} + ${KILL_ANSWER_MS} < ${SHUTDOWN_BOUND_MS}`);
 });
