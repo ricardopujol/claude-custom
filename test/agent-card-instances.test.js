@@ -100,6 +100,30 @@ test('A4: the roster card draws its Pause through cardHtml, and the click prefer
   assert.match(js, /const taskId = act\.taskId !== undefined \? act\.taskId : ids\.length === 1 \? ids\[0\] : undefined;/);
 });
 
+// ---- PR #239 A11 (Miguel S3, S5, S8) ------------------------------------------------------------------------------------------
+
+test('A11 S3: anyWaiting sees an instance card waiting on background work though its name\'s detail outranks it', () => {
+  assert.strictEqual(D.anyWaiting([row({ detail: 'reading' })]), false);
+  assert.strictEqual(D.anyWaiting([row({ detail: 'bgwait' })]), true);
+  assert.strictEqual(D.anyWaiting([row({ detail: 'helper', instances: [{ id: 'A', state: 'working', detail: 'helper' }, { id: 'B', state: 'working', detail: 'bgwaitlate' }] })]), true);
+  assert.strictEqual(D.anyWaiting([row({ detail: 'helper', instances: [{ id: 'A', state: 'working', detail: 'helper' }, null] })]), false);
+  assert.strictEqual(D.anyWaiting([]), false);
+  const js = read('app/renderer.js');
+  assert.match(js, /if \(window\.agentStateDisplay\.anyWaiting\(\[\.\.\.roster\.values\(\)\]\)\) renderRoster\(\);/);
+});
+
+test('A11 S5: agent-card-display\'s header no longer says its counts are for a ×N badge', () => {
+  const head = read('app/agent-card-display.js').split('*/')[0];
+  assert.doesNotMatch(head, /×N/);
+  assert.match(head, /#142 b/);
+});
+
+test('A11 S8: the live roster card is drawn by activeCardHtml, which renderRoster calls per card', () => {
+  const js = read('app/renderer.js');
+  assert.match(js, /function activeCardHtml\(r, counts\) \{/);
+  assert.match(js, /paintAgents\(shown\.flatMap\(\(r\) => window\.agentStateDisplay\.instanceRows\(r\)\)\.map\(\(r\) => \(r\.explainer \? explainerCardHtml\(false\) : activeCardHtml\(r, counts\)\)\)\.join\(''\)\);/);
+});
+
 // ---- PR #239 Miguel Y1 (A9): two cards on one face key each keep their own live video ----------------------------------------
 
 const M = require('../app/portrait-media-display');

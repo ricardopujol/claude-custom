@@ -6233,39 +6233,43 @@ function renderRoster() {
   // BACKLOG #142 b: two or more instances of one agent are one card each (app/agent-state-display.js instanceRows), after the hide
   // and search filters, which stay per agent name: every card of a name carries the same data-agent, so a medal, a hide or a pause
   // on one card is the name's (the open question's default).
-  paintAgents(shown.flatMap((r) => window.agentStateDisplay.instanceRows(r)).map(r => {
-    if (r.explainer) return explainerCardHtml(false);
-    const entry = rosterIndexEntry(r.agent);
-    // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
-    // `data-detail`, drawn as a corner badge and as words under the name.
-    const look = window.agentStateDisplay.describeState(r.state, r.detail);
-    // BACKLOG #162: a stressed card says why on hover, the card itself and the words under the name (their own titles win elsewhere).
-    const cause = window.agentStateDisplay.causeTitle(r.state, r.cause);
-    return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
-      (r.instance ? ` data-instance="${escapeHtml(r.instance)}"` : '') +
-      (cause ? ` title="${escapeHtml(cause)}"` : '') +
-      (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
-      hideButtonHtml(r) +
-      window.medalsDisplay.cardButtonHtml(r.agent) +
-      `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
-      window.agentStateDisplay.badgeHtml(r.state, r.detail) +
-      `<div class="meta">` + agentNameHtml(r.agent, entry, '') +
-      agentFnHtml(entry) +
-      `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
-      window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
-      agentPauseHtml(r, counts) +
-      agentModelHtml(r.agent) +
-      occupancyWhereHtml(r.agent) +
-      careerHtml(r.agent) +
-      beltHtml(r.agent) +
-      `</div>` +
-    `</div>`;
-  }).join(''));
+  paintAgents(shown.flatMap((r) => window.agentStateDisplay.instanceRows(r)).map((r) => (r.explainer ? explainerCardHtml(false) : activeCardHtml(r, counts))).join(''));
+}
+
+// One card on the Active tab: a name's, or one instance's (#142 b). Out of renderRoster, which was long past readable (PR #239
+// Miguel S8); `counts` is the running count per name, for the Pause.
+function activeCardHtml(r, counts) {
+  const entry = rosterIndexEntry(r.agent);
+  // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
+  // `data-detail`, drawn as a corner badge and as words under the name.
+  const look = window.agentStateDisplay.describeState(r.state, r.detail);
+  // BACKLOG #162: a stressed card says why on hover, the card itself and the words under the name (their own titles win elsewhere).
+  const cause = window.agentStateDisplay.causeTitle(r.state, r.cause);
+  return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
+    (r.instance ? ` data-instance="${escapeHtml(r.instance)}"` : '') +
+    (cause ? ` title="${escapeHtml(cause)}"` : '') +
+    (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
+    hideButtonHtml(r) +
+    window.medalsDisplay.cardButtonHtml(r.agent) +
+    `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
+    window.agentStateDisplay.badgeHtml(r.state, r.detail) +
+    `<div class="meta">` + agentNameHtml(r.agent, entry, '') +
+    agentFnHtml(entry) +
+    `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+    window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
+    agentPauseHtml(r, counts) +
+    agentModelHtml(r.agent) +
+    occupancyWhereHtml(r.agent) +
+    careerHtml(r.agent) +
+    beltHtml(r.agent) +
+    `</div>` +
+  `</div>`;
 }
 
 // BACKLOG #155: a waiting card counts minutes, and the host only speaks when the detail changes: repaint the roster twice a minute while one waits.
 setInterval(() => {
-  for (const r of roster.values()) if (r.detail === 'bgwait' || r.detail === 'bgwaitlate') { renderRoster(); return; }
+  // A name's row or one of its instance cards (#142 b, PR #239 Miguel S3).
+  if (window.agentStateDisplay.anyWaiting([...roster.values()])) renderRoster();
 }, 30_000);
 
 function renderRosterIndex(rosterIndex) {

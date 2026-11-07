@@ -250,6 +250,23 @@ test('A8: a failure ends the run\'s retry series (fail() resets it): same, same,
   assert.strictEqual(r.m.instancesOf('code-reviewer')[0].state, 'working', 'one call after the error, not the third of a series');
 });
 
+test('A11 S6: fail() ends the name\'s retry series too, on every path (a failed spawn as well as a failed call)', () => {
+  // An older CLI that labels no call: the name's own record is what the card reads.
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const send = (event, payload) => m.handle({ event, payload });
+  const same = () => send('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'same' }, tool_response: { exit_code: 0 } });
+  send('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'old' } });
+  same();
+  same();
+  send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_f', tool_input: { subagent_type: 'old' } });
+  send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: 'toolu_f', tool_input: { subagent_type: 'old' }, error: 'boom' });
+  same();
+  // A good call after a failure shows working; without the reset it was the third of a series, stressed "retried ... 3 times".
+  assert.strictEqual(m.stateOf('old'), 'working', 'one call after the failure, not the third of a series');
+  assert.strictEqual(m.causeOf('old'), null);
+});
+
 // ---- PR #239 Dexter 7: a finish flash runs on a monotonic clock, so a wall-clock step back can't stretch it ------------------
 
 test('A7: a wall-clock step back of 10 minutes doesn\'t keep a finished instance\'s card for 10 minutes', () => {

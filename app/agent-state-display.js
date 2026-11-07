@@ -117,6 +117,18 @@ function instanceRows(row) {
   });
 }
 
+// BACKLOG #155's minute count ticks while some card waits on its background work: a name row's detail, or one of its instance
+// cards' (#142 b), since a sibling's reading or helper outranks the wait on the name's own detail (PR #239 Miguel S3).
+const WAITING_DETAILS = new Set(['bgwait', 'bgwaitlate']);
+function anyWaiting(rows) {
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || typeof r !== 'object') continue;
+    if (WAITING_DETAILS.has(r.detail)) return true;
+    if (Array.isArray(r.instances) && r.instances.some((i) => i && WAITING_DETAILS.has(i.detail))) return true;
+  }
+  return false;
+}
+
 // PR #239 Dexter 5 / Miguel Y5: what a roster repaint replaces. `old` and `fresh` are the cards in order, each { key, html }: `key`
 // is data-agent + "|" + data-instance (null for a node that isn't a card), `html` the markup it was painted from (undefined when
 // unknown). The same cards in the same places: replace only those whose markup changed, so an unchanged card keeps its node (a
@@ -132,7 +144,7 @@ function rosterPatch(old, fresh) {
   return { full: false, replace };
 }
 
-const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, instanceRows, rosterPatch, FINER_STATES: Object.keys(FINER) };
+const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, instanceRows, rosterPatch, anyWaiting, FINER_STATES: Object.keys(FINER) };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module system.
 if (typeof module !== 'undefined' && module.exports) {

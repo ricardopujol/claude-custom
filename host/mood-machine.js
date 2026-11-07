@@ -342,10 +342,14 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // A failed call: the count the state machine reads, and the record the cause is read from, in ONE place so they can't part.
   // The name's card and the run's own card (BACKLOG #142 b) both take it: the name's for its one card, the run's for its
   // instance card, which is stressed by its own failures and no sibling's.
+  // A failure also ENDS the retry series it interrupts, the name's and the run's alike, on every path (PR #239 Miguel S6: the
+  // spawn-failure path used to leave the name's series running).
   function fail(a, what, inv = null) {
     const at = now();
     a.errors++;
     addFailure(a.failures, { ...what, at });
+    a.repeats = 0;
+    a.lastSignature = null;
     if (!inv) return;
     inv.errors++;
     addFailure(inv.failures, { ...what, at });
@@ -999,8 +1003,6 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const a = ensure(agent);
       if (!callInterrupted && (failureEvent || isFailure(p.tool_response))) {
         fail(a, { tool, to: p.tool_input && p.tool_input.to }, inv);
-        a.repeats = 0;
-        a.lastSignature = null;
         setState(agent, a, STRESSED);
         return;
       }
