@@ -326,7 +326,24 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   }
 
   const isOpen = inv => invs.includes(inv);
-  const running = name => invs.some(i => i.name === name);
+  // Each name's open runs, in start order: settle() re-asks every name on every event, and since #142 b each asks for its own runs
+  // more than once, so a scan of every open run per name made a long session quadratic (the REMEMBER_MAX tests took minutes).
+  // Kept in step with `invs` at its two adds (openRun) and its one removal (in end()).
+  const byName = new Map();
+  const runsOf = name => byName.get(name) || [];
+  function openRun(inv) {
+    invs.push(inv);
+    const list = byName.get(inv.name);
+    if (list) list.push(inv); else byName.set(inv.name, [inv]);
+  }
+  function closeRun(inv) {
+    const list = byName.get(inv.name);
+    if (!list) return;
+    const at = list.indexOf(inv);
+    if (at !== -1) list.splice(at, 1);
+    if (list.length === 0) byName.delete(inv.name);
+  }
+  const running = name => byName.has(name);
   const current = () => (invs.length ? invs[invs.length - 1] : null);
 
   function ensure(agent) {
@@ -412,8 +429,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     const t = now();
     const repeating = a.repeats >= RETRY_LIMIT;
     let best = state;
-    for (const inv of invs) {
-      if (inv.name !== agent) continue;
+    for (const inv of runsOf(agent)) {
       const d = runDetail(inv, state, repeating, t);
       if ((RANK[d] || 0) > (RANK[best] || 0)) best = d;
     }
@@ -435,8 +451,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
     const t = now();
     const tm = mono();                         // flash deadlines (Dexter 7)
     const rows = [];
-    for (const inv of invs) {
-      if (inv.name !== agent) continue;
+    for (const inv of runsOf(agent)) {
       const state = inv.runState;
       const row = { serial: inv.order, live: true, inv, id: instanceId(inv), state, detail: runDetail(inv, state, inv.repeats >= RETRY_LIMIT, t) };
       if (state === STRESSED) row.cause = stressCause({ failures: inv.failures, retry: retryOf(inv) });
@@ -462,22 +477,32 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   }
   // A drawn row also says which run it is (PR #239 Dexter 4): a live one's `agentId` (its task id, for its own Pause), and
   // `ended: true` on a finish still flashing (no Pause: it isn't running).
-  function instancesOf(agent) {
-    const rows = rowsOf(agent);
+  function instancesOf(agent, rows = rowsOf(agent)) {
     if (rows.length < 2) return null;
     return rows.map(({ serial, live, inv, ...row }) => {
       if (!live) return { ...row, ended: true };
       return typeof inv.agentId === 'string' && inv.agentId ? { ...row, agentId: inv.agentId } : row;
     });
   }
+  // What instancesOf would draw, as one compact string, for change detection: every field it puts on a row. Built on every
+  // event for every name, so no JSON of the whole list (1,025 open runs of one name made that the guards suite's minutes).
+  const SEP = '\u0001';
+  const rowsSig = (rows) => (rows.length < 2 ? '' : rows.map((r) => [r.id, r.state, r.detail, r.cause || '',
+    r.wait ? `${r.wait.on}${SEP}${r.wait.since}` : '', r.live ? (r.inv.agentId || '') : '\u0002'].join(SEP)).join('\u0003'));
+
+  // Does the name's card keep the name-scoped rule? Only while a call of it was pinned on a run by guess (a.guessed) AND no call
+  // has named its agent_id yet. One labelled call proves the CLI labels its calls, so an earlier unlabelled one was the main
+  // session's own, and the guess is void (PR #239 Dexter R2-1: main's Bash returning before the first subagent spoke kept the mark
+  // for the whole burst). An older CLI never labels one, so its names keep the rule.
+  const nameScoped = (a) => a.guessed && !saysWho;
 
   // The name's cause: unless one of its calls was attributed by guess (a.guessed), the shown rows' (the first stressed one's);
   // otherwise the name's own record (a call without agent_id, from an older CLI, is pinned on a run by guess, so a failure stays
   // the name's: test/mood-machine.test.js "a failure is not cleared by a sibling finishing cleanly").
-  function causeFor(agent, a) {
+  function causeFor(agent, a, rows = null) {
     if (a.state !== STRESSED) return null;
-    if (!a.guessed) {
-      const s = rowsOf(agent).find(r => r.state === STRESSED);
+    if (!nameScoped(a)) {
+      const s = (rows || rowsOf(agent)).find(r => r.state === STRESSED);
       if (s) return s.cause;
     }
     return stressCause({ failures: a.failures, retry: retryOf(a) });
@@ -485,20 +510,22 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
 
   // What the card carries beside its state and detail. A move of it alone is a `cards` event (see CAUSE in the header).
   // The instance cards are among them (#142 b): a second run starting, or one run's own state moving, leaves the name's state alone.
-  const extrasOf = (agent, a) => JSON.stringify([causeFor(agent, a), instancesOf(agent)]);
+  const extrasOf = (agent, a, rows) => `${causeFor(agent, a, rows) ?? ''}${'\u0004'}${rowsSig(rows)}`;
   function setState(agent, a, state) {
     if (state === SLEEPING) a.done = [];      // asleep: no run of it is open or flashing any more
-    // PR #239 Dexter 1: unless a call of this name was attributed by guess (a.guessed: no agent_id), the runs shown are the only
-    // source of the name's stress. Not "has the CLI ever said who": every session starts that way, and a spawn's own result is
-    // matched by its tool_use_id, so it's certain (the property found that). Stressed if any shown row is, else working while one runs, else the happy flash; its detail the best of theirs that fits that state (with one
-    // row, that row's). A retry series is a run's own: a sibling's different call doesn't end it. Asleep stays asleep.
-    const shown = state === SLEEPING || a.guessed ? [] : rowsOf(agent);
+    // PR #239 Dexter 1: unless a call of this name was attributed by guess (nameScoped), the runs shown are the only source of
+    // the name's stress. Not "has the CLI ever said who": every session starts that way, and a spawn's own result is matched by
+    // its tool_use_id, so it's certain (the property found that). Stressed if any shown row is, else working while one runs, else
+    // the happy flash; its detail the best of theirs that fits that state (with one row, that row's). A retry series is a run's
+    // own: a sibling's different call doesn't end it. Asleep stays asleep. The rows are built ONCE here and reused below.
+    const rows = rowsOf(agent);
+    const shown = state === SLEEPING || nameScoped(a) ? [] : rows;
     if (shown.length > 0) state = shown.some(r => r.state === STRESSED) ? STRESSED : shown.some(r => r.live) ? WORKING : HAPPY;
     const detail = shown.length > 0 ? bestDetail(shown, state) : refine(agent, a, state);
     const moved = a.state !== state || a.detail !== detail;
     a.state = state;
     a.detail = detail;
-    const extra = extrasOf(agent, a);
+    const extra = extrasOf(agent, a, rows);
     const extraMoved = extra !== a.extraSig;
     a.extraSig = extra;
     if (moved) machine.emit('change', { agent, state, detail });
@@ -637,6 +664,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       const at = invs.indexOf(inv);
       if (at === -1) continue;
       invs.splice(at, 1);
+      closeRun(inv);
       if (inv.agentId) rememberEnded(inv);
       if (inv.mate) { inv.mate.ended = true; inv.mate.reaped = reaped; inv.mate.wake = false; }
       else if (reaped && inv.background && inv.agentId) remember(reapedIds, inv.agentId);
@@ -768,7 +796,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
       ...freshRun(flash ? flash.id : null, flash ? flash.serial : id),
     };
     if (mate) { inv.mate = mate; mate.ended = false; mate.reaped = false; mate.wake = false; mate.runtimeId = agentId; }
-    invs.push(inv);
+    openRun(inv);
     if (key !== null) spawns.set(key, inv);
     setState(name, a, WORKING);
     return inv;
@@ -917,7 +945,7 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         background: input.run_in_background === true, description: input.description,
         startedAt: now(), lastActivity: now(), ...idleTools(), ...freshRun(key, id),
       };
-      invs.push(inv);
+      openRun(inv);
       if (inv.key !== null) spawns.set(inv.key, inv);
       if (parent) {
         refresh(parent);

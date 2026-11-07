@@ -194,6 +194,26 @@ test('A1: a name whose calls were attributed by guess (no agent_id) keeps the na
   assert.strictEqual(m.stateOf('old'), 'stressed', 'never hide a failure that may be the remaining run\'s');
 });
 
+test('R2-1: a main-session call before the first agent_id is no lasting guess: once a call is labelled, the one card is the remaining run\'s', () => {
+  // Dexter, PR #239 round 2, his six steps: a fresh host; main sends two spawns and a Bash in one message.
+  const r = rig();
+  const T = 'code-reviewer';
+  const a = { agent_id: 'acode-reviewer-00000000000000aa', agent_type: T };
+  const b = { agent_id: 'acode-reviewer-00000000000000bb', agent_type: T };
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_A', tool_input: { subagent_type: T } });
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_B', tool_input: { subagent_type: T } });
+  // 2. main's own Bash returns before either subagent speaks: no agent_id, pinned on B by the old fallback
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'main1', tool_input: { command: 'git status' }, tool_response: { exit_code: 0 } });
+  r.send('PreToolUse', { tool_name: 'Read', tool_use_id: 'a1', tool_input: { file_path: 'C:/a' }, ...a });           // 3. A speaks
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'a2', tool_input: { command: 'grep x' }, tool_response: { exit_code: 1 }, ...a });  // 4.
+  r.send('PreToolUse', { tool_name: 'Read', tool_use_id: 'b1', tool_input: { file_path: 'C:/b' }, ...b });           // 5. B speaks
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b2', tool_input: { command: 'ok' }, tool_response: { exit_code: 0 }, ...b });
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'a3', is_interrupt: true, ...a });                 // 6. A is Esc'd
+  assert.strictEqual(r.m.instancesOf(T), null);
+  assert.strictEqual(r.m.stateOf(T), 'working', 'B never failed');
+  assert.strictEqual(r.m.causeOf(T), null, 'and A\'s failure is not blamed on B');
+});
+
 test('A1: the remaining run\'s OWN failure still shows on the one card', () => {
   const r = rig();
   const a = r.spawnRun('code-reviewer', 'toolu_A');

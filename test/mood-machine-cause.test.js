@@ -161,6 +161,9 @@ const opArb = fc.oneof(
   { weight: 1, arbitrary: fc.record({ op: fc.constant('result'), who: fc.nat(), stopToo: fc.boolean() }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('resume'), who: fc.nat() }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('again') }) },
+  // PR #239 Dexter R2-1: a main-session call with no agent_id, before the host has seen any labelled one (the old fallback pins it
+  // on the youngest foreground run, a guess). A good call, as a main-session Bash that returns before a subagent speaks.
+  { weight: 1, arbitrary: fc.record({ op: fc.constant('main') }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('interrupt'), who: fc.nat() }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('stop') }) },
   { weight: 1, arbitrary: fc.record({ op: fc.constant('sessionEnd') }) },
@@ -175,7 +178,14 @@ function run(ops, onStep) {
   const gone = [];
   let n = 0;
   let last = null;                                  // the last event, for `again`: { event, payload, apply }
-  const send = (event, payload, apply = null) => { last = { event, payload, apply }; m.handle({ event, payload }); if (apply) apply(); };
+  // `labelled`: a call naming its agent_id has been sent; `guessedTypes`: names a pre-labelled main call was pinned on.
+  const state = { labelled: false, guessedTypes: new Set() };
+  const send = (event, payload, apply = null) => {
+    last = { event, payload, apply };
+    if (payload && payload.agent_id) state.labelled = true;
+    m.handle({ event, payload });
+    if (apply) apply();
+  };
   const by = (a) => ({ agent_id: a.id, agent_type: a.type });
   const fresh = (a) => Object.assign(a, { own: 'working', sig: null, reps: 0 });
   const leave = (a) => { live.splice(live.indexOf(a), 1); if (a.spoke) gone.push(a); };
@@ -234,13 +244,20 @@ function run(ops, onStep) {
         break;
       }
       case 'again': if (last) send(last.event, last.payload, last.apply); break;
+      case 'main': {
+        if (state.labelled) break;                   // only before the first labelled call: after it, nothing is pinned by guess
+        const fg = live.filter(x => !x.background);
+        if (fg.length) state.guessedTypes.add(fg[fg.length - 1].type);
+        send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'main' + (++n), tool_input: { command: 'main ' + n }, tool_response: { exit_code: 0 } });
+        break;
+      }
       case 'interrupt': { const a = pick(spoken(), o.who); if (!a) break; send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), is_interrupt: true, ...by(a) }); leave(a); break; }
       // The turn ends its foreground runs; a resumed (background) run outlives it.
       case 'stop': send('Stop', {}); for (const a of live.filter(x => !x.background)) leave(a); break;
       case 'sessionEnd': send('SessionEnd', {}); for (const a of [...live]) leave(a); break;
       default: throw new Error(o.op);
     }
-    onStep(m, live);
+    onStep(m, live, state);
   }
 }
 
@@ -248,7 +265,7 @@ const sentence = (c) => typeof c === 'string' && c.trim() !== '';
 
 test('property: whatever the events, a stressed card always carries a non-empty cause, and a card not stressed carries none', () => {
   fc.assert(fc.property(fc.array(opArb, { minLength: 1, maxLength: 60 }), (ops) => {
-    run(ops, (m, live) => {
+    run(ops, (m, live, state) => {
       for (const r of m.roster()) {
         const c = m.causeOf(r.agent);
         if (r.state === 'stressed') assert.ok(sentence(c), `${r.agent} is stressed with no cause`);
@@ -261,7 +278,10 @@ test('property: whatever the events, a stressed card always carries a non-empty 
         if (rows === null) {
           assert.ok(mine.length <= 1, `${r.agent}: ${mine.length} live runs and no instance cards`);
           // PR #239 Dexter 1: one card left with one live run is THAT run's card, never a departed sibling's record.
-          if (mine.length === 1) assert.strictEqual(r.state, mine[0].own, `${r.agent}: the one card shows ${r.state}, its run is ${mine[0].own}`);
+          // While no call has been labelled yet, a name a main call was pinned on keeps the name-scoped rule (the accepted guess of
+          // an older CLI); from the first labelled call on, that guess is void (Dexter R2-1).
+          const stillGuessed = !state.labelled && state.guessedTypes.has(r.agent);
+          if (mine.length === 1 && !stillGuessed) assert.strictEqual(r.state, mine[0].own, `${r.agent}: the one card shows ${r.state}, its run is ${mine[0].own}`);
           continue;
         }
         assert.ok(rows.length >= 2, `${r.agent}: instance cards only for two or more`);
