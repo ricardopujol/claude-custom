@@ -62,3 +62,30 @@ test('property: the same ids come out (a permutation), each once', () => {
     for (let i = 0; i < out.length; i++) if (out[i].sep) assert.ok(i > 0 && i < out.length - 1 && !out[i - 1].sep && !out[i + 1].sep);
   }));
 });
+
+// BACKLOG #109: a rail the person reordered is drawn through inOrder. Its tests sit here with the module, so Stryker's run of
+// app/rail-groups.js has them (PR #241 Miguel M1).
+const { inOrder } = require('../app/rail-groups');
+
+test('inOrder: the order given, a separator exactly where two neighbours are in different groups', () => {
+  assert.deepStrictEqual(inOrder(['agents', 'git', 'canvas', 'fog']), [{ id: 'agents' }, { id: 'git' }, { sep: true }, { id: 'canvas' }, { sep: true }, { id: 'fog' }]);
+  assert.deepStrictEqual(inOrder(['vault', 'zzz']), [{ id: 'vault' }, { id: 'zzz' }], 'an unknown id is Me\'s, as groupOf says');
+  assert.deepStrictEqual(inOrder(['ask']), [{ id: 'ask' }]);
+  for (const j of [null, undefined, 5, 'x', {}, []]) assert.deepStrictEqual(inOrder(j), []);
+  assert.deepStrictEqual(inOrder(['', null, 'git', 3]), [{ id: 'git' }]);
+});
+
+test('property: inOrder keeps every id in its place, and separates exactly the group changes', () => {
+  const pool = [...TABS.map(t => t.id), 'zzz'];
+  fc.assert(fc.property(fc.shuffledSubarray(pool), (sub) => {
+    const out = inOrder(sub);
+    assert.deepStrictEqual(ids(out), sub);
+    const seps = out.filter(i => i.sep).length;
+    assert.strictEqual(seps, sub.filter((id, i) => i > 0 && groupOf(sub[i - 1]) !== groupOf(id)).length);
+    for (let i = 0; i < out.length; i++) {
+      if (!out[i].sep) continue;
+      assert.ok(i > 0 && i < out.length - 1 && !out[i - 1].sep && !out[i + 1].sep, 'never at an end, never two together');
+      assert.notStrictEqual(groupOf(out[i - 1].id), groupOf(out[i + 1].id), 'only between two groups');
+    }
+  }));
+});
