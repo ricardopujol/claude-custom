@@ -18,6 +18,16 @@ are in `host/heavy-lock.js`'s header). A busy lock is waited for **20 minutes**
 one or two suites queued ahead. About once a minute the waiting run prints who
 holds the lock and how long it has waited.
 
+That covers every script here that starts an Electron, a `host.js`, a real
+`claude` or Ollama work (BACKLOG #179). A script that starts a host or a claude
+by hand requires `lib/launch-electron.js` before its first start and records each
+child with its `noteChild`; a script that is itself an Electron main (`shoot.js`,
+`shoot-full.js`, `probe-atomic-sleep.js`) takes it through
+`lib/electron-main-lock.js`, before the app is ready. A header that says "take
+heavy-lock.ps1 first" isn't a lock. `test/probe-lock-coverage.test.js` fails on a
+new script that starts that kind of work without the lock; the scripts that
+rightly take none are on its allow-list, each with its reason.
+
 If the wait runs out the work does **not** run. The last line says so, and the
 exit code is **75**, never 1 (1 is a failing suite or probe):
 
