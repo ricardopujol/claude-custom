@@ -165,8 +165,10 @@ test('#109: a rail button starts the same drag as a tab name, through pressStep,
   assert.match(press, /closest\('\.zone-tabs button\[data-module\], \.drail button\[data-module\]'\)/, 'a rail button is a handle too');
   assert.match(press, /opts: rail \? DD\.PRESS\.rail : DD\.PRESS\.tab/);
   assert.match(JS, /const out = DD\.pressStep\(press\.st, ev, press\.opts\);/);
-  // The drag's click is swallowed before the page's click handler opens the rail's panel: a capture listener.
-  assert.match(JS, /document\.addEventListener\('click', \(e\) => \{\n\s+if \(!swallowClick\) return;[\s\S]*?e\.stopPropagation\(\);\n\s+\}, true\);/);
+  // The drag's click is the drag's: the page's click handler asks before it opens the rail's panel. No capture listener and no
+  // stopPropagation (test/renderer-mouse-passthrough.test.js: they could starve the terminal of its clicks).
+  assert.match(JS, /tabDragClaimsClick = \(e\) => \{\n\s+if \(!swallowClick\) return false;\n\s+swallowClick = false;\n\s+return e\.detail !== 0;\n\s+\};/);
+  assert.match(JS, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{\n\s+if \(tabDragClaimsClick\(e\)\) return;[^\n]*\n\s+openPeek\(id, e\.detail === 0\);/);
   assert.match(JS, /DD\.railDrop\(DD\.zonesAt\(/);
   const up = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\n\s+if \(!press\) return;/);
   const release = JS.slice(up, JS.indexOf('\n  });', up));
@@ -275,7 +277,8 @@ test('D4: a rail\'s button opens its popover instead of selecting a tab nobody c
   const at = JS.indexOf("document.addEventListener('click', (e) => {\n  const pinButton = e.target.closest('.dpin');");
   assert.ok(at !== -1, 'the tab and rail click handler must be findable');
   const handler = JS.slice(at, JS.indexOf('\n});', at));
-  assert.match(handler, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{ openPeek\(id, e\.detail === 0\); return; \}/);
+  // #109: the click a drag from the rail button left behind is the drag's, asked first; any other click opens the popover.
+  assert.match(handler, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{\n\s+if \(tabDragClaimsClick\(e\)\) return;[^\n]*\n\s+openPeek\(id, e\.detail === 0\);\n\s+return;\n\s+\}/);
   assert.match(handler, /railEvent\(\{ type: 'tab', module: id \}\)/);
   assert.match(handler, /if \(pinButton\) \{ togglePin\(pinButton\.dataset\.pin\); return; \}/, 'the Pin button is no tab (#85)');
   assert.match(handler, /renderLayout\(\{ refit: false \}\)/, 'a popover never changes the terminal\'s rectangle');

@@ -3008,6 +3008,7 @@ async function retryPresets() {
 // of the cell under the pointer is lit in #dock-overlay and the one under it
 // fills; a drop on a zone docks, anywhere else changes nothing.
 let cancelTabDrag = () => {};      // the socket closing ends a drag too
+let tabDragClaimsClick = () => false;   // whether a click on a rail button is the one a drag left behind (#109)
 
 // The zones of a drop, lit in #dock-overlay: the tab drag's and the keyboard move's. [] clears it.
 function paintZones(zones) {
@@ -3134,16 +3135,14 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
     const target = landingFor(d.target, d.at, d.viewport);
     commitPlacement(DTm.dock(settledLayout(), d.id, target), { select: d.id });
   });
-  // The click a drag leaves behind on its own button is the drag's (#109): taken before the page's click handler sees it.
-  document.addEventListener('click', (e) => {
-    if (!swallowClick) return;
+  // The click a drag leaves behind on its own rail button is the drag's (#109): the page's click handler asks here before it
+  // opens the rail's panel. No listener of its own and no stopPropagation: a mouse handler that stops propagation can starve the
+  // terminal of its clicks (test/renderer-mouse-passthrough.test.js). A keyboard click (detail 0) is never a drag's.
+  tabDragClaimsClick = (e) => {
+    if (!swallowClick) return false;
     swallowClick = false;
-    if (e.detail === 0) return;                          // a keyboard click is never a drag's
-    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
-    if (!b) return;
-    e.preventDefault();
-    e.stopPropagation();
-  }, true);
+    return e.detail !== 0;
+  };
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
   window.addEventListener('blur', () => { cancelTabDrag(); });
@@ -3360,7 +3359,11 @@ document.addEventListener('click', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
   const id = button.dataset.module;
-  if (button.parentNode.classList.contains('drail')) { openPeek(id, e.detail === 0); return; }
+  if (button.parentNode.classList.contains('drail')) {
+    if (tabDragClaimsClick(e)) return;                  // the click a drag from this rail button left behind: a drag never opens a panel (#109)
+    openPeek(id, e.detail === 0);
+    return;
+  }
   if (button.closest('.dpeek')) {
     // Another tab of the same rail: the popover shows that panel. Nothing is saved; the pty is not told.
     railEvent({ type: 'tab', module: id });
