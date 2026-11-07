@@ -496,8 +496,9 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
   // agent_id -> its invocation. An id seen for the first time is bound to the
   // OLDEST open invocation of its type that has no id yet: agents of one type
   // start in the order they were spawned. When two same-type siblings are
-  // bound crosswise the CARD is unaffected -- both are the same name -- and
-  // the spawn's result, which names its agentId, corrects it (see adopt()).
+  // bound crosswise, each instance card (#142 b) shows the other's run until
+  // the spawn's result, which names its agentId, corrects it (see adopt(),
+  // which moves the run's own record with the id).
   function bind(agentId, agentType) {
     if (!agentId) return null;
     const known = invs.find(i => i.agentId === agentId);
@@ -553,9 +554,18 @@ function createMoodMachine({ now = Date.now, idleMs = IDLE_MS, stallMs = STALL_M
         else if (c.parent === other) c.parent = inv;
       }
       other.agentId = inv.agentId;
+      swapRun(inv, other);
     }
     inv.agentId = agentId;
     return true;
+  }
+  // What a RUN did lives on the record its events were bound to, so a corrected binding moves it with the id: its own card's state,
+  // failures and retry series (#142 b), its calls in flight, its prompt and its background holds (PR #239 Dexter 2). The spawn's own
+  // facts (key, name, parent, background, description, startedAt) stay with the record.
+  const RUN_FIELDS = ['runState', 'errors', 'failures', 'repeats', 'lastSignature', 'repeatTool', 'repeatFrom', 'repeatAt',
+    'bash', 'tool', 'waiting', 'modWaiting', 'modWaitingAt', 'clearedAt', 'holds', 'lastActivity'];
+  function swapRun(x, y) {
+    for (const f of RUN_FIELDS) { const v = x[f]; x[f] = y[f]; y[f] = v; }
   }
 
   const fgChildren = inv => invs.filter(c => c.parent === inv && !c.background);

@@ -176,3 +176,22 @@ test('A1: the remaining run\'s OWN failure still shows on the one card', () => {
   assert.strictEqual(r.m.stateOf('code-reviewer'), 'stressed');
   assert.strictEqual(r.m.causeOf('code-reviewer'), 'A Bash call failed');
 });
+
+// ---- PR #239 Dexter 2: adopt() corrects a crosswise binding, and the run's own record moves with its id ------------------------
+
+test('A2: two runs bound crosswise, the completed result swaps them back WITH their own records', () => {
+  const r = rig();
+  const T = 'code-reviewer';
+  const idA = 'acode-reviewer-00000000000000aa', idB = 'acode-reviewer-00000000000000bb';
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_A', tool_input: { subagent_type: T } });
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_B', tool_input: { subagent_type: T } });
+  // B speaks first, and fails: first-come binding puts bB on A's record.
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b1', tool_input: { command: 'x' }, tool_response: { exit_code: 1 }, agent_id: idB, agent_type: T });
+  // A speaks, clean, and lands on B's record.
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'a1', tool_input: { command: 'y' }, tool_response: { exit_code: 0 }, agent_id: idA, agent_type: T });
+  // A's spawn completes, naming its id, before its SubagentStop.
+  r.send('PostToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_A', tool_input: { subagent_type: T }, tool_response: { status: 'completed', agentId: idA } });
+  const rows = r.m.instancesOf(T);
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'stressed']], 'A finished clean; B is the one that failed');
+  assert.strictEqual(rows[1].cause, 'A Bash call failed', 'and B keeps its own cause');
+});
