@@ -5683,6 +5683,8 @@ function applyFaceVideo(v) {
   else v.pause();
 }
 
+// Each roster card node -> the markup it was painted from (before any live video was moved into it): what rosterPatch compares.
+const paintedCardHtml = new WeakMap();
 function setRosterHtml(html) {
   // A repaint runs about once a second while anything is running. A video that
   // is unloaded and recreated each time restarts from frame 0 and never loops
@@ -5691,24 +5693,40 @@ function setRosterHtml(html) {
   // the live one before the roster is replaced, and only nodes that go away or
   // change are unloaded. The move is synchronous, so the browser's "removed from
   // the document" pause never runs.
-  const oldByKey = new Map();
-  for (const v of agentsEl.querySelectorAll('video[data-face-key]')) {
-    if (!oldByKey.has(v.dataset.faceKey)) oldByKey.set(v.dataset.faceKey, v);
-  }
+  //
+  // PER CARD (PR #239 Dexter 5 / Miguel Y5): when the same cards sit in the same places, only those whose markup changed are
+  // replaced (app/agent-state-display.js rosterPatch), so an unchanged card keeps its node, and a press on its button or a hover on
+  // it survives a sibling's repaint. Each card's painted markup is remembered (paintedCardHtml) to compare with.
   const stage = document.createElement('div');
   stage.innerHTML = html;
-  const plan = portraitMedia.planVideoReuse([...oldByKey.keys()],
-    [...stage.querySelectorAll('video[data-face-key]')].map(v => v.dataset.faceKey));
-  for (const fresh of [...stage.querySelectorAll('video[data-face-key]')]) {
-    const old = plan.reuse.has(fresh.dataset.faceKey) ? oldByKey.get(fresh.dataset.faceKey) : null;
-    if (old) { oldByKey.delete(fresh.dataset.faceKey); fresh.replaceWith(old); }
+  const freshNodes = [...stage.childNodes];
+  const freshHtml = freshNodes.map(n => (n.nodeType === 1 ? n.outerHTML : n.textContent));
+  const oldNodes = [...agentsEl.childNodes];
+  const keyOf = n => (n.nodeType === 1 && n.dataset && n.dataset.agent ? n.dataset.agent + '|' + (n.dataset.instance || '') : null);
+  const patch = window.agentStateDisplay.rosterPatch(oldNodes.map(n => ({ key: keyOf(n), html: paintedCardHtml.get(n) })),
+    freshNodes.map((n, i) => ({ key: keyOf(n), html: freshHtml[i] })));
+  const going = patch.full ? oldNodes : patch.replace.map(i => oldNodes[i]);
+  const coming = patch.full ? freshNodes : patch.replace.map(i => freshNodes[i]);
+  const videosIn = nodes => nodes.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video[data-face-key]')] : []));
+  // Every live video of a face key is kept, not only the first: two instance cards on one picture each keep their own (Miguel Y1).
+  const oldVideos = videosIn(going);
+  const newVideos = videosIn(coming);
+  const pairs = portraitMedia.pairVideoReuse(oldVideos.map(v => v.dataset.faceKey), newVideos.map(v => v.dataset.faceKey));
+  newVideos.forEach((fresh, j) => {
+    const old = pairs[j] >= 0 ? oldVideos[pairs[j]] : null;
+    if (old) fresh.replaceWith(old);
+  });
+  for (const n of going) {
+    if (n.nodeType !== 1) continue;
+    for (const v of n.querySelectorAll('video')) {
+      if (faceVideoObserver) faceVideoObserver.unobserve(v);
+      portraitMedia.unloadVideo(v);
+    }
   }
-  for (const v of agentsEl.querySelectorAll('video')) {
-    if (faceVideoObserver) faceVideoObserver.unobserve(v);
-    portraitMedia.unloadVideo(v);
-  }
-  agentsEl.replaceChildren(...stage.childNodes);
-  for (const v of agentsEl.querySelectorAll('video')) {
+  if (patch.full) agentsEl.replaceChildren(...freshNodes);
+  else patch.replace.forEach(i => oldNodes[i].replaceWith(freshNodes[i]));
+  coming.forEach(n => paintedCardHtml.set(n, freshHtml[freshNodes.indexOf(n)]));
+  for (const v of coming.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video')] : []))) {
     if (faceVideoObserver) faceVideoObserver.observe(v);
     // Applied at once, not left to the observer's first callback: a hidden
     // window never delivers one, and the `autoplay` attribute would start the

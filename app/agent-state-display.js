@@ -117,7 +117,22 @@ function instanceRows(row) {
   });
 }
 
-const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, instanceRows, FINER_STATES: Object.keys(FINER) };
+// PR #239 Dexter 5 / Miguel Y5: what a roster repaint replaces. `old` and `fresh` are the cards in order, each { key, html }: `key`
+// is data-agent + "|" + data-instance (null for a node that isn't a card), `html` the markup it was painted from (undefined when
+// unknown). The same cards in the same places: replace only those whose markup changed, so an unchanged card keeps its node (a
+// press on its button, a hover on it, its video survive a sibling's repaint). Anything else (a card came, went or moved, a
+// non-card node, an empty roster) is a full replace, as before. The full fix for a press on a card that DID change is BACKLOG #184.
+function rosterPatch(old, fresh) {
+  const a = Array.isArray(old) ? old : [];
+  const b = Array.isArray(fresh) ? fresh : [];
+  if (a.length === 0 || a.length !== b.length) return { full: true };
+  for (let i = 0; i < b.length; i++) if (b[i].key == null || a[i].key !== b[i].key) return { full: true };
+  const replace = [];
+  for (let i = 0; i < b.length; i++) if (a[i].html === undefined || a[i].html !== b[i].html) replace.push(i);
+  return { full: false, replace };
+}
+
+const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, instanceRows, rosterPatch, FINER_STATES: Object.keys(FINER) };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module system.
 if (typeof module !== 'undefined' && module.exports) {

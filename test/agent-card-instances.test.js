@@ -96,3 +96,62 @@ test('A4: the roster card draws its Pause through cardHtml, and the click prefer
   assert.match(js, /window\.agentPauseDisplay\.cardHtml\(agentPauses\.view\(r\.agent, counts\.get\(r\.agent\) \|\| 0\), r\)/);
   assert.match(js, /const taskId = act\.taskId !== undefined \? act\.taskId : ids\.length === 1 \? ids\[0\] : undefined;/);
 });
+
+// ---- PR #239 Miguel Y1 (A9): two cards on one face key each keep their own live video ----------------------------------------
+
+const M = require('../app/portrait-media-display');
+
+test('A9: pairVideoReuse gives every fresh video of a key its own old node, in order, and never one node twice', () => {
+  assert.deepStrictEqual(M.pairVideoReuse(['k', 'k'], ['k', 'k']), [0, 1], 'two cards, two live videos kept');
+  assert.deepStrictEqual(M.pairVideoReuse(['k'], ['k', 'k']), [0, -1], 'a second card is new: one fresh node');
+  assert.deepStrictEqual(M.pairVideoReuse(['a', 'k', 'b'], ['b', 'a', 'x']), [2, 0, -1]);
+  assert.deepStrictEqual(M.pairVideoReuse([], ['k']), [-1]);
+});
+
+test('A9: property: pairVideoReuse never reuses a node twice and only pairs equal keys, as many as the keys allow', () => {
+  const key = fc.constantFrom('a', 'b', 'c');
+  fc.assert(fc.property(fc.array(key, { maxLength: 6 }), fc.array(key, { maxLength: 6 }), (olds, news) => {
+    const pairs = M.pairVideoReuse(olds, news);
+    assert.strictEqual(pairs.length, news.length);
+    const used = pairs.filter(i => i >= 0);
+    assert.strictEqual(new Set(used).size, used.length);
+    pairs.forEach((i, j) => { if (i >= 0) assert.strictEqual(olds[i], news[j]); });
+    for (const k of new Set(news)) {
+      const want = Math.min(olds.filter(x => x === k).length, news.filter(x => x === k).length);
+      assert.strictEqual(pairs.filter((i, j) => i >= 0 && news[j] === k).length, want);
+    }
+  }));
+});
+
+test('A9: setRosterHtml keeps a LIST of live videos per face key', () => {
+  const js = read('app/renderer.js');
+  assert.match(js, /portraitMedia\.pairVideoReuse\(/);
+  assert.doesNotMatch(js, /if \(!oldByKey\.has\(v\.dataset\.faceKey\)\) oldByKey\.set/);
+});
+
+// ---- PR #239 Dexter 5 / Miguel Y5 (A5): a repaint replaces only the cards whose markup changed --------------------------------
+
+const cardOf = (agent, instance, html) => ({ key: agent + '|' + (instance || ''), html });
+
+test('A5: rosterPatch replaces only the changed cards when the same cards are in the same places', () => {
+  const old = [cardOf('a', '', '<1>'), cardOf('b', 'toolu_1', '<2>'), cardOf('b', 'toolu_2', '<3>')];
+  assert.deepStrictEqual(D.rosterPatch(old, [cardOf('a', '', '<1>'), cardOf('b', 'toolu_1', '<2x>'), cardOf('b', 'toolu_2', '<3>')]),
+    { full: false, replace: [1] });
+  assert.deepStrictEqual(D.rosterPatch(old, old.map(c => ({ ...c }))), { full: false, replace: [] });
+});
+
+test('A5: rosterPatch replaces everything when the cards, their order or their number changed, or a node is not a card', () => {
+  const old = [cardOf('a', '', '<1>'), cardOf('b', '', '<2>')];
+  assert.deepStrictEqual(D.rosterPatch(old, [cardOf('b', '', '<2>'), cardOf('a', '', '<1>')]), { full: true });
+  assert.deepStrictEqual(D.rosterPatch(old, [cardOf('a', '', '<1>')]), { full: true });
+  assert.deepStrictEqual(D.rosterPatch(old, [cardOf('a', '', '<1>'), { key: null, html: 'x' }]), { full: true });
+  assert.deepStrictEqual(D.rosterPatch([], []), { full: true }, 'an empty roster is a plain replace');
+  assert.deepStrictEqual(D.rosterPatch([{ key: 'a|', html: undefined }], [cardOf('a', '', '<1>')]), { full: false, replace: [0] },
+    'a card whose painted markup is unknown is replaced');
+});
+
+test('A5: setRosterHtml patches through rosterPatch, keyed by data-agent and data-instance', () => {
+  const js = read('app/renderer.js');
+  assert.match(js, /window\.agentStateDisplay\.rosterPatch\(/);
+  assert.match(js, /n\.dataset\.agent \+ '\|' \+ \(n\.dataset\.instance \|\| ''\)/);
+});
