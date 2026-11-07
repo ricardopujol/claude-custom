@@ -123,9 +123,15 @@ test('host.js: a stop ends the shell host the way it ends any host: the pty tree
 });
 
 test('main.js: the + menu offers a Shell tab for the selected lane', () => {
-  const plus = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:plus'"), MAIN.indexOf("ipcMain.on('strip:plus'") + 2500);
-  assert.match(plus, /m\.shell\.enabled \? m\.shell\.label : `\$\{m\.shell\.label\} \(\$\{m\.shell\.why\}\)`/);
-  assert.match(plus, /tabShell\.openShell\(m\.shell\.target\)/);
+  // #160: the template is app/tab-shell.js plusMenuTemplate (its labels are pinned in test/tab-shell-develop.test.js); main hands
+  // it the shell's openShell for the item's target.
+  const plus = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:plus'"), MAIN.indexOf("ipcMain.on('strip:plus'") + 300);
+  assert.match(plus, /Menu\.buildFromTemplate\(plusMenuFor\(\)\)/);
+  const builder = MAIN.slice(MAIN.indexOf('function plusMenuFor('), MAIN.indexOf('function plusMenuFor(') + 500);
+  assert.match(builder, /plusMenuTemplate\(tabShell\.plusMenu\(\)/);
+  assert.match(builder, /openShell: \(target\) => tabShell\.openShell\(target\)/);
+  // The item's label and its click on the lane's target are plusMenuTemplate's, pinned by behaviour in test/tab-shell-develop.test.js
+  // (not read here as text: tab-shell.js is mutated, test/stryker-config.test.js).
 });
 
 test('main.js: the probe driver can open a shell by the branch tab\'s label', () => {

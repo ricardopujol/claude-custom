@@ -18,8 +18,11 @@
  * verify/ script that starts a host or an Electron (test/probe-mark-coverage.test.js pins it); a host an older build started has no
  * mark and is never touched.
  *
- * Exit: 0 nothing wrong; 1 a stop failed; 2 refused (bad arguments, the lock is busy, or the process table could not be read);
- * 3 nothing was stopped but some running marked host could not be proven either way (it is listed as "left").
+ * Exit: 0 nothing wrong; 1 a stop failed (or the lock code itself threw: a bug, its stack is printed); 2 refused (bad
+ * arguments, or the process table could not be read); 3 nothing was stopped but some running marked host could not be
+ * proven either way (it is listed as "left"); 75 NOT RUN: --stop could not take the heavy lock (busy, machine too loaded,
+ * or the lock script failed), nothing was swept, and the last line is the lock's own NOT RUN line (host/heavy-lock.js
+ * notRunLine, the same contract as scripts/with-heavy-lock.js; #237 Miguel S5). Retry later.
  */
 const path = require('path');
 const { sweep } = require('./lib/orphan-sweep');
@@ -39,10 +42,17 @@ async function main(argv = process.argv.slice(2), {
   let lock = null;
   if (stop) {
     // A probe holds this lock for its whole run, so while we hold it none is mid-spawn or about to adopt a host we are judging.
-    const acquire = acquireLock || require('../host/heavy-lock').acquire;
+    const heavy = require('../host/heavy-lock');
+    const acquire = acquireLock || heavy.acquire;
     try { lock = acquire({ label: 'sweep-orphans --stop', env, log }); } catch (err) {
-      log(`the heavy-work lock is not free (${err && err.message}); nothing was stopped. Run it again when it is.`);
-      return 2;
+      // Only the lock's own refusal is NOT RUN; anything else is a bug in the lock code (#237 Miguel M4, S5).
+      if (!(err instanceof heavy.HeavyLockError)) {
+        log(`[heavy-lock] the lock code itself failed (a bug, not a busy lock); nothing was stopped: ${(err && err.stack) || err}`);
+        return 1;
+      }
+      log(`the heavy-work lock is not free (${err.message}); nothing was stopped. Run it again when it is.`);
+      log(heavy.notRunLine(err));   // the last line
+      return heavy.NOT_RUN_EXIT;
     }
   }
   let r;

@@ -22,7 +22,7 @@
  *   W3           `git worktree add` while open -> a new tab within ~6 s
  *   criterion 5  hand close: that host exits, the folder is still there; reopen
  *                and the tab is back
- *   criterion 6  dev has no close, in the strip or by command
+ *   criterion 6  (replaced by BACKLOG #160) dev's x is drawn; closing it is verify/probe-develop-merged.js's
  *   raise        `raise` counts the OTHER clients: 1 with the window open, 0 after it
  *                closes (what Go to that session turns into words)
  *   launcher     opened from a sibling's folder, THAT tab is selected
@@ -272,8 +272,10 @@ async function main() {
       JSON.stringify(dom));
     check('the painted strip marks dev selected',
       Array.isArray(dom) && dom.length === 1 && dom[0].selected && !dom[0].dim);
-    check('dev has no close button in the strip (criterion 6)',
-      Array.isArray(dom) && dom.length === 1 && dom[0].hasClose === false);
+    // Criterion 6 ("dev has no close") was replaced by BACKLOG #160 (Ricardo, 2026-11-05): develop closes like a lane and the
+    // Lanes and + menus bring it back. Closing it, and the way back, are verify/probe-develop-merged.js's.
+    check('dev has a close button in the strip (#160; criterion 6 replaced)',
+      Array.isArray(dom) && dom.length === 1 && dom[0].hasClose === true);
 
     // The selected view: xterm mounted (renderer.js ran to the end: a duplicate
     // top-level name in the shared script scope would have aborted a file), and
@@ -289,12 +291,6 @@ async function main() {
     const pngOk = (f) => { try { const b = fs.readFileSync(f); return b.length > 2000 && b.slice(0, 8).toString('hex') === '89504e470d0a1a0a'; } catch { return false; } };
     check('a screenshot of the strip is a real image', !!r.ok && pngOk(r.stripFile), r.ok ? `${r.stripBytes} bytes` : r.error);
     check('a screenshot of the selected view is a real image', !!r.ok && pngOk(shot), r.ok ? `${r.viewBytes} bytes` : r.error);
-
-    // Criterion 6, by command: dev cannot be closed.
-    const devClose = await command(app, { cmd: 'close', label: 'develop' });
-    s = await state(app);
-    check('dev cannot be closed by command either (criterion 6)', devClose.ok === false && !!tabOf(s, 'develop'),
-      JSON.stringify(devClose));
 
     // X5: selecting a tab starts its host.
     const sel = await command(app, { cmd: 'select', label: 'feat/a' }, 60000);

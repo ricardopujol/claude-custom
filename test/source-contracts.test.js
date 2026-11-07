@@ -41,6 +41,19 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
+// PR #236 Miguel G9: it reads tab-model.js and tab-lanes.js as text to run them as plain scripts, so it lives here, not in
+// tab-model.test.js (which is in the mutation command).
+test('loaded as a plain script before tab-lanes.js, tab-model.js says so at load; in the right order it loads', () => {
+  const vm = require('vm');
+  const src = read('app/tab-model.js');
+  assert.throws(() => vm.runInNewContext(src, { window: {} }), /app\/tab-model\.js needs app\/tab-lanes\.js loaded first/);
+  const page = { window: {} };
+  page.window.window = page.window;
+  vm.createContext(page);
+  vm.runInContext(read('app/tab-lanes.js'), page);
+  assert.doesNotThrow(() => vm.runInContext(src, page));
+});
+
 test('the strip page wires its accent: the bridge listens, the page paints (#64)', () => {
   // Read as text here, not in tab-strip.test.js: tab-strip.js is a mutated module.
   assert.match(read('app/tab-strip.js'), /root\.strip\.onAccent\(\(hex\) => paintAccent\(root\.document, hex\)\)/);

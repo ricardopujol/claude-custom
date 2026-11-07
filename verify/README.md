@@ -9,6 +9,70 @@ All probes render the pty stream into `@xterm/headless` with `Unicode11Addon`
 active, which is the same terminal state the host will serialize for
 detach/reattach — so the probes exercise the real component, not a mock.
 
+## The heavy lock
+
+`npm test` (through `scripts/with-heavy-lock.js`) and every probe that requires
+`lib/launch-electron.js` take the machine-wide heavy-work lock first (the rules
+are in `host/heavy-lock.js`'s header). A busy lock is waited for **20 minutes**
+(`HEAVY_LOCK_WAIT_MINUTES` changes it): one full suite is about 8, so that covers
+one or two suites queued ahead. About once a minute the waiting run prints who
+holds the lock and how long it has waited.
+
+If the wait runs out the work does **not** run. The last line says so, and the
+exit code is **75**, never 1 (1 is a failing suite or probe):
+
+    [heavy-lock] lock busy for 20 min, held by npm test (pid 123 start 456) (since 10:00:00): NOT RUN
+
+The lock script also holds a free slot back until the machine has 8 GB free RAM
+and is under 70% CPU (its load gate). That time counts against the same 20
+minutes, so a machine kept loaded by something outside the lock (REAPER, a
+build) can use up the wait with the slot free. That give-up reads apart from a
+busy lock by its first words, with the same exit code:
+
+    [heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4.2 GB free, 91% CPU): NOT RUN
+
+Two more shapes end the same way, with the same exit code. Earlier tickets
+still waiting with nobody holding the slot (the first in line is between two
+polls, or held back by the load gate):
+
+    [heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN
+
+And the lock script itself failing (its output, on one line):
+
+    [heavy-lock] the lock could not be taken (heavy-lock.ps1 failed (exit 1): ...): NOT RUN
+
+On a loaded machine the script call can run past its wait and be stopped by
+its own timer. The busy and machine-busy lines then say so after the minutes,
+`(heavy-lock.ps1 ran past its wait and was stopped)`. The last line is always one
+physical line that starts with `[heavy-lock]`. `verify/sweep-orphans.js --stop`
+ends the same way when it can't take the lock.
+
+Exit 75 means "not run, retry", not "failed". The load gate is deliberate:
+wait for the machine, don't work around it. Neither `HEAVY_LOCK_HELD` nor
+`HEAVY_LOCK_SCRIPT` is a way past a NOT RUN: retry later.
+
+The rule is 75 **plus** that NOT RUN last line, not 75 alone. A command that ran
+under the lock can exit 75 itself (a nested probe's own NOT RUN). The wrapper
+passes that code through unchanged, and its last line then says whose 75 it is:
+
+    [heavy-lock] the command ran under the lock and exited 75 itself: that is its own code (see its output above), not this wrapper's NOT RUN
+
+`HEAVY_LOCK_HELD` is set by whoever holds the lock, for what it starts, to its
+own identity (`npm test (pid 123 start 456)`). It skips the lock only while that
+same holder really holds it, and the line names that holder:
+
+    [heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by npm test (pid 123 start 456) (since 10:00:00): not taking the lock (re-entrant, under that holder)
+
+Under another lane's holder it's a stranger's variable: a `WARNING: ... a
+STRANGER'S variable` line, and the lock is waited for like any run. With nobody
+holding it the variable is stale (a shell that forgot to unset it): a
+`WARNING: ... a STALE variable` line, and the lock is taken for real. The bare
+`HEAVY_LOCK_HELD=1` is the by-hand form (`host/heavy-lock.js`'s header): it only
+counts under a holder that took the lock by hand.
+A unit test's child process that runs a probe's code with no lock at all
+points `HEAVY_LOCK_SCRIPT` at an absolute path that doesn't exist. That's for
+test children that start nothing heavy, never for a real run.
+
 | Probe | Question | Result (2026-09-11, v2.1.268) |
 |---|---|---|
 | `probe-render.js` | Does the Ink TUI render faithfully through the host? | Yes — banner, box rules, prompt all correct |
