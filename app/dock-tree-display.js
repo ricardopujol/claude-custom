@@ -629,12 +629,14 @@ function applyBoxes(plan, doc, leanKeeps) {
     el.dataset.dir = b.dir;
     if (b.id) el.dataset.rail = b.id; else delete el.dataset.rail;      // the dock's own rail (#85): its tabs open on click
     setRect(el, b.rect);
-    const sig = b.modules.join(',');
+    // A rail the person reordered (BACKLOG #109) is drawn in its own order; the same modules grouped are another drawing.
+    const sig = `${b.ordered === true ? 'o' : 'g'}:${b.modules.join(',')}`;
     if (el.dataset.sig !== sig) {
       el.dataset.sig = sig;
       el.textContent = '';
       const byId = new Map(b.tabs.map(t => [t.id, t]));
-      for (const item of groupsApi.groupRail(b.tabs.map(t => t.id))) {
+      const railIds = b.tabs.map(t => t.id);
+      for (const item of (b.ordered === true ? groupsApi.inOrder(railIds) : groupsApi.groupRail(railIds))) {
         if (item.sep) {
           const sep = mk('span', 'rail-sep');
           sep.setAttribute('role', 'separator');

@@ -133,7 +133,8 @@ function anyWaiting(rows) {
 // is data-agent + "|" + data-instance (null for a node that isn't a card), `html` the markup it was painted from (undefined when
 // unknown). The same cards in the same places: replace only those whose markup changed, so an unchanged card keeps its node (a
 // press on its button, a hover on it, its video survive a sibling's repaint). Anything else (a card came, went or moved, a
-// non-card node, an empty roster) is a full replace, as before. The full fix for a press on a card that DID change is BACKLOG #184.
+// non-card node, an empty roster) is a full replace, as before. A card that DID change is patched in place, not swapped
+// (BACKLOG #184, app/roster-morph.js), so a press on it lands too; `replace` names the cards to patch.
 function rosterPatch(old, fresh) {
   const a = Array.isArray(old) ? old : [];
   const b = Array.isArray(fresh) ? fresh : [];

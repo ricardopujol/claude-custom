@@ -19,6 +19,12 @@
  *    2 (before, every repaint replaced both), the quiet card kept throughout; two instances of one agent busy at once (a read
  *    and a Bash start or end a second) = 10 repaints, 13 card nodes of 4 (a full replace would be 40). A press on a card that
  *    DID change can still be dropped: BACKLOG #184.
+ *    Case 4 (BACKLOG #184): the hook event aimed at the CLICKED card itself, 20 presses, each with that card's detail changing
+ *    between mousedown and mouseup. Since #184 a changed card is patched in place (app/roster-morph.js), so its node stays and the
+ *    click lands; the repaint counter now watches the cards' insides too (a patch swaps no child of #agents), and __removed still
+ *    counts swapped card nodes, which a busy card no longer causes.
+ *    Case 5 (PR #244 Dexter 2): a press on Pause whose button becomes the "pausing" badge mid-press must fire nothing: no Pause, no
+ *    card click, no activity log (the replaced control's press drops, even though its parent div is kept).
  * B. BACKLOG #162: a stressed card carries its cause as its hover (the card's title, and the words under its name), and a
  *    picture of it hovered: agent-card-stressed-hover.png. The OS draws a native tooltip outside the page, where capturePage
  *    can't see it, so the probe draws the card's own title text at the hover point, captioned ON the picture as the probe's
@@ -75,6 +81,13 @@ const churn = () => {
   if (flying) { send('PostToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step ' + flying }, tool_response: { exit_code: 0 }, ...by('probe-churn') }); flying = null; }
   else { flying = 'tu' + (++n); send('PreToolUse', { tool_name: 'Bash', tool_use_id: flying, tool_input: { command: 'step ' + flying }, ...by('probe-churn') }); }
 };
+// The same step aimed at any agent's card (BACKLOG #184: the clicked card's own churn), each agent with its own call in flight.
+const flyingBy = {};
+const churnOn = (name) => {
+  const id = flyingBy[name];
+  if (id) { send('PostToolUse', { tool_name: 'Bash', tool_use_id: id, tool_input: { command: 'step ' + id }, tool_response: { exit_code: 0 }, ...by(name) }); flyingBy[name] = null; }
+  else { const t = 'tc' + (++n); flyingBy[name] = t; send('PreToolUse', { tool_name: 'Bash', tool_use_id: t, tool_input: { command: 'step ' + t }, ...by(name) }); }
+};
 const need = async (what) => {
   if (what === 'churn') churn();
   if (what === 'busy') for (let i = 0; i < 10; i++) { churn(); await sleep(1000); }
@@ -118,23 +131,25 @@ app.whenReady().then(async () => {
     check('the roster is on screen', await until(onScreen, 10000));
     check('both cards are on the roster', await until('document.querySelectorAll("#agents .agent[data-agent^=\\'probe-\\']").length === 2', 30000));
     // What reached the page: every click (capture phase, so nothing in the page can hide it from us), and every time the
-    // roster's markup was really replaced (paintAgents -> setRosterHtml -> replaceChildren is a childList mutation).
-    // __repaints: roster repaints that replaced anything (one observer call per paint); __removed: card nodes they replaced
-    // (PR #239 A5: since the per-card patch, a sibling's change replaces its own card, not every card).
+    // roster's markup was really changed (paintAgents -> setRosterHtml: a card swapped, or patched in place).
+    // __repaints: roster repaints that changed anything (one observer call per paint; the subtree too, since BACKLOG #184 patches a
+    // changed card in place); __removed: card nodes they swapped (PR #239 A5: a sibling's change swapped only its own card; #184:
+    // a changed card is patched, so none is swapped unless the cards themselves change).
     await js('window.__clicks = []; window.__repaints = 0; window.__removed = 0;' +
-      ' document.addEventListener("click", (e) => { const t = e.target; window.__clicks.push({ onButton: !!(t && t.closest && t.closest("[data-medal-open]")), tag: t && t.tagName, id: t && t.id || null, cls: t && String(t.className || "") }); }, true);' +
-      ' new MutationObserver((ms) => { window.__repaints++; for (const m of ms) for (const n of m.removedNodes) if (n.classList && n.classList.contains("agent")) window.__removed++; }).observe(document.getElementById("agents"), { childList: true }); true');
+      ' document.addEventListener("click", (e) => { const t = e.target; window.__clicks.push({ onButton: !!(t && t.closest && t.closest("[data-medal-open]")), inRoster: !!(t && t.closest && t.closest("#agents")), onPause: !!(t && t.closest && t.closest(".agent-pause-btn")), tag: t && t.tagName, id: t && t.id || null, cls: t && String(t.className || "") }); }, true);' +
+      ' const agentsRoot = document.getElementById("agents");' +
+      ' new MutationObserver((ms) => { window.__repaints++; for (const m of ms) if (m.target === agentsRoot) for (const n of m.removedNodes) if (n.classList && n.classList.contains("agent")) window.__removed++; }).observe(agentsRoot, { childList: true, subtree: true, attributes: true, characterData: true }); true');
     const cardNode = 'document.querySelector("#agents .agent[data-agent=\\'probe-click\\']")';
     const BTN = '#agents .agent[data-agent=\\'probe-click\\'] [data-medal-open]';
     // The point, and what is really under it (a press that lands on something else measures nothing).
-    const point = async () => js('(() => { const b = document.querySelector("' + BTN + '"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect();' +
+    const point = async (sel = BTN) => js('(() => { const b = document.querySelector("' + sel + '"); b.scrollIntoView({ block: "center" }); const r = b.getBoundingClientRect();' +
       ' const x = Math.round(r.left + r.width / 2), y = Math.round(r.top + r.height / 2); const at = document.elementFromPoint(x, y);' +
-      ' return { x, y, w: r.width, h: r.height, dpr: window.devicePixelRatio, inner: [window.innerWidth, window.innerHeight], onButton: !!(at && at.closest && at.closest("[data-medal-open]")), at: at ? at.tagName + "." + String(at.className || "") : null }; })()');
+      ' return { x, y, w: r.width, h: r.height, dpr: window.devicePixelRatio, inner: [window.innerWidth, window.innerHeight], onButton: !!(at && at.closest && at.closest("[data-medal-open]")), hit: !!(at && at.closest && at.closest("' + sel + '")), at: at ? at.tagName + "." + String(at.className || "") : null }; })()');
     const closeMenu = () => js('(() => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); if (typeof medalMenuEl !== "undefined" && medalMenuEl) medalMenuEl.hidden = true; return true; })()');
-    const press = async (between) => {
+    const press = async (between, sel) => {
       await closeMenu();
       await sleep(300);
-      const p = await point();
+      const p = await point(sel);
       console.log('[point] ' + JSON.stringify(p));
       await js('window.__clicks = []; window.__repaints = 0; true');
       win.webContents.sendInputEvent({ type: 'mouseMove', x: p.x, y: p.y });
@@ -144,7 +159,7 @@ app.whenReady().then(async () => {
       await sleep(80);
       win.webContents.sendInputEvent({ type: 'mouseUp', x: p.x, y: p.y, button: 'left', clickCount: 1 });
       await sleep(300);
-      return JSON.parse(await js('JSON.stringify({ clicks: window.__clicks, repaints: window.__repaints })'));
+      return { ...JSON.parse(await js('JSON.stringify({ clicks: window.__clicks, repaints: window.__repaints })')), point: p };
     };
 
     const plain = await press(async () => {});
@@ -167,6 +182,47 @@ app.whenReady().then(async () => {
     check('3. A5: the clicked card, unchanged, keeps its node', kept === true);
     check('3. A5: ...and the click lands', landed, changed);
 
+    // 4. BACKLOG #184: the hook event aimed at the CLICKED card itself, 20 presses. Each press: mousedown on its medal button, a
+    // Bash call starting or ending on probe-click (its card's detail changes: working <-> running), then mouseup at the same point.
+    // Before #184 the changed card's node was swapped and the click dropped; now the card is patched in place and must land.
+    const aimed = { presses: 0, changed: 0, landed: 0, dropped: 0, kept: 0, swapped: 0 };
+    for (let k = 0; k < 20; k++) {
+      await js('window.__clickCard = ' + cardNode + '; window.__detail0 = window.__clickCard.dataset.detail; window.__removed = 0; true');
+      const r = await press(async () => {
+        churnOn('probe-click');
+        await until('(() => { const c = ' + cardNode + '; return !!c && c.dataset.detail !== window.__detail0; })()', 5000);
+      });
+      const after = JSON.parse(await js('JSON.stringify({ changed: (' + cardNode + ').dataset.detail !== window.__detail0, kept: window.__clickCard === ' + cardNode + ', removed: window.__removed })'));
+      aimed.presses++;
+      if (after.changed) aimed.changed++;
+      if (after.kept) aimed.kept++;
+      aimed.swapped += after.removed;
+      if (r.clicks.some(c => c.onButton)) aimed.landed++; else aimed.dropped++;
+    }
+    console.log('[#184] 20 presses, each with the CLICKED card changing between mousedown and mouseup: ' + JSON.stringify(aimed));
+    check('4. #184: the clicked card really changed during every press', aimed.changed === 20, aimed);
+    check('4. #184: the clicked card kept its node through every press', aimed.kept === 20 && aimed.swapped === 0, aimed);
+    check('4. #184: 0 of 20 clicks dropped', aimed.dropped === 0 && aimed.landed === 20, aimed);
+
+    // 5. PR #244 Dexter 2: a control that turns into ANOTHER one mid-press is replaced, and the press must fire nothing. Mousedown on
+    // probe-click's Pause, then its pause machine moves to "pausing" (the button becomes a badge in the same, kept div.agent-pause),
+    // then mouseup at the same point. If the engine sent the click to the nearest live ancestor, it would hit div.agent-pause and the
+    // card handler would open the activity log. No plain press on Pause is made: a landed one would type a real pause line.
+    const PAUSE = '#agents .agent[data-agent=\\'probe-click\\'] .agent-pause-btn';
+    check('5. probe-click has a Pause button to press', await until('!!document.querySelector("' + PAUSE + '")', 5000));
+    const flipped = await press(async () => {
+      await js('agentPauses.begin("probe-click", "pause", Date.now()); renderRoster(); true');
+      await until('!document.querySelector("' + PAUSE + '")', 3000);
+    }, PAUSE);
+    const logOpen = await js('!!(agentLog && agentLog.open)');
+    console.log('[#244 D2] a press on Pause that became "pausing" mid-press: ' + JSON.stringify({ point: flipped.point, clicks: flipped.clicks, logOpen }));
+    check('5. D2: the mousedown really was on Pause', flipped.point.hit === true, flipped.point);
+    check('5. D2: nothing reached the roster: no Pause, no card click', flipped.clicks.every(c => !c.inRoster && !c.onPause), flipped.clicks);
+    check('5. D2: ...and no activity log opened', logOpen === false, logOpen);
+    // Back to where it was: the typing never happened, so the machine is told it was refused, and the Pause button comes back.
+    await js('agentPauses.refused("probe-click"); renderRoster(); true');
+    check('5. the Pause button is back after the case', await until('!!document.querySelector("' + PAUSE + '")', 5000));
+
     // The repaint rate. Quiet: an agent working, no events, processes frames every second.
     await js('window.__repaints = 0; window.__removed = 0; true');
     await sleep(10000);
@@ -179,7 +235,8 @@ app.whenReady().then(async () => {
     console.log('[F4] 10 s of one Bash call starting or ending a second on another agent: ' + busy.repaints + ' repaints, ' + busy.removed +
       ' card nodes replaced (2 cards on the roster), the quiet card node ' + (busy.kept ? 'kept throughout' : 'replaced'));
     check('busy: the roster is repainted when a card changes', busy.repaints > 0, busy);
-    check('busy: A5: only the changing card is replaced, one node per repaint', busy.removed === busy.repaints && busy.kept, busy);
+    // A5 kept the quiet card; since #184 the changing card is patched in place too, so no card node is swapped at all.
+    check('busy: A5 + #184: the quiet card keeps its node, and the changing card is patched, not swapped', busy.removed === 0 && busy.kept, busy);
 
     // Pictures, through the app's own capturePage (never the screen): the roster panel's rectangle.
     const SHOTS = path.join(require('os').tmpdir(), 'cc-try');
@@ -225,6 +282,19 @@ app.whenReady().then(async () => {
     await need('churn');
     await until('window.__repaints > 0', 5000);
     check('B. Y5: a sibling\\'s repaint keeps the hovered card\\'s node', await js('window.__clickCard === ' + cardNode));
+    // #184 (Miguel Y5's rest): the HOVERED card itself changes (a Bash call on probe-click starts and ends well: stressed -> working,
+    // its cause title goes; working and probe-churn's working sort the same, by name, so the cards keep their places). Patched in
+    // place, the node the pointer is over stays and its title changes on it. The OS tooltip itself is drawn outside the page, so
+    // what's measured is the node and its title, not the tooltip's pixels.
+    // IF THIS FLAKES, look here first (PR #244 Miguel G5): it relies on one good Bash call clearing "stressed" within the 5 s wait
+    // (a longer mood hold makes hoverAfter null, a false negative) and on :hover being recomputed after the patch.
+    await js('window.__clickCard = ' + cardNode + '; true');
+    churnOn('probe-click');
+    churnOn('probe-click');
+    const hoverAfter = await until('(() => { const c = ' + cardNode + '; return c && c.dataset.state !== "stressed" ? JSON.stringify({ state: c.dataset.state, title: c.getAttribute("title"), kept: c === window.__clickCard, hovered: c.matches(":hover") }) : null; })()', 5000);
+    console.log('[#184] the hovered card itself changed: ' + hoverAfter);
+    const hv = hoverAfter ? JSON.parse(hoverAfter) : {};
+    check('B. #184: the hovered card changing keeps its node, still hovered, its title updated on it', hv.kept === true && hv.hovered === true && hv.title !== title, hoverAfter);
 
     // C. BACKLOG #142 b: two instances of one agent are two cards, each with its own state; no ×N badge.
     const twin = (k) => ({ agent_id: 'aprobe-twin-' + String(7000 + k).padStart(16, '0'), agent_type: 'probe-twin' });

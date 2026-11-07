@@ -102,6 +102,8 @@ const ALLOWED_GLOBALS = new Set([
   'instanceCounts', 'modelLine', 'modelEntry',
   // app/agent-state-display.js (BACKLOG #55): ONE name leaves its IIFE.
   'agentStateDisplay',
+  // app/roster-morph.js (BACKLOG #184): a changed card patched in place. ONE name leaves its IIFE.
+  'rosterMorph',
   // app/peer-cue.js (BACKLOG #156): the held-message cue. ONE name leaves its IIFE.
   'peerCue',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
