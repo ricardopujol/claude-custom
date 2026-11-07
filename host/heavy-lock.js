@@ -282,14 +282,15 @@ function holderIsDead(holder, { startsOf, work, log = () => {} }) {
 
 // The slot's holder from the script's status: { holder, live } where live is true (someone holds it and isn't provably
 // dead), false (free, or the holder is provably dead), or null (the status could not be read).
-function readHolder({ run, startsOf, work }) {
+// `log` hears why a dead-looking holder still counts as live (#237 Dexter 5: the #112 "can't be read" line).
+function readHolder({ run, startsOf, work, log = () => {} }) {
   let st = null;
   try { st = run([], { timeoutMs: STATUS_TIMEOUT_MS }); } catch { st = null; }
   const text = (st && st.stdout) || '';
   const m = /^held: (.*)$/m.exec(text);
   if (!m) return /^free$/m.test(text) ? { holder: null, live: false } : { holder: null, live: null };
   const holder = m[1].trim();
-  return { holder: holder || null, live: !holderIsDead(holder, { startsOf, work }) };
+  return { holder: holder || null, live: !holderIsDead(holder, { startsOf, work, log }) };
 }
 
 // If the slot's holder is provably dead (holderIsDead), release it by its exact owner string. `status`: the script's status
@@ -372,7 +373,7 @@ function acquire({
   if (isHeld(env)) {
     // The flag is trusted only while the holder it names really holds the slot (RE-ENTRANCY above): the skip names who.
     const flag = env[ENV_VAR];
-    const outer = exists(scriptPath) ? readHolder({ run, startsOf, work }) : { holder: null, live: null };
+    const outer = exists(scriptPath) ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
     if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
       log(outer.holder
         ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`

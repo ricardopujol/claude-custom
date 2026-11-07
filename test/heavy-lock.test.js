@@ -1106,3 +1106,16 @@ test('#237 Miguel S9: each attempt\'s watcher is bounded by THAT call\'s wait, a
   assert.deepStrictEqual(cfgs.map(c => c.maxMs), [22 * 60000, 3 * 60000]);
   cfgs.forEach((c, i) => assert.ok(c.maxMs > timeouts[i], `watcher ${i} outlasts its call`));
 });
+
+// ---- #237 L8 (Dexter 5): the re-entrant path says why a dead-looking holder still counts as live ----
+test('#237 Dexter 5: flag set, the holder it names is dead, its work record is corrupt: re-entrant, and the #112 "can\'t be read" line is said', () => {
+  const fs = require('fs');
+  const file = path.join(tmpDir('hl-d5-'), 'w.json');
+  fs.writeFileSync(file, '{"owner":"npm test (pid 5000 start 777)","work":[{"pid":60');   // damaged
+  const r = rig({ holder: `${DEAD} (since 09:00:00)` });
+  r.env[ENV_VAR] = DEAD;
+  const lock = acquire({ label: 'probe', pid: 8, ...r.deps(), work: createWorkStore(file) });
+  assert.strictEqual(lock.state, 'reentrant');
+  assert.ok(r.log.some(m => /work record of npm test \(pid 5000 start 777\) \(since 09:00:00\) can't be read/.test(m)), JSON.stringify(r.log));
+  assert.strictEqual(of(r, '-Release').length, 0);
+});
