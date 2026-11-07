@@ -122,6 +122,17 @@ function planVideoReuse(oldKeys, newKeys) {
   return { reuse, drop };
 }
 
+/**
+ * Which old live video each fresh one takes over: for fresh video j, the index of an old one with the same key, or -1 (a new
+ * node). Keys may repeat (two instance cards of one agent on the same picture, BACKLOG #142 b): each old node is taken once, in
+ * order, so the second card keeps its own playing video instead of restarting from frame 0 on every repaint (PR #239 Miguel Y1).
+ */
+function pairVideoReuse(oldKeys, newKeys) {
+  const free = new Map();
+  (Array.isArray(oldKeys) ? oldKeys : []).forEach((k, i) => { if (!free.has(k)) free.set(k, []); free.get(k).push(i); });
+  return (Array.isArray(newKeys) ? newKeys : []).map((k) => { const list = free.get(k); return list && list.length ? list.shift() : -1; });
+}
+
 /** The descriptor as markup. Every interpolated value is escaped or forced numeric. */
 function faceMediaHtml(result, opts) {
   const d = mediaElementFor(result, opts);
@@ -158,7 +169,7 @@ function unloadVideo(el) {
   try { if (typeof el.load === 'function') el.load(); } catch { /* detached */ }
 }
 
-const API = { mediaElementFor, faceMediaHtml, videoKey, planVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
+const API = { mediaElementFor, faceMediaHtml, videoKey, planVideoReuse, pairVideoReuse, visibilityAction, unloadVideo, fileUrl, tierTitle, TIER_TITLE };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = API;
 else root.portraitMedia = API;

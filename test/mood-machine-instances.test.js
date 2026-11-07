@@ -1,0 +1,358 @@
+'use strict';
+/**
+ * BACKLOG #142 b: two or more instances of one agent show as separate cards, not "×2" (Ricardo). The mood machine says what each
+ * card is: instancesOf(agent) is one row per running instance (and per instance whose finish is still flashing) while there are
+ * two or more, and null while there's one card. A row is keyed by the CLI's own id for that run: the spawn's tool_use_id (known
+ * from its first event), or the agent_id of a run that came back without a spawn (a resume). Never an index.
+ */
+const test = require('node:test');
+const assert = require('node:assert');
+const { createMoodMachine, FLASH_MS } = require('../host/mood-machine');
+
+function rig() {
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const cards = [];
+  m.on('cards', (c) => cards.push(c));
+  let n = 0;
+  const send = (event, payload) => m.handle({ event, payload });
+  // A run of `type`: spawned under `key`, then its first call binds its agent_id.
+  const spawnRun = (type, key) => {
+    const id = 'a' + type + '-' + String(++n).padStart(16, '0');
+    send('PreToolUse', { tool_name: 'Agent', tool_use_id: key, tool_input: { subagent_type: type } });
+    send('PreToolUse', { tool_name: 'Read', tool_use_id: 'tu' + (++n), tool_input: { file_path: 'C:/a' }, agent_id: id, agent_type: type });
+    return { id, type, key, by: { agent_id: id, agent_type: type } };
+  };
+  const err = (run) => send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), tool_input: { command: 'x' }, tool_response: { exit_code: 1 }, ...run.by });
+  const ok = (run) => send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tu' + (++n), tool_input: { command: 'c' + n }, tool_response: { exit_code: 0 }, ...run.by });
+  return { m, cards, send, spawnRun, err, ok, advance: (ms) => { t += ms; m.tick(); } };
+}
+
+const ids = (rows) => rows.map(r => r.id);
+
+test('one running instance is one card: no instance rows', () => {
+  const r = rig();
+  r.spawnRun('code-reviewer', 'toolu_A');
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null);
+  assert.strictEqual(r.m.instancesOf('never-seen'), null);
+});
+
+test('two instances of one agent: two rows, keyed by each spawn\'s own tool_use_id, in start order, each with its own state', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  let rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(ids(rows), ['toolu_A', 'toolu_B']);
+  assert.deepStrictEqual(rows.map(x => x.state), ['working', 'working']);
+  r.err(b);
+  rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(rows.map(x => x.state), ['working', 'stressed'], 'only B failed');
+  assert.strictEqual(rows[0].cause, undefined, 'a working card carries no cause');
+  assert.strictEqual(rows[1].cause, 'A Bash call failed', 'and B says why (#162, per card)');
+  r.ok(a);
+  assert.strictEqual(r.m.instancesOf('code-reviewer')[1].state, 'stressed', 'A\'s good call is not B\'s');
+});
+
+test('a second instance starting is announced, though the name stays working', () => {
+  const r = rig();
+  r.spawnRun('code-reviewer', 'toolu_A');
+  const before = r.cards.length;
+  r.spawnRun('code-reviewer', 'toolu_B');
+  assert.ok(r.cards.some((c, i) => i >= before && c.agent === 'code-reviewer'));
+});
+
+test('one instance finishing: its card flashes happy, then leaves; the other card goes on', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'working']], 'start order: no card moves when another finishes');
+  r.advance(FLASH_MS + 1);
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null, 'one card again once the flash is over');
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'working');
+});
+
+test('an instance that finished with errors flashes stressed, with its cause', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  r.ok(a);
+  r.send('SubagentStop', a.by);
+  const done = r.m.instancesOf('code-reviewer').find(x => x.id === 'toolu_A');
+  assert.strictEqual(done.state, 'stressed');
+  assert.strictEqual(done.cause, 'A Bash call failed');
+});
+
+test('an instance cut off (Esc) leaves at once: nothing to celebrate', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...a.by });
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null);
+});
+
+test('the same agent restarting is one card, its new run\'s, not the old one beside it', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.send('SubagentStop', a.by);
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null, 'one finished run is the name\'s own flash');
+  r.spawnRun('code-reviewer', 'toolu_C');          // inside the flash: the new run ends it, as the name's flash does
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null);
+  r.advance(FLASH_MS + 1);
+  const b = r.spawnRun('code-reviewer', 'toolu_D');
+  assert.deepStrictEqual(ids(r.m.instancesOf('code-reviewer')), ['toolu_C', 'toolu_D']);
+  r.send('SubagentStop', b.by);
+  r.advance(FLASH_MS + 1);
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null);
+});
+
+test('a run that came back with no spawn (a resume) is keyed by its own agent_id', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  r.advance(FLASH_MS + 1);
+  r.send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: 'sm1', tool_input: { to: a.id, message: 'again' },
+    tool_response: { success: true, resumedAgentId: a.id } });
+  assert.deepStrictEqual(ids(r.m.instancesOf('code-reviewer')), ['toolu_B', a.id]);
+});
+
+test('every live instance appears exactly once, and ids never repeat', () => {
+  const r = rig();
+  for (const k of ['toolu_1', 'toolu_2', 'toolu_3']) r.spawnRun('qa-expert', k);
+  const rows = r.m.instancesOf('qa-expert');
+  assert.strictEqual(new Set(ids(rows)).size, 3);
+  assert.deepStrictEqual(r.m.stack().filter(x => x === 'qa-expert').length, 3);
+});
+
+// ---- PR #239 Dexter 1 (High): when the view collapses to one card, that card is the remaining run's, never a departed run's --------
+
+test('A1: a failed sibling cut off (Esc) leaves the remaining run\'s card as that run is: working, no cause', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  assert.deepStrictEqual(r.m.instancesOf('code-reviewer').map(x => x.state), ['stressed', 'working']);
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...a.by });
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null, 'one card again');
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'working', 'B never failed');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), null, 'and A\'s failure is not blamed on B');
+});
+
+test('A1: a failed sibling that finished, once its flash ends, leaves the remaining run\'s card as that run is', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  r.ok(a);
+  r.send('SubagentStop', a.by);
+  assert.deepStrictEqual(r.m.instancesOf('code-reviewer').map(x => [x.id, x.state]), [['toolu_A', 'stressed'], ['toolu_B', 'working']]);
+  r.advance(FLASH_MS + 1);
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null);
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'working');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), null);
+});
+
+test('A1: the last run finishing clean flashes happy, though a sibling failed and left before it', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(a);
+  r.send('SubagentStop', a.by);
+  r.advance(FLASH_MS + 1);                       // A's flash is over: B is the one card
+  r.send('SubagentStop', b.by);
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'happy', 'B finished clean');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), null);
+});
+
+test('A1: before any subagent has spoken, a failed spawn\'s flash ending leaves the live run\'s card as that run is', () => {
+  // The property's counterexample (fast-check, the whole suite's run): every session starts with no agent_id seen yet, and a
+  // spawn's result is matched by its own tool_use_id, so its failure is the failed run's for certain, not the name's.
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const send = (event, payload) => m.handle({ event, payload });
+  send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_1', tool_input: { subagent_type: 'tb' } });
+  send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_2', tool_input: { subagent_type: 'tb' } });
+  send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: 'toolu_2', error: 'boom' });
+  t += FLASH_MS + 1;
+  m.tick();
+  assert.strictEqual(m.stateOf('tb'), 'working', 'the one run left never failed');
+  assert.strictEqual(m.causeOf('tb'), null);
+});
+
+test('A1: a name whose calls were attributed by guess (no agent_id) keeps the name-scoped rule', () => {
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const send = (event, payload) => m.handle({ event, payload });
+  send('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'old' } });
+  send('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'x' }, tool_response: { exit_code: 1 } });   // whose? a guess
+  send('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'old' } });
+  send('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'y' }, tool_response: { exit_code: 0 } });
+  send('SubagentStop', { agent_type: 'old' });
+  assert.strictEqual(m.stateOf('old'), 'stressed', 'never hide a failure that may be the remaining run\'s');
+});
+
+test('R2-1: a main-session call before the first agent_id is no lasting guess: once a call is labelled, the one card is the remaining run\'s', () => {
+  // Dexter, PR #239 round 2, his six steps: a fresh host; main sends two spawns and a Bash in one message.
+  const r = rig();
+  const T = 'code-reviewer';
+  const a = { agent_id: 'acode-reviewer-00000000000000aa', agent_type: T };
+  const b = { agent_id: 'acode-reviewer-00000000000000bb', agent_type: T };
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_A', tool_input: { subagent_type: T } });
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_B', tool_input: { subagent_type: T } });
+  // 2. main's own Bash returns before either subagent speaks: no agent_id, pinned on B by the old fallback
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'main1', tool_input: { command: 'git status' }, tool_response: { exit_code: 0 } });
+  r.send('PreToolUse', { tool_name: 'Read', tool_use_id: 'a1', tool_input: { file_path: 'C:/a' }, ...a });           // 3. A speaks
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'a2', tool_input: { command: 'grep x' }, tool_response: { exit_code: 1 }, ...a });  // 4.
+  r.send('PreToolUse', { tool_name: 'Read', tool_use_id: 'b1', tool_input: { file_path: 'C:/b' }, ...b });           // 5. B speaks
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b2', tool_input: { command: 'ok' }, tool_response: { exit_code: 0 }, ...b });
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'a3', is_interrupt: true, ...a });                 // 6. A is Esc'd
+  assert.strictEqual(r.m.instancesOf(T), null);
+  assert.strictEqual(r.m.stateOf(T), 'working', 'B never failed');
+  assert.strictEqual(r.m.causeOf(T), null, 'and A\'s failure is not blamed on B');
+});
+
+test('A1: the remaining run\'s OWN failure still shows on the one card', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  r.err(b);
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...a.by });
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'stressed');
+  assert.strictEqual(r.m.causeOf('code-reviewer'), 'A Bash call failed');
+});
+
+// ---- PR #239 Dexter 2: adopt() corrects a crosswise binding, and the run's own record moves with its id ------------------------
+
+test('A2: two runs bound crosswise, the completed result swaps them back WITH their own records', () => {
+  const r = rig();
+  const T = 'code-reviewer';
+  const idA = 'acode-reviewer-00000000000000aa', idB = 'acode-reviewer-00000000000000bb';
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_A', tool_input: { subagent_type: T } });
+  r.send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_B', tool_input: { subagent_type: T } });
+  // B speaks first, and fails: first-come binding puts bB on A's record.
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'b1', tool_input: { command: 'x' }, tool_response: { exit_code: 1 }, agent_id: idB, agent_type: T });
+  // A speaks, clean, and lands on B's record.
+  r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'a1', tool_input: { command: 'y' }, tool_response: { exit_code: 0 }, agent_id: idA, agent_type: T });
+  // A's spawn completes, naming its id, before its SubagentStop.
+  r.send('PostToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_A', tool_input: { subagent_type: T }, tool_response: { status: 'completed', agentId: idA } });
+  const rows = r.m.instancesOf(T);
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'stressed']], 'A finished clean; B is the one that failed');
+  assert.strictEqual(rows[1].cause, 'A Bash call failed', 'and B keeps its own cause');
+});
+
+// ---- PR #239 Dexter 3 / Miguel Y2: a run resumed inside its own finish flash takes over its card ---------------------------------
+
+const resume = (r, id, key) => r.send('PostToolUse', { tool_name: 'SendMessage', tool_use_id: key, tool_input: { to: id, message: 'again' },
+  tool_response: { success: true, resumedAgentId: id } });
+
+test('A3: a run resumed inside its own flash, while a sibling runs, is ONE card: its own, in its place', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  r.advance(1_000);                                   // inside FLASH_MS
+  resume(r, a.id, 'sm1');
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'working'], ['toolu_B', 'working']], 'two runs, two cards; A where it was');
+});
+
+test('A3: the resumed run finishing again inside the old flash is still one card, never an id twice', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  r.advance(1_000);
+  resume(r, a.id, 'sm1');
+  r.send('SubagentStop', a.by);
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.state]), [['toolu_A', 'happy'], ['toolu_B', 'working']]);
+});
+
+// ---- PR #239 Dexter 8: the guards no test would have missed --------------------------------------------------------------------
+
+test('A8: a name that falls asleep shows no flashing cards (the SLEEPING clear)', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  const c = r.spawnRun('code-reviewer', 'toolu_C');
+  r.send('SubagentStop', a.by);
+  r.send('SubagentStop', b.by);
+  r.send('PostToolUseFailure', { tool_name: 'Bash', tool_use_id: 'tx', is_interrupt: true, ...c.by });   // the last one cut off
+  assert.strictEqual(r.m.stateOf('code-reviewer'), 'sleeping');
+  assert.strictEqual(r.m.instancesOf('code-reviewer'), null, 'no cards under a sleeping name');
+});
+
+test('A8: a failure ends the run\'s retry series (fail() resets it): same, same, error, same is working again', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  r.spawnRun('code-reviewer', 'toolu_B');
+  const same = () => r.send('PostToolUse', { tool_name: 'Bash', tool_use_id: 'tq' + Math.random(), tool_input: { command: 'same' }, tool_response: { exit_code: 0 }, ...a.by });
+  same();
+  same();
+  r.err(a);
+  same();
+  assert.strictEqual(r.m.instancesOf('code-reviewer')[0].state, 'working', 'one call after the error, not the third of a series');
+});
+
+test('A11 S6: fail() ends the name\'s retry series too, on every path (a failed spawn as well as a failed call)', () => {
+  // An older CLI that labels no call: the name's own record is what the card reads.
+  let t = 1_000_000;
+  const m = createMoodMachine({ now: () => t });
+  const send = (event, payload) => m.handle({ event, payload });
+  const same = () => send('PostToolUse', { tool_name: 'Bash', tool_input: { command: 'same' }, tool_response: { exit_code: 0 } });
+  send('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'old' } });
+  same();
+  same();
+  send('PreToolUse', { tool_name: 'Agent', tool_use_id: 'toolu_f', tool_input: { subagent_type: 'old' } });
+  send('PostToolUseFailure', { tool_name: 'Agent', tool_use_id: 'toolu_f', tool_input: { subagent_type: 'old' }, error: 'boom' });
+  same();
+  // A good call after a failure shows working; without the reset it was the third of a series, stressed "retried ... 3 times".
+  assert.strictEqual(m.stateOf('old'), 'working', 'one call after the failure, not the third of a series');
+  assert.strictEqual(m.causeOf('old'), null);
+});
+
+// ---- PR #239 Dexter 7: a finish flash runs on a monotonic clock, so a wall-clock step back can't stretch it ------------------
+
+test('A7: a wall-clock step back of 10 minutes doesn\'t keep a finished instance\'s card for 10 minutes', () => {
+  let wall = 5_000_000, mono = 100;
+  const m = createMoodMachine({ now: () => wall, mono: () => mono });
+  const send = (event, payload) => m.handle({ event, payload });
+  const run = (key, id) => {
+    send('PreToolUse', { tool_name: 'Agent', tool_use_id: key, tool_input: { subagent_type: 'qa' } });
+    send('PreToolUse', { tool_name: 'Read', tool_use_id: 'r' + key, tool_input: {}, agent_id: id, agent_type: 'qa' });
+    return { agent_id: id, agent_type: 'qa' };
+  };
+  const a = run('toolu_A', 'aqa-000000000000000a');
+  const b = run('toolu_B', 'aqa-000000000000000b');
+  send('SubagentStop', a);
+  assert.strictEqual(m.instancesOf('qa').length, 2, 'A flashes beside B');
+  wall -= 600_000;                       // the system clock steps back
+  mono += FLASH_MS + 1;                  // while real time moves on past the flash
+  m.tick();
+  assert.strictEqual(m.instancesOf('qa'), null, 'the flash is over: B is the one card');
+  send('SubagentStop', b);
+  assert.strictEqual(m.stateOf('qa'), 'happy');
+  wall -= 600_000;
+  mono += FLASH_MS + 1;
+  m.tick();
+  assert.strictEqual(m.stateOf('qa'), 'sleeping', 'the name\'s own flash ends on the same clock');
+});
+
+test('A7: the host gives the mood machine a monotonic clock for its flashes', () => {
+  const host = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'host.js'), 'utf8');
+  assert.match(host, /const mood = createMoodMachine\(\{ mono: \(\) => performance\.now\(\) \}\);/);
+});
+
+test('A4: a finished instance\'s row says it ended; a live row carries its run\'s agent_id', () => {
+  const r = rig();
+  const a = r.spawnRun('code-reviewer', 'toolu_A');
+  const b = r.spawnRun('code-reviewer', 'toolu_B');
+  r.send('SubagentStop', a.by);
+  const rows = r.m.instancesOf('code-reviewer');
+  assert.ok(a.id, 'A had an id');
+  assert.deepStrictEqual(rows.map(x => [x.id, x.ended === true, x.agentId]), [['toolu_A', true, undefined], ['toolu_B', false, b.id]],
+    'a flash is no run to pause, so it names none');
+});

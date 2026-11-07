@@ -314,8 +314,10 @@ test('silence-stuck waits longer than ten minutes: a long unhooked call is not s
   assert.ok(STUCK_MS >= 20 * 60_000);
 });
 
-// PR #154 Miguel I2: cards are per NAME and a retry loop is counted per name, so two runs of one agent share it.
-test('two runs of one agent: a retry loop in one is the card\'s, and the other\'s different call ends it', () => {
+// PR #154 Miguel I2 had a retry loop counted per NAME, so a sibling's different call ended it. Since BACKLOG #142 b each run is its
+// own card with its own retry series (PR #239 Dexter 1): the loop is the looping run's until ITS next different call, and the
+// name's card, which reads the shown runs, says stuck while any of them is.
+test('two runs of one agent: a retry loop is the looping run\'s own, and only its own different call ends it', () => {
   const r = rig();
   const a1 = r.spawn('miguel');
   const a2 = r.spawn('miguel');
@@ -324,7 +326,10 @@ test('two runs of one agent: a retry loop in one is the card\'s, and the other\'
   for (let i = 0; i < 3; i++) r.post(a2, 'Bash', r.pre(a2, 'Bash', { command: 'loop' }), { command: 'loop' });
   assert.strictEqual(r.detail('miguel'), 'stuck', 'the card is stuck, whichever run retried');
   r.post(a1, 'Bash', r.pre(a1, 'Bash', { command: 'z' }), { command: 'z' });
-  assert.strictEqual(r.detail('miguel'), 'working', 'the sibling\'s different call resets the name\'s loop');
+  assert.strictEqual(r.detail('miguel'), 'stuck', 'the sibling\'s different call is not the looping run\'s');
+  assert.deepStrictEqual(r.m.instancesOf('miguel').map(x => [x.state, x.detail]), [['working', 'working'], ['stressed', 'stuck']]);
+  r.post(a2, 'Bash', r.pre(a2, 'Bash', { command: 'w' }), { command: 'w' });
+  assert.strictEqual(r.detail('miguel'), 'working', 'its own different call ends it');
 });
 
 test('the same call three times is stuck: state stressed, detail stuck', () => {
