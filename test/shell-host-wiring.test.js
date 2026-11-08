@@ -26,13 +26,15 @@ test('host.js: the pty runs the picked shell with its (empty) arguments, not cla
 });
 
 test('host.js: a shell\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {
+  // Since #74 F2 the env is built by host/pty-env.js: host.js hands it the kind and the parts, and its shell branch is pinned by
+  // behaviour in test/pty-env.test.js (a shell tab gets shellEnv(base), the worktree's, no provider, no mod token, no marker).
   const spawn = HOST.slice(HOST.indexOf('const spawnPty = () => pty.spawn('), HOST.indexOf('trackExit(term);'));
-  const from = spawn.indexOf('env: SHELL');
-  assert.ok(from > 0, 'the env is chosen by SHELL');
-  const shellBranch = spawn.slice(from, spawn.indexOf('\n      : {', from));
-  assert.match(shellBranch, /shellEnv\(cleanEnv\(\)\)/);
-  assert.doesNotMatch(shellBranch, /providerEnv|MOD_TOKEN|CLAUDE_CUSTOM_SESSION/);
-  assert.match(spawn.slice(spawn.indexOf('\n      : {', from)), /providerEnv/, 'claude\'s own branch still has them');
+  assert.match(spawn, /env: ptyEnv\(\{ kind: SHELL \? 'shell' : SIDE \? 'side' : 'branch', base: cleanEnv\(\), shellEnv, sessionEnv, providerEnv,/);
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'pty-env.js'), 'utf8');
+  const at = src.replace(/\r\n/g, '\n').indexOf("if (kind === 'shell') {");
+  const shellBranch = src.replace(/\r\n/g, '\n').slice(at, src.replace(/\r\n/g, '\n').indexOf('\n  }', at));
+  assert.match(shellBranch, /shellEnv\(\{ \.\.\.base \}\)/);
+  assert.doesNotMatch(shellBranch, /providerEnv|modEnv|CLAUDE_CUSTOM_SESSION/);
 });
 
 test('host.js: every identity the host writes says whether it is a shell host, as well as a side host', () => {

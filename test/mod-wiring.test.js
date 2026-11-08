@@ -53,7 +53,10 @@ test('Miguel Y9: the page writes the reason into the diagnostics log, for a mod 
 });
 
 test('the mod\'s port and token reach the child through its environment, and only when the server is up', () => {
-  assert.match(CODE, /\.\.\.\(modPort === null \? \{\} : \{ CLAUDE_CUSTOM_MOD_PORT: String\(modPort\), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN \}\),/);
+  // The env is built by host/pty-env.js since #74 F2 (a claude session spreads modEnv; a shell tab doesn't: test/pty-env.test.js).
+  assert.match(CODE, /modEnv: modPort === null \? \{\} : \{ CLAUDE_CUSTOM_MOD_PORT: String\(modPort\), CLAUDE_CUSTOM_MOD_TOKEN: MOD_TOKEN \} \}\),/);
+  const ptyEnvSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'pty-env.js'), 'utf8');
+  assert.match(ptyEnvSrc, /CLAUDE_CUSTOM_SESSION: '1',\s*\.\.\.modEnv,/);
 });
 
 test('an inherited port or token (a host launched from inside a harness tab) never reaches the child', () => {
