@@ -12,12 +12,18 @@
  */
 const QUIT_GRACE_MS = 5000;
 
-function armQuitWatchdog(app, { graceMs = QUIT_GRACE_MS, setTimer = setTimeout, hardKill = () => process.kill(process.pid, 'SIGKILL') } = {}) {
+// `onFire` (BACKLOG #74 A, app/quit-log.js) is told just before the kill, so a logged run kills exactly as the shipped one does
+// (PR #242 Miguel F7): it can't replace the kill, and one that throws doesn't stop it.
+function armQuitWatchdog(app, { graceMs = QUIT_GRACE_MS, setTimer = setTimeout, hardKill = () => process.kill(process.pid, 'SIGKILL'), onFire = null } = {}) {
   let armed = false;
   app.on('will-quit', (e) => {
     if (armed || (e && e.defaultPrevented)) return;
     armed = true;
-    const t = setTimer(hardKill, graceMs);
+    const fire = () => {
+      if (typeof onFire === 'function') { try { onFire(); } catch { /* the kill still happens */ } }
+      hardKill();
+    };
+    const t = setTimer(fire, graceMs);
     if (t && typeof t.unref === 'function') t.unref();
   });
 }
