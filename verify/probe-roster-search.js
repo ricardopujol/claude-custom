@@ -11,7 +11,7 @@
  * nothing is billed. The toggle's store and Electron's userData are throwaway temp folders. Screenshots go to the folder
  * named by SHOTS (default: a temp folder, printed at the end).
  *
- * HEAVY: take ~/.claude/scripts/heavy-lock.ps1 before running it.
+ * HEAVY: it takes the heavy-work lock itself when it starts (verify/README.md, "The heavy lock"): don't take the lock by hand first.
  *
  *   node verify/probe-roster-search.js        (exit 0 = every check passed)
  */

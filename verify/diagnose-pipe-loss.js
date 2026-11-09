@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/launch-electron');   // #243 Miguel I4: takes the heavy-work lock, so its timings are taken on a machine with nothing heavy beside it
 /* measure-hook-latency.js delivered only 4 of 35 events for EVERY helper, and
    the native timings sat at roughly (process startup + the 80ms connect
    timeout). That points at the bridge refusing connections rather than at slow

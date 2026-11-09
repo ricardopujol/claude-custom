@@ -12,6 +12,7 @@
    .claude/settings.json, with a SessionStart hook that appends a marker to a
    file. The --settings file carries a SessionStart hook with a different
    marker. Which markers land tells us what survived. */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -53,6 +54,7 @@ async function run(label, args) {
                    'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_BRIDGE_SESSION_ID']) delete env[k];
 
   const p = pty.spawn(BIN, args, { name: 'xterm-256color', cols: 100, rows: 30, cwd: work, env });
+  noteChild(p);   // the lock's work record: a live p keeps this probe a live holder (BACKLOG #112)
   let out = '';
   p.onData(d => { out += d; });
   await sleep(12000);

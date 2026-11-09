@@ -1,4 +1,5 @@
 'use strict';
+require('./lib/launch-electron');   // #243 Miguel I4: takes the heavy-work lock, so its timings are taken on a machine with nothing heavy beside it
 /* Is the 4-connection ceiling in the SERVER or in the C# client? Same server,
    same count, three clients: the C# exe, a spawned Node script, and an
    in-process Node connect (no spawn cost at all, isolating the protocol). */

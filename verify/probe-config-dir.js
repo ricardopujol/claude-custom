@@ -22,6 +22,7 @@
  * session's identity (CLAUDECODE, CLAUDE_CODE_*); ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN are dropped too so
  * the key can't be redirected.
  */
+require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before claude starts. Its claude runs are spawnSync, so noteChild can't record them (#243 Miguel S4): while this probe lives it holds the slot, but a hard kill of it mid-run frees the slot while that claude runs on, up to its spawnSync timeout
 const { spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');

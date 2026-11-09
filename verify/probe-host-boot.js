@@ -22,6 +22,7 @@
  * Run: node verify/probe-host-boot.js           (exit 0 = booted and ticked)
  */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -67,6 +68,7 @@ const env = { ...process.env,
 delete env.ELECTRON_RUN_AS_NODE;
 
 const child = spawn(process.execPath, ['-e', bootstrap], { cwd: ROOT, env });
+noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
 let out = '';
 child.stdout.on('data', d => { out += d; });
 child.stderr.on('data', d => { out += d; });

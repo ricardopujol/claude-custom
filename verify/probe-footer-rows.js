@@ -40,6 +40,7 @@
 
    Safety: ANTHROPIC_API_KEY and ELECTRON_RUN_AS_NODE are deleted from the
    child env. No command is typed, so no settings file is written. */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -91,8 +92,8 @@ async function boot({ output, mode }) {
     : ['--settings', settingsFile, '--permission-mode', mode];
   const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
   const child = process.platform === 'win32'
-    ? pty.spawn('cmd.exe', ['/c', 'claude', ...cliArgs], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env })
-    : pty.spawn('claude', cliArgs, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+    ? noteChild(pty.spawn('cmd.exe', ['/c', 'claude', ...cliArgs], { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env }))   // noteChild: the lock's work record (BACKLOG #112)
+    : noteChild(pty.spawn('claude', cliArgs, { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env }));
   child.onData(d => term.write(d));
 
   const screen = () => {

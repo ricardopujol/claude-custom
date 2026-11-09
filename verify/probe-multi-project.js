@@ -18,6 +18,7 @@
  */
 
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const { spawn } = require('child_process');
 const fs = require('fs');
 const net = require('net');
@@ -72,6 +73,7 @@ async function main() {
       stdio: ['ignore', log, log],
       env: { ...process.env, CLAUDE_CUSTOM_CWD: cwd, CLAUDE_CUSTOM_PORT: String(port) },
     });
+    noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
     kids.push(child);
     return child;
   };

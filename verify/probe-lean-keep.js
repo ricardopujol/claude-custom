@@ -1,7 +1,7 @@
 'use strict';
 /**
- * PROBE: lean mode DRAWS the Schedules panel (PR #200, Ricardo 2026-10-21) in a REAL window. (re-runnable; HEAVY: take
- * ~/.claude/scripts/heavy-lock.ps1 first)
+ * PROBE: lean mode DRAWS the Schedules panel (PR #200, Ricardo 2026-10-21) in a REAL window. (re-runnable; HEAVY: it
+ * takes the heavy-work lock itself)
  *
  *   node verify/probe-lean-keep.js            (exit 0 = every check held)
  *   LEAN_KEEP_SHOTS=<dir>                     keep the screenshots there (default: .harness/lean-keep)

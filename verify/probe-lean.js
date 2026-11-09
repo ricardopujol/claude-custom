@@ -1,7 +1,7 @@
 'use strict';
 /**
  * PROBE: lean mode (BACKLOG #62, documentation/DESIGN_LEAN_MODE.md) in a REAL window with REAL hosts. (re-runnable; HEAVY:
- * take ~/.claude/scripts/heavy-lock.ps1 first)
+ * it takes the heavy-work lock itself)
  *
  *   node verify/probe-lean.js            (exit 0 = every check held)
  *   LEAN_PROBE_SHOTS=<dir>               keep the screenshots there
