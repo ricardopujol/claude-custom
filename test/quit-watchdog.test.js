@@ -47,3 +47,17 @@ test('a quit another handler cancels (preventDefault) arms nothing', () => {
 test('the grace period is long enough for the app\'s own cleanup', () => {
   assert.ok(QUIT_GRACE_MS >= 3000 && QUIT_GRACE_MS <= 15000);
 });
+
+test('onFire (the quit log, #74 A) is told just before the same kill; it can neither replace nor stop it (PR #242 Miguel F7)', () => {
+  const order = [];
+  const r = rig({ hardKill: () => order.push('kill'), onFire: () => order.push('fire') });
+  r.app.emit('will-quit', { preventDefault() {} });
+  r.timers[0].fn();
+  assert.deepStrictEqual(order, ['fire', 'kill']);
+
+  const kills = [];
+  const t = rig({ hardKill: () => kills.push('kill'), onFire: () => { throw new Error('log failed'); } });
+  t.app.emit('will-quit', { preventDefault() {} });
+  assert.doesNotThrow(() => t.timers[0].fn());
+  assert.deepStrictEqual(kills, ['kill'], 'a throwing onFire still kills');
+});
