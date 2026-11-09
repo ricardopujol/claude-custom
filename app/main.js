@@ -59,6 +59,9 @@ const { createOccupancyService } = require('../host/occupancy-service');
 const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
 const { startTimes, createSelfStartTime, isAlive: isPidAlive } = require('../host/proc-start');
+// One window per project (DESIGN_TABS_SESSIONS.md 3.3): the owner file + proof, and the pipe a second launch speaks through.
+const { claim: claimOwner, release: releaseOwner, pickLane, forwardedCwd } = require('../host/window-owner');
+const { listen: listenForLaunches, send: sendFocus } = require('../host/window-focus');
 // ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
 // host of this build runs (a plain terminal, an older build). host/occupancy-transcripts.js.
 const { createTranscriptScanner } = require('../host/occupancy-transcripts');
@@ -216,6 +219,9 @@ const PROBE_PORT = Number(process.env.CLAUDE_CUSTOM_TABS_PROBE) || 0;
 // A probe window is killed by pid, which leaves a ghost icon in the notification area until the mouse passes over it. So only the
 // tray's own probe (verify/probe-tray.js) gets a tray; in every other probe the tray (and starting hidden) is off.
 const TRAY_ON = !PROBE_PORT || process.env.CLAUDE_CUSTOM_TRAY_PROBE === '1';
+// One window per project applies to a person's windows. A probe's windows come many to a temp folder, so they are outside the rule
+// unless the probe of the rule itself (verify/probe-one-window.js) sets CLAUDE_CUSTOM_ONE_WINDOW_PROBE=1.
+const ONE_WINDOW_ON = !PROBE_PORT || process.env.CLAUDE_CUSTOM_ONE_WINDOW_PROBE === '1';
 // The probe's secret; every driver command must carry it (Miguel, PR #75 M4).
 // handleProbeCommand refuses everything when it's missing or short.
 const PROBE_TOKEN = process.env.CLAUDE_CUSTOM_TABS_PROBE_TOKEN || null;
@@ -2382,6 +2388,55 @@ function startIndexing(seams) {
   setTimeout(() => { projects(PROJECT_ROOT).catch(() => {}); }, 15_000).unref();
 }
 
+// --- one window per project -------------------------------------------------------------------------------------
+// A second launch of this project is answered by the first window (focus + the lane it named) and ends without a window.
+// The pipe is up BEFORE the owner file names this process, and it answers only once the window is ready.
+const windowReady = (() => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; })();
+let launchPipe = null;
+const ownStartTime = createSelfStartTime();   // this process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it
+
+// The owner side: a launch came in. Focus (restoring a minimised or tray-hidden window) and select the lane it named, if this
+// window has one.
+async function onLaunchFocus(msg) {
+  await windowReady.promise;
+  focusWindow();
+  const key = pickLane(tabShell.snapshot().tabs, msg);
+  if (key) tabShell.select(key);
+  console.log(`[main] a second launch asked for this window (${msg.cwd || 'no lane'}${msg.port ? `, port ${msg.port}` : ''}): ${key ? `selected ${key}` : 'focused'}`);
+  return { selected: key };
+}
+
+// 'proceed' (make the window) or 'exit' (another window owns this project and has been told).
+async function claimProjectWindow() {
+  if (!ONE_WINDOW_ON) return 'proceed';
+  try {
+    launchPipe = await listenForLaunches({ pid: process.pid, onFocus: onLaunchFocus, log: (...a) => console.log(...a) }).catch((err) => {
+      console.log('[main] one window: no launch pipe (', err && err.message, ')');
+      return null;
+    });
+    const self = { pid: process.pid, start: await ownStartTime() };
+    const r = await claimOwner({ stateRoot: STATE_ROOT, self, startTimes });
+    if (r.action === 'focus') {
+      const msg = {};
+      const cwd = forwardedCwd(LAUNCH_CWD, PROJECT);
+      if (cwd) msg.cwd = cwd;
+      if (Number.isInteger(EXPLICIT_PORT)) msg.port = EXPLICIT_PORT;
+      const told = await sendFocus({ pid: r.owner.pid, msg });
+      if (told.ok) { console.log(`[main] one window: this project's window (pid ${r.owner.pid}) has it; this launch ends`); return 'exit'; }
+      // A proven owner that can't be reached (a build from before this, or it is closing): the old behaviour, a window of its own.
+      console.log(`[main] one window: owner pid ${r.owner.pid} did not answer (${told.error}); opening a window`);
+      return 'proceed';
+    }
+    if (r.published && !launchPipe) releaseOwner({ stateRoot: STATE_ROOT, selfPid: process.pid });   // a file naming a window nobody can reach
+    // Gone with the process, however it goes (app.exit skips will-quit); a crash leaves a file the next launch proves dead.
+    process.on('exit', () => { try { releaseOwner({ stateRoot: STATE_ROOT, selfPid: process.pid }); } catch { /* the proof copes with a leftover */ } });
+    return 'proceed';
+  } catch (err) {
+    console.log('[main] one window: the check failed, opening a window:', err && err.message);   // never a crash: the old behaviour
+    return 'proceed';
+  }
+}
+
 app.whenReady().then(async () => {
   console.log('[main] project       :', PROJECT_ROOT, `(${MODE})`);
   console.log('[main] launched on   :', LAUNCH_CWD);
@@ -2389,6 +2444,9 @@ app.whenReady().then(async () => {
   // Named and refused (see explicitPort): nothing sensible is left to do, and
   // opening a window anyway would show a terminal wired to nothing.
   if (EXPLICIT_PORT && EXPLICIT_PORT.bad !== undefined) { app.exit(1); return; }
+
+  // One window per project: before anything is made, ask whether this project's window already exists.
+  if (await claimProjectWindow() === 'exit') { app.exit(0); return; }
 
   const seams = readSeams(process.env);
   const openPrsReader = seams.openPrsFixture
@@ -2408,8 +2466,6 @@ app.whenReady().then(async () => {
     onChange: () => { if (tabShell) tabShell.refresh(); },
     log: (...a) => console.log(...a),
   });
-  // This process's own start time, asked once: the claims below and the shared sampler's owner record both prove "this process" with it.
-  const ownStartTime = createSelfStartTime();
   transcriptOccupancy = createTranscriptScanner({
     // #81: a side host's session: its agents' claims are readers', whoever writes them
     readerSessions: () => readerSessionIds(ownIdentities() || []),
@@ -2616,6 +2672,7 @@ app.whenReady().then(async () => {
   occupancyService.start();
   transcriptOccupancy.start();
   const first = await tabShell.open();
+  windowReady.resolve();          // a second launch waiting on this window is answered from here
   if (attachOnlyRefusal) {
     console.error('[main] Open refused:', attachOnlyRefusal.reason);
     if (!PROBE_PORT && win && !win.isDestroyed()) {

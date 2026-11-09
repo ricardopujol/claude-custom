@@ -150,4 +150,14 @@ function pickLane(tabs, { cwd, port } = {}) {
   return byCwd ? byCwd.key : null;
 }
 
-module.exports = { OWNER_FILE, parseOwner, decide, proveOwner, claim, release, pickLane };
+/**
+ * What a launch forwards as its lane: its folder when that is a lane's own folder (a worktree), nothing when it is the project's
+ * `dev` or its container root (a plain focus: launching from `dev\` is not asking to leave the lane the person is on).
+ */
+function forwardedCwd(cwd, project) {
+  if (typeof cwd !== 'string' || !cwd || !project) return undefined;
+  if (samePath(cwd, project.dev) || samePath(cwd, project.root)) return undefined;
+  return cwd;
+}
+
+module.exports = { OWNER_FILE, parseOwner, decide, proveOwner, claim, release, pickLane, forwardedCwd };

@@ -274,6 +274,16 @@ test('pickLane: a port wins over a folder; nothing matching is null (focus only)
   assert.strictEqual(pickLane(null, { cwd: 'C:\\p\\dev' }), null);
 });
 
+test('forwardedCwd: only a lane\'s own folder is forwarded; the project\'s dev folder or root is a plain focus', () => {
+  const { forwardedCwd } = load();
+  const project = { kind: 'container', root: 'C:\\p', dev: 'C:\\p\\dev' };
+  assert.strictEqual(forwardedCwd('C:\\p\\feat-x', project), 'C:\\p\\feat-x');
+  assert.strictEqual(forwardedCwd('c:/p/dev/', project), undefined);
+  assert.strictEqual(forwardedCwd('C:\\p', project), undefined);
+  assert.strictEqual(forwardedCwd('', project), undefined);
+  assert.strictEqual(forwardedCwd('C:\\p\\feat-x', null), undefined, 'a folder in no project has no lanes');
+});
+
 // ---- the property: never a second window while a proven live owner exists ----------------------------------------
 
 test('property: decide never proceeds past a proven live owner that is not this process', () => {
