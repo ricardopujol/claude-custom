@@ -217,7 +217,7 @@ async function main() {
   check('4: a graceful quit removed the owner file', gone === true, `file=${JSON.stringify(readOwner(p))}`);
   // Chromium's shutdown is slow under load (BACKLOG #74 A): the file goes first, the process much later. So step 5's DEAD owner is a
   // short-lived process of this probe's own, proven by pid and start time while it ran, written down after it ended.
-  const shortLived = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: 'ignore', windowsHide: true });
+  const shortLived = require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { stdio: 'ignore', windowsHide: true });   // lock-ok: a 1.5 s node that ends by itself, awaited below
   const shortStart = (await startTimes([shortLived.pid])).get(shortLived.pid);
   await new Promise((resolve) => shortLived.on('exit', resolve));
   check('5: setup: a process of ours that has ended, with the pid and start time it had', typeof shortStart === 'string' && !isRunning(shortLived.pid));
