@@ -6,6 +6,8 @@
    on generated art is to look at it. */
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { app, BrowserWindow } = require('electron');
+// BACKLOG #179: this main is itself the Electron, so it takes the heavy lock here, before the app is ready, and exit() frees it first.
+const mainLock = require('./lib/electron-main-lock').takeMainLock({ app, label: 'shoot.js' });
 const { probeWindowOptions } = require('../host/probe-window');
 const path = require('path');
 const fs = require('fs');
@@ -35,5 +37,5 @@ app.whenReady().then(async () => {
     console.error('shoot failed:', err.message);
     process.exitCode = 1;
   }
-  setTimeout(() => app.exit(process.exitCode || 0), 300);
+  setTimeout(() => mainLock.exit(process.exitCode || 0), 300);
 });

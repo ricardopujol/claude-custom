@@ -28,6 +28,8 @@
 
 require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { app } = require('electron');
+// BACKLOG #179: this main is itself the Electron, so it takes the heavy lock here, before the app is ready, and exit() frees it first.
+const mainLock = require('./lib/electron-main-lock').takeMainLock({ app, label: 'probe-atomic-sleep.js' });
 const path = require('path');
 const { sleepSync, renameWithRetry } =
   require(path.join(__dirname, '..', 'host', 'atomic-write.js'));
@@ -69,5 +71,5 @@ app.whenReady().then(() => {
   }
 
   console.log(failures ? `\n${failures} FAILED` : '\nall checks passed');
-  setTimeout(() => app.exit(failures ? 1 : 0), 200);
+  setTimeout(() => mainLock.exit(failures ? 1 : 0), 200);
 });

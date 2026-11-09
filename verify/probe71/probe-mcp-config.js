@@ -1,4 +1,5 @@
 'use strict';
+const { noteChild } = require('../lib/launch-electron');   // #243 Miguel I1: takes the heavy-work lock now, before anything starts; noteChild records the claude it starts
 /* Probe #71 (c): does `claude --mcp-config '<json string>'` at spawn hand the session a claude-custom-owned MCP
    server, with no edit to any config file and no approval prompt, and does an env var set in that JSON reach the
    server (so it knows which session/tab it serves)? Runs `claude -p` against a fake endpoint (zero spend) in a
@@ -36,6 +37,7 @@ const claudeBin = path.join(execFileSync('npm', ['root', '-g'], { encoding: 'utf
   const mcp = JSON.stringify({ mcpServers: { canvas: { command: process.execPath, args: [path.join(__dirname, 'canvas-mcp.js')], env: { CANVAS_SESSION: 'tab-7', CANVAS_MCP_LOG: mcpLog } } } });
   const before = fs.readFileSync(path.join(config, '.claude.json'), 'utf8');
   const child = spawn(claudeBin, ['-p', 'hello', '--model', 'haiku', '--mcp-config', mcp], { cwd: work, env });
+  noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
   let out = ''; child.stdout.on('data', d => { out += d; }); child.stderr.on('data', d => { out += d; });
   const code = await new Promise(r => { const t = setTimeout(() => { try { require('C:/Users/ricar/VibeCode/claude-custom/dev/host/kill-tree').killChildTree(child); } catch {} r('timeout'); }, 60000); child.on('exit', c => { clearTimeout(t); r(c); }); });
   const mainTools = seen.filter(Boolean).find(t => t.length > 5) || [];

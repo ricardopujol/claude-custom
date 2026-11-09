@@ -44,6 +44,7 @@
    (e) Markdown is rendered: `inline code` loses its backticks (the path shows
        bare), and [mocks](C:\...\git-tree-mocks.html) shows only "mocks" -- the
        target isn't on screen, so it can't become a file link from the text. */
+const { noteChild } = require('./lib/launch-electron');   // BACKLOG #179: takes the heavy-work lock now, before anything heavy starts; noteChild records each host / claude it starts
 const pty = require('node-pty');
 const { Terminal } = require('@xterm/headless');
 const path = require('path');
@@ -64,6 +65,7 @@ const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true, scro
 const args = ['--setting-sources', 'project,local', '--model', 'haiku'];
 const child = pty.spawn('cmd.exe', ['/c', 'claude', ...args],
   { name: 'xterm-256color', cols: COLS, rows: ROWS, cwd: REPO, env });
+noteChild(child);   // the lock's work record: a live child keeps this probe a live holder (BACKLOG #112)
 child.onData(d => term.write(d));
 // Ctrl+C on the probe ends its own `claude` too, not just the probe (PR #92 Miguel S7).
 process.on('SIGINT', () => { try { child.kill(); } catch {} process.exit(130); });
