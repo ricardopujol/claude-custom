@@ -4,7 +4,7 @@
  * with a REAL host. (re-runnable)
  *
  *   env -u ELECTRON_RUN_AS_NODE node verify/probe-chat-view.js        (exit 0 = every check held)
- *   CHAT_VIEW_PROBE_SHOTS=<dir>                                       also keep the screenshots there
+ *   CHAT_VIEW_PROBE_SHOTS=<dir>  or  --shots=<dir>                    also keep the screenshots there
  *
  * The unit tests pin the decisions and the DOM (jsdom). No unit test can see the chat laid over a real xterm without
  * resizing it, a real hook event travel native helper -> pipe -> host -> websocket -> page, the plain-<script> global
@@ -27,6 +27,12 @@
  *   E  a permission prompt (Notification) flips the tab to the terminal with the one-line note; a main-session tool
  *      event (the answer) brings the chat back; a dialog still open when Ctrl+Shift+H is pressed keeps the terminal
  *   F  "Claude is working..." from a prompt to its Stop; a reply with hostile text shows as text, no element made of it
+ *   I  (#171) the chat shows the project's background: see-through over a picture, a video and a plain colour (in a dark and a light
+ *      look, and lean), so #bg and its darkness veil show as they do behind the terminal; the live terminal's pixels are hidden while
+ *      the chat is shown (opacity 0, so no resize) and back when it isn't. Screenshots chat-bg-*.png (ffmpeg makes the picture and
+ *      the video locally; without it I is skipped)
+ *   J  (#172) Ctrl+wheel over the conversation zooms it in 10 % steps, 70 % to 200 %, each wheel cancelled (no page zoom), the terminal's
+ *      font and size untouched; the zoom lands in the app-wide fonts record; a real Ctrl+0 keypress resets it. Screenshot chat-zoom-150.png
  *   G  Ctrl+Shift+H toggles; a re-attached window (hello) is handed the conversation; off shows the terminal again
  *
  * SAFE. The session's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills: this is NOT a real claude run, because that
@@ -57,7 +63,8 @@ const tmp = tmpDir('cc-probe-chat-');
 const container = path.join(tmp, 'proj');
 const dev = path.join(container, 'dev');
 const userData = path.join(tmp, 'user-data');
-const shots = process.env.CHAT_VIEW_PROBE_SHOTS || path.join(tmp, 'shots');
+const shotsArg = process.argv.find(a => a.startsWith('--shots='));
+const shots = shotsArg ? shotsArg.slice('--shots='.length) : (process.env.CHAT_VIEW_PROBE_SHOTS || path.join(tmp, 'shots'));
 const boxCtl = path.join(tmp, 'box-ctl.json');
 const boxLog = path.join(tmp, 'box-submitted.log');
 fs.mkdirSync(shots, { recursive: true });
@@ -361,6 +368,149 @@ async function main() {
   const copyAll = await doChat(app, 'copy', { label: 'whole reply', index: (await chat(app)).copyButtons.filter(b => (b.label || '').includes('whole reply')).length - 1 });
   check('H: Copy reply copies all of it', copyAll.ok && (copyAll.skipped || (copyAll.copied.includes('A: the long answer, in full') && copyAll.copied.includes('B: saved a memory'))), JSON.stringify(copyAll && copyAll.copied));
 
+  // I (#171) ------------------------------------------------------------------------
+  const CLEAR = 'rgba(0, 0, 0, 0)';
+  const shown = await waitFor(async () => { const c = await chat(app); return c && c.shown && !c.rootHidden ? c : null; }, 10000);
+  check('I: while the chat is shown the live terminal\'s pixels are hidden (opacity 0), and it is still its own size',
+    !!shown && shown.termOpacity === '0' && shown.term.cols === before.term.cols && shown.term.rows === before.term.rows, JSON.stringify(shown && { o: shown.termOpacity, t: shown.term }));
+  check('I: ...the chat\'s fill follows the background: see-through over one, the terminal\'s own fill without',
+    !!shown && (shown.hasBg ? shown.rootBg === CLEAR : shown.rootBg !== CLEAR), JSON.stringify(shown && { hasBg: shown.hasBg, bg: shown.rootBg }));
+  const media = path.join(tmp, 'media');
+  fs.mkdirSync(media, { recursive: true });
+  const png = path.join(media, 'background.png');
+  const webm = path.join(media, 'background.webm');
+  const ff = (args) => spawnSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { windowsHide: true, encoding: 'utf8' }).status === 0;
+  const madeMedia = ff(['-f', 'lavfi', '-i', 'testsrc2=size=1280x720', '-frames:v', '1', png])
+    && ff(['-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=15:duration=3', '-c:v', 'libvpx-vp9', '-b:v', '400k', '-pix_fmt', 'yuv420p', webm]);
+  if (!madeMedia) console.log('SKIP  I: ffmpeg could not make the test picture and video');
+  else {
+    const bgState = async () => { const r = await view(app, 'bgState'); return r && r.ok ? r : null; };
+    const fonts = async () => { const r = await view(app, 'fontsState'); return r && r.ok ? r : null; };
+    const seeThrough = (label, c) => check(`I: ${label}: the chat is see-through over it and the terminal's pixels are hidden`,
+      !!c && c.shown && c.hasBg && c.rootBg === CLEAR && c.termOpacity === '0', JSON.stringify(c && { s: c.shown, hasBg: c.hasBg, bg: c.rootBg, o: c.termOpacity }));
+
+    await view(app, 'bgStyle', { action: 'set-background', path: png });
+    const pic = await waitFor(async () => { const b = await bgState(); return b && b.hasCustomBg && b.bgImage.includes('background.png') ? b : null; }, 15000);
+    check('I: a picture is the project\'s background', !!pic, JSON.stringify(pic && { custom: pic.hasCustomBg, img: pic.bgImage }));
+    seeThrough('a picture', await chat(app));
+    check('I: ...under the same darkness veil the terminal gets (the veil is #bg\'s own, shared by both views)', !!pic && pic.veil > 0, pic && String(pic.veil));
+    await sleep(400);
+    await shoot(app, 'chat-bg-image');
+
+    await doChat(app, 'toggle');
+    const termView = await waitFor(async () => { const c = await chat(app); return c && c.rootHidden && !c.shown ? c : null; }, 5000);
+    check('I: with the chat off the terminal\'s pixels are back (opacity 1)', !!termView && termView.termOpacity === '1', JSON.stringify(termView && termView.termOpacity));
+    await sleep(300);
+    await shoot(app, 'chat-bg-image-terminal');
+    await doChat(app, 'toggle');
+    await waitFor(async () => { const c = await chat(app); return c && c.shown ? c : null; }, 5000);
+
+    await view(app, 'leanClass', { on: true });
+    await sleep(600);
+    seeThrough('a picture, in lean', await chat(app));
+    await shoot(app, 'chat-bg-lean');
+    await view(app, 'leanClass', { on: false });
+    await sleep(400);
+
+    await view(app, 'bgStyle', { action: 'set-background', path: webm });
+    const vid = await waitFor(async () => { const b = await bgState(); return b && b.video && b.video.readyState >= 2 ? b : null; }, 15000);
+    check('I: a video is the project\'s background, and it plays under the chat', !!vid && vid.video.paused === false, JSON.stringify(vid && vid.video));
+    seeThrough('a video', await chat(app));
+    await sleep(400);
+    await shoot(app, 'chat-bg-video');
+
+    await view(app, 'bgStyle', { action: 'set-look', look: { backgroundMode: 'colour' } });
+    const plainBg = await waitFor(async () => { const f = await fonts(); return f && f.bg.plainColour && f.bg.hasPlainClass ? f : null; }, 10000);
+    check('I: Plain colour is the project\'s background', !!plainBg, JSON.stringify(plainBg && plainBg.bg));
+    seeThrough('a plain colour', await chat(app));
+    await sleep(400);
+    await shoot(app, 'chat-bg-plain');
+    await view(app, 'bgStyle', { action: 'set-look', look: { backgroundMode: null } });
+    await waitFor(async () => { const f = await fonts(); return f && !f.bg.plainColour ? f : null; }, 10000);
+
+    await view(app, 'bgStyle', { action: 'set-background', path: png });
+    await waitFor(async () => { const b = await bgState(); return b && b.bgImage.includes('background.png') && !b.video ? b : null; }, 15000);
+    await view(app, 'bgStyle', { action: 'set-mode', mode: 'light' });
+    const light = await waitFor(async () => { const c = await chat(app); return c && c.lookMode === 'light' ? c : null; }, 15000);
+    check('I: a light look is on', !!light, JSON.stringify(await chat(app).then(c => c && c.lookMode)));
+    seeThrough('a picture, in a light look', light);
+    await sleep(600);
+    await shoot(app, 'chat-bg-light');
+    await view(app, 'bgStyle', { action: 'set-mode', mode: 'dark' });
+    await waitFor(async () => { const c = await chat(app); return c && c.lookMode !== 'light' ? c : null; }, 15000);
+  }
+
+  // J (#172) ------------------------------------------------------------------------
+  const fontsRec = async () => { const r = await view(app, 'fontsState'); return r && r.ok ? r.settings : null; };
+  const z0 = await waitFor(async () => { const c = await chat(app); return c && c.shown ? c : null; }, 5000);
+  check('J: the chat starts at 100 % (zoom 1)', !!z0 && z0.chatZoom === 100 && Number(z0.logZoom) === 1, JSON.stringify(z0 && { z: z0.chatZoom, css: z0.logZoom }));
+  const plain = await doChat(app, 'wheel', { deltaY: -100, ctrl: false });
+  const z1 = await chat(app);
+  check('J: a wheel without Ctrl only scrolls: no zoom, not cancelled', plain.ok && plain.cancelled === false && z1.chatZoom === 100, JSON.stringify({ plain, z: z1.chatZoom }));
+  // F10: a touchpad pinch is a burst of small deltas: 15 of -4 px (60 px of travel) is less than one step
+  for (let i = 0; i < 15; i++) await doChat(app, 'wheel', { deltaY: -4, ctrl: true });
+  const zb = await chat(app);
+  check('J: a touchpad-like burst of 15 Ctrl+wheel events of -4 px (60 px) does not move the zoom (one step per 100 px of travel)', zb.chatZoom === 100, String(zb.chatZoom));
+  await sleep(400);                                            // the gesture goes quiet: the 60 px are forgotten
+  // F11: at the bottom of the conversation before the zoom; still there after it; and the next reply is followed
+  await doChat(app, 'scrollBottom');
+  const before11 = (await chat(app)).logScroll;
+  const ups = [];
+  for (let i = 0; i < 5; i++) ups.push(await doChat(app, 'wheel', { deltaY: -100, ctrl: true }));
+  await sleep(200);
+  const after11 = (await chat(app)).logScroll;
+  console.log(`MEASURE F11 scroll before the zoom ${JSON.stringify(before11)} after five steps ${JSON.stringify(after11)}`);
+  check('J (F11): a reader at the bottom of the conversation is still at the bottom after zooming in', before11.atBottom && after11.atBottom, JSON.stringify({ before11, after11 }));
+  hook(pid, 'UserPromptSubmit', { prompt: 'one more question after the zoom' });
+  hook(pid, 'Stop', { last_assistant_message: 'FOLLOWED-AFTER-ZOOM reply' });
+  const followed = await waitFor(async () => { const c = await chat(app); return c && c.logText.includes('FOLLOWED-AFTER-ZOOM') ? c : null; }, 10000);
+  await sleep(300);
+  const after11b = (await chat(app)).logScroll;
+  console.log(`MEASURE F11 scroll after the next reply ${JSON.stringify(after11b)}`);
+  check('J (F11): ...and the next reply arrives in view (the log followed it)', !!followed && after11b.atBottom, JSON.stringify(after11b));
+  const z2 = await chat(app);
+  check('J: five Ctrl+wheel ups make the conversation 150 % (zoom 1.5), each wheel cancelled so the page never zooms',
+    ups.every(u => u.ok && u.cancelled === true) && z2.chatZoom === 150 && Number(z2.logZoom) === 1.5, JSON.stringify({ c: ups.map(u => u.cancelled), z: z2.chatZoom, css: z2.logZoom }));
+  check('J: ...the terminal\'s font and size did not move, and no resize was sent', z2.termFontSize === z0.termFontSize && z2.term.cols === before.term.cols
+    && z2.term.rows === before.term.rows && z2.resizeSends === z0.resizeSends, JSON.stringify({ f: [z0.termFontSize, z2.termFontSize], t: z2.term, s: [z0.resizeSends, z2.resizeSends] }));
+  const saved = await waitFor(async () => { const s = await fontsRec(); return s && s.chatZoom === 150 ? s : null; }, 5000);
+  check('J: ...and it is remembered app-wide: the fonts record holds chatZoom 150 once the wheel settles', !!saved, JSON.stringify(await fontsRec()));
+  await sleep(300);
+  await shoot(app, 'chat-zoom-150');
+  for (let i = 0; i < 20; i++) await doChat(app, 'wheel', { deltaY: -100, ctrl: true });
+  const top = await chat(app);
+  check('J: it stops at 200 %', top.chatZoom === 200, String(top.chatZoom));
+  for (let i = 0; i < 30; i++) await doChat(app, 'wheel', { deltaY: 100, ctrl: true });
+  const bottom = await chat(app);
+  check('J: ...and at 70 %', bottom.chatZoom === 70 && Number(bottom.logZoom) === 0.7, JSON.stringify({ z: bottom.chatZoom, css: bottom.logZoom }));
+  // F13: Ctrl+0 does nothing while the terminal is the display shown
+  await doChat(app, 'toggle');
+  await waitFor(async () => { const c = await chat(app); return c && !c.shown ? c : null; }, 5000);
+  await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
+  await sleep(400);
+  const offZoom = (await chat(app)).chatZoom;
+  check('J (F13): Ctrl+0 while the terminal is shown leaves the chat zoom alone', offZoom === 70, String(offZoom));
+  await doChat(app, 'toggle');
+  await waitFor(async () => { const c = await chat(app); return c && c.shown ? c : null; }, 5000);
+  // F13: Ctrl+0 as a real keypress with the keyboard NOT in the chat's type box (as after clicking the conversation's text)
+  const blurred = await doChat(app, 'blur');
+  const keyed = await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
+  const reset = await waitFor(async () => { const c = await chat(app); return c && c.chatZoom === 100 ? c : null; }, 3000);
+  check('J (F13): Ctrl+0 with the chat shown puts it back to 100 %, though the keyboard is not in the type box', !!keyed.ok && !!reset && (await chat(app)).focusInChat === false,
+    JSON.stringify({ blurred, keyed, z: (await chat(app)).chatZoom, focus: (await chat(app)).focusInChat }));
+  const savedReset = await waitFor(async () => { const s = await fontsRec(); return s && s.chatZoom === 100 ? s : null; }, 5000);
+  check('J: ...and the record follows (chatZoom 100)', !!savedReset, JSON.stringify(await fontsRec()));
+  // F14: a REAL wheel event with Ctrl held over the chat (webContents.sendInputEvent): the page itself never zooms, the chat does
+  const rr = (await chat(app)).rootRect;
+  const real = await command(app, { cmd: 'mouseWheel', x: Math.round(rr.left + rr.width / 2), y: Math.round(rr.top + rr.height / 2), deltaY: 120, ctrl: true });
+  await sleep(300);
+  const zReal = (await chat(app)).chatZoom;
+  check('J (F14): a real Ctrl+wheel over the chat moves the chat zoom and leaves the PAGE zoom factor at 1', !!real.ok && real.zoomFactor === 1 && zReal !== 100,
+    JSON.stringify({ real, chatZoom: zReal }));
+  await command(app, { cmd: 'key', key: '0', modifiers: ['control'] });
+  await waitFor(async () => { const c = await chat(app); return c && c.chatZoom === 100 ? c : null; }, 3000);
+  await view(app, 'fontsSet', { settings: { chatZoom: null } });      // the app under test's own UI-state folder: put the field back to unset
+
   // G ------------------------------------------------------------------------------
   const count = (await chat(app)).bubbles.length;
   await view(app, 'reconnect', { blur: true });
@@ -369,6 +519,7 @@ async function main() {
   await doChat(app, 'toggle');
   const terminalBack = await waitFor(async () => { const c = await chat(app); return c && c.rootHidden && c.wanted === false && c.btn.pressed === 'false' ? c : null; }, 5000);
   check('G: the button again shows the terminal', !!terminalBack);
+  check('G: ...with its pixels back (#171: opacity 1 once the chat is off)', !!terminalBack && terminalBack.termOpacity === '1', JSON.stringify(terminalBack && terminalBack.termOpacity));
   check('G: ...which is the real terminal: the earlier typed command\'s output is still on its screen', (await screenOf(app)).includes('chat-typed-ok'));
   await shoot(app, '4-terminal-again');
 

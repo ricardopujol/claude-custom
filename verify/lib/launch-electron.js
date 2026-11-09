@@ -31,7 +31,7 @@ const { startTimes: realStartTimes, createSelfStartTime } = require('../../host/
 const ledger = require('../../host/pid-ledger');
 const { VISIBLE_VAR } = require('../../host/probe-window');
 const path = require('path');
-const { createProcessLock, HeavyLockError } = require('../../host/heavy-lock');
+const { createProcessLock, HeavyLockError, notRunLine, NOT_RUN_EXIT } = require('../../host/heavy-lock');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -78,14 +78,19 @@ function probeName(argv1 = process.argv[1]) {
   return (path.dirname(abs) + path.sep).toLowerCase().startsWith((VERIFY_DIR + path.sep).toLowerCase()) ? path.basename(abs) : null;
 }
 const defaultHeavyLock = createProcessLock({ label: probeName() || 'probe', beforeRelease: () => sweepLive() });
+// The lock a launch records into: the one handed in, else this probe's own (a non-probe process has none). Declared before its
+// users (#112 M5).
+const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 // A probe's Electron root is work the lock's holder started: recorded, so a dead probe with a live Electron isn't a dead holder.
 const noteWork = (heavyLock, handle) => {
   const lock = lockFor(heavyLock);
   if (lock && typeof lock.addWork === 'function' && typeof handle.start === 'string') { try { lock.addWork(handle.pid, handle.start); } catch { /* a safety net */ } }
 };
 // A host.js / claude a probe starts by hand with a plain spawn: the same work record. Written at once with an unknown start
-// (a hard kill during the 0.5-1.5 s start query still leaves it listed), then again with the start time. Nothing if the
-// lock isn't held, or the child never got a pid. Returns the child.
+// (a hard kill during the 0.5-1.5 s start query still leaves it listed), then again with the start time. The second
+// addWork RUNS THAT START QUERY SYNCHRONOUSLY (one powershell, 0.5-1.5 s) and blocks this probe's event loop meanwhile, so
+// call it right after a spawn, never in a hot path (#113 M4); a child it can't list has exited and is dropped from the record
+// (#113 Dexter 1). Nothing if the lock isn't held, or the child never got a pid. Returns the child.
 const noteChild = (child, heavyLock) => {
   const lock = lockFor(heavyLock);
   const pid = child && child.pid;
@@ -94,17 +99,25 @@ const noteChild = (child, heavyLock) => {
   }
   return child;
 };
-const lockFor = (heavyLock) => (heavyLock !== undefined ? heavyLock : (probeName() ? defaultHeavyLock : null));
 
-// Busy / too loaded is one clear line and exit 1, not a stack trace; anything else is thrown as it was.
+// Busy / too loaded is the reason, then the NOT RUN line, and exit 75 (NOT_RUN_EXIT, never a probe's own failure codes),
+// not a stack trace; anything else is thrown as it was.
 function takeLock(lock, exit = (c) => process.exit(c), say = console.error) {
   if (!lock) return;
   try { lock.ensure(); } catch (err) {
-    if (err instanceof HeavyLockError) { say(`[heavy-lock] ${probeName() || 'probe'} did not run: ${err.message}`); exit(1); }
+    if (err instanceof HeavyLockError) {
+      say(`[heavy-lock] ${probeName() || 'probe'} did not run: ${err.message}`);
+      say(notRunLine(err));
+      exit(NOT_RUN_EXIT);
+    }
     throw err;
   }
 }
 if (probeName()) takeLock(defaultHeavyLock);
+// BACKLOG #169: every process tree a probe starts carries this probe's mark (verify/lib/mark-probe.js, which a probe that spawns a host
+// by hand without this launcher requires too). Set in process.env itself, so the Electron, the hosts it starts and a host a probe spawns
+// by hand (all built from it) inherit it; the name has no CLAUDE_CUSTOM_ prefix, so no env stripping above removes it.
+require('./mark-probe');
 const live = new Set();            // handles not yet stopped, for the exit / signal sweep
 let sweepInstalled = false;
 

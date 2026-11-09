@@ -4,6 +4,7 @@
 
    Exists because SVG cannot be inspected by reading it -- the only honest check
    on generated art is to look at it. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { app, BrowserWindow } = require('electron');
 const { probeWindowOptions } = require('../host/probe-window');
 const path = require('path');

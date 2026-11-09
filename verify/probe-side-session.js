@@ -41,6 +41,10 @@ const { createHygieneRegistry } = require('./lib/process-hygiene');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { sendControl } = require(path.join(ROOT, 'host', 'host-client'));
 const sideSession = require(path.join(ROOT, 'host', 'side-session'));
+// A host's teardown is bounded by the host itself (host/bounded-shutdown.js: the pty kill is proven by start time, up to 30 s on a
+// loaded machine, then 15 s more). Measured on 2026-11-04: with 15 s / 20 s waits here, 3 of 4 runs saw a side host still ending when
+// the wait ran out. So "the host is gone" is awaited for the host's own bound, and the time it took is printed.
+const HOST_GONE_MS = require(path.join(ROOT, 'host', 'bounded-shutdown')).SHUTDOWN_BOUND_MS + 10000;
 const { buildClaudeArgs } = require(path.join(ROOT, 'host', 'settings-writer'));
 
 if (process.platform !== 'win32') {
@@ -346,8 +350,12 @@ async function main() {
       && !real.tools.some(t => ['Bash', 'PowerShell', 'Monitor', 'Edit', 'Write', 'NotebookEdit'].includes(t)) && real.mcp.length === 0 && real.mode === 'plan',
       JSON.stringify(real));
     const open = await initTools([]);
-    check('and every tool an UNRESTRICTED session of the installed CLI offers has been reviewed (a new one fails here until it is classified)',
-      !!open.tools && open.tools.every(t => sideSession.SIDE_REVIEWED_TOOLS.includes(t)), JSON.stringify(open.tools || open));
+    // mcp__<server>__<tool> names are whatever connectors the signed-in account has (they differ per machine and per day), not the CLI's
+    // built-ins. They are fenced by --strict-mcp-config, which the check above measures on the real CLI (mcp: [] in a side session).
+    const builtIn = (open.tools || []).filter(t => !t.startsWith('mcp__'));
+    check('and every built-in tool an UNRESTRICTED session of the installed CLI offers has been reviewed (a new one fails here until it is classified)',
+      !!open.tools && builtIn.length > 20 && builtIn.every(t => sideSession.SIDE_REVIEWED_TOOLS.includes(t)),
+      JSON.stringify(open.tools ? builtIn.filter(t => !sideSession.SIDE_REVIEWED_TOOLS.includes(t)) : open));
   }
 
   // The session lock lives in the worktree's git dir: the branch tab's host holds it, the side host does not.
@@ -377,7 +385,9 @@ async function main() {
 
   // ===== reopen: stop the side host =====
   const stopped = await sendControl({ port: sideHost.port, token: tokenOf(sideHost.port), msg: { type: 'stop' } });
-  const gone = await waitFor(async () => !alive(sideHost.pid), 15000, 250);
+  const stopT0 = Date.now();
+  const gone = await waitFor(async () => !alive(sideHost.pid), HOST_GONE_MS, 250);
+  console.log(`NOTE  the stopped side host took ${Date.now() - stopT0} ms to end`);
   // The reply to a stop is the socket closing; a host that takes a moment to tear down can outlast the client's 3 s wait, so
   // the answer is reported, and what is judged is whether the host is really gone.
   check('stopping the side host ends it (the branch tab\'s host is untouched)', !!gone && alive(aHost.pid), JSON.stringify(stopped));
@@ -411,7 +421,9 @@ async function main() {
     }
     const confirmsBefore = ((await state(app)).confirms || []).length;
     const r = await command(app, way.cmd);
-    const gone = await waitFor(async () => !alive(liveSide.pid) && !(sideId && sideId.claudePid && alive(sideId.claudePid)), 20000, 300);
+    const closeT0 = Date.now();
+    const gone = await waitFor(async () => !alive(liveSide.pid) && !(sideId && sideId.claudePid && alive(sideId.claudePid)), HOST_GONE_MS, 300);
+    console.log(`NOTE  ${way.name}: the side host and its claude took ${Date.now() - closeT0} ms to end`);
     const x = await waitFor(async () => { const y = await state(app); return y && !tabOf(y, SIDE_A) ? y : null; }, 10000, 300);
     check(`${way.name} closes the side tab: its host and its claude end, the branch tab's host stays, feat/a shows next, nothing asked`,
       r.ok === true && !!gone && !!x && alive(aHost.pid) && (tabOf(x, 'feat/a') || {}).selected === true && (x.confirms || []).length === confirmsBefore,

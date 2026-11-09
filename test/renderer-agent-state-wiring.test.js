@@ -23,8 +23,8 @@ test('the roster card keeps data-state for the base state and adds data-detail, 
   const js = read('app/renderer.js');
   assert.match(js, /data-state="\$\{escapeHtml\(r\.state\)\}" data-detail="\$\{escapeHtml\(look\.detail\)\}"/);
   assert.match(js, /window\.agentStateDisplay\.badgeHtml\(r\.state, r\.detail\)/);
-  // #150's medal chip follows the words in the same line (integration 2026-10-10)
-  assert.match(js, /<div class="state">\$\{escapeHtml\(look\.words\)\}(\$\{window\.medalsDisplay\.chipHtml\(window\.medalsDisplay\.countOf\(medalList, r\.agent\)\)\})?<\/div>/);
+  // #150's medal chip follows the words in the same line (integration 2026-10-10); #162's cause is the words' title when stressed
+  assert.match(js, /<div class="state"(\$\{cause \? ` title="\$\{escapeHtml\(cause\)\}"` : ''\})?>\$\{escapeHtml\(look\.words\)\}(\$\{window\.medalsDisplay\.chipHtml\(window\.medalsDisplay\.countOf\(medalList, r\.agent\)\)\})?<\/div>/);
 });
 
 test('the waiting badge pulses, and not under prefers-reduced-motion', () => {

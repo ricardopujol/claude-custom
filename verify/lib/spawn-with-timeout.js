@@ -34,11 +34,14 @@
 const { spawn } = require('child_process');
 const { killPidTree, killChildTree } = require('../../host/kill-tree');
 
-function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, killFn = killPidTree }) {   // kill-ok(held-handle): the default killFn, reached only through killChildTree(child) on the held child
+// `onSpawn(child)`: called once, right after the start, so a caller that holds the heavy lock can record the child as its
+// work (#237 Dexter 9 e: probe-shell-guard's claude). A throw from it never stops the run.
+function spawnWithTimeout({ cmd, args = [], env, cwd, timeoutMs, shell = false, killFn = killPidTree, onSpawn = null }) {   // kill-ok(held-handle): the default killFn, reached only through killChildTree(child) on the held child
   return new Promise((resolve) => {
     let stdout = '', stderr = '', timedOut = false, settled = false;
     let exited = false, exitCode = null;
     const child = spawn(cmd, args, { env, cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell });
+    if (typeof onSpawn === 'function') { try { onSpawn(child); } catch { /* recording is a safety net */ } }
 
     // Settle exactly once, from whichever of exit/close/error/timeout fires
     // first (Finding 2). A small, acknowledged trade-off: settling on 'exit'

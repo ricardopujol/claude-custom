@@ -40,7 +40,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
   const h = {
     running: { ...running }, spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [],
     confirms: [], confirm: true, tokens: 0, markers: {}, clock: 1_000_000_000, listText: porcelain(THREE),
-    order: [], holdSide: null, holdWait: null, removeHold: null, sideWalks: 0, sideHostReads: 0, controlOk: true,
+    order: [], holdSide: null, holdWait: null, removeHold: null, sideWalks: 0, sideHostReads: 0, controlOk: true, pidStops: [], pidWho: [], pidOutcome: 'killed', controlError: null,
   };
   const base = 7700;
   const tokenOf = (port) => (h.running[port] === undefined ? null : `tok-${port}`);
@@ -69,6 +69,7 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
       spawn: ({ tab, port, token }) => {
         h.spawns.push({ key: tab.key, port, token, side: tab.side === true, cwd: tab.cwd });
         h.running[port] = { cwd: tab.cwd, side: tab.side === true };
+        return h.spawnChild ? h.spawnChild() : undefined;
       },
       wait: async () => { if (h.holdWait) await h.holdWait; if (h.waitFails > 0) { h.waitFails--; return false; } return true; },
       tokenFor: tokenOf,
@@ -77,13 +78,14 @@ function harness({ mode = 'tabs', running = {}, occupancy, safety, listSideHosts
       control: async (c) => {
         h.controls.push(c);
         if (c.msg.type === 'stop') { h.order.push(`stop:${c.port}`); if (h.controlOk) delete h.running[c.port]; }
-        return h.controlOk ? { ok: true, reply: null } : { ok: false, error: 'no answer' };
+        return h.controlOk ? { ok: true, reply: null } : { ok: false, error: h.controlError || 'no answer' };
       },
       sideHosts: () => {
         h.sideHostReads++;
         return Object.entries(h.running).filter(([, o]) => o.side === true).map(([p, o]) => ({ port: Number(p), cwd: o.cwd }));
       },
       shellHosts: () => [],      // #119 A5: no shell host anywhere, so no shell walk
+      stopByPid: async (port, who) => { h.pidStops.push(port); h.pidWho.push(who); if (h.pidOutcome === 'killed') delete h.running[port]; return h.pidOutcome; },
       identity: () => null,
       readToken: () => null,
     },
@@ -273,15 +275,66 @@ test('the tab menu offers the close on a side tab', async () => {
   assert.strictEqual(h.shell.menuState(skey('feat-a')).close, true);
 });
 
-test('a side host that does not answer its stop: the tab still goes, and the strip says it may still be running', async () => {
+test('a side host that does not answer its stop nor the pid retry: the tab is kept, and the strip says it may still be running (#129)', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'failed';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.kept, true);
+  assert.strictEqual(r.stopError, 'no answer');
+  assert.deepStrictEqual(h.pidStops, [7702]);
+  assert.ok(h.shell.tabByKey(skey('feat-a')));
+  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the side session in feat\/a · side: no answer\. It may still be running\./);
+  assert.strictEqual(h.changes[h.changes.length - 1].closeStuck.key, skey('feat-a'));
+  // Stop: it answers now, and the tab goes without a question.
+  h.controlOk = true;
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null, 'the notice goes with the tab it was about');
+});
+
+test('a side host that does not answer its stop but dies to the pid retry: the tab goes with no notice (#129)', async () => {
   const h = await opened();
   await h.shell.openSide(key('feat-a'));
   h.controlOk = false;
   const r = await h.shell.closeTab(skey('feat-a'));
   assert.strictEqual(r.ok, true);
-  assert.strictEqual(r.stopError, 'no answer');
-  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
-  assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the side session in feat\/a · side: no answer\. It may still be running\./);
+  assert.strictEqual(r.stopError, undefined);
+  assert.deepStrictEqual(h.pidStops, [7702]);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.strictEqual(h.changes[h.changes.length - 1].closeNotice, null);
+});
+
+test('PR #231 Miguel R3: a started side host whose stop fails, whose pid retry proves nothing, and whose port refuses closes with a notice', async () => {
+  for (const outcome of ['unknown', 'failed']) {
+    const h = await opened();
+    await h.shell.openSide(key('feat-a'));     // showing: the close selects its branch tab, which must not wipe the notice
+    h.controlOk = false;
+    h.controlError = 'connection refused';
+    h.pidOutcome = outcome;
+    delete h.running[7702];                    // nothing listens on the side host's port any more
+    const r = await h.shell.closeTab(skey('feat-a'));
+    assert.strictEqual(r.ok, true, outcome);
+    assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null, outcome);
+    assert.deepStrictEqual(h.pidStops, [7702], outcome);
+    const snap = h.shell.snapshot();
+    assert.strictEqual(snap.closeNotice, "Closed the side session in feat/a · side: its host no longer listens on its port, and its process couldn't be confirmed ended.", outcome);
+    assert.strictEqual(snap.closeStuck, null, outcome);
+  }
+});
+
+test('PR #231 Miguel R3: the same side host with its port still listening is kept, as before', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'unknown';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.ok(h.shell.tabByKey(skey('feat-a')));
+  assert.match(h.shell.snapshot().closeNotice, /^Couldn't end the side session/);
 });
 
 test('an ended side session closes with no stop sent: its port may be another host\'s by now', async () => {
@@ -371,6 +424,7 @@ test('Dexter F3: a close while the side host is still starting waits for the sto
   const opening = h.shell.openSide(key('feat-a'));
   await flush();
   h.controlOk = false;
+  h.pidOutcome = 'failed';
   let settled = false;
   const closing = h.shell.closeTab(skey('feat-a')).then((r) => { settled = true; return r; });
   await flush();
@@ -378,10 +432,10 @@ test('Dexter F3: a close while the side host is still starting waits for the sto
   await opening;
   const r = await closing;
   assert.strictEqual(settled, true);
-  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.ok, false);
   assert.strictEqual(r.stopError, 'no answer', 'the failed stop is reported, not dropped');
   assert.strictEqual(h.controls.filter(c => c.msg.type === 'stop').length, 1, 'one stop, not one from the start and another from the close');
-  assert.deepStrictEqual(labels(h), ['develop', 'feat/a', 'feat/b']);
+  assert.ok(h.shell.tabByKey(skey('feat-a')), 'its host may still be running, so the tab is kept (#129)');
   assert.match(h.changes[h.changes.length - 1].closeNotice, /Couldn't end the side session in feat\/a · side: no answer\. It may still be running\./);
 });
 
@@ -590,6 +644,26 @@ async function timeOutTwice(h) {
 }
 const stopMsgsTo = (h, port) => h.controls.filter(c => c.msg.type === 'stop' && c.port === port);
 
+test('Dexter M2: a side host whose spawned child exited before it bound is dead: its tab closes, with no stop sent to its port', async () => {
+  const { EventEmitter } = require('node:events');
+  const h = await opened();
+  const child = new EventEmitter();
+  h.spawnChild = () => child;
+  h.waitFails = 1;
+  await h.shell.openSide(key('feat-a'));
+  assert.ok(h.shell._tabs.get(skey('feat-a')).pending, 'a pending host');
+  delete h.running[7702];                    // nothing binds that port
+  h.controlOk = false;
+  h.pidOutcome = 'nofile';
+  child.emit('exit', 1, null);
+  h.controls.length = 0;
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell._tabs.has(skey('feat-a')), false);
+  assert.deepStrictEqual(h.controls, []);
+  assert.deepStrictEqual(h.pidStops, []);
+});
+
 test('Dexter F1 (PR #216): closing the BRANCH tab after two side-start timeouts stops the unconfirmed side host, by x and by Ctrl+click', async () => {
   for (const ifSafe of [false, true]) {
     const h = ifSafe ? await mergedHarness([]) : await opened();
@@ -743,6 +817,18 @@ test('...and a side host that does not answer its stop does not hold the removal
   assert.deepStrictEqual(h.order, ['stop:7702', 'remove']);
 });
 
+test('Miguel Y2 (PR #208): /merged with a side session that has ENDED sends it no stop (its port may be another host\'s), and the remover still runs', async () => {
+  const h = await opened();
+  await mergedAndEnded(h);
+  delete h.running[7702];                     // the side claude ended too
+  h.order.length = 0;
+  await h.shell.poll();
+  await flush();
+  assert.strictEqual(stopsTo(h, 7702), 0, 'nothing is sent to an ended record');
+  assert.deepStrictEqual(h.order, ['remove']);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+});
+
 test('a merged tab with NO side session is removed exactly as before: no stop, one remove', async () => {
   const h = await opened();
   h.markers[key('feat-a')] = 'feat/a';
@@ -884,4 +970,80 @@ test('side hosts the identity files could not list: every tab is looked for the 
     await flush();
     assert.deepStrictEqual(labels(h2), ['develop', 'feat/a', SIDE_A, 'feat/b']);
   }
+});
+
+// --- PR #231 review: the same proof for a side tab's host ---------------------------------------------------------------------
+
+test('Dexter 1: a side host that refuses this tab token: a stranger host, no retry by pid, and the tab goes', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.controlError = 'handshake refused (HTTP 403)';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, []);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 1: the pid retry for a side tab asks for ITS kind of host in its folder, and a stranger answer drops the tab', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'stranger';
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, [7702]);
+  assert.deepStrictEqual(h.pidWho, [{ cwd: h.shell.tabByKey(key('feat-a')).cwd, side: true, shell: false }]);
+  assert.strictEqual(h.shell.tabByKey(skey('feat-a')), null);
+});
+
+test('Dexter 6: a side host whose file is stale (a mismatch) is dead: the tab goes with no notice', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'mismatch';
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, true);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 7: a side host whose stop timed out is given its shutdown bound, and is never killed if it goes quiet', async () => {
+  const h = await opened();
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.controlError = 'timed out after 3000ms';
+  delete h.running[7702];                      // it goes quiet while the shell waits
+  const r = await h.shell.closeTab(skey('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, []);
+});
+
+test('Dexter 3: a side tab with an unsaved reader edit asks on a plain x even when it was kept; only the Stop click skips the question', async () => {
+  const h = await opened({ safety: { readerUnsaved: () => 'README.md' } });
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'failed';
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, false);
+  assert.strictEqual(h.confirms.length, 1);
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, false);
+  assert.strictEqual(h.confirms.length, 2, 'a plain x asks again');
+  h.controlOk = true;
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'), { stop: true })).ok, true);
+  assert.strictEqual(h.confirms.length, 2, 'the Stop click does not');
+});
+
+test('Dexter M1: selecting a kept side tab withdraws its Stop offer, so a later Stop asks about an unsaved reader edit', async () => {
+  let unsaved = null;
+  const h = await opened({ safety: { readerUnsaved: () => unsaved } });
+  await h.shell.openSide(key('feat-a'));
+  h.controlOk = false;
+  h.pidOutcome = 'failed';
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'))).ok, false);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, skey('feat-a'));
+  await h.shell.select(skey('feat-a'));
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the offer is withdrawn');
+  unsaved = 'README.md';
+  h.controlOk = true;
+  assert.strictEqual((await h.shell.closeTab(skey('feat-a'), { stop: true })).ok, true);
+  assert.strictEqual(h.confirms.length, 1, 'asked');
 });

@@ -30,6 +30,7 @@
 const fs = require('fs');
 const path = require('path');
 const { renameWithRetry } = require('./atomic-write');
+const { parseMark } = require('./probe-mark');
 
 const fileFor = (dir, port) => path.join(dir, 'hosts', `${port}.json`);
 
@@ -71,7 +72,7 @@ function defaultIsAlive(pid) {
 // `claudePid` is the host's claude, once it has one (Dexter, PR #83 F1): a stop
 // waits for it too, since the host can exit while claude is still closing in
 // the folder -- and a host with no session lock has nowhere else to say it.
-function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false, sessionId, kind } = {}) {
+function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, claudePid, side = false, sessionId, kind, probeMark } = {}) {
   const file = fileFor(dir, port);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp${process.pid}`;
@@ -84,6 +85,9 @@ function writeIdentity({ dir, port, cwd, pid = process.pid, processStartedAt, cl
   if (side === true) doc.side = true;
   // A5: a tab's plain shell shares the folder too, and runs no claude. Only the exact word; an ordinary host's identity is what it always was.
   if (kind === 'shell') doc.kind = 'shell';
+  // BACKLOG #169: a host a verify/ probe started carries the probe's mark (host/probe-mark.js), so verify/sweep-orphans.js can prove
+  // it is a probe's and not a person's. Only a well-formed mark is written; readIdentity (the app's reader) never looks at it.
+  if (parseMark(probeMark)) doc.probeMark = probeMark;
   // A side host's session id, for the producers that read transcripts (host/occupancy-transcripts.js): only a safe id, and only a side host's.
   if (side === true && typeof sessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) doc.sessionId = sessionId;
   try {

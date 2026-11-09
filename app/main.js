@@ -26,6 +26,11 @@ const { createToastHolder } = require('./toast-holder');
 const { tabViewWebPreferences } = require('./tab-view-prefs');
 const { cueFlash } = require('./cue-flash');
 const { armQuitWatchdog } = require('./quit-watchdog');
+const { createQuitLog, wireQuitLog, markWillQuitEnd } = require('./quit-log');
+// BACKLOG #74 A: the quit's timeline, only when CLAUDE_CUSTOM_QUIT_LOG names a file (verify/probe-quit-linger.js); a no-op otherwise.
+const QUIT_LOG_FILE = process.env.CLAUDE_CUSTOM_QUIT_LOG || null;
+const quitMark = createQuitLog(QUIT_LOG_FILE);
+if (QUIT_LOG_FILE) wireQuitLog(app, quitMark);
 const { createVault } = require('./secret-vault');
 const { createSecretService } = require('./secret-service');
 const { registerClipboardHandlers } = require('./clipboard-bridge');
@@ -37,7 +42,7 @@ const { readChromeSettings, ensureStatusDefault, registerChromeHandlers, watchCh
 const { registerPlaybackHandlers } = require('./playback-bridge');
 const { registerLeanHandlers, PUSH_CHANNEL: LEAN_PUSH, FACES_PUSH: LEAN_FACES_PUSH } = require('./lean-bridge');
 const { createLean, unionDismissed } = require('./lean-state');
-const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR } = require('./tab-shell');
+const { createShell, handleProbeCommand, probeLineReader, shortcutFor, shortcutWillAct, focusStep, menuText, NO_PORT_ERROR, lanesMenuTemplate, plusMenuTemplate } = require('./tab-shell');
 const { spawn, execFile } = require('child_process');
 const net = require('net');
 const fs = require('fs');
@@ -131,6 +136,7 @@ const { suspendVerified } = require('../host/process-suspend');
 const { createPausePersist } = require('../host/pause-persist');
 const pidLedger = require('../host/pid-ledger');
 const { killProvenAsync } = require('../host/kill-tree');
+const { createStopByPid } = require('../host/stop-by-pid');
 const { runStopAll, countUnstoppable, describeUnstoppable } = require('../host/kill-switch');
 const { writeFileAtomic } = require('../host/atomic-write');
 const { createSeams: createLeftoverSeams } = require('../host/leftovers-seams');
@@ -339,6 +345,9 @@ function ownIdentities() {
   try { return identitiesIn(INSTALL_DIR); } catch { return null; }
 }
 
+// #129: end a tab's host by pid when its stop message failed (host/stop-by-pid.js).
+const stopHostByPid = createStopByPid({ identities: () => ownIdentities(), kill: (pid, start) => killProvenAsync(pid, start), ownPids: [process.pid, process.ppid] });
+
 function spawnHost(tab, port, token) {
   const hostPath = path.join(__dirname, '..', 'host', 'host.js');
   // detached:true is the point — the host must outlive this window so a session
@@ -495,6 +504,26 @@ function tabMenuTemplate(key) {
     { label: 'Allow a second session here', enabled: st.override, click: () => tabShell.override(key) },
     { label: 'Close tab', enabled: st.close, click: () => closeTabFlow(key) },
   ];
+}
+
+/**
+ * The Lanes ▾ menu's template (BACKLOG #139): the tabs the strip page couldn't fit, then the lanes with no tab (a closed develop
+ * first, #160; Not started; Merged, whose closed rows are the merged close's Undo). A row selects the lane, which starts its
+ * session and gives it a tab, or reopens one closed. The strip's popup builds it, and so does the probe driver's `menu`, so the
+ * item a probe clicks is the item a person clicks.
+ */
+function lanesMenuFor(asked) {
+  return lanesMenuTemplate(tabShell.lanesMenu(asked),
+    (r) => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')));
+}
+
+/** The + menu's template: a closed develop first (#160), New branch…, the selected lane's shell tab. Built the same two ways. */
+function plusMenuFor() {
+  return plusMenuTemplate(tabShell.plusMenu(), {
+    reopen: (key) => tabShell.reopen(key).catch(logShellError('reopen')),     // #160: a closed develop is the first row
+    openCreate: () => tabShell.openCreate(),
+    openShell: (target) => tabShell.openShell(target).catch(logShellError('open shell')),
+  });
 }
 
 let win = null;
@@ -955,6 +984,7 @@ function applySelection(snapshot) {
   stripWasBusy = stripBusy;
   const step = focusStep(lastFocusedView, { windowFocused: focused, selectedView: live, stripBusy });
   if (step.focus) live.webContents.focus();
+  else if (step.focusStrip === true && win && !win.isDestroyed()) win.webContents.focus();     // the view with the keyboard went (PR #236 Miguel Y4)
   lastFocusedView = step.lastFocused;
   pushStripAccent();
   // The Resources panel runs its process-tree sample only for the SELECTED tab's page (#63).
@@ -1015,8 +1045,8 @@ function onShellChanged(snapshot) {
   applySelection(snapshot);
   // `model` is the strip's tabs only (1B: a lane with no running session is a row in `lanes`, the Lanes menu's rows).
   lastStripPayload = {
-    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice,
-    mode: snapshot.mode, create: snapshot.create,
+    model: snapshot.strip, lanes: snapshot.lanes, selectedKey: snapshot.selectedKey, notice: snapshot.notice, closeNotice: snapshot.closeNotice, closeStuck: snapshot.closeStuck,
+    mode: snapshot.mode, create: snapshot.create, devClosed: snapshot.devClosed === true, mergedNotice: snapshot.mergedNotice || null,
   };
   win.webContents.send('strip-model', lastStripPayload);
   if (trayController) trayController.sync();     // the count and the tooltip follow the cues
@@ -1024,9 +1054,9 @@ function onShellChanged(snapshot) {
 
 // Hand close (criterion 5): ask first, every time; then the reducer's stop +
 // close. Nothing on disk is touched.
-async function closeTabFlow(key, { ifSafe = false } = {}) {
+async function closeTabFlow(key, { ifSafe = false, stop = false } = {}) {
   if (!key || !tabShell) return null;
-  return tabShell.closeTab(key, { ifSafe });
+  return tabShell.closeTab(key, { ifSafe, stop });
 }
 
 let closeAsking = false;     // the window-close question is up: a second close gesture doesn't stack another
@@ -1289,6 +1319,10 @@ function registerIpc() {
     if (!fromStrip(e) || typeof key !== 'string') return;
     closeTabFlow(key, { ifSafe: ifSafe === true });
   });
+  ipcMain.on('strip:stop', (e, key) => {
+    if (!fromStrip(e) || typeof key !== 'string') return;
+    closeTabFlow(key, { stop: true });
+  });
   ipcMain.on('strip:contextMenu', (e, key) => {
     if (!fromStrip(e) || typeof key !== 'string') return;
     Menu.buildFromTemplate(tabMenuTemplate(key)).popup({ window: win });
@@ -1299,16 +1333,7 @@ function registerIpc() {
   ipcMain.on('strip:lanes', (e, hidden) => {
     if (!fromStrip(e)) return;
     const asked = Array.isArray(hidden) ? hidden.filter(k => typeof k === 'string').slice(0, 200) : [];
-    const rows = tabShell.lanesMenu(asked);
-    const template = rows.length === 0 ? [{ label: 'No other lanes', enabled: false }] : rows.map((r) => {
-      if (r.type === 'header') return { label: r.label, enabled: false };
-      const label = `${menuText(r.label)}${r.state ? `  (${r.state})` : ''}${r.shortcut ? `  (${r.shortcut})` : ''}`;
-      return {
-        label,
-        click: () => (r.action === 'reopen' ? tabShell.reopen(r.key) : tabShell.select(r.key)).catch(logShellError('lanes')),
-      };
-    });
-    Menu.buildFromTemplate(template).popup({ window: win });
+    Menu.buildFromTemplate(lanesMenuFor(asked)).popup({ window: win });
   });
   // Drag to reorder (#141): a lane's tab dropped before another's (null: the end). The shell checks both keys and saves the order.
   ipcMain.on('strip:reorder', (e, key, before) => {
@@ -1319,20 +1344,7 @@ function registerIpc() {
   // are in the Lanes menu now.
   ipcMain.on('strip:plus', (e) => {
     if (!fromStrip(e)) return;
-    const m = tabShell.plusMenu();
-    Menu.buildFromTemplate([
-      {
-        label: m.create.enabled ? 'New branch…' : `New branch… (${m.create.why})`,
-        enabled: m.create.enabled,
-        click: () => tabShell.openCreate(),
-      },
-      // #119 A5: a plain shell for the selected lane
-      {
-        label: m.shell.enabled ? m.shell.label : `${m.shell.label} (${m.shell.why})`,
-        enabled: m.shell.enabled,
-        click: () => tabShell.openShell(m.shell.target).catch(logShellError('open shell')),
-      },
-    ]).popup({ window: win });
+    Menu.buildFromTemplate(plusMenuFor()).popup({ window: win });
   });
   // `issue` (BACKLOG #119 A6): the number of the GitHub issue the branch was picked from, so its brief is written.
   ipcMain.on('strip:create', (e, branch, issue) => {
@@ -1452,6 +1464,11 @@ function registerIpc() {
   ipcMain.on('tab:typed', (e, reply) => {
     if (!isTabView(e.sender)) return;
     tabShell.typed(e.sender, reply);
+  });
+  // BACKLOG #139: the page's answer to `box-state` (is its CLI box at rest?), asked before a merged tab closes by itself.
+  ipcMain.on('tab:boxState', (e, reply) => {
+    if (!isTabView(e.sender)) return;
+    tabShell.boxAnswered(e.sender, reply);
   });
   // A link clicked in a tab's terminal (fix/terminal-links): straight to the
   // default browser, no prompt -- only what openInBrowser accepts.
@@ -1780,6 +1797,42 @@ async function capture(wc, file) {
 // The strip's file next to the view's: <name>.png -> <name>.strip.png
 const stripFileFor = (file) => file.replace(/(\.png)?$/i, '.strip.png');
 
+/**
+ * Probe only (#139 / #160): a picture of the Lanes ▾ or + menu for a look before merge. capturePage can't see a native popup, and a
+ * screen capture would take whatever else is on the screen with it, so the probe DRAWS the items Electron built (`menu.items`:
+ * labels, separators, disabled rows) as a box under the button in the strip page, captioned as the probe's drawing, captures the
+ * strip page alone (capturePage: only this app's pixels), then removes the box. The OS draws the real popup's chrome.
+ */
+async function photographMenu(menu, which, file) {
+  const items = menu.items.map(i => ({ label: i.label, type: i.type, enabled: i.enabled }));
+  const req = JSON.stringify(JSON.stringify({ id: which === 'plus' ? 'plus' : 'lanes', name: which === 'plus' ? '+' : 'Lanes ▾', items }));
+  await win.webContents.executeJavaScript(`(() => {
+    const r = JSON.parse(${req});
+    const b = document.getElementById(r.id);
+    const at = b ? b.getBoundingClientRect() : { left: 0, bottom: 0 };
+    const box = document.createElement('div');
+    box.id = 'probe-menu-shot';
+    box.style.cssText = 'position:fixed;z-index:2147483647;top:' + Math.round(at.bottom + 2) + 'px;left:' + Math.max(4, Math.min(Math.round(at.left), innerWidth - 340)) + 'px;min-width:300px;background:#2b2b2b;color:#eee;font:13px "Segoe UI",sans-serif;border:1px solid #555;box-shadow:0 6px 16px rgba(0,0,0,.55);padding:4px 0';
+    const cap = document.createElement('div');
+    cap.textContent = 'probe drawing of the ' + r.name + ' menu, from the items Electron built';
+    cap.style.cssText = 'font-size:10px;color:#8fa98f;padding:2px 12px 5px';
+    box.appendChild(cap);
+    for (const it of r.items) {
+      const d = document.createElement('div');
+      if (it.type === 'separator') d.style.cssText = 'border-top:1px solid #555;margin:4px 0';
+      else { d.textContent = it.label; d.style.cssText = 'padding:5px 28px;white-space:pre;' + (it.enabled ? '' : 'color:#8a8a8a'); }
+      box.appendChild(d);
+    }
+    document.body.appendChild(box);
+    return true; })()`);
+  try {
+    await new Promise(r => setTimeout(r, 200));
+    return await capture(win.webContents, file);
+  } finally {
+    await win.webContents.executeJavaScript("(() => { const b = document.getElementById('probe-menu-shot'); if (b) b.remove(); return true; })()").catch(() => {});
+  }
+}
+
 // CLAUDE_CUSTOM_SCREENSHOT=<file> renders the real window, waits for the TUI to
 // draw, writes a PNG and exits. The GUI is the one surface the headless probes
 // cannot reach, so this is how it gets checked at all rather than assumed to
@@ -1852,6 +1905,16 @@ function startProbeDriver(port) {
     win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
     return { ok: true };
   };
+  // #129: a real click on the Stop button in the strip's alert line (a tab kept because its host wouldn't end), read from the DOM.
+  const stripStopClick = async () => {
+    const rect = JSON.parse(await win.webContents.executeJavaScript(
+      "JSON.stringify((() => { const n = document.querySelector('#strip-alert .stop'); if (!n) return null; const r = n.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })())"));
+    if (!rect) return { ok: false, error: 'no Stop button in the strip' };
+    const base = { x: rect.x, y: rect.y, button: 'left', clickCount: 1, modifiers: [] };
+    win.webContents.sendInputEvent({ type: 'mouseDown', ...base });
+    win.webContents.sendInputEvent({ type: 'mouseUp', ...base });
+    return { ok: true };
+  };
   const api = {
     async state() {
       const model = tabShell.model();
@@ -1878,7 +1941,7 @@ function startProbeDriver(port) {
       let stripChrome = null;
       try {
         stripChrome = JSON.parse(await win.webContents.executeJavaScript(
-          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
+          "JSON.stringify({ plus: !document.getElementById('plus').hidden, form: !document.getElementById('create').hidden, alert: document.getElementById('strip-alert').hidden ? null : document.getElementById('strip-alert').textContent, stop: !!document.querySelector('#strip-alert .stop'), stopInView: (() => { const b = document.querySelector('#strip-alert .stop'); if (!b) return null; const r = b.getBoundingClientRect(); const a = document.getElementById('strip-alert').getBoundingClientRect(); return r.width > 0 && r.left >= a.left - 1 && r.right <= a.right + 1; })(), textClipped: (() => { const n = document.querySelector('#strip-alert .alert-text'); return n ? n.scrollWidth > n.clientWidth : null; })(), pane: document.getElementById('pane').hidden ? null : document.getElementById('pane-text').textContent, "
           // #62: the lean button and chip as painted
           + "lean: { bodyLean: document.body.classList.contains('lean'), btnHidden: document.getElementById('lean-btn').hidden, chipHidden: document.getElementById('lean-chip').hidden, label: document.getElementById('lean-chip-label').textContent, night: document.getElementById('lean-chip-night').hidden ? null : document.getElementById('lean-chip-night').textContent, back: document.getElementById('lean-back').textContent, dotAnim: (() => { const d = document.querySelector('.dot.working'); return d ? getComputedStyle(d).animationName : null; })(), "
           + "faces: (() => { const b = document.getElementById('lean-faces'); const r = b.getBoundingClientRect(); const f = [...b.querySelectorAll('.lean-face')]; const m = b.querySelector('.lean-more'); return { hidden: b.hidden, count: f.length, titles: f.map(x => x.title), more: m ? m.textContent : null, size: f[0] ? Math.round(f[0].getBoundingClientRect().width) : null, round: f[0] ? getComputedStyle(f[0]).borderRadius : null, videos: b.querySelectorAll('video').length, stills: b.querySelectorAll('canvas').length, drawn: b.querySelectorAll('canvas[data-still-drawn]').length, failed: b.querySelectorAll('canvas[data-still-failed]').length, imgs: b.querySelectorAll('img').length, imgsLoaded: [...b.querySelectorAll('img')].filter(i => i.complete && i.naturalWidth > 0).length, placeholders: b.querySelectorAll('.face-placeholder').length, left: Math.round(r.left), right: Math.round(r.right), chipLeft: Math.round(document.getElementById('lean-chip').getBoundingClientRect().left) }; })() } })"));
@@ -1916,6 +1979,10 @@ function startProbeDriver(port) {
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, stripLayout, viewDom, noMenuBar, windowFrame,
         // 1B: the keys main says have a tab, and the Lanes menu's rows (Not started / Merged, with the ones closed by hand)
         stripKeys: snap.strip.map(e => e.key), lanes: snap.lanes,
+        // #139 / #160: the merged close's notice, and whether develop is closed (the pane's empty-window line)
+        mergedNotice: snap.mergedNotice || null, devClosed: snap.devClosed === true,
+        stripAlert: await win.webContents.executeJavaScript("(() => { const a = document.getElementById('strip-alert'); return a && !a.hidden ? { text: a.textContent, kind: a.className } : null; })()").catch(() => null),
+        stripPane: await win.webContents.executeJavaScript("(() => { const p = document.getElementById('pane'); return p && !p.hidden ? (document.getElementById('pane-text') || {}).textContent || '' : null; })()").catch(() => null),
         create: snap.create, reopenable: tabShell.plusMenu().reopen, confirms: probeConfirms.slice(),
         // #119 A6: whether the selected tab's page is showing (it steps aside while the form's issue list is open); null if unreadable.
         selectedViewVisible: (() => { const v = selectedView(); try { return v && typeof v.getVisible === 'function' ? v.getVisible() : null; } catch { return null; } })(),
@@ -2021,6 +2088,7 @@ function startProbeDriver(port) {
     async ctrlClick(label) { return stripClick(label, false, ['control']); },
     // Ricardo's look, 2026-10-26: a real plain click on the tab's own x, so the strip page's handler decides what to ask main.
     async xClick(label) { return stripClick(label, true, []); },
+    async stopClick() { return stripStopClick(); },
     // The tab's right-click menu as ELECTRON built it, from the popup's own template, and given an item's label that item's own
     // click (Ricardo's look, 2026-10-26: a shell tab's menu had no close).
     async tabMenu(label, item) {
@@ -2034,6 +2102,23 @@ function startProbeDriver(port) {
       if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
       hit.click();
       return { ok: true, items };
+    },
+    // #139 / #160: the Lanes ▾ or + menu as ELECTRON built it from the popup's own template; given an item's label, that item's own
+    // click; given a .png `shot`, a picture of those items drawn under the button in the strip page (photographMenu).
+    async menu(which, item, shot) {
+      const template = which === 'plus' ? plusMenuFor() : lanesMenuFor([]);
+      const built = Menu.buildFromTemplate(template);
+      const items = built.items.map(i => ({ label: i.label, type: i.type, enabled: i.enabled }));
+      let shotBytes = null;
+      if (typeof shot === 'string') {
+        try { shotBytes = await photographMenu(built, which === 'plus' ? 'plus' : 'lanes', shot); } catch (err) { return { ok: false, error: `photograph: ${err.message}`, items }; }
+      }
+      if (item === undefined) return { ok: true, items, shotBytes };
+      const hit = built.items.find(i => i.type !== 'separator' && i.label === item);
+      if (!hit) return { ok: false, error: `no item ${item}`, items };
+      if (!hit.enabled) return { ok: false, error: `${item} is disabled`, items };
+      hit.click();
+      return { ok: true, items, shotBytes };
     },
     // #85: a real pointer move in the selected tab's view (x, y in the view's own pixels): the page's hit-testing and its own
     // pointer events decide what is hovered, as for a mouse.
@@ -2055,6 +2140,16 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'mouseDown', ...base });
       sel.webContents.sendInputEvent({ type: 'mouseUp', ...base });
       return { ok: true };
+    },
+    // PR #233 F14: a real mouse wheel over the selected tab's view (x, y in its own pixels), with Ctrl held if asked. Answers the view's PAGE
+    // zoom factor after it, which the chat's Ctrl+wheel must leave at 1.
+    async mouseWheel(x, y, deltaY, ctrl) {
+      const sel = selectedView();
+      if (!sel || sel.webContents.isDestroyed()) return { ok: false, error: 'no selected view' };
+      sel.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      sel.webContents.sendInputEvent({ type: 'mouseWheel', x, y, deltaX: 0, deltaY, canScroll: true, modifiers: ctrl ? ['control'] : [] });
+      await new Promise((r) => setTimeout(r, 250));
+      return { ok: true, zoomFactor: sel.webContents.getZoomFactor() };
     },
     // Layout pass L1: a named action in the selected view (renderer.js
     // window.__dockProbe, defined only on a page opened with ?probe=1). The
@@ -2099,6 +2194,16 @@ function startProbeDriver(port) {
       sel.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
       sel.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
       return { ok: true, before };
+    },
+    // PR #236 Miguel Y4: a key to the strip page itself. Says first whether the strip page held the keyboard (only meaningful while
+    // the window is focused, which a probe can't make sure of while someone uses the machine).
+    async stripKey(key, modifiers) {
+      if (!win || win.isDestroyed()) return { ok: false, error: 'no window' };
+      const stripFocused = win.webContents.isFocused();
+      const windowFocused = win.isFocused();
+      win.webContents.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers });
+      win.webContents.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
+      return { ok: true, stripFocused, windowFocused };
     },
     // #34: the window as the OS minimises and restores it (the real events fire), and the OS's
     // reduced-motion preference emulated on the selected view through the debugger protocol.
@@ -2372,6 +2477,9 @@ app.whenReady().then(async () => {
       newToken: () => (MODE === 'single' && process.env.CLAUDE_CUSTOM_TOKEN)
         || require('crypto').randomBytes(24).toString('hex'),
       control: (c) => sendControl(c),
+      // #129: the retry of a stop that failed, by pid: the identity file names the host's pid and its OS start time, and the kill
+      // proves both on a held handle (host/kill-tree.js). No file (or no start time) for the port: the host is gone, or can't be proved.
+      stopByPid: (port, who) => stopHostByPid(port, who),
       // #81: the side hosts this build's identity files say are running: a window looks for them only where one serves a folder
       sideHosts: () => sideHostsOf(ownIdentities()),
       // PR #227 Dexter 4: the branch hosts the identity files say are running, so a lane whose first look missed its host is looked for again only where one serves it
@@ -2551,4 +2659,5 @@ app.on('will-quit', (e) => {
 app.on('before-quit', () => { quitting = true; });
 app.on('will-quit', () => { if (trayController) trayController.destroy(); if (resourceSampler) resourceSampler.stop(); if (transcriptOccupancy) transcriptOccupancy.close(); if (occupancyService) occupancyService.close(); });
 // A panel page that called window.print() leaves the browser unable to terminate; this ends the process if quitting stalls (app/quit-watchdog.js).
-armQuitWatchdog(app);
+armQuitWatchdog(app, QUIT_LOG_FILE ? { onFire: () => quitMark('quit watchdog fires') } : {});
+if (QUIT_LOG_FILE) markWillQuitEnd(app, quitMark);

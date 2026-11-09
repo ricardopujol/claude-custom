@@ -102,6 +102,8 @@ const ALLOWED_GLOBALS = new Set([
   'instanceCounts', 'modelLine', 'modelEntry',
   // app/agent-state-display.js (BACKLOG #55): ONE name leaves its IIFE.
   'agentStateDisplay',
+  // app/roster-morph.js (BACKLOG #184): a changed card patched in place. ONE name leaves its IIFE.
+  'rosterMorph',
   // app/peer-cue.js (BACKLOG #156): the held-message cue. ONE name leaves its IIFE.
   'peerCue',
   // app/loadout-display.js (BACKLOG #17): the tool belt. ONE name leaves its IIFE.
@@ -154,6 +156,8 @@ const ALLOWED_GLOBALS = new Set([
   'planSwitch', 'switchNotice', 'vimInsertShown', 'commandTyped', 'boxHoldsLine', 'scrollCapRows', 'menuPlacement',
   // PR #93 Dexter F3: the typing plan the top bar and the Git drawer's Type /merged share
   'planTyping', 'SHELL_TAB_REFUSAL', 'shellExitText', 'typingKeys', 'boxText',
+  'liveBox',                               // PR #233 F2: the chat's clear reads the box's rows
+
   // app/context-fill-display.js (BACKLOG #6)
   'contextFill', 'applyContextFill', 'CONTEXT_STEP_CLASSES', 'CONTEXT_UNKNOWN_CLASS',
   // app/worktree-status-display.js (PR 1b, Extension X1/X4): one namespace object.
@@ -165,6 +169,8 @@ const ALLOWED_GLOBALS = new Set([
   'occupancyDisplay', 'occupancyConfirm',
   // app/terminal-bar.js (backlog #49 + #52): the bar's pure decisions
   'terminalBar',
+  // app/term-fit.js (#177, the terminal refit that settles): one namespace object, IIFE-wrapped.
+  'termFit',
   'summaryDisplay',
   // app/docs-drift-display.js (backlog #39 job 2): one namespace object, IIFE-wrapped.
   'docsDriftDisplay',

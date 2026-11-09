@@ -89,7 +89,63 @@ function waitNoteHtml(detail, wait, now) {
   return `<div class="wait-note" data-late="${note.late}">${esc(note.text)}</div>`;
 }
 
-const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, FINER_STATES: Object.keys(FINER) };
+// BACKLOG #162: the hover of a stressed card, the host's own sentence (host/stress-cause.js, on the `mood` frame as `cause`). Only a
+// stressed card shows one, so a cause that outlived its state is never drawn; nothing to show is '' (the card then has no title).
+function causeTitle(state, cause) {
+  if (state !== 'stressed' || typeof cause !== 'string') return '';
+  return cause.trim();
+}
+
+// BACKLOG #142 b: the cards one roster row draws. Two or more instances of one agent (the host's `instances`, host/mood-machine.js
+// instancesOf) are one card each: the row's name, entry and portrait, with the instance's own state, detail, cause, wait and
+// portrait, and its id as `instance`. The name's own cause and wait never leak onto an instance card. A row with fewer than two
+// well-formed instances is its one card, unchanged (an older host sends none).
+const goodInstance = (i) => !!i && typeof i === 'object' && typeof i.id === 'string' && i.id !== '' && typeof i.state === 'string';
+function instanceRows(row) {
+  const list = row && Array.isArray(row.instances) ? row.instances.filter(goodInstance) : [];
+  if (list.length < 2) return [row];
+  const { instances, cause, wait, ...base } = row;
+  return list.map((i) => {
+    const card = { ...base, instance: i.id, state: i.state, detail: typeof i.detail === 'string' ? i.detail : i.state,
+      portrait: i.portrait && typeof i.portrait === 'object' ? i.portrait : base.portrait };
+    if (typeof i.cause === 'string') card.cause = i.cause;
+    if (i.wait && typeof i.wait === 'object') card.wait = i.wait;
+    // PR #239 Dexter 4: a finish still flashing offers no Pause, and a live card's Pause names its own run.
+    if (i.ended === true) card.ended = true;
+    if (typeof i.agentId === 'string' && i.agentId !== '') card.agentId = i.agentId;
+    return card;
+  });
+}
+
+// BACKLOG #155's minute count ticks while some card waits on its background work: a name row's detail, or one of its instance
+// cards' (#142 b), since a sibling's reading or helper outranks the wait on the name's own detail (PR #239 Miguel S3).
+const WAITING_DETAILS = new Set(['bgwait', 'bgwaitlate']);
+function anyWaiting(rows) {
+  for (const r of Array.isArray(rows) ? rows : []) {
+    if (!r || typeof r !== 'object') continue;
+    if (WAITING_DETAILS.has(r.detail)) return true;
+    if (Array.isArray(r.instances) && r.instances.some((i) => i && WAITING_DETAILS.has(i.detail))) return true;
+  }
+  return false;
+}
+
+// PR #239 Dexter 5 / Miguel Y5: what a roster repaint replaces. `old` and `fresh` are the cards in order, each { key, html }: `key`
+// is data-agent + "|" + data-instance (null for a node that isn't a card), `html` the markup it was painted from (undefined when
+// unknown). The same cards in the same places: replace only those whose markup changed, so an unchanged card keeps its node (a
+// press on its button, a hover on it, its video survive a sibling's repaint). Anything else (a card came, went or moved, a
+// non-card node, an empty roster) is a full replace, as before. A card that DID change is patched in place, not swapped
+// (BACKLOG #184, app/roster-morph.js), so a press on it lands too; `replace` names the cards to patch.
+function rosterPatch(old, fresh) {
+  const a = Array.isArray(old) ? old : [];
+  const b = Array.isArray(fresh) ? fresh : [];
+  if (a.length === 0 || a.length !== b.length) return { full: true };
+  for (let i = 0; i < b.length; i++) if (b[i].key == null || a[i].key !== b[i].key) return { full: true };
+  const replace = [];
+  for (let i = 0; i < b.length; i++) if (a[i].html === undefined || a[i].html !== b[i].html) replace.push(i);
+  return { full: false, replace };
+}
+
+const agentStateDisplay = { describeState, badgeHtml, stateWords, sortRows, waitNote, waitNoteHtml, causeTitle, instanceRows, rosterPatch, anyWaiting, FINER_STATES: Object.keys(FINER) };
 
 // Loaded two ways: require() from tests, and a plain <script> tag in the renderer, which has no module system.
 if (typeof module !== 'undefined' && module.exports) {

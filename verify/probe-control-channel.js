@@ -9,6 +9,7 @@
    This drives the real host and asserts the refusal, because a unit test on the
    gatekeeper proves the FUNCTION and nothing about whether it is wired into the
    handshake. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');

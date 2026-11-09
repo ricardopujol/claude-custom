@@ -35,6 +35,7 @@
  *   runStopAll({ seam, home, confirm, write, mkdir, now, countUnstoppable }) -> { outcome, error?, file, unstoppable }   main's whole path
  *   countUnstoppable({ installs, identitiesIn, isAlive }) -> n, describeUnstoppable(n) -> text   hosts too old to watch the file
  */
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -166,6 +167,28 @@ function loadAnchor(file, { read = (f) => fs.readFileSync(f, 'utf8') } = {}) {
   } catch { return null; }
 }
 
+// One anchor file PER WORKTREE (BACKLOG #128): the state root is the project's `dev` folder for every lane, so a file named only
+// `night-anchor.json` made two /bedtime loops in two lanes share one deadline. The worktree's absolute path (lower-cased, slashes
+// and trailing separators normalised, as Windows treats them) is hashed into the name; the same worktree always finds its own.
+function anchorFileFor({ stateRoot, worktree } = {}) {
+  if (!nonEmpty(stateRoot) || !nonEmpty(worktree)) return '';
+  const key = worktree.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  const id = crypto.createHash('sha1').update(key).digest('hex').slice(0, 16);
+  return path.join(stateRoot, '.claude-custom', `night-anchor-${id}.json`);
+}
+
+// The ONE anchor every worktree of a project shared before #128. A host upgraded in the middle of a night finds no keyed file yet, so
+// it starts from this one: read as the starting value, never written (the keyed file is the only one saved), and ignored once the
+// worktree has its own (PR #235 Dexter 9, Miguel S5). A stale one is no anchor: createNightBudget ignores an anchor past its window.
+const LEGACY_ANCHOR = 'night-anchor.json';
+function legacyAnchorFile(stateRoot) {
+  return nonEmpty(stateRoot) ? path.join(stateRoot, '.claude-custom', LEGACY_ANCHOR) : '';
+}
+function loadAnchorWithLegacy(file, legacyFile, opts = {}) {
+  const own = loadAnchor(file, opts);
+  return own !== null ? own : loadAnchor(legacyFile, opts);
+}
+
 function saveAnchor(file, anchor, { write, mkdir = (d) => fs.mkdirSync(d, { recursive: true }) } = {}) {
   if (!nonEmpty(file)) throw new Error('no anchor path');
   mkdir(path.dirname(file));
@@ -199,7 +222,17 @@ function describeStop(stop) {
  * later stop() (a sentinel after the budget, say), which kill-tree allows because it reopens the "once" for exactly those answers.
  * A host that refused at start (no pty) stays refused until clearRefused(), which the host calls once the file is gone.
  */
-function createStopper({ term, stopPty, killChildTree, outcomeOf = () => null, log = () => {}, notify = () => {}, now = Date.now, maxRetries = 5 } = {}) {
+/**
+ * WHICH STOPS END THE SESSION'S JOB (BACKLOG #127, host/job-guard.js): the one place this is decided (PR #235 Dexter 2). As built,
+ * every stop that kills does: a trip of either sentinel (STOP-ALL, scope 'all'; the project's STOP, scope 'project') and the night
+ * budget. A refusal has no session to end. Ricardo's answer (2026-11-05, PR #235): "Every stop", as built. Narrowing it later (to
+ * STOP-ALL only, say) is this function and its test, nothing else.
+ */
+function jobEndsFor(stop) {
+  return !!stop && (stop.kind === 'tripped' || stop.kind === 'night-budget');
+}
+
+function createStopper({ term, stopPty, killChildTree, outcomeOf = () => null, endJob = null, log = () => {}, notify = () => {}, now = Date.now, maxRetries = 5 } = {}) {
   let state = null;
   let retries = 0;
 
@@ -208,6 +241,14 @@ function createStopper({ term, stopPty, killChildTree, outcomeOf = () => null, l
 
   function kill(t, again) {
     stopPty(t, { killChildTree });
+    // After the tree kill, the job: what the tree kill can't reach (processes whose parent already exited). Asked once, on the first
+    // kill; its answer comes later through noteJob (PR #235 Dexter 4, Miguel S6).
+    if (!again && typeof endJob === 'function' && jobEndsFor(state)) {
+      let j = null;
+      try { j = endJob(); } catch { /* the stop still stands */ }
+      state.job = typeof j === 'string' ? j : 'not-armed';
+      say(`job of pid ${t.pid}: ${state.job}`);
+    }
     let outcome = null;
     try { outcome = outcomeOf(t); } catch { /* an unreadable outcome is no outcome */ }
     state.kill = outcome;
@@ -241,6 +282,15 @@ function createStopper({ term, stopPty, killChildTree, outcomeOf = () => null, l
       if (!t) return false;
       retries++;
       kill(t, true);
+      return true;
+    },
+    // The job's later answer ('killed', 'kill-failed: …', 'dropped: …', 'kill-unanswered'), once a stop has asked for it: into the
+    // reported state and host.log. Before any stop the guard's own changes ('arming', 'armed') are not the stop's business.
+    noteJob(outcome) {
+      if (state === null || typeof state.job !== 'string' || typeof outcome !== 'string' || outcome === state.job) return false;
+      state.job = outcome;
+      say(`job: ${outcome}`);
+      try { notify(state); } catch { /* the outcome is recorded either way */ }
       return true;
     },
     state: () => state,
@@ -326,6 +376,6 @@ function describeUnstoppable(n) {
 
 module.exports = {
   runStopAll, countUnstoppable, describeUnstoppable,
-  stopAllHome, sentinelsFor, scopeOf, watch, createNightBudget, describeStop, createStopper, createLinger, requestStopAll,
-  loadAnchor, saveAnchor, NIGHT_BUDGET_MS, NIGHT_FRESH_AFTER_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
+  stopAllHome, sentinelsFor, scopeOf, watch, createNightBudget, describeStop, createStopper, jobEndsFor, createLinger, requestStopAll,
+  loadAnchor, saveAnchor, anchorFileFor, loadAnchorWithLegacy, legacyAnchorFile, LEGACY_ANCHOR, NIGHT_BUDGET_MS, NIGHT_FRESH_AFTER_MS, POLL_MS, STOP_ALL, PROJECT_STOP,
 };

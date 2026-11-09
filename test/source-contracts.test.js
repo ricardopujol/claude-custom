@@ -41,6 +41,19 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..');
 const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
+// PR #236 Miguel G9: it reads tab-model.js and tab-lanes.js as text to run them as plain scripts, so it lives here, not in
+// tab-model.test.js (which is in the mutation command).
+test('loaded as a plain script before tab-lanes.js, tab-model.js says so at load; in the right order it loads', () => {
+  const vm = require('vm');
+  const src = read('app/tab-model.js');
+  assert.throws(() => vm.runInNewContext(src, { window: {} }), /app\/tab-model\.js needs app\/tab-lanes\.js loaded first/);
+  const page = { window: {} };
+  page.window.window = page.window;
+  vm.createContext(page);
+  vm.runInContext(read('app/tab-lanes.js'), page);
+  assert.doesNotThrow(() => vm.runInContext(src, page));
+});
+
 test('the strip page wires its accent: the bridge listens, the page paints (#64)', () => {
   // Read as text here, not in tab-strip.test.js: tab-strip.js is a mutated module.
   assert.match(read('app/tab-strip.js'), /root\.strip\.onAccent\(\(hex\) => paintAccent\(root\.document, hex\)\)/);
@@ -721,4 +734,18 @@ test('app/peer-cue.js is the only file in the app that makes a sound', () => {
   const makers = fs2.readdirSync(dir).filter(f => f.endsWith('.js') && !/codemirror|bundle|vendor/.test(f)
     && /AudioContext|new Audio\(|<audio/.test(strip(fs2.readFileSync(path.join(dir, f), 'utf8'))));
   assert.deepStrictEqual(makers, ['peer-cue.js']);
+});
+
+// PR #239 Dexter 6: the #162 cause tests post only tools whose PostToolUse / PostToolUseFailure hooks are registered, so every
+// fixture is a shape that can arrive live (a Read has no Post hook: "the same read" can't be detected on a default install).
+test('the mood machine\'s cause tests post only tools whose Post hooks are registered', () => {
+  const hooked = new Set(read('host/settings-writer.js').match(/const POST_TOOL_MATCHER = '([^']+)'/)[1].split('|'));
+  const causeTests = read('test/mood-machine-cause.test.js');
+  const posted = new Set();
+  for (const m of causeTests.matchAll(/(?:r\.(?:ok|err|failed)\('t[ab]', '([A-Za-z]+)'|tool: fc\.constantFrom\(([^)]*)\))/g)) {
+    if (m[1]) posted.add(m[1]);
+    else for (const t of m[2].matchAll(/'([A-Za-z]+)'/g)) posted.add(t[1]);
+  }
+  assert.ok(posted.size > 0, 'the scan found the fixtures');
+  for (const t of posted) assert.ok(hooked.has(t), `${t} has no PostToolUse hook, so it can't happen live`);
 });

@@ -112,3 +112,15 @@ test('PROPERTY: CLAUDE_CUSTOM_* keys are base minus per-tab plus the five set ke
     },
   ));
 });
+
+// BACKLOG #169 (PR #232 Miguel Y4): the probe mark rides the base env through hostEnv into the host, which writes it into its identity
+// file. Filtering it (a PER_TAB_KEYS entry, a prefix rule) would blind the orphan sweep without failing anything else.
+test('hostEnv keeps the probe mark: the host reads back exactly the mark its probe set, and it is not a per-tab key', () => {
+  const { MARK_VAR, makeMark, markFromEnv } = require('../host/probe-mark');
+  const mark = makeMark(4321, 'abcdef012345');
+  const out = hostEnv({ [MARK_VAR]: mark, CLAUDE_CUSTOM_BIN: 'stub.js' }, args());
+  assert.strictEqual(out[MARK_VAR], mark);
+  assert.strictEqual(markFromEnv(out), mark, 'the host (host/host.js identityFor) would write this mark');
+  assert.ok(!PER_TAB_KEYS.includes(MARK_VAR));
+  assert.ok(!MARK_VAR.startsWith('CLAUDE_CUSTOM_'), 'the CLAUDE_CUSTOM_ prefix is what the probes and tabs strip');
+});

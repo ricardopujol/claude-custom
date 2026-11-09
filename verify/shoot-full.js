@@ -39,6 +39,7 @@
    were being rendered with cyan and orange fringing on every vertical stroke --
    so the noise being judged was partly the compositor's, not the technique's. */
 
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { app, BrowserWindow } = require('electron');
 const { probeWindowOptions } = require('../host/probe-window');
 const path = require('path');

@@ -39,14 +39,17 @@ test('host.js: every identity the host writes says whether it is a shell host, a
   const writes = HOST.match(/writeIdentity\(\{[^}]*\}\)/g) || [];
   assert.ok(writes.length >= 3, `found ${writes.length} writeIdentity calls`);
   for (const w of writes) assert.match(w, /\.\.\.identityFor\(\)/, w);
-  assert.match(HOST, /const identityFor = \(\) => identityFields\(\{ side: SIDE, shell: SHELL, sessionId \}\);/);
+  // The probe mark (BACKLOG #169) rides along on the same helper's result; the role fields still come from identityFields, unchanged.
+  assert.match(HOST, /const identityFor = \(\) => \(\{ \.\.\.identityFields\(\{ side: SIDE, shell: SHELL, sessionId \}\), probeMark: markFromEnv\(process\.env\) \}\);/);
 });
 
 test('host.js: a shell that fails to spawn ENDS the host through the same exit path as an exited shell (Dexter 1)', () => {
   const start = HOST.slice(HOST.indexOf('function startSession()'), HOST.indexOf('trackExit(term);'));
-  assert.match(start, /const started = startShellPty\(spawnPty\);\s*\n\s*if \(!started\.term\) \{/);
+  // Both paths spawn through spawnTimed, which only reads the clock around the same spawnPty for the job guard (PR #235 K2).
+  assert.match(start, /const spawnTimed = \(\) => \{ const before = Date\.now\(\); const t = spawnPty\(\); spawnWindow = \{ before, after: Date\.now\(\) \}; return t; \};/);
+  assert.match(start, /const started = startShellPty\(spawnTimed\);\s*\n\s*if \(!started\.term\) \{/);
   assert.match(start, /endHost\(started\.frame\.exitCode, started\.frame\.signal, \{ error: started\.frame\.error \}, FAILED_START_LINGER_MS\);\s*\n\s*return;/);
-  assert.match(start, /\} else \{\s*\n\s*term = spawnPty\(\);/, 'claude keeps the plain spawn');
+  assert.match(start, /\} else \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
   const end = HOST.slice(HOST.indexOf('function endHost('));
   assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);
   assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,200}endHost\(exitCode, signal\);/);
@@ -96,6 +99,13 @@ test('main.js: the probe driver clicks the menu a person gets, and a tab\'s x wi
   assert.match(drv, /win\.webContents\.sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\);/, 'a real input event, so the page\'s own handler runs');
 });
 
+test('main.js: the probe driver clicks the strip alert\'s Stop button with a real input event, and the state says whether it is drawn (#129)', () => {
+  const drv = MAIN.slice(MAIN.indexOf('function startProbeDriver('), MAIN.indexOf('async mouseMove('));
+  assert.match(drv, /async stopClick\(\) \{ return stripStopClick\(\); \}/);
+  assert.match(drv, /const stripStopClick = async \(\) => \{[\s\S]*?querySelector\('#strip-alert \.stop'\)[\s\S]*?sendInputEvent\(\{ type: 'mouseDown', \.\.\.base \}\)/);
+  assert.match(drv, /stop: !!document\.querySelector\('#strip-alert \.stop'\)/, 'stripChrome says if the offer is drawn');
+});
+
 test('host.js: a stop ends the shell host the way it ends any host: the pty tree by pid, then its identity file', () => {
   const stop = HOST.slice(HOST.indexOf("if (msg.type === 'stop') {"), HOST.indexOf("if (msg.type === 'raise') {"));
   assert.match(stop, /shutdown\(\);\s*process\.exit\(0\);/);
@@ -113,9 +123,15 @@ test('host.js: a stop ends the shell host the way it ends any host: the pty tree
 });
 
 test('main.js: the + menu offers a Shell tab for the selected lane', () => {
-  const plus = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:plus'"), MAIN.indexOf("ipcMain.on('strip:plus'") + 2500);
-  assert.match(plus, /m\.shell\.enabled \? m\.shell\.label : `\$\{m\.shell\.label\} \(\$\{m\.shell\.why\}\)`/);
-  assert.match(plus, /tabShell\.openShell\(m\.shell\.target\)/);
+  // #160: the template is app/tab-shell.js plusMenuTemplate (its labels are pinned in test/tab-shell-develop.test.js); main hands
+  // it the shell's openShell for the item's target.
+  const plus = MAIN.slice(MAIN.indexOf("ipcMain.on('strip:plus'"), MAIN.indexOf("ipcMain.on('strip:plus'") + 300);
+  assert.match(plus, /Menu\.buildFromTemplate\(plusMenuFor\(\)\)/);
+  const builder = MAIN.slice(MAIN.indexOf('function plusMenuFor('), MAIN.indexOf('function plusMenuFor(') + 500);
+  assert.match(builder, /plusMenuTemplate\(tabShell\.plusMenu\(\)/);
+  assert.match(builder, /openShell: \(target\) => tabShell\.openShell\(target\)/);
+  // The item's label and its click on the lane's target are plusMenuTemplate's, pinned by behaviour in test/tab-shell-develop.test.js
+  // (not read here as text: tab-shell.js is mutated, test/stryker-config.test.js).
 });
 
 test('main.js: the probe driver can open a shell by the branch tab\'s label', () => {

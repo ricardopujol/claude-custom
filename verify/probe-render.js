@@ -1,5 +1,6 @@
 'use strict';
 /* Renders the live claude TUI through @xterm/headless and dumps the grid. */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');

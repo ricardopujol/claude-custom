@@ -61,6 +61,42 @@ test('the chat sits over the terminal, below the banners and the lock overlay, a
   assert.doesNotMatch(RENDERER.slice(RENDERER.indexOf('function chatRefreshView()'), RENDERER.indexOf('function chatToggle()')), /fit\.fit|sendResize|display = 'none'/);
 });
 
+test('the chat view shows the project\'s own background, and the terminal under it is not seen (#171)', () => {
+  // Over a picture, a video or a plain colour the chat is see-through, like the terminal (body.has-bg #termwrap), so #bg and its darkness
+  // veil show the same in both views. With no background at all it keeps the terminal's own fill.
+  assert.match(HTML, /body\.has-bg #chat-view \{ background: transparent; \}/);
+  // The terminal keeps running, keeps its size and keeps the keyboard's focus path (the send's read-back reads xterm's buffer, never its pixels):
+  // only its pixels go, and only while the chat is the one shown.
+  assert.match(HTML, /body\.chat-on #term \{ opacity: 0; \}/);
+  assert.doesNotMatch(HTML, /body\.chat-on #term \{[^}]*(display|visibility|width|height)/, 'no rule that would resize, detach or unfocus it');
+});
+
+test('Ctrl+wheel over the chat zooms its conversation, never the page or the terminal; Ctrl+0 resets; the zoom is the fonts record\'s (#172)', () => {
+  const at = RENDERER.indexOf('// #172: Ctrl+wheel');
+  assert.ok(at !== -1, 'the chat zoom block exists');
+  const block = RENDERER.slice(at, RENDERER.indexOf('// #172 end'));
+  // the wheel: on the chat view only, Ctrl only, cancelled so Chromium never zooms the page, not passive (or preventDefault is ignored)
+  assert.match(block, /chatViewEl\.addEventListener\('wheel', \(e\) => \{\s+if \(!e\.ctrlKey\) return;\s+e\.preventDefault\(\);/);
+  assert.match(block, /\}, \{ passive: false \}\);/);
+  // F10: one step per 100 px of travel (fonts-display wheelZoomSteps), not per event
+  assert.match(block, /fontsDisplay\.wheelZoomSteps\(chatWheel, e\.deltaY, e\.deltaMode, e\.timeStamp\)/);
+  assert.match(block, /fontsDisplay\.nextChatZoom\(chatZoomSaver\.current\(\), r\.steps\)/);
+  // F13: Ctrl+0 resets wherever the keyboard is in the page, but only while the chat is the display shown
+  assert.match(block, /document\.addEventListener\('keydown', \(e\) => \{\s+if \(!chatShown \|\| !chatViewState\.isChatZoomResetKey\(e\)\) return;\s+e\.preventDefault\(\);/);
+  assert.doesNotMatch(block, /chatViewEl\.addEventListener\('keydown'/);
+  // F12: saved through the saver (a run saved once it settles, kept until the record loads), flushed when the page goes away
+  assert.match(RENDERER, /const chatZoomSaver = fontsDisplay\.createChatZoomSaver\(\{ save: \(z\) => setFontSettings\(\{ chatZoom: z \}\)/);
+  assert.match(block, /window\.addEventListener\('pagehide', \(\) => chatZoomSaver\.flush\(\)\)/);
+  // F11: a zoom step keeps a reader who was at the bottom there
+  assert.match(block, /chatUi\.keepBottom\(/);
+  // it never reaches the terminal's font or geometry
+  assert.doesNotMatch(block, /term\.options|fit\.fit|sendResize/);
+  // the zoom is the CSS variable the conversation reads, and a saved record (this window's or another's) goes through the saver
+  assert.match(HTML, /#chat-log \{[^}]*zoom: var\(--chat-zoom, 1\);/);
+  const take = RENDERER.slice(RENDERER.indexOf('function takeFontSettings('), RENDERER.indexOf('function refreshFontSettings('));
+  assert.match(take, /applyChatZoom\(chatZoomSaver\.record\(fontSettings\.chatZoom\)\)/);
+});
+
 test('the host\'s conversation reaches the page in hello and on every change', () => {
   assert.match(RENDERER, /chatApply\(msg\.chat\);\s+\/\/ BACKLOG #157/);
   assert.match(RENDERER, /if \(msg\.type === 'chat'\) \{\s+chatApply\(msg\.chat\);\s+return;\s+\}/);

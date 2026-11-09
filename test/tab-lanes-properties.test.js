@@ -45,7 +45,13 @@ const modelArb = fc.tuple(
   return entries;
 });
 
-const closedArb = fc.array(fc.integer({ min: 0, max: 20 }).map(i => ({ key: `lane${i}`, label: `lane${i}` })), { maxLength: 6 });
+// A closed develop (#160) is a closed row like a lane's, flagged isDev. A `merged: true` row is one an earlier build of PR #236 saved
+// (its merged close's Undo, gone since Ricardo's "B: no Undo"): it must read as any closed row.
+const closedArb = fc.array(fc.oneof(
+  fc.integer({ min: 0, max: 20 }).map(i => ({ key: `lane${i}`, label: `lane${i}` })),
+  fc.integer({ min: 0, max: 20 }).map(i => ({ key: `lane${i}`, label: `lane${i}`, merged: true })),
+  fc.constant({ key: 'dev', label: 'develop', isDev: true }),
+), { maxLength: 6 });
 const keysOf = (list) => list.map(e => e.key);
 
 // --- placeLanes ----------------------------------------------------------------------------
@@ -59,9 +65,21 @@ test('P1: every lane is reachable exactly once, on the strip or as a menu row', 
       ...r.menu.notStarted.map(x => x.key), ...r.menu.merged.map(x => x.key),
     ];
     for (const k of lanes) assert.strictEqual(placed.filter(p => p === k).length, 1, `${k} placed ${placed.filter(p => p === k).length} times`);
-    // a closed row is for a lane with no entry, and appears once
-    const all = [...r.menu.notStarted, ...r.menu.merged].map(x => x.key);
+    // a closed row is for a lane with no entry, and appears once; a closed develop is menu.develop, never a Not started row
+    const all = [...(r.menu.develop ? [r.menu.develop] : []), ...r.menu.notStarted, ...r.menu.merged].map(x => x.key);
     assert.strictEqual(new Set(all).size, all.length, 'no menu row repeats');
+    const devClosed = closed.some(c => c.isDev) && !entries.some(e => e.key === 'dev');
+    assert.strictEqual(r.menu.develop !== null, devClosed, 'menu.develop exactly when develop is closed and has no entry');
+    if (r.menu.develop) assert.strictEqual(L.lanesMenuRows(r.menu, [])[0].key, 'dev', 'and it is the first row');
+    // every closed lane with no entry is a Not started "closed" row whose click reopens it, whatever `merged` an old file said
+    const closedLanes = new Set(closed.filter(c => !c.isDev && !entries.some(e => e.key === c.key)).map(c => c.key));
+    for (const k of closedLanes) {
+      const row = r.menu.notStarted.find(x => x.key === k);
+      assert.ok(row, `${k} is in Not started`);
+      assert.deepStrictEqual({ state: row.state, closed: row.closed }, { state: 'closed', closed: true });
+      assert.ok(!r.menu.merged.some(x => x.key === k), `${k} is never a Merged row`);
+      assert.strictEqual(L.lanesMenuRows(r.menu, []).find(x => x.key === k).action, 'reopen', `${k}'s click reopens it`);
+    }
   }), RUNS);
 });
 

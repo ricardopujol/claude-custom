@@ -133,6 +133,9 @@ const CONTRACT = {
     //     "completed", agentId } at the end. Absent on older CLIs and on
     //     truncated captures, so the machine falls back to binding a new
     //     agent_id to the oldest unbound invocation of its type;
+    //   tool_input.to of a FAILED SendMessage -- whom the message was for, in
+    //     a stressed card's cause (BACKLOG #162, host/stress-cause.js); absent,
+    //     the cause just says "a message failed to send";
     //   a NAMED TEAMMATE's spawn result (Agent with `name`, in an
     //     interactive session; measured 2026-10-03 from a transcript's
     //     toolUseResult, the hook's tool_response is assumed equal):

@@ -11,6 +11,7 @@
 
      node verify/probe-payloads.js            # check against the contract
      node verify/probe-payloads.js --dump     # also print the shapes seen */
+require('./lib/mark-probe');   // BACKLOG #169: this script starts a host or an Electron, so its children carry the probe mark
 const { spawn } = require('child_process');
 const path = require('path');
 const WebSocket = require('ws');

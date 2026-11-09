@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld('strip', {
   select: (key) => ipcRenderer.send('strip:select', key),
   // `ifSafe` (Ctrl+click, #77): close with no confirm when the tab is merged, clean, pushed and unoccupied.
   close: (key, ifSafe) => ipcRenderer.send('strip:close', key, ifSafe === true),
+  // #129 (PR #231 Dexter 3): the Stop button on a tab kept because its host wouldn't end. Its own channel: a plain x is a new close and asks.
+  stop: (key) => ipcRenderer.send('strip:stop', key),
   contextMenu: (key) => ipcRenderer.send('strip:contextMenu', key),
   plus: () => ipcRenderer.send('strip:plus'),
   // The Lanes ▾ menu (BACKLOG #139): `hidden` are the tab keys this page couldn't fit, which main lists first. Drag to reorder (#141):

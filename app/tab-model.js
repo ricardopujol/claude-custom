@@ -27,6 +27,12 @@
  */
 (function (root) {
 
+// The drag order (app/tab-lanes.js applyOrder), read once at load (BACKLOG #170 S6: it was required inside stripModel, on every
+// call). No page loads this file today; one that does must load tab-lanes.js before it, as tab-strip.html does for its own use.
+const tabLanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
+// A page that loads them in the wrong order learns why now, not as "cannot read applyOrder of undefined" at the first strip (PR #236 Miguel G9).
+if (!tabLanes || typeof tabLanes.applyOrder !== 'function') throw new Error('app/tab-model.js needs app/tab-lanes.js loaded first');
+
 const isString = s => typeof s === 'string';
 const identity = p => p;
 
@@ -73,21 +79,25 @@ function pulseFor(st) {
  *   [{ key, label, isDev, selected, started, closable, working, needsInput, night, summary, pulse,
  *      lockGlyph, health, phase, error, note, setup, createdWarning }]
  * Dev first (order otherwise as given). Exactly one entry is selected: the one
- * matching `selectedKey`, else dev (else the first entry).
+ * matching `selectedKey`, else dev (else the first entry). With `pickAny: false`
+ * there is no "first entry" fallback: a window whose develop tab was closed and
+ * whose selection is null selects nothing (BACKLOG #160), rather than a lane
+ * nobody chose. `lastClosable` (PR #236 Dexter 8, Miguel Y5): the one closability rule. A project window passes true: every tab
+ * closes, the last one too, develop or a lane, since the Lanes and + menus bring any of them back. Left out (a single-folder
+ * window, whose one tab has nowhere to come back from), a lone tab never closes.
  */
-function stripModel(state, runtime, selectedKey, { keyOf = identity, order = null } = {}) {
+function stripModel(state, runtime, selectedKey, { keyOf = identity, order = null, pickAny = true, lastClosable = false } = {}) {
   const tabs = state && Array.isArray(state.tabs) ? state.tabs.filter(t => t && isString(t.path)) : [];
   // `order`: the person's drag order of the other lanes (keys; app/tab-lanes.js applyOrder). Develop is first whatever it says.
-  const lanes = typeof module !== 'undefined' && module.exports ? require('./tab-lanes') : root.tabLanes;
   const devFirst = [
     ...tabs.filter(t => t.isDev === true),
-    ...lanes.applyOrder(tabs.filter(t => t.isDev !== true), order, t => keyOf(t.path)),
+    ...tabLanes.applyOrder(tabs.filter(t => t.isDev !== true), order, t => keyOf(t.path)),
   ];
   const keys = devFirst.map(t => keyOf(t.path));
   let selIdx = keys.indexOf(selectedKey);
   if (selIdx < 0) selIdx = devFirst.findIndex(t => t.isDev === true);
-  if (selIdx < 0 && devFirst.length) selIdx = 0;
-  const single = devFirst.length <= 1;
+  if (selIdx < 0 && devFirst.length && pickAny !== false) selIdx = 0;
+  const single = devFirst.length <= 1 && lastClosable !== true;
   return devFirst.map((t, i) => {
     const key = keys[i];
     const rt = runtimeOf(runtime, key);
@@ -100,7 +110,8 @@ function stripModel(state, runtime, selectedKey, { keyOf = identity, order = nul
       started: !!rt && rt.started === true,
       // Not while its folder is being removed: a reopen could spawn a host
       // into a folder `git worktree remove` is deleting (PR #80 Dexter F4).
-      closable: t.isDev !== true && !single && t.phase !== 'removing',
+      // Develop closes too (BACKLOG #160): the Lanes and + menus bring it back. A lone tab only where `lastClosable` says.
+      closable: !single && t.phase !== 'removing',
       working: !!st && st.working === true,
       needsInput: !!st && st.needsInput === true,
       // #156: held cross-session messages in this tab (already cut down by the shell); 0 for none or unknown.
@@ -171,12 +182,16 @@ function select(model, key) {
   return model.some(e => e.key === key) ? key : selectedKeyOf(model);
 }
 
-/** Ctrl+Tab (+1) / Ctrl+Shift+Tab (-1), wrapping. An unknown key steps from the selection. */
+/**
+ * Ctrl+Tab (+1) / Ctrl+Shift+Tab (-1), wrapping. An unknown key steps from the selection. With nothing selected either (develop
+ * closed and nothing chosen, BACKLOG #160), Ctrl+Tab lands on the first tab and Ctrl+Shift+Tab on the last (PR #236 Dexter 10).
+ */
 function neighbour(model, key, step) {
   if (model.length === 0) return null;
-  let i = model.findIndex(e => e.key === key);
-  if (i < 0) i = Math.max(0, model.findIndex(e => e.selected));
   const n = model.length;
+  let i = model.findIndex(e => e.key === key);
+  if (i < 0) i = model.findIndex(e => e.selected);
+  if (i < 0) return step >= 0 ? model[0].key : model[n - 1].key;
   return model[(((i + step) % n) + n) % n].key;
 }
 

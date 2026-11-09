@@ -9,11 +9,75 @@ All probes render the pty stream into `@xterm/headless` with `Unicode11Addon`
 active, which is the same terminal state the host will serialize for
 detach/reattach — so the probes exercise the real component, not a mock.
 
+## The heavy lock
+
+`npm test` (through `scripts/with-heavy-lock.js`) and every probe that requires
+`lib/launch-electron.js` take the machine-wide heavy-work lock first (the rules
+are in `host/heavy-lock.js`'s header). A busy lock is waited for **20 minutes**
+(`HEAVY_LOCK_WAIT_MINUTES` changes it): one full suite is about 8, so that covers
+one or two suites queued ahead. About once a minute the waiting run prints who
+holds the lock and how long it has waited.
+
+If the wait runs out the work does **not** run. The last line says so, and the
+exit code is **75**, never 1 (1 is a failing suite or probe):
+
+    [heavy-lock] lock busy for 20 min, held by npm test (pid 123 start 456) (since 10:00:00): NOT RUN
+
+The lock script also holds a free slot back until the machine has 8 GB free RAM
+and is under 70% CPU (its load gate). That time counts against the same 20
+minutes, so a machine kept loaded by something outside the lock (REAPER, a
+build) can use up the wait with the slot free. That give-up reads apart from a
+busy lock by its first words, with the same exit code:
+
+    [heavy-lock] machine busy after a 20 min wait: the lock is free, but its load gate needs 8 GB free RAM and under 70% CPU (now 4.2 GB free, 91% CPU): NOT RUN
+
+Two more shapes end the same way, with the same exit code. Earlier tickets
+still waiting with nobody holding the slot (the first in line is between two
+polls, or held back by the load gate):
+
+    [heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN
+
+And the lock script itself failing (its output, on one line):
+
+    [heavy-lock] the lock could not be taken (heavy-lock.ps1 failed (exit 1): ...): NOT RUN
+
+On a loaded machine the script call can run past its wait and be stopped by
+its own timer. The busy and machine-busy lines then say so after the minutes,
+`(heavy-lock.ps1 ran past its wait and was stopped)`. The last line is always one
+physical line that starts with `[heavy-lock]`. `verify/sweep-orphans.js --stop`
+ends the same way when it can't take the lock.
+
+Exit 75 means "not run, retry", not "failed". The load gate is deliberate:
+wait for the machine, don't work around it. Neither `HEAVY_LOCK_HELD` nor
+`HEAVY_LOCK_SCRIPT` is a way past a NOT RUN: retry later.
+
+The rule is 75 **plus** that NOT RUN last line, not 75 alone. A command that ran
+under the lock can exit 75 itself (a nested probe's own NOT RUN). The wrapper
+passes that code through unchanged, and its last line then says whose 75 it is:
+
+    [heavy-lock] the command ran under the lock and exited 75 itself: that is its own code (see its output above), not this wrapper's NOT RUN
+
+`HEAVY_LOCK_HELD` is set by whoever holds the lock, for what it starts, to its
+own identity (`npm test (pid 123 start 456)`). It skips the lock only while that
+same holder really holds it, and the line names that holder:
+
+    [heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by npm test (pid 123 start 456) (since 10:00:00): not taking the lock (re-entrant, under that holder)
+
+Under another lane's holder it's a stranger's variable: a `WARNING: ... a
+STRANGER'S variable` line, and the lock is waited for like any run. With nobody
+holding it the variable is stale (a shell that forgot to unset it): a
+`WARNING: ... a STALE variable` line, and the lock is taken for real. The bare
+`HEAVY_LOCK_HELD=1` is the by-hand form (`host/heavy-lock.js`'s header): it only
+counts under a holder that took the lock by hand.
+A unit test's child process that runs a probe's code with no lock at all
+points `HEAVY_LOCK_SCRIPT` at an absolute path that doesn't exist. That's for
+test children that start nothing heavy, never for a real run.
+
 | Probe | Question | Result (2026-09-11, v2.1.268) |
 |---|---|---|
 | `probe-render.js` | Does the Ink TUI render faithfully through the host? | Yes — banner, box rules, prompt all correct |
 | `probe-keys.js` | Shift+Tab modes, Shift+Enter newline, rule alignment | All pass; rules exactly `cols` wide |
-| `probe-detach.js` | Does the session survive with no viewer? Full mode cycle | Survives; state intact on reattach |
+| `probe-detach.js` | Does the session survive with no viewer, intact and responsive on reattach? Exits 1 if a check fails or the host dies | 2026-11-05 (BACKLOG #168, rewritten: the spike's hard-coded pre-worktree path killed its host at start and it still exited 0): 9/9. A host up with no viewer for 4 s keeps itself and its pty; a fresh client's replay holds the draft typed before the detach, before it sends a key, and its keys land on the same line. A host that dies fails check 1 with its log and exits 1. cmd.exe stand-in, temp project, own port and token. The Shift+Tab mode cycle it used to print is `probe-keys.js`'s question |
 | `probe-settings.js` | Does `--settings` merge or shadow? | Top-level merge, **wholesale replace within a key** |
 | `probe-hook-layers.js` | Do `--settings` hooks replace the project layer's? | No — they **accumulate** |
 | `probe-hook-e2e.js` | Does a helper invocation reach the running host? | Yes, `subagent_type` round-trips |
@@ -28,6 +92,8 @@ detach/reattach — so the probes exercise the real component, not a mock.
 | `probe-canvas-mcp.js` | Does Claude's panel's MCP server work through the REAL CLI, next to the user's own servers? (BACKLOG #71, PR 2) | 2026-10-05, claude 2.1.289, fake endpoint + throwaway config (zero spend): `--mcp-config` (built by the real `buildClaudeArgs`) ADDS to a user server already in `.claude.json` (both tool sets listed), the CLI shows the model the description saying the panel changes only when the user asks, a model's `canvas_render` call is run by the CLI through the server and lands in `<state>/canvas/<session-id>/index.html` (session id from the pointer file), `canvas_list_artifacts` answers from the shelf on disk, nothing about the panel is written to `.claude.json`, and with the setting off no canvas tool is offered. The `Artifact` tool's success payload could not be captured offline (needs a signed-in session); its structured result was read from a real transcript and the shelf parser accepts the structured, text and content-array forms |
 | `probe-gui.js` | Does the real Electron GUI render correctly? | Writes a PNG to `.harness/` |
 | `probe-memory-footprint.js` | What does the app cost in memory? (BACKLOG #20 baseline) | 2026-09-26, 4 runs: harness 280–408 MB private (idle / 24 agents / long session; three runs sat at 280–292, one at 337–408, so compare medians of several runs, not one); `claude` + its MCP servers ≈ 800–970 MB on top. No video-avatar scenario yet (#13/#18 unbuilt). Samples in `.harness/memory-footprint.json` |
+| `probe-kill-switch-detached.js` | Does the stop end a process whose parent already exited (BACKLOG #127)? Sleeper stand-ins under node-pty (bundled ConPTY), the host's own stop path; four cases (node `detached`, Git Bash `nohup & disown`, PowerShell `Start-Process -WindowStyle Hidden`, and `launcher`: Git's `bin\bash.exe` -> `usr\bin\bash` -> the stand-in, which must be ADOPTED at the arm). `--bare`: no guard; `--window-only`: the guard proves each pty by its spawn window alone. Runs against a checkout without the guard too (`NODE_PATH` at a `node_modules`) | 2026-11-06 (PR #235): `--bare` all four grandchildren SURVIVED, exit 1; guarded, all four ended (launcher: 2 descendants adopted), exit 0; `--window-only` the same, exit 0. A failed process-table query is no answer (it read as "ended" before: a `--bare` grandchild reported gone was still running). Arm (spawn -> armed, the guard's log line, 10 rounds, CPU 17-43%): 627 / 701 / 1506 ms, helper's own 95 / 105 / 478 ms; under load (52%, 2026-11-05) 1008 / 1395 / 1656 ms. node-pty's `AttachConsole failed` traces are its `term.kill()` agent after the tree kill, not a failure |
+| `probe-kill-switch-electron.js` | PR #235 M1: does Electron run from a session in the kill switch's job (no BREAKAWAY_OK)? A node stand-in in a real job starts: `quit` the lane's Electron with a trivial main (sandboxed window, GPU, utility, crashpad); `hold` the same, then the job is ended; `probe` one real app probe (`probe-shortcuts-page.js`: the app window and a host whose own job nests inside). Heavy lock | 2026-11-06: YES. `quit` loaded, sandboxed Tab + GPU, no child-process-gone, exit 0; `hold` the stop ended all 6 (5 electron.exe incl. crashpad, conhost), none left; `probe` all checks passed, exit 0 (control outside any job: also all passed). `probe-renderer-origin.js` was the first pick for `probe`: it fails outside any job too (NO HANDSHAKE, its 4 s window under load), so it can't judge the job |
 | `probe-kill-switch.js` | Does the kill switch stop a real host's session, and keep a new one from starting? (PLAN_SAFETY_NET lane 2) | 2026-10-25: 11/11. A project STOP ended the session in 1738 ms and the host exited, naming the file; a host started while it existed spawned nothing and left 24 s later with no window; with it deleted a fresh host started, and STOP-ALL ended it in 978 ms. Stand-in claude, throwaway repo and claude home: the real STOP-ALL is never written |
 | `probe-lean.js` | Does lean mode work in a real window, and what does it save? (BACKLOG #62) | Behaviour checks 1-7 (button, bedtime, button-wins, still portraits, GIF/webm stills) and the normal-vs-lean memory/CPU table per process type, one busy tab and three. Heavy: take heavy-lock.ps1. Numbers in the PR body; samples in `.harness/lean-footprint.json` |
 | `probe-anim-cost.js` | Does an animated background cost CPU/GPU, GIF vs MP4 vs WebM? (BACKLOG #62, the video switch) | Same 10 s clip as GIF, H.264 MP4, VP9 WebM and a still behind a busy terminal, 2 min each, plus animated portraits; CPU % and private MB per process type and GPU engine %. Heavy: take heavy-lock.ps1. Samples in `.harness/anim-cost.json` |

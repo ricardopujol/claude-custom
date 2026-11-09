@@ -42,6 +42,7 @@ const THREE = [['dev', 'develop'], ['feat-a', 'feat/a'], ['feat-b', 'feat/b']];
 function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, launchedFrom = null, focused = true, spawnFails = false, marks, occupancy, resources, safety } = {}) {
   const h = {
     listText: list, listFails: false, running: { ...running },   // port -> cwd of a live host
+    pidStops: [], pidWho: [], pidReply: null,
     spawns: [], controls: [], viewsMade: [], viewsGone: [], sent: [], changes: [], focusCalls: 0,
     confirm: true, confirms: [], resolveCalls: [], tokens: 0, failWait: false, spawnRegisters: true, gitInFlight: 0, gitMax: 0,
     // port -> the token file the host that BOUND that port wrote (host.js writes
@@ -123,17 +124,21 @@ function harness({ usage, mode = 'tabs', list = porcelain(THREE), running = {}, 
         if (spawnFails) throw new Error('spawn exploded');
         h.spawns.push({ key: tab.key, port, token });
         if (h.onSpawn) h.onSpawn({ key: tab.key, port, token });
+        const child = h.spawnChild ? h.spawnChild() : undefined;     // main.js's spawnHost returns the ChildProcess
         // A registering spawn binds -- unless something else bound the port first.
         if (h.spawnRegisters && h.running[port] === undefined) {
           h.running[port] = tab.cwd;
           h.tokenFiles[port] = token;
         }
+        return child;
       },
       wait: async () => !h.failWait,
       tokenFor: fileToken,
       tokenFile: fileToken,
       newToken: () => `fresh-${++h.tokens}`,
       control: async (c) => { h.controls.push(c); return h.controlReply ? h.controlReply(c) : { ok: true, reply: null }; },
+      // #129: the retry by pid. 'killed' | 'gone' end it; anything else (or a throw) means the host is still there.
+      stopByPid: async (port, who) => { h.pidStops.push(port); h.pidWho.push(who); return h.pidReply ? h.pidReply(port) : 'killed'; },
       identity: () => null,
       readToken: () => null,
     },
@@ -436,11 +441,11 @@ test('only one poll runs at a time: a tick that finds one running does nothing',
 
 // --- hand close: criterion 5 -------------------------------------------------
 
-test('hand close: confirm, then stop + close; the tab stays closed while git lists it, and dev cannot', async () => {
+test('hand close: confirm, then stop + close; the tab stays closed while git lists it', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
-  assert.strictEqual((await h.shell.closeTab(key('dev'))).ok, false, 'dev has no close (criterion 6)');
+  // (criterion 6, "dev has no close", was replaced by BACKLOG #160: test/tab-shell-develop.test.js)
   h.confirm = false;
   assert.strictEqual((await h.shell.closeTab(key('feat-a'))).cancelled, true);
   assert.deepStrictEqual(h.controls, []);
@@ -648,28 +653,96 @@ test('F3: closing a tab that is still attaching stops the session it ends up pre
     [{ port: 7702, token: 'tok-7702', msg: { type: 'stop' } }], 'the attached session was stopped');
 });
 
-test('F3: a stop that is refused still closes the tab, and the strip notice names the branch and the error', async () => {
+test('F3: a stop that is refused and cannot be ended by pid keeps the tab, and the strip notice names the branch and the error (#129)', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
-  h.controlReply = () => ({ ok: false, error: 'handshake refused (HTTP 403)' });
+  h.controlReply = () => ({ ok: false, error: 'closed before reply' });
+  h.pidReply = () => 'failed';
   const r = await h.shell.closeTab(key('feat-a'));
-  assert.strictEqual(r.ok, true);
-  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'the tab is closed either way');
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.kept, true);
+  assert.strictEqual(r.stopError, 'closed before reply');
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'the tab is NOT dropped: its host may still be running');
+  assert.deepStrictEqual(h.pidStops, [7701], 'the stop was retried once, by pid');
   const notice = h.shell.snapshot().closeNotice;
-  assert.strictEqual(notice, "Couldn't end the session in feat/a: handshake refused (HTTP 403). It may still be running.");
-  // ...and it is cleared by the next selection rather than sitting there forever.
+  assert.strictEqual(notice, "Couldn't end the session in feat/a: closed before reply. It may still be running.");
+  // The notice is cleared by the next selection; the Stop offer on the kept tab is not.
   await h.shell.select(key('dev'));
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
 });
 
-test('F3: a stop that throws is reported the same way', async () => {
+test('F3: a stop that throws is reported the same way, and keeps the tab', async () => {
   const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
   await h.shell.open();
   await flush();
   h.controlReply = () => { throw new Error('socket gone'); };
+  h.pidReply = () => { throw new Error('powershell gone'); };
   await h.shell.closeTab(key('feat-a'));
   assert.match(h.shell.snapshot().closeNotice, /feat\/a: socket gone\. It may still be running\./);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+});
+
+test('#129: a refused stop that the pid retry ends closes the tab with no notice', async () => {
+  for (const outcome of ['killed', 'gone']) {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    h.controlReply = () => ({ ok: false, error: 'no answer' });
+    h.pidReply = () => outcome;
+    const r = await h.shell.closeTab(key('feat-a'));
+    assert.strictEqual(r.ok, true, outcome);
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, outcome);
+    assert.deepStrictEqual(h.pidStops, [7701], outcome);
+    assert.strictEqual(h.shell.snapshot().closeNotice, null, outcome);
+    assert.strictEqual(h.shell.snapshot().closeStuck, null, outcome);
+  }
+});
+
+test('#129: a kept tab is not offered back by Reopen, and Stop on it ends it without asking again', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.shell.plusMenu().reopen, [], 'it never closed, so there is nothing to reopen');
+  assert.strictEqual(h.confirms.length, 1);
+  // Stop: the host answers this time.
+  h.controlReply = null;
+  const r = await h.shell.closeTab(key('feat-a'), { stop: true });     // the strip's Stop button
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.confirms.length, 1, 'the question was answered the first time');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null, 'the "may still be running" line goes with the tab it was about (found by verify/probe-tab-close-kept.js)');
+});
+
+test('#129: Stop that fails again leaves the tab kept, with the offer still up', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  const again = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(again.ok, false);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  assert.deepStrictEqual(h.pidStops, [7701, 7701]);
+});
+
+test('#129: a kept tab is not written as closed in the layout file', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  h.pidReply = () => 'failed';
+  const before = h.shell.snapshot().lanes;
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.shell.snapshot().lanes, before, 'the lane is where it was');
+  assert.ok(h.shell.snapshot().strip.some(e => e.key === key('feat-a')), 'still on the strip');
 });
 
 test('F3: a clean stop leaves no notice', async () => {
@@ -710,9 +783,13 @@ test('R2-3: closing a tab whose spawned host never answered twice says it may st
   h.failWait = true;
   await h.shell.select(key('feat-a'));
   await h.shell.select(key('feat-a'));               // second wait fails: no pending host any more
+  h.pidReply = () => 'unknown';                      // and the pid retry cannot prove it either (#129: the tab is kept)
+  h.controlReply = () => ({ ok: false, error: 'no answer' });
+  const unconfirmedPort = h.shell.tabByKey(key('feat-a')).unconfirmed.port;
   const r = await h.shell.closeTab(key('feat-a'));
-  assert.strictEqual(r.ok, true);
-  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.deepStrictEqual(h.pidStops, [unconfirmedPort], 'the host that never answered is retried by pid (Miguel Y4)');
+  assert.strictEqual(r.ok, false);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
   assert.match(h.shell.snapshot().closeNotice, /feat\/a/);
   assert.match(h.shell.snapshot().closeNotice, /may still be running/);
 });
@@ -751,9 +828,11 @@ test('F4: focusStep -- focus a selected view that lacks the keyboard, only while
   assert.deepStrictEqual(focusStep(w, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: w }, 'window not focused');
 });
 
-test('R2-4: focusStep -- a selection with no view leaves nothing holding the keyboard', () => {
+test('R2-4: focusStep -- a selection with no view leaves no view holding the keyboard; the strip page takes it if a view had it (Miguel Y4)', () => {
   const v = {};
-  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null });
+  assert.deepStrictEqual(focusStep(v, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null, focusStrip: true },
+    'the view that had the keyboard went: the strip page gets it, so Lanes ▾, + and Ctrl+Shift+T are reachable');
+  assert.deepStrictEqual(focusStep(null, { windowFocused: true, selectedView: null }), { focus: false, lastFocused: null }, 'nothing had it: nothing to move');
   assert.deepStrictEqual(focusStep(v, { windowFocused: false, selectedView: null }), { focus: false, lastFocused: null });
   assert.deepStrictEqual(focusStep(undefined, { windowFocused: false, selectedView: v }), { focus: false, lastFocused: null });
 });
@@ -1979,7 +2058,7 @@ test('the override is offered only for a blocked tab, and reaches only that view
   assert.strictEqual(h.shell.menuState(key('feat-a')).override, true);
   assert.strictEqual(h.shell.override(key('feat-a')), true);
   assert.deepStrictEqual(h.sent.filter(([, ch]) => ch === 'lock-override'), [[key('feat-a'), 'lock-override', undefined]]);
-  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: false }, 'dev has no close');
+  assert.deepStrictEqual(h.shell.menuState(key('dev')), { key: key('dev'), override: false, close: true }, 'dev closes too (#160)');
   assert.deepStrictEqual(h.shell.menuState('nope'), { key: 'nope', override: false, close: false });
 });
 
@@ -2115,6 +2194,15 @@ test('handleProbeCommand: key is dispatched with its name, and needs one', async
     { ok: false, error: 'key modifiers must be a list' });
 });
 
+test('handleProbeCommand: strip-key (PR #236 Miguel Y4) goes to the strip page, with the same checks as key', async () => {
+  const seen = [];
+  const api = { stripKey: async (k, m) => { seen.push([k, m]); return { ok: true, stripFocused: true, windowFocused: true }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key', key: 'T', modifiers: ['control', 'shift'] }), api), { ok: true, stripFocused: true, windowFocused: true });
+  assert.deepStrictEqual(seen, [['T', ['control', 'shift']]]);
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key' }), api), { ok: false, error: 'strip-key needs a key' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'strip-key', key: 'T', modifiers: 'shift' }), api), { ok: false, error: 'strip-key modifiers must be a list' });
+});
+
 // --- Miguel, PR #75 M4: the probe driver answers only the probe -------------------
 
 test('M4: a line without the token, or with another one, is refused and runs nothing', async () => {
@@ -2140,6 +2228,16 @@ test('M4: screenshot writes only a .png', async () => {
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'C:\\Windows\\win.ini' }), api),
     { ok: false, error: 'screenshot needs a .png file' });
   assert.deepStrictEqual(await probeCmd(line({ cmd: 'screenshot', file: 'shot.PNG' }), api), { ok: true, file: 'shot.PNG' });
+});
+
+test('#139 / #160 probe: menu writes only a .png, and names only the Lanes or + menu', async () => {
+  const api = { menu: async (which, item, shot) => ({ ok: true, which, item, shot }) };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'window-shot', file: 'w.png' }), api), { ok: false, error: 'unknown command: window-shot' }, 'no screen capture command');
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'tab' }), api), { ok: false, error: 'menu needs which: lanes or plus' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'lanes', item: 3 }), api), { ok: false, error: 'menu item must be a label' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'plus', shot: 'x.txt' }), api), { ok: false, error: 'menu shot needs a .png file' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'plus', shot: 'm.png' }), api), { ok: true, which: 'plus', item: undefined, shot: 'm.png' });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'menu', which: 'lanes', item: 'develop  (closed)' }), api), { ok: true, which: 'lanes', item: 'develop  (closed)', shot: undefined });
 });
 
 test('M4: the line reader splits on newlines and gives up on a line longer than its cap', () => {
@@ -2258,6 +2356,20 @@ test('handleProbeCommand: mouseClick reaches the driver with whole-number coordi
     assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseClick', ...bad }), api), { ok: false, error: 'mouseClick needs whole-number x and y' });
   }
   assert.deepStrictEqual(seen, [[10, 20]]);
+});
+
+test('handleProbeCommand: mouseWheel (PR #233 F14) reaches the driver with whole-number coordinates and delta, Ctrl only when asked; anything else is refused', async () => {
+  const seen = [];
+  const api = { mouseWheel: async (x, y, dy, ctrl) => { seen.push([x, y, dy, ctrl]); return { ok: true, zoomFactor: 1 }; } };
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', x: 10, y: 20, deltaY: -100, ctrl: true }), api), { ok: true, zoomFactor: 1 });
+  assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', x: 10, y: 20, deltaY: 100, ctrl: 'yes' }), api), { ok: true, zoomFactor: 1 });
+  for (const bad of [{ deltaY: 1 }, { x: 1.5, y: 2, deltaY: 1 }, { x: -1, y: 0, deltaY: 1 }]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', ...bad }), api), { ok: false, error: 'mouseWheel needs whole-number x and y' });
+  }
+  for (const dy of [undefined, 1.5, '100', 5000]) {
+    assert.deepStrictEqual(await probeCmd(line({ cmd: 'mouseWheel', x: 1, y: 1, deltaY: dy }), api), { ok: false, error: 'mouseWheel needs a whole-number deltaY' });
+  }
+  assert.deepStrictEqual(seen, [[10, 20, -100, true], [10, 20, 100, false]]);
 });
 
 test('handleProbeCommand: mark reaches the driver with a branch and an id (null clears)', async () => {
@@ -2680,9 +2792,13 @@ test('ctrl-close: a plain close (no ifSafe) still asks once, with no reason, eve
   assert.deepStrictEqual(h.confirms, [null]);
 });
 
-test('ctrl-close: dev still has no close', async () => {
+test('ctrl-close on dev (#160): it is never merged, so it asks why before it closes', async () => {
   const h = await mergedHarness();
-  assert.strictEqual((await h.shell.closeTab(key('dev'), { ifSafe: true })).ok, false);
+  h.facts = { ...GIT_OK, branch: 'develop' };
+  const r = await ctrlClose(h, 'dev');
+  assert.strictEqual(r.cancelled, true, 'asked, and the answer was no');
+  assert.deepStrictEqual(asked(h), [said("This one isn't merged.")]);
+  assert.ok(h.shell.tabByKey(key('dev')), 'still open');
 });
 
 // Ricardo, 2026-10-09 (design round 2): the tab's OWN session no longer asks. Ctrl+click closes a merged, saved,
@@ -3068,6 +3184,31 @@ test('ctrl-close F3: a tab that leaves during the git re-read is not stopped aga
   assert.strictEqual(h.shell.snapshot().closeNotice, null);
 });
 
+// PR #231 round 2, Dexter L3: the closing state starts before the targets are read, not after the silent close's second check.
+test('ctrl-close L3: during the git re-read the tab is already closing: a poll attaches no host to it, so none is presented after the targets were read', async () => {
+  let reads = 0;
+  let startedDuring = null;
+  let h = null;
+  h = await mergedHarness({ safety: { facts: async (cwd) => {
+    if (cwd === wt('feat-b')) {
+      reads += 1;
+      if (reads === 2) {                                      // the re-read: a host for feat-b appears and a poll looks again
+        h.running[7702] = wt('feat-b');
+        await h.shell.poll();
+        await flush();
+        startedDuring = h.shell.tabByKey(key('feat-b')).started;
+      }
+    }
+    return { branch: 'feat/b', dirtyCount: 0, unpushedCount: 0, headInDevelop: true };
+  } } });
+  h.markers[key('feat-b')] = 'feat/b';
+  assert.strictEqual(h.shell.tabByKey(key('feat-b')).started, false, 'feat-b has no host yet');
+  const r = await ctrlClose(h, 'feat-b');
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(reads, 2, 'the close was silent and re-read once');
+  assert.strictEqual(startedDuring, false, 'nothing was attached to a tab that is closing');
+});
+
 // Dexter F4 (PR #139): one rule for doubt and count -- a folder an agent touched earlier (`also`) blocks a silent close.
 test('ctrl-close F4: a live claim whose `also` names the tab\'s folder asks, like the unprovable one', async () => {
   const claim = claimIn('feat-b', { also: [wt('feat-a')] });
@@ -3194,4 +3335,509 @@ test('handleProbeCommand: tray-image saves a PNG only', async () => {
     assert.deepStrictEqual(await probeCmd(line({ cmd: 'tray-image', file }), api), { ok: false, error: 'tray-image needs a .png file' }, String(file));
   }
   assert.deepStrictEqual(seen, ['a.png']);
+});
+
+// --- PR #231 review: the proof binds to THIS tab's host, and a tab is never dropped while its host may be live ------------------
+
+const refuse = (error) => () => ({ ok: false, error });
+
+test('Dexter 1 / Miguel B1: closing an ENDED tab whose port another folder\'s host holds now sends nothing and kills nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  delete h.running[7701];                       // feat-a's claude exits, and its host with it
+  await h.shell.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).ended, true);
+  h.running[7701] = wt('feat-b');               // folder b's host bound the freed port
+  h.controlReply = refuse('handshake refused (HTTP 403)');
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, [], 'a pid kill aimed at port 7701 would be feat-b\'s host');
+  assert.deepStrictEqual(h.controls, [], 'an ended tab is sent no stop: its port may be another host\'s by now');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'and it closes');
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 1: a stop whose token is REFUSED at the handshake is a stranger\'s host: no retry by pid, the tab goes without a notice', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('handshake refused (HTTP 403)');     // the host died between two polls and another took its port
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, []);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 1: the pid retry is asked for THIS tab\'s folder and kind; a file that names another host comes back a stranger and the tab goes', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'stranger';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, [7701]);
+  assert.deepStrictEqual(h.pidWho, [{ cwd: wt('feat-a'), side: false, shell: false }]);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 2: no identity file is NOT proof of death for a host still starting: the tab is kept, and the host is stopped once it binds', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.spawnRegisters = false;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;
+  await h.shell.select(key('feat-a'));                 // the host's wait times out: a pending host that has not bound yet
+  const pending = h.shell.tabByKey(key('feat-a')).pending;
+  assert.ok(pending, 'a pending host');
+  h.pidReply = () => 'nofile';
+  h.controlReply = refuse('connection refused');       // nothing listens yet
+  // (a) it never comes up within the start's own wait
+  const kept = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(kept.ok, false);
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'kept: dropping it would leave a host that binds a moment later with no tab');
+  assert.match(h.shell.snapshot().closeNotice, /hasn't come up yet/);
+  // (b) it binds during the wait: it is stopped, with the token it was started with
+  h.failWait = false;
+  h.controls.length = 0;
+  h.controlReply = (c) => (h.controls.length === 1 ? { ok: false, error: 'connection refused' } : { ok: true, reply: null });
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.controls.map(c => [c.port, c.token]), [[pending.port, pending.token], [pending.port, pending.token]], 'the stop is sent again once it is up');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('Dexter M2: a pending host whose spawned child has EXITED is dead: the tab closes, nothing is sent or killed; one still alive keeps the tab', async () => {
+  const { EventEmitter } = require('node:events');
+  const h = harness({ running: { 7700: wt('dev') } });
+  h.spawnRegisters = false;
+  const child = new EventEmitter();
+  h.spawnChild = () => child;
+  await h.shell.open();
+  await flush();
+  h.failWait = true;                                   // the wait always fails: the host never bound its port
+  await h.shell.select(key('feat-a'));
+  assert.ok(h.shell.tabByKey(key('feat-a')).pending, 'a pending host');
+  h.pidReply = () => 'nofile';
+  h.controlReply = refuse('connection refused');
+  const alive = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(alive.ok, false, 'its process may still be starting: kept');
+  child.emit('exit', 1, null);                         // the host crashed while starting
+  h.controls.length = 0;
+  h.pidStops.length = 0;
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true, 'the window spawned it and saw it die: nothing is left to stop');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.deepStrictEqual(h.controls, [], 'no stop sent to a port a stranger may hold now');
+  assert.deepStrictEqual(h.pidStops, []);
+});
+
+test('Dexter 2: a host that WAS listening and has no file now (nothing starting) is gone: the tab goes', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('connection refused');
+  h.pidReply = () => 'nofile';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter L4: a started tab dropped because its host has no identity file is logged, with the stop failure that led there', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'nofile';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  const line = h.logs.map(a => a.join(' ')).find(l => /7701/.test(l) && /no identity file/.test(l));
+  assert.ok(line, `a line names the port and the missing file: ${JSON.stringify(h.logs)}`);
+  assert.match(line, /closed before reply/);
+});
+
+test('Dexter 5: a tab with BOTH a pending and an unconfirmed host stops and retries both, not only the pending one', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const tab = h.shell.tabByKey(key('feat-a'));
+  tab.pending = { port: 7761, token: 'pending-tok' };
+  tab.unconfirmed = { port: 7760, token: 'unconfirmed-tok' };
+  h.controlReply = refuse('no answer');
+  h.pidReply = () => 'failed';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.controls.map(c => [c.port, c.token]).sort(), [[7760, 'unconfirmed-tok'], [7761, 'pending-tok']]);
+  assert.deepStrictEqual([...h.pidStops].sort(), [7760, 7761]);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+});
+
+test('Miguel Y4: an attach whose token cannot be read is retried by pid, as THIS folder\'s host', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  h.tokenFiles[7701] = null;                            // the token file can't be read: the open-time attach doesn't present it
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, false);
+  h.pidReply = () => 'failed';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.deepStrictEqual(h.controls, [], 'no token, so no stop frame');
+  assert.deepStrictEqual(h.pidStops, [7701]);
+  assert.deepStrictEqual(h.pidWho, [{ cwd: wt('feat-a'), side: false, shell: false }]);
+  assert.match(h.shell.snapshot().closeNotice, /token can't be read/);
+});
+
+test('Dexter 6: a start-time MISMATCH means the file is stale and that host is dead: the tab goes, nothing was killed', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('connection refused');
+  h.pidReply = () => 'mismatch';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+});
+
+test('Dexter 7: a stop that timed out gets the host\'s own shutdown bound to finish; a host that goes quiet is never killed', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('timed out after 3000ms');
+  let probes = 0;
+  h.probeOverride = (port) => (port === 7701 && ++probes > 3 ? 'refused' : 'listening');
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, [], 'it was ending: a kill mid-shutdown would leave its lock and identity file behind');
+  assert.ok(h.slept.length >= 3, 'it waited');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('Dexter 7: a host still listening after its whole shutdown bound is ended by pid; a stop that ANSWERED ok is never followed by a kill', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('timed out after 3000ms');
+  h.probeOverride = () => 'listening';
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(h.pidStops, [7701]);
+  assert.ok(h.slept.length >= 90, `it waited the whole bound (${h.slept.length} steps of 500 ms)`);
+  const ok = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await ok.shell.open();
+  await flush();
+  await ok.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(ok.pidStops, []);
+  assert.deepStrictEqual(ok.slept, []);
+});
+
+test('Miguel R5: a window closed during the wait for a host to go quiet stops waiting, and kills nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('timed out after 3000ms');
+  h.probeOverride = (port) => { if (h.slept.length >= 2) h.shell.destroy(); return 'listening'; };
+  await h.shell.closeTab(key('feat-a'));
+  assert.ok(h.slept.length <= 3, `it stopped waiting (${h.slept.length} steps of 500 ms)`);
+  assert.deepStrictEqual(h.pidStops, [], 'a host still ending is not killed by a window that is gone');
+});
+
+test('Dexter 7: any other failure goes to the pid retry at once, with no wait', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  await h.shell.closeTab(key('feat-a'));
+  assert.deepStrictEqual(h.pidStops, [7701]);
+  assert.deepStrictEqual(h.slept, []);
+});
+
+// --- PR #231 Miguel R3 (Ricardo, 2026-11-05: "Q2: A"): a dead port plus a file that proves nothing is an ended host ----------------
+
+const DEAD_PORT_NOTICE = "Closed feat/a: its host no longer listens on its port, and its process couldn't be confirmed ended.";
+
+for (const outcome of ['unknown', 'failed']) {
+  test(`Miguel R3: a started tab whose stop is refused, whose pid retry says ${outcome}, and whose port refuses a fresh probe closes with a notice, killing nothing`, async () => {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    h.controlReply = refuse('connection refused');
+    const probed = [];
+    h.pidReply = () => { delete h.running[7701]; return outcome; };     // nothing listens on 7701 any more; the file proves nothing
+    h.probeOverride = (port) => { probed.push(port); return h.running[port] !== undefined ? 'listening' : 'refused'; };
+    const r = await h.shell.closeTab(key('feat-a'));
+    assert.strictEqual(r.ok, true, 'the tab closes');
+    assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+    assert.deepStrictEqual(h.pidStops, [7701], 'one pid retry, which killed nothing (its outcome is not a kill)');
+    assert.ok(probed.includes(7701), 'the refusal is a fresh probe of the port, not read from the error text');
+    const snap = h.shell.snapshot();
+    assert.strictEqual(snap.closeNotice, DEAD_PORT_NOTICE);
+    assert.strictEqual(snap.closeStuck, null, 'no Stop offer is left behind: the tab is gone');
+    const line = h.logs.map(a => a.join(' ')).find(l => /^\[shell\]/.test(l) && /7701/.test(l) && /connection refused/.test(l) && l.includes(outcome));
+    assert.ok(line, `one [shell] line names the port, the failure and the outcome: ${JSON.stringify(h.logs)}`);
+    // It clears the way the other notices do: the next selection.
+    await h.shell.select(key('dev'));
+    assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  });
+}
+
+for (const answer of ['unknown', 'listening']) {
+  test(`Miguel R3: a probe that answers ${answer} after a non-kill outcome is no proof: the tab is kept with its Stop offer, as before`, async () => {
+    const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+    await h.shell.open();
+    await flush();
+    h.controlReply = refuse('connection refused');
+    h.pidReply = () => 'unknown';
+    h.probeOverride = (port) => (port === 7701 ? answer : 'listening');
+    const r = await h.shell.closeTab(key('feat-a'));
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.kept, true);
+    assert.ok(h.shell.tabByKey(key('feat-a')));
+    assert.strictEqual(h.shell.snapshot().closeNotice, "Couldn't end the session in feat/a: connection refused. It may still be running.");
+    assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  });
+}
+
+test('Miguel R3: a BOOTING host whose port refuses is unchanged: a refusal proves nothing while it may still bind, so the tab is kept', async () => {
+  const h = harness({ running: { 7700: wt('dev') } });
+  await h.shell.open();
+  await flush();
+  const tab = h.shell.tabByKey(key('feat-a'));
+  tab.pending = { port: 7761, token: 'pending-tok' };      // a host still starting: nothing listens on 7761 yet
+  h.controlReply = refuse('connection refused');
+  h.pidReply = () => 'unknown';
+  const probed = [];
+  h.probeOverride = (port) => { probed.push(port); return 'refused'; };
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.kept, true);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(h.pidStops, [7761]);
+  assert.ok(!probed.includes(7761), 'a booting host\'s port is not probed for this rule');
+  assert.strictEqual(h.shell.snapshot().closeNotice, "Couldn't end the session in feat/a: connection refused. It may still be running.");
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+});
+
+test('Miguel R3: a window destroyed before the probe closes nothing and waits on nothing', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('connection refused');
+  h.pidReply = () => { delete h.running[7701]; h.shell.destroy(); return 'unknown'; };
+  const probed = [];
+  h.probeOverride = (port) => { probed.push(port); return 'refused'; };
+  const r = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(r.ok, false, 'no close from a window that is gone');
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+  assert.deepStrictEqual(probed, [], 'no probe after the window went');
+  assert.deepStrictEqual(h.slept, [], 'no timer');
+  assert.notStrictEqual(h.shell.snapshot().closeNotice, DEAD_PORT_NOTICE);
+});
+
+// --- PR #231 Dexter 3 / Miguel Y1: the Stop license is for THAT kept tab's Stop button, and nothing else ----------------------------
+
+async function keptFeatA() {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.confirms.length, 1);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  return h;
+}
+
+test('Dexter 3: a plain x on a kept tab is a NEW close: it asks again, whatever happened to the Stop offer', async () => {
+  const h = await keptFeatA();
+  const r = await h.shell.closeTab(key('feat-a'));          // the tab's own x, not the strip's Stop button
+  assert.strictEqual(h.confirms.length, 2, 'asked again');
+  assert.strictEqual(r.ok, false);
+  h.confirm = false;                                        // ...and "no" cancels it
+  const no = await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(no.cancelled, true);
+  assert.ok(h.shell.tabByKey(key('feat-a')));
+});
+
+test('Dexter 3: the Stop button\'s own click (stop: true) is the only close that skips the question', async () => {
+  const h = await keptFeatA();
+  h.controlReply = null;
+  h.pidReply = null;
+  const r = await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.confirms.length, 1, 'not asked a second time');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+});
+
+test('Dexter 3: stop: true on a tab that was never kept is an ordinary close and asks', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 1);
+});
+
+test('Dexter 3 / Miguel Y1: a kept tab that leaves, and a NEW tab under the same key, inherit nothing', async () => {
+  const h = await keptFeatA();
+  const listed = h.listText;
+  h.listText = porcelain([['dev', 'develop'], ['feat-b', 'feat/b']]);     // git stops listing feat-a: its folder was removed
+  await h.shell.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  // (the poll that removed it published, and the snapshot purged the offer right there; the record comparison in stuckValid is a second
+  // line of defence that no sequence through the public API can reach alone: PR #231 Miguel R2)
+  h.listText = listed;                                                    // the lane is made again under the same name
+  await h.shell.poll();
+  assert.ok(h.shell.tabByKey(key('feat-a')), 'a new tab with the same key');
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the new tab did not fail anything');
+  h.controlReply = null;
+  h.pidReply = null;
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'its first close asks, even from a Stop click');
+});
+
+test('Dexter 3: a kept tab whose host then ends has no Stop offer any more', async () => {
+  const h = await keptFeatA();
+  delete h.running[7701];
+  await h.shell.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).ended, true);
+  assert.strictEqual(h.shell.snapshot().closeStuck, null);
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'a stale offer licenses nothing');
+});
+
+test('Dexter 3: a second kept tab does not take the first one\'s offer away', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a'), 7702: wt('feat-b') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.closeTab(key('feat-b'));
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-b'), 'the strip shows the newest');
+  h.controlReply = null;
+  h.pidReply = null;
+  assert.strictEqual((await h.shell.closeTab(key('feat-b'), { stop: true })).ok, true);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'), 'and the older one is still offered');
+  assert.strictEqual((await h.shell.closeTab(key('feat-a'), { stop: true })).ok, true);
+  assert.strictEqual(h.confirms.length, 2, 'each asked once');
+});
+
+// --- PR #231 round 2, Dexter M1: a selection of the kept tab withdraws the Stop offer ---------------------------------------
+
+test('Dexter M1: selecting the kept tab withdraws the Stop offer, so a later Stop is a new close and asks (an unsaved reader edit is not lost)', async () => {
+  let unsaved = null;
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') }, safety: { readerUnsaved: () => unsaved } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.confirms.length, 1);
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'));
+  await h.shell.select(key('feat-a'));                      // Ricardo goes back to the tab and works in it
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'the offer is withdrawn');
+  unsaved = 'src/x.js';                                     // ...and leaves an edit in its reader
+  h.controlReply = null;
+  h.pidReply = null;
+  const r = await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'asked: the Stop click no longer licenses a close without the question');
+  assert.strictEqual(r.ok, true);
+});
+
+test('Miguel R4: a kept tab that fails again becomes the newest offer (it moves to the end of the Map), not behind an older one', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a'), 7702: wt('feat-b') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  await h.shell.closeTab(key('feat-b'));
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-b'));
+  await h.shell.closeTab(key('feat-a'));                    // a again, and it fails again
+  assert.strictEqual(h.shell.snapshot().closeStuck.key, key('feat-a'), 'the strip shows the latest failure');
+});
+
+// --- PR #231 round 2, Miguel R1: the long stop ends, and the key now names a NEW tab record --------------------------------
+
+test('Miguel R1: a close whose long stop fails after its tab was removed and made again keeps and blames nothing on the NEW tab', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  let release;
+  h.pidReply = () => new Promise((resolve) => { release = () => resolve('failed'); });
+  const listed = h.listText;
+  const closing = h.shell.closeTab(key('feat-a'));
+  await settle();
+  const old = h.shell.tabByKey(key('feat-a'));
+  h.listText = porcelain([['dev', 'develop'], ['feat-b', 'feat/b']]);      // git stops listing feat-a during the stop...
+  await h.shell.poll();
+  h.listText = listed;                                                       // ...and lists it again: a new record under the same key
+  await h.shell.poll();
+  const fresh = h.shell.tabByKey(key('feat-a'));
+  assert.ok(fresh && fresh !== old, 'a new tab record');
+  release();
+  const r = await closing;
+  assert.strictEqual(r.ok, true, 'the old tab is gone: nothing to keep');
+  assert.strictEqual(h.shell.snapshot().closeStuck, null, 'no Stop offer for the new tab');
+  assert.strictEqual(h.shell.snapshot().closeNotice, null);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), fresh, 'and the new tab is left alone');
+  h.controlReply = null;
+  h.pidReply = null;
+  await h.shell.closeTab(key('feat-a'), { stop: true });
+  assert.strictEqual(h.confirms.length, 2, 'a Stop click on the new tab asks: it never failed anything');
+});
+
+// --- PR #231 Dexter 4 / Miguel G3: while a host is being ended its tab is in a closing state ---------------------------------
+
+test('Dexter 4: during the stop and the retry the tab is greyed and says so, can\'t be selected, and nothing is started or attached for it', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  h.tokenFiles[7701] = null;                              // not started: the attach couldn't read its token
+  await h.shell.open();
+  await flush();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).started, false);
+  let release;
+  h.pidReply = () => new Promise((resolve) => { release = () => resolve('killed'); });
+  const closing = h.shell.closeTab(key('feat-a'));
+  await settle();
+  const e = h.shell.model().find(x => x.key === key('feat-a'));
+  assert.strictEqual(e.ending, true, 'the model says its host is being ended');
+  assert.match(e.phaseText, /Ending its session/);
+  const selectedBefore = h.shell.snapshot().selectedKey;
+  const spawnsBefore = h.spawns.length;
+  const walksBefore = h.resolveCalls.filter(k => k === key('feat-a')).length;
+  await h.shell.select(key('feat-a'));                    // a click on the tab being closed
+  await h.shell.poll();                                    // and the poll's look for a host of a lane that has none
+  assert.strictEqual(h.shell.snapshot().selectedKey, selectedBefore, 'not selectable');
+  assert.strictEqual(h.spawns.length, spawnsBefore, 'no host spawned for a tab being closed');
+  assert.strictEqual(h.resolveCalls.filter(k => k === key('feat-a')).length, walksBefore, 'no walk for a port on its behalf');
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')).starting, false, 'nothing started');
+  release();
+  const r = await closing;
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null);
+  assert.strictEqual(h.spawns.length, spawnsBefore, 'and no host was left running with no tab');
+  assert.strictEqual(h.shell.model().some(x => x.ending), false, 'the state ends with the close');
+});
+
+test('Dexter 4: the closing state also ends when the tab is kept, and when the close throws or is cancelled', async () => {
+  const h = harness({ running: { 7700: wt('dev'), 7701: wt('feat-a') } });
+  await h.shell.open();
+  await flush();
+  h.controlReply = refuse('closed before reply');
+  h.pidReply = () => 'failed';
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === key('feat-a')).ending, false, 'kept: selectable again');
+  h.pidReply = () => { throw new Error('boom'); };
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === key('feat-a')).ending, false);
+  h.confirm = false;
+  await h.shell.closeTab(key('feat-a'));
+  assert.strictEqual(h.shell.model().find(x => x.key === key('feat-a')).ending, false);
+  await h.shell.select(key('feat-a'));
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-a'), 'and it can be selected');
 });

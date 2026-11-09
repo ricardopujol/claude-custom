@@ -28,24 +28,22 @@
  *
  * SAFE. The host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and no prompt is ever sent;
  * ELECTRON_RUN_AS_NODE and every CLAUDE_CUSTOM_* variable of an enclosing tab are stripped; the project is a temp
- * git repo, registry, portraits, uploads and user data are temp folders. Two files of THIS checkout are touched
- * because host.js hardcodes its state dir (.harness/state/layout-global.json and layout-tree.json): both are
- * snapshotted and put back on every exit path. Only PIDs this probe started are killed: the burner and the
+ * git repo, registry, portraits, uploads, user data and the UI-state folder (CLAUDE_CUSTOM_UI_STATE_DIR: layout, chip
+ * record AND the shared sampler's pool, BACKLOG #114 F2) are temp folders, so nothing of this checkout's .harness/state
+ * is touched and the probe never joins the real, machine-wide resource pool. Only PIDs this probe started are killed: the burner and the
  * bystander end themselves (the burner after ~100 s at the latest), and the Electron tree this probe spawned is
  * killed by PID at exit (verify/lib/process-hygiene.js). Nothing is ever stopped by name.
  */
 
 const { spawn, execFileSync } = require('child_process');
-const { spawnElectron } = require('./lib/launch-electron');
+const { spawnElectron, noteChild } = require('./lib/launch-electron');
 const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..');
-const STATE_DIR = path.join(ROOT, '.harness', 'state');
 const { createHygieneRegistry } = require('./lib/process-hygiene');
-const { snapshotFile } = require('./lib/file-snapshot');
 const { isLiveHost } = require('./lib/live-host');
 const { readIdentity } = require(path.join(ROOT, 'host', 'host-identity'));
 const { killChildTree } = require(path.join(ROOT, 'host', 'kill-tree'));
@@ -55,6 +53,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-res-'));
 const dev = path.join(tmp, 'proj', 'dev');
 const userData = path.join(tmp, 'user-data');
+// main's install-wide UI records AND the shared resource sampler's pool folder (resource-poller-v1) live here (host/probe-seams.js).
+const STATE_DIR = path.join(tmp, 'ui-state');
+fs.mkdirSync(STATE_DIR, { recursive: true });
 const shots = process.env.RES_PROBE_SHOTS || path.join(ROOT, '.harness', 'probe-resource-panel');
 fs.mkdirSync(shots, { recursive: true });
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=probe', '-c', 'user.email=probe@example.invalid', ...args],
@@ -83,14 +84,40 @@ const freePort = () => new Promise((resolve, reject) => {
   srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
 });
 
-const LAYOUT_FILE = path.join(STATE_DIR, 'layout-global.json');
-const TREE_FILE = path.join(STATE_DIR, 'layout-tree.json');
 const CHIP_FILE = path.join(STATE_DIR, 'resource-chip.json');
-const layoutSnap = snapshotFile(LAYOUT_FILE);
-const treeSnap = snapshotFile(TREE_FILE);
-const chipSnap = snapshotFile(CHIP_FILE);
-hygiene.addCleanup(() => { layoutSnap.restore(); treeSnap.restore(); chipSnap.restore(); });
 hygiene.install();
+
+// The top-bar chip (BACKLOG #168: the chip is CPU, RAM and GPU, Ricardo's design). Its aria-label, the text the probe reads:
+// `CPU 23%, RAM 52%, GPU 8%`; CPU is "—" before the first CPU delta exists (strictCpu false allows that); the GPU part is there when the
+// sample carries a GPU object, "—" when its counters couldn't be read.
+const CHIP_RE = (strictCpu) => new RegExp(`^CPU ${strictCpu ? '\\d+%' : '(\\d+%|—)'}, RAM \\d+%(, GPU (\\d+%|—))?$`);
+// Its hover text: the full figures, one per line, then what it is.
+const OF = '(\\d+(\\.\\d)? of \\d+(\\.\\d)? GB|\\d+ of \\d+ MB)';
+const TITLE_RE = new RegExp(`^CPU (\\d+%|—)\\nRAM ${OF} \\(\\d+%\\)(\\nGPU (\\d+%|—)( \\(${OF}\\))?)?\\nMachine total\\. Click for the graphs of the last hour\\.$`);
+const chipParts = (text) => {
+  const m = /^CPU (\S+), RAM (\S+?)(?:, GPU (\S+))?$/.exec(text || '');
+  return m ? { cpu: m[1], ram: m[2], gpu: m[3] === undefined ? null : m[3] } : null;
+};
+// What the chip must say for the machine figures in the SAME payload (resourcesState reads both in one turn): whole percents of the
+// payload's own numbers, "—" for none. A chip that drew a stale, a coerced (Number(null) is 0) or another figure fails here.
+const pctText = (v) => (typeof v === 'number' && Number.isFinite(v) ? `${Math.round(Math.min(100, Math.max(0, v)))}%` : '—');
+function chipAgrees(s) {
+  const p = chipParts(s.chip && s.chip.text);
+  const m = s.machine;
+  if (!p || !m || !m.mem || !(m.mem.totalBytes > 0)) return false;
+  const gpu = m.gpu && typeof m.gpu === 'object' ? pctText(m.gpu.busy) : null;
+  return p.cpu === pctText(m.cpu) && p.ram === pctText((m.mem.usedBytes / m.mem.totalBytes) * 100) && p.gpu === gpu;
+}
+// The hover text names the same three figures as the chip.
+function titleAgrees(s) {
+  const p = chipParts(s.chip && s.chip.text);
+  const t = s.chip && s.chip.title;
+  if (!p || typeof t !== 'string') return false;
+  const cpu = (/^CPU (\S+)$/m.exec(t) || [])[1];
+  const ram = (/^RAM .* \((\d+%)\)$/m.exec(t) || [])[1];
+  const gpu = (/^GPU (\S+)/m.exec(t) || [])[1] || null;
+  return cpu === p.cpu && ram === p.ram && gpu === p.gpu;
+}
 
 async function launchApp(cwd) {
   const port = await freePort();
@@ -105,12 +132,13 @@ async function launchApp(cwd) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, 'registry'),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    CLAUDE_CUSTOM_UI_STATE_DIR: STATE_DIR,
     // the warning's threshold, lowered so a busy machine still shows the chip (default 40; see app/main.js)
     CLAUDE_CUSTOM_RESOURCE_WARN_AT: process.env.RES_PROBE_WARN_AT || '15',
   };
   delete env.ELECTRON_RUN_AS_NODE;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
-  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_RESOURCE_WARN_AT', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+  const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')), [ROOT, `--user-data-dir=${userData}`], { cwd: ROOT, env }, { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_RESOURCE_WARN_AT', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_UI_STATE_DIR'] });
   hygiene.registerChild(child);
   const app = { port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
@@ -180,7 +208,27 @@ async function dumpTree(hostPid) {
     return descendants(s.procs, hostPid).map(p => `${p.pid}<-${p.ppid} ${p.name} ${(p.cmd || '').slice(0, 60)}`).join(' | ');
   } catch (e) { return `dump failed: ${e.message}`; }
 }
-const fmtState = (s) => JSON.stringify({ chip: s.chip.text, rows: s.rows.filter(r => r.open || /^s:/.test(r.key || '')).map(r => [r.name, r.open]), children: s.children.map(c => [c.name, c.cmd.slice(0, 50), c.figs, c.stop]) }).slice(0, 900);
+// The sampler's clock as the page sees it (BACKLOG #114 F3/F4). Every rs() call notes when the payload's machine figures change: each
+// sample brings new ones, so the count is the samples that reached the page. Two samples with identical figures count once, so the
+// count can only run slow, which makes a wait on it longer, never shorter.
+const samples = { n: 0, key: null, at: null };
+function noteSample(s) {
+  if (s && s.machine) {
+    const k = JSON.stringify(s.machine);
+    if (k !== samples.key) { samples.key = k; samples.n++; samples.at = Date.now(); }
+  }
+  return s;
+}
+// What the page shows of the sampler's health: "last updated N s ago" is its stale status (app/resources-display.js), a chip of dashes
+// is an expired sample (app/chip-model.js), and the probe's own count says whether samples were arriving at all. (The payload's
+// status object itself isn't on the probe surface: renderer.js's resourcesState doesn't return it.)
+const samplerState = (s) => ({
+  stale: ((/last updated \d+ s ago/.exec((s && s.text) || '')) || [null])[0],
+  expired: !!(s && s.chip && /^CPU —, RAM —/.test(s.chip.text)),
+  samplesSeen: samples.n,
+  sinceLastSampleMs: samples.at === null ? null : Date.now() - samples.at,
+});
+const fmtState = (s) => JSON.stringify({ sampler: samplerState(s), chip: s.chip.text, rows: s.rows.filter(r => r.open || /^s:/.test(r.key || '')).map(r => [r.name, r.open]), children: s.children.map(c => [c.name, c.cmd.slice(0, 50), c.figs, c.stop]) }).slice(0, 900);
 
 const BURN = `'use strict';
 const { Worker, isMainThread, workerData } = require('worker_threads');
@@ -205,7 +253,6 @@ async function main() {
   fs.mkdirSync(dev, { recursive: true });
   git(dev, 'init', '-q', '-b', 'develop');
   git(dev, 'commit', '-q', '--allow-empty', '-m', 'init');
-  for (const f of [LAYOUT_FILE, TREE_FILE, CHIP_FILE]) { try { fs.unlinkSync(f); } catch { /* none */ } }
   const burnJs = path.join(tmp, 'burn.js');
   const byJs = path.join(tmp, 'bystander.js');
   const burnPidFile = path.join(tmp, 'burn.pid');
@@ -221,18 +268,49 @@ async function main() {
   const ready = await viewReady(app);
   check('the window came up with a session', !!ready, ready ? '' : app.out.slice(-600));
   if (!ready) return;
+  // BACKLOG #114 F2: the machine-wide sampler pool is this probe's own folder, never the real one under LOCALAPPDATA.
+  const poolDir = require(path.join(ROOT, 'host', 'shared-poller')).defaultDir({ uiStateDir: STATE_DIR });
+  check('the shared sampler pool is private to this probe (not the real LOCALAPPDATA one)',
+    !!(await waitFor(() => (fs.existsSync(poolDir) && fs.readdirSync(poolDir).length > 0 ? true : null), 20000)), poolDir);
   const st0 = await command(app, { cmd: 'state' });
   const tabKey = st0.selectedKey;
   const sessionKey = `s:${tabKey}`;
   const hostPid = (st0.hosts.find(h => h.key === tabKey) || {}).pid;
-  const rs = () => view(app, 'resourcesState');
+  const rs = async () => noteSample(await view(app, 'resourcesState'));
+  // Wait for `fn`, counted in samples rather than seconds (BACKLOG #114 F3): it fails once `advances` samples reached the page after
+  // the wait began and none showed it (the sampler did its part), and a sampler that delivers fewer than that before `ceilingMs` is
+  // reported as starved, still a FAIL, but one that names its cause instead of looking like a missing row.
+  // A read that throws (an `{ ok: false }` reply has no `children`) is a retry inside the same bounds, like waitFor's (PR #234 Miguel Y1),
+  // and the reason says how many reads failed: a starved count made of failed reads is the probe's channel, not the sampler.
+  async function waitSamples(fn, advances, ceilingMs) {
+    const from = samples.n;
+    const t0 = Date.now();
+    let failed = 0;
+    let lastErr = '';
+    const reads = () => (failed ? `; ${failed} read(s) of the page failed, the last: ${lastErr}` : '');
+    for (;;) {
+      let v = null;
+      try { v = await fn(); } catch (e) { failed++; lastErr = (e && e.message) || String(e); }
+      const got = samples.n - from;
+      if (v) return { v, why: `after ${got} sample(s), ${Date.now() - t0} ms${reads()}` };
+      if (got >= advances) return { v: null, why: `${got} samples reached the page in ${Date.now() - t0} ms and none showed it${reads()}` };
+      if (Date.now() - t0 > ceilingMs) {
+        return { v: null, why: `${failed ? 'too few samples seen (the page reads failed too, so the sampler may not be the cause): ' : 'the sampler starved: '}only ${got} sample(s) in ${Date.now() - t0} ms${reads()}` };
+      }
+      await sleep(500);
+    }
+  }
   const strip = async () => ((await command(app, { cmd: 'state' })).stripDom || []);
 
   // 1 -----------------------------------------------------------------------------
-  const chip0 = await waitFor(async () => { const s = await rs(); return s && s.ok !== false && s.hasPayload && s.chip && /^CPU .* GB \/ .* GB( {2}GPU .*)?$/.test(s.chip.text) ? s : null; }, 40000, 300);
-  check('1: the chip shows the machine total from the machine sample, with the panel never opened',
-    !!chip0 && /^CPU (\d+(\.\d)?%|—)  \d+(\.\d)? GB \/ \d+(\.\d)? GB( {2}GPU (\d+(\.\d)?%|<1%|—))?$/.test(chip0.chip.text), JSON.stringify(chip0 && chip0.chip));
-  check('1: the chip says what it is on hover', !!chip0 && /Machine total and the last hour\. Click for the graphs\./.test(chip0.chip.title));
+  // The chip is `CPU 23% · RAM 52% · GPU 8%` (chrome grammar #215, option A, Ricardo 2026-10-28; confirmed 2026-11-05, BACKLOG #168 Q3):
+  // whole percents, "—" for a figure it doesn't have. chip.text is its aria-label, `CPU 23%, RAM 52%, GPU 8%`, built from the same segments
+  // as the markup (app/chip-model.js). The full figures are its hover text.
+  const chip0 = await waitFor(async () => { const s = await rs(); return s && s.ok !== false && s.hasPayload && s.machine && s.chip && /^CPU \S+, RAM \d+%/.test(s.chip.text) ? s : null; }, 40000, 300);
+  check('1: the chip shows the machine total from the machine sample, with the panel never opened (RAM a real percent; CPU may be "—" until a second sample)',
+    !!chip0 && CHIP_RE(false).test(chip0.chip.text) && chipAgrees(chip0), JSON.stringify(chip0 && [chip0.chip, chip0.machine]));
+  check('1: the chip says what it is on hover: the full figures, then "Machine total. Click for the graphs of the last hour."',
+    !!chip0 && TITLE_RE.test(chip0.chip.title) && titleAgrees(chip0), JSON.stringify(chip0 && chip0.chip.title));
   // Q1 (Ricardo): the process tree is sampled with the panel CLOSED, so the tab warning works with it closed.
   const closedFull = await waitFor(async () => { const s = await rs(); return s.payloadHasModel ? s : null; }, 40000, 500);
   check('1: the process tree is sampled with the panel never opened (the full model arrives)', !!closedFull && closedFull.shown === false, JSON.stringify(closedFull && closedFull.shown));
@@ -253,14 +331,18 @@ async function main() {
   check('2: the footer says how often it samples and that it pauses while minimised', /Every 10 s · paused while minimised/.test(full.text));
   const second = await waitFor(async () => { const s = await rs(); return s && s.payloadHasModel && !/measuring…/.test(s.text) ? s : null; }, 40000, 500);
   check('2: after the second sample every CPU figure is real: no "measuring…", and nothing prints a bare NaN or undefined', !!second && !/NaN|undefined|null/.test(second.text), JSON.stringify(second && second.text.slice(0, 160)));
-  check('2: the chip reads `CPU n%  x GB / y GB`', !!second && /^CPU \d+(\.\d)?%  \d+(\.\d)? GB \/ \d+(\.\d)? GB( {2}GPU (\d+(\.\d)?%|<1%|—))?$/.test(second.chip.text), JSON.stringify(second && second.chip));
+  check('2: the chip reads `CPU n%, RAM n%[, GPU n%]`, each the whole percent of the payload\'s own machine figure', !!second && CHIP_RE(true).test(second.chip.text) && chipAgrees(second) && titleAgrees(second),
+    JSON.stringify(second && [second.chip, second.machine]));
   check('2: the legend gives claude-custom and everything else', !!second && /claude-custom [^·]+· everything else/.test(second.text));
   await view(app, 'resourcesClick', { act: 'toggle', key: sessionKey });
 
   // 8 -----------------------------------------------------------------------------
   // The one-hour history. By now there are several samples, so the sparklines have lines in them.
-  const withHist = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.points >= 3 && s.hist.spark.length >= 2 && s.hist.spark.slice(0, 2).every(k => k.polylines >= 1) ? s : null; }, 60000, 500);
-  check('8: the chip has a sparkline after the CPU and after the memory figure, each with a line in it', !!withHist, JSON.stringify(withHist ? withHist.hist.spark : (await rs()).hist));
+  // Since #215 the chip is the figures only: the history's graphs are the popover's (the hover peek or a click), not sparklines in the
+  // top bar. So: the history has points to draw, and the chip itself carries no sparkline.
+  const withHist = await waitFor(async () => { const s = await rs(); return s && s.hist && s.hist.points >= 3 ? s : null; }, 60000, 500);
+  check('8: the one-hour history has 3 or more points, and the chip is the figures only (no sparkline in the top bar since #215)',
+    !!withHist && withHist.hist.spark.length === 0 && CHIP_RE(true).test(withHist.chip.text), JSON.stringify(withHist ? [withHist.hist.points, withHist.hist.spark, withHist.chip.text] : (await rs()).hist));
   const bigBefore = (await rs()).hist;
   check('8: the chip still fits the top bar at this window width (nothing clips)', bigBefore.chipClipped === false && bigBefore.barClipped === false && bigBefore.chipRect && bigBefore.chipRect.x >= 0 && bigBefore.chipRect.x + bigBefore.chipRect.w <= bigBefore.winW,
     JSON.stringify({ chip: bigBefore.chipRect, win: bigBefore.winW, clipped: [bigBefore.chipClipped, bigBefore.barClipped], spark: bigBefore.spark }));
@@ -310,12 +392,17 @@ async function main() {
   if (!burnPid) return;
   // the burner is NOT tracked for the final kill: it ends itself after 100 s, and Stop ends it in this probe
 
-  const named = await waitFor(async () => {
+  // A sample already in flight when the burner started can't hold it; the next one names it, and its CPU figure is a delta that needs
+  // one more: 3 samples, plus 1 spare = 4. The
+  // 180 s ceiling only bounds a starved sampler (the panel samples every 10 s), it is never what the check waits for.
+  const namedWait = await waitSamples(async () => {
     const s = await rs();
     const row = s.children.find(c => /burn\.js/.test(c.cmd));
     return row && /^(\d+(\.\d)?|<1)%$/.test(row.figs[0]) && /(MB|GB)$/.test(row.figs[1]) ? s : null;
-  }, 60000, 500);
-  check('3: the burner is named in the session\'s top children, with a real CPU figure and its memory', !!named, named ? '' : `${fmtState(await rs())} TREE: ${await dumpTree(hostPid)}`);
+  }, 4, 180000);
+  const named = namedWait.v;
+  check('3: the burner is named in the session\'s top children, with a real CPU figure and its memory, within 4 samples', !!named,
+    named ? namedWait.why : `${namedWait.why}; ${fmtState(await rs())} TREE: ${await dumpTree(hostPid)}`);
   if (named) {
     const row = named.children.find(c => /burn\.js/.test(c.cmd));
     check('3: its row shows what it runs (the script), the command is not the executable path', row.name === 'burn.js' && !/Program Files/i.test(row.cmd), JSON.stringify([row.name, row.cmd]));
@@ -354,6 +441,7 @@ async function main() {
       const posix = idleJs.replace(/^([A-Za-z]):/, (m, d) => `/${d.toLowerCase()}`).replace(/\\/g, '/');
       const payload = `source /dev/null 2>/dev/null || true && shopt -u extglob 2>/dev/null || true && eval 'node ${posix}' < /dev/null && pwd -P >| /dev/null`;
       const sh = spawn(bashExe, ['-c', payload], { stdio: 'ignore', windowsHide: true });
+      noteChild(sh);   // a bash running a node script: the lock's work record covers it (BACKLOG #113)
       hygiene.registerChild(sh);
       try {
         const line = await waitFor(async () => { const l = cimLine(sh.pid); return /eval/.test(l) ? l : null; }, 15000, 300);
@@ -473,7 +561,7 @@ async function main() {
   let seen6 = 0; let lastText6 = null;
   const noModel = await waitFor(async () => { const s = await rs(); if (s.payloadHasModel && s.machine && JSON.stringify(s.machine) !== lastText6) { lastText6 = JSON.stringify(s.machine); seen6++; } return seen6 >= 2 && s.payloadHasModel ? s : null; }, 40000, 500);
   check('6: hiding the panel does NOT stop the process-tree sample: the model keeps arriving', !!noModel, String(Date.now() - before6));
-  check('6: the chip keeps its machine figures', !!noModel && /^CPU .* GB \/ .* GB( {2}GPU .*)?$/.test(noModel.chip.text) && !/NaN|undefined/.test(noModel.chip.text), JSON.stringify(noModel && noModel.chip));
+  check('6: the chip keeps its machine figures (real percents, the payload\'s own)', !!noModel && CHIP_RE(true).test(noModel.chip.text) && chipAgrees(noModel), JSON.stringify(noModel && [noModel.chip, noModel.machine]));
 
   // 7 (Q2) the Window menu's chip toggle -----------------------------------------------
   const untick = await view(app, 'resourcesChipMenu');
@@ -491,20 +579,31 @@ async function main() {
 
 
   // 8 (gap) a minimised stretch is a break in the line ----------------------------------
-  // Main marks a break the moment the window is minimised, so a short minimise proves it. The MEMORY sparkline is counted
-  // (its first sample after the restore already has a value; the CPU one needs two): runs = lines + lone dots, and exactly one
-  // more is expected.
-  const runsNow = async () => { const s = await rs(); return s.hist.spark[1] ? s.hist.spark[1].polylines + s.hist.spark[1].dots : 0; };
-  const runsBefore = await runsNow();
+  // Main marks a break the moment the window is minimised, so a short minimise proves it. The chip has no sparkline since #215, so the
+  // runs are counted in the popover's MEMORY graph (its first sample after the restore already has a value; the CPU one needs two):
+  // runs = filled areas + lone dots, read with the popover open (minimising closes it), and exactly one more is expected.
+  const memGraph = (s) => (s && s.hist && s.hist.open ? s.hist.graphs.find(g => g.kind === 'mem') : null);
+  const runsOf = (g) => (g ? g.rest + g.dots : null);
+  await view(app, 'resourcesClick', { chip: true });
+  const popBefore = await waitFor(async () => { const s = await rs(); return memGraph(s) ? s : null; }, 5000, 150);
+  const runsBefore = runsOf(memGraph(popBefore));
+  await view(app, 'resourcesHistoryDo', { op: 'esc' });
+  await waitFor(async () => ((await rs()).hist.open === false ? true : null), 5000, 150);
   await command(app, { cmd: 'window-state', state: 'minimize' });
   await sleep(8000);
   await command(app, { cmd: 'window-state', state: 'restore' });
-  const afterGap = await waitFor(async () => (await runsNow()) >= runsBefore + 1 ? true : null, 60000, 500);
-  const runsAfter = await runsNow();
-  check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0', !!afterGap && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
   await view(app, 'resourcesClick', { chip: true });
-  const gapPop = await waitFor(async () => { const s = await rs(); return s.hist.open && s.hist.graphs.length >= 2 ? s : null; }, 5000, 150);
-  check('8: the popover draws the break too (two or more marks in the memory graph: areas and dots)', !!gapPop && gapPop.hist.graphs[1].rest + gapPop.hist.graphs[1].dots >= 2, JSON.stringify(gapPop && gapPop.hist.graphs[1]));
+  const gapPop = await waitFor(async () => { const s = await rs(); const r = runsOf(memGraph(s)); return r !== null && runsBefore !== null && r >= runsBefore + 1 ? s : null; }, 60000, 500);
+  const runsAfter = runsOf(memGraph(gapPop || await rs()));
+  check('8: a window minimised for 8 s leaves exactly one break in the memory line (one more run), never a drop to 0',
+    runsBefore !== null && runsBefore >= 1 && !!gapPop && runsAfter === runsBefore + 1, `runs before ${runsBefore}, after ${runsAfter}`);
+  // The run count above can't see a drop to 0 (a zero point is still a point on the line). The newest minute, read where the line
+  // resumed, must be a real memory figure (PR #234 Miguel G3: this used to repeat "two or more marks", which the run count implies).
+  await view(app, 'resourcesHistoryDo', { op: 'hover', kind: 'mem', frac: 0.995 });
+  const resumed = await waitFor(async () => { const g = memGraph(await rs()); return g && g.cursor && /^now · memory \d/.test(g.readout) ? g : null; }, 5000, 150);
+  const resumedGb = resumed ? Number((/^now · memory (\d+(\.\d+)?) GB/.exec(resumed.readout) || [])[1]) : NaN;
+  check('8: after the break the line resumes at a real figure, not 0 (the newest minute reads the machine\'s memory in GB, above 0)',
+    !!resumed && resumedGb > 0, JSON.stringify(resumed));
   await command(app, { cmd: 'screenshot', file: path.join(shots, 'resource-history-gap.png') });
   await view(app, 'resourcesHistoryDo', { op: 'esc' });
   // the popover also closes when the window loses focus / the page hides (minimise hides it)
@@ -527,9 +626,6 @@ main()
   .catch((err) => { console.log(`FAIL  probe crashed: ${err && err.stack}`); failures++; })
   .finally(() => {
     killEverything();
-    layoutSnap.restore();
-    treeSnap.restore();
-    chipSnap.restore();
     try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }); } catch { /* best effort */ }
     console.log(failures ? `${failures} check(s) failed` : 'all checks passed');
     process.exit(failures ? 1 : 0);

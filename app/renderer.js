@@ -711,7 +711,11 @@ if (window.harness && window.harness.occupancy) {
 
 // --- fonts and plain colour (BACKLOG #88, #92) ---------------------------------
 // Declared before the terminal because applyTheme (called from many places) reads them. `null` = not yet known.
-let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont }
+let fontSettings = null;            // main's app-wide record: { terminalFont, terminalSize, uiFont, chatZoom }
+// BACKLOG #172: the chat view's text zoom and its save (app/fonts-display.js createChatZoomSaver: a wheel run is saved once it settles, kept
+// until the record has loaded, and newer than any record that arrives meanwhile). Declared here because takeFontSettings reads it.
+const chatZoomSaver = fontsDisplay.createChatZoomSaver({ save: (z) => setFontSettings({ chatZoom: z }),
+  schedule: (fn, ms) => setTimeout(fn, ms), cancel: (h) => clearTimeout(h) });
 let projectTerminalFont = null;     // this project's look.terminalFont: the override over the app-wide one
 let plainColourOn = false;          // this project's look.backgroundMode === 'colour': no media, the app colour is the background
 let fontFamilies = null;            // every installed family main listed (null = not listed yet)
@@ -862,6 +866,9 @@ try {
   console.warn('[renderer] WebGL addon unavailable, using fallback:', e.message);
 }
 
+// The one bare fit left on purpose (BACKLOG #177): the #termwrap ResizeObserver's first callback refits through refitTerminal(),
+// and the socket's onopen sends the size whatever it is. Don't swap it for refitTerminal(): that reads `let lastSentResize`, declared
+// far below, so here it throws a temporal-dead-zone ReferenceError and stops the whole script.
 fit.fit();
 
 // The terminal bar's view of the buffer (#49). The prompt part follows the viewport; a resize reflows every line
@@ -2366,7 +2373,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   if (btn) btn.classList.toggle('own', ownLayout !== null);
   kbRefresh();                      // a keyboard move in flight lights the zones of the dock as it is now
   // Cell geometry changed, so the pty must be told or Ink's layout corrupts.
-  if (refit) setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  if (refit) setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // The settle motion (dockable panels D4): the dock gets `.settling` for the length of the glide, and the CSS moves the
@@ -2998,17 +3005,20 @@ async function retryPresets() {
 // --- dragging a module's tab (dockable panels D1) ---------------------------------
 // Pointer events, not HTML5 drag-and-drop: the zones are drawn and hit-tested by
 // app/dock-drag.js, and HTML5 drag gives no control over either. A press that
-// never moves 5 px stays a click (it selects the tab). While dragging, every zone
+// never moves 5 px stays a click (it selects the tab). A rail button is a handle
+// too (BACKLOG #109): 6 px of movement or 250 ms held starts its drag, a release
+// before either is the click that opens its panel (dockDrag.pressStep). While dragging, every zone
 // of the cell under the pointer is lit in #dock-overlay and the one under it
 // fills; a drop on a zone docks, anywhere else changes nothing.
 let cancelTabDrag = () => {};      // the socket closing ends a drag too
+let tabDragClaimsClick = () => false;   // whether a click on a rail button is the one a drag left behind (#109)
 
 // The zones of a drop, lit in #dock-overlay: the tab drag's and the keyboard move's. [] clears it.
 function paintZones(zones) {
   const overlayEl = document.getElementById('dock-overlay');
   overlayEl.textContent = '';
   for (const z of zones) {
-    const el = node('div', { className: z.hot ? 'dz hot' : 'dz' });
+    const el = node('div', { className: `dz${z.hot ? ' hot' : ''}${z.line ? ' line' : ''}` });     // `line`: a place in the rail (#109)
     Object.assign(el.style, { left: `${z.rect.x}px`, top: `${z.rect.y}px`, width: `${z.rect.width}px`, height: `${z.rect.height}px` });
     overlayEl.appendChild(el);
   }
@@ -3019,68 +3029,168 @@ let tabDragDraws = 0;             // how many times the drag rebuilt the overlay
 (function initTabDrag() {
   const dock = document.getElementById('dock');
   const overlay = document.getElementById('dock-overlay');
-  let press = null;                // { id, label, x, y, el, pointerId }: the button is down, not yet dragged
+  const DD = window.dockDrag;
+  // { id, label, el, pointerId, rail, st, opts, timer, cx, cy }: the button is down. `rail`: a rail button (BACKLOG #109), whose
+  // icon or name is a drag handle like a tab's name; `st` is dockDrag.pressStep's state, which says click or drag.
+  let press = null;
   let drag = null;                 // { id, ghost, target, rect, viewport, sig }
+  // A press that became a drag leaves a click behind on its button when the button is still there (a drop that changed
+  // nothing, a drag back onto the rail): that click is the drag's, so it never opens the rail's panel or selects (#109).
+  let swallowClick = false;
 
   function drawZones(zones) {
     tabDragDraws += 1;
     paintZones(zones);
   }
   function end() {
-    if (press) { try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ } }
+    if (press) {
+      clearTimeout(press.timer);
+      try { press.el.releasePointerCapture(press.pointerId); } catch { /* not captured, or the button is gone */ }
+    }
     press = null;
-    if (drag) drag.ghost.remove();
+    if (drag) {
+      drag.ghost.remove();
+      if (drag.railEl) drag.railEl.removeEventListener('scroll', onRailScroll);
+      cancelAnimationFrame(drag.scrollFrame);
+    }
     drag = null;
     overlay.textContent = '';
     document.body.classList.remove('dock-dragging');
   }
   cancelTabDrag = () => { if (press || drag) end(); };
 
+  // The dock's rail as the drag measures it once, at its start (#109): its rectangle and its buttons in the order drawn, relative
+  // to the dock as the drag's point is. Only a module ON that rail gets one: a docked tab dropped on the rail changes nothing.
+  function railSlots(dockRect, id) {
+    const railed = placementLayout().rail;
+    if (!Array.isArray(railed) || !railed.includes(id)) return null;
+    const el = dock.querySelector(':scope > .drail[data-rail="dock"]');
+    if (!el) return null;
+    const rel = r => ({ x: r.left - dockRect.left, y: r.top - dockRect.top, width: r.width, height: r.height });
+    const slots = [...el.querySelectorAll('button[data-module]')].map(b => ({ id: b.dataset.module, rect: rel(b.getBoundingClientRect()) }));
+    return { rect: rel(el.getBoundingClientRect()), dir: el.dataset.dir === 'h' ? 'h' : 'v', slots };
+  }
+  // The drag begins: the dock's rectangle and size are read once, here, as a move event must not force a layout every time.
+  function begin() {
+    // A rail's open panel goes off the screen, as a keyboard Move does: it would cover the zones the drag lights.
+    if (press.rail && peek) { railEvent({ type: 'drop' }); renderLayout({ refit: false }); }
+    // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
+    const own = DTm.floatOf(placementLayout(), press.id);
+    drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null, rail: null };
+    drag.rail = railSlots(drag.rect, press.id);
+    // The dock rail scrolls (a full one overflows): its buttons move under the pointer, so a scroll measures them again (PR #241
+    // Dexter 2, Miguel M2). Only a drag that has a place in the rail listens.
+    drag.railEl = drag.rail ? dock.querySelector(':scope > .drail[data-rail="dock"]') : null;
+    drag.scrollFrame = 0;
+    if (drag.railEl) drag.railEl.addEventListener('scroll', onRailScroll, { passive: true });
+    document.body.appendChild(drag.ghost);
+    document.body.classList.add('dock-dragging');
+    swallowClick = press.rail;                           // a tab's name keeps what it did before #109
+  }
+  function follow(x, y) {
+    drag.ghost.style.left = `${x + 12}px`;
+    drag.ghost.style.top = `${y + 10}px`;
+    drag.at = { x: x - drag.rect.left, y: y - drag.rect.top };
+    // Over the dock's rail a rail tab finds its place in it (#109); the rim and a float on top still win (dockDrag.railDrop).
+    const hit = DD.railDrop(DD.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude }), drag.rail, drag.at, drag.id);
+    drag.target = hit.target;
+    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
+    const sig = JSON.stringify(hit.zones);
+    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+    if (drag.railEl && !drag.scrollFrame && DD.railScrollStep(drag.rail, drag.at) !== 0) drag.scrollFrame = requestAnimationFrame(scrollTick);
+  }
+  // The rail scrolled under the drag: its buttons are measured again and the pointer, which hasn't moved, is judged again.
+  function onRailScroll() {
+    if (!drag || !press) return;
+    drag.rail = railSlots(drag.rect, drag.id);
+    follow(press.cx, press.cy);
+  }
+  // While the pointer holds near an end of the rail, it scrolls that way, a frame at a time (dockDrag.railScrollStep).
+  function scrollTick() {
+    if (!drag || !drag.railEl) return;
+    const step = DD.railScrollStep(drag.rail, drag.at);
+    if (step === 0) { drag.scrollFrame = 0; return; }
+    if (drag.rail && drag.rail.dir === 'h') drag.railEl.scrollLeft += step; else drag.railEl.scrollTop += step;
+    drag.scrollFrame = requestAnimationFrame(scrollTick);
+  }
+  // One pointer event of the press through dockDrag.pressStep; 'start' begins the drag where the pointer is now.
+  function feed(ev) {
+    const out = DD.pressStep(press.st, ev, press.opts);
+    press.st = out.state;
+    if (out.effect === 'start') { begin(); follow(press.cx, press.cy); } else if (out.effect === 'move') follow(press.cx, press.cy);
+    return out.effect;
+  }
+
   document.addEventListener('pointerdown', (e) => {
+    // One pointer at a time (PR #241 Dexter 3): another touch or pen pointer during a press or a drag is ignored, so it can't
+    // overwrite the press, leak the first ghost or clear the swallowed click. The same pointer pressing again lost its release:
+    // that press ends (a drag is dropped, nothing committed) and this one starts.
+    if (press && e.pointerId !== press.pointerId) return;
+    if (press) end();
+    swallowClick = false;                                // a new press: whatever the last drag left behind is not this one's
     if (e.button !== 0) return;
-    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module]');
+    const b = e.target.closest && e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
     if (!b) return;
-    press = { id: b.dataset.module, label: b.textContent, x: e.clientX, y: e.clientY, el: b, pointerId: e.pointerId };
+    const rail = b.parentNode.classList.contains('drail');
+    // A rail button's text is its name, which may be hidden (icons only): the ghost says the label, as a tab's does.
+    press = { id: b.dataset.module, label: rail ? (b.getAttribute('aria-label') || b.dataset.module) : b.textContent, el: b, pointerId: e.pointerId,
+      rail, st: null, opts: rail ? DD.PRESS.rail : DD.PRESS.tab, timer: null, cx: e.clientX, cy: e.clientY };
+    // Every event of a press carries performance.now(): one clock for the press and its hold (PR #241 Miguel L1).
+    feed({ type: 'down', x: e.clientX, y: e.clientY, t: performance.now() });
+    // Holding a rail button still starts the drag too: the timer asks pressStep at the hold time, and a timer that fires early
+    // is armed again for what is left (dockDrag.holdRemaining), so an early fire never turns the hold into a click.
+    if (press.opts.holdMs !== null) {
+      const mine = press;
+      const fire = () => {
+        if (press !== mine || drag) return;
+        const now = performance.now();
+        feed({ type: 'hold', t: now });
+        const left = drag ? null : DD.holdRemaining(mine.st, now, mine.opts);
+        if (left !== null && left > 0) mine.timer = setTimeout(fire, left);
+      };
+      mine.timer = setTimeout(fire, press.opts.holdMs);
+    }
     // Capture keeps the moves and the release coming to this page when the pointer leaves the window; if the
     // release is lost anyway (Alt-Tab, an OS dialog), the three guards below end the drag (PR #100 Miguel I2).
     try { b.setPointerCapture(e.pointerId); } catch { /* a pointer that is already gone */ }
   });
   window.addEventListener('pointermove', (e) => {
-    if (!press) return;
+    if (!press || e.pointerId !== press.pointerId) return;      // another pointer's moves are not this press's (Dexter 3)
     if (e.buttons === 0) { end(); return; }              // the release never came: the button is up
-    if (!drag) {
-      if (Math.hypot(e.clientX - press.x, e.clientY - press.y) < 5) return;
-      // The dock's rectangle and size are read once, here: a move event must not force a layout every time.
-      // A tab dragged out of a float: that float is no drop target, what is under it decides (D2).
-      const own = DTm.floatOf(placementLayout(), press.id);
-      drag = { id: press.id, ghost: node('div', { id: 'dock-ghost', text: press.label }), target: null, rect: dock.getBoundingClientRect(), viewport: dockViewport(), sig: null, exclude: own ? own.id : null, at: null };
-      document.body.appendChild(drag.ghost);
-      document.body.classList.add('dock-dragging');
-    }
-    drag.ghost.style.left = `${e.clientX + 12}px`;
-    drag.ghost.style.top = `${e.clientY + 10}px`;
-    drag.at = { x: e.clientX - drag.rect.left, y: e.clientY - drag.rect.top };
-    const hit = window.dockDrag.zonesAt(lastPlan ? lastPlan.boxes : [], drag.viewport, drag.at, { exclude: drag.exclude });
-    drag.target = hit.target;
-    // The overlay is the cell under the pointer's zones and which one is hot: unchanged, nothing to rebuild.
-    const sig = JSON.stringify(hit.zones);
-    if (sig !== drag.sig) { drag.sig = sig; drawZones(hit.zones); }
+    press.cx = e.clientX;
+    press.cy = e.clientY;
+    feed({ type: 'move', x: e.clientX, y: e.clientY, t: performance.now() });
   });
-  window.addEventListener('pointerup', () => {
-    if (!press) return;
+  window.addEventListener('pointerup', (e) => {
+    if (!press || e.pointerId !== press.pointerId) return;      // another pointer's release ends nothing (Dexter 3)
     const d = drag;
+    const effect = feed({ type: 'up' });
     // Ended BEFORE the drop redraws: the redraw removes the dragged tab's button,
     // and a removed source never reports an end (L1 PR #82 Dexter F1, Miguel I2).
     end();
-    if (!d) return;                                     // never moved: the click that follows selects the tab
-    if (!d.target) return;
+    // Never dragged: the click that follows selects the tab, or opens the rail's panel. Dragged but never moved the distance
+    // (a hold released where it was pressed): 'cancel', a no-op wherever the press point is, even in a rim (PR #241 Dexter 1).
+    if (!d || effect !== 'drop' || !d.target) return;
+    // A place on the dock's rail: only the rail's order changes, nothing docks (#109).
+    if (d.target.rail === 'dock') { commitPlacement(DTm.moveOnRail(settledLayout(), d.id, d.target.before)); return; }
     // The terminal's middle floats the panel where it was dropped: the model says where (D2).
     const target = landingFor(d.target, d.at, d.viewport);
     commitPlacement(DTm.dock(settledLayout(), d.id, target), { select: d.id });
   });
+  // The click a drag leaves behind on its own rail button is the drag's (#109): the page's click handler asks here before it
+  // opens the rail's panel. No listener of its own and no stopPropagation: a mouse handler that stops propagation can starve the
+  // terminal of its clicks (test/renderer-mouse-passthrough.test.js). A keyboard click (detail 0) is never a drag's.
+  tabDragClaimsClick = (e) => {
+    if (!swallowClick) return false;
+    swallowClick = false;
+    return e.detail !== 0;
+  };
   window.addEventListener('pointercancel', () => { cancelTabDrag(); });
   window.addEventListener('lostpointercapture', () => { cancelTabDrag(); });   // after a normal release `press` is already null
   window.addEventListener('blur', () => { cancelTabDrag(); });
+  // The dock's rectangle, its size and the rail were measured at the drag's start: a resize makes them stale, so it ends the
+  // drag with nothing moved, as a blur does (PR #241 Miguel L7).
+  window.addEventListener('resize', () => { cancelTabDrag(); });
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && drag) { e.preventDefault(); e.stopPropagation(); end(); }
   }, true);
@@ -3279,7 +3389,7 @@ function applyFocusMode(on) {
   paintBar();       // the bar hides with the chrome: bar-open and the banner's offset are re-read (PR #99 Miguel G6)
   if (!on && shownModules.has('vault')) renderVault();
   renderLayout();   // the rails are display:none while focus is on: draw the dock again so any rail that lost its fit then is fitted now
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 if (focusBridge) focusBridge.onChange(applyFocusMode);
 for (const id of ['focus-btn', 'focus-exit']) {
@@ -3294,7 +3404,11 @@ document.addEventListener('click', (e) => {
   const button = e.target.closest('.zone-tabs button[data-module], .drail button[data-module]');
   if (!button) return;
   const id = button.dataset.module;
-  if (button.parentNode.classList.contains('drail')) { openPeek(id, e.detail === 0); return; }
+  if (button.parentNode.classList.contains('drail')) {
+    if (tabDragClaimsClick(e)) return;                  // the click a drag from this rail button left behind: a drag never opens a panel (#109)
+    openPeek(id, e.detail === 0);
+    return;
+  }
   if (button.closest('.dpeek')) {
     // Another tab of the same rail: the popover shows that panel. Nothing is saved; the pty is not told.
     railEvent({ type: 'tab', module: id });
@@ -3491,6 +3605,7 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
   const overlayState = () => ({
     zones: document.querySelectorAll('#dock-overlay .dz').length,
     hot: document.querySelectorAll('#dock-overlay .dz.hot').length,
+    lines: document.querySelectorAll('#dock-overlay .dz.line').length,      // a place in the rail (#109)
     dragging: document.body.classList.contains('dock-dragging'),
     ghost: !!document.querySelector('#dock-ghost'),         // made on the fly by the drag, so not a getElementById
   });
@@ -3650,6 +3765,92 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
         btn.click();
         return JSON.stringify({ ok: true, after: overlayState() });
       }
+      // BACKLOG #109 (verify/probe-rail-drag.js): a press on a rail button's ICON. `how`: 'click' (down, up, the click a browser
+      // sends), 'drag' (down, 8 px, then to `to` ({ x, y } relative to #dock) or to the top of the rail button `before`, or under
+      // the last one when `before` is null), 'hold' (down, still for 320 ms). `release: false` leaves a drag in flight for
+      // `railRelease`. A release is followed by the click a browser would send to the pressed button, which a drag must swallow.
+      case 'railPress': return (async () => {
+        const btn = document.querySelector(`.drail button[data-module="${CSS.escape(String(a.id))}"]`);
+        if (!btn) return JSON.stringify({ ok: false, error: 'no such rail button' });
+        const icon = btn.querySelector('.rail-icon-box') || btn;
+        const from = icon.getBoundingClientRect();
+        // `pressAt` ({ x, y } relative to #dock): press there on the button instead of the icon's middle (PR #241 Dexter 1: the rim).
+        const dockBox = document.getElementById('dock').getBoundingClientRect();
+        const x0 = a.pressAt ? dockBox.left + a.pressAt.x : from.left + from.width / 2;
+        const y0 = a.pressAt ? dockBox.top + a.pressAt.y : from.top + from.height / 2;
+        icon.dispatchEvent(ptr('pointerdown', x0, y0));
+        if (a.how === 'hold') {
+          await new Promise(r => setTimeout(r, 320));
+          // A hold, then a move to `to`: the drag the hold started, moved and dropped there.
+          if (a.to) { const x1 = dockBox.left + a.to.x; const y1 = dockBox.top + a.to.y; window.dispatchEvent(ptr('pointermove', x1, y1)); window.__railPressAt = { x: x1, y: y1, btn }; }
+        } else if (a.how === 'drag') {
+          window.dispatchEvent(ptr('pointermove', x0 + 8, y0));
+          let x1;
+          let y1;
+          if (a.to) { const d = document.getElementById('dock').getBoundingClientRect(); x1 = d.left + a.to.x; y1 = d.top + a.to.y; } else {
+            const rail = btn.parentNode;
+            const all = [...rail.querySelectorAll('button[data-module]')];
+            const at = a.before === null ? null : all.find(b => b.dataset.module === a.before);
+            const r = (at || all[all.length - 1]).getBoundingClientRect();
+            x1 = r.left + r.width / 2;
+            y1 = at ? r.top + 3 : Math.min(r.bottom + 4, rail.getBoundingClientRect().bottom - 2);
+          }
+          window.dispatchEvent(ptr('pointermove', x1, y1));
+          window.__railPressAt = { x: x1, y: y1, btn };
+        }
+        const during = { ...overlayState(), lines: document.querySelectorAll('#dock-overlay .dz.line').length, ghostText: (document.querySelector('#dock-ghost') || {}).textContent || null };
+        if (a.release === false) {
+          window.__railPressAt = window.__railPressAt || { x: x0, y: y0, btn };
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));      // painted, so a screenshot shows it
+          return JSON.stringify({ ok: true, during });
+        }
+        const at = window.__railPressAt || { x: x0, y: y0 };
+        window.__railPressAt = null;
+        window.dispatchEvent(ptr('pointerup', at.x, at.y));
+        if (btn.isConnected) btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, clientX: at.x, clientY: at.y }));
+        await new Promise(r => requestAnimationFrame(() => r()));
+        return JSON.stringify({ ok: true, during, after: overlayState(), peek: peek ? peek.module : null });
+      })();
+      // A drag left in flight by railPress moved again: to the top of rail button `before` as it is NOW (after a scroll), or to `to`.
+      // `scroll`: the dock rail's scrollTop is set first, as a wheel would, and the page's own scroll event runs.
+      case 'railPressMove': return (async () => {
+        const held = window.__railPressAt;
+        if (!held) return JSON.stringify({ ok: false, error: 'no rail press in flight' });
+        const rail = document.querySelector('#dock > .drail[data-rail="dock"]');
+        if (typeof a.scroll === 'number' && rail) {
+          rail.scrollTop = a.scroll;
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));     // the scroll event has run
+        }
+        // `resize`: the window's resize event mid-drag (PR #241 Miguel L7), and what the drag looks like after it.
+        if (a.resize === true) {
+          window.dispatchEvent(new Event('resize'));
+          return JSON.stringify({ ok: true, after: overlayState() });
+        }
+        const linesAfterScroll = document.querySelectorAll('#dock-overlay .dz.line').length;
+        let x1 = held.x;
+        let y1 = held.y;
+        if (a.before && rail) {
+          const b = rail.querySelector(`button[data-module="${CSS.escape(String(a.before))}"]`);
+          if (!b) return JSON.stringify({ ok: false, error: 'no such rail button' });
+          const r = b.getBoundingClientRect();
+          x1 = r.left + r.width / 2;
+          y1 = r.top + 3;
+        } else if (a.to) { const d = document.getElementById('dock').getBoundingClientRect(); x1 = d.left + a.to.x; y1 = d.top + a.to.y; }
+        window.dispatchEvent(ptr('pointermove', x1, y1));
+        window.__railPressAt = { ...held, x: x1, y: y1 };
+        const line = document.querySelector('#dock-overlay .dz.line');
+        const lineTop = line ? line.getBoundingClientRect().top : null;
+        return JSON.stringify({ ok: true, linesAfterScroll, lines: document.querySelectorAll('#dock-overlay .dz.line').length, lineTop, pointerY: y1, scrollTop: rail ? rail.scrollTop : null });
+      })();
+      case 'railRelease': return (async () => {
+        const at = window.__railPressAt;
+        if (!at) return JSON.stringify({ ok: false, error: 'no rail press in flight' });
+        window.__railPressAt = null;
+        window.dispatchEvent(ptr('pointerup', at.x, at.y));
+        if (at.btn.isConnected) at.btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1, clientX: at.x, clientY: at.y }));
+        await new Promise(r => requestAnimationFrame(() => r()));
+        return JSON.stringify({ ok: true, after: overlayState(), peek: peek ? peek.module : null });
+      })();
       // A divider dragged by `delta` px (synthetic pointer events on the bar), in two steps; `hold` leaves the bar pressed.
       case 'gutter': {
         const g = [...document.querySelectorAll('#dock > .dgutter')].find(el => el.dataset.path === String(a.path) && Number(el.dataset.i) === a.i);
@@ -4140,12 +4341,30 @@ if (new URLSearchParams(location.search).get('probe') === '1') {
           copyButtons: [...log.querySelectorAll('.chat-copy')].map(b => ({ label: b.getAttribute('aria-label'), text: b.textContent })),
           logText: log.textContent, term: { cols: term.cols, rows: term.rows }, resizeSends,
           rootRect: rectOf(root), termRect: rectOf(document.getElementById('term')),
+          // #171: what the chat paints over the background, and whether the live terminal's pixels are seen
+          rootBg: getComputedStyle(root).backgroundColor, termOpacity: getComputedStyle(document.getElementById('term')).opacity,
+          hasBg: document.body.classList.contains('has-bg'), lookMode: document.documentElement.getAttribute('data-look-mode'),
+          // #172: the conversation's zoom as painted, the value the page holds, and the terminal's font (which must never move with it)
+          logZoom: getComputedStyle(log).zoom, chatZoom: chatZoomSaver.current(), termFontSize: term.options.fontSize,
+          // PR #233 F11: where the conversation is scrolled (at the bottom = within chat-display's 40 px of it)
+          logScroll: { top: log.scrollTop, height: log.scrollHeight, client: log.clientHeight, atBottom: log.scrollHeight - log.scrollTop - log.clientHeight <= 40 },
+          focusInChat: !!(document.activeElement && root.contains(document.activeElement)),
         });
       }
       case 'chatDo': {
         if (a.what === 'toggle') { chatBtn.click(); return JSON.stringify({ ok: true }); }
         if (a.what === 'clearInput') { document.getElementById('chat-input').value = ''; return JSON.stringify({ ok: true }); }
         if (a.what === 'key') { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'H', code: 'KeyH', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); return JSON.stringify({ ok: true }); }
+        // PR #233 F11 / F13: put the conversation at its bottom; take the keyboard out of the chat's type box (as a click on its text does)
+        if (a.what === 'scrollBottom') { const l = document.getElementById('chat-log'); l.scrollTop = l.scrollHeight; return JSON.stringify({ ok: true }); }
+        if (a.what === 'blur') { if (document.activeElement) document.activeElement.blur(); return JSON.stringify({ ok: true, active: document.activeElement ? document.activeElement.tagName : null }); }
+        // #172: a wheel over the conversation, as a mouse sends it; `cancelled` is whether the page's handler stopped Chromium's own zoom
+        if (a.what === 'wheel') {
+          const target = document.getElementById('chat-log');
+          const r = target.getBoundingClientRect();
+          const ev = new WheelEvent('wheel', { clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, deltaY: Number(a.deltaY) || 0, ctrlKey: a.ctrl === true, bubbles: true, cancelable: true });
+          return JSON.stringify({ ok: true, cancelled: !target.dispatchEvent(ev) });
+        }
         if (a.what === 'type') {
           if (typeof a.text !== 'string' || !a.text || a.text.length > 2000) return JSON.stringify({ ok: false, error: 'type needs text' });
           document.getElementById('chat-input').value = a.text;
@@ -5606,7 +5825,7 @@ function applyTheme(theme) {
   renderTopBar();
   // A font change alters cell size, so the pty must be told the new geometry or
   // Ink's layout corrupts.
-  setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // --- agent roster -----------------------------------------------------------
@@ -5633,11 +5852,15 @@ function faceHtml(portrait) {
 // The hover pencil on a face (BACKLOG C #13): the file-picker route to the same
 // `portrait set` message a drop sends. NOT the plain card click -- that opens
 // the agent's activity log.
-function faceEditHtml() {
+// `state` is the one the card shows, carried ON the pencil (PR #244 Dexter 1): a card patched in place (app/roster-morph.js)
+// keeps a control whose own data-* are unchanged, so a pencil reading the card's live data-state would save a press made on a
+// working card as the stressed portrait when a failure lands mid-press. On the pencil, a state change makes it another control:
+// it's replaced and that press drops, and a click reads the state that was on screen.
+function faceEditHtml(state) {
   // Hidden while images are off or unknown: a picture saved then changes nothing
   // visible, which reads as a broken button (Miguel S7, PR #64).
   return (window.harness && window.harness.avatar && agentImagesEnabled === true)
-    ? '<button type="button" class="face-pencil" data-no-card-click title="Choose a picture, GIF or video for this agent">✎</button>'
+    ? `<button type="button" class="face-pencil" data-no-card-click data-portrait-state="${escapeHtml(state)}" title="Choose a picture, GIF or video for this agent">✎</button>`
     : '';
 }
 
@@ -5661,6 +5884,18 @@ function applyFaceVideo(v) {
   else v.pause();
 }
 
+// Each roster card node -> the markup it was painted from (before any live video was moved into it): what rosterPatch compares.
+const paintedCardHtml = new WeakMap();
+// setRosterHtml's per-card path (BACKLOG #184): each changed card patched in place, never swapped (app/roster-morph.js patchCards,
+// which also unloads a replaced control's video and watches and pauses a new one, as the full replace does). Each patched node
+// remembers the markup it now matches, so the next rosterPatch sees it unchanged.
+function patchRosterCards(oldNodes, freshNodes, freshHtml, changed) {
+  const live = window.rosterMorph.patchCards(oldNodes, freshNodes, changed, {
+    observer: faceVideoObserver, unloadVideo: portraitMedia.unloadVideo, applyFaceVideo,
+    onError: (err) => console.warn('[roster] a card patch failed, swapped instead:', err && err.message),
+  });
+  changed.forEach((i, k) => paintedCardHtml.set(live[k], freshHtml[i]));
+}
 function setRosterHtml(html) {
   // A repaint runs about once a second while anything is running. A video that
   // is unloaded and recreated each time restarts from frame 0 and never loops
@@ -5669,24 +5904,43 @@ function setRosterHtml(html) {
   // the live one before the roster is replaced, and only nodes that go away or
   // change are unloaded. The move is synchronous, so the browser's "removed from
   // the document" pause never runs.
-  const oldByKey = new Map();
-  for (const v of agentsEl.querySelectorAll('video[data-face-key]')) {
-    if (!oldByKey.has(v.dataset.faceKey)) oldByKey.set(v.dataset.faceKey, v);
-  }
+  //
+  // PER CARD (PR #239 Dexter 5 / Miguel Y5): when the same cards sit in the same places, only those whose markup changed are
+  // replaced (app/agent-state-display.js rosterPatch), so an unchanged card keeps its node, and a press on its button or a hover on
+  // it survives a sibling's repaint. Each card's painted markup is remembered (paintedCardHtml) to compare with.
+  //
+  // IN PLACE (BACKLOG #184): a changed card is no longer swapped either. app/roster-morph.js patches its attributes and text onto
+  // the live nodes, so a press on the card, or on a control in it that is still the same control, lands even when the card changes
+  // between mousedown and mouseup; a hovered card's title changes on the same node. A control that turned into another (a Pause
+  // turned Resume) is replaced: its videos are unloaded, a new video is watched and paused, as in the full replace below.
   const stage = document.createElement('div');
   stage.innerHTML = html;
-  const plan = portraitMedia.planVideoReuse([...oldByKey.keys()],
-    [...stage.querySelectorAll('video[data-face-key]')].map(v => v.dataset.faceKey));
-  for (const fresh of [...stage.querySelectorAll('video[data-face-key]')]) {
-    const old = plan.reuse.has(fresh.dataset.faceKey) ? oldByKey.get(fresh.dataset.faceKey) : null;
-    if (old) { oldByKey.delete(fresh.dataset.faceKey); fresh.replaceWith(old); }
+  const freshNodes = [...stage.childNodes];
+  const freshHtml = freshNodes.map(n => (n.nodeType === 1 ? n.outerHTML : n.textContent));
+  const oldNodes = [...agentsEl.childNodes];
+  const keyOf = n => (n.nodeType === 1 && n.dataset && n.dataset.agent ? n.dataset.agent + '|' + (n.dataset.instance || '') : null);
+  const patch = window.agentStateDisplay.rosterPatch(oldNodes.map(n => ({ key: keyOf(n), html: paintedCardHtml.get(n) })),
+    freshNodes.map((n, i) => ({ key: keyOf(n), html: freshHtml[i] })));
+  if (!patch.full) { patchRosterCards(oldNodes, freshNodes, freshHtml, patch.replace); return; }
+  const videosIn = nodes => nodes.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video[data-face-key]')] : []));
+  // Every live video of a face key is kept, not only the first: two instance cards on one picture each keep their own (Miguel Y1).
+  const oldVideos = videosIn(oldNodes);
+  const newVideos = videosIn(freshNodes);
+  const pairs = portraitMedia.pairVideoReuse(oldVideos.map(v => v.dataset.faceKey), newVideos.map(v => v.dataset.faceKey));
+  newVideos.forEach((fresh, j) => {
+    const old = pairs[j] >= 0 ? oldVideos[pairs[j]] : null;
+    if (old) fresh.replaceWith(old);
+  });
+  for (const n of oldNodes) {
+    if (n.nodeType !== 1) continue;
+    for (const v of n.querySelectorAll('video')) {
+      if (faceVideoObserver) faceVideoObserver.unobserve(v);
+      portraitMedia.unloadVideo(v);
+    }
   }
-  for (const v of agentsEl.querySelectorAll('video')) {
-    if (faceVideoObserver) faceVideoObserver.unobserve(v);
-    portraitMedia.unloadVideo(v);
-  }
-  agentsEl.replaceChildren(...stage.childNodes);
-  for (const v of agentsEl.querySelectorAll('video')) {
+  agentsEl.replaceChildren(...freshNodes);
+  freshNodes.forEach((n, i) => paintedCardHtml.set(n, freshHtml[i]));
+  for (const v of freshNodes.flatMap(n => (n.nodeType === 1 ? [...n.querySelectorAll('video')] : []))) {
     if (faceVideoObserver) faceVideoObserver.observe(v);
     // Applied at once, not left to the observer's first callback: a hidden
     // window never delivers one, and the `autoplay` attribute would start the
@@ -5755,9 +6009,10 @@ function careerHtml(agent) {
     `</div>`;
 }
 
-// The model line under the state (FF10) and the ×N badge beside the name for
-// concurrent instances of one agent (FF8). Both judgements live in
-// app/agent-card-display.js so they can be tested; this is only the drawing.
+// The model line under the state (FF10). The judgement lives in
+// app/agent-card-display.js so it can be tested; this is only the drawing.
+// (Concurrent instances of one agent were a ×N badge here (FF8); since
+// BACKLOG #142 b each is its own card, app/agent-state-display.js instanceRows.)
 function agentModelHtml(agent) {
   const entry = modelEntry(sessionModel && sessionModel.agents, agent);
   const m = modelLine(entry, sessionModel && sessionModel.errors);
@@ -5814,16 +6069,18 @@ document.addEventListener('click', (e) => {
 // typeCommand, so the box, the submit gate and its refusals apply as they do for the wand.
 const agentPauses = window.agentPauseDisplay.createAgentPauses();
 let latestAgentIds = [];      // [{ name, agentId }] of the live runs, from every `processes` frame
-function agentPauseHtml(agent, counts) {
-  return window.agentPauseDisplay.html(agentPauses.view(agent, counts.get(agent) || 0), agent);
+// `r` is the card: a name card, or one instance card (#142 b), whose flash offers nothing and whose Pause names its own run.
+function agentPauseHtml(r, counts) {
+  return window.agentPauseDisplay.cardHtml(agentPauses.view(r.agent, counts.get(r.agent) || 0), r);
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest && e.target.closest('.agent-pause-btn');
   const act = b ? window.agentPauseDisplay.clickAction(b.dataset) : null;
   if (!act) return;
   // The run's task id, when the host knows exactly one: named in the line, and what our TaskStop is recognised by (app/agent-pause-display.js).
+  // An instance card names its own run (PR #239 Dexter 4); a name card, the one run the host knows, if it knows exactly one.
   const ids = latestAgentIds.filter(a => a.name === act.agent).map(a => a.agentId);
-  const taskId = ids.length === 1 ? ids[0] : undefined;
+  const taskId = act.taskId !== undefined ? act.taskId : ids.length === 1 ? ids[0] : undefined;
   const command = window.agentPauseDisplay.commandFor(act.act, act.agent, taskId) || window.agentPauseDisplay.commandFor(act.act, act.agent);
   if (!command || !agentPauses.begin(act.agent, act.act, Date.now(), command.includes('(task id ') ? taskId : undefined)) return;
   renderRoster();
@@ -5834,13 +6091,6 @@ document.addEventListener('click', (e) => {
     if (!r.ok || r.submitted !== true) { agentPauses.refused(act.agent); renderRoster(); }
   }, window.agentPauseDisplay.INPUT_KIND, { submit: true, typeOnly: false });
 });
-
-function countBadgeHtml(agent, counts) {
-  // A "×1" is noise -- everyone already assumes one instance. Only a SECOND
-  // concurrent run is news.
-  const n = counts.get(agent) || 0;
-  return n >= 2 ? `<span class="agent-count" title="${n} running now">×${n}</span>` : '';
-}
 
 // --- Active/Inactive roster tabs (BACKLOG D #16) -----------------------------
 // The split and sort are pure decisions in app/roster-tabs-display.js; this is
@@ -6028,7 +6278,7 @@ function inactiveRowHtml(row) {
   // data-agent: a portrait dropped on this face reaches the host, which sets
   // the agent's default portrait for state "inactive" (Miguel I1, PR #35).
   return `<div class="agent" data-state="inactive" data-agent="${escapeHtml(row.agent)}">` +
-      `<div class="face">${faceHtml(entry && entry.portrait)}${faceEditHtml()}</div>` +
+      `<div class="face">${faceHtml(entry && entry.portrait)}${faceEditHtml('inactive')}</div>` +
       `<div class="meta">` + agentNameHtml(row.agent, entry, unresolvedHtml + unreadableHtml) +
       agentFnHtml(entry) +
       `<div class="state">inactive</div>` +
@@ -6083,7 +6333,7 @@ function paintAgents(html) {
   // Through setRosterHtml, not innerHTML: a live avatar video keeps its node
   // across a repaint, per PR #64. The unchanged-markup skip from PR #66 runs first.
   setRosterHtml(html);
-  paintBubbles();       // a repaint replaced the cards, so the bubbles go back on (BACKLOG #80)
+  paintBubbles();       // a repaint replaced or patched the cards and took their bubbles off, so they go back on (BACKLOG #80, roster-morph.js)
 }
 
 // Delegated on #agents, the ONE click handler for the roster's cards. No
@@ -6194,35 +6444,46 @@ function renderRoster() {
     return;
   }
 
-  paintAgents(shown.map(r => {
-    if (r.explainer) return explainerCardHtml(false);
-    const entry = rosterIndexEntry(r.agent);
-    // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
-    // `data-detail`, drawn as a corner badge and as words under the name.
-    const look = window.agentStateDisplay.describeState(r.state, r.detail);
-    return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
-      (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
-      hideButtonHtml(r) +
-      window.medalsDisplay.cardButtonHtml(r.agent) +
-      `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml()}</div>` +
-      window.agentStateDisplay.badgeHtml(r.state, r.detail) +
-      `<div class="meta">` + agentNameHtml(r.agent, entry, countBadgeHtml(r.agent, counts)) +
-      agentFnHtml(entry) +
-      `<div class="state">${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
-      window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
-      agentPauseHtml(r.agent, counts) +
-      agentModelHtml(r.agent) +
-      occupancyWhereHtml(r.agent) +
-      careerHtml(r.agent) +
-      beltHtml(r.agent) +
-      `</div>` +
-    `</div>`;
-  }).join(''));
+  // BACKLOG #142 b: two or more instances of one agent are one card each (app/agent-state-display.js instanceRows), after the hide
+  // and search filters, which stay per agent name: every card of a name carries the same data-agent, so a medal, a hide or a pause
+  // on one card is the name's (the open question's default).
+  paintAgents(shown.flatMap((r) => window.agentStateDisplay.instanceRows(r)).map((r) => (r.explainer ? explainerCardHtml(false) : activeCardHtml(r, counts))).join(''));
+}
+
+// One card on the Active tab: a name's, or one instance's (#142 b). Out of renderRoster, which was long past readable (PR #239
+// Miguel S8); `counts` is the running count per name, for the Pause.
+function activeCardHtml(r, counts) {
+  const entry = rosterIndexEntry(r.agent);
+  // BACKLOG #55: `data-state` stays the card's base state (ring, sort, portrait upload); the finer state is
+  // `data-detail`, drawn as a corner badge and as words under the name.
+  const look = window.agentStateDisplay.describeState(r.state, r.detail);
+  // BACKLOG #162: a stressed card says why on hover, the card itself and the words under the name (their own titles win elsewhere).
+  const cause = window.agentStateDisplay.causeTitle(r.state, r.cause);
+  return `<div class="agent" data-state="${escapeHtml(r.state)}" data-detail="${escapeHtml(look.detail)}" data-agent="${escapeHtml(r.agent)}"` +
+    (r.instance ? ` data-instance="${escapeHtml(r.instance)}"` : '') +
+    (cause ? ` title="${escapeHtml(cause)}"` : '') +
+    (hiddenAgentNames.includes(r.agent) ? ' data-hidden="true"' : '') + `>` +
+    hideButtonHtml(r) +
+    window.medalsDisplay.cardButtonHtml(r.agent) +
+    `<div class="face" data-tier="${escapeHtml((r.portrait && r.portrait.tier) || 'text')}">${faceHtml(r.portrait)}${faceEditHtml(r.state)}</div>` +
+    window.agentStateDisplay.badgeHtml(r.state, r.detail) +
+    `<div class="meta">` + agentNameHtml(r.agent, entry, '') +
+    agentFnHtml(entry) +
+    `<div class="state"${cause ? ` title="${escapeHtml(cause)}"` : ''}>${escapeHtml(look.words)}${window.medalsDisplay.chipHtml(window.medalsDisplay.countOf(medalList, r.agent))}</div>` +
+    window.agentStateDisplay.waitNoteHtml(r.detail, r.wait, Date.now()) +
+    agentPauseHtml(r, counts) +
+    agentModelHtml(r.agent) +
+    occupancyWhereHtml(r.agent) +
+    careerHtml(r.agent) +
+    beltHtml(r.agent) +
+    `</div>` +
+  `</div>`;
 }
 
 // BACKLOG #155: a waiting card counts minutes, and the host only speaks when the detail changes: repaint the roster twice a minute while one waits.
 setInterval(() => {
-  for (const r of roster.values()) if (r.detail === 'bgwait' || r.detail === 'bgwaitlate') { renderRoster(); return; }
+  // A name's row or one of its instance cards (#142 b, PR #239 Miguel S3).
+  if (window.agentStateDisplay.anyWaiting([...roster.values()])) renderRoster();
 }, 30_000);
 
 function renderRosterIndex(rosterIndex) {
@@ -8006,6 +8267,30 @@ if (window.harness && window.harness.onTypeCommand) {
   });
 }
 
+// BACKLOG #139: before main closes a merged tab by itself it asks whether this tab's CLI box is at rest (at its prompt, nothing
+// typed, nothing being typed by this page). Read off the screen as the chat view's send reads it; a screen that can't be read is "no".
+// The page's other unsent input counts too (PR #236 Dexter 2): the chat view's draft, which lives in the DOM only, and the vault and
+// bug-vault forms half filled in (each empties itself on a save). Only the answer leaves the page, never a value. A search box is a
+// filter, not something unsent; the model chip's id field keeps its last value by design, so it is not read either. Each id is
+// written out, so test/renderer-scope.test.js checks it against renderer.html.
+const unsentDrafts = () => [
+  document.getElementById('chat-input'), document.getElementById('vault-label'), document.getElementById('vault-secret'),
+  document.getElementById('bugvault-category'), document.getElementById('bugvault-summary-input'), document.getElementById('bugvault-where'),
+  document.getElementById('bugvault-detected'), document.getElementById('bugvault-survived'), document.getElementById('bugvault-caught'),
+].map(el => (el ? el.value : null));
+if (window.harness && window.harness.onBoxState) {
+  window.harness.onBoxState((ask) => {
+    const id = ask && ask.id;
+    let clear = false;
+    try {
+      const lines = screenLines();
+      const drafts = unsentDrafts();
+      clear = chatViewState.boxAtRest({ screen: inputState(lines, { vim: vimSeen }), box: boxText(lines), typing: typingBusy, drafts });
+    } catch { clear = false; }
+    window.harness.boxState({ id, clear: clear === true });
+  });
+}
+
 // WAND-BEGIN
 // The wand (BACKLOG #51): favourite skills as emoji buttons. app/wand-display.js decides everything (what
 // shows, what a click means, what each edit sends); this is only the DOM and the socket. A click TYPES
@@ -8986,7 +9271,8 @@ agentsEl.addEventListener('click', (e) => {
   e.preventDefault();
   const row = btn.closest('.agent');
   const agent = row && row.dataset.agent;
-  const state = row && row.dataset.state;
+  // The pencil's own state, not the card's live data-state (PR #244 Dexter 1: see faceEditHtml).
+  const state = btn.dataset.portraitState;
   if (!agent || !state || !(window.harness && window.harness.avatar)) return;
   pickAndSetPortrait(agent, state);
 });
@@ -9064,7 +9350,7 @@ function applyFonts() {
   term.options.fontSize = eff.fontSize;
   // A font change alters the cell size, so the pty must be told the new geometry or Ink's layout corrupts.
   clearTimeout(fontFitTimer);
-  fontFitTimer = setTimeout(() => { try { fit.fit(); sendResize(); } catch {} }, 0);
+  fontFitTimer = setTimeout(() => { try { refitTerminal(); } catch {} }, 0);
 }
 
 // A tab that was in the background misses a focus-mode or lean push, and its rails measured zero while hidden: fit them when it shows.
@@ -9077,6 +9363,8 @@ if (document.fonts && document.fonts.addEventListener) document.fonts.addEventLi
 
 function takeFontSettings(raw) {
   fontSettings = fontsDisplay.sanitizeSettings(raw);
+  // #172: the chat's zoom, this window's save or another window's; a wheel run still waiting to be saved is newer than any record.
+  applyChatZoom(chatZoomSaver.record(fontSettings.chatZoom));
   applyFonts();
   renderStylePanel();
 }
@@ -9502,8 +9790,8 @@ function handleControl(msg) {
     }
     latestParty = msg.party || [];
     renderParty(msg.party);
-    // The ×N badge is derived from `party`, which just changed; the roster map
-    // itself may not have, so nothing else here would repaint it.
+    // The belt and the pauses read `party`, which just changed; the roster map
+    // itself may not have, so nothing else here would repaint them.
     renderRoster();
     return;
   }
@@ -9886,6 +10174,23 @@ function sendResize() {
   }
 }
 
+// Every refit of the terminal to its box (BACKLOG #177). One fit.fit() can be a column short: xterm's cell width follows the column
+// count, so the box is asked again after each resize until it agrees (app/term-fit.js has the measured case). The pty is then told
+// only a size it wasn't told last. FitAddon's own resize step: clear the renderer (a full render), then resize.
+function refitTerminal() {
+  window.termFit.settleFit({
+    size: () => ({ cols: term.cols, rows: term.rows }),
+    propose: () => fit.proposeDimensions(),
+    resize: (cols, rows) => {
+      // xterm PRIVATE API (`_core._renderService`), as FitAddon itself calls it, on @xterm/xterm 5.5.0: an upgrade can drop it, and
+      // the catch then keeps the resize going without the full render.
+      try { term._core._renderService.clear(); } catch { /* the full render is a nicety; the resize is what counts */ }
+      term.resize(cols, rows);
+    },
+  });
+  if (window.termFit.needsSend({ cols: term.cols, rows: term.rows }, lastSentResize)) sendResize();
+}
+
 // Everything xterm translates from a keypress flows through here.
 // Typing drops the selection, as in Windows Terminal: a selection left
 // behind is the one a later Ctrl+C would copy instead of interrupting
@@ -10216,6 +10521,40 @@ if (term.textarea) term.textarea.addEventListener('focus', () => { if (chatShown
 
 chatBtn.addEventListener('click', chatToggle);
 document.getElementById('chat-show-tools').addEventListener('click', chatToggle);
+
+// #172: Ctrl+wheel over the chat zooms its conversation in 10 % steps (70 % to 200 %), one step per 100 px of wheel travel (a mouse notch;
+// a touchpad pinch's burst of small deltas adds up the same way, PR #233 F10). Ctrl+0 puts it back to 100 % wherever the keyboard is in the
+// page, while the chat is the display shown (F13). The wheel is cancelled, so Chromium never zooms the page; the listener has to be
+// non-passive for that, and it is on the chat view only (a plain wheel returns at once). The terminal's font and size are never touched.
+// Remembered app-wide in the fonts record (main's fonts-global) through chatZoomSaver, which saves a run once it settles and when the page goes away.
+const chatViewEl = document.getElementById('chat-view');
+let chatWheel = null;                // the wheel travel not yet turned into a step (fontsDisplay.wheelZoomSteps)
+// A reader at the bottom of the conversation stays there through a zoom step, so the next reply is still followed (PR #233 F11: measured in
+// probe J, a zoom-in left the log 178 px above the bottom and the next reply arrived out of view).
+function applyChatZoom(z) {
+  const el = document.getElementById('chat-view');
+  if (!el) return;
+  chatUi.keepBottom(() => el.style.setProperty('--chat-zoom', String(z / 100)));
+}
+function zoomChat(next) {
+  if (next === chatZoomSaver.current()) return;
+  chatZoomSaver.zoomed(next);
+  applyChatZoom(next);
+}
+chatViewEl.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  const r = fontsDisplay.wheelZoomSteps(chatWheel, e.deltaY, e.deltaMode, e.timeStamp);
+  chatWheel = r.acc;
+  if (r.steps !== 0) zoomChat(fontsDisplay.nextChatZoom(chatZoomSaver.current(), r.steps));
+}, { passive: false });
+document.addEventListener('keydown', (e) => {
+  if (!chatShown || !chatViewState.isChatZoomResetKey(e)) return;
+  e.preventDefault();
+  zoomChat(fontsDisplay.CHAT_ZOOM_DEFAULT);
+});
+window.addEventListener('pagehide', () => chatZoomSaver.flush());
+// #172 end
 // The terminal's own key handler decides the shortcut while it has focus (xterm consumes keys before a document listener); this is the chat's.
 document.addEventListener('keydown', (e) => {
   if (e.defaultPrevented || !chatViewState.isChatKey(e)) return;
@@ -10228,7 +10567,7 @@ chatRefreshView();
 // Resize must propagate on window resize AND on font change, or the Ink layout
 // corrupts.
 const ro = new ResizeObserver(() => {
-  try { fit.fit(); sendResize(); } catch {}
+  try { refitTerminal(); } catch {}
 });
 ro.observe(document.getElementById('termwrap'));
 

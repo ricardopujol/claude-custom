@@ -37,7 +37,7 @@ test('Dexter F2 / Miguel B1: a redraw moves focus only as renderEffects says -- 
 });
 
 test('Dexter F1 / Miguel I2: a drop ends the drag BEFORE the move redraws away its source', () => {
-  const at = JS.search(/window\.addEventListener\('pointerup', \(\) => \{\r?\n\s+if \(!press\) return;/);
+  const at = JS.search(/window\.addEventListener\('pointerup', \(e\) => \{\r?\n\s+if \(!press \|\| e\.pointerId !== press\.pointerId\) return;/);
   assert.ok(at !== -1, 'the tab drag\'s pointerup handler must be findable');
   const handler = JS.slice(at, JS.indexOf('  });', at));
   const end = handler.indexOf('end();');
@@ -152,9 +152,59 @@ test('PR #100 Miguel I4: tab and rail buttons have a focus ring that sits inside
 test('PR #100 Miguel S1: a tab drag reads the dock\'s rectangle once at its start and rebuilds the overlay only when the zones change', () => {
   assert.doesNotMatch(JS, /pointInDock/, 'no per-move getBoundingClientRect');
   assert.match(JS, /rect: dock\.getBoundingClientRect\(\), viewport: dockViewport\(\)/);
-  assert.match(JS, /drag\.at = \{ x: e\.clientX - drag\.rect\.left, y: e\.clientY - drag\.rect\.top \};/);
+  // BACKLOG #109: the move's point arrives through pressStep's `follow(x, y)`, still against the rectangle read at the start.
+  assert.match(JS, /drag\.at = \{ x: x - drag\.rect\.left, y: y - drag\.rect\.top \};/);
   assert.match(JS, /zonesAt\(lastPlan \? lastPlan\.boxes : \[\], drag\.viewport, drag\.at, \{ exclude: drag\.exclude \}\)/);
   assert.match(JS, /if \(sig !== drag\.sig\) \{ drag\.sig = sig; drawZones\(hit\.zones\); \}/);
+});
+
+test('#109: a rail button starts the same drag as a tab name, through pressStep, and a drop on the rail only reorders it', () => {
+  // PR #241 Dexter 3: one pointer at a time. Another pointer's down, moves and release are ignored; the same pointer pressing
+  // again (a lost release) ends the old press first, so no ghost leaks and the swallowed click isn't cleared by a stranger.
+  assert.match(JS, /if \(press && e\.pointerId !== press\.pointerId\) return;\n\s+if \(press\) end\(\);\n\s+swallowClick = false;/);
+  assert.match(JS, /window\.addEventListener\('pointermove', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId !== press\.pointerId\) return;/);
+  const down = JS.search(/document\.addEventListener\('pointerdown', \(e\) => \{\n(?:\s+\/\/[^\n]*\n)*\s+if \(press && e\.pointerId/);
+  assert.ok(down !== -1, 'the tab drag\'s press handler must be findable');
+  const press = JS.slice(down, JS.indexOf('\n  });', down));
+  assert.match(press, /closest\('\.zone-tabs button\[data-module\], \.drail button\[data-module\]'\)/, 'a rail button is a handle too');
+  assert.match(press, /opts: rail \? DD\.PRESS\.rail : DD\.PRESS\.tab/);
+  assert.match(JS, /const out = DD\.pressStep\(press\.st, ev, press\.opts\);/);
+  // The drag's click is the drag's: the page's click handler asks before it opens the rail's panel. No capture listener and no
+  // stopPropagation (test/renderer-mouse-passthrough.test.js: they could starve the terminal of its clicks).
+  assert.match(JS, /tabDragClaimsClick = \(e\) => \{\n\s+if \(!swallowClick\) return false;\n\s+swallowClick = false;\n\s+return e\.detail !== 0;\n\s+\};/);
+  assert.match(JS, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{\n\s+if \(tabDragClaimsClick\(e\)\) return;[^\n]*\n\s+openPeek\(id, e\.detail === 0\);/);
+  assert.match(JS, /DD\.railDrop\(DD\.zonesAt\(/);
+  const up = JS.search(/window\.addEventListener\('pointerup', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId !== press\.pointerId\) return;/);
+  const release = JS.slice(up, JS.indexOf('\n  });', up));
+  assert.match(release, /if \(d\.target\.rail === 'dock'\) \{ commitPlacement\(DTm\.moveOnRail\(settledLayout\(\), d\.id, d\.target\.before\)\); return; \}/);
+  assert.ok(release.indexOf('end();') < release.indexOf('moveOnRail'), 'ended before the reorder redraws the rail');
+  // PR #241 Dexter 2 / Miguel M2: the rail scrolls under a drag, so its scroll measures the slots again and re-judges the point;
+  // and a pointer held near either end scrolls it (railScrollStep, one frame at a time). The listener goes with the drag.
+  assert.match(JS, /if \(drag\.railEl\) drag\.railEl\.addEventListener\('scroll', onRailScroll, \{ passive: true \}\);/);
+  assert.match(JS, /function onRailScroll\(\) \{\n\s+if \(!drag \|\| !press\) return;\n\s+drag\.rail = railSlots\(drag\.rect, drag\.id\);\n\s+follow\(press\.cx, press\.cy\);/);
+  assert.match(JS, /if \(drag\.railEl\) drag\.railEl\.removeEventListener\('scroll', onRailScroll\);/);
+  assert.match(JS, /const step = DD\.railScrollStep\(drag\.rail, drag\.at\);/);
+  // PR #241 Dexter 4 / Miguel L6: only a module ON the dock rail gets the rail's slots, so a docked tab over the rail draws no line
+  // (verify/probe-rail-drag.js case 2 reads the lines mid-drag).
+  assert.match(JS, /const railed = placementLayout\(\)\.rail;\n\s+if \(!Array\.isArray\(railed\) \|\| !railed\.includes\(id\)\) return null;/);
+  // PR #241 Miguel L7: a drag measures the dock, its size and the rail once; a resize mid-drag would leave all three stale, so it
+  // ends the drag, as a blur does, and nothing is committed.
+  assert.match(JS, /window\.addEventListener\('resize', \(\) => \{ cancelTabDrag\(\); \}\);/);
+  // PR #241 Miguel L5: the move path. A pointermove keeps the point and feeds pressStep; its 'start' begins the drag and follows
+  // the point, its 'move' follows it; nothing else draws a drag.
+  const moveAt = JS.search(/window\.addEventListener\('pointermove', \(e\) => \{\n\s+if \(!press \|\| e\.pointerId/);
+  const moveHandler = JS.slice(moveAt, JS.indexOf('\n  });', moveAt));
+  assert.match(moveHandler, /press\.cx = e\.clientX;\n\s+press\.cy = e\.clientY;\n\s+feed\(\{ type: 'move'/);
+  assert.match(JS, /if \(out\.effect === 'start'\) \{ begin\(\); follow\(press\.cx, press\.cy\); \} else if \(out\.effect === 'move'\) follow\(press\.cx, press\.cy\);/);
+  // PR #241 Miguel L1: one clock for the press and its hold, and an early timer re-armed for the rest.
+  assert.doesNotMatch(JS, /feed\(\{ type: '(?:down|move)'[^}]*e\.timeStamp/, 'no event of a press on the event\'s own clock');
+  assert.match(JS, /feed\(\{ type: 'down', x: e\.clientX, y: e\.clientY, t: performance\.now\(\) \}\);/);
+  assert.match(JS, /feed\(\{ type: 'move', x: e\.clientX, y: e\.clientY, t: performance\.now\(\) \}\);/);
+  assert.match(JS, /const left = drag \? null : DD\.holdRemaining\(mine\.st, now, mine\.opts\);\n\s+if \(left !== null && left > 0\) mine\.timer = setTimeout\(fire, left\);/);
+  // PR #241 Dexter 1: only pressStep's 'drop' commits. A hold-started drag released unmoved answers 'cancel', and a cancel never docks.
+  assert.match(release, /const effect = feed\(\{ type: 'up' \}\);/);
+  assert.match(release, /if \(!d \|\| effect !== 'drop' \|\| !d\.target\) return;/);
+  assert.ok(release.indexOf("effect !== 'drop'") < release.indexOf('commitPlacement('), 'judged before anything is committed');
 });
 
 test('D2: a float move or resize is drawn while it goes and saved once on release, on the placement as it is NOW; a press only raises, in the selection', () => {
@@ -187,7 +237,12 @@ test('PR #102 Dexter 2/6, Miguel Y2/S4: a float drag starts after 3 px, follows 
   assert.match(JS, /renderLayout\(\{ refit: false \}\)/, 'a float move does not change the terminal\'s rectangle');
   assert.match(JS, /const same = placementOf\(incoming\) === placementOf\(globalLayout\);\r?\n\s+globalLayout = incoming;\r?\n\s+if \(!ownLayout && !same\) renderLayout\(\);/, 'the echo of this window\'s own save is not redrawn (it would refit the terminal)');
   assert.match(JS, /function renderLayout\(\{ userAction = false, refit = true, settle = false, quiet = false \} = \{\}\)/);
-  assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ fit\.fit\(\); sendResize\(\); \} catch \{\} \}, 0\);/);
+  // BACKLOG #177: the refit is the settled one (app/term-fit.js), which tells the pty only a changed size.
+  assert.match(JS, /if \(refit\) setTimeout\(\(\) => \{ try \{ refitTerminal\(\); \} catch \{\} \}, 0\);/);
+  assert.match(JS, /function refitTerminal\(\) \{\r?\n\s+window\.termFit\.settleFit\(/);
+  // PR #240 C3 (Dexter 3, Miguel I3): the settled size reaches the pty, and only when it changed: the function's last line, then its end.
+  assert.match(JS, /function refitTerminal\(\) \{[\s\S]{0,900}?\r?\n\s+\}\);\r?\n\s+if \(window\.termFit\.needsSend\(\{ cols: term\.cols, rows: term\.rows \}, lastSentResize\)\) sendResize\(\);\r?\n\}/,
+    'refitTerminal ends by telling the pty the settled size, gated on needsSend against what it was told last');
 });
 
 test('PR #102 Miguel Y4: pressing a float\'s bar or grip does not take keyboard focus out of a field inside it (the press cancels the mousedown default)', () => {
@@ -258,7 +313,8 @@ test('D4: a rail\'s button opens its popover instead of selecting a tab nobody c
   const at = JS.indexOf("document.addEventListener('click', (e) => {\n  const pinButton = e.target.closest('.dpin');");
   assert.ok(at !== -1, 'the tab and rail click handler must be findable');
   const handler = JS.slice(at, JS.indexOf('\n});', at));
-  assert.match(handler, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{ openPeek\(id, e\.detail === 0\); return; \}/);
+  // #109: the click a drag from the rail button left behind is the drag's, asked first; any other click opens the popover.
+  assert.match(handler, /if \(button\.parentNode\.classList\.contains\('drail'\)\) \{\n\s+if \(tabDragClaimsClick\(e\)\) return;[^\n]*\n\s+openPeek\(id, e\.detail === 0\);\n\s+return;\n\s+\}/);
   assert.match(handler, /railEvent\(\{ type: 'tab', module: id \}\)/);
   assert.match(handler, /if \(pinButton\) \{ togglePin\(pinButton\.dataset\.pin\); return; \}/, 'the Pin button is no tab (#85)');
   assert.match(handler, /renderLayout\(\{ refit: false \}\)/, 'a popover never changes the terminal\'s rectangle');

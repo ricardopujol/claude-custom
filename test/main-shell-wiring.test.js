@@ -81,7 +81,7 @@ test('the gate check reads each handler alone: an ungated handler right before a
 
 test('the scan finds the channels this file registers', () => {
   const names = channels.map(c => c.name);
-  for (const n of ['strip:select', 'strip:close', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo', 'tab:selectFolder',
+  for (const n of ['strip:select', 'strip:close', 'strip:stop', 'strip:contextMenu', 'strip:background', 'tab:status', 'tab:close', 'tab:goTo', 'tab:selectFolder',
     'tab:raise', 'attention', 'secrets:list', 'secrets:melt', 'look:setDim',
     // the Git drawer (Enhancement #46)
     'tab:states', 'tab:typeMerged', 'tab:typed']) {
@@ -220,8 +220,9 @@ test('a hand close asks first, every time', () => {
 
 test('#77: Ctrl+click reaches the shell as ifSafe, only when the strip sent exactly true; the reason rides into the confirm', () => {
   assert.match(MAIN, /ipcMain\.on\('strip:close', \(e, key, ifSafe\)/);
+  assert.match(MAIN, /ipcMain\.on\('strip:stop', \(e, key\) => \{\s*if \(!fromStrip\(e\) \|\| typeof key !== 'string'\) return;\s*closeTabFlow\(key, \{ stop: true \}\);/, 'Stop is its own gated channel');
   assert.match(MAIN, /closeTabFlow\(key, \{ ifSafe: ifSafe === true \}\)/);
-  assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe \}\)/);
+  assert.match(MAIN, /tabShell\.closeTab\(key, \{ ifSafe, stop \}\)/);
   assert.match(MAIN, /async function confirmClose\(tab, \{ reason = '' \} = \{\}\)/);
   assert.match(MAIN, /safety: \{ facts: \(folder\) => readCloseFacts\(folder\), readerUnsaved: \(tab\) => readerUnsaved\.pathFor\(tab\.key\) \}/);
   assert.match(MAIN, /occupancy: \{ claims: \(\) => occupancyService\.current\(\), known: \(folder\) => occupancyService\.known\(folder\) \}/,
@@ -396,8 +397,13 @@ test('PR #80 Miguel Y2: every fire-and-forget create / reopen has a catch, so no
 });
 
 test('PR #80 Miguel G3: a branch name in a native menu label goes through menuText (the Lanes menu, since #139)', () => {
+  // #170 S8: the template is app/tab-shell.js lanesMenuTemplate now, whose rows go through menuText (test/tab-shell-develop.test.js
+  // pins `feat/r&d` -> `feat/r&&d`); main must build the menu with it, not by hand.
   const c = channels.find(x => x.name === 'strip:lanes');
-  assert.match(callText(MAIN, c.at), /menuText\(r\.label\)/);
+  assert.match(callText(MAIN, c.at), /Menu\.buildFromTemplate\(lanesMenuFor\(asked\)\)/);
+  const builder = MAIN.slice(MAIN.indexOf('function lanesMenuFor('), MAIN.indexOf('function lanesMenuFor(') + 400);
+  assert.match(builder, /lanesMenuTemplate\(tabShell\.lanesMenu\(asked\)/);
+  assert.doesNotMatch(builder, /label: `\$\{/, 'no hand-built row labels left in main');
 });
 
 test('#139 + #141: the Lanes and reorder channels are the strip page\'s alone, and check what they were sent', () => {
@@ -409,8 +415,10 @@ test('#139 + #141: the Lanes and reorder channels are the strip page\'s alone, a
   const lanes = callText(MAIN, channels.find(x => x.name === 'strip:lanes').at);
   assert.match(lanes, /Array\.isArray\(hidden\)/);
   assert.match(lanes, /typeof k === 'string'/, 'only strings are looked up');
-  assert.match(lanes, /tabShell\.lanesMenu\(/);
-  assert.match(lanes, /r\.action === 'reopen' \? tabShell\.reopen\(r\.key\) : tabShell\.select\(r\.key\)/);
+  assert.match(lanes, /lanesMenuFor\(asked\)/);
+  const builder = MAIN.slice(MAIN.indexOf('function lanesMenuFor('), MAIN.indexOf('function lanesMenuFor(') + 400);
+  assert.match(builder, /tabShell\.lanesMenu\(/);
+  assert.match(builder, /r\.action === 'reopen' \? tabShell\.reopen\(r\.key\) : tabShell\.select\(r\.key\)/);
   const reorder = callText(MAIN, channels.find(x => x.name === 'strip:reorder').at);
   assert.match(reorder, /typeof key !== 'string'/);
   assert.match(reorder, /tabShell\.reorder\(key, typeof before === 'string' \? before : null\)/);
@@ -464,6 +472,8 @@ test('#31 (Dexter F1): the window regaining focus is a look at the selected tab'
 test('PR 3: Ctrl+Shift+T reopens, and the branch form keeps the keyboard while open', () => {
   assert.match(MAIN, /action === 'reopen-tab'\) tabShell\.reopen\(\)/);
   assert.match(MAIN, /focusStep\(lastFocusedView, \{ windowFocused: focused, selectedView: live, stripBusy \}\)/);
+  // PR #236 Miguel Y4: the view with the keyboard went and none replaces it: the strip page takes it
+  assert.match(MAIN, /else if \(step\.focusStrip === true && win && !win\.isDestroyed\(\)\) win\.webContents\.focus\(\);/);
   // Dexter F7 (PR #80): only while the field takes typing -- not during Contract A's fetch.
   // #66: the indexing field holds the keyboard the same way while it has focus.
   assert.match(MAIN, /const stripBusy = \(!!snapshot\.create && snapshot\.create\.phase !== 'running'\) \|\| indexFieldFocused;/);

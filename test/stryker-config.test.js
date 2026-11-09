@@ -81,6 +81,7 @@ const REPO_SCANNING = new Set([
   'renderer-changes-wiring.test.js',
   'bounded-shutdown-process.test.js',   // #121 (PR #217): real children with a blocked event loop and a real watchdog; the pure tests are in bounded-shutdown.test.js, which IS in the command
   'canvas-mcp-process.test.js',    // #125: spawns the MCP server as a real process and names its script; split out of canvas-mcp.test.js so the in-process tests can be mutated
+  'job-guard-process.test.js',     // #127: a real Job Object (real PowerShell, real sleepers, seconds per case); the pure tests are in job-guard.test.js
 ]);
 
 const testFiles = fs.readdirSync(path.join(ROOT, 'test'))
@@ -481,6 +482,13 @@ test('the eight modules that decide what is killed, deleted or kept running are 
   }
 });
 
+test('the job guard (what a stop ends beyond the tree, #127) is mutated, by its pure tests; its real-process half stays out (PR #235 Miguel I5)', () => {
+  assert.ok(conf.mutate.includes('host/job-guard.js'), 'host/job-guard.js must be in stryker.conf.json\'s mutate');
+  const cmd = conf.commandRunner.command;
+  assert.ok(cmd.includes('test/job-guard.test.js'), 'its pure tests run in the command');
+  assert.ok(!cmd.includes('test/job-guard-process.test.js'), 'the real Job Object test stays out (a Stryker timeout is a kill)');
+});
+
 test('the real-process halves of status-relay, probe-hygiene and settings-writer stay split out of the command (Miguel, PR #142 I1/I2)', () => {
   // A Stryker timeout counts as a KILL, and a hung child is left behind: the tests that run real processes live in <name>-process.test.js,
   // exempt from the command, while the pure tests stay in. Each must exist, still spawn, and stay out; the pure file must not spawn.
@@ -492,4 +500,10 @@ test('the real-process halves of status-relay, probe-hygiene and settings-writer
     assert.ok(cmd.includes('test/' + name + '.test.js'), name + '.test.js (the pure tests) must be in the command');
     assert.ok(!SPAWN.test(fs.readFileSync(path.join(ROOT, 'test', name + '.test.js'), 'utf8')), name + '.test.js must not spawn real processes');
   }
+});
+
+test('the pid-retry decision module is mutated, and its tests are in the run (PR #231 Miguel Y3)', () => {
+  // It decides whether a process is ours to kill: a wrong verdict ends somebody's session. Not listing it is silent: no mutant, no number.
+  for (const module of ['host/stop-by-pid.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
+  assert.ok(conf.commandRunner.command.split(/\s+/).includes('test/stop-by-pid.test.js'), 'its test file is in the command');
 });

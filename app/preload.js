@@ -45,6 +45,13 @@ contextBridge.exposeInMainWorld('harness', {
       try { fn(ask); } catch (err) { console.error('[preload] type-command listener threw', err); }
     }), () => ipcRenderer.removeAllListeners('type-command')),
   typed: (reply) => ipcRenderer.send('tab:typed', reply),
+  //   onBoxState    main -> page { id }: is THIS tab's CLI box at rest (at its prompt, empty)? Asked before a merged tab closes by
+  //                 itself (BACKLOG #139); boxState page -> main { id, clear }
+  onBoxState: (fn) => (ipcRenderer.removeAllListeners('box-state'), ipcRenderer.on('box-state',
+    (_e, ask) => {
+      try { fn(ask); } catch (err) { console.error('[preload] box-state listener threw', err); }
+    }), () => ipcRenderer.removeAllListeners('box-state')),
+  boxState: (reply) => ipcRenderer.send('tab:boxState', reply),
   // A link clicked in the terminal (fix/terminal-links). Main opens it in the
   // default browser if, and only if, it is plain http(s), and answers whether
   // it did, so the page can say when it didn't.

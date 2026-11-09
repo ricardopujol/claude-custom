@@ -19,7 +19,10 @@ function probeWindowOptions(opts = {}, env = process.env) {
     y: OFFSCREEN,
     skipTaskbar: true,
     focusable: opts.focusable === true,
-    webPreferences: { ...opts.webPreferences, backgroundThrottling: false },
+    // Throttling off keeps a window's timers running off screen, but it also makes document.visibilityState report 'visible' for a window
+    // that is hidden or minimised (measured: probe-avatar-roster, BACKLOG #75). A probe that must SEE the page go hidden says
+    // `backgroundThrottling: true` and keeps it.
+    webPreferences: { backgroundThrottling: false, ...opts.webPreferences },
   };
 }
 
