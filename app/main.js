@@ -60,7 +60,7 @@ const { readCloseFacts } = require('../host/close-safety');
 const { occupancyDir, createClaimWriter } = require('../host/occupancy-store');
 const { startTimes, createSelfStartTime, isAlive: isPidAlive } = require('../host/proc-start');
 // One window per project (DESIGN_TABS_SESSIONS.md 3.3): the owner file + proof, and the pipe a second launch speaks through.
-const { claim: claimOwner, release: releaseOwner, pickLane, forwardedCwd } = require('../host/window-owner');
+const { claim: claimOwner, takeOver: takeOverOwner, release: releaseOwner, pickLane, forwardedCwd } =require('../host/window-owner');
 const { listen: listenForLaunches, send: sendFocus } = require('../host/window-focus');
 // ...and it PRODUCES the ones no host can: claims read off the subagent transcripts, for sessions that no
 // host of this build runs (a plain terminal, an older build). host/occupancy-transcripts.js.
@@ -1989,6 +1989,8 @@ function startProbeDriver(port) {
       } catch (err) { stripLayout = { error: err.message }; }
       const snap = tabShell.snapshot();
       return {
+        // verify/probe-one-window.js: how many windows this Electron process has made (one window per project: it must stay 1)
+        windows: BrowserWindow.getAllWindows().length,
         mode: MODE, selectedKey: snap.selectedKey, tabs: model, hosts, stripDom, stripOccupancy, stripChrome, stripLayout, viewDom, noMenuBar, windowFrame,
         // 1B: the keys main says have a tab, and the Lanes menu's rows (Not started / Merged, with the ones closed by hand)
         stripKeys: snap.strip.map(e => e.key), lanes: snap.lanes,
@@ -2402,8 +2404,8 @@ const windowReady = (() => { let resolve; const promise = new Promise((r) => { r
 let launchPipe = null;
 const ownStartTime = createSelfStartTime();   // this process's own start time, asked once: the owner file, the claims and the sampler prove "this process" with it
 
-// The owner side: a launch came in. Focus (restoring a minimised or tray-hidden window) and select the lane it named, if this
-// window has one.
+// The owner side: a launch came in (and was already answered "accepted": it never waits for this window to start). Once the window is
+// ready, focus it (restoring a minimised or tray-hidden window) and select the lane the launch named, if this window has one.
 async function onLaunchFocus(msg) {
   await windowReady.promise;
   focusWindow();
@@ -2423,6 +2425,7 @@ async function claimProjectWindow() {
     });
     const self = { pid: process.pid, start: await ownStartTime() };
     const r = await claimOwner({ stateRoot: STATE_ROOT, self, startTimes });
+    let published = r.published === true;
     if (r.action === 'focus') {
       const msg = {};
       const cwd = forwardedCwd(LAUNCH_CWD, PROJECT);
@@ -2430,11 +2433,11 @@ async function claimProjectWindow() {
       if (Number.isInteger(EXPLICIT_PORT)) msg.port = EXPLICIT_PORT;
       const told = await sendFocus({ pid: r.owner.pid, msg });
       if (told.ok) { console.log(`[main] one window: this project's window (pid ${r.owner.pid}) has it; this launch ends`); return 'exit'; }
-      // A proven owner that can't be reached (a build from before this, or it is closing): the old behaviour, a window of its own.
-      console.log(`[main] one window: owner pid ${r.owner.pid} did not answer (${told.error}); opening a window`);
-      return 'proceed';
+      // A proven owner that can't be reached (a build from before this, or it is closing): a window of its own, which then owns the file.
+      console.log(`[main] one window: owner pid ${r.owner.pid} did not answer (${told.error}); opening a window and taking the owner file over`);
+      published = takeOverOwner({ stateRoot: STATE_ROOT, self });
     }
-    if (r.published && !launchPipe) releaseOwner({ stateRoot: STATE_ROOT, selfPid: process.pid });   // a file naming a window nobody can reach
+    if (published && !launchPipe) releaseOwner({ stateRoot: STATE_ROOT, selfPid: process.pid });   // a file naming a window nobody can reach
     // Gone with the process, however it goes (app.exit skips will-quit); a crash leaves a file the next launch proves dead.
     process.on('exit', () => { try { releaseOwner({ stateRoot: STATE_ROOT, selfPid: process.pid }); } catch { /* the proof copes with a leftover */ } });
     return 'proceed';

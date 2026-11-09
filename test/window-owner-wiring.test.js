@@ -40,6 +40,11 @@ test('the pipe is listening before the owner file names this window, and the fil
   assert.match(fn, /process\.on\('exit'[\s\S]{0,200}releaseOwner\(/);
 });
 
+test('a launch whose proven owner cannot be reached opens its window and takes the owner file over', () => {
+  const fn = src.slice(src.indexOf('async function claimProjectWindow'));
+  assert.match(fn, /did not answer[\s\S]{0,200}takeOverOwner\(\{ stateRoot: STATE_ROOT, self \}\)/);
+});
+
 test('the owner answers a launch only once its window is ready, focuses it, and selects the lane the launch named', () => {
   const fn = src.slice(src.indexOf('async function onLaunchFocus'));
   assert.ok(fn.indexOf('await windowReady.promise') > 0);

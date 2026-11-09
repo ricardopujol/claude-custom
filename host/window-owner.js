@@ -126,6 +126,18 @@ async function claim({ stateRoot, self, startTimes, now = Date.now, link, hooks 
   return { action: 'proceed', reason: 'contended', file, published: false };
 }
 
+/**
+ * The owner on file was proven live but could not be reached (it is mid-shutdown, or a build from before the pipe): this launch
+ * opens its window anyway, and the file must then name THAT window, or a later launch would be handed to a window on its way out.
+ * true when the file now names this process.
+ */
+function takeOver({ stateRoot, self, now = Date.now, link } = {}) {
+  if (lookDirState(stateRoot, fs) === 'foreign') return false;
+  if (typeof self.start !== 'string' || !self.start) return false;
+  const file = path.join(lookDir(stateRoot), OWNER_FILE);
+  try { return publish(file, { pid: self.pid, start: self.start, at: now() }, { staleText: readRaw(file), link, now }) === 'ok'; } catch { return false; }
+}
+
 /** Remove the file when it still names this process (a clean exit). true when it removed one. */
 function release({ stateRoot, selfPid } = {}) {
   const file = path.join(lookDir(stateRoot), OWNER_FILE);
@@ -160,4 +172,4 @@ function forwardedCwd(cwd, project) {
   return cwd;
 }
 
-module.exports = { OWNER_FILE, parseOwner, decide, proveOwner, claim, release, pickLane, forwardedCwd };
+module.exports = { OWNER_FILE, parseOwner, decide, proveOwner, claim, takeOver, release, pickLane, forwardedCwd };

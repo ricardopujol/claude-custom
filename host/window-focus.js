@@ -5,7 +5,8 @@
  *
  * A named pipe the window's own main process listens on, `\\.\pipe\claude-custom-window-<pid>` -- the same transport the
  * hook helper already uses for a host (`claude-custom-<pid>`). The pid is the one in the owner file (host/window-owner.js), so the
- * launcher needs nothing else to find it. One JSON line in ({ cwd?, port? }), one JSON line out ({ ok, selected }), then it closes.
+ * launcher needs nothing else to find it. One JSON line in ({ cwd?, port? }), one JSON line out ({ ok }) the moment the message is understood, then it closes.
+ * The owner focuses and selects AFTER answering, once its window is ready: a launch never waits for a window to start.
  *
  * WHY NOT THE OTHER TWO (measured, verify/measure-single-instance-lock.js; reasons in the PR):
  *   - Electron's requestSingleInstanceLock is per user-data dir, not per project: a window of another project is refused too.
@@ -23,8 +24,6 @@ const path = require('path');
 const MAX_LINE = 4096;
 const MAX_CWD = 1024;
 const DEFAULT_SEND_TIMEOUT_MS = 10_000;
-// How long the owner keeps a launch waiting for its own readiness before it gives up (the window is still starting).
-const DEFAULT_ANSWER_TIMEOUT_MS = 30_000;
 
 const isPid = (n) => Number.isInteger(n) && n > 0;
 
@@ -51,9 +50,9 @@ function cleanMessage(raw) {
 
 /**
  * Listen for launches. Resolves { close() } once the pipe is up; rejects when it can't be (the name is taken): the caller then
- * publishes no owner file. `onFocus(msg)` -> Promise<{ selected }>: it may wait for the window to be ready.
+ * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, and may wait for the window to be ready.
  */
-function listen({ pid, onFocus, answerTimeoutMs = DEFAULT_ANSWER_TIMEOUT_MS, log = () => {} } = {}) {
+function listen({ pid, onFocus, log = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const sockets = new Set();
     const server = net.createServer((sock) => {
@@ -77,11 +76,10 @@ function listen({ pid, onFocus, answerTimeoutMs = DEFAULT_ANSWER_TIMEOUT_MS, log
         let msg = null;
         try { msg = cleanMessage(JSON.parse(buf.slice(0, i))); } catch { msg = null; }
         if (!msg) return reply({ ok: false, error: 'not a focus request' });
-        let timer = setTimeout(() => reply({ ok: false, error: 'window not ready' }), answerTimeoutMs);
-        if (timer.unref) timer.unref();
-        Promise.resolve().then(() => onFocus(msg)).then(
-          (r) => { clearTimeout(timer); reply({ ok: true, selected: r && r.selected !== undefined ? r.selected : null }); },
-          (err) => { clearTimeout(timer); log(`[window-focus] onFocus failed: ${err && err.message}`); reply({ ok: false, error: 'focus failed' }); });
+        // ACCEPT, THEN ACT. The launch is answered the moment the message is understood; it never waits for this window to finish starting
+        // (a window that takes longer than the launch's wait would make the launch open a second one).
+        reply({ ok: true });
+        Promise.resolve().then(() => onFocus(msg)).catch((err) => log(`[window-focus] onFocus failed: ${err && err.message}`));
       });
     });
     server.once('error', reject);
@@ -99,7 +97,7 @@ function listen({ pid, onFocus, answerTimeoutMs = DEFAULT_ANSWER_TIMEOUT_MS, log
   });
 }
 
-/** Ask the window of `pid` to focus. NEVER throws: { ok: true, selected } or { ok: false, error }. */
+/** Ask the window of `pid` to focus. NEVER throws: { ok: true } (accepted) or { ok: false, error }. */
 function send({ pid, msg = {}, timeoutMs = DEFAULT_SEND_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     if (!isPid(pid)) return resolve({ ok: false, error: `invalid pid: ${String(pid)}` });

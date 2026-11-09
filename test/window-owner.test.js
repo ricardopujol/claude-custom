@@ -242,6 +242,25 @@ test('claim: a filesystem that refuses hard links still publishes (rename, last 
   assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 20);
 });
 
+// ---- taking over an owner that was proven live but can't be reached ----------------------------------------------------------
+
+test('takeOver: replaces a live-looking file (an owner mid-shutdown, or from a build without the pipe) so the new window is the owner', () => {
+  const { takeOver, parseOwner } = load();
+  const root = project();
+  writeOwner(root, { pid: 10, start: START_A, at: 1 });
+  assert.strictEqual(takeOver({ stateRoot: root, self: { pid: 20, start: START_B }, now: () => 77 }), true);
+  assert.deepStrictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')), { pid: 20, start: START_B, at: 77 });
+});
+
+test('takeOver: with no start time for this process, or a foreign look folder, it changes nothing and says false', () => {
+  const { takeOver } = load();
+  const root = project();
+  writeOwner(root, { pid: 10, start: START_A, at: 1 });
+  const before = fs.readFileSync(ownerFileOf(root), 'utf8');
+  assert.strictEqual(takeOver({ stateRoot: root, self: { pid: 20, start: null } }), false);
+  assert.strictEqual(fs.readFileSync(ownerFileOf(root), 'utf8'), before);
+});
+
 // ---- release -----------------------------------------------------------------------------------------------------
 
 test('release: removes the file only when it still names this process', () => {
