@@ -68,6 +68,27 @@ test('open: anything else is a window of its own on that host, and nothing for n
   assert.strictEqual(a.open(null), null);
 });
 
+test('open: a background host of THIS project selects its lane here and spawns nothing', () => {
+  const { a, calls } = actions({ laneFor: (o) => (o.cwd === 'C:\\p\\feat-x' ? 'lane-x' : undefined) });
+  assert.deepStrictEqual(a.open({ kind: 'window', port: 7702, cwd: 'C:\\p\\feat-x' }), { selected: 'lane-x', here: true });
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'select' || c[0] === 'focus'), [['select', 'lane-x'], ['focus']]);
+  assert.ok(!calls.some(c => c[0] === 'spawn'), 'no attach-only window for this project');
+});
+
+test('open: a host of this project with no tab here focuses the window and still spawns nothing (a second window is what this lane removes)', () => {
+  const { a, calls } = actions({ laneFor: () => null });
+  assert.deepStrictEqual(a.open({ kind: 'window', port: 7702, cwd: 'C:\\p\\gone' }), { selected: null, here: true });
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'select'), []);
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'focus'), [['focus']]);
+  assert.ok(!calls.some(c => c[0] === 'spawn'));
+});
+
+test('open: a host of ANOTHER project keeps the attach-only spawn', () => {
+  const { a, calls } = actions({ laneFor: () => undefined });
+  assert.deepStrictEqual(a.open({ kind: 'window', port: 7801, cwd: 'C:\\other\\dev' }), { pid: 55 });
+  assert.deepStrictEqual(calls.filter(c => c[0] === 'spawn'), [['spawn', { port: 7801, cwd: 'C:\\other\\dev' }]]);
+});
+
 test('open: a spawn that throws is logged and answers null', () => {
   const { a, calls } = actions({ spawnWindow: () => { throw new Error('ENOENT'); } });
   assert.strictEqual(a.open({ kind: 'window', port: 7701, cwd: 'C:\\x' }), null);

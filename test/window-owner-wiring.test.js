@@ -49,6 +49,11 @@ test('the owner answers a launch only once its window is ready, focuses it, and 
   assert.match(ready, /await tabShell\.open\(\);\s*\n\s*windowReady\.resolve\(\)/);
 });
 
+test('the menu\'s Open hands main\'s project check to the actions: this project selects here, another project spawns', () => {
+  const block = src.slice(src.indexOf('createBackgroundActions({'));
+  assert.match(block, /laneFor:\s*\(o\)\s*=>\s*\{[\s\S]{0,300}samePath\(p\.root, PROJECT_ROOT\)\) return undefined;[\s\S]{0,120}pickLane\(tabShell\.snapshot\(\)\.tabs/);
+});
+
 test('a launch forwards its folder only when it is a lane\'s own folder, and the explicit port of an attach-only launch', () => {
   assert.match(src, /forwardedCwd\(LAUNCH_CWD, PROJECT\)/);
   assert.match(src, /Number\.isInteger\(EXPLICIT_PORT\)/);

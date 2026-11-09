@@ -58,6 +58,17 @@ function createBackgroundActions(deps) {
   function open(o) {
     if (!o) return null;
     if (o.kind === 'select-tab') { deps.select(o.key); deps.focusWindow(); return { selected: o.key }; }
+    // One window per project: a host of THIS project is shown here, never in a window of its own. laneFor answers the tab's key,
+    // null (this project, no tab for it: the window just comes forward) or undefined (another project: the attach-only spawn below).
+    if (typeof deps.laneFor === 'function') {
+      const key = deps.laneFor(o);
+      if (key !== undefined) {
+        if (key) deps.select(key);
+        deps.focusWindow();
+        deps.log(`[main] Open (background): ${key ? `selected lane ${key}` : 'no tab for it'} in this window (port ${o.port}, ${o.cwd})`);
+        return { selected: key || null, here: true };
+      }
+    }
     try {
       const r = deps.spawnWindow({ cwd: o.cwd, port: o.port });
       deps.log(`[main] Open (background): a window on port ${o.port} for ${o.cwd} (pid ${r && r.pid})`);
