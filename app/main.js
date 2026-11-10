@@ -506,9 +506,14 @@ function tabMenuTemplate(key) {
   if (isSideKey(key)) return [sideItem, { type: 'separator' }, closeSideItem];
   if (isShellKey(key)) return [shellItem, { type: 'separator' }, closeShellItem];
   const issue = tabShell.issueOf(key);
+  // #167: Pin / Unpin, for a lane's tab only (the shell says: not develop, which is always started at launch).
+  const pinState = tabShell.pinMenu(key);
+  const done = (r) => { if (r && r.ok === false) console.log(`[menu] pin: ${r.error}`); };
+  const pinItem = { label: pinState.label, click: () => done(pinState.pinned ? tabShell.unpin(pinState.target) : tabShell.pin(pinState.target)) };
   return [
     markSubmenu(tabShell.branchOf(key)),
     { type: 'separator' },
+    ...(pinState.show ? [pinItem] : []),
     // #119 A6: a lane started from a GitHub issue keeps its link.
     ...(issue ? [{ label: `Open issue #${issue.number}${issue.title ? ` ${menuText(issue.title).slice(0, 60)}` : ''}`, click: () => openIssue(key).catch(logShellError('open issue')) }] : []),
     sideItem,
@@ -2007,7 +2012,7 @@ function startProbeDriver(port) {
         stripLayout = JSON.parse(await win.webContents.executeJavaScript(
           "JSON.stringify((() => { const r = (e) => { const b = e.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) }; }; const tabs = document.getElementById('tabs'); const lanes = document.getElementById('lanes');"
           + " return { stripWidth: Math.round(document.getElementById('strip').getBoundingClientRect().width), tabs: r(tabs), tabsScroll: tabs.scrollWidth, tabsScrollLeft: tabs.scrollLeft, beside: [...document.getElementById('strip').children].filter(c => c !== tabs && c.getBoundingClientRect().width > 0).map(c => [c.id || c.className, Math.round(c.getBoundingClientRect().width)]), lanes: { ...r(lanes), text: lanes.textContent, hidden: lanes.hidden, overflow: lanes.classList.contains('overflow'), title: lanes.title },"
-          + " items: [...tabs.querySelectorAll('.tab')].map(t => ({ key: t.dataset.key, label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), leaving: t.classList.contains('leaving'), draggable: t.draggable, dev: t.classList.contains('dev'), occupied: t.classList.contains('occupied'), ...r(t) })) }; })())"));
+          + " items: [...tabs.querySelectorAll('.tab')].map(t => ({ key: t.dataset.key, label: (t.querySelector('.label') || {}).textContent, selected: t.classList.contains('selected'), leaving: t.classList.contains('leaving'), draggable: t.draggable, dev: t.classList.contains('dev'), occupied: t.classList.contains('occupied'), pin: t.querySelector('.pin') ? { title: t.querySelector('.pin').title, width: Math.round(t.querySelector('.pin').getBoundingClientRect().width), height: Math.round(t.querySelector('.pin').getBoundingClientRect().height), beforeDot: (() => { const p = t.querySelector('.pin'); const d = t.querySelector('.dot'); return !d || p.getBoundingClientRect().left < d.getBoundingClientRect().left; })(), svg: !!t.querySelector('.pin svg path') } : null, ...r(t) })) }; })())"));
       } catch (err) { stripLayout = { error: err.message }; }
       const snap = tabShell.snapshot();
       return {

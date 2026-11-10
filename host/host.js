@@ -20,7 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const pty = require('node-pty');
 const { WebSocketServer } = require('ws');
-const { writeHarnessSettings, buildClaudeArgs, findUserStatusLine, findUserTheme } = require('./settings-writer');
+const { writeHarnessSettings, buildClaudeArgs, argsForSpawn, findUserStatusLine, findUserTheme } = require('./settings-writer');
 const { claudeConfigDir, setConfigAnchor } = require('./claude-config-dir');
 const { createHookBridge } = require('./hook-bridge');
 const { createTerminalState } = require('./terminal-state');
@@ -173,6 +173,8 @@ const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
+const { recordMainSession, resumeIdFor } = require('./main-session');
+const { createResumeWatch, WITHIN_MS: RESUME_RETRY_MS } = require('./resume-retry');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -766,6 +768,24 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
 const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 // Rebuilt once, at boot, with the claude-custom mod when its switch, the CLI's version and its directory allow it (prepareMod below).
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
+// The mod's directory ARGS was last rebuilt with (prepareMod), so a spawn-time rebuild keeps the plugin.
+let ARGS_MOD_DIR = null;
+// The main session's id, per folder (host/main-session.js): the next main session resumes ITS OWN conversation with it.
+const MAIN_SESSIONS_FILE = path.join(HARNESS_DIR, 'state', 'main-sessions.json');
+/**
+ * What claude is started with RIGHT NOW (BACKLOG #166; PR #250 Dexter 1): ARGS for a side session and a shell host; for a lane's main
+ * session `--resume <its recorded session id>` when the CLI's own store still has that transcript, else a FRESH session. Never
+ * `--continue` (the folder's newest conversation, which may be a side session's). Asked at each spawn (a session started after the
+ * kill switch, a lock or a click on an ended tab resumes too). The interactive CLI resuming nothing exits 1 (host/continue-flag.js).
+ */
+let RESUME_REFUSED = false;      // the CLI refused a --resume once (host/resume-retry.js): the retry starts fresh
+let LAST_SPAWN_RESUMED = false;  // the arguments of the last claudeArgs() carried --resume
+function claudeArgs() {
+  const resumeId = SIDE || SHELL || RESUME_REFUSED ? null : resumeIdFor({ file: MAIN_SESSIONS_FILE, cwd: CWD, store: { log: (l) => console.log(l) } });
+  const args = argsForSpawn({ side: SIDE, shell: SHELL, args: ARGS, options: ARGS_OPTIONS, modDir: ARGS_MOD_DIR, resumeId });
+  LAST_SPAWN_RESUMED = args.includes('--resume');
+  return args;
+}
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
 // What every writeIdentity call says about this host's role (host/shell-tab.js identityFields): one place, so a fourth call can't forget it.
@@ -1638,6 +1658,8 @@ if (helperExists) {
     if (ev.event === 'SessionStart' && ev.payload && ev.payload.session_id) {
       sessionId = ev.payload.session_id;
       console.log('[host] session id     :', sessionId);
+      // a main host keeps its own id, so its next session resumes it (a side host and a shell host never do: they start fresh)
+      if (!SIDE && !SHELL) recordMainSession({ file: MAIN_SESSIONS_FILE, cwd: CWD, sessionId });
       if (SIDE) republishIdentity();     // the identity names it, for the producers that read transcripts
       canvasControl.sessionChanged(sessionId);
       // the roster cards match an agent's worktree claim on it (backlog #57): a /clear starts a new one
@@ -1980,7 +2002,7 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : claudeArgs(), {
     name: 'xterm-256color',
     cols,
     rows,
@@ -2030,7 +2052,21 @@ function startSession() {
   // And the identity names it, so a stop (▾, `--stop`) waits for this claude
   // too, lock or no lock (Dexter, PR #83 F1).
   republishIdentity();
-  wireTerm(term);
+  // PR #250 safety net: a --resume the CLI refuses (measured: "No conversation found", exit 1, at once) must not kill the tab at every
+  // launch. The host starts it ONCE more, fresh, and says why (host/resume-retry.js).
+  const retryFresh = () => {
+    console.log(`[host] the CLI refused --resume (exit 1 within ${RESUME_RETRY_MS / 1000} s, "No conversation found"): starting this session fresh, once`);
+    RESUME_REFUSED = true;
+    term = spawnTimed();
+    trackExit(term);
+    jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), spawnWindow })
+      .catch((err) => console.log('[job-guard] attach failed:', err && err.message));
+    console.log('[host] pty pid       :', term.pid);
+    if (lockState.state === 'held') updateSessionLock(SESSION_LOCK, lockOwner, { claudePid: term.pid });
+    republishIdentity();
+    wireTerm(term);
+  };
+  wireTerm(term, !SHELL && LAST_SPAWN_RESUMED ? createResumeWatch() : null, retryFresh);
 }
 
 // --- attach surface ---------------------------------------------------------
@@ -2234,8 +2270,9 @@ function sayInTab(text) {
 }
 
 // The pty's two event handlers, attached when startSession() spawns it.
-function wireTerm(t) {
+function wireTerm(t, watch = null, retryFresh = null) {
   t.onData((data) => {
+    if (watch) watch.feed(data);
     termState.write(data, programStatusHost.deliver());
     const frame = Buffer.from(data, 'utf8');
     for (const ws of clients) {
@@ -2245,6 +2282,9 @@ function wireTerm(t) {
 
   t.onExit(({ exitCode, signal }) => {
     console.log(`[host] claude exited code=${exitCode} signal=${signal}`);
+    if (watch && retryFresh && watch.shouldRetry({ exitCode })) {
+      try { retryFresh(); return; } catch (err) { console.log('[host] the fresh retry could not start:', err && err.message); }
+    }
     endHost(exitCode, signal);
   });
 }
@@ -3445,7 +3485,9 @@ async function prepareMod() {
       return;
     }
     modPort = await modServer.listen();
-    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir: modPluginDirFor({ enabled, version, dir: MOD_DIR, forced }) });
+    const modDir = modPluginDirFor({ enabled, version, dir: MOD_DIR, forced });
+    ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir });
+    ARGS_MOD_DIR = modDir;
     console.log('[host] claude-custom mod: on, posts to 127.0.0.1:' + modPort + ' (CLI', version ? version.join('.') : 'stand-in', ')');
     setModStatus({ state: 'on', reason: null });
   } catch (err) {

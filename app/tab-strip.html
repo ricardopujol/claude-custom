@@ -16,6 +16,8 @@
       --warn: #e6c34a;
       /* Backlog #52: a session in a /bedtime night. A still, deep blue: movement on the strip means "needs you". */
       --night: #1a2350; --night-edge: #7f93e0;
+      /* #167: the pin glyph's tint: the text colour leaning to the accent, so it follows a light or dark theme (Claude's call, shown at the live look). */
+      --pin: color-mix(in srgb, var(--text) 62%, var(--accent));
     }
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
       font: 12px/1.3 var(--font-ui, "Segoe UI", system-ui, sans-serif); overflow: hidden; user-select: none; }
@@ -96,6 +98,9 @@
     .dot.needs.error { background: var(--bad); }
     .dot.done { background: var(--ok); }
     .dot.error { background: var(--bad); }
+    /* #167: a pinned lane's pin, before the status dot (P4 "A"). 11 px, tinted by --pin; still, like the dots' resting colours. */
+    .pin { width: 11px; height: 11px; flex: 0 0 auto; display: inline-flex; color: var(--pin); }
+    .pin svg { width: 11px; height: 11px; display: block; }
     .glyph { font-size: 11px; }
     .mark { font-size: 12px; line-height: 1; flex: 0 0 auto; }
     .health { font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }

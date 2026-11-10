@@ -759,3 +759,15 @@ test('pty-env.js: a shell tab\'s environment goes through shellEnv and gets no p
   assert.match(shellBranch, /shellEnv\(\{ \.\.\.base \}\)/);
   assert.doesNotMatch(shellBranch, /providerEnv|modEnv|CLAUDE_CUSTOM_SESSION/);
 });
+
+// --- PR #250 (Miguel S2): moved here from tab-shell-pins.test.js, which is in the mutation command and so can't read a mutated module as text ---
+test('Miguel S2: one "pinnable" rule serves pin and pinMenu, and the menu click reports a refusal instead of dropping it', () => {
+  const fs = require('fs');
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.strictEqual((shell.match(/const pinnable = /g) || []).length, 1);
+  assert.ok((shell.match(/pinnable\(key\)/g) || []).length >= 2, 'used by setPinned and pinMenu');
+  assert.strictEqual((shell.match(/model\(\)\.some\(e => e\.key === key && !isCompanionEntry\(e\) && !e\.isDev\)/g) || []).length, 1, 'the predicate is written once');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
+  assert.match(menu, /const done = \(r\) => \{ if \(r && r\.ok === false\) console\.log\(`\[menu\] pin: \$\{r\.error\}`\); \};/);
+});
