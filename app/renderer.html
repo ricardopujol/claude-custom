@@ -709,6 +709,21 @@
       letter-spacing: .03em; white-space: nowrap;
     }
 
+    /* A draft the drop's grant cleared and could not put back (PR #246 R2-2): stays until dismissed, selectable, wrapped, with Copy. */
+    .draft-notice {
+      position: fixed; right: 18px; bottom: 22px; z-index: 41;
+      width: min(560px, calc(100vw - 36px)); max-height: 60vh;
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 12px 14px; border-radius: 9px;
+      background: color-mix(in srgb, var(--chrome) 96%, transparent);
+      border: 1px solid var(--accent);
+      box-shadow: 0 6px 24px rgba(0,0,0,.45);
+      user-select: text; -webkit-user-select: text;
+    }
+    .draft-notice .dn-head { font-size: 12px; font-weight: 600; color: var(--accent); }
+    .draft-notice .dn-body { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; overflow-y: auto; user-select: text; -webkit-user-select: text; }
+    .draft-notice .dn-row { display: flex; gap: 8px; justify-content: flex-end; }
+
     header {
       display: flex; align-items: center; gap: 8px;
       /* No wrapping. The header is a single row of status; letting it wrap

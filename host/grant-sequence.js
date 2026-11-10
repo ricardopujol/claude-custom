@@ -90,18 +90,35 @@ function ruleWidth(lines) {
 // row's first word would still have fitted on this one, in which case only a real line break explains it: '\n'. Unknown width: a space,
 // never a guess. MEASURED on the real CLI (verify/probe-paste-doc.js draft-rows, claude 2.1.319, 134 columns): a token wider than the box
 // fills its row to 132 columns, the width minus RIGHT_MARGIN_COLS; word-wrapped rows came out at 131 and 127; real line breaks read back
-// as short rows. (A word-wrapped row of exactly the usable width reads as a mid-word wrap: the one ambiguity left, and it joins the two
-// words with no space.)
+// as short rows. A word-wrapped row CAN end exactly at the usable width too, and nothing in the rows tells it from a mid-word fill: MEASURED
+// (draft-rows `exact-limit-word-wrap`, same CLI): 'hello ' x21 + 'aaaa there' came back as rows of 132 and 7 columns, the second being
+// `  there` with no extra blank, so the swallowed space leaves no trace (the wrap trims; PR #246 Dexter R2-1 guessed otherwise). What does
+// tell them apart is the word itself: the CLI breaks inside a word only when the whole word is wider than a row's content (a word that
+// would fit moves to the next row whole, which is why word-wrapped rows end short). So a full row continues with no space only when
+// the word it cuts (its last token plus the next row's first) is wider than that; otherwise it is a wrap at a space. Prose is the common case.
 const RIGHT_MARGIN_COLS = 2;
+// Columns a string takes on screen (the CLI wraps by these, not by `.length`): emoji and East Asian wide characters take two, combining
+// marks, joiners and variation selectors none. Not a full wcwidth table: the ranges that show up in a prompt.
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦⌚⌛⏩-⏬⏰⏳◽◾☔☕♈-♓♿⚓⚡⚪⚫⚽⚾⛄⛅⛎⛔⛪⛲⛳⛵⛺⛽✅✊✋✨❌❎❓-❕❗➕-➗➰➿⬛⬜⭐⭕]|[\u{1F300}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F900}-\u{1F9FF}\u{20000}-\u{3FFFD}]/u;
+const ZERO = /[̀-ͯ​-‍︀-️]/u;
+function cellWidth(s) {
+  let n = 0;
+  for (const ch of s) n += ZERO.test(ch) ? 0 : (WIDE.test(ch) ? 2 : 1);
+  return n;
+}
 function joinRows(rows, width) {
   let out = rows[0] || '';
   const limit = width - RIGHT_MARGIN_COLS;
   for (let i = 1; i < rows.length; i++) {
-    const cols = PREFIX_COLS + rows[i - 1].length;
+    const prev = rows[i - 1];
+    const cols = PREFIX_COLS + cellWidth(prev);
+    const head = rows[i].split(' ')[0];
     let sep = ' ';
     if (width > 0) {
-      if (cols >= limit) sep = '';
-      else if (cols + 1 + rows[i].split(' ')[0].length <= limit) sep = '\n';
+      if (cols >= limit) {
+        const cut = cellWidth(prev.slice(prev.lastIndexOf(' ') + 1)) + cellWidth(head);
+        if (cut > limit - PREFIX_COLS) sep = '';
+      } else if (cols + 1 + cellWidth(head) <= limit) sep = '\n';
     }
     out += sep + rows[i];
   }
@@ -142,7 +159,8 @@ async function clearBox(env) {
 // One grant. { ok: true } once the Enter was sent; { ok: false, reason } with nothing sent that could submit or confirm anything.
 async function grantOne(dir, env) {
   const command = '/add-dir ' + quote(dir);
-  if (!idleBox((await readScreen(env)))) return { ok: false, reason: 'the prompt is not showing (a dialog, a menu or a permission prompt has the keyboard)' };
+  // `untouched`: refused before any key was written, so a draft read a moment ago is still whole in the box (runDrop forgets that read).
+  if (!idleBox((await readScreen(env)))) return { ok: false, untouched: true, reason: 'the prompt is not showing (a dialog, a menu or a permission prompt has the keyboard)' };
   if (!(await clearBox(env))) return { ok: false, reason: 'the draft could not be cleared, so nothing was typed' };
   env.write(command);
   // The screen can lag the pty (a loaded machine, the slash-command list redrawing): give the read-back a few polls to catch up
@@ -204,6 +222,34 @@ async function typeOut(env, out) {
   }
 }
 
+const LATE_WAIT_MS = 30 * 60 * 1000;   // how long a draft waits for an unanswered Add-directory dialog before it is handed back as a notice
+const LATE_POLL_MS = 1000;
+
+// A draft the grant cleared, while its dialog is still open past DIALOG_WAIT_MS: wait for the prompt to come back, then type the draft
+// into the box (after whatever the person typed there meanwhile, never over it). It never throws; a draft that can't go back is handed
+// back (handBack: the notice that stays). Resolves { restored: boolean }.
+async function lateRetype(env, draft, handBack) {
+  try {
+    for (let t = 0; t < LATE_WAIT_MS; t += LATE_POLL_MS) {
+      await env.sleep(LATE_POLL_MS);
+      if (!idleBox(await readScreen(env))) continue;
+      const done = await env.exclusive(async () => {
+        const now = await readScreen(env);
+        if (!idleBox(now)) return false;
+        const empty = boxEmpty(now, env.termRows());
+        env.log('[host] drop: the dialog was answered late; the draft is typed back (' + draft.length + ' characters)' + (empty ? '' : ' after what the box held by then'));
+        await typeOut(env, empty ? draft : ' ' + draft);
+        return true;
+      });
+      if (done) return { restored: true };
+    }
+    handBack('the Add-directory dialog was still open after ' + Math.round(LATE_WAIT_MS / 60000) + ' minutes');
+  } catch (err) {
+    handBack('typing it back failed: ' + (err && err.message));
+  }
+  return { restored: false };
+}
+
 /**
  * One drop, start to end. Grants run one at a time, each with its own read-back; the next waits for the previous one's dialog to be
  * answered. `onGranted(dir)` runs only after that grant's Enter went out, `onFailed(dir, reason)` for every folder that was not
@@ -239,7 +285,12 @@ async function runDrop({ dirs = [], text = '', env, onGranted = () => {}, onFail
       for (const d of dirs.slice(i)) { env.log(`[host] grant of ${d} not requested: ${r.reason}`); onFailed(d, r.reason); }
       break;
     }
-    if (!r.ok) { env.log(`[host] grant of ${dir} not requested: ${r.reason}`); onFailed(dir, r.reason); continue; }
+    if (!r.ok) {
+      // A prompt drawn between the draft's read and the grant's first look: nothing was cleared, the draft is still in the box. Forget the
+      // read (the next grant, or nothing, reads it again): keeping it would raise a false notice or type it a second time at the end.
+      if (r.untouched) { draft = ''; draftRead = false; }
+      env.log(`[host] grant of ${dir} not requested: ${r.reason}`); onFailed(dir, r.reason); continue;
+    }
     onGranted(dir);
     if (i < dirs.length - 1 || text || draft) {
       // First see the dialog DRAWN, then wait for it to go: right after the Enter the screen can still read as an idle prompt
@@ -249,7 +300,9 @@ async function runDrop({ dirs = [], text = '', env, onGranted = () => {}, onFail
         const why = 'the Add-directory dialog was still open, so the rest of the drop was left alone';
         for (const rest of dirs.slice(i + 1)) { env.log(`[host] grant of ${rest} not requested: ${why}`); onFailed(rest, why); }
         env.log('[host] drop text not typed: ' + why);
-        handBack(why);
+        // The person is away (that is why it timed out): the draft waits for the dialog to be answered and is typed back then. Only when that
+        // cannot happen does it come back as a notice that stays (PR #246 Dexter R2-2). Not awaited: the next drop must not queue behind it.
+        if (draft) return { late: lateRetype(env, draft, handBack) };
         return;
       }
     }
@@ -294,6 +347,6 @@ function createInputGate({ write }) {
 }
 
 module.exports = {
-  runDrop, grantOne, clearBox, waitIdle, idleBox, boxEmpty, draftOf, joinRows, createInputGate, scrollCapRows,
+  runDrop, grantOne, clearBox, waitIdle, idleBox, boxEmpty, draftOf, joinRows, createInputGate, scrollCapRows, LATE_WAIT_MS,
   CTRL_E, CTRL_U, MAX_CLEAR_PASSES, KEY_GAP_MS, DIALOG_WAIT_MS,
 };

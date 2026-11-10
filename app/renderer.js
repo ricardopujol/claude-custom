@@ -10259,8 +10259,47 @@ document.addEventListener('paste', (e) => {
 
 // What the drop did, said out loud. A gesture that silently widens what the
 // session may read is exactly the thing that should not be silent.
+// A draft the grant cleared and that could not be typed back (PR #246 D1, Dexter R2-2). NOT the flourish: that one fades after 4 s, takes no
+// pointer events (nothing to select or copy) and cuts a long line off, and this notice is raised when the person was away. It stays until
+// dismissed, shows the whole text wrapped and selectable, and has a Copy button. One at a time: a second draft replaces the first one's text
+// below it, so nothing is lost silently (the first stays in host.log).
+let draftNoticeEl = null;
+function showDraftNotice(left) {
+  if (!left || typeof left.text !== 'string') return;
+  if (draftNoticeEl) { draftNoticeEl.remove(); draftNoticeEl = null; }
+  const el = document.createElement('div');
+  el.className = 'draft-notice';
+  el.setAttribute('role', 'alert');
+  const head = document.createElement('div');
+  head.className = 'dn-head';
+  head.textContent = '⛔ Your draft was not put back (' + (left.why || 'the prompt was not free') + '). It read:';
+  const body = document.createElement('div');
+  body.className = 'dn-body';
+  body.textContent = left.text;
+  const row = document.createElement('div');
+  row.className = 'dn-row';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.textContent = 'Copy';
+  copy.addEventListener('click', async () => {
+    try {
+      const r = window.harness && window.harness.writeClipboard ? await window.harness.writeClipboard(left.text) : null;
+      copy.textContent = r && r.ok === true ? 'Copied' : 'Copy failed';
+    } catch { copy.textContent = 'Copy failed'; }
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Dismiss';
+  close.addEventListener('click', () => { el.remove(); if (draftNoticeEl === el) draftNoticeEl = null; });
+  row.append(copy, close);
+  el.append(head, body, row);
+  document.body.appendChild(el);
+  draftNoticeEl = el;
+}
+
 function renderDropNote(note) {
   if (!note) return;
+  if (note.draftLeft && typeof note.draftLeft.text === 'string') showDraftNotice(note.draftLeft);
   const bits = [];
   if (note.requested && note.requested.length) {
     bits.push('requested read access to ' + note.requested.join(', '));
@@ -10269,13 +10308,9 @@ function renderDropNote(note) {
     bits.push(note.refused.map(r => 'refused ' + r.dir + ': ' + r.why).join(' · '));
   }
   if (note.truncated) bits.push(note.truncated + ' more file(s) not added');
-  // PR #246 D1: a draft the grant cleared and could not type back (its dialog never answered, the prompt gone): said with its text
-  if (note.draftLeft && typeof note.draftLeft.text === 'string') {
-    bits.push('your draft was not put back (' + (note.draftLeft.why || 'the prompt was not free') + '). It read: ' + note.draftLeft.text);
-  }
   if (!bits.length) return;
   if (note.unusable) bits.push(note.unusable + ' file(s) skipped: unsafe name');
-  const denied = !!((note.refused && note.refused.length) || note.draftLeft);
+  const denied = !!(note.refused && note.refused.length);
   flourish({ icon: denied ? '⛔' : '📁', name: bits.join(' · ') });
 }
 

@@ -247,12 +247,20 @@ app.on('ready', async () => {
       const { draftOf } = require(path.join(REPO, 'host', 'grant-sequence'));
       const cols = await js('term.cols');
       const termRows = await js('term.rows');
+      // words whose last one ends at content column cols - 4 (the box row is `❯ ` + this = cols - 2 columns)
+      const exactLimitWords = (c) => { const n = Math.floor((c - 4 - 4) / 6); return 'hello '.repeat(n) + 'a'.repeat(c - 4 - 6 * n); };
       const words = Array.from({ length: 40 }, (_, i) => `w${i}x`.repeat(1 + (i % 3))).join(' ');
       const token = 'T' + 'abcdefghij'.repeat(Math.ceil((cols * 1.6) / 10));
       const cases = [
         ['soft-wrap-words', [words], words],
         ['token-wider-than-box', ['see ' + token], 'see ' + token],
-        ['hard-breaks', ['first line here', '\x1b\r', 'second line', '\x1b\r', 'third'], 'first line here\nsecond line\nthird'],
+        // PR #246 Dexter R2-1: a word that ends EXACTLY at the usable width (cols - 2, prefix included), then a word that does not fit; and a
+        // token that fills the same row mid-word. Do the two next rows differ (a leading blank for the swallowed space)?
+        ['exact-limit-word-wrap', [exactLimitWords(cols) + ' there'], exactLimitWords(cols) + ' there'],
+        ['exact-limit-mid-word', ['z'.repeat(cols - 4 + 20)], 'z'.repeat(cols - 4 + 20)],
+        // joinRows' rule rests on this: a word wider than what is left but narrower than a whole row moves to the next row whole
+        ['word-moves-to-next-row', ['hello '.repeat(10) + 'y'.repeat(cols - 4 - 14) + ' end', ], 'hello '.repeat(10) + 'y'.repeat(cols - 4 - 14) + ' end'],
+        ['hard-breaks',['first line here', '\x1b\r', 'second line', '\x1b\r', 'third'], 'first line here\nsecond line\nthird'],
       ];
       for (const [name, parts, typed] of cases) {
         win.focus(); win.webContents.focus(); await js(`term.focus(); true`);

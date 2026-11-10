@@ -429,6 +429,26 @@ test('D2: a row that ends exactly at the width continues without a space (the on
   assert.strictEqual(joinRows(['a'.repeat(55), 'bcdefg'], 60), 'a'.repeat(55) + ' bcdefg', 'one column short: a wrap at a space');
 });
 
+test('R2-1: a word-wrapped row that ends EXACTLY at the usable width keeps its space (Dexter counterexamples), the mid-word one beside it does not', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  // Dexter's, at the test file's 60 columns (limit 58): 'ab' ends at column 58, ' there' does not fit
+  assert.strictEqual(joinRows(['hello '.repeat(9) + 'ab', 'there'], 60), 'hello '.repeat(9) + 'ab there');
+  // ... and at the measured 134 (limit 132)
+  assert.strictEqual(joinRows(['hello '.repeat(21) + 'abcd', 'there'], 134), 'hello '.repeat(21) + 'abcd there');
+  // the mid-word case beside it: one token wider than a row's content, so the cut is inside it
+  assert.strictEqual(joinRows(['a'.repeat(56), 'bcd'], 60), 'a'.repeat(56) + 'bcd');
+  assert.strictEqual(joinRows(['see ' + 'a'.repeat(52), 'a'.repeat(30)], 60), 'see ' + 'a'.repeat(82), 'a token that starts mid-row and fills it');
+  assert.strictEqual(joinRows(['a'.repeat(56), 'a'.repeat(56), 'bc'], 60), 'a'.repeat(112) + 'bc', 'a middle row that is all token');
+});
+
+test('R2-1: joinRows counts display columns, not characters (a wide emoji is two)', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  const row = '✅'.repeat(27) + 'aa';   // 29 characters, 56 columns: a full row at 60
+  assert.strictEqual(joinRows([row, 'a'.repeat(38)], 60), row + 'a'.repeat(38), 'a full row of wide characters is mid-word');
+  const words = '✅ '.repeat(18) + 'ab';  // 38 characters, 56 columns: a word wrap that ends at the limit
+  assert.strictEqual(joinRows([words, 'there'], 60), words + ' there');
+});
+
 test('D2: a row that ends in a space joins with the one space the wrap swallowed, not two', () => {
   const { draftOf } = require('../host/grant-sequence');
   const rows = ['❯ ' + 'word '.repeat(11) + '   ', '  ' + 'tail words here that go on and on'];   // 2 + 54 + trailing blanks (trimmed by the screen read)
@@ -446,11 +466,86 @@ test('D4: a break after a short row is a real line break (the next word would ha
 test('D1: an Add-directory dialog never answered: the draft is handed back in a notice with its text, and logged in full', async () => {
   const cli = fakeCli({ draft: [{ t: 'my important draft' }] });
   const left = []; const logs = [];
-  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: envFor(cli, { log: l => logs.push(l) }), onDraftLeft: (t, why) => left.push([t, why]) });
+  const r = await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: envFor(cli, { log: l => logs.push(l) }), onDraftLeft: (t, why) => left.push([t, why]) });
+  await r.late;   // the wait for the dialog runs out (the injected sleep is instant)
   assert.strictEqual(left.length, 1);
   assert.strictEqual(left[0][0], 'my important draft');
   assert.match(left[0][1], /dialog/);
   assert.ok(logs.some(l => l.includes('my important draft')), 'the host.log line carries the text, not just its length');
+});
+
+test('R2-2: the person is away past the timeout and answers the dialog LATER: the draft is typed back into the empty box, no notice', async () => {
+  const cli = fakeCli({ draft: [{ t: 'fix the bug in' }] });
+  const left = []; const logs = [];
+  let sleeps = 0;
+  const env = envFor(cli, { log: l => logs.push(l), sleep: async () => { if (cli.dialog && ++sleeps === 1000) cli.dialog = null; } });   // 480 polls = the 120 s timeout; 1000 is well after it
+  const r = await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env, onDraftLeft: (t) => left.push(t) });
+  assert.ok(cli.dialog, 'at the timeout the dialog is still open');
+  assert.strictEqual(boxNow(cli), '', 'nothing typed into the dialog');
+  const out = await r.late;
+  assert.deepStrictEqual(out, { restored: true });
+  assert.strictEqual(boxNow(cli), 'fix the bug in');
+  assert.deepStrictEqual(left, [], 'it went back, so no notice');
+  assert.ok(logs.some(l => /answered late/.test(l)));
+});
+
+test('R2-2: the late retype never blocks the drop queue: runDrop resolves while the dialog is still open', async () => {
+  const cli = fakeCli({ draft: [{ t: 'a draft' }] });
+  const r = await runDrop({ dirs: ['C:\\a'], text: '', env: envFor(cli), onDraftLeft: () => {} });
+  assert.ok(r && typeof r.late.then === 'function');
+  await r.late;
+});
+
+test('R2-2: the person typed into the emptied box before answering late: the draft goes after it, nothing is lost', async () => {
+  const cli = fakeCli({ draft: [{ t: 'my draft' }] });
+  let sleeps = 0;
+  const env = envFor(cli, { sleep: async () => { if (cli.dialog && ++sleeps === 1000) { cli.dialog = null; cli.draft = [{ t: 'typed meanwhile' }]; } } });
+  const left = [];
+  const r = await runDrop({ dirs: ['C:\\a'], text: '', env, onDraftLeft: (t) => left.push(t) });
+  await r.late;
+  assert.strictEqual(boxNow(cli), 'typed meanwhile my draft');
+  assert.deepStrictEqual(left, []);
+});
+
+test('R2-2: the dialog is never answered (30 minutes): the draft is handed back for the notice that stays, with its text, exactly once', async () => {
+  const { LATE_WAIT_MS } = require('../host/grant-sequence');
+  assert.ok(LATE_WAIT_MS >= 10 * 60 * 1000, 'a person who is away for longer than the old 4 s toast is still covered');
+  const cli = fakeCli({ draft: [{ t: 'keep me' }] });
+  const left = [];
+  const r = await runDrop({ dirs: ['C:\\a'], text: '', env: envFor(cli), onDraftLeft: (t, why) => left.push([t, why]) });
+  assert.deepStrictEqual(await r.late, { restored: false });
+  assert.deepStrictEqual(left.map(l => l[0]), ['keep me']);
+  assert.match(left[0][1], /minutes/);
+});
+
+test('R2 Medium: a prompt drawn between the draft read and the grant refuses with nothing cleared: no false notice, no doubled draft', async () => {
+  const cli = fakeCli({ draft: [{ t: 'still here' }] });
+  let reads = 0;
+  const base = envFor(cli);
+  const env = { ...base, lines: () => { reads += 1; return reads === 2 ? ['● out', RULE, 'Do you want to proceed?', '  ❯ 1. Yes', '    2. No', RULE, '  footer'] : cli.lines(); } };
+  const left = []; const failed = [];
+  await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env, onDraftLeft: t => left.push(t), onFailed: d => failed.push(d) });
+  assert.deepStrictEqual(failed, ['C:\\a']);
+  assert.deepStrictEqual(left, [], 'the draft never left the box, so nothing to hand back');
+  assert.strictEqual(boxNow(cli), 'still here C:\\a\\x.md ', 'typed once, the path after it');
+});
+
+test('R2-2: the notice for a draft left behind stays until dismissed, is selectable, wraps, and has a Copy button (never the 4 s flourish)', () => {
+  const fs = require('fs'); const path = require('path');
+  const page = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.html'), 'utf8');
+  const fn = page.slice(page.indexOf('function showDraftNotice'), page.indexOf('function renderDropNote'));
+  assert.ok(fn.length > 50, 'showDraftNotice exists');
+  assert.doesNotMatch(fn, /setTimeout/, 'no timer removes it');
+  assert.match(fn, /textContent/, 'the draft goes in as text, never as markup');
+  assert.match(fn, /writeClipboard/, 'the Copy button copies through the clipboard bridge');
+  const drop = page.slice(page.indexOf('function renderDropNote'), page.indexOf('// --- key handling'));
+  assert.match(drop, /showDraftNotice\(note\.draftLeft\)/);
+  assert.doesNotMatch(drop, /It read: /, 'the draft text is no longer a flourish line');
+  const css = html.slice(html.indexOf('.draft-notice {'));
+  assert.match(css.slice(0, 900), /user-select:\s*text/);
+  assert.match(css.slice(0, 900), /pre-wrap/);
+  assert.doesNotMatch(css.slice(0, 900), /pointer-events:\s*none/);
 });
 
 test('D1: the prompt not showing when the draft is to be typed back: handed back, nothing typed into the wrong place', async () => {
@@ -494,7 +589,7 @@ test('D1 wiring: the host broadcasts a draft that was not put back, and the page
   const page = fs.readFileSync(path.join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
   assert.match(host, /onDraftLeft:\s*\(draftText, why\) => tell\(\{ draftLeft: \{ text: draftText, why \} \}\)/);
   assert.match(page, /note\.draftLeft\.text/);
-  assert.match(page, /your draft was not put back/);
+  assert.match(page, /Your draft was not put back/);
 });
 
 test('D3: a draft that cannot be read back whole reports every folder from the one it stopped at, once each', async () => {
