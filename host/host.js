@@ -154,7 +154,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
 const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
-const { nextStep: bootRetryStep, giveUpLine: bootGiveUpLine, RETRY_LINE: BOOT_RETRY_LINE } = require('./boot-retry');
+const { createBootRetry, settleVersion } = require('./boot-retry');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -199,6 +199,8 @@ function resolveClaude() {
 }
 
 const CLAUDE_BIN = resolveClaude();
+// Whether the exe was there at boot (BACKLOG #217): only then is a later "not found" an update in progress, not a claude that isn't installed.
+const CLAUDE_BIN_EXISTED = fs.existsSync(CLAUDE_BIN);
 const CWD = process.env.CLAUDE_CUSTOM_CWD || process.cwd();
 // A relative CLAUDE_CONFIG_DIR means a folder under THIS tab's cwd (where its `claude` runs), not the host process's.
 setConfigAnchor(CWD);
@@ -1955,34 +1957,20 @@ async function restartAfterRefusal() {
   }
 }
 
-// BACKLOG #217: the retry of a spawn that failed because the binary was not usable (mid-update). True when the failure is ours (a retry
-// is scheduled, or the bound ran out and the host ended with its error); false for any other error, which the caller rethrows.
-let bootFirstFailedAt = null;
-function retrySpawnLater(err) {
-  const step = bootRetryStep({ err, firstFailedAt: bootFirstFailedAt, now: Date.now() });
-  if (step.action === 'fail') return false;
-  console.error('[host] claude would not start:', err && err.message || err);
-  if (step.action === 'give-up') {
-    sayInTab(bootGiveUpLine(err));
-    // The existing ended state with its click-to-restart, the way a shell that can't start ends (FAILED_START_LINGER_MS).
-    endHost(1, null, { error: bootGiveUpLine(err) }, FAILED_START_LINGER_MS);
-    return true;
-  }
-  bootFirstFailedAt = step.firstFailedAt;
-  if (step.first) sayInTab(BOOT_RETRY_LINE);
-  setTimeout(async () => {
-    try {
-      // The version read that decides whether the mod loads was skipped or failed while the exe was whole-less; read it again now.
-      if (modPort === null && !SHELL) await prepareMod();
-      startSession();
-    } catch (e) {
-      // startSession throws only for an error that is not ours; say it and end like a failed start rather than hang on a blank tab.
-      console.error('[host] could not start the session:', e && e.message);
-      endHost(1, null, { error: bootGiveUpLine(e) }, FAILED_START_LINGER_MS);
-    }
-  }, step.delayMs);
-  return true;
-}
+// BACKLOG #217: a spawn that fails because the binary is not usable right now (claude.exe mid-update) is retried (host/boot-retry.js).
+// A monotonic clock, so a wall-clock step can't stretch or cut the bound. No timer is ever cleared: every exit path of the host is a
+// process.exit, which takes a pending retry with it, and startSession itself refuses after a stop, a kill switch or when a pty exists.
+const bootRetry = createBootRetry({
+  now: () => performance.now(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  say: sayInTab,
+  end: (reason) => endHost(1, null, { error: reason }, FAILED_START_LINGER_MS),
+  log: (line) => console.error('[host]', line),
+  prepare: prepareMod,
+  unreadable: () => modVersionUnreadable,
+  binExisted: () => CLAUDE_BIN_EXISTED,
+  startSession: () => startSession(),
+});
 
 function startSession() {
   if (term) return;
@@ -2036,12 +2024,12 @@ function startSession() {
     try {
       term = spawnTimed();
     } catch (err) {
-      if (!retrySpawnLater(err)) throw err;
+      if (!bootRetry.failed(err)) throw err;
       return;
     }
   }
-  bootFirstFailedAt = null;
-  trackExit(term);       // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
+  bootRetry.started();
+  trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   // And every process it starts joins a job the kill switch can end, parent links or not (BACKLOG #127). Never throws; a session
   // the guard could not arm is exactly the session it was before.
   jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), spawnWindow })
@@ -3465,6 +3453,7 @@ let modPort = null;
 // Why the mod is not loaded, if it is not: said once in the log and kept for the diagnostics pane (hello + `modStatus`), so a quiet feed
 // is never a mystery (PR #197 Miguel Y9). null while it is on or before it has been decided.
 let modStatus = null;
+let modVersionUnreadable = false;      // the last prepareMod found `claude --version` unreadable (the boot and the retry read it again)
 function setModStatus(status) {
   modStatus = status;
   broadcastControl({ type: 'modStatus', modStatus });
@@ -3478,6 +3467,8 @@ async function prepareMod() {
     // A stand-in binary asked for with CLAUDE_CUSTOM_MOD=1 has no version worth reading.
     const forced = !!process.env.CLAUDE_CUSTOM_BIN;
     const version = enabled && !forced ? await readCliVersion(CLAUDE_BIN) : null;
+    // Only a read that GAVE NOTHING (an exe half-written by an update) can change on a second look; an old CLI or a mod switched off can't.
+    modVersionUnreadable = enabled && !forced && !Array.isArray(version);
     const why = modOffReason({ enabled, version, dir: MOD_DIR, forced });
     if (why !== null) {
       console.log('[host] claude-custom mod: not loaded --', why);
@@ -3521,6 +3512,8 @@ const handleModRecord = createModRecordHandler({
 (async () => {
   const [processStartedAt, excluded] = await Promise.all([createSelfStartTime()(), excludedRanges(), prepareMod()]);
   excludedPorts = excluded;
+  // A version that read nothing (claude.exe mid-update) is read again before the session starts, so a spawn that then works loads the mod.
+  await settleVersion({ prepare: prepareMod, unreadable: () => modVersionUnreadable, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) });
   lockOwner = { pid: process.pid, processStartedAt, startedAt: Date.now(), port: PORT, claudePid: null, install: path.join(__dirname, '..') };
   // The identity again, now with the OS start time: the exact proof the ▾
   // list needs before it may stop this pid (Dexter, PR 2 F1). Only by the host

@@ -48,7 +48,7 @@ test('host.js: a shell that fails to spawn ENDS the host through the same exit p
   assert.match(start, /const started = startShellPty\(spawnTimed\);\s*\n\s*if \(!started\.term\) \{/);
   assert.match(start, /endHost\(started\.frame\.exitCode, started\.frame\.signal, \{ error: started\.frame\.error \}, FAILED_START_LINGER_MS\);\s*\n\s*return;/);
   // BACKLOG #217: still the plain timed spawn, now inside the try whose retryable failures host/boot-retry.js waits out.
-  assert.match(start, /\} else \{[\s\S]{0,400}try \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
+  assert.match(start, /\} else \{\s*\n(?:\s*\/\/[^\n]*\n)+\s*try \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
   const end = HOST.slice(HOST.indexOf('function endHost('));
   assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);
   assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,420}endHost\(exitCode, signal\);/);

@@ -1,5 +1,6 @@
 'use strict';
-// BACKLOG #217: host/host.js uses host/boot-retry.js on the claude spawn, and only there.
+// BACKLOG #217: host/host.js builds host/boot-retry.js's chain with its own collaborators and uses it on the claude spawn, and only there.
+// The behaviour (retry, bound, single flight, clock) is tested in boot-retry.test.js with a fake clock; this pins only the wiring.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -7,29 +8,40 @@ const path = require('node:path');
 
 const host = fs.readFileSync(path.join(__dirname, '..', 'host', 'host.js'), 'utf8');
 const startSession = host.slice(host.indexOf('function startSession()'), host.indexOf('// --- attach surface'));
-const retryFn = host.slice(host.indexOf('function retrySpawnLater'), host.indexOf('function startSession()'));
+const build = host.slice(host.indexOf('const bootRetry = createBootRetry('), host.indexOf('function startSession()'));
+const boot = host.slice(host.indexOf('const [processStartedAt, excluded]'), host.indexOf('const gate = gateFromAcquire(await acquireSessionLock'));
 
-test('the host requires the retry decision from host/boot-retry', () => {
+test('the host requires the chain from host/boot-retry and builds it from its own collaborators', () => {
   assert.match(host, /require\('\.\/boot-retry'\)/);
+  assert.match(build, /now: \(\) => performance\.now\(\)/, 'a monotonic clock, not the wall clock');
+  assert.match(build, /setTimer: \(fn, ms\) => setTimeout\(fn, ms\)/);
+  assert.match(build, /say: sayInTab/);
+  assert.match(build, /end: \(reason\) => endHost\(1, null, \{ error: reason \}, FAILED_START_LINGER_MS\)/);
+  assert.match(build, /prepare: prepareMod/);
+  assert.match(build, /unreadable: \(\) => modVersionUnreadable/);
+  assert.match(build, /binExisted: \(\) => CLAUDE_BIN_EXISTED/);
+  assert.match(build, /startSession: \(\) => startSession\(\)/);
 });
 
-test('the claude spawn (not the shell one) is wrapped: a failure goes to retrySpawnLater and is rethrown when it is not ours', () => {
-  assert.match(startSession, /try \{\s*term = spawnTimed\(\);\s*\} catch \(err\) \{\s*if \(!retrySpawnLater\(err\)\) throw err;\s*return;\s*\}/);
+test('the claude spawn (not the shell one) is wrapped: a failure goes to the chain and is rethrown when it is not ours', () => {
+  assert.match(startSession, /\} else \{\s*\n\s*\/\/ BACKLOG #217[^\n]*\n\s*\/\/[^\n]*\n\s*try \{\s*\n\s*term = spawnTimed\(\);\s*\} catch \(err\) \{\s*if \(!bootRetry\.failed\(err\)\) throw err;\s*return;\s*\}/);
   assert.match(startSession, /startShellPty\(spawnTimed\)/, 'the shell path is untouched');
 });
 
-test('a spawn that worked resets the clock, so the next outage gets its own two minutes', () => {
-  assert.match(startSession, /bootFirstFailedAt = null;\s*trackExit\(term\)/);
+test('a spawn that worked tells the chain, so the clock is freed', () => {
+  assert.match(startSession, /bootRetry\.started\(\);\s*trackExit\(term\)/);
 });
 
-test('the tab says it is retrying once, on the first failure only', () => {
-  assert.match(retryFn, /if \(step\.first\) sayInTab\(BOOT_RETRY_LINE\)/);
+test('the boot reads an unreadable version again before the session starts, so a spawn that then works still loads the mod (Dexter 1)', () => {
+  assert.match(boot, /await settleVersion\(\{ prepare: prepareMod, unreadable: \(\) => modVersionUnreadable, sleep: \(ms\) => new Promise\(\(r\) => setTimeout\(r, ms\)\) \}\);/);
 });
 
-test('the retry re-reads the CLI version (the mod) before it starts again, only while the mod is not up', () => {
-  assert.match(retryFn, /if \(modPort === null && !SHELL\) await prepareMod\(\);\s*startSession\(\);/);
+test('prepareMod says whether the version was unreadable (and only then)', () => {
+  const prep = host.slice(host.indexOf('async function prepareMod()'), host.indexOf('// One record from the mod'));
+  assert.match(prep, /modVersionUnreadable = enabled && !forced && !Array\.isArray\(version\);/);
+  assert.match(host, /let modVersionUnreadable = false;/);
 });
 
-test('past the bound the host ends with the error frame the restart state is built on', () => {
-  assert.match(retryFn, /step\.action === 'give-up'[\s\S]*endHost\(1, null, \{ error: bootGiveUpLine\(err\) \}, FAILED_START_LINGER_MS\)/);
+test('CLAUDE_BIN_EXISTED is read once, at boot, from the resolved path', () => {
+  assert.match(host, /const CLAUDE_BIN_EXISTED = fs\.existsSync\(CLAUDE_BIN\);/);
 });

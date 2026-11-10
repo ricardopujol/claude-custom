@@ -508,6 +508,14 @@ test('the pid-retry decision module is mutated, and its tests are in the run (PR
   assert.ok(conf.commandRunner.command.split(/\s+/).includes('test/stop-by-pid.test.js'), 'its test file is in the command');
 });
 
+test('the boot-retry decision and chain module is mutated, and its tests are in the run (#217, PR #252 Miguel Y1)', () => {
+  // It decides how long a tab waits for an updating claude.exe: a boundary, a regex, a clock. Not listing it is silent: no mutant, no number.
+  assert.ok(conf.mutate.includes('host/boot-retry.js'), 'host/boot-retry.js is in mutate');
+  assert.ok(conf.commandRunner.command.split(/\s+/).includes('test/boot-retry.test.js'), 'its test file is in the command');
+  // The wiring test reads host/host.js (not mutated) and requires nothing mutated: it stays out of the run.
+  assert.ok(!conf.commandRunner.command.split(/\s+/).includes('test/boot-retry-wiring.test.js'));
+});
+
 test('the pty environment builder is mutated, and its tests are in the run (#74 F2, PR #246 Miguel Y6)', () => {
   // It decides what every session the host starts inherits (PYTHON_BASIC_REPL, no provider or mod token in a shell tab). Not listing it is silent.
   for (const module of ['host/pty-env.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
