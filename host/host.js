@@ -1027,6 +1027,8 @@ function handleDrop(msg, ws) {
     env: grantEnv(),
     onGranted: (dir) => { grantedDirs.push(dir); console.log('[host] drop requests :', dir); tell({ requested: [dir] }); },
     onFailed: (dir, why) => tell({ refused: [{ dir, why }] }),
+    // A draft the grant cleared that could not be typed back is shown WITH its text, so the person can paste it again (PR #246 D1)
+    onDraftLeft: (draftText, why) => tell({ draftLeft: { text: draftText, why } }),
   })).catch((err) => console.log('[host] drop failed:', err && err.message));
   void ws;
 }

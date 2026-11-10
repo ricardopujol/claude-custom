@@ -10267,9 +10267,13 @@ function renderDropNote(note) {
     bits.push(note.refused.map(r => 'refused ' + r.dir + ': ' + r.why).join(' · '));
   }
   if (note.truncated) bits.push(note.truncated + ' more file(s) not added');
+  // PR #246 D1: a draft the grant cleared and could not type back (its dialog never answered, the prompt gone): said with its text
+  if (note.draftLeft && typeof note.draftLeft.text === 'string') {
+    bits.push('your draft was not put back (' + (note.draftLeft.why || 'the prompt was not free') + '). It read: ' + note.draftLeft.text);
+  }
   if (!bits.length) return;
   if (note.unusable) bits.push(note.unusable + ' file(s) skipped: unsafe name');
-  const denied = !!(note.refused && note.refused.length);
+  const denied = !!((note.refused && note.refused.length) || note.draftLeft);
   flourish({ icon: denied ? '⛔' : '📁', name: bits.join(' · ') });
 }
 
