@@ -9,6 +9,8 @@
  * disk and GPU caches sit under the user-data folder and the first window holds them). This starts two real windows on two
  * throwaway projects with ONE shared --user-data-dir (a temp folder, never the real %APPDATA%\claude-custom) and prints
  * every cache line the second one wrote. PASS = none, and both windows answered the driver.
+ * `--baseline` runs the same with the fix off (CLAUDE_CUSTOM_SHARED_CACHE=1) and PASSES only if the second window DOES print them,
+ * which proves this probe can see the problem.
  *
  * The hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN): nothing bills. ELECTRON_RUN_AS_NODE is deleted. Hosts and windows are
  * ended by their own driver `quit` and by pid tree for any left (verify/lib/process-hygiene, verify/lib/seen-pids). Both windows
@@ -34,7 +36,10 @@ hygiene.install();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-probe-cache-'));
 const userData = path.join(tmp, 'user-data');
-const CACHE_LINE = /Unable to move the cache|Unable to create cache|Gpu Cache Creation failed|Unable to create cache|Disk cache|disk_cache|gpu_disk_cache|cache_util/i;
+// The three lines of the bug, the files Chromium logs them from, and a failure that names the Code, Dawn, shader or GPU cache
+// (those folders stay shared in user-data: a PASS here says THIS machine's second window is quiet about them too).
+const CACHE_LINE = /Unable to move the cache|Unable to create cache|Gpu Cache Creation failed|cache_util_win\.cc|disk_cache\.cc|gpu_disk_cache\.cc|(?:Code|Dawn|GrShader|Shader|GPU) ?Cache.*(?:fail|error|denied|unable)/i;
+const BASELINE = process.argv.includes('--baseline');     // the fix is switched off (CLAUDE_CUSTOM_SHARED_CACHE=1): the probe must SEE the lines
 const seenPids = require('./lib/seen-pids').createSeenPids();
 
 let failures = 0;
@@ -68,12 +73,13 @@ async function launchApp(no) {
     CLAUDE_CUSTOM_REGISTRY: path.join(tmp, `registry-${no}`),
     CLAUDE_CUSTOM_PORTRAITS: path.join(tmp, 'portraits'),
     CLAUDE_CUSTOM_UPLOADS: path.join(tmp, 'uploads'),
+    ...(BASELINE ? { CLAUDE_CUSTOM_SHARED_CACHE: '1' } : {}),
   };
   delete env.ELECTRON_RUN_AS_NODE; delete env.CLAUDE_CUSTOM_PORT; delete env.CLAUDE_CUSTOM_TOKEN;
   fs.mkdirSync(env.CLAUDE_CUSTOM_REGISTRY, { recursive: true });
   const child = spawnElectron(require(path.join(ROOT, 'node_modules', 'electron')),
     [ROOT, `--user-data-dir=${userData}`, '--enable-logging=stderr'], { cwd: ROOT, env },
-    { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS'] });
+    { keepEnv: ['CLAUDE_CUSTOM_BIN', 'CLAUDE_CUSTOM_CWD', 'CLAUDE_CUSTOM_PORTRAITS', 'CLAUDE_CUSTOM_REGISTRY', 'CLAUDE_CUSTOM_TABS_PROBE', 'CLAUDE_CUSTOM_TABS_PROBE_TOKEN', 'CLAUDE_CUSTOM_UPLOADS', 'CLAUDE_CUSTOM_SHARED_CACHE'] });
   hygiene.registerChild(child);
   const app = { no, port, token, child, out: '', exited: false };
   child.stdout.on('data', d => { app.out += d; });
@@ -115,7 +121,8 @@ async function main() {
   check('the second window (same user-data folder, other project) came up and its driver answers', !!b, b ? `pid ${second.child.pid}` : second.out.split('\n').slice(-15).join('\n'));
   await sleep(3000);
   const lines = second.out.split(/\r?\n/).filter(l => CACHE_LINE.test(l));
-  check('the second window printed no Chromium cache lines', lines.length === 0, lines.length ? `\n    ${lines.slice(0, 8).join('\n    ')}` : '');
+  if (BASELINE) check('baseline (fix off): the second window DOES print the cache lines, so this probe can see the problem', lines.length > 0, lines.slice(0, 3).join(' | '));
+  else check('the second window printed no Chromium cache lines', lines.length === 0, lines.length ? `\n    ${lines.slice(0, 8).join('\n    ')}` : '');
   const firstLines = first.out.split(/\r?\n/).filter(l => CACHE_LINE.test(l));
   console.log(`(the first window printed ${firstLines.length} cache lines)`);
   for (const app of [second, first]) { if (!app.exited) await command(app, { cmd: 'quit' }, 5000); await waitFor(() => app.exited, 15000, 200); }
