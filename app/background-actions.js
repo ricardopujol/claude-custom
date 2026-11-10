@@ -48,6 +48,7 @@ function stopAllDetail(rows) {
 
 /**
  * deps: select(key), focusWindow(), spawnWindow({ cwd, port }) -> { pid },
+ *       thisProject(row) -> bool, laneFor(row) -> key|null, reopenLane(row) -> Promise<key|null> (one window per project),
  *       confirmStop(row) -> bool, confirmStopAll(rows) -> bool, inform(text),
  *       stopHost(row) -> result, log(msg)
  */
@@ -59,6 +60,31 @@ function createBackgroundActions(deps) {
     if (!o) return null;
     if (o.kind === 'select-tab') { deps.select(o.key); deps.focusWindow(); return { selected: o.key }; }
     try {
+      // One window per project: a host of THIS project is shown here, never in a window of its own. Its tab is selected; a lane that was
+      // closed by hand is reopened (and selected) here; either way the window comes forward. thisProject / laneFor / reopenLane are main's
+      // (the project check, the tab lookup, tab-shell's reopenFolder). Another project's host keeps the attach-only spawn below.
+      if (typeof deps.thisProject === 'function' && deps.thisProject(o)) {
+        const key = typeof deps.laneFor === 'function' ? deps.laneFor(o) : null;
+        if (key) {
+          deps.select(key);
+          deps.focusWindow();
+          deps.log(`[main] Open (background): selected lane ${key} in this window (port ${o.port}, ${o.cwd})`);
+          return { selected: key, here: true };
+        }
+        if (typeof deps.reopenLane === 'function') {
+          Promise.resolve().then(() => deps.reopenLane(o)).then(
+            (k) => {
+              deps.focusWindow();
+              deps.log(`[main] Open (background): ${k ? `reopened lane ${k}` : 'no lane for it'} in this window (port ${o.port}, ${o.cwd})`);
+            },
+            (err) => deps.log(`[main] Open (background) reopen failed: ${err && err.message}`),
+          ).catch(() => {});
+          return { reopening: true, here: true };
+        }
+        deps.focusWindow();
+        deps.log(`[main] Open (background): no lane for it in this window (port ${o.port}, ${o.cwd})`);
+        return { selected: null, here: true };
+      }
       const r = deps.spawnWindow({ cwd: o.cwd, port: o.port });
       deps.log(`[main] Open (background): a window on port ${o.port} for ${o.cwd} (pid ${r && r.pid})`);
       return r || null;

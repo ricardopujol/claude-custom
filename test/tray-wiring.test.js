@@ -47,7 +47,7 @@ test('close hides to the tray only through hidesOnClose, ahead of the unsaved-te
   assert.ok(hide < close.indexOf('closeGuarded ||'), 'the hide decision comes first: hiding loses nothing, so no question');
   assert.match(close, /hidesOnClose\(\{ settings: readTraySettings\(uiStore\), trayExists: !!trayController && trayController\.state\(\)\.exists, quitting \}\)/);
   assert.match(close, /e\.preventDefault\(\);\s*win\.hide\(\);/);
-  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; \}\);/);
+  assert.match(MAIN, /app\.on\('before-quit', \(\) => \{ quitting = true; windowClaim\.stop\(\); \}\);/);
   assert.match(MAIN, /win\.on\('session-end', \(\) => \{ quitting = true; \}\);/);
 });
 
