@@ -1,7 +1,7 @@
 'use strict';
 /* BACKLOG #136: pasting a document sends what was typed before it. Real window, real `claude`.
 
-     node verify/probe-paste-doc.js [long] [midturn] [menu] [file] [file-idle] [drop] [grant] [redraw]     (no argument = all)
+     node verify/probe-paste-doc.js [long] [midturn] [menu] [file] [file-idle] [drop] [grant] [draft-rows] [redraw]     (no argument = all)
 
    Types a draft ("DRAFT-BEFORE") into the prompt without Enter, pastes or drops a document, then reads the screen:
    did the draft stay in the prompt (good), or was it submitted (a "> DRAFT-BEFORE" turn above an empty prompt, or the
@@ -240,6 +240,38 @@ app.on('ready', async () => {
       // The cursor moved back into the draft before the drop.
       if (gwant('grant-cursor-mid-draft')) await pasteCase('grant-cursor-mid-draft', 'DRAFT-BEFORE', '', { dropFile: outsideOf('grant-cursor-mid-draft'), expect: 'dialog',
         typeDraft: async () => { await typeRaw('DRAFT-BEFORE the rest of a sentence'); await sleep(300); await typeRaw('\x1b[D'.repeat(12)); } });
+    }
+    // PR #246 Dexter D2/D4: what the box shows for a soft wrap, a token wider than the box and a real line break (Shift+Enter's bytes), and
+    // whether host/grant-sequence.js draftOf reads each back as what was typed. Types nothing it would submit; the draft is cleared after.
+    if (want('draft-rows')) {
+      const { draftOf } = require(path.join(REPO, 'host', 'grant-sequence'));
+      const cols = await js('term.cols');
+      const termRows = await js('term.rows');
+      const words = Array.from({ length: 40 }, (_, i) => `w${i}x`.repeat(1 + (i % 3))).join(' ');
+      const token = 'T' + 'abcdefghij'.repeat(Math.ceil((cols * 1.6) / 10));
+      const cases = [
+        ['soft-wrap-words', [words], words],
+        ['token-wider-than-box', ['see ' + token], 'see ' + token],
+        ['hard-breaks', ['first line here', '\x1b\r', 'second line', '\x1b\r', 'third'], 'first line here\nsecond line\nthird'],
+      ];
+      for (const [name, parts, typed] of cases) {
+        win.focus(); win.webContents.focus(); await js(`term.focus(); true`);
+        await typeRaw('\x7f'.repeat(600)); await sleep(800);
+        for (const part of parts) { await typeRaw(part); await sleep(250); }
+        await sleep(1200);
+        const lines = (await screen()).split('\n');
+        const rules = lines.map((l, i) => /^─{10,}/.test(l.trim()) ? i : -1).filter(i => i >= 0);
+        const boxRows = rules.length >= 2 ? lines.slice(rules[rules.length - 2] + 1, rules[rules.length - 1]) : [];
+        const ruleLen = rules.length ? lines[rules[rules.length - 1]].trim().length : 0;
+        const got = draftOf(lines, termRows);
+        const ok = got.ok && got.text === typed;
+        console.log(`   [${name}] cols=${cols} ruleLen=${ruleLen} row lengths (prefix included, trailing blanks off)=${JSON.stringify(boxRows.map(r => r.replace(/\s+$/, '').length))} rows=${JSON.stringify(boxRows)}`);
+        console.log(`   [${name}] draftOf=${JSON.stringify(got)}`);
+        results[name] = { ok, cols, ruleLen, rowLengths: boxRows.map(r => r.replace(/\s+$/, '').length), draftOf: got, typed };
+        console.log(`[${at()}] ${ok ? 'PASS' : 'FAIL'} ${name}`);
+        if (!ok) failures.push(name);
+      }
+      await typeRaw('\x7f'.repeat(600)); await sleep(800);
     }
     if (want('redraw')) {
       await pasteCase('after-resize', 'DRAFT-BEFORE', doc(5), { draftFirst: true,

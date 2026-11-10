@@ -85,17 +85,23 @@ function ruleWidth(lines) {
   return rules.length ? rules[rules.length - 1].length : 0;
 }
 
-// Box rows (prefix off, trimmed) back into the text they hold. A row of `width` columns (prefix included) is FULL: the CLI wrapped mid-word,
-// so the next row continues with no space. Otherwise the break was at a space (a soft wrap swallows one) unless the next row's first word
-// would still have fitted on this one, in which case only a real line break explains it: '\n'. Unknown width: a space, never a guess.
+// Box rows (prefix off, trimmed) back into the text they hold. A row that reaches the box's usable width (prefix included) is FULL: the CLI
+// wrapped mid-word, so the next row continues with no space. Otherwise the break was at a space (a soft wrap swallows one) unless the next
+// row's first word would still have fitted on this one, in which case only a real line break explains it: '\n'. Unknown width: a space,
+// never a guess. MEASURED on the real CLI (verify/probe-paste-doc.js draft-rows, claude 2.1.319, 134 columns): a token wider than the box
+// fills its row to 132 columns, the width minus RIGHT_MARGIN_COLS; word-wrapped rows came out at 131 and 127; real line breaks read back
+// as short rows. (A word-wrapped row of exactly the usable width reads as a mid-word wrap: the one ambiguity left, and it joins the two
+// words with no space.)
+const RIGHT_MARGIN_COLS = 2;
 function joinRows(rows, width) {
   let out = rows[0] || '';
+  const limit = width - RIGHT_MARGIN_COLS;
   for (let i = 1; i < rows.length; i++) {
     const cols = PREFIX_COLS + rows[i - 1].length;
     let sep = ' ';
     if (width > 0) {
-      if (cols >= width) sep = '';
-      else if (cols + 1 + rows[i].split(' ')[0].length <= width) sep = '\n';
+      if (cols >= limit) sep = '';
+      else if (cols + 1 + rows[i].split(' ')[0].length <= limit) sep = '\n';
     }
     out += sep + rows[i];
   }

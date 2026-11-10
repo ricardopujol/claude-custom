@@ -358,7 +358,7 @@ test('#136 (2): a draft holding a pasted block or an image is never cleared (typ
 });
 
 test('#136 (2): a long draft is typed back in writes of at most 200 characters (one big write is taken for a paste)', async () => {
-  // five rows of 55 characters: with the 2-column prefix each is 57 of the 60 columns and the next word (3 letters) would not fit: soft wraps
+  // five rows of 55 characters: with the 2-column prefix each is 57 of the 58 usable columns (60 less the CLI's 2-column right margin, measured) and the next word (3 letters) would not fit: soft wraps
   const long = Array.from({ length: 5 }, (_, i) => `row ${i} ` + 'w'.repeat(49));
   const cli = fakeCli({ draft: long.map(t => ({ t })) });
   await runDrop({ dirs: ['C:\\a'], text: 'C:\\a\\x.md ', env: answering(cli) });
@@ -403,30 +403,30 @@ test('draftOf: the box as one line, or why it cannot be read back whole', () => 
 });
 
 // ---- PR #246 review (Dexter D1-D4, Miguel Y3) ------------------------------------------------------------------------------------
-// The box is 60 columns wide in these (RULE); a row's width is its text plus the 2-column prefix.
+// The box is 60 columns wide in these (RULE) and the CLI uses 58 of them (measured: 132 of 134); a row's width is its text plus the 2-column prefix.
 
 test('D2: a token wider than the box wraps mid-word and comes back whole, with no space inside it', () => {
   const { draftOf } = require('../host/grant-sequence');
   const url = 'https://example.com/' + 'a'.repeat(80);                       // 100 characters
-  const rows = ['❯ ' + url.slice(0, 58), '  ' + url.slice(58)];               // the first row fills the 60 columns
+  const rows = ['❯ ' + url.slice(0, 56), "  " + url.slice(56)];               // the first row fills the 58 usable columns
   assert.deepStrictEqual(draftOf(['x', RULE, ...rows, RULE], 24), { ok: true, text: url });
   // two full rows and a rest
   const long = 'x'.repeat(150);
-  const three = ['❯ ' + long.slice(0, 58), '  ' + long.slice(58, 116), '  ' + long.slice(116)];
+  const three = ["❯ " + long.slice(0, 56), "  " + long.slice(56, 112), "  " + long.slice(112)];
   assert.strictEqual(draftOf(['x', RULE, ...three, RULE], 24).text, long);
 });
 
 test('D2: words before a long path: the break before the path is a wrap at a space, the break inside it is not', () => {
   const { draftOf } = require('../host/grant-sequence');
-  const p = 'C:\\Users\\ricar\\VibeCode\\claude-custom\\fix-quick-fixes-nov\\host\\grant-sequence.js';   // 78 characters, wider than the 58 left
-  const rows = ['❯ see', '  ' + p.slice(0, 58), '  ' + p.slice(58)];
+  const p = 'C:\\Users\\ricar\\VibeCode\\claude-custom\\fix-quick-fixes-nov\\host\\grant-sequence.js';   // 78 characters, wider than the 56 left
+  const rows = ["❯ see", "  " + p.slice(0, 56), "  " + p.slice(56)];
   assert.strictEqual(draftOf(['x', RULE, ...rows, RULE], 24).text, 'see ' + p);
 });
 
 test('D2: a row that ends exactly at the width continues without a space (the one reading the screen can give)', () => {
   const { joinRows } = require('../host/grant-sequence');
-  assert.strictEqual(joinRows(['a'.repeat(58), 'bcd'], 60), 'a'.repeat(58) + 'bcd');
-  assert.strictEqual(joinRows(['a'.repeat(57), 'bcdefg'], 60), 'a'.repeat(57) + ' bcdefg', 'one column short: a wrap at a space');
+  assert.strictEqual(joinRows(['a'.repeat(56), 'bcd'], 60), 'a'.repeat(56) + 'bcd');
+  assert.strictEqual(joinRows(['a'.repeat(55), 'bcdefg'], 60), 'a'.repeat(55) + ' bcdefg', 'one column short: a wrap at a space');
 });
 
 test('D2: a row that ends in a space joins with the one space the wrap swallowed, not two', () => {
@@ -439,7 +439,7 @@ test('D4: a break after a short row is a real line break (the next word would ha
   const { joinRows } = require('../host/grant-sequence');
   assert.strictEqual(joinRows(['first line', 'second line'], 60), 'first line\nsecond line');
   assert.strictEqual(joinRows(['a', '', 'b'], 60), 'a\n\nb', 'a blank line is a line break too');
-  assert.strictEqual(joinRows(['w '.repeat(28).trim(), 'next'], 60), 'w '.repeat(28).trim() + ' next', '2 + 55 columns, "next" does not fit in the 3 left');
+  assert.strictEqual(joinRows(['w '.repeat(28).trim(), 'next'], 60), 'w '.repeat(28).trim() + ' next', '2 + 55 columns of 58: "next" does not fit in the 1 left');
   assert.strictEqual(joinRows(['one', 'two'], 0), 'one two', 'an unknown width never guesses a break');
 });
 
@@ -502,4 +502,14 @@ test('D3: a draft that cannot be read back whole reports every folder from the o
   const failed = [];
   await runDrop({ dirs: ['C:\\a', 'C:\\b'], text: 'C:\\a\\x C:\\b\\y ', env: answering(cli), onFailed: d => failed.push(d) });
   assert.deepStrictEqual(failed, ['C:\\a', 'C:\\b']);
+});
+
+test('measured on the real CLI (134 columns, claude 2.1.319): a mid-word wrap fills 132 columns; word wraps came out at 131 and 127; line breaks are short rows', () => {
+  const { joinRows } = require('../host/grant-sequence');
+  const token = 'T' + 'abcdefghij'.repeat(20);
+  // "❯ see Tabcde...": 132 columns on the first row, the rest on the second
+  const first = ('see ' + token).slice(0, 130);
+  assert.strictEqual(joinRows([first, ('see ' + token).slice(130)], 134), 'see ' + token, 'a 132-column row continues with no space');
+  assert.strictEqual(joinRows(['w'.repeat(129), 'w17xw17xw17x'], 134), 'w'.repeat(129) + ' w17xw17xw17x', 'a 131-column row whose next word does not fit is a wrap at a space');
+  assert.strictEqual(joinRows(['first line here', 'second line', 'third'], 134), 'first line here\nsecond line\nthird');
 });
