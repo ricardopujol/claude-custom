@@ -225,7 +225,7 @@ const errorText = (err) => (err && err.message) || String(err);
 
 /** The strip's kept layout, strictly typed, or an empty one: a missing, throwing or odd layout is "nothing kept". */
 function readLayout(layout, log) {
-  const empty = { order: [], closed: [] };
+  const empty = { order: [], closed: [], pinned: [] };
   if (!layout || typeof layout.load !== 'function') return empty;
   try {
     const l = layout.load();
@@ -234,7 +234,8 @@ function readLayout(layout, log) {
     const closed = (Array.isArray(l.closed) ? l.closed : [])
       .filter(c => c && typeof c.key === 'string' && c.key !== '' && typeof c.path === 'string' && c.path !== '')
       .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null }));
-    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed };
+    const keys = (list) => (Array.isArray(list) ? list : []).filter((k, i, all) => typeof k === 'string' && k !== '' && all.indexOf(k) === i);
+    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed, pinned: keys(l.pinned) };
   } catch (err) {
     log('[shell] layout.load threw:', err && err.message);
     return empty;
@@ -286,6 +287,7 @@ function createShell(deps) {
   const kept = readLayout(layout, log);
   let state = { ...lifecycle.initial(), dismissed: kept.closed.map(c => c.key) };
   let order = kept.order;        // lane keys in the person's drag order (app/tab-lanes.js); develop is not in it
+  let pinned = kept.pinned;      // lane keys the person pinned (BACKLOG #167): always on the strip, started at launch; develop is never in it
   let selectedKey = null;
   let polling = false;
   let lastError = null;
@@ -513,6 +515,8 @@ function createShell(deps) {
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
+        // #167: a pinned lane (never develop, never a side or shell tab) is on the strip and starts at launch.
+        pinned: !isCompanionEntry(e) && !e.isDev && pinned.includes(e.key),
         // Its session's host stopped answering after it ran (the strip keeps such a lane only while it is selected).
         ended: !!t && t.ended === true,
         // #129: its host is being ended (the strip greys it and says so; it can't be selected meanwhile).
@@ -591,9 +595,10 @@ function createShell(deps) {
     if (prune && state.tabs.length > 0) {
       const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key), ...reopenedUnlisted]);
       order = order.filter(k => known.has(k));
+      pinned = pinned.filter(k => known.has(k));     // P7: a pin whose folder git no longer lists is forgotten, like the order
     }
     try {
-      const r = layout.save({ order, closed });
+      const r = layout.save({ order, closed, pinned });
       if (r && r.ok === false) log('[shell] layout.save refused:', r.error);
     } catch (err) {
       log('[shell] layout.save threw:', err && err.message);
@@ -624,6 +629,28 @@ function createShell(deps) {
     publish();
     return { ok: true };
   }
+
+  /**
+   * Pin or unpin a lane (BACKLOG #167). Only a lane the strip lists can be pinned: not develop (always in the launch set), not a side
+   * or shell tab. An unpin is allowed for any key that is pinned, listed or not. Saved.
+   */
+  function setPinned(key, on) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    if (typeof key !== 'string' || key === '') return { ok: false, error: 'not a lane' };
+    const has = pinned.includes(key);
+    if (on === false) {
+      if (!has) return { ok: true };
+    } else {
+      if (!model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev)) return { ok: false, error: 'not a lane that can be pinned' };
+      if (has) return { ok: true };
+    }
+    pinned = on === false ? pinned.filter(k => k !== key) : [...pinned, key];
+    persistLayout();
+    publish();
+    return { ok: true };
+  }
+  const pin = (key) => setPinned(key, true);
+  const unpin = (key) => setPinned(key, false);
 
   /**
    * The Lanes menu's rows (app/tab-lanes.js lanesMenuRows): `hiddenKeys` are the tabs the strip page couldn't fit (2A),
@@ -960,6 +987,8 @@ function createShell(deps) {
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
         apply(actions, before);
+        // #167 (P7): the merged close ignores a pin, and the pin goes with the lane, in one save.
+        if (r && r.ok === true && pinned.includes(key)) { pinned = pinned.filter(k => k !== key); persistLayout(); }
         // #139 (P5): a merged lane's tab that the removal closed leaves "Closed <lane> (merged)" on the strip's notice line, after
         // apply (the selection it makes would clear it). A tab that was drawn always gets it, whoever ended its session.
         if (hadTab && !tabs.has(key)) {
@@ -980,6 +1009,11 @@ function createShell(deps) {
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
     if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
+    // ... and a pin on a lane git stopped listing (P7). An empty list is no answer: it prunes nothing.
+    if (state.tabs.length > 0) {
+      const listed = new Set([...state.tabs.map(t => keyOf(t.path)), ...closedByHand.map(c => c.key)]);
+      if (pinned.some(k => !listed.has(k))) { pinned = pinned.filter(k => listed.has(k)); persistLayout(); }
+    }
     if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
       const k = selectWhenListed;
       selectWhenListed = null;
@@ -2327,7 +2361,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, pin, unpin, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor, boxAnswered,
     // #139: the merged closes the last poll started (a test awaits them; main never needs to).

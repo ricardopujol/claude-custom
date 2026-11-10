@@ -161,6 +161,17 @@ test('#139 (B): the merged close never calls closeByHand and writes nothing to t
   assert.deepStrictEqual(closedRowsOf(h), []);
 });
 
+test('#167 P7: the merged close ignores a pin, and the pin goes in the same save as the close', async () => {
+  const saves = [];
+  const layout = { load: () => ({ order: [], closed: [], pinned: [key('feat-a'), key('feat-b')], error: null }), save: (v) => { saves.push(JSON.parse(JSON.stringify(v))); return { ok: true }; } };
+  const h = await liveThenMerged({ layout });
+  await h.poll();
+  assert.strictEqual(h.shell.tabByKey(key('feat-a')), null, 'a pinned lane that merged is closed all the same');
+  assert.ok(saves.length > 0, 'the pin change was saved');
+  assert.deepStrictEqual(saves[saves.length - 1].pinned, [key('feat-b')], 'only the merged lane lost its pin');
+  assert.deepStrictEqual(saves[saves.length - 1].closed, [], 'and no closed entry came with it');
+});
+
 for (const [what, reply, phase] of [
   ['keeping the folder (the branch still has a brief)', { ok: false, kept: true, reason: 'the branch still has a handoff brief' }, 'kept'],
   ['failing', { ok: false, error: 'git worktree remove failed' }, 'remove-failed'],
