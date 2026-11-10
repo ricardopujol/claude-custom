@@ -44,7 +44,7 @@ function tty(ms = 20000) {
       .find(c => fs.existsSync(c)) || 'claude.exe';
     say(`binary ${bin}`);
     const p = pty.spawn(bin, ['--continue', '--model', 'haiku'], { cwd: SCRATCH, cols: 120, rows: 30, env: process.env });
-    noteChild({ pid: p.pid });
+    noteChild(p);
     let screen = ''; let exited = null;
     p.onData(d => { screen += d; });
     p.onExit(e => { exited = e.exitCode; });

@@ -8,17 +8,17 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const { hasConversation } = require('../host/continue-flag');
 const { projectDirName } = require('../host/project-dir');
+const { tmpDir } = require('./tmp-dir');
 
 const USER_LINE = JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, cwd: 'x' }) + '\n';
 const SNAP_LINE = JSON.stringify({ type: 'file-history-snapshot', messageId: 'm' }) + '\n';
 
 function store() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-continue-'));
+  const root = tmpDir('cc-continue-');
   const cwd = path.join(root, 'proj', 'lane');
   const dir = path.join(root, '.claude', 'projects', projectDirName(cwd));
   return {
