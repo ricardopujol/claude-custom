@@ -281,8 +281,31 @@ test('takeOver: replaces a live-looking file (an owner mid-shutdown, or from a b
   const { takeOver, parseOwner } = load();
   const root = project();
   writeOwner(root, { pid: 10, start: START_A, at: 1 });
-  assert.strictEqual(takeOver({ stateRoot: root, self: { pid: 20, start: START_B }, now: () => 77 }), true);
+  const judgedText = fs.readFileSync(ownerFileOf(root), 'utf8');
+  assert.strictEqual(takeOver({ stateRoot: root, self: { pid: 20, start: START_B }, judgedText, now: () => 77 }), true);
   assert.deepStrictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')), { pid: 20, start: START_B, at: 77 });
+});
+
+test('takeOver (M3): only the bytes that were judged are replaced; a file that names someone else now is left alone and says false', () => {
+  const { takeOver, parseOwner } = load();
+  const root = project();
+  writeOwner(root, { pid: 10, start: START_A, at: 1 });
+  const judgedText = fs.readFileSync(ownerFileOf(root), 'utf8');
+  writeOwner(root, { pid: 11, start: START_A, at: 2 });          // L1 took over after the judgement
+  assert.strictEqual(takeOver({ stateRoot: root, self: { pid: 20, start: START_B }, judgedText }), false);
+  assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 11);
+  assert.strictEqual(takeOver({ stateRoot: root, self: { pid: 20, start: START_B } }), false, 'with nothing judged it removes nothing');
+  assert.strictEqual(parseOwner(fs.readFileSync(ownerFileOf(root), 'utf8')).pid, 11);
+});
+
+test('claim (M3): a focus result carries the file\'s bytes it judged', async () => {
+  const { claim } = load();
+  const root = project();
+  writeOwner(root, { pid: 10, start: START_A, at: 1 });
+  const text = fs.readFileSync(ownerFileOf(root), 'utf8');
+  const r = await claim({ stateRoot: root, self: { pid: 20, start: START_B }, startTimes: async () => new Map([[10, START_A]]) });
+  assert.strictEqual(r.action, 'focus');
+  assert.strictEqual(r.text, text);
 });
 
 test('takeOver: with no start time for this process, or a foreign look folder, it changes nothing and says false', () => {
