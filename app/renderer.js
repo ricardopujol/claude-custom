@@ -854,6 +854,8 @@ term.loadAddon(unicode11);
 term.unicode.activeVersion = '11';
 
 term.open(document.getElementById('term'));
+// A right click pastes nothing (BACKLOG #194): the CLI pastes on a right-button mouse report, so none is sent.
+installRightClickGuard(document.getElementById('term'));
 
 // WebGL is a big perf win on heavy output but can fail on some drivers; the
 // canvas fallback is fine, so never let it take the app down.
