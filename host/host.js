@@ -154,6 +154,7 @@ const { createSelfStartTime, isAlive: procAlive, startTimes } = require('./proc-
 const { isSideEnv, siblingSessions } = require('./side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own too (host/shell-tab.js): its pty runs the person's shell, not claude.
 const { isShellEnv, startShellPty, identityFields, FAILED_START_LINGER_MS } = require('./shell-tab');
+const { nextStep: bootRetryStep, giveUpLine: bootGiveUpLine, RETRY_LINE: BOOT_RETRY_LINE } = require('./boot-retry');
 const { identitiesIn } = require('./background-hosts');
 // Worktree occupancy (backlog #44 + #47): which worktree each of this session's subagents is working in,
 // as claim files the other windows read. See host/occupancy-producer.js.
@@ -1932,6 +1933,45 @@ async function restartAfterRefusal() {
   }
 }
 
+// A line written into the tab the way the pty's own output is (the screen a later window attaches to, and every client now).
+function sayInTab(text) {
+  const data = '\x1b[33m' + text + '\x1b[0m\r\n';
+  termState.write(data, programStatusHost.deliver());
+  const frame = Buffer.from(data, 'utf8');
+  for (const ws of clients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame, { binary: true });
+  }
+}
+
+// BACKLOG #217: the retry of a spawn that failed because the binary was not usable (mid-update). True when the failure is ours (a retry
+// is scheduled, or the bound ran out and the host ended with its error); false for any other error, which the caller rethrows.
+let bootFirstFailedAt = null;
+function retrySpawnLater(err) {
+  const step = bootRetryStep({ err, firstFailedAt: bootFirstFailedAt, now: Date.now() });
+  if (step.action === 'fail') return false;
+  console.error('[host] claude would not start:', err && err.message || err);
+  if (step.action === 'give-up') {
+    sayInTab(bootGiveUpLine(err));
+    // The existing ended state with its click-to-restart, the way a shell that can't start ends (FAILED_START_LINGER_MS).
+    endHost(1, null, { error: bootGiveUpLine(err) }, FAILED_START_LINGER_MS);
+    return true;
+  }
+  bootFirstFailedAt = step.firstFailedAt;
+  if (step.first) sayInTab(BOOT_RETRY_LINE);
+  setTimeout(async () => {
+    try {
+      // The version read that decides whether the mod loads was skipped or failed while the exe was whole-less; read it again now.
+      if (modPort === null && !SHELL) await prepareMod();
+      startSession();
+    } catch (e) {
+      // startSession throws only for an error that is not ours; say it and end like a failed start rather than hang on a blank tab.
+      console.error('[host] could not start the session:', e && e.message);
+      endHost(1, null, { error: bootGiveUpLine(e) }, FAILED_START_LINGER_MS);
+    }
+  }, step.delayMs);
+  return true;
+}
+
 function startSession() {
   if (term) return;
   // The kill switch (host/kill-switch.js): asked now, not at the next poll, so a sentinel already there is never raced by the spawn;
@@ -1979,9 +2019,17 @@ function startSession() {
     }
     term = started.term;
   } else {
-    term = spawnTimed();
+    // BACKLOG #217: a claude.exe being rewritten by an update fails the spawn; that is waited out (host/boot-retry.js), not left as an
+    // empty tab. Any other spawn error propagates exactly as before.
+    try {
+      term = spawnTimed();
+    } catch (err) {
+      if (!retrySpawnLater(err)) throw err;
+      return;
+    }
   }
-  trackExit(term);        // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
+  bootFirstFailedAt = null;
+  trackExit(term);       // so shutdown can kill its whole process tree by pid, proven by start time (host/pty-stop.js)
   // And every process it starts joins a job the kill switch can end, parent links or not (BACKLOG #127). Never throws; a session
   // the guard could not arm is exactly the session it was before.
   jobGuard.attach({ pid: term.pid, startOf: () => trackedStart(term), spawnWindow })
