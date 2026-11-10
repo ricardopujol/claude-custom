@@ -163,6 +163,30 @@ function moveKey(order, key, beforeKey) {
 }
 
 /**
+ * launchSet({ lanes, devKey, pinned, order, dismissed, first }) -> the lane keys whose sessions start when the window opens
+ * (documentation/DESIGN_TABS_SESSIONS.md 3.1; Ricardo's picks P1 and P10), in the order they start:
+ *   1. `first`, the lane the window was opened from, when it is listed;
+ *   2. develop (`devKey`), when it is listed;
+ *   3. the pinned lanes, in strip order (the saved `order`, then the lanes it doesn't name, as git lists them).
+ * `lanes` are the keys git lists (develop's among them); a key that isn't listed (a pin whose worktree is gone) is never in it, and
+ * neither is one in `dismissed` (closed by hand: closed stays closed). A subset of `lanes`, no key twice, junk ignored.
+ */
+function launchSet(args) {
+  const { lanes, devKey, pinned, order, dismissed, first } = args && typeof args === 'object' ? args : {};
+  const keysOf = (v) => (Array.isArray(v) ? v : []).filter(k => isString(k) && k !== '');
+  const listed = new Set(keysOf(lanes));
+  const closed = new Set(keysOf(dismissed));
+  const ok = (k) => isString(k) && listed.has(k) && !closed.has(k);
+  const out = [];
+  const add = (k) => { if (ok(k) && !out.includes(k)) out.push(k); };
+  add(first);
+  add(devKey);
+  const pins = new Set(keysOf(pinned));
+  for (const k of applyOrder(keysOf(lanes).filter(k => k !== devKey), order, (x) => x)) if (pins.has(k)) add(k);
+  return out;
+}
+
+/**
  * dropBefore(stripEntries, draggedKey, overKey, leftHalf) -> { ok: true, before: key | null } | { ok: false }
  * Where a dragged lane tab lands when dropped on the tab `overKey`: the left half drops before that lane, the right half
  * before the lane after it (null: the end). Over a companion counts as over its lane; over develop is "first of the
@@ -218,7 +242,7 @@ function lanesMenuRows(menu, hiddenEntries) {
   return out;
 }
 
-const api = { MIN_TAB, isRunning, needsYou, hasMessages, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, dropBefore, leaving, lanesMenuRows };
+const api = { MIN_TAB, isRunning, needsYou, hasMessages, placeLanes, capacityFor, splitOverflow, applyOrder, moveKey, launchSet, dropBefore, leaving, lanesMenuRows };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = api;

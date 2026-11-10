@@ -925,7 +925,18 @@ function createShell(deps) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
         openedNow.add(key);
-        if (tabs.has(key)) continue;
+        if (tabs.has(key)) {
+          // A record made before git answered (develop, P10): git lists it now, so it adopts its side and shell hosts like any tab,
+          // from the same read as the rest of this batch.
+          const early = tabs.get(key);
+          if (early.early === true) {
+            if (sideList === undefined) sideList = listSideHosts();
+            adoptSide(early, sideList);
+            if (shellList === undefined) shellList = listShellHosts();
+            adoptShell(early, shellList);
+          }
+          continue;
+        }
         const entry = state.tabs.find(t => keyOf(t.path) === key) || { path: a.path, branch: a.branch, isDev: false };
         const tab = newRecord(entry);
         tabs.set(key, tab);
@@ -1018,6 +1029,7 @@ function createShell(deps) {
     state = next;
     reopenedUnlisted.clear();     // git has answered: state.tabs is the truth again
     apply(actions, before);
+    settleEarlyTabs();
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
     if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
@@ -1033,6 +1045,32 @@ function createShell(deps) {
     } else if (selectedKey === null || !tabs.has(selectedKey)) {
       const first = firstSelection();
       if (first !== null) select(first);
+    }
+    startLaunchSet();
+  }
+
+  /**
+   * A record made before git had answered (develop, P10) meets git's list: listed, it takes its branch (and apply gave it its side
+   * and shell hosts, from the batch's one read); not listed, nothing would draw it and nobody could end it, so its session is stopped and the record dropped.
+   */
+  function settleEarlyTabs() {
+    for (const t of [...tabs.values()]) {
+      if (t.early !== true) continue;
+      const entry = state.tabs.find(x => keyOf(x.path) === t.key);
+      if (entry) {
+        t.early = false;
+        t.branch = entry.branch === undefined ? null : entry.branch;
+        continue;
+      }
+      log(`[shell] ${t.key}: started at launch, but git doesn't list the folder; ending it`);
+      t.early = false;
+      t.closed = true;
+      if (t.started && t.port && t.token) {
+        hosts.control({ port: t.port, token: t.token, msg: { type: 'stop' } }).catch(() => {});
+      }
+      if (t.view) { try { views.destroy(t); } catch (err) { log('[shell] destroy failed:', err && err.message); } }
+      t.view = null;
+      tabs.delete(t.key);
     }
   }
 
@@ -1277,8 +1315,46 @@ function createShell(deps) {
       await start(tab);
       return tab;
     }
+    startDevelopAtOnce();
     await poll();
     return null;
+  }
+
+  /**
+   * P10 (Ricardo's pick, BACKLOG #166): develop's session starts the moment the window opens, from its own folder, before the first
+   * git poll has answered; the poll then reconciles (develop is always listed). It is a record the poll hasn't listed yet (`early`):
+   * reconcileWith gives it its branch, or ends it when git doesn't list the folder. Not when develop was closed by hand (closed
+   * stays closed), and not when the window was opened from a lane's worktree: that lane is the first start then (the poll's
+   * first selection), and develop follows in the launch set.
+   */
+  function startDevelopAtOnce() {
+    if (mode !== 'tabs' || devKey === null || tabs.has(devKey) || state.dismissed.includes(devKey)) return;
+    const devPath = path.join(container, 'dev');
+    if (typeof launchedFrom === 'string' && launchedFrom !== '' && keyOf(launchedFrom) !== devKey && !isInside(launchedFrom, devPath)) return;
+    const rec = newRecord({ path: devPath, branch: null, isDev: true });
+    rec.early = true;
+    tabs.set(devKey, rec);
+    start(rec);
+  }
+
+  let launchSetDone = false;
+
+  /**
+   * After the window's first reconcile with git's answer: the launch set (app/tab-lanes.js launchSet), each session through the
+   * start chain, in order. A start that fails shows its error on its own tab and holds nobody else. Once per window: a pin made
+   * later starts nothing by itself (it is on the strip, idle, until clicked or the next launch).
+   */
+  function startLaunchSet() {
+    if (launchSetDone || mode !== 'tabs') return;
+    launchSetDone = true;
+    const lanes = state.tabs.map(t => keyOf(t.path));
+    // the lane the window was opened from, by the same rule as the first selection (it is already starting, in the chain's first place)
+    const named = typeof launchedFrom === 'string' && launchedFrom !== '' ? firstSelection() : null;
+    const first = named === null ? undefined : named;
+    for (const k of tabLanes.launchSet({ lanes, devKey, pinned, order, dismissed: state.dismissed, first })) {
+      const tab = tabs.get(k);
+      if (tab && !tab.started && !tab.starting && !ending.has(k)) start(tab);
+    }
   }
 
   // --- #77: is this tab safe to close with no confirm? -------------------------------------------------------

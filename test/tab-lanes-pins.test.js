@@ -78,3 +78,48 @@ test('PROPERTY: every pinned lane is on the strip and shown, every entry is in t
     assert.strictEqual(shown.length + hidden.length, placed.strip.length);
   }));
 });
+
+// --- the launch set (documentation/DESIGN_TABS_SESSIONS.md 3.1) ---------------------------------------
+
+test('launchSet: develop first, then the pinned lanes in strip order; unpinned lanes are not in it', () => {
+  const lanes = ['dev', 'a', 'b', 'c'];
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: ['a', 'c'], order: [] }), ['dev', 'a', 'c']);
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: ['a', 'c'], order: ['c', 'a'] }), ['dev', 'c', 'a'], 'strip order, not the order they were pinned in');
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: [], order: [] }), ['dev']);
+});
+
+test('launchSet: a pin git no longer lists, a hand-closed lane and a closed develop are left out', () => {
+  const lanes = ['dev', 'a', 'b'];
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: ['gone', 'a', 'b'], order: [], dismissed: ['b'] }), ['dev', 'a']);
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: ['a'], order: [], dismissed: ['dev'] }), ['a']);
+});
+
+test('launchSet: a lane the window was opened from goes first, develop follows, no repeats', () => {
+  const lanes = ['dev', 'a', 'b'];
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: ['a', 'b'], order: [], first: 'b' }), ['b', 'dev', 'a']);
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: [], order: [], first: 'dev' }), ['dev']);
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes, devKey: 'dev', pinned: [], order: [], first: 'nowhere' }), ['dev'], 'a first that is not listed starts nothing');
+});
+
+test('launchSet: junk in, nothing out', () => {
+  assert.deepStrictEqual(tabLanes.launchSet({}), []);
+  assert.deepStrictEqual(tabLanes.launchSet(null), []);
+  assert.deepStrictEqual(tabLanes.launchSet({ lanes: ['a', 7, null, ''], devKey: null, pinned: ['a', 7], order: 'x' }), ['a']);
+});
+
+test('PROPERTY: the launch set is a subset of the listed lanes, has no duplicates, holds every pinned listed lane that is not closed, and develop leads unless a first lane was named', () => {
+  const k = fc.constantFrom('dev', 'a', 'b', 'c', 'd', 'e', 'gone');
+  fc.assert(fc.property(
+    fc.uniqueArray(fc.constantFrom('dev', 'a', 'b', 'c', 'd', 'e'), { minLength: 0, maxLength: 6 }),
+    fc.array(k, { maxLength: 8 }), fc.array(k, { maxLength: 8 }), fc.array(k, { maxLength: 4 }), fc.option(k, { nil: undefined }),
+    (lanes, pinned, order, dismissed, first) => {
+      const out = tabLanes.launchSet({ lanes, devKey: 'dev', pinned, order, dismissed, first });
+      assert.strictEqual(new Set(out).size, out.length, 'no duplicates');
+      for (const x of out) assert.ok(lanes.includes(x), `${x} is listed`);
+      for (const p of pinned) if (lanes.includes(p) && !dismissed.includes(p) && p !== 'dev') assert.ok(out.includes(p), `pinned ${p} is in it`);
+      if (lanes.includes('dev') && !dismissed.includes('dev')) assert.ok(out.includes('dev'), 'develop is in it');
+      const named = first !== undefined && lanes.includes(first) && !dismissed.includes(first);
+      if (named) assert.strictEqual(out[0], first);
+      else if (out.length > 0 && out.includes('dev')) assert.strictEqual(out[0], 'dev');
+    }));
+});

@@ -366,7 +366,9 @@ test('launching from a sibling selects THAT tab (criterion 8 / launcher)', async
   await flush();
   assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'));
   assert.ok(h.shell.tabByKey(key('feat-b')).started, 'the selected tab starts');
-  assert.ok(!h.shell.tabByKey(key('dev')).started, 'dev does not, when it is not selected');
+  // BACKLOG #166 / P10: develop is in the launch set, so it follows the lane the window was opened from (it is not the selected tab).
+  assert.ok(h.shell.tabByKey(key('dev')).started, 'dev follows in the launch set, though it is not selected');
+  assert.strictEqual(h.shell.snapshot().selectedKey, key('feat-b'), 'and the selection stays where the window was opened');
 });
 
 // --- the poller: W3 ----------------------------------------------------------
