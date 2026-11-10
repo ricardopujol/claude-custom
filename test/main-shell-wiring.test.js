@@ -515,14 +515,14 @@ test('Miguel #4: the tab:raise handler keeps its own comment', () => {
 
 // --- layout pass L1 ----------------------------------------------------------
 
-test('L1: the global layout is served to this window\'s tab views and pushed to all of them', () => {
+test("L1: the project's own layout is served to this window's tab views and pushed to them", () => {
   assert.match(MAIN, /const \{ registerLayoutHandlers, watchLayout, LAYOUT_KEY, TREE_NAMES, PRESET_NAMES \} = require\('\.\/layout-bridge'\);/);
   const at = MAIN.indexOf('registerLayoutHandlers({');
   assert.ok(at !== -1, 'registerLayoutHandlers is called');
   const call = callText(MAIN, at);
   assert.match(call, /isSender: isTabView/);
   assert.match(call, /send: pushToViews/);
-  assert.match(call, /store: uiStore/);
+  assert.match(call, /store: layoutStore/);       // #211: the project's own layout store; the install-wide file is only a default
   assert.match(call, /sync: layoutSync/);
 });
 
@@ -532,7 +532,7 @@ test('L1: another project window\'s layout change reaches this one through the s
   const call = callText(MAIN, at);
   assert.match(call, /sync: layoutSync/);
   assert.match(call, /send: pushToViews/);
-  assert.match(call, /`\$\{LAYOUT_KEY\}\.json`/);
+  assert.match(call, /layoutStore\.pathOf\(LAYOUT_KEY\)/);       // the project's own file, so another project's change is never followed
 });
 
 test('L1: the preload exposes the layout bridge with one listener at a time', () => {
@@ -552,7 +552,7 @@ test('D1: the tree layout is a second registration under TREE_NAMES, with its ow
   const watch = callText(MAIN, MAIN.indexOf('watchLayout({', MAIN.indexOf('watchLayout({') + 1));
   assert.match(watch, /names: TREE_NAMES/);
   assert.match(watch, /sync: treeSync/);
-  assert.match(watch, /`\$\{TREE_NAMES\.key\}\.json`/);
+  assert.match(watch, /layoutStore\.pathOf\(TREE_NAMES\.key\)/);
   assert.strictEqual(MAIN.split('registerLayoutHandlers({').length - 1, 3, 'the L1 pair stays, for older windows and the one migration read; D3 adds the presets as the third');
   assert.strictEqual(MAIN.split('watchLayout({').length - 1, 4, 'the three layout records, plus the fonts record (#88), which reuses the same poll');
 });
