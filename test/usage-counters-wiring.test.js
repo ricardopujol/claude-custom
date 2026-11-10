@@ -35,7 +35,7 @@ test('every key the code bumps is valid', () => {
 });
 
 test('the renderer counts a panel per show and the games report their name', () => {
-  assert.match(RENDERER, /for \(const id of fx\.newlyShown\) \{ if \(usageGestureLive\(\)\) usage\('panel:' \+ id\); onModuleShown\(id\); \}/);
+  assert.match(RENDERER, /for \(const id of fx\.newlyShown\) \{ if \(usageGestureLive\(\) && !uncountedReveal\) usage\('panel:' \+ id\); onModuleShown\(id\); \}/);
   assert.match(RENDERER, /onStart: \(game\) => usage\('game:' \+ game \+ ':start'\)/);
 });
 
@@ -47,13 +47,29 @@ test('every dock panel id makes a valid key (the list itself is pinned in usage-
 
 test('a panel counts only after the layout loaded, and only within a moment of a user gesture (I3)', () => {
   assert.match(RENDERER, /const usageGestureLive = \(\) => layoutLoaded && helloSeen && Date\.now\(\) - usageGestureAt < 1500;/);
-  assert.match(RENDERER, /if \(usageGestureLive\(\)\) usage\('panel:' \+ id\); onModuleShown\(id\);/);
+  assert.match(RENDERER, /if \(usageGestureLive\(\) && !uncountedReveal\) usage\('panel:' \+ id\); onModuleShown\(id\);/);
   // #97: the gesture is the default; only a reveal that isn't the person's (Claude's canvas render) passes gesture: false
   for (const site of ['function selectModule(id, { gesture = true } = {}) { if (gesture) usageGesture();', 'function revealModule(id, { gesture = true } = {}) {\n  if (gesture) usageGesture();',
     'function openPeek(id, byKeyboard) {\n  usageGesture();', 'a burst\'s drawn sizes would hide this change until its own flush\n  if (gesture) usageGesture();']) {
     assert.ok(RENDERER.replace(/\r\n/g, '\n').includes(site), site);
   }
   assert.strictEqual((RENDERER.match(/function usage\(key\)/g) || []).length, 1, 'defined once');
+});
+
+test('D5 (PR #246): Claude\'s canvas reveal never counts, even within 1.5 s of the person\'s own gesture', () => {
+  // The flag is declared above its use, set only around the reveal, and cleared even when the reveal throws.
+  const src = RENDERER.replace(/\r\n/g, '\n');
+  assert.ok(src.indexOf('let uncountedReveal = false;') > 0 && src.indexOf('let uncountedReveal = false;') < src.indexOf('!uncountedReveal) usage('));
+  assert.strictEqual((src.match(/uncountedReveal = true/g) || []).length, 1, 'set in one place only: canvasDock');
+  // run the two pieces together: a live gesture, then the canvas reveal draws a newly shown panel
+  const vm = require('node:vm');
+  const counted = [];
+  const ctx = { counted, usage: (k) => counted.push(k), onModuleShown() {}, usageGestureLive: () => true, uncountedReveal: false };
+  vm.createContext(ctx);
+  vm.runInContext(`function draw(fx) { for (const id of fx.newlyShown) { if (usageGestureLive() && !uncountedReveal) usage('panel:' + id); onModuleShown(id); } }
+    function canvasDock() { uncountedReveal = true; try { draw({ newlyShown: ['canvas'] }); } finally { uncountedReveal = false; } }
+    canvasDock(); draw({ newlyShown: ['git'] });`, ctx);
+  assert.deepStrictEqual(counted, ['panel:git'], 'canvas is not counted, the next show is');
 });
 
 test('the host builds the counters above the canvas control that bumps them', () => {

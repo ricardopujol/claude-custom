@@ -38,7 +38,7 @@ test('the panel docks itself only when canvasDisplay says Claude wrote a page: s
   assert.match(dock, /if \(window\.canvasDisplay\.shouldDock\(frame\)\) canvasDock\(\);/);
   // hidden: shown; unpinned (#85): opened from its rail, held; docked: selected: all three in the one shared helper
   // #97: Claude's render shows the panel but is not the person's gesture, so the show isn't counted as a use
-  assert.match(BLOCK, /function canvasDock\(\) \{\s*revealModule\('canvas', \{ gesture: false \}\);/);
+  assert.match(BLOCK, /function canvasDock\(\) \{[\s\S]*?uncountedReveal = true;\s*try \{ revealModule\('canvas', \{ gesture: false \}\); \} finally \{ uncountedReveal = false; \}/);
   assert.match(JS, /function revealModule\(id, \{ gesture = true \} = \{\}\) \{[\s\S]*?commitPlacement\(DTm\.show\(settledLayout\(\), id\), \{ select: id, gesture \}\)[\s\S]*?\} else selectModule\(id, \{ gesture \}\);/);
 });
 

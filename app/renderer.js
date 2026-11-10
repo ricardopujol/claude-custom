@@ -1337,6 +1337,7 @@ let shownModules = new Set();
 let usageGestureAt = -Infinity;
 const usageGesture = () => { usageGestureAt = Date.now(); };
 const usageGestureLive = () => layoutLoaded && helloSeen && Date.now() - usageGestureAt < 1500;
+let uncountedReveal = false;     // true only while canvasDock's reveal draws: whatever gesture came before, that show is Claude's, not a use
 let hostControls = null;         // the control types the attached host's hello lists; null until it has said (an old host lists no 'lean')
 let leanNight = false;           // a /bedtime night is going in any tab, main's word with the lean state: an animated background never plays then
 let windowFocused = null;        // main's word on whether this window has the keyboard focus; null until it has said (unknown holds still)
@@ -2048,7 +2049,10 @@ function canvasFetchIfNeeded() {
 
 // Claude was asked to build something: show the panel if it is hidden (as the Window menu does) and select it.
 function canvasDock() {
-  revealModule('canvas', { gesture: false });
+  // The draw this reveal causes runs inside the call, so the flag covers it: a person's gesture a moment EARLIER (a tab click within
+  // 1.5 s) must not make Claude's render count as a use of the panel (PR #246 Dexter D5).
+  uncountedReveal = true;
+  try { revealModule('canvas', { gesture: false }); } finally { uncountedReveal = false; }
 }
 
 function canvasOnFrame(frame) {
@@ -2362,7 +2366,7 @@ function renderLayout({ userAction = false, refit = true, settle = false, quiet 
   changesView();                    // the Changes panel asks the host for the changeset only while it is on screen
   ensureFontList();                 // the installed fonts are listed only once the Style panel is on screen
   reportResourcesViewing();         // main samples faster while any page shows the Resources panel
-  for (const id of fx.newlyShown) { if (usageGestureLive()) usage('panel:' + id); onModuleShown(id); }
+  for (const id of fx.newlyShown) { if (usageGestureLive() && !uncountedReveal) usage('panel:' + id); onModuleShown(id); }
   syncCanvasView();                 // the dock moved or resized: the panel's native view follows (or goes, when it is hidden)
   syncPreviewView();                // and the Preview panel's, the same way
   paintSchedulesBadge();            // a rebuilt rail button has lost its count
