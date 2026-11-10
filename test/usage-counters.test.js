@@ -292,6 +292,37 @@ test('#97 reset: a missing file resets nothing and writes nothing; an unreadable
   assert.ok(!fs.readdirSync(b.dir).some(f => f.includes('before-reset')));
 });
 
+test('Y1 (PR #246): a copy that fails half way leaves no archive and drops no key; a short copy is caught and refused', () => {
+  const before = { 'panel:agents': { count: 7, last: 'a' }, 'git:opened': { count: 3, last: 'b' } };
+  // the copy dies after writing part of the file
+  const a = setup();
+  const text = JSON.stringify(before);
+  fs.writeFileSync(a.file, text);
+  const dying = (src, dest) => { fs.writeFileSync(dest, text.slice(0, 10)); throw new Error('disk full'); };
+  const r = resetPrefix({ store: a.store, prefix: 'panel:', now: () => Date.parse('2026-11-07T18:30:00Z'), copyFile: dying });
+  assert.strictEqual(r.ok, false);
+  assert.match(r.reason, /could not be kept/);
+  assert.strictEqual(fs.readFileSync(a.file, 'utf8'), text, 'no key was dropped');
+  assert.ok(!fs.readdirSync(a.dir).some(f => f.includes('before-reset')), 'no truncated archive, no .partial left: ' + fs.readdirSync(a.dir));
+  // a copy that "succeeds" but is short
+  const b = setup();
+  fs.writeFileSync(b.file, text);
+  const short = (src, dest) => fs.writeFileSync(dest, text.slice(0, 10));
+  const r2 = resetPrefix({ store: b.store, prefix: 'panel:', copyFile: short });
+  assert.strictEqual(r2.ok, false);
+  assert.strictEqual(fs.readFileSync(b.file, 'utf8'), text);
+  assert.ok(!fs.readdirSync(b.dir).some(f => f.includes('before-reset')));
+  // an archive of that name already there is never overwritten
+  const c = setup();
+  fs.writeFileSync(c.file, text);
+  const stamp = () => Date.parse('2026-11-07T18:30:00Z');
+  const first = resetPrefix({ store: c.store, prefix: 'panel:', now: stamp });
+  assert.strictEqual(first.ok, true);
+  fs.writeFileSync(c.file, text);
+  assert.strictEqual(resetPrefix({ store: c.store, prefix: 'panel:', now: stamp }).ok, false, 'same second, same name: refused');
+  assert.strictEqual(fs.readFileSync(first.archive, 'utf8'), text);
+});
+
 test('#97 reset: only a prefix that names a counter family is accepted (an empty one would wipe everything)', () => {
   const { store, file } = setup();
   fs.writeFileSync(file, JSON.stringify({ 'git:opened': { count: 2, last: 'x' } }));
@@ -308,7 +339,7 @@ test('#97 wiring: host and main build their counters off for a probe or a test p
   assert.match(r, /function usage\(key\) \{ if \(usageOff\) return; sendJson/);
   assert.match(r, /const usageOff = new URLSearchParams\(location\.search\)\.get\('probe'\) === '1';/);
   // Claude's own canvas render reveals its panel, but it is not a gesture of the person's
-  assert.match(r, /function canvasDock\(\) \{\s*revealModule\('canvas', \{ gesture: false \}\);/);
+  assert.match(r, /function canvasDock\(\) \{[\s\S]*?try \{ revealModule\('canvas', \{ gesture: false \}\); \} finally \{ uncountedReveal = false; \}/);
   assert.match(r, /function revealModule\(id, \{ gesture = true \} = \{\}\) \{\s*if \(gesture\) usageGesture\(\);/);
   assert.match(r, /function commitPlacement\(next, \{ justThisTab = false, select = null, userAction = true, refit = true, gesture = true \} = \{\}\) \{[\s\S]{0,200}if \(gesture\) usageGesture\(\);/);
 });

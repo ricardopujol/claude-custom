@@ -84,7 +84,7 @@ const RESET_PREFIX = /^[a-z]+:$/;
  * keys under `prefix` are dropped and every other key is written back verbatim.
  *   -> { ok: true, removed: [keys], archive: path | null } | { ok: false, reason }
  */
-function resetPrefix({ store, prefix, now = Date.now } = {}) {
+function resetPrefix({ store, prefix, now = Date.now, copyFile = fs.copyFileSync } = {}) {
   if (typeof prefix !== 'string' || !RESET_PREFIX.test(prefix)) return { ok: false, reason: 'the prefix must name one counter family, like panel:' };
   try {
     return store.withLock(STORE_KEY, () => {
@@ -96,7 +96,19 @@ function resetPrefix({ store, prefix, now = Date.now } = {}) {
       const stamp = new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/:/g, '-');
       const archive = path.join(path.dirname(file), `${STORE_KEY}.before-reset-${stamp}.json`);
       const removed = Object.keys(state.value).filter((k) => k.startsWith(prefix));
-      try { fs.copyFileSync(file, archive, fs.constants.COPYFILE_EXCL); } catch (err) { return { ok: false, reason: `the old file could not be kept: ${err && err.message}` }; }
+      // The copy goes to a temp name, is checked against the original, and only then takes the archive's name, so a copy that failed half
+      // way never leaves a short file that looks like the kept archive (PR #246 Miguel Y1). No kept copy, no drop.
+      const partial = archive + '.partial';
+      try {
+        if (fs.existsSync(archive)) throw new Error('an archive of that name already exists');
+        try { fs.unlinkSync(partial); } catch { /* none left over */ }
+        copyFile(file, partial, fs.constants.COPYFILE_EXCL);
+        if (fs.readFileSync(partial, 'utf8') !== fs.readFileSync(file, 'utf8')) throw new Error('the copy does not match the original');
+        fs.renameSync(partial, archive);
+      } catch (err) {
+        try { fs.unlinkSync(partial); } catch { /* nothing to clean */ }
+        return { ok: false, reason: `the old file could not be kept: ${err && err.message}` };
+      }
       const next = {};
       for (const [k, v] of Object.entries(state.value)) if (!k.startsWith(prefix)) next[k] = v;
       try { store.write(STORE_KEY, next); } catch { return { ok: false, reason: 'write-failed' }; }
