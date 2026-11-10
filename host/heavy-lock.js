@@ -353,8 +353,12 @@ function reentrantSkip({ env, scriptPath, exists, run, startsOf, work, log }) {
   const outer = scriptThere ? readHolder({ run, startsOf, work, log }) : { holder: null, live: null };
   if (outer.live === null || (outer.live === true && flagNames(flag, outer.holder))) {
     // Flag set and no script: the reason is the missing script, not an unreadable status (#237 Miguel S3).
+    // A flag that is an identity (not the by-hand "1") names the holder that started this process: its own outer wrapper
+    // or probe, never another lane's suite (#183).
+    const pidOf = flag !== '1' && outer.holder ? /\(pid (\d+)(?: start \d+)?\)/.exec(outer.holder) : null;
+    const outerPid = pidOf ? pidOf[1] : null;
     log(outer.holder
-      ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder)`
+      ? `[heavy-lock] ${ENV_VAR} is set and the slot is held by ${outer.holder}: not taking the lock (re-entrant, under that holder${outerPid ? `: your own outer wrapper, pid ${outerPid}` : ''})`
       : !scriptThere
         ? `[heavy-lock] ${ENV_VAR} is set and the lock script ${scriptPath} is not on this machine: not taking the lock (re-entrant, no script to ask)`
         : `[heavy-lock] ${ENV_VAR} is set and who holds the slot could not be read: not taking the lock (re-entrant, can't tell)`);

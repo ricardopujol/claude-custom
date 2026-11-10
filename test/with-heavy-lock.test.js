@@ -35,7 +35,7 @@ test('runs the command under the lock, passes the re-entrancy flag, returns its 
   const p = main(['node', '--test', 'x'], r.deps);
   r.child.emit('exit', 3, null);
   assert.strictEqual(await p, 3);
-  assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'release']);
+  assert.deepStrictEqual(plain(r), ['acquire:node --test', 'spawn', 'release']);
   assert.strictEqual(r.spawned().cmd, 'node');
   assert.deepStrictEqual(r.spawned().args, ['--test', 'x']);
   assert.strictEqual(r.spawned().opts.env[ENV_VAR], 'npm test (pid 9 start 99)', '#237 Dexter 2: the flag names this run\'s holder, not a bare 1');
@@ -132,7 +132,7 @@ test('SIGHUP (a closed console): the tree is killed, THEN the slot is released, 
   const r = rig();
   const p = main(['node'], r.deps);
   r.proc.emit('SIGHUP');
-  assert.deepStrictEqual(plain(r), ['acquire:npm test', 'spawn', 'kill:4242', 'release']);
+  assert.deepStrictEqual(plain(r), ['acquire:node', 'spawn', 'kill:4242', 'release']);
   r.child.emit('exit', null, 'SIGTERM');
   assert.strictEqual(await p, 129);
   assert.strictEqual(r.events.filter(e => e === 'release').length, 1);
@@ -266,7 +266,24 @@ test('Dexter r2 1: the suite\'s child pid is recorded as work right after it sta
   const p = main(['node', '--test'], r.deps);
   r.child.emit('exit', 0, null);
   await p;
-  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:npm test', 'spawn', 'work:4242', 'provisional:4242', 'work:4242', 'release']);
+  assert.deepStrictEqual(r.events.filter(e => !e.startsWith('log:')), ['acquire:node --test', 'spawn', 'work:4242', 'provisional:4242', 'work:4242', 'release']);
+});
+
+test('#183: the lock is taken under the command\'s own first words, not always "npm test"', async () => {
+  const { labelFor } = require('../scripts/with-heavy-lock');
+  assert.strictEqual(labelFor(['node', 'verify/probe-x.js', '--flag'], {}), 'node verify/probe-x.js');
+  assert.strictEqual(labelFor(['node', '--test', '--test-concurrency=2', 'test/**/*.test.js'], {}), 'node --test');
+  assert.strictEqual(labelFor(['node'], {}), 'node');
+  assert.strictEqual(labelFor(['node', '--test', 'x'], { npm_lifecycle_event: 'test' }), 'npm test', 'run from `npm test`: named as such');
+  assert.strictEqual(labelFor(['node', 'verify/probe-x.js'], { npm_lifecycle_event: 'probe' }), 'node verify/probe-x.js');
+  assert.ok(!/[()]/.test(labelFor(['node', 'a (pid 5)'], {})), 'a label can never forge the owner shape "(pid N)"');
+  assert.ok(labelFor(['node', 'x'.repeat(500)], {}).length <= 80);
+  const r = rig();
+  r.deps.env = { A: 'a' };
+  const p = main(['node', 'verify/probe-x.js'], r.deps);
+  r.child.emit('exit', 0, null);
+  await p;
+  assert.ok(r.events.includes('acquire:node verify/probe-x.js'));
 });
 
 test('Dexter r2 1: a lock without addWork (or one that throws) does not stop the command', async () => {

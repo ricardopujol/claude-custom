@@ -536,7 +536,15 @@ test('Dexter r2 5 / 2026-11-05: HEAVY_LOCK_HELD under the live holder it names p
   const r = rig({ holder: OUTER });
   r.env[ENV_VAR] = OUTER_ID;
   acquire({ label: 'x', pid: 7, ...r.deps() });
-  assert.deepStrictEqual(r.log, [`[heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by ${OUTER}: not taking the lock (re-entrant, under that holder)`]);
+  // #183: the holder its own flag names is this run's own outer wrapper, never "another lane's suite".
+  assert.deepStrictEqual(r.log, [`[heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by ${OUTER}: not taking the lock (re-entrant, under that holder: your own outer wrapper, pid 1)`]);
+});
+
+test('#183: a by-hand bare "1" holder is not called "your own wrapper"', () => {
+  const r = rig({ holder: 'hub: probes (since 10:00:00)' });
+  r.env[ENV_VAR] = '1';
+  acquire({ label: 'x', pid: 7, ...r.deps() });
+  assert.deepStrictEqual(r.log, ['[heavy-lock] HEAVY_LOCK_HELD is set and the slot is held by hub: probes (since 10:00:00): not taking the lock (re-entrant, under that holder)']);
 });
 
 // ---- #237 Dexter 2 / Miguel S7: the flag names its holder, and a stranger's flag waits ----

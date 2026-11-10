@@ -43,12 +43,22 @@ const { spawn } = require('child_process');
 const heavy = require('../host/heavy-lock');
 const { killPidTree } = require('../host/kill-tree');
 
+// The name this run takes the slot under (#183): the command's own first words, so a probe's child sees "held by node
+// verify/probe-x.js (pid N)" and not a suite of another lane. `npm test` keeps its name (its argv is `node --test ...`, which
+// says less). No parentheses: a label must never read as the "(pid N)" part of an owner (host/heavy-lock.js WRAPPER_OWNER).
+const LABEL_MAX = 80;
+function labelFor(argv, env = process.env) {
+  if (env && env.npm_lifecycle_event === 'test') return 'npm test';
+  const words = argv.slice(0, 2).join(' ').replace(/[()]/g, '').replace(/\s+/g, ' ').trim();
+  return (words || 'command').slice(0, LABEL_MAX);
+}
+
 async function main(argv, {
   acquire = heavy.acquire, spawn: spawnFn = spawn, killFn = killPidTree, proc = process, log = console.error, env = process.env,
 } = {}) {
   if (!argv.length) { log('usage: node scripts/with-heavy-lock.js <command> [args...]'); return 2; }
   let lock;
-  try { lock = acquire({ label: 'npm test', env, log }); } catch (err) {
+  try { lock = acquire({ label: labelFor(argv, env), env, log }); } catch (err) {
     // Only the lock's own refusals are NOT RUN. Anything else is a bug in this code: its stack, and 1 (#237 Miguel M4).
     if (!(err instanceof heavy.HeavyLockError)) {
       log(`[heavy-lock] the lock code itself failed (a bug, not a busy lock): ${(err && err.stack) || err}`);
@@ -103,7 +113,7 @@ async function main(argv, {
   }
 }
 
-module.exports = { main };
+module.exports = { main, labelFor };
 
 if (require.main === module) {
   main(process.argv.slice(2)).then((code) => { process.exitCode = code; });
