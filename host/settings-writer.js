@@ -347,7 +347,7 @@ function canvasMcpConfig(c) {
  * a working session to buy a mood engine that cannot run yet. The helper
  * arrives in step 2; until then the harness runs without hooks.
  */
-function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side = false } = {}) {
+function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side = false, continueSession = false } = {}) {
   // #81: a side session is the CLI's own plan mode, which can read and answer and cannot write. Bypassing permissions would
   // override it, so the two never go together; and it is offered no panel of Claude's own.
   // Plan mode is only where it STARTS (Shift+Tab, or accepting the plan, leaves it): the deny is what keeps it read-only, and
@@ -357,6 +357,10 @@ function buildClaudeArgs({ settingsFile, helperExists, canvasMcp, modDir, side =
   const args = side === true
     ? ['--permission-mode', 'plan', '--tools', SIDE_ALLOWED_TOOLS.join(','), '--disallowedTools', SIDE_DENIED_TOOLS.join(','), '--strict-mcp-config']
     : ['--dangerously-skip-permissions'];
+  // BACKLOG #166: a lane's MAIN session resumes with the CLI's own --continue (its most recent conversation in this folder). Opt-in, and
+  // never on a side session. Whether there is a conversation to continue is the caller's question (host/continue-flag.js): the
+  // interactive CLI with nothing to continue exits 1.
+  if (continueSession === true && side !== true) args.push('--continue');
   if (helperExists && settingsFile) args.push('--settings', settingsFile);
   // The tools learn their session from the SessionStart hook; with no hook helper no session id ever arrives and every call would answer
   // 'not ready yet' for ever, so they are not offered at all (PR #125 Dexter #8).

@@ -172,6 +172,7 @@ const { liveSessionsIn } = require('./session-registry');
 const { worktreeEnv, worktreeRoot } = require('./worktree-env');
 const { allocate: allocatePortBlock, excludedRanges } = require('./port-blocks');
 const { branchHealth } = require('./branch-health');
+const { hasConversation } = require('./continue-flag');
 
 // --- locate the real claude binary -----------------------------------------
 // npm installs a native claude.exe; spawning it directly avoids a cmd.exe shim
@@ -765,6 +766,17 @@ const settingsFile = writeHarnessSettings(HARNESS_DIR, {
 const ARGS_OPTIONS = { settingsFile, helperExists, canvasMcp, side: SIDE };
 // Rebuilt once, at boot, with the claude-custom mod when its switch, the CLI's version and its directory allow it (prepareMod below).
 let ARGS = buildClaudeArgs(ARGS_OPTIONS);
+// The mod's directory ARGS was last rebuilt with (prepareMod), so a spawn-time rebuild keeps the plugin.
+let ARGS_MOD_DIR = null;
+/**
+ * What claude is started with RIGHT NOW (BACKLOG #166): ARGS, and for a lane's main session `--continue` when the CLI's own session
+ * store has a conversation here, asked at each spawn (a session started after the kill switch, or after a lock blocked it, resumes
+ * too). A side session and a shell tab start fresh. The interactive CLI with nothing to continue exits 1 (host/continue-flag.js).
+ */
+function claudeArgs() {
+  if (SIDE || SHELL) return ARGS;
+  return buildClaudeArgs({ ...ARGS_OPTIONS, modDir: ARGS_MOD_DIR, continueSession: hasConversation(CWD) });
+}
 // A shell host runs the person's shell with no arguments (host/launch-target.js pickShell); claude's arguments are for claude.
 const SHELL_TARGET = SHELL ? pickShell(process.env) : null;
 // What every writeIdentity call says about this host's role (host/shell-tab.js identityFields): one place, so a fourth call can't forget it.
@@ -1950,7 +1962,7 @@ function startSession() {
   // arrived while blocked or booting only reached termState, which starts at
   // 120x30 and follows every validated resize since.
   const { cols, rows } = termState.size();
-  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : ARGS, {
+  const spawnPty = () => pty.spawn(SHELL ? SHELL_TARGET.bin : CLAUDE_BIN, SHELL ? SHELL_TARGET.args : claudeArgs(), {
     name: 'xterm-256color',
     cols,
     rows,
@@ -3408,6 +3420,7 @@ async function prepareMod() {
     }
     modPort = await modServer.listen();
     ARGS = buildClaudeArgs({ ...ARGS_OPTIONS, modDir: modPluginDirFor({ enabled, version, dir: MOD_DIR, forced }) });
+    ARGS_MOD_DIR = modPluginDirFor({ enabled, version, dir: MOD_DIR, forced });
     console.log('[host] claude-custom mod: on, posts to 127.0.0.1:' + modPort + ' (CLI', version ? version.join('.') : 'stand-in', ')');
     setModStatus({ state: 'on', reason: null });
   } catch (err) {
