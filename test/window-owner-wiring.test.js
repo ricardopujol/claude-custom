@@ -50,6 +50,10 @@ test('the owner stops being one at before-quit, before a dialog that ends the pr
   assert.match(ready, /\}\)\.catch\(\(err\) => \{[\s\S]{0,260}windowClaim\.stop\(\);[\s\S]{0,120}app\.exit\(1\)/);
 });
 
+test('a cancelled quit (the unsaved-text prompt answered Cancel) puts the window back as the project\'s owner (M1)', () => {
+  assert.match(src, /else \{\s*\n\s*quitting = false;[\s\S]{0,260}windowClaim\.resume\(\)/);
+});
+
 test('a window that already exists is left running when a late step throws (only the ownership is dropped)', () => {
   assert.match(ready, /windowClaim\.stop\(\);\s*\n\s*if \(!win \|\| win\.isDestroyed\(\)\) app\.exit\(1\);/);
 });

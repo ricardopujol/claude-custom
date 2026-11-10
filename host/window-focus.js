@@ -53,7 +53,7 @@ function cleanMessage(raw) {
  * Listen for launches. Resolves { close() } once the pipe is up; rejects when it can't be (the name is taken): the caller then
  * publishes no owner file. `onFocus(msg)` runs AFTER the launch was answered ok, and may wait for the window to be ready.
  */
-function listen({ pid, onFocus, accepting = () => true, idleMs = DEFAULT_IDLE_MS, log = () => {} } = {}) {
+function listen({ pid, onFocus, accepting = () => true, whenReady = () => true, idleMs = DEFAULT_IDLE_MS, log = () => {} } = {}) {
   return new Promise((resolve, reject) => {
     const sockets = new Set();
     const server = net.createServer((sock) => {
@@ -83,10 +83,19 @@ function listen({ pid, onFocus, accepting = () => true, idleMs = DEFAULT_IDLE_MS
         let open = false;
         try { open = accepting() === true; } catch { open = false; }
         if (!open) return reply({ ok: false, error: 'closing' });
-        // ACCEPT, THEN ACT. The launch is answered the moment the message is understood; it never waits for this window to finish starting
-        // (a window that takes longer than the launch's wait would make the launch open a second one).
-        reply({ ok: true });
-        Promise.resolve().then(() => onFocus(msg)).catch((err) => log(`[window-focus] onFocus failed: ${err && err.message}`));
+        // A launch is held (no idle drop) while this window finishes starting: ok is only ever said by a window that is ready, so an
+        // owner that then ends before it is ready (attach-only refusal, failed start) cannot have swallowed a launch (PR #247 Dexter M2).
+        sock.setTimeout(0);
+        // ACCEPT, THEN ACT. Once the window is ready the launch is answered at once and acted on right after.
+        let ready;
+        try { ready = Promise.resolve(whenReady()); } catch { ready = Promise.resolve(false); }
+        ready.catch(() => false).then((isReady) => {
+          let open = false;
+          try { open = isReady === true && accepting() === true; } catch { open = false; }
+          if (!open) return reply({ ok: false, error: 'closing' });
+          reply({ ok: true });
+          Promise.resolve().then(() => onFocus(msg)).catch((err) => log(`[window-focus] onFocus failed: ${err && err.message}`));
+        });
       });
     });
     server.once('error', reject);

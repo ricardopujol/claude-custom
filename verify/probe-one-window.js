@@ -19,6 +19,10 @@
  *   7  two launches started together on one project: exactly one window survives, the other exits 0
  *   8  close, then reopen (PR #247 Dexter 1 / Miguel B1): a launch while the first window is still shutting down gets a window of its own,
  *      and the file names it: one window, never zero
+ *   9  the double click during a close (PR #247 round 2, M3): two launches while the first window is shutting down end with ONE window
+ *      (one opens it, the other is handed to it). NOT here: a cancelled quit (M1) needs the unsaved-text prompt and a launch held while
+ *      the owner starts (M2) needs an attach-only refusal; neither has a probe command, so test/window-claim-edges.test.js covers them
+ *      with the real owner file and the real pipes.
  *
  * SAFE. A scratch project in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), ELECTRON_RUN_AS_NODE and every
  * CLAUDE_CUSTOM_* the probe doesn't set are deleted by the launcher, registry / portraits / uploads / UI state / user data are temp
@@ -277,8 +281,33 @@ async function main() {
     quitExtra.push(w8, l8);
   }
 
+  // 9 ---------------------------------------------------------------------------------
+  // The double click during a close (PR #247 round 2, Dexter M3): two launches while the first window is shutting down end with ONE window.
+  const y = makeProject('proj4');
+  const w9 = await launchApp(y.container);
+  const sw9 = await firstWindowUp(w9);
+  check('9: the window to be closed came up', !!sw9 && sw9.windows === 1);
+  let k9 = [];
+  const e9 = [];
+  if (sw9) {
+    await command(w9, { cmd: 'quit', graceful: true });
+    const pair = await Promise.all([launchApp(y.container), launchApp(y.container)]);
+    await waitFor(() => pair.some(a => /this launch ends/.test(a.out)) ? true : null, 90000);
+    await sleep(5000);
+    e9.push(...pair.filter(a => /this launch ends/.test(a.out)));
+    k9 = pair.filter(a => !/this launch ends/.test(a.out));
+    check('9: two launches during a close: one opens the window, the other is handed to it', e9.length === 1 && k9.length === 1, `enders=${e9.length} keepers=${k9.length}`);
+    if (k9.length === 1) {
+      const s9 = await firstWindowUp(k9[0]);
+      check('9: ...and the keeper has one window and the file names it', !!s9 && s9.windows === 1 && (readOwner(y) || {}).pid === k9[0].child.pid,
+        `windows=${s9 && s9.windows} file=${JSON.stringify(readOwner(y))}`);
+      await command(k9[0], { cmd: 'quit', graceful: true });
+    }
+    quitExtra.push(w9, ...k9);
+  }
+
   // The launches that handed over must END (and leave nothing of their own), however long Chromium takes to shut down.
-  const handedOver = [app2, app3, ...[r1, r2].filter(a => /this launch ends/.test(a.out))];
+  const handedOver = [app2, app3, ...[r1, r2].filter(a => /this launch ends/.test(a.out)), ...e9];
   const allGone = await waitFor(() => handedOver.every(a => a.exited) ? true : null, 300000, 1000);
   check('2/3/7: every launch that handed over ended by itself with exit code 0', allGone === true && handedOver.every(a => a.exitCode === 0),
     handedOver.map(a => `${a.child.pid}:${a.exited ? a.exitCode : 'running'}`).join(' '));

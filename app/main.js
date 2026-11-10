@@ -722,7 +722,11 @@ function createWindow() {
       if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
       // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
       // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
-      else quitting = false;
+      else {
+        quitting = false;
+        // before-quit already stopped the one-window claim; the window stays, so it is the project's owner again (PR #247 Dexter M1).
+        if (win && !win.isDestroyed()) windowClaim.resume().catch(() => {});
+      }
     }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
   });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
