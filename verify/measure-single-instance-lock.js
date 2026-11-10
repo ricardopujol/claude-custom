@@ -16,7 +16,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { spawnElectron } =require('./lib/launch-electron');
+const { spawnElectron } = require('./lib/launch-electron');
 const { tmpDir } = require('../test/tmp-dir');
 
 const ROOT = path.join(__dirname, '..');
