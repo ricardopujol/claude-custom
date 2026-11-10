@@ -749,3 +749,13 @@ test('the mood machine\'s cause tests post only tools whose Post hooks are regis
   assert.ok(posted.size > 0, 'the scan found the fixtures');
   for (const t of posted) assert.ok(hooked.has(t), `${t} has no PostToolUse hook, so it can't happen live`);
 });
+
+// #74 F2 / PR #246 Miguel Y6: host/pty-env.js is now a mutated module, so the shell-branch text pin moved here from shell-host-wiring.test.js.
+test('pty-env.js: a shell tab\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {
+  const src = read('host/pty-env.js').replace(/\r\n/g, '\n');
+  const at = src.indexOf("if (kind === 'shell') {");
+  assert.ok(at >= 0, 'the shell branch exists');
+  const shellBranch = src.slice(at, src.indexOf('\n  }', at));
+  assert.match(shellBranch, /shellEnv\(\{ \.\.\.base \}\)/);
+  assert.doesNotMatch(shellBranch, /providerEnv|modEnv|CLAUDE_CUSTOM_SESSION/);
+});

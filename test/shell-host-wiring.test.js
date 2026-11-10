@@ -30,11 +30,7 @@ test('host.js: a shell\'s environment goes through shellEnv and gets no provider
   // behaviour in test/pty-env.test.js (a shell tab gets shellEnv(base), the worktree's, no provider, no mod token, no marker).
   const spawn = HOST.slice(HOST.indexOf('const spawnPty = () => pty.spawn('), HOST.indexOf('trackExit(term);'));
   assert.match(spawn, /env: ptyEnv\(\{ kind: SHELL \? 'shell' : SIDE \? 'side' : 'branch', base: cleanEnv\(\), shellEnv, sessionEnv, providerEnv,/);
-  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'host', 'pty-env.js'), 'utf8');
-  const at = src.replace(/\r\n/g, '\n').indexOf("if (kind === 'shell') {");
-  const shellBranch = src.replace(/\r\n/g, '\n').slice(at, src.replace(/\r\n/g, '\n').indexOf('\n  }', at));
-  assert.match(shellBranch, /shellEnv\(\{ \.\.\.base \}\)/);
-  assert.doesNotMatch(shellBranch, /providerEnv|modEnv|CLAUDE_CUSTOM_SESSION/);
+  // The text pin on pty-env.js's shell branch lives in test/source-contracts.test.js (pty-env.js is a mutated module: PR #246 Y6).
 });
 
 test('host.js: every identity the host writes says whether it is a shell host, as well as a side host', () => {
