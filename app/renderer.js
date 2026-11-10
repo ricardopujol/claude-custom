@@ -10242,17 +10242,24 @@ function sendDropFiles(files) {
 // main runs a native paste into this page (window.harness.pasteFiles, only when files are ALL the clipboard holds), and its paste
 // event carries every file as a File, which goes down the drop's path above. MEASURED 2026-11-07: main's own clipboard API sees only
 // the first of two copied files; the paste event sees both. Capture phase on the document, so xterm's textarea listener never gets it
-// (it would paste nothing, or raw text). A paste this page asked for is always taken here, files or not, for the same reason.
+// (it would paste nothing, or raw text). What it does with each paste is app/paste-action.js pasteEventDecision (tested): files are taken,
+// an armed paste with nothing in it is taken and SAID, and an armed paste carrying someone else's text passes through (PR #246 Y2, D6).
 let filePasteArmedUntil = 0;
 document.addEventListener('paste', (e) => {
-  const armed = Date.now() < filePasteArmedUntil;
-  const files = [...((e.clipboardData && e.clipboardData.files) || [])];
-  const inTerm = !!(e.target && e.target.closest && e.target.closest('#term'));
-  if (!armed && !(files.length && inTerm)) return;
-  filePasteArmedUntil = 0;
+  const cd = e.clipboardData;
+  const files = [...((cd && cd.files) || [])];
+  const d = pasteEventDecision({
+    armed: Date.now() < filePasteArmedUntil,
+    fileCount: files.length,
+    hasText: !!(cd && typeof cd.getData === 'function' && cd.getData('text/plain')),
+    inTerm: !!(e.target && e.target.closest && e.target.closest('#term')),
+  });
+  if (d.disarm) filePasteArmedUntil = 0;
+  if (d.act === 'ignore') return;
   e.preventDefault();
   e.stopImmediatePropagation();
-  if (files.length) sendDropFiles(files);
+  if (d.act === 'files' && !sendDropFiles(files)) flourish(noUsablePathNote());
+  else if (d.notice) flourish(d.notice);
 }, true);
 
 // What the drop did, said out loud. A gesture that silently widens what the

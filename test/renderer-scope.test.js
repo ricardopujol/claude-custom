@@ -193,6 +193,8 @@ const ALLOWED_GLOBALS = new Set([
   'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'copyKeyAction', 'selectionVisible',
   // fileEntries: the drop's and the pasted file list's entries (#136 (1)), called bare from renderer.js's sendDropFiles
   'fileEntries',
+  // pasteEventDecision, noUsablePathNote: what the capture-phase paste listener does with an event (PR #246 Y2, D6)
+  'pasteEventDecision', 'noUsablePathNote',
   // app/models-favourites.js (BACKLOG E #5, #3)
   'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite', 'setFavourite',
   'partitionFavourites', 'pinFavouritesFirst',
@@ -310,7 +312,7 @@ test('the display modules the renderer needs are actually defined after loading'
   for (const fn of ['usageDisplay', 'careerDisplay', 'quotaDisplay', 'projectsDisplay',
                     'rosterWidth', 'faceSize', 'bugVaultDisplay',
                     'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
-                    'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'fileEntries',
+                    'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'fileEntries', 'pasteEventDecision', 'noUsablePathNote',
                     'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'setFavourite',
                     'partitionFavourites', 'pinFavouritesFirst', 'refreshButtonState',
                     'mergeCatalogueReply', 'shouldClearPending',

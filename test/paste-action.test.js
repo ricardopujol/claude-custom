@@ -303,3 +303,35 @@ test('#136 (1): the renderer wires a files paste to the drop\'s own code, and le
   assert.match(src, /document\.addEventListener\('paste', [\s\S]{0,900}sendDropFiles\(files\)[\s\S]{0,300}\}, true\);/);
   assert.match(body, /action\.kind === 'text'[\s\S]{0,200}pasteFrame\(action\.text, term\.modes\.bracketedPasteMode\)/, 'text keeps its frame');
 });
+
+// ---- PR #246 (Miguel Y2, Dexter D6): the capture-phase paste listener's decision --------------------------------------------------
+const { pasteEventDecision, noUsablePathNote } = require('../app/paste-action');
+
+test('a paste with files in the terminal (or one this page asked for) is taken and sent down the drop path', () => {
+  assert.deepStrictEqual(pasteEventDecision({ fileCount: 2, inTerm: true }), { act: 'files', disarm: true, notice: null });
+  assert.strictEqual(pasteEventDecision({ armed: true, fileCount: 1 }).act, 'files');
+});
+
+test('an ordinary text paste is never taken, armed or not', () => {
+  assert.strictEqual(pasteEventDecision({ hasText: true, inTerm: true }).act, 'ignore');
+  assert.deepStrictEqual(pasteEventDecision({}), { act: 'ignore', disarm: false, notice: null });
+  assert.strictEqual(pasteEventDecision({ fileCount: 1, inTerm: false }).act, 'ignore', 'files pasted elsewhere (a text box) are left to it');
+});
+
+test('Y2: an armed paste that carries text and no files falls through to the normal paste, and disarms', () => {
+  assert.deepStrictEqual(pasteEventDecision({ armed: true, hasText: true }), { act: 'ignore', disarm: true, notice: null });
+});
+
+test('D6: an armed paste with nothing in it is taken and SAID, never silent', () => {
+  const d = pasteEventDecision({ armed: true });
+  assert.strictEqual(d.act, 'empty');
+  assert.strictEqual(d.disarm, true);
+  assert.match(d.notice.name, /no copied file/);
+  assert.match(noUsablePathNote().name, /nothing was pasted/);
+});
+
+test('the listener uses the decision (and says so when no file has a usable path)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'renderer.js'), 'utf8');
+  assert.match(src, /pasteEventDecision\(\{/);
+  assert.match(src, /flourish\(noUsablePathNote\(\)\)/);
+});
