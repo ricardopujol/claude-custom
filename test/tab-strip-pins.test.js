@@ -76,3 +76,9 @@ test('the glyph is a drawn pin, 11 px, tinted by --pin (the page defines it); no
   assert.strictEqual(pin.textContent, '', 'the glyph carries no text: it is a drawing');
   assert.ok(pin.children.length > 0, 'an svg child');
 });
+
+test('Miguel S1: the whole tab\'s hover and screen-reader text says it is pinned, not only the 11 px glyph', () => {
+  const [a, b] = tabsOf([entry({ key: 'a', pinned: true, phaseText: 'live' }), entry({ key: 'b' })]);
+  assert.match(a.title, /Pinned · resumes at launch/);
+  assert.ok(!/Pinned/.test(b.title));
+});

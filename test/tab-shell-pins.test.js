@@ -206,3 +206,14 @@ test('Dexter 7: a layout that throws on save never breaks pin or unpin', async (
   assert.deepStrictEqual(h.shell.unpin(key('feat-a')), { ok: true });
   assert.ok(h.logs.some(l => /layout\.save threw: disk full/.test(l)));
 });
+
+test('Miguel S2: one "pinnable" rule serves pin and pinMenu, and the menu click reports a refusal instead of dropping it', () => {
+  const fs = require('fs');
+  const shell = fs.readFileSync(path.join(__dirname, '..', 'app', 'tab-shell.js'), 'utf8').replace(/\r\n/g, '\n');
+  assert.strictEqual((shell.match(/const pinnable = /g) || []).length, 1);
+  assert.ok((shell.match(/pinnable\(key\)/g) || []).length >= 2, 'used by setPinned and pinMenu');
+  assert.strictEqual((shell.match(/model\(\)\.some\(e => e\.key === key && !isCompanionEntry\(e\) && !e\.isDev\)/g) || []).length, 1, 'the predicate is written once');
+  const main = fs.readFileSync(path.join(__dirname, '..', 'app', 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const menu = main.slice(main.indexOf('function tabMenuTemplate('), main.indexOf('let win = null;'));
+  assert.match(menu, /const done = \(r\) => \{ if \(r && r\.ok === false\) console\.log\(`\[menu\] pin: \$\{r\.error\}`\); \};/);
+});

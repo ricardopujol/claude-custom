@@ -636,6 +636,9 @@ function createShell(deps) {
    * Pin or unpin a lane (BACKLOG #167). Only a lane the strip lists can be pinned: not develop (always in the launch set), not a side
    * or shell tab. An unpin is allowed for any key that is pinned, listed or not. Saved.
    */
+  /** A lane the strip lists that can be pinned: not develop (always in the launch set), not a side or shell tab. */
+  const pinnable = (key) => model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev);
+
   function setPinned(key, on) {
     if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
     if (typeof key !== 'string' || key === '') return { ok: false, error: 'not a lane' };
@@ -643,7 +646,7 @@ function createShell(deps) {
     if (on === false) {
       if (!has) return { ok: true };
     } else {
-      if (!model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev)) return { ok: false, error: 'not a lane that can be pinned' };
+      if (!pinnable(key)) return { ok: false, error: 'not a lane that can be pinned' };
       if (has) return { ok: true };
     }
     pinned = on === false ? pinned.filter(k => k !== key) : [...pinned, key];
@@ -661,7 +664,7 @@ function createShell(deps) {
   function pinMenu(key) {
     const none = { show: false, pinned: false, label: '', target: null };
     if (mode !== 'tabs' || typeof key !== 'string' || key === '') return none;
-    if (!model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev)) return none;
+    if (!pinnable(key)) return none;
     const on = pinned.includes(key);
     return { show: true, pinned: on, label: on ? 'Unpin' : 'Pin (starts at launch)', target: key };
   }

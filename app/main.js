@@ -504,7 +504,8 @@ function tabMenuTemplate(key) {
   const issue = tabShell.issueOf(key);
   // #167: Pin / Unpin, for a lane's tab only (the shell says: not develop, which is always started at launch).
   const pinState = tabShell.pinMenu(key);
-  const pinItem = { label: pinState.label, click: () => (pinState.pinned ? tabShell.unpin(pinState.target) : tabShell.pin(pinState.target)) };
+  const done = (r) => { if (r && r.ok === false) console.log(`[menu] pin: ${r.error}`); };
+  const pinItem = { label: pinState.label, click: () => done(pinState.pinned ? tabShell.unpin(pinState.target) : tabShell.pin(pinState.target)) };
   return [
     markSubmenu(tabShell.branchOf(key)),
     { type: 'separator' },

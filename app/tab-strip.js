@@ -196,7 +196,8 @@ function paintTab(doc, entry, bridge, all) {
   if (said.length) tab.title = [tab.title, ...said].join('\n');
   // #167 (Ricardo's pick P4, "A"): a pinned lane wears a pin glyph before the status dot. The model says who is pinned; a side or
   // shell tab never is. Only a real `true` draws it.
-  if (entry.pinned === true && entry.side !== true && entry.shell !== true) tab.appendChild(pinGlyph(doc));
+  const pinned = entry.pinned === true && entry.side !== true && entry.shell !== true;
+  if (pinned) { tab.appendChild(pinGlyph(doc)); tab.title = [tab.title, PIN_TITLE.split(' · ').slice(0, 2).join(' · ')].join('\n'); }
   // The dots read the CLI's own state when it reports one (OSC 7501, app/program-status-display.js); without it they are
   // exactly what they always were. The kind and message ride in the tooltip as text, never in the tab's chrome.
   const ps = typeof module !== 'undefined' && module.exports ? require('./program-status-display') : root.programStatusDisplay;

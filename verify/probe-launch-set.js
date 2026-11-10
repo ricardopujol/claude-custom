@@ -15,7 +15,8 @@
  *   3  the pin glyph is painted before the status dot on the pinned tabs (11 px, an svg, the hover text) and not on develop
  *   4  the tab menu offers Pin on an unpinned lane and Unpin on a pinned one, and nothing on develop; Pin puts feat/c on the strip
  *      idle (no session started by it) with its glyph, Unpin takes it off again; both are saved to tab-strip.json
- *   5  a restart keeps the pins, attaches to the three hosts that are still running, and starts no fourth
+ *   5  a restart keeps the pins and attaches to the hosts still running (develop, the two pins and feat/c, which step 4 started): four
+ *      before and four after, none spawned twice
  *
  * SAFE. Every host's `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), so nothing bills and `--continue` is never passed to a real CLI.
  * ELECTRON_RUN_AS_NODE is deleted and every CLAUDE_CUSTOM_* variable but the probe's own is stripped. Hosts end by their own stop,
