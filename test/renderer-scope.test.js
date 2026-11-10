@@ -197,7 +197,7 @@ const ALLOWED_GLOBALS = new Set([
   'pasteEventDecision', 'noUsablePathNote',
   // app/models-favourites.js (BACKLOG E #5, #3)
   'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'toggleFavourite', 'setFavourite',
-  'partitionFavourites', 'pinFavouritesFirst',
+  'partitionFavourites', 'pinFavouritesFirst', 'filterCatalogue',
   // app/models-refresh.js (BACKLOG E #5, #2)
   'refreshButtonState',
   // app/models-catalogue.js (BACKLOG E #5, PR #60 review: Dexter F1/F4)
@@ -314,7 +314,7 @@ test('the display modules the renderer needs are actually defined after loading'
                     'vaultLockDisplay', 'styleDisplay', 'instanceCounts', 'modelLine', 'modelEntry',
                     'pasteAction', 'isPasteKey', 'pasteFrame', 'pasteFailureNote', 'fileEntries', 'pasteEventDecision', 'noUsablePathNote',
                     'emptyFavourites', 'normalizeFavourites', 'isFavourite', 'setFavourite',
-                    'partitionFavourites', 'pinFavouritesFirst', 'refreshButtonState',
+                    'partitionFavourites', 'pinFavouritesFirst', 'filterCatalogue', 'refreshButtonState',
                     'mergeCatalogueReply', 'shouldClearPending',
                     'splitActiveInactive', 'rosterTokenState', 'sortRosterRows']) {
     assert.strictEqual(typeof ctx[fn], 'function', `${fn} must be reachable from renderer.js`);

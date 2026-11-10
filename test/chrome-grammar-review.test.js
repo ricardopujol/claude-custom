@@ -27,6 +27,8 @@ test('#163: the HP heart is gone from the top bar: no markup, no CSS, no rendere
   assert.ok(!HTML.includes('id="hp"'), 'no #hp element');
   assert.ok(!HTML.includes('chip-hp'), 'no chip-hp wrapper');
   assert.ok(!HTML.includes('heart-pulse'), 'no heart icon in the bar');
+  // PR #246 Miguel S2: its icon path left with it (nothing else drew it)
+  assert.ok(!require('fs').readFileSync(require('path').join(__dirname, '..', 'app', 'chip-icons.js'), 'utf8').includes('heart-pulse'), 'no heart-pulse path in chip-icons.js');
   assert.doesNotMatch(HTML, /#hp\b/, 'no #hp CSS rule');
   assert.ok(!HTML.includes('hp-pulse'), 'no hp-pulse keyframes');
   assert.ok(!JS.includes('renderHealth'), 'the renderer draws no health chip');

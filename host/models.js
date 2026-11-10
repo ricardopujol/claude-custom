@@ -29,11 +29,6 @@
  * would shrink the diversity the council exists for.
  */
 
-const TARGETS = Object.freeze({
-  SESSION: 'session',   // must be able to call tools
-  COUNCIL: 'council',   // chat is enough
-});
-
 /** Dollars per million tokens, or null when the figure is not a usable number. */
 function perMillion(price) {
   if (price === null || price === undefined || price === '') return null;
@@ -105,5 +100,5 @@ function sortModels(models, by) {
 }
 
 module.exports = {
-  normalizeModel, normalizeCatalogue, sortModels, perMillion, TARGETS,
+  normalizeModel, normalizeCatalogue, sortModels, perMillion,
 };

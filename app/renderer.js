@@ -6842,17 +6842,8 @@ function renderModels() {
     return;
   }
 
-  let rows = catalogue;
-  // Only the SESSION target restricts by tools: a model that cannot call one
-  // can still hold an opinion, and excluding it would shrink the very
-  // diversity the council exists for.
-  if (target === 'session') rows = rows.filter(m => m.tools);
-  if (search) {
-    const q = search.toLowerCase();
-    rows = rows.filter(m => m.id.toLowerCase().indexOf(q) !== -1 ||
-                            m.name.toLowerCase().indexOf(q) !== -1);
-  }
-  if (freeOnly) rows = rows.filter(m => m.free);
+  // Only the SESSION target restricts by tools (app/models-favourites.js filterCatalogue, tested)
+  let rows = filterCatalogue(catalogue, { target, search, freeOnly });
 
   if (!rows.length) {
     el.innerHTML = '<div class="none">nothing matches that filter</div>';

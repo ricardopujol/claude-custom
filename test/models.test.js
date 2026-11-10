@@ -22,9 +22,10 @@ const {
 } = require('../host/models');
 
 // BACKLOG #93 (Ricardo 2026-11-06): filterModels was used only by its own tests; the Models panel filters the rows itself
-// (app/renderer.js, the session target keeps only models with tools, free-only keeps only the known-free).
-test('#93: filterModels is no longer exported (only its own tests used it)', () => {
+// (app/models-favourites.js filterCatalogue, tested in models-favourites.test.js). TARGETS went with it (PR #246 Miguel Y4).
+test('#93: filterModels and its TARGETS are no longer exported (only their own tests used them)', () => {
   assert.strictEqual(require('../host/models').filterModels, undefined);
+  assert.strictEqual(require('../host/models').TARGETS, undefined);
 });
 
 // A row shaped like the real endpoint returns. Prices are STRINGS, per token.

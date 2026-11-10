@@ -13,21 +13,21 @@ const {
 } = require('../host/close-safety');
 
 const SAFE = { merged: true, dirtyCount: 0, unpushedCount: 0, agentsHere: 0 };
-// Safe = no reason to ask. isSafeToClose was exactly this wrapper, used only here, and is removed (BACKLOG #93); every rule it
-// pinned is a rule of closeReasons, so the assertions stay, through this.
-const isSafeToClose = (facts) => closeReasons(facts).length === 0;
+// Safe = no reason to ask. The removed isSafeToClose (BACKLOG #93) was exactly this one-liner; every rule it pinned is a rule of
+// closeReasons, so the assertions stay, through a plain helper (no copy of the removed function lives here: PR #246 Miguel S1).
+const noReason = (facts) => closeReasons(facts).length === 0;
 
 test('#93: isSafeToClose is no longer exported (only this test used it)', () => {
   assert.strictEqual(require('../host/close-safety').isSafeToClose, undefined);
 });
 
 test('safe: merged, clean, pushed and unoccupied is safe', () => {
-  assert.strictEqual(isSafeToClose(SAFE), true);
+  assert.strictEqual(noReason(SAFE), true);
 });
 
 test("safe: the tab's own session is not a fact -- mid-turn, waiting or unknown still closes", () => {
   for (const session of ['idle', 'busy', 'waiting', null, undefined, 'x']) {
-    assert.strictEqual(isSafeToClose({ ...SAFE, session }), true, String(session));
+    assert.strictEqual(noReason({ ...SAFE, session }), true, String(session));
     assert.deepStrictEqual(closeReasons({ ...SAFE, session }), [], String(session));
   }
 });
@@ -39,7 +39,7 @@ test('safe: every combination -- only the all-clear one is safe', () => {
         for (const agentsHere of [0, 1]) {
           const expected = merged && dirtyCount === 0 && unpushedCount === 0 && agentsHere === 0;
           const facts = { merged, dirtyCount, unpushedCount, agentsHere };
-          assert.strictEqual(isSafeToClose(facts), expected, JSON.stringify(facts));
+          assert.strictEqual(noReason(facts), expected, JSON.stringify(facts));
         }
       }
     }
@@ -49,15 +49,15 @@ test('safe: every combination -- only the all-clear one is safe', () => {
 test('safe: unknown is never safe (null, undefined, strings, NaN, negatives)', () => {
   for (const bad of [null, undefined, '0', NaN, -1, 1.5, {}, false]) {
     for (const k of ['dirtyCount', 'unpushedCount', 'agentsHere']) {
-      assert.strictEqual(isSafeToClose({ ...SAFE, [k]: bad }), false, `${k}=${String(bad)}`);
+      assert.strictEqual(noReason({ ...SAFE, [k]: bad }), false, `${k}=${String(bad)}`);
     }
   }
   for (const bad of [null, undefined, 'true', 1, 0, false]) {
-    assert.strictEqual(isSafeToClose({ ...SAFE, merged: bad }), false, `merged=${String(bad)}`);
+    assert.strictEqual(noReason({ ...SAFE, merged: bad }), false, `merged=${String(bad)}`);
   }
-  assert.strictEqual(isSafeToClose(null), false);
-  assert.strictEqual(isSafeToClose(undefined), false);
-  assert.strictEqual(isSafeToClose('x'), false);
+  assert.strictEqual(noReason(null), false);
+  assert.strictEqual(noReason(undefined), false);
+  assert.strictEqual(noReason('x'), false);
 });
 
 test('closeReasons: names each thing that is wrong, one sentence each, in a fixed order', () => {
@@ -244,8 +244,8 @@ test('real git: showUntrackedFiles=no can\'t hide a file; a detached HEAD is unk
 // #50: unsaved edits in the file reader are a reason to ask.
 test('closeReasons: a file with unsaved edits in the reader is a reason, and an empty or missing one is not', () => {
   assert.deepStrictEqual(closeReasons({ ...SAFE, readerUnsaved: 'src/app.js' }), ['You have unsaved edits to src/app.js in the file reader.']);
-  assert.strictEqual(isSafeToClose({ ...SAFE, readerUnsaved: 'src/app.js' }), false);
+  assert.strictEqual(noReason({ ...SAFE, readerUnsaved: 'src/app.js' }), false);
   for (const none of [undefined, null, '', 0, false, {}]) {
-    assert.strictEqual(isSafeToClose({ ...SAFE, readerUnsaved: none }), true, String(none));
+    assert.strictEqual(noReason({ ...SAFE, readerUnsaved: none }), true, String(none));
   }
 });
