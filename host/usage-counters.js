@@ -24,9 +24,19 @@
  *     counter loses a count before it costs the pty host or Electron main a frame.
  *   - What panel counts MEAN: a panel shown after the layout loaded, by a user gesture (a tab, the rail, the Window menu). Startup,
  *     layout loads and leaving lean mode are not counted. A rail panel opened by a click counts as a show.
+ *   - ONLY RICARDO'S OWN WINDOWS COUNT (BACKLOG #97, 2026-11-06 "Fix the count first"). `countingOff(env)` names why a process never
+ *     counts: 'probe' when a verify/ probe started it (the probe mark, host/probe-mark.js, which every process tree a probe starts
+ *     inherits; or main under the tabs probe, CLAUDE_CUSTOM_TABS_PROBE), 'test' when a `node --test` run did (NODE_TEST_CONTEXT).
+ *     host.js and main.js build their counters with it as `off`, and an off counter refuses every bump ('off') without touching
+ *     the file. A person's own window has none of these, so it is null there. The page adds two rules of its own (app/renderer.js):
+ *     a page opened with ?probe=1 sends nothing, and Claude's own canvas render reveals its panel without marking a gesture.
+ *   - `resetPrefix({ store, prefix })` starts a family over (scripts/usage-reset.js): the whole old file is kept beside it as
+ *     `usage-counters.before-reset-<ISO time>.json`, then the keys under the prefix are dropped, inside the same lock.
  */
 
 const fs = require('node:fs');
+const path = require('node:path');
+const { markFromEnv } = require('./probe-mark');
 
 const STORE_KEY = 'usage-counters';
 const KEYS_MAX = 100;
@@ -56,7 +66,58 @@ function isValidKey(key) {
   return typeof key === 'string' && (STATIC_SET.has(key) || PANEL_SET.has(key) || GAME_SET.has(key));
 }
 
-function createUsageCounters({ store, now = Date.now, debounceMs = PANEL_DEBOUNCE_MS, log = () => {} } = {}) {
+/** Why this process never counts ('probe' | 'test'), or null for a person's own window. */
+function countingOff(env) {
+  if (!env || typeof env !== 'object') return null;
+  if (markFromEnv(env) !== null) return 'probe';
+  if (typeof env.CLAUDE_CUSTOM_TABS_PROBE === 'string' && env.CLAUDE_CUSTOM_TABS_PROBE !== '') return 'probe';
+  if (typeof env.NODE_TEST_CONTEXT === 'string' && env.NODE_TEST_CONTEXT !== '') return 'test';
+  return null;
+}
+
+// A counter family's prefix: lowercase letters then one colon ('panel:', 'game:'). Nothing shorter can be reset: '' would be every key.
+const RESET_PREFIX = /^[a-z]+:$/;
+
+/**
+ * Start a counter family over. Inside the store's lock: the file is read (a missing one resets nothing; one it can't read is refused
+ * and left alone), the whole old file is copied beside it as `<key>.before-reset-<ISO time, colons as dashes>.json`, then the
+ * keys under `prefix` are dropped and every other key is written back verbatim.
+ *   -> { ok: true, removed: [keys], archive: path | null } | { ok: false, reason }
+ */
+function resetPrefix({ store, prefix, now = Date.now, copyFile = fs.copyFileSync } = {}) {
+  if (typeof prefix !== 'string' || !RESET_PREFIX.test(prefix)) return { ok: false, reason: 'the prefix must name one counter family, like panel:' };
+  try {
+    return store.withLock(STORE_KEY, () => {
+      let state;
+      try { state = store.readState(STORE_KEY); } catch { return { ok: false, reason: 'unreadable' }; }
+      if (state.status === 'missing') return { ok: true, removed: [], archive: null };
+      if (state.status !== 'ok' || !isObject(state.value)) return { ok: false, reason: 'unreadable' };
+      const file = store.pathOf(STORE_KEY);
+      const stamp = new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/:/g, '-');
+      const archive = path.join(path.dirname(file), `${STORE_KEY}.before-reset-${stamp}.json`);
+      const removed = Object.keys(state.value).filter((k) => k.startsWith(prefix));
+      // The copy goes to a temp name, is checked against the original, and only then takes the archive's name, so a copy that failed half
+      // way never leaves a short file that looks like the kept archive (PR #246 Miguel Y1). No kept copy, no drop.
+      const partial = archive + '.partial';
+      try {
+        if (fs.existsSync(archive)) throw new Error('an archive of that name already exists');
+        try { fs.unlinkSync(partial); } catch { /* none left over */ }
+        copyFile(file, partial, fs.constants.COPYFILE_EXCL);
+        if (fs.readFileSync(partial, 'utf8') !== fs.readFileSync(file, 'utf8')) throw new Error('the copy does not match the original');
+        fs.renameSync(partial, archive);
+      } catch (err) {
+        try { fs.unlinkSync(partial); } catch { /* nothing to clean */ }
+        return { ok: false, reason: `the old file could not be kept: ${err && err.message}` };
+      }
+      const next = {};
+      for (const [k, v] of Object.entries(state.value)) if (!k.startsWith(prefix)) next[k] = v;
+      try { store.write(STORE_KEY, next); } catch { return { ok: false, reason: 'write-failed' }; }
+      return { ok: true, removed, archive };
+    }, { deadlineMs: 5000 });
+  } catch { return { ok: false, reason: 'busy' }; }
+}
+
+function createUsageCounters({ store, now = Date.now, debounceMs = PANEL_DEBOUNCE_MS, log = () => {}, off = null } = {}) {
   if (!store || typeof store.readState !== 'function' || typeof store.write !== 'function' || typeof store.withLock !== 'function') {
     throw new Error('createUsageCounters: a store with readState, write and withLock is required');
   }
@@ -99,6 +160,7 @@ function createUsageCounters({ store, now = Date.now, debounceMs = PANEL_DEBOUNC
   }
 
   function bump(key) {
+    if (off) return { ok: false, reason: 'off' };
     if (!isValidKey(key)) return { ok: false, reason: 'invalid' };
     const t = now();
     if (isDebounced(key)) {
@@ -128,4 +190,4 @@ function createUsageCounters({ store, now = Date.now, debounceMs = PANEL_DEBOUNC
   return { bump, all, STORE_KEY };
 }
 
-module.exports = { createUsageCounters, isValidKey, STATIC_KEYS, PANEL_IDS, GAME_IDS, STORE_KEY, PANEL_DEBOUNCE_MS, KEYS_MAX, RATE_PER_SEC, LOCK_WAIT_MS };
+module.exports = { createUsageCounters, countingOff, resetPrefix, isValidKey, STATIC_KEYS, PANEL_IDS, GAME_IDS, STORE_KEY, PANEL_DEBOUNCE_MS, KEYS_MAX, RATE_PER_SEC, LOCK_WAIT_MS };

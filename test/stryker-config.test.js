@@ -507,3 +507,9 @@ test('the pid-retry decision module is mutated, and its tests are in the run (PR
   for (const module of ['host/stop-by-pid.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
   assert.ok(conf.commandRunner.command.split(/\s+/).includes('test/stop-by-pid.test.js'), 'its test file is in the command');
 });
+
+test('the pty environment builder is mutated, and its tests are in the run (#74 F2, PR #246 Miguel Y6)', () => {
+  // It decides what every session the host starts inherits (PYTHON_BASIC_REPL, no provider or mod token in a shell tab). Not listing it is silent.
+  for (const module of ['host/pty-env.js']) assert.ok(conf.mutate.includes(module), `${module} is in mutate`);
+  assert.ok(conf.commandRunner.command.split(/\s+/).includes('test/pty-env.test.js'), 'its test file is in the command');
+});

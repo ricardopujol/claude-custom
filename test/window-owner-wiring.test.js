@@ -50,6 +50,22 @@ test('the owner stops being one at before-quit, before a dialog that ends the pr
   assert.match(ready, /\}\)\.catch\(\(err\) => \{[\s\S]{0,260}windowClaim\.stop\(\);[\s\S]{0,120}app\.exit\(1\)/);
 });
 
+test('a cancelled quit (the unsaved-text prompt answered Cancel) puts the window back as the project\'s owner (M1)', () => {
+  assert.match(src, /else \{\s*\n\s*quitting = false;[\s\S]{0,260}windowClaim\.resume\(\)/);
+});
+
+test('every app.exit after markReady() in whenReady is preceded by windowClaim.stop(): a held launch must hear no, not ok (PR #248 Dexter 1)', () => {
+  const from = ready.indexOf('windowClaim.markReady()');
+  const to = ready.indexOf('}).catch((err) => {');
+  assert.ok(from > 0 && to > from);
+  const seg = ready.slice(from, to);
+  const exits = [...seg.matchAll(/app\.exit\(/g)].map(m => m.index);
+  assert.ok(exits.length >= 2, 'the attach-only and the single-mode exits');
+  const stops = [...seg.matchAll(/windowClaim\.stop\(\)/g)].length;
+  assert.ok(stops >= exits.length, `${exits.length} exits, ${stops} stops`);
+  assert.match(seg, /NO_PORT_ERROR[\s\S]{0,300}windowClaim\.stop\(\);[\s\S]{0,200}app\.exit\(1\)/, 'the single-mode no-port exit');
+});
+
 test('a window that already exists is left running when a late step throws (only the ownership is dropped)', () => {
   assert.match(ready, /windowClaim\.stop\(\);\s*\n\s*if \(!win \|\| win\.isDestroyed\(\)\) app\.exit\(1\);/);
 });

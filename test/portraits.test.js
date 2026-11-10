@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { portraitFor, listStates, placeholderFor } = require('../host/portraits');
+const { portraitFor, placeholderFor } = require('../host/portraits');
 const { tmpDir } = require('./tmp-dir');
 
 function portraits(tree) {
@@ -59,19 +59,9 @@ test('placeholder initials come from the agent name', () => {
   assert.strictEqual(placeholderFor('debugger').initials, 'DE');
 });
 
-test('state list is read from config, not hardcoded to four', () => {
-  // "thinking" and "waiting on you" are expected to follow.
-  const dir = tmpDir('cc-portraits-');
-  fs.writeFileSync(path.join(dir, 'states.json'),
-    JSON.stringify(['sleeping', 'working', 'happy', 'stressed', 'thinking']));
-  assert.deepStrictEqual(listStates({ portraitsDir: dir }),
-    ['sleeping', 'working', 'happy', 'stressed', 'thinking']);
-});
-
-test('state list falls back to the four built-ins when unconfigured', () => {
-  const dir = portraits({});
-  assert.deepStrictEqual(listStates({ portraitsDir: dir }),
-    ['sleeping', 'working', 'happy', 'stressed']);
+// BACKLOG #93 (Ricardo 2026-11-06): listStates (the state list read from a states.json) was used only by its own two tests.
+test('#93: listStates is no longer exported (only its own tests used it)', () => {
+  assert.strictEqual(require('../host/portraits').listStates, undefined);
 });
 
 test('an agent name that could escape the portraits directory is rejected', () => {

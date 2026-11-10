@@ -75,7 +75,7 @@ const tabMarks = require('./tab-marks');
 const { marksFileFor, loadMarks, saveMarks } = require('../host/tab-marks-store');
 const { sanitizeDim } = require('../host/look');
 const { createStore } = require('../host/store');
-const { createUsageCounters } = require('../host/usage-counters');
+const { createUsageCounters, countingOff } = require('../host/usage-counters');
 const { hostEnv } = require('../host/tab-env');
 const { isSideKey, sideHostsOf, laneHostsOf, readerSessionIds } = require('../host/side-session');
 // BACKLOG #119 A5: a tab's plain shell is a host of its own, looked for as a shell host and never as the folder's own.
@@ -177,7 +177,8 @@ const { createIndexingBridge } = require('./indexing-bridge');
 // A probe seam (host/probe-seams.js, uiStateDir) moves these records into the probe's own folder; unset in real use.
 const UI_STATE_DIR = readSeams(process.env).uiStateDir || path.join(__dirname, '..', '.harness', 'state');
 const uiStore = createStore({ dir: UI_STATE_DIR });
-const usageCounters = createUsageCounters({ store: uiStore });       // invisible feature-use counts (host/usage-counters.js); same file the hosts write
+// Invisible feature-use counts (host/usage-counters.js); same file the hosts write. Off when a probe or a test started this main (#97).
+const usageCounters = createUsageCounters({ store: uiStore, off: countingOff(process.env) });
 const UI_KEY = 'look-global';
 const resourceChip = createChipStore(uiStore);
 const gameScores = createScoreStore(uiStore);   // #41: the wait games' bests, install-wide
@@ -725,7 +726,11 @@ function createWindow() {
       if (ok && win && !win.isDestroyed()) { closeGuarded = true; win.close(); }
       // Cancel (or a save that didn't clear) also cancels a quit that started this close: Electron says nothing when a quit is
       // cancelled, so without this `quitting` stays true and close-to-tray is dead for the rest of the session.
-      else quitting = false;
+      else {
+        quitting = false;
+        // before-quit already stopped the one-window claim; the window stays, so it is the project's owner again (PR #247 Dexter M1).
+        if (win && !win.isDestroyed()) windowClaim.resume().catch(() => {});
+      }
     }).catch(logShellError('window close guard')).finally(() => { closeAsking = false; });
   });
   win.on('closed', () => { win = null; if (tabShell) tabShell.destroy(); });
@@ -2689,7 +2694,11 @@ app.whenReady().then(async () => {
     // The old behaviour, kept: a refused or unfindable port ends the launch.
     // A host that merely was slow leaves the window up, with its reason and Retry.
     console.error('[main] could not start:', first.error);
-    if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) { app.exit(1); return; }
+    if (first.error === NO_PORT_ERROR || /resolvePort:/.test(String(first.error))) {
+      windowClaim.stop();         // markReady() already ran: a launch held on this window must hear no, not ok, before the exit (PR #248 Dexter 1)
+      app.exit(1);
+      return;
+    }
   }
   if (MODE === 'tabs') setInterval(() => { reloadMarks(); tabShell.poll(); }, POLL_MS);
   // #119 A6: read the repo's open issues once, a little after the window is up, so a tab whose branch came from an
