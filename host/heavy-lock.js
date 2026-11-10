@@ -131,9 +131,10 @@ const flagNames = (flag, holder) => (flag === '1' ? !WRAPPER_OWNER.test(holder) 
 
 // `holder`: who held the slot when the wait ended (null: nobody, or unknown); `waitedMs`: how long this asker waited.
 class HeavyLockError extends Error {
-  constructor(code, message, { holder = null, waitedMs = null, detail = null, timedOut = false } = {}) {
+  constructor(code, message, { holder = null, waitedMs = null, detail = null, timedOut = false, firstInLine = null } = {}) {
     super(message); this.name = 'HeavyLockError'; this.code = code; this.holder = holder; this.waitedMs = waitedMs; this.detail = detail;
     this.timedOut = timedOut;
+    this.firstInLine = firstInLine;   // what the script said about the first ticket ("held back by the load gate since T" / "not held back by the load gate"), null from an older script
   }
 }
 
@@ -156,7 +157,14 @@ function notRunLine(err) {
   if (err && err.code === 'busy') {
     const span = n ? `lock busy for ${n}` : 'lock busy for the whole wait';
     // Tickets ahead and nobody holding: the first in line is between two polls, or held back by the load gate itself.
-    if (!holder && detail) return `[heavy-lock] ${span}${timed}, held by nobody now but ${detail} (the first may be held back by the load gate: ${LOAD_GATE}): NOT RUN`;
+    if (!holder && detail) {
+      // The script says whether its first ticket is gated (#187); an older script says nothing, and the guess stays.
+      const first = err.firstInLine ? oneLine(err.firstInLine) : null;
+      const gate = !first ? `the first may be held back by the load gate: ${LOAD_GATE}`
+        : /^held back/.test(first) ? `the first in line is ${first}: ${LOAD_GATE}`
+          : `the first in line is ${first}`;
+      return `[heavy-lock] ${span}${timed}, held by nobody now but ${detail} (${gate}): NOT RUN`;
+    }
     if (!holder && timed) return `[heavy-lock] ${span}${timed}, held by a holder its status could not name: NOT RUN`;
     return `[heavy-lock] ${span}${timed}, held by ${holder || 'nobody now'}: NOT RUN`;
   }
@@ -379,18 +387,21 @@ function reentrantSkip({ env, scriptPath, exists, run, startsOf, work, log }) {
 // The give-up's HeavyLockError from the last -Acquire answer `r` (#237 Miguel M6). `run` reads the slot again when the
 // call was killed by its own timer (#237 Dexter 6).
 function failureFrom(r, waitedMs, run) {
-  const said = (r && r.stdout) || '';
+  // The script's own "[heavy-lock] ..." lines (its stderr progress) are for a person watching the wait; the error text
+  // keeps what the script answered (#187). The line the script prints on a queue give-up is read, not inferred.
+  const said = String((r && r.stdout) || '').split(/\r?\n/).filter(l => !/^\s*\[heavy-lock\]/.test(l)).join('\n').trim();
   if (r && r.status === SCRIPT_BUSY) {
     const m = /^busy: (.*)$/m.exec(said);
     const what = m ? m[1].trim() : '';
     const queued = /^\d+ ahead in the queue$/.test(what);
-    return new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs });
+    const f = /^first in line: (.*)$/m.exec(said);
+    return new HeavyLockError('busy', `${said || 'busy'}. ${HINT}`, { holder: what && !queued ? what : null, detail: queued ? what : null, waitedMs, firstInLine: f ? f[1].trim() : null });
   }
   if (r && r.status === SCRIPT_LOADED) {
     const m = /^machine too loaded: (.*)$/m.exec(said);
     return new HeavyLockError('loaded', `${said || 'machine too loaded'}. ${HINT}`, { detail: m ? m[1].trim() : null, waitedMs });
   }
-  if (r && r.status === null && /ETIMEDOUT/.test(said)) {
+  if (r && r.status === null && /ETIMEDOUT/.test((r && r.stdout) || '')) {   // the raw text: the tag is appended to its last line
     // Killed by its own wait + 1 timer: on a loaded machine the script's load check plus its 20 s sleep can run past the
     // deadline. The wait ran out all the same, so the slot is read again to say which give-up it was.
     const s = parseStatus(readStatus(run));

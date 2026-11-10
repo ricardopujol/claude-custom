@@ -733,6 +733,34 @@ test('#178 b: notRunLine is the one last line, in words a builder cannot misread
   assert.match(notRunLine(null), /: NOT RUN$/);
 });
 
+const FIRST_HELD = 'first in line: held back by the load gate since 10:05:00';
+const FIRST_FREE = 'first in line: not held back by the load gate';
+test('#187: the script\'s "first in line:" line is read, not inferred', () => {
+  const held = rig({ acquireOverride: { status: 2, stdout: `busy: 2 ahead in the queue\n${FIRST_HELD}` } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...held.deps() }), (e) => e.code === 'busy' && e.detail === '2 ahead in the queue' && e.firstInLine === 'held back by the load gate since 10:05:00');
+  const free = rig({ acquireOverride: { status: 2, stdout: `busy: 2 ahead in the queue\r\n${FIRST_FREE}\r\n` } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...free.deps() }), (e) => e.detail === '2 ahead in the queue' && e.firstInLine === 'not held back by the load gate');
+  const old = rig({ acquireOverride: { status: 2, stdout: 'busy: 2 ahead in the queue' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...old.deps() }), (e) => e.detail === '2 ahead in the queue' && e.firstInLine === null);
+});
+
+test('#187: notRunLine says what the script said about the first in line; an older script keeps today\'s guess', () => {
+  const mk = (firstInLine) => new HeavyLockError('busy', 'm', { detail: '2 ahead in the queue', waitedMs: 20 * 60000, firstInLine });
+  assert.strictEqual(notRunLine(mk('held back by the load gate since 10:05:00')),
+    '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is held back by the load gate since 10:05:00: 8 GB free RAM and under 70% CPU): NOT RUN');
+  assert.strictEqual(notRunLine(mk('not held back by the load gate')),
+    '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first in line is not held back by the load gate): NOT RUN');
+  assert.strictEqual(notRunLine(mk(null)),
+    '[heavy-lock] lock busy for 20 min, held by nobody now but 2 ahead in the queue (the first may be held back by the load gate: 8 GB free RAM and under 70% CPU): NOT RUN');
+});
+
+test('#187: the error text drops the script\'s raw [heavy-lock] lines', () => {
+  const r = rig({ acquireOverride: { status: 2, stdout: `[heavy-lock] waited 19:40 for the slot: 2 ahead in the queue\nbusy: 2 ahead in the queue\n${FIRST_FREE}\n[heavy-lock] this run's queue ticket was gone: written back in its place` } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...r.deps() }), (e) => !/\[heavy-lock\]/.test(e.message) && /busy: 2 ahead in the queue/.test(e.message));
+  const t = rig({ acquireOverride: { status: 1, stdout: '[heavy-lock] could not take the slot: boom\ncould not take the slot: boom' } });
+  assert.throws(() => acquire({ label: 'x', pid: 7, ...t.deps() }), (e) => e.code === 'error' && !/\[heavy-lock\]/.test(e.message) && /boom/.test(e.message));
+});
+
 test('#178 b: the watcher runs exactly around the wait, with the asker and its start, and is stopped whether the acquire holds or gives up', () => {
   for (const holder of [null, 'hub: probes (since 10:00:00)']) {
     const r = rig({ holder });

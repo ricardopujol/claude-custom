@@ -24,6 +24,8 @@
  *     under 70% CPU (now <load>): NOT RUN                                         the slot was free, the machine wasn't
  *   [heavy-lock] the lock could not be taken (<why>): NOT RUN                     the lock script failed (the 'error'
  *                                                                                 shape: <why> is its output, one line)
+ * (In the queue variant the parenthesis reads the script's own "first in line:" line when it prints one: "the first in line
+ * is held back by the load gate since <t>" or "is not held back by the load gate"; an older script gets the guess above.)
  * The first and third get " (heavy-lock.ps1 ran past its wait and was stopped)" after the "<n> min" part when the script
  * call was killed by its own wait + 1 minute timer (a loaded machine); then an unreadable holder reads "held by a holder
  * its status could not name". The last line is always one physical line starting "[heavy-lock]".
