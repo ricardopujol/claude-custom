@@ -415,7 +415,9 @@ const SHELL_TAB_REFUSAL = 'this is a plain shell tab, not a Claude session: noth
  * Plain text only (the page writes it with term.write, never as markup); control characters in the reason are blanked.
  */
 function shellExitText(kind, error) {
-  if (kind !== 'shell') return '[claude exited]';
+  // A claude host that ended WITH a reason never ran: the start failed and the retry bound ran out (host/boot-retry.js, BACKLOG #217).
+  // Its reason is already in the tab (the host's own line); a normal exit carries none. Wording pending Ricardo (PR #252 Miguel G1).
+  if (kind !== 'shell') return typeof error === 'string' && error.trim() !== '' ? '[claude did not start]' : '[claude exited]';
   const why = typeof error === 'string' ? error.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim().slice(0, 300) : '';
   return why === '' ? '[shell exited]' : `[shell exited: ${why}]`;
 }

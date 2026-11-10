@@ -125,7 +125,10 @@ test('N2: the host passes the linger to endHost for a failed start only, delays 
 test('N3: the terminal\'s end line names the shell and the reason for a shell tab, and stays "[claude exited]" otherwise', () => {
   const { shellExitText } = require('../app/top-bar-display');
   assert.strictEqual(shellExitText(null, undefined), '[claude exited]');
-  assert.strictEqual(shellExitText(null, 'File not found: nu'), '[claude exited]', 'a claude tab ignores any reason');
+  // PR #252 Miguel G1 (wording pending Ricardo): a claude host that ended WITH a reason never ran (the retry bound ran out); it did not exit.
+  assert.strictEqual(shellExitText(null, 'File not found: nu'), '[claude did not start]');
+  assert.strictEqual(shellExitText(null, ''), '[claude exited]');
+  assert.strictEqual(shellExitText(null, 42), '[claude exited]');
   assert.strictEqual(shellExitText('shell', undefined), '[shell exited]');
   assert.strictEqual(shellExitText('shell', ''), '[shell exited]');
   assert.strictEqual(shellExitText('shell', 'File not found: nu'), '[shell exited: File not found: nu]');
