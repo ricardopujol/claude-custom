@@ -17,6 +17,8 @@
  *   5  a stale file naming a DEAD pid: a launch opens its window and takes the file over
  *   6  a file naming a LIVE pid with ANOTHER start time (a reused pid): a launch opens its window and takes the file over
  *   7  two launches started together on one project: exactly one window survives, the other exits 0
+ *   8  close, then reopen (PR #247 Dexter 1 / Miguel B1): a launch while the first window is still shutting down gets a window of its own,
+ *      and the file names it: one window, never zero
  *
  * SAFE. A scratch project in a temp folder (never dev\), the hosts' `claude` is cmd.exe (CLAUDE_CUSTOM_BIN), ELECTRON_RUN_AS_NODE and every
  * CLAUDE_CUSTOM_* the probe doesn't set are deleted by the launcher, registry / portraits / uploads / UI state / user data are temp
@@ -198,7 +200,7 @@ async function main() {
   // Chromium's shutdown can take a minute or more under load (BACKLOG #74 A), so "gone" is checked at the end, not here.
   console.log(`      (second launch: decided to end after ${tSaid} ms; alive now: ${isRunning(app2.child.pid)})`);
   check('2: a second launch from dev\\ decided at once: it said why (handed to the first window) and never reached a window', !!said2 && /this project's window \(pid \d+\) has it; this launch ends/.test(app2.out) && !/\[main\] Open refused/.test(app2.out), `${tSaid} ms`);
-  const told = await waitFor(() => /a second launch asked for this window \(no lane\): focused/.test(app1.out), 15000);
+  const told = await waitFor(() => /a second launch asked for this window \(null\): focused/.test(app1.out), 15000);
   check('2: the first window was told: focus, no lane', !!told, app1.out.slice(-300));
   const st2 = await stateOf(app1);
   check('2: still ONE window, and the selected tab did not move', st2.windows === 1 && st2.selectedKey === dKey, `windows=${st2.windows} selected=${st2.selectedKey}`);
@@ -242,6 +244,7 @@ async function main() {
   await waitFor(() => app5.exited && app6.exited, 240000);
 
   // 7 ---------------------------------------------------------------------------------
+  const quitExtra = [];
   const q = makeProject('proj2');
   const [r1, r2] = await Promise.all([launchApp(q.container), launchApp(q.container)]);
   const decided = await waitFor(() => [r1, r2].some(a => /this launch ends/.test(a.out)) ? true : null, 90000);
@@ -257,6 +260,23 @@ async function main() {
     await command(keepers[0], { cmd: 'quit', graceful: true });
   }
 
+  // 8 ---------------------------------------------------------------------------------
+  const z = makeProject('proj3');
+  const w8 = await launchApp(z.container);
+  const sw8 = await firstWindowUp(w8);
+  check('8: the window to be closed came up', !!sw8 && sw8.windows === 1);
+  if (sw8) {
+    await command(w8, { cmd: 'quit', graceful: true });   // before-quit: it stops being the owner; its process is still shutting down
+    const l8 = await launchApp(z.container);              // the reopen, while the first is still going (Chromium's shutdown takes long under load)
+    const sl8 = await firstWindowUp(l8);
+    const o8 = readOwner(z);
+    check('8: a launch during the quit gets a window of its own (one window, never zero)', !!sl8 && sl8.windows === 1 && !/this launch ends/.test(l8.out),
+      `windows=${sl8 && sl8.windows} owner-file=${JSON.stringify(o8)} first-still-alive=${isRunning(w8.child.pid)}`);
+    check('8: ...and the file names the new window', !!o8 && o8.pid === l8.child.pid, JSON.stringify(o8));
+    await command(l8, { cmd: 'quit', graceful: true });
+    quitExtra.push(w8, l8);
+  }
+
   // The launches that handed over must END (and leave nothing of their own), however long Chromium takes to shut down.
   const handedOver = [app2, app3, ...[r1, r2].filter(a => /this launch ends/.test(a.out))];
   const allGone = await waitFor(() => handedOver.every(a => a.exited) ? true : null, 300000, 1000);
@@ -267,7 +287,7 @@ async function main() {
   await waitFor(() => { orphans = handedOver.map(a => childrenOf(a.child.pid)); return orphans.every(c => c && c.length === 0) ? true : null; }, 120000, 3000);
   check('2/3/7: ...and left no process of their own behind (polled up to 2 minutes)', orphans.every(c => c && c.length === 0), JSON.stringify(orphans));
   // The windows this probe asked to quit end too (the file went first; the process takes Chromium's time, BACKLOG #74 A).
-  const quitApps = [app1, app5, app6, ...keepers];
+  const quitApps = [app1, app5, app6, ...keepers, ...quitExtra];
   const quitGone = await waitFor(() => quitApps.every(a => a.exited) ? true : null, 300000, 1000);
   check('4/5/6/7: every window that was quit ended (polled up to 5 minutes)', quitGone === true, quitApps.map(a => `${a.child.pid}:${a.exited ? a.exitCode : 'running'}`).join(' '));
 }
