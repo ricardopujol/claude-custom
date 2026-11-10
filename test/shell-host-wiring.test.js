@@ -22,7 +22,7 @@ test('host.js: a shell host takes no session lock', () => {
 
 test('host.js: the pty runs the picked shell with its (empty) arguments, not claude with claude\'s', () => {
   assert.match(HOST, /const SHELL_TARGET = SHELL \? pickShell\(process\.env\) : null;/);
-  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : CLAUDE_BIN, SHELL \? SHELL_TARGET\.args : ARGS, \{/);
+  assert.match(HOST, /const spawnPty = \(\) => pty\.spawn\(SHELL \? SHELL_TARGET\.bin : CLAUDE_BIN, SHELL \? SHELL_TARGET\.args : claudeArgs\(\), \{/);     // #166: claudeArgs() is ARGS, plus --continue for a lane's main session (host/continue-flag.js)
 });
 
 test('host.js: a shell\'s environment goes through shellEnv and gets no provider, no mod token and no harness session marker', () => {
@@ -50,7 +50,7 @@ test('host.js: a shell that fails to spawn ENDS the host through the same exit p
   assert.match(start, /\} else \{\s*\n\s*term = spawnTimed\(\);/, 'claude keeps the plain spawn, timed');
   const end = HOST.slice(HOST.indexOf('function endHost('));
   assert.match(end, /releaseSessionLock\(SESSION_LOCK, lockOwner\)[\s\S]*type: 'exit', exitCode, signal, \.\.\.extra[\s\S]*process\.exit\(exitCode \?\? 0\)/);
-  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,200}endHost\(exitCode, signal\);/);
+  assert.match(HOST, /t\.onExit\(\(\{ exitCode, signal \}\) => \{[\s\S]{0,420}endHost\(exitCode, signal\);/);
 });
 
 test('host.js: a shell host polls no quota, asks for none on attach, and loads no mod', () => {

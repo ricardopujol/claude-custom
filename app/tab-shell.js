@@ -225,7 +225,7 @@ const errorText = (err) => (err && err.message) || String(err);
 
 /** The strip's kept layout, strictly typed, or an empty one: a missing, throwing or odd layout is "nothing kept". */
 function readLayout(layout, log) {
-  const empty = { order: [], closed: [] };
+  const empty = { order: [], closed: [], pinned: [] };
   if (!layout || typeof layout.load !== 'function') return empty;
   try {
     const l = layout.load();
@@ -234,7 +234,8 @@ function readLayout(layout, log) {
     const closed = (Array.isArray(l.closed) ? l.closed : [])
       .filter(c => c && typeof c.key === 'string' && c.key !== '' && typeof c.path === 'string' && c.path !== '')
       .map(c => ({ key: c.key, path: c.path, branch: typeof c.branch === 'string' && c.branch !== '' ? c.branch : null }));
-    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed };
+    const keys = (list) => (Array.isArray(list) ? list : []).filter((k, i, all) => typeof k === 'string' && k !== '' && all.indexOf(k) === i);
+    return { order: (Array.isArray(l.order) ? l.order : []).filter(k => typeof k === 'string' && k !== ''), closed, pinned: keys(l.pinned) };
   } catch (err) {
     log('[shell] layout.load threw:', err && err.message);
     return empty;
@@ -286,6 +287,7 @@ function createShell(deps) {
   const kept = readLayout(layout, log);
   let state = { ...lifecycle.initial(), dismissed: kept.closed.map(c => c.key) };
   let order = kept.order;        // lane keys in the person's drag order (app/tab-lanes.js); develop is not in it
+  let pinned = kept.pinned;      // lane keys the person pinned (BACKLOG #167): always on the strip, started at launch; develop is never in it
   let selectedKey = null;
   let polling = false;
   let lastError = null;
@@ -513,6 +515,8 @@ function createShell(deps) {
       // The strip paints these; it decides nothing (PR 3: badge and phase line).
       return {
         ...e, starting: !!(t && t.starting), startError: t ? t.error : null,
+        // #167: a pinned lane (never develop, never a side or shell tab) is on the strip and starts at launch.
+        pinned: !isCompanionEntry(e) && !e.isDev && pinned.includes(e.key),
         // Its session's host stopped answering after it ran (the strip keeps such a lane only while it is selected).
         ended: !!t && t.ended === true,
         // #129: its host is being ended (the strip greys it and says so; it can't be selected meanwhile).
@@ -591,9 +595,12 @@ function createShell(deps) {
     if (prune && state.tabs.length > 0) {
       const known = new Set([...state.tabs.map(t => keyOf(t.path)), ...closed.map(c => c.key), ...reopenedUnlisted]);
       order = order.filter(k => known.has(k));
+      // P7: a pin whose folder git no longer lists AT ALL is forgotten. Listed but not openable (detached mid-rebase, prunable,
+      // initializing) is still listed: its pin stays (PR #250 Dexter 2). Before git has given a usable list nothing is pruned.
+      if (listedKeys !== null) pinned = pinned.filter(k => listedKeys.has(k) || known.has(k));
     }
     try {
-      const r = layout.save({ order, closed });
+      const r = layout.save({ order, closed, pinned });
       if (r && r.ok === false) log('[shell] layout.save refused:', r.error);
     } catch (err) {
       log('[shell] layout.save threw:', err && err.message);
@@ -623,6 +630,43 @@ function createShell(deps) {
     persistLayout();
     publish();
     return { ok: true };
+  }
+
+  /**
+   * Pin or unpin a lane (BACKLOG #167). Only a lane the strip lists can be pinned: not develop (always in the launch set), not a side
+   * or shell tab. An unpin is allowed for any key that is pinned, listed or not. Saved.
+   */
+  /** A lane the strip lists that can be pinned: not develop (always in the launch set), not a side or shell tab. */
+  const pinnable = (key) => model().some(e => e.key === key && !isCompanionEntry(e) && !e.isDev);
+
+  function setPinned(key, on) {
+    if (mode !== 'tabs') return { ok: false, error: 'not a project window' };
+    if (typeof key !== 'string' || key === '') return { ok: false, error: 'not a lane' };
+    const has = pinned.includes(key);
+    if (on === false) {
+      if (!has) return { ok: true };
+    } else {
+      if (!pinnable(key)) return { ok: false, error: 'not a lane that can be pinned' };
+      if (has) return { ok: true };
+    }
+    pinned = on === false ? pinned.filter(k => k !== key) : [...pinned, key];
+    persistLayout();
+    publish();
+    return { ok: true };
+  }
+  const pin = (key) => setPinned(key, true);
+  const unpin = (key) => setPinned(key, false);
+
+  /**
+   * The Pin / Unpin item of a lane tab's right-click menu: `{ show, pinned, label, target }`. Shown for a lane only (not develop, not a
+   * side or shell tab, not a key the strip doesn't list). The labels are Claude's call, shown at Ricardo's live look.
+   */
+  function pinMenu(key) {
+    const none = { show: false, pinned: false, label: '', target: null };
+    if (mode !== 'tabs' || typeof key !== 'string' || key === '') return none;
+    if (!pinnable(key)) return none;
+    const on = pinned.includes(key);
+    return { show: true, pinned: on, label: on ? 'Unpin' : 'Pin (starts at launch)', target: key };
   }
 
   /**
@@ -839,7 +883,7 @@ function createShell(deps) {
   }
 
   /**
-   * A branch tab whose claude exited keeps a dead page, and a click on it starts a fresh session (BACKLOG #140): the page is
+   * A branch tab whose claude exited keeps a dead page, and a click on it starts a session again (BACKLOG #140); a main tab's host resumes ITS OWN last conversation when it has one recorded (#166, host/main-session.js), else it is fresh: the page is
    * dropped and the record goes back to unstarted, so select() starts it as it retries a failed start. Side and shell tabs
    * have their own reopen; a folder being removed or already merged (finishing), or a reader with unsaved edits (#50), is left as it is.
    */
@@ -919,7 +963,18 @@ function createShell(deps) {
       const key = keyOf(a.path);
       if (a.type === 'open') {
         openedNow.add(key);
-        if (tabs.has(key)) continue;
+        if (tabs.has(key)) {
+          // A record made before git answered (develop, P10): git lists it now, so it adopts its side and shell hosts like any tab,
+          // from the same read as the rest of this batch.
+          const early = tabs.get(key);
+          if (early.early === true) {
+            if (sideList === undefined) sideList = listSideHosts();
+            adoptSide(early, sideList);
+            if (shellList === undefined) shellList = listShellHosts();
+            adoptShell(early, shellList);
+          }
+          continue;
+        }
         const entry = state.tabs.find(t => keyOf(t.path) === key) || { path: a.path, branch: a.branch, isDev: false };
         const tab = newRecord(entry);
         tabs.set(key, tab);
@@ -993,6 +1048,8 @@ function createShell(deps) {
         const { state: next, actions } = lifecycle.removeResult(state, p, r);
         state = next;
         apply(actions, before);
+        // #167 (P7): the merged close ignores a pin, and the pin goes with the lane (folder removed, or kept for its brief), in one save.
+        if (r && (r.ok === true || r.kept === true) && pinned.includes(key)) { pinned = pinned.filter(k => k !== key); persistLayout(); }
         // #139 (P5): a merged lane's tab that the removal closed leaves "Closed <lane> (merged)" on the strip's notice line, after
         // apply (the selection it makes would clear it). A tab that was drawn always gets it, whoever ended its session.
         if (hadTab && !tabs.has(key)) {
@@ -1004,15 +1061,27 @@ function createShell(deps) {
       });
   }
 
+  // Every folder git listed in its last USABLE answer (one with develop in it), openable or not; null until there is one.
+  let listedKeys = null;
+  const usableAnswer = (o) => !!o && Array.isArray(o.worktrees) && o.worktrees.some(w => w && w.isDev === true);
+
   function reconcileWith(observation) {
     const before = model();
+    const usable = usableAnswer(observation);
+    if (usable) listedKeys = new Set(observation.worktrees.map(w => keyOf(w.path)));
     const { state: next, actions } = lifecycle.reconcile(state, observation);
     state = next;
     reopenedUnlisted.clear();     // git has answered: state.tabs is the truth again
     apply(actions, before);
+    if (usable) settleEarlyTabs();
     // The reducer forgets a hand close once git stops listing the worktree: so does the saved list.
     const stillClosed = closedByHand.filter(c => state.dismissed.includes(c.key));
     if (stillClosed.length !== closedByHand.length) { closedByHand = stillClosed; persistLayout(); }
+    // ... and a pin on a folder git stopped listing at all (P7; see persistLayout). An unusable answer is no answer: it prunes nothing.
+    if (usable) {
+      const listed = new Set([...listedKeys, ...closedByHand.map(c => c.key)]);
+      if (pinned.some(k => !listed.has(k))) { pinned = pinned.filter(k => listed.has(k)); persistLayout(); }
+    }
     if (selectWhenListed !== null && tabs.has(selectWhenListed)) {
       const k = selectWhenListed;
       selectWhenListed = null;
@@ -1020,6 +1089,23 @@ function createShell(deps) {
     } else if (selectedKey === null || !tabs.has(selectedKey)) {
       const first = firstSelection();
       if (first !== null) select(first);
+    }
+    if (usable) startLaunchSet();     // an unusable answer must not use up the once-per-window launch set (PR #250 Miguel Y2)
+  }
+
+  /**
+   * A record made before git had answered (develop, P10) meets a USABLE git list (one with develop in it): it takes its branch (and
+   * apply gave it its side and shell hosts, from the batch's one read). It is never stopped here: an attached session was alive before
+   * this window and is the person's (Remote Control survives the window on purpose), and a list that does not name develop is
+   * unusable (host/tab-lifecycle.js reconcile), which never reaches this (PR #250 Dexter 5).
+   */
+  function settleEarlyTabs() {
+    for (const t of tabs.values()) {
+      if (t.early !== true) continue;
+      const entry = state.tabs.find(x => keyOf(x.path) === t.key);
+      if (!entry) { log(`[shell] ${t.key}: started at launch; git's list names no such tab (left as it is)`); continue; }
+      t.early = false;
+      t.branch = entry.branch === undefined ? null : entry.branch;
     }
   }
 
@@ -1267,8 +1353,60 @@ function createShell(deps) {
       await start(tab);
       return tab;
     }
+    startDevelopAtOnce();
     await poll();
     return null;
+  }
+
+  /**
+   * P10 (Ricardo's pick, BACKLOG #166): develop's session starts the moment the window opens, from its own folder, before the first
+   * git poll has answered; the poll then reconciles (develop is always listed). It is a record the poll hasn't listed yet (`early`):
+   * reconcileWith gives it its branch, or ends it when git doesn't list the folder. Not when develop was closed by hand (closed
+   * stays closed), and not when the window was opened from a lane's worktree: that lane is the first start then (the poll's
+   * first selection), and develop follows in the launch set.
+   */
+  /**
+   * The same question firstSelection answers once git has: is the window opened from a LANE's worktree? Before git has answered the
+   * lanes are unknown, so by shape: inside the project container, and neither the container itself (what main.js sends for a window
+   * opened on the project) nor develop's folder nor inside it. Anything else (outside the project, no folder) resolves to develop.
+   */
+  function launchedFromALane(devPath) {
+    if (typeof launchedFrom !== 'string' || launchedFrom === '') return false;
+    if (keyOf(launchedFrom) === keyOf(container) || keyOf(launchedFrom) === devKey || isInside(launchedFrom, devPath)) return false;
+    return isInside(launchedFrom, container);
+  }
+
+  function startDevelopAtOnce() {
+    if (mode !== 'tabs' || devKey === null || tabs.has(devKey) || state.dismissed.includes(devKey)) return;
+    const devPath = path.join(container, 'dev');
+    if (launchedFromALane(devPath)) return;
+    const rec = newRecord({ path: devPath, branch: null, isDev: true });
+    rec.early = true;
+    tabs.set(devKey, rec);
+    start(rec);
+  }
+
+  let launchSetDone = false;
+
+  /**
+   * After the window's first reconcile with git's answer: the launch set (app/tab-lanes.js launchSet), each session through the
+   * start chain, in order. A start that fails shows its error on its own tab and holds nobody else. Once per window: a pin made
+   * later starts nothing by itself (it is on the strip, idle, until clicked or the next launch).
+   */
+  function startLaunchSet() {
+    if (launchSetDone || mode !== 'tabs') return;
+    launchSetDone = true;
+    const lanes = state.tabs.map(t => keyOf(t.path));
+    // the lane the window was opened from, by the same rule as the first selection (it is already starting, in the chain's first place)
+    const named = typeof launchedFrom === 'string' && launchedFrom !== '' ? firstSelection() : null;
+    const first = named === null ? undefined : named;
+    for (const k of tabLanes.launchSet({ lanes, devKey, pinned, order, dismissed: state.dismissed, first })) {
+      const tab = tabs.get(k);
+      if (!tab || tab.started || tab.starting || ending.has(k)) continue;
+      // #139: the window starts no claude in a lane on its way out (a merged lane shows as merged and waits for the person)
+      if (wasMerged(k)) { log(`[shell] ${k}: merged; the launch doesn't start it`); continue; }
+      start(tab);
+    }
   }
 
   // --- #77: is this tab safe to close with no confirm? -------------------------------------------------------
@@ -2363,7 +2501,7 @@ function createShell(deps) {
 
   return {
     open, poll, select: userSelect, closeTab, report, raise, attentionClick, goTo, selectFolder, tabStates, typeMerged, typed, menuState, override,
-    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
+    createWorktree, openCreate, cancelCreate, openPicker, closePicker, plusMenu, reopen, reopenFolder, reorder, pin, unpin, pinMenu, lanesMenu, looked, isLooked, openSide, sideMenu, openShell, shellMenu, issueOf,
     next: () => step(1), previous: () => step(-1),
     isTabView, tabForSender, tabByKey, tabmodeOf, snapshot, model, destroy, branchOf, occupancyFor, boxAnswered,
     // #139: the merged closes the last poll started (a test awaits them; main never needs to).

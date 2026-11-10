@@ -29,10 +29,10 @@ const CLOSED = { key: 'c:\\p\\feat-a', path: 'C:\\p\\feat-a', branch: 'feat/a' }
 
 test('no file yet is an empty layout, and saving then loading round-trips', () => {
   const m = memory();
-  assert.deepStrictEqual(m.layout.load(), { order: [], closed: [], error: null });
+  assert.deepStrictEqual(m.layout.load(), { order: [], closed: [], pinned: [], error: null });
   assert.deepStrictEqual(m.layout.save({ order: ['c:\\p\\b', 'c:\\p\\a'], closed: [CLOSED] }), { ok: true });
   const again = createStripLayout({ file: 'F', readText: (f) => m.files.get(f), writeText: () => assert.fail('a read writes nothing'), mkdir: () => {} });
-  assert.deepStrictEqual(again.load(), { order: ['c:\\p\\b', 'c:\\p\\a'], closed: [CLOSED], error: null });
+  assert.deepStrictEqual(again.load(), { order: ['c:\\p\\b', 'c:\\p\\a'], closed: [CLOSED], pinned: [], error: null });
 });
 
 test('the file name sits in the look folder under the project, and a foreign look folder means no file', () => {
@@ -66,7 +66,7 @@ test('a read that fails some other way (a scan holding the file) is an unknown s
 
 test('without a file (a look folder that is a link elsewhere) it lives in memory for this run and says ok', () => {
   const layout = createStripLayout({ file: null });
-  assert.deepStrictEqual(layout.load(), { order: [], closed: [], error: null });
+  assert.deepStrictEqual(layout.load(), { order: [], closed: [], pinned: [], error: null });
   assert.deepStrictEqual(layout.save({ order: ['a'], closed: [] }), { ok: true });
 });
 
@@ -93,8 +93,8 @@ test('strict parsing: bad entries are dropped one by one, repeats once, and noth
 });
 
 test('a missing or wrong-typed list is an empty one', () => {
-  assert.deepStrictEqual(parseLayout('{"version":1}'), { order: [], closed: [] });
-  assert.deepStrictEqual(parseLayout('{"order":"a","closed":{}}'), { order: [], closed: [] });
+  assert.deepStrictEqual(parseLayout('{"version":1}'), { order: [], closed: [], pinned: [] });
+  assert.deepStrictEqual(parseLayout('{"order":"a","closed":{}}'), { order: [], closed: [], pinned: [] });
 });
 
 test('lists are bounded when written, keeping the newest closed (they are most recent first) and the first of the order', () => {
