@@ -52,7 +52,8 @@ const { projectLabel } = require('../host/project-path');
 const { resolvePort } = require('../host/port-for-project');
 const { decideAttach } = require('../host/handshake');
 const { readIdentity, readTokenFile, defaultIsAlive } = require('../host/host-identity');
-const { readLook, lookDirState, ensureLookDir } = require('../host/style');
+const { readLook, lookDir, lookDirState, ensureLookDir } = require('../host/style');
+const { createProjectLayoutStore } = require('./project-layout-store');
 // Worktree occupancy (backlog #44 + #47): which worktree each agent is working in, from the claim files the
 // launching hosts write. This window only READS them; host/occupancy-service.js is where "live" is decided.
 const { createOccupancyService } = require('../host/occupancy-service');
@@ -1678,19 +1679,28 @@ function registerIpc() {
   // The global dock layout (layout pass L1): install-wide like the toggle above,
   // and followed across project windows the same way -- see layout-bridge.js.
   // A tab's OWN layout is its host's business, not main's.
+  // BACKLOG #211: the layout is each PROJECT's own, in its `.claude-custom\` (the install-wide file only seeds a project
+  // that has none yet), so another project's window is never moved by this one. Presets below stay install-wide.
+  const layoutStore = createProjectLayoutStore({
+    project: createStore({ dir: lookDir(STATE_ROOT) }), fallback: uiStore,
+    prepare: () => {
+      if (lookDirState(STATE_ROOT, fs) === 'foreign') throw new Error('.claude-custom is a link to somewhere else');
+      ensureLookDir(STATE_ROOT, fs);
+    },
+  });
   const layoutSync = {};
-  registerLayoutHandlers({ ipcMain, store: uiStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
+  registerLayoutHandlers({ ipcMain, store: layoutStore, sync: layoutSync, isSender: isTabView, send: pushToViews });
   watchLayout({
-    store: uiStore, sync: layoutSync, send: pushToViews,
-    file: path.join(UI_STATE_DIR, `${LAYOUT_KEY}.json`),
+    store: layoutStore, sync: layoutSync, send: pushToViews,
+    file: layoutStore.pathOf(LAYOUT_KEY),
   });
   // The split-tree layout (dockable panels D1) under its own key. The pair above stays: an older
   // window still writes it, and it is read once to migrate into the tree, never written by this build.
   const treeSync = {};
-  registerLayoutHandlers({ ipcMain, store: uiStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
+  registerLayoutHandlers({ ipcMain, store: layoutStore, sync: treeSync, names: TREE_NAMES, isSender: isTabView, send: pushToViews });
   watchLayout({
-    store: uiStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
-    file: path.join(UI_STATE_DIR, `${TREE_NAMES.key}.json`),
+    store: layoutStore, sync: treeSync, names: TREE_NAMES, send: pushToViews,
+    file: layoutStore.pathOf(TREE_NAMES.key),
   });
   // The layout presets (dockable panels D3): a list, install-wide, under its own key. Same bridge, an array.
   const presetSync = {};

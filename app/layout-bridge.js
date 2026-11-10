@@ -1,9 +1,11 @@
 'use strict';
 /**
- * Main's side of the GLOBAL dock layout (layout pass L1, S6): which module sits
- * in which zone for every tab that hasn't got its own. Install-wide, like the
- * unfocused dim and the agent-images toggle, so it lives in main's store
- * (`.harness/state/layout-global.json`) and not in a host.
+ * Main's side of the dock layout (layout pass L1, S6): which module sits
+ * in which zone for every tab that hasn't got its own. Since BACKLOG #211 the layout and the split tree
+ * are each PROJECT's own: main hands this bridge app/project-layout-store.js, which keeps them in the
+ * project's `.claude-custom\` and reads the install-wide `.harness/state/layout-global.json` / `layout-tree.json`
+ * only as the first-open default for a project with none yet. The presets stay install-wide (a saved preset
+ * is meant to be reused) and keep the plain store. Not in a host.
  *
  * Main stores and relays; it never judges the shape. The page normalizes every
  * layout it reads (app/dock-tree.js, app/dock-migrate.js for L1's shape) because only the page knows which
